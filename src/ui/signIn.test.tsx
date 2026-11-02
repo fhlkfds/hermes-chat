@@ -47,6 +47,45 @@ describe("Extra request headers on the sign-in screen", () => {
   });
 });
 
+describe("Header values filled in from the keyring", () => {
+  const restored: SignInDetails = { ...blank, password: "", headers: [{ name: "CF-Access-Client-Secret", value: "s3cret-for-a" }] };
+
+  it("are cleared, names kept, once the URL is changed, so they never go to another server", async () => {
+    const onSignIn = vi.fn(async () => {});
+    render(<SignIn initial={restored} onSignIn={onSignIn} />);
+    const url = screen.getByLabelText(/^Dashboard URL/);
+    await userEvent.clear(url);
+    await userEvent.type(url, "https://other.example.com");
+    expect(screen.getByLabelText("Header 1 name")).toHaveProperty("value", "CF-Access-Client-Secret");
+    expect(screen.getByLabelText("Header 1 value")).toHaveProperty("value", "");
+    expect(screen.getByRole("status").textContent).toContain("saved header values were cleared");
+    // Values typed now are meant for the new URL, and are sent.
+    await userEvent.type(screen.getByLabelText("Header 1 value"), "s3cret-for-b");
+    await userEvent.type(screen.getByLabelText(/^Dashboard password/), "hunter2");
+    await userEvent.click(screen.getByRole("button", { name: "Connect" }));
+    expect(onSignIn).toHaveBeenCalledWith(expect.objectContaining({ url: "https://other.example.com", headers: [{ name: "CF-Access-Client-Secret", value: "s3cret-for-b" }] }));
+  });
+
+  it("are cleared too when the owner starts in SSH, switches to URL and changes it", async () => {
+    render(<SignIn initial={{ ...restored, mode: "ssh" }} onSignIn={async () => {}} />);
+    await userEvent.click(screen.getByRole("button", { name: "URL" }));
+    expect(screen.getByLabelText("Header 1 value")).toHaveProperty("value", "s3cret-for-a");
+    await userEvent.type(screen.getByLabelText(/^Dashboard URL/), "/");
+    expect(screen.getByLabelText("Header 1 value")).toHaveProperty("value", "");
+  });
+
+  it("stay while the URL is the one they were saved for", async () => {
+    const onSignIn = vi.fn(async () => {});
+    render(<SignIn initial={restored} onSignIn={onSignIn} />);
+    await userEvent.type(screen.getByLabelText(/^Dashboard URL/), " ");
+    await userEvent.type(screen.getByLabelText("Dashboard username"), "x");
+    await userEvent.type(screen.getByLabelText(/^Dashboard password/), "hunter2");
+    await userEvent.click(screen.getByRole("button", { name: "Connect" }));
+    expect(onSignIn).toHaveBeenCalledWith(expect.objectContaining({ headers: restored.headers }));
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+});
+
 describe("The real pipe", () => {
   it("hands Rust the headers for a URL, and none for SSH", async () => {
     const { tauriPipe } = await import("../hermes/tauriPipe");

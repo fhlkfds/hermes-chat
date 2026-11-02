@@ -20,6 +20,16 @@ export function SignIn({
   const ready = (d.mode === "ssh" ? d.sshTarget : d.url).trim() && d.username.trim() && d.password;
   const headers = d.headers ?? [];
   const setHeader = (i: number, patch: Partial<ExtraHeader>) => set({ headers: headers.map((h, j) => (j === i ? { ...h, ...patch } : h)) });
+  // Header values filled in from the keyring belong to the URL they were saved for (account.ts). Once the URL is
+  // changed, they are cleared, names kept, so a gateway's secrets never go to another server.
+  const [restoredFor, setRestoredFor] = useState(initial.headers?.some((h) => h.value) ? initial.url.trim() : undefined);
+  const [cleared, setCleared] = useState(false);
+  const setUrl = (url: string) => {
+    if (restoredFor === undefined || url.trim() === restoredFor) return set({ url });
+    set({ url, headers: headers.map((h) => ({ ...h, value: "" })) });
+    setRestoredFor(undefined);
+    setCleared(true);
+  };
   return (
     <div className="first-run">
       <div className="first-run-card">
@@ -59,7 +69,7 @@ export function SignIn({
           ) : (
             <label className="field">
               <span className="field-label">Dashboard URL</span>
-              <input value={d.url} onChange={(e) => set({ url: e.target.value })} placeholder="http://hermes:9119" />
+              <input value={d.url} onChange={(e) => setUrl(e.target.value)} placeholder="http://hermes:9119" />
               <span className="field-hint block">
                 <Globe size={12} /> <code>http://</code> isn't encrypted unless it stays on this computer or on Tailscale.
               </span>
@@ -100,6 +110,11 @@ export function SignIn({
               <button type="button" className="btn add-header" onClick={() => set({ headers: [...headers, { name: "", value: "" }] })}>
                 <Plus size={14} /> Add header
               </button>
+              {cleared && headers.length > 0 && (
+                <span className="field-hint block" role="status">
+                  The URL changed, so the saved header values were cleared. Enter them for this URL.
+                </span>
+              )}
               <span className="field-hint block">
                 <ShieldCheck size={12} /> For a gateway in front of the dashboard, such as Cloudflare Access. Sent with every request to this URL,
                 never to another site. Saved in your system keyring.
