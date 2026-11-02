@@ -58,9 +58,8 @@ export type Item =
   | { kind: "error"; id: string; text: string };
 
 /** How the owner answers an Approval: run it this once, for the rest of the chat, always, or not at all. */
-export type ApprovalChoice = "once" | "session" | "always" | "deny";
-
-export const APPROVAL_CHOICES: readonly ApprovalChoice[] = ["once", "session", "always", "deny"];
+export const APPROVAL_CHOICES = ["once", "session", "always", "deny"] as const;
+export type ApprovalChoice = (typeof APPROVAL_CHOICES)[number];
 
 export type ApprovalItem = Extract<Item, { kind: "approval" }>;
 

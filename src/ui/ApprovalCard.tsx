@@ -11,7 +11,7 @@ const CHOICE_LABEL: Record<ApprovalChoice, string> = {
   deny: "Deny",
 };
 
-const ANSWERED: Record<ApprovalChoice, string> = {
+const ANSWERED_LABEL: Record<ApprovalChoice, string> = {
   once: "Approved once",
   session: "Allowed for this chat",
   always: "Always allowed",
@@ -45,7 +45,7 @@ export function ApprovalCard({
     <div className={`approval ${closed ? "answered" : ""}`}>
       <div className="approval-head">
         <ShieldAlert size={15} />
-        {item.answer ? ANSWERED[item.answer] : item.ended ? endedNote(item.ended) : "Hermes wants to run a command"}
+        {item.answer ? ANSWERED_LABEL[item.answer] : item.ended ? endedNote(item.ended) : "Hermes wants to run a command"}
       </div>
       <pre className="approval-cmd">{item.command}</pre>
       {!closed && (

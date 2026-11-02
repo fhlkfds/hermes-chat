@@ -65,6 +65,12 @@ describe("Approvals", () => {
     expect(card()).toMatchObject({ choices: ["once", "deny"], allowSession: false, allowPermanent: false });
   });
 
+  it("rules out the broader grants when Hermes doesn't say they're allowed", async () => {
+    const { server, runtime, card } = await replying();
+    server.askApproval(runtime, { allow_session: undefined, allow_permanent: undefined });
+    expect(card()).toMatchObject({ allowSession: false, allowPermanent: false });
+  });
+
   it("approves the command once", async () => {
     const { server, hermes, id: chatId, runtime, card } = await replying();
     const { id } = server.askApproval(runtime);
@@ -202,6 +208,13 @@ describe("Approvals", () => {
     expect(server.responses).toEqual([]);
   });
 
+  it("closes a card Hermes drops by its server request id", async () => {
+    const { server, runtime, card } = await replying();
+    const { id } = server.askApproval(runtime);
+    server.event(runtime, "approval.cancelled", { reason: "interrupted", cancelled_count: 1, request_ids: [id] });
+    expect(card()).toMatchObject({ ended: "interrupted" });
+  });
+
   it("closes the cards Hermes drops when it tears the session down", async () => {
     const { server, hermes, id: chatId, runtime, chat } = await replying();
     const first = server.askApproval(runtime);
@@ -307,8 +320,26 @@ describe("Approvals after a reconnect", () => {
     await hermes.idle();
 
     expect(chat().items.filter((i) => i.kind === "approval" && !i.answer)).toEqual([]);
+    expect(chat().items.at(-1)).toMatchObject({
+      kind: "error",
+      text: "Your answer to “rm -rf /var/log/old” didn't reach Hermes before the connection dropped. Hermes stops waiting on its own.",
+    });
     await hermes.answerApproval(chatId, id!, "once");
     expect(server.responses.map((r) => r.result?.choice)).toEqual(["deny"]);
+  });
+
+  it("doesn't bring back a card Hermes dropped with the session, though it lists it again", async () => {
+    vi.useFakeTimers();
+    const { server, hermes, id: chatId, runtime, chat } = await replying();
+    const { id, requestId } = server.askApproval(runtime);
+    server.event(runtime, "approval.cancelled", { reason: "interrupted", cancelled_count: 1, request_ids: [requestId] });
+    server.drop();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await hermes.idle();
+
+    expect(chat().items.filter((i) => i.kind === "approval" && !i.ended)).toEqual([]);
+    await hermes.answerApproval(chatId, id!, "once");
+    expect(server.responses).toEqual([]);
   });
 
   it("doesn't bring back a card Hermes stopped waiting on, though it lists it again", async () => {
