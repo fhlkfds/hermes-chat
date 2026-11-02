@@ -1041,6 +1041,8 @@ button.status-item:disabled { opacity: 0.5; cursor: default; }
 }
 .usage-line:hover, .usage-line[aria-expanded="true"] { color: var(--muted); background: var(--raised-2); }
 .usage-table { margin: 6px 0 0; display: grid; gap: 2px; font-size: calc(12rem / 14); max-width: 300px; }
+.usage-breakdown { max-width: 300px; }
+.usage-breakdown .usage-note { margin-top: 6px; }
 .usage-row { display: flex; justify-content: space-between; gap: 16px; }
 .usage-row dt { color: var(--muted); }
 .usage-row dd { margin: 0; color: var(--text-2); font-variant-numeric: tabular-nums; text-align: right; }
