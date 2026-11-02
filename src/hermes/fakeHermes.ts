@@ -644,6 +644,8 @@ export class FakeHermes {
     computer_use: [{ name: "cua-driver (background)", post_setup: "cua_driver", status: "needs_setup", is_active: false }],
     stt: [{ name: "Local Whisper", status: "ready", is_active: true }],
   };
+  /** While set, the next toolset list read waits for it (once). */
+  toolsetListGateOnce?: Promise<void>;
   /** While set, `GET /api/tools/toolsets/{name}/config` fails with this. */
   toolsetConfigFailure?: string;
   /** The next toggle writes, then answers with this error anyway (a failure after the save, such as a 500). */
@@ -770,6 +772,11 @@ export class FakeHermes {
     const name = rawName === undefined ? undefined : decodeURIComponent(rawName);
     const on = this.enabledToolsets(profile);
     const known = (n: string) => this.toolsetCatalog.find((t) => t.name === n);
+    if (req.method === "GET" && name === undefined && this.toolsetListGateOnce) {
+      const gate = this.toolsetListGateOnce;
+      this.toolsetListGateOnce = undefined;
+      await gate;
+    }
     if (req.method === "GET" && name === undefined && this.toolsetReadsFailing)
       throw new Error(`The dashboard answered 500: {"detail":"Internal Server Error"}`);
     if (req.method === "GET" && name === undefined)

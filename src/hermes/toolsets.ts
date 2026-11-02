@@ -57,6 +57,11 @@ export type ToolsetChange =
    * answered with this error, yet reads it back as asked. `mcpBack`: the platform's `no_mcp` was cleared by the save.
    */
   | { kind: "saved"; list: ToolsetList; installing?: string; warning?: string; mcpBack?: boolean }
+  /**
+   * Not sent: checked again just before the write, the change now needs the owner to confirm something they weren't
+   * asked about (`cautions`, all of them, to ask again).
+   */
+  | { kind: "confirm"; cautions: Caution[]; list: ToolsetList }
   /** Not sent: Hermes already had it otherwise, or no longer lists it; another client changed it. */
   | { kind: "conflict"; list: ToolsetList; now?: boolean }
   /** Refused with a 4xx, which Hermes answers before writing; `list`, when it could be read again. */
@@ -78,6 +83,10 @@ export type Pending = { profile: string; name: string; enabled: boolean };
  * checked, so either may happen.
  */
 export type Caution = { kind: "install"; keys: string[] } | { kind: "noMcp"; platform: string } | { kind: "unchecked"; what: string };
+
+/** A caution's identity, to tell whether the owner already confirmed it. */
+const cautionKey = (c: Caution) =>
+  c.kind === "install" ? `install:${[...c.keys].sort().join(",")}` : c.kind === "noMcp" ? `noMcp:${c.platform}` : `unchecked:${c.what}`;
 
 /** The toolsets whose providers Hermes checks for readiness at `bf0203a` (`TOOL_CATEGORIES`). */
 const PROVIDER_TOOLSETS = ["web", "browser", "image_gen", "video_gen", "x_search", "tts", "stt", "computer_use"];
@@ -249,10 +258,14 @@ export class ToolsetsApi {
       names.map(async (name) => {
         const read = await this.providers(profile, name).catch(() => undefined);
         if (!read?.rows.length) return;
-        const active = read.rows.find((p) => p.is_active === true) ?? read.rows.find((p) => read.active && str(p.name) === read.active);
-        if (active) {
-          const why = READINESS[str(active.status)];
-          if (why) out[name] = `Its provider, ${str(active.name)}, ${why}.`;
+        // Hermes can have several providers active at once (web's search and extract each pick one), so every one
+        // in use is checked; the none-ready rule is only for when none is active.
+        const flagged = read.rows.filter((p) => p.is_active === true);
+        const active = flagged.length ? flagged : read.rows.filter((p) => read.active && str(p.name) === read.active);
+        if (active.length) {
+          const bad = active.filter((p) => READINESS[str(p.status)]);
+          if (bad.length === 1) out[name] = `Its provider, ${str(bad[0].name)}, ${READINESS[str(bad[0].status)]}.`;
+          else if (bad.length) out[name] = `Its providers in use need setup: ${bad.map((p) => `${str(p.name)} ${READINESS[str(p.status)]}`).join("; ")}.`;
         } else if (!read.rows.some((p) => p.status === "ready")) {
           out[name] = "None of its providers is ready on the server.";
         }
@@ -268,7 +281,11 @@ export class ToolsetsApi {
    * said too, rather than assumed safe.
    */
   async cautions(profile: string, t: Toolset, enabled: boolean): Promise<Caution[]> {
-    if (t.configOnly) return [];
+    return (await this.cautionsAndGuards(profile, t, enabled)).cautions;
+  }
+
+  private async cautionsAndGuards(profile: string, t: Toolset, enabled: boolean): Promise<{ cautions: Caution[]; guards?: ToolsetGuards }> {
+    if (t.configOnly) return { cautions: [] };
     const out: Caution[] = [];
     const [guards, installs] = await Promise.all([
       this.guards(profile),
@@ -283,19 +300,20 @@ export class ToolsetsApi {
     else if (installs.length) out.push({ kind: "install", keys: installs });
     if (!guards) out.push({ kind: "unchecked", what: `whether the profile has MCP servers turned off with no_mcp, which any change here clears` });
     else if (guards.noMcp.includes(t.platform)) out.push({ kind: "noMcp", platform: t.platform });
-    return out;
+    return { cautions: out, guards };
   }
 
   /**
    * Turns `name` on or off for `profile`, if Hermes still has it as `expected` (what the owner saw), then reads it back.
    * Sends nothing when it doesn't: another client changed it, and the owner sees that first. Changes wait their turn:
-   * one is written at a time, so a later one is checked against what the earlier one left.
+   * one is written at a time, so a later one is checked against what the earlier one left. `accepted`: the cautions the
+   * owner confirmed; they are checked again just before the write, and anything new is asked about instead of sent.
    */
-  set(profile: string, name: string, enabled: boolean, expected: boolean): Promise<ToolsetChange> {
+  set(profile: string, name: string, enabled: boolean, expected: boolean, accepted: Caution[] = []): Promise<ToolsetChange> {
     const run = async () => {
       this.setPending({ profile, name, enabled });
       try {
-        return await this.write(profile, name, enabled, expected);
+        return await this.write(profile, name, enabled, expected, accepted);
       } finally {
         this.setPending(undefined);
       }
@@ -305,14 +323,19 @@ export class ToolsetsApi {
     return done;
   }
 
-  private async write(profile: string, name: string, enabled: boolean, expected: boolean): Promise<ToolsetChange> {
+  private async write(profile: string, name: string, enabled: boolean, expected: boolean, accepted: Caution[]): Promise<ToolsetChange> {
     if (!changeableName(name)) return { kind: "rejected", reason: "This app can't send that toolset's name to Hermes." };
     const before = await this.list(profile);
     const row = before.toolsets.find((t) => t.name === name);
     if (!row) return { kind: "conflict", list: before };
     if (row.enabled !== expected) return { kind: "conflict", list: before, now: row.enabled };
     if (row.enabled === enabled) return { kind: "saved", list: before };
-    const hadNoMcp = row.configOnly ? false : (await this.guards(profile))?.noMcp.includes(row.platform);
+    // What the owner confirmed may no longer be all there is: another client may have set no_mcp, or an install may now
+    // be due. Checked here, inside the queue, right before the write.
+    const check = await this.cautionsAndGuards(profile, row, enabled);
+    const covered = new Set(accepted.map(cautionKey));
+    if (check.cautions.some((c) => !covered.has(cautionKey(c)))) return { kind: "confirm", cautions: check.cautions, list: before };
+    const hadNoMcp = !row.configOnly && check.guards?.noMcp.includes(row.platform);
 
     let answer: Json;
     try {

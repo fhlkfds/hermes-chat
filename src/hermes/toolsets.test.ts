@@ -101,7 +101,10 @@ describe("toolset discovery", () => {
     expect(await api.cautions("default", web, false)).toEqual([{ kind: "noMcp", platform: "cli" }]);
     // A Discord toolset writes Discord's list, which has no no_mcp.
     expect(await api.cautions("default", list.toolsets.find((x) => x.name === "discord")!, true)).toEqual([]);
-    expect(await api.set("default", "web", false, true)).toMatchObject({ kind: "saved", mcpBack: true });
+    // Sent only with that caution confirmed.
+    expect(await api.set("default", "web", false, true)).toMatchObject({ kind: "confirm", cautions: [{ kind: "noMcp", platform: "cli" }] });
+    expect(server.toolsetWrites).toEqual([]);
+    expect(await api.set("default", "web", false, true, [{ kind: "noMcp", platform: "cli" }])).toMatchObject({ kind: "saved", mcpBack: true });
     expect((await api.guards("default"))?.noMcp).toEqual([]);
   });
 
@@ -117,6 +120,24 @@ describe("toolset discovery", () => {
     });
     // Web has no active provider but a ready one (Exa's keyless row).
     expect(problems.web).toBeUndefined();
+    // Web's search and extract can each have an active provider: one ready doesn't hide the other.
+    server.toolsetProviders.web = [
+      { name: "Firecrawl Self-Hosted", status: "ready", is_active: true },
+      { name: "OpenAI Native", status: "needs_auth", is_active: true },
+    ];
+    expect((await api.setupProblems("default", await api.list("default"))).web).toBe("Its provider, OpenAI Native, needs a sign-in on the server.");
+  });
+
+  it("asks again when the check right before the write finds what the owner wasn't asked about", async () => {
+    const { server, api } = await connected();
+    const install = [{ kind: "install" as const, keys: ["cua_driver"] }];
+    server.enabledToolsets("default").delete("computer_use");
+    // Confirmed for the install; meanwhile another client sets no_mcp.
+    server.toolsetNoMcp.default = new Set(["cli"]);
+    const r = await api.set("default", "computer_use", true, false, install);
+    expect(r).toMatchObject({ kind: "confirm", cautions: [...install, { kind: "noMcp", platform: "cli" }] });
+    expect(server.toolsetWrites).toEqual([]);
+    expect(server.toolsetNoMcp.default.has("cli")).toBe(true);
   });
 });
 
@@ -141,7 +162,8 @@ describe("changing a toolset", () => {
 
   it("reports an install Hermes started for it", async () => {
     const { api } = await connected();
-    expect(await api.set("default", "computer_use", true, false)).toMatchObject({ kind: "saved", installing: "cua_driver" });
+    const install = [{ kind: "install" as const, keys: ["cua_driver"] }];
+    expect(await api.set("default", "computer_use", true, false, install)).toMatchObject({ kind: "saved", installing: "cua_driver" });
   });
 
   it("sends nothing when another client changed it since it was shown", async () => {

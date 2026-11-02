@@ -46,6 +46,8 @@ function noteFor(t: Toolset, enabled: boolean, r: ToolsetChange): Note {
           (r.installing ? ` Hermes also started installing ${r.installing} on the server for it, in the background.` : "") +
           (r.mcpBack ? " Hermes cleared no_mcp, so new chats are offered the profile's MCP servers again." : ""),
       };
+    case "confirm":
+      return { tone: "warn", text: `Not sent yet: checked again just before sending, turning ${t.label} ${onOff(enabled)} now needs your confirmation above.` };
     case "conflict":
       return r.now === undefined
         ? { tone: "warn", text: `Not changed: Hermes no longer lists ${t.label}.` }
@@ -138,7 +140,7 @@ function ToolsetRow({
       )}
       {(!t.configured || problem) && (
         <div className="muted small toolset-hint">
-          {problem ?? "Its provider or API key isn't set up on the server."} Its tools may not work, or be offered, even while it's on. Set it up with{" "}
+          {problem ?? "Its provider or API key isn't set up on the server."} {t.configOnly ? "It may not work" : "Its tools may not work, or be offered,"} even while it's on. Set it up with{" "}
           <span className="mono">hermes tools</span> there.
         </div>
       )}
@@ -178,7 +180,8 @@ export function ToolsetSettings({
   const [reading, setReading] = useState(false);
   const [checking, setChecking] = useState<Checking>();
   const [notes, setNotes] = useState<Record<string, Note>>({});
-  const [ask, setAsk] = useState<{ t: Toolset; enabled: boolean; cautions: Caution[] }>();
+  /** A change waiting for the owner's confirmation. `again`: the check right before sending found something new. */
+  const [ask, setAsk] = useState<{ t: Toolset; enabled: boolean; cautions: Caution[]; again?: boolean }>();
   /** A change whose outcome is unknown: the list is read again once Hermes is back. */
   const [reread, setReread] = useState(false);
   // The change on its way belongs to the API, not to this screen: leaving and coming back still shows it and waits.
@@ -241,12 +244,14 @@ export function ToolsetSettings({
       } finally {
         readingNow.current = false;
         if (live.current) setReading(false);
+        // What was asked meanwhile, such as the read on reconnecting, on every path out, a dropped or failed read
+        // included. One waiting for a change to this profile runs when that is done.
+        if (wanted.current !== undefined && live.current && api.pending()?.profile !== profile) {
+          const again = wanted.current;
+          wanted.current = undefined;
+          void read(again);
+        }
       }
-      // What was asked meanwhile, such as the read on reconnecting. One waiting for a change runs when it's done.
-      if (wanted.current === undefined || !live.current || api.pending()?.profile === profile) return;
-      const again = wanted.current;
-      wanted.current = undefined;
-      void read(again);
     },
     [api, profile],
   );
@@ -276,14 +281,18 @@ export function ToolsetSettings({
     return () => window.removeEventListener("focus", onFocus);
   }, [connected, list, read]);
 
-  const commit = async (t: Toolset, enabled: boolean) => {
+  const commit = async (t: Toolset, enabled: boolean, accepted: Caution[] = []) => {
     let note: Note;
     try {
-      const r = await api.set(profile, t.name, enabled, t.enabled);
+      const r = await api.set(profile, t.name, enabled, t.enabled, accepted);
       if (!live.current) return;
       stamp.current++;
       // Every outcome but a lost answer carries the list as Hermes has it after the attempt.
       if (r.list) setList(r.list);
+      if (r.kind === "confirm") {
+        const fresh = r.list.toolsets.find((x) => x.name === t.name) ?? t;
+        setAsk({ t: fresh, enabled, cautions: r.cautions, again: true });
+      }
       if (r.kind === "unknown" && !r.list) setReread(true);
       if (r.kind === "saved" && r.mcpBack) setGuards((g) => g && { ...g, noMcp: g.noMcp.filter((p) => p !== t.platform) });
       note = noteFor(t, enabled, r);
@@ -316,9 +325,9 @@ export function ToolsetSettings({
 
   const confirm = async () => {
     if (!ask || api.pending() || !connected) return;
-    const { t, enabled } = ask;
+    const { t, enabled, cautions } = ask;
     setAsk(undefined);
-    await commit(t, enabled);
+    await commit(t, enabled, cautions);
   };
 
   const intro = (
@@ -417,6 +426,7 @@ export function ToolsetSettings({
           <span className="confirm-msg">
             <TriangleAlert size={12} /> Turn {ask.t.label} {onOff(ask.enabled)}?
           </span>
+          {ask.again && <span className="confirm-detail">Checked again just before sending, this changed since you were asked:</span>}
           {ask.cautions.map((c, i) => (
             <span className="confirm-detail" key={i}>
               {cautionText(c, ask.t)}

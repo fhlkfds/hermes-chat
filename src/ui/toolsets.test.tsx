@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 import { FakeHermes } from "../hermes/fakeHermes";
 import { connect } from "../hermes/transport";
+import { PROBE_NAME } from "../hermes/toolsets";
 import { ToolsetSettings } from "./ToolsetSettings";
 import { SettingsScreen } from "./Settings";
 import { appearanceStore } from "./appearance";
@@ -212,6 +213,46 @@ describe("Settings → Toolsets", () => {
     act(() => release());
     await waitFor(() => expect(toggle("Image Generation").getAttribute("aria-checked")).toBe("true"));
     expect(toggle("Web Search & Scraping").getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("asks again, sending nothing, when no_mcp appears between the confirmation and the write", async () => {
+    const server = new FakeHermes();
+    const { user } = await shown(server);
+    await user.click(toggle("Computer Use"));
+    const ask = await screen.findByRole("alertdialog");
+    expect(ask.textContent).not.toMatch(/no_mcp/);
+    server.toolsetNoMcp.default = new Set(["cli"]); // Another client turns MCP servers off meanwhile.
+    await user.click(within(ask).getByRole("button", { name: "Turn on" }));
+    const again = await screen.findByRole("alertdialog");
+    expect(again.textContent).toMatch(/Checked again just before sending, this changed since you were asked/);
+    expect(again.textContent).toMatch(/turned off for CLI with no_mcp/);
+    expect(server.toolsetWrites).toEqual([]);
+    expect(server.toolsetNoMcp.default.has("cli")).toBe(true);
+    await user.click(within(again).getByRole("button", { name: "Turn on" }));
+    await screen.findByText(/Hermes cleared no_mcp/);
+    expect(toolsetWrites(server)).toEqual(["default:computer_use=true"]);
+  });
+
+  it("a reconnect read waiting behind a read that turns out stale still runs", async () => {
+    const { server, user, rerender } = await shown();
+    let releaseWrite!: () => void;
+    server.toolsetGateBeforeWrite = new Promise((r) => (releaseWrite = r));
+    await user.click(toggle("Web Search & Scraping"));
+    await screen.findByText(/Saving: turning Web Search & Scraping off/);
+    // A focus read starts and hangs; then the connection drops and comes back.
+    let releaseRead!: () => void;
+    server.toolsetListGateOnce = new Promise((r) => (releaseRead = r));
+    act(() => void window.dispatchEvent(new Event("focus")));
+    rerender({ connected: false });
+    rerender({ connected: true });
+    const probes = () => server.restRequests.filter((q) => q.method === "PUT" && q.path.endsWith(PROBE_NAME)).length;
+    const probesBefore = probes();
+    server.enabledToolsets("default").add("image_gen"); // Changed elsewhere while away.
+    act(() => releaseWrite());
+    await screen.findByText(/Saved: Hermes reads Web Search & Scraping back as off/);
+    act(() => releaseRead()); // The hung read lands after the change's result: dropped, and the reconnect read runs.
+    await waitFor(() => expect(toggle("Image Generation").getAttribute("aria-checked")).toBe("true"));
+    await waitFor(() => expect(probes()).toBe(probesBefore + 1));
   });
 
   it("offers no switches on a server that can't change toolsets", async () => {
