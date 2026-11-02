@@ -37,14 +37,17 @@ const STATUS_NOTE: Record<ConnectionStatus, string | undefined> = {
 };
 
 /**
- * `alsoPostsIn`: the Telegram or Discord chat Hermes will also post its replies in. `onAnswer` answers an Approval card.
- * `onSettle` is left out for a chat not started yet. Ctrl+F opens the find bar.
+ * `alsoPostsIn`: the Telegram or Discord chat Hermes will also post its replies in. `draft`: the composer's text, kept
+ * outside the pane so it survives switching chats. `onAnswer` answers an Approval card. `onSettle` is left out for a
+ * chat not started yet. Ctrl+F opens the find bar.
  */
 export function ChatPane({
   chat,
   findTarget,
   status,
   alsoPostsIn,
+  draft,
+  onDraft,
   onAttach,
   onSend,
   onStop,
@@ -55,6 +58,8 @@ export function ChatPane({
   findTarget?: FindTarget;
   status: ConnectionStatus;
   alsoPostsIn?: Source;
+  draft: string;
+  onDraft: (text: string) => void;
   onAttach: (paths: string[]) => Promise<AttachCheck>;
   onSend: (text: string, attachments: Attachment[]) => void;
   onStop: () => void;
@@ -270,6 +275,8 @@ export function ChatPane({
         note={STATUS_NOTE[status]}
         hint={waiting ? "Hermes is waiting for your approval above." : undefined}
         alsoPostsIn={alsoPostsIn}
+        text={draft}
+        onText={onDraft}
         onAttach={onAttach}
         onSend={(t, attachments) => {
           stickToBottom.current = true;
@@ -379,6 +386,8 @@ function Composer({
   note,
   hint,
   alsoPostsIn,
+  text,
+  onText,
   onAttach,
   onSend,
   onStop,
@@ -389,11 +398,13 @@ function Composer({
   note?: string;
   hint?: string;
   alsoPostsIn?: Source;
+  /** `onSend` empties it. */
+  text: string;
+  onText: (text: string) => void;
   onAttach: (paths: string[]) => Promise<AttachCheck>;
   onSend: (text: string, attachments: Attachment[]) => void;
   onStop: () => void;
 }) {
-  const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [refused, setRefused] = useState<string[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -444,7 +455,6 @@ function Composer({
   const send = () => {
     if (offline || running || !sendable) return;
     onSend(text.trim(), attachments);
-    setText("");
     setAttachments([]);
     setRefused([]);
   };
@@ -485,7 +495,7 @@ function Composer({
           autoFocus
           placeholder="Message Hermes"
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => onText(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();

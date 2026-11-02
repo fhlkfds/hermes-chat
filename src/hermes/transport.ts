@@ -450,11 +450,11 @@ export class Hermes {
 
   /**
    * Sends a message and its attachments. A chat not yet open on this connection is resumed first; a Settled one
-   * becomes Active.
+   * becomes Active. Resolves to whether Hermes took the message; if it didn't, the chat says why.
    */
-  async send(chatId: string, text: string, attachments: Attachment[] = []): Promise<void> {
+  async send(chatId: string, text: string, attachments: Attachment[] = []): Promise<boolean> {
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
-    if (!chat) return;
+    if (!chat) return false;
     const profile = this.profile;
     const activating = chat.settled;
     const wantedBefore = this.pinWanted.get(chatId);
@@ -481,6 +481,7 @@ export class Hermes {
       // Pin now if Hermes has stored the session; a new chat may not have its row yet, so the end of the turn
       // tries again.
       if (this.pinWanted.get(chatId)) this.track(this.writePin(chatId, profile));
+      return true;
     } catch (e) {
       if (activating) {
         if (wantedBefore === undefined) this.pinWanted.delete(chatId);
@@ -492,6 +493,7 @@ export class Hermes {
         settled: activating || c.settled,
         items: [...c.items, errorItem(c, (e as Error).message)],
       }));
+      return false;
     }
   }
 

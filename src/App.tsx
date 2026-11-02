@@ -2,6 +2,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { connect, type Hermes } from "./hermes/transport";
 import { type Account, type SavedSignIn, savedSignIn, signIn, signOut } from "./hermes/account";
 import { localChatCache } from "./hermes/chatCache";
+import { draftKey, drafts } from "./hermes/drafts";
 import { systemKeyring } from "./hermes/tauriKeyring";
 import { tauriPipe, type SignInDetails } from "./hermes/tauriPipe";
 import type { Attachment, Chat, Found } from "./hermes/model";
@@ -35,6 +36,8 @@ const account: Account = {
   store: { load: loadSignIn, save: (d) => localStorage.setItem(SAVED, JSON.stringify(d)) },
   connect: (d) => connect(tauriPipe(d), undefined, localChatCache),
 };
+
+const savedDrafts = drafts(localStorage);
 
 /** What launch ends in: signed in with the saved password, or the sign-in screen and why. */
 type Launch = { hermes: Hermes } | { initial: SignInDetails; error?: string };
@@ -76,7 +79,7 @@ export default function App() {
     return (
       <Main
         hermes={hermes}
-        username={account.store.load().username}
+        connection={account.store.load()}
         notSaved={notSaved}
         onSignOut={async () => {
           let failure: string | undefined;
@@ -119,7 +122,17 @@ export default function App() {
   );
 }
 
-function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; username: string; notSaved?: string; onSignOut: () => Promise<void> }) {
+function Main({
+  hermes,
+  connection,
+  notSaved,
+  onSignOut,
+}: {
+  hermes: Hermes;
+  connection: SavedSignIn;
+  notSaved?: string;
+  onSignOut: () => Promise<void>;
+}) {
   const { profile, chats, olderPulled, status, route, unsecure, closedReason, syncError } = useSyncExternalStore(
     hermes.subscribe,
     hermes.getSnapshot,
@@ -143,6 +156,10 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
     items: draftError ? [{ kind: "error", id: "e-draft", text: draftError }] : [],
   };
   const selected = chats.find((c) => c.id === selectedId) ?? draft;
+  // What the owner has typed and not sent, kept for each chat on this connection and profile.
+  const draftOf = (chatId: string | null) => draftKey(connection, profile, chatId);
+  const shownDraft = draftOf(selectedId);
+  const composerText = useSyncExternalStore(savedDrafts.subscribe, () => savedDrafts.get(shownDraft));
 
   const openChat = (id: string | null) => {
     setSelectedId(id);
@@ -167,18 +184,22 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
       ? { query: picked.found.find, itemId: hermes.locate(picked.found), at: picked.at }
       : undefined;
 
+  // The composer empties as the message goes. If Hermes doesn't take it, the text comes back, in the new chat if one
+  // was started.
   const send = async (text: string, attachments: Attachment[]) => {
+    const typed = savedDrafts.take(shownDraft);
     let id = selectedId;
     if (!id) {
       try {
         id = await hermes.newChat();
       } catch (e) {
         setDraftError(`Couldn't start a chat: ${e instanceof Error ? e.message : String(e)}`);
+        savedDrafts.putBack(draftOf(null), typed);
         return;
       }
       openChat(id);
     }
-    await hermes.send(id, text, attachments);
+    if (!(await hermes.send(id, text, attachments))) savedDrafts.putBack(draftOf(id), typed);
   };
 
   // The other profile's chats replace the list, so the pane starts a fresh draft.
@@ -273,7 +294,7 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
             status={status}
             route={route}
             unsecure={unsecure}
-            username={username}
+            username={connection.username}
             passwordSaved={!notSaved}
             profile={profile}
             olderPulled={olderPulled}
@@ -290,6 +311,8 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
             findTarget={findTarget}
             status={status}
             alsoPostsIn={hermes.alsoPostsIn(selected.id)}
+            draft={composerText}
+            onDraft={(text) => savedDrafts.set(shownDraft, text)}
             onAttach={(paths) => hermes.checkAttachments(paths)}
             onSend={send}
             onStop={() => void hermes.stop(selected.id)}
