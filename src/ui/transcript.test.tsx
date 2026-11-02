@@ -32,8 +32,8 @@ function pane(chat: Chat, findTarget?: FindTarget, onAnswer: Answer = () => {}) 
       status="connected"
       draft=""
       onDraft={() => {}}
-      undelivered={[]}
       onRetry={() => {}}
+      onEdit={() => {}}
       onDismiss={() => {}}
       onAttach={async () => ({ attachments: [], refused: [] })}
       onSend={() => {}}

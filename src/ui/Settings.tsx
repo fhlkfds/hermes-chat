@@ -1,20 +1,24 @@
-// The Settings screen, in two tabs. General, ported from the prototype: the connection and Sign out, what shows on
+// The Settings screen, in three tabs. General, ported from the prototype: the connection and Sign out, what shows on
 // launch, the local cache, and older history. Appearance: how the app looks on this computer (AppearanceSettings.tsx).
+// Model: the profile's models on Hermes (ModelSettings.tsx).
 // Profiles are switched in the list's header, not here (ADR 0001).
 import { useState } from "react";
-import { ArrowLeft, Download, KeyRound, Lock, LogOut, Palette, Settings2, Trash2 } from "lucide-react";
+import { ArrowLeft, Cpu, Download, KeyRound, Lock, LogOut, Palette, Settings2, Trash2 } from "lucide-react";
 import type { Chat, ConnectionStatus } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
 import { TRANSCRIPT_LIMIT_BYTES } from "../hermes/chatCache";
 import { STATUS_LABEL, arrowSelect, fmtSize, routeLabel } from "./bits";
 import type { AppearanceStore, Fonts } from "./appearance";
 import { AppearanceSettings } from "./AppearanceSettings";
+import type { ModelSettingsApi } from "../hermes/modelSettings";
+import { ModelSettings } from "./ModelSettings";
 import { StartupSettings } from "./StartupSettings";
 
-type Tab = "general" | "appearance";
+type Tab = "general" | "appearance" | "model";
 const TABS = [
   { id: "general", label: "General", Icon: Settings2 },
   { id: "appearance", label: "Appearance", Icon: Palette },
+  { id: "model", label: "Model", Icon: Cpu },
 ] as const;
 
 /** What a pull added: the older chats in Settled, and any pinned in another Hermes client, which are Active. */
@@ -39,6 +43,7 @@ export function SettingsScreen({
   cacheBytes,
   appearance,
   listFonts,
+  modelSettings,
   onClearCache,
   onPullOlder,
   onSignOut,
@@ -57,6 +62,8 @@ export function SettingsScreen({
   appearance: AppearanceStore;
   /** The installed font families, for the font pickers. */
   listFonts: () => Promise<Fonts>;
+  /** The profile's model setup on Hermes. */
+  modelSettings: ModelSettingsApi;
   onClearCache: () => void;
   /** Resolves to the older chats added. */
   onPullOlder: () => Promise<Chat[]>;
@@ -115,6 +122,11 @@ export function SettingsScreen({
         {tab === "appearance" ? (
           <div id="settings-panel-appearance" role="tabpanel" aria-labelledby="settings-tab-appearance">
             <AppearanceSettings store={appearance} listFonts={listFonts} />
+          </div>
+        ) : tab === "model" ? (
+          <div id="settings-panel-model" role="tabpanel" aria-labelledby="settings-tab-model">
+            {/* A draft lives only while this tab is open, and for one profile. */}
+            <ModelSettings key={profile} api={modelSettings} profile={profile} connected={status === "connected"} />
           </div>
         ) : (
           <div id="settings-panel-general" role="tabpanel" aria-labelledby="settings-tab-general">
