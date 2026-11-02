@@ -120,7 +120,8 @@ describe("Hermes's projects", () => {
     await store.load();
     expect(store.getSnapshot()).toMatchObject({ error: "Couldn't read the projects: database is locked", projects: [{ id: p.id }] });
 
-    // The first read answers last, with a list that predates the project: the second read's answer stands.
+    // Reads are serialized; a superseded read with an old list cannot prune the cached associations.
+    store.setChat(p.id, "nas", true);
     const answers: (() => void)[] = [];
     s.handlers["projects.list"] = (r) => {
       const list = answers.length ? structuredClone(s.projects.default) : [];
@@ -129,11 +130,29 @@ describe("Hermes's projects", () => {
     const first = store.load();
     const second = store.load();
     await hermes.idle();
-    answers[1]();
-    await second;
     answers[0]();
     await first;
+    await expect.poll(() => answers.length).toBe(2);
+    answers[1]();
+    await second;
     expect(store.getSnapshot()).toMatchObject({ loaded: true, error: undefined, projects: [{ id: p.id }] });
+    expect(store.getSnapshot().chats).toEqual({ [p.id]: ["nas"] });
+  });
+
+  it("keeps a stale list reply from erasing a newly created project's chat links", async () => {
+    const { s, store, hermes, storage } = await setUp();
+    let answer!: () => void;
+    s.handlers["projects.list"] = (r) => { answer = () => s.respond(r.id, { projects: [], active_id: null }); };
+    const loading = store.load();
+    await hermes.idle();
+    const creating = store.create("New lab");
+    await hermes.idle();
+    expect(sent(s, "projects.create")).toEqual([]);
+    answer();
+    await loading;
+    const p = await creating;
+    store.setChat(p.id, "nas", true);
+    expect(projectLinks(storage).read(SCOPE)).toMatchObject({ selected: p.id, chats: { [p.id]: ["nas"] } });
   });
 
   it("keeps each profile's projects apart", async () => {
@@ -249,6 +268,17 @@ describe("which chats are in a project", () => {
     expect(again).toMatchObject({ selected: p.id, chats: { [p.id]: ["nas"] }, known: [{ id: p.id, name: "Lab" }] });
   });
 
+  it("keeps every folder's primary flag across a fresh storage reader", async () => {
+    const storage = memoryStorage();
+    const { store } = await setUp(server(), storage);
+    const p = await store.create("Lab");
+    await store.addFolder(p.id, "/srv/app");
+    await store.addFolder(p.id, "/srv/notes");
+    const fresh = projectLinks(storage).read(SCOPE);
+    expect(fresh.known).toEqual(store.getSnapshot().projects);
+    expect(fresh.known[0].folders).toEqual([{ path: "/srv/app", primary: true }, { path: "/srv/notes", primary: false }]);
+  });
+
   it("forgets a deleted chat", async () => {
     const { store } = await setUp();
     const p = await store.create("Lab");
@@ -287,13 +317,20 @@ describe("the stored document", () => {
   });
 
   it("reads what it knows of a newer document, and keeps the rest when writing", () => {
-    const storage = stored({ v: 7, later: { x: 1 }, scopes: { [SCOPE]: { chats: { p_1: ["nas", 3, "nas"] }, known: [project, { id: 5 }], colour: "red" } } });
+    const otherScope = { selected: "p_other", chats: { p_other: ["chat"] }, known: [], colour: "blue" };
+    const storage = stored({ v: 7, later: { x: 1 }, scopes: { [SCOPE]: { selected: "p_1", chats: { p_1: ["nas", 3, "nas"] }, known: [project, { id: 5 }], colour: "red" }, other: otherScope } });
     const links = projectLinks(storage);
-    expect(links.read(SCOPE)).toEqual({ chats: { p_1: ["nas"] }, known: [{ id: "p_1", name: "Lab", folders: [], archived: false }] });
+    expect(links.read(SCOPE)).toEqual({ selected: "p_1", chats: { p_1: ["nas"] }, known: [{ id: "p_1", name: "Lab", folders: [], archived: false }] });
     links.setChat(SCOPE, "p_1", "backup", true);
     const doc = JSON.parse(storage.data.get(PROJECTS_KEY)!);
-    expect(doc).toMatchObject({ v: 7, later: { x: 1 } });
+    expect(doc).toMatchObject({ v: 7, later: { x: 1 }, scopes: { [SCOPE]: { colour: "red" }, other: otherScope } });
     expect(doc.scopes[SCOPE].chats).toEqual({ p_1: ["backup", "nas"] });
+    links.select(SCOPE, undefined);
+    const allChats = JSON.parse(storage.data.get(PROJECTS_KEY)!);
+    expect(allChats.scopes[SCOPE].selected).toBeUndefined();
+    expect(allChats.scopes[SCOPE].colour).toBe("red");
+    links.forgetProject(SCOPE, "p_1");
+    expect(JSON.parse(storage.data.get(PROJECTS_KEY)!).scopes[SCOPE].colour).toBe("red");
   });
 
   it("starts empty from anything it can't read", () => {

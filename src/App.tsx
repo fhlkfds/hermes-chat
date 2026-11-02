@@ -196,6 +196,7 @@ export function Main({
   const proj = useSyncExternalStore(projects.subscribe, projects.getSnapshot);
   const listable = proj.projects.filter((p) => !p.archived);
   const shownProject = listable.find((p) => p.id === proj.selectedId);
+  const projectScreenOpen = projectOpen && !!shownProject;
   const inShown = shownProject && new Set(proj.chats[shownProject.id] ?? []);
   const listed = inShown ? chats.filter((c) => inShown.has(c.id)) : chats;
   const unreadChats = chats.filter((c) => c.unread && !c.archived);
@@ -261,11 +262,11 @@ export function Main({
   /** The chat to send in: the one on screen, or a new one started now for the New chat pane. */
   const chatToSendIn = async (): Promise<{ id: string } | { delivery: Delivery }> => {
     if (selectedId) return { id: selectedId };
+    const into = projects.getSnapshot().selectedId;
     try {
       const id = await hermes.newChat(sticky);
       // A chat started while the list shows a project goes in it, so it stays in the list.
-      const into = projects.getSnapshot().selectedId;
-      if (into) projects.setChat(into, id, true);
+      if (into && projects.getSnapshot().projects.some((p) => p.id === into)) projects.setChat(into, id, true);
       openChat(id);
       return { id };
     } catch (e) {
@@ -390,10 +391,10 @@ export function Main({
   // is. Until connected it shows its Saved copy, and after a reconnect it loads again. Settings covers the chat, so it
   // isn't on screen meanwhile.
   useEffect(() => {
-    if (!selectedId || settingsOpen || projectOpen) return;
+    if (!selectedId || settingsOpen || projectScreenOpen) return;
     void hermes.open(selectedId);
     return () => hermes.leave(selectedId);
-  }, [hermes, selectedId, status, settingsOpen, projectOpen]);
+  }, [hermes, selectedId, status, settingsOpen, projectScreenOpen]);
 
   // The profile's projects, read once connected, and again for each profile.
   useEffect(() => {
@@ -504,7 +505,7 @@ export function Main({
           chats={listed}
           archivedListed={archivedListed}
           syncError={syncError}
-          selectedId={settingsOpen || (projectOpen && shownProject) ? null : selectedId}
+          selectedId={settingsOpen || projectScreenOpen ? null : selectedId}
           onOpen={openChat}
           onSettle={setSettled}
           onArchive={setArchived}

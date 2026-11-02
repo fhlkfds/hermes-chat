@@ -176,6 +176,25 @@ describe("a chat's menu", () => {
 });
 
 describe("a chat started while a project is shown", () => {
+  it("uses the project selected at Send when creation finishes after switching projects", async () => {
+    const s = server();
+    s.projects.default.push(project("p_lab", "Lab"));
+    const create = s.handlers["session.create"];
+    let finish!: () => void;
+    s.handlers["session.create"] = (r) => { finish = () => create(r); };
+    const { user, hermes } = await launch(s);
+    await pick(user, "Budget Tracker");
+    await user.type(screen.getByPlaceholderText("Message Hermes"), "Plan the budget{Enter}");
+    await waitFor(() => expect(finish).toBeDefined());
+    await pick(user, "Lab");
+    await act(async () => finish());
+    await waitFor(() => expect(onScreen()).not.toBe("New chat"));
+    await act(async () => void (await hermes.idle()));
+    const scopes = Object.values(JSON.parse(localStorage.getItem(PROJECTS_KEY)!).scopes as Record<string, { chats: Record<string, string[]> }>);
+    expect(scopes[0].chats.p_budget).toHaveLength(1);
+    expect(scopes[0].chats.p_lab).toBeUndefined();
+  });
+
   it("goes in the project and stays in the list", async () => {
     const s = server();
     const { user, hermes } = await launch(s);
@@ -193,6 +212,23 @@ describe("a chat started while a project is shown", () => {
 });
 
 describe("the project screen", () => {
+  it.each(["deleted", "archived"])("resumes tracking the visible chat when the project is %s elsewhere", async (change) => {
+    const s = server();
+    const { user, hermes } = await launch(s);
+    await user.click(screen.getByRole("button", { name: /NAS disks/ }));
+    await waitFor(() => expect(onScreen()).toBe("NAS disks"));
+    await pick(user, "Budget Tracker");
+    await user.click(screen.getByTitle("Project settings for Budget Tracker"));
+    await screen.findByRole("heading", { name: /Budget Tracker/ });
+    const open = vi.spyOn(hermes, "open");
+    if (change === "deleted") s.projects.default = [];
+    else s.projects.default[0].archived = true;
+    await user.click(switcher());
+    await waitFor(() => expect(onScreen()).toBe("NAS disks"));
+    await waitFor(() => expect(open).toHaveBeenCalledWith("nas"));
+    open.mockRestore();
+  });
+
   async function openScreen(s = server()) {
     const app = await launch(s);
     await pick(app.user, "Budget Tracker");

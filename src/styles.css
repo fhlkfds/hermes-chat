@@ -755,7 +755,7 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 .project-create { color: var(--muted); }
 .project-create:disabled { opacity: 0.5; cursor: default; }
 .project-create svg { color: inherit; vertical-align: -2px; margin-right: 4px; }
-.menu-group { display: flex; flex-direction: column; border-top: 1px solid var(--line); margin-top: 4px; padding-top: 4px; }
+.menu-group { display: flex; flex-direction: column; border-top: 1px solid var(--line); margin-top: 4px; padding-top: 4px; max-height: 45vh; overflow-y: auto; }
 .menu-heading { font-size: calc(11rem / 14); color: var(--faint); padding: 4px 8px 2px; font-weight: 500; }
 .menu-label { overflow: hidden; text-overflow: ellipsis; }
 .project-badge { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

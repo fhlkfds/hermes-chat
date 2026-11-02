@@ -190,6 +190,15 @@ export class ProjectsStore {
   private snap: ProjectsSnapshot;
   private listeners = new Set<() => void>();
   private reads = 0;
+  // Project writes return whole snapshots. Keep them in order with list reads so an older reply cannot prune
+  // associations created after that request, or restore a project that a later request deleted.
+  private pending: Promise<unknown> = Promise.resolve();
+
+  private enqueue<T>(run: () => Promise<T>): Promise<T> {
+    const result = this.pending.then(run);
+    this.pending = result.catch(() => {});
+    return result;
+  }
 
   constructor(
     private api: ProjectsApi,
@@ -222,18 +231,20 @@ export class ProjectsStore {
    * Reads the profile's projects from Hermes. A project deleted in another client goes, and with it which chats were
    * in it. A failed read keeps what was shown and says why.
    */
-  async load(): Promise<void> {
+  load(): Promise<void> {
     const n = ++this.reads;
     this.set({ loading: true });
-    try {
-      const projects = await this.api.list(this.profile);
-      if (n !== this.reads) return;
-      this.links.remember(this.scope, projects);
-      this.set({ loaded: true, loading: false, error: undefined, ...this.fromLinks() });
-    } catch (e) {
-      if (n !== this.reads) return;
-      this.set({ loading: false, error: `Couldn't read the projects: ${(e as Error).message}` });
-    }
+    return this.enqueue(async () => {
+      try {
+        const projects = await this.api.list(this.profile);
+        if (n !== this.reads) return;
+        this.links.remember(this.scope, projects);
+        this.set({ loaded: true, loading: false, error: undefined, ...this.fromLinks() });
+      } catch (e) {
+        if (n !== this.reads) return;
+        this.set({ loading: false, error: `Couldn't read the projects: ${(e as Error).message}` });
+      }
+    });
   }
 
   /** Shows only `id`'s chats in the list; undefined shows every chat. Kept on this computer. */
@@ -243,41 +254,47 @@ export class ProjectsStore {
   }
 
   /** Makes a project in Hermes, then shows it. */
-  async create(name: string): Promise<Project> {
-    const project = await this.api.create(this.profile, name);
-    this.keep(project);
-    this.select(project.id);
-    return project;
+  create(name: string): Promise<Project> {
+    return this.enqueue(async () => {
+      const project = await this.api.create(this.profile, name);
+      this.keep(project);
+      this.select(project.id);
+      return project;
+    });
   }
 
   rename(id: string, name: string): Promise<Project> {
-    return this.write(id, () => this.api.rename(this.profile, id, name));
+    return this.enqueue(() => this.write(id, () => this.api.rename(this.profile, id, name)));
   }
 
   /**
    * Deletes the project in Hermes. Its chats stay in Hermes, in the list, and its folders stay on the server; only the
    * project and which chats were in it go.
    */
-  async delete(id: string): Promise<void> {
-    try {
-      const projects = await this.api.delete(this.profile, id);
-      this.links.remember(this.scope, projects);
-    } catch (e) {
-      if (!(e instanceof ProjectGoneError)) throw e;
-      this.links.forgetProject(this.scope, id);
-    }
-    this.set(this.fromLinks());
+  delete(id: string): Promise<void> {
+    return this.enqueue(async () => {
+      try {
+        const projects = await this.api.delete(this.profile, id);
+        this.links.remember(this.scope, projects);
+      } catch (e) {
+        if (!(e instanceof ProjectGoneError)) throw e;
+        this.links.forgetProject(this.scope, id);
+      }
+      this.set(this.fromLinks());
+    });
   }
 
   /** Checks the folder is there on the server, then adds it to the project. Nothing on the server is created. */
-  async addFolder(id: string, path: string): Promise<Project> {
-    await this.api.checkFolder(this.profile, path);
-    return this.write(id, () => this.api.addFolder(this.profile, id, path));
+  addFolder(id: string, path: string): Promise<Project> {
+    return this.enqueue(async () => {
+      await this.api.checkFolder(this.profile, path);
+      return this.write(id, () => this.api.addFolder(this.profile, id, path));
+    });
   }
 
   /** Takes the folder out of the project. The folder itself stays on the server. */
   removeFolder(id: string, path: string): Promise<Project> {
-    return this.write(id, () => this.api.removeFolder(this.profile, id, path));
+    return this.enqueue(() => this.write(id, () => this.api.removeFolder(this.profile, id, path)));
   }
 
   /** Puts `chatId` in project `id`, or takes it out. Kept on this computer; the chat itself doesn't change. */

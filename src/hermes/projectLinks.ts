@@ -49,6 +49,17 @@ const isDoc = (v: unknown): v is Record<string, unknown> => typeof v === "object
 const id = (v: unknown, max = 400) => (typeof v === "string" && v.length > 0 && v.length <= max ? v : undefined);
 const EMPTY: Readonly<ScopeLinks> = Object.freeze({ chats: Object.freeze({}) as Record<string, string[]>, known: [] });
 
+// The cache holds our normalized Project shape, rather than Hermes's is_primary wire field.
+function storedProject(v: unknown): Project | undefined {
+  const project = toProject(v);
+  if (!project || !isDoc(v)) return project;
+  return { ...project, folders: Array.isArray(v.folders) ? v.folders.flatMap((f) =>
+    isDoc(f) && typeof f.path === "string" && f.path
+      ? [{ path: f.path, primary: f.primary === true }]
+      : [],
+  ) : [] };
+}
+
 function toChats(v: unknown): Record<string, string[]> {
   if (!isDoc(v)) return {};
   const out: Record<string, string[]> = {};
@@ -63,7 +74,7 @@ function toChats(v: unknown): Record<string, string[]> {
 /** One scope's links as stored; anything that isn't valid is left out. */
 export function toScope(v: unknown): ScopeLinks | undefined {
   if (!isDoc(v)) return undefined;
-  const known = Array.isArray(v.known) ? v.known.map(toProject).filter((p): p is Project => !!p) : [];
+  const known = Array.isArray(v.known) ? v.known.map(storedProject).filter((p): p is Project => !!p) : [];
   const selected = id(v.selected);
   return { ...(selected && { selected }), chats: toChats(v.chats), known };
 }
@@ -118,8 +129,14 @@ export function projectLinks(storage: LinksStorage): ProjectLinks {
     scopes = { ...scopes };
     if (isEmpty(after)) delete scopes[scope];
     else scopes[scope] = after;
-    // Fields a newer app wrote are kept, and so is its version.
-    doc = { ...doc, v: Math.max(PROJECTS_VERSION, Number(doc.v) || 0), scopes };
+    // Update this scope's known fields only. Preserve newer fields here and leave other scopes untouched,
+    // including scopes this version couldn't parse. Explicitly drop selected when the owner picks All chats.
+    const storedScopes = isDoc(doc.scopes) ? { ...doc.scopes } : {};
+    const prior = isDoc(storedScopes[scope]) ? storedScopes[scope] : {};
+    const { selected: _selected, chats: _chats, known: _known, ...extra } = prior;
+    if (isEmpty(after) && !Object.keys(extra).length) delete storedScopes[scope];
+    else storedScopes[scope] = { ...extra, ...after };
+    doc = { ...doc, v: Math.max(PROJECTS_VERSION, Number(doc.v) || 0), scopes: storedScopes };
     const raw = JSON.stringify(doc);
     try {
       storage.setItem(PROJECTS_KEY, raw);
