@@ -44,15 +44,35 @@ export type Item =
    * An Approval: Hermes asks before running a command it counts as dangerous. `answer`: the owner's, from this app.
    * `ended`: why Hermes stopped waiting without one: its own reason (`timeout`, `interrupted`, `resolved` when
    * another Hermes client answered), `turn ended`, or `lost` when Hermes let go of the session while the connection
-   * was down, or the chat couldn't be loaded again.
+   * was down, or the chat couldn't be loaded again. `choices`: the answers Hermes offers, in its order.
+   * `allowSession` / `allowPermanent`: false when Hermes rules out allowing the command for the chat, or always.
    */
-  | { kind: "approval"; id: string; requestId: string; command: string; description: string; answer?: ApprovalChoice; ended?: string }
+  | {
+      kind: "approval";
+      id: string;
+      requestId: string;
+      command: string;
+      description: string;
+      choices: ApprovalChoice[];
+      allowSession: boolean;
+      allowPermanent: boolean;
+      answer?: ApprovalChoice;
+      ended?: string;
+    }
   | { kind: "error"; id: string; text: string };
 
 /** How the owner answers an Approval: run it this once, for the rest of the chat, always, or not at all. */
-export type ApprovalChoice = "once" | "session" | "always" | "deny";
+export const APPROVAL_CHOICES = ["once", "session", "always", "deny"] as const;
+export type ApprovalChoice = (typeof APPROVAL_CHOICES)[number];
 
 export type ApprovalItem = Extract<Item, { kind: "approval" }>;
+
+/** The answers the owner can give an Approval: the ones Hermes offers, less the broader grants it rules out. */
+export const offeredChoices = (i: ApprovalItem): ApprovalChoice[] =>
+  i.choices.filter((c) => (c !== "session" || i.allowSession) && (c !== "always" || i.allowPermanent));
+
+/** Answers that allow the command beyond this once, so the owner confirms them first. */
+export const isBroadGrant = (c: ApprovalChoice) => c === "session" || c === "always";
 
 /** An Approval Hermes is still waiting on. */
 export const isWaiting = (i: Item): i is ApprovalItem => i.kind === "approval" && !i.answer && !i.ended;

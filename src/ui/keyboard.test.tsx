@@ -68,7 +68,7 @@ async function waiting() {
   const s = await replying();
   let id: string | undefined;
   act(() => void ({ id } = s.server.askApproval(s.runtime)));
-  await screen.findByRole("button", { name: "Approve" });
+  await screen.findByRole("button", { name: "Approve once" });
   await settle(s.hermes);
   return { ...s, approvalId: id! };
 }
@@ -79,23 +79,27 @@ async function untouched({ server, hermes }: { server: FakeHermes; hermes: Herme
   expect(server.responses).toEqual([]);
   expect(server.openRequests.size).toBe(1);
   expect(interrupts(server)).toEqual([]);
-  expect(button("Approve")).toBeTruthy();
+  expect(button("Approve once")).toBeTruthy();
 }
 
 describe("Approval card by keyboard", () => {
-  it("is reached with Shift+Tab from the composer, and Enter on Approve approves the command once", async () => {
+  it("is reached with Shift+Tab from the composer, and Enter on Approve once approves the command once", async () => {
     const s = await waiting();
     expect(focused()).toBe(composer());
 
     await s.user.tab({ shift: true });
     expect(focused()).toBe(button("Deny"));
     await s.user.tab({ shift: true });
-    expect(focused()).toBe(button("Approve"));
+    expect(focused()).toBe(button("Always allow…"));
+    await s.user.tab({ shift: true });
+    expect(focused()).toBe(button("Allow for this chat…"));
+    await s.user.tab({ shift: true });
+    expect(focused()).toBe(button("Approve once"));
     await s.user.keyboard("{Enter}");
     await settle(s.hermes);
 
     expect(s.server.responses).toEqual([{ jsonrpc: "2.0", id: s.approvalId, result: { choice: "once", all: false } }]);
-    expect(screen.getByText("Approved")).toBeTruthy();
+    expect(screen.getByText("Approved once")).toBeTruthy();
     // Focus stays on the answered card, so the owner keeps their place, and Tab carries on to the composer.
     expect(focused()?.classList.contains("approval")).toBe(true);
     await s.user.tab();
@@ -113,15 +117,15 @@ describe("Approval card by keyboard", () => {
 
   it("is never answered by Escape, and Escape doesn't stop the reply", async () => {
     const s = await waiting();
-    button("Approve").focus();
+    button("Approve once").focus();
     await s.user.keyboard("{Escape}");
     await untouched(s);
-    expect(focused()).toBe(button("Approve"));
+    expect(focused()).toBe(button("Approve once"));
   });
 
   it("is never answered by bare number or letter keys, wherever focus is", async () => {
     const s = await waiting();
-    button("Approve").focus();
+    button("Approve once").focus();
     await s.user.keyboard("1234yna");
     button("Deny").focus();
     await s.user.keyboard("1234yna");
@@ -149,13 +153,13 @@ describe("Approval card by keyboard", () => {
     expect(prompts(s.server)).toHaveLength(1);
   });
 
-  it("keeps focus on the card when Hermes stops waiting while Approve has focus, so Enter answers nothing", async () => {
+  it("keeps focus on the card when Hermes stops waiting while Approve once has focus, so Enter answers nothing", async () => {
     const s = await waiting();
-    button("Approve").focus();
+    button("Approve once").focus();
     act(() => s.server.cancelRequest(s.approvalId, "timeout"));
     await settle(s.hermes);
 
-    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Approve once" })).toBeNull();
     expect(focused()?.classList.contains("approval")).toBe(true);
     await s.user.keyboard("{Enter} 1");
     await settle(s.hermes);
@@ -163,12 +167,32 @@ describe("Approval card by keyboard", () => {
     expect(interrupts(s.server)).toEqual([]);
   });
 
-  it("keeps Approve focusable but inert while offline", async () => {
+  it("asks again before a broader grant: Back takes focus, and going back keeps focus on the card", async () => {
     const s = await waiting();
-    button("Approve").focus();
+    button("Allow for this chat…").focus();
+    await s.user.keyboard("{Enter}");
+    expect(focused()).toBe(button("Back"));
+    await s.user.keyboard("{Enter}");
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+    expect(focused()?.classList.contains("approval")).toBe(true);
+    await untouched(s);
+
+    button("Allow for this chat…").focus();
+    await s.user.keyboard("{Enter}");
+    await s.user.tab({ shift: true });
+    expect(focused()).toBe(button("Yes, allow for this chat"));
+    await s.user.keyboard("{Enter}");
+    await settle(s.hermes);
+    expect(s.server.responses.map((r) => (r.result as { choice: string }).choice)).toEqual(["session"]);
+    expect(focused()?.classList.contains("approval")).toBe(true);
+  });
+
+  it("keeps Approve once focusable but inert while offline", async () => {
+    const s = await waiting();
+    button("Approve once").focus();
     act(() => s.server.drop());
-    await waitFor(() => expect(button("Approve").getAttribute("aria-disabled")).toBe("true"));
-    expect(focused()).toBe(button("Approve"));
+    await waitFor(() => expect(button("Approve once").getAttribute("aria-disabled")).toBe("true"));
+    expect(focused()).toBe(button("Approve once"));
     await s.user.keyboard("{Enter}");
     await settle(s.hermes);
     expect(s.server.responses).toEqual([]);

@@ -271,6 +271,8 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .approval.answered .approval-cmd { margin: 6px 0 2px; color: var(--muted); }
 .approval-desc { color: var(--muted); font-size: 13px; }
 .approval-actions { display: flex; gap: 8px; margin-top: 12px; }
+.approval-confirm { margin-top: 12px; }
+.approval-confirm .approval-desc { color: var(--text); }
 
 .btn {
   display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 14px; border-radius: 8px;
@@ -281,7 +283,7 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .btn.primary { background: var(--text); color: #111; border-color: transparent; }
 .btn.primary:hover:not(:disabled, [aria-disabled="true"]) { background: #fff; }
 .btn.danger { background: rgba(248, 113, 113, 0.14); color: var(--bad); border-color: transparent; }
-.btn.danger:hover { background: rgba(248, 113, 113, 0.22); }
+.btn.danger:hover:not(:disabled) { background: rgba(248, 113, 113, 0.22); }
 
 /* composer */
 .composer-wrap { padding: 0 28px 22px; max-width: 796px; width: 100%; margin: 0 auto; }

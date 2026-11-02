@@ -1,11 +1,12 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
-import { useCallback, useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
-import { ArrowUp, Brain, ChevronDown, ChevronRight, ChevronUp, CloudOff, FileDown, HardDrive, Paperclip, Search, ShieldAlert, Square, Wrench, X } from "lucide-react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
+import { ArrowUp, Brain, ChevronDown, ChevronRight, ChevronUp, CloudOff, FileDown, HardDrive, Paperclip, Search, Square, Wrench, X } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import type { ApprovalChoice, ApprovalItem, AttachCheck, Attachment, Chat, ConnectionStatus, Item, Source } from "../hermes/model";
+import type { ApprovalChoice, AttachCheck, Attachment, Chat, ConnectionStatus, Item, Source } from "../hermes/model";
 import { SOURCE_LABEL, isWaiting } from "../hermes/model";
 import type { Undelivered } from "../hermes/drafts";
+import { ApprovalCard } from "./ApprovalCard";
 import { Markdown } from "./Markdown";
 import { ArchiveButton, SettleButton, SourceIcon, Spinner, StoredTime, composing, highlight } from "./bits";
 import { AttachmentChip, Previews, readPreview } from "./previews";
@@ -80,7 +81,7 @@ export function ChatPane({
   onAttach: (paths: string[]) => Promise<AttachCheck>;
   onSend: (text: string, attachments: Attachment[]) => void;
   onStop: () => void;
-  onAnswer: (approvalId: string, choice: ApprovalChoice) => void;
+  onAnswer: (approvalId: string, choice: ApprovalChoice, confirmed?: boolean) => void;
   onSettle?: (settled: boolean) => void;
   onArchive?: (archived: boolean) => void;
   onExport?: () => void;
@@ -162,6 +163,8 @@ export function ChatPane({
   };
 
   const blocks = toBlocks(chat.items);
+  // Cards ignore clicks for a moment after the transcript changes, since it may have moved them under the pointer.
+  const movedAt = useMemo(() => performance.now(), [chat.items]);
   const last = chat.items[chat.items.length - 1];
   const waiting = chat.items.some(isWaiting);
 
@@ -302,7 +305,15 @@ export function ChatPane({
               );
             if (b.kind === "thinking") return <Thought key={b.id} item={b} live={!!chat.running && b === last} query={q} />;
             if (b.kind === "approval")
-              return <ApprovalCard key={b.id} item={b} offline={status !== "connected"} onAnswer={(c) => onAnswer(b.id, c)} />;
+              return (
+                <ApprovalCard
+                  key={b.id}
+                  item={b}
+                  offline={status !== "connected" || !!chat.loading}
+                  movedAt={movedAt}
+                  onAnswer={(c, confirmed) => onAnswer(b.id, c, confirmed)}
+                />
+              );
             return <ToolGroup key={b.id} tools={b.tools} />;
           })}
           {/* A reply waiting on the owner isn't thinking, and streamed thinking shows its own row. */}
@@ -335,51 +346,6 @@ export function ChatPane({
         }}
         onStop={onStop}
       />
-    </div>
-  );
-}
-
-/** What a closed card says when Hermes stopped waiting without an answer from this app. */
-function endedNote(reason: string): string {
-  if (reason === "timeout") return "Timed out without an answer";
-  if (reason === "resolved") return "Answered in another Hermes client";
-  return "Hermes stopped waiting for an answer";
-}
-
-/**
- * Answered only by clicking, or by Enter or Space on a focused Approve or Deny; no shortcut answers it. Offline, the
- * buttons stay focusable but do nothing, so a reconnect doesn't drop the owner's place.
- */
-function ApprovalCard({ item, offline, onAnswer }: { item: ApprovalItem; offline: boolean; onAnswer: (c: ApprovalChoice) => void }) {
-  const closed = item.answer ?? item.ended;
-  const card = useRef<HTMLDivElement>(null);
-  const headId = useId();
-  // The buttons go when the card closes, however it closes. If one had focus, focus stays on the card instead of
-  // falling to the page, so the owner keeps their place and a repeated key lands on nothing.
-  const keepFocus = useCallback((actions: HTMLDivElement | null) => {
-    return () => void (actions?.contains(document.activeElement) && card.current?.focus());
-  }, []);
-  const answer = (c: ApprovalChoice) => !offline && onAnswer(c);
-  return (
-    <div ref={card} tabIndex={-1} role="group" aria-labelledby={headId} className={`approval ${closed ? "answered" : ""}`}>
-      <div className="approval-head" id={headId}>
-        <ShieldAlert size={15} />
-        {item.answer ? (item.answer === "deny" ? "Denied" : "Approved") : item.ended ? endedNote(item.ended) : "Hermes wants to run a command"}
-      </div>
-      <pre className="approval-cmd">{item.command}</pre>
-      {!closed && (
-        <>
-          {item.description && <div className="approval-desc">{item.description}</div>}
-          <div className="approval-actions" ref={keepFocus}>
-            <button className="btn primary" aria-disabled={offline || undefined} onClick={() => answer("once")}>
-              Approve
-            </button>
-            <button className="btn" aria-disabled={offline || undefined} onClick={() => answer("deny")}>
-              Deny
-            </button>
-          </div>
-        </>
-      )}
     </div>
   );
 }

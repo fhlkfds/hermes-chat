@@ -3,9 +3,11 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import ReactMarkdown from "react-markdown";
 import { chatMarkdown, exportChat, exportFileName } from "./exportChat";
-import type { Chat, Item } from "./model";
+import type { ApprovalChoice, Chat, Item } from "./model";
 
 const AT = new Date("2026-11-02T14:05:00Z");
+/** What an Approval card offered; the export doesn't show it. */
+const offered = { choices: ["once", "deny"] as ApprovalChoice[], allowSession: false, allowPermanent: false };
 
 /** A chat whose stored history has loaded on this connection. */
 const chat = (items: Item[], more: Partial<Chat> = {}): Chat => ({
@@ -51,8 +53,8 @@ describe("A chat as Markdown", () => {
     const md = chatMarkdown(
       chat([
         { kind: "thinking", id: "r", text: "Check the port first." },
-        { kind: "approval", id: "ap", requestId: "req-77", command: "rm -rf /tmp/restic-cache", description: "Delete a folder", answer: "once" },
-        { kind: "approval", id: "ap2", requestId: "req-78", command: "reboot", description: "Restart the server", ended: "timeout" },
+        { kind: "approval", ...offered, id: "ap", requestId: "req-77", command: "rm -rf /tmp/restic-cache", description: "Delete a folder", answer: "once" },
+        { kind: "approval", ...offered, id: "ap2", requestId: "req-78", command: "reboot", description: "Restart the server", ended: "timeout" },
         { kind: "assistant", id: "a", text: "", interrupted: true },
       ]),
       AT,
@@ -124,7 +126,7 @@ describe("A chat as Markdown", () => {
       const md = chatMarkdown(
         chat([
           { kind: "thinking", id: "r", text: "Maybe:\n```\nls\n```" },
-          { kind: "approval", id: "ap", requestId: "r", command: "cat <<'EOF'\n```\nEOF", description: "Write a file" },
+          { kind: "approval", ...offered, id: "ap", requestId: "r", command: "cat <<'EOF'\n```\nEOF", description: "Write a file" },
         ]),
         AT,
       );
@@ -165,7 +167,7 @@ describe("A chat as Markdown", () => {
     const md = chatMarkdown(
       chat([
         { kind: "user", id: "u", text: "hi" },
-        { kind: "approval", id: "ap", requestId: "req-secret-77", command: "ls", description: "List" },
+        { kind: "approval", ...offered, id: "ap", requestId: "req-secret-77", command: "ls", description: "List" },
         { kind: "error", id: "e-1", text: "Hermes stopped answering at http://127.0.0.1:41234/" },
       ]),
       AT,

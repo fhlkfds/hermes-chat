@@ -14,7 +14,7 @@
 // Each chat opened lately keeps a Saved copy of its transcript on this computer, shown while Hermes can't be reached
 // or the history is on the way; when the first connection at launch fails, the saved list and copies still open.
 // Unread chats in the other profiles are polled over dashboard REST (otherProfiles.ts).
-import { isWaiting, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ConnectionStatus, type Found, type Item, type OtherProfiles, type Source } from "./model";
+import { APPROVAL_CHOICES, isBroadGrant, isWaiting, offeredChoices, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ConnectionStatus, type Found, type Item, type OtherProfiles, type Source } from "./model";
 import { noOthers, OtherProfilesCheck } from "./otherProfiles";
 import type { OpenPipe, Pipe, PipeEvent, Route } from "./pipe";
 import { isUnsecure } from "./unsecure";
@@ -318,6 +318,9 @@ export class Hermes {
   private resumeOnReconnect = new Set<string>();
   /** Requests for a session no chat holds yet: the resume that reattaches it can answer after Hermes writes them. */
   private earlyRequests = new Map<string, ServerRequest[]>();
+  /** Closed Approval cards, answered here or that Hermes stopped waiting on, by request id. A resume replaces the
+   * chat's cards with what Hermes lists, so this keeps one it lists again from coming back. */
+  private closedApprovals = new Map<string, ApprovalItem>();
   /** Approvals Hermes has been told are on screen (`approval.received`), by request id. */
   private shownApprovals = new Set<string>();
   /** Hermes answered that it has no `approval.received`. */
@@ -802,12 +805,16 @@ export class Hermes {
 
   /**
    * Answers an Approval with the owner's choice, in a response frame to Hermes's request (research doc §6). One
-   * already answered, or that Hermes stopped waiting for, is left alone. If the answer can't go, the chat says so
-   * and the card stays waiting.
+   * already answered, or that Hermes stopped waiting for, is left alone, and so is a choice Hermes didn't offer, or a
+   * broader grant (`isBroadGrant`) the owner hasn't `confirmed`. So is a card from before a drop until its chat is
+   * loaded again, which tells whether Hermes still waits on it. If the answer can't go, the chat says so and the card
+   * stays waiting.
    */
-  async answerApproval(chatId: string, approvalId: string, choice: ApprovalChoice): Promise<void> {
-    const waiting = this.snapshot.chats.find((c) => c.id === chatId)?.items.some((i) => i.id === approvalId && isWaiting(i));
-    if (!waiting) return;
+  async answerApproval(chatId: string, approvalId: string, choice: ApprovalChoice, confirmed = false): Promise<void> {
+    const chat = this.snapshot.chats.find((c) => c.id === chatId);
+    const card = chat?.items.find((i) => i.id === approvalId);
+    if (!card || !isWaiting(card) || !offeredChoices(card).includes(choice) || (isBroadGrant(choice) && !confirmed)) return;
+    if (this.snapshot.status === "connected" && !chat?.runtimeId) return;
     const answer = (a?: ApprovalChoice) =>
       this.patchChat(chatId, (c) => ({ ...c, items: c.items.map((i) => (i.id === approvalId && i.kind === "approval" ? { ...i, answer: a } : i)) }));
     answer(choice);
@@ -1021,7 +1028,10 @@ export class Hermes {
     else this.earlyRequests.set(sid, [...(this.earlyRequests.get(sid) ?? []), req]);
   }
 
-  /** Adds a card for each Approval request the chat doesn't show yet. A request can be listed more than once. */
+  /**
+   * Adds a card for each Approval request the chat doesn't show yet. A request can be listed more than once. One whose
+   * card was closed stays closed; if the owner had answered it, the answer never reached Hermes, and the chat says so.
+   */
   private showApprovals(chatId: string, reqs: ServerRequest[]) {
     const runtimeId = this.snapshot.chats.find((c) => c.id === chatId)?.runtimeId;
     const fresh = reqs.filter((r) => r.method === "approval" && !this.notified.has(`${runtimeId} ${r.id}`));
@@ -1029,8 +1039,19 @@ export class Hermes {
     if (fresh.length) this.alert(NOTICES.approval);
     this.patchChat(chatId, (c) => {
       const shown = new Set(c.items.map((i) => i.id));
-      const cards = reqs.filter((r) => r.method === "approval" && !shown.has(r.id) && shown.add(r.id)).map(approvalItem);
-      return cards.length ? { ...c, items: [...c.items, ...cards] } : c;
+      const items = [...c.items];
+      for (const r of reqs.filter((r) => r.method === "approval" && !shown.has(r.id) && shown.add(r.id))) {
+        const closed = this.closedApprovals.get(r.id);
+        if (!closed) items.push(approvalItem(r));
+        else if (closed.answer)
+          items.push(
+            errorItem(
+              { ...c, items },
+              `Your answer to “${closed.command}” didn't reach Hermes before the connection dropped. Hermes stops waiting on its own.`,
+            ),
+          );
+      }
+      return items.length > c.items.length ? { ...c, items } : c;
     });
     if (chatId === this.viewing) this.tellShown(chatId);
   }
@@ -1192,6 +1213,8 @@ export class Hermes {
         // History has no cards. A card that was waiting when the connection dropped either comes back below, or
         // Hermes let go of the session meanwhile and the card stays, closed.
         const lost = (items: Item[]) => endWaitingApprovals(items.filter((i) => isWaiting(i) && !asking.some((r) => r.id === i.id)), "lost");
+        for (const i of this.snapshot.chats.find((c) => c.id === chatId)?.items ?? [])
+          if (i.kind === "approval" && (i.answer || i.ended)) this.closedApprovals.set(i.id, i);
         // The Saved copy, if shown, is among the stale items.
         this.patchChat(chatId, (c) => ({
           ...c,
@@ -1662,12 +1685,26 @@ function historyItems(messages: TranscriptMessage[]): Item[] {
 /** A stored Hermes time (Unix seconds) in ms, or nothing for a missing, zero or out-of-range one. */
 const storedAt = (s: unknown) => (typeof s === "number" && s > 0 && s * 1000 <= 8.64e15 ? s * 1000 : undefined);
 
+/** A card for an `approval` request. Choices this app doesn't know are dropped; it never makes one up. */
 function approvalItem(r: ServerRequest): ApprovalItem {
   const p = r.params;
-  return { kind: "approval", id: r.id, requestId: String(p.request_id ?? ""), command: String(p.command ?? ""), description: String(p.description ?? "") };
+  const offered = Array.isArray(p.choices) ? p.choices : [];
+  return {
+    kind: "approval",
+    id: r.id,
+    requestId: String(p.request_id ?? ""),
+    command: String(p.command ?? ""),
+    description: String(p.description ?? ""),
+    choices: APPROVAL_CHOICES.filter((c) => offered.includes(c)).sort((a, b) => offered.indexOf(a) - offered.indexOf(b)),
+    // A grant Hermes doesn't say it allows is ruled out.
+    allowSession: p.allow_session === true,
+    allowPermanent: p.allow_permanent === true,
+  };
 }
 
-const endWaitingApprovals = (items: Item[], ended: string) => items.map((i): Item => (isWaiting(i) ? { ...i, ended } : i));
+/** Closes the waiting cards, or those of them `which` picks, with Hermes's reason. */
+const endWaitingApprovals = (items: Item[], ended: string, which = (_: ApprovalItem) => true) =>
+  items.map((i): Item => (isWaiting(i) && which(i) ? { ...i, ended } : i));
 
 function errorItem(c: Chat, text: string): Item {
   return { kind: "error", id: `e-${c.items.length}`, text };
@@ -1746,7 +1783,12 @@ function applyEvent(c: Chat, type: string, p: Record<string, unknown>): Chat {
       };
     case "request.cancel":
       // Hermes stopped waiting: timed out, interrupted, or answered in another Hermes client.
-      return { ...c, items: items.map((i) => (isWaiting(i) && i.id === p.id ? { ...i, ended: String(p.reason || "withdrawn") } : i)) };
+      return { ...c, items: endWaitingApprovals(items, String(p.reason || "withdrawn"), (i) => i.id === p.id) };
+    case "approval.cancelled": {
+      // An interrupt or teardown dropped the session's waiting Approvals: the ones listed, by either id, or all.
+      const ids = Array.isArray(p.request_ids) ? p.request_ids : undefined;
+      return { ...c, items: endWaitingApprovals(items, String(p.reason || "withdrawn"), (i) => !ids || ids.includes(i.requestId) || ids.includes(i.id)) };
+    }
     case "message.complete": {
       // Providers that don't stream send the whole reply here; a streamed turn repeats text it already sent.
       const lastUser = items.map((i) => i.kind).lastIndexOf("user");
