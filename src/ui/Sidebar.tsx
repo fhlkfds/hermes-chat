@@ -1,6 +1,6 @@
 // Icon rail beside a chat list (ADR 0001), ported from the prototype's variants C and A. The list's header is the
 // profile switcher. Settings opens from the rail's foot. Right-clicking a chat opens its menu (ChatMenu.tsx).
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { Check, ChevronDown, ChevronRight, CircleAlert, EyeOff, LockOpen, Search, Settings, SquarePen, Trash2 } from "lucide-react";
 import type { Chat, ConnectionStatus, OtherProfile, OtherProfiles } from "../hermes/model";
 import { SOURCE_LABEL, isWaiting } from "../hermes/model";
@@ -333,8 +333,10 @@ function ProfileSwitcher({
   onSwitch: (name: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  // The profile the owner picked while something is left behind here, until they say whether to go.
-  const [asking, setAsking] = useState<string>();
+  // The profile the owner picked while something was left behind here, and what, until they say whether to go. Kept
+  // as asked, so the question stays if the reply finishes meanwhile.
+  const [asking, setAsking] = useState<{ to: string; note: string }>();
+  const button = useRef<HTMLButtonElement>(null);
   const [profiles, setProfiles] = useState<string[]>();
   const [error, setError] = useState<string>();
   const box = useRef<HTMLDivElement>(null);
@@ -361,24 +363,30 @@ function ProfileSwitcher({
     setOpen(false);
     setAsking(undefined);
   };
-  const go = (name: string) => {
+  // The options are gone once the question shows, so focus goes back to the switcher.
+  const answer = (go: boolean) => {
+    const to = asking?.to;
     close();
-    onSwitch(name);
+    button.current?.focus();
+    if (go && to) onSwitch(to);
   };
   const pick = (name: string) => {
     if (name === profile) close();
-    else if (leaving) setAsking(name);
-    else go(name);
+    else if (leaving) setAsking({ to: name, note: leaving });
+    else {
+      close();
+      onSwitch(name);
+    }
   };
 
   return (
     <div className="profile-switch" ref={box}>
-      <button className="profile-btn" title={switcherTip(others)} aria-expanded={open} onClick={() => (open ? close() : setOpen(true))}>
+      <button ref={button} className="profile-btn" title={switcherTip(others)} aria-expanded={open} onClick={() => (open ? close() : setOpen(true))}>
         <span className="profile-name">{profile}</span>
         {elsewhere && <span className="dot" aria-label="Unread chats in other profiles" />}
         <ChevronDown size={14} className="profile-chev" />
       </button>
-      {open && asking && leaving && <LeaveProfile note={leaving} to={asking} onGo={() => go(asking)} onStay={close} />}
+      {open && asking && <LeaveProfile note={asking.note} to={asking.to} onGo={() => answer(true)} onStay={() => answer(false)} />}
       {open && !asking && <ProfileMenu profile={profile} profiles={profiles} error={error} others={others} onPick={pick} onClose={close} />}
     </div>
   );
@@ -386,11 +394,17 @@ function ProfileSwitcher({
 
 /** Asks before switching to `to` while something is left behind. Stay has focus, so a stray Enter stays. */
 function LeaveProfile({ note, to, onGo, onStay }: { note: string; to: string; onGo: () => void; onStay: () => void }) {
-  useReturnFocus();
+  const noteId = useId();
   return (
-    <div className="profile-menu" role="alertdialog" aria-label={`Switch to ${to}?`} onKeyDown={(e) => e.key === "Escape" && !composing(e) && onStay()}>
+    <div
+      className="profile-menu"
+      role="alertdialog"
+      aria-label={`Switch to ${to}?`}
+      aria-describedby={noteId}
+      onKeyDown={(e) => e.key === "Escape" && !composing(e) && onStay()}
+    >
       <div className="confirm profile-leave">
-        <span>{note}</span>
+        <span id={noteId}>{note}</span>
         <div className="confirm-actions">
           <button className="btn" autoFocus onClick={onStay}>
             Stay

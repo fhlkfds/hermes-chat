@@ -461,12 +461,20 @@ export class Hermes {
   async switchProfile(name: string): Promise<void> {
     if (name === this.profile) return;
     const from = this.profile;
-    const busy = this.snapshot.chats.filter((c) => c.running || c.items.some(isWaiting)).map((c) => c.id);
-    if (busy.length) this.busyIn.set(from, busy);
-    else this.busyIn.delete(from);
+    // Busy now, still to be resumed after a drop or an earlier switch back, or being resumed.
+    const busy = new Set([
+      ...(this.busyIn.get(from) ?? []),
+      ...this.resumeOnReconnect,
+      ...this.resuming.keys(),
+      ...this.snapshot.chats.filter((c) => c.running || c.items.some(isWaiting)).map((c) => c.id),
+    ]);
+    if (busy.size) this.busyIn.set(from, [...busy]);
     // Nothing the old profile's socket still sends shows in the new one. It is let go below, once writes already
-    // started for the old profile have gone out.
-    if (this.pipe && this.pipeProfile !== name) this.generation++;
+    // started for the old profile have gone out, and isn't used again, even if the owner comes straight back.
+    if (this.pipe && this.pipeProfile !== name) {
+      this.generation++;
+      this.pipeProfile = undefined;
+    }
     const unread = this.snapshot.chats.filter((c) => c.unread).length;
     this.others.switched(from, name, this.listedAt === undefined ? undefined : { unread, listedAt: this.listedAt });
     this.listedAt = undefined;

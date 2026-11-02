@@ -85,6 +85,25 @@ describe("Switching profile in the app", () => {
     expect((await screen.findByRole("alertdialog")).textContent).toMatch(/A reply is still running in default\. Hermes keeps it going/);
   });
 
+  it("keeps the question open if the reply finishes meanwhile, and puts focus back on the switcher on Stay", async () => {
+    const { server, hermes, user } = await launch();
+    let id = "";
+    await act(async () => {
+      id = await hermes.newChat();
+      await hermes.send(id, "Summarise the logs");
+    });
+    await pickProfile(user, "work");
+    const ask = await screen.findByRole("alertdialog");
+    expect(ask.getAttribute("aria-describedby")).toBeTruthy();
+    expect(document.getElementById(ask.getAttribute("aria-describedby")!)?.textContent).toMatch(/A reply is still running/);
+    act(() => server.event(server.runtimeIdOf(id)!, "message.complete", { text: "Done." }));
+    expect(screen.getByRole("alertdialog")).toBe(ask);
+
+    await user.click(screen.getByRole("button", { name: "Stay" }));
+    expect(document.activeElement).toBe(document.querySelector(".profile-btn"));
+    expect(document.querySelector(".profile-btn")!.getAttribute("aria-expanded")).toBe("false");
+  });
+
   it("shows the switch under way, then the new profile's chats", async () => {
     const { server, hermes, user } = await launch();
     const list = server.rest["GET /api/sessions"];
