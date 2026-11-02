@@ -663,7 +663,7 @@ impl Dashboard {
             (other, _) => return Err(TransportError::NotRelayed(format!("{other} requests"))),
         };
         let (url, routed) = relay_url(&self.base, path, query)?;
-        // Server files are read-only (ADR 0007): nothing but GET goes to the server's file routes, checked on the
+        // Server files are read-only (ADR 0012): nothing but GET goes to the server's file routes, checked on the
         // path as the server will route it, so `api/./files` or `api/%66iles` can't slip past.
         if method != Method::GET && is_file_route(&routed) {
             return Err(TransportError::NotRelayed(format!("{method} {path}")));

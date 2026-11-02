@@ -219,7 +219,7 @@ describe("Server files", () => {
     await waitFor(() => expect(names()).toContain("notes.md"));
     await user.click(row_("notes.md"));
     await waitFor(() => expect(held).toHaveLength(1));
-    delete s.serverFiles.nodes["/home/liam/notes.md"];
+    delete s.managedFiles.nodes["/home/liam/notes.md"];
     await user.click(screen.getByRole("button", { name: "Refresh" }));
     await waitFor(() => expect(names()).not.toContain("notes.md"));
     await releaseAll();
@@ -235,7 +235,7 @@ describe("Server files", () => {
     await waitFor(() => expect(held).toHaveLength(2));
     // The read was answered before the file went; only the listing sees it gone.
     const [readRun, listAgain] = held.splice(0);
-    delete s.serverFiles.nodes["/home/liam/run"];
+    delete s.managedFiles.nodes["/home/liam/run"];
     await act(async () => {
       listAgain();
       readRun();
@@ -252,6 +252,22 @@ describe("Server files", () => {
     expect(screen.getByText("Limited to /home/liam/projects")).toBeTruthy();
     expect(trail()).toEqual(["/home/liam/projects"]);
     expect((screen.getByRole("button", { name: "Up one folder" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("takes turns with Settings over the chat, and leaves no chat marked open meanwhile", async () => {
+    const { user } = await launch(server());
+    await user.click(screen.getByRole("button", { name: /Nightly backup/ }));
+    await waitFor(() => expect(document.querySelector("[aria-current='true']")).not.toBeNull());
+    await openFiles(user);
+    const filesButton = screen.getByRole("button", { name: "Server files (read-only)" });
+    expect(filesButton.getAttribute("aria-pressed")).toBe("true");
+    expect(document.querySelector("[aria-current='true']")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await waitFor(() => expect(document.querySelector(".files")).toBeNull());
+    expect(filesButton.getAttribute("aria-pressed")).toBe("false");
+    await openFiles(user);
+    expect(screen.queryByRole("button", { name: "Back to chat" })).toBeTruthy();
+    expect(document.querySelectorAll(".files")).toHaveLength(1);
   });
 
   it("gives way to a chat, and opens again where it was", async () => {

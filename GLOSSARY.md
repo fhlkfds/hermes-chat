@@ -140,7 +140,7 @@ A header name and value the owner adds to a URL connection, for a gateway in fro
 _Avoid_: custom header, gateway token
 
 **Server files screen**:
-The rail's read-only browser for the Server files on the machine the Hermes dashboard runs on. It lists folders through the dashboard's managed files, as the server's own user can open them, the same for every profile, and never shows credential files such as `.env`. The server may limit it to one folder. Nothing on this computer is shown there, and nothing on the server can be changed from it (ADR 0011).
+The rail's read-only browser for the Server files on the machine the Hermes dashboard runs on. It lists folders through the dashboard's managed files, as the server's own user can open them, the same for every profile, and never shows credential files such as `.env`. The server may limit it to one folder. Nothing on this computer is shown there, and nothing on the server can be changed from it (ADR 0012).
 _Avoid_: remote files, file manager, workspace (Hermes's word for a session's working folder)
 
 **Unsecure**:
