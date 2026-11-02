@@ -217,6 +217,9 @@ export function ChatList({
         )}
         <div className="section-label">Active</div>
         {active.length ? active.map(row) : <div className="empty-hint">Nothing active. Start a new chat.</div>}
+      </div>
+      {/* Settled is pinned to the foot of the list and opens upward as a drawer with its own scroll. */}
+      <div className={`settled-section ${settledOpen ? "open" : ""}`}>
         <button className="section-toggle" onClick={() => setSettledOpen((o) => !o)}>
           <ChevronRight size={14} className={`chev ${settledOpen ? "open" : ""}`} />
           Settled
