@@ -57,36 +57,6 @@ impl Requests {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn peeking_preserves_a_request_until_a_live_window_acknowledges_it() {
-        let requests = Requests::default();
-        requests.ask();
-        let first = requests.pending().unwrap();
-        assert_eq!(requests.pending(), Some(first));
-        requests.ask();
-        let second = requests.pending().unwrap();
-        assert_ne!(first, second);
-        requests.acknowledge(first);
-        assert_eq!(requests.pending(), Some(second));
-        requests.acknowledge(second);
-        assert_eq!(requests.pending(), None);
-    }
-
-    #[test]
-    fn an_unhandled_request_expires_after_two_minutes() {
-        let requests = Requests::default();
-        requests.ask();
-        assert_eq!(
-            requests.pending_at(Instant::now() + Duration::from_secs(120)),
-            None
-        );
-    }
-}
-
 /// The command line asks for a screenshot.
 pub fn asked(args: impl IntoIterator<Item = String>) -> bool {
     args.into_iter().skip(1).any(|a| a == "--screenshot")
@@ -146,4 +116,34 @@ pub fn serve(asked: impl Fn() + Send + 'static) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peeking_preserves_a_request_until_a_live_window_acknowledges_it() {
+        let requests = Requests::default();
+        requests.ask();
+        let first = requests.pending().unwrap();
+        assert_eq!(requests.pending(), Some(first));
+        requests.ask();
+        let second = requests.pending().unwrap();
+        assert_ne!(first, second);
+        requests.acknowledge(first);
+        assert_eq!(requests.pending(), Some(second));
+        requests.acknowledge(second);
+        assert_eq!(requests.pending(), None);
+    }
+
+    #[test]
+    fn an_unhandled_request_expires_after_two_minutes() {
+        let requests = Requests::default();
+        requests.ask();
+        assert_eq!(
+            requests.pending_at(Instant::now() + Duration::from_secs(120)),
+            None
+        );
+    }
 }

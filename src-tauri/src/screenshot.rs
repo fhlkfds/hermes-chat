@@ -522,6 +522,8 @@ pub mod portal {
         proxy.get::<u32>(IFACE, "version").map_err(dbus_error)
     }
 
+    type PortalAnswer = Arc<Mutex<Option<(u32, Option<String>)>>>;
+
     /// Asks the portal for an interactive screenshot and waits up to `timeout` for the owner's pick. Returns the file
     /// the portal saved.
     pub fn screenshot(timeout: Duration) -> Result<PathBuf, CaptureError> {
@@ -538,7 +540,7 @@ pub mod portal {
         );
         let sender = conn.unique_name().trim_start_matches(':').replace('.', "_");
         let handle = format!("{PATH}/request/{sender}/{token}");
-        let answer: Arc<Mutex<Option<(u32, Option<String>)>>> = Arc::default();
+        let answer: PortalAnswer = Arc::default();
         let listen = |path: String| {
             let answer = answer.clone();
             let rule =
