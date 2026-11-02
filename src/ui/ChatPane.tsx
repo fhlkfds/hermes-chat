@@ -5,6 +5,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import type { ApprovalChoice, ApprovalItem, AttachCheck, Attachment, Chat, ConnectionStatus, Item, Source } from "../hermes/model";
 import { SOURCE_LABEL, isWaiting } from "../hermes/model";
+import type { Undelivered } from "../hermes/drafts";
 import { Markdown } from "./Markdown";
 import { SettleButton, SourceIcon, Spinner, fmtSize, highlight } from "./bits";
 
@@ -49,6 +50,9 @@ export function ChatPane({
   alsoPostsIn,
   draft,
   onDraft,
+  undelivered,
+  onRetry,
+  onDismiss,
   onAttach,
   onSend,
   onStop,
@@ -61,6 +65,9 @@ export function ChatPane({
   alsoPostsIn?: Source;
   draft: string;
   onDraft: (text: string) => void;
+  undelivered: Undelivered[];
+  onRetry: (heldId: string) => void;
+  onDismiss: (heldId: string) => void;
   onAttach: (paths: string[]) => Promise<AttachCheck>;
   onSend: (text: string, attachments: Attachment[]) => void;
   onStop: () => void;
@@ -279,6 +286,9 @@ export function ChatPane({
         alsoPostsIn={alsoPostsIn}
         text={draft}
         onText={onDraft}
+        undelivered={undelivered}
+        onRetry={onRetry}
+        onDismiss={onDismiss}
         onAttach={onAttach}
         onSend={(t, attachments) => {
           stickToBottom.current = true;
@@ -400,6 +410,35 @@ function ToolGroup({ tools }: { tools: ToolItem[] }) {
   );
 }
 
+/**
+ * A sent message kept beside the composer. One that may have reached Hermes says so, since sending it again could run
+ * it twice, tools included.
+ */
+function UndeliveredCard({ held, canSend, onRetry, onDismiss }: { held: Undelivered; canSend: boolean; onRetry: () => void; onDismiss: () => void }) {
+  const unknown = held.delivery === "unknown";
+  return (
+    <div className={`undelivered ${held.delivery}`} role="alert">
+      <div className="undelivered-head">
+        {unknown ? "Hermes may already have this message" : "This message wasn't sent"}
+      </div>
+      <div className="undelivered-why">
+        {unknown
+          ? "The connection dropped before Hermes confirmed it got it, so it may already be running, tools and all. Check the chat before sending it again."
+          : held.reason}
+      </div>
+      <div className="undelivered-text">{held.text}</div>
+      <div className="undelivered-actions">
+        <button className="btn" onClick={onDismiss} disabled={held.retrying}>
+          Dismiss
+        </button>
+        <button className="btn primary" onClick={onRetry} disabled={!canSend || held.retrying}>
+          {held.retrying ? "Sending…" : "Send again"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function Composer({
   offline,
   running,
@@ -409,6 +448,9 @@ function Composer({
   alsoPostsIn,
   text,
   onText,
+  undelivered,
+  onRetry,
+  onDismiss,
   onAttach,
   onSend,
   onStop,
@@ -422,6 +464,10 @@ function Composer({
   /** `onSend` empties it. */
   text: string;
   onText: (text: string) => void;
+  /** Sent messages Hermes didn't take, or may not have: each can be sent again or dismissed. */
+  undelivered: Undelivered[];
+  onRetry: (heldId: string) => void;
+  onDismiss: (heldId: string) => void;
   onAttach: (paths: string[]) => Promise<AttachCheck>;
   onSend: (text: string, attachments: Attachment[]) => void;
   onStop: () => void;
@@ -489,6 +535,9 @@ function Composer({
           <SourceIcon source={alsoPostsIn} /> Hermes also posts its replies in this {SOURCE_LABEL[alsoPostsIn]} chat.
         </div>
       )}
+      {undelivered.map((u) => (
+        <UndeliveredCard key={u.id} held={u} canSend={!offline && !running} onRetry={() => onRetry(u.id)} onDismiss={() => onDismiss(u.id)} />
+      ))}
       {refused.map((r, i) => (
         <div key={i} className="attach-note" role="alert">
           {r}
