@@ -467,6 +467,11 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .field input:focus { border-color: var(--line-3); }
 .field-hint { font-size: calc(12rem / 14); color: var(--faint); display: flex; align-items: center; gap: 5px; min-height: 16px; flex-wrap: wrap; }
 .field-hint.err { color: var(--bad); }
+.extra-headers { border: 0; padding: 0; margin: 0; min-width: 0; }
+.extra-headers legend { padding: 0; margin-bottom: 6px; }
+.header-row { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr) auto; gap: 6px; align-items: center; }
+.header-row input { min-width: 0; padding-inline: 10px; }
+.add-header { align-self: flex-start; height: 28px; padding: 0 10px; }
 .field-hint.block { display: block; line-height: 1.5; }
 .field-hint.block svg { vertical-align: -2px; margin-right: 4px; }
 .field-hint code { font-size: calc(11.5rem / 14); color: var(--muted); }
@@ -499,6 +504,11 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .profile-option svg { color: var(--accent); flex: none; }
 .profile-hint { font-size: calc(12rem / 14); color: var(--faint); padding: 6px 8px; }
 .profile-hint.err { color: var(--bad); }
+.profile-leave { padding: 6px 4px 2px; color: var(--text-2); }
+.switch-status { display: flex; flex-direction: column; gap: 8px; margin: 2px 6px 8px; padding: 8px 10px; border-radius: 8px; background: var(--raised-2); font-size: calc(12.5rem / 14); color: var(--muted); }
+.switch-status.failed { color: var(--warn); }
+.switch-progress { display: flex; align-items: center; gap: 8px; }
+.switch-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .profile-btn .dot { flex: none; width: 6px; height: 6px; margin-left: 2px; }
 .profile-unread { display: inline-flex; align-items: center; gap: 5px; flex: none; font-size: calc(11rem / 14); color: var(--muted); }
 .profile-unread .dot { width: 6px; height: 6px; }
@@ -575,6 +585,8 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 .settings h2 { font-size: calc(14rem / 14); font-weight: 600; margin: 0 0 6px; }
 .settings p { margin: 0 0 16px; font-size: calc(13rem / 14); line-height: 1.55; }
 .settings p.settings-note { margin: 12px 0 0; font-size: calc(12rem / 14); }
+.settings-headers { margin-top: 12px; line-height: 1.5; }
+.settings-headers svg { vertical-align: -2px; }
 .settings-status { display: flex; align-items: center; gap: 12px; margin: 8px 0 18px; }
 .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
 .settings-row svg { vertical-align: -2px; }

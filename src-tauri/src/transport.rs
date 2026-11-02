@@ -6,17 +6,21 @@
 //! through the webview (§7), the staged images the composer shows as thumbnails, and the start of a local file the
 //! owner picked for the preview pane (ADR 0007). For a direct connection it
 //! resolves the host name in the URL the owner typed, so the webview can tell whether the connection is Unsecure.
+//! A direct connection can carry extra request headers for a gateway in front of the dashboard, such as Cloudflare
+//! Access, on every request and the WebSocket handshake (ADR 0006).
 
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
-use reqwest::{header, Method, StatusCode};
-use serde::Serialize;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use reqwest::{header, redirect, Method, StatusCode};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::net::IpAddr;
 use std::sync::Mutex;
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use url::Url;
 
@@ -26,6 +30,8 @@ const PASSWORD_PROVIDER: &str = "basic";
 pub struct SignIn {
     pub username: String,
     pub password: String,
+    /// Sent with every request to the dashboard, the WebSocket handshake included. Built by `extra_headers`.
+    pub headers: HeaderMap,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -52,6 +58,84 @@ pub enum TransportError {
     FileTooLarge { size: u64, max: u64 },
     #[error("{0}")]
     File(String),
+    #[error("{0}")]
+    BadHeader(String),
+    #[error("The dashboard sent Hermes Chat on to {0}, another site. Hermes Chat doesn't follow it there, so your extra request headers aren't sent to it. If a gateway such as Cloudflare Access is in front of the dashboard, check the headers it needs.")]
+    Redirected(String),
+}
+
+/// An extra request header as the owner typed it in the sign-in screen.
+#[derive(Deserialize)]
+pub struct ExtraHeader {
+    pub name: String,
+    pub value: String,
+}
+
+const MAX_EXTRA_HEADERS: usize = 32;
+const MAX_HEADER_VALUE_BYTES: usize = 8 * 1024;
+
+/// Headers the transport or HTTP itself sets, or that would change how the request is framed or routed.
+fn reserved(name: &HeaderName) -> bool {
+    let n = name.as_str(); // always lowercase
+    matches!(
+        n,
+        "host" | "content-length" | "content-type" | "transfer-encoding" | "connection" | "upgrade" | "cookie" | "te" | "trailer"
+            | "keep-alive" | "expect" | "origin"
+    ) || n.starts_with("sec-websocket-")
+        || n.starts_with("proxy-")
+}
+
+/// Checks the owner's extra request headers and builds them, every value marked sensitive. Names are matched without
+/// regard to case: one set twice is refused, as is a reserved one (`reserved`). Spaces and tabs around a value are
+/// dropped; any other control character, a line break above all, is refused. Errors name the header, never its value.
+pub fn extra_headers(headers: &[ExtraHeader]) -> Result<HeaderMap, TransportError> {
+    if headers.len() > MAX_EXTRA_HEADERS {
+        return Err(TransportError::BadHeader(format!("Hermes Chat sends at most {MAX_EXTRA_HEADERS} extra request headers.")));
+    }
+    let mut map = HeaderMap::new();
+    for (i, h) in headers.iter().enumerate() {
+        let bad = |why: String| TransportError::BadHeader(format!("Extra request header {}: {why}", i + 1));
+        let raw = h.name.trim_matches([' ', '\t']);
+        if raw.is_empty() {
+            return Err(bad("enter its name.".into()));
+        }
+        let name = HeaderName::from_bytes(raw.as_bytes())
+            .map_err(|_| bad(format!("{raw:?} isn't a header name. Use letters, digits and dashes, such as CF-Access-Client-Id.")))?;
+        if reserved(&name) {
+            return Err(bad(format!("Hermes Chat sets {raw} itself.")));
+        }
+        if map.contains_key(&name) {
+            return Err(bad(format!("{raw} is set twice.")));
+        }
+        let value = h.value.trim_matches([' ', '\t']);
+        if value.is_empty() {
+            return Err(bad(format!("enter a value for {raw}.")));
+        }
+        if value.len() > MAX_HEADER_VALUE_BYTES {
+            return Err(bad(format!("the value of {raw} is over {} KB.", MAX_HEADER_VALUE_BYTES / 1024)));
+        }
+        // Visible ASCII, spaces and tabs only: no line breaks, other control characters or non-ASCII bytes, which
+        // `HeaderValue` would let through as obsolete text.
+        let printable = value.bytes().all(|b| b == b'\t' || (b' '..=b'~').contains(&b));
+        let mut value = HeaderValue::from_str(value)
+            .ok()
+            .filter(|_| printable)
+            .ok_or_else(|| bad(format!("the value of {raw} can only hold ASCII letters, digits, punctuation and spaces, on one line.")))?;
+        value.set_sensitive(true);
+        map.insert(name, value);
+    }
+    Ok(map)
+}
+
+/// With extra headers set, a redirect is followed only within the dashboard's origin (scheme, host and port), so
+/// the headers never reach another site. reqwest only strips its own credential headers on such a redirect.
+fn same_origin_redirects(attempt: redirect::Attempt) -> redirect::Action {
+    let from = attempt.previous().last().map(Url::origin);
+    if from.as_ref() == Some(&attempt.url().origin()) {
+        redirect::Policy::default().redirect(attempt)
+    } else {
+        attempt.stop()
+    }
 }
 
 const MIB: u64 = 1024 * 1024;
@@ -367,12 +451,19 @@ pub struct Dashboard {
     http: reqwest::Client,
     base: Url,
     cookies: Mutex<Vec<(String, String)>>,
+    /// The owner's extra request headers; `http` sends them itself, the WebSocket handshake adds them.
+    headers: HeaderMap,
 }
 
 impl Dashboard {
     /// Sign in at `base`, the dashboard root (e.g. the local end of the SSH tunnel).
     pub async fn sign_in(base: &Url, sign_in: &SignIn) -> Result<Dashboard, TransportError> {
-        let dashboard = Dashboard { http: reqwest::Client::new(), base: base.clone(), cookies: Mutex::default() };
+        let mut http = reqwest::Client::builder().default_headers(sign_in.headers.clone());
+        if !sign_in.headers.is_empty() {
+            http = http.redirect(redirect::Policy::custom(same_origin_redirects));
+        }
+        let http = http.build().map_err(|e| TransportError::Unreachable(e.to_string()))?;
+        let dashboard = Dashboard { http, base: base.clone(), cookies: Mutex::default(), headers: sign_in.headers.clone() };
         let login = dashboard
             .http
             .post(endpoint(base, "auth/password-login"))
@@ -422,7 +513,11 @@ impl Dashboard {
             .set_scheme(if self.base.scheme() == "https" { "wss" } else { "ws" })
             .expect("http(s) URLs map to ws(s)");
         ws_url.query_pairs_mut().append_pair("ticket", ticket).append_pair("profile", profile);
-        let (ws, _) = tokio_tungstenite::connect_async(ws_url.as_str())
+        let mut handshake = ws_url.as_str().into_client_request().map_err(|e| TransportError::WebSocket(e.to_string()))?;
+        for (name, value) in &self.headers {
+            handshake.headers_mut().insert(name, value.clone());
+        }
+        let (ws, _) = tokio_tungstenite::connect_async(handshake)
             .await
             .map_err(|e| TransportError::WebSocket(e.to_string()))?;
 
@@ -526,6 +621,13 @@ fn endpoint(base: &Url, path: &str) -> Url {
 }
 
 async fn unexpected(resp: reqwest::Response) -> TransportError {
+    // A redirect that came back unfollowed: `same_origin_redirects` stopped it at another site.
+    if resp.status().is_redirection() {
+        let to = resp.headers().get(header::LOCATION).and_then(|l| resp.url().join(l.to_str().ok()?).ok());
+        if let Some(to) = to.filter(|to| to.origin() != resp.url().origin()) {
+            return TransportError::Redirected(to.origin().ascii_serialization());
+        }
+    }
     let status = resp.status().as_u16();
     let body = resp.text().await.unwrap_or_default().chars().take(300).collect();
     TransportError::Unexpected { status, body }

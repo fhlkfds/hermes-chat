@@ -3,7 +3,7 @@
 // Model: the profile's models on Hermes (ModelSettings.tsx).
 // Profiles are switched in the list's header, not here (ADR 0001).
 import { useState } from "react";
-import { ArrowLeft, Cpu, Download, KeyRound, Lock, LogOut, Palette, Settings2, Trash2 } from "lucide-react";
+import { ArrowLeft, Cpu, Download, KeyRound, Lock, LogOut, Palette, Settings2, ShieldCheck, Trash2 } from "lucide-react";
 import type { Chat, ConnectionStatus } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
 import { TRANSCRIPT_LIMIT_BYTES } from "../hermes/chatCache";
@@ -38,6 +38,8 @@ export function SettingsScreen({
   unsecure,
   username,
   passwordSaved,
+  headers = [],
+  headersSaved = true,
   profile,
   olderPulled,
   cacheBytes,
@@ -55,6 +57,10 @@ export function SettingsScreen({
   username: string;
   /** The keyring kept the password at sign-in. */
   passwordSaved: boolean;
+  /** The names of the extra request headers the connection sends; their values are never shown. */
+  headers?: string[];
+  /** The keyring kept the extra headers at sign-in. */
+  headersSaved?: boolean;
   profile: string;
   olderPulled: boolean;
   /** The storage the saved chat lists and Saved copies take now. */
@@ -154,7 +160,25 @@ export function SettingsScreen({
                   <LogOut size={14} /> {signingOut ? "Signing out…" : "Sign out"}
                 </button>
               </div>
-              <p className="muted small settings-note">Signing out deletes the saved password from the keyring. You type it again at the next sign-in.</p>
+              {headers.length > 0 && (
+                <div className="muted small settings-headers">
+                  <ShieldCheck size={12} /> Sends {headers.length === 1 ? "an extra request header" : `${headers.length} extra request headers`}:{" "}
+                  {headers.map((h, i) => (
+                    <span key={i}>
+                      {i > 0 && ", "}
+                      <span className="mono">{h}</span>
+                    </span>
+                  ))}
+                  .{" "}
+                  {headersSaved
+                    ? "Their values are saved in your system keyring and never shown."
+                    : "Their values are never shown. The system keyring couldn't save them, so you type them again at the next sign-in."}
+                </div>
+              )}
+              <p className="muted small settings-note">
+                Signing out deletes the saved password from the keyring. You type it again at the next sign-in.
+                {headers.length > 0 && headersSaved && " The extra request headers stay saved, to change or remove on the sign-in screen."}
+              </p>
             </section>
 
             <StartupSettings />
