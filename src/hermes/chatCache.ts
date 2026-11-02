@@ -2,10 +2,12 @@
 // Saved copies of the chats opened lately, so they can be read while Hermes can't be reached, the profile shown last,
 // so the next sign-in opens it, and the profiles whose older history the owner pulled. All of it is kept apart per
 // connection (how the app reaches the dashboard, and as whom), never with the password.
-// Clearing the cache deletes every connection's chat lists and Saved copies, and nothing else.
+// Clearing the cache deletes every connection's chat lists and Saved copies, and nothing else: never the sign-in,
+// drafts, appearance or display preferences (uiPrefs.ts).
 import type { SavedSignIn } from "./account";
 import type { Chat, Item, Source } from "./model";
 import type { ChatCache, SavedTranscript } from "./transport";
+import { UI_PREFS_KEY } from "./uiPrefs";
 
 const LIST_PREFIX = "hermes-chat.chats.";
 const TRANSCRIPT_PREFIX = "hermes-chat.transcript.";
@@ -30,8 +32,11 @@ function keysOf(prefix: string): string[] {
   }
   return keys;
 }
-/** Every connection's lists and Saved copies, and lists kept before they were kept per connection. */
-const cacheKeys = () => [...keysOf(LIST_PREFIX), ...keysOf(TRANSCRIPT_PREFIX)];
+/**
+ * Every connection's lists and Saved copies, and lists kept before they were kept per connection. Only these count
+ * toward the cache or are cleared with it; the display preferences are named out so no prefix can ever take them in.
+ */
+const cacheKeys = () => [...keysOf(LIST_PREFIX), ...keysOf(TRANSCRIPT_PREFIX)].filter((k) => k !== UI_PREFS_KEY);
 
 /** When a Saved copy was saved, read off the front of its JSON so the rest isn't parsed. */
 const savedAtOf = (k: string) => Number(/^\{"savedAt":(\d+)/.exec(localStorage.getItem(k) ?? "")?.[1] ?? 0);
