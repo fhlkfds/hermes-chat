@@ -490,6 +490,11 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .profile-option svg { color: var(--accent); flex: none; }
 .profile-hint { font-size: calc(12rem / 14); color: var(--faint); padding: 6px 8px; }
 .profile-hint.err { color: var(--bad); }
+.profile-leave { padding: 6px 4px 2px; color: var(--text-2); }
+.switch-status { display: flex; flex-direction: column; gap: 8px; margin: 2px 6px 8px; padding: 8px 10px; border-radius: 8px; background: var(--raised-2); font-size: calc(12.5rem / 14); color: var(--muted); }
+.switch-status.failed { color: var(--warn); }
+.switch-progress { display: flex; align-items: center; gap: 8px; }
+.switch-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .profile-btn .dot { flex: none; width: 6px; height: 6px; margin-left: 2px; }
 .profile-unread { display: inline-flex; align-items: center; gap: 5px; flex: none; font-size: calc(11rem / 14); color: var(--muted); }
 .profile-unread .dot { width: 6px; height: 6px; }

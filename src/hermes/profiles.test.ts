@@ -144,3 +144,151 @@ describe("Profiles", () => {
     expect(hermes.getSnapshot().syncError).toMatch(/Couldn't refresh the chat list: .*Profile 'retired' not found/);
   });
 });
+
+describe("Switching profile", () => {
+  it("shows the switch under way until the new profile's list is read, and only then remembers it", async () => {
+    const cache = memoryCache();
+    const { server, hermes } = await signedIn(cache);
+    const release = holdLists(server);
+    await hermes.switchProfile("work");
+    expect(hermes.getSnapshot()).toMatchObject({ profile: "work", status: "connected", switching: { from: "default" } });
+    expect(cache.profile).toBeUndefined();
+
+    release();
+    await hermes.idle();
+    expect(hermes.getSnapshot().switching).toBeUndefined();
+    expect(cache.profile).toBe("work");
+  });
+
+  it("says why when the new profile can't be reached, and goes back when asked", async () => {
+    const cache = memoryCache();
+    const { server, hermes, ids } = await signedIn(cache);
+    server.refuse = "ssh: connect to host hermes port 22: Connection refused";
+    await hermes.switchProfile("work");
+    expect(hermes.getSnapshot()).toMatchObject({ profile: "work", switching: { from: "default", error: expect.stringMatching(/Connection refused/) } });
+
+    server.refuse = undefined;
+    await hermes.switchProfile("default");
+    await hermes.idle();
+    expect(hermes.getSnapshot()).toMatchObject({ profile: "default", status: "connected" });
+    expect(hermes.getSnapshot().switching).toBeUndefined();
+    expect(ids()).toEqual(["home-1"]);
+    expect(cache.profile).toBe("default");
+    await hermes.close();
+  });
+
+  it("clears the reason while it tries again, and finishes the switch once it connects", async () => {
+    const { server, hermes, ids } = await signedIn();
+    server.refuse = "ssh: connect to host hermes port 22: Connection refused";
+    await hermes.switchProfile("work");
+    server.refuse = undefined;
+    const retry = hermes.reconnect();
+    expect(hermes.getSnapshot().switching).toEqual({ from: "default" });
+    await retry;
+    await hermes.idle();
+    expect(hermes.getSnapshot()).toMatchObject({ profile: "work", status: "connected" });
+    expect(hermes.getSnapshot().switching).toBeUndefined();
+    expect(ids()).toEqual(["work-1", "work-2"]);
+  });
+
+  it("says why when the profile is gone from the server, and doesn't remember it", async () => {
+    const cache = memoryCache();
+    const { hermes } = await signedIn(cache);
+    await hermes.switchProfile("retired");
+    await hermes.idle();
+    expect(hermes.getSnapshot().switching).toEqual({ from: "default", error: expect.stringMatching(/Profile 'retired' not found/) });
+    expect(cache.profile).toBeUndefined();
+  });
+
+  it("brings back a reply running and an Approval waiting in a profile when the owner switches back to it", async () => {
+    const { server, hermes } = await signedIn();
+    const id = await hermes.newChat();
+    await hermes.send(id, "Clean up the logs");
+    await hermes.sync();
+    const { id: requestId } = server.askApproval(server.runtimeIdOf(id)!);
+    const card = () => hermes.getSnapshot().chats.find((c) => c.id === id)?.items.find((i) => i.kind === "approval");
+    expect(card()).toMatchObject({ id: requestId });
+
+    await hermes.switchProfile("work");
+    await hermes.idle();
+    expect(hermes.getSnapshot().chats.some((c) => c.id === id)).toBe(false);
+
+    await hermes.switchProfile("default");
+    await hermes.idle();
+    const chat = hermes.getSnapshot().chats.find((c) => c.id === id)!;
+    expect(chat.running).toBe(true);
+    expect(card()).toMatchObject({ id: requestId });
+    expect(card() && "answer" in card()! ? (card() as { answer?: string }).answer : undefined).toBeUndefined();
+  });
+
+  it("comes straight back to the old profile over a socket it still listens to", async () => {
+    const { server, hermes } = await signedIn();
+    await Promise.all([hermes.switchProfile("work"), hermes.switchProfile("default")]);
+    await hermes.idle();
+    expect(hermes.getSnapshot()).toMatchObject({ profile: "default", status: "connected" });
+    expect(server.wsProfiles.at(-1)).toBe("default");
+    await expect(hermes.newChat()).resolves.toMatch(/abc123/);
+  });
+
+  it("resumes a reply that was running when the connection dropped, once the owner switches back", async () => {
+    const { server, hermes } = await signedIn();
+    const id = await hermes.newChat();
+    await hermes.send(id, "Summarise the logs");
+    await hermes.sync();
+    server.refuse = "ssh: connect to host hermes port 22: Connection refused";
+    server.drop();
+    await hermes.switchProfile("work");
+    server.refuse = undefined;
+    await hermes.reconnect();
+    await hermes.idle();
+
+    await hermes.switchProfile("default");
+    await hermes.idle();
+    expect(server.requests.filter((r) => r.method === "session.resume").map((r) => r.params.session_id)).toContain(id);
+  });
+
+  it("keeps a waiting Approval to bring back when the owner leaves its profile again before its list loads", async () => {
+    const { server, hermes } = await signedIn();
+    const id = await hermes.newChat();
+    await hermes.send(id, "Clean up the logs");
+    await hermes.sync();
+    const { id: requestId } = server.askApproval(server.runtimeIdOf(id)!);
+    await hermes.switchProfile("work");
+    await hermes.idle();
+
+    const release = holdLists(server);
+    await hermes.switchProfile("default");
+    await hermes.switchProfile("work");
+    release();
+    await hermes.idle();
+    await hermes.switchProfile("default");
+    await hermes.idle();
+    const card = hermes.getSnapshot().chats.find((c) => c.id === id)?.items.find((i) => i.kind === "approval");
+    expect(card).toMatchObject({ id: requestId });
+  });
+
+  it("doesn't show a search started in the old profile under the new one", async () => {
+    const { server, hermes } = await signedIn();
+    let answer!: () => void;
+    server.rest["GET /api/sessions/search"] = () => new Promise((resolve) => (answer = () => resolve({ results: [{ id: "home-1", title: "Home" }] })));
+    const searching = hermes.search("home");
+    await hermes.switchProfile("work");
+    answer();
+    await expect(searching).rejects.toThrow(/work profile/);
+  });
+
+  it("doesn't put a chat started in the old profile into the new one's list", async () => {
+    const { server, hermes, ids } = await signedIn();
+    const create = server.handlers["session.create"];
+    let answer!: () => void;
+    server.handlers["session.create"] = (r) => void (answer = () => create(r));
+    const starting = hermes.newChat();
+    // Hermes answers after the switch has begun, before the old socket is let go.
+    const switching = hermes.switchProfile("work");
+    answer();
+    await expect(starting).rejects.toThrow();
+    await switching;
+    await hermes.idle();
+    expect(ids()).toEqual(["work-1", "work-2"]);
+  });
+});
