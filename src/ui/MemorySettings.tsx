@@ -72,7 +72,7 @@ export function MemorySettings({
   const [kept, setKept] = useState<string[]>([]);
   const keep = (text: string) => setKept((k) => (k.includes(text) ? k : [...k, text]));
   // A save whose outcome is unknown, until a read shows whether Hermes has it: the text sent, and the entry it was for.
-  const [unsure, setUnsure] = useState<{ text: string; entryId: string }>();
+  const [unsure, setUnsure] = useState<{ text: string; entryId: string; source: MemorySource }>();
   const [confirmDelete, setConfirmDelete] = useState(false);
   // Opening another entry or file while the open one has an unsaved edit asks first; this is what it would do.
   const [leaving, setLeaving] = useState<() => void>();
@@ -108,7 +108,7 @@ export function MemorySettings({
     const open = opts.keep ?? editing;
     if (!open) return;
     const still = next.resources[open.entry.source].entries.find((e) => e.id === open.entry.id);
-    if (still) return setEditing({ entry: still, draft: open.draft });
+    if (still) return setEditing({ ...open, entry: still });
     // The entry changed or went: an edit in it is kept, never dropped.
     if (open.draft !== open.entry.text) {
       keep(open.draft);
@@ -135,9 +135,8 @@ export function MemorySettings({
       if (!alive.current || n !== reads.current) return;
       if (unsure !== undefined) {
         // A read settles a save whose answer was lost: Hermes has the text, or it doesn't.
-        const saved = Object.values(next.resources)
-          .flatMap((r) => r.entries)
-          .find((e) => e.text === unsure.text);
+        // Only the file the save was for: the same text in the other file is another entry.
+        const saved = next.resources[unsure.source].entries.find((e) => e.text === unsure.text);
         setUnsure(undefined);
         if (saved && editing?.entry.id !== unsure.entryId) {
           // The owner moved on from that entry: say what became of the save, and leave what's open alone.
@@ -238,7 +237,7 @@ export function MemorySettings({
           text: e instanceof MemoryConflictError ? e.message : `${e.message} Your edit is kept below.`,
         });
       } else if (e instanceof MemoryUnsureError) {
-        setUnsure({ text: pyStrip(at.draft), entryId: at.entry.id });
+        setUnsure({ text: pyStrip(at.draft), entryId: at.entry.id, source: at.entry.source });
         setNotice({ kind: "unsure", text: e.message });
       } else if (e instanceof MemoryUnsupportedError) {
         keep(at.draft);

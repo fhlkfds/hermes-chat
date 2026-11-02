@@ -253,6 +253,46 @@ describe("Settings → Memory", () => {
     expect(screen.getByRole("group", { name: /Edit entry in MEMORY.md/ })).toBeTruthy();
   });
 
+  it("settles a lost save only in the file it was for, though the other file has the same text", async () => {
+    const s = server();
+    s.memory.default.profile = [SAM, "Same words in both files"];
+    const { hermes, user } = await shown({ s });
+    await user.click(entry(SHORT));
+    await user.clear(editor());
+    await user.type(editor(), "Same words in both files");
+    s.dropOnLearning = "lost";
+    await user.click(button("Save"));
+    await screen.findByText(/may or may not have saved/);
+    await act(async () => void (await hermes.reconnect()));
+    await user.type(editor(), " and more");
+    await user.click(button(/Reload/));
+    expect((await screen.findByRole("alert")).textContent).toMatch(/Hermes doesn't have your edit/);
+    expect(screen.getByRole("tab", { name: /Agent notes/ }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("group", { name: /Edit entry in MEMORY.md/ })).toBeTruthy();
+    expect(editor().value).toBe("Same words in both files and more");
+    expect(s.memory.default.memory[1]).toBe(SHORT);
+    expect(s.memory.default.profile).toEqual([SAM, "Same words in both files"]);
+  });
+
+  it("still settles a kept edit put in an entry after a Reload", async () => {
+    const { s, user } = await shown();
+    await user.click(entry(SHORT));
+    await user.clear(editor());
+    await user.type(editor(), "Edit A");
+    s.memory.default.memory[1] = "Agent changed it";
+    await user.click(button("Save"));
+    await screen.findByRole("textbox", { name: "Your kept edit" });
+    await user.click(entry("Agent changed it"));
+    await user.click(button(/Put your kept edit in this entry/));
+    await user.type(editor(), ", merged");
+    await user.click(button(/Reload/));
+    await waitFor(() => expect(button(/Reload/)).toHaveProperty("disabled", false));
+    await user.click(button("Save"));
+    await screen.findByText(/Saved, and read back/);
+    expect(s.memory.default.memory[1]).toBe("Edit A, merged");
+    expect(screen.queryByRole("textbox", { name: /Your kept edit/ })).toBeNull();
+  });
+
   it("keeps every edit a conflict leaves, not only the latest", async () => {
     const { s, user } = await shown();
     await user.click(entry(SHORT));
