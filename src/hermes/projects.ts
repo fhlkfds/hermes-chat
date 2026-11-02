@@ -1,4 +1,4 @@
-// Projects: named groups of chats and of folders on the server (GLOSSARY.md "Project", ADR 0006). The project itself,
+// Projects: named groups of chats and of folders on the server (GLOSSARY.md "Project", ADR 0007). The project itself,
 // its name and its folders, is Hermes's own: the profile's `projects.db`, read and written with the legacy `projects.*`
 // JSON-RPC on `/api/ws`, so the official desktop app and `hermes projects` see the same ones. Hermes doesn't record which
 // chats belong to a project, so that, and which project the list shows, is kept on this computer (projectLinks.ts).

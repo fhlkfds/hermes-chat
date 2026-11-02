@@ -273,7 +273,7 @@ describe("Active is Hermes's pinned flag", () => {
     expect(server.restRequests.filter((r) => r.method === "PATCH")).toEqual([]);
   });
 
-  it("shows an error if the chat can't be resumed", async () => {
+  it("marks the message failed if the chat can't be resumed", async () => {
     const server = new FakeHermes();
     server.sessions = [row("x", 1)];
     const { hermes, chat } = await signedIn(server);
@@ -281,7 +281,7 @@ describe("Active is Hermes's pinned flag", () => {
     server.sessions = [];
     await hermes.send("x", "hi");
     expect(chat("x")).toMatchObject({ running: false });
-    expect(chat("x").items.at(-1)).toMatchObject({ kind: "error", text: "session not found: x" });
+    expect(chat("x").items.at(-1)).toMatchObject({ kind: "user", text: "hi", outgoing: { state: "failed", reason: "session not found: x" } });
     expect(server.last("prompt.submit")).toBeUndefined();
   });
 });

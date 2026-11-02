@@ -31,9 +31,12 @@ export type UIPrefs = {
   modelPicker: StickyModelPick | null;
   /** Starred models, as `provider/model`, listed first in the model picker. Kept even when Hermes no longer lists them. */
   modelFavorites: string[];
-  /** The status bar items shown, in order. */
+  /** The status bar items shown, in order (StatusBar.tsx). Empty: the bar is hidden. */
   statusBar: string[];
 };
+
+/** Every status bar item, in the bar's order; all shown until the owner picks otherwise. */
+export const STATUS_BAR_ITEMS = ["context", "yolo", "model", "status"] as const;
 
 export const DEFAULT_UI_PREFS: Readonly<UIPrefs> = Object.freeze({
   theme: "system",
@@ -42,7 +45,7 @@ export const DEFAULT_UI_PREFS: Readonly<UIPrefs> = Object.freeze({
   reasoningBlocks: true,
   modelPicker: null,
   modelFavorites: [],
-  statusBar: [],
+  statusBar: [...STATUS_BAR_ITEMS],
 });
 
 /** A stored document as read, before its fields are checked. */

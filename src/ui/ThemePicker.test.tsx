@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-// Settings in two tabs, and the Appearance tab's color scheme, themes, theme editor, contrast and chat width.
+// Settings in three tabs, and the Appearance tab's color scheme, themes, theme editor, contrast and chat width.
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
+import { ModelSettingsApi } from "../hermes/modelSettings";
 import { appearanceStore, loadAppearance, type SystemDark } from "./appearance";
 import { AppearanceSettings } from "./AppearanceSettings";
 import { SettingsScreen } from "./Settings";
@@ -59,6 +60,7 @@ describe("Settings tabs", () => {
         cacheBytes={() => 0}
         appearance={store}
         listFonts={fonts}
+        modelSettings={new ModelSettingsApi(async () => Promise.reject(new Error("Not connected to Hermes.")), () => "default")}
         onClearCache={() => {}}
         onPullOlder={async () => []}
         onSignOut={async () => {}}
@@ -76,17 +78,21 @@ describe("Settings tabs", () => {
 
   it("move with the arrow keys, Home and End, with only the selected tab in the Tab order", async () => {
     settings();
-    const [general, appearance] = screen.getAllByRole("tab");
-    expect([general.tabIndex, appearance.tabIndex]).toEqual([0, -1]);
+    const [general, appearance, model] = screen.getAllByRole("tab");
+    expect([general.tabIndex, appearance.tabIndex, model.tabIndex]).toEqual([0, -1, -1]);
     general.focus();
     await userEvent.keyboard("{ArrowRight}");
     expect(appearance.getAttribute("aria-selected")).toBe("true");
     expect(document.activeElement).toBe(appearance);
-    expect([general.tabIndex, appearance.tabIndex]).toEqual([-1, 0]);
+    expect([general.tabIndex, appearance.tabIndex, model.tabIndex]).toEqual([-1, 0, -1]);
+    await userEvent.keyboard("{ArrowRight}");
+    expect(document.activeElement).toBe(model);
     await userEvent.keyboard("{ArrowRight}");
     expect(document.activeElement).toBe(general);
     await userEvent.keyboard("{End}");
-    expect(appearance.getAttribute("aria-selected")).toBe("true");
+    expect(model.getAttribute("aria-selected")).toBe("true");
+    await userEvent.keyboard("{Home}");
+    expect(general.getAttribute("aria-selected")).toBe("true");
   });
 
   it("show the appearance settings, and only them, on Appearance", async () => {
