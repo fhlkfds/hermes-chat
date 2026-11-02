@@ -382,6 +382,7 @@ export function Main({
             cacheBytes={() => hermes.cacheBytes()}
             appearance={appearance}
             listFonts={systemFonts}
+            modelSettings={hermes.modelSettings}
             onClearCache={() => hermes.clearCache()}
             onPullOlder={() => hermes.pullOlderHistory()}
             onSignOut={onSignOut}

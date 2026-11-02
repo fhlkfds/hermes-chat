@@ -312,15 +312,19 @@ impl Dashboard {
     }
 
     /// One dashboard REST call for the webview: `GET`, `PATCH` or `DELETE` on a path under `api/`, with a
-    /// JSON body. Returns the response body on 2xx.
+    /// JSON body. `POST` and `PUT` reach only Settings → Model's two writes: `POST api/model/set` and
+    /// `PUT api/config`. Returns the response body on 2xx.
     pub async fn request(&self, method: &str, path_and_query: &str, body: Option<String>) -> Result<String, TransportError> {
-        let method = match method {
-            "GET" => Method::GET,
-            "PATCH" => Method::PATCH,
-            "DELETE" => Method::DELETE,
-            other => return Err(TransportError::NotRelayed(format!("{other} requests"))),
-        };
         let (path, query) = path_and_query.split_once('?').unwrap_or((path_and_query, ""));
+        let method = match (method, path) {
+            ("GET", _) => Method::GET,
+            ("PATCH", _) => Method::PATCH,
+            ("DELETE", _) => Method::DELETE,
+            ("POST", "api/model/set") => Method::POST,
+            ("PUT", "api/config") => Method::PUT,
+            ("POST" | "PUT", _) => return Err(TransportError::NotRelayed(format!("{method} {path}"))),
+            (other, _) => return Err(TransportError::NotRelayed(format!("{other} requests"))),
+        };
         if !path.starts_with("api/") || path.split('/').any(|seg| seg == "..") {
             return Err(TransportError::NotRelayed(path.to_owned()));
         }

@@ -1,5 +1,5 @@
-// The Settings screen, ported from the prototype: the connection and Sign out, appearance, the local cache, and older
-// history.
+// The Settings screen, ported from the prototype: the connection and Sign out, appearance, the local cache, older
+// history, and the profile's models (ModelSettings.tsx).
 // Profiles are switched in the list's header, not here (ADR 0001).
 import { useState } from "react";
 import { ArrowLeft, Download, KeyRound, Lock, LogOut, Trash2 } from "lucide-react";
@@ -9,6 +9,8 @@ import { TRANSCRIPT_LIMIT_BYTES } from "../hermes/chatCache";
 import { STATUS_LABEL, fmtSize, routeLabel } from "./bits";
 import type { AppearanceStore, Fonts } from "./appearance";
 import { AppearanceSettings } from "./AppearanceSettings";
+import type { ModelSettingsApi } from "../hermes/modelSettings";
+import { ModelSettings } from "./ModelSettings";
 
 /** What a pull added: the older chats in Settled, and any pinned in another Hermes client, which are Active. */
 function pulledText(added: Chat[]): string {
@@ -32,6 +34,7 @@ export function SettingsScreen({
   cacheBytes,
   appearance,
   listFonts,
+  modelSettings,
   onClearCache,
   onPullOlder,
   onSignOut,
@@ -50,6 +53,8 @@ export function SettingsScreen({
   appearance: AppearanceStore;
   /** The installed font families, for the font pickers. */
   listFonts: () => Promise<Fonts>;
+  /** The profile's model setup on Hermes. */
+  modelSettings: ModelSettingsApi;
   onClearCache: () => void;
   /** Resolves to the older chats added. */
   onPullOlder: () => Promise<Chat[]>;
@@ -169,6 +174,9 @@ export function SettingsScreen({
             </button>
           </div>
         </section>
+
+        {/* A draft lives only while Settings is open, and for one profile. */}
+        <ModelSettings key={profile} api={modelSettings} profile={profile} connected={status === "connected"} />
       </div>
     </div>
   );
