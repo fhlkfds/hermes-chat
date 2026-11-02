@@ -12,4 +12,6 @@ Images 11–12 are captures of the running React app in T3's Chromium browser, a
 
 Image 13 repeats the 440 px recording capture after merging projects and token usage from main (`2b74a86`), using the same Chromium harness and synthetic audio. Done remained within the chat and passed browser hit testing. Clicking Done again inserted the fixture transcript without adding a chat message.
 
+Image 14 repeats the Chromium harness capture after merging screenshot capture and title/model fixes from main (`05d2d6e`). The screenshot button remains beside the model controls while recording uses its own row. Browser hit testing confirmed Dictate and Attach a screenshot before recording, and Done during recording, remain clickable at a 440 px chat width; Done uploaded synthetic WAV audio and inserted the fixture transcript without adding a chat message.
+
 Physical microphone capture, speech recognition with a configured provider, and audible speaker output still need checking on the owner's desktop. The deployed default profile used local STT but lacked `faster-whisper` when checked.
