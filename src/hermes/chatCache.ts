@@ -11,6 +11,7 @@ import type { Attachment, Chat, Item, Outgoing, OutgoingItem, Source } from "./m
 import type { ChatCache, SavedTranscript } from "./transport";
 import { UI_PREFS_KEY } from "./uiPrefs";
 import { replyUsageOf } from "./usage";
+import { persist } from "./unsaved";
 
 const LIST_PREFIX = "hermes-chat.chats.";
 const TRANSCRIPT_PREFIX = "hermes-chat.transcript.";
@@ -200,15 +201,11 @@ export function localChatCache(connection: SavedSignIn): ChatCache {
       return [];
     }
   };
+  // A failed write keeps the outbox in memory, here and for an update's restart (unsaved.ts).
   const writeOutbox = (profile: string, chatId: string, items: OutgoingItem[]) => {
-    liveOutboxes.set(outboxKey(profile, chatId), items);
-    try {
-      if (items.length) localStorage.setItem(outboxKey(profile, chatId), JSON.stringify(items));
-      else localStorage.removeItem(outboxKey(profile, chatId));
-      liveOutboxes.delete(outboxKey(profile, chatId));
-    } catch {
-      // Only a restart loses them.
-    }
+    const key = outboxKey(profile, chatId);
+    liveOutboxes.set(key, items);
+    if (persist(() => localStorage, key, items.length ? JSON.stringify(items) : null)) liveOutboxes.delete(key);
     for (const fn of outboxListeners) fn();
   };
 

@@ -1,5 +1,5 @@
 import { type ReactNode, type RefObject, useCallback, useLayoutEffect, useMemo, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { flushSync } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import { Columns2, PanelRight, X } from "lucide-react";
 import { connect, readSaved, type Delivery, type Hermes } from "./hermes/transport";
 import { CHECK_EVERY_MS } from "./hermes/otherProfiles";
@@ -12,7 +12,7 @@ import { projectLinks, projectScope } from "./hermes/projectLinks";
 import { ProjectsStore, type Project } from "./hermes/projects";
 import { systemHeaderKeyring, systemKeyring } from "./hermes/tauriKeyring";
 import { appUpdates } from "./hermes/tauriUpdates";
-import { needsAttention } from "./hermes/updates";
+import { needsAttention, type Updater } from "./hermes/updates";
 import { desktopNotify } from "./hermes/tauriNotify";
 import { ScreenshotDesk, type ScreenshotApi } from "./hermes/screenshots";
 import { onDesktopScreenshot, screenshotSupport, showWindow, syncScreenshotOutbox, tauriScreenshots, type ScreenshotSupport } from "./hermes/tauriScreenshot";
@@ -267,6 +267,7 @@ export function Main({
   webPages = tauriWebPages,
   screenshots = tauriScreenshotWiring,
   onSignOut,
+  updates = appUpdates,
 }: {
   hermes: Hermes;
   connection: SavedSignIn;
@@ -281,6 +282,7 @@ export function Main({
   webPages?: WebPages;
   screenshots?: Screenshots;
   onSignOut: () => Promise<void>;
+  updates?: Updater;
 }) {
   const { profile, chats, olderPulled, archivedListed, status, route, unsecure, closedReason, syncError, others, models, switching } = useSyncExternalStore(
     hermes.subscribe,
@@ -298,7 +300,10 @@ export function Main({
   // Server files covers the chat panes too. The folder open last stays for this sign-in.
   const [filesOpen, setFilesOpen] = useState(false);
   const [filesPath, setFilesPath] = useState<string>();
-  const updateWaiting = needsAttention(useSyncExternalStore(appUpdates.subscribe, appUpdates.getSnapshot));
+  const update = useSyncExternalStore(updates.subscribe, updates.getSnapshot);
+  const updateWaiting = needsAttention(update);
+  // Drafts were saved for the restart; nothing typed after that would survive it.
+  const restarting = update.state === "restarting";
   // The chat to reopen at launch, until Hermes's list shows it is there or gone, or the owner goes somewhere first.
   const [reopening, setReopening] = useState(() => (reopenLast ? chatToReopen(profile) : undefined));
   // One pane, or two side by side. The chat to reopen opens at once when the list saved on this computer has it, so the
@@ -745,7 +750,7 @@ export function Main({
 
   return (
     <PreviewContext.Provider value={openPreview}>
-    <div className="app">
+    <div className="app" inert={restarting}>
       <Rail
         status={status}
         route={route}
@@ -937,6 +942,14 @@ export function Main({
           )}
         </div>
       )}
+      {restarting &&
+        // Outside the inert app, so it is announced.
+        createPortal(
+          <div className="restarting-overlay" role="status">
+            Restarting into {update.to}…
+          </div>,
+          document.body,
+        )}
     </div>
     </PreviewContext.Provider>
   );

@@ -158,7 +158,7 @@ fn drafts_file(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 /// Restarts the app. `drafts` (every draft and outbox, from localStorage; updates.ts `DRAFT_PREFIXES`) is written to disk first, and nothing
-/// restarts if that fails; the next launch puts them back (`restart_drafts_take`), in case the webview hadn't saved
+/// restarts if that fails; the next launch puts them back (`restart_drafts_read`), in case the webview hadn't saved
 /// the last keystrokes when the process ended.
 #[tauri::command]
 pub async fn app_restart(app: AppHandle, drafts: String) -> Result<(), String> {
@@ -175,13 +175,19 @@ pub async fn app_restart(app: AppHandle, drafts: String) -> Result<(), String> {
     app.restart()
 }
 
-/// The drafts saved by the last restart, once: the file is deleted as it is read.
+/// The drafts saved by the last restart, if any. The file stays until the webview has put them all back
+/// (`restart_drafts_clear`), so a crash or a full store at launch doesn't lose them.
 #[tauri::command]
-pub async fn restart_drafts_take(app: AppHandle) -> Option<String> {
-    let path = drafts_file(&app).ok()?;
-    let drafts = std::fs::read_to_string(&path).ok()?;
-    let _ = std::fs::remove_file(&path);
-    Some(drafts)
+pub async fn restart_drafts_read(app: AppHandle) -> Option<String> {
+    std::fs::read_to_string(drafts_file(&app).ok()?).ok()
+}
+
+#[tauri::command]
+pub async fn restart_drafts_clear(app: AppHandle) -> Result<(), String> {
+    match std::fs::remove_file(drafts_file(&app)?) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]

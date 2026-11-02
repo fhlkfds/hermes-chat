@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
+import { persist, unsaved } from "./unsaved";
 import { checkPackage, parseGitPkgver, releaseNotes, restoreDrafts, snapshotDrafts, updater, type Install, type Progress, type UpdateDeps } from "./updates";
 
 const NOW = Date.UTC(2026, 10, 2, 12);
@@ -176,6 +177,34 @@ describe("updater", () => {
     expect(get).toHaveBeenCalledTimes(1);
   });
 
+  it("notices pacman's install on a quiet re-check from any settled state", async () => {
+    for (const first of [{ status: "identical", ahead_by: 0, behind_by: 0, commits: [] }, null]) {
+      let installed = "r312.ef433a2-1";
+      const get = first ? fetchOnce(json(first)) : vi.fn<typeof fetch>(async () => Promise.reject(new Error("offline")));
+      const { u } = setup({ update_install_kind: () => pacman("r312.ef433a2-1", installed) }, { fetch: get });
+      await u.check();
+      expect(u.getSnapshot().state).toBe(first ? "upToDate" : "error");
+      installed = "r313.4444444-1";
+      await u.check({ installedOnly: true });
+      expect(u.getSnapshot()).toEqual({ state: "restart", from: "r312.ef433a2-1", to: "r313.4444444-1" });
+    }
+  });
+
+  it("doesn't let a slower check replace the restart a quicker one found", async () => {
+    // Each update_install_kind call answers in turn: the first full check, the quiet re-check (pacman has installed
+    // the update), then the overlapping full check (from before pacman did).
+    const kinds = [pacman("r312.ef433a2-1"), pacman("r312.ef433a2-1", "r313.4444444-1"), pacman("r312.ef433a2-1")];
+    const ahead = () => json({ status: "ahead", ahead_by: 1, behind_by: 0, commits: [commit("4444444", "Fix")] });
+    const get = vi.fn<typeof fetch>(async () => ahead());
+    const { u } = setup({ update_install_kind: () => kinds.shift() }, { fetch: get });
+    await u.check();
+    const quiet = u.check({ installedOnly: true });
+    const full = u.check();
+    await Promise.all([quiet, full]);
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(u.getSnapshot()).toEqual({ state: "restart", from: "r312.ef433a2-1", to: "r313.4444444-1" });
+  });
+
   it("says why a copy isn't updated here", async () => {
     let { u } = setup({ update_install_kind: { kind: "unmanaged", version: "0.1.0" } });
     await u.check();
@@ -272,13 +301,29 @@ describe("updater", () => {
   });
 });
 
+describe("drafts storage refused", () => {
+  it("still go into the restart snapshot", () => {
+    localStorage.clear();
+    localStorage.setItem("hermes-chat.draft.a", "old");
+    localStorage.setItem("hermes-chat.draft.gone", "sent");
+    const full = { setItem: () => { throw new Error("QuotaExceededError"); }, removeItem: () => { throw new Error("QuotaExceededError"); } };
+    persist(() => full, "hermes-chat.draft.a", "newer than storage");
+    persist(() => full, "hermes-chat.outbox.b", "[1]");
+    persist(() => full, "hermes-chat.draft.gone", null);
+    expect(JSON.parse(snapshotDrafts(localStorage))).toEqual({ "hermes-chat.draft.a": "newer than storage", "hermes-chat.outbox.b": "[1]" });
+    persist(() => localStorage, "hermes-chat.draft.a", "saved at last");
+    expect(unsaved.has("hermes-chat.draft.a")).toBe(false);
+    unsaved.clear();
+  });
+});
+
 describe("restoreDrafts", () => {
   it("puts back the drafts saved at restart, dropping ones emptied before it, and leaves other keys alone", () => {
     localStorage.clear();
     localStorage.setItem("hermes-chat.draft.a", "half");
     localStorage.setItem("hermes-chat.draft.sent", "sent before the restart");
     localStorage.setItem("hermes-ui-prefs", "{}");
-    restoreDrafts(localStorage, JSON.stringify({ "hermes-chat.draft.a": "half a thought", "hermes-chat.undelivered.b": "[]", "hermes-ui-prefs": "x" }));
+    expect(restoreDrafts(localStorage, JSON.stringify({ "hermes-chat.draft.a": "half a thought", "hermes-chat.undelivered.b": "[]", "hermes-ui-prefs": "x" }))).toBe(true);
     expect(snapshotDrafts(localStorage)).toBe(JSON.stringify({ "hermes-chat.draft.a": "half a thought", "hermes-chat.undelivered.b": "[]" }));
     expect(localStorage.getItem("hermes-ui-prefs")).toBe("{}");
   });
@@ -286,7 +331,13 @@ describe("restoreDrafts", () => {
   it("leaves drafts as they are with no snapshot or a garbled one", () => {
     localStorage.clear();
     localStorage.setItem("hermes-chat.draft.a", "kept");
-    for (const s of [null, "", "{", "[]", "null", '"x"']) restoreDrafts(localStorage, s);
+    for (const s of [null, "", "{", "[]", "null", '"x"']) expect(restoreDrafts(localStorage, s)).toBe(true);
     expect(localStorage.getItem("hermes-chat.draft.a")).toBe("kept");
+  });
+
+  it("says to keep the snapshot when storage refuses it", () => {
+    localStorage.clear();
+    const store = { length: 0, key: () => null, removeItem: () => {}, setItem: () => { throw new Error("QuotaExceededError"); } };
+    expect(restoreDrafts(store, JSON.stringify({ "hermes-chat.draft.a": "x" }))).toBe(false);
   });
 });

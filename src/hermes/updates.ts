@@ -6,6 +6,8 @@
 // notes. Only the package manager installs it; the app then asks to restart. A standalone AppImage built with an
 // update key uses Tauri's updater, which verifies the download's signature. Drafts survive the restart (`restart`).
 
+import { unsaved } from "./unsaved";
+
 export const REPO = "l0cky12/hermes-chat";
 
 export type Install =
@@ -166,8 +168,8 @@ export type Updater = {
   getSnapshot: () => UpdateState;
   subscribe: (fn: () => void) => () => void;
   /**
-   * Checks again; does nothing while a check, install or restart is under way. `installedOnly`: with a package update
-   * waiting, only look for pacman having installed it, without asking GitHub.
+   * Checks again; does nothing while a check, install or restart is under way. `installedOnly`: only look for pacman
+   * having installed a newer version, without asking GitHub.
    */
   check: (opts?: { installedOnly?: boolean }) => Promise<void>;
   /** Installs the update found (AppImage only). */
@@ -183,12 +185,18 @@ export type Updater = {
 export const DRAFT_PREFIXES = ["hermes-chat.draft.", "hermes-chat.outbox.", "hermes-chat.undelivered."];
 const isDraftKey = (k: string) => DRAFT_PREFIXES.some((p) => k.startsWith(p));
 
-export function snapshotDrafts(storage: UpdateDeps["storage"]): string {
+/** The drafts and outboxes in `storage`, with the latest of any its stores couldn't write there (unsaved.ts). */
+export function snapshotDrafts(storage: UpdateDeps["storage"], pending: ReadonlyMap<string, string | null> = unsaved): string {
   const out: Record<string, string> = {};
   for (let i = 0; i < storage.length; i++) {
     const k = storage.key(i);
     const v = k && isDraftKey(k) ? storage.getItem(k) : null;
     if (k && v !== null) out[k] = v;
+  }
+  for (const [k, v] of pending) {
+    if (!isDraftKey(k)) continue;
+    if (v === null) delete out[k];
+    else out[k] = v;
   }
   return JSON.stringify(out);
 }
@@ -196,16 +204,18 @@ export function snapshotDrafts(storage: UpdateDeps["storage"]): string {
 /**
  * Puts back the drafts saved as the app restarted, replacing whatever the webview kept, so the last keystrokes before
  * the restart aren't lost. Run before anything reads a draft. Anything wrong with the snapshot leaves drafts as they are.
+ * False: storage refused a write, so keep the snapshot to try again at the next launch. Nothing in the snapshot is
+ * lost meanwhile: a refused write leaves the key as it was, and only keys the snapshot doesn't have are deleted.
  */
-export function restoreDrafts(storage: Pick<Storage, "length" | "key" | "setItem" | "removeItem">, snapshot: string | null) {
-  if (!snapshot) return;
+export function restoreDrafts(storage: Pick<Storage, "length" | "key" | "setItem" | "removeItem">, snapshot: string | null): boolean {
+  if (!snapshot) return true;
   let saved: unknown;
   try {
     saved = JSON.parse(snapshot);
   } catch {
-    return;
+    return true;
   }
-  if (typeof saved !== "object" || saved === null || Array.isArray(saved)) return;
+  if (typeof saved !== "object" || saved === null || Array.isArray(saved)) return true;
   const entries = Object.entries(saved).filter((e): e is [string, string] => isDraftKey(e[0]) && typeof e[1] === "string");
   const stale: string[] = [];
   for (let i = 0; i < storage.length; i++) {
@@ -215,8 +225,9 @@ export function restoreDrafts(storage: Pick<Storage, "length" | "key" | "setItem
   try {
     stale.forEach((k) => storage.removeItem(k));
     entries.forEach(([k, v]) => storage.setItem(k, v));
+    return true;
   } catch {
-    // A full store keeps what it had.
+    return false;
   }
 }
 
@@ -230,45 +241,44 @@ export function updater(deps: UpdateDeps): Updater {
   };
   const busy = () => ["checking", "installing", "restarting"].includes(state.state);
 
+  /** A check's result, unless an install or restart got under way meanwhile, which nothing a check finds replaces. */
+  const settle = (s: UpdateState) => {
+    if (!["installing", "restart", "restarting"].includes(state.state)) set(s);
+  };
+
   const check = async ({ installedOnly = false } = {}) => {
-    if (busy()) return;
     // Installed and waiting for a restart: nothing newer matters until then.
-    if (state.state === "restart") return;
-    const waiting = state.state === "available" && state.found.via === "pacman" ? state : undefined;
-    if (installedOnly && !waiting) return;
-    if (!waiting) set({ state: "checking" });
+    if (busy() || state.state === "restart") return;
+    if (!installedOnly) set({ state: "checking" });
     try {
       const install = await deps.invoke<Install>("update_install_kind");
-      if (installedOnly) {
-        if (install.kind === "pacman" && install.installed && install.installed !== install.running) set({ state: "restart", from: install.running, to: install.installed });
-        return;
-      }
-      set({ state: "checking" });
+      if (install.kind === "pacman" && install.installed && install.installed !== install.running)
+        return settle({ state: "restart", from: install.running, to: install.installed });
+      if (installedOnly) return;
       if (install.kind === "unmanaged")
-        return set({
+        return settle({
           state: "unsupported",
           version: install.version,
           reason: "This copy wasn't installed by pacman or as an AppImage, so it isn't updated from here. If you built it from source, pull and build it again.",
         });
       if (install.kind === "pacman") {
         if (install.installed === null)
-          return set({ state: "unsupported", version: install.running, reason: `pacman no longer lists ${install.package}, so there's nothing to compare.` });
-        if (install.installed !== install.running) return set({ state: "restart", from: install.running, to: install.installed });
-        return set(await checkPackage(install, deps.fetch, now()));
+          return settle({ state: "unsupported", version: install.running, reason: `pacman no longer lists ${install.package}, so there's nothing to compare.` });
+        return settle(await checkPackage(install, deps.fetch, now()));
       }
       if (!install.updater)
-        return set({
+        return settle({
           state: "unsupported",
           version: install.version,
           reason: "This AppImage was built without an update key, so it can't check for or install updates. Download a newer build to update.",
         });
       const a = await deps.invoke<{ version: string; current: string; notes?: string | null } | null>("update_check");
-      if (!a) return set({ state: "upToDate", version: install.version, checkedAt: now() });
+      if (!a) return settle({ state: "upToDate", version: install.version, checkedAt: now() });
       const notes = noteLines(a.notes);
-      set({ state: "available", checkedAt: now(), found: { from: a.current, to: a.version, notes: notes.slice(0, NOTES_SHOWN), more: Math.max(0, notes.length - NOTES_SHOWN), via: "updater" } });
+      settle({ state: "available", checkedAt: now(), found: { from: a.current, to: a.version, notes: notes.slice(0, NOTES_SHOWN), more: Math.max(0, notes.length - NOTES_SHOWN), via: "updater" } });
     } catch (e) {
-      // A quiet look for pacman's install leaves the update shown as it was.
-      if (!installedOnly) set({ state: "error", message: `Couldn't check for updates: ${messageOf(e)}` });
+      // A quiet look for pacman's install leaves things as they were.
+      if (!installedOnly) settle({ state: "error", message: `Couldn't check for updates: ${messageOf(e)}` });
     }
   };
 

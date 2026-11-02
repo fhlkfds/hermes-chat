@@ -14,11 +14,15 @@ export const appUpdates = updater({
   storage: localStorage,
 });
 
-/** Puts back the drafts saved by an update's restart. Runs before the app first renders, so no draft is read before. */
+/**
+ * Puts back the drafts saved by an update's restart. Runs before the app first renders, so no draft is read before.
+ * The saved copy is deleted only once every one is back; otherwise the next launch tries again.
+ */
 export async function restoreDraftsAfterRestart() {
   try {
-    restoreDrafts(localStorage, await invoke<string | null>("restart_drafts_take"));
+    const saved = await invoke<string | null>("restart_drafts_read");
+    if (saved !== null && restoreDrafts(localStorage, saved)) await invoke("restart_drafts_clear");
   } catch {
-    // Outside the app, or nothing saved.
+    // Outside the app; or the copy couldn't be deleted, and the next launch puts it back again.
   }
 }
