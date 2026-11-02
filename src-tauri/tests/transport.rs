@@ -116,11 +116,13 @@ async fn save_env(RawQuery(query): RawQuery, Json(body): Json<Value>) -> Respons
     Json(json!({"ok": true})).into_response()
 }
 
-/// `POST /api/providers/validate`: `sk-good` passes, `sk-bad` is turned down, `sk-offline` can't be checked.
+/// `POST /api/providers/validate`: `sk-good` passes, `sk-bad` is turned down, `sk-offline` can't be checked, and
+/// `sk-garbled` gets an answer that isn't one. Each failure quotes part of the key, as a provider's message can.
 async fn validate(Json(body): Json<Value>) -> Response {
     Json(match body["value"].as_str() {
-        Some("sk-bad") => json!({"ok": false, "reachable": true, "message": "That API key was rejected. Double-check it and try again."}),
-        Some("sk-offline") => json!({"ok": false, "reachable": false, "message": "Could not reach the provider to verify the key."}),
+        Some("sk-bad") => json!({"ok": false, "reachable": true, "message": "Incorrect API key provided: sk-b***ad."}),
+        Some("sk-offline") => json!({"ok": false, "reachable": false, "message": "Could not reach the provider to verify sk-off…ne."}),
+        Some("sk-garbled") => json!({"ok": "sk-garbled", "reachable": true}),
         _ => json!({"ok": true, "reachable": true, "message": ""}),
     })
     .into_response()
@@ -697,7 +699,7 @@ fn saved_for(profile: &str) -> Vec<Value> {
 async fn saves_a_provider_key_the_provider_accepts() {
     let dashboard = signed_in().await;
     let saved = dashboard.save_provider_key("keys-good", "OPENROUTER_API_KEY", "  sk-good ").await.unwrap();
-    assert_eq!(saved, SavedKey { verified: true, message: "".into() });
+    assert_eq!(saved, SavedKey { verified: true });
     assert_eq!(saved_for("keys-good"), vec![json!({"key": "OPENROUTER_API_KEY", "value": "sk-good", "provider_setup": true})]);
 }
 
@@ -705,7 +707,7 @@ async fn saves_a_provider_key_the_provider_accepts() {
 async fn saves_a_key_the_provider_could_not_check_and_says_so() {
     let dashboard = signed_in().await;
     let saved = dashboard.save_provider_key("keys-offline", "OPENROUTER_API_KEY", "sk-offline").await.unwrap();
-    assert_eq!(saved, SavedKey { verified: false, message: "Could not reach the provider to verify the key.".into() });
+    assert_eq!(saved, SavedKey { verified: false });
     assert_eq!(saved_for("keys-offline").len(), 1);
 }
 
@@ -713,7 +715,11 @@ async fn saves_a_key_the_provider_could_not_check_and_says_so() {
 async fn does_not_save_a_key_the_provider_turns_down() {
     let dashboard = signed_in().await;
     let err = dashboard.save_provider_key("keys-bad", "OPENROUTER_API_KEY", "sk-bad").await.unwrap_err();
-    assert_eq!(err.to_string(), "That API key was rejected. Double-check it and try again.");
+    assert_eq!(err.to_string(), transport::KEY_TURNED_DOWN);
+    assert!(saved_for("keys-bad").is_empty());
+    // An answer that isn't one is neither shown nor saved on.
+    let err = dashboard.save_provider_key("keys-bad", "OPENROUTER_API_KEY", "sk-garbled").await.unwrap_err().to_string();
+    assert!(!err.contains("sk-"), "{err}");
     assert!(saved_for("keys-bad").is_empty());
 }
 

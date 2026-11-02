@@ -965,21 +965,21 @@ fn describe(e: &reqwest::Error) -> String {
 }
 
 /// What became of a provider key saved with `Dashboard::save_provider_key`. `verified`: the provider accepted it.
-/// Otherwise Hermes couldn't check it (no check for that provider, or the provider couldn't be reached) and
-/// `message` may say why; it is saved either way.
+/// Otherwise Hermes couldn't check it (no check for that provider, or the provider couldn't be reached); it is saved
+/// either way. Hermes's own message isn't passed on: a provider's can quote part of the key, as OpenAI's does.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SavedKey {
     pub verified: bool,
-    pub message: String,
 }
+
+/// Said when the provider turns a key down, in place of its own message, which can quote part of the key.
+pub const KEY_TURNED_DOWN: &str = "The provider turned the key down. Check that you copied all of it, and that it's for this provider.";
 
 /// `POST /api/providers/validate`'s answer (`hermes_cli/web_routers/config_env.py` at the deployed `bf0203a`).
 #[derive(Deserialize)]
 struct Validated {
     ok: bool,
     reachable: bool,
-    #[serde(default)]
-    message: String,
 }
 
 /// An env var name that can hold a model provider's API key: upper-case, ending `_API_KEY`, `_KEY` or `_TOKEN`,
@@ -1028,16 +1028,18 @@ impl Dashboard {
 
         let body = json!({"key": key, "value": value}).to_string();
         let checked = self.call(Method::POST, endpoint(&self.base, "api/providers/validate"), Some(body), false).await?;
-        let checked: Validated = serde_json::from_str(&checked)
-            .map_err(|e| TransportError::Unexpected { status: 200, body: format!("POST /api/providers/validate: {e}") })?;
+        // Neither the answer nor serde's account of it is shown: either can quote the key.
+        let checked: Validated = serde_json::from_str(&checked).map_err(|_| TransportError::Unexpected {
+            status: 200,
+            body: "Hermes's answer to the key check wasn't understood (not shown, as it may hold the key).".into(),
+        })?;
         if !checked.ok && checked.reachable {
-            let why = if checked.message.is_empty() { "The provider turned the key down." } else { checked.message.as_str() };
-            return Err(TransportError::KeyRejected(why.replace(value, "[key]")));
+            return Err(TransportError::KeyRejected(KEY_TURNED_DOWN.into()));
         }
 
         let body = json!({"key": key, "value": value, "provider_setup": true}).to_string();
         self.call(Method::PUT, scoped("api/env"), Some(body), false).await?;
-        Ok(SavedKey { verified: checked.ok && checked.reachable, message: checked.message.replace(value, "[key]") })
+        Ok(SavedKey { verified: checked.ok && checked.reachable })
     }
 
     /// One signed-in call that the app itself makes, with a JSON body; the webview's are `request`. `show_failure`:

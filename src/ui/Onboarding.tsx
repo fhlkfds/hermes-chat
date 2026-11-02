@@ -601,7 +601,7 @@ function ProviderKeys({
         ok: true,
         text: r.verified
           ? `Saved. ${pick.label} accepted the key.`
-          : `Saved, but Hermes couldn't check the key with ${pick.label}${r.message ? `: ${r.message}` : "."}`,
+          : `Saved, but Hermes couldn't check the key with ${pick.label}. If it's wrong, ${pick.label} will turn down Hermes's first request.`,
       });
       await load();
     } catch (e) {

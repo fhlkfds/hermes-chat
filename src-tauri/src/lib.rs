@@ -49,9 +49,23 @@ enum Route {
     Url { url: String, addresses: Vec<String> },
 }
 
-/// `probe`: the connection test running now, so setup can stop it, and a new one replaces it.
+/// `probe`: the connection test running now, so setup can stop it, and a new one replaces it. `connecting`: the
+/// connection being opened now, so the webview can stop it.
 #[derive(Default)]
-struct AppState(Mutex<Option<Connection>>, std::sync::Mutex<Option<tokio::task::AbortHandle>>);
+struct AppState(Mutex<Option<Connection>>, std::sync::Mutex<Option<tokio::task::AbortHandle>>, std::sync::Mutex<Connecting>);
+
+/// The connection `hermes_connect` is opening, by the webview's name for that attempt, and the attempts stopped
+/// before they began.
+#[derive(Default)]
+struct Connecting {
+    now: Option<(String, tokio::task::AbortHandle)>,
+    stopped: std::collections::HashSet<String>,
+}
+
+/// How long opening a connection may take, all steps together, so a server that stops answering midway can't keep
+/// the app, or Sign out, waiting for good.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const CONNECT_STOPPED: &str = "Connecting was stopped.";
 
 /// The dashboard root for `target`, the tunnel that reaches it (SSH only), the route to report, and the extra
 /// request headers to send (URL only, ADR 0006). Failures are the owner's address, headers or SSH (`Stage::Address`).
@@ -97,10 +111,50 @@ async fn hermes_connect(
     username: String,
     password: String,
     profile: String,
+    attempt: Option<String>,
     on_event: Channel<PipeEvent>,
 ) -> Result<Route, String> {
     let mut slot = state.0.lock().await;
     *slot = None;
+    let attempt = attempt.unwrap_or_default();
+    // Run apart, so `hermes_connect_cancel` can stop it; stopping it drops what it opened, SSH tunnel included.
+    let task = {
+        let mut connecting = state.2.lock().unwrap();
+        if connecting.stopped.remove(&attempt) {
+            return Err(CONNECT_STOPPED.into());
+        }
+        let task = tokio::spawn(async move {
+            tokio::time::timeout(CONNECT_TIMEOUT, open_connection(target, username, password, profile, on_event))
+                .await
+                .unwrap_or_else(|_| Err(format!("Hermes didn't finish connecting within {}s.", CONNECT_TIMEOUT.as_secs())))
+        });
+        connecting.now = Some((attempt.clone(), task.abort_handle()));
+        task
+    };
+    let opened = task.await;
+    {
+        let mut connecting = state.2.lock().unwrap();
+        if connecting.now.as_ref().is_some_and(|(a, _)| *a == attempt) {
+            connecting.now = None;
+        }
+    }
+    let (connection, route) = match opened {
+        Ok(opened) => opened?,
+        Err(e) if e.is_cancelled() => return Err(CONNECT_STOPPED.into()),
+        Err(e) => return Err(e.to_string()),
+    };
+    *slot = Some(connection);
+    Ok(route)
+}
+
+/// Opens the tunnel or resolves the URL, signs in and opens `/api/ws`, for `hermes_connect`.
+async fn open_connection(
+    target: Target,
+    username: String,
+    password: String,
+    profile: String,
+    on_event: Channel<PipeEvent>,
+) -> Result<(Connection, Route), String> {
     let (base, tunnel, route, headers) = open_target(target).await?;
     let dashboard = Dashboard::sign_in(&base, &SignIn { username, password, headers }).await.map_err(|e| e.to_string())?;
     let pipe = dashboard
@@ -109,8 +163,20 @@ async fn hermes_connect(
         })
         .await
         .map_err(|e| e.to_string())?;
-    *slot = Some(Connection { dashboard: Arc::new(dashboard), pipe: Arc::new(pipe), _tunnel: tunnel });
-    Ok(route)
+    Ok((Connection { dashboard: Arc::new(dashboard), pipe: Arc::new(pipe), _tunnel: tunnel }, route))
+}
+
+/// Stops the connection `hermes_connect` is opening for `attempt`, or, if it hasn't begun, stops it before it does.
+/// Another attempt's is left alone.
+#[tauri::command]
+fn hermes_connect_cancel(state: State<'_, AppState>, attempt: String) {
+    let mut connecting = state.2.lock().unwrap();
+    match &connecting.now {
+        Some((now, task)) if *now == attempt => task.abort(),
+        _ => {
+            connecting.stopped.insert(attempt);
+        }
+    }
 }
 
 /// A connection test that went through: how it reached the dashboard, plus what `transport::probe` read.
@@ -503,6 +569,7 @@ pub fn run(screenshot: bool) {
             hermes_speak,
             hermes_voice_setup,
             hermes_disconnect,
+            hermes_connect_cancel,
             hermes_probe,
             hermes_probe_cancel,
             hermes_save_provider_key,

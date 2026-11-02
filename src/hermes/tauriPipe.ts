@@ -39,10 +39,17 @@ export const tauriProbe: Probe = {
 
 export function tauriPipe(d: SignInDetails): OpenPipe {
   const target = targetOf(d);
-  return async (onEvent, profile) => {
+  return async (onEvent, profile, signal) => {
     const channel = new Channel<PipeEvent>();
     channel.onmessage = onEvent;
-    const route = await invoke<Route>("hermes_connect", { target, username: d.username, password: d.password, profile, onEvent: channel }).catch(asError);
+    // Names this opening, so stopping it can't stop a later one (src-tauri `hermes_connect_cancel`).
+    const attempt = crypto.randomUUID();
+    const stop = () => void invoke("hermes_connect_cancel", { attempt }).catch(() => {});
+    signal?.addEventListener("abort", stop, { once: true });
+    if (signal?.aborted) stop();
+    const route = await invoke<Route>("hermes_connect", { target, username: d.username, password: d.password, profile, attempt, onEvent: channel })
+      .catch(asError)
+      .finally(() => signal?.removeEventListener("abort", stop));
     return {
       route,
       send: (frame) => invoke("hermes_send", { frame }),

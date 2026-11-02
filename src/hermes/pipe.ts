@@ -60,6 +60,7 @@ export interface Pipe {
 
 /**
  * Opens the pipe, with `/api/ws` opened for `profile`. Frames may arrive on `onEvent` before the returned promise
- * resolves. It can be called again after the pipe closes, to reconnect or to switch profile.
+ * resolves. It can be called again after the pipe closes, to reconnect or to switch profile. Aborting `signal` stops
+ * an opening under way, which then rejects; once open, the pipe is closed with `close`.
  */
-export type OpenPipe = (onEvent: (e: PipeEvent) => void, profile: string) => Promise<Pipe>;
+export type OpenPipe = (onEvent: (e: PipeEvent) => void, profile: string, signal?: AbortSignal) => Promise<Pipe>;

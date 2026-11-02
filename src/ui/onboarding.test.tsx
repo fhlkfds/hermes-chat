@@ -166,7 +166,7 @@ describe("First run", () => {
     await user.selectOptions(screen.getByLabelText("Provider"), "anthropic");
     await user.type(screen.getByLabelText("API key"), "sk-bad");
     await user.click(screen.getByRole("button", { name: "Check and save key" }));
-    expect((await screen.findByRole("alert")).textContent).toBe("Not saved: That API key was rejected. Double-check it and try again.");
+    expect((await screen.findByRole("alert")).textContent).toBe("Not saved: The provider turned the key down. Check that you copied all of it, and that it's for this provider.");
     expect(home.savedKeys).toEqual([]);
 
     await user.clear(screen.getByLabelText("API key"));
@@ -421,7 +421,7 @@ describe("Setup from Settings", () => {
     await user.type(screen.getByLabelText("API key"), "sk-offline");
     await user.click(screen.getByRole("button", { name: "Check and save key" }));
     expect(
-      (await screen.findByText("Saved, but Hermes couldn't check the key with DeepSeek: Could not reach the provider to verify the key.")).getAttribute("role"),
+      (await screen.findByText("Saved, but Hermes couldn't check the key with DeepSeek. If it's wrong, DeepSeek will turn down Hermes's first request.")).getAttribute("role"),
     ).toBe("status");
     expect(home.savedKeys).toEqual([{ profile: "default", envVar: "DEEPSEEK_API_KEY", key: "sk-offline" }]);
     await user.click(screen.getByRole("button", { name: "Done" }));

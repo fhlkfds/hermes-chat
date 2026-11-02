@@ -741,10 +741,11 @@ export class FakeHermes {
     const value = key.trim();
     if (!value || /[\u0000-\u001f]/.test(value)) throw new Error("Paste the key on one line, without spaces around it.");
     const checked = this.checkKey(value);
-    if (!checked.ok && checked.reachable) throw new Error(checked.message);
+    // As Rust does, the provider's own message isn't passed on: it can quote part of the key.
+    if (!checked.ok && checked.reachable) throw new Error("The provider turned the key down. Check that you copied all of it, and that it's for this provider.");
     this.savedKeys.push({ profile, envVar, key: value });
     this.env![envVar] = { ...row, is_set: true, redacted_value: `${value.slice(0, 3)}…${value.slice(-2)}` };
-    return { verified: checked.ok && checked.reachable, message: checked.message };
+    return { verified: checked.ok && checked.reachable };
   }
 
   /** A Server file for `/api/fs/*`, failing the way `_fs_regular_file` and `_is_sensitive_path` do at `bf0203a`. */

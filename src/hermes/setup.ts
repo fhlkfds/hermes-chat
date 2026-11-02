@@ -270,8 +270,9 @@ export type ProviderKey = { provider: string; label: string; envVar: string; isS
  */
 export type ProviderSetup = { keys: ProviderKey[]; ready: string[]; unsupported?: string };
 
-/** What became of a saved key (`transport::SavedKey`). */
-export type SavedKey = { verified: boolean; message: string };
+/** What became of a saved key (`transport::SavedKey`). `verified`: the provider accepted it; otherwise Hermes
+ * couldn't check it. Hermes's own message isn't passed on, as a provider's can quote part of the key. */
+export type SavedKey = { verified: boolean };
 
 /** The providers most owners start with, listed first. */
 const FEATURED = ["openrouter", "anthropic", "openai-api", "gemini", "deepseek", "xai"];

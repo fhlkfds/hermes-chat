@@ -204,7 +204,7 @@ describe("Model provider keys", () => {
     const hermes = await connect(server.openPipe);
     await hermes.loadModels();
     const asked = server.requests.filter((r) => r.method === "model.options").length;
-    expect(await hermes.saveProviderKey("ANTHROPIC_API_KEY", " sk-ant-good ")).toEqual({ verified: true, message: "" });
+    expect(await hermes.saveProviderKey("ANTHROPIC_API_KEY", " sk-ant-good ")).toEqual({ verified: true });
     expect(server.savedKeys).toEqual([{ profile: "default", envVar: "ANTHROPIC_API_KEY", key: "sk-ant-good" }]);
     await hermes.idle();
     expect(server.requests.filter((r) => r.method === "model.options").length).toBe(asked + 1);
@@ -215,13 +215,10 @@ describe("Model provider keys", () => {
   it("doesn't save a key the provider turns down, nor anything that isn't a provider key", async () => {
     const server = new FakeHermes();
     const hermes = await connect(server.openPipe);
-    await expect(hermes.saveProviderKey("ANTHROPIC_API_KEY", "sk-bad")).rejects.toThrow("That API key was rejected");
+    await expect(hermes.saveProviderKey("ANTHROPIC_API_KEY", "sk-bad")).rejects.toThrow("The provider turned the key down.");
     await expect(hermes.saveProviderKey("TELEGRAM_BOT_TOKEN", "sk-good")).rejects.toThrow("doesn't relay");
     expect(server.savedKeys).toEqual([]);
-    expect(await hermes.saveProviderKey("ANTHROPIC_API_KEY", "sk-offline")).toEqual({
-      verified: false,
-      message: "Could not reach the provider to verify the key.",
-    });
+    expect(await hermes.saveProviderKey("ANTHROPIC_API_KEY", "sk-offline")).toEqual({ verified: false });
     await hermes.close();
   });
 });

@@ -450,11 +450,21 @@ export class Hermes {
    */
   async dial(): Promise<void> {
     await this.droppedClosing;
+    // Closed meanwhile: from here to the opening below runs at once, so a later close finds `abortDial` set.
+    if (this.closing) throw new Error("Closed by the app.");
     const gen = ++this.generation;
     const ready = new Promise<Record<string, unknown>>((resolve) => (this.onReady = resolve));
     // Set as soon as the pipe closes or the app gives up, even after gateway.ready has arrived.
     let failure: Error | undefined;
-    const failed = new Promise<never>((_, reject) => (this.abortDial = (e) => reject((failure ??= e))));
+    // Giving up also stops Rust opening the connection, which has no other way to end early.
+    const stop = new AbortController();
+    const failed = new Promise<never>(
+      (_, reject) =>
+        (this.abortDial = (e) => {
+          stop.abort();
+          reject((failure ??= e));
+        }),
+    );
     failed.catch(() => {}); // Raced below, once the pipe is open.
     let up = false;
     let pipe: Pipe | undefined;
@@ -465,7 +475,7 @@ export class Hermes {
         if (gen !== this.generation) return;
         if (e.kind === "closed" && !up) this.abortDial?.(new Error(`The connection closed before Hermes was ready: ${e.reason}`));
         else this.handle(e);
-      }, profile);
+      }, profile, stop.signal);
       const payload = await Promise.race([
         ready,
         failed,
@@ -1276,9 +1286,11 @@ export class Hermes {
   }
 
   /**
-   * Closes the connection for good. Resolves once a reconnect under way has given up and closed what it opened, and
-   * a dropped pipe has closed: Rust holds one connection, so a late close from this Hermes would end whichever
-   * connection Rust holds by then, such as the one replacing it.
+   * Closes the connection for good. Rust holds one connection and routes every command to it, so from here on this
+   * Hermes sends nothing: later calls find no connection rather than using the one that replaces it. Requests in
+   * flight are left unanswered, as when the app quits, so a message being sent is kept as one the app closed on.
+   * Resolves once a reconnect under way has been stopped and closed what it opened, if anything, and a dropped pipe
+   * has closed, so no late close from this Hermes can end the replacement either.
    */
   async close() {
     this.closing = true;
@@ -1286,9 +1298,19 @@ export class Hermes {
     this.generation++;
     clearTimeout(this.retryTimer);
     clearInterval(this.heartbeat);
+    const pipe = this.takePipe();
     await this.redialing?.catch(() => {});
     await this.droppedClosing;
-    await this.pipe?.close();
+    await pipe?.close();
+    // Anything a dial opened after all.
+    await this.takePipe()?.close();
+  }
+
+  /** The pipe in use, now no longer this Hermes's to send on. */
+  private takePipe(): Pipe | undefined {
+    const pipe = this.pipe;
+    this.pipe = undefined;
+    return pipe;
   }
 
   private handle(e: PipeEvent) {
