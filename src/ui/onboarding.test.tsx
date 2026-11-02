@@ -20,6 +20,8 @@ const backend = vi.hoisted(() => ({
   probes: 0,
   cancelled: 0,
   release: undefined as (() => void) | undefined,
+  /** While set, a stopped test answers only when the test releases it, as when Rust's abort lands late. */
+  lateCancel: false,
 }));
 
 const where = (d: SignInDetails) => (d.mode === "ssh" ? `ssh:${d.sshTarget.trim()}` : `url:${d.url.trim()}`);
@@ -59,7 +61,7 @@ vi.mock("../hermes/tauriPipe", () => ({
     },
     cancel: () => {
       backend.cancelled++;
-      backend.release?.();
+      if (!backend.lateCancel) backend.release?.();
     },
   },
 }));
@@ -95,7 +97,7 @@ beforeEach(() => {
   home = new FakeHermes();
   backend.servers.clear();
   backend.servers.set("ssh:liam@hermes", { server: home, password: "hunter2" });
-  Object.assign(backend, { keyring: undefined, holdProbe: false, keyringBroken: false, probes: 0, cancelled: 0, release: undefined });
+  Object.assign(backend, { keyring: undefined, holdProbe: false, keyringBroken: false, probes: 0, cancelled: 0, release: undefined, lateCancel: false });
 });
 
 afterEach(() => {
@@ -236,12 +238,35 @@ describe("First run", () => {
     expect(await screen.findByText("Testing the connection…")).toBeTruthy();
     expect((screen.getByRole("button", { name: "Test connection" }) as HTMLButtonElement).disabled).toBe(true);
 
+    // The details can't change under a test.
+    expect((screen.getByLabelText("Dashboard password") as HTMLInputElement).readOnly).toBe(true);
     await user.click(screen.getByRole("button", { name: "Stop test" }));
     expect(backend.cancelled).toBe(1);
+    expect((screen.getByLabelText("Dashboard password") as HTMLInputElement).readOnly).toBe(false);
     await act(async () => {});
     expect(screen.queryByText("Testing the connection…")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
     expect((screen.getByRole("button", { name: "Test connection" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("keeps the next test's result when a stopped test answers late", async () => {
+    Object.assign(backend, { holdProbe: true, lateCancel: true });
+    const user = await start();
+    await screen.findByRole("heading", { name: "Welcome to Hermes Chat" });
+    await toSignInStep(user);
+    await user.type(screen.getByLabelText("Dashboard username"), "liam");
+    await user.type(screen.getByLabelText("Dashboard password"), "hunter2");
+    await user.click(screen.getByRole("button", { name: "Test connection" }));
+    await screen.findByText("Testing the connection…");
+    await user.click(screen.getByRole("button", { name: "Stop test" }));
+    const stopped = backend.release!;
+
+    backend.holdProbe = false;
+    await user.click(screen.getByRole("button", { name: "Test connection" }));
+    expect((await screen.findByRole("status")).textContent).toContain("Connected to Hermes");
+    await act(async () => stopped());
+    expect(screen.getByRole("status").textContent).toContain("Connected to Hermes");
+    expect(screen.getByRole("button", { name: "Save and connect" })).toBeTruthy();
   });
 });
 
@@ -286,6 +311,8 @@ describe("Setup from Settings", () => {
     await user.click(screen.getByRole("button", { name: "Cancel setup" }));
     expect(dialog()).toBeNull();
     expect(screen.getByRole("heading", { name: "Settings" })).toBeTruthy();
+    // Focus goes back to the button that opened setup.
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Run setup again" }));
     expect(document.querySelector(".app")?.hasAttribute("inert")).toBe(false);
 
     await user.click(screen.getByRole("button", { name: "Run setup again" }));
@@ -349,6 +376,41 @@ describe("Setup from Settings", () => {
     await user.click(screen.getByRole("button", { name: "Cancel setup" }));
     expect(dialog()).toBeNull();
     expect(home.closed).toBe(false);
+  });
+
+  it("puts the old connection back even when the keyring couldn't keep its password", async () => {
+    backend.keyringBroken = true;
+    const studio = new FakeHermes();
+    backend.servers.set("url:http://studio.example.com:9119", { server: studio, password: "pa55" });
+    const user = await start();
+    // First run: connected, but the password is only in memory.
+    await screen.findByRole("heading", { name: "Welcome to Hermes Chat" });
+    await toSignInStep(user);
+    await user.type(screen.getByLabelText("Dashboard username"), "liam");
+    await user.type(screen.getByLabelText("Dashboard password"), "hunter2");
+    await user.click(screen.getByRole("button", { name: "Test connection" }));
+    await screen.findByText(/Connected to Hermes/);
+    await user.click(screen.getByRole("button", { name: "Save and connect" }));
+    await user.click(await screen.findByRole("button", { name: "Finish" }));
+    expect(backend.keyring).toBeUndefined();
+
+    await user.click(screen.getByTitle("Settings"));
+    await user.click(screen.getByRole("button", { name: "Run setup again" }));
+    await user.click(await screen.findByRole("button", { name: "Change connection" }));
+    await user.click(screen.getByRole("button", { name: "URL" }));
+    await user.type(screen.getByLabelText("Dashboard URL"), "http://studio.example.com:9119");
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.type(screen.getByLabelText("Dashboard password"), "pa55");
+    await user.click(screen.getByRole("button", { name: "Test connection" }));
+    await screen.findByText(/Connected to Hermes/);
+    studio.refuse = "Can't reach the Hermes dashboard: connection reset";
+    await user.click(screen.getByRole("button", { name: "Save and connect" }));
+    await screen.findByText(/The test passed, but connecting failed/);
+    await waitFor(() => expect(home.opened).toBe(2));
+
+    await user.click(screen.getByRole("button", { name: "Cancel setup" }));
+    expect(home.closed).toBe(false);
+    expect(screen.queryByRole("heading", { name: "Connect to Hermes" })).toBeNull();
   });
 
   it("adds a provider key without touching the connection", async () => {

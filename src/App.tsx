@@ -60,7 +60,7 @@ const appearance = appearanceStore(localStorage, document.documentElement);
  * What launch ends in: signed in with the saved password, or the sign-in screen and why. `firstRun`: nothing is set up
  * on this computer, so setup opens instead of the sign-in screen.
  */
-type Launch = { hermes: Hermes } | { initial: SignInDetails; error?: string; firstRun?: boolean };
+type Launch = { hermes: Hermes; details: SignInDetails } | { initial: SignInDetails; error?: string; firstRun?: boolean };
 
 /** Setup, open over whatever else shows, and where it was opened from. */
 type Setup = { mode: SetupMode; initial: SignInDetails };
@@ -80,7 +80,7 @@ function launch(): Promise<Launch> {
       return { initial: { ...stored, password: "" }, firstRun: !isSetUp(stored) };
     }
     try {
-      return { hermes: await launchSignIn(saved, account) };
+      return { hermes: await launchSignIn(saved, account), details: saved };
     } catch (e) {
       return { initial: saved, error: messageOf(e) };
     }
@@ -101,10 +101,16 @@ export default function App() {
   const [connections, setConnections] = useState(0);
   const current = useRef<Hermes | null>(null);
   current.current = hermes;
+  // The sign-in the connection in use was made with, password and all, so setup can put it back if a new one fails,
+  // even when the keyring couldn't keep the password. The transport holds it anyway, to reconnect.
+  const signedInWith = useRef<SignInDetails>(undefined);
 
   useEffect(() => {
     void launch().then((l) => {
-      if ("hermes" in l) return setHermes(l.hermes);
+      if ("hermes" in l) {
+        signedInWith.current = l.details;
+        return setHermes(l.hermes);
+      }
       setInitial(l.initial);
       setError(l.error);
       if (l.firstRun) setSetup({ mode: "first-run", initial: l.initial });
@@ -118,7 +124,8 @@ export default function App() {
 
   /**
    * Setup's Save and connect. Rust holds one connection, so the one in use closes first, or its reconnects would take
-   * the connection back. If the new one fails after all, the saved one is put back as at launch.
+   * the connection back. If the new one fails after all, the one in use before is put back, as at launch: Offline
+   * with what this computer saved if it can't connect either.
    */
   const connectWith = async (d: SignInDetails) => {
     const before = current.current;
@@ -129,14 +136,18 @@ export default function App() {
       setError(undefined);
       // The last chat open was on the other connection.
       if (before) setColdStart(false);
+      signedInWith.current = d;
       use(h);
       return { notSaved };
     } catch (e) {
       if (before) {
-        const saved = await savedSignIn(account);
-        const back = saved ? await launchSignIn(saved, account).catch(() => null) : null;
+        const previous = signedInWith.current ?? (await savedSignIn(account));
+        const back = previous ? await launchSignIn(previous, account).catch(() => null) : null;
         use(back);
-        if (!back) setInitial({ ...loadSignIn(), password: "" });
+        if (!back) {
+          signedInWith.current = undefined;
+          setInitial({ ...loadSignIn(), password: "" });
+        }
       }
       throw e;
     }
@@ -174,6 +185,7 @@ export default function App() {
             failure = messageOf(e);
           }
           setHermes(null);
+          signedInWith.current = undefined;
           setColdStart(false);
           setNotSaved(undefined);
           setInitial({ ...loadSignIn(), password: "" });
@@ -202,6 +214,7 @@ export default function App() {
         setError(undefined);
         try {
           const { hermes: h, notSaved } = await signIn(d, account);
+          signedInWith.current = d;
           setNotSaved(notSaved);
           setHermes(h);
         } catch (e) {

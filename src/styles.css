@@ -799,3 +799,4 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .setup-link { align-self: center; font-size: calc(12.5rem / 14); }
 .settings-setup { margin-top: 16px; }
 .settings-setup .btn { flex: none; white-space: nowrap; }
+.setup .field input:read-only { opacity: 0.6; }

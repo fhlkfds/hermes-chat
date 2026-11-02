@@ -98,9 +98,9 @@ async fn env_rows(headers: HeaderMap) -> Response {
     .into_response()
 }
 
-/// `PUT /api/env`. A key of `sk-echo` gets FastAPI's 422, which echoes what it was sent.
+/// `PUT /api/env`. A key starting `sk-echo` gets FastAPI's 422, which echoes what it was sent.
 async fn save_env(RawQuery(query): RawQuery, Json(body): Json<Value>) -> Response {
-    if body["value"] == "sk-echo" {
+    if body["value"].as_str().is_some_and(|v| v.starts_with("sk-echo")) {
         return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"detail": [{"msg": "bad", "input": body}]}))).into_response();
     }
     SAVED_KEYS.lock().unwrap().push((query.unwrap_or_default(), body));
@@ -565,8 +565,31 @@ async fn saves_only_what_hermes_lists_as_a_provider_key() {
 }
 
 #[tokio::test]
-async fn a_failed_key_save_never_shows_the_key() {
+async fn a_failed_key_save_never_shows_the_key_or_part_of_it() {
     let dashboard = signed_in().await;
-    let err = dashboard.save_provider_key("keys-echo", "OPENROUTER_API_KEY", "sk-echo").await.unwrap_err().to_string();
-    assert!(err.contains("422") && !err.contains("sk-echo"), "{err}");
+    // Long enough that a 300-character cut of the echo would end inside it.
+    let key = format!("sk-echo-{}", "x".repeat(400));
+    let err = dashboard.save_provider_key("keys-echo", "OPENROUTER_API_KEY", &key).await.unwrap_err().to_string();
+    assert!(err.contains("422") && !err.contains("sk-echo") && !err.contains("xxxx"), "{err}");
+}
+
+#[tokio::test]
+async fn a_connection_test_gives_up_on_a_status_body_that_never_comes() {
+    let stalled = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = stalled.local_addr().unwrap();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut held = vec![];
+        while let Ok((mut sock, _)) = stalled.accept().await {
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            let _ = sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 100\r\n\r\n{").await;
+            held.push(sock);
+        }
+    });
+    let base = Url::parse(&format!("http://{addr}/")).unwrap();
+    let started = std::time::Instant::now();
+    let failed = transport::probe_with(&base, &sign_in("hunter2"), "default", Duration::from_millis(300)).await.unwrap_err();
+    assert_eq!(failed.stage, Stage::Reach);
+    assert!(started.elapsed() < Duration::from_secs(3));
 }

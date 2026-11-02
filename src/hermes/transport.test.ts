@@ -133,4 +133,28 @@ describe("Hermes transport", () => {
       }),
     ).rejects.toThrow("4401");
   });
+
+  // Rust keeps one connection, so a reconnect's pipe closed after the app moved on would end the next connection.
+  it("closes only once a reconnect under way has let go of its pipe", async () => {
+    const server = new FakeHermes();
+    const log: string[] = [];
+    let opening: (() => void) | undefined;
+    const hermes = await connect(async (onEvent, profile) => {
+      if (log.length) await new Promise<void>((resolve) => (opening = resolve));
+      const pipe = await server.openPipe(onEvent, profile);
+      log.push("open");
+      return { ...pipe, close: async () => void log.push("close") };
+    });
+    server.drop();
+    void hermes.reconnect();
+    await Promise.resolve();
+    let closed = false;
+    const closing = hermes.close().then(() => (closed = true));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(closed).toBe(false);
+
+    opening!();
+    await closing;
+    expect(log).toEqual(["open", "close", "open", "close"]);
+  });
 });

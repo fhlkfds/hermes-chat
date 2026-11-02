@@ -430,11 +430,18 @@ pub async fn probe(base: &Url, sign_in: &SignIn, profile: &str) -> Result<Probed
 pub async fn probe_with(base: &Url, sign_in: &SignIn, profile: &str, step: Duration) -> Result<Probed, ProbeFailure> {
     let timed_out = |what: &str| format!("{what} didn't answer within {}s.", step.as_secs());
     let http = reqwest::Client::new();
-    let status = match tokio::time::timeout(step, http.get(endpoint(base, "api/status")).send()).await {
+    // The body is read inside the limit too: a server can send its headers and then stall.
+    let read_status = async {
+        let resp = http.get(endpoint(base, "api/status")).send().await?;
+        if !resp.status().is_success() {
+            return Ok(None);
+        }
+        resp.text().await.map(Some)
+    };
+    let status = match tokio::time::timeout(step, read_status).await {
         Err(_) => return Err(ProbeFailure::new(Stage::Reach, timed_out("The dashboard"))),
         Ok(Err(e)) => return Err(ProbeFailure::new(Stage::Reach, TransportError::Unreachable(describe(&e)).to_string())),
-        Ok(Ok(resp)) if resp.status().is_success() => resp.text().await.ok(),
-        Ok(Ok(_)) => None,
+        Ok(Ok(status)) => status,
     };
     let fail = |stage, message: String| ProbeFailure { stage, message, status: status.clone() };
     let dashboard = match tokio::time::timeout(step, Dashboard::sign_in(base, sign_in)).await {
@@ -519,7 +526,8 @@ impl Dashboard {
     /// 2. `POST /api/providers/validate` asks the provider about the key. A key it turns down isn't saved.
     /// 3. `PUT /api/env?profile=` saves it in the profile's `.env` on the server.
     ///
-    /// The key never comes back in an error: any echo of it in the dashboard's answer is blanked out.
+    /// The key never comes back in an error: a failed answer to a request that carried it isn't shown at all, since
+    /// it may echo the key (FastAPI's 422 does), and cutting it short could leave part of the key behind.
     pub async fn save_provider_key(&self, profile: &str, key: &str, value: &str) -> Result<SavedKey, TransportError> {
         let value = value.trim();
         if !provider_key_name(key) {
@@ -533,12 +541,8 @@ impl Dashboard {
             url.query_pairs_mut().append_pair("profile", profile);
             url
         };
-        let hide = |e: TransportError| match e {
-            TransportError::Unexpected { status, body } => TransportError::Unexpected { status, body: body.replace(value, "[key]") },
-            other => other,
-        };
 
-        let env: serde_json::Value = serde_json::from_str(&self.call(Method::GET, scoped("api/env"), None).await?)
+        let env: serde_json::Value = serde_json::from_str(&self.call(Method::GET, scoped("api/env"), None, true).await?)
             .map_err(|e| TransportError::Unexpected { status: 200, body: format!("GET /api/env: {e}") })?;
         let row = &env[key];
         let is_provider_secret = row["provider"].as_str().is_some_and(|p| !p.is_empty())
@@ -549,7 +553,7 @@ impl Dashboard {
         }
 
         let body = json!({"key": key, "value": value}).to_string();
-        let checked = self.call(Method::POST, endpoint(&self.base, "api/providers/validate"), Some(body)).await.map_err(hide)?;
+        let checked = self.call(Method::POST, endpoint(&self.base, "api/providers/validate"), Some(body), false).await?;
         let checked: Validated = serde_json::from_str(&checked)
             .map_err(|e| TransportError::Unexpected { status: 200, body: format!("POST /api/providers/validate: {e}") })?;
         if !checked.ok && checked.reachable {
@@ -558,12 +562,13 @@ impl Dashboard {
         }
 
         let body = json!({"key": key, "value": value, "provider_setup": true}).to_string();
-        self.call(Method::PUT, scoped("api/env"), Some(body)).await.map_err(hide)?;
+        self.call(Method::PUT, scoped("api/env"), Some(body), false).await?;
         Ok(SavedKey { verified: checked.ok && checked.reachable, message: checked.message.replace(value, "[key]") })
     }
 
-    /// One signed-in call that the app itself makes, with a JSON body; the webview's are `request`.
-    async fn call(&self, method: Method, url: Url, body: Option<String>) -> Result<String, TransportError> {
+    /// One signed-in call that the app itself makes, with a JSON body; the webview's are `request`. `show_failure`:
+    /// a failed answer's body goes into the error; off for a request that carries a secret.
+    async fn call(&self, method: Method, url: Url, body: Option<String>, show_failure: bool) -> Result<String, TransportError> {
         let mut req = self.http.request(method, url).header(header::COOKIE, self.cookie_header());
         if let Some(body) = body {
             req = req.header(header::CONTENT_TYPE, "application/json").body(body);
@@ -573,7 +578,8 @@ impl Dashboard {
         match resp.status() {
             s if s.is_success() => resp.text().await.map_err(|e| TransportError::Unreachable(e.to_string())),
             StatusCode::UNAUTHORIZED => Err(TransportError::SignedOut),
-            _ => Err(unexpected(resp).await),
+            _ if show_failure => Err(unexpected(resp).await),
+            s => Err(TransportError::Unexpected { status: s.as_u16(), body: "(not shown, as it may hold the key)".into() }),
         }
     }
 }

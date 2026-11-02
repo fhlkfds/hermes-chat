@@ -56,37 +56,51 @@ export function Onboarding({
   // The connection setup saved, which the providers step uses; Settings' own one when only adding a key.
   const [saved, setSaved] = useState(false);
   const [notSaved, setNotSaved] = useState<string>();
+  // Each test gets the next number, and only the latest one's result counts; stopping one moves the number on, so a
+  // late answer from a stopped test can't be taken for the next one's. `testing`: a test is under way in Rust.
   const run = useRef(0);
+  const testing = useRef(false);
   const titleId = useId();
   const heading = useRef<HTMLHeadingElement>(null);
 
-  // A test still running when setup closes is stopped, so its SSH tunnel goes too.
-  useEffect(() => () => void (run.current && probe.cancel()), [probe]);
+  // A test still running when setup closes is stopped, so its SSH tunnel goes too. Focus goes back to whatever opened
+  // setup, such as Settings' Run setup again, if it is still there.
+  useEffect(() => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    return () => {
+      run.current++;
+      if (testing.current) probe.cancel();
+      if (opener?.isConnected) opener.focus();
+    };
+  }, [probe]);
   // Each step announces itself by moving focus to its heading.
   useEffect(() => heading.current?.focus(), [step]);
 
+  const stopTest = () => {
+    run.current++;
+    if (testing.current) probe.cancel();
+    testing.current = false;
+    setTest({ state: "idle" });
+  };
+
   const set = (patch: Partial<SignInDetails>) => {
     setD((was) => ({ ...was, ...patch }));
-    // A result is for the details it tested.
-    if (test.state === "done") setTest({ state: "idle" });
+    // A result is for the details it tested, and so is a test under way.
+    if (test.state === "testing") stopTest();
+    else if (test.state === "done") setTest({ state: "idle" });
     setConnectError(undefined);
   };
 
   const startTest = async () => {
     if (missing(d).length || test.state === "testing") return;
     const mine = ++run.current;
+    testing.current = true;
     setTest({ state: "testing" });
     setConnectError(undefined);
     const outcome = await testConnection(probe, d);
     if (mine !== run.current) return;
-    run.current = 0;
+    testing.current = false;
     setTest(outcome.ok || outcome.stage !== "cancelled" ? { state: "done", outcome } : { state: "idle" });
-  };
-
-  const stopTest = () => {
-    run.current = 0;
-    probe.cancel();
-    setTest({ state: "idle" });
   };
 
   const connect = async () => {
@@ -209,7 +223,16 @@ export function Onboarding({
               This is the Hermes dashboard's own login, not your SSH or computer password.
             </p>
             <Field label="Dashboard username">
-              {(a) => <input {...a} value={d.username} autoComplete="username" spellCheck={false} onChange={(e) => set({ username: e.target.value })} />}
+              {(a) => (
+                <input
+                  {...a}
+                  value={d.username}
+                  autoComplete="username"
+                  spellCheck={false}
+                  readOnly={test.state === "testing" || connecting}
+                  onChange={(e) => set({ username: e.target.value })}
+                />
+              )}
             </Field>
             <Field
               label="Dashboard password"
@@ -220,7 +243,14 @@ export function Onboarding({
               }
             >
               {(a) => (
-                <input {...a} type="password" autoComplete="current-password" value={d.password} onChange={(e) => set({ password: e.target.value })} />
+                <input
+                  {...a}
+                  type="password"
+                  autoComplete="current-password"
+                  value={d.password}
+                  readOnly={test.state === "testing" || connecting}
+                  onChange={(e) => set({ password: e.target.value })}
+                />
               )}
             </Field>
 

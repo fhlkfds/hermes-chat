@@ -1056,12 +1056,19 @@ export class Hermes {
     while (this.background.size) await Promise.allSettled([...this.background]);
   }
 
+  /**
+   * Closes the connection for good. Resolves once a reconnect under way has given up and closed what it opened, and
+   * a dropped pipe has closed: Rust holds one connection, so a late close from this Hermes would end whichever
+   * connection Rust holds by then, such as the one replacing it.
+   */
   async close() {
     this.closing = true;
     this.abortDial?.(new Error("Closed by the app."));
     this.generation++;
     clearTimeout(this.retryTimer);
     clearInterval(this.heartbeat);
+    await this.redialing?.catch(() => {});
+    await this.droppedClosing;
     await this.pipe?.close();
   }
 
