@@ -124,7 +124,7 @@ What a chat's usage cost, only as Hermes recorded it: reported by the provider, 
 _Avoid_: price, spend, bill (except for a cost the provider reported)
 
 **Preview pane**:
-The resizable pane beside the chat that shows a web page, a Server file, a Local file or a tool call's output. It opens from a link in a reply, from an opened tool call, or from the chat's header. In a window too narrow for both, it covers the chat until the owner goes back to it. What it shows can't reach the app, the sign-in or this computer's other files (ADR 0007).
+The resizable pane beside the chat that shows a web page, a Server file, a Local file or a tool call's output. It opens from a link in a reply, from an opened tool call, or from the chat's header. In a window too narrow for both, it covers the chat until the owner goes back to it. What it shows can't reach the app, the sign-in or this computer's other files (ADR 0007). A web page whose site refuses to be shown inside other apps gets a note and Open in your browser instead (ADR 0011).
 _Avoid_: viewer, side panel, artifact (the official desktop app's word)
 
 **Server file**:
