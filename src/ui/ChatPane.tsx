@@ -1004,7 +1004,7 @@ function Composer({
           {modelControls}
           {!dictation.active && <span className="composer-keys">{queueing ? "Enter to queue" : "Enter to send"} · Shift+Enter for a new line</span>}
           {queueing && onQueue && (
-            <button className="send queue" title="Queue: send after the reply (Enter)" aria-label="Queue" disabled={!sendable} onClick={send}>
+            <button className="send queue-btn" title="Queue: send after the reply (Enter)" aria-label="Queue" disabled={!sendable} onClick={send}>
               <ListPlus size={16} />
             </button>
           )}

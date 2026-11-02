@@ -429,9 +429,9 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .send:disabled { background: var(--raised-2); color: var(--faint); cursor: default; }
 .send.stop { background: var(--raised-2); color: var(--text); border: 1px solid var(--line-2); }
 .send.stop:hover { background: var(--raised-3); }
-.send.queue { background: var(--accent-soft); color: var(--accent); }
-.send.queue:hover:not(:disabled) { background: var(--accent); color: var(--on-text); }
-.send.queue:disabled { background: var(--raised-2); color: var(--faint); }
+.send.queue-btn { background: var(--accent-soft); color: var(--accent); }
+.send.queue-btn:hover:not(:disabled) { background: var(--accent); color: var(--on-text); }
+.send.queue-btn:disabled { background: var(--raised-2); color: var(--faint); }
 
 /* The chat's queue (Queue.tsx), above the composer and as wide as it. */
 .queue {
