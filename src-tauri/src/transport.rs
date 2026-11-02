@@ -3,7 +3,8 @@
 //! The webview speaks the protocol; this side never parses it (ADR 0003). Wire details:
 //! docs/research/hermes-gateway-api.md §2, §5 and "Password login and profiles".
 //! It also reads the files the owner attaches, so their bytes go from disk to Hermes without passing
-//! through the webview (§7), and the staged images the composer shows as thumbnails. For a direct connection it
+//! through the webview (§7), the staged images the composer shows as thumbnails, and the start of a local file the
+//! owner picked for the preview pane (ADR 0007). For a direct connection it
 //! resolves the host name in the URL the owner typed, so the webview can tell whether the connection is Unsecure.
 //! For voice it relays a recording to the dashboard's transcription route and a reply to its speech route, and reads
 //! which speech providers the profile uses without passing the rest of its config, keys and all, to the webview
@@ -307,6 +308,10 @@ pub async fn read_preview(path: &str) -> Result<Vec<u8>, TransportError> {
         return Err(TransportError::File("it isn't an image".into()));
     }
     let bytes = read_capped(path, PREVIEW_MAX_BYTES).await?;
+    checked_image(bytes)
+}
+
+fn checked_image(bytes: Vec<u8>) -> Result<Vec<u8>, TransportError> {
     let b = bytes.as_slice();
     let image = b.starts_with(b"\x89PNG\r\n\x1a\n")
         || b.starts_with(b"\xff\xd8\xff")
@@ -317,6 +322,109 @@ pub async fn read_preview(path: &str) -> Result<Vec<u8>, TransportError> {
         return Err(TransportError::File("it isn't an image".into()));
     }
     Ok(bytes)
+}
+
+/// The most of a local file the preview pane reads: the same as Hermes reads of a server file
+/// (`_FS_TEXT_PREVIEW_MAX_BYTES`), so both kinds of file show alike.
+pub const LOCAL_TEXT_MAX_BYTES: u64 = 512 * 1024;
+
+/// A local file's text for the preview pane: its first `LOCAL_TEXT_MAX_BYTES`, decoded as UTF-8 (bad bytes replaced),
+/// and whether it looks binary, the way Hermes judges a server file (`_fs_looks_binary`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LocalText {
+    pub size: u64,
+    pub truncated: bool,
+    pub binary: bool,
+    pub text: String,
+}
+
+/// Opens only a regular file, without following a last-component symlink or blocking on a FIFO.
+fn open_local_text(path: &str) -> Result<std::fs::File, TransportError> {
+    use std::os::unix::fs::OpenOptionsExt;
+    if !std::path::Path::new(path).is_absolute() {
+        return Err(TransportError::File("it isn't a full path".into()));
+    }
+    let file = std::fs::OpenOptions::new().read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path)
+        .map_err(|e| TransportError::File(e.to_string()))?;
+    let meta = file.metadata().map_err(|e| TransportError::File(e.to_string()))?;
+    if !meta.is_file() {
+        return Err(TransportError::File(if meta.is_dir() { "it's a folder" } else { "it isn't a regular file" }.into()));
+    }
+    Ok(file)
+}
+
+fn read_file_prefix(file: &std::fs::File, max: u64) -> Result<Vec<u8>, TransportError> {
+    use std::os::unix::fs::FileExt;
+    let mut bytes = vec![0; max as usize];
+    let mut len = 0;
+    // Positional reads keep concurrent reloads from sharing or advancing the retained handle's offset.
+    while len < bytes.len() {
+        match file.read_at(&mut bytes[len..], len as u64) {
+            Ok(0) => break,
+            Ok(n) => len += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(TransportError::File(e.to_string())),
+        }
+    }
+    bytes.truncate(len);
+    Ok(bytes)
+}
+
+async fn read_opened_text(file: std::sync::Arc<std::fs::File>) -> Result<LocalText, TransportError> {
+    tokio::task::spawn_blocking(move || {
+        let size = file.metadata().map_err(|e| TransportError::File(e.to_string()))?.len();
+        let bytes = read_file_prefix(&file, LOCAL_TEXT_MAX_BYTES)?;
+        let head = &bytes[..bytes.len().min(4096)];
+        let control = head.iter().filter(|&&b| b < 32 && !matches!(b, 9 | 10 | 13)).count();
+        let binary = head.contains(&0) || (!head.is_empty() && control as f64 / head.len() as f64 > 0.12);
+        let text = if binary { String::new() } else { String::from_utf8_lossy(&bytes).into_owned() };
+        Ok(LocalText { size, truncated: size > bytes.len() as u64, binary, text })
+    }).await.map_err(|e| TransportError::File(e.to_string()))?
+}
+
+/// Reads the start of a local regular file. The preview IPC uses `PickedFiles::read` instead.
+pub async fn read_local_text(path: &str) -> Result<LocalText, TransportError> {
+    read_opened_text(std::sync::Arc::new(open_local_text(path)?)).await
+}
+
+/// Retains the files picked in the native dialog, so replacing a path cannot grant access to another file.
+#[derive(Default)]
+pub struct PickedFiles(Mutex<std::collections::HashMap<String, std::sync::Arc<std::fs::File>>>);
+
+impl PickedFiles {
+    pub fn allow(&self, path: &str) -> Result<String, TransportError> {
+        let path = std::fs::canonicalize(path).map_err(|e| TransportError::File(e.to_string()))?;
+        let path = path.to_str().ok_or_else(|| TransportError::File("the path isn't UTF-8".into()))?.to_owned();
+        let file = open_local_text(&path)?;
+        self.0.lock().unwrap().insert(path.clone(), std::sync::Arc::new(file));
+        Ok(path)
+    }
+
+    fn file(&self, path: &str) -> Result<std::sync::Arc<std::fs::File>, TransportError> {
+        self.0.lock().unwrap().get(path).cloned()
+            .ok_or_else(|| TransportError::File("it wasn't picked in the Open dialog".into()))
+    }
+
+    pub async fn read(&self, path: &str) -> Result<LocalText, TransportError> {
+        read_opened_text(self.file(path)?).await
+    }
+
+    pub async fn read_image(&self, path: &str) -> Result<Vec<u8>, TransportError> {
+        let file = self.file(path)?;
+        tokio::task::spawn_blocking(move || {
+            let size = file.metadata().map_err(|e| TransportError::File(e.to_string()))?.len();
+            if size > PREVIEW_MAX_BYTES {
+                return Err(TransportError::FileTooLarge { size, max: PREVIEW_MAX_BYTES });
+            }
+            let bytes = read_file_prefix(&file, PREVIEW_MAX_BYTES + 1)?;
+            if bytes.len() as u64 > PREVIEW_MAX_BYTES {
+                return Err(TransportError::FileTooLarge { size: bytes.len() as u64, max: PREVIEW_MAX_BYTES });
+            }
+            checked_image(bytes)
+        }).await.map_err(|e| TransportError::File(e.to_string()))?
+    }
+
 }
 
 /// Writes a file pasted into the composer to a new temp file and returns its path, so it attaches like a dropped
@@ -658,6 +766,9 @@ impl Dashboard {
         let status = resp.status();
         if status == StatusCode::UNAUTHORIZED {
             return Err(TransportError::SignedOut);
+        }
+        if status.is_redirection() {
+            return Err(unexpected(resp).await);
         }
         let text = resp.text().await.map_err(|e| TransportError::Unreachable(e.to_string()))?;
         if status.is_success() {

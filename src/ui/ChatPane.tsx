@@ -1,7 +1,7 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
 // Dictation and Read aloud come from Voice.tsx.
 import { memo, type ReactNode, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
-import { ArrowUp, Brain, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, FileDown, HardDrive, Paperclip, RotateCcw, Search, Square, Wrench, X } from "lucide-react";
+import { ArrowUp, Brain, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, FileDown, Globe, HardDrive, Paperclip, RotateCcw, Search, Server, Square, Wrench, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
@@ -15,6 +15,8 @@ import { Speaker } from "./speaker";
 import { DictationNoteView, DictationStrip, ListenButton, MicButton, type VoiceApi, listenBlocked, micBlocked, useDictation, useVoiceSetup } from "./Voice";
 import { withTranscript } from "../hermes/voice";
 import type { VoiceSetup } from "../hermes/pipe";
+import { useOpenPreview } from "./previewContext";
+import { previewName, toolTargets } from "../hermes/preview";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type ThinkingItem = Extract<Item, { kind: "thinking" }>;
@@ -87,6 +89,7 @@ const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateS
  * Hermes is connected. `onRetry`, `onEdit` and `onDismiss` act on a message Hermes didn't take, or may not have.
  * `modelControls`: the model picker and reasoning pill, at the bottom left of the composer. `footer`: what goes under
  * the composer, the status bar. `voice` supplies Dictation and Read aloud. Ctrl+F opens the find bar.
+ * `headActions`: more buttons in the header, before Find.
  */
 export function ChatPane({
   chat,
@@ -109,6 +112,7 @@ export function ChatPane({
   modelControls,
   voice,
   footer,
+  headActions,
 }: {
   chat: Chat;
   notLoaded?: boolean;
@@ -130,6 +134,7 @@ export function ChatPane({
   modelControls?: ReactNode;
   voice?: VoiceApi;
   footer?: ReactNode;
+  headActions?: ReactNode;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const voiceSetup = useVoiceSetup(voice, status === "connected");
@@ -251,6 +256,7 @@ export function ChatPane({
           {chat.archived && <span className="badge">Archived</span>}
         </div>
         <div className="chat-head-actions">
+          {headActions}
           <button
             className="icon-btn"
             title="Find in chat (Ctrl+F)"
@@ -559,7 +565,42 @@ function ToolRow({ t }: { t: ToolItem }) {
               <pre>{t.status === "running" ? "…" : t.result || "(empty)"}</pre>
             </>
           )}
+          <ToolPreviews t={t} />
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * What an opened tool call can show in the preview pane: the files and pages it names, which are on the Hermes server
+ * since that is where tools run, and its output.
+ */
+function ToolPreviews({ t }: { t: ToolItem }) {
+  const open = useOpenPreview();
+  if (!open) return null;
+  const targets = toolTargets(t, location.origin);
+  const output = t.status !== "running" && t.result ? t.result : undefined;
+  if (!targets.length && !output) return null;
+  return (
+    <div className="tool-previews">
+      <span className="tool-label">Preview</span>
+      {targets.map((x) => (
+        <button
+          key={x.kind === "server" ? `s:${x.path}` : x.kind === "web" ? `w:${x.url}` : x.kind}
+          className="preview-chip"
+          title={x.kind === "server" ? `${x.path}\nOn the Hermes server` : x.kind === "web" ? x.url : undefined}
+          onClick={() => open(x)}
+        >
+          {x.kind === "server" ? <Server size={12} /> : <Globe size={12} />}
+          <span>{previewName(x)}</span>
+        </button>
+      ))}
+      {output && (
+        <button className="preview-chip" title="What the tool call returned" onClick={() => open({ kind: "tool", name: t.name, text: output })}>
+          <Wrench size={12} />
+          <span>Output</span>
+        </button>
       )}
     </div>
   );
