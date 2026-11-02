@@ -69,12 +69,28 @@ export type Chat = {
   items: Item[];
   /** Its stored history is on the way (`Hermes.open`). */
   loading?: boolean;
+  /**
+   * The transcript on screen is the Saved copy this computer took at this time, not yet loaded from Hermes on this
+   * connection: Hermes can't be reached, or the history is still on the way.
+   */
+  savedAt?: number;
   running?: boolean;
   /** Stop was asked for; the reply keeps running until Hermes ends the turn (`Hermes.stop`). */
   stopping?: boolean;
 };
 
 export type ConnectionStatus = "connected" | "reconnecting" | "offline";
+
+/**
+ * Unread chats in a profile the app isn't showing, as its latest check found them (`Hermes.checkOtherProfiles`).
+ * `unread`: how many chats in the profile's list are Unread. `more`: the check read only the profile's most recent
+ * chats and the list holds more, so more of them may be Unread. `checkedAt`: when that was read. `error`: why the
+ * latest check failed; the other fields then come from an earlier check, if there was one.
+ */
+export type OtherProfile = { unread?: number; more?: boolean; checkedAt?: number; error?: string };
+
+/** The profiles the app isn't showing, by name. `error`: why the latest check couldn't list the profiles. */
+export type OtherProfiles = { byName: Record<string, OtherProfile>; checkedAt?: number; error?: string };
 
 /**
  * A chat found by searching all chats (`Hermes.search`). `snippet`: the text around the match, with the matched words
