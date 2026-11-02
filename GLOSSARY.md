@@ -23,6 +23,10 @@ The owner's manual actions that move a chat from Active to Settled, and back.
 The owner's action that removes a chat from Hermes for good, in every Hermes client. Unlike settling, it can't be undone, so the app asks first. A chat with a reply running can't be deleted.
 _Avoid_: remove, archive
 
+**Rename**:
+The owner's action that changes a chat's title, in every Hermes client. If the chat was renamed or edited elsewhere since the owner started, nothing is overwritten: the app shows the newer title and the owner chooses whether to save again.
+_Avoid_: retitle
+
 **Unread**:
 A chat with something new in it since the owner last opened it, in this app or any other Hermes client. It shows a dot, and so does the collapsed Settled header when a Settled chat is unread. The chat on screen never shows the dot.
 _Avoid_: new, unseen

@@ -272,6 +272,7 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
           onOpen={openChat}
           onSettle={setSettled}
           onDelete={deleteChat}
+          onRename={(id, title, from) => hermes.rename(id, title, from)}
           onListProfiles={() => hermes.profiles()}
           onSwitchProfile={switchProfile}
         />

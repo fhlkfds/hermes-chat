@@ -138,6 +138,16 @@ export class ProtocolMismatchError extends Error {
   }
 }
 
+/**
+ * A rename that would have overwritten another edit of the chat, made in another Hermes client since the owner
+ * started. `title`: the chat's title on the server now, which the app shows instead.
+ */
+export class RenameConflict extends Error {
+  constructor(readonly title: string) {
+    super(`This chat changed in another Hermes client and is now called "${title}". Save again to rename it anyway.`);
+  }
+}
+
 export class RpcError extends Error {
   constructor(
     readonly code: number,
@@ -206,6 +216,8 @@ export class Hermes {
   private pinWrites = new Map<string, Promise<void>>();
   /** Chats whose pinned flag was written since the list sync under way read the list, which may predate the write. */
   private pinnedSinceListRead = new Set<string>();
+  /** Chats renamed since the list sync under way read the list, which may predate the rename. */
+  private retitledSinceListRead = new Set<string>();
   /** The chat on screen. It is kept read: new activity in it doesn't show the dot. */
   private viewing?: string;
   /** The latest write marking each chat read, while it is under way. */
@@ -346,7 +358,8 @@ export class Hermes {
         const role = r.role === "user" || r.role === "assistant" ? r.role : undefined;
         return {
           chatId: r.id,
-          title: r.title || r.preview || c?.title || "Untitled chat",
+          // The list's title, so a chat is called the same in both while the search index catches up with a rename.
+          title: c?.title ?? listTitle(r),
           source: toSource(r.source),
           // Every pinned chat is listed, so one that isn't is Settled.
           settled: c?.settled ?? true,
@@ -541,6 +554,44 @@ export class Hermes {
       this.saveList(profile, chats);
       return false;
     }
+  }
+
+  /**
+   * Renames a chat in every Hermes client (`PATCH {title}`). `from` is the title the owner was looking at when they
+   * started; the edit names the session's revision, so it can't overwrite a rename made elsewhere meanwhile. The
+   * title shown here changes only once Hermes reads it back, and resolves to it. Rejects, leaving the old title, if
+   * the title is empty, Hermes refuses it, or it's unclear whether it was saved; with a `RenameConflict` if the chat
+   * changed elsewhere first. Nothing is retried on its own.
+   */
+  async rename(chatId: string, proposed: string, from: string): Promise<string> {
+    const title = proposed.trim();
+    if (!title) throw new Error("A chat needs a title.");
+    if (title === from) return from;
+    const profile = this.profile;
+    // Read in this order, a rename elsewhere either shows in the title or makes the revision stale.
+    const revision = await this.revision(chatId, profile);
+    const current = await this.readTitle(chatId, profile);
+    // An earlier try whose answer was lost may have saved it already.
+    if (current === title) return this.retitled(chatId, current);
+    if (current !== from) throw new RenameConflict(this.retitled(chatId, current));
+    try {
+      await this.fencedPatch(chatId, profile, { title }, revision);
+    } catch (e) {
+      const why = (e as Error).message;
+      const conflict = why.includes("revision_conflict");
+      if (!conflict && /^The dashboard answered 4/.test(why)) throw e;
+      // The edit may have landed though its answer was lost, so the title as stored now decides.
+      const now = await this.readTitle(chatId, profile).catch(() => {
+        throw new Error(`Couldn't tell whether Hermes saved the new title: ${why}`);
+      });
+      if (now === title) return this.retitled(chatId, now);
+      if (conflict) throw new RenameConflict(this.retitled(chatId, now));
+      throw e;
+    }
+    const saved = await this.readTitle(chatId, profile).catch((e) => {
+      throw new Error(`Couldn't tell whether Hermes saved the new title: ${(e as Error).message}`);
+    });
+    return this.retitled(chatId, saved);
   }
 
   /**
@@ -968,11 +1019,19 @@ export class Hermes {
     this.track(write);
   }
 
+  /** Shows the title Hermes read back for a renamed chat. */
+  private retitled(chatId: string, title: string): string {
+    this.retitledSinceListRead.add(chatId);
+    this.patchChat(chatId, (c) => ({ ...c, title }));
+    return title;
+  }
+
   private async syncOnce(): Promise<Error | undefined> {
     const profile = this.profile;
     const cutoff = this.snapshot.olderPulled ? -Infinity : Date.now() - LIST_WINDOW_MS;
     this.pinnedSinceListRead.clear();
     this.readSinceListRead.clear();
+    this.retitledSinceListRead.clear();
     const rows = new Map<string, SessionRow>();
     try {
       for (let page = 0; page < MAX_PAGES; page++) {
@@ -1018,7 +1077,8 @@ export class Hermes {
           items: [],
           ...c,
           id: r.id,
-          title: r.title || r.preview || c?.title || "Untitled chat",
+          // A row read before this app's latest rename is stale too.
+          title: c && this.retitledSinceListRead.has(r.id) ? c.title : listTitle(r, c?.title),
           source: toSource(r.source),
           settled: !(wanted ?? r.pinned),
           updatedAt: Math.max(c?.updatedAt ?? 0, lastActive(r)),
@@ -1048,21 +1108,38 @@ export class Hermes {
    * Sets a session's sidebar flags. Hermes refuses a session edit without a request id and the session's current
    * revision (409 `client_upgrade_required`), so each write first reads the revision from the mutation snapshot.
    * The flags are plain values, so a write that loses to another edit of the same session (`revision_conflict`) is
-   * sent once more against the new revision. A profile switch can redial between the read and the write; the write
-   * names its profile, so it goes out on the new connection.
+   * sent once more against the new revision.
    */
   private async patchSession(chatId: string, profile: string, flags: { pinned?: boolean; unread?: boolean }): Promise<void> {
-    const path = `api/sessions/${encodeURIComponent(chatId)}`;
     for (let attempt = 0; ; attempt++) {
-      const snapshot = (await this.rest("GET", `${path}/mutation-snapshot?${new URLSearchParams({ profile })}`)) as MutationSnapshot;
-      if (!this.pipe) await this.redialing;
+      const revision = await this.revision(chatId, profile);
       try {
-        await this.rest("PATCH", path, { ...flags, profile, request_id: crypto.randomUUID(), expected_revision: snapshot.runtime_revision });
-        return;
+        return await this.fencedPatch(chatId, profile, flags, revision);
       } catch (e) {
         if (attempt > 0 || !(e as Error).message.includes("revision_conflict")) throw e;
       }
     }
+  }
+
+  /** The session's current revision, which every session edit must name (`GET .../mutation-snapshot`). */
+  private async revision(chatId: string, profile: string): Promise<number> {
+    const query = new URLSearchParams({ profile });
+    return ((await this.rest("GET", `${sessionPath(chatId)}/mutation-snapshot?${query}`)) as MutationSnapshot).runtime_revision;
+  }
+
+  /**
+   * One session edit against `revision`, with a new request id. A profile switch can redial between reading the
+   * revision and writing; the edit names its profile, so it goes out on the new connection.
+   */
+  private async fencedPatch(chatId: string, profile: string, edit: Record<string, unknown>, revision: number): Promise<void> {
+    if (!this.pipe) await this.redialing;
+    await this.rest("PATCH", sessionPath(chatId), { ...edit, profile, request_id: crypto.randomUUID(), expected_revision: revision });
+  }
+
+  /** The chat's title as Hermes stores it now (`GET /api/sessions/{id}`), shown the way the list shows it. */
+  private async readTitle(chatId: string, profile: string): Promise<string> {
+    const row = (await this.rest("GET", `${sessionPath(chatId)}?${new URLSearchParams({ profile })}`)) as SessionRow;
+    return listTitle(row);
   }
 
   private async rest(method: "GET" | "PATCH" | "DELETE", pathAndQuery: string, body?: unknown): Promise<unknown> {
@@ -1104,6 +1181,13 @@ export class Hermes {
     this.snapshot = { ...this.snapshot, ...patch };
     for (const fn of this.listeners) fn();
   }
+}
+
+const sessionPath = (chatId: string) => `api/sessions/${encodeURIComponent(chatId)}`;
+
+/** A session's title as the list shows it: an untitled one by its first words. */
+function listTitle(r: Pick<SessionRow, "title" | "preview">, known?: string): string {
+  return r.title || r.preview || known || "Untitled chat";
 }
 
 function lastActive(r: Pick<SessionRow, "last_active" | "started_at">): number {

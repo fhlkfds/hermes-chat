@@ -1,10 +1,12 @@
 // Icon rail beside a chat list (ADR 0001), ported from the prototype's variants C and A. The list's header is the
-// profile switcher. Settings opens from the rail's foot.
-import { useEffect, useRef, useState } from "react";
+// profile switcher. Settings opens from the rail's foot. Right-clicking a chat opens its menu (ChatMenu.tsx).
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, ChevronRight, LockOpen, Search, Settings, SquarePen, Trash2 } from "lucide-react";
 import type { Chat, ConnectionStatus } from "../hermes/model";
 import { SOURCE_LABEL } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
+import { RenameConflict } from "../hermes/transport";
+import { ChatMenu } from "./ChatMenu";
 import { STATUS_LABEL, SettleButton, SourceIcon, Spinner, relTime, routeLabel } from "./bits";
 
 const byRecent = (a: Chat, b: Chat) => b.updatedAt - a.updatedAt;
@@ -69,8 +71,66 @@ export function Rail({
 }
 
 /**
- * One chat in the list. Its trash button asks before deleting, in the row itself: Escape, Cancel or clicking away
- * keeps the chat. A chat with a reply running can't be deleted.
+ * The chat's title in a text box. Enter saves it, and the box stays until Hermes has read the new title back. If
+ * saving fails the typed title stays, with why; if the chat was renamed elsewhere, the list shows that title and only
+ * another Enter replaces it. Escape, or clicking away before changing anything, keeps the old title.
+ */
+function RenameRow({
+  chat,
+  selected,
+  onRename,
+  onDone,
+}: {
+  chat: Chat;
+  selected: boolean;
+  onRename: (title: string, from: string) => Promise<unknown>;
+  onDone: () => void;
+}) {
+  const [draft, setDraft] = useState(chat.title);
+  // The title being replaced: after a conflict, the one the server has now.
+  const [from, setFrom] = useState(chat.title);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string>();
+  const save = () => {
+    if (saving) return;
+    setSaving(true);
+    setError(undefined);
+    onRename(draft, from).then(onDone, (e) => {
+      if (e instanceof RenameConflict) setFrom(e.title);
+      setError(e instanceof Error ? e.message : String(e));
+      setSaving(false);
+    });
+  };
+  return (
+    <div className={`row renaming ${selected ? "sel" : ""}`}>
+      <input
+        className="row-rename"
+        aria-label="Chat title"
+        aria-invalid={!!error}
+        autoFocus
+        value={draft}
+        readOnly={saving}
+        onChange={(e) => setDraft(e.target.value)}
+        onFocus={(e) => e.currentTarget.select()}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") save();
+          else if (e.key === "Escape" && !saving) onDone();
+        }}
+        onBlur={() => !saving && draft.trim() === from && onDone()}
+      />
+      {saving && <Spinner />}
+      {error && (
+        <div className="row-rename-error" role="alert">
+          {error}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One chat in the list. Right-clicking it opens its menu. Its trash button asks before deleting, in the row itself:
+ * Escape, Cancel or clicking away keeps the chat. A chat with a reply running can't be deleted.
  */
 function ChatRow({
   chat,
@@ -78,14 +138,20 @@ function ChatRow({
   onOpen,
   onSettle,
   onDelete,
+  onRename,
 }: {
   chat: Chat;
   selected: boolean;
   onOpen: () => void;
   onSettle: (settled: boolean) => void;
   onDelete: () => void;
+  onRename: (title: string, from: string) => Promise<unknown>;
 }) {
   const [confirming, setConfirming] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const closeMenu = useCallback(() => setMenu(null), []);
+  if (renaming) return <RenameRow chat={chat} selected={selected} onRename={onRename} onDone={() => setRenaming(false)} />;
   if (confirming)
     return (
       <div
@@ -104,8 +170,12 @@ function ChatRow({
     );
   return (
     <div
-      className={`row ${selected ? "sel" : ""} ${chat.unread ? "unread" : ""}`}
+      className={`row ${selected ? "sel" : ""} ${chat.unread ? "unread" : ""} ${menu ? "menu-open" : ""}`}
       onClick={onOpen}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        setMenu({ x: e.clientX, y: e.clientY });
+      }}
       title={chat.source !== "app" ? `${chat.title} (from ${SOURCE_LABEL[chat.source]})` : chat.title}
     >
       {chat.source !== "app" && <SourceIcon source={chat.source} />}
@@ -126,6 +196,7 @@ function ChatRow({
           <Trash2 size={14} />
         </button>
       )}
+      {menu && <ChatMenu chat={chat} x={menu.x} y={menu.y} onRename={() => setRenaming(true)} onClose={closeMenu} />}
     </div>
   );
 }
@@ -216,6 +287,7 @@ export function ChatList({
   onOpen,
   onSettle,
   onDelete,
+  onRename,
   onListProfiles,
   onSwitchProfile,
 }: {
@@ -226,6 +298,7 @@ export function ChatList({
   onOpen: (id: string) => void;
   onSettle: (id: string, settled: boolean) => void;
   onDelete: (id: string) => void;
+  onRename: (id: string, title: string, from: string) => Promise<unknown>;
   onListProfiles: () => Promise<string[]>;
   onSwitchProfile: (name: string) => void;
 }) {
@@ -246,6 +319,7 @@ export function ChatList({
       onOpen={() => onOpen(c.id)}
       onSettle={(s) => onSettle(c.id, s)}
       onDelete={() => onDelete(c.id)}
+      onRename={(title, from) => onRename(c.id, title, from)}
     />
   );
   return (
