@@ -174,9 +174,10 @@ describe("Settings → Memory", () => {
     // The owner looks at what Hermes has now, and saves their text over it on purpose.
     await user.click(entry("Owner wants detailed answers."));
     await user.click(button(/Put your kept edit in this entry/));
+    await user.type(editor(), ", merged");
     await user.click(button("Save"));
     await screen.findByText(/Saved, and read back/);
-    expect(s.memory.default.memory[1]).toBe("My careful edit");
+    expect(s.memory.default.memory[1]).toBe("My careful edit, merged");
     expect(screen.queryByRole("textbox", { name: "Your kept edit" })).toBeNull();
   });
 

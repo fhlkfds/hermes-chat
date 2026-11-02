@@ -23,8 +23,11 @@ import {
   type MemoryView,
 } from "../hermes/memory";
 
-/** The entry open in the editor: as last read from Hermes, and the owner's text for it. */
-type Editing = { entry: MemoryEntry; draft: string };
+/**
+ * The entry open in the editor: as last read from Hermes, and the owner's text for it. `fromKept`: the owner put their
+ * kept edit in it, so saving it settles the kept edit.
+ */
+type Editing = { entry: MemoryEntry; draft: string; fromKept?: boolean };
 type Notice = { kind: "ok" | "error" | "conflict" | "unsure"; text: string };
 /** Why memory couldn't be read: the server or the profile is unsupported here, a permission refusal, or another failure. */
 type LoadProblem = { kind: "server" | "profile" | "permission" | "error"; text: string };
@@ -183,7 +186,7 @@ export function MemorySettings({
       if (!alive.current) return;
       setView(next);
       setEditing({ entry, draft: entry.text });
-      if (recovered !== undefined && pyStrip(recovered) === entry.text) setRecovered(undefined);
+      if (recovered !== undefined && (at.fromKept || pyStrip(recovered) === entry.text)) setRecovered(undefined);
       setNotice({ kind: "ok", text: `Saved, and read back from Hermes. New chats on ${profile} start with it.` });
     } catch (e) {
       if (!alive.current) return;
@@ -391,7 +394,7 @@ export function MemorySettings({
                     </span>
                   </label>
                   {recovered !== undefined && editing.draft !== recovered && (
-                    <button className="btn small-btn" disabled={!!busy} onClick={() => setEditing({ ...editing, draft: recovered })}>
+                    <button className="btn small-btn" disabled={!!busy} onClick={() => setEditing({ ...editing, draft: recovered, fromKept: true })}>
                       <Undo2 size={14} /> Put your kept edit in this entry
                     </button>
                   )}
