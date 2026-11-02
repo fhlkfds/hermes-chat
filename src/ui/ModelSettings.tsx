@@ -1,7 +1,7 @@
 // Settings → Model: the main model, subagents, auxiliary (helper task) models and the guardrails, as Hermes has them
 // for the profile shown. Edits are one draft held here until a part is applied; leaving Settings drops it without
 // asking, as the official desktop app does. Reads and writes: modelSettings.ts.
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { CircleDollarSign, Pin, RotateCcw, ShieldAlert, TriangleAlert } from "lucide-react";
 import {
   AUX_AUTO,
@@ -175,6 +175,8 @@ export function ModelSettings({ api, profile, connected }: { api: ModelSettingsA
   const [errors, setErrors] = useState<Partial<Record<Part, string>>>({});
   const [done, setDone] = useState<Partial<Record<Part, boolean>>>({});
   const [ask, setAsk] = useState<Ask>();
+  /** An Apply is under way. A ref, not just `busy`, so a second click before the next render can't start another. */
+  const applying = useRef(false);
 
   const loaded = saved !== undefined;
   useEffect(() => {
@@ -225,10 +227,14 @@ export function ModelSettings({ api, profile, connected }: { api: ModelSettingsA
   const discard = (part: Part) => edit(part, (d) => ({ ...d, [part]: draftFrom(saved)[part] }));
 
   /**
-   * Applies one part, then reads Hermes back. Once it's all written, that part's draft becomes what Hermes now has; the
-   * other parts' drafts are kept. When a guardrail stopped it part way, the draft stays for the owner to answer.
+   * Applies one part, then reads Hermes back. One Apply runs at a time, and every control is disabled meanwhile, so no
+   * edit made during it is overwritten. Once it's all written, that part's draft becomes what Hermes now has; the other
+   * parts' drafts are kept. When a guardrail stopped it part way, or a write failed after earlier ones landed, Hermes is
+   * still read back, so the screen compares the draft with what Hermes really has.
    */
   const apply = async (part: Part, write: () => Promise<boolean>) => {
+    if (applying.current) return;
+    applying.current = true;
     setBusy(part);
     setErrors((x) => ({ ...x, [part]: undefined }));
     try {
@@ -240,13 +246,20 @@ export function ModelSettings({ api, profile, connected }: { api: ModelSettingsA
       setDone((x) => ({ ...x, [part]: true }));
     } catch (e) {
       setErrors((x) => ({ ...x, [part]: messageOf(e) }));
+      try {
+        setSaved(await api.load());
+      } catch {
+        // The write's error is the one to show; the next Apply reads Hermes again.
+      }
     } finally {
+      applying.current = false;
       setBusy(undefined);
     }
   };
 
   /** Asks the pinned-helpers guardrail first; Hermes answers the expensive-model one, having written nothing. */
   const applyMain = (answered: { pinned?: boolean; expensive?: boolean } = {}) => {
+    if (applying.current) return;
     const pinned = answered.pinned || answered.expensive ? undefined : auxPinWarning(saved, draft);
     if (pinned) return setAsk({ kind: "pinned", warning: pinned });
     setAsk(undefined);
@@ -257,6 +270,7 @@ export function ModelSettings({ api, profile, connected }: { api: ModelSettingsA
     });
   };
   const applyAuxiliary = (confirmed: string[] = []) => {
+    if (applying.current) return;
     setAsk(undefined);
     void apply("auxiliary", async () => {
       const r = await api.applyAuxiliary(saved, draft, confirmed);
@@ -325,7 +339,8 @@ export function ModelSettings({ api, profile, connected }: { api: ModelSettingsA
     );
 
   return (
-    <>
+    // Disabled while an Apply runs: every select, input and button, guardrail answers included.
+    <fieldset className="model-fieldset" disabled={busy !== undefined}>
       <section>
         <h2>Main model</h2>
         <p className="muted">
@@ -593,6 +608,6 @@ export function ModelSettings({ api, profile, connected }: { api: ModelSettingsA
           </div>
         </div>
       </section>
-    </>
+    </fieldset>
   );
 }

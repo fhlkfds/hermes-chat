@@ -219,3 +219,73 @@ describe("Subagents and auxiliary models", () => {
     expect(server.modelConfig.agent.reasoning_effort).toBe("high");
   });
 });
+
+/** Disabled as the owner meets it: its own attribute, or a disabled fieldset around it. */
+const off = (el: Element) => el.matches(":disabled");
+
+/** Holds a REST route's answers until `release`, as a slow Hermes would. */
+function hold(server: FakeHermes, route: string) {
+  const answer = server.rest[route];
+  let release = () => {};
+  const gate = new Promise<void>((r) => (release = r));
+  server.rest[route] = async (req) => {
+    await gate;
+    return answer(req);
+  };
+  return () => release();
+}
+
+describe("While an Apply runs", () => {
+  it("every control is disabled, so an edit made meanwhile can't be overwritten when Hermes is read back", async () => {
+    const { server, user } = await shown();
+    const release = hold(server, "POST /api/model/set");
+    await user.selectOptions(select("Main model"), "deepseek/deepseek-v4-pro");
+    await user.click(screen.getByRole("button", { name: "Apply main model" }));
+    await waitFor(() => expect(off(select("Main reasoning effort"))).toBe(true));
+    expect(off(select("Compression effort"))).toBe(true);
+    expect(off(screen.getByRole("button", { name: "Apply subagent" }))).toBe(true);
+    release();
+    await screen.findByText("Applied. New chats use it.");
+    expect(off(select("Main reasoning effort"))).toBe(false);
+  });
+
+  it("a guardrail's answer can't start a second Apply", async () => {
+    const { server, user } = await shown();
+    await user.selectOptions(select("Main provider"), "nous");
+    await user.selectOptions(select("Main model"), "hermes-5-70b");
+    await user.click(screen.getByRole("button", { name: "Apply main model" }));
+    const ask = screen.getByRole("alertdialog", { name: "Auxiliary models still pinned" });
+
+    const release = hold(server, "PUT /api/config");
+    await user.clear(screen.getByRole("spinbutton", { name: "Subagent turn limit" }));
+    await user.type(screen.getByRole("spinbutton", { name: "Subagent turn limit" }), "80");
+    await user.click(screen.getByRole("button", { name: "Apply subagent" }));
+    await waitFor(() => expect(off(within(ask).getByRole("button", { name: "Apply anyway" }))).toBe(true));
+    await user.click(within(ask).getByRole("button", { name: "Apply anyway" }));
+    expect(writes(server).map(([route]) => route)).toEqual(["PUT /api/config"]);
+
+    release();
+    await waitFor(() => expect(server.modelConfig.delegation.max_iterations).toBe(80));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Apply anyway" }));
+    await waitFor(() => expect(server.modelConfig.model).toEqual({ provider: "nous", default: "hermes-5-70b" }));
+  });
+});
+
+describe("A write that fails after an earlier one landed", () => {
+  it("still reads Hermes back, so Discard shows what Hermes really has", async () => {
+    const { server, user } = await shown();
+    server.rest["PUT /api/config"] = () => {
+      throw new Error('The dashboard answered 500: {"detail":"Internal server error"}');
+    };
+    await user.selectOptions(select("Main model"), "deepseek/deepseek-v4-pro");
+    await user.selectOptions(select("Main reasoning effort"), "low");
+    await user.click(screen.getByRole("button", { name: "Apply main model" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("answered 500");
+    expect(server.modelConfig.model.default).toBe("deepseek/deepseek-v4-pro");
+
+    await user.click(screen.getByRole("button", { name: "Discard main model changes" }));
+    expect(select("Main model").value).toBe("deepseek/deepseek-v4-pro");
+    expect(select("Main reasoning effort").value).toBe("high");
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "Apply main model" }).disabled).toBe(true);
+  });
+});

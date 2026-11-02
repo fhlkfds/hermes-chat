@@ -15,6 +15,7 @@ import {
   subagentPatch,
   subagentProblem,
   subagentRouteValue,
+  ModelSettingsApi,
   type Draft,
   type ModelSettings,
 } from "./modelSettings";
@@ -310,5 +311,33 @@ describe("Guardrail: a model Hermes flags as expensive", () => {
     const d = draftFrom(saved);
     d.main.model = "anthropic/claude-fable-5.1";
     await expect(api.applyMain(saved, d, true)).rejects.toThrow("Still too expensive.");
+  });
+});
+
+describe("A profile switch during an Apply", () => {
+  it("doesn't send the Apply's later writes to the new profile", async () => {
+    const { saved } = await setup();
+    let profile = "work";
+    const sent: string[] = [];
+    // Hermes answers each write; the owner switches profile while the first one is on its way.
+    const api = new ModelSettingsApi(async (method, path) => {
+      sent.push(`${method} ${path}`);
+      profile = "home";
+      return { ok: true };
+    }, () => profile);
+
+    const d = draftFrom(saved);
+    d.main = { ...d.main, model: "deepseek/deepseek-v4-pro", effort: "low" };
+    d.auxiliary.compression.effort = "none";
+    d.auxiliary.vision.effort = "low";
+    await api.applyMain(saved, d);
+    profile = "work";
+    await api.applyAuxiliary(saved, d);
+    expect(sent).toEqual([
+      "POST api/model/set?profile=work",
+      "PUT api/config?profile=work",
+      "POST api/model/set?profile=work",
+      "POST api/model/set?profile=work",
+    ]);
   });
 });

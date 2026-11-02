@@ -318,18 +318,21 @@ export class ModelSettingsApi {
     private readonly profile: () => string,
   ) {}
 
-  private q(extra: Record<string, string> = {}) {
-    return new URLSearchParams({ ...extra, profile: this.profile() }).toString();
+  /** The `?profile=` query. Each operation reads it once, so a profile switch mid-Apply can't send its later writes to
+   * the new profile. */
+  private q() {
+    return new URLSearchParams({ profile: this.profile() }).toString();
   }
 
   /** `GET /api/model/options`, `/api/model/auxiliary`, `/api/config` and `/api/delegation/routing`. */
   async load(): Promise<ModelSettings> {
+    const q = this.q();
     const [options, aux, config, routing] = await Promise.all([
-      this.rest("GET", `api/model/options?${this.q()}`),
-      this.rest("GET", `api/model/auxiliary?${this.q()}`),
-      this.rest("GET", `api/config?${this.q()}`),
+      this.rest("GET", `api/model/options?${q}`),
+      this.rest("GET", `api/model/auxiliary?${q}`),
+      this.rest("GET", `api/config?${q}`),
       // Only counted for a note; a backend without it still shows the rest.
-      this.rest("GET", `api/delegation/routing?${this.q()}`).catch(() => ({})),
+      this.rest("GET", `api/delegation/routing?${q}`).catch(() => ({})),
     ]);
     const main = obj(obj(aux).main);
     const agent = obj(obj(config).agent);
@@ -361,10 +364,11 @@ export class ModelSettingsApi {
   async applyMain(saved: ModelSettings, d: Draft, confirmExpensive = false): Promise<MainApplied> {
     const problem = mainProblem(d);
     if (problem) throw new Error(problem);
+    const q = this.q();
     if (mainModelChanged(saved, d)) {
       const apiUrl = saved.providers.find((p) => p.slug === d.main.provider)?.apiUrl;
       const res = obj(
-        await this.rest("POST", `api/model/set?${this.q()}`, {
+        await this.rest("POST", `api/model/set?${q}`, {
           scope: "main",
           provider: d.main.provider,
           model: d.main.model,
@@ -381,7 +385,7 @@ export class ModelSettingsApi {
     const agent: Json = {};
     if (d.main.effort !== saved.main.effort) agent.reasoning_effort = d.main.effort;
     if (d.main.fast !== saved.main.fast) agent.service_tier = d.main.fast ? "fast" : "normal";
-    if (Object.keys(agent).length) await this.rest("PUT", `api/config?${this.q()}`, { config: { agent } });
+    if (Object.keys(agent).length) await this.rest("PUT", `api/config?${q}`, { config: { agent } });
     return { applied: true };
   }
 
@@ -389,8 +393,9 @@ export class ModelSettingsApi {
   async applySubagent(saved: ModelSettings, d: SubagentDraft): Promise<void> {
     const problem = subagentProblem(d);
     if (problem) throw new Error(problem);
+    const q = this.q();
     const patch = subagentPatch(saved, d);
-    if (patch) await this.rest("PUT", `api/config?${this.q()}`, { config: { delegation: patch } });
+    if (patch) await this.rest("PUT", `api/config?${q}`, { config: { delegation: patch } });
   }
 
   /**
@@ -399,6 +404,7 @@ export class ModelSettingsApi {
    * this is called again with it in `confirmed`. Tasks written before it stay written.
    */
   async applyAuxiliary(saved: ModelSettings, d: Draft, confirmed: string[] = []): Promise<AuxApplied> {
+    const q = this.q();
     const changed = auxChanged(saved, d);
     for (const t of changed) {
       const problem = auxProblem(t, d.auxiliary[t.task]);
@@ -409,7 +415,7 @@ export class ModelSettingsApi {
       const apiUrl = saved.providers.find((p) => p.slug === a.provider)?.apiUrl;
       const confirm = confirmed.includes(t.task);
       const res = obj(
-        await this.rest("POST", `api/model/set?${this.q()}`, {
+        await this.rest("POST", `api/model/set?${q}`, {
           scope: "auxiliary",
           task: t.task,
           provider: a.provider,
