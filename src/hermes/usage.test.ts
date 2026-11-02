@@ -93,6 +93,14 @@ describe("A reply's usage", () => {
     expect(replyUsage(second, countersOf({ input: 2300, prompt: 3400, output: 30, calls: 3 })!)).toMatchObject({ input: 300, cache: 100 });
   });
 
+  it("keeps the input total of a first turn that read nothing from the cache, with its split unknown (#53)", () => {
+    // `message.complete.usage` for the reply in issue #53: no cache fields, no cost, and `input` equal to `prompt`.
+    const end = countersOf({ model: "z-ai/glm-5.3-flash", input: 59292, output: 7, reasoning: 1, prompt: 59292, completion: 7, total: 59299, calls: 1 })!;
+    expect(replyUsage(ZERO_COUNTERS, end)).toEqual({ prompt: 59292, output: 7, reasoning: 1, calls: 1, model: "z-ai/glm-5.3-flash" });
+    // Had the cache been read, the same counts would say none of it was uncached.
+    expect(replyUsage(ZERO_COUNTERS, countersOf({ input: 59292, prompt: 59292, output: 7, calls: 1, cache_hit_pct: 100 })!)).toMatchObject({ input: 0, cache: 59292 });
+  });
+
   it("is nothing for a turn that made no model call", () => {
     expect(replyUsage(start, { ...start })).toBeUndefined();
   });

@@ -55,6 +55,40 @@ describe("Usage per reply", () => {
     ]);
   });
 
+  it("keeps a reply's input whole when Hermes can't say how much was cached, leaving its cost to the chat (#53)", async () => {
+    // A new chat's first turn on OpenRouter that read nothing from the cache: Hermes sends `input` equal to `prompt`
+    // and no `cache_hit_pct`, which is also what it sends for input all written to the cache. No cost on the live feed.
+    const server = new FakeHermes();
+    server.sessions = [row("a", 1)];
+    server.transcripts = { a: [] };
+    const hermes = await connect(server.openPipe);
+    await hermes.sync();
+    await hermes.send("a", "Hi");
+    // The stored row, written by the time the turn ends, splits the cache and has Hermes's estimate.
+    Object.assign(server.sessions[0], {
+      input_tokens: 59292,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      output_tokens: 7,
+      reasoning_tokens: 1,
+      api_call_count: 1,
+      estimated_cost_usd: 0.0059,
+      cost_status: "estimated",
+      cost_source: "provider_models_api",
+    });
+    turn(server, server.runtimeIdOf("a")!, "Hello!", counters(59292, 0, 7, 1, undefined, 1));
+    await hermes.idle();
+
+    expect(replies(hermes, "a")).toEqual([["Hello!", { prompt: 59292, output: 7, reasoning: 1, calls: 1, model: "z-ai/glm-5.3-flash" }]]);
+    expect(hermes.getSnapshot().chats.find((c) => c.id === "a")!.usage).toMatchObject({
+      input: 59292,
+      cacheRead: 0,
+      cacheWrite: 0,
+      calls: 1,
+      cost: { kind: "estimated", usd: 0.0059, source: "provider_models_api" },
+    });
+  });
+
   it("counts only model calls after retrying a rejected send and saves its reply row before timestamps arrive", async () => {
     const server = new FakeHermes();
     const cache = memoryCache();

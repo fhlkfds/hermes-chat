@@ -7,6 +7,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Chat, Item } from "../hermes/model";
 import { chatUsageOf } from "../hermes/usage";
 import { ChatPane } from "./ChatPane";
+import { REPLY_NOTES } from "./Usage";
 
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: async () => null }));
@@ -70,6 +71,8 @@ describe("A reply's usage", () => {
       ["Model", "z-ai/glm-5.3-flash"],
       ["Cost", "Not reported per reply"],
     ]);
+    // Said on screen, not only in a tooltip.
+    expect(table.querySelector(".usage-note")!.textContent).toBe(`${REPLY_NOTES.split} ${REPLY_NOTES.cost}`);
     expect(line.getAttribute("aria-expanded")).toBe("true");
   });
 
@@ -83,13 +86,37 @@ describe("A reply's usage", () => {
     expect(screen.getAllByRole("button", { name: /^Tokens for this reply/ }).map((b) => b.textContent)).toEqual(["1.2k in · 1k out"]);
   });
 
-  it("shows all the input as in, and its split as not reported, when Hermes's counts don't split it", async () => {
-    pane(chatOf([{ kind: "assistant", id: "a", text: "Hi", usage: { prompt: 1100, output: 15, reasoning: 0, calls: 1 } }]));
+  it("shows all the input as in, its split as unknown and why, when Hermes's counts don't split it (#53)", async () => {
+    // The reply in issue #53: one call whose live counts said nothing about the cache.
+    const usage = { prompt: 59292, output: 7, reasoning: 1, calls: 1, model: "z-ai/glm-5.3-flash" };
+    pane(chatOf([{ kind: "assistant", id: "a", text: "Hi", usage }]));
     const line = screen.getByRole("button", { name: /^Tokens for this reply/ });
-    expect(line.textContent).toBe("1.1k in · 15 out");
+    expect(line.textContent).toBe("59.3k in · 7 out");
     await userEvent.click(line);
     const table = document.getElementById(line.getAttribute("aria-controls")!)!;
-    expect([...table.querySelectorAll(".usage-row dd")].slice(0, 3).map((d) => d.textContent)).toEqual([(1100).toLocaleString(), "Not reported", "Not reported"]);
+    const rows = [...table.querySelectorAll(".usage-row")].map((r) => [r.querySelector("dt")!.textContent, r.querySelector("dd")!.textContent]);
+    expect(rows).toEqual([
+      ["Input", (59292).toLocaleString()],
+      ["not cached", "Unknown"],
+      ["cache read or written", "Unknown"],
+      ["Output", "7"],
+      ["of which reasoning", "1"],
+      ["Model calls", "1"],
+      ["Model", "z-ai/glm-5.3-flash"],
+      ["Cost", "Not reported per reply"],
+    ]);
+    const note = table.querySelector(".usage-note")!.textContent;
+    expect(note).toBe(`${REPLY_NOTES.unsplit} ${REPLY_NOTES.cost}`);
+    expect(note).toContain("beside its title, shows its cost");
+  });
+
+  it("shows a cache Hermes counted as none as 0, never as unknown", async () => {
+    pane(chatOf([{ kind: "assistant", id: "a", text: "Hi", usage: { prompt: 1100, input: 1100, cache: 0, output: 15, reasoning: 0, calls: 1 } }]));
+    await userEvent.click(screen.getByRole("button", { name: /^Tokens for this reply/ }));
+    const table = document.querySelector(".usage-breakdown")!;
+    expect([...table.querySelectorAll(".usage-row dd")].slice(0, 3).map((d) => d.textContent)).toEqual([(1100).toLocaleString(), (1100).toLocaleString(), "0"]);
+    expect(table.textContent).not.toContain("Unknown");
+    expect(table.textContent).not.toContain(REPLY_NOTES.unsplit);
   });
 
   it("waits for the reply to finish", () => {

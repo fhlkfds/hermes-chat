@@ -8,19 +8,32 @@ import { useReturnFocus } from "./bits";
 const full = (n: number | undefined) => (n === undefined ? "Not reported" : n.toLocaleString());
 
 /** One row of a breakdown. `sub`: a part of the row above it. */
-function Row({ label, value, sub, note }: { label: string; value: string; sub?: boolean; note?: string }) {
+function Row({ label, value, sub }: { label: string; value: string; sub?: boolean }) {
   return (
-    <div className={`usage-row ${sub ? "sub" : ""}`} title={note}>
+    <div className={`usage-row ${sub ? "sub" : ""}`}>
       <dt>{label}</dt>
       <dd>{value}</dd>
     </div>
   );
 }
 
+/**
+ * Why a reply's breakdown has no cache split, or never a cost (issue #53). Hermes's live counts (`usage.ts`
+ * `countersOf`) have no cache read or write fields: the uncached part is told apart only once the cache was read, and
+ * they carry no cost. The chat's stored usage has both.
+ */
+export const REPLY_NOTES = {
+  unsplit:
+    "Hermes didn't say how much of this input was cached. Until the cache has been read from, Hermes's live count looks the same whether input was sent uncached or written to the cache, so it isn't guessed.",
+  split: "Hermes's live count doesn't tell cache reads from cache writes.",
+  cost: "Hermes prices the whole chat, not each reply. The chat's usage, beside its title, shows its cost and splits cache reads from cache writes.",
+};
+
 /** The tokens one reply's turn took: a line under the reply, and its breakdown when clicked. */
 export function ReplyUsageLine({ usage }: { usage: ReplyUsage }) {
   const [open, setOpen] = useState(false);
   const id = useId();
+  const split = usage.input !== undefined;
   // Without the split, all the input shows as "in".
   const parts =
     usage.input === undefined
@@ -38,16 +51,22 @@ export function ReplyUsageLine({ usage }: { usage: ReplyUsage }) {
         {parts.join(" · ")}
       </button>
       {open && (
-        <dl className="usage-table" id={id} ref={(el) => el?.scrollIntoView?.({ block: "nearest" })}>
-          <Row label="Input" value={full(usage.prompt)} />
-          <Row label="not cached" value={full(usage.input)} sub />
-          <Row label="cache read or written" value={full(usage.cache)} sub note="Hermes's live counts don't tell cache reads from cache writes." />
-          <Row label="Output" value={full(usage.output)} />
-          <Row label="of which reasoning" value={full(usage.reasoning)} sub />
-          <Row label="Model calls" value={full(usage.calls)} />
-          {usage.model && <Row label="Model" value={usage.model} />}
-          <Row label="Cost" value="Not reported per reply" note="Hermes reports cost only for the whole chat, beside its title." />
-        </dl>
+        <div className="usage-breakdown" id={id} ref={(el) => el?.scrollIntoView?.({ block: "nearest" })}>
+          <dl className="usage-table">
+            <Row label="Input" value={full(usage.prompt)} />
+            {/* Unknown, not "Not reported" or 0: Hermes sent a count, one that doesn't say how much was cached. */}
+            <Row label="not cached" value={split ? full(usage.input) : "Unknown"} sub />
+            <Row label="cache read or written" value={split ? full(usage.cache) : "Unknown"} sub />
+            <Row label="Output" value={full(usage.output)} />
+            <Row label="of which reasoning" value={full(usage.reasoning)} sub />
+            <Row label="Model calls" value={full(usage.calls)} />
+            {usage.model && <Row label="Model" value={usage.model} />}
+            <Row label="Cost" value="Not reported per reply" />
+          </dl>
+          <p className="usage-note">
+            {split ? REPLY_NOTES.split : REPLY_NOTES.unsplit} {REPLY_NOTES.cost}
+          </p>
+        </div>
       )}
     </div>
   );
