@@ -10,6 +10,7 @@ import { systemKeyring } from "./hermes/tauriKeyring";
 import { desktopNotify } from "./hermes/tauriNotify";
 import { tauriPipe, type SignInDetails } from "./hermes/tauriPipe";
 import type { Attachment, Chat, Found } from "./hermes/model";
+import type { ModelPick } from "./hermes/models";
 import { ChatList, Rail } from "./ui/Sidebar";
 import { ChatPane } from "./ui/ChatPane";
 import { SearchPalette } from "./ui/Search";
@@ -18,6 +19,8 @@ import { composing } from "./ui/bits";
 import { appearanceStore } from "./ui/appearance";
 import { systemFonts } from "./ui/tauriFonts";
 import { SignIn } from "./ui/SignIn";
+import { ModelControls } from "./ui/ModelPicker";
+import { getUIPrefs, setUIPrefs, subscribe as subscribeUIPrefs, toggleModelFavorite, type StickyModelPick } from "./hermes/uiPrefs";
 
 const SAVED = "hermes-chat.sign-in"; // Everything but the password, which is in the system keyring.
 // Hermes also announces store changes over the socket; the poll catches anything it misses.
@@ -28,6 +31,8 @@ const TOAST_MS = 5_000;
 type Toast = { text: string; undo?: () => void; at: number };
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+const withoutProfile = ({ profile: _profile, ...pick }: StickyModelPick): ModelPick => pick;
 
 function loadSignIn(): SavedSignIn {
   const blank = { mode: "ssh" as const, sshTarget: "", url: "", username: "" };
@@ -151,7 +156,7 @@ export function Main({
   reopenLast?: boolean;
   onSignOut: () => Promise<void>;
 }) {
-  const { profile, chats, olderPulled, archivedListed, status, route, unsecure, closedReason, syncError, others } = useSyncExternalStore(
+  const { profile, chats, olderPulled, archivedListed, status, route, unsecure, closedReason, syncError, others, models } = useSyncExternalStore(
     hermes.subscribe,
     hermes.getSnapshot,
   );
@@ -182,6 +187,20 @@ export function Main({
   const shownDraft = draftOf(selectedId);
   const composerText = useSyncExternalStore(savedDrafts.subscribe, () => savedDrafts.get(shownDraft));
   const undelivered = useSyncExternalStore(savedDrafts.subscribe, () => savedDrafts.undelivered(shownDraft));
+
+  // The model pick is sticky: new chats start on it, in this profile, until the owner picks another. It is kept on this
+  // computer only and never becomes the profile's default. Picked in another profile, it gives way to this profile's
+  // own model. A chat on screen shows the model it runs on, and a pick there switches that chat alone.
+  const { modelPicker, modelFavorites } = useSyncExternalStore(subscribeUIPrefs, getUIPrefs);
+  const catalog = models?.profile === profile ? models : undefined;
+  const sticky: ModelPick | undefined = modelPicker?.profile === profile ? withoutProfile(modelPicker) : catalog?.defaultPick;
+  const shownModel = (selected !== draft && selected.model) || sticky;
+  const pickModel = (pick: ModelPick) => {
+    setUIPrefs({ modelPicker: { ...pick, profile } });
+    if (selected === draft) return;
+    const id = selected.id;
+    hermes.setModel(id, pick).catch((e) => setToast({ text: `Couldn't switch this chat's model: ${messageOf(e)}`, at: Date.now() }));
+  };
 
   // Every move between chats is kept as the profile's last open chat, so it reopens at the next launch whether or not
   // the app closes cleanly. Going somewhere also ends the wait to reopen the last one.
@@ -216,7 +235,7 @@ export function Main({
   const chatToSendIn = async (): Promise<{ id: string } | { delivery: Delivery }> => {
     if (selectedId) return { id: selectedId };
     try {
-      const id = await hermes.newChat();
+      const id = await hermes.newChat(sticky);
       openChat(id);
       return { id };
     } catch (e) {
@@ -343,6 +362,17 @@ export function Main({
     return () => clearInterval(timer);
   }, [hermes]);
 
+  // The models the profile offers, read once connected, and again for each profile.
+  useEffect(() => {
+    if (status === "connected") void hermes.loadModels();
+  }, [hermes, status, profile]);
+
+  // Switching profile reseeds the pick to that profile's own model, once its list is read.
+  useEffect(() => {
+    const pick = getUIPrefs().modelPicker;
+    if (catalog?.defaultPick && pick?.profile !== profile) setUIPrefs({ modelPicker: { ...catalog.defaultPick, profile } });
+  }, [catalog, profile]);
+
   // Unread chats in the other profiles are polled, so the switcher can be up to CHECK_EVERY_MS behind.
   useEffect(() => {
     void hermes.checkOtherProfiles();
@@ -442,6 +472,16 @@ export function Main({
             onSettle={selected === draft ? undefined : (s) => setSettled(selected.id, s)}
             onExport={selected === draft ? undefined : () => exportSelected(selected)}
             onArchive={selected === draft ? undefined : (a) => setArchived(selected.id, a)}
+            modelControls={
+              <ModelControls
+                catalog={catalog}
+                current={shownModel}
+                defaultEffort={catalog?.defaultEffort}
+                favorites={modelFavorites}
+                onPick={pickModel}
+                onToggleFavorite={toggleModelFavorite}
+              />
+            }
           />
         )}
       </main>

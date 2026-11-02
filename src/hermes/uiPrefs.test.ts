@@ -14,6 +14,7 @@ import {
   rememberOpenChat,
   setUIPrefs,
   subscribe,
+  toggleModelFavorite,
   type UIPrefs,
 } from "./uiPrefs";
 
@@ -41,7 +42,7 @@ afterEach(() => {
 
 describe("reading", () => {
   it("is the defaults when nothing is stored", () => {
-    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, statusBar: [] });
+    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, modelFavorites: [], statusBar: [] });
     expect(getUIPrefs()).toEqual(DEFAULT_UI_PREFS);
   });
 
@@ -61,6 +62,7 @@ describe("reading", () => {
         reopenLastChat: false,
         reasoningBlocks: "no",
         modelPicker: { provider: "anthropic", model: "claude-opus-5-5", effort: "max", fast: true, extra: 1 },
+        modelFavorites: ["openai/gpt-5", "no-slash", 7, "openai/gpt-5", "anthropic/claude-opus-5-5"],
         statusBar: ["model", 3, "", "tokens", "model"],
         lastOpenChat: { default: "c1", work: 7, "": "c2", home: "" },
       }),
@@ -71,8 +73,24 @@ describe("reading", () => {
       lastOpenChat: { default: "c1" },
       reasoningBlocks: true,
       modelPicker: { provider: "anthropic", model: "claude-opus-5-5", effort: "max", fast: true },
+      modelFavorites: ["openai/gpt-5", "anthropic/claude-opus-5-5"],
       statusBar: ["model", "tokens"],
     });
+  });
+
+  it("keeps the profile a model was picked in, and drops an effort Hermes doesn't take", () => {
+    localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ v: 1, modelPicker: { provider: "openai", model: "gpt-5", effort: "hgih", profile: "work" } }));
+    expect(getUIPrefs().modelPicker).toEqual({ provider: "openai", model: "gpt-5", profile: "work" });
+  });
+
+  it("stars and unstars a model without picking it", () => {
+    setUIPrefs({ modelPicker: { provider: "anthropic", model: "claude-sonnet-5-5" } });
+    toggleModelFavorite("openai/gpt-5");
+    toggleModelFavorite("anthropic/claude-opus-5-5");
+    expect(getUIPrefs().modelFavorites).toEqual(["openai/gpt-5", "anthropic/claude-opus-5-5"]);
+    toggleModelFavorite("openai/gpt-5");
+    expect(getUIPrefs()).toMatchObject({ modelFavorites: ["anthropic/claude-opus-5-5"], modelPicker: { model: "claude-sonnet-5-5" } });
+    expect(stored().modelFavorites).toEqual(["anthropic/claude-opus-5-5"]);
   });
 
   it("drops a model pick without a provider and model", () => {

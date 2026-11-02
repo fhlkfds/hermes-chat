@@ -1,8 +1,10 @@
 // Display preferences for this computer: the theme, whether the last chat reopens at launch and which chat each profile
-// had open, whether reasoning shows, the model last picked, and which items the status bar shows. All of it lives in
-// one versioned JSON document under one localStorage key, so "Clear local cache" can't touch it (chatCache.ts) and later
-// settings add fields here rather than new keys. Nothing here goes to Hermes. Every settings feature reads and writes
-// through this module.
+// had open, whether reasoning shows, the model last picked and the starred models, and which items the status bar
+// shows. All of it lives in one versioned JSON document under one localStorage key, so "Clear local cache" can't touch
+// it (chatCache.ts) and later settings add fields here rather than new keys. Nothing here goes to Hermes. Every
+// settings feature reads and writes through this module.
+
+import { fromKey, isEffort, type ModelPick } from "./models";
 
 export const UI_PREFS_KEY = "hermes-ui-prefs";
 /** The shape the document has now. Bump it, and add a step to UI_PREFS_MIGRATIONS, when a field changes meaning. */
@@ -11,8 +13,11 @@ export const UI_PREFS_VERSION = 1;
 export type Theme = "light" | "dark" | "system";
 export const THEMES: readonly Theme[] = ["light", "dark", "system"];
 
-/** The model picked last, kept so the next new chat starts with it. */
-export type ModelPick = { provider: string; model: string; effort?: string; fast?: boolean };
+/**
+ * The model picked last, kept so the next new chat starts with it (models.ts). `profile`: the profile it was picked in;
+ * in another profile the composer starts from that profile's own model instead. It never becomes the profile's default.
+ */
+export type StickyModelPick = ModelPick & { profile?: string };
 
 export type UIPrefs = {
   theme: Theme;
@@ -23,7 +28,9 @@ export type UIPrefs = {
   /** Show the model's reasoning blocks in transcripts. */
   reasoningBlocks: boolean;
   /** null: no sticky pick, so Hermes's default model is used. */
-  modelPicker: ModelPick | null;
+  modelPicker: StickyModelPick | null;
+  /** Starred models, as `provider/model`, listed first in the model picker. Kept even when Hermes no longer lists them. */
+  modelFavorites: string[];
   /** The status bar items shown, in order. */
   statusBar: string[];
 };
@@ -34,6 +41,7 @@ export const DEFAULT_UI_PREFS: Readonly<UIPrefs> = Object.freeze({
   lastOpenChat: Object.freeze({}) as Record<string, string>,
   reasoningBlocks: true,
   modelPicker: null,
+  modelFavorites: [],
   statusBar: [],
 });
 
@@ -72,14 +80,25 @@ export function migrateUIPrefs(raw: unknown, migrations: UIPrefsMigrations = UI_
 
 const str = (v: unknown, max = 200) => (typeof v === "string" && v.length > 0 && v.length <= max ? v : undefined);
 
-function toModelPick(v: unknown): ModelPick | null | undefined {
+function toModelPick(v: unknown): StickyModelPick | null | undefined {
   if (v === null) return null;
   if (!isDoc(v)) return undefined;
   const provider = str(v.provider);
   const model = str(v.model);
   if (provider === undefined || model === undefined) return undefined;
-  const effort = str(v.effort, 40);
-  return { provider, model, ...(effort !== undefined && { effort }), ...(typeof v.fast === "boolean" && { fast: v.fast }) };
+  const profile = str(v.profile);
+  return {
+    provider,
+    model,
+    ...(isEffort(v.effort) && { effort: v.effort }),
+    ...(typeof v.fast === "boolean" && { fast: v.fast }),
+    ...(profile !== undefined && { profile }),
+  };
+}
+
+function toFavorites(v: unknown): string[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  return [...new Set(v.filter((k): k is string => str(k, 400) !== undefined && !!fromKey(k)))];
 }
 
 function toStatusBar(v: unknown): string[] | undefined {
@@ -106,6 +125,7 @@ export function readUIPrefs(doc: UIPrefsDoc, d: Readonly<UIPrefs> = DEFAULT_UI_P
     lastOpenChat: toLastOpenChat(doc.lastOpenChat) ?? { ...d.lastOpenChat },
     reasoningBlocks: typeof doc.reasoningBlocks === "boolean" ? doc.reasoningBlocks : d.reasoningBlocks,
     modelPicker: pick === undefined ? (d.modelPicker && { ...d.modelPicker }) : pick,
+    modelFavorites: toFavorites(doc.modelFavorites) ?? [...d.modelFavorites],
     statusBar: toStatusBar(doc.statusBar) ?? [...d.statusBar],
   };
 }
@@ -184,6 +204,12 @@ export function setUIPrefs(patch: Partial<UIPrefs>): void {
     // Not kept: `cached` holds the change while the stored document is still the one last read.
   }
   notify();
+}
+
+/** Stars a model (`provider/model`) for the model picker, or unstars a starred one. Never picks it. */
+export function toggleModelFavorite(key: string): void {
+  const favorites = getUIPrefs().modelFavorites;
+  setUIPrefs({ modelFavorites: favorites.includes(key) ? favorites.filter((k) => k !== key) : [...favorites, key] });
 }
 
 /** Another window changed the stored document. `key` null: that window cleared all of localStorage. */
