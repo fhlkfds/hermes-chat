@@ -46,6 +46,8 @@ export function failureText(e: unknown): string | undefined {
   }
 }
 
+const RESTORED = "Hermes didn't confirm it got your message, so its screenshot is back here. Send it again, or remove it.";
+
 /** A capture or a note waiting for a composer to show it. */
 type Waiting = { paths: string[]; note?: string; remote: boolean };
 
@@ -103,15 +105,28 @@ export class ScreenshotDesk {
     };
   }
 
-  private async deliver(w: Waiting) {
+  private async deliver(w: Waiting): Promise<void> {
     const sink = this.sink;
     if (!sink) return void this.waiting.push(w);
     if (w.paths.length) {
       const kept = await sink.attach(w.paths);
+      // The composer went while it checked them (another chat opened, or Settings): they go to the one on screen
+      // now, unless the old one already let them go.
+      if (this.sink !== sink) return this.deliver({ ...w, paths: w.paths.filter((p) => this.mine.has(p)) });
       this.release(w.paths.filter((p) => !kept.includes(p)));
       if (kept.length) this.onAttached?.(w.remote);
     }
     if (w.note) sink.note(w.note);
+  }
+
+  /**
+   * Puts captures sent with a message Hermes didn't confirm back in the composer on screen, so they aren't lost with
+   * it; others are deleted. `accepted`: Hermes took the message.
+   */
+  sent(paths: readonly string[], accepted: boolean) {
+    if (accepted || this.disposed) return this.release(paths);
+    const back = paths.filter((p) => this.mine.has(p));
+    if (back.length) void this.deliver({ paths: back, remote: false, note: RESTORED });
   }
 
   /** Deletes any of `paths` that are captures: sent, removed from the composer, or left behind. Others are ignored. */

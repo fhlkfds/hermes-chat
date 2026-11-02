@@ -12,17 +12,18 @@ type KeyLike = Pick<KeyboardEvent, "key" | "code" | "ctrlKey" | "altKey" | "shif
 
 /**
  * The key a press is for, as a shortcut names it: a letter (by its label on the owner's layout), a digit, F1–F24 or
- * one of a few others. Undefined for a modifier alone or a key a shortcut can't use.
+ * one of a few others. Undefined for a modifier alone or a key a shortcut can't use. The key typed comes first, since
+ * virtual keyboards, remappers and some input methods report no usable `code`; the key's position is the fallback, for
+ * a layout or modifier that types something else there (a Cyrillic letter, or ß for Alt+S).
  */
 function keyOf(e: KeyLike): string | undefined {
-  const letter = /^Key([A-Z])$/.exec(e.code);
-  if (letter) return /^[a-z]$/i.test(e.key) ? e.key.toUpperCase() : letter[1];
-  const digit = /^Digit(\d)$/.exec(e.code);
-  if (digit) return digit[1];
-  if (/^F(?:[1-9]|1\d|2[0-4])$/.test(e.code) || OTHER_KEYS.includes(e.code)) return e.code;
-  // WebKitGTK reports Print Screen's code as "PrintScreen", but some layouts only set the key.
-  if (e.key === "PrintScreen" || e.key === "Print") return "PrintScreen";
-  return undefined;
+  if (/^[a-z0-9]$/i.test(e.key)) return e.key.toUpperCase();
+  const position = /^(?:Key([A-Z])|Digit(\d))$/.exec(e.code);
+  if (position) return position[1] ?? position[2];
+  const fKey = [e.key, e.code].find((k) => /^F(?:[1-9]|1\d|2[0-4])$/.test(k));
+  if (fKey) return fKey;
+  if (e.key === "Print" || e.key === "PrintScreen" || e.code === "PrintScreen") return "PrintScreen";
+  return [e.key, e.code].find((k) => OTHER_KEYS.includes(k));
 }
 
 /** A key press as a shortcut, or undefined while only modifiers are down or for a key a shortcut can't use. */

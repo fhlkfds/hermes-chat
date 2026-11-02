@@ -50,7 +50,8 @@ export function ScreenshotSettings({ checkSupport }: { checkSupport?: () => Prom
       <h2>Screenshots</h2>
       <p className="muted">
         Take a screenshot of a region or a window and attach it to the message you're writing. You see it in the composer before you send it, and
-        can remove it. It stays on this computer until you send the message, and is deleted from this computer once sent or removed.
+        can remove it. It stays on this computer until you send the message, and is deleted from this computer once Hermes has the message or you
+        remove it.
       </p>
       <div className="appearance-row">
         <div className="appearance-label">

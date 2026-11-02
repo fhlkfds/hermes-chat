@@ -44,16 +44,17 @@ enum Route {
 #[derive(Default)]
 struct AppState(Mutex<Option<Connection>>);
 
-/// The private folder screenshots are staged in (screenshot.rs), opened at the first capture. And when the app was
-/// started by `hermes-chat --screenshot` with no window open yet, when that was, so the first signed-in window takes it.
+/// The private folder screenshots are staged in (screenshot.rs), opened at the first capture. And when a desktop
+/// shortcut last asked for a screenshot (`hermes-chat --screenshot`, remote.rs) that no signed-in window has taken yet:
+/// at launch, or at the sign-in screen, it waits for one.
 #[derive(Default)]
 struct Screenshots {
     captures: std::sync::Mutex<Option<Arc<screenshot::Captures>>>,
-    asked_at_launch: std::sync::Mutex<Option<std::time::Instant>>,
+    asked_at: std::sync::Mutex<Option<std::time::Instant>>,
 }
 
-/// How long a screenshot asked for at launch still waits for sign-in. Any later, and it would surprise the owner.
-const LAUNCH_REQUEST_FOR: std::time::Duration = std::time::Duration::from_secs(120);
+/// How long a desktop shortcut's screenshot waits for a signed-in window. Any later, and it would surprise the owner.
+const REQUEST_WAITS_FOR: std::time::Duration = std::time::Duration::from_secs(120);
 
 impl Screenshots {
     fn captures(&self) -> Result<Arc<screenshot::Captures>, screenshot::CaptureError> {
@@ -158,10 +159,10 @@ async fn screenshot_support() -> screenshot::Support {
     tokio::task::spawn_blocking(screenshot::support).await.unwrap_or_else(|e| screenshot::Support { ok: false, summary: e.to_string() })
 }
 
-/// Whether the app was started by `hermes-chat --screenshot` lately and nothing has taken that yet. True once.
+/// Whether a desktop shortcut asked for a screenshot lately that no window has taken yet. True once per request.
 #[tauri::command]
-fn screenshot_launch_request(state: State<'_, Screenshots>) -> bool {
-    state.asked_at_launch.lock().unwrap().take().is_some_and(|at| at.elapsed() < LAUNCH_REQUEST_FOR)
+fn screenshot_take_request(state: State<'_, Screenshots>) -> bool {
+    state.asked_at.lock().unwrap().take().is_some_and(|at| at.elapsed() < REQUEST_WAITS_FOR)
 }
 
 /// Brings the window forward after a desktop shortcut's screenshot was attached, so the owner can review it.
@@ -248,14 +249,19 @@ async fn system_fonts() -> fonts::Fonts {
 pub fn run(screenshot: bool) {
     let screenshots = Screenshots::default();
     if screenshot {
-        *screenshots.asked_at_launch.lock().unwrap() = Some(std::time::Instant::now());
+        *screenshots.asked_at.lock().unwrap() = Some(std::time::Instant::now());
     }
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .manage(screenshots)
         .setup(|app| {
-            remote::serve(app.handle().clone());
+            use tauri::Emitter;
+            let handle = app.handle().clone();
+            remote::serve(move || {
+                *handle.state::<Screenshots>().asked_at.lock().unwrap() = Some(std::time::Instant::now());
+                let _ = handle.emit(remote::EVENT, ());
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -275,7 +281,7 @@ pub fn run(screenshot: bool) {
             screenshot_capture,
             screenshot_discard,
             screenshot_support,
-            screenshot_launch_request,
+            screenshot_take_request,
             screenshot_show_window
         ])
         .build(tauri::generate_context!())

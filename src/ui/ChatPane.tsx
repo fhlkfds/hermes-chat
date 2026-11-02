@@ -586,6 +586,10 @@ function Composer({
   // Screenshots attach here while this composer is on screen. Any still staged when it goes (another chat opened,
   // signing out) are deleted: attachments aren't kept in a Draft.
   const shot = useSyncExternalStore(screenshots?.subscribe ?? noDesk, screenshots?.getSnapshot ?? (() => NOT_CAPTURING));
+  // A new screenshot replaces the notes about the last thing attached.
+  useEffect(() => {
+    if (shot.capturing) setRefused([]);
+  }, [shot.capturing]);
   const staged = useRef(attachments);
   staged.current = attachments;
   useEffect(() => {

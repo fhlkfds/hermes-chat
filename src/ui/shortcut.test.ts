@@ -25,8 +25,13 @@ describe("Writing a key press down", () => {
     expect(shortcutOf(press("O", "KeyS", { ctrl: true, shift: true }))).toBe("Ctrl+Shift+O");
     // With Shift held, the 1 key types "!".
     expect(shortcutOf(press("!", "Digit1", { ctrl: true, shift: true }))).toBe("Ctrl+Shift+1");
-    // A layout that gives no letter with Ctrl+Alt falls back to the key's position.
+    // A layout that gives no letter with Ctrl+Alt falls back to the key's position, as does a Cyrillic layout.
     expect(shortcutOf(press("ß", "KeyS", { ctrl: true, alt: true }))).toBe("Ctrl+Alt+S");
+    expect(shortcutOf(press("Ы", "KeyS", { ctrl: true, shift: true }))).toBe("Ctrl+Shift+S");
+    // A virtual keyboard (wtype, remappers) may give a key with no usable code.
+    expect(shortcutOf(press("S", "", { ctrl: true, shift: true }))).toBe("Ctrl+Shift+S");
+    expect(shortcutOf(press("S", "Unidentified", { ctrl: true, shift: true }))).toBe("Ctrl+Shift+S");
+    expect(shortcutOf(press("F5", "", {}))).toBe("F5");
   });
 
   it("has no shortcut for a modifier alone or a key it can't use", () => {

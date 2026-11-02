@@ -2,11 +2,11 @@
 //! attachment, to review before sending. Nothing leaves this computer until the message is sent.
 //!
 //! How a capture is taken depends on the desktop:
-//! - Hyprland, Sway and other wlroots compositors, with `slurp` and `grim` installed: slurp lets the owner drag a
-//!   region or click a window, and grim saves it. Their screenshot portals (xdg-desktop-portal-hyprland and -wlr)
-//!   capture the whole screen and offer no picker, so this is the only way to pick a region there.
-//! - Everywhere else (GNOME, KDE Plasma, and wlroots without slurp): the xdg-desktop-portal Screenshot portal, asked to
-//!   be interactive, so the desktop shows its own region and window picker.
+//! - Hyprland, Sway and other wlroots compositors: slurp lets the owner drag a region or click a window, and grim saves
+//!   it. Their screenshot portals (xdg-desktop-portal-hyprland and -wlr) capture the whole screen or need slurp
+//!   themselves, so without slurp and grim the owner is told to install them, and nothing is captured.
+//! - Everywhere else (GNOME, KDE Plasma): the xdg-desktop-portal Screenshot portal, asked to be interactive, so the
+//!   desktop shows its own region and window picker. A portal too old to offer a picker is refused the same way.
 //!
 //! Captures are written to a private folder, `$XDG_RUNTIME_DIR/hermes-chat/captures/<pid>/`, which only this user can
 //! read and which is in memory on systemd systems. Each is deleted when it is removed from the composer, once its
@@ -70,8 +70,9 @@ pub enum Windows {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
     GrimSlurp(Windows),
-    /// `whole_screen`: a wlroots compositor without slurp and grim, whose portal can't offer a picker.
-    Portal { whole_screen: bool },
+    Portal,
+    /// A wlroots compositor without slurp or grim: its portal can't let the owner pick, so nothing is captured.
+    NeedsSlurpAndGrim,
 }
 
 /// Picks the capture method from the session's environment and the tools on PATH.
@@ -84,10 +85,10 @@ pub fn plan(env: impl Fn(&str) -> Option<String>, has: impl Fn(&str) -> bool) ->
     let sway = set("SWAYSOCK") || desktops.contains(&"sway");
     let wlroots = hyprland || sway || desktops.iter().any(|d| matches!(*d, "river" | "labwc" | "wayfire" | "wlroots"));
     if !(wayland && wlroots) {
-        return Method::Portal { whole_screen: false };
+        return Method::Portal;
     }
     if !(has("grim") && has("slurp")) {
-        return Method::Portal { whole_screen: true };
+        return Method::NeedsSlurpAndGrim;
     }
     let windows = if hyprland && has("hyprctl") {
         Windows::Hyprland
@@ -123,8 +124,10 @@ pub struct Support {
 
 const NO_PORTAL: &str = "No screenshot portal is running. Install xdg-desktop-portal and the backend for your desktop \
 (xdg-desktop-portal-gnome, -kde, -hyprland or -wlr), or on Hyprland and Sway install slurp and grim.";
-const WHOLE_SCREEN_NOTE: &str = "Your desktop's screenshot portal can only capture the whole screen here. To pick a \
-region or window, install slurp and grim.";
+const NEEDS_SLURP_AND_GRIM: &str = "On Hyprland, Sway and other wlroots desktops, Hermes Chat picks a region or window \
+with slurp and grim. Install both (on Arch: sudo pacman -S slurp grim), then try again.";
+const PORTAL_TOO_OLD: &str = "Your desktop's screenshot portal is too old to let you pick a region or window. Update \
+xdg-desktop-portal and its backend for your desktop.";
 
 /// How screenshots are taken here, for Settings. Asks the portal for its version, so it can block briefly.
 pub fn support() -> Support {
@@ -136,16 +139,13 @@ pub fn support() -> Support {
                 _ => "Screenshots use slurp and grim: drag to select a region, or click a window.".into(),
             },
         },
-        Method::Portal { whole_screen } => match portal::version() {
-            Ok(_) if whole_screen => Support { ok: true, summary: WHOLE_SCREEN_NOTE.into() },
+        Method::NeedsSlurpAndGrim => Support { ok: false, summary: NEEDS_SLURP_AND_GRIM.into() },
+        Method::Portal => match portal::version() {
             Ok(v) if v >= 2 => Support {
                 ok: true,
                 summary: "Screenshots use your desktop's screenshot portal, which asks you to pick a region or window.".into(),
             },
-            Ok(_) => Support {
-                ok: true,
-                summary: "Your desktop's screenshot portal is too old to offer a picker, so it captures the whole screen.".into(),
-            },
+            Ok(_) => Support { ok: false, summary: PORTAL_TOO_OLD.into() },
             Err(e) => Support { ok: false, summary: e.to_string() },
         },
     }
@@ -173,20 +173,20 @@ pub async fn capture(captures: &Captures, name: &str) -> Result<Capture, Capture
             let path = grim_slurp(captures, windows, name).await?;
             Ok(Capture { path: path.to_string_lossy().into_owned(), note: None })
         }
-        Method::Portal { whole_screen } => {
-            let source = tokio::task::spawn_blocking(|| portal::screenshot(PICK_TIMEOUT))
-                .await
-                .map_err(|e| failed("The screenshot stopped", e))??;
+        Method::NeedsSlurpAndGrim => Err(CaptureError::Unsupported(NEEDS_SLURP_AND_GRIM.into())),
+        Method::Portal => {
+            let source = tokio::task::spawn_blocking(|| {
+                // Version 1 has no picker: it would capture the whole screen without asking.
+                if portal::version()? < 2 {
+                    return Err(CaptureError::Unsupported(PORTAL_TOO_OLD.into()));
+                }
+                portal::screenshot(PICK_TIMEOUT)
+            })
+            .await
+            .map_err(|e| failed("The screenshot stopped", e))??;
             let scratch = is_scratch(&source);
             let path = captures.adopt(&source, name, scratch)?;
-            let mut notes = vec![];
-            if whole_screen {
-                notes.push(WHOLE_SCREEN_NOTE.to_owned());
-            }
-            if !scratch && source.exists() {
-                notes.push(format!("Your desktop also saved its own copy at {}.", source.display()));
-            }
-            let note = (!notes.is_empty()).then(|| notes.join(" "));
+            let note = (!scratch && source.exists()).then(|| format!("Your desktop also saved its own copy at {}.", source.display()));
             Ok(Capture { path: path.to_string_lossy().into_owned(), note })
         }
     }
@@ -230,7 +230,13 @@ async fn grim_slurp(captures: &Captures, windows: Windows, name: &str) -> Result
             return Err(CaptureError::Failed("grim didn't finish the screenshot.".into()));
         }
     };
-    if let Err(e) = grim_outcome(out.status.success(), &out.stderr).and_then(|()| check_image(&path).map(|_| ())) {
+    let checked = grim_outcome(out.status.success(), &out.stderr)
+        .and_then(|()| check_image(&path).map(|_| ()))
+        .and_then(|()| {
+            // grim writes with the umask; the folder is private already, the file is made so too.
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(|e| failed("Couldn't save the screenshot", e))
+        });
+    if let Err(e) = checked {
         captures.discard(&path);
         return Err(e);
     }
@@ -571,8 +577,17 @@ impl Captures {
     }
 
     /// Copies a capture the portal saved into a slot, as `<name>.png` (or `.jpg`), readable only by this user, and
-    /// deletes `source` if `remove_source`.
+    /// deletes `source` if `remove_source`, even when it couldn't be copied.
     pub fn adopt(&self, source: &Path, name: &str, remove_source: bool) -> Result<PathBuf, CaptureError> {
+        let adopted = self.copy_in(source, name);
+        // A scratch copy goes whether or not it could be staged: nothing else would ever delete it.
+        if remove_source {
+            let _ = std::fs::remove_file(source);
+        }
+        adopted
+    }
+
+    fn copy_in(&self, source: &Path, name: &str) -> Result<PathBuf, CaptureError> {
         let meta = std::fs::metadata(source).map_err(|e| failed("Couldn't read the screenshot", e))?;
         if !meta.is_file() {
             return Err(CaptureError::Failed("The screenshot portal didn't save a file.".into()));
@@ -588,9 +603,6 @@ impl Captures {
         if let Err(e) = copied {
             self.discard(&path);
             return Err(failed("Couldn't save the screenshot", e));
-        }
-        if remove_source {
-            let _ = std::fs::remove_file(source);
         }
         Ok(path)
     }
@@ -622,13 +634,32 @@ impl Captures {
 
     /// Deletes the folders of processes that are gone: captures left behind when the app crashed or was killed.
     pub fn sweep(&self) {
+        self.sweep_except(instance_alive);
+    }
+
+    /// `sweep`, with `alive` saying which pids are still a running Hermes Chat.
+    pub fn sweep_except(&self, alive: impl Fn(u32) -> bool) {
         let Ok(entries) = std::fs::read_dir(&self.root) else { return };
         for e in entries.flatten() {
             let name = e.file_name();
             let Some(pid) = name.to_str().and_then(|n| n.parse::<u32>().ok()) else { continue };
-            if pid != std::process::id() && !Path::new("/proc").join(pid.to_string()).exists() {
+            if pid != std::process::id() && !alive(pid) {
                 let _ = std::fs::remove_dir_all(e.path());
             }
         }
     }
+}
+
+/// `pid` is a running Hermes Chat: it exists, isn't a zombie, and has this program's name. A pid reused by another
+/// program, or one never reaped, doesn't keep a crashed run's captures around.
+pub fn instance_alive(pid: u32) -> bool {
+    let proc = Path::new("/proc").join(pid.to_string());
+    let Ok(stat) = std::fs::read_to_string(proc.join("stat")) else { return false };
+    // The state follows the name in parentheses, which can itself hold spaces or parentheses.
+    let state = stat.rsplit_once(") ").and_then(|(_, rest)| rest.chars().next());
+    if matches!(state, None | Some('Z') | Some('X')) {
+        return false;
+    }
+    let comm = |p: &Path| std::fs::read_to_string(p.join("comm")).map(|c| c.trim_end().to_owned());
+    matches!((comm(&proc), comm(Path::new("/proc/self"))), (Ok(a), Ok(b)) if a == b)
 }

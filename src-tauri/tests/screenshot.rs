@@ -20,8 +20,10 @@ fn picks_slurp_and_grim_on_wlroots_compositors_and_the_portal_elsewhere() {
     assert_eq!(screenshot::plan(&hypr, tools(&["grim", "slurp", "hyprctl"])), Method::GrimSlurp(Windows::Hyprland));
     // Without hyprctl, slurp still picks regions.
     assert_eq!(screenshot::plan(&hypr, tools(&["grim", "slurp"])), Method::GrimSlurp(Windows::None));
-    // Without slurp or grim, the portal: it can only capture the whole screen there.
-    assert_eq!(screenshot::plan(&hypr, tools(&["grim"])), Method::Portal { whole_screen: true });
+    // Without slurp or grim nothing is captured: the portal there can't let the owner pick, so it would take the whole
+    // screen without asking.
+    assert_eq!(screenshot::plan(&hypr, tools(&["grim"])), Method::NeedsSlurpAndGrim);
+    assert_eq!(screenshot::plan(&hypr, tools(&["slurp", "hyprctl"])), Method::NeedsSlurpAndGrim);
 
     let sway = env(&[("WAYLAND_DISPLAY", "wayland-1"), ("SWAYSOCK", "/run/user/1000/sway-ipc.sock")]);
     assert_eq!(screenshot::plan(&sway, tools(&["grim", "slurp", "swaymsg"])), Method::GrimSlurp(Windows::Sway));
@@ -32,12 +34,12 @@ fn picks_slurp_and_grim_on_wlroots_compositors_and_the_portal_elsewhere() {
     let all = tools(&["grim", "slurp", "hyprctl", "swaymsg"]);
     for desktop in ["GNOME", "KDE", "ubuntu:GNOME"] {
         let e = env(&[("WAYLAND_DISPLAY", "wayland-0"), ("XDG_CURRENT_DESKTOP", desktop)]);
-        assert_eq!(screenshot::plan(&e, &all), Method::Portal { whole_screen: false }, "{desktop}");
+        assert_eq!(screenshot::plan(&e, &all), Method::Portal, "{desktop}");
     }
     // An X11 session, even of a desktop named like a wlroots one, goes through the portal.
     let x11 = env(&[("DISPLAY", ":0"), ("XDG_SESSION_TYPE", "x11"), ("XDG_CURRENT_DESKTOP", "sway")]);
-    assert_eq!(screenshot::plan(&x11, &all), Method::Portal { whole_screen: false });
-    assert_eq!(screenshot::plan(env(&[]), &all), Method::Portal { whole_screen: false });
+    assert_eq!(screenshot::plan(&x11, &all), Method::Portal);
+    assert_eq!(screenshot::plan(env(&[]), &all), Method::Portal);
 }
 
 #[test]
@@ -167,11 +169,15 @@ fn stages_captures_privately_and_deletes_the_portals_scratch_copy() {
     assert_ne!(a, b);
     assert_eq!(a.file_name(), b.file_name());
 
-    // Not an image: refused, and nothing is left behind.
+    // Not an image: refused, and nothing is left behind, not even the portal's scratch copy.
     std::fs::write(&source, b"<html>").unwrap();
     assert!(matches!(captures.adopt(&source, "x", true), Err(CaptureError::Failed(_))));
-    assert!(source.exists());
+    assert!(!source.exists());
     assert_eq!(std::fs::read_dir(captures.mine()).unwrap().count(), 2);
+    // The desktop's own copy is kept, even when refused.
+    std::fs::write(&source, b"<html>").unwrap();
+    assert!(captures.adopt(&source, "x", false).is_err());
+    assert!(source.exists());
 }
 
 #[test]
@@ -203,19 +209,41 @@ fn sweeps_captures_left_by_a_process_that_is_gone() {
     let source = root.0.join("s.png");
     std::fs::write(&source, PNG).unwrap();
     let kept = captures.adopt(&source, "mine", false).unwrap();
-    // pid_max is at most 2^22 on Linux, so no process has this one.
-    let gone = root.0.join("captures").join("4194999");
-    std::fs::create_dir_all(gone.join("0")).unwrap();
-    std::fs::write(gone.join("0").join("old.png"), PNG).unwrap();
-    // pid 1 is alive: its folder is left alone. So is anything not named like a pid.
-    let alive = root.0.join("captures").join("1");
-    let other = root.0.join("captures").join("notes");
-    std::fs::create_dir_all(&alive).unwrap();
-    std::fs::create_dir_all(&other).unwrap();
+    let folder = |name: &str| {
+        let f = root.0.join("captures").join(name);
+        std::fs::create_dir_all(f.join("0")).unwrap();
+        std::fs::write(f.join("0").join("old.png"), PNG).unwrap();
+        f
+    };
+    let (gone, running, other) = (folder("4194999"), folder("4242"), folder("notes"));
 
-    captures.sweep();
+    captures.sweep_except(|pid| pid == 4242);
     assert!(!gone.exists());
-    assert!(alive.exists() && other.exists() && kept.exists());
+    // Another Hermes Chat still running keeps its captures; anything not named like a pid is left alone, and so are
+    // this process's own.
+    assert!(running.exists() && other.exists() && kept.exists());
+}
+
+#[test]
+fn counts_only_a_running_hermes_chat_as_alive() {
+    // This test binary is running, under its own name.
+    assert!(screenshot::instance_alive(std::process::id()));
+    // pid 1 runs, but isn't this program: a reused pid doesn't keep a crashed run's captures.
+    assert!(!screenshot::instance_alive(1));
+    // pid_max is at most 2^22 on Linux, so no process has this one.
+    assert!(!screenshot::instance_alive(4_194_999));
+    // A child that has exited but isn't reaped yet is a zombie: gone.
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap()).arg("--list").stdout(std::process::Stdio::null()).spawn().unwrap();
+    let pid = child.id();
+    for _ in 0..200 {
+        let state = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+        if state.rsplit_once(") ").unwrap().1.starts_with('Z') {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(!screenshot::instance_alive(pid));
+    child.wait().unwrap();
 }
 
 #[test]

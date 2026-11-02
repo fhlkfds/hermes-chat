@@ -294,15 +294,22 @@ export function Main({
 
   // The composer empties as the message goes. If Hermes doesn't take it, the text comes back, in the new chat if one
   // was started; if Hermes may have it, it is held beside the composer until the owner sends it again or dismisses it.
-  // Screenshots sent with it are deleted once Hermes has them, or once the message fails: attachments don't come back.
+  // Screenshots sent with it are deleted once Hermes has the message. If Hermes didn't confirm it, they go back in the
+  // composer instead, since nothing else keeps a copy.
   const send = async (text: string, attachments: Attachment[]) => {
+    let accepted = false;
     try {
       const typed = savedDrafts.take(shownDraft);
       const to = await chatToSendIn();
       if ("delivery" in to) return savedDrafts.afterSend(draftOf(null), typed, to.delivery);
-      savedDrafts.afterSend(draftOf(to.id), typed, await hermes.send(to.id, text, attachments));
+      const delivery = await hermes.send(to.id, text, attachments);
+      accepted = delivery.delivery === "accepted";
+      savedDrafts.afterSend(draftOf(to.id), typed, delivery);
     } finally {
-      desk?.release(attachments.map((a) => a.path));
+      desk?.sent(
+        attachments.map((a) => a.path),
+        accepted,
+      );
     }
   };
 

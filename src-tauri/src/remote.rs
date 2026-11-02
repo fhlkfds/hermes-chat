@@ -1,7 +1,8 @@
 //! `hermes-chat --screenshot`, for a desktop shortcut that works while another window is focused. Wayland doesn't let
 //! an app listen for keys it isn't focused for, so the owner binds a key in their desktop to run that command. It
 //! asks the Hermes Chat already running, over the session bus, to take a screenshot; with none running, the app starts
-//! and takes one once it is signed in.
+//! and takes one once it is signed in. Either way the request waits in Rust until a signed-in window takes it, so one
+//! made at the sign-in screen isn't lost (lib.rs, `screenshot_take_request`).
 //!
 //! The running app owns the bus name `net.l0cky12.HermesChat` and answers one method, `Screenshot`. Only this user's
 //! own programs can reach their session bus, and a request only opens the picker: nothing is captured until the owner
@@ -11,12 +12,11 @@ use dbus::blocking::Connection;
 use dbus::channel::MatchingReceiver;
 use dbus::message::{MatchRule, MessageType};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
 
 pub const NAME: &str = "net.l0cky12.HermesChat";
 const PATH: &str = "/net/l0cky12/HermesChat";
 const IFACE: &str = "net.l0cky12.HermesChat";
-/// The event the webview hears when a desktop shortcut asks for a screenshot.
+/// The event that tells the webview a desktop shortcut asked for a screenshot.
 pub const EVENT: &str = "screenshot-requested";
 
 /// The command line asks for a screenshot.
@@ -30,9 +30,9 @@ pub fn forward() -> Result<(), dbus::Error> {
     conn.with_proxy(NAME, PATH, Duration::from_secs(5)).method_call(IFACE, "Screenshot", ())
 }
 
-/// Takes the bus name and answers `Screenshot` calls by telling the webview, on a thread of its own. If another
-/// Hermes Chat already has the name, the desktop shortcut goes to that one, and this one just doesn't listen.
-pub fn serve(app: AppHandle) {
+/// Takes the bus name and answers `Screenshot` calls with `asked`, on a thread of its own. If another Hermes Chat
+/// already has the name, the desktop shortcut goes to that one, and this one just doesn't listen.
+pub fn serve(asked: impl Fn() + Send + 'static) {
     std::thread::spawn(move || {
         let conn = match Connection::new_session() {
             Ok(c) => c,
@@ -55,7 +55,7 @@ pub fn serve(app: AppHandle) {
                 let path = msg.path().map(|p| p.to_string());
                 let reply = match (iface.as_deref(), member.as_deref(), path.as_deref()) {
                     (Some(IFACE) | None, Some("Screenshot"), Some(PATH)) => {
-                        let _ = app.emit(EVENT, ());
+                        asked();
                         msg.method_return()
                     }
                     (Some("org.freedesktop.DBus.Peer"), Some("Ping"), _) => msg.method_return(),

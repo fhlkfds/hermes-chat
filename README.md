@@ -40,12 +40,12 @@ To run it from a terminal, set the variable yourself: `WEBKIT_DISABLE_DMABUF_REN
 
 Ctrl+Shift+S (or the camera button in the composer) takes a screenshot of a region or window and attaches it to the message you're writing, for you to review before sending. Change or turn off the shortcut in Settings → General → Screenshots.
 
-- **Hyprland, Sway and other wlroots compositors:** install `slurp` and `grim` (`sudo pacman -S --needed slurp grim`). You drag a region, or click a window. Their screenshot portals capture only the whole screen.
+- **Hyprland, Sway and other wlroots compositors:** install `slurp` and `grim` (`sudo pacman -S --needed slurp grim`). You drag a region, or click a window. Without them the app says what to install and captures nothing, because the screenshot portals there can't let you pick.
 - **GNOME and KDE Plasma:** the desktop's screenshot portal shows its own region and window picker. It needs `xdg-desktop-portal` and `xdg-desktop-portal-gnome` or `xdg-desktop-portal-kde`.
 
-That shortcut works only while Hermes Chat is focused. Wayland apps can't see keys pressed in other windows, so for a shortcut that works anywhere, bind a key in your desktop's settings to `hermes-chat --screenshot`. For example, on Hyprland: `bind = SUPER SHIFT, S, exec, hermes-chat --screenshot`. If Hermes Chat is open, the screenshot goes to the chat on screen. If it isn't open, it starts, and takes the screenshot once you're signed in. When it might need to start, use `env WEBKIT_DISABLE_DMABUF_RENDERER=1 hermes-chat --screenshot`.
+That shortcut works only while Hermes Chat is focused. Wayland apps can't see keys pressed in other windows, so for a shortcut that works anywhere, bind a key in your desktop's settings to `hermes-chat --screenshot`. For example, on Hyprland: `bind = SUPER SHIFT, S, exec, hermes-chat --screenshot`. If Hermes Chat is open, the screenshot goes to the chat on screen. If it isn't open, or is on the sign-in screen, the screenshot is taken once you're signed in, if that's within two minutes. When it might need to start, use `env WEBKIT_DISABLE_DMABUF_RENDERER=1 hermes-chat --screenshot`.
 
-Captures wait in `$XDG_RUNTIME_DIR/hermes-chat/captures/`, readable only by you. Each one is deleted once its message is sent, when you remove it, when you leave the chat without sending it, and when the app quits. Nothing is uploaded until you send the message.
+Captures wait in `$XDG_RUNTIME_DIR/hermes-chat/captures/`, readable only by you. Each one is deleted once Hermes takes its message, when you remove it, when you leave the chat without sending it, and when the app quits. If Hermes doesn't confirm the message, the screenshot goes back in the composer instead. If the app is killed, its captures are deleted the next time it starts, or when you log out. Nothing is uploaded until you send the message.
 
 ## Test
 

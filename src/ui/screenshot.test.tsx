@@ -85,7 +85,9 @@ async function signedIn() {
   return { server, hermes, rust, user, view };
 }
 
-const chips = () => screen.queryAllByText(/^screenshot-\d{4}-\d\d-\d\d-\d{6}\.png$/);
+/** The screenshots staged in the composer (not the names shown on sent messages). */
+const chips = () =>
+  [...document.querySelectorAll(".composer .chip")].filter((c) => /screenshot-\d{4}-\d\d-\d\d-\d{6}\.png/.test(c.textContent ?? ""));
 
 describe("Taking a screenshot for the composer", () => {
   it("attaches the capture for review, then sends it to Hermes and deletes it", async () => {
@@ -112,6 +114,22 @@ describe("Taking a screenshot for the composer", () => {
     expect(sent[0].params).toMatchObject({ filename: `${rust.names[0]}.png`, content_base64: btoa(PNG) });
     expect(sent[1].params).toMatchObject({ text: "What's wrong in this dialog?" });
     expect(rust.attached).not.toHaveBeenCalled();
+  });
+
+  it("puts the capture back in the composer when Hermes doesn't take the message", async () => {
+    const { server, hermes, rust, user } = await signedIn();
+    server.handlers["image.attach_bytes"] = (r) => server.fail(r.id, 4004, "unknown method image.attach_bytes");
+    await user.keyboard("{Control>}{Shift>}s{/Shift}{/Control}");
+    await rust.land();
+    await waitFor(() => expect(chips()).toHaveLength(1));
+    await user.type(composer(), "What's wrong here?{Enter}");
+    await settle(hermes);
+
+    // Not deleted: it's the only copy, back for the owner to send again or remove.
+    await waitFor(() => expect(chips()).toHaveLength(1));
+    expect(rust.discarded).toEqual([]);
+    expect(screen.getByText(/so its screenshot is back here/)).toBeTruthy();
+    expect(server.requests.map((r) => r.method)).not.toContain("prompt.submit");
   });
 
   it("deletes a capture the owner removes before sending", async () => {
@@ -197,6 +215,20 @@ describe("Taking a screenshot for the composer", () => {
     // The button still works.
     await user.click(screen.getByRole("button", { name: "Attach a screenshot" }));
     expect(rust.names).toHaveLength(1);
+  });
+});
+
+describe("A desktop without a way to take screenshots", () => {
+  it("says what to install in Settings", async () => {
+    const server = new FakeHermes();
+    const hermes = await connect(server.openPipe);
+    const rust = fakeRust(server);
+    rust.wiring.support = async () => ({ ok: false, summary: "On Hyprland, Sway and other wlroots desktops, Hermes Chat picks a region or window with slurp and grim." });
+    const user = userEvent.setup();
+    render(<Main hermes={hermes} connection={{ mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" }} onSignOut={async () => {}} screenshots={rust.wiring} />);
+    await settle(hermes);
+    await user.click(screen.getByTitle("Settings"));
+    expect((await screen.findByRole("alert")).textContent).toContain("picks a region or window with slurp and grim");
   });
 });
 

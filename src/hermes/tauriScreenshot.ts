@@ -14,11 +14,15 @@ export const tauriScreenshots: ScreenshotApi = {
 export type ScreenshotSupport = { ok: boolean; summary: string };
 export const screenshotSupport = () => invoke<ScreenshotSupport>("screenshot_support");
 
-/** Calls `fn` whenever a desktop shortcut asks for a screenshot, including once if one started the app. */
+/**
+ * Calls `fn` whenever a desktop shortcut asks for a screenshot. Rust keeps the request until a window takes it, so one
+ * made before this window was signed in (or one that started the app) is taken now, if it's recent.
+ */
 export function onDesktopScreenshot(fn: () => void): () => void {
+  const take = () => void invoke<boolean>("screenshot_take_request").then((asked) => asked && fn(), () => {});
   // Outside the app (tests, a plain browser) there is no Rust to listen to, and nothing to do.
-  const stop = listen("screenshot-requested", () => fn()).catch(() => undefined);
-  void invoke<boolean>("screenshot_launch_request").then((asked) => asked && fn(), () => {});
+  const stop = listen("screenshot-requested", take).catch(() => undefined);
+  take();
   return () => void stop.then((s) => s?.());
 }
 

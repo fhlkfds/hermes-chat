@@ -133,6 +133,44 @@ describe("Screenshot desk", () => {
     expect(rust.names).toHaveLength(2);
   });
 
+  it("hands a capture to the composer now on screen when the one checking it goes meanwhile", async () => {
+    const rust = fakeApi();
+    const desk = new ScreenshotDesk(rust.api);
+    // The first composer's check is still running when it goes (another chat opened).
+    let check!: (kept: string[]) => void;
+    const first: ScreenshotSink = { attach: () => new Promise((r) => (check = r)), note: () => {} };
+    const stop = desk.attachTo(first);
+    const taking = desk.capture();
+    await rust.land({ path: "/c/1/0/a.png" });
+    stop();
+    const second = sink();
+    desk.attachTo(second.s);
+    check(["/c/1/0/a.png"]);
+    await taking;
+    expect(second.attached).toEqual([["/c/1/0/a.png"]]);
+    expect(rust.discarded).toEqual([]);
+  });
+
+  it("puts captures back when Hermes didn't confirm the message, and deletes them once it did", async () => {
+    const rust = fakeApi();
+    const desk = new ScreenshotDesk(rust.api);
+    const composer = sink();
+    desk.attachTo(composer.s);
+    const taking = desk.capture();
+    await rust.land({ path: "/c/1/0/a.png" });
+    await taking;
+
+    desk.sent(["/c/1/0/a.png", "/home/liam/rack.png"], false);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(composer.attached).toEqual([["/c/1/0/a.png"], ["/c/1/0/a.png"]]);
+    expect(composer.notes).toEqual(["Hermes didn't confirm it got your message, so its screenshot is back here. Send it again, or remove it."]);
+    expect(rust.discarded).toEqual([]);
+
+    desk.sent(["/c/1/0/a.png"], true);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(rust.discarded).toEqual(["/c/1/0/a.png"]);
+  });
+
   it("stops handing captures to a composer that has gone", async () => {
     const rust = fakeApi();
     const desk = new ScreenshotDesk(rust.api);
