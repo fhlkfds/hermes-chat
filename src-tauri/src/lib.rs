@@ -7,6 +7,7 @@ pub mod screenshot;
 pub mod transport;
 pub mod tunnel;
 pub mod web_page;
+pub mod update;
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -427,10 +428,17 @@ pub fn run(screenshot: bool) {
     if screenshot {
         screenshots.requests.ask();
     }
-    tauri::Builder::default()
+    let context = tauri::generate_context!();
+    let mut builder = tauri::Builder::default();
+    // The updater needs a public key to start, so it is there only in a build given one (README, "Updates").
+    if update::configured(context.config()) {
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    }
+    builder
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .manage(screenshots)
+        .manage(update::Updates::default())
         .on_permission_request(|webview, kind| permission(&webview, kind))
         .setup(|app| {
             use tauri::Emitter;
@@ -447,6 +455,9 @@ pub fn run(screenshot: bool) {
             if let Err(e) = app.state::<Screenshots>().captures() {
                 eprintln!("hermes-chat: couldn't clean up old screenshots: {e}");
             }
+            // Which package the binary came from, read before anything can upgrade it.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move { handle.state::<update::Updates>().start().await });
             let handle = app.handle().clone();
             remote::serve(move || {
                 handle.state::<Screenshots>().requests.ask();
@@ -488,9 +499,14 @@ pub fn run(screenshot: bool) {
             screenshot_sync_outbox,
             screenshot_pending_request,
             screenshot_ack_request,
-            screenshot_show_window
+            screenshot_show_window,
+            update::update_install_kind,
+            update::update_check,
+            update::update_download_and_install,
+            update::app_restart,
+            update::restart_drafts_take
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         // Outbox persistence in the renderer can precede its asynchronous retention IPC. Leave remaining captures
         // for the next startup's sweep, after persisted references are known, rather than risk deleting Retry bytes.

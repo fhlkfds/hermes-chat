@@ -659,6 +659,19 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 .voice-row { padding: 8px 0; border-top: 1px solid var(--line); }
 .voice-row:first-of-type { border-top: 0; }
 .voice-row-head { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+/* updates */
+.settings-btn { position: relative; }
+.update-dot { position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; }
+.update-status { margin-top: 8px; }
+.update-status > p { margin: 0 0 10px; }
+.update-status .btn { margin-top: 4px; }
+.update-notes-title { font-size: calc(13rem / 14); font-weight: 600; margin: 14px 0 6px; }
+.update-notes { margin: 0 0 12px; padding-left: 20px; font-size: calc(13rem / 14); line-height: 1.6; }
+.update-command { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; }
+.update-command code { flex: 1; min-width: 0; padding: 8px 10px; border-radius: 8px; background: var(--raised-2); border: 1px solid var(--line); overflow-x: auto; white-space: nowrap; }
+.update-warning { color: var(--warn); }
+.update-progress { width: 100%; height: 8px; accent-color: var(--accent); }
+.selectable { user-select: text; -webkit-user-select: text; }
 .big-num { font-size: calc(20rem / 14); font-weight: 600; font-variant-numeric: tabular-nums; }
 .select {
   height: 32px; padding: 0 8px; border-radius: 8px; background: var(--raised-2); border: 1px solid var(--line); color: var(--text);

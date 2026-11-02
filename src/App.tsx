@@ -11,6 +11,8 @@ import { exportChat } from "./hermes/exportChat";
 import { projectLinks, projectScope } from "./hermes/projectLinks";
 import { ProjectsStore, type Project } from "./hermes/projects";
 import { systemHeaderKeyring, systemKeyring } from "./hermes/tauriKeyring";
+import { appUpdates } from "./hermes/tauriUpdates";
+import { needsAttention } from "./hermes/updates";
 import { desktopNotify } from "./hermes/tauriNotify";
 import { ScreenshotDesk, type ScreenshotApi } from "./hermes/screenshots";
 import { onDesktopScreenshot, screenshotSupport, showWindow, syncScreenshotOutbox, tauriScreenshots, type ScreenshotSupport } from "./hermes/tauriScreenshot";
@@ -151,6 +153,15 @@ export default function App() {
     });
   }, []);
 
+  // Updates: checked once as the app starts, if the owner wants that. Back in the window, a package update waiting to be
+  // installed looks again for pacman having installed it, which the owner does in a terminal.
+  useEffect(() => {
+    if (getUIPrefs().checkUpdatesOnLaunch && appUpdates.getSnapshot().state === "idle") void appUpdates.check();
+    const onFocus = () => void appUpdates.check({ installedOnly: true });
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
+
   if (hermes)
     return (
       <Main
@@ -287,6 +298,7 @@ export function Main({
   // Server files covers the chat panes too. The folder open last stays for this sign-in.
   const [filesOpen, setFilesOpen] = useState(false);
   const [filesPath, setFilesPath] = useState<string>();
+  const updateWaiting = needsAttention(useSyncExternalStore(appUpdates.subscribe, appUpdates.getSnapshot));
   // The chat to reopen at launch, until Hermes's list shows it is there or gone, or the owner goes somewhere first.
   const [reopening, setReopening] = useState(() => (reopenLast ? chatToReopen(profile) : undefined));
   // One pane, or two side by side. The chat to reopen opens at once when the list saved on this computer has it, so the
@@ -750,6 +762,7 @@ export function Main({
         }}
         filesOpen={filesOpen && !settingsOpen && !projectScreenOpen}
         onSettings={() => { setProjectOpen(false); setFilesOpen(false); setShowTextGeneration(undefined); setSettingsOpen(true); }}
+        updateWaiting={updateWaiting}
       />
       {listOpen && (
         <ChatList
