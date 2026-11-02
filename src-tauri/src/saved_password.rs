@@ -1,14 +1,16 @@
 //! The dashboard password, kept in the system keyring (the Secret Service: GNOME Keyring or KWallet) so the
-//! app can sign in at launch without asking. The app keeps one sign-in, so there is one entry. The keyring
+//! app can sign in at launch without asking, and beside it the extra request headers, whose values may be secrets
+//! such as a Cloudflare Access client secret. The app keeps one sign-in, so there is one entry of each. The keyring
 //! talks D-Bus and blocks, so each call runs off the async runtime.
 
 use keyring::{Entry, Error};
 
 const SERVICE: &str = "hermes-chat";
-const ACCOUNT: &str = "dashboard-password";
+pub const PASSWORD: &str = "dashboard-password";
+pub const HEADERS: &str = "extra-request-headers";
 
-fn entry() -> Result<Entry, Error> {
-    Entry::new(SERVICE, ACCOUNT)
+fn entry(account: &str) -> Result<Entry, Error> {
+    Entry::new(SERVICE, account)
 }
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, Error> + Send + 'static) -> Result<T, String> {
@@ -18,9 +20,9 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, Error> + Send
         .map_err(|e| format!("The system keyring failed: {e}"))
 }
 
-/// The saved password, or none if nothing is saved.
-pub async fn load() -> Result<Option<String>, String> {
-    blocking(|| match entry()?.get_password() {
+/// The saved secret, or none if nothing is saved.
+pub async fn load(account: &'static str) -> Result<Option<String>, String> {
+    blocking(move || match entry(account)?.get_password() {
         Ok(p) => Ok(Some(p)),
         Err(Error::NoEntry) => Ok(None),
         Err(e) => Err(e),
@@ -28,13 +30,13 @@ pub async fn load() -> Result<Option<String>, String> {
     .await
 }
 
-pub async fn save(password: String) -> Result<(), String> {
-    blocking(move || entry()?.set_password(&password)).await
+pub async fn save(account: &'static str, secret: String) -> Result<(), String> {
+    blocking(move || entry(account)?.set_password(&secret)).await
 }
 
-/// Deletes the saved password. Nothing saved counts as done.
-pub async fn delete() -> Result<(), String> {
-    blocking(|| match entry()?.delete_credential() {
+/// Deletes the saved secret. Nothing saved counts as done.
+pub async fn delete(account: &'static str) -> Result<(), String> {
+    blocking(move || match entry(account)?.delete_credential() {
         Ok(()) | Err(Error::NoEntry) => Ok(()),
         Err(e) => Err(e),
     })

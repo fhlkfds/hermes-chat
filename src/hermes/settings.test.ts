@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type Account, type Keyring, savedSignIn, signIn, signOut } from "./account";
+import { type Account, type Keyring, savedSignIn, signIn, signInForm, signOut } from "./account";
 import { localChatCache } from "./chatCache";
 import { FakeHermes, row } from "./fakeHermes";
 import { memoryCache } from "./memoryCache";
@@ -19,11 +19,12 @@ function memoryKeyring(password?: string): Keyring & { password?: string; broken
 }
 
 /** An account against a fake dashboard whose password is `hunter2`. */
-function account(keyring = memoryKeyring()) {
+function account(keyring = memoryKeyring(), headerKeyring = memoryKeyring()) {
   const server = new FakeHermes();
   let saved: Omit<SignInDetails, "password"> = { mode: "ssh", sshTarget: "", url: "", username: "" };
   const a: Account = {
     keyring,
+    headerKeyring,
     store: { load: () => saved, save: (d) => void (saved = d) },
     connect: async (d) => {
       if (d.password !== "hunter2") throw new Error("Wrong username or password.");
@@ -31,7 +32,7 @@ function account(keyring = memoryKeyring()) {
     },
     readSaved: (_d, reason) => readSaved(server.openPipe, reason, memoryCache()),
   };
-  return { server, keyring, account: a, saved: () => saved };
+  return { server, keyring, headerKeyring, account: a, saved: () => saved };
 }
 
 describe("Saved password", () => {
@@ -54,7 +55,7 @@ describe("Saved password", () => {
     const { account: a, server } = account(first.keyring);
     a.store = first.account.store;
     const saved = await savedSignIn(a);
-    expect(saved).toEqual(details);
+    expect(saved).toEqual({ ...details, headers: [] });
     expect((await a.connect(saved!)).getSnapshot().status).toBe("connected");
     expect(server.opened).toBe(1);
   });
@@ -73,6 +74,57 @@ describe("Saved password", () => {
     const { hermes, notSaved } = await signIn(details, a);
     expect(hermes.getSnapshot().status).toBe("connected");
     expect(notSaved).toBe("Couldn't save the password in the system keyring: no Secret Service running");
+  });
+});
+
+describe("Extra request headers", () => {
+  const access: SignInDetails = {
+    ...details,
+    mode: "url",
+    url: "https://hermes.example.com",
+    headers: [
+      { name: "CF-Access-Client-Id", value: "id.access" },
+      { name: "CF-Access-Client-Secret", value: "s3cret" },
+    ],
+  };
+
+  it("are saved in the system keyring, never beside the rest of the sign-in, and come back at launch", async () => {
+    const first = account();
+    await signIn(access, first.account);
+    expect(JSON.parse(first.headerKeyring.password!)).toEqual(access.headers);
+    expect(first.saved()).toEqual({ mode: "url", sshTarget: "liam@hermes", url: "https://hermes.example.com", username: "liam" });
+    expect(JSON.stringify(first.saved())).not.toContain("s3cret");
+    expect(await savedSignIn(first.account)).toEqual(access);
+  });
+
+  it("stay after Sign out, so the sign-in screen still has them", async () => {
+    const { account: a } = account();
+    const { hermes } = await signIn(access, a);
+    await signOut(hermes, a);
+    expect(await savedSignIn(a)).toBeUndefined();
+    expect(await signInForm(a)).toEqual({ ...access, password: "" });
+  });
+
+  it("are deleted from the keyring when the owner signs in with none", async () => {
+    const { account: a, headerKeyring } = account();
+    await signIn(access, a);
+    await signIn({ ...access, headers: [] }, a);
+    expect(headerKeyring.password).toBeUndefined();
+  });
+
+  it("are none when the keyring entry is unreadable or isn't a list of headers", async () => {
+    for (const stored of ["not json", '{"name":"X"}', '[{"name":"X"},{"name":"Y","value":"1"},null]']) {
+      const { account: a } = account(memoryKeyring("hunter2"), memoryKeyring(stored));
+      expect((await savedSignIn(a))?.headers).toEqual(stored.startsWith("[") ? [{ name: "Y", value: "1" }] : []);
+    }
+  });
+
+  it("still sign in when the keyring can't save them, and say so without the values", async () => {
+    const headerKeyring = memoryKeyring();
+    headerKeyring.broken = "the keyring is locked";
+    const { account: a } = account(memoryKeyring(), headerKeyring);
+    const { notSaved } = await signIn(access, a);
+    expect(notSaved).toBe("Couldn't save the extra request headers in the system keyring: the keyring is locked");
   });
 });
 

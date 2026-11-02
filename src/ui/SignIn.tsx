@@ -1,8 +1,8 @@
 // Sign-in over SSH (ADR 0003) or straight to a dashboard URL, built from the prototype's first-run screen and its
 // connection form.
 import { useState } from "react";
-import { Globe, KeyRound, Terminal } from "lucide-react";
-import type { SignInDetails } from "../hermes/tauriPipe";
+import { Globe, KeyRound, Plus, ShieldCheck, Terminal, X } from "lucide-react";
+import type { ExtraHeader, SignInDetails } from "../hermes/tauriPipe";
 
 export function SignIn({
   initial,
@@ -18,6 +18,8 @@ export function SignIn({
   const [busy, setBusy] = useState(false);
   const set = (patch: Partial<SignInDetails>) => setD({ ...d, ...patch });
   const ready = (d.mode === "ssh" ? d.sshTarget : d.url).trim() && d.username.trim() && d.password;
+  const headers = d.headers ?? [];
+  const setHeader = (i: number, patch: Partial<ExtraHeader>) => set({ headers: headers.map((h, j) => (j === i ? { ...h, ...patch } : h)) });
   return (
     <div className="first-run">
       <div className="first-run-card">
@@ -31,7 +33,8 @@ export function SignIn({
             if (!ready || busy) return;
             setBusy(true);
             try {
-              await onSignIn(d);
+              // Rows left blank are dropped; Rust checks the rest.
+              await onSignIn({ ...d, headers: headers.filter((h) => h.name.trim() || h.value.trim()) });
             } finally {
               setBusy(false);
             }
@@ -61,6 +64,47 @@ export function SignIn({
                 <Globe size={12} /> <code>http://</code> isn't encrypted unless it stays on this computer or on Tailscale.
               </span>
             </label>
+          )}
+          {d.mode === "url" && (
+            <fieldset className="field extra-headers">
+              <legend className="field-label">Extra request headers</legend>
+              {headers.map((h, i) => (
+                <div className="header-row" key={i}>
+                  <input
+                    aria-label={`Header ${i + 1} name`}
+                    placeholder="CF-Access-Client-Id"
+                    spellCheck={false}
+                    autoComplete="off"
+                    value={h.name}
+                    onChange={(e) => setHeader(i, { name: e.target.value })}
+                  />
+                  <input
+                    aria-label={`Header ${i + 1} value`}
+                    type="password"
+                    placeholder="Value"
+                    autoComplete="off"
+                    value={h.value}
+                    onChange={(e) => setHeader(i, { value: e.target.value })}
+                  />
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    aria-label={`Remove header ${i + 1}`}
+                    title="Remove"
+                    onClick={() => set({ headers: headers.filter((_, j) => j !== i) })}
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              ))}
+              <button type="button" className="btn add-header" onClick={() => set({ headers: [...headers, { name: "", value: "" }] })}>
+                <Plus size={14} /> Add header
+              </button>
+              <span className="field-hint block">
+                <ShieldCheck size={12} /> For a gateway in front of the dashboard, such as Cloudflare Access. Sent with every request to this URL,
+                never to another site. Saved in your system keyring.
+              </span>
+            </fieldset>
           )}
           <label className="field">
             <span className="field-label">Dashboard username</span>

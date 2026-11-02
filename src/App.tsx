@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { connect, readSaved, type Delivery, type Hermes } from "./hermes/transport";
 import { CHECK_EVERY_MS } from "./hermes/otherProfiles";
-import { type Account, type SavedSignIn, launchSignIn, savedSignIn, signIn, signOut } from "./hermes/account";
+import { type Account, type SavedSignIn, launchSignIn, PASSWORD_NOT_SAVED, savedSignIn, signIn, signInForm, signOut } from "./hermes/account";
 import { localChatCache } from "./hermes/chatCache";
 import { draftKey, drafts } from "./hermes/drafts";
 import { chatToReopen, forgetOpenChat, rememberOpenChat } from "./hermes/uiPrefs";
 import { exportChat } from "./hermes/exportChat";
-import { systemKeyring } from "./hermes/tauriKeyring";
+import { systemHeaderKeyring, systemKeyring } from "./hermes/tauriKeyring";
 import { desktopNotify } from "./hermes/tauriNotify";
 import { tauriPipe, type SignInDetails } from "./hermes/tauriPipe";
 import type { Attachment, Chat, Found } from "./hermes/model";
@@ -22,7 +22,7 @@ import { SignIn } from "./ui/SignIn";
 import { ModelControls } from "./ui/ModelPicker";
 import { getUIPrefs, setUIPrefs, subscribe as subscribeUIPrefs, toggleModelFavorite, type StickyModelPick } from "./hermes/uiPrefs";
 
-const SAVED = "hermes-chat.sign-in"; // Everything but the password, which is in the system keyring.
+const SAVED = "hermes-chat.sign-in"; // Everything but the password and extra headers, which are in the system keyring.
 // Hermes also announces store changes over the socket; the poll catches anything it misses.
 const SYNC_EVERY_MS = 60_000;
 const TOAST_MS = 5_000;
@@ -45,6 +45,7 @@ function loadSignIn(): SavedSignIn {
 
 const account: Account = {
   keyring: systemKeyring,
+  headerKeyring: systemHeaderKeyring,
   store: { load: loadSignIn, save: (d) => localStorage.setItem(SAVED, JSON.stringify(d)) },
   connect: (d) => connect(tauriPipe(d), undefined, localChatCache(d), desktopNotify),
   readSaved: (d, reason) => readSaved(tauriPipe(d), reason, localChatCache(d), desktopNotify),
@@ -54,8 +55,11 @@ const savedDrafts = drafts(localStorage);
 // Applied as the app loads, so the chosen fonts show from the first screen.
 const appearance = appearanceStore(localStorage, document.documentElement);
 
+/** The names of the extra request headers a sign-in sends; only a URL sends them. */
+const headerNames = (d: SignInDetails) => (d.mode === "url" ? (d.headers ?? []).map((h) => h.name.trim()) : []);
+
 /** What launch ends in: signed in with the saved password, or the sign-in screen and why. */
-type Launch = { hermes: Hermes } | { initial: SignInDetails; error?: string };
+type Launch = { hermes: Hermes; headers: string[] } | { initial: SignInDetails; error?: string };
 let launching: Promise<Launch> | undefined;
 
 /**
@@ -66,9 +70,9 @@ let launching: Promise<Launch> | undefined;
 function launch(): Promise<Launch> {
   return (launching ??= (async () => {
     const saved = await savedSignIn(account);
-    if (!saved) return { initial: { ...loadSignIn(), password: "" } };
+    if (!saved) return { initial: await signInForm(account) };
     try {
-      return { hermes: await launchSignIn(saved, account) };
+      return { hermes: await launchSignIn(saved, account), headers: headerNames(saved) };
     } catch (e) {
       return { initial: saved, error: messageOf(e) };
     }
@@ -84,10 +88,15 @@ export default function App() {
   const [notSaved, setNotSaved] = useState<string>();
   // Only the first sign-in after the app starts reopens the last chat; signing in again after Sign out starts fresh.
   const [coldStart, setColdStart] = useState(true);
+  // The names of the extra request headers the connection sends, for Settings.
+  const [headers, setHeaders] = useState<string[]>([]);
 
   useEffect(() => {
     void launch().then((l) => {
-      if ("hermes" in l) return setHermes(l.hermes);
+      if ("hermes" in l) {
+        setHeaders(l.headers);
+        return setHermes(l.hermes);
+      }
       setInitial(l.initial);
       setError(l.error);
     });
@@ -98,6 +107,7 @@ export default function App() {
       <Main
         hermes={hermes}
         connection={account.store.load()}
+        headers={headers}
         notSaved={notSaved}
         reopenLast={coldStart}
         onSignOut={async () => {
@@ -110,7 +120,7 @@ export default function App() {
           setHermes(null);
           setColdStart(false);
           setNotSaved(undefined);
-          setInitial({ ...loadSignIn(), password: "" });
+          setInitial(await signInForm(account));
           setError(failure);
         }}
       />
@@ -133,6 +143,7 @@ export default function App() {
         try {
           const { hermes: h, notSaved } = await signIn(d, account);
           setNotSaved(notSaved);
+          setHeaders(headerNames(d));
           setHermes(h);
         } catch (e) {
           setError(messageOf(e));
@@ -145,12 +156,15 @@ export default function App() {
 export function Main({
   hermes,
   connection,
+  headers = [],
   notSaved,
   reopenLast = false,
   onSignOut,
 }: {
   hermes: Hermes;
   connection: SavedSignIn;
+  /** The names of the extra request headers the connection sends. */
+  headers?: string[];
   notSaved?: string;
   /** This is the app starting: open the profile's last open chat, if the owner wants it reopened. */
   reopenLast?: boolean;
@@ -441,7 +455,8 @@ export function Main({
             route={route}
             unsecure={unsecure}
             username={connection.username}
-            passwordSaved={!notSaved}
+            passwordSaved={!notSaved?.startsWith(PASSWORD_NOT_SAVED)}
+            headers={route?.kind === "url" ? headers : []}
             profile={profile}
             olderPulled={olderPulled}
             cacheBytes={() => hermes.cacheBytes()}

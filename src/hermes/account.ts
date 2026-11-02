@@ -1,12 +1,13 @@
 // Signing in and out. The dashboard password is kept in the system keyring, so the app signs in at launch without
 // asking; the rest of the sign-in is kept beside it, so the sign-in screen after Sign out has everything but the
-// password.
-import type { SignInDetails } from "./tauriPipe";
+// password. The extra request headers, whose values can be secrets, are kept in the keyring too, and stay after Sign
+// out, so the sign-in screen still has them.
+import type { ExtraHeader, SignInDetails } from "./tauriPipe";
 import type { Hermes } from "./transport";
 
-export type SavedSignIn = Omit<SignInDetails, "password">;
+export type SavedSignIn = Omit<SignInDetails, "password" | "headers">;
 
-/** The one saved dashboard password. `load` resolves to undefined when none is saved. */
+/** One saved secret: the dashboard password, or the extra headers as JSON. `load` resolves to undefined when none is saved. */
 export type Keyring = { load(): Promise<string | undefined>; save(password: string): Promise<void>; delete(): Promise<void> };
 
 /**
@@ -15,10 +16,14 @@ export type Keyring = { load(): Promise<string | undefined>; save(password: stri
  */
 export type Account = {
   keyring: Keyring;
+  headerKeyring: Keyring;
   store: { load(): SavedSignIn; save(d: SavedSignIn): void };
   connect: (d: SignInDetails) => Promise<Hermes>;
   readSaved: (d: SignInDetails, reason: string) => Hermes | undefined;
 };
+
+/** How `notSaved` starts when the password itself wasn't kept. */
+export const PASSWORD_NOT_SAVED = "Couldn't save the password in the system keyring";
 
 /** What the Rust side says when the dashboard turns the password down (`TransportError::BadCredentials`). */
 const WRONG_PASSWORD = "Wrong username or password.";
@@ -29,13 +34,23 @@ const WRONG_PASSWORD = "Wrong username or password.";
  */
 export async function signIn(d: SignInDetails, account: Account): Promise<{ hermes: Hermes; notSaved?: string }> {
   const hermes = await account.connect(d);
-  const { password, ...saved } = d;
+  const { password, headers = [], ...saved } = d;
   account.store.save(saved);
+  const notSaved: string[] = [];
+  await account.keyring.save(password).catch((e: Error) => notSaved.push(`${PASSWORD_NOT_SAVED}: ${e.message}`));
+  await (headers.length ? account.headerKeyring.save(JSON.stringify(headers)) : account.headerKeyring.delete()).catch((e: Error) =>
+    notSaved.push(`Couldn't save the extra request headers in the system keyring: ${e.message}`),
+  );
+  return notSaved.length ? { hermes, notSaved: notSaved.join(" ") } : { hermes };
+}
+
+/** The saved extra request headers; none when nothing is saved, or the keyring can't be read. */
+async function savedHeaders(account: Account): Promise<ExtraHeader[]> {
   try {
-    await account.keyring.save(password);
-    return { hermes };
-  } catch (e) {
-    return { hermes, notSaved: `Couldn't save the password in the system keyring: ${(e as Error).message}` };
+    const headers: unknown = JSON.parse((await account.headerKeyring.load()) ?? "[]");
+    return Array.isArray(headers) ? headers.filter((h): h is ExtraHeader => typeof h?.name === "string" && typeof h?.value === "string") : [];
+  } catch {
+    return [];
   }
 }
 
@@ -45,7 +60,12 @@ export async function signIn(d: SignInDetails, account: Account): Promise<{ herm
  */
 export async function savedSignIn(account: Account): Promise<SignInDetails | undefined> {
   const password = await account.keyring.load().catch(() => undefined);
-  return password === undefined ? undefined : { ...account.store.load(), password };
+  return password === undefined ? undefined : { ...account.store.load(), password, headers: await savedHeaders(account) };
+}
+
+/** The sign-in screen's details when it asks: everything saved but the password. */
+export async function signInForm(account: Account): Promise<SignInDetails> {
+  return { ...account.store.load(), password: "", headers: await savedHeaders(account) };
 }
 
 /**
