@@ -1086,7 +1086,7 @@ function ChatView({
       }
     }
   };
-  // The chat's queue, shared by every pane showing it (ADR 0013). A chat not started yet has none.
+  // The chat's queue, shared by every pane showing it (ADR 0014). A chat not started yet has none.
   const queue = useSyncExternalStore(hermes.subscribe, () => hermes.getSnapshot().queues[chat.id]);
   const queueApi: QueueApi | undefined = started
     ? {

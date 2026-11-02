@@ -4,7 +4,7 @@
 // connection (how the app reaches the dashboard, and as whom), never with the password.
 // Each chat's outbox, the messages sent from here that Hermes hasn't confirmed, is kept beside it, per connection,
 // profile and chat. It holds the owner's own words, so like a draft it isn't part of the cache. So is each chat's
-// queue of messages waiting to go after its reply (ADR 0013).
+// queue of messages waiting to go after its reply (ADR 0014).
 // Clearing the cache deletes every connection's chat lists and Saved copies, and nothing else: never the sign-in,
 // drafts, outboxes, appearance or display preferences (uiPrefs.ts).
 import type { SavedSignIn } from "./account";

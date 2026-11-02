@@ -294,7 +294,7 @@ Webview local storage is in `$XDG_DATA_HOME/net.l0cky12.hermes-chat/localstorage
 ## Project documents
 
 - [`GLOSSARY.md`](GLOSSARY.md) defines the app's terms, such as Active, Settled, Saved copy, and Approval.
-- [`docs/adr/`](docs/adr/) records the design decisions, for example the [SSH sign-in](docs/adr/0003-sign-in-through-ssh-tunnel-to-the-dashboard.md), the [Unsecure label](docs/adr/0004-direct-url-sign-in-and-what-counts-as-unsecure.md), [extra request headers](docs/adr/0006-extra-request-headers-for-a-gateway-in-front-of-the-dashboard.md), the [preview pane sandbox](docs/adr/0007-preview-pane-shows-untrusted-content-in-sandboxed-frames.md), [usage and cost](docs/adr/0008-usage-and-cost-come-from-hermes.md), [Server files](docs/adr/0012-server-files-are-the-dashboards-managed-files-read-only.md), and [Queued messages](docs/adr/0013-queued-messages-are-kept-and-sent-by-this-app.md).
+- [`docs/adr/`](docs/adr/) records the design decisions, for example the [SSH sign-in](docs/adr/0003-sign-in-through-ssh-tunnel-to-the-dashboard.md), the [Unsecure label](docs/adr/0004-direct-url-sign-in-and-what-counts-as-unsecure.md), [extra request headers](docs/adr/0006-extra-request-headers-for-a-gateway-in-front-of-the-dashboard.md), the [preview pane sandbox](docs/adr/0007-preview-pane-shows-untrusted-content-in-sandboxed-frames.md), [usage and cost](docs/adr/0008-usage-and-cost-come-from-hermes.md), [Server files](docs/adr/0012-server-files-are-the-dashboards-managed-files-read-only.md), and [Queued messages](docs/adr/0014-queued-messages-are-kept-and-sent-by-this-app.md).
 - [`docs/research/hermes-gateway-api.md`](docs/research/hermes-gateway-api.md) describes the Hermes API that the app relies on.
 
 ## License

@@ -103,7 +103,7 @@ export type ChatCache = {
   /** Keeps a chat's outbox; none deletes it. */
   /** False: storage refused it, so it lasts until the app closes. */
   saveOutbox(profile: string, chatId: string, items: OutgoingItem[]): boolean | void;
-  /** Each chat's queue (ADR 0013), by chat id; chats with an empty queue are left out. */
+  /** Each chat's queue (ADR 0014), by chat id; chats with an empty queue are left out. */
   loadQueues(profile: string): Record<string, ChatQueue>;
   /** Keeps the chat's queue; none, or an empty one, deletes it. False: storage refused it, so it lasts until the app closes. */
   saveQueue(profile: string, chatId: string, queue: ChatQueue | undefined): boolean;
@@ -327,7 +327,7 @@ export type Snapshot = {
   closedReason?: string;
   syncError?: string;
   others: OtherProfiles;
-  /** The shown profile's queues of messages waiting to go after a reply, by chat id (ADR 0013). */
+  /** The shown profile's queues of messages waiting to go after a reply, by chat id (ADR 0014). */
   queues: Record<string, ChatQueue>;
   /** The models the shown profile can switch to (`loadModels`); none until read. */
   models?: ModelCatalog;
@@ -956,7 +956,7 @@ export class Hermes {
   }
 
   /**
-   * Adds a message to the end of the chat's queue (ADR 0013). This app sends it, the next in line, once the chat's
+   * Adds a message to the end of the chat's queue (ADR 0014). This app sends it, the next in line, once the chat's
    * reply has ended and nothing in the chat waits on the owner: no Approval, and no message Hermes didn't take or may
    * have. It goes only while this app runs, is connected, and shows the chat's profile. Returns why it wasn't queued.
    */
@@ -2575,7 +2575,7 @@ function loadOutbox(cache: ChatCache, profile: string): Record<string, OutgoingI
   return Object.fromEntries(Object.entries(cache.loadOutbox(profile)).map(([chatId, rows]) => [chatId, rows.map(loaded)]));
 }
 
-/** Why a queue waits for the owner's Resume (ADR 0013). */
+/** Why a queue waits for the owner's Resume (ADR 0014). */
 const PAUSED = {
   owner: "You paused it.",
   restored: "Hermes Chat closed, or showed another profile, since these were queued. Check the chat, then resume.",
