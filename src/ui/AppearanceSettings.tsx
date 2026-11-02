@@ -1,11 +1,13 @@
-// Settings, Appearance: the interface and code fonts and sizes, and Word wrap, each with a preview of what it changes.
-// Changes apply at once and are kept on this computer only (appearance.ts). Also whether the status bar shows
-// (StatusBar.tsx), so a bar hidden from its own menu can come back.
+// Settings, the Appearance tab: the color scheme, themes, contrast and chat width (ThemePicker.tsx), then the interface
+// and code fonts and sizes, and Word wrap, each with a preview of what it changes. Changes apply at once and are kept
+// on this computer only (appearance.ts). Last, whether the status bar shows (StatusBar.tsx), so a bar hidden from its
+// own menu can come back.
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { RotateCcw } from "lucide-react";
 import { DEFAULT_APPEARANCE, MONO_SIZES, UI_SIZES, type Appearance, type AppearanceStore, type Fonts } from "./appearance";
 import { Markdown } from "./Markdown";
-import type { StatusBarStore } from "./StatusBar";
+import { StatusBarSetting } from "./StatusBar";
+import { ThemeSettings } from "./ThemePicker";
 
 const UI_SAMPLE = "Chats that need attention sit at the top; settled ones wait below. Press Ctrl+K to search every chat.";
 const CODE_SAMPLE = [
@@ -83,9 +85,8 @@ function FontRow({
   );
 }
 
-export function AppearanceSettings({ store, statusBar, listFonts }: { store: AppearanceStore; statusBar: StatusBarStore; listFonts: () => Promise<Fonts> }) {
+export function AppearanceSettings({ store, listFonts }: { store: AppearanceStore; listFonts: () => Promise<Fonts> }) {
   const a = useSyncExternalStore(store.subscribe, store.get);
-  const bar = useSyncExternalStore(statusBar.subscribe, statusBar.get);
   const [fonts, setFonts] = useState<Fonts>({ all: [], mono: [] });
   useEffect(() => {
     let live = true;
@@ -98,71 +99,62 @@ export function AppearanceSettings({ store, statusBar, listFonts }: { store: App
   const otherFonts = fonts.all.filter((f) => !fonts.mono.includes(f));
 
   return (
-    <section>
-      <h2>Appearance</h2>
-      <p className="muted">How Hermes Chat looks on this computer. Changes apply at once.</p>
+    <>
+      <ThemeSettings store={store} />
+      <section>
+        <h2>Fonts</h2>
 
-      <FontRow
-        title="Interface font"
-        hint="Everything outside code blocks and tool output."
-        changed={a.uiFont !== d.uiFont || a.uiSize !== d.uiSize}
-        onReset={() => set({ uiFont: d.uiFont, uiSize: d.uiSize })}
-      >
-        <FontSelect label="Interface font" value={a.uiFont} groups={[["Installed fonts", fonts.all]]} onChange={(uiFont) => set({ uiFont })} />
-        <SizeSelect label="Interface font size" value={a.uiSize} sizes={UI_SIZES} onChange={(uiSize) => set({ uiSize })} />
-      </FontRow>
-      <div className="appearance-preview ui-preview">{UI_SAMPLE}</div>
-
-      <FontRow
-        title="Code font"
-        hint="Code blocks, tool output, and commands waiting for approval."
-        changed={a.monoFont !== d.monoFont || a.monoSize !== d.monoSize}
-        onReset={() => set({ monoFont: d.monoFont, monoSize: d.monoSize })}
-      >
-        <FontSelect
-          label="Code font"
-          value={a.monoFont}
-          groups={[
-            ["Monospace", fonts.mono],
-            ["Other fonts", otherFonts],
-          ]}
-          onChange={(monoFont) => set({ monoFont })}
-        />
-        <SizeSelect label="Code font size" value={a.monoSize} sizes={MONO_SIZES} onChange={(monoSize) => set({ monoSize })} />
-      </FontRow>
-      <div className="appearance-preview code-preview">
-        <Markdown text={CODE_SAMPLE} />
-      </div>
-
-      <div className="appearance-row">
-        <div className="appearance-label">
-          <div className="appearance-title" id="word-wrap-label">
-            Word wrap
-          </div>
-          <div className="muted small">Wrap long lines in code blocks instead of scrolling sideways.</div>
-        </div>
-        <button
-          className="switch"
-          role="switch"
-          aria-checked={a.wordWrap}
-          aria-labelledby="word-wrap-label"
-          onClick={() => set({ wordWrap: !a.wordWrap })}
+        <FontRow
+          title="Interface font"
+          hint="Everything outside code blocks and tool output."
+          changed={a.uiFont !== d.uiFont || a.uiSize !== d.uiSize}
+          onReset={() => set({ uiFont: d.uiFont, uiSize: d.uiSize })}
         >
-          <span className="switch-knob" />
-        </button>
-      </div>
+          <FontSelect label="Interface font" value={a.uiFont} groups={[["Installed fonts", fonts.all]]} onChange={(uiFont) => set({ uiFont })} />
+          <SizeSelect label="Interface font size" value={a.uiSize} sizes={UI_SIZES} onChange={(uiSize) => set({ uiSize })} />
+        </FontRow>
+        <div className="appearance-preview ui-preview">{UI_SAMPLE}</div>
 
-      <div className="appearance-row">
-        <div className="appearance-label">
-          <div className="appearance-title" id="status-bar-label">
-            Status bar
-          </div>
-          <div className="muted small">Context, YOLO, model and connection under the chat. Right-click it to pick what it shows.</div>
+        <FontRow
+          title="Code font"
+          hint="Code blocks, tool output, and commands waiting for approval."
+          changed={a.monoFont !== d.monoFont || a.monoSize !== d.monoSize}
+          onReset={() => set({ monoFont: d.monoFont, monoSize: d.monoSize })}
+        >
+          <FontSelect
+            label="Code font"
+            value={a.monoFont}
+            groups={[
+              ["Monospace", fonts.mono],
+              ["Other fonts", otherFonts],
+            ]}
+            onChange={(monoFont) => set({ monoFont })}
+          />
+          <SizeSelect label="Code font size" value={a.monoSize} sizes={MONO_SIZES} onChange={(monoSize) => set({ monoSize })} />
+        </FontRow>
+        <div className="appearance-preview code-preview">
+          <Markdown text={CODE_SAMPLE} />
         </div>
-        <button className="switch" role="switch" aria-checked={bar.shown} aria-labelledby="status-bar-label" onClick={() => statusBar.set({ shown: !bar.shown })}>
-          <span className="switch-knob" />
-        </button>
-      </div>
-    </section>
+
+        <div className="appearance-row">
+          <div className="appearance-label">
+            <div className="appearance-title" id="word-wrap-label">
+              Word wrap
+            </div>
+            <div className="muted small">Wrap long lines in code blocks instead of scrolling sideways.</div>
+          </div>
+          <button
+            className="switch"
+            role="switch"
+            aria-checked={a.wordWrap}
+            aria-labelledby="word-wrap-label"
+            onClick={() => set({ wordWrap: !a.wordWrap })}
+          >
+            <span className="switch-knob" />
+          </button>
+        </div>
+        <StatusBarSetting />
+      </section>
+    </>
   );
 }

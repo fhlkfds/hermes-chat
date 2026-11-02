@@ -1,4 +1,5 @@
 // What the UI renders. Terms follow GLOSSARY.md: a Chat is Active or Settled, may be Archived, and has one Source.
+import type { ModelPick } from "./models";
 
 export type Source = "app" | "telegram" | "discord" | "cli" | "desktop" | "other";
 
@@ -103,17 +104,23 @@ export type Chat = {
   running?: boolean;
   /** Stop was asked for; the reply keeps running until Hermes ends the turn (`Hermes.stop`). */
   stopping?: boolean;
+  /**
+   * The model the chat runs on: as Hermes last reported it for the chat, or as the owner last picked for it here.
+   * Unknown until the chat is started or resumed on this connection, or for a server that doesn't say.
+   */
+  model?: ModelPick;
   /** What Hermes reports about the chat's session on this connection; gone when the connection drops. */
   live?: SessionLive;
 };
 
 /**
- * A chat's live session as Hermes reports it (`session.info`, `session.usage`, research doc "Status bar").
+ * A chat's live session as Hermes reports it (`session.info`, `session.usage`, research doc "Status bar"); its model is
+ * `Chat.model`.
  * `context`: how full the context window is, only once Hermes has measured it. `yolo`: Hermes runs commands it counts
  * as dangerous without asking; undefined when Hermes doesn't report it. `yoloEverywhere`: on for every chat by Hermes's
  * own settings, so this chat can't turn it off.
  */
-export type SessionLive = { model?: string; context?: ContextUse; yolo?: boolean; yoloEverywhere?: boolean };
+export type SessionLive = { context?: ContextUse; yolo?: boolean; yoloEverywhere?: boolean };
 
 /** `used` of `max` tokens, `percent` full. `estimated`: Hermes counted part of it itself, not the provider. */
 export type ContextUse = { used: number; max: number; percent: number; estimated: boolean };

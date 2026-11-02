@@ -1,0 +1,90 @@
+// Themes: the colors worked out from a theme's four, what contrast does to them, and reading a pasted theme.
+import { describe, expect, it } from "vitest";
+import { BUILTIN_THEMES, contrastRatio, freeName, parseTheme, readThemeJson, resolveMode, themeJson, themeVars } from "./themes";
+
+const newId = () => "custom-new";
+const hermes = BUILTIN_THEMES[0];
+
+describe("Theme colors", () => {
+  it("are the stylesheet's original colors for Hermes in dark at the default contrast", () => {
+    expect(themeVars(hermes.dark, "dark")).toMatchObject({
+      "--bg": "#161618",
+      "--sidebar": "#111113",
+      "--raised": "#1e1e21",
+      "--text": "#e7e7ea",
+      "--muted": "#8d8d90",
+      "--faint": "#5c5c5e",
+      "--accent": "#d97757",
+      "--code-bg": "#0d0d0e",
+      "--text-strong": "#ffffff",
+    });
+  });
+
+  it("keep every built-in theme's text, muted text and accent readable on its background in both modes", () => {
+    for (const theme of BUILTIN_THEMES)
+      for (const mode of ["light", "dark"] as const) {
+        const v = themeVars(theme[mode], mode);
+        expect(contrastRatio(v["--text"], v["--bg"]), `${theme.name} ${mode} text`).toBeGreaterThan(10);
+        expect(contrastRatio(v["--muted"], v["--bg"]), `${theme.name} ${mode} muted`).toBeGreaterThan(4.5);
+        expect(contrastRatio(v["--accent"], v["--bg"]), `${theme.name} ${mode} accent`).toBeGreaterThan(4.5);
+        expect(contrastRatio(v["--on-accent"], v["--accent"]), `${theme.name} ${mode} on accent`).toBeGreaterThan(4.5);
+      }
+  });
+
+  it("spread further from the background as contrast goes up, and stay readable at the lowest", () => {
+    for (const mode of ["light", "dark"] as const) {
+      const at = (c: number) => themeVars(hermes[mode], mode, c);
+      const ratio = (c: number, key: string) => contrastRatio(at(c)[key], at(c)["--bg"]);
+      for (const key of ["--text", "--muted", "--faint"]) {
+        expect(ratio(0, key)).toBeLessThan(ratio(50, key));
+        expect(ratio(50, key)).toBeLessThan(ratio(100, key));
+      }
+      expect(ratio(0, "--muted")).toBeGreaterThan(2.8);
+    }
+  });
+
+  it("follow the system's mode only for System", () => {
+    expect(resolveMode("system", true)).toBe("dark");
+    expect(resolveMode("system", false)).toBe("light");
+    expect(resolveMode("light", true)).toBe("light");
+    expect(resolveMode("dark", false)).toBe("dark");
+  });
+});
+
+describe("Custom themes", () => {
+  const theme = { id: "custom-a1", name: "Mine", light: { ...hermes.light }, dark: { ...hermes.dark } };
+
+  it("read back as they were kept, colors lowercased", () => {
+    expect(parseTheme({ ...theme, dark: { ...theme.dark, accent: "#ABCDEF" } }, newId)).toEqual({
+      ...theme,
+      dark: { ...theme.dark, accent: "#abcdef" },
+    });
+  });
+
+  it("are refused without a name or with a color that isn't #rrggbb", () => {
+    expect(parseTheme({ ...theme, name: "  " }, newId)).toBeUndefined();
+    expect(parseTheme({ ...theme, light: { ...theme.light, text: "red" } }, newId)).toBeUndefined();
+    expect(parseTheme({ ...theme, dark: { ...theme.dark, surface: "#fff" } }, newId)).toBeUndefined();
+    expect(parseTheme({ name: "No modes" }, newId)).toBeUndefined();
+    expect(parseTheme("theme", newId)).toBeUndefined();
+  });
+
+  it("get a new id unless theirs is a custom one", () => {
+    expect(parseTheme({ ...theme, id: "hermes" }, newId)?.id).toBe("custom-new");
+    expect(parseTheme({ ...theme, id: undefined }, newId)?.id).toBe("custom-new");
+  });
+
+  it("go out as JSON and come back in, under a new id", () => {
+    expect(readThemeJson(themeJson(theme), newId)).toEqual({ ...theme, id: "custom-new" });
+  });
+
+  it("say what's wrong with pasted text that isn't a theme", () => {
+    expect(readThemeJson("{nope", newId)).toBe("That isn't valid JSON.");
+    expect(readThemeJson('{"name": "x"}', newId)).toMatch(/needs a "name"/);
+  });
+
+  it("are named so no two share a name", () => {
+    expect(freeName("Ocean copy", ["Ocean"])).toBe("Ocean copy");
+    expect(freeName("Ocean copy", ["Ocean copy", "Ocean copy 2"])).toBe("Ocean copy 3");
+  });
+});

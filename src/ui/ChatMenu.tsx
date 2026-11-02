@@ -1,12 +1,30 @@
 // Right-click menus: the one a chat row opens on right-click, the Menu key or Shift+F10, and the shell the status bar's
-// menu uses too. Escape or a click elsewhere closes one, and focus goes back to what had it.
+// menu uses too. Escape or a click elsewhere closes one, and focus goes back to what had it. The arrow keys move
+// between a menu's items.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { Pencil } from "lucide-react";
+import { Pencil, Sparkles } from "lucide-react";
 import type { Chat } from "../hermes/model";
 import { useReturnFocus } from "./bits";
 
-/** The right-click menu for one chat, at the pointer, kept inside the window. `onRename` hands back to the row. */
-export function ChatMenu({ chat, x, y, onRename, onClose }: { chat: Chat; x: number; y: number; onRename: () => void; onClose: () => void }) {
+/**
+ * The right-click menu for one chat, at the pointer, kept inside the window. `onRename` and `onRegenTitle` hand back
+ * to the row.
+ */
+export function ChatMenu({
+  chat,
+  x,
+  y,
+  onRename,
+  onRegenTitle,
+  onClose,
+}: {
+  chat: Chat;
+  x: number;
+  y: number;
+  onRename: () => void;
+  onRegenTitle: () => void;
+  onClose: () => void;
+}) {
   return (
     <Menu label={`Actions for ${chat.title}`} x={x} y={y} onClose={onClose}>
       <button
@@ -21,6 +39,20 @@ export function ChatMenu({ chat, x, y, onRename, onClose }: { chat: Chat; x: num
           <Pencil size={15} />
         </span>
         <span className="menu-label">Rename…</span>
+      </button>
+      <button
+        role="menuitem"
+        className="menu-item"
+        title="Ask Hermes for a new title from the last five messages"
+        onClick={() => {
+          onClose();
+          onRegenTitle();
+        }}
+      >
+        <span className="menu-icon">
+          <Sparkles size={15} />
+        </span>
+        <span className="menu-label">Regenerate title</span>
       </button>
     </Menu>
   );
@@ -72,8 +104,8 @@ export function Menu({ label, x, y, onClose, children }: { label: string; x: num
         else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
           e.preventDefault();
           const items = [...menu.current!.querySelectorAll<HTMLElement>("[role^=menuitem]")];
-          const at = items.indexOf(document.activeElement as HTMLElement) + (e.key === "ArrowDown" ? 1 : -1);
-          items[(at + items.length) % items.length]?.focus();
+          const at = items.indexOf(document.activeElement as HTMLElement);
+          items[(at + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length]?.focus();
         }
       }}
     >

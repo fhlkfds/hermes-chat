@@ -39,6 +39,10 @@ _Avoid_: download, backup
 The owner's action that changes a chat's title, in every Hermes client. If the chat was renamed or edited elsewhere since the owner started, nothing is overwritten: the app shows the newer title and the owner chooses whether to save again.
 _Avoid_: retitle
 
+**Regenerate title**:
+The owner's action that asks Hermes for a new title made from the chat's last five messages, then saves it as a Rename does. Asking adds nothing to the chat. If Hermes gives no usable title, the old one stays and the row says why.
+_Avoid_: auto-title (Hermes's own titling of a new chat), retitle
+
 **Unread**:
 A chat with something new in it since the owner last opened it, in this app or any other Hermes client. It shows a dot, and so does the collapsed Settled header when a Settled chat is unread. The chat on screen never shows the dot.
 _Avoid_: new, unseen
@@ -69,6 +73,18 @@ _Avoid_: permission, confirmation, prompt
 **Saved copy**:
 The transcript of a chat the owner opened lately, kept on this computer so it can be read while Hermes can't be reached, even after a restart. It shows with a note saying when it was saved, until the chat loads from Hermes again. Each connection and profile keeps its own, without the password, and a copy never holds Approvals or errors. The least recently saved copies are deleted first once they pass the storage limit, deleting a chat deletes its copy, and Clear local cache deletes them all.
 _Avoid_: cache (for one chat's copy), offline mode
+
+**Model pick**:
+The model, reasoning effort and fast mode the composer starts new chats on. It is sticky: it stays after starting a chat, switching chats or restarting the app, and is kept on this computer only. It never changes the profile's default model in Hermes. Picking with a chat on screen switches that chat alone, and becomes the pick for new chats. Switching profile starts again from that profile's own model.
+_Avoid_: default model (that is the profile's, in Hermes), current model
+
+**Reasoning effort**:
+How hard the model thinks before it answers: Off, Low, Medium, High, Extra high or Max. The pill beside the model picker shows it and changes it, and is hidden for a model without reasoning.
+_Avoid_: thinking level
+
+**Favorite model**:
+A model the owner starred in the model picker. Favorites are listed first, and are kept on this computer even when Hermes no longer offers the model.
+_Avoid_: pinned model (pinning is how Hermes stores Active, ADR 0002)
 
 **Unsecure**:
 The warning on a connection whose traffic between this app and the server isn't encrypted.

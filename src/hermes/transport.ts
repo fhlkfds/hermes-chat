@@ -14,8 +14,11 @@
 // Each chat opened lately keeps a Saved copy of its transcript on this computer, shown while Hermes can't be reached
 // or the history is on the way; when the first connection at launch fails, the saved list and copies still open.
 // Unread chats in the other profiles are polled over dashboard REST (otherProfiles.ts).
-// Each chat's model, context fullness and YOLO come from its session's `info` and `usage`: research doc "Status bar".
+// The composer's model picker lists what `model.options` offers (models.ts) and switches one chat at a time with
+// session-scoped `config.set`; nothing here ever writes the profile's default model, reasoning or fast mode.
+// Each chat's context fullness and YOLO come from its session's `info` and `usage`: research doc "Status bar".
 import { APPROVAL_CHOICES, isBroadGrant, isWaiting, offeredChoices, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ConnectionStatus, type ContextPart, type ContextUse, type Found, type Item, type OtherProfiles, type SessionLive, type Source } from "./model";
+import { catalogFromServer, fallbackCatalog, isEffort, modelKey, pickFromInfo, type ModelCatalog, type ModelPick } from "./models";
 import { noOthers, OtherProfilesCheck } from "./otherProfiles";
 import type { OpenPipe, Pipe, PipeEvent, Route } from "./pipe";
 import { isUnsecure } from "./unsecure";
@@ -35,6 +38,8 @@ const LIST_WINDOW_MS = 30 * 86_400_000;
 /** Dashboard REST caps `GET /api/sessions` pages at 100. */
 const PAGE_SIZE = 100;
 const MAX_PAGES = 20;
+/** How long the model list may take: Hermes may first fetch model metadata, which it bounds at 15 seconds. */
+const MODELS_TIMEOUT_MS = 30_000;
 /** Checking another profile for Unread chats reads one page of its most recent ones. */
 const OTHER_PAGE_SIZE = 50;
 /** The most chats one search lists; dashboard REST caps it at 100. */
@@ -123,7 +128,10 @@ type SearchRow = Pick<SessionRow, "id" | "source" | "title" | "preview" | "start
   role?: string | null;
 };
 /** Dashboard REST `GET /api/profiles` (`web_routers/profiles.py`), as far as this app reads it. */
-type ProfileList = { profiles: { name: string }[] };
+type ProfileList = { profiles: { name: string; model?: string | null; provider?: string | null }[] };
+
+/** Legacy `config.set` result for `model` (`ConfigSetResult`): an expensive model is applied only once confirmed. */
+type ConfigSet = { value?: unknown; confirm_required?: boolean; confirm_message?: string; deferred?: boolean; warning?: string };
 
 /** A history row from legacy `session.resume` (research doc §5, `TranscriptMessage`). Tool rows carry the call's
  * name, args and an 80-char `context`; Hermes keeps the result (`content`) only for edit tools. `timestamp`: when the
@@ -238,6 +246,8 @@ export type Snapshot = {
   closedReason?: string;
   syncError?: string;
   others: OtherProfiles;
+  /** The models the shown profile can switch to (`loadModels`); none until read. */
+  models?: ModelCatalog;
 };
 
 /**
@@ -345,6 +355,10 @@ export class Hermes {
   private background = new Set<Promise<unknown>>();
   /** When the shown profile's list last synced on this connection. */
   private listedAt?: number;
+  /** The model list being read, and for which profile. */
+  private modelsLoading?: { profile: string; done: Promise<void> };
+  /** A chat and model Hermes asked to confirm as expensive: picking it again for that chat confirms it. */
+  private confirmModel?: string;
   private others = new OtherProfilesCheck({
     scope: () => (this.pipe && this.snapshot.status === "connected" && !this.closing ? { connection: this.generation, profile: this.profile } : undefined),
     profiles: () => this.profiles(),
@@ -450,7 +464,7 @@ export class Hermes {
     this.resumeOnReconnect.clear();
     this.revealed.clear();
     this.cache.rememberProfile(name);
-    this.update({ profile: name, chats: this.cache.load(name), olderPulled: this.cache.olderPulled(name), archivedListed: false, syncError: undefined });
+    this.update({ profile: name, chats: this.cache.load(name), olderPulled: this.cache.olderPulled(name), archivedListed: false, syncError: undefined, models: undefined });
     // A reconnect under way may be opening the old profile's socket.
     await this.redialing;
     if (this.profile !== name || this.closing) return;
@@ -541,14 +555,28 @@ export class Hermes {
 
   getSnapshot = () => this.snapshot;
 
-  /** Starts a Chat in this app. It is Active from the start, and pinned once Hermes has stored it (ADR 0002). */
-  async newChat(): Promise<string> {
-    const res = (await this.request("session.create", { profile: this.profile, source: APP_SOURCE })) as {
+  /**
+   * Starts a Chat in this app. It is Active from the start, and pinned once Hermes has stored it (ADR 0002). `model`:
+   * what it runs on, for this chat only; left out, it runs on the profile's model.
+   */
+  async newChat(model?: ModelPick): Promise<string> {
+    const res = (await this.request("session.create", {
+      profile: this.profile,
+      source: APP_SOURCE,
+      // `SessionCreateParams`: each is this session's own override. `fast` left out keeps the profile's.
+      ...(model && {
+        model: model.model,
+        provider: model.provider,
+        ...(model.effort && { reasoning_effort: model.effort }),
+        ...(model.fast !== undefined && { fast: model.fast }),
+      }),
+    })) as {
       session_id: string;
       stored_session_id: string;
       info?: unknown;
     };
     const chat: Chat = {
+      model: pickFromInfo(res.info) ?? model,
       id: res.stored_session_id,
       runtimeId: res.session_id,
       title: "New chat",
@@ -584,6 +612,61 @@ export class Hermes {
       this.patchChat(chatId, (c) =>
         c.running ? c : { ...c, items: [...withoutLoadError(c.items), { kind: "error", id: LOAD_ERROR_ID, text: `Couldn't load this chat: ${(e as Error).message}` }] },
       );
+    }
+  }
+
+  /**
+   * Reads the models the profile can switch to into the snapshot's `models`: Hermes's own list over the socket
+   * (`model.options`), else over dashboard REST, else a fallback list built around the model in use, which says why.
+   * Hermes's list is read once per profile; a fallback is tried again on the next call. Only read on a connection open
+   * for the profile shown, and dropped if that connection goes meanwhile: the app asks again once connected.
+   */
+  loadModels(): Promise<void> {
+    const profile = this.profile;
+    if (this.snapshot.models?.profile === profile && this.snapshot.models.source === "server") return Promise.resolve();
+    if (!this.pipe || this.pipeProfile !== profile || this.snapshot.status !== "connected") return Promise.resolve();
+    if (this.modelsLoading?.profile === profile) return this.modelsLoading.done;
+    const gen = this.generation;
+    const done: Promise<void> = this.readModels(profile)
+      .then((models) => void (this.profile === profile && this.generation === gen && this.update({ models })))
+      .finally(() => {
+        if (this.modelsLoading?.done === done) this.modelsLoading = undefined;
+      });
+    this.modelsLoading = { profile, done };
+    return done;
+  }
+
+  /**
+   * Switches a chat to `pick`, for that chat only: the profile's default model, reasoning and fast mode stay as they
+   * are. A chat not open on this connection is resumed first. During a reply Hermes applies it from the next turn.
+   * Rejects if Hermes refuses, and the chat shows its model as before. An expensive model Hermes asks to confirm is
+   * refused with its message; picking it again for the same chat confirms it.
+   */
+  async setModel(chatId: string, pick: ModelPick): Promise<void> {
+    const before = this.snapshot.chats.find((c) => c.id === chatId)?.model;
+    if (!this.snapshot.chats.some((c) => c.id === chatId)) throw new Error("This chat isn't in the list.");
+    this.patchChat(chatId, (c) => ({ ...c, model: pick }));
+    try {
+      const sid = await this.resume(chatId);
+      // Every write names the chat's session: without one, Hermes writes these keys to the profile's config. Given a
+      // session it no longer holds, it refuses rather than falling back (`_SESSION_SCOPED_KEYS`).
+      const set = (key: string, value: string, extra: Record<string, unknown> = {}) =>
+        this.request("config.set", { session_id: sid, profile: this.profile, key, value, ...extra }) as Promise<ConfigSet>;
+      if (before?.provider !== pick.provider || before?.model !== pick.model) {
+        const confirmKey = `${chatId} ${modelKey(pick)}`;
+        const confirmed = this.confirmModel === confirmKey;
+        const res = await set("model", `${pick.model} --provider ${pick.provider} --session`, confirmed ? { confirm_expensive_model: true } : {});
+        this.confirmModel = undefined;
+        if (res?.confirm_required) {
+          this.confirmModel = confirmKey;
+          throw new Error(`${withoutStop(res.confirm_message || "Hermes asks to confirm this model, which costs more")}. Pick it again to use it.`);
+        }
+      }
+      if (pick.effort && pick.effort !== before?.effort) await set("reasoning", pick.effort, { scope: "session" });
+      if (pick.fast !== undefined && pick.fast !== before?.fast) await set("fast", pick.fast ? "fast" : "normal");
+    } catch (e) {
+      this.patchChat(chatId, (c) => (c.model === pick ? { ...c, model: before } : c));
+      throw e;
     }
   }
 
@@ -776,6 +859,34 @@ export class Hermes {
   }
 
   /**
+   * Asks Hermes for a new title made from the chat's last few stored messages, then renames the chat to it like
+   * `rename` does. The messages are read with dashboard REST; the title comes from legacy `llm.oneshot`, a separate
+   * model call on Hermes's title model that adds nothing to the chat. Rejects, leaving the old title, if the chat has
+   * no messages, Hermes gives no usable title, the profile changes meanwhile, or the rename fails.
+   */
+  async regenerateTitle(chatId: string): Promise<string> {
+    const chat = this.snapshot.chats.find((c) => c.id === chatId);
+    if (!chat) throw new Error("This chat isn't in the list.");
+    const from = chat.title;
+    const profile = this.profile;
+    // Tool rows count toward each page, so older pages are read until the last messages are all in.
+    let rows: StoredMessage[] = [];
+    for (let offset = 0; offset < TITLE_MAX_ROWS; offset += TITLE_PAGE_ROWS) {
+      const query = new URLSearchParams({ profile, order: "latest", limit: String(TITLE_PAGE_ROWS), offset: String(offset), inline_images: "false" });
+      const page = ((await this.rest("GET", `${sessionPath(chatId)}/messages?${query}`)) as { messages?: StoredMessage[] }).messages ?? [];
+      rows = [...page, ...rows];
+      if (page.length < TITLE_PAGE_ROWS || saidIn(rows).length >= TITLE_FROM_MESSAGES) break;
+    }
+    const input = titleInput(rows);
+    if (!input) throw new Error("This chat has no messages to make a title from.");
+    const { text } = (await this.request("llm.oneshot", { profile, instructions: TITLE_INSTRUCTIONS, input, max_tokens: 512 })) as { text?: string };
+    const title = cleanTitle(text ?? "");
+    if (!title) throw new Error("Hermes didn't answer with a title.");
+    if (this.profile !== profile) throw new Error("The profile changed before the title was ready.");
+    return this.rename(chatId, title, from);
+  }
+
+  /**
    * Where else Hermes posts its replies in this chat, besides Hermes clients. On the canonical protocol, a reply in a
    * chat started in Telegram or Discord also goes to that platform chat, unless the platform chat has since moved to
    * another session. This app speaks only the legacy protocol, where replies stay in Hermes clients (research doc
@@ -908,6 +1019,14 @@ export class Hermes {
     return this.snapshot.chats.filter((c) => !before.has(c.id) && c.updatedAt < cutoff);
   }
 
+  /**
+   * The shown profile's list has been read from Hermes on this connection, so a chat missing from it is gone (deleted,
+   * archived, or older than the list reaches), not just not yet synced.
+   */
+  hasListed(): boolean {
+    return this.listedAt !== undefined;
+  }
+
   /** The storage the chat lists and Saved copies kept on this computer take, in bytes. */
   cacheBytes(): number {
     return this.cache.bytes();
@@ -989,7 +1108,13 @@ export class Hermes {
     }
     const chat = session_id ? this.snapshot.chats.find((c) => c.runtimeId === session_id) : undefined;
     if (!chat) return;
-    if (type === "session.info") this.infoCount.set(session_id!, (this.infoCount.get(session_id!) ?? 0) + 1);
+    // Sent when the chat's model, reasoning, fast mode or YOLO changes, here or in another Hermes client.
+    if (type === "session.info") {
+      this.infoCount.set(chat.runtimeId!, (this.infoCount.get(chat.runtimeId!) ?? 0) + 1);
+      const model = pickFromInfo(payload);
+      this.patchChat(chat.id, (c) => ({ ...c, ...(model && { model }), live: withLive(c.live, payload) }));
+      return;
+    }
     this.patchChat(chat.id, (c) => applyEvent(c, type, payload));
     if (type === "message.complete") this.stampTurn(chat.id, (payload.persisted_turn ?? {}) as PersistedTurn);
     // By the end of a turn Hermes has stored the session, so a pin that failed earlier can succeed.
@@ -1274,6 +1399,7 @@ export class Hermes {
         this.patchChat(chatId, (c) => ({
           ...c,
           runtimeId: res.session_id,
+          model: pickFromInfo(res.info) ?? c.model,
           live: withLive(undefined, res.info, res.usage),
           running: c.running || !!res.running,
           savedAt: undefined,
@@ -1640,6 +1766,44 @@ export class Hermes {
     return listTitle(row);
   }
 
+  /** See `loadModels`. */
+  private async readModels(profile: string): Promise<ModelCatalog> {
+    const why: string[] = [];
+    const read = async (what: string, ask: () => Promise<unknown>) => {
+      try {
+        const catalog = catalogFromServer(profile, await timeLimit(ask(), MODELS_TIMEOUT_MS));
+        if (!catalog) why.push(`${what} listed no models`);
+        return catalog;
+      } catch (e) {
+        why.push(`${what}: ${withoutStop((e as Error).message)}`);
+        return undefined;
+      }
+    };
+    const catalog =
+      (await read("model.options", () => this.request("model.options", { profile }))) ??
+      (await read("GET /api/model/options", () => this.rest("GET", `api/model/options?${new URLSearchParams({ profile })}`))) ??
+      fallbackCatalog(profile, await this.modelInUse(profile), why.join("; "));
+    catalog.defaultPick ??= await this.modelInUse(profile);
+    // `config.get reasoning` without a session reads the profile's effort; it writes nothing.
+    const effort = await timeLimit(this.request("config.get", { key: "reasoning", profile }), MODELS_TIMEOUT_MS).then(
+      (r) => (r as { value?: unknown } | undefined)?.value,
+      () => undefined,
+    );
+    return isEffort(effort) ? { ...catalog, defaultEffort: effort } : catalog;
+  }
+
+  /** The model a chat on this connection runs on, else the profile's, as dashboard REST lists the profiles. */
+  private async modelInUse(profile: string): Promise<ModelPick | undefined> {
+    const chat = this.snapshot.chats.find((c) => c.model)?.model;
+    if (chat) return { provider: chat.provider, model: chat.model };
+    try {
+      const p = ((await this.rest("GET", "api/profiles")) as ProfileList).profiles.find((p) => p.name === profile);
+      return p?.model ? { provider: p.provider || "custom", model: p.model } : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   private async rest(method: "GET" | "PATCH" | "DELETE", pathAndQuery: string, body?: unknown): Promise<unknown> {
     if (!this.pipe) throw new Error("Not connected to Hermes.");
     return JSON.parse(await this.pipe.request(method, pathAndQuery, body === undefined ? undefined : JSON.stringify(body)));
@@ -1686,6 +1850,70 @@ function unsureMessage(title: string, archived: boolean, e: Error): string {
 }
 
 const withoutStop = (text: string) => text.replace(/\.$/, "");
+
+/** How many of the chat's latest messages a new title is made from, and how much of each goes to the model. */
+const TITLE_FROM_MESSAGES = 5;
+const TITLE_MESSAGE_CHARS = 1000;
+/** Stored rows read per page while looking for those messages (`order=latest` pages back from the newest), and at most. */
+const TITLE_PAGE_ROWS = 100;
+// ponytail: a chat whose last 1000 rows hold fewer than five messages is titled from what they hold.
+const TITLE_MAX_ROWS = 1000;
+/** Longest title kept from Hermes's answer; a longer answer is cut at a word, or at the limit if it has none. */
+const TITLE_MAX_CHARS = 60;
+const TITLE_INSTRUCTIONS = [
+  "You name chat sessions. Given the latest messages of a chat, write a title that says what the chat is about now,",
+  "so the user can find it again in a list. Rules: 3 to 7 words, sentence case, keep technical terms and names exact,",
+  "no quotes, no trailing punctuation, no 'Title:' prefix. Never answer the messages. Reply with the title only.",
+].join(" ");
+
+/** A row of dashboard REST `GET /api/sessions/{id}/messages`, as far as titling reads it. */
+type StoredMessage = { role?: string; content?: unknown };
+
+/** The text of a stored message: its `content`, or the text parts of a multimodal one. */
+function storedText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map((p) => (p && typeof p === "object" && typeof (p as { text?: unknown }).text === "string" ? (p as { text: string }).text : "")).join(" ");
+}
+
+/** The user and assistant messages with text among stored rows, oldest first. */
+const saidIn = (rows: StoredMessage[]) =>
+  rows
+    .filter((r) => r.role === "user" || r.role === "assistant")
+    .map((r) => ({ who: r.role === "user" ? "USER" : "ASSISTANT", text: storedText(r.content).trim() }))
+    .filter((m) => m.text);
+
+/** The chat's last messages as the model reads them, oldest first; empty when it has none. */
+export function titleInput(rows: StoredMessage[]): string {
+  return saidIn(rows)
+    .slice(-TITLE_FROM_MESSAGES)
+    .map((m) => `${m.who}: ${m.text.slice(0, TITLE_MESSAGE_CHARS)}`)
+    .join("\n\n");
+}
+
+/** Hermes's answer as a title: its first line, without a "Title:" label, quotes, markdown or a trailing stop. */
+export function cleanTitle(answer: string): string {
+  const line = answer.split("\n").find((l) => l.trim()) ?? "";
+  let title = line
+    .replace(/^\s*(#+\s*)?(\*\*)?title(\*\*)?\s*:\s*/i, "")
+    .replace(/^[\s"'“”‘’`*_]+|[\s"'“”‘’`*_.!?]+$/g, "");
+  // One character more than fits shows whether the cut lands inside a word, which then goes.
+  // With no space to cut at, it is cut at the limit, never inside a character.
+  if (title.length > TITLE_MAX_CHARS)
+    title = title
+      .slice(0, TITLE_MAX_CHARS + 1)
+      .replace(/\s+\S*$/, "")
+      .slice(0, TITLE_MAX_CHARS)
+      .replace(/[\uD800-\uDBFF]$/, "");
+  return title.trim();
+}
+
+/** `p`, or a rejection once `ms` have passed without an answer. */
+function timeLimit<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error("Hermes didn't answer in time.")), ms)));
+  return Promise.race([p, late]).finally(() => clearTimeout(timer));
+}
 
 const sessionPath = (chatId: string) => `api/sessions/${encodeURIComponent(chatId)}`;
 
@@ -1797,6 +2025,7 @@ const obj = (v: unknown) => (v && typeof v === "object" && !Array.isArray(v) ? (
 
 /**
  * `prev` updated from a session's `info` (`server._session_info`) and `usage` (`server._get_usage`, or `info.usage`).
+ * The model is `Chat.model` (`pickFromInfo`).
  * Context fullness only as Hermes measured it: none until it has. YOLO only when Hermes reports it.
  */
 function withLive(prev: SessionLive | undefined, info?: unknown, usage?: unknown): SessionLive | undefined {
@@ -1804,8 +2033,6 @@ function withLive(prev: SessionLive | undefined, info?: unknown, usage?: unknown
   const u = obj(usage) ?? obj(i?.usage);
   if (!i && !u) return prev;
   const live: SessionLive = { ...prev };
-  const model = [i?.model, u?.model].find((m): m is string => typeof m === "string" && m !== "");
-  if (model) live.model = model;
   if (typeof i?.yolo === "boolean") Object.assign(live, { yolo: i.yolo, yoloEverywhere: i.approval_mode === "off" });
   if (u) live.context = contextUse(u);
   return live;
@@ -1892,8 +2119,6 @@ function applyEvent(c: Chat, type: string, p: Record<string, unknown>): Chat {
             : i,
         ),
       };
-    case "session.info":
-      return { ...c, live: withLive(c.live, p) };
     // Every second or so while a turn runs.
     case "session.usage":
       return { ...c, live: withLive(c.live, undefined, p.usage) };

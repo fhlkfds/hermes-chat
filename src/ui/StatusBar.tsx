@@ -1,67 +1,39 @@
 // The status bar along the bottom of the chat pane: how full the chat's context window is, its YOLO switch, its model,
 // and the connection. Right-click picks what it shows, or hides it; Settings, Appearance shows it again. The choice is
-// kept on this computer (ui-prefs `statusBar`). Nothing is shown that Hermes didn't report.
+// kept in the display preferences (uiPrefs.ts `statusBar`). Nothing is shown that Hermes didn't report.
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Check, Zap } from "lucide-react";
 import type { Chat, ConnectionStatus, ContextPart } from "../hermes/model";
+import { STATUS_BAR_ITEMS, getUIPrefs, setUIPrefs, subscribe } from "../hermes/uiPrefs";
 import { Menu } from "./ChatMenu";
 import { STATUS_LABEL, useReturnFocus } from "./bits";
 
-export const STATUS_ITEMS = [
-  ["context", "Context"],
-  ["yolo", "YOLO"],
-  ["model", "Model"],
-  ["status", "Connection"],
-] as const;
-export type StatusItem = (typeof STATUS_ITEMS)[number][0];
-export type StatusBarPrefs = { shown: boolean; items: StatusItem[] };
+type StatusItem = (typeof STATUS_BAR_ITEMS)[number];
+const LABEL: Record<StatusItem, string> = { context: "Context", yolo: "YOLO", model: "Model", status: "Connection" };
 
-const KEY = "hermes-chat.ui-prefs";
-const ALL = STATUS_ITEMS.map(([id]) => id);
-export const DEFAULT_STATUS_BAR: StatusBarPrefs = { shown: true, items: ALL };
-
-type PrefsStorage = Pick<Storage, "getItem" | "setItem">;
-
-const readPrefs = (storage: PrefsStorage): Record<string, unknown> => {
-  try {
-    const v: unknown = JSON.parse(storage.getItem(KEY) ?? "{}");
-    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
-  } catch {
-    return {};
-  }
+/** The items the bar shows, in its order; ids a newer or older app kept that this one doesn't know are skipped. */
+const useShown = (): StatusItem[] => {
+  const kept = useSyncExternalStore(subscribe, getUIPrefs).statusBar;
+  return STATUS_BAR_ITEMS.filter((i) => kept.includes(i));
 };
+const show = (items: StatusItem[]) => setUIPrefs({ statusBar: items });
 
-/** What `storage` keeps for the status bar, with anything missing or unknown back at its default. */
-export function loadStatusBar(storage: PrefsStorage): StatusBarPrefs {
-  const kept = readPrefs(storage).statusBar as Partial<Record<keyof StatusBarPrefs, unknown>> | undefined;
-  return {
-    shown: typeof kept?.shown === "boolean" ? kept.shown : true,
-    items: Array.isArray(kept?.items) ? ALL.filter((i) => (kept.items as unknown[]).includes(i)) : ALL,
-  };
-}
-
-export type StatusBarStore = { get(): StatusBarPrefs; set(change: Partial<StatusBarPrefs>): void; subscribe(fn: () => void): () => void };
-
-/** The status bar's choices kept in `storage`, beside any other ui-prefs. */
-export function statusBarStore(storage: PrefsStorage): StatusBarStore {
-  let current = loadStatusBar(storage);
-  const listeners = new Set<() => void>();
-  return {
-    get: () => current,
-    set(change) {
-      current = { ...current, ...change };
-      try {
-        storage.setItem(KEY, JSON.stringify({ ...readPrefs(storage), statusBar: current }));
-      } catch {
-        // Kept until the app closes.
-      }
-      listeners.forEach((fn) => fn());
-    },
-    subscribe(fn) {
-      listeners.add(fn);
-      return () => void listeners.delete(fn);
-    },
-  };
+/** The Settings switch that shows the bar again with every item, or hides it. */
+export function StatusBarSetting() {
+  const shown = useShown().length > 0;
+  return (
+    <div className="appearance-row">
+      <div className="appearance-label">
+        <div className="appearance-title" id="status-bar-label">
+          Status bar
+        </div>
+        <div className="muted small">Context, YOLO, model and connection under the chat. Right-click it to pick what it shows.</div>
+      </div>
+      <button className="switch" role="switch" aria-checked={shown} aria-labelledby="status-bar-label" onClick={() => show(shown ? [] : [...STATUS_BAR_ITEMS])}>
+        <span className="switch-knob" />
+      </button>
+    </div>
+  );
 }
 
 const n = (tokens: number) => tokens.toLocaleString();
@@ -223,20 +195,19 @@ function YoloToggle({ chat, status, onYolo }: { chat: Chat; status: ConnectionSt
 export function StatusBar({
   chat,
   status,
-  prefs,
   onYolo,
   onBreakdown,
 }: {
   chat: Chat;
   status: ConnectionStatus;
-  prefs: StatusBarStore;
   onYolo: (on: boolean) => Promise<void>;
   onBreakdown: () => Promise<ContextPart[]>;
 }) {
-  const { shown, items } = useSyncExternalStore(prefs.subscribe, prefs.get);
+  const items = useShown();
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
-  if (!shown) return null;
-  const show = (i: StatusItem) => items.includes(i);
+  // Nothing to show is the same as hidden: unticking the last item hides the bar.
+  if (!items.length) return null;
+  const has = (i: StatusItem) => items.includes(i);
   const live = chat.live;
   return (
     <footer
@@ -247,15 +218,15 @@ export function StatusBar({
         setMenu({ x: e.clientX, y: e.clientY });
       }}
     >
-      {show("context") && live?.context && <ContextMeter context={live.context} onBreakdown={onBreakdown} />}
-      {show("yolo") && <YoloToggle chat={chat} status={status} onYolo={onYolo} />}
+      {has("context") && live?.context && <ContextMeter context={live.context} onBreakdown={onBreakdown} />}
+      {has("yolo") && <YoloToggle chat={chat} status={status} onYolo={onYolo} />}
       <span className="status-gap" />
-      {show("model") && live?.model && (
+      {has("model") && chat.model && (
         <span className="status-item" title="The model this chat uses">
-          {live.model}
+          {chat.model.model}
         </span>
       )}
-      {show("status") && (
+      {has("status") && (
         <span className={`status-item status-conn ${status}`}>
           <span className="conn-dot" aria-hidden />
           {STATUS_LABEL[status]}
@@ -263,16 +234,16 @@ export function StatusBar({
       )}
       {menu && (
         <Menu label="Show in status bar" x={menu.x} y={menu.y} onClose={() => setMenu(null)}>
-          {STATUS_ITEMS.map(([id, label]) => (
+          {STATUS_BAR_ITEMS.map((id) => (
             <button
               key={id}
               role="menuitemcheckbox"
-              aria-checked={show(id)}
+              aria-checked={has(id)}
               className="menu-item"
-              onClick={() => prefs.set({ items: show(id) ? items.filter((i) => i !== id) : ALL.filter((i) => i === id || items.includes(i)) })}
+              onClick={() => show(has(id) ? items.filter((i) => i !== id) : STATUS_BAR_ITEMS.filter((i) => i === id || has(i)))}
             >
-              <span className="menu-icon">{show(id) && <Check size={14} />}</span>
-              <span className="menu-label">{label}</span>
+              <span className="menu-icon">{has(id) && <Check size={14} />}</span>
+              <span className="menu-label">{LABEL[id]}</span>
             </button>
           ))}
           <div className="menu-sep" role="separator" />
@@ -281,7 +252,7 @@ export function StatusBar({
             className="menu-item"
             onClick={() => {
               setMenu(null);
-              prefs.set({ shown: false });
+              show([]);
             }}
           >
             <span className="menu-icon" />

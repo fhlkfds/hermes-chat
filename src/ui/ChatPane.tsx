@@ -1,5 +1,5 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
-import { memo, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
+import { memo, type ReactNode, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { ArrowUp, Brain, ChevronDown, ChevronRight, ChevronUp, CloudOff, FileDown, HardDrive, Paperclip, Search, Square, Wrench, X } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
@@ -51,7 +51,8 @@ const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateS
  * `alsoPostsIn`: the Telegram or Discord chat Hermes will also post its replies in. `draft`: the composer's text, kept
  * outside the pane so it survives switching chats. `onAnswer` answers an Approval card. `onSettle`, `onArchive` and
  * `onExport` are left out for a chat not started yet. `notLoaded`: the chat has no Saved copy and can't load until
- * Hermes is connected. `footer`: what goes under the composer, the status bar. Ctrl+F opens the find bar.
+ * Hermes is connected. `modelControls`: the model picker and reasoning pill, at the bottom left of the composer.
+ * `footer`: what goes under the composer, the status bar. Ctrl+F opens the find bar.
  */
 export function ChatPane({
   chat,
@@ -71,6 +72,7 @@ export function ChatPane({
   onSettle,
   onArchive,
   onExport,
+  modelControls,
   footer,
 }: {
   chat: Chat;
@@ -90,6 +92,7 @@ export function ChatPane({
   onSettle?: (settled: boolean) => void;
   onArchive?: (archived: boolean) => void;
   onExport?: () => void;
+  modelControls?: ReactNode;
   footer?: ReactNode;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -326,6 +329,7 @@ export function ChatPane({
           onSend(t, attachments);
         }}
         onStop={onStop}
+        modelControls={modelControls}
       />
       {footer}
     </div>
@@ -515,6 +519,7 @@ function Composer({
   onAttach,
   onSend,
   onStop,
+  modelControls,
 }: {
   offline: boolean;
   running: boolean;
@@ -532,6 +537,7 @@ function Composer({
   onAttach: (paths: string[]) => Promise<AttachCheck>;
   onSend: (text: string, attachments: Attachment[]) => void;
   onStop: () => void;
+  modelControls?: ReactNode;
 }) {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [refused, setRefused] = useState<string[]>([]);
@@ -646,6 +652,7 @@ function Composer({
           <button className="icon-btn" title="Attach files" onClick={() => void pick()}>
             <Paperclip size={16} />
           </button>
+          {modelControls}
           <span className="composer-keys">Enter to send · Shift+Enter for a new line</span>
           {running ? (
             <button className="send stop" title={stopping ? "Stopping" : "Stop"} disabled={offline || stopping} onClick={onStop}>
