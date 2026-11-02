@@ -1,13 +1,13 @@
 // Icon rail beside a chat list (ADR 0001), ported from the prototype's variants C and A. The list's header is the
 // profile switcher. Settings opens from the rail's foot. Right-clicking a chat opens its menu (ChatMenu.tsx).
-import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Check, ChevronDown, ChevronRight, CircleAlert, EyeOff, LockOpen, Search, Settings, SquarePen, Trash2 } from "lucide-react";
 import type { Chat, ConnectionStatus, OtherProfile, OtherProfiles } from "../hermes/model";
 import { SOURCE_LABEL, isWaiting } from "../hermes/model";
 import { CHECK_EVERY_MS, totalUnread } from "../hermes/otherProfiles";
 import type { Route } from "../hermes/pipe";
 import { RenameConflict, type Snapshot } from "../hermes/transport";
-import { ChatMenu } from "./ChatMenu";
+import { ChatMenu, type ChatProjects } from "./ChatMenu";
 import { ArchiveButton, STATUS_LABEL, SettleButton, SourceIcon, Spinner, composing, relTime, routeLabel, useReturnFocus } from "./bits";
 
 const byRecent = (a: Chat, b: Chat) => b.updatedAt - a.updatedAt;
@@ -150,6 +150,7 @@ function ChatRow({
   onDelete,
   onRename,
   onRegenTitle,
+  projects,
 }: {
   chat: Chat;
   selected: boolean;
@@ -164,6 +165,7 @@ function ChatRow({
   onDelete: () => void;
   onRename: (title: string, from: string) => Promise<unknown>;
   onRegenTitle: () => Promise<unknown>;
+  projects?: ChatProjects;
 }) {
   const [confirming, setConfirming] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -255,6 +257,7 @@ function ChatRow({
       {menu && (
         <ChatMenu
           chat={chat}
+          projects={projects}
           x={menu.x}
           y={menu.y}
           split={split}
@@ -553,9 +556,15 @@ function moveBetweenChats(e: KeyboardEvent<HTMLElement>) {
   rows[rows.indexOf(e.target as HTMLButtonElement) + (e.key === "ArrowDown" ? 1 : -1)]?.focus();
 }
 
-/** The chat list. `archivedListed`: it shows the profile's archived chats instead of the Active and Settled ones. */
+/**
+ * The chat list. `archivedListed`: it shows the profile's archived chats instead of the Active and Settled ones.
+ * `projectSwitcher` sits under the profile's name; `chats` are only the shown project's when one is picked there.
+ * `projectsOf`: the projects a chat's menu offers to put it in or take it out of.
+ */
 export function ChatList({
   profile,
+  projectSwitcher,
+  projectsOf,
   switching,
   status,
   others,
@@ -579,6 +588,8 @@ export function ChatList({
   onRetrySwitch,
 }: {
   profile: string;
+  projectSwitcher?: ReactNode;
+  projectsOf?: (chatId: string) => ChatProjects | undefined;
   switching?: Snapshot["switching"];
   status: ConnectionStatus;
   others: OtherProfiles;
@@ -628,6 +639,7 @@ export function ChatList({
       onDelete={() => onDelete(c.id)}
       onRename={(title, from) => onRename(c.id, title, from)}
       onRegenTitle={() => onRegenTitle(c.id)}
+      projects={projectsOf?.(c.id)}
     />
   );
   return (
@@ -650,6 +662,7 @@ export function ChatList({
           <EyeOff size={16} />
         </button>
       </div>
+      {projectSwitcher && <div className="sb-project">{projectSwitcher}</div>}
       <div className="sb-scroll">
         {switching && (
           <SwitchStatus profile={profile} switching={switching} status={status} onRetry={onRetrySwitch} onBack={() => onSwitchProfile(switching.from)} />

@@ -1,4 +1,4 @@
-import { type ReactNode, type RefObject, useCallback, useLayoutEffect, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { type ReactNode, type RefObject, useCallback, useLayoutEffect, useMemo, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { flushSync } from "react-dom";
 import { Columns2, PanelRight, X } from "lucide-react";
 import { connect, readSaved, type Delivery, type Hermes } from "./hermes/transport";
@@ -8,6 +8,8 @@ import { localChatCache } from "./hermes/chatCache";
 import { draftKey, drafts } from "./hermes/drafts";
 import { chatToReopen, forgetOpenChat, rememberOpenChat } from "./hermes/uiPrefs";
 import { exportChat } from "./hermes/exportChat";
+import { projectLinks, projectScope } from "./hermes/projectLinks";
+import { ProjectsStore, type Project } from "./hermes/projects";
 import { systemHeaderKeyring, systemKeyring } from "./hermes/tauriKeyring";
 import { desktopNotify } from "./hermes/tauriNotify";
 import { tauriPipe, type SignInDetails } from "./hermes/tauriPipe";
@@ -18,7 +20,8 @@ import { ChatPane } from "./ui/ChatPane";
 import { PANE_NAMES, Split, usePaneVisible, type PaneSlot } from "./ui/Split";
 import { SearchPalette } from "./ui/Search";
 import { SettingsScreen } from "./ui/Settings";
-import { composing } from "./ui/bits";
+import { composing, routeLabel } from "./ui/bits";
+import { ProjectScreen, ProjectSwitcher, type ProjectUnread } from "./ui/Projects";
 import { appearanceStore } from "./ui/appearance";
 import { StatusBar } from "./ui/StatusBar";
 import { systemFonts } from "./ui/tauriFonts";
@@ -90,6 +93,7 @@ const account: Account = {
 };
 
 const savedDrafts = drafts(localStorage);
+const savedProjects = projectLinks(localStorage);
 // Applied as the app loads, so the chosen fonts show from the first screen.
 const appearance = appearanceStore(localStorage, document.documentElement);
 
@@ -238,6 +242,7 @@ export function Main({
     hermes.getSnapshot,
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [projectOpen, setProjectOpen] = useState(false);
   // The chat to reopen at launch, until Hermes's list shows it is there or gone, or the owner goes somewhere first.
   const [reopening, setReopening] = useState(() => (reopenLast ? chatToReopen(profile) : undefined));
   // One pane, or two side by side. The chat to reopen opens at once when the list saved on this computer has it, so the
@@ -282,6 +287,35 @@ export function Main({
   const mainRef = useRef<HTMLElement>(null);
   const mainWidth = useWidth(mainRef);
 
+  // Projects are Hermes's, one store for each connection and profile; which chats are in each is kept on this computer.
+  // A project picked in the switcher narrows the list to its chats. Active, Settled and Unread work as before inside it.
+  const scope = projectScope(connection, profile);
+  // Keep the same store and request queue when returning to a profile: a write still finishing for that profile
+  // must share ordering with its new reads and writes, rather than commit from an abandoned snapshot.
+  const projectStores = useMemo(() => new Map<string, ProjectsStore>(), [hermes]);
+  const projects = useMemo(() => {
+    let store = projectStores.get(scope);
+    if (!store) {
+      store = new ProjectsStore(hermes.projects, savedProjects, scope, profile);
+      projectStores.set(scope, store);
+    }
+    return store;
+  }, [hermes, scope, projectStores]);
+  const proj = useSyncExternalStore(projects.subscribe, projects.getSnapshot);
+  const listable = proj.projects.filter((p) => !p.archived);
+  const shownProject = listable.find((p) => p.id === proj.selectedId);
+  const projectScreenOpen = projectOpen && !!shownProject;
+  const inShown = shownProject && new Set(proj.chats[shownProject.id] ?? []);
+  const listed = inShown ? chats.filter((c) => inShown.has(c.id)) : chats;
+  const unreadChats = chats.filter((c) => c.unread && !c.archived);
+  const projectUnread: ProjectUnread = {
+    all: unreadChats.length,
+    hidden: inShown ? unreadChats.filter((c) => !inShown.has(c.id)).length : 0,
+    of: (id) => unreadChats.filter((c) => proj.chats[id]?.includes(c.id)).length,
+  };
+  const projectNames = (chatId: string) => listable.filter((p) => proj.chats[p.id]?.includes(chatId)).map((p) => p.name);
+  const where = routeLabel(route) ?? (connection.mode === "ssh" ? `ssh://${connection.sshTarget}` : connection.url) ?? undefined;
+
   const stillIn = (p: string) => hermes.profile === p;
 
   const patchPane = (key: string, patch: Partial<Pane>) => setPanes((ps) => ps.map((p) => (p.key === key ? { ...p, ...patch } : p)));
@@ -306,6 +340,7 @@ export function Main({
     setActiveKey(pane);
     setReopening(undefined);
     setSettingsOpen(false);
+    setProjectOpen(false);
     if (remember) rememberOpenChat(profile, id);
   };
 
@@ -319,6 +354,7 @@ export function Main({
     rememberOpenChat(profile, found.chatId);
     setSearchOpen(false);
     setSettingsOpen(false);
+    setProjectOpen(false);
   };
 
   // A second pane opens to the right and becomes the active one. Both panes may show the same chat: they are two views
@@ -331,6 +367,7 @@ export function Main({
     setActiveKey(key);
     setReopening(undefined);
     setSettingsOpen(false);
+    setProjectOpen(false);
     rememberOpenChat(profile, chatId);
   };
 
@@ -371,6 +408,7 @@ export function Main({
     setActiveKey(keep);
     setReopening(undefined);
     setSettingsOpen(false);
+    setProjectOpen(false);
     setToast(null);
     setPreview(null);
     void hermes.switchProfile(name);
@@ -384,12 +422,27 @@ export function Main({
     setToast({ text: `${settled ? "Settled" : "Moved to Active"}: ${title}`, undo: () => move(!settled), at: Date.now() });
   };
 
+  // Putting a chat in a project, or taking it out, is kept on this computer only; Undo puts it back.
+  const setInProject = (chatId: string, p: Project, inProject: boolean) => {
+    const title = chats.find((c) => c.id === chatId)?.title ?? "";
+    projects.setChat(p.id, chatId, inProject);
+    setToast({
+      text: `${inProject ? `Put in ${p.name}` : `Taken out of ${p.name}`}: ${title}`,
+      undo: () => projects.setChat(p.id, chatId, !inProject),
+      at: Date.now(),
+    });
+  };
+
   // Deleting can't be undone, so the row asked first. A pane showing the chat gives way to a fresh draft. A refused
   // delete says why in the list instead of the toast.
   const deleteChat = (id: string) => {
     const title = chats.find((c) => c.id === id)?.title ?? "";
     clearChat(id);
-    void hermes.delete(id).then((deleted) => deleted && stillIn(profile) && setToast({ text: `Deleted: ${title}`, at: Date.now() }));
+    void hermes.delete(id).then((deleted) => {
+      if (!deleted) return;
+      projects.forgetChat(id);
+      if (stillIn(profile)) setToast({ text: `Deleted: ${title}`, at: Date.now() });
+    });
   };
 
   // One Save dialog at a time: a second click while it is open does nothing.
@@ -450,6 +503,10 @@ export function Main({
       window.removeEventListener("blur", onBlur);
     };
   }, [hermes]);
+
+  useEffect(() => {
+    if (status === "connected") void projects.load();
+  }, [projects, status]);
 
   // Back on the network: don't wait for the next retry, or for the owner if it gave up.
   useEffect(() => {
@@ -521,7 +578,7 @@ export function Main({
   const paneMax = mainWidth ? mainWidth - CHAT_MIN_WIDTH : 1200;
   const paneWidth = Math.min(Math.max(dragWidth ?? previewWidth ?? PREVIEW_DEFAULT_WIDTH, PANE_MIN_WIDTH), Math.max(PANE_MIN_WIDTH, paneMax));
   // Settings covers the chat, and the pane with it.
-  const previewShown = !!preview && !settingsOpen && (previewFits || !previewHidden);
+  const previewShown = !!preview && !settingsOpen && !projectScreenOpen && (previewFits || !previewHidden);
   const previewCovers = previewShown && !previewFits;
 
 
@@ -543,11 +600,13 @@ export function Main({
           chat={chat}
           started={!!listed}
           picked={p.picked}
-          active={!settingsOpen && !previewCovers && (!split || isActive)}
+          active={!settingsOpen && !projectScreenOpen && !previewCovers && (!split || isActive)}
           split={split}
           catalog={catalog}
           sticky={sticky}
           favorites={modelFavorites}
+          projects={projects}
+          projectNames={listed ? projectNames(chat.id) : shownProject ? [shownProject.name] : undefined}
           onStarted={(id) => {
             // The chat started from this pane's New chat pane replaces it here, without taking the owner from the
             // other pane if they went there meanwhile.
@@ -603,14 +662,43 @@ export function Main({
       {listOpen && (
         <ChatList
           profile={profile}
+            projectSwitcher={
+              <ProjectSwitcher
+                projects={listable}
+                selected={shownProject}
+                unread={projectUnread}
+                loading={proj.loading}
+                error={proj.error}
+                connected={status === "connected"}
+                onOpen={() => status === "connected" && void projects.load()}
+                onSelect={(id) => {
+                  projects.select(id);
+                  if (!id) setProjectOpen(false);
+                }}
+                onCreate={async (name) => {
+                  await projects.create(name);
+                  setSettingsOpen(false);
+                  setProjectOpen(true);
+                }}
+                onManage={() => {
+                  setSettingsOpen(false);
+                  setProjectOpen(true);
+                }}
+              />
+            }
+            projectsOf={(chatId) => {
+              if (!listable.length) return undefined;
+              const of = projects.projectsOf(chatId);
+              return { list: listable, of, onToggle: (id, on) => setInProject(chatId, listable.find((p) => p.id === id)!, on) };
+            }}
           switching={switching}
           status={status}
           others={others}
-          chats={chats}
+          chats={listed}
           archivedListed={archivedListed}
           syncError={syncError}
-          selectedId={settingsOpen ? null : active.chatId}
-          alsoShownId={settingsOpen ? null : (other?.chatId ?? null)}
+          selectedId={settingsOpen || projectScreenOpen ? null : active.chatId}
+          alsoShownId={settingsOpen || projectScreenOpen ? null : (other?.chatId ?? null)}
           split={split}
           onOpen={(id) => openChat(id)}
           onOpenIn={openIn}
@@ -628,7 +716,37 @@ export function Main({
       )}
       <main className="main" ref={mainRef}>
         <div className="main-chat" inert={previewCovers || undefined}>
-        {settingsOpen ? (
+            {projectScreenOpen && shownProject && !settingsOpen ? (
+              <ProjectScreen
+                key={shownProject.id}
+                project={shownProject}
+                profile={profile}
+                connection={where}
+                connected={status === "connected"}
+                chats={listed.length}
+                unlisted={(proj.chats[shownProject.id]?.length ?? 0) - listed.length}
+                onRename={(name) => projects.rename(shownProject.id, name)}
+                onDelete={async () => {
+                  const { name } = shownProject;
+                  await projects.delete(shownProject.id);
+                  setProjectOpen(false);
+                  if (stillIn(profile)) setToast({ text: `Deleted the project ${name}. Its chats and folders are kept.`, at: Date.now() });
+                }}
+                onAddFolder={(path) => projects.addFolder(shownProject.id, path)}
+                onRemoveFolder={(path) => projects.removeFolder(shownProject.id, path)}
+                readFolder={async (path) => {
+                  const [problem, worktrees] = await Promise.all([
+                    hermes.projects.checkFolder(profile, path).then(
+                      () => undefined,
+                      (e) => messageOf(e),
+                    ),
+                    hermes.projects.worktrees(path).catch(() => []),
+                  ]);
+                  return { problem, worktrees };
+                }}
+                onClose={() => { flushSync(() => setProjectOpen(false)); focusPane(active.key); }}
+              />
+            ) : settingsOpen ? (
           <SettingsScreen
             status={status}
             route={route}
@@ -652,7 +770,7 @@ export function Main({
             }}
           />
         ) : null}
-        <Split panes={slots} activeKey={active.key} onActivate={activate} covered={settingsOpen || previewCovers} />
+        <Split panes={slots} activeKey={active.key} onActivate={activate} covered={settingsOpen || projectScreenOpen || previewCovers} />
         </div>
           {preview && previewShown && (
             <PreviewPane
@@ -715,6 +833,8 @@ function ChatView({
   catalog,
   sticky,
   favorites,
+  projects,
+  projectNames,
   onStarted,
   onDraftError,
   onToast,
@@ -738,6 +858,8 @@ function ChatView({
   catalog?: ModelCatalog;
   sticky?: ModelPick;
   favorites: string[];
+  projects: ProjectsStore;
+  projectNames?: string[];
   onStarted: (id: string) => void;
   onDraftError: (reason: string) => void;
   onToast: (text: string) => void;
@@ -767,8 +889,10 @@ function ChatView({
   /** The chat to send in: the one in this pane, or a new one started now for the New chat pane. */
   const chatToSendIn = async (): Promise<{ id: string } | { delivery: Delivery }> => {
     if (chatId) return { id: chatId };
+    const into = projects.getSnapshot().selectedId;
     try {
       const id = await hermes.newChat(sticky);
+      if (into && projects.getSnapshot().projects.some((p) => p.id === into)) projects.setChat(into, id, true);
       if (stillIn()) onStarted(id);
       return { id };
     } catch (e) {
@@ -809,6 +933,8 @@ function ChatView({
     <ChatPane
       key={`${profile}/${chat.id}`}
       chat={chat}
+      projects={projectNames}
+      onUsage={started ? () => void hermes.refreshUsage(chat.id) : undefined}
       notLoaded={started && status !== "connected" && !chat.runtimeId && chat.items.every(isOutgoing)}
       findTarget={findTarget}
       status={status}

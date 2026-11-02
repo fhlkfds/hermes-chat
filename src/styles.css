@@ -817,6 +817,51 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 .menu-item:hover .menu-icon, .menu-item:focus-visible .menu-icon { color: inherit; }
 .menu-label { flex: 1; white-space: nowrap; }
 
+/* projects (Projects.tsx, ADR 0007): the switcher under the profile's name, and the project screen */
+.sb-project { display: flex; padding: 0 12px 6px 14px; margin-top: -4px; }
+.project-switch { position: relative; min-width: 0; flex: 1; display: flex; align-items: center; gap: 2px; }
+.project-btn {
+  display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 200px; padding: 3px 6px; border-radius: 7px;
+  font-size: calc(12.5rem / 14); color: var(--muted);
+}
+.project-btn:hover, .project-btn[aria-expanded="true"] { background: var(--raised-2); color: var(--text); }
+.project-btn .dot { flex: none; width: 6px; height: 6px; }
+.project-icon { flex: none; }
+.project-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-manage { width: 24px; height: 24px; }
+.project-menu { left: 0; }
+.project-new { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.project-new .profile-filter { flex: 1; min-width: 0; }
+.project-create { color: var(--muted); }
+.project-create:disabled { opacity: 0.5; cursor: default; }
+.project-create svg { color: inherit; vertical-align: -2px; margin-right: 4px; }
+.menu-group { display: flex; flex-direction: column; border-top: 1px solid var(--line); margin-top: 4px; padding-top: 4px; max-height: 45vh; overflow-y: auto; }
+.menu-heading { font-size: calc(11rem / 14); color: var(--faint); padding: 4px 8px 2px; font-weight: 500; }
+.menu-label { overflow: hidden; text-overflow: ellipsis; }
+.project-badge { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-title { display: flex; align-items: center; gap: 10px; }
+.project-title > svg { color: var(--muted); flex: none; }
+.project-rename { display: flex; align-items: center; gap: 10px; margin: 14px 0 22px; }
+.project-rename .row-rename { flex: 1; height: 34px; font-size: calc(16rem / 14); }
+.project-screen h3 { font-size: calc(13rem / 14); font-weight: 600; margin: 22px 0 4px; }
+.folder-list { list-style: none; margin: 0 0 14px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.folder-row {
+  display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--raised);
+}
+.folder-icon { color: var(--muted); flex: none; }
+.folder-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.folder-name { display: flex; align-items: center; gap: 8px; font-weight: 500; font-size: calc(13rem / 14); }
+.folder-where { display: flex; flex-wrap: wrap; gap: 4px 10px; color: var(--muted); }
+.folder-conn { color: var(--faint); }
+.folder-path { overflow-wrap: anywhere; color: var(--text-2); }
+.folder-note { font-size: calc(12rem / 14); color: var(--muted); display: flex; align-items: center; gap: 5px; }
+.folder-note.err { color: var(--warn); }
+.folder-add { display: flex; align-items: flex-end; gap: 10px; }
+.folder-add .field { flex: 1; }
+.folder-add .field input { font-family: var(--mono); font-size: calc(12.5rem / 14); }
+.project-screen .settings-row > .btn { flex: none; white-space: nowrap; }
+.project-screen .settings-row > p { margin: 0; }
+
 /* ---------- preview pane (PreviewPane.tsx, ADR 0007) ---------- */
 .preview {
   flex: none; display: flex; flex-direction: column; min-width: 0; background: var(--sidebar); border-left: 1px solid var(--line);
@@ -940,6 +985,41 @@ button.status-item:disabled { opacity: 0.5; cursor: default; }
 /* Settings covers mounted panes so their scroll, find and attachment state survives. */
 .main { position: relative; }
 .panes.covered { position: absolute; inset: 0; visibility: hidden; pointer-events: none; }
+
+
+/* token usage and cost (Usage.tsx): a line under each measured reply, and the chat's totals beside its title */
+.reply-usage { margin-top: 2px; }
+.usage-line {
+  font-size: calc(11.5rem / 14); color: var(--faint); font-variant-numeric: tabular-nums; padding: 1px 4px; margin-left: -4px;
+  border-radius: 5px;
+}
+.usage-line:hover, .usage-line[aria-expanded="true"] { color: var(--muted); background: var(--raised-2); }
+.usage-table { margin: 6px 0 0; display: grid; gap: 2px; font-size: calc(12rem / 14); max-width: 300px; }
+.usage-row { display: flex; justify-content: space-between; gap: 16px; }
+.usage-row dt { color: var(--muted); }
+.usage-row dd { margin: 0; color: var(--text-2); font-variant-numeric: tabular-nums; text-align: right; }
+.usage-row.sub dt { padding-left: 12px; color: var(--faint); }
+.usage-row.sub dd { color: var(--muted); }
+.chat-head-end { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.chat-usage { position: relative; display: flex; align-items: center; }
+.usage-pill {
+  display: inline-flex; align-items: center; height: 24px; padding: 0 9px; border-radius: 999px; border: 1px solid var(--line-2);
+  font-size: calc(11.5rem / 14); color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.usage-pill:hover, .usage-pill.on { color: var(--text); background: var(--raised-2); }
+.usage-pill.warn { color: var(--warn); }
+.usage-popover {
+  position: absolute; right: 0; top: calc(100% + 8px); z-index: 30; width: 300px; padding: 12px 14px; outline: none;
+  background: var(--raised); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: 0 16px 44px rgba(0, 0, 0, 0.5);
+  animation: menu-in 0.1s ease-out;
+}
+.usage-popover .usage-table { max-width: none; margin-top: 8px; }
+.usage-title { font-size: calc(12.5rem / 14); font-weight: 600; color: var(--text); }
+.usage-cost { display: flex; flex-direction: column; gap: 2px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.usage-cost-value { font-size: calc(13rem / 14); color: var(--text); font-variant-numeric: tabular-nums; }
+.usage-cost-detail, .usage-note { font-size: calc(11.5rem / 14); color: var(--muted); line-height: 1.45; }
+.usage-note { margin: 10px 0 0; color: var(--faint); }
+.usage-error { margin: 8px 0 0; font-size: calc(11.5rem / 14); color: var(--warn); line-height: 1.45; }
 
 /* A pane half a window wide gives the transcript the room its padding took. */
 @container (max-width: 560px) {
