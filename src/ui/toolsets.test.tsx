@@ -59,14 +59,16 @@ describe("Settings → Toolsets", () => {
   it("lists the toolsets with their state, scope and when changes apply", async () => {
     await shown();
     expect(screen.getByRole("heading", { name: "Toolsets" })).toBeTruthy();
-    expect(screen.getByText(/Hermes keeps this choice on the server, in the profile's settings/)).toBeTruthy();
+    expect(screen.getByText(/Hermes keeps this list on the server, in the profile's settings/)).toBeTruthy();
     expect(screen.getByText(/in chats Hermes starts after the change/)).toBeTruthy();
     expect(screen.getByText(/Toolsets aren't Approvals/)).toBeTruthy();
     expect(toggle("Web Search & Scraping").getAttribute("aria-checked")).toBe("true");
     expect(toggle("Image Generation").getAttribute("aria-checked")).toBe("false");
     expect(screen.getByText("web_search, web_extract")).toBeTruthy();
     // Needs setup on the server; another platform's toolset is apart and says whose it is.
-    expect(screen.getByText("Needs setup")).toBeTruthy();
+    const imageGen = toggle("Image Generation").closest(".toolset-row") as HTMLElement;
+    expect(within(imageGen).getByText("Needs setup")).toBeTruthy();
+    expect(within(toggle("Web Search & Scraping").closest(".toolset-row") as HTMLElement).queryByText("Needs setup")).toBeNull();
     const others = screen.getByRole("group", { name: "Toolsets for other platforms" });
     expect(within(others).getByText("Discord only")).toBeTruthy();
     expect(within(others).getByText(/Changes Hermes's Discord chats, not this app's/)).toBeTruthy();
@@ -103,7 +105,7 @@ describe("Settings → Toolsets", () => {
     server.toolsetRefusal = { status: 403, detail: "Profile is managed by an administrator" };
     await user.click(toggle("Web Search & Scraping"));
     expect((await screen.findByRole("alert")).textContent).toBe(
-      "Hermes didn't make the change (Profile is managed by an administrator). It reads Web Search & Scraping back as on.",
+      "Hermes refused the change (Profile is managed by an administrator). It reads Web Search & Scraping back as on.",
     );
     expect(toggle("Web Search & Scraping").getAttribute("aria-checked")).toBe("true");
   });
@@ -129,14 +131,87 @@ describe("Settings → Toolsets", () => {
   it("asks before turning on a toolset that may start an install on the server", async () => {
     const { server, user } = await shown();
     await user.click(toggle("Computer Use"));
-    const ask = await screen.findByRole("alertdialog", { name: "Install on the server" });
-    expect(ask.textContent).toMatch(/Hermes starts installing cua_driver on the server when it.s turned on/);
+    const ask = await screen.findByRole("alertdialog", { name: /Turn Computer Use .* on/ });
+    expect(ask.textContent).toMatch(/Hermes starts installing cua_driver on the server when Computer Use .* is turned on/);
     await user.click(within(ask).getByRole("button", { name: "Keep it off" }));
     expect(server.toolsetWrites).toEqual([]);
     await user.click(toggle("Computer Use"));
     await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Turn on" }));
     expect(await screen.findByText(/Hermes also started installing cua_driver on the server/)).toBeTruthy();
     expect(toolsetWrites(server)).toEqual(["default:computer_use=true"]);
+  });
+
+  it("asks before a change when it couldn't check what turning a toolset on does", async () => {
+    const server = new FakeHermes();
+    const { user } = await shown(server);
+    server.toolsetConfigFailure = "The dashboard answered 500: {}";
+    await user.click(toggle("Computer Use"));
+    const ask = await screen.findByRole("alertdialog");
+    expect(ask.textContent).toMatch(/couldn't check whether turning Computer Use .* on starts an install on the server/);
+    expect(server.toolsetWrites).toEqual([]);
+  });
+
+  it("asks before a change that clears no_mcp, and says MCP servers are back once read back", async () => {
+    const server = new FakeHermes();
+    server.toolsetNoMcp.default = new Set(["cli"]);
+    const { user } = await shown(server);
+    await user.click(toggle("Terminal & Processes"));
+    const ask = await screen.findByRole("alertdialog");
+    expect(ask.textContent).toMatch(/MCP servers turned off for CLI with no_mcp. Hermes clears no_mcp whenever it saves/);
+    expect(server.toolsetWrites).toEqual([]);
+    await user.click(within(ask).getByRole("button", { name: "Turn off" }));
+    expect(await screen.findByText(/Hermes cleared no_mcp, so new chats are offered the profile's MCP servers again/)).toBeTruthy();
+  });
+
+  it("marks a toolset whose provider isn't ready, though Hermes counts it configured", async () => {
+    const server = new FakeHermes();
+    server.toolsetProviders.stt = [{ name: "Local Whisper", status: "needs_setup", is_active: true }];
+    await shown(server);
+    const stt = toggle("Speech-to-Text").closest(".toolset-row") as HTMLElement;
+    expect(await within(stt).findByText("Needs setup")).toBeTruthy();
+    expect(within(stt).getByText(/Its provider, Local Whisper, isn't installed or set up on the server/)).toBeTruthy();
+  });
+
+  it("says when coding focus mode or a server pin replaces the list", async () => {
+    const server = new FakeHermes();
+    server.codingFocus.default = true;
+    await shown(server);
+    expect(await screen.findByText(/agent.coding_context is focus: in a code workspace, Hermes gives new chats its own coding selection/)).toBeTruthy();
+    expect(screen.getByText("HERMES_TUI_TOOLSETS")).toBeTruthy();
+  });
+
+  it("leaving and reopening the tab mid-change still shows it saving, blocks other changes, then shows the result", async () => {
+    const server = new FakeHermes();
+    const hermes = await connect(server.openPipe, "default");
+    const user = userEvent.setup();
+    const first = render(<ToolsetSettings api={hermes.toolsets} profile="default" connected />);
+    await screen.findByText(/Read from Hermes at/);
+    let release!: () => void;
+    server.toolsetGateBeforeWrite = new Promise((r) => (release = r));
+    await user.click(toggle("Web Search & Scraping"));
+    await screen.findByText(/Saving: turning Web Search & Scraping off/);
+    first.unmount();
+    render(<ToolsetSettings api={hermes.toolsets} profile="default" connected />);
+    expect(await screen.findByText(/Saving: turning Web Search & Scraping off/)).toBeTruthy();
+    expect((toggle("File Operations") as HTMLButtonElement).disabled).toBe(true);
+    await user.click(toggle("File Operations"));
+    act(() => release());
+    await waitFor(() => expect(toggle("Web Search & Scraping").getAttribute("aria-checked")).toBe("false"));
+    expect(toolsetWrites(server)).toEqual(["default:web=false"]);
+  });
+
+  it("a reconnect during a change reads again once the change is done", async () => {
+    const { server, user, rerender } = await shown();
+    let release!: () => void;
+    server.toolsetGateBeforeWrite = new Promise((r) => (release = r));
+    await user.click(toggle("Web Search & Scraping"));
+    await screen.findByText(/Saving: turning Web Search & Scraping off/);
+    rerender({ connected: false });
+    server.enabledToolsets("default").add("image_gen"); // Changed in another client while this one was away.
+    rerender({ connected: true });
+    act(() => release());
+    await waitFor(() => expect(toggle("Image Generation").getAttribute("aria-checked")).toBe("true"));
+    expect(toggle("Web Search & Scraping").getAttribute("aria-checked")).toBe("false");
   });
 
   it("offers no switches on a server that can't change toolsets", async () => {

@@ -1,6 +1,6 @@
 // A fake Hermes dashboard for tests: it sits where the Rust pipe does and speaks wire-shaped legacy
 // JSON-RPC frames and dashboard REST bodies (shapes from the deployed contracts, see the research doc).
-import type { LocalFile, OpenPipe, PipeEvent, Route, Speech, VoiceSetup } from "./pipe";
+import type { LocalFile, OpenPipe, PipeEvent, Route, Speech, ToolsetGuards, VoiceSetup } from "./pipe";
 import { FakeServerFiles } from "./fakeServerFiles";
 
 type Request = { jsonrpc: "2.0"; id: number; method: string; params: Record<string, unknown> };
@@ -624,6 +624,28 @@ export class FakeHermes {
   toolsetSuppressed = new Set<string>();
   /** While set, the toggle route waits for it after writing and before it answers. */
   toolsetGate?: Promise<void>;
+  /** While set, the toggle route waits for it before it writes. */
+  toolsetGateBeforeWrite?: Promise<void>;
+  /** Platforms whose saved toolset list names `no_mcp`, per profile. Any toggle for that platform clears it. */
+  toolsetNoMcp: Record<string, Set<string>> = {};
+  /** `agent.coding_context` is focus, per profile. */
+  codingFocus: Record<string, boolean> = {};
+  /** While set, reading the config for the toolset guards fails with this. */
+  toolsetGuardsFailure?: string;
+  /**
+   * Each toolset's provider rows, as `GET /api/tools/toolsets/{name}/config` answers them (`provider_readiness_status`).
+   * A toolset not here has no provider category. Checked live: web's keyless Exa row is ready and its ddgs row isn't.
+   */
+  toolsetProviders: Record<string, { name: string; post_setup?: string; status: string; is_active: boolean }[]> = {
+    web: [
+      { name: "Exa · Free (keyless)", status: "ready", is_active: false },
+      { name: "DuckDuckGo (ddgs)", post_setup: "ddgs", status: "needs_setup", is_active: false },
+    ],
+    computer_use: [{ name: "cua-driver (background)", post_setup: "cua_driver", status: "needs_setup", is_active: false }],
+    stt: [{ name: "Local Whisper", status: "ready", is_active: true }],
+  };
+  /** While set, `GET /api/tools/toolsets/{name}/config` fails with this. */
+  toolsetConfigFailure?: string;
   /** The next toggle writes, then answers with this error anyway (a failure after the save, such as a 500). */
   failAfterToolsetWrite?: { status: number; detail: string };
   /** After the next toggle, every toolset list read fails with a 500. */
@@ -692,6 +714,11 @@ export class FakeHermes {
         return this.speech;
       },
       voiceSetup: async () => ({ ...this.voice }),
+      // Mirrors `Dashboard::toolset_guards`: only these two facts of the config.
+      toolsetGuards: async (profile): Promise<ToolsetGuards> => {
+        if (this.toolsetGuardsFailure) throw new Error(this.toolsetGuardsFailure);
+        return { noMcp: [...(this.toolsetNoMcp[profile] ?? [])].sort(), codingFocus: !!this.codingFocus[profile] };
+      },
       request: async (method, pathAndQuery, body) => {
         const url = new URL(pathAndQuery, "http://dashboard/");
         const req: RestRequest = { method, path: url.pathname, query: url.searchParams, body: body === undefined ? undefined : JSON.parse(body) };
@@ -753,10 +780,10 @@ export class FakeHermes {
     if (req.method === "GET" && name !== undefined && config) {
       const t = known(name);
       if (!t) throw new Error(`The dashboard answered 400: {"detail":"Unknown toolset: ${name}"}`);
-      const providers = t.installs ? [{ name: "cua-driver", env_vars: [], post_setup: t.installs, status: "needs_setup", is_active: false }] : [];
-      // Web's keyless DuckDuckGo row reports `needs_setup` for its package, which the toggle never installs (checked live).
-      if (name === "web") providers.push({ name: "DuckDuckGo", env_vars: [], post_setup: "ddgs", status: "needs_setup", is_active: false });
-      return { name, has_category: providers.length > 0, providers, active_provider: null };
+      if (this.toolsetConfigFailure) throw new Error(this.toolsetConfigFailure);
+      const providers = (this.toolsetProviders[name] ?? []).map((p) => ({ env_vars: [], post_setup: null, ...p }));
+      const active = providers.find((p) => p.is_active)?.name ?? null;
+      return { name, has_category: providers.length > 0, providers, active_provider: active };
     }
     if (req.method === "PUT" && name !== undefined && !config) {
       if (this.toolsetRoutes === "read-only") throw notFound();
@@ -765,6 +792,7 @@ export class FakeHermes {
         throw new Error(`The dashboard answered 422: {"detail":[{"type":"bool_parsing","loc":["body","enabled"],"msg":"Input should be a valid boolean"}]}`);
       if (!known(name)) throw new Error(`The dashboard answered 400: {"detail":"Unknown toolset: ${name}"}`);
       if (this.toolsetRefusal) throw new Error(`The dashboard answered ${this.toolsetRefusal.status}: ${JSON.stringify({ detail: this.toolsetRefusal.detail })}`);
+      await this.toolsetGateBeforeWrite;
       const drop = this.dropOnToolsetWrite;
       this.dropOnToolsetWrite = undefined;
       if (drop === "lost") throw new Error("Can't reach the Hermes dashboard: connection reset");
@@ -772,13 +800,15 @@ export class FakeHermes {
       this.toolsetWrites.push({ profile, name, enabled });
       if (enabled) on.add(name);
       else on.delete(name);
+      // `_save_platform_tools` drops the `no_mcp` sentinel from the platform's list; `stt` writes its own section.
+      if (name !== "stt") this.toolsetNoMcp[profile]?.delete(known(name)!.platform);
       if (drop === "stored") throw new Error("Can't reach the Hermes dashboard: connection reset");
       if (this.toolsetReadsFailAfterWrite) this.toolsetReadsFailing = true;
       const late = this.failAfterToolsetWrite;
       this.failAfterToolsetWrite = undefined;
       if (late) throw new Error(`The dashboard answered ${late.status}: ${JSON.stringify({ detail: late.detail })}`);
       await this.toolsetGate;
-      const installs = enabled ? known(name)?.installs : undefined;
+      const installs = enabled && this.toolsetProviders[name]?.some((p) => p.post_setup === known(name)?.installs && p.status === "needs_setup") ? known(name)?.installs : undefined;
       return { ok: true, name, platform: known(name)!.platform, enabled, post_setup_started: installs ?? null };
     }
     throw notFound();

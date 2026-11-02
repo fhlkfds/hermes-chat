@@ -753,6 +753,15 @@ impl Dashboard {
         Ok(VoiceSetup { transcribe, speak, stt_enabled, stt_provider, tts_provider })
     }
 
+    /// `ToolsetGuards` for `profile`, from `GET /api/config`; nothing else of the config is kept.
+    pub async fn toolset_guards(&self, profile: &str) -> Result<ToolsetGuards, TransportError> {
+        let query = url::form_urlencoded::Serializer::new(String::new()).append_pair("profile", profile).finish();
+        let body = self.request("GET", &format!("api/config?{query}"), None).await?;
+        let config: serde_json::Value = serde_json::from_str(&body)
+            .map_err(|_| TransportError::Unexpected { status: 200, body: "the profile's config isn't JSON".into() })?;
+        Ok(toolset_guards(&config))
+    }
+
     /// One `POST` to an audio route for `profile`, with a JSON body.
     async fn post_audio(&self, path: &str, profile: &str, body: &serde_json::Value) -> Result<AudioAnswer, TransportError> {
         let mut url = endpoint(&self.base, path);
@@ -843,6 +852,39 @@ impl Dashboard {
         let jar = self.cookies.lock().unwrap();
         jar.iter().map(|(n, v)| format!("{n}={v}")).collect::<Vec<_>>().join("; ")
     }
+}
+
+/// What Settings → Toolsets needs from a profile's config besides the toolset list, read in Rust because the config
+/// can hold API keys. Only these facts leave Rust.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolsetGuards {
+    /// Platforms whose `platform_toolsets` entry names `no_mcp`, which Hermes's toggle route clears on any change
+    /// (`_save_platform_tools` at `bf0203a`), so MCP servers would be offered again.
+    pub no_mcp: Vec<String>,
+    /// `agent.coding_context` is `focus` (or its aliases `strict`, `lean`): in a code workspace Hermes swaps in a coding
+    /// toolset selection instead of the profile's list (`agent/coding_context.coding_selection`).
+    pub coding_focus: bool,
+}
+
+/// `ToolsetGuards` from a profile's config as `GET /api/config` answers it.
+pub fn toolset_guards(config: &serde_json::Value) -> ToolsetGuards {
+    let names_no_mcp = |v: &serde_json::Value| match v {
+        serde_json::Value::Array(items) => items.iter().any(|i| i.as_str().map(str::trim) == Some("no_mcp")),
+        // A list literal saved as a string (`parse_platform_toolsets_value`): any mention counts, to be safe.
+        serde_json::Value::String(s) => s.contains("no_mcp"),
+        _ => false,
+    };
+    let mut no_mcp: Vec<String> = config["platform_toolsets"]
+        .as_object()
+        .map(|o| o.iter().filter(|(_, v)| names_no_mcp(v)).map(|(k, _)| k.clone()).collect())
+        .unwrap_or_default();
+    no_mcp.sort();
+    let mode = match &config["agent"]["coding_context"] {
+        serde_json::Value::String(s) => s.trim().to_ascii_lowercase(),
+        _ => String::new(),
+    };
+    ToolsetGuards { no_mcp, coding_focus: matches!(mode.as_str(), "focus" | "strict" | "lean") }
 }
 
 /// Where a relayed REST call goes, and its path as the dashboard will route it: with `.` segments resolved and

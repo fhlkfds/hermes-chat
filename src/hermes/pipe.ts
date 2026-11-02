@@ -18,6 +18,13 @@ export type Speech = { mime: string; audio: Uint8Array; provider?: string };
  */
 export type VoiceSetup = { transcribe: boolean; speak: boolean; sttEnabled?: boolean; sttProvider?: string; ttsProvider?: string };
 
+/**
+ * What Settings → Toolsets needs from a profile's config besides the toolset list, read in Rust since the config can
+ * hold API keys. `noMcp`: platforms whose toolset list names `no_mcp`, which Hermes clears on any toolset change.
+ * `codingFocus`: `agent.coding_context` is focus, so Hermes picks a coding toolset in code workspaces.
+ */
+export type ToolsetGuards = { noMcp: string[]; codingFocus: boolean };
+
 export type PipeEvent = { kind: "frame"; text: string } | { kind: "closed"; reason: string };
 
 /**
@@ -53,6 +60,7 @@ export interface Pipe {
   /** Asks Hermes to read `text` aloud with `profile`'s text-to-speech provider. */
   speak(profile: string, text: string): Promise<Speech>;
   voiceSetup(profile: string): Promise<VoiceSetup>;
+  toolsetGuards(profile: string): Promise<ToolsetGuards>;
   close(): Promise<void>;
 }
 

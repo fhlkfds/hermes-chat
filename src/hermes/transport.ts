@@ -502,6 +502,11 @@ export class Hermes {
       if (!pipe) throw new Error("Not connected to Hermes.");
       return JSON.parse(await pipe.request(method, pathAndQuery, body === undefined ? undefined : JSON.stringify(body)));
     },
+    async (profile) => {
+      const pipe = this.closing ? undefined : this.connectedPipe();
+      if (!pipe) throw new Error("Not connected to Hermes.");
+      return pipe.toolsetGuards(profile);
+    },
     (_profile, name) => {
       if (name === "stt") this.voiceRead = undefined;
     },

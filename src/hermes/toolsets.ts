@@ -7,17 +7,26 @@
 //   `platform_toolsets.<platform>` in its config.yaml, under the config mutation lock, keeping every other entry
 //   (`_save_platform_tools`). The config-only `stt` flips `stt.enabled` instead. Enabling may start a background
 //   `hermes tools post-setup` install on the server (`post_setup_started`).
-// - `GET /api/tools/toolsets/{name}/config?profile=` lists its providers and their readiness, used here only to warn
-//   before an enable that may start such an install. Env vars come as `is_set` flags, never values.
+// - `GET /api/tools/toolsets/{name}/config?profile=` lists its providers and their readiness, used here to show a
+//   provider that still needs setup and to warn before an enable that may start an install. Env vars come as `is_set`
+//   flags, never values.
+// - Two facts of the profile's config come from Rust (`Pipe.toolsetGuards`), never the config itself: which platforms'
+//   lists name `no_mcp`, which any toggle clears (`_save_platform_tools`), and whether coding focus mode swaps the list.
 //
 // What the setting reaches: `platform` is `cli` for nearly every toolset, and `platform_toolsets.cli` is what Hermes
 // builds this app's chats with (`tui_gateway/agent_factory._load_enabled_toolsets`), as well as the CLI, the TUI and
 // the official desktop app. A toolset restricted to another platform (Discord's) targets that platform instead. An
 // agent's toolsets are fixed when Hermes builds it, so a chat Hermes already has open, and any reply running in it,
-// keeps the tools it started with; new chats get the change.
+// keeps the tools it started with; new chats get the change. The list is the profile's default: a server started with
+// `HERMES_TUI_TOOLSETS` uses that list instead, and with `agent.coding_context: focus` Hermes picks a coding selection in
+// a code workspace (`_load_enabled_toolsets` checks both first).
 //
 // Nothing is taken on trust: every change is checked against a fresh read first (another client may have changed it),
 // and reported as saved only once a read afterwards shows it.
+
+import type { ToolsetGuards } from "./pipe";
+
+export type { ToolsetGuards };
 
 /** One toolset as Hermes lists it for a profile. */
 export type Toolset = {
@@ -45,17 +54,33 @@ export type ToolsetList = { profile: string; toolsets: Toolset[]; readAt: number
 export type ToolsetChange =
   /**
    * Read back as asked. `installing`: Hermes started a background install for it on the server. `warning`: Hermes
-   * answered with this error, yet reads it back as asked.
+   * answered with this error, yet reads it back as asked. `mcpBack`: the platform's `no_mcp` was cleared by the save.
    */
-  | { kind: "saved"; list: ToolsetList; installing?: string; warning?: string }
+  | { kind: "saved"; list: ToolsetList; installing?: string; warning?: string; mcpBack?: boolean }
   /** Not sent: Hermes already had it otherwise, or no longer lists it; another client changed it. */
   | { kind: "conflict"; list: ToolsetList; now?: boolean }
-  /** Refused, and not read back as asked (`list`, when it could be read again). */
+  /** Refused with a 4xx, which Hermes answers before writing; `list`, when it could be read again. */
   | { kind: "rejected"; reason: string; list?: ToolsetList }
   /** Sent and accepted, but Hermes reads it back the other way. */
   | { kind: "mismatch"; list: ToolsetList }
-  /** The connection failed before Hermes answered, and a read afterwards (if any) doesn't show it: it may yet land. */
+  /**
+   * Hermes didn't confirm it: the answer was lost, or a server error, and a read afterwards (`list`, if any) doesn't
+   * show it as asked. It may have been written, or may yet land.
+   */
   | { kind: "unknown"; reason: string; list?: ToolsetList };
+
+/** A change being written, one at a time for the whole app (`ToolsetsApi.pending`). */
+export type Pending = { profile: string; name: string; enabled: boolean };
+
+/**
+ * What to tell the owner before a change is sent, for them to confirm. `install`: Hermes will start installing these on
+ * the server. `noMcp`: the save clears the platform's `no_mcp`, so MCP servers come back. `unchecked`: what couldn't be
+ * checked, so either may happen.
+ */
+export type Caution = { kind: "install"; keys: string[] } | { kind: "noMcp"; platform: string } | { kind: "unchecked"; what: string };
+
+/** The toolsets whose providers Hermes checks for readiness at `bf0203a` (`TOOL_CATEGORIES`). */
+const PROVIDER_TOOLSETS = ["web", "browser", "image_gen", "video_gen", "x_search", "tts", "stt", "computer_use"];
 
 /** One signed-in dashboard REST call; resolves to the parsed JSON body. */
 export type Rest = (method: "GET" | "PUT", pathAndQuery: string, body?: unknown) => Promise<unknown>;
@@ -126,13 +151,40 @@ function rowsFrom(res: unknown): Toolset[] {
   });
 }
 
-/** Settings → Toolsets' reads and writes. Every call names its profile, so a profile switch can't redirect one. */
+/** What a provider's readiness (`provider_readiness_status`) means for the owner. */
+const READINESS: Record<string, string> = {
+  needs_setup: "isn't installed or set up on the server",
+  needs_keys: "has no API key on the server",
+  needs_auth: "needs a sign-in on the server",
+};
+
+/**
+ * Settings → Toolsets' reads and writes. Every call names its profile, so a profile switch can't redirect one. Writes go
+ * one at a time for the whole app, whichever screen asked, and `pending` says which is on its way.
+ */
 export class ToolsetsApi {
+  private queue: Promise<unknown> = Promise.resolve();
+  private current?: Pending;
+  private listeners = new Set<() => void>();
+
   constructor(
     private readonly rest: Rest,
+    /** The profile's `no_mcp` platforms and coding focus, from Rust. */
+    private readonly readGuards: (profile: string) => Promise<ToolsetGuards>,
     /** Called after a change Hermes may have taken, so cached reads that depend on it are dropped. */
     private readonly changed: (profile: string, name: string) => void = () => {},
   ) {}
+
+  /** The change on its way, if any. */
+  readonly pending = (): Pending | undefined => this.current;
+  readonly subscribe = (fn: () => void) => {
+    this.listeners.add(fn);
+    return () => void this.listeners.delete(fn);
+  };
+  private setPending(p: Pending | undefined) {
+    this.current = p;
+    for (const fn of this.listeners) fn();
+  }
 
   private path(profile: string, name?: string, rest = "") {
     const q = new URLSearchParams({ profile }).toString();
@@ -151,6 +203,11 @@ export class ToolsetsApi {
         );
       throw new Error(f.reason);
     }
+  }
+
+  /** The profile's `no_mcp` platforms and coding focus; undefined when the config couldn't be read. */
+  guards(profile: string): Promise<ToolsetGuards | undefined> {
+    return this.readGuards(profile).catch(() => undefined);
   }
 
   /**
@@ -174,35 +231,88 @@ export class ToolsetsApi {
     }
   }
 
+  private async providers(profile: string, name: string): Promise<{ rows: Json[]; active: string }> {
+    const res = obj(await this.rest("GET", this.path(profile, name, "/config")));
+    return { rows: Array.isArray(res.providers) ? res.providers.map(obj) : [], active: str(res.active_provider) };
+  }
+
   /**
-   * The software Hermes would start installing on the server when `name` is turned on. The toggle route installs only a
-   * `post_setup` with a registered installed-check that fails (`_post_setup_already_installed`, which at `bf0203a` has
-   * one: `cua_driver`); other providers that need setup, such as `ddgs` for web, are left to `hermes tools`. Empty when
-   * nothing would be installed; undefined when it couldn't be read. A newer server's other installs are still reported
-   * afterwards, from `post_setup_started`.
+   * For each listed toolset with providers, what keeps the one Hermes would use from working: the active provider's
+   * readiness, or, with none active, that no provider is ready. Toolsets without a problem, or whose providers couldn't
+   * be read, are left out. Hermes's own `configured` only checks keys, so a keyless provider whose package is missing
+   * (Local Whisper without faster-whisper) shows only here.
    */
-  async pendingInstalls(profile: string, name: string): Promise<string[] | undefined> {
-    try {
-      const res = obj(await this.rest("GET", this.path(profile, name, "/config")));
-      const rows = Array.isArray(res.providers) ? res.providers.map(obj) : [];
-      const pending = rows.filter((p) => INSTALL_ON_ENABLE.has(str(p.post_setup)) && p.status === "needs_setup");
-      return [...new Set(pending.map((p) => str(p.post_setup)))];
-    } catch {
-      return undefined;
-    }
+  async setupProblems(profile: string, list: ToolsetList): Promise<Record<string, string>> {
+    const names = list.toolsets.map((t) => t.name).filter((n) => PROVIDER_TOOLSETS.includes(n));
+    const out: Record<string, string> = {};
+    await Promise.all(
+      names.map(async (name) => {
+        const read = await this.providers(profile, name).catch(() => undefined);
+        if (!read?.rows.length) return;
+        const active = read.rows.find((p) => p.is_active === true) ?? read.rows.find((p) => read.active && str(p.name) === read.active);
+        if (active) {
+          const why = READINESS[str(active.status)];
+          if (why) out[name] = `Its provider, ${str(active.name)}, ${why}.`;
+        } else if (!read.rows.some((p) => p.status === "ready")) {
+          out[name] = "None of its providers is ready on the server.";
+        }
+      }),
+    );
+    return out;
+  }
+
+  /**
+   * What to tell the owner before turning `t` to `enabled`. The toggle route installs only a `post_setup` with a
+   * registered installed-check that fails (`_post_setup_already_installed`, which at `bf0203a` has one: `cua_driver`);
+   * other providers that need setup, such as web's `ddgs`, are left to `hermes tools`. Whatever couldn't be checked is
+   * said too, rather than assumed safe.
+   */
+  async cautions(profile: string, t: Toolset, enabled: boolean): Promise<Caution[]> {
+    if (t.configOnly) return [];
+    const out: Caution[] = [];
+    const [guards, installs] = await Promise.all([
+      this.guards(profile),
+      enabled
+        ? this.providers(profile, t.name).then(
+            ({ rows }) => [...new Set(rows.filter((p) => INSTALL_ON_ENABLE.has(str(p.post_setup)) && p.status === "needs_setup").map((p) => str(p.post_setup)))],
+            () => undefined,
+          )
+        : Promise.resolve([] as string[]),
+    ]);
+    if (installs === undefined) out.push({ kind: "unchecked", what: `whether turning ${t.label} on starts an install on the server` });
+    else if (installs.length) out.push({ kind: "install", keys: installs });
+    if (!guards) out.push({ kind: "unchecked", what: `whether the profile has MCP servers turned off with no_mcp, which any change here clears` });
+    else if (guards.noMcp.includes(t.platform)) out.push({ kind: "noMcp", platform: t.platform });
+    return out;
   }
 
   /**
    * Turns `name` on or off for `profile`, if Hermes still has it as `expected` (what the owner saw), then reads it back.
-   * Sends nothing when it doesn't: another client changed it, and the owner sees that first.
+   * Sends nothing when it doesn't: another client changed it, and the owner sees that first. Changes wait their turn:
+   * one is written at a time, so a later one is checked against what the earlier one left.
    */
-  async set(profile: string, name: string, enabled: boolean, expected: boolean): Promise<ToolsetChange> {
+  set(profile: string, name: string, enabled: boolean, expected: boolean): Promise<ToolsetChange> {
+    const run = async () => {
+      this.setPending({ profile, name, enabled });
+      try {
+        return await this.write(profile, name, enabled, expected);
+      } finally {
+        this.setPending(undefined);
+      }
+    };
+    const done = this.queue.then(run, run);
+    this.queue = done.catch(() => {});
+    return done;
+  }
+
+  private async write(profile: string, name: string, enabled: boolean, expected: boolean): Promise<ToolsetChange> {
     if (!changeableName(name)) return { kind: "rejected", reason: "This app can't send that toolset's name to Hermes." };
     const before = await this.list(profile);
     const row = before.toolsets.find((t) => t.name === name);
     if (!row) return { kind: "conflict", list: before };
     if (row.enabled !== expected) return { kind: "conflict", list: before, now: row.enabled };
     if (row.enabled === enabled) return { kind: "saved", list: before };
+    const hadNoMcp = row.configOnly ? false : (await this.guards(profile))?.noMcp.includes(row.platform);
 
     let answer: Json;
     try {
@@ -215,10 +325,10 @@ export class ToolsetsApi {
       this.changed(profile, name);
       const list = await this.list(profile).catch(() => undefined);
       const now = list?.toolsets.find((t) => t.name === name)?.enabled;
-      if (now === enabled) return { kind: "saved", list: list!, warning: f.reason };
-      // A 4xx is answered before anything is written (validation, an unknown name, the sign-in); a lost answer, or a
-      // server error that couldn't be read back, may have been written.
-      if (f.status === undefined || (f.status >= 500 && !list)) return { kind: "unknown", reason: f.reason, list };
+      if (now === enabled) return { kind: "saved", list: list!, warning: f.reason, ...(await this.mcpBack(profile, row, hadNoMcp)) };
+      // A 4xx is answered before anything is written (validation, an unknown name, the sign-in). A lost answer or a
+      // server error may have written it, even when the read shows otherwise (a composite in agent.disabled_toolsets).
+      if (f.status === undefined || f.status >= 500) return { kind: "unknown", reason: f.reason, list };
       return { kind: "rejected", reason: f.reason, list };
     }
     this.changed(profile, name);
@@ -227,6 +337,13 @@ export class ToolsetsApi {
     const now = after.toolsets.find((t) => t.name === name);
     if (answer.ok !== true || now?.enabled !== enabled) return { kind: "mismatch", list: after };
     const installing = str(answer.post_setup_started);
-    return { kind: "saved", list: after, ...(installing ? { installing } : {}) };
+    return { kind: "saved", list: after, ...(installing ? { installing } : {}), ...(await this.mcpBack(profile, row, hadNoMcp)) };
+  }
+
+  /** Whether a save cleared the platform's `no_mcp`, read back; nothing when it had none or that can't be read. */
+  private async mcpBack(profile: string, row: Toolset, had: boolean | undefined): Promise<{ mcpBack?: boolean }> {
+    if (!had) return {};
+    const now = await this.guards(profile);
+    return now && !now.noMcp.includes(row.platform) ? { mcpBack: true } : {};
   }
 }

@@ -100,7 +100,7 @@ Hermes asking the owner before it runs a command it counts as dangerous. It show
 _Avoid_: permission, confirmation, prompt
 
 **Toolset**:
-A named group of tools Hermes can offer the model, such as Web Search or Terminal. Which toolsets are on is a setting of the profile, kept by Hermes on the server, so it is the same for every chat in the profile and in every Hermes client. A change reaches chats Hermes starts afterwards; a chat Hermes already has open, and a reply running in it, keeps the tools it started with. Settings → Toolsets says a change is saved only once Hermes reads it back that way. A toolset being on doesn't let Hermes run anything it would otherwise ask about: Approvals and YOLO decide that.
+A named group of tools Hermes can offer the model, such as Web Search or Terminal. Which toolsets are on is a setting of the profile, kept by Hermes on the server: the list new chats in the profile start with, in every Hermes client, unless the server pins its own or the profile's coding focus mode picks one in a code workspace. A change reaches chats Hermes starts afterwards; a chat Hermes already has open, and a reply running in it, keeps the tools it started with. Settings → Toolsets says a change is saved only once Hermes reads it back that way. A toolset being on doesn't let Hermes run anything it would otherwise ask about: Approvals and YOLO decide that.
 _Avoid_: tool permissions, capabilities, plugins (a plugin can bring a toolset, but isn't one)
 
 **Saved copy**:

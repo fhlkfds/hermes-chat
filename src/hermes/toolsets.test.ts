@@ -70,10 +70,53 @@ describe("toolset discovery", () => {
     expect(await api.writeSupport("default")).toEqual({ ok: false, reason: "Hermes doesn't let this sign-in change toolsets: Read-only dashboard session" });
   });
 
-  it("knows when providers still need an install that enabling may start", async () => {
+  it("knows when enabling starts an install, and not for providers the toggle leaves to hermes tools", async () => {
     const { api } = await connected();
-    expect(await api.pendingInstalls("default", "computer_use")).toEqual(["cua_driver"]);
-    expect(await api.pendingInstalls("default", "web")).toEqual([]);
+    const list = await api.list("default");
+    const t = (name: string) => list.toolsets.find((x) => x.name === name)!;
+    expect(await api.cautions("default", t("computer_use"), true)).toEqual([{ kind: "install", keys: ["cua_driver"] }]);
+    // Web's ddgs row needs setup, but the toggle never installs it (`_POST_SETUP_INSTALLED` at bf0203a).
+    expect(await api.cautions("default", t("web"), true)).toEqual([]);
+    expect(await api.cautions("default", t("computer_use"), false)).toEqual([]);
+  });
+
+  it("says what it couldn't check instead of treating it as safe", async () => {
+    const { server, api } = await connected();
+    const list = await api.list("default");
+    const t = (name: string) => list.toolsets.find((x) => x.name === name)!;
+    server.toolsetConfigFailure = "The dashboard answered 500: {}";
+    expect(await api.cautions("default", t("computer_use"), true)).toEqual([{ kind: "unchecked", what: expect.stringContaining("starts an install") }]);
+    server.toolsetConfigFailure = undefined;
+    server.toolsetGuardsFailure = "The dashboard answered 500: {}";
+    expect(await api.cautions("default", t("web"), false)).toEqual([{ kind: "unchecked", what: expect.stringContaining("no_mcp") }]);
+    // Speech-to-text has its own section: neither applies.
+    expect(await api.cautions("default", t("stt"), false)).toEqual([]);
+  });
+
+  it("warns that a change clears no_mcp, and reports it cleared once read back", async () => {
+    const { server, api } = await connected();
+    server.toolsetNoMcp.default = new Set(["cli"]);
+    const list = await api.list("default");
+    const web = list.toolsets.find((x) => x.name === "web")!;
+    expect(await api.cautions("default", web, false)).toEqual([{ kind: "noMcp", platform: "cli" }]);
+    // A Discord toolset writes Discord's list, which has no no_mcp.
+    expect(await api.cautions("default", list.toolsets.find((x) => x.name === "discord")!, true)).toEqual([]);
+    expect(await api.set("default", "web", false, true)).toMatchObject({ kind: "saved", mcpBack: true });
+    expect((await api.guards("default"))?.noMcp).toEqual([]);
+  });
+
+  it("names the provider that keeps a toolset from working, beyond Hermes's key check", async () => {
+    const { server, api } = await connected();
+    server.toolsetProviders.stt = [{ name: "Local Whisper", status: "needs_setup", is_active: true }];
+    server.toolsetProviders.image_gen = [{ name: "FAL.ai", status: "needs_keys", is_active: false }];
+    const problems = await api.setupProblems("default", await api.list("default"));
+    expect(problems).toEqual({
+      stt: "Its provider, Local Whisper, isn't installed or set up on the server.",
+      image_gen: "None of its providers is ready on the server.",
+      computer_use: "None of its providers is ready on the server.",
+    });
+    // Web has no active provider but a ready one (Exa's keyless row).
+    expect(problems.web).toBeUndefined();
   });
 });
 
@@ -142,6 +185,16 @@ describe("changing a toolset", () => {
     expect(await api.set("default", "web", false, true)).toMatchObject({ kind: "unknown", reason: "Internal Server Error" });
   });
 
+  it("keeps a server error unconfirmed even when the read disagrees: the save may have gone in", async () => {
+    const { server, api } = await connected();
+    // The save lands, a later step fails with a 500, and agent.disabled_toolsets still resolves it off.
+    server.toolsetSuppressed.add("image_gen");
+    server.failAfterToolsetWrite = { status: 500, detail: "Internal Server Error" };
+    const r = await api.set("default", "image_gen", true, false);
+    expect(r).toMatchObject({ kind: "unknown", reason: "Internal Server Error" });
+    expect(server.enabledToolsets("default").has("image_gen")).toBe(true);
+  });
+
   it("doesn't claim success when Hermes reads it back the other way", async () => {
     const { server, api } = await connected();
     // `agent.disabled_toolsets` strips it through a composite: the save goes in, the read-back is still off.
@@ -191,6 +244,27 @@ describe("changing a toolset", () => {
 });
 
 describe("concurrent changes", () => {
+  it("writes one change at a time for the whole app, and says which is on its way", async () => {
+    const { server, api } = await connected();
+    let release!: () => void;
+    server.toolsetGateBeforeWrite = new Promise((r) => (release = r));
+    const seen: (string | undefined)[] = [];
+    api.subscribe(() => seen.push(api.pending() && `${api.pending()!.name}=${api.pending()!.enabled}`));
+    const first = api.set("default", "web", false, true);
+    // A second screen (the tab reopened) asks while the first hasn't written yet: it waits, then checks afresh.
+    const second = api.set("default", "web", true, true);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(api.pending()).toEqual({ profile: "default", name: "web", enabled: false });
+    expect(server.toolsetWrites).toEqual([]);
+    release();
+    expect((await first).kind).toBe("saved");
+    // It saw web on, Hermes now has it off: not sent.
+    expect(await second).toMatchObject({ kind: "conflict", now: false });
+    expect(server.toolsetWrites).toEqual([{ profile: "default", name: "web", enabled: false }]);
+    expect(api.pending()).toBeUndefined();
+    expect(seen).toEqual(["web=false", undefined, "web=true", undefined]);
+  });
+
   it("two different toolsets changed at once both land", async () => {
     const { server, api } = await connected();
     const [a, b] = await Promise.all([api.set("default", "web", false, true), api.set("default", "file", false, true)]);

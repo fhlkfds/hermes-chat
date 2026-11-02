@@ -1,9 +1,20 @@
 // Settings → Toolsets: which toolsets Hermes offers the model, for the profile shown, as Hermes has them on the server.
 // A switch changes one toolset for the whole profile; it is checked against a fresh read first and shown as saved only
 // once Hermes reads it back that way. Reads and writes: toolsets.ts.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { RefreshCw, ShieldCheck, TriangleAlert } from "lucide-react";
-import { UnsupportedServerError, changeableName, type Toolset, type ToolsetChange, type ToolsetList, type ToolsetsApi, type WriteSupport } from "../hermes/toolsets";
+import {
+  UnsupportedServerError,
+  changeableName,
+  type Caution,
+  type Pending,
+  type Toolset,
+  type ToolsetChange,
+  type ToolsetGuards,
+  type ToolsetList,
+  type ToolsetsApi,
+  type WriteSupport,
+} from "../hermes/toolsets";
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const onOff = (on: boolean) => (on ? "on" : "off");
@@ -11,8 +22,16 @@ const timeOf = (at: number) => new Date(at).toLocaleTimeString([], { hour: "2-di
 
 /** What happened to the latest change of one toolset, under its row. `unsettled`: a later read settles it. */
 type Note = { tone: "ok" | "warn" | "error"; text: string; unsettled?: boolean };
-/** The change on its way: `checking` reads whether turning it on may start an install, before anything is sent. */
-type Saving = { name: string; enabled: boolean; phase: "checking" | "saving" };
+/** A change being checked before it's sent: whether it may start an install or bring MCP servers back. */
+type Checking = { name: string; enabled: boolean };
+
+/** One caution, as the confirmation says it. */
+function cautionText(c: Caution, t: Toolset): string {
+  if (c.kind === "install") return `Hermes starts installing ${c.keys.join(", ")} on the server when ${t.label} is turned on, in the background, because it isn't installed there yet.`;
+  if (c.kind === "noMcp")
+    return `This profile has MCP servers turned off for ${t.platformLabel} with no_mcp. Hermes clears no_mcp whenever it saves a toolset change, so new chats would be offered the profile's MCP servers again.`;
+  return `This app couldn't check ${c.what}.`;
+}
 
 /** The note a change's outcome leaves under the toolset's row. */
 function noteFor(t: Toolset, enabled: boolean, r: ToolsetChange): Note {
@@ -23,8 +42,9 @@ function noteFor(t: Toolset, enabled: boolean, r: ToolsetChange): Note {
         tone: r.warning ? "warn" : "ok",
         text:
           (r.warning ? `Hermes answered with an error (${r.warning}), but reads ${t.label} back as ${onOff(enabled)}.` : `Saved: Hermes reads ${t.label} back as ${onOff(enabled)}.`) +
-          " Chats Hermes starts from now use it." +
-          (r.installing ? ` Hermes also started installing ${r.installing} on the server for it, in the background.` : ""),
+          " It's the profile's list for new chats." +
+          (r.installing ? ` Hermes also started installing ${r.installing} on the server for it, in the background.` : "") +
+          (r.mcpBack ? " Hermes cleared no_mcp, so new chats are offered the profile's MCP servers again." : ""),
       };
     case "conflict":
       return r.now === undefined
@@ -33,7 +53,7 @@ function noteFor(t: Toolset, enabled: boolean, r: ToolsetChange): Note {
     case "rejected":
       return {
         tone: "error",
-        text: `Hermes didn't make the change (${r.reason}). ${now === undefined ? `It was ${onOff(t.enabled)} before.` : `It reads ${t.label} back as ${onOff(now)}.`}`,
+        text: `Hermes refused the change (${r.reason}). ${now === undefined ? `It was ${onOff(t.enabled)} before.` : `It reads ${t.label} back as ${onOff(now)}.`}`,
       };
     case "mismatch":
       return {
@@ -57,28 +77,37 @@ function ToolsetRow({
   t,
   write,
   connected,
+  locked,
   saving,
+  checking,
+  problem,
   note,
   onToggle,
 }: {
   t: Toolset;
   write?: WriteSupport;
   connected: boolean;
-  saving?: Saving;
+  /** Another change, or a read, is under way: no switch takes a click. */
+  locked: boolean;
+  saving?: Pending;
+  checking?: Checking;
+  /** What keeps its provider from working, from the provider readiness Hermes reports. */
+  problem?: string;
   note?: Note;
   onToggle: (t: Toolset) => void;
 }) {
   const id = `toolset-${t.name}`;
-  const mine = saving?.name === t.name;
+  const mine = saving?.name === t.name ? saving : undefined;
+  const checkingMe = checking?.name === t.name ? checking : undefined;
   const canSwitch = write?.ok === true && changeableName(t.name);
   return (
-    <div className="toolset-row" aria-busy={mine || undefined}>
+    <div className="toolset-row" aria-busy={mine || checkingMe ? true : undefined}>
       <div className="toolset-head">
         <div className="toolset-label">
           <div className="appearance-title" id={`${id}-label`}>
             {t.label}
             {t.platform !== "cli" && <span className="badge">{t.platformLabel} only</span>}
-            {!t.configured && <span className="badge warn">Needs setup</span>}
+            {(!t.configured || problem) && <span className="badge warn">Needs setup</span>}
           </div>
           {/* Plugin toolsets can describe themselves at length: two lines here, all of it on hover. */}
           <div className="muted small toolset-desc" id={`${id}-desc`} title={t.description || undefined}>
@@ -92,7 +121,7 @@ function ToolsetRow({
             aria-checked={t.enabled}
             aria-labelledby={`${id}-label`}
             aria-describedby={`${id}-desc`}
-            disabled={!connected || saving !== undefined}
+            disabled={!connected || locked}
             onClick={() => onToggle(t)}
           >
             <span className="switch-knob" />
@@ -107,19 +136,19 @@ function ToolsetRow({
       {t.configOnly && (
         <div className="muted small toolset-hint">A setting with no tools of its own: it turns speech-to-text on or off for the profile, Dictation in this app included.</div>
       )}
-      {!t.configured && (
+      {(!t.configured || problem) && (
         <div className="muted small toolset-hint">
-          Its provider or API key isn't set up on the server, so its tools may not be offered even while it's on. Set it up with{" "}
+          {problem ?? "Its provider or API key isn't set up on the server."} Its tools may not work, or be offered, even while it's on. Set it up with{" "}
           <span className="mono">hermes tools</span> there.
         </div>
       )}
       {write?.ok && !changeableName(t.name) && <div className="muted small toolset-hint">This app can't send its name to Hermes, so it can't change it.</div>}
-      {mine && (
+      {(mine || checkingMe) && (
         <div className="small muted toolset-hint" role="status">
-          {saving.phase === "checking" ? `Checking what turning ${t.label} on needs…` : `Saving: turning ${t.label} ${onOff(saving.enabled)}…`}
+          {mine ? `Saving: turning ${t.label} ${onOff(mine.enabled)}…` : `Checking what turning ${t.label} ${onOff(checkingMe!.enabled)} does…`}
         </div>
       )}
-      {!mine && note && (
+      {!mine && !checkingMe && note && (
         <div className={`small toolset-hint ${note.tone === "error" ? "sign-in-error" : note.tone === "warn" ? "warn-note" : "muted"}`} role={note.tone === "ok" ? "status" : "alert"}>
           {note.text}
         </div>
@@ -142,17 +171,27 @@ export function ToolsetSettings({
 }) {
   const [list, setList] = useState<ToolsetList>();
   const [write, setWrite] = useState<WriteSupport>();
+  const [guards, setGuards] = useState<ToolsetGuards>();
+  const [problems, setProblems] = useState<Record<string, string>>({});
   const [loadError, setLoadError] = useState<string>();
   const [unsupported, setUnsupported] = useState<string>();
   const [reading, setReading] = useState(false);
-  const [saving, setSaving] = useState<Saving>();
+  const [checking, setChecking] = useState<Checking>();
   const [notes, setNotes] = useState<Record<string, Note>>({});
-  const [ask, setAsk] = useState<{ t: Toolset; installs: string[] }>();
+  const [ask, setAsk] = useState<{ t: Toolset; enabled: boolean; cautions: Caution[] }>();
   /** A change whose outcome is unknown: the list is read again once Hermes is back. */
   const [reread, setReread] = useState(false);
-  // Synchronous guards: state updates land after a second click could.
-  const busy = useRef(false);
+  // The change on its way belongs to the API, not to this screen: leaving and coming back still shows it and waits.
+  const pending = useSyncExternalStore(api.subscribe, api.pending);
+  const savingHere = pending?.profile === profile ? pending : undefined;
+  // Synchronous guards, since state lands after a second click could.
+  const readingNow = useRef(false);
+  const checkingNow = useRef(false);
+  /** A read asked for while another read or a change was under way; `true` also asks whether Hermes takes changes. */
+  const wanted = useRef<boolean | undefined>(undefined);
   const live = useRef(true);
+  /** Bumped by each change's result: a read that started before it is older than what's shown, and is dropped. */
+  const stamp = useRef(0);
   const shownList = useRef<ToolsetList | undefined>(undefined);
   shownList.current = list;
   useEffect(() => {
@@ -160,18 +199,29 @@ export function ToolsetSettings({
     return () => void (live.current = false);
   }, []);
 
-  /** Reads the list, and whether Hermes takes changes, for this component's profile. */
+  /**
+   * Reads the list for this component's profile, and with `full` whether Hermes takes changes, the config guards and
+   * provider readiness too. Asked while another read is under way, it runs once that is done; while a change to this
+   * profile is on its way, it runs, and runs again once the change is done.
+   */
   const read = useCallback(
-    async (probe: boolean) => {
-      if (busy.current) return;
-      busy.current = true;
+    async (full: boolean) => {
+      if (readingNow.current) {
+        wanted.current = (wanted.current ?? false) || full;
+        return;
+      }
+      if (api.pending()?.profile === profile) wanted.current = wanted.current ?? false;
+      readingNow.current = true;
+      const started = stamp.current;
       setReading(true);
       try {
-        const [fresh, support] = await Promise.all([
+        const [fresh, support, g] = await Promise.all([
           api.list(profile),
-          probe ? api.writeSupport(profile).catch((e): WriteSupport => ({ ok: false, reason: `Couldn't check whether Hermes takes changes: ${messageOf(e)}` })) : undefined,
+          full ? api.writeSupport(profile).catch((e): WriteSupport => ({ ok: false, reason: `Couldn't check whether Hermes takes changes: ${messageOf(e)}` })) : undefined,
+          full ? api.guards(profile) : undefined,
         ]);
         if (!live.current) return;
+        if (stamp.current !== started) return;
         // A note about a toolset that has changed since (elsewhere) no longer describes it, and an unconfirmed change is
         // settled by this read: the switch shows what Hermes has.
         const before = new Map(shownList.current?.toolsets.map((t) => [t.name, t.enabled]));
@@ -179,20 +229,35 @@ export function ToolsetSettings({
         setNotes((n) => Object.fromEntries(Object.entries(n).filter(([name, note]) => !moved.has(name) && !note.unsettled)));
         setList(fresh);
         if (support) setWrite(support);
+        if (full) setGuards(g);
         setLoadError(undefined);
         setUnsupported(undefined);
         setReread(false);
+        if (full) void api.setupProblems(profile, fresh).then((p) => live.current && setProblems(p));
       } catch (e) {
-        if (!live.current) return;
+        if (!live.current || stamp.current !== started) return;
         if (e instanceof UnsupportedServerError) setUnsupported(e.message);
         else setLoadError(messageOf(e));
       } finally {
-        busy.current = false;
+        readingNow.current = false;
         if (live.current) setReading(false);
       }
+      // What was asked meanwhile, such as the read on reconnecting. One waiting for a change runs when it's done.
+      if (wanted.current === undefined || !live.current || api.pending()?.profile === profile) return;
+      const again = wanted.current;
+      wanted.current = undefined;
+      void read(again);
     },
     [api, profile],
   );
+
+  // A change finishing (here, or before this screen was opened) runs the read that waited for it.
+  useEffect(() => {
+    if (pending || wanted.current === undefined || !connected) return;
+    const again = wanted.current;
+    wanted.current = undefined;
+    void read(again);
+  }, [pending, connected, read]);
 
   // The first read, again on reconnecting (another client may have changed it meanwhile), and after an unknown outcome.
   const wasConnected = useRef(false);
@@ -212,14 +277,15 @@ export function ToolsetSettings({
   }, [connected, list, read]);
 
   const commit = async (t: Toolset, enabled: boolean) => {
-    setSaving({ name: t.name, enabled, phase: "saving" });
     let note: Note;
     try {
       const r = await api.set(profile, t.name, enabled, t.enabled);
       if (!live.current) return;
+      stamp.current++;
       // Every outcome but a lost answer carries the list as Hermes has it after the attempt.
       if (r.list) setList(r.list);
       if (r.kind === "unknown" && !r.list) setReread(true);
+      if (r.kind === "saved" && r.mcpBack) setGuards((g) => g && { ...g, noMcp: g.noMcp.filter((p) => p !== t.platform) });
       note = noteFor(t, enabled, r);
     } catch (e) {
       if (!live.current) return;
@@ -230,47 +296,41 @@ export function ToolsetSettings({
   };
 
   const toggle = async (t: Toolset) => {
-    if (busy.current || !connected) return;
-    busy.current = true;
+    if (checkingNow.current || readingNow.current || api.pending() || !connected) return;
+    checkingNow.current = true;
     setAsk(undefined);
     setNotes(({ [t.name]: _gone, ...rest }) => rest);
     const enabled = !t.enabled;
+    let cautions: Caution[];
     try {
-      if (enabled && !t.configOnly) {
-        setSaving({ name: t.name, enabled, phase: "checking" });
-        const installs = await api.pendingInstalls(profile, t.name);
-        if (!live.current) return;
-        if (installs?.length) return setAsk({ t, installs });
-      }
-      await commit(t, enabled);
+      setChecking({ name: t.name, enabled });
+      cautions = await api.cautions(profile, t, enabled);
     } finally {
-      busy.current = false;
-      if (live.current) setSaving(undefined);
+      checkingNow.current = false;
+      if (live.current) setChecking(undefined);
     }
+    if (!live.current) return;
+    if (cautions.length) return setAsk({ t, enabled, cautions });
+    await commit(t, enabled);
   };
 
-  const confirmInstall = async (t: Toolset) => {
-    if (busy.current || !connected) return;
-    busy.current = true;
+  const confirm = async () => {
+    if (!ask || api.pending() || !connected) return;
+    const { t, enabled } = ask;
     setAsk(undefined);
-    try {
-      await commit(t, true);
-    } finally {
-      busy.current = false;
-      if (live.current) setSaving(undefined);
-    }
+    await commit(t, enabled);
   };
 
   const intro = (
     <>
       <h2>Toolsets</h2>
       <p className="muted">
-        Which tools Hermes offers the model in the <span className="mono">{profile}</span> profile. Hermes keeps this choice on the server, in the profile's
+        Which tools Hermes offers the model in the <span className="mono">{profile}</span> profile. Hermes keeps this list on the server, in the profile's
         settings, so the command line, the TUI and the Hermes desktop app use it too. It is the same for every chat in the profile.
       </p>
       <p className="muted small toolset-scope">
         <strong>When it takes effect:</strong> in chats Hermes starts after the change. A chat Hermes already has open, and a reply running in it, keeps the
-        tools it started with.
+        tools it started with. A server started with <span className="mono">HERMES_TUI_TOOLSETS</span> set uses that list instead.
       </p>
       <p className="muted small toolset-scope">
         <ShieldCheck size={12} /> Toolsets aren't Approvals. Turning one on doesn't change which commands Hermes asks about before running them, or YOLO.
@@ -296,15 +356,32 @@ export function ToolsetSettings({
     );
   }
 
+  const locked = !!pending || !!checking || reading;
   const here = list.toolsets.filter((t) => t.platform === "cli");
   const elsewhere = list.toolsets.filter((t) => t.platform !== "cli");
   const row = (t: Toolset) => (
-    <ToolsetRow key={t.name} t={t} write={write} connected={connected} saving={saving} note={notes[t.name]} onToggle={(x) => void toggle(x)} />
+    <ToolsetRow
+      key={t.name}
+      t={t}
+      write={write}
+      connected={connected}
+      locked={locked}
+      saving={savingHere}
+      checking={checking}
+      problem={problems[t.name]}
+      note={notes[t.name]}
+      onToggle={(x) => void toggle(x)}
+    />
   );
 
   return (
     <section>
       {intro}
+      {guards?.codingFocus && (
+        <p className="small warn-note toolset-scope" role="status">
+          This profile's agent.coding_context is focus: in a code workspace, Hermes gives new chats its own coding selection of toolsets instead of this list.
+        </p>
+      )}
       {runningReplies > 0 && (
         <p className="small warn-note toolset-scope" role="status">
           <TriangleAlert size={12} /> A reply is running in {runningReplies === 1 ? "a chat" : `${runningReplies} chats`} of this profile. A change here doesn't
@@ -321,29 +398,36 @@ export function ToolsetSettings({
           {write.reason} Each toolset shows whether it's on.
         </p>
       )}
+      {pending && pending.profile !== profile && (
+        <p className="small muted toolset-scope" role="status">
+          Waiting for a change in the {pending.profile} profile to finish before this one can change.
+        </p>
+      )}
       <div className="settings-row toolset-status">
         <div className="muted small" role="status">
           {reading ? "Reading the toolsets from Hermes…" : loadError ? null : `Read from Hermes at ${timeOf(list.readAt)}.`}
           {loadError && <span className="sign-in-error">Couldn't read them again: {loadError}</span>}
         </div>
-        <button className="btn" disabled={!connected || reading || saving !== undefined} onClick={() => void read(write?.ok !== true)}>
+        <button className="btn" disabled={!connected || locked} onClick={() => void read(true)}>
           <RefreshCw size={14} /> Refresh
         </button>
       </div>
       {ask && (
-        <div className="confirm toolset-ask" role="alertdialog" aria-label="Install on the server">
+        <div className="confirm toolset-ask" role="alertdialog" aria-label={`Turn ${ask.t.label} ${onOff(ask.enabled)}`}>
           <span className="confirm-msg">
-            <TriangleAlert size={12} /> Turn on {ask.t.label}?
+            <TriangleAlert size={12} /> Turn {ask.t.label} {onOff(ask.enabled)}?
           </span>
-          <span className="confirm-detail">
-            Hermes starts installing {ask.installs.join(", ")} on the server when it's turned on, in the background, because it isn't installed there yet.
-          </span>
+          {ask.cautions.map((c, i) => (
+            <span className="confirm-detail" key={i}>
+              {cautionText(c, ask.t)}
+            </span>
+          ))}
           <div className="confirm-actions">
             <button className="btn" onClick={() => setAsk(undefined)}>
-              Keep it off
+              Keep it {onOff(ask.t.enabled)}
             </button>
-            <button className="btn danger" onClick={() => void confirmInstall(ask.t)}>
-              Turn on
+            <button className="btn danger" disabled={!connected || !!pending} onClick={() => void confirm()}>
+              Turn {onOff(ask.enabled)}
             </button>
           </div>
         </div>

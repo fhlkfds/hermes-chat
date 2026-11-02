@@ -458,6 +458,22 @@ async fn relays_the_toolset_switch_with_only_enabled_in_the_body() {
     assert!(dashboard.request("PUT", &probe, Some(r#"{"enabled":"probe"}"#.into())).await.is_ok());
 }
 
+#[test]
+fn toolset_guards_keep_only_no_mcp_platforms_and_coding_focus() {
+    let config = json!({
+        "platform_toolsets": {"cli": ["web", "no_mcp"], "telegram": "[web, no_mcp]", "discord": ["discord"]},
+        "agent": {"coding_context": " Lean "},
+        "web": {"api_key": "sk-secret"},
+    });
+    let guards = transport::toolset_guards(&config);
+    assert_eq!(guards, transport::ToolsetGuards { no_mcp: vec!["cli".into(), "telegram".into()], coding_focus: true });
+    let out = serde_json::to_value(&guards).unwrap();
+    assert_eq!(out, json!({"noMcp": ["cli", "telegram"], "codingFocus": true}));
+    assert!(!out.to_string().contains("sk-secret"));
+    assert_eq!(transport::toolset_guards(&json!({})), transport::ToolsetGuards { no_mcp: vec![], coding_focus: false });
+    assert!(!transport::toolset_guards(&json!({"agent": {"coding_context": "auto"}})).coding_focus);
+}
+
 #[tokio::test]
 async fn relays_no_other_toolset_write() {
     let dashboard = signed_in().await;
