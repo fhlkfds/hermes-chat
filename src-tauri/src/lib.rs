@@ -6,7 +6,8 @@ pub mod tunnel;
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tauri::ipc::Channel;
+use tauri::ipc::{Channel, InvokeBody};
+use tauri::webview::{PermissionKind, PermissionResponse};
 use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Mutex;
@@ -126,6 +127,57 @@ async fn hermes_request(
     dashboard.request(&method, &path, body).await.map_err(|e| e.to_string())
 }
 
+/// The signed-in dashboard, without holding the lock across a request, so frames keep flowing while it runs.
+async fn dashboard(state: &State<'_, AppState>) -> Result<Arc<Dashboard>, String> {
+    match &*state.0.lock().await {
+        Some(conn) => Ok(conn.dashboard.clone()),
+        None => Err(transport::TransportError::Closed.to_string()),
+    }
+}
+
+/// A header the webview set on a raw-body command, URI-decoded.
+fn header_value(request: &tauri::ipc::Request<'_>, name: &str) -> Option<String> {
+    let raw = request.headers().get(name)?.to_str().ok()?;
+    url::form_urlencoded::parse(format!("v={}", raw.replace('+', "%2B")).as_bytes()).next().map(|(_, v)| v.into_owned())
+}
+
+/// Transcribes a dictated recording. Its bytes come as the raw request body, not as JSON, and its MIME type and the
+/// profile as the URI-encoded `x-mime` and `x-profile` headers. Nothing here keeps or logs the audio or the text.
+#[tauri::command]
+async fn hermes_transcribe(state: State<'_, AppState>, request: tauri::ipc::Request<'_>) -> Result<transport::Transcript, String> {
+    let InvokeBody::Raw(audio) = request.body() else {
+        return Err("The recording didn't arrive as audio bytes.".into());
+    };
+    let mime = header_value(&request, "x-mime").unwrap_or_default();
+    let profile = header_value(&request, "x-profile").ok_or("The recording didn't name a profile.")?;
+    let dashboard = dashboard(&state).await?;
+    dashboard.transcribe(&profile, &mime, audio).await.map_err(|e| e.to_string())
+}
+
+/// A reply read aloud, as the webview gets it: the audio as base64, since a command answers either JSON or raw bytes.
+#[derive(Serialize)]
+struct SpeechOut {
+    mime: String,
+    audio: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
+}
+
+#[tauri::command]
+async fn hermes_speak(state: State<'_, AppState>, profile: String, text: String) -> Result<SpeechOut, String> {
+    use base64::Engine;
+    let dashboard = dashboard(&state).await?;
+    let speech = dashboard.speak(&profile, &text).await.map_err(|e| e.to_string())?;
+    let audio = base64::engine::general_purpose::STANDARD.encode(&speech.audio);
+    Ok(SpeechOut { mime: speech.mime, audio, provider: speech.provider })
+}
+
+#[tauri::command]
+async fn hermes_voice_setup(state: State<'_, AppState>, profile: String) -> Result<transport::VoiceSetup, String> {
+    let dashboard = dashboard(&state).await?;
+    dashboard.voice_setup(&profile).await.map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn hermes_disconnect(state: State<'_, AppState>) -> Result<(), String> {
     *state.0.lock().await = None;
@@ -181,10 +233,34 @@ async fn system_fonts() -> fonts::Fonts {
     fonts::list().await
 }
 
+/// Dictation records from the microphone, and the app asks for it only when the owner starts a recording. The app shows
+/// only its own pages, so a microphone request is granted here; the camera and screen are never used, so asking for
+/// them is refused. Anything else gets WebKit's default.
+fn permission(kind: PermissionKind) -> PermissionResponse {
+    match kind {
+        PermissionKind::Microphone => PermissionResponse::Allow,
+        PermissionKind::Camera | PermissionKind::DisplayCapture => PermissionResponse::Deny,
+        _ => PermissionResponse::Default,
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
+        .on_permission_request(|_, kind| permission(kind))
+        .setup(|app| {
+            // WebKitGTK leaves `navigator.mediaDevices` out unless media capture is turned on.
+            if let Some(window) = app.get_webview_window("main") {
+                window.with_webview(|webview| {
+                    use webkit2gtk::{SettingsExt, WebViewExt};
+                    if let Some(settings) = webview.inner().settings() {
+                        settings.set_enable_media_stream(true);
+                    }
+                })?;
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             hermes_connect,
             hermes_send,
@@ -192,6 +268,9 @@ pub fn run() {
             hermes_stat_files,
             hermes_read_preview,
             hermes_request,
+            hermes_transcribe,
+            hermes_speak,
+            hermes_voice_setup,
             hermes_disconnect,
             password_load,
             password_save,

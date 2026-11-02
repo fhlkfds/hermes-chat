@@ -1,4 +1,5 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
+// Dictation and Read aloud come from Voice.tsx.
 import { memo, type ReactNode, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { ArrowUp, Brain, ChevronDown, ChevronRight, ChevronUp, CloudOff, FileDown, HardDrive, Paperclip, Search, Square, Wrench, X } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -10,6 +11,10 @@ import { ApprovalCard } from "./ApprovalCard";
 import { Markdown } from "./Markdown";
 import { ArchiveButton, SettleButton, SourceIcon, Spinner, StoredTime, composing, highlight } from "./bits";
 import { AttachmentChip, Previews, readPreview } from "./previews";
+import { Speaker } from "./speaker";
+import { DictationNoteView, DictationStrip, ListenButton, MicButton, type VoiceApi, listenBlocked, micBlocked, useDictation, useVoiceSetup } from "./Voice";
+import { withTranscript } from "../hermes/voice";
+import type { VoiceSetup } from "../hermes/pipe";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type ThinkingItem = Extract<Item, { kind: "thinking" }>;
@@ -51,8 +56,8 @@ const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateS
  * `alsoPostsIn`: the Telegram or Discord chat Hermes will also post its replies in. `draft`: the composer's text, kept
  * outside the pane so it survives switching chats. `onAnswer` answers an Approval card. `onSettle`, `onArchive` and
  * `onExport` are left out for a chat not started yet. `notLoaded`: the chat has no Saved copy and can't load until
- * Hermes is connected. `modelControls`: the model picker and reasoning pill, at the bottom left of the composer. Ctrl+F
- * opens the find bar.
+ * Hermes is connected. `modelControls`: the model picker and reasoning pill, at the bottom left of the composer. `voice`:
+ * Dictation and Read aloud, left out where there's no Hermes to do them. Ctrl+F opens the find bar.
  */
 export function ChatPane({
   chat,
@@ -73,6 +78,7 @@ export function ChatPane({
   onArchive,
   onExport,
   modelControls,
+  voice,
 }: {
   chat: Chat;
   notLoaded?: boolean;
@@ -92,8 +98,21 @@ export function ChatPane({
   onArchive?: (archived: boolean) => void;
   onExport?: () => void;
   modelControls?: ReactNode;
+  voice?: VoiceApi;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const voiceSetup = useVoiceSetup(voice, status === "connected");
+  // One reply reads aloud at a time; closing the chat stops it and lets go of its audio.
+  const voiceRef = useRef(voice);
+  voiceRef.current = voice;
+  const [speaker, setSpeaker] = useState<Speaker>();
+  useEffect(() => {
+    if (!voice) return;
+    const s = new Speaker((text) => voiceRef.current!.speak(text));
+    setSpeaker(s);
+    return () => s.dispose();
+  }, [!voice]);
+  const listen = speaker && { speaker, blocked: listenBlocked(status, voiceSetup) };
   // The blocks are memoized, so they get one answer handler for the life of the pane.
   const onAnswerRef = useRef(onAnswer);
   onAnswerRef.current = onAnswer;
@@ -296,6 +315,7 @@ export function ChatPane({
               offline={status !== "connected" || !!chat.loading}
               movedAt={b.kind === "approval" ? movedAt : 0}
               onAnswer={answer}
+              listen={b.kind === "assistant" ? listen : undefined}
             />
           ))}
           {/* A reply waiting on the owner isn't thinking, and streamed thinking shows its own row. */}
@@ -328,10 +348,16 @@ export function ChatPane({
         }}
         onStop={onStop}
         modelControls={modelControls}
+        voice={voice}
+        voiceSetup={voiceSetup}
+        status={status}
       />
     </div>
   );
 }
+
+/** Read aloud for a reply: the chat's speaker, and why it can't be used now. */
+type Listen = { speaker: Speaker; blocked?: string };
 
 /**
  * One block of the transcript. Memoized, so a streamed delta re-renders only the block it changes. `live`: the reply
@@ -346,6 +372,7 @@ const BlockView = memo(
     offline,
     movedAt,
     onAnswer,
+    listen,
   }: {
     block: Block;
     live: boolean;
@@ -353,6 +380,7 @@ const BlockView = memo(
     offline: boolean;
     movedAt: number;
     onAnswer: (approvalId: string, choice: ApprovalChoice, confirmed?: boolean) => void;
+    listen?: Listen;
   }) {
     if (block.kind === "user")
       return (
@@ -377,6 +405,7 @@ const BlockView = memo(
           <Markdown text={block.text} query={query} />
           {live && <span className="cursor" />}
           {block.interrupted && <div className="stopped">Stopped</div>}
+          {listen && !live && block.text.trim() && <ListenButton speaker={listen.speaker} itemId={block.id} text={block.text} blocked={listen.blocked} />}
           <StoredTime at={block.at} />
         </div>
       );
@@ -392,7 +421,14 @@ const BlockView = memo(
     return <ToolGroup tools={block.tools} />;
   },
   (a, b) =>
-    sameBlock(a.block, b.block) && a.live === b.live && a.query === b.query && a.offline === b.offline && a.movedAt === b.movedAt && a.onAnswer === b.onAnswer,
+    sameBlock(a.block, b.block) &&
+    a.live === b.live &&
+    a.query === b.query &&
+    a.offline === b.offline &&
+    a.movedAt === b.movedAt &&
+    a.onAnswer === b.onAnswer &&
+    a.listen?.speaker === b.listen?.speaker &&
+    a.listen?.blocked === b.listen?.blocked,
 );
 
 /**
@@ -517,6 +553,9 @@ function Composer({
   onSend,
   onStop,
   modelControls,
+  voice,
+  voiceSetup,
+  status,
 }: {
   offline: boolean;
   running: boolean;
@@ -535,8 +574,26 @@ function Composer({
   onSend: (text: string, attachments: Attachment[]) => void;
   onStop: () => void;
   modelControls?: ReactNode;
+  voice?: VoiceApi;
+  voiceSetup?: VoiceSetup;
+  status: ConnectionStatus;
 }) {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  // The transcript joins the text as it is when it arrives, typed meanwhile included.
+  const textRef = useRef(text);
+  textRef.current = text;
+  // Focus goes back to the text once a recording is done with, whichever way, since the controls it was on are gone.
+  const wasDictating = useRef(false);
+  const dictation = useDictation(voice?.transcribe, (heard) => {
+    const next = withTranscript(textRef.current, heard);
+    onText(next);
+    const ta = taRef.current;
+    if (ta) {
+      ta.focus();
+      // After React has put the new text in.
+      requestAnimationFrame(() => ta.setSelectionRange(next.length, next.length));
+    }
+  });
   const [refused, setRefused] = useState<string[]>([]);
   const [dragging, setDragging] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -550,6 +607,10 @@ function Composer({
     return () => p.dispose();
   }, []);
   useEffect(() => previews.current?.sync(attachments), [attachments]);
+  useEffect(() => {
+    if (wasDictating.current && !dictation.active) taRef.current?.focus();
+    wasDictating.current = dictation.active;
+  }, [dictation.active]);
 
   const add = async (paths: string[]) => {
     if (!paths.length) return;
@@ -601,7 +662,15 @@ function Composer({
   };
 
   return (
-    <div className="composer-wrap">
+    <div
+      className="composer-wrap"
+      onKeyDown={(e) => {
+        if (e.key === "Escape" && dictation.active && !composing(e)) {
+          e.preventDefault();
+          dictation.cancel();
+        }
+      }}
+    >
       {note && <div className="offline-note">{note}</div>}
       {!note && hint && <div className="composer-hint">{hint}</div>}
       {alsoPostsIn && (
@@ -612,6 +681,7 @@ function Composer({
       {undelivered.map((u) => (
         <UndeliveredCard key={u.id} held={u} canSend={!offline && !running} onRetry={() => onRetry(u.id)} onDismiss={() => onDismiss(u.id)} />
       ))}
+      <DictationNoteView dictation={dictation} />
       {refused.map((r, i) => (
         <div key={i} className="attach-note" role="alert">
           {r}
@@ -649,8 +719,9 @@ function Composer({
           <button className="icon-btn" title="Attach files" onClick={() => void pick()}>
             <Paperclip size={16} />
           </button>
+          {voice && !dictation.active && <MicButton dictation={dictation} blocked={micBlocked(status, voiceSetup)} />}
           {modelControls}
-          <span className="composer-keys">Enter to send · Shift+Enter for a new line</span>
+          {dictation.active ? <DictationStrip dictation={dictation} /> : <span className="composer-keys">Enter to send · Shift+Enter for a new line</span>}
           {running ? (
             <button className="send stop" title={stopping ? "Stopping" : "Stop"} disabled={offline || stopping} onClick={onStop}>
               <Square size={12} fill="currentColor" />

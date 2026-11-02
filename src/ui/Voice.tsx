@@ -1,0 +1,325 @@
+// Dictation (the composer's microphone) and Read aloud (under each reply), plus the Voice section of Settings.
+// Hermes transcribes and speaks on the server with the profile's own providers; see src/hermes/voice.ts.
+import { useEffect, useReducer, useRef, useState, useSyncExternalStore } from "react";
+import { Check, Mic, RotateCcw, Square, Volume2, X } from "lucide-react";
+import type { Speech, Transcript, VoiceSetup } from "../hermes/pipe";
+import type { ConnectionStatus } from "../hermes/model";
+import { MAX_RECORDING_SECONDS, clock, dictationBlocked, messageOf, readAloudBlocked, sttProvider, ttsProvider } from "../hermes/voice";
+import { type AudioEnv, type Capture, type Recording, startCapture } from "./recorder";
+import type { Speaker } from "./speaker";
+import { Spinner } from "./bits";
+
+/** What the chat pane needs for voice: the profile's set-up, and Hermes's transcribing and speaking. */
+export type VoiceApi = {
+  setup: () => Promise<VoiceSetup>;
+  transcribe: (audio: Uint8Array, mime: string) => Promise<Transcript>;
+  speak: (text: string) => Promise<Speech>;
+};
+
+/** The profile's voice set-up, read once connected; undefined until read, or if it couldn't be. */
+export function useVoiceSetup(voice: VoiceApi | undefined, connected: boolean): VoiceSetup | undefined {
+  const [setup, setSetup] = useState<VoiceSetup>();
+  useEffect(() => {
+    if (!voice || !connected) return;
+    let live = true;
+    voice.setup().then(
+      (s) => live && setSetup(s),
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [voice, connected]);
+  return setup;
+}
+
+/** A recording shorter than this is taken as a slip of the button. */
+const MIN_SECONDS = 0.3;
+
+type Phase = { phase: "idle" } | { phase: "starting" } | { phase: "recording"; capture: Capture } | { phase: "transcribing"; seconds: number };
+
+/** A note above the composer about the last recording. `retry`: the recording is still held, to transcribe again. */
+type DictationNote = { text: string; retry?: Recording };
+
+/**
+ * Dictation's state: open the microphone, stop and transcribe, or cancel. The transcript goes to `onTranscript`; a
+ * recording Hermes couldn't transcribe is held so it can be sent again without speaking it again. Closing the chat
+ * closes the microphone and drops everything, a transcript still on its way included.
+ */
+export function useDictation(transcribe: VoiceApi["transcribe"] | undefined, onTranscript: (text: string) => void, env?: AudioEnv) {
+  const [state, setState] = useState<Phase>({ phase: "idle" });
+  const [note, setNote] = useState<DictationNote>();
+  const [, tick] = useReducer((n: number) => n + 1, 0);
+  // `turn` is bumped by every start, stop and cancel, so a late answer for an earlier one is dropped.
+  const live = useRef<{ capture?: Capture; turn: number }>({ turn: 0 });
+  const latest = useRef({ transcribe, onTranscript });
+  latest.current = { transcribe, onTranscript };
+
+  useEffect(() => {
+    const now = live.current;
+    return () => {
+      now.turn++;
+      now.capture?.cancel();
+      now.capture = undefined;
+    };
+  }, []);
+
+  const send = async (recording: Recording) => {
+    const turn = ++live.current.turn;
+    setNote(undefined);
+    setState({ phase: "transcribing", seconds: recording.seconds });
+    try {
+      const got = await latest.current.transcribe!(recording.audio, recording.mime);
+      if (turn !== live.current.turn) return;
+      setState({ phase: "idle" });
+      if (got.text) latest.current.onTranscript(got.text);
+      else setNote({ text: "Hermes heard no speech in the recording." });
+    } catch (e) {
+      if (turn !== live.current.turn) return;
+      setState({ phase: "idle" });
+      setNote({ text: messageOf(e), retry: recording });
+    }
+  };
+
+  const stop = () => {
+    const capture = live.current.capture;
+    if (!capture) return;
+    live.current.capture = undefined;
+    const recording = capture.stop();
+    if (recording.seconds < MIN_SECONDS) {
+      live.current.turn++;
+      setState({ phase: "idle" });
+      setNote({ text: "The recording was too short to transcribe." });
+      return;
+    }
+    void send(recording);
+  };
+
+  // The clock and level meter move while recording, and a recording stops by itself at the limit.
+  useEffect(() => {
+    if (state.phase !== "recording") return;
+    const id = setInterval(() => (state.capture.seconds() >= MAX_RECORDING_SECONDS ? stop() : tick()), 200);
+    return () => clearInterval(id);
+  }, [state]);
+
+  const start = async () => {
+    if (state.phase !== "idle" || !latest.current.transcribe) return;
+    const turn = ++live.current.turn;
+    setNote(undefined);
+    setState({ phase: "starting" });
+    try {
+      const capture = await startCapture((why) => {
+        if (turn !== live.current.turn) return;
+        live.current.capture = undefined;
+        live.current.turn++;
+        setState({ phase: "idle" });
+        setNote({ text: why });
+      }, env);
+      if (turn !== live.current.turn) return capture.cancel();
+      live.current.capture = capture;
+      setState({ phase: "recording", capture });
+    } catch (e) {
+      if (turn !== live.current.turn) return;
+      setState({ phase: "idle" });
+      setNote({ text: messageOf(e) });
+    }
+  };
+
+  const cancel = () => {
+    live.current.turn++;
+    live.current.capture?.cancel();
+    live.current.capture = undefined;
+    setState({ phase: "idle" });
+  };
+
+  return {
+    state,
+    note,
+    start,
+    stop,
+    cancel,
+    retry: () => note?.retry && void send(note.retry),
+    dismiss: () => setNote(undefined),
+    active: state.phase !== "idle",
+  };
+}
+
+export type Dictation = ReturnType<typeof useDictation>;
+
+/** The composer's microphone button. `blocked`: why Dictation can't be used now. */
+export function MicButton({ dictation, blocked }: { dictation: Dictation; blocked?: string }) {
+  return (
+    <button
+      className="icon-btn"
+      title={blocked ?? "Dictate a message: records until you stop, then puts the text here to edit"}
+      aria-label="Dictate"
+      aria-disabled={!!blocked}
+      onClick={() => !blocked && void dictation.start()}
+    >
+      <Mic size={16} />
+    </button>
+  );
+}
+
+/** What's happening with a recording, in place of the composer's key hints, with its Stop and Cancel buttons. */
+export function DictationStrip({ dictation }: { dictation: Dictation }) {
+  const { state } = dictation;
+  if (state.phase === "idle") return null;
+  const cancel = (
+    <button className="icon-btn" title="Cancel (Esc)" aria-label={state.phase === "recording" ? "Cancel recording" : "Cancel"} onClick={dictation.cancel}>
+      <X size={15} />
+    </button>
+  );
+  if (state.phase === "starting")
+    return (
+      <div className="dictation" role="status">
+        <Spinner /> <span>Waiting for the microphone…</span>
+        <span className="dictation-fill" />
+        {cancel}
+      </div>
+    );
+  if (state.phase === "transcribing")
+    return (
+      <div className="dictation" role="status">
+        <Spinner /> <span>Transcribing {clock(state.seconds)} of audio…</span>
+        <span className="dictation-fill" />
+        {cancel}
+      </div>
+    );
+  const level = state.capture.level();
+  return (
+    <div className="dictation recording" role="status" aria-label="Recording">
+      <span className="rec-dot" aria-hidden />
+      <span>Recording</span>
+      <span className="dictation-clock">
+        {clock(state.capture.seconds())} / {clock(MAX_RECORDING_SECONDS)}
+      </span>
+      <span className="level" aria-hidden>
+        <span style={{ width: `${Math.round(level * 100)}%` }} />
+      </span>
+      <span className="dictation-fill" />
+      {cancel}
+      {/* The microphone button it replaces had focus; Enter here finishes, Esc cancels. */}
+      <button className="btn dictation-stop" title="Stop and transcribe" autoFocus onClick={dictation.stop}>
+        <Check size={14} /> Done
+      </button>
+    </div>
+  );
+}
+
+/** The last recording's problem above the composer, with Try again when the recording is still held. */
+export function DictationNoteView({ dictation }: { dictation: Dictation }) {
+  const { note } = dictation;
+  if (!note) return null;
+  return (
+    <div className="voice-note" role="alert">
+      <span>{note.text}</span>
+      {note.retry && (
+        <button className="link-btn" onClick={dictation.retry}>
+          <RotateCcw size={12} /> Try again
+        </button>
+      )}
+      <button className="link-btn" onClick={dictation.dismiss} aria-label={note.retry ? "Discard the recording" : "Dismiss"}>
+        {note.retry ? "Discard" : "Dismiss"}
+      </button>
+    </div>
+  );
+}
+
+/** Read aloud under a reply. `blocked`: why it can't be used now; a reply already playing can still be stopped. */
+export function ListenButton({ speaker, itemId, text, blocked }: { speaker: Speaker; itemId: string; text: string; blocked?: string }) {
+  const now = useSyncExternalStore(speaker.subscribe, () => speaker.of(itemId));
+  const busy = now?.phase === "loading" || now?.phase === "playing";
+  const off = !!blocked && !busy;
+  return (
+    <div className={`msg-actions ${now ? "active" : ""}`}>
+      <button
+        className="msg-action"
+        title={off ? blocked : busy ? "Stop reading aloud" : "Have Hermes read this reply aloud"}
+        aria-disabled={off}
+        aria-pressed={busy}
+        onClick={() => !off && speaker.toggle(itemId, text)}
+      >
+        {now?.phase === "loading" ? <Spinner /> : busy ? <Square size={10} fill="currentColor" /> : <Volume2 size={13} />}
+        <span>{now?.phase === "loading" ? "Getting audio…" : busy ? "Stop" : "Read aloud"}</span>
+      </button>
+      {now?.phase === "failed" && (
+        <span className="msg-action-error" role="alert">
+          {now.why}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** Why Read aloud can't be used now, or undefined. */
+export function listenBlocked(status: ConnectionStatus, setup: VoiceSetup | undefined): string | undefined {
+  if (status !== "connected") return "Connect to Hermes to read replies aloud.";
+  return readAloudBlocked(setup);
+}
+
+/** Why Dictation can't be started now, or undefined. */
+export function micBlocked(status: ConnectionStatus, setup: VoiceSetup | undefined): string | undefined {
+  if (status !== "connected") return "Connect to Hermes to dictate: it does the transcribing.";
+  return dictationBlocked(setup);
+}
+
+/** Settings → Voice: what the profile's providers are and need, and where recordings go. */
+export function VoiceSettings({ status, profile, setup }: { status: ConnectionStatus; profile: string; setup?: () => Promise<VoiceSetup> }) {
+  const [got, setGot] = useState<{ setup?: VoiceSetup; error?: string }>();
+  const connected = status === "connected";
+  useEffect(() => {
+    if (!setup || !connected) return;
+    let live = true;
+    setup().then(
+      (s) => live && setGot({ setup: s }),
+      (e) => live && setGot({ error: messageOf(e) }),
+    );
+    return () => {
+      live = false;
+    };
+  }, [setup, connected, profile]);
+
+  const s = got?.setup;
+  const row = (name: string, blocked: string | undefined, provider: { label: string; needs: string }) => (
+    <div className="voice-row">
+      <div className="voice-row-head">
+        <b>{name}</b>
+        {blocked ? <span className="badge warn">Unavailable</span> : <span className="badge">{provider.label}</span>}
+      </div>
+      <div className="muted small">{blocked ?? provider.needs}</div>
+    </div>
+  );
+
+  return (
+    <section>
+      <h2>Voice</h2>
+      <p className="muted">
+        Dictate a message with the microphone in the composer: the text lands in the composer for you to edit before sending. Read aloud, under a
+        reply, has Hermes speak it. Hermes does both on the server with the <span className="mono">{profile}</span> profile's own speech
+        providers, so their keys never reach this app.
+      </p>
+      {!connected ? (
+        <p className="muted small">Connect to Hermes to see this profile's voice set-up.</p>
+      ) : got?.error ? (
+        <p className="small sign-in-error" role="alert">
+          Couldn't read the voice set-up: {got.error}
+        </p>
+      ) : !s ? (
+        <p className="muted small">
+          <Spinner /> Reading the voice set-up…
+        </p>
+      ) : (
+        <>
+          {row("Dictation", dictationBlocked(s), sttProvider(s))}
+          {row("Read aloud", readAloudBlocked(s), ttsProvider(s))}
+        </>
+      )}
+      <p className="muted small settings-note">
+        Pick the providers on the server with <span className="mono">hermes tools</span> (Speech-to-Text and Text-to-Speech). The microphone is
+        open only while you record. Recordings stay in memory here and go to Hermes, and on to the provider if it's a cloud one; Hermes deletes its
+        copy once it has the text. Recordings stop by themselves after {MAX_RECORDING_SECONDS / 60} minutes.
+      </p>
+    </section>
+  );
+}

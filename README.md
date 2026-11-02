@@ -25,6 +25,10 @@ npm run app
 
 To sign in, enter an SSH target whose key works without a prompt (for example `liam@hermes`, or an alias from `~/.ssh/config`), plus the Hermes dashboard username and password. Or switch to URL and enter the dashboard's address, for example `http://hermes:9119`.
 
+## Voice
+
+The composer's microphone button starts Dictation: speak, press Done, and the text appears in the composer to edit before sending. Read aloud, under each reply, has Hermes speak it. Hermes does the transcribing and the speaking on the server, with the profile's speech-to-text and text-to-speech providers (set them with `hermes tools` on the server). Settings → General → Voice shows which providers the profile uses and what each one needs. The app needs a working microphone and a PipeWire or PulseAudio sound server.
+
 ## Install
 
 `packaging/aur/PKGBUILD` builds `hermes-chat-git` from `main` on GitHub. It installs the `hermes-chat` binary, its icons, and a launcher that sets `WEBKIT_DISABLE_DMABUF_RENDERER=1`. To build and install it:

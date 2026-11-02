@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { connect, readSaved, type Delivery, type Hermes } from "./hermes/transport";
 import { CHECK_EVERY_MS } from "./hermes/otherProfiles";
 import { type Account, type SavedSignIn, launchSignIn, savedSignIn, signIn, signOut } from "./hermes/account";
@@ -13,6 +13,7 @@ import type { Attachment, Chat, Found } from "./hermes/model";
 import type { ModelPick } from "./hermes/models";
 import { ChatList, Rail } from "./ui/Sidebar";
 import { ChatPane } from "./ui/ChatPane";
+import type { VoiceApi } from "./ui/Voice";
 import { SearchPalette } from "./ui/Search";
 import { SettingsScreen } from "./ui/Settings";
 import { composing } from "./ui/bits";
@@ -161,6 +162,10 @@ export function Main({
     hermes.getSnapshot,
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const voice = useMemo<VoiceApi>(
+    () => ({ setup: () => hermes.voiceSetup(), transcribe: (audio, mime) => hermes.transcribe(audio, mime), speak: (text) => hermes.speak(text) }),
+    [hermes],
+  );
   // The chat to reopen at launch, until Hermes's list shows it is there or gone, or the owner goes somewhere first.
   const [reopening, setReopening] = useState(() => (reopenLast ? chatToReopen(profile) : undefined));
   // Opened at once when the list saved on this computer has it, so the New chat pane doesn't show first.
@@ -449,6 +454,7 @@ export function Main({
             listFonts={systemFonts}
             onClearCache={() => hermes.clearCache()}
             onPullOlder={() => hermes.pullOlderHistory()}
+            voiceSetup={voice.setup}
             onSignOut={onSignOut}
             onClose={() => setSettingsOpen(false)}
           />
@@ -472,6 +478,7 @@ export function Main({
             onSettle={selected === draft ? undefined : (s) => setSettled(selected.id, s)}
             onExport={selected === draft ? undefined : () => exportSelected(selected)}
             onArchive={selected === draft ? undefined : (a) => setArchived(selected.id, a)}
+            voice={voice}
             modelControls={
               <ModelControls
                 catalog={catalog}

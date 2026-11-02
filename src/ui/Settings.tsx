@@ -1,5 +1,5 @@
 // The Settings screen, in two tabs. General, ported from the prototype: the connection and Sign out, what shows on
-// launch, the local cache, and older history. Appearance: how the app looks on this computer (AppearanceSettings.tsx).
+// launch, voice, the local cache, and older history. Appearance: how the app looks on this computer (AppearanceSettings.tsx).
 // Profiles are switched in the list's header, not here (ADR 0001).
 import { useState } from "react";
 import { ArrowLeft, Download, KeyRound, Lock, LogOut, Palette, Settings2, Trash2 } from "lucide-react";
@@ -10,6 +10,8 @@ import { STATUS_LABEL, arrowSelect, fmtSize, routeLabel } from "./bits";
 import type { AppearanceStore, Fonts } from "./appearance";
 import { AppearanceSettings } from "./AppearanceSettings";
 import { StartupSettings } from "./StartupSettings";
+import { VoiceSettings } from "./Voice";
+import type { VoiceSetup } from "../hermes/pipe";
 
 type Tab = "general" | "appearance";
 const TABS = [
@@ -43,6 +45,7 @@ export function SettingsScreen({
   onPullOlder,
   onSignOut,
   onClose,
+  voiceSetup,
 }: {
   status: ConnectionStatus;
   route?: Route;
@@ -62,6 +65,8 @@ export function SettingsScreen({
   onPullOlder: () => Promise<Chat[]>;
   onSignOut: () => Promise<void>;
   onClose: () => void;
+  /** The shown profile's voice set-up, for the Voice section. */
+  voiceSetup?: () => Promise<VoiceSetup>;
 }) {
   const [bytes, setBytes] = useState(cacheBytes);
   const [confirmClear, setConfirmClear] = useState(false);
@@ -146,6 +151,8 @@ export function SettingsScreen({
             </section>
 
             <StartupSettings />
+
+            <VoiceSettings status={status} profile={profile} setup={voiceSetup} />
 
             <section>
               <h2>Local cache</h2>

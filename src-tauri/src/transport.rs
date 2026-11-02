@@ -5,6 +5,9 @@
 //! It also reads the files the owner attaches, so their bytes go from disk to Hermes without passing
 //! through the webview (§7), and the staged images the composer shows as thumbnails. For a direct connection it
 //! resolves the host name in the URL the owner typed, so the webview can tell whether the connection is Unsecure.
+//! For voice it relays a recording to the dashboard's transcription route and a reply to its speech route, and reads
+//! which speech providers the profile uses without passing the rest of its config, keys and all, to the webview
+//! (research doc, "Voice").
 
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
@@ -51,9 +54,95 @@ pub enum TransportError {
     FileTooLarge { size: u64, max: u64 },
     #[error("{0}")]
     File(String),
+    #[error("This Hermes server can't {0}: it has no {1} route. Updating Hermes adds it.")]
+    NoVoiceRoute(&'static str, &'static str),
+    #[error("{0}")]
+    Voice(String),
 }
 
 const MIB: u64 = 1024 * 1024;
+
+/// Hermes's own limit on a recording to transcribe (`_MAX_TRANSCRIPTION_UPLOAD_BYTES` in
+/// `hermes_cli/web_routers/audio.py` at the deployed `bf0203a`).
+pub const TRANSCRIBE_MAX_BYTES: u64 = 25 * MIB;
+
+/// What Hermes heard in a recording. `text` is empty when it heard no speech.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Transcript {
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+}
+
+/// A reply read aloud by Hermes: the audio file's bytes and type.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Speech {
+    pub mime: String,
+    pub audio: Vec<u8>,
+    pub provider: Option<String>,
+}
+
+/// What the profile's voice set-up looks like from here: whether the server has the two audio routes, and which
+/// providers the profile's config names. Only these fields leave Rust; the config they come from can hold API keys.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceSetup {
+    /// The server has `POST /api/audio/transcribe`.
+    pub transcribe: bool,
+    /// The server has `POST /api/audio/speak`.
+    pub speak: bool,
+    /// `stt.enabled`; Hermes counts a missing one as on. `None` when the config couldn't be read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stt_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stt_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tts_provider: Option<String>,
+}
+
+/// How an audio route answered: its JSON, no such route, or a refusal and Hermes's reason.
+enum AudioAnswer {
+    Done(serde_json::Value),
+    NoRoute,
+    Refused(String),
+}
+
+/// A plain MIME type such as `audio/wav`, without parameters, or `None` if it isn't an audio type.
+fn audio_mime(raw: &str) -> Option<String> {
+    let mime = raw.split(';').next()?.trim().to_ascii_lowercase();
+    let (kind, sub) = mime.split_once('/')?;
+    let token = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"!#$&-^_.+".contains(&b));
+    (kind == "audio" && token(sub)).then_some(mime)
+}
+
+/// The reason in a refusal's body: FastAPI's `detail`, an `error`, or else the status alone (a proxy's HTML page says
+/// nothing useful). Long enough for Hermes's "No STT provider available", which lists what each provider needs.
+fn refusal_reason(status: StatusCode, body: &str) -> String {
+    let json: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+    let text = json["detail"].as_str().or(json["error"].as_str()).map(str::trim).filter(|s| !s.is_empty());
+    match text {
+        Some(t) => t.chars().take(800).collect(),
+        None => format!("the server answered {status}"),
+    }
+}
+
+/// A config value as a short display string, or `None` if it isn't a non-empty string.
+fn config_word(v: &serde_json::Value) -> Option<String> {
+    v.as_str().map(str::trim).filter(|s| !s.is_empty()).map(|s| s.chars().take(64).collect())
+}
+
+/// `stt.enabled` as Hermes reads it (`is_truthy_value(cfg.get("enabled", True), default=True)` in
+/// `tools/transcription_tools.py`, then Python truthiness): missing is on.
+fn truthy(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Null => true,
+        serde_json::Value::Bool(b) => *b,
+        serde_json::Value::Number(n) => n.as_f64() != Some(0.0),
+        serde_json::Value::String(s) => matches!(s.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"),
+        serde_json::Value::Array(a) => !a.is_empty(),
+        serde_json::Value::Object(o) => !o.is_empty(),
+    }
+}
 
 /// A dashboard to sign in to directly, without the SSH tunnel: its root, and the IP addresses its host name
 /// resolves to (none when the host is an IP address).
@@ -337,6 +426,110 @@ impl Dashboard {
             StatusCode::UNAUTHORIZED => Err(TransportError::SignedOut),
             _ => Err(unexpected(resp).await),
         }
+    }
+
+    /// Sends a recording to Hermes to transcribe with `profile`'s speech-to-text provider (`POST
+    /// /api/audio/transcribe`). `mime` must be an audio type. Hermes deletes its temporary copy once it has the text.
+    pub async fn transcribe(&self, profile: &str, mime: &str, audio: &[u8]) -> Result<Transcript, TransportError> {
+        let mime = audio_mime(mime).ok_or_else(|| TransportError::Voice("The recording isn't audio.".into()))?;
+        if audio.is_empty() {
+            return Err(TransportError::Voice("The recording is empty.".into()));
+        }
+        if audio.len() as u64 > TRANSCRIBE_MAX_BYTES {
+            return Err(TransportError::Voice(format!(
+                "The recording is too long to transcribe: {}.",
+                TransportError::FileTooLarge { size: audio.len() as u64, max: TRANSCRIBE_MAX_BYTES }
+            )));
+        }
+        let mut data_url = String::with_capacity(mime.len() + 13 + audio.len().div_ceil(3) * 4);
+        data_url.push_str("data:");
+        data_url.push_str(&mime);
+        data_url.push_str(";base64,");
+        base64::engine::general_purpose::STANDARD.encode_string(audio, &mut data_url);
+        let body = json!({"data_url": data_url, "mime_type": mime});
+        match self.post_audio("api/audio/transcribe", profile, &body).await? {
+            AudioAnswer::Done(v) => match v["transcript"].as_str() {
+                Some(text) => Ok(Transcript { text: text.trim().to_owned(), provider: config_word(&v["provider"]) }),
+                None => Err(TransportError::Voice("Hermes answered without a transcript.".into())),
+            },
+            AudioAnswer::NoRoute => Err(TransportError::NoVoiceRoute("transcribe recordings", "/api/audio/transcribe")),
+            AudioAnswer::Refused(why) => Err(TransportError::Voice(format!("Hermes couldn't transcribe the recording: {why}"))),
+        }
+    }
+
+    /// Asks Hermes to read `text` aloud with `profile`'s text-to-speech provider (`POST /api/audio/speak`). Hermes
+    /// strips the Markdown and splits long text itself, and deletes its audio file once it has sent it.
+    pub async fn speak(&self, profile: &str, text: &str) -> Result<Speech, TransportError> {
+        if text.trim().is_empty() {
+            return Err(TransportError::Voice("There's nothing to read aloud.".into()));
+        }
+        let v = match self.post_audio("api/audio/speak", profile, &json!({"text": text})).await? {
+            AudioAnswer::Done(v) => v,
+            AudioAnswer::NoRoute => return Err(TransportError::NoVoiceRoute("read replies aloud", "/api/audio/speak")),
+            AudioAnswer::Refused(why) => return Err(TransportError::Voice(format!("Hermes couldn't read it aloud: {why}"))),
+        };
+        let bad = || TransportError::Voice("Hermes answered with audio this app can't read.".into());
+        let (head, encoded) = v["data_url"].as_str().and_then(|u| u.strip_prefix("data:")?.split_once(',')).ok_or_else(bad)?;
+        let mime = head.strip_suffix(";base64").and_then(audio_mime).ok_or_else(bad)?;
+        let audio = base64::engine::general_purpose::STANDARD.decode(encoded).map_err(|_| bad())?;
+        if audio.is_empty() {
+            return Err(bad());
+        }
+        Ok(Speech { mime, audio, provider: config_word(&v["provider"]) })
+    }
+
+    /// Reads whether the server has the two audio routes, and which providers `profile`'s config names. The routes
+    /// are asked with bodies they refuse before doing any work (an empty recording, no text), so nothing is
+    /// transcribed or spoken. Only the provider names and `stt.enabled` are kept from the config.
+    pub async fn voice_setup(&self, profile: &str) -> Result<VoiceSetup, TransportError> {
+        let has = |a: AudioAnswer| !matches!(a, AudioAnswer::NoRoute);
+        let transcribe = has(self.post_audio("api/audio/transcribe", profile, &json!({"data_url": ""})).await?);
+        let speak = has(self.post_audio("api/audio/speak", profile, &json!({"text": ""})).await?);
+        let query = url::form_urlencoded::Serializer::new(String::new()).append_pair("profile", profile).finish();
+        let config: Option<serde_json::Value> = match self.request("GET", &format!("api/config?{query}"), None).await {
+            Ok(body) => serde_json::from_str(&body).ok(),
+            Err(TransportError::SignedOut) => return Err(TransportError::SignedOut),
+            Err(_) => None,
+        };
+        let (stt_enabled, stt_provider, tts_provider) = match &config {
+            Some(c) => (Some(truthy(&c["stt"]["enabled"])), config_word(&c["stt"]["provider"]), config_word(&c["tts"]["provider"])),
+            None => (None, None, None),
+        };
+        Ok(VoiceSetup { transcribe, speak, stt_enabled, stt_provider, tts_provider })
+    }
+
+    /// One `POST` to an audio route for `profile`, with a JSON body.
+    async fn post_audio(&self, path: &str, profile: &str, body: &serde_json::Value) -> Result<AudioAnswer, TransportError> {
+        let mut url = endpoint(&self.base, path);
+        url.query_pairs_mut().append_pair("profile", profile);
+        let resp = self
+            .http
+            .post(url)
+            .header(header::COOKIE, self.cookie_header())
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| TransportError::Unreachable(e.to_string()))?;
+        self.keep_cookies(&resp);
+        let status = resp.status();
+        if status == StatusCode::UNAUTHORIZED {
+            return Err(TransportError::SignedOut);
+        }
+        let text = resp.text().await.map_err(|e| TransportError::Unreachable(e.to_string()))?;
+        if status.is_success() {
+            return serde_json::from_str(&text)
+                .map(AudioAnswer::Done)
+                .map_err(|_| TransportError::Unexpected { status: status.as_u16(), body: text.chars().take(300).collect() });
+        }
+        let reason = refusal_reason(status, &text);
+        // FastAPI's own "no such route" (and the headless backend's catch-all) differ from a refusal by the route
+        // itself, such as an unknown profile, which also answers 404 but with its own reason.
+        let no_route = match status {
+            StatusCode::METHOD_NOT_ALLOWED => true,
+            StatusCode::NOT_FOUND => reason == "Not Found" || reason.starts_with("Headless backend") || reason.starts_with("the server answered"),
+            _ => false,
+        };
+        Ok(if no_route { AudioAnswer::NoRoute } else { AudioAnswer::Refused(reason) })
     }
 
     /// Take in every Set-Cookie: a new value replaces the old one, an empty one deletes it. Only

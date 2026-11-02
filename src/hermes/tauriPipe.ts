@@ -2,10 +2,18 @@
 // `/api/ws` frames and REST calls. It also reads the files the owner attaches, so their bytes never pass through the
 // webview.
 import { Channel, invoke } from "@tauri-apps/api/core";
-import type { LocalFile, OpenPipe, PipeEvent, Route } from "./pipe";
+import type { LocalFile, OpenPipe, PipeEvent, Route, Transcript, VoiceSetup } from "./pipe";
 
 // A failed command rejects with the Rust error's text, not an Error.
 export const asError = (e: unknown) => Promise.reject(new Error(String(e)));
+
+/** Base64 to bytes. */
+function fromBase64(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
 
 /** `mode` picks which of `sshTarget` and `url` is used. */
 export type SignInDetails = { mode: "ssh" | "url"; sshTarget: string; url: string; username: string; password: string };
@@ -22,6 +30,16 @@ export function tauriPipe(d: SignInDetails): OpenPipe {
       request: (method, path, body) => invoke<string>("hermes_request", { method, path, body }).catch(asError),
       statFiles: (paths) => invoke<LocalFile[]>("hermes_stat_files", { paths }),
       sendFile: (head, path, tail, maxBytes) => invoke<void>("hermes_send_file", { head, path, tail, maxBytes }).catch(asError),
+      // The recording goes as the raw body, not as a JSON list of numbers.
+      transcribe: (profile, audio, mime) =>
+        invoke<Transcript>("hermes_transcribe", audio, {
+          headers: { "x-mime": encodeURIComponent(mime), "x-profile": encodeURIComponent(profile) },
+        }).catch(asError),
+      speak: async (profile, text) => {
+        const got = await invoke<{ mime: string; audio: string; provider?: string }>("hermes_speak", { profile, text }).catch(asError);
+        return { ...got, audio: fromBase64(got.audio) };
+      },
+      voiceSetup: (profile) => invoke<VoiceSetup>("hermes_voice_setup", { profile }).catch(asError),
       close: () => invoke("hermes_disconnect"),
     };
   };
