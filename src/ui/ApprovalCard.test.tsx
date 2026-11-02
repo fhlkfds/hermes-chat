@@ -1,0 +1,75 @@
+import { describe, expect, it } from "vitest";
+import { renderToStaticMarkup } from "react-dom/server";
+import type { ApprovalItem } from "../hermes/model";
+import { ApprovalCard, ConfirmGrant } from "./ApprovalCard";
+
+const card = (over: Partial<ApprovalItem> = {}): ApprovalItem => ({
+  kind: "approval",
+  id: "srq-1",
+  requestId: "apr-1",
+  command: "rm -rf /var/log/old",
+  description: "recursive delete",
+  choices: ["once", "session", "always", "deny"],
+  allowSession: true,
+  allowPermanent: true,
+  ...over,
+});
+
+/** Each button's text, and whether it is disabled. */
+function buttons(html: string) {
+  return [...html.matchAll(/<button([^>]*)>(.*?)<\/button>/g)].map(([, attrs, text]) => ({
+    text: text.replace(/<[^>]+>/g, ""),
+    disabled: /\sdisabled=""/.test(attrs),
+  }));
+}
+
+const labels = (html: string) => buttons(html).map((b) => b.text);
+const show = (item: ApprovalItem, offline = false) => renderToStaticMarkup(<ApprovalCard item={item} offline={offline} onAnswer={() => {}} />);
+
+describe("Approval card", () => {
+  it("offers each answer Hermes offers, in its order", () => {
+    expect(labels(show(card({ choices: ["deny", "once", "always", "session"] })))).toEqual([
+      "Deny",
+      "Approve once",
+      "Always allow…",
+      "Allow for this chat…",
+    ]);
+  });
+
+  it("offers no answer Hermes didn't offer or rules out", () => {
+    expect(labels(show(card({ choices: ["once", "deny"] })))).toEqual(["Approve once", "Deny"]);
+    expect(labels(show(card({ allowSession: false, allowPermanent: false })))).toEqual(["Approve once", "Deny"]);
+  });
+
+  it("says so when Hermes offers no answer this app can give", () => {
+    const html = show(card({ choices: [] }));
+    expect(buttons(html)).toEqual([]);
+    expect(html).toContain("no answer this app can give");
+  });
+
+  it("can't be answered while offline", () => {
+    expect(buttons(show(card(), true)).every((b) => b.disabled)).toBe(true);
+  });
+
+  it("can't be answered once answered, or once Hermes stopped waiting", () => {
+    const always = show(card({ answer: "always" }));
+    expect(buttons(always)).toEqual([]);
+    expect(always).toContain("Always allowed");
+    const timedOut = show(card({ ended: "timeout" }));
+    expect(buttons(timedOut)).toEqual([]);
+    expect(timedOut).toContain("Timed out without an answer");
+  });
+
+  it("asks the owner to confirm allowing the command for the rest of the chat", () => {
+    const html = renderToStaticMarkup(<ConfirmGrant item={card()} choice="session" offline={false} onConfirm={() => {}} onBack={() => {}} />);
+    expect(html).toContain("for the rest of this chat");
+    expect(html).toContain("recursive delete");
+    expect(labels(html)).toEqual(["Yes, allow for this chat", "Back"]);
+  });
+
+  it("asks the owner to confirm always allowing the command", () => {
+    const html = renderToStaticMarkup(<ConfirmGrant item={card()} choice="always" offline={false} onConfirm={() => {}} onBack={() => {}} />);
+    expect(html).toContain("in any chat");
+    expect(labels(html)).toEqual(["Yes, always allow", "Back"]);
+  });
+});

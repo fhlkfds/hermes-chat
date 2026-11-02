@@ -1,10 +1,11 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowUp, Brain, ChevronDown, ChevronRight, ChevronUp, Paperclip, Search, ShieldAlert, Square, Wrench, X } from "lucide-react";
+import { ArrowUp, Brain, ChevronDown, ChevronRight, ChevronUp, Paperclip, Search, Square, Wrench, X } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import type { ApprovalChoice, ApprovalItem, AttachCheck, Attachment, Chat, ConnectionStatus, Item, Source } from "../hermes/model";
+import type { ApprovalChoice, AttachCheck, Attachment, Chat, ConnectionStatus, Item, Source } from "../hermes/model";
 import { SOURCE_LABEL, isWaiting } from "../hermes/model";
+import { ApprovalCard } from "./ApprovalCard";
 import { Markdown } from "./Markdown";
 import { SettleButton, SourceIcon, Spinner, fmtSize, highlight } from "./bits";
 
@@ -59,7 +60,7 @@ export function ChatPane({
   onAttach: (paths: string[]) => Promise<AttachCheck>;
   onSend: (text: string, attachments: Attachment[]) => void;
   onStop: () => void;
-  onAnswer: (approvalId: string, choice: ApprovalChoice) => void;
+  onAnswer: (approvalId: string, choice: ApprovalChoice, confirmed?: boolean) => void;
   onSettle?: (settled: boolean) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -251,7 +252,7 @@ export function ChatPane({
               );
             if (b.kind === "thinking") return <Thought key={b.id} item={b} live={!!chat.running && b === last} query={q} />;
             if (b.kind === "approval")
-              return <ApprovalCard key={b.id} item={b} offline={status !== "connected"} onAnswer={(c) => onAnswer(b.id, c)} />;
+              return <ApprovalCard key={b.id} item={b} offline={status !== "connected"} onAnswer={(c, confirmed) => onAnswer(b.id, c, confirmed)} />;
             return <ToolGroup key={b.id} tools={b.tools} />;
           })}
           {/* A reply waiting on the owner isn't thinking, and streamed thinking shows its own row. */}
@@ -279,39 +280,6 @@ export function ChatPane({
         }}
         onStop={onStop}
       />
-    </div>
-  );
-}
-
-/** What a closed card says when Hermes stopped waiting without an answer from this app. */
-function endedNote(reason: string): string {
-  if (reason === "timeout") return "Timed out without an answer";
-  if (reason === "resolved") return "Answered in another Hermes client";
-  return "Hermes stopped waiting for an answer";
-}
-
-function ApprovalCard({ item, offline, onAnswer }: { item: ApprovalItem; offline: boolean; onAnswer: (c: ApprovalChoice) => void }) {
-  const closed = item.answer ?? item.ended;
-  return (
-    <div className={`approval ${closed ? "answered" : ""}`}>
-      <div className="approval-head">
-        <ShieldAlert size={15} />
-        {item.answer ? (item.answer === "deny" ? "Denied" : "Approved") : item.ended ? endedNote(item.ended) : "Hermes wants to run a command"}
-      </div>
-      <pre className="approval-cmd">{item.command}</pre>
-      {!closed && (
-        <>
-          {item.description && <div className="approval-desc">{item.description}</div>}
-          <div className="approval-actions">
-            <button className="btn primary" disabled={offline} onClick={() => onAnswer("once")}>
-              Approve
-            </button>
-            <button className="btn" disabled={offline} onClick={() => onAnswer("deny")}>
-              Deny
-            </button>
-          </div>
-        </>
-      )}
     </div>
   );
 }

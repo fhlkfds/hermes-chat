@@ -302,7 +302,7 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
             onAttach={(paths) => hermes.checkAttachments(paths)}
             onSend={send}
             onStop={() => void hermes.stop(selected.id)}
-            onAnswer={(approvalId, choice) => void hermes.answerApproval(selected.id, approvalId, choice)}
+            onAnswer={(approvalId, choice, confirmed) => void hermes.answerApproval(selected.id, approvalId, choice, confirmed)}
             onSettle={selected === draft ? undefined : (s) => setSettled(selected.id, s)}
           />
         )}
