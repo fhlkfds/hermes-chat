@@ -4,6 +4,7 @@ import { useState } from "react";
 import { ArrowLeft, Download, KeyRound, Lock, LogOut, Trash2 } from "lucide-react";
 import type { Chat, ConnectionStatus } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
+import { TRANSCRIPT_LIMIT_BYTES } from "../hermes/chatCache";
 import { STATUS_LABEL, fmtSize, routeLabel } from "./bits";
 
 /** What a pull added: the older chats in Settled, and any pinned in another Hermes client, which are Active. */
@@ -39,7 +40,7 @@ export function SettingsScreen({
   passwordSaved: boolean;
   profile: string;
   olderPulled: boolean;
-  /** The storage the saved chat lists take now. */
+  /** The storage the saved chat lists and Saved copies take now. */
   cacheBytes: () => number;
   onClearCache: () => void;
   /** Resolves to the older chats added. */
@@ -103,7 +104,11 @@ export function SettingsScreen({
 
         <section>
           <h2>Local cache</h2>
-          <p className="muted">Hermes Chat keeps a copy of each profile's chat list on this computer, so the list shows as soon as you sign in.</p>
+          <p className="muted">
+            Hermes Chat keeps a copy of each profile's chat list on this computer, so the list shows as soon as you sign in. It also keeps a
+            Saved copy of the chats you opened most recently, up to {fmtSize(TRANSCRIPT_LIMIT_BYTES)}, so you can read them while Hermes can't be
+            reached. The oldest copies are deleted first when that fills up.
+          </p>
           <div className="settings-row">
             <div>
               <div className="big-num">{fmtSize(bytes)}</div>
@@ -117,7 +122,7 @@ export function SettingsScreen({
               <div className="confirm">
                 <span>
                   <Lock size={12} /> Only the copies on this computer are deleted. Nothing on your Hermes server is touched; the list is saved again
-                  at the next refresh.
+                  at the next refresh, and a chat's Saved copy when you next open it.
                 </span>
                 <div className="confirm-actions">
                   <button className="btn" onClick={() => setConfirmClear(false)}>
