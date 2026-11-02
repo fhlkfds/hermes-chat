@@ -1032,6 +1032,6 @@ button.status-item:disabled { opacity: 0.5; cursor: default; }
   .usage-popover { width: min(300px, calc(100cqw - 24px)); }
   .transcript-inner { padding: 14px 16px 32px; }
   .composer-wrap { padding: 0 12px 14px; }
-  .find { right: 8px; }
+  .find { right: 8px; top: calc(100% - 2px); }
   .find input { width: 120px; }
 }
