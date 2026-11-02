@@ -31,6 +31,19 @@ function hold(server: FakeHermes, key: string) {
 const patches = (server: FakeHermes) => server.restRequests.filter((r) => r.method === "PATCH");
 
 describe("Renaming a chat", () => {
+  it("renames a chat started in this app, which Hermes stores with a source it lets clients edit", async () => {
+    const server = new FakeHermes();
+    const hermes = await connect(server.openPipe);
+    const id = await hermes.newChat();
+    await hermes.send(id, "hello");
+    server.event(server.runtimeIdOf(id)!, "message.complete", { text: "Hi!", status: "complete" });
+    await hermes.idle();
+    await hermes.sync();
+
+    expect(await hermes.rename(id, "Greeting", hermes.getSnapshot().chats.find((c) => c.id === id)!.title)).toBe("Greeting");
+    expect(server.sessions.find((s) => s.id === id)).toMatchObject({ source: "gui", title: "Greeting" });
+  });
+
   it("saves the title with a request id and the current revision, and shows the title the server reads back", async () => {
     const { server, hermes, title, stored } = await listed(row("a", 1, { title: "Old name", runtime_revision: 3 }));
     expect(await hermes.rename("a", "  Backup fix  ", "Old name")).toBe("Backup fix");

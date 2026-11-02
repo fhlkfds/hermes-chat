@@ -91,10 +91,19 @@ const DAY = 86_400;
 const MiB = 1024 * 1024;
 const now = () => Date.now() / 1000;
 
+/**
+ * The sources whose stored rows the gateway takes a session edit on. A local client's row is owner history only with a
+ * source the native resume adopts (`LEGACY_LOCAL_SOURCES` in `hermes_state_local_migration.py`, plus `import`;
+ * `authorize_history` at the deployed `bf0203a`); a messaging platform's row is mounted by its route. Any other row,
+ * such as one stamped with a custom source, can't be mounted, and the edit is answered 404 `not_found` though the row
+ * exists (`restore_api_session`).
+ */
+const EDITABLE_SOURCES = new Set(["cli", "tui", "gui", "desktop", "oneshot", "tool", "acp", "import", "telegram", "discord", "slack", "whatsapp", "signal", "matrix"]);
+
 /** A stored session `daysAgo` days old, unpinned and from this app unless overridden. */
 export function row(id: string, daysAgo: number, over: Partial<SessionRow> = {}): SessionRow {
   const at = now() - daysAgo * DAY;
-  return { id, source: "hermes-chat", title: `Chat ${id}`, preview: "", started_at: at, last_active: at, message_count: 2, pinned: false, archived: false, last_read_at: null, ...over };
+  return { id, source: "gui", title: `Chat ${id}`, preview: "", started_at: at, last_active: at, message_count: 2, pinned: false, archived: false, last_read_at: null, ...over };
 }
 
 /** A session edit's body without the request id and revision every edit carries. */
@@ -630,7 +639,7 @@ export class FakeHermes {
     if (body.request_id === undefined || body.expected_revision === undefined)
       throw new Error(`The dashboard answered 409: {"detail":"mutation_identity_required"}`);
     const s = this.storeOrFail(body.profile as string | undefined).find((r) => r.id === id);
-    if (!s) throw new Error(`The dashboard answered 404: {"detail":"not_found"}`);
+    if (!s || !EDITABLE_SOURCES.has(s.source)) throw new Error(`The dashboard answered 404: {"detail":"not_found"}`);
     if (body.expected_revision !== (s.runtime_revision ?? 0)) throw new Error(`The dashboard answered 409: {"detail":"revision_conflict"}`);
     s.runtime_revision = (s.runtime_revision ?? 0) + 1;
     if (typeof body.pinned === "boolean") s.pinned = body.pinned;
