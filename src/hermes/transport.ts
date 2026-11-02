@@ -9,6 +9,8 @@
 // "Approvals on the legacy generation".
 // The list holds the past month's chats until the owner pulls older history for the profile; from then on it holds
 // them all.
+// While the window is out of focus, a reply finishing or an Approval arriving shows a desktop notification, and the chat
+// on screen isn't marked read.
 // Each chat opened lately keeps a Saved copy of its transcript on this computer, shown while Hermes can't be reached
 // or the history is on the way; when the first connection at launch fails, the saved list and copies still open.
 // Unread chats in the other profiles are polled over dashboard REST (otherProfiles.ts).
@@ -70,6 +72,14 @@ export type ChatCache = {
   olderPulled(profile: string): boolean;
   rememberOlderPulled(profile: string): void;
 };
+/** Shows a desktop notification; rejects if it can't. */
+export type Notify = (n: { title: string; body: string }) => Promise<void>;
+/** What notifications say. They never quote a chat's title or messages, or an Approval's command. */
+export const NOTICES = {
+  finished: { title: "Hermes finished a reply", body: "Open Hermes Chat to read it." },
+  approval: { title: "Hermes is asking for approval", body: "A command is waiting for your answer in Hermes Chat." },
+};
+
 const noCache: ChatCache = {
   load: () => [],
   save: () => {},
@@ -209,8 +219,8 @@ export type Snapshot = {
  * Connects to Hermes for `profile`, by default the one shown last; rejects if the first connection fails. Later drops
  * are reconnected by the returned Hermes.
  */
-export async function connect(openPipe: OpenPipe, profile?: string, cache: ChatCache = noCache): Promise<Hermes> {
-  const hermes = new Hermes(openPipe, profile ?? cache.lastProfile() ?? "default", cache);
+export async function connect(openPipe: OpenPipe, profile?: string, cache: ChatCache = noCache, notify?: Notify): Promise<Hermes> {
+  const hermes = new Hermes(openPipe, profile ?? cache.lastProfile() ?? "default", cache, notify);
   await hermes.dial();
   return hermes;
 }
@@ -220,8 +230,8 @@ export async function connect(openPipe: OpenPipe, profile?: string, cache: ChatC
  * profile shown last, its chat list and the Saved copies of the chats opened lately, which keeps trying to connect as
  * after a drop. Undefined when no chat list is saved, so there is nothing to read.
  */
-export function readSaved(openPipe: OpenPipe, reason: string, cache: ChatCache): Hermes | undefined {
-  return Hermes.readSaved(openPipe, reason, cache);
+export function readSaved(openPipe: OpenPipe, reason: string, cache: ChatCache, notify?: Notify): Hermes | undefined {
+  return Hermes.readSaved(openPipe, reason, cache, notify);
 }
 
 export class Hermes {
@@ -261,6 +271,13 @@ export class Hermes {
   private retitledSinceListRead = new Set<string>();
   /** The chat on screen. It is kept read: new activity in it doesn't show the dot. */
   private viewing?: string;
+  /** The app's window has the owner's focus (`setFocused`). */
+  private focused = true;
+  /** The chat on screen had something new while the window was out of focus, so it is marked read once it's back. */
+  private readWhenBack = false;
+  /** Approvals already notified, or that arrived in focus, by runtime session and request id. Hermes lists one again
+   * after a reconnect. */
+  private notified = new Set<string>();
   /** The latest write marking each chat read, while it is under way. */
   private readWrites = new Map<string, Promise<void>>();
   /** Chats marked read since the list sync under way read the list, which may predate the write. */
@@ -298,13 +315,14 @@ export class Hermes {
     private openPipe: OpenPipe,
     profile: string,
     private cache: ChatCache = noCache,
+    private notify: Notify = () => Promise.resolve(),
   ) {
     this.snapshot = { profile, chats: cache.load(profile), olderPulled: cache.olderPulled(profile), status: "offline", unsecure: false, others: noOthers };
   }
 
   /** See `readSaved`. */
-  static readSaved(openPipe: OpenPipe, reason: string, cache: ChatCache): Hermes | undefined {
-    const hermes = new Hermes(openPipe, cache.lastProfile() ?? "default", cache);
+  static readSaved(openPipe: OpenPipe, reason: string, cache: ChatCache, notify?: Notify): Hermes | undefined {
+    const hermes = new Hermes(openPipe, cache.lastProfile() ?? "default", cache, notify);
     if (!hermes.snapshot.chats.length) return undefined;
     hermes.dropped(reason);
     return hermes;
@@ -463,6 +481,17 @@ export class Hermes {
     return (holding(longest) || holding(flat(found.find ?? "")) || undefined)?.id;
   }
 
+  /**
+   * Whether the app's window has the owner's focus. Out of focus, a reply finishing or an Approval arriving shows a
+   * desktop notification, and the chat on screen isn't marked read; once the window is back in focus, it is.
+   */
+  setFocused(focused: boolean) {
+    this.focused = focused;
+    if (!focused || !this.readWhenBack) return;
+    this.readWhenBack = false;
+    if (this.viewing) this.markRead(this.viewing);
+  }
+
   subscribe = (fn: () => void) => {
     this.listeners.add(fn);
     return () => void this.listeners.delete(fn);
@@ -494,15 +523,15 @@ export class Hermes {
    * Opens a chat: one this connection hasn't resumed yet is resumed now and shows its stored history, and its Saved
    * copy meanwhile. If that fails the chat shows why, and the next open tries again. The chat is on screen until
    * `leave`: it is marked read on the server, and stays read while the owner is in it. Hermes counts a chat no client
-   * has marked as read, and only marking it lets later activity show the dot. While not connected, the chat shows its
-   * Saved copy only; the app opens it again once connected.
+   * has marked as read, and only marking it lets later activity show the dot. Out of focus, marking it waits until the
+   * window is back. While not connected, the chat shows its Saved copy only; the app opens it again once connected.
    */
   async open(chatId: string): Promise<void> {
     if (!this.snapshot.chats.some((c) => c.id === chatId)) return;
     this.viewing = chatId;
     this.showSaved(chatId);
     if (this.snapshot.status !== "connected") return;
-    this.markRead(chatId);
+    this.seen(chatId);
     try {
       await this.resume(chatId);
       if (this.viewing === chatId) this.tellShown(chatId);
@@ -516,7 +545,9 @@ export class Hermes {
 
   /** The owner has moved off the chat; new activity in it shows the dot again. */
   leave(chatId: string) {
-    if (this.viewing === chatId) this.viewing = undefined;
+    if (this.viewing !== chatId) return;
+    this.viewing = undefined;
+    this.readWhenBack = false;
   }
 
   /** Checks local files the owner wants to attach: images up to 25 MB, other files up to 256 MB. */
@@ -849,7 +880,9 @@ export class Hermes {
     // By the end of a turn Hermes has stored the session, so a pin that failed earlier can succeed.
     if (type === "message.complete" && this.pinWanted.has(chat.id)) this.track(this.writePin(chat.id));
     // The finished reply is newer than the read watermark, though the owner watched it come in.
-    if (type === "message.complete" && chat.id === this.viewing) this.markRead(chat.id);
+    if (type === "message.complete" && chat.id === this.viewing) this.seen(chat.id);
+    // A turn ends once; a repeated end finds the chat no longer running.
+    if ((type === "message.complete" || type === "error") && chat.running) this.alert(NOTICES.finished);
     if (type === "message.complete") this.saveTranscript(chat.id);
   }
 
@@ -894,6 +927,10 @@ export class Hermes {
 
   /** Adds a card for each Approval request the chat doesn't show yet. A request can be listed more than once. */
   private showApprovals(chatId: string, reqs: ServerRequest[]) {
+    const runtimeId = this.snapshot.chats.find((c) => c.id === chatId)?.runtimeId;
+    const fresh = reqs.filter((r) => r.method === "approval" && !this.notified.has(`${runtimeId} ${r.id}`));
+    for (const r of fresh) this.notified.add(`${runtimeId} ${r.id}`);
+    if (fresh.length) this.alert(NOTICES.approval);
     this.patchChat(chatId, (c) => {
       const shown = new Set(c.items.map((i) => i.id));
       const cards = reqs.filter((r) => r.method === "approval" && !shown.has(r.id) && shown.add(r.id)).map(approvalItem);
@@ -1112,6 +1149,17 @@ export class Hermes {
     return write;
   }
 
+  /** Marks the chat on screen read, or once the window is back in focus. */
+  private seen(chatId: string) {
+    if (this.focused) this.markRead(chatId);
+    else this.readWhenBack = true;
+  }
+
+  /** A desktop notification, out of focus only. A missing notification service, or one that refuses, changes nothing. */
+  private alert(n: { title: string; body: string }) {
+    if (!this.focused) this.track(Promise.resolve().then(() => this.notify(n)));
+  }
+
   /**
    * Clears the chat's dot here at once and moves its shared read watermark to now (`PATCH {unread: false}`), so
    * opening it here clears the dot in every Hermes client. A failed write isn't reported: the next refresh shows
@@ -1200,7 +1248,7 @@ export class Hermes {
     const chats = [...onThisConnection, ...listed];
     this.listedAt = Date.now();
     this.update({ chats, syncError: undefined });
-    if (readOnScreen) this.markRead(this.viewing!);
+    if (readOnScreen) this.seen(this.viewing!);
     this.saveList(profile, chats);
     return undefined;
   }

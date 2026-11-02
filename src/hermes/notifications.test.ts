@@ -1,0 +1,145 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { editFlags, FakeHermes, row } from "./fakeHermes";
+import { connect, NOTICES, type Notify } from "./transport";
+
+/** A new chat with a reply under way, out of focus unless `focused`; `shown` collects the notifications. */
+async function replying(opts: { focused?: boolean; notify?: Notify } = {}) {
+  const server = new FakeHermes();
+  const shown: { title: string; body: string }[] = [];
+  const notify: Notify = opts.notify ?? (async (n) => void shown.push(n));
+  const hermes = await connect(server.openPipe, undefined, undefined, notify);
+  const id = await hermes.newChat();
+  await hermes.send(id, "Clean up the logs in /var/secret");
+  const runtime = server.runtimeIdOf(id)!;
+  server.event(runtime, "message.start");
+  hermes.setFocused(!!opts.focused);
+  const chat = () => hermes.getSnapshot().chats.find((c) => c.id === id)!;
+  return { server, hermes, id, runtime, shown, chat };
+}
+
+const finish = (server: FakeHermes, runtime: string) =>
+  server.event(runtime, "message.complete", { text: "Deleted 3 files from /var/secret", status: "complete" });
+
+const readWrites = (server: FakeHermes) =>
+  server.restRequests.filter((r) => r.method === "PATCH" && "unread" in (r.body ?? {})).map((r) => editFlags(r.body));
+
+describe("Desktop notifications", () => {
+  afterEach(() => void vi.useRealTimers());
+
+  it("tells the owner a reply finished while the window is out of focus, without quoting the chat", async () => {
+    const { server, hermes, runtime, shown } = await replying();
+    finish(server, runtime);
+    await hermes.idle();
+    expect(shown).toEqual([NOTICES.finished]);
+    expect(JSON.stringify(shown)).not.toMatch(/secret|logs|Deleted/);
+  });
+
+  it("tells the owner Hermes is asking for an Approval, without the command", async () => {
+    const { server, hermes, runtime, shown } = await replying();
+    server.askApproval(runtime, { command: "rm -rf /var/secret", description: "recursive delete" });
+    await hermes.idle();
+    expect(shown).toEqual([NOTICES.approval]);
+    expect(JSON.stringify(shown)).not.toMatch(/secret|rm -rf|recursive/);
+  });
+
+  it("stays quiet while the window has focus", async () => {
+    const { server, hermes, runtime, shown } = await replying({ focused: true });
+    server.askApproval(runtime);
+    finish(server, runtime);
+    await hermes.idle();
+    expect(shown).toEqual([]);
+  });
+
+  it("tells the owner once when Hermes repeats the end of a turn", async () => {
+    const { server, hermes, runtime, shown } = await replying();
+    finish(server, runtime);
+    finish(server, runtime);
+    server.event(runtime, "error", { message: "late" });
+    await hermes.idle();
+    expect(shown).toEqual([NOTICES.finished]);
+  });
+
+  it("tells the owner once about an Approval Hermes lists again after a reconnect", async () => {
+    vi.useFakeTimers();
+    const { server, hermes, runtime, shown, chat } = await replying();
+    server.askApproval(runtime);
+    server.drop();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await hermes.idle();
+    expect(chat().items.filter((i) => i.kind === "approval")).toHaveLength(1);
+    expect(shown).toEqual([NOTICES.approval]);
+  });
+
+  it("doesn't notify an Approval that arrived in focus when Hermes lists it again out of focus", async () => {
+    vi.useFakeTimers();
+    const { server, hermes, runtime, shown } = await replying({ focused: true });
+    server.askApproval(runtime);
+    hermes.setFocused(false);
+    server.drop();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await hermes.idle();
+    expect(shown).toEqual([]);
+  });
+
+  for (const [how, notify] of [
+    ["refuses", () => Promise.reject(new Error("org.freedesktop.DBus.Error.AccessDenied"))],
+    ["is missing", () => { throw new Error("org.freedesktop.DBus.Error.ServiceUnknown"); }],
+  ] as [string, Notify][])
+    it(`leaves the chat working when the notification service ${how}`, async () => {
+      const { server, hermes, id, runtime, chat } = await replying({ notify });
+      server.askApproval(runtime);
+      finish(server, runtime);
+      await hermes.idle();
+      expect(chat().running).toBe(false);
+      expect(chat().items.filter((i) => i.kind === "error")).toEqual([]);
+      expect(hermes.getSnapshot().syncError).toBeUndefined();
+      await hermes.send(id, "again");
+      expect(chat().items.at(-1)).toMatchObject({ kind: "user", text: "again" });
+    });
+});
+
+describe("The chat on screen, out of focus", () => {
+  it("isn't marked read when a reply in it finishes, until the window is back in focus", async () => {
+    const { server, hermes, id, runtime } = await replying({ focused: true });
+    await hermes.open(id);
+    await hermes.idle();
+    const opened = readWrites(server).length;
+
+    hermes.setFocused(false);
+    finish(server, runtime);
+    await hermes.idle();
+    expect(readWrites(server).slice(opened)).toEqual([]);
+
+    hermes.setFocused(true);
+    await hermes.idle();
+    expect(readWrites(server).slice(opened)).toEqual([{ unread: false, profile: "default" }]);
+  });
+
+  it("isn't marked read when opened again by a reconnect", async () => {
+    const server = new FakeHermes();
+    server.sessions = [row("a", 1, { last_read_at: 0 })];
+    const hermes = await connect(server.openPipe);
+    await hermes.sync();
+    hermes.setFocused(false);
+    await hermes.open("a");
+    await hermes.idle();
+    expect(readWrites(server)).toEqual([]);
+
+    hermes.setFocused(true);
+    await hermes.idle();
+    expect(readWrites(server)).toEqual([{ unread: false, profile: "default" }]);
+  });
+
+  it("isn't marked read on coming back if the owner left it meanwhile", async () => {
+    const { server, hermes, id, runtime } = await replying({ focused: true });
+    await hermes.open(id);
+    await hermes.idle();
+    const opened = readWrites(server).length;
+    hermes.setFocused(false);
+    finish(server, runtime);
+    hermes.leave(id);
+    hermes.setFocused(true);
+    await hermes.idle();
+    expect(readWrites(server).slice(opened)).toEqual([]);
+  });
+});
