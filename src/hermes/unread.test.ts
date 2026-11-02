@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FakeHermes, row, type RestRequest } from "./fakeHermes";
+import { editFlags, FakeHermes, row, type RestRequest } from "./fakeHermes";
 import { memoryCache } from "./memoryCache";
 import { connect, type ChatCache } from "./transport";
 
@@ -15,7 +15,7 @@ async function listed(rows: ReturnType<typeof row>[], profile = "default", cache
 }
 
 const readWrites = (server: FakeHermes) =>
-  server.restRequests.filter((r) => r.method === "PATCH" && "unread" in (r.body ?? {})).map((r) => r.body);
+  server.restRequests.filter((r) => r.method === "PATCH" && "unread" in (r.body ?? {})).map((r) => editFlags(r.body));
 
 /** Something new happens in the stored session, as another client or platform would cause. */
 const activity = (s: ReturnType<typeof row>) => void (s.last_active = Date.now() / 1000 + 1);

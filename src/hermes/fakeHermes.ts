@@ -24,6 +24,8 @@ export type SessionRow = {
   archived: boolean;
   /** The read watermark: unread when activity postdates it. `null` = never tracked = read; 0 = marked unread. */
   last_read_at: number | null;
+  /** Bumped by every session edit; an edit must name the current one. Missing means 0. */
+  runtime_revision?: number;
 };
 
 /**
@@ -54,6 +56,12 @@ const now = () => Date.now() / 1000;
 export function row(id: string, daysAgo: number, over: Partial<SessionRow> = {}): SessionRow {
   const at = now() - daysAgo * DAY;
   return { id, source: "hermes-chat", title: `Chat ${id}`, preview: "", started_at: at, last_active: at, message_count: 2, pinned: false, archived: false, last_read_at: null, ...over };
+}
+
+/** A session edit's body without the request id and revision every edit carries. */
+export function editFlags(body: Record<string, unknown> | undefined) {
+  const { request_id: _id, expected_revision: _revision, ...flags } = body ?? {};
+  return flags;
 }
 
 export class FakeHermes {
@@ -276,10 +284,12 @@ export class FakeHermes {
         const req: RestRequest = { method, path: url.pathname, query: url.searchParams, body: body === undefined ? undefined : JSON.parse(body) };
         this.restRequests.push(req);
         const patch = /^\/api\/sessions\/([^/]+)$/.exec(req.path);
+        const snapshot = /^\/api\/sessions\/([^/]+)\/mutation-snapshot$/.exec(req.path);
         const handler =
           this.rest[`${method} ${req.path}`] ??
           (method === "PATCH" && patch ? () => this.patchSession(patch[1], req.body!) : undefined) ??
-          (method === "DELETE" && patch ? () => this.deleteSession(decodeURIComponent(patch[1]), req.query.get("profile")) : undefined);
+          (method === "DELETE" && patch ? () => this.deleteSession(decodeURIComponent(patch[1]), req.query.get("profile")) : undefined) ??
+          (method === "GET" && snapshot ? () => this.mutationSnapshot(snapshot[1], req.query.get("profile")) : undefined);
         if (!handler) throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
         return JSON.stringify(await handler(req));
       },
@@ -374,9 +384,27 @@ export class FakeHermes {
     return store;
   }
 
+  /** `GET /api/sessions/{id}/mutation-snapshot` (`hermes_cli/web_routers/sessions.py` at the deployed `bf0203a`). */
+  private mutationSnapshot(id: string, profile: string | null) {
+    const s = this.storeOrFail(profile).find((r) => r.id === id);
+    return { session_id: id, exists: !!s, runtime_revision: s?.runtime_revision ?? 0, runtime_generation: s ? 0 : null };
+  }
+
+  /**
+   * `PATCH /api/sessions/{id}`, fenced like the deployed `bf0203a` (`_mutate_session_request`, `mutate_runtime_session`):
+   * an edit without `request_id` and `expected_revision` is refused, and so is one naming an old revision.
+   */
   private patchSession(id: string, body: Record<string, unknown>) {
+    if (body.request_id === undefined && body.expected_revision === undefined)
+      throw new Error(
+        `The dashboard answered 409: {"detail":"client_upgrade_required: this app is out of sync (different versions) with the Hermes backend; update the app to edit sessions"}`,
+      );
+    if (body.request_id === undefined || body.expected_revision === undefined)
+      throw new Error(`The dashboard answered 409: {"detail":"mutation_identity_required"}`);
     const s = this.storeOrFail(body.profile as string | undefined).find((r) => r.id === id);
-    if (!s) throw new Error(`The dashboard answered 404: {"detail":"Session not found"}`);
+    if (!s) throw new Error(`The dashboard answered 404: {"detail":"not_found"}`);
+    if (body.expected_revision !== (s.runtime_revision ?? 0)) throw new Error(`The dashboard answered 409: {"detail":"revision_conflict"}`);
+    s.runtime_revision = (s.runtime_revision ?? 0) + 1;
     if (typeof body.pinned === "boolean") s.pinned = body.pinned;
     if (typeof body.unread === "boolean") s.last_read_at = body.unread ? 0 : now();
     return { ok: true };

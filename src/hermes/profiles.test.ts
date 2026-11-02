@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FakeHermes, row, type RestRequest } from "./fakeHermes";
+import { editFlags, FakeHermes, row, type RestRequest } from "./fakeHermes";
 import { memoryCache } from "./memoryCache";
 import { type ChatCache, connect } from "./transport";
 
@@ -101,7 +101,7 @@ describe("Profiles", () => {
     await settling;
     await hermes.idle();
     const pins = server.restRequests.filter((r) => r.method === "PATCH" && "pinned" in (r.body ?? {}));
-    expect(pins.map((r) => r.body)).toEqual([{ pinned: false, profile: "default" }]);
+    expect(pins.map((r) => editFlags(r.body))).toEqual([{ pinned: false, profile: "default" }]);
     expect(server.sessions[0].pinned).toBe(false);
   });
 
