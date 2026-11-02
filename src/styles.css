@@ -209,6 +209,12 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .tool-dur { font-size: 11.5px; color: var(--faint); flex: none; font-variant-numeric: tabular-nums; }
 .tool-group-body { border-left: 1px solid var(--line-2); margin: 2px 0 2px 2px; padding-left: 14px; }
 .tool-body { margin: 2px 0 8px 22px; }
+.thought-label { font-size: 13px; color: #b9b9c0; flex: none; }
+.thought-preview { font-family: inherit; font-size: 12.5px; }
+.thought-body {
+  margin: 2px 0 6px 2px; padding-left: 14px; border-left: 1px solid var(--line-2); font-size: 13px; line-height: 1.6;
+  color: var(--muted); white-space: pre-wrap; word-wrap: break-word;
+}
 .tool-label { font-size: 11px; color: var(--faint); margin: 8px 0 4px; text-transform: uppercase; letter-spacing: 0.05em; }
 .tool-body pre {
   margin: 0; background: #0d0d0f; border-radius: 8px; padding: 9px 12px; font-size: 12px; color: #c3c3c9;

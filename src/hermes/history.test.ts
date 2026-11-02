@@ -54,18 +54,20 @@ describe("Opening a listed chat", () => {
     ]);
   });
 
-  it("leaves out reasoning-only replies and timeline notes, but keeps every tool call", async () => {
+  it("shows stored reasoning as thinking before its reply, leaves out timeline notes, and keeps every tool call", async () => {
     const { hermes, chat } = await listed([
       { role: "user", text: "Hi" },
       { role: "assistant", text: "", reasoning: "Thinking about a greeting" },
       { role: "system", text: "Model switched to sonnet", display_kind: "model_switch" },
       { role: "tool", name: "todo", context: "" },
-      { role: "assistant", text: "Hello!" },
+      { role: "assistant", text: "Hello!", reasoning: "Keep it short. " },
     ]);
     await hermes.open("tg");
     expect(chat().items).toEqual([
       { kind: "user", id: "h-0", text: "Hi" },
+      { kind: "thinking", id: "h-1-r", text: "Thinking about a greeting" },
       { kind: "tool", id: "h-3", name: "todo", status: "done" },
+      { kind: "thinking", id: "h-4-r", text: "Keep it short." },
       { kind: "assistant", id: "h-4", text: "Hello!" },
     ]);
   });

@@ -98,6 +98,7 @@ type ProfileList = { profiles: { name: string }[] };
 type TranscriptMessage = {
   role: string;
   text?: string | null;
+  reasoning?: string | null;
   content?: unknown;
   name?: string | null;
   context?: string | null;
@@ -1086,10 +1087,14 @@ function toSource(source = ""): Source {
 const LOAD_ERROR_ID = "load-error";
 const withoutLoadError = (items: Item[]) => items.filter((i) => i.id !== LOAD_ERROR_ID);
 
-/** Stored history as transcript items. Hermes doesn't keep tool results, except for edit tools. */
+/**
+ * Stored history as transcript items. Hermes doesn't keep tool results, except for edit tools. An assistant row's
+ * reasoning shows as thinking before its text.
+ */
 function historyItems(messages: TranscriptMessage[]): Item[] {
   return messages.flatMap((m, i): Item[] => {
     const id = `h-${i}`;
+    const thought: Item[] = m.role === "assistant" && m.reasoning?.trim() ? [{ kind: "thinking", id: `${id}-r`, text: m.reasoning.trim() }] : [];
     if (m.role === "tool")
       return [
         {
@@ -1103,8 +1108,8 @@ function historyItems(messages: TranscriptMessage[]): Item[] {
         },
       ];
     // Assistant rows can be reasoning only; system rows are timeline notes this app doesn't show yet.
-    if (!m.text?.trim()) return [];
-    if (m.role === "user" || m.role === "assistant") return [{ kind: m.role, id, text: m.text }];
+    if (!m.text?.trim()) return thought;
+    if (m.role === "user" || m.role === "assistant") return [...thought, { kind: m.role, id, text: m.text }];
     return [];
   });
 }
@@ -1137,13 +1142,28 @@ function markInterrupted(items: Item[]): Item[] {
 }
 
 // Fold one session event into a chat. Text deltas extend the trailing assistant item, or start a new one
-// after a tool call.
+// after a tool call; reasoning deltas do the same with thinking items.
 function applyEvent(c: Chat, type: string, p: Record<string, unknown>): Chat {
   const items = [...c.items];
   const last = items[items.length - 1];
   switch (type) {
     case "message.start":
       return { ...c, running: true, updatedAt: Date.now() };
+    // `thinking.delta` is Hermes's spinner and wait notices, not reasoning, so it isn't shown.
+    case "reasoning.delta": {
+      const text = p.text;
+      if (typeof text !== "string" || !text) return c;
+      if (last?.kind === "thinking") items[items.length - 1] = { ...last, text: last.text + text };
+      else items.push({ kind: "thinking", id: `r-${items.length}`, text });
+      return { ...c, items, updatedAt: Date.now() };
+    }
+    // A response's reasoning in one go, up to 500 characters, when the model didn't stream it.
+    case "reasoning.available": {
+      const text = typeof p.text === "string" ? p.text.trim() : "";
+      if (!text || last?.kind === "thinking") return c;
+      items.push({ kind: "thinking", id: `r-${items.length}`, text });
+      return { ...c, items };
+    }
     case "message.delta": {
       const text = p.text;
       if (typeof text !== "string" || !text) return c;
@@ -1183,6 +1203,12 @@ function applyEvent(c: Chat, type: string, p: Record<string, unknown>): Chat {
       // Providers that don't stream send the whole reply here; a streamed turn repeats text it already sent.
       const lastUser = items.map((i) => i.kind).lastIndexOf("user");
       const answered = items.slice(lastUser + 1).some((i) => i.kind === "assistant");
+      // The last response's reasoning, for a turn that showed none: it goes before the reply.
+      const reasoning = typeof p.reasoning === "string" ? p.reasoning.trim() : "";
+      if (reasoning && !items.slice(lastUser + 1).some((i) => i.kind === "thinking")) {
+        const reply = items.map((i) => i.kind).lastIndexOf("assistant");
+        items.splice(reply > lastUser ? reply : items.length, 0, { kind: "thinking", id: `r-${items.length}`, text: reasoning });
+      }
       if (!answered && typeof p.text === "string" && p.text) items.push({ kind: "assistant", id: `a-${items.length}`, text: p.text });
       const end = { ...c, running: false, stopping: false, updatedAt: Date.now() };
       // Stopped here or from another Hermes client.
