@@ -23,12 +23,14 @@ import { tauriPipe, type SignInDetails } from "./hermes/tauriPipe";
 import { isOutgoing, type Attachment, type Chat, type ConnectionStatus, type Found } from "./hermes/model";
 import type { ModelCatalog, ModelPick } from "./hermes/models";
 import { ChatList, Rail } from "./ui/Sidebar";
-import { ChatPane } from "./ui/ChatPane";
+import { ChatPane, type JumpTarget } from "./ui/ChatPane";
 import { PANE_NAMES, Split, usePaneVisible, type PaneSlot } from "./ui/Split";
 import type { VoiceApi } from "./ui/Voice";
 import { SearchPalette } from "./ui/Search";
 import { SettingsScreen } from "./ui/Settings";
 import { FileBrowser } from "./ui/FileBrowser";
+import { OutputsScreen, type OutputsScope } from "./ui/Outputs";
+import { OutputsIndex, outputsIn, splitPath, type Output } from "./hermes/outputs";
 import { composing, routeLabel } from "./ui/bits";
 import { ProjectScreen, ProjectSwitcher, type ProjectUnread } from "./ui/Projects";
 import { ScheduledJobs } from "./ui/ScheduledJobs";
@@ -218,7 +220,7 @@ export default function App() {
  * One pane of the chat area. `chatId` null: the New chat pane. `draftError`: why the New chat pane couldn't start a
  * chat. `picked`: the search result its chat was opened from; `at` tells one pick from the next.
  */
-type Pane = { key: string; chatId: string | null; draftError?: string; picked?: { found: Found; at: number } };
+type Pane = { key: string; chatId: string | null; draftError?: string; picked?: { found: Found; at: number }; jump?: JumpTarget };
 
 let panesMade = 0;
 /** A pane's key, which is also its name to Hermes for what is on screen (transport.ts `open`). */
@@ -304,6 +306,9 @@ export function Main({
   // Server files covers the chat panes too. The folder open last stays for this sign-in.
   const [filesOpen, setFilesOpen] = useState(false);
   const [filesPath, setFilesPath] = useState<string>();
+  // Outputs covers the chat panes too, but not the preview pane, where its files open.
+  const [outputsOpen, setOutputsOpen] = useState(false);
+  const [outputsScope, setOutputsScope] = useState<OutputsScope>("chat");
   const update = useSyncExternalStore(updates.subscribe, updates.getSnapshot);
   const updateWaiting = needsAttention(update);
   // Drafts were saved for the restart; nothing typed after that would survive it.
@@ -379,6 +384,30 @@ export function Main({
     of: (id) => unreadChats.filter((c) => proj.chats[id]?.includes(c.id)).length,
   };
   const projectNames = (chatId: string) => listable.filter((p) => proj.chats[p.id]?.includes(chatId)).map((p) => p.name);
+
+  // Outputs: one index for each connection and profile, like projects (outputs.ts, ADR 0013). Leaving a profile, or
+  // signing out, stops its run and drops whatever it reads afterwards.
+  const outputsIndex = useMemo(() => new OutputsIndex(hermes.outputsIo(profile), localStorage, scope), [hermes, scope]);
+  useEffect(() => () => outputsIndex.cancel(), [outputsIndex]);
+  const outSnap = useSyncExternalStore(outputsIndex.subscribe, outputsIndex.getSnapshot);
+  const outputsChatId = active.chatId && chats.some((c) => c.id === active.chatId) ? active.chatId : null;
+  // A scope that has nothing to show (no chat open, no project picked) gives way to the next wider one.
+  const shownOutputsScope: OutputsScope =
+    outputsScope === "chat" && !outputsChatId ? (shownProject ? "project" : "profile") : outputsScope === "project" && !shownProject ? "profile" : outputsScope;
+  const outputsChats = shownOutputsScope === "chat" ? chats.filter((c) => c.id === outputsChatId) : shownOutputsScope === "project" ? listed : chats;
+  const outputsChatKey = outputsChats.map((c) => c.id).join("\n");
+  const scopedOutputs = (snap: typeof outSnap): Output[] => {
+    const ids = new Set(outputsChats.map((c) => c.id));
+    // Every chat in the profile also takes in the files added without a chat; a chat deleted since isn't listed.
+    return shownOutputsScope === "profile" ? outputsIn(snap).filter((o) => o.chatId === undefined || ids.has(o.chatId)) : outputsIn(snap, ids);
+  };
+  const shownOutputs = useMemo(() => scopedOutputs(outSnap), [outSnap, outputsChatKey, shownOutputsScope]);
+  const outputsRefs = () => outputsChats.map((c) => ({ id: c.id, updatedAt: c.updatedAt }));
+  // Opening Outputs, or picking another scope, reads the chats in it that changed since they were last read. A chat
+  // changing while it is open (a reply streaming) waits for Refresh, so a reply doesn't set off a read per word.
+  useEffect(() => {
+    if (outputsOpen && status === "connected") void outputsIndex.index(outputsRefs());
+  }, [outputsOpen, status, outputsIndex, shownOutputsScope, outputsChatKey]);
   const where = routeLabel(route) ?? (connection.mode === "ssh" ? `ssh://${connection.sshTarget}` : connection.url) ?? undefined;
 
   const stillIn = (p: string) => hermes.profile === p;
@@ -400,7 +429,7 @@ export function Main({
   // unless another is named, and the pane it opens in becomes the active one.
   const openChat = (id: string | null, { pane = active.key, remember = true, fresh = false } = {}) => {
     setPreviewHidden(true);
-    patchPane(pane, { chatId: id, picked: undefined, ...(fresh && { draftError: undefined }) });
+    patchPane(pane, { chatId: id, picked: undefined, jump: undefined, ...(fresh && { draftError: undefined }) });
     activeKeyRef.current = pane;
     setActiveKey(pane);
     setReopening(undefined);
@@ -408,6 +437,7 @@ export function Main({
     setProjectOpen(false);
     setFilesOpen(false);
     setJobsOpen(false);
+    setOutputsOpen(false);
     if (remember) rememberOpenChat(profile, id);
   };
 
@@ -416,7 +446,7 @@ export function Main({
   const pick = (found: Found) => {
     setPreviewHidden(true);
     hermes.reveal(found);
-    patchPane(active.key, { chatId: found.chatId, picked: { found, at: Date.now() } });
+    patchPane(active.key, { chatId: found.chatId, picked: { found, at: Date.now() }, jump: undefined });
     setReopening(undefined);
     rememberOpenChat(profile, found.chatId);
     setSearchOpen(false);
@@ -424,6 +454,7 @@ export function Main({
     setProjectOpen(false);
     setFilesOpen(false);
     setJobsOpen(false);
+    setOutputsOpen(false);
   };
 
   // A second pane opens to the right and becomes the active one. Both panes may show the same chat: they are two views
@@ -440,6 +471,7 @@ export function Main({
     setProjectOpen(false);
     setFilesOpen(false);
     setJobsOpen(false);
+    setOutputsOpen(false);
     rememberOpenChat(profile, chatId);
   };
 
@@ -468,6 +500,7 @@ export function Main({
       setProjectOpen(false);
       setFilesOpen(false);
       setJobsOpen(false);
+      setOutputsOpen(false);
       setSearchOpen(false);
       if (!previewFits) setPreviewHidden(true);
     });
@@ -669,7 +702,7 @@ export function Main({
       } else if (e.code === "Backslash" || k === "\\") {
         e.preventDefault();
         toggleSplit();
-      } else if ((k === "1" || k === "2") && !e.shiftKey && !e.altKey && split && !settingsOpen && !filesOpen && !jobsOpen) {
+      } else if ((k === "1" || k === "2") && !e.shiftKey && !e.altKey && split && !settingsOpen && !filesOpen && !jobsOpen && !outputsOpen) {
         e.preventDefault();
         focusPane(panes[Number(k) - 1].key);
       }
@@ -684,8 +717,10 @@ export function Main({
   const paneMax = mainWidth ? mainWidth - CHAT_MIN_WIDTH : 1200;
   const paneWidth = Math.min(Math.max(dragWidth ?? previewWidth ?? PREVIEW_DEFAULT_WIDTH, PANE_MIN_WIDTH), Math.max(PANE_MIN_WIDTH, paneMax));
   // Settings covers the chat, and the pane with it; so do the project screen, Server files and Scheduled jobs.
-  const covering = settingsOpen || projectScreenOpen || filesOpen || jobsOpen;
-  const previewShown = !!preview && !covering && (previewFits || !previewHidden);
+  // Outputs covers the chat panes but keeps the preview pane beside it, since its files open there.
+  const screenCovering = settingsOpen || projectScreenOpen || filesOpen || jobsOpen;
+  const covering = screenCovering || outputsOpen;
+  const previewShown = !!preview && !screenCovering && (previewFits || !previewHidden);
   const previewCovers = previewShown && !previewFits;
 
 
@@ -707,6 +742,7 @@ export function Main({
           chat={chat}
           started={!!listed}
           picked={p.picked}
+          jump={p.jump}
           active={!covering && !previewCovers && (!split || isActive)}
           split={split}
           screenshots={desk}
@@ -772,11 +808,20 @@ export function Main({
           setSettingsOpen(false);
           setProjectOpen(false);
           setJobsOpen(false);
+          setOutputsOpen(false);
           setFilesOpen((o) => !o);
         }}
+        onOutputs={() => {
+          setSettingsOpen(false);
+          setProjectOpen(false);
+          setFilesOpen(false);
+          setJobsOpen(false);
+          setOutputsOpen((o) => !o);
+        }}
+        outputsOpen={outputsOpen && !settingsOpen && !projectScreenOpen && !filesOpen}
         filesOpen={filesOpen && !settingsOpen && !projectScreenOpen}
-        onSettings={() => { setProjectOpen(false); setFilesOpen(false); setJobsOpen(false); setShowTextGeneration(undefined); setSettingsOpen(true); }}
-        onJobs={() => { setProjectOpen(false); setSettingsOpen(false); setFilesOpen(false); setJobsOpen(true); }}
+        onSettings={() => { setProjectOpen(false); setFilesOpen(false); setJobsOpen(false); setOutputsOpen(false); setShowTextGeneration(undefined); setSettingsOpen(true); }}
+        onJobs={() => { setProjectOpen(false); setSettingsOpen(false); setFilesOpen(false); setOutputsOpen(false); setJobsOpen(true); }}
         jobsOpen={jobsOpen && !settingsOpen}
         updateWaiting={updateWaiting}
       />
@@ -801,12 +846,14 @@ export function Main({
                   setSettingsOpen(false);
                   setFilesOpen(false);
                   setJobsOpen(false);
+                  setOutputsOpen(false);
                   setProjectOpen(true);
                 }}
                 onManage={() => {
                   setSettingsOpen(false);
                   setFilesOpen(false);
                   setJobsOpen(false);
+                  setOutputsOpen(false);
                   setProjectOpen(true);
                 }}
               />
@@ -837,6 +884,7 @@ export function Main({
             setProjectOpen(false);
             setFilesOpen(false);
             setJobsOpen(false);
+            setOutputsOpen(false);
             setShowTextGeneration({});
             setSettingsOpen(true);
           }}
@@ -924,6 +972,44 @@ export function Main({
               focusPane(active.key);
             }}
           />
+        ) : outputsOpen ? (
+          <OutputsScreen
+            snapshot={outSnap}
+            outputs={shownOutputs}
+            scope={shownOutputsScope}
+            scopes={{ chat: outputsChatId ? chats.find((c) => c.id === outputsChatId)?.title : undefined, project: shownProject?.name, profile }}
+            unindexed={outSnap.indexing ? 0 : outputsChats.filter((c) => !outSnap.chats[c.id]).length}
+            chatTitle={(id) => chats.find((c) => c.id === id)?.title}
+            status={status}
+            canAdd={shownOutputsScope !== "project"}
+            onScope={setOutputsScope}
+            onRefresh={async () => {
+              await outputsIndex.index(outputsRefs());
+              if (outputsIndex.getSnapshot().unsupported === undefined) await outputsIndex.check(scopedOutputs(outputsIndex.getSnapshot()));
+            }}
+            onIndexMore={() => void outputsIndex.index(outputsRefs())}
+            onAdd={(path) => outputsIndex.add(path, shownOutputsScope === "chat" ? (outputsChatId ?? undefined) : undefined)}
+            onRemove={(key) => outputsIndex.remove(key)}
+            onPreview={(o) => openPreview({ kind: "server", path: o.path })}
+            onJump={(o) => {
+              if (!o.chatId || !o.callId) return;
+              if (!chats.some((c) => c.id === o.chatId)) {
+                setToast({ text: "That chat isn't in the chat list now.", at: Date.now() });
+                return;
+              }
+              openChat(o.chatId);
+              patchPane(active.key, { jump: { callId: o.callId, at: Date.now() } });
+            }}
+            onShowFolder={(o) => {
+              setFilesPath(splitPath(o.path).dir);
+              setOutputsOpen(false);
+              setFilesOpen(true);
+            }}
+            onClose={() => {
+              flushSync(() => setOutputsOpen(false));
+              focusPane(active.key);
+            }}
+          />
         ) : null}
         <Split panes={slots} activeKey={active.key} onActivate={activate} covered={covering || previewCovers} />
         </div>
@@ -992,6 +1078,7 @@ function ChatView({
   chat,
   started,
   picked,
+  jump,
   active,
   split,
   catalog,
@@ -1021,6 +1108,8 @@ function ChatView({
   chat: Chat;
   started: boolean;
   picked?: { found: Found; at: number };
+  /** A tool call to go to, from Outputs. */
+  jump?: JumpTarget;
   active: boolean;
   split: boolean;
   catalog?: ModelCatalog;
@@ -1134,6 +1223,8 @@ function ChatView({
       onUsage={started ? () => void hermes.refreshUsage(chat.id) : undefined}
       notLoaded={started && status !== "connected" && !chat.runtimeId && chat.items.every(isOutgoing)}
       findTarget={findTarget}
+      jumpTo={jump}
+      onJumpMissed={() => onToast("Couldn't find the tool call that made this file in the chat's history.")}
       status={status}
       alsoPostsIn={hermes.alsoPostsIn(chat.id)}
       draft={composerText}

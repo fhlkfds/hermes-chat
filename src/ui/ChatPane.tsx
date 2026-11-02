@@ -1,6 +1,6 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
 // Dictation and Read aloud come from Voice.tsx.
-import { memo, type ReactNode, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
+import { createContext, memo, type ReactNode, useCallback, useContext, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import { ArrowUp, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, FileDown, Globe, HardDrive, Paperclip, RotateCcw, Search, Server, Square, Wrench, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -46,6 +46,11 @@ const sameBlock = (a: Block, b: Block) =>
  * `itemId`, or at the first match anywhere when the matched message isn't known. `at` tells one pick from the next.
  */
 export type FindTarget = { query: string; itemId?: string; at: number };
+
+/** A tool call to go to and open, by its call id (`Item.callId`); `at` tells one request from the next. */
+export type JumpTarget = { callId: string; at: number };
+/** The tool call being gone to, for the tool rows and groups that hold it to open themselves. */
+const JumpContext = createContext<JumpTarget | undefined>(undefined);
 
 const STATUS_NOTE: Record<ConnectionStatus, string | undefined> = {
   connected: undefined,
@@ -100,6 +105,8 @@ export function ChatPane({
   chat,
   notLoaded,
   findTarget,
+  jumpTo,
+  onJumpMissed,
   status,
   alsoPostsIn,
   draft,
@@ -130,6 +137,10 @@ export function ChatPane({
   chat: Chat;
   notLoaded?: boolean;
   findTarget?: FindTarget;
+  /** Scroll to this tool call and open it, once the history holding it has loaded (Outputs, "Go to the message"). */
+  jumpTo?: JumpTarget;
+  /** The history loaded without the tool call `jumpTo` names. */
+  onJumpMissed?: () => void;
   status: ConnectionStatus;
   alsoPostsIn?: Source;
   draft: string;
@@ -246,6 +257,30 @@ export function ChatPane({
     if (scrollToMatch.current && marks[idx]) {
       scrollToMatch.current = false;
       marks[idx].scrollIntoView({ block: "center" });
+    }
+  });
+
+  // Going to a tool call: once its row is on screen, scroll it to the middle, mark it and move focus to it. A history
+  // that loaded without it says so; one still loading, or a Saved copy while offline without it, waits.
+  const [jumping, setJumping] = useState<JumpTarget>();
+  useEffect(() => {
+    if (!jumpTo) return;
+    stickToBottom.current = false;
+    setJumping(jumpTo);
+  }, [jumpTo?.at]);
+  useLayoutEffect(() => {
+    if (!jumping) return;
+    const id = CSS.escape(jumping.callId);
+    const el = scrollRef.current?.querySelector<HTMLElement>(`[data-call="${id}"]`) ?? scrollRef.current?.querySelector<HTMLElement>(`[data-calls~="${id}"]`);
+    if (el) {
+      setJumping(undefined);
+      el.scrollIntoView?.({ block: "center" });
+      el.classList.add("jumped");
+      el.focus({ preventScroll: true });
+      setTimeout(() => el.classList.remove("jumped"), 2500);
+    } else if (!chat.loading && chat.runtimeId) {
+      setJumping(undefined);
+      onJumpMissed?.();
     }
   });
 
@@ -370,6 +405,7 @@ export function ChatPane({
           stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
         }}
       >
+        <JumpContext.Provider value={jumpTo}>
         <div className="transcript-inner">
           {chat.source !== "app" && (
             <div className="imported-note">
@@ -424,6 +460,7 @@ export function ChatPane({
             </div>
           )}
         </div>
+        </JumpContext.Provider>
       </div>
 
       <Composer
@@ -607,9 +644,13 @@ function Thought({ item, live, query }: { item: ThinkingItem; live: boolean; que
 
 function ToolRow({ t }: { t: ToolItem }) {
   const [open, setOpen] = useState(false);
+  const jump = useContext(JumpContext);
+  useEffect(() => {
+    if (jump && t.callId === jump.callId) setOpen(true);
+  }, [jump?.at]);
   const summary = t.status === "stopped" ? "stopped" : t.summary;
   return (
-    <div className={`tool ${open ? "open" : ""}`}>
+    <div className={`tool ${open ? "open" : ""}`} data-call={t.callId} tabIndex={t.callId ? -1 : undefined}>
       <button className="tool-line" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
         {t.status === "running" ? <Spinner /> : <ChevronRight size={13} className={`chev ${open ? "open" : ""}`} />}
         <span className="tool-name">{t.name}</span>
@@ -671,6 +712,10 @@ function ToolPreviews({ t }: { t: ToolItem }) {
 
 function ToolGroup({ tools }: { tools: ToolItem[] }) {
   const [open, setOpen] = useState(false);
+  const jump = useContext(JumpContext);
+  useEffect(() => {
+    if (jump && tools.some((t) => t.callId === jump.callId)) setOpen(true);
+  }, [jump?.at]);
   if (tools.length === 1)
     return (
       <div className="tools">
@@ -680,7 +725,7 @@ function ToolGroup({ tools }: { tools: ToolItem[] }) {
   const running = tools.find((t) => t.status === "running");
   const names = [...new Set(tools.map((t) => t.name))].join(", ");
   return (
-    <div className="tools">
+    <div className="tools" data-calls={tools.flatMap((t) => t.callId ?? []).join(" ") || undefined} tabIndex={-1}>
       <button className="tool-line group" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
         {running ? <Spinner /> : <Wrench size={13} />}
         <span className="tool-name">{tools.length} tool calls</span>

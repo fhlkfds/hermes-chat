@@ -35,6 +35,7 @@ import type { OpenPipe, Pipe, PipeEvent, RestMethod, Route, Speech, Transcript, 
 import { remoteFiles, type RemoteFiles } from "./remoteFiles";
 import { isUnsecure } from "./unsecure";
 import { readServerFile, type FileView } from "./preview";
+import type { OutputsIo, StoredRow as StoredOutputRow } from "./outputs";
 import { chatUsageOf, countersOf, newerChatUsage, replyUsage, ZERO_COUNTERS, type ReplyUsage, type UsageCounters } from "./usage";
 
 /**
@@ -171,6 +172,8 @@ type TranscriptMessage = {
   name?: string | null;
   context?: string | null;
   args?: Record<string, unknown> | null;
+  /** A tool row's call (`tool_call_id`). */
+  tool_call_id?: string | null;
   timestamp?: number | null;
   /** The stored row (`messages.id`); a live session's not-yet-stored tail has none. */
   row_id?: number | null;
@@ -2139,6 +2142,28 @@ export class Hermes {
     return readServerFile((q) => this.rest("GET", q), path, this.snapshot.profile);
   }
 
+  /**
+   * How Outputs reads Hermes for `profile` (outputs.ts): a chat's stored rows through dashboard REST, each page refused
+   * past its size limit, and a folder's listing through `GET /api/fs/list`, where the profile's tools run. Every
+   * request names the profile, so a run for a profile left behind still reads only that profile.
+   */
+  outputsIo(profile: string): OutputsIo {
+    return {
+      rows: async (chatId, offset, limit, maxBytes) => {
+        const query = new URLSearchParams({ profile, order: "latest", limit: String(limit), offset: String(offset), inline_images: "false" });
+        const res = JSON.parse(await this.restGet(`${sessionPath(chatId)}/messages?${query}`, maxBytes)) as { messages?: unknown };
+        return Array.isArray(res.messages) ? (res.messages as StoredOutputRow[]) : [];
+      },
+      listDir: async (path) => {
+        const res = JSON.parse(await this.restGet(`api/fs/list?${new URLSearchParams({ path, profile })}`, LIST_MAX_BYTES)) as { entries?: unknown; error?: unknown };
+        const entries = (Array.isArray(res.entries) ? res.entries : []).flatMap((e: { name?: unknown; isDirectory?: unknown }) =>
+          typeof e?.name === "string" ? [{ name: e.name, isDirectory: e.isDirectory === true }] : [],
+        );
+        return { entries, ...(typeof res.error === "string" && { error: res.error }) };
+      },
+    };
+  }
+
   private async rest(method: RestMethod, pathAndQuery: string, body?: unknown): Promise<unknown> {
     if (!this.pipe) throw new Error("Not connected to Hermes.");
     return JSON.parse(await this.pipe.request(method, pathAndQuery, body === undefined ? undefined : JSON.stringify(body)));
@@ -2306,6 +2331,9 @@ function timeLimit<T>(p: Promise<T>, ms: number): Promise<T> {
   return Promise.race([p, late]).finally(() => clearTimeout(timer));
 }
 
+/** The most a folder listing for Outputs may be: a folder of tens of thousands of entries. */
+const LIST_MAX_BYTES = 8 * 1024 * 1024;
+
 const sessionPath = (chatId: string) => `api/sessions/${encodeURIComponent(chatId)}`;
 
 /** A session's title as the list shows it: an untitled one by its first words. */
@@ -2440,6 +2468,7 @@ function historyItems(messages: TranscriptMessage[]): Item[] {
         {
           kind: "tool",
           id,
+          ...(m.tool_call_id && { callId: m.tool_call_id }),
           name: m.name || "tool",
           args: m.args ?? undefined,
           preview: m.context || undefined,
@@ -2576,6 +2605,7 @@ function applyEvent(c: Chat, type: string, p: Record<string, unknown>): Chat {
       items.push({
         kind: "tool",
         id: String(p.tool_id),
+        callId: String(p.tool_id),
         name: String(p.name ?? "tool"),
         args: p.args as Record<string, unknown> | undefined,
         preview: p.preview as string | undefined,
