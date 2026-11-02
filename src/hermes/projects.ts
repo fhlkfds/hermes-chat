@@ -6,6 +6,7 @@
 // Folders are only references. Nothing here creates, moves or deletes a folder, a repository or a worktree on the
 // server: a folder is checked with a read-only directory listing before it is added, and a repository's worktrees are
 // read with `git worktree list` (dashboard REST `GET /api/git/worktrees`), never added.
+import type { DefaultsDraft, ProjectDefaults } from "./projectDefaults";
 import type { ProjectLinks } from "./projectLinks";
 
 /** One of a project's folders: a path on the server. `primary`: the folder Hermes names the project's main one. */
@@ -169,7 +170,8 @@ export function projectsApi(io: ProjectsIO): ProjectsApi {
 /**
  * What the project switcher and the project screen show, for one connection and profile. `projects`: as Hermes listed
  * them last, or as this computer saved them until Hermes is read. `loaded`: read from Hermes since this opened.
- * `selectedId`: the project the chat list shows, if any. `chats`: each project's chats, by project id.
+ * `selectedId`: the project the chat list shows, if any. `chats`: each project's chats, by project id. `defaults`: each
+ * project's defaults for new chats, kept on this computer (projectDefaults.ts).
  */
 export type ProjectsSnapshot = {
   profile: string;
@@ -179,6 +181,7 @@ export type ProjectsSnapshot = {
   error?: string;
   selectedId?: string;
   chats: Readonly<Record<string, readonly string[]>>;
+  defaults: Readonly<Record<string, ProjectDefaults>>;
 };
 
 /**
@@ -303,6 +306,24 @@ export class ProjectsStore {
     this.set(this.fromLinks());
   }
 
+  /**
+   * Saves project `id`'s defaults for new chats on this computer, over revision `base` (projectLinks.ts
+   * `saveDefaults`). Chats already started don't change.
+   */
+  saveDefaults(id: string, base: number, draft: DefaultsDraft): ProjectDefaults {
+    try {
+      return this.links.saveDefaults(this.scope, id, base, draft);
+    } finally {
+      // A conflict means another window saved: show what it saved.
+      this.set(this.fromLinks());
+    }
+  }
+
+  /** Reads this computer's copy again, after another window changed it. */
+  reread() {
+    this.set(this.fromLinks());
+  }
+
   /** The chat was deleted, so it is in no project any more. */
   forgetChat(chatId: string) {
     this.links.forgetChat(this.scope, chatId);
@@ -331,9 +352,9 @@ export class ProjectsStore {
     this.set(this.fromLinks());
   }
 
-  private fromLinks(): Pick<ProjectsSnapshot, "projects" | "selectedId" | "chats"> {
-    const { known, selected, chats } = this.links.read(this.scope);
-    return { projects: known, selectedId: known.some((p) => p.id === selected && !p.archived) ? selected : undefined, chats };
+  private fromLinks(): Pick<ProjectsSnapshot, "projects" | "selectedId" | "chats" | "defaults"> {
+    const { known, selected, chats, defaults } = this.links.read(this.scope);
+    return { projects: known, selectedId: known.some((p) => p.id === selected && !p.archived) ? selected : undefined, chats, defaults };
   }
 
   private set(patch: Partial<ProjectsSnapshot>) {

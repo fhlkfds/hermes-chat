@@ -17,6 +17,7 @@ The application is built with Tauri 2, React 19, and TypeScript, and it uses Vit
 - [Install on Arch Linux](#install-on-arch-linux)
 - [Updates](#updates)
 - [Development](#development)
+- [Project defaults](#project-defaults)
 - [Connecting to Hermes](#connecting-to-hermes)
 - [What is stored where](#what-is-stored-where)
 - [Troubleshooting](#troubleshooting)
@@ -51,6 +52,7 @@ These features are on the `main` branch.
 - **Server files.** The folder button on the rail opens a read-only browser for the disk of the machine the dashboard runs on. It shows folders with a path trail, sizes, modified times, types, and symbolic links, and previews text files up to 1 MiB and images up to 10 MiB. It shows what the dashboard's OS user can read, starting in that user's home folder, and Hermes never lists credential files such as `.env` or `auth.json`.
 - **Scheduled jobs.** The calendar button on the rail lists the profile's Hermes cron jobs, and creates, edits, pauses, resumes, runs, and deletes them. Hermes keeps and runs them on the server, so they run while Hermes Chat is closed. See [Scheduled jobs](#scheduled-jobs).
 - **Projects.** Projects are Hermes's own named groups of chats and server folders. Hermes stores the projects and their folders. This computer stores which chats are in each project.
+- **Project defaults.** A project's screen sets instructions, a model with its reasoning effort, and a working folder on the server for the chats started while the list shows it. The New chat pane lists what the chat will start with and where each value comes from: chosen for this chat, the project's default, or the profile's. See [Project defaults](#project-defaults).
 - **Models.** The composer has a model picker with reasoning effort, fast mode, and starred models. Settings → Model sets the profile's main model, subagent models, auxiliary models (including the Text generation model used for titles), and guardrails.
 - **Usage and cost.** You see token usage per reply and per chat. Cost appears only as Hermes recorded it, because the app keeps no price list.
 - **Status bar.** The status bar shows how full the context window is, a per-chat YOLO switch, the model, and the connection state. Right-click it to choose the items.
@@ -198,6 +200,19 @@ The benchmark times opening, streaming, find-in-chat, scrolling, two simultaneou
 
 GitHub Actions (`.github/workflows/ci.yml`) runs `npm test`, `npm run build`, and the Rust tests on every pull request and on pushes to `main`.
 
+## Project defaults
+
+Open a project's screen (the gear beside the project switcher) and set **Defaults for new chats**. Edits wait for **Save defaults**; **Cancel** puts back what's saved. Anything left empty comes from the profile, and a model picked in the New chat pane beats the project's for that chat. Saving changes only chats started afterwards.
+
+- **Folder.** One of the project's folders. Before each chat starts, the app lists it on the server; a missing folder, a file, or one Hermes's user can't open stops the chat with the reason, and the message goes back in the composer. Hermes runs a chat in its own folder, without an error, when it can't use the one asked for, so the app keeps a chat only when Hermes answers that it runs in that exact folder.
+- **Model and reasoning effort.** If Hermes no longer offers the model, or lists it as unavailable, the chat doesn't start; pick a model for the chat or change the default. The app never picks another model for you.
+- **Instructions.** Sent once, when the chat starts, as a hidden message before your first one. The model reads it as part of the conversation, not as its system prompt, and no Hermes client shows it. They aren't sent again with later messages.
+- **Apply to this chat.** In a started chat of the shown project, the folder-and-gear button asks first and lists what changes. It can switch the chat's model and effort, and move its folder between replies. It can't change the instructions a chat started with.
+
+The defaults are kept on this computer, per connection and profile, because Hermes has no place for them; other computers and Hermes clients don't use them. If another Hermes Chat window saved them since you started editing, Save says so and lets you load theirs or save yours over them. A version older than this one keeps them; this version won't change defaults that a newer version saved. See [ADR 0014](docs/adr/0014-project-defaults-are-local-and-sent-when-a-chat-starts.md).
+
+These rely on Hermes's legacy `session.create` taking `cwd`, `cwd_explicit`, `model`, `provider`, `reasoning_effort` and seeded `messages`, and on `session.cwd.set`, as Hermes at `bf0203a` does. A server without them may ignore a field rather than refuse it; the folder check after creation catches an ignored folder, but not ignored instructions.
+
 ## Connecting to Hermes
 
 <img src="docs/screenshots/readme/sign-in.png" width="420" alt="The sign-in screen in URL mode, with an extra request header whose value is masked">
@@ -251,7 +266,7 @@ Hermes stores the chats and their history, titles, Archived state, and Unread st
 | Chat list copy for each profile | Webview local storage | Clear local cache |
 | **Saved copies** of recently opened chats (up to 2 MB in total) | Webview local storage | Clear local cache, deleting the chat, or the oldest copy going first when the 2 MB limit is reached |
 | Drafts and **Failed messages** | Webview local storage, per connection, profile, and chat | Sending, Retry, or Dismiss. Clear local cache keeps them. |
-| Which chats are in each project | Webview local storage (`hermes-chat.projects`) | Deleting the project. Clear local cache keeps it. |
+| Which chats are in each project, and each project's defaults for new chats | Webview local storage (`hermes-chat.projects`) | Deleting the project. Clear local cache keeps them. |
 | Display preferences, model pick, starred models, and reopen-last-chat | Webview local storage | Not removed by Clear local cache |
 | Drafts and Failed messages saved for an update's restart | `$XDG_DATA_HOME/net.l0cky12.hermes-chat/restart-drafts.json`, readable only by you | Putting them back at the next launch. A copy that couldn't be put back is renamed `restart-drafts-<time>.json` and stays until you move or delete it; Settings says where. |
 | Screenshots waiting to send | `$XDG_CACHE_HOME/hermes-chat/captures/`, readable only by you | Confirmed delivery, removing them from the composer, or leaving the composer without sending. A Failed message keeps its screenshots until delivery is confirmed, history reconciles it, or you Dismiss it. Startup cleanup removes only leftovers that no message needs. |
@@ -281,7 +296,8 @@ Webview local storage is in `$XDG_DATA_HOME/net.l0cky12.hermes-chat/localstorage
 - The app supports one Hermes server connection at a time, and only the legacy session protocol with username and password sign-in.
 - The app targets Linux on Arch with WebKitGTK; CI runs on Ubuntu. No other packages or installers exist.
 - Active and Settled don't sync between computers for chats that Hermes won't pin, such as chats started in this app.
-- Project membership is stored on this computer only. Other computers and Hermes clients don't see it.
+- Project membership and project defaults are stored on this computer only. Other computers and Hermes clients don't see them.
+- A project's instructions reach the model as a hidden message in the conversation, not as part of the system prompt, because Hermes has no per-chat instructions field. They can't be changed in a chat that has started.
 - Per-reply usage appears only for replies that the app watched from start to finish. Chat totals come from Hermes and cover every call. Costs count only the calls Hermes could price.
 - Server files is read-only: it can't upload, rename, delete, or download. A preview reads the whole file, so bigger files aren't previewed at all, and the server sends a folder in one answer, however many items it has.
 - Scheduled jobs: Hermes's per-job routes act on another profile's copy of a job if this profile's job was deleted elsewhere just before, and Hermes offers no revision to stop an edit landing between the app's conflict check and its write. Only prompt jobs can be created here, run history goes back 100 runs, and the app can't see a `HERMES_TIMEZONE` set in the server's environment.
@@ -294,7 +310,7 @@ Webview local storage is in `$XDG_DATA_HOME/net.l0cky12.hermes-chat/localstorage
 ## Project documents
 
 - [`GLOSSARY.md`](GLOSSARY.md) defines the app's terms, such as Active, Settled, Saved copy, and Approval.
-- [`docs/adr/`](docs/adr/) records the design decisions, for example the [SSH sign-in](docs/adr/0003-sign-in-through-ssh-tunnel-to-the-dashboard.md), the [Unsecure label](docs/adr/0004-direct-url-sign-in-and-what-counts-as-unsecure.md), [extra request headers](docs/adr/0006-extra-request-headers-for-a-gateway-in-front-of-the-dashboard.md), the [preview pane sandbox](docs/adr/0007-preview-pane-shows-untrusted-content-in-sandboxed-frames.md), and [usage and cost](docs/adr/0008-usage-and-cost-come-from-hermes.md), [Server files](docs/adr/0012-server-files-are-the-dashboards-managed-files-read-only.md), and [Scheduled jobs](docs/adr/0013-scheduled-jobs-are-hermess-cron-jobs-confirmed-by-read-back.md).
+- [`docs/adr/`](docs/adr/) records the design decisions, for example the [SSH sign-in](docs/adr/0003-sign-in-through-ssh-tunnel-to-the-dashboard.md), the [Unsecure label](docs/adr/0004-direct-url-sign-in-and-what-counts-as-unsecure.md), [extra request headers](docs/adr/0006-extra-request-headers-for-a-gateway-in-front-of-the-dashboard.md), the [preview pane sandbox](docs/adr/0007-preview-pane-shows-untrusted-content-in-sandboxed-frames.md), [usage and cost](docs/adr/0008-usage-and-cost-come-from-hermes.md), [Server files](docs/adr/0012-server-files-are-the-dashboards-managed-files-read-only.md), [Scheduled jobs](docs/adr/0013-scheduled-jobs-are-hermess-cron-jobs-confirmed-by-read-back.md), and [project defaults](docs/adr/0014-project-defaults-are-local-and-sent-when-a-chat-starts.md).
 - [`docs/research/hermes-gateway-api.md`](docs/research/hermes-gateway-api.md) describes the Hermes API that the app relies on.
 
 ## License

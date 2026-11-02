@@ -6,7 +6,8 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row, type FakeProject } from "../hermes/fakeHermes";
 import { connect, type Hermes } from "../hermes/transport";
-import { PROJECTS_KEY } from "../hermes/projectLinks";
+import { PROJECTS_KEY, PROJECTS_VERSION, projectLinks, projectScope } from "../hermes/projectLinks";
+import type { DefaultsDraft } from "../hermes/projectDefaults";
 import { Main } from "../App";
 
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }) }));
@@ -140,7 +141,7 @@ describe("the project switcher", () => {
     await pick(first.user, "Budget Tracker");
     cleanup();
     await Promise.all(running.splice(0).map((h) => h.close()));
-    expect(JSON.parse(localStorage.getItem(PROJECTS_KEY)!).v).toBe(1);
+    expect(JSON.parse(localStorage.getItem(PROJECTS_KEY)!).v).toBe(PROJECTS_VERSION);
 
     await launch(s);
     expect(switcher().textContent).toContain("Budget Tracker");
@@ -278,7 +279,7 @@ describe("the project screen", () => {
 
   it("shows each folder's connection and path on the server", async () => {
     await openScreen();
-    const folder = screen.getByText("/srv/budget").closest("li")!;
+    const folder = screen.getByText("/srv/budget", { selector: ".folder-path" }).closest("li")!;
     expect(within(folder).getByText("ssh://liam@hermes")).toBeTruthy();
     expect(within(folder).getByText("Main folder")).toBeTruthy();
   });
@@ -307,7 +308,7 @@ describe("the project screen", () => {
 
     await user.clear(input);
     await user.type(input, "/srv/app{Enter}");
-    await screen.findByText("/srv/app");
+    await screen.findByText("/srv/app", { selector: ".folder-path" });
     expect(s.projects.default[0].folders.map((f) => f.path)).toEqual(["/srv/budget", "/srv/app"]);
     // A git folder shows its branch, and the repository's other worktree is offered, not made.
     await screen.findByText(/main · the repository's main worktree/);
@@ -353,5 +354,196 @@ describe("the project screen", () => {
     expect(switcher().textContent).toContain("All chats");
     expect(activeTitles()).toEqual(["Nightly backup", "NAS disks", "Login page"]);
     expect(onScreen()).toBe("New chat");
+  });
+});
+
+describe("a project's defaults for new chats", () => {
+  const SCOPE = projectScope({ mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" }, "default");
+  /** Defaults saved as another window, or an earlier run, would have. */
+  const seed = (id: string, draft: DefaultsDraft, base = 0) => projectLinks(localStorage).saveDefaults(SCOPE, id, base, draft);
+  const opus = { provider: "anthropic", model: "claude-opus-4-5", effort: "high" as const };
+  const creates = (s: FakeHermes) => s.requests.filter((r) => r.method === "session.create").map((r) => r.params);
+  const startPanel = () => screen.getByRole("region", { name: "What this chat starts with" });
+  const send = async (user: ReturnType<typeof userEvent.setup>, text: string) => user.type(screen.getByPlaceholderText("Message Hermes"), `${text}{Enter}`);
+
+  it("shows what a new chat starts with and where each value comes from, then starts it so", async () => {
+    const s = server();
+    seed("p_budget", { instructions: "Use metric units.\nKeep it short.", model: opus, folder: "/srv/budget" });
+    const { user, hermes } = await launch(s);
+    await pick(user, "Budget Tracker");
+    const panel = startPanel().textContent!;
+    expect(panel).toContain("claude-opus-4-5 (anthropic) project default (Budget Tracker)");
+    expect(panel).toContain("High project default (Budget Tracker)");
+    expect(panel).toContain("/srv/budget on ssh://liam@hermes project default (Budget Tracker)");
+    expect(panel).toContain("Use metric units. project default (Budget Tracker)");
+    // The composer shows the project's model too.
+    expect(screen.getByRole("button", { name: /^Model:/ }).textContent).toContain("claude-opus-4-5");
+
+    await send(user, "Plan the budget");
+    await waitFor(() => expect(onScreen()).not.toBe("New chat"));
+    await act(async () => void (await hermes.idle()));
+    const [create] = creates(s);
+    expect(create).toMatchObject({ cwd: "/srv/budget", cwd_explicit: true, model: "claude-opus-4-5", provider: "anthropic", reasoning_effort: "high" });
+    expect(create.messages).toEqual([{ role: "user", display_kind: "hidden", content: expect.stringContaining("Use metric units.\nKeep it short.") }]);
+    // The folder was checked on the server first, read-only.
+    expect(s.restRequests.some((r) => r.path === "/api/fs/list" && r.query.get("path") === "/srv/budget")).toBe(true);
+    // The instructions aren't sent again with the message.
+    expect(s.requests.filter((r) => r.method === "prompt.submit").map((r) => r.params.text)).toEqual(["Plan the budget"]);
+  });
+
+  it("keeps two projects' chats apart, and a chat outside any project on the profile's", async () => {
+    const s = server();
+    s.projects.default.push(project("p_lab", "Lab", ["/srv/app"]));
+    seed("p_budget", { instructions: "Budget rules", folder: "/srv/budget", model: opus });
+    seed("p_lab", { instructions: "Lab rules", folder: "/srv/app" });
+    const { user, hermes } = await launch(s);
+    for (const [name, text] of [["Budget Tracker", "one"], ["Lab", "two"], ["All chats", "three"]]) {
+      await pick(user, name);
+      await user.click(screen.getAllByTitle(/New chat/)[0]);
+      await send(user, text);
+      await waitFor(() => expect(creates(s).length).toBeGreaterThan(0));
+      await act(async () => void (await hermes.idle()));
+    }
+    const [budget, lab, none] = creates(s);
+    expect([budget.cwd, budget.model, String((budget.messages as { content: string }[])[0].content)]).toEqual(["/srv/budget", "claude-opus-4-5", expect.stringContaining("Budget rules")]);
+    expect([lab.cwd, lab.model, String((lab.messages as { content: string }[])[0].content)]).toEqual(["/srv/app", "claude-sonnet-4-5", expect.stringContaining("Lab rules")]);
+    expect(none).toMatchObject({ model: "claude-sonnet-4-5" });
+    expect(none.cwd).toBeUndefined();
+    expect(none.messages).toBeUndefined();
+  });
+
+  it("starts on a model chosen for the chat over the project's", async () => {
+    const s = server();
+    seed("p_budget", { model: opus });
+    const { user, hermes } = await launch(s);
+    await pick(user, "Budget Tracker");
+    await user.click(screen.getByRole("button", { name: /^Model:/ }));
+    await user.click(within(screen.getByRole("dialog", { name: "Choose a model" })).getByRole("button", { name: /^gpt-5/ }));
+    expect(startPanel().textContent).toContain("gpt-5 (openai) chosen for this chat");
+    await send(user, "Hi");
+    await waitFor(() => expect(creates(s)).toHaveLength(1));
+    await act(async () => void (await hermes.idle()));
+    expect(creates(s)[0]).toMatchObject({ model: "gpt-5", provider: "openai" });
+  });
+
+  it("refuses a folder that's gone or Hermes may not open, and gives the message back", async () => {
+    const s = server();
+    seed("p_budget", { folder: "/srv/budget" });
+    s.serverDirs.delete("/srv/budget");
+    const { user } = await launch(s);
+    await pick(user, "Budget Tracker");
+    await send(user, "Plan the budget");
+    await screen.findByText(/Couldn't start a chat: There's no folder at \/srv\/budget on the server/);
+    expect(creates(s)).toEqual([]);
+    expect((screen.getByPlaceholderText("Message Hermes") as HTMLTextAreaElement).value).toBe("Plan the budget");
+
+    s.serverDirs.add("/srv/budget");
+    s.rest["GET /api/fs/list"] = () => ({ entries: [], error: "EACCES" });
+    await user.click(screen.getByTitle("Send"));
+    await screen.findByText(/Hermes isn't allowed to open \/srv\/budget/);
+    expect(creates(s)).toEqual([]);
+  });
+
+  it("refuses a chat Hermes quietly started in another folder", async () => {
+    const s = server();
+    seed("p_budget", { folder: "/srv/budget", instructions: "x" });
+    const create = s.handlers["session.create"];
+    s.handlers["session.create"] = (r) => create({ ...r, params: { ...r.params, cwd: "/elsewhere" } });
+    const { user, hermes } = await launch(s);
+    await pick(user, "Budget Tracker");
+    await send(user, "Plan the budget");
+    await screen.findByText(/Hermes didn't start it in \/srv\/budget: it would have worked in \/home\/hermes/);
+    await act(async () => void (await hermes.idle()));
+    expect(onScreen()).toBe("New chat");
+    expect(s.requests.some((r) => r.method === "prompt.submit")).toBe(false);
+    expect(s.requests.some((r) => r.method === "session.close")).toBe(true);
+  });
+
+  it("refuses a project model Hermes doesn't offer, rather than swapping it", async () => {
+    const s = server();
+    seed("p_budget", { model: { provider: "anthropic", model: "claude-retired" } });
+    const { user } = await launch(s);
+    await pick(user, "Budget Tracker");
+    expect(within(startPanel()).getByRole("alert").textContent).toContain("claude-retired (anthropic), isn't offered by Hermes");
+    await send(user, "Hi");
+    await screen.findByText(/Couldn't start a chat: The project's default model/);
+    expect(creates(s)).toEqual([]);
+  });
+
+  it("can't start a chat offline, and still shows what it would start with", async () => {
+    const s = server();
+    seed("p_budget", { folder: "/srv/budget" });
+    const { user, hermes } = await launch(s);
+    await pick(user, "Budget Tracker");
+    await act(async () => s.drop());
+    await waitFor(() => expect(hermes.getSnapshot().status).not.toBe("connected"));
+    await user.type(screen.getByPlaceholderText("Message Hermes"), "Plan the budget{Enter}");
+    expect((screen.getByTitle("Send") as HTMLButtonElement).disabled).toBe(true);
+    expect(startPanel().textContent).toContain("/srv/budget on ssh://liam@hermes");
+    expect(creates(s)).toEqual([]);
+  });
+
+  it("edits the defaults with Save and Cancel, changes no chat that has started, and applies them to one only when asked", async () => {
+    const s = server();
+    seed("p_budget", { folder: "/srv/budget" });
+    s.projects.default[0].folders.push({ path: "/srv/app", label: null, is_primary: false, added_at: 2 });
+    const { user, hermes } = await launch(s);
+    await pick(user, "Budget Tracker");
+    await send(user, "Plan the budget");
+    await waitFor(() => expect(onScreen()).not.toBe("New chat"));
+    await act(async () => void (await hermes.idle()));
+    const started = hermes.getSnapshot().chats.find((c) => c.runtimeId)!;
+    act(() => s.event(started.runtimeId!, "message.complete", { text: "Done." }));
+    const before = s.requests.length;
+
+    await user.click(screen.getByTitle("Project settings for Budget Tracker"));
+    const instructions = screen.getByRole("textbox", { name: "Instructions" });
+    await user.type(instructions, "Answer in French.");
+    expect(screen.getByText("Unsaved changes")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect((instructions as HTMLTextAreaElement).value).toBe("");
+    await user.type(instructions, "Answer in French.");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Working folder on the server" }), "/srv/app");
+    expect(document.getElementById("defaults-folder-hint")!.textContent).toContain("/srv/app on ssh://liam@hermes, profile default");
+    await user.click(screen.getByRole("button", { name: "Save defaults" }));
+    await screen.findByText(/Saved\. New chats in this project use these/);
+    expect(projectLinks(localStorage).read(SCOPE).defaults.p_budget).toEqual({ rev: 2, instructions: "Answer in French.", folder: "/srv/app" });
+    await act(async () => void (await hermes.idle()));
+    // The chat that had started didn't change.
+    expect(s.requests.slice(before).filter((r) => ["config.set", "session.cwd.set", "prompt.submit"].includes(r.method))).toEqual([]);
+
+    // Apply to this chat asks first, says what changes, and leaves its instructions.
+    await user.click(screen.getByRole("button", { name: /Back to chat/ }));
+    expect(onScreen()).not.toBe("New chat");
+    await user.click(screen.getByTitle("Apply Budget Tracker's defaults to this chat…"));
+    const dialog = screen.getByRole("dialog", { name: "Apply Budget Tracker's defaults to this chat" });
+    expect(dialog.textContent).toContain("moves its work to /srv/app");
+    expect(dialog.textContent).toContain("Instructions: not changed");
+    expect(s.requests.some((r) => r.method === "session.cwd.set")).toBe(false);
+    await user.click(within(dialog).getByRole("button", { name: "Apply to this chat" }));
+    await screen.findByText("Applied Budget Tracker's defaults to this chat.");
+    expect(s.requests.filter((r) => r.method === "session.cwd.set").map((r) => r.params.cwd)).toEqual(["/srv/app"]);
+    expect(s.requests.filter((r) => r.method === "prompt.submit")).toHaveLength(1);
+  });
+
+  it("refuses to save over a save made in another window, and lets the owner choose", async () => {
+    const s = server();
+    const { user } = await launch(s);
+    await pick(user, "Budget Tracker");
+    await user.click(screen.getByTitle("Project settings for Budget Tracker"));
+    await user.type(screen.getByRole("textbox", { name: "Instructions" }), "Mine");
+    await act(async () => {
+      seed("p_budget", { instructions: "Theirs" });
+      window.dispatchEvent(new StorageEvent("storage", { key: PROJECTS_KEY }));
+    });
+    // The owner's edits stay on screen.
+    expect((screen.getByRole("textbox", { name: "Instructions" }) as HTMLTextAreaElement).value).toBe("Mine");
+    await user.click(screen.getByRole("button", { name: "Save defaults" }));
+    const alert = await screen.findByText(/changed elsewhere since you opened them/);
+    expect(alert.closest("[role=alert]")!.textContent).toContain("Saved there: instructions");
+    expect(projectLinks(localStorage).read(SCOPE).defaults.p_budget.instructions).toBe("Theirs");
+    await user.click(screen.getByRole("button", { name: "Save mine over them" }));
+    await screen.findByText(/Saved\./);
+    expect(projectLinks(localStorage).read(SCOPE).defaults.p_budget).toEqual({ rev: 2, instructions: "Mine" });
   });
 });
