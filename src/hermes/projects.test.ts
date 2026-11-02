@@ -320,7 +320,7 @@ describe("the stored document", () => {
     const otherScope = { selected: "p_other", chats: { p_other: ["chat"] }, known: [], colour: "blue" };
     const storage = stored({ v: 7, later: { x: 1 }, scopes: { [SCOPE]: { selected: "p_1", chats: { p_1: ["nas", 3, "nas"] }, known: [project, { id: 5 }], colour: "red" }, other: otherScope } });
     const links = projectLinks(storage);
-    expect(links.read(SCOPE)).toEqual({ selected: "p_1", chats: { p_1: ["nas"] }, known: [{ id: "p_1", name: "Lab", folders: [], archived: false }], defaults: {} });
+    expect(links.read(SCOPE)).toEqual({ selected: "p_1", chats: { p_1: ["nas"] }, known: [{ id: "p_1", name: "Lab", folders: [], archived: false }] });
     links.setChat(SCOPE, "p_1", "backup", true);
     const doc = JSON.parse(storage.data.get(PROJECTS_KEY)!);
     expect(doc).toMatchObject({ v: 7, later: { x: 1 }, scopes: { [SCOPE]: { colour: "red" }, other: otherScope } });
@@ -335,8 +335,8 @@ describe("the stored document", () => {
 
   it("starts empty from anything it can't read", () => {
     for (const raw of ["{not json", "[]", "null", '"x"', JSON.stringify({ v: "two", scopes: { [SCOPE]: { chats: { p: ["a"] } } } })])
-      expect(projectLinks(memoryStorage({ [PROJECTS_KEY]: raw })).read(SCOPE)).toEqual({ chats: {}, known: [], defaults: {} });
-    expect(readLinks({ v: 1, scopes: { [SCOPE]: "nope", other: { chats: "x", known: "y" } } })).toEqual({ other: { chats: {}, known: [], defaults: {} } });
+      expect(projectLinks(memoryStorage({ [PROJECTS_KEY]: raw })).read(SCOPE)).toEqual({ chats: {}, known: [] });
+    expect(readLinks({ v: 1, scopes: { [SCOPE]: "nope", other: { chats: "x", known: "y" } } })).toEqual({ other: { chats: {}, known: [] } });
   });
 });
 

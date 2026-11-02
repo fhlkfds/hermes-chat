@@ -598,6 +598,7 @@ function DefaultsSection({ saved, folders, profile, connection, catalog, profile
           aria-invalid={!!tooLong || undefined}
           aria-errormessage={tooLong ? "defaults-instructions-error" : undefined}
           className="defaults-instructions"
+          readOnly={saving}
           rows={5}
           value={draft.instructions ?? ""}
           placeholder="None. Chats follow the profile's own prompt."
@@ -619,7 +620,8 @@ function DefaultsSection({ saved, folders, profile, connection, catalog, profile
         <span className="field-label" id="defaults-model-label">
           Model and reasoning effort
         </span>
-        <div className="defaults-model" role="group" aria-labelledby="defaults-model-label">
+        {/* Edits made while a save is under way would be replaced by what it saved, so nothing changes meanwhile. */}
+        <div className="defaults-model" role="group" aria-labelledby="defaults-model-label" inert={saving || undefined}>
           <ModelControls
             catalog={catalog}
             current={model ?? profilePick}
@@ -645,7 +647,7 @@ function DefaultsSection({ saved, folders, profile, connection, catalog, profile
         <label className="field-label" htmlFor="defaults-folder">
           Working folder on the server
         </label>
-        <select id="defaults-folder" aria-describedby="defaults-folder-hint" className="defaults-folder" value={draft.folder ?? ""} onChange={(e) => edit({ folder: e.target.value || undefined })}>
+        <select id="defaults-folder" disabled={saving} aria-describedby="defaults-folder-hint" className="defaults-folder" value={draft.folder ?? ""} onChange={(e) => edit({ folder: e.target.value || undefined })}>
           <option value="">The profile's (Hermes's default folder)</option>
           {folders.map((f) => (
             <option key={f.path} value={f.path}>

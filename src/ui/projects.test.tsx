@@ -6,14 +6,26 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row, type FakeProject } from "../hermes/fakeHermes";
 import { connect, type Hermes } from "../hermes/transport";
-import { PROJECTS_KEY, PROJECTS_VERSION, projectLinks, projectScope } from "../hermes/projectLinks";
-import type { DefaultsDraft } from "../hermes/projectDefaults";
+import { PROJECTS_KEY, projectScope } from "../hermes/projectLinks";
+import { DEFAULTS_KEY, savedDefaults, type DefaultsDraft } from "../hermes/projectDefaults";
 import { Main } from "../App";
 
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: async () => null }));
 
 beforeAll(() => {
+  // jsdom has no Web Locks; WebKitGTK does. One holder at a time, in order, as the API holds them.
+  let queue = Promise.resolve();
+  Object.defineProperty(navigator, "locks", {
+    configurable: true,
+    value: {
+      request: (_name: string, run: () => unknown) => {
+        const next = queue.then(run);
+        queue = next.then(() => {}, () => {});
+        return next;
+      },
+    },
+  });
   Element.prototype.scrollIntoView = () => {};
   globalThis.CSS ??= { escape: (s: string) => s } as typeof CSS;
 });
@@ -141,7 +153,7 @@ describe("the project switcher", () => {
     await pick(first.user, "Budget Tracker");
     cleanup();
     await Promise.all(running.splice(0).map((h) => h.close()));
-    expect(JSON.parse(localStorage.getItem(PROJECTS_KEY)!).v).toBe(PROJECTS_VERSION);
+    expect(JSON.parse(localStorage.getItem(PROJECTS_KEY)!).v).toBe(1);
 
     await launch(s);
     expect(switcher().textContent).toContain("Budget Tracker");
@@ -360,7 +372,7 @@ describe("the project screen", () => {
 describe("a project's defaults for new chats", () => {
   const SCOPE = projectScope({ mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" }, "default");
   /** Defaults saved as another window, or an earlier run, would have. */
-  const seed = (id: string, draft: DefaultsDraft, base = 0) => projectLinks(localStorage).saveDefaults(SCOPE, id, base, draft);
+  const seed = (id: string, draft: DefaultsDraft, base = 0) => savedDefaults.save(SCOPE, id, base, draft);
   const opus = { provider: "anthropic", model: "claude-opus-4-5", effort: "high" as const };
   const creates = (s: FakeHermes) => s.requests.filter((r) => r.method === "session.create").map((r) => r.params);
   const startPanel = () => screen.getByRole("region", { name: "What this chat starts with" });
@@ -544,7 +556,7 @@ describe("a project's defaults for new chats", () => {
     expect(document.getElementById("defaults-folder-hint")!.textContent).toContain("/srv/app on ssh://liam@hermes, profile default");
     await user.click(screen.getByRole("button", { name: "Save defaults" }));
     await screen.findByText(/Saved\. New chats in this project use these/);
-    expect(projectLinks(localStorage).read(SCOPE).defaults.p_budget).toEqual({ rev: 2, instructions: "Answer in French.", folder: "/srv/app" });
+    expect(savedDefaults.read(SCOPE).p_budget).toEqual({ rev: 2, instructions: "Answer in French.", folder: "/srv/app" });
     await act(async () => void (await hermes.idle()));
     // The chat that had started didn't change.
     expect(s.requests.slice(before).filter((r) => ["config.set", "session.cwd.set", "prompt.submit"].includes(r.method))).toEqual([]);
@@ -563,6 +575,32 @@ describe("a project's defaults for new chats", () => {
     expect(s.requests.filter((r) => r.method === "prompt.submit")).toHaveLength(1);
   });
 
+  it("holds the fields still while a save is under way, so nothing typed meanwhile is lost", async () => {
+    const s = server();
+    const list = s.rest["GET /api/fs/list"];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    s.rest["GET /api/fs/list"] = async (req) => {
+      await gate;
+      return list(req);
+    };
+    const { user } = await launch(s);
+    await pick(user, "Budget Tracker");
+    await user.click(screen.getByTitle("Project settings for Budget Tracker"));
+    await user.type(screen.getByRole("textbox", { name: "Instructions" }), "First");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Working folder on the server" }), "/srv/budget");
+    await user.click(screen.getByRole("button", { name: "Save defaults" }));
+    const box = screen.getByRole("textbox", { name: "Instructions" }) as HTMLTextAreaElement;
+    expect(box.readOnly).toBe(true);
+    expect((screen.getByRole("combobox", { name: "Working folder on the server" }) as HTMLSelectElement).disabled).toBe(true);
+    await user.type(box, " and more");
+    expect(box.value).toBe("First");
+    await act(async () => release());
+    await screen.findByText(/Saved\./);
+    expect(box.readOnly).toBe(false);
+    expect(savedDefaults.read(SCOPE).p_budget).toEqual({ rev: 1, instructions: "First", folder: "/srv/budget" });
+  });
+
   it("refuses to save over a save made in another window, and lets the owner choose", async () => {
     const s = server();
     const { user } = await launch(s);
@@ -571,16 +609,16 @@ describe("a project's defaults for new chats", () => {
     await user.type(screen.getByRole("textbox", { name: "Instructions" }), "Mine");
     await act(async () => {
       seed("p_budget", { instructions: "Theirs" });
-      window.dispatchEvent(new StorageEvent("storage", { key: PROJECTS_KEY }));
+      window.dispatchEvent(new StorageEvent("storage", { key: DEFAULTS_KEY }));
     });
     // The owner's edits stay on screen.
     expect((screen.getByRole("textbox", { name: "Instructions" }) as HTMLTextAreaElement).value).toBe("Mine");
     await user.click(screen.getByRole("button", { name: "Save defaults" }));
     const alert = await screen.findByText(/changed elsewhere since you opened them/);
     expect(alert.closest("[role=alert]")!.textContent).toContain("Saved there: instructions");
-    expect(projectLinks(localStorage).read(SCOPE).defaults.p_budget.instructions).toBe("Theirs");
+    expect(savedDefaults.read(SCOPE).p_budget.instructions).toBe("Theirs");
     await user.click(screen.getByRole("button", { name: "Save mine over them" }));
     await screen.findByText(/Saved\./);
-    expect(projectLinks(localStorage).read(SCOPE).defaults.p_budget).toEqual({ rev: 2, instructions: "Mine" });
+    expect(savedDefaults.read(SCOPE).p_budget).toEqual({ rev: 2, instructions: "Mine" });
   });
 });

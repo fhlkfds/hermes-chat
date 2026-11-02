@@ -1,7 +1,8 @@
 // A project's defaults for its new chats (GLOSSARY.md "Project defaults", ADR 0014): instructions, a model with its
 // reasoning effort, and a working folder on the server. Hermes keeps projects, but has nowhere to keep these (its
-// `projects.update` takes only a name, description, icon, colour and board), so this computer keeps them, beside which
-// chats are in each project (projectLinks.ts), for each connection and profile.
+// `projects.update` takes only a name, description, icon, colour and board), so this computer keeps them, for each
+// connection and profile, in their own document (`hermes-chat.project-defaults`). Only a save or a clean-up writes it,
+// each holding a lock every window of the app shares, so no other write can put an older copy back over a save.
 //
 // A new chat takes each value from the first of: what the owner chose for that chat, the project's default, and the
 // profile's own. The defaults go to Hermes only when a chat starts, through `session.create`: `model`, `provider` and
@@ -142,3 +143,97 @@ export function modelProblem(s: NewChatSettings, catalog?: ModelCatalog): string
  */
 export const instructionsMessage = (project: string, text: string) =>
   `Instructions for this chat from the project "${project}". Follow them unless a later message says otherwise.\n\n${text}`;
+
+/** The storage the defaults are kept in: localStorage in the app. */
+export type DefaultsStorage = Pick<Storage, "getItem" | "setItem">;
+
+export const DEFAULTS_KEY = "hermes-chat.project-defaults";
+/** The document's shape: `{v, scopes: {[scope]: {[projectId]: ProjectDefaults}}}`. Bump it when a field changes meaning. */
+export const DEFAULTS_VERSION = 1;
+
+/** Runs `run` while no other window of this app holds lock `name`. */
+export type Lock = <T>(name: string, run: () => T) => Promise<T>;
+
+/**
+ * The Web Locks API, which the web engine holds for every window of this origin at once (WebKitGTK has it, and wry
+ * marks the app's scheme secure, which it needs). Without it a save could race another window's, so it is refused.
+ */
+export const windowLock: Lock = (name, run) => {
+  const locks = (globalThis.navigator as Navigator | undefined)?.locks;
+  if (!locks) return Promise.reject(new Error("This system's web engine can't keep two Hermes Chat windows from saving over each other, so nothing was saved."));
+  return locks.request(name, async () => run());
+};
+
+/** The projects' defaults kept in a storage. Every call reads it afresh, and a write is checked against that read. */
+export type DefaultsDoc = {
+  read(scope: string): Record<string, ProjectDefaults>;
+  /**
+   * Keeps project `id`'s defaults over revision `base`, the one the owner started from (0: none yet), and answers
+   * them as kept. Throws `DefaultsConflict` if another save landed meanwhile, `NewerDefaultsError` if a newer app wrote
+   * the document, and an error if the draft is wrong or the storage refused it; nothing is kept then. Hold the lock.
+   */
+  save(scope: string, id: string, base: number, draft: DefaultsDraft): ProjectDefaults;
+  /** Forgets the defaults of projects Hermes no longer has. Leaves a newer app's document alone. Hold the lock. */
+  prune(scope: string, keep: ReadonlySet<string>): void;
+};
+
+export function defaultsDoc(storage: () => DefaultsStorage): DefaultsDoc {
+  type Loaded = { v: number; scopes: Record<string, unknown>; rest: Record<string, unknown> };
+  const load = (): Loaded => {
+    let raw: unknown;
+    try {
+      raw = JSON.parse(storage().getItem(DEFAULTS_KEY) ?? "null");
+    } catch {
+      raw = undefined;
+    }
+    if (!isObj(raw)) return { v: DEFAULTS_VERSION, scopes: {}, rest: {} };
+    const { v, scopes, ...rest } = raw;
+    return { v: Number.isSafeInteger(v) ? (v as number) : DEFAULTS_VERSION, scopes: isObj(scopes) ? scopes : {}, rest };
+  };
+  const ofScope = (scopes: Record<string, unknown>, scope: string): Record<string, unknown> => {
+    const s = scopes[scope];
+    return isObj(s) ? s : {};
+  };
+  const write = (doc: Loaded, scope: string, entries: Record<string, unknown>) => {
+    const scopes = { ...doc.scopes };
+    if (Object.keys(entries).length) scopes[scope] = entries;
+    else delete scopes[scope];
+    storage().setItem(DEFAULTS_KEY, JSON.stringify({ ...doc.rest, v: Math.max(doc.v, DEFAULTS_VERSION), scopes }));
+  };
+  return {
+    read: (scope) => {
+      const out: Record<string, ProjectDefaults> = {};
+      for (const [id, d] of Object.entries(ofScope(load().scopes, scope))) {
+        const kept = toDefaults(d);
+        if (kept) out[id] = kept;
+      }
+      return out;
+    },
+    save: (scope, id, base, draft) => {
+      const problem = draftProblem(draft);
+      if (problem) throw new Error(problem);
+      const doc = load();
+      if (doc.v > DEFAULTS_VERSION) throw new NewerDefaultsError();
+      const entries = ofScope(doc.scopes, scope);
+      const stored = toDefaults(entries[id]);
+      if ((stored?.rev ?? 0) !== base) throw new DefaultsConflict(stored);
+      const saved: ProjectDefaults = { rev: base + 1, ...cleanDraft(draft) };
+      try {
+        write(doc, scope, { ...entries, [id]: saved });
+      } catch (e) {
+        throw new Error(`This computer couldn't keep them: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      return saved;
+    },
+    prune: (scope, keep) => {
+      const doc = load();
+      if (doc.v > DEFAULTS_VERSION) return;
+      const entries = ofScope(doc.scopes, scope);
+      const left = Object.fromEntries(Object.entries(entries).filter(([id]) => keep.has(id)));
+      if (Object.keys(left).length !== Object.keys(entries).length) write(doc, scope, left);
+    },
+  };
+}
+
+/** The defaults in the app's localStorage. */
+export const savedDefaults = defaultsDoc(() => globalThis.localStorage);

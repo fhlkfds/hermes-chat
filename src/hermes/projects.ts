@@ -6,8 +6,8 @@
 // Folders are only references. Nothing here creates, moves or deletes a folder, a repository or a worktree on the
 // server: a folder is checked with a read-only directory listing before it is added, and a repository's worktrees are
 // read with `git worktree list` (dashboard REST `GET /api/git/worktrees`), never added.
-import type { DefaultsDraft, ProjectDefaults } from "./projectDefaults";
-import { PROJECTS_KEY, windowLock, type Lock, type ProjectLinks } from "./projectLinks";
+import { DEFAULTS_KEY, savedDefaults, windowLock, type DefaultsDoc, type DefaultsDraft, type Lock, type ProjectDefaults } from "./projectDefaults";
+import type { ProjectLinks } from "./projectLinks";
 
 /** One of a project's folders: a path on the server. `primary`: the folder Hermes names the project's main one. */
 export type ProjectFolder = { path: string; primary: boolean };
@@ -209,7 +209,8 @@ export class ProjectsStore {
     /** Where this computer keeps the profile's links (projectLinks.ts `projectScope`). */
     readonly scope: string,
     readonly profile: string,
-    /** Holds the stored document for one window at a time while defaults are saved. */
+    /** Where this computer keeps the projects' defaults (projectDefaults.ts), and the lock every write holds. */
+    private defaults: DefaultsDoc = savedDefaults,
     private lock: Lock = windowLock,
   ) {
     this.snap = { profile, loaded: false, loading: false, ...this.fromLinks() };
@@ -244,6 +245,7 @@ export class ProjectsStore {
         const projects = await this.api.list(this.profile);
         if (n !== this.reads) return;
         this.links.remember(this.scope, projects);
+        this.pruneDefaults();
         this.set({ loaded: true, loading: false, error: undefined, ...this.fromLinks() });
       } catch (e) {
         if (n !== this.reads) return;
@@ -281,9 +283,11 @@ export class ProjectsStore {
       try {
         const projects = await this.api.delete(this.profile, id);
         this.links.remember(this.scope, projects);
+        this.pruneDefaults();
       } catch (e) {
         if (!(e instanceof ProjectGoneError)) throw e;
         this.links.forgetProject(this.scope, id);
+        this.pruneDefaults();
       }
       this.set(this.fromLinks());
     });
@@ -314,7 +318,7 @@ export class ProjectsStore {
    */
   async saveDefaults(id: string, base: number, draft: DefaultsDraft): Promise<ProjectDefaults> {
     try {
-      return await this.lock(`${PROJECTS_KEY}.defaults`, () => this.links.saveDefaults(this.scope, id, base, draft));
+      return await this.lock(DEFAULTS_KEY, () => this.defaults.save(this.scope, id, base, draft));
     } finally {
       // A conflict means another window saved: show what it saved.
       this.set(this.fromLinks());
@@ -341,10 +345,17 @@ export class ProjectsStore {
     } catch (e) {
       if (e instanceof ProjectGoneError) {
         this.links.forgetProject(this.scope, id);
+        this.pruneDefaults();
         this.set(this.fromLinks());
       }
       throw e;
     }
+  }
+
+  /** Forgets the defaults of projects Hermes no longer has. Best effort: one left behind is never shown or used. */
+  private pruneDefaults() {
+    const keep = new Set(this.links.read(this.scope).known.map((p) => p.id));
+    void this.lock(DEFAULTS_KEY, () => this.defaults.prune(this.scope, keep)).catch(() => {});
   }
 
   private keep(project: Project) {
@@ -355,7 +366,9 @@ export class ProjectsStore {
   }
 
   private fromLinks(): Pick<ProjectsSnapshot, "projects" | "selectedId" | "chats" | "defaults"> {
-    const { known, selected, chats, defaults } = this.links.read(this.scope);
+    const { known, selected, chats } = this.links.read(this.scope);
+    const ids = new Set(known.map((p) => p.id));
+    const defaults = Object.fromEntries(Object.entries(this.defaults.read(this.scope)).filter(([id]) => ids.has(id)));
     return { projects: known, selectedId: known.some((p) => p.id === selected && !p.archived) ? selected : undefined, chats, defaults };
   }
 

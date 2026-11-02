@@ -123,7 +123,8 @@ export function ApplyDefaults({
             Model:{" "}
             {model ? (
               <>
-                {modelText(current)} → {modelText(model)}
+                {modelText(current)}
+                {current?.effort ? `, ${EFFORT_LABEL[current.effort]}` : ""} → {modelText(model)}
                 {model.effort ? `, ${EFFORT_LABEL[model.effort]}` : ""}. Hermes switches it from the next reply.
               </>
             ) : (

@@ -11,7 +11,7 @@ import { chatToReopen, forgetOpenChat, rememberOpenChat } from "./hermes/uiPrefs
 import { exportChat } from "./hermes/exportChat";
 import { PROJECTS_KEY, projectLinks, projectScope } from "./hermes/projectLinks";
 import { ProjectsStore, type Project } from "./hermes/projects";
-import { instructionsMessage, modelProblem, resolveNewChat, type ProjectDefaults } from "./hermes/projectDefaults";
+import { DEFAULTS_KEY, instructionsMessage, modelProblem, resolveNewChat, type ProjectDefaults } from "./hermes/projectDefaults";
 import { systemHeaderKeyring, systemKeyring } from "./hermes/tauriKeyring";
 import { appUpdates } from "./hermes/tauriUpdates";
 import { needsAttention, type Updater } from "./hermes/updates";
@@ -371,7 +371,7 @@ export function Main({
   const proj = useSyncExternalStore(projects.subscribe, projects.getSnapshot);
   // Another Hermes Chat window saved projects, such as a project's defaults: show them here too.
   useEffect(() => {
-    const changed = (e: StorageEvent) => e.key === PROJECTS_KEY && projects.reread();
+    const changed = (e: StorageEvent) => (e.key === PROJECTS_KEY || e.key === DEFAULTS_KEY) && projects.reread();
     window.addEventListener("storage", changed);
     return () => window.removeEventListener("storage", changed);
   }, [projects]);
