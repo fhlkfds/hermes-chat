@@ -135,7 +135,8 @@ function RenameRow({
  * Menu key or Shift+F10 on it, opens its menu. The trash button asks before deleting, in the row itself: Escape,
  * Cancel or clicking away keeps the chat. Cancel and the trash button share a key, so React keeps the one button, and
  * focus with it, when the row goes back. An archived chat has Restore in place of Settle and Archive. A chat with
- * a reply running can't be archived, restored or deleted.
+ * a reply running can't be archived, restored or deleted. Regenerate title in the menu shows a spinner until the new
+ * title is saved, and why underneath if it isn't.
  */
 function ChatRow({
   chat,
@@ -145,6 +146,7 @@ function ChatRow({
   onArchive,
   onDelete,
   onRename,
+  onRegenTitle,
 }: {
   chat: Chat;
   selected: boolean;
@@ -153,9 +155,26 @@ function ChatRow({
   onArchive: (archived: boolean) => void;
   onDelete: () => void;
   onRename: (title: string, from: string) => Promise<unknown>;
+  onRegenTitle: () => Promise<unknown>;
 }) {
   const [confirming, setConfirming] = useState(false);
   const [renaming, setRenaming] = useState(false);
+  const [retitling, setRetitling] = useState(false);
+  const [retitleError, setRetitleError] = useState<string>();
+  const regenTitle = () => {
+    if (retitling) return;
+    setRetitling(true);
+    setRetitleError(undefined);
+    onRegenTitle()
+      .catch((e) =>
+        setRetitleError(
+          e instanceof RenameConflict
+            ? `This chat was renamed in another Hermes client meanwhile, to "${e.title}". Regenerate again to replace it.`
+            : `Couldn't regenerate the title: ${e instanceof Error ? e.message : String(e)}`,
+        ),
+      )
+      .finally(() => setRetitling(false));
+  };
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const closeMenu = useCallback(() => setMenu(null), []);
   const openButton = useRef<HTMLButtonElement>(null);
@@ -185,9 +204,10 @@ function ChatRow({
     );
   return (
     <div
-      className={`row ${selected ? "sel" : ""} ${chat.unread ? "unread" : ""} ${menu ? "menu-open" : ""}`}
+      className={`row ${selected ? "sel" : ""} ${chat.unread ? "unread" : ""} ${menu ? "menu-open" : ""} ${retitleError ? "retitle-failed" : ""} ${retitling ? "retitling" : ""}`}
       onContextMenu={(e) => {
         e.preventDefault();
+        setRetitleError(undefined);
         // From the keyboard the event has no pointer position, so the menu opens under the row.
         const r = e.currentTarget.getBoundingClientRect();
         setMenu(e.clientX || e.clientY ? { x: e.clientX, y: e.clientY } : { x: r.left + 8, y: r.bottom });
@@ -197,13 +217,16 @@ function ChatRow({
         ref={openButton}
         className="row-open"
         aria-current={selected || undefined}
-        title={chat.source !== "app" ? `${chat.title} (from ${SOURCE_LABEL[chat.source]})` : chat.title}
-        onClick={onOpen}
+        title={retitling ? "Writing a new title…" : chat.source !== "app" ? `${chat.title} (from ${SOURCE_LABEL[chat.source]})` : chat.title}
+        onClick={() => {
+          setRetitleError(undefined);
+          onOpen();
+        }}
       >
         {chat.source !== "app" && <SourceIcon source={chat.source} />}
         <span className="row-title">{chat.title}</span>
         <span className="row-meta">
-          {chat.running ? <Spinner /> : chat.unread ? <span className="dot" title="Unread" /> : relTime(chat.updatedAt)}
+          {chat.running || retitling ? <Spinner /> : chat.unread ? <span className="dot" title="Unread" /> : relTime(chat.updatedAt)}
         </span>
       </button>
       {!chat.archived && <SettleButton settled={chat.settled} size={14} className="row-action" onSettle={onSettle} />}
@@ -221,7 +244,12 @@ function ChatRow({
           <Trash2 size={14} />
         </button>
       )}
-      {menu && <ChatMenu chat={chat} x={menu.x} y={menu.y} onRename={() => setRenaming(true)} onClose={closeMenu} />}
+      {menu && <ChatMenu chat={chat} x={menu.x} y={menu.y} onRename={() => setRenaming(true)} onRegenTitle={regenTitle} onClose={closeMenu} />}
+      {retitleError && (
+        <div className="row-rename-error" role="alert">
+          {retitleError}
+        </div>
+      )}
     </div>
   );
 }
@@ -418,6 +446,7 @@ export function ChatList({
   onListArchived,
   onDelete,
   onRename,
+  onRegenTitle,
   onListProfiles,
   onCheckOthers,
   onSwitchProfile,
@@ -434,6 +463,7 @@ export function ChatList({
   onListArchived: (on: boolean) => void;
   onDelete: (id: string) => void;
   onRename: (id: string, title: string, from: string) => Promise<unknown>;
+  onRegenTitle: (id: string) => Promise<unknown>;
   onListProfiles: () => Promise<string[]>;
   onCheckOthers: () => void;
   onSwitchProfile: (name: string) => void;
@@ -458,6 +488,7 @@ export function ChatList({
       onArchive={(a) => onArchive(c.id, a)}
       onDelete={() => onDelete(c.id)}
       onRename={(title, from) => onRename(c.id, title, from)}
+      onRegenTitle={() => onRegenTitle(c.id)}
     />
   );
   return (

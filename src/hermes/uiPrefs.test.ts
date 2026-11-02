@@ -1,0 +1,296 @@
+// @vitest-environment jsdom
+// The display preferences: what reads back from the one stored document, how changes merge into it, how older
+// documents are brought up to date, who hears of a change, and that clearing the chat cache leaves them alone.
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { localChatCache } from "./chatCache";
+import {
+  DEFAULT_UI_PREFS,
+  UI_PREFS_KEY,
+  UI_PREFS_VERSION,
+  chatToReopen,
+  forgetOpenChat,
+  getUIPrefs,
+  migrateUIPrefs,
+  rememberOpenChat,
+  setUIPrefs,
+  subscribe,
+  type UIPrefs,
+} from "./uiPrefs";
+
+const stored = (): Record<string, unknown> => JSON.parse(localStorage.getItem(UI_PREFS_KEY) ?? "null");
+/** Another window of the app writing the document, as the `storage` event reports it. */
+function writeFromOtherWindow(value: string | null, key: string | null = UI_PREFS_KEY) {
+  if (key === null) localStorage.clear();
+  else if (value === null) localStorage.removeItem(key);
+  else localStorage.setItem(key, value);
+  window.dispatchEvent(new StorageEvent("storage", { key, newValue: value }));
+}
+
+const unsubscribers: (() => void)[] = [];
+const listen = () => {
+  const fn = vi.fn<(p: Readonly<UIPrefs>) => void>();
+  unsubscribers.push(subscribe(fn));
+  return fn;
+};
+
+beforeEach(() => localStorage.clear());
+afterEach(() => {
+  unsubscribers.splice(0).forEach((u) => u());
+  vi.restoreAllMocks();
+});
+
+describe("reading", () => {
+  it("is the defaults when nothing is stored", () => {
+    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, statusBar: [] });
+    expect(getUIPrefs()).toEqual(DEFAULT_UI_PREFS);
+  });
+
+  it("is the defaults when the document is unreadable or not a document", () => {
+    for (const raw of ["{not json", "null", "[1,2]", '"dark"', "42"]) {
+      localStorage.setItem(UI_PREFS_KEY, raw);
+      expect(getUIPrefs()).toEqual(DEFAULT_UI_PREFS);
+    }
+  });
+
+  it("takes each valid field and puts each invalid one back at its default", () => {
+    localStorage.setItem(
+      UI_PREFS_KEY,
+      JSON.stringify({
+        v: 1,
+        theme: "neon",
+        reopenLastChat: false,
+        reasoningBlocks: "no",
+        modelPicker: { provider: "anthropic", model: "claude-opus-5-5", effort: "max", fast: true, extra: 1 },
+        statusBar: ["model", 3, "", "tokens", "model"],
+        lastOpenChat: { default: "c1", work: 7, "": "c2", home: "" },
+      }),
+    );
+    expect(getUIPrefs()).toEqual({
+      theme: "system",
+      reopenLastChat: false,
+      lastOpenChat: { default: "c1" },
+      reasoningBlocks: true,
+      modelPicker: { provider: "anthropic", model: "claude-opus-5-5", effort: "max", fast: true },
+      statusBar: ["model", "tokens"],
+    });
+  });
+
+  it("drops a model pick without a provider and model", () => {
+    localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ v: 1, modelPicker: { model: "x" } }));
+    expect(getUIPrefs().modelPicker).toBeNull();
+  });
+
+  it("returns the same object until the document changes", () => {
+    const first = getUIPrefs();
+    expect(getUIPrefs()).toBe(first);
+    setUIPrefs({ theme: "dark" });
+    expect(getUIPrefs()).not.toBe(first);
+    expect(getUIPrefs()).toBe(getUIPrefs());
+  });
+});
+
+describe("writing", () => {
+  it("keeps everything in one versioned document under one key", () => {
+    setUIPrefs({ theme: "light" });
+    expect(Object.keys(localStorage)).toEqual([UI_PREFS_KEY]);
+    expect(stored()).toEqual({ ...DEFAULT_UI_PREFS, theme: "light", v: UI_PREFS_VERSION });
+  });
+
+  it("merges a patch, leaving fields not given, or given as undefined, as they were", () => {
+    setUIPrefs({ theme: "dark", reopenLastChat: false });
+    setUIPrefs({ reasoningBlocks: false, theme: undefined });
+    expect(getUIPrefs()).toEqual({ ...DEFAULT_UI_PREFS, theme: "dark", reopenLastChat: false, reasoningBlocks: false });
+  });
+
+  it("replaces the status bar and model pick whole, and forgets the pick on null", () => {
+    setUIPrefs({ statusBar: ["model", "tokens"], modelPicker: { provider: "openai", model: "o5", effort: "high" } });
+    setUIPrefs({ statusBar: ["cost"], modelPicker: { provider: "anthropic", model: "claude-sonnet-5-5" } });
+    expect(getUIPrefs().statusBar).toEqual(["cost"]);
+    expect(getUIPrefs().modelPicker).toEqual({ provider: "anthropic", model: "claude-sonnet-5-5" });
+    setUIPrefs({ modelPicker: null });
+    expect(getUIPrefs().modelPicker).toBeNull();
+    expect(stored().modelPicker).toBeNull();
+  });
+
+  it("doesn't share arrays with the caller", () => {
+    const items = ["model"];
+    setUIPrefs({ statusBar: items });
+    items.push("tokens");
+    expect(getUIPrefs().statusBar).toEqual(["model"]);
+  });
+
+  it("leaves a field as it was when given a value that isn't valid", () => {
+    setUIPrefs({ theme: "dark" });
+    setUIPrefs({ theme: "neon" as UIPrefs["theme"] });
+    expect(getUIPrefs().theme).toBe("dark");
+  });
+
+  it("keeps fields a newer version of the app wrote", () => {
+    localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ v: 1, theme: "dark", density: "compact" }));
+    setUIPrefs({ reasoningBlocks: false });
+    expect(stored()).toMatchObject({ v: 1, theme: "dark", density: "compact", reasoningBlocks: false });
+  });
+
+  it("holds a change until the app closes when storage won't take it", () => {
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("full", "QuotaExceededError");
+    });
+    const heard = listen();
+    expect(() => setUIPrefs({ theme: "dark" })).not.toThrow();
+    expect(getUIPrefs().theme).toBe("dark");
+    expect(heard).toHaveBeenCalledOnce();
+  });
+});
+
+describe("migration", () => {
+  it("reads a document written without a version as version 1, and stamps the version on the next write", () => {
+    localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ theme: "light", reopenLastChat: false }));
+    expect(getUIPrefs()).toMatchObject({ theme: "light", reopenLastChat: false });
+    setUIPrefs({ reasoningBlocks: false });
+    expect(stored()).toEqual({ ...DEFAULT_UI_PREFS, theme: "light", reopenLastChat: false, reasoningBlocks: false, v: 1 });
+  });
+
+  it("runs each step from the stored version up to the current one, in order", () => {
+    const steps = {
+      0: (d: Record<string, unknown>) => ({ ...d, steps: ["0→1"] }),
+      1: (d: Record<string, unknown>) => ({ ...d, theme: d.darkMode ? "dark" : "light", darkMode: undefined, steps: [...(d.steps as string[]), "1→2"] }),
+      2: (d: Record<string, unknown>) => ({ ...d, steps: [...(d.steps as string[]), "2→3"] }),
+    };
+    expect(migrateUIPrefs({ darkMode: true }, steps, 3)).toEqual({ theme: "dark", darkMode: undefined, steps: ["0→1", "1→2", "2→3"], v: 3 });
+    expect(migrateUIPrefs({ v: 2, theme: "light", steps: [] }, steps, 3)).toEqual({ theme: "light", steps: ["2→3"], v: 3 });
+    expect(migrateUIPrefs({ v: 3, theme: "light" }, steps, 3)).toEqual({ theme: "light", v: 3 });
+  });
+
+  it("starts over from the defaults when a version has no way forward or isn't a version", () => {
+    expect(migrateUIPrefs({ v: 1, theme: "dark" }, {}, 2)).toEqual({ v: 2 });
+    expect(migrateUIPrefs({ v: "1", theme: "dark" })).toEqual({ v: UI_PREFS_VERSION });
+    expect(migrateUIPrefs({ v: 1.5, theme: "dark" })).toEqual({ v: UI_PREFS_VERSION });
+  });
+
+  it("reads a newer version's document as it is, taking the fields this version knows", () => {
+    localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ v: UI_PREFS_VERSION + 1, theme: "dark", density: "compact" }));
+    expect(getUIPrefs().theme).toBe("dark");
+  });
+});
+
+describe("subscribe", () => {
+  it("fires with the new prefs on a change in this window", () => {
+    const heard = listen();
+    setUIPrefs({ theme: "dark" });
+    expect(heard).toHaveBeenCalledOnce();
+    expect(heard).toHaveBeenLastCalledWith(expect.objectContaining({ theme: "dark" }));
+    expect(heard.mock.calls[0][0]).toBe(getUIPrefs());
+  });
+
+  it("doesn't fire when a patch changes nothing", () => {
+    setUIPrefs({ theme: "dark" });
+    const heard = listen();
+    setUIPrefs({ theme: "dark" });
+    setUIPrefs({});
+    expect(heard).not.toHaveBeenCalled();
+  });
+
+  it("fires when another window changes the document", () => {
+    const heard = listen();
+    writeFromOtherWindow(JSON.stringify({ v: 1, theme: "light", reasoningBlocks: false }));
+    expect(heard).toHaveBeenCalledOnce();
+    expect(heard).toHaveBeenLastCalledWith(expect.objectContaining({ theme: "light", reasoningBlocks: false }));
+    expect(getUIPrefs().theme).toBe("light");
+  });
+
+  it("fires when another window removes the document or clears localStorage, with the defaults", () => {
+    setUIPrefs({ theme: "dark" });
+    const heard = listen();
+    writeFromOtherWindow(null);
+    expect(heard).toHaveBeenLastCalledWith(DEFAULT_UI_PREFS);
+    setUIPrefs({ theme: "dark" });
+    heard.mockClear();
+    writeFromOtherWindow(null, null);
+    expect(heard).toHaveBeenCalledOnce();
+    expect(getUIPrefs()).toEqual(DEFAULT_UI_PREFS);
+  });
+
+  it("ignores other keys and writes that change nothing", () => {
+    setUIPrefs({ theme: "dark" });
+    const heard = listen();
+    writeFromOtherWindow("[]", "hermes-chat.chats.x");
+    writeFromOtherWindow(localStorage.getItem(UI_PREFS_KEY));
+    writeFromOtherWindow(JSON.stringify({ ...stored(), unknown: 1 }));
+    expect(heard).not.toHaveBeenCalled();
+  });
+
+  it("stops firing once unsubscribed, in this window and from others", () => {
+    const heard = vi.fn();
+    const stop = subscribe(heard);
+    const other = listen();
+    stop();
+    stop();
+    setUIPrefs({ theme: "dark" });
+    writeFromOtherWindow(JSON.stringify({ v: 1, theme: "light" }));
+    expect(heard).not.toHaveBeenCalled();
+    expect(other).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("Clear local cache", () => {
+  it("deletes the chat lists and Saved copies and keeps the display preferences", () => {
+    setUIPrefs({ theme: "dark", statusBar: ["model"], modelPicker: { provider: "anthropic", model: "claude-opus-5-5" } });
+    const prefsBefore = localStorage.getItem(UI_PREFS_KEY);
+    const cache = localChatCache({ mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" });
+    cache.save("default", []);
+    cache.saveTranscript("default", "a", [{ kind: "user", id: "1", text: "hi" }]);
+    expect(cache.bytes()).toBeGreaterThan(0);
+
+    cache.clear();
+    expect(cache.bytes()).toBe(0);
+    expect(cache.loadTranscript("default", "a")).toBeUndefined();
+    expect(localStorage.getItem(UI_PREFS_KEY)).toBe(prefsBefore);
+    expect(getUIPrefs()).toMatchObject({ theme: "dark", statusBar: ["model"] });
+    // The prefs never count toward the cache's size either.
+    setUIPrefs({ theme: "light" });
+    expect(cache.bytes()).toBe(0);
+  });
+});
+
+describe("the last open chat", () => {
+  it("is kept for each profile apart", () => {
+    rememberOpenChat("default", "c1");
+    rememberOpenChat("work", "w1");
+    rememberOpenChat("default", "c2");
+    expect(stored().lastOpenChat).toEqual({ default: "c2", work: "w1" });
+    expect(chatToReopen("default")).toBe("c2");
+    expect(chatToReopen("work")).toBe("w1");
+    expect(chatToReopen("home")).toBeUndefined();
+  });
+
+  it("is dropped for a profile on the New chat pane, and the others stay", () => {
+    rememberOpenChat("default", "c1");
+    rememberOpenChat("work", "w1");
+    rememberOpenChat("default", null);
+    expect(stored().lastOpenChat).toEqual({ work: "w1" });
+  });
+
+  it("is forgotten only while it is still the chat named", () => {
+    rememberOpenChat("default", "c1");
+    forgetOpenChat("default", "c0");
+    expect(chatToReopen("default")).toBe("c1");
+    forgetOpenChat("default", "c1");
+    expect(chatToReopen("default")).toBeUndefined();
+  });
+
+  it("isn't reopened with the setting off, and is still kept", () => {
+    setUIPrefs({ reopenLastChat: false });
+    rememberOpenChat("default", "c1");
+    expect(chatToReopen("default")).toBeUndefined();
+    setUIPrefs({ reopenLastChat: true });
+    expect(chatToReopen("default")).toBe("c1");
+  });
+
+  it("writes nothing when the chat is already the one kept", () => {
+    rememberOpenChat("default", "c1");
+    const fn = listen();
+    rememberOpenChat("default", "c1");
+    rememberOpenChat("work", null);
+    expect(fn).not.toHaveBeenCalled();
+  });
+});

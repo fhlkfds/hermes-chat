@@ -1,5 +1,5 @@
-// The Settings screen, in two tabs. General, ported from the prototype: the connection and Sign out, the local cache,
-// and older history. Appearance: how the app looks on this computer (AppearanceSettings.tsx).
+// The Settings screen, in two tabs. General, ported from the prototype: the connection and Sign out, what shows on
+// launch, the local cache, and older history. Appearance: how the app looks on this computer (AppearanceSettings.tsx).
 // Profiles are switched in the list's header, not here (ADR 0001).
 import { useState } from "react";
 import { ArrowLeft, Download, KeyRound, Lock, LogOut, Palette, Settings2, Trash2 } from "lucide-react";
@@ -9,6 +9,7 @@ import { TRANSCRIPT_LIMIT_BYTES } from "../hermes/chatCache";
 import { STATUS_LABEL, arrowSelect, fmtSize, routeLabel } from "./bits";
 import type { AppearanceStore, Fonts } from "./appearance";
 import { AppearanceSettings } from "./AppearanceSettings";
+import { StartupSettings } from "./StartupSettings";
 
 type Tab = "general" | "appearance";
 const TABS = [
@@ -144,12 +145,14 @@ export function SettingsScreen({
               <p className="muted small settings-note">Signing out deletes the saved password from the keyring. You type it again at the next sign-in.</p>
             </section>
 
+            <StartupSettings />
+
             <section>
               <h2>Local cache</h2>
               <p className="muted">
                 Hermes Chat keeps a copy of each profile's chat list on this computer, so the list shows as soon as you sign in. It also keeps a
                 Saved copy of the chats you opened most recently, up to {fmtSize(TRANSCRIPT_LIMIT_BYTES)}, so you can read them while Hermes can't be
-                reached. The oldest copies are deleted first when that fills up.
+                reached. The oldest copies are deleted first when that fills up. Clearing the cache keeps your display settings.
               </p>
               <div className="settings-row">
                 <div>
@@ -163,8 +166,8 @@ export function SettingsScreen({
                 ) : (
                   <div className="confirm">
                     <span>
-                      <Lock size={12} /> Only the copies on this computer are deleted. Nothing on your Hermes server is touched; the list is saved again
-                      at the next refresh, and a chat's Saved copy when you next open it.
+                      <Lock size={12} /> Only the chat copies on this computer are deleted; your display settings are kept. Nothing on your Hermes
+                      server is touched; the list is saved again at the next refresh, and a chat's Saved copy when you next open it.
                     </span>
                     <div className="confirm-actions">
                       <button className="btn" onClick={() => setConfirmClear(false)}>
