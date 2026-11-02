@@ -274,6 +274,24 @@ describe("Settings → Memory", () => {
     expect(s.memory.default.profile).toEqual([SAM, "Same words in both files"]);
   });
 
+  it("doesn't take another entry with the same words for a lost save in the same file", async () => {
+    const { s, hermes, user } = await shown();
+    await user.click(entry(FALCON));
+    await user.clear(editor());
+    await user.type(editor(), SHORT);
+    s.dropOnLearning = "lost";
+    await user.click(button("Save"));
+    await screen.findByText(/may or may not have saved/);
+    await act(async () => void (await hermes.reconnect()));
+    await user.type(editor(), " and more");
+    await user.click(button(/Reload/));
+    expect((await screen.findByRole("alert")).textContent).toMatch(/Hermes doesn't have your edit/);
+    expect(screen.getByRole("button", { name: named(FALCON) }).getAttribute("aria-current")).toBe("true");
+    await user.click(button("Save"));
+    await screen.findByText(/Saved, and read back/);
+    expect(s.memory.default.memory).toEqual([`${SHORT} and more`, SHORT]);
+  });
+
   it("still settles a kept edit put in an entry after a Reload", async () => {
     const { s, user } = await shown();
     await user.click(entry(SHORT));

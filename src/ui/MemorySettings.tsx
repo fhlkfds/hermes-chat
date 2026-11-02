@@ -71,8 +71,9 @@ export function MemorySettings({
   // to put in an entry until they discard it. A later one never replaces an earlier one.
   const [kept, setKept] = useState<string[]>([]);
   const keep = (text: string) => setKept((k) => (k.includes(text) ? k : [...k, text]));
-  // A save whose outcome is unknown, until a read shows whether Hermes has it: the text sent, and the entry it was for.
-  const [unsure, setUnsure] = useState<{ text: string; entryId: string; source: MemorySource }>();
+  // A save whose outcome is unknown, until a read shows whether Hermes has it: the text sent, and the entry it was for
+  // (its id, file and text as read before the save).
+  const [unsure, setUnsure] = useState<{ text: string; entryId: string; source: MemorySource; from: string }>();
   const [confirmDelete, setConfirmDelete] = useState(false);
   // Opening another entry or file while the open one has an unsaved edit asks first; this is what it would do.
   const [leaving, setLeaving] = useState<() => void>();
@@ -135,8 +136,10 @@ export function MemorySettings({
       if (!alive.current || n !== reads.current) return;
       if (unsure !== undefined) {
         // A read settles a save whose answer was lost: Hermes has the text, or it doesn't.
-        // Only the file the save was for: the same text in the other file is another entry.
-        const saved = next.resources[unsure.source].entries.find((e) => e.text === unsure.text);
+        // Only the file the save was for: the same text in the other file is another entry. And while the entry's old
+        // text is still there, the save didn't happen (an edit replaces it), even if another entry has the new text.
+        const entries = next.resources[unsure.source].entries;
+        const saved = entries.some((e) => e.text === unsure.from) ? undefined : entries.find((e) => e.text === unsure.text);
         setUnsure(undefined);
         if (saved && editing?.entry.id !== unsure.entryId) {
           // The owner moved on from that entry: say what became of the save, and leave what's open alone.
@@ -237,7 +240,7 @@ export function MemorySettings({
           text: e instanceof MemoryConflictError ? e.message : `${e.message} Your edit is kept below.`,
         });
       } else if (e instanceof MemoryUnsureError) {
-        setUnsure({ text: pyStrip(at.draft), entryId: at.entry.id, source: at.entry.source });
+        setUnsure({ text: pyStrip(at.draft), entryId: at.entry.id, source: at.entry.source, from: at.entry.text });
         setNotice({ kind: "unsure", text: e.message });
       } else if (e instanceof MemoryUnsupportedError) {
         keep(at.draft);
