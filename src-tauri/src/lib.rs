@@ -6,6 +6,7 @@ pub mod saved_password;
 pub mod screenshot;
 pub mod transport;
 pub mod tunnel;
+pub mod web_page;
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -369,6 +370,19 @@ async fn preview_read_local_image(picked: State<'_, PickedFiles>, path: String) 
     picked.read_image(&path).await.map(tauri::ipc::Response::new).map_err(|e| e.to_string())
 }
 
+/// Whether the site at `url` refuses to be shown in the preview's frame, asked the way the frame asks
+/// (`web_page::check`, ADR 0011). `user_agent`: the webview's, which the frame sends.
+#[tauri::command]
+async fn preview_check_web(url: String, user_agent: String) -> Result<web_page::Framing, String> {
+    web_page::check(&url, &user_agent).await
+}
+
+/// Opens an http(s) page in the owner's browser, for one the preview can't show.
+#[tauri::command]
+async fn preview_open_in_browser(url: String) -> Result<(), String> {
+    web_page::open_in_browser(&url).await
+}
+
 #[tauri::command]
 async fn notify_desktop(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
     notify::show(app, title, body).await
@@ -455,6 +469,8 @@ pub fn run(screenshot: bool) {
             preview_pick_local,
             preview_read_local,
             preview_read_local_image,
+            preview_check_web,
+            preview_open_in_browser,
             notify_desktop,
             system_fonts,
             screenshot_capture,

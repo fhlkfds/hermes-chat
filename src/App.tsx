@@ -34,7 +34,7 @@ import { SignIn } from "./ui/SignIn";
 import { ModelControls } from "./ui/ModelPicker";
 import { PANE_MIN_WIDTH, PreviewPane } from "./ui/PreviewPane";
 import { PreviewContext } from "./ui/previewContext";
-import { tauriLocalFiles, type LocalFiles } from "./ui/tauriPreview";
+import { tauriLocalFiles, tauriWebPages, type LocalFiles, type WebPages } from "./ui/tauriPreview";
 import type { PreviewTarget } from "./hermes/preview";
 import type { Route } from "./hermes/pipe";
 import { getUIPrefs, setUIPrefs, subscribe as subscribeUIPrefs, toggleModelFavorite, type StickyModelPick } from "./hermes/uiPrefs";
@@ -252,6 +252,7 @@ export function Main({
   kept = { password: true, headers: true },
   reopenLast = false,
   localFiles = tauriLocalFiles,
+  webPages = tauriWebPages,
   screenshots = tauriScreenshotWiring,
   onSignOut,
 }: {
@@ -265,6 +266,7 @@ export function Main({
   /** This is the app starting: open the profile's last open chat, if the owner wants it reopened. */
   reopenLast?: boolean;
   localFiles?: LocalFiles;
+  webPages?: WebPages;
   screenshots?: Screenshots;
   onSignOut: () => Promise<void>;
 }) {
@@ -861,6 +863,7 @@ export function Main({
               serverLabel={serverLabel(route)}
               readServer={(path) => hermes.readServerFile(path)}
               local={localFiles}
+              web={webPages}
               overlay={!previewFits}
               width={paneWidth}
               maxWidth={paneMax}
