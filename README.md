@@ -31,6 +31,7 @@ The application is built with Tauri 2, React 19, and TypeScript, and it uses Vit
 - For SSH: the dashboard must listen on port **9119** on the server's loopback address. The tunnel always forwards to `127.0.0.1:9119` on the server.
 - For voice: speech-to-text and text-to-speech providers set up for the profile on the server (`hermes tools`).
 - For Projects: a Hermes that has the `projects.*` methods. Without them, the chat list works and the project switcher says that Hermes needs an update.
+- For Server files: a dashboard that serves its managed-files routes, `GET /api/files` and `GET /api/files/read`, which the dashboard's own Files tab uses. Hermes at `bf0203a` does. Without them, the Server files screen says that this Hermes needs a dashboard with the Files tab. To limit browsing to one folder, start the dashboard with `HERMES_DASHBOARD_FILES_ROOT=/that/folder`.
 
 ## Features
 
@@ -45,6 +46,7 @@ These features are on the `main` branch.
 - **Voice.** Use **Dictation** to speak a message into the composer, and **Read aloud** to have Hermes speak a reply. Hermes does the transcription and speech on the server.
 - **Two panes.** Ctrl+\\ opens a second chat beside the first.
 - **Preview pane.** A resizable pane shows web links from replies, files on the Hermes server, local files you choose, and tool output. Web pages and HTML files load in sandboxed frames.
+- **Server files.** The folder button on the rail opens a read-only browser for the disk of the machine the dashboard runs on. It shows folders with a path trail, sizes, modified times, types, and symbolic links, and previews text files up to 1 MiB and images up to 10 MiB. It shows what the dashboard's OS user can read, starting in that user's home folder, and Hermes never lists credential files such as `.env` or `auth.json`.
 - **Projects.** Projects are Hermes's own named groups of chats and server folders. Hermes stores the projects and their folders. This computer stores which chats are in each project.
 - **Models.** The composer has a model picker with reasoning effort, fast mode, and starred models. Settings → Model sets the profile's main model, subagent models, auxiliary models (including the Text generation model used for titles), and guardrails.
 - **Usage and cost.** You see token usage per reply and per chat. Cost appears only as Hermes recorded it, because the app keeps no price list.
@@ -237,6 +239,7 @@ Webview local storage is in `$XDG_DATA_HOME/net.l0cky12.hermes-chat/localstorage
 - Active and Settled don't sync between computers for chats that Hermes won't pin, such as chats started in this app.
 - Project membership is stored on this computer only. Other computers and Hermes clients don't see it.
 - Per-reply usage appears only for replies that the app watched from start to finish. Chat totals come from Hermes and cover every call. Costs count only the calls Hermes could price.
+- Server files is read-only: it can't upload, rename, delete, or download. A preview reads the whole file, so bigger files aren't previewed at all, and the server sends a folder in one answer, however many items it has.
 - Framed web pages in the preview pane get no cookies, so sites that need a sign-in don't stay signed in. HTML files show as static documents.
 - Long transcripts render in full. Very long chats, especially two at once, can be slow while streaming or resizing.
 - On the legacy protocol, a reply to a Telegram or Discord chat should stay in Hermes clients and not be posted back to Telegram or Discord. This comes from reading Hermes's source and hasn't been tested live.
@@ -245,7 +248,7 @@ Webview local storage is in `$XDG_DATA_HOME/net.l0cky12.hermes-chat/localstorage
 ## Project documents
 
 - [`GLOSSARY.md`](GLOSSARY.md) defines the app's terms, such as Active, Settled, Saved copy, and Approval.
-- [`docs/adr/`](docs/adr/) records the design decisions, for example the [SSH sign-in](docs/adr/0003-sign-in-through-ssh-tunnel-to-the-dashboard.md), the [Unsecure label](docs/adr/0004-direct-url-sign-in-and-what-counts-as-unsecure.md), [extra request headers](docs/adr/0006-extra-request-headers-for-a-gateway-in-front-of-the-dashboard.md), the [preview pane sandbox](docs/adr/0007-preview-pane-shows-untrusted-content-in-sandboxed-frames.md), and [usage and cost](docs/adr/0008-usage-and-cost-come-from-hermes.md).
+- [`docs/adr/`](docs/adr/) records the design decisions, for example the [SSH sign-in](docs/adr/0003-sign-in-through-ssh-tunnel-to-the-dashboard.md), the [Unsecure label](docs/adr/0004-direct-url-sign-in-and-what-counts-as-unsecure.md), [extra request headers](docs/adr/0006-extra-request-headers-for-a-gateway-in-front-of-the-dashboard.md), the [preview pane sandbox](docs/adr/0007-preview-pane-shows-untrusted-content-in-sandboxed-frames.md), and [usage and cost](docs/adr/0008-usage-and-cost-come-from-hermes.md), and [Server files](docs/adr/0012-server-files-are-the-dashboards-managed-files-read-only.md).
 - [`docs/research/hermes-gateway-api.md`](docs/research/hermes-gateway-api.md) describes the Hermes API that the app relies on.
 
 ## License

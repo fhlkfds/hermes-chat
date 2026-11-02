@@ -1,7 +1,7 @@
 // Icon rail beside a chat list (ADR 0001), ported from the prototype's variants C and A. The list's header is the
 // profile switcher. Settings opens from the rail's foot. Right-clicking a chat opens its menu (ChatMenu.tsx).
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { Check, ChevronDown, ChevronRight, CircleAlert, EyeOff, LockOpen, Search, Settings, SquarePen, Trash2 } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, CircleAlert, EyeOff, FolderOpen, LockOpen, Search, Settings, SquarePen, Trash2 } from "lucide-react";
 import type { Chat, ConnectionStatus, OtherProfile, OtherProfiles } from "../hermes/model";
 import { SOURCE_LABEL, isWaiting } from "../hermes/model";
 import { CHECK_EVERY_MS, totalUnread } from "../hermes/otherProfiles";
@@ -22,6 +22,8 @@ export function Rail({
   onToggleList,
   onNew,
   onSearch,
+  onFiles,
+  filesOpen = false,
   onSettings,
 }: {
   status: ConnectionStatus;
@@ -32,6 +34,9 @@ export function Rail({
   onToggleList: () => void;
   onNew: () => void;
   onSearch: () => void;
+  /** Opens Server files, the read-only browser for the files on the Hermes server (FileBrowser.tsx). */
+  onFiles?: () => void;
+  filesOpen?: boolean;
   onSettings: () => void;
 }) {
   const where = routeLabel(route);
@@ -57,6 +62,11 @@ export function Rail({
         <button className="icon-btn" title="Search all chats (Ctrl+K)" onClick={onSearch}>
           <Search size={18} />
         </button>
+        {onFiles && (
+          <button className={`icon-btn ${filesOpen ? "on" : ""}`} title="Server files (read-only)" aria-pressed={filesOpen} onClick={onFiles}>
+            <FolderOpen size={18} />
+          </button>
+        )}
       </div>
       <div className="rail-bottom">
         <button className="conn-btn" title={tip} aria-label={tip} onClick={() => status !== "connected" && onReconnect()}>
