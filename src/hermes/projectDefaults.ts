@@ -43,10 +43,16 @@ export function toDefaults(v: unknown): ProjectDefaults | undefined {
   return { rev: v.rev as number, ...(instructions && { instructions }), ...(model && { model }), ...(folder && { folder }) };
 }
 
-/** The draft as it is kept: blank instructions are none, and effort is kept only with a model. */
+/** What is wrong with the draft, if anything, said to the owner. */
+export function draftProblem(d: DefaultsDraft): string | undefined {
+  const n = d.instructions?.trim().length ?? 0;
+  if (n > INSTRUCTIONS_MAX) return `Keep the instructions under ${INSTRUCTIONS_MAX.toLocaleString("en")} characters; they're ${n.toLocaleString("en")}.`;
+  return undefined;
+}
+
+/** The draft as it is kept: blank instructions are none, and effort is kept only with a model. Never throws. */
 export function cleanDraft(d: DefaultsDraft): DefaultsDraft {
   const instructions = d.instructions?.trim() ? d.instructions.trim() : undefined;
-  if (instructions && instructions.length > INSTRUCTIONS_MAX) throw new Error(`Keep the instructions under ${INSTRUCTIONS_MAX.toLocaleString("en")} characters.`);
   return {
     ...(instructions && { instructions }),
     ...(d.model && { model: { provider: d.model.provider, model: d.model.model, ...(d.model.effort && { effort: d.model.effort }) } }),

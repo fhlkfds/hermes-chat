@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, Check, ChevronDown, FolderGit2, Folder, FolderKanban, GitBranch, Pencil, Plus, Settings2, Trash2, X } from "lucide-react";
 import { EFFORT_LABEL, shortName, type Effort, type ModelCatalog, type ModelPick } from "../hermes/models";
-import { DefaultsConflict, NewerDefaultsError, cleanDraft, sameDraft, type DefaultsDraft, type ProjectDefaults } from "../hermes/projectDefaults";
+import { DefaultsConflict, NewerDefaultsError, cleanDraft, draftProblem, sameDraft, type DefaultsDraft, type ProjectDefaults } from "../hermes/projectDefaults";
 import type { Project, ProjectFolder, Worktree } from "../hermes/projects";
 import { Spinner, composing, useReturnFocus } from "./bits";
 import { ModelControls } from "./ModelPicker";
@@ -537,6 +537,7 @@ function DefaultsSection({ saved, folders, profile, connection, catalog, profile
   const [conflict, setConflict] = useState<ProjectDefaults | null>();
   const [done, setDone] = useState(false);
   const unsaved = !sameDraft(draft, shown.draft);
+  const tooLong = draftProblem(draft);
 
   const load = (d?: ProjectDefaults) => {
     const next = { rev: d?.rev ?? 0, draft: blank(d) };
@@ -594,6 +595,8 @@ function DefaultsSection({ saved, folders, profile, connection, catalog, profile
         <textarea
           id="defaults-instructions"
           aria-describedby="defaults-instructions-hint"
+          aria-invalid={!!tooLong || undefined}
+          aria-errormessage={tooLong ? "defaults-instructions-error" : undefined}
           className="defaults-instructions"
           rows={5}
           value={draft.instructions ?? ""}
@@ -605,6 +608,11 @@ function DefaultsSection({ saved, folders, profile, connection, catalog, profile
           Sent once, as a hidden message before your first one, when a chat starts. The model reads it as part of the chat, not as its
           system prompt, and no Hermes client shows it.
         </span>
+        {tooLong && (
+          <span className="field-hint err" id="defaults-instructions-error" role="alert">
+            {tooLong}
+          </span>
+        )}
       </div>
 
       <div className="field">
@@ -670,7 +678,7 @@ function DefaultsSection({ saved, folders, profile, connection, catalog, profile
             <button className="btn" onClick={() => load(saved)}>
               Use the saved ones
             </button>
-            <button className="btn primary" disabled={saving} onClick={() => void save(conflict?.rev ?? 0)}>
+            <button className="btn primary" disabled={saving || !!tooLong} onClick={() => void save(conflict?.rev ?? 0)}>
               Save mine over them
             </button>
           </div>
@@ -688,7 +696,7 @@ function DefaultsSection({ saved, folders, profile, connection, catalog, profile
         <button className="btn" disabled={!unsaved || saving} onClick={() => load(saved)}>
           Cancel
         </button>
-        <button className="btn primary" disabled={!unsaved || saving || newer || conflict !== undefined} onClick={() => void save()}>
+        <button className="btn primary" disabled={!unsaved || saving || newer || !!tooLong || conflict !== undefined} onClick={() => void save()}>
           {saving ? "Saving…" : "Save defaults"}
         </button>
       </div>

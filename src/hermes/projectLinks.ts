@@ -6,7 +6,7 @@
 // profile, the way drafts are. "Clear local cache" doesn't touch it (chatCache.ts clears only chat lists and Saved
 // copies): which chats are in a project is the owner's own grouping, not a copy of anything on the server.
 import type { SavedSignIn } from "./account";
-import { DefaultsConflict, NewerDefaultsError, cleanDraft, toDefaults, type DefaultsDraft, type ProjectDefaults } from "./projectDefaults";
+import { DefaultsConflict, NewerDefaultsError, cleanDraft, draftProblem, toDefaults, type DefaultsDraft, type ProjectDefaults } from "./projectDefaults";
 import { toProject, type Project } from "./projects";
 import { migrateUIPrefs as migrateDoc, type UIPrefsDoc, type UIPrefsMigrations } from "./uiPrefs";
 
@@ -157,11 +157,16 @@ export function projectLinks(storage: LinksStorage): ProjectLinks {
     // including scopes this version couldn't parse. Explicitly drop selected when the owner picks All chats.
     const storedScopes = isDoc(doc.scopes) ? { ...doc.scopes } : {};
     const prior = isDoc(storedScopes[scope]) ? storedScopes[scope] : {};
-    const { selected: _selected, chats: _chats, known: _known, defaults: _defaults, ...extra } = prior;
-    if (isEmpty(after) && !Object.keys(extra).length) delete storedScopes[scope];
+    const { selected: _selected, chats: _chats, known: _known, defaults: priorDefaults, ...extra } = prior;
+    // A newer app wrote these defaults: keep them as it wrote them, dropping only a project this change took out.
+    const newer = (Number(doc.v) || 0) > PROJECTS_VERSION && isDoc(priorDefaults);
+    const defaults = newer
+      ? Object.fromEntries(Object.entries(priorDefaults).filter(([p]) => !(p in before.defaults) || p in after.defaults))
+      : after.defaults;
+    if (isEmpty(after) && !Object.keys(extra).length && !Object.keys(defaults).length) delete storedScopes[scope];
     else {
       // No defaults yet: written as before they existed.
-      const { defaults, ...rest } = after;
+      const { defaults: _parsed, ...rest } = after;
       storedScopes[scope] = { ...extra, ...rest, ...(Object.keys(defaults).length && { defaults }) };
     }
     doc = { ...doc, v: Math.max(PROJECTS_VERSION, Number(doc.v) || 0), scopes: storedScopes };
@@ -211,13 +216,34 @@ export function projectLinks(storage: LinksStorage): ProjectLinks {
         return { ...s, ...(selected && ids.has(selected) && { selected }), chats, defaults: only(s.defaults, (p) => ids.has(p)), known: projects };
       }),
     saveDefaults: (scope, projectId, base, draft) => {
-      const kept = cleanDraft(draft);
-      const stored = current()[scope]?.defaults[projectId];
-      if ((Number(doc.v) || 0) > PROJECTS_VERSION) throw new NewerDefaultsError();
-      if ((stored?.rev ?? 0) !== base) throw new DefaultsConflict(stored);
-      const saved: ProjectDefaults = { rev: base + 1, ...kept };
-      change(scope, (s) => ({ ...s, defaults: { ...s.defaults, [projectId]: saved } }), true);
+      const problem = draftProblem(draft);
+      if (problem) throw new Error(problem);
+      const saved: ProjectDefaults = { rev: base + 1, ...cleanDraft(draft) };
+      // Checked and written from one read of the storage, so nothing read earlier decides it.
+      change(
+        scope,
+        (s) => {
+          if ((Number(doc.v) || 0) > PROJECTS_VERSION) throw new NewerDefaultsError();
+          const stored = s.defaults[projectId];
+          if ((stored?.rev ?? 0) !== base) throw new DefaultsConflict(stored);
+          return { ...s, defaults: { ...s.defaults, [projectId]: saved } };
+        },
+        true,
+      );
       return saved;
     },
   };
 }
+
+/** Runs `run` while no other window of this app holds lock `name`. */
+export type Lock = <T>(name: string, run: () => T) => Promise<T>;
+
+/**
+ * The Web Locks API, which the browser engine holds for every window of this origin at once, so a read, check and write
+ * of the stored document in one window can't interleave with another's. Without it, `run` goes straight away: the save
+ * is still checked and written from a single read.
+ */
+export const windowLock: Lock = (name, run) => {
+  const locks = (globalThis.navigator as Navigator | undefined)?.locks;
+  return locks ? locks.request(name, async () => run()) : Promise.resolve().then(run);
+};

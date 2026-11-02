@@ -444,6 +444,43 @@ describe("a project's defaults for new chats", () => {
     expect(creates(s)).toEqual([]);
   });
 
+  it("starts nothing when the profile changes while the folder is being checked", async () => {
+    const s = server();
+    s.otherProfiles = { work: [] };
+    seed("p_budget", { folder: "/srv/budget", instructions: "Budget only" });
+    const list = s.rest["GET /api/fs/list"];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    s.rest["GET /api/fs/list"] = async (req) => {
+      await gate;
+      return list(req);
+    };
+    const { user, hermes } = await launch(s);
+    await pick(user, "Budget Tracker");
+    await send(user, "Plan the budget");
+    await waitFor(() => expect(s.restRequests.some((r) => r.path === "/api/fs/list")).toBe(true));
+    await user.click(document.querySelector<HTMLElement>(".profile-btn")!);
+    await user.click(await screen.findByRole("option", { name: /work/ }));
+    await waitFor(() => expect(hermes.getSnapshot()).toMatchObject({ profile: "work", status: "connected" }));
+    await act(async () => release());
+    await act(async () => void (await hermes.idle()));
+    expect(creates(s)).toEqual([]);
+  });
+
+  it("says when the instructions are too long, without losing them", async () => {
+    const s = server();
+    const { user } = await launch(s);
+    await pick(user, "Budget Tracker");
+    await user.click(screen.getByTitle("Project settings for Budget Tracker"));
+    const box = screen.getByRole("textbox", { name: "Instructions" });
+    await user.click(box);
+    await user.paste("x".repeat(20_001));
+    expect(screen.getByRole("alert").textContent).toContain("Keep the instructions under 20,000 characters; they're 20,001.");
+    expect(box.getAttribute("aria-invalid")).toBe("true");
+    expect((screen.getByRole("button", { name: "Save defaults" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("textbox", { name: "Instructions" }) as HTMLTextAreaElement).value).toHaveLength(20_001);
+  });
+
   it("refuses a chat Hermes quietly started in another folder", async () => {
     const s = server();
     seed("p_budget", { folder: "/srv/budget", instructions: "x" });

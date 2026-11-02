@@ -7,7 +7,7 @@
 // server: a folder is checked with a read-only directory listing before it is added, and a repository's worktrees are
 // read with `git worktree list` (dashboard REST `GET /api/git/worktrees`), never added.
 import type { DefaultsDraft, ProjectDefaults } from "./projectDefaults";
-import type { ProjectLinks } from "./projectLinks";
+import { PROJECTS_KEY, windowLock, type Lock, type ProjectLinks } from "./projectLinks";
 
 /** One of a project's folders: a path on the server. `primary`: the folder Hermes names the project's main one. */
 export type ProjectFolder = { path: string; primary: boolean };
@@ -209,6 +209,8 @@ export class ProjectsStore {
     /** Where this computer keeps the profile's links (projectLinks.ts `projectScope`). */
     readonly scope: string,
     readonly profile: string,
+    /** Holds the stored document for one window at a time while defaults are saved. */
+    private lock: Lock = windowLock,
   ) {
     this.snap = { profile, loaded: false, loading: false, ...this.fromLinks() };
   }
@@ -310,9 +312,9 @@ export class ProjectsStore {
    * Saves project `id`'s defaults for new chats on this computer, over revision `base` (projectLinks.ts
    * `saveDefaults`). Chats already started don't change.
    */
-  saveDefaults(id: string, base: number, draft: DefaultsDraft): ProjectDefaults {
+  async saveDefaults(id: string, base: number, draft: DefaultsDraft): Promise<ProjectDefaults> {
     try {
-      return this.links.saveDefaults(this.scope, id, base, draft);
+      return await this.lock(`${PROJECTS_KEY}.defaults`, () => this.links.saveDefaults(this.scope, id, base, draft));
     } finally {
       // A conflict means another window saved: show what it saved.
       this.set(this.fromLinks());

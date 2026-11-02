@@ -44,7 +44,7 @@ export function NewChatSettingsView({ settings, where, profile, problem }: { set
               <span className="mono">{folder.value}</span> on <span className="mono">{where ?? "no connection"}</span>
             </>
           ) : (
-            <>Hermes's default folder for {profile}</>
+            <>Hermes's default folder for the {profile} profile</>
           ),
           folder.from,
         )}

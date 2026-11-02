@@ -5,8 +5,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { connect, type Hermes } from "./transport";
 import { catalogFromServer, type ModelPick } from "./models";
 import { FakeHermes, modelOptions } from "./fakeHermes";
-import { DefaultsConflict, NewerDefaultsError, cleanDraft, instructionsMessage, modelProblem, resolveNewChat, toDefaults } from "./projectDefaults";
-import { PROJECTS_KEY, PROJECTS_VERSION, projectLinks, projectScope, type LinksStorage } from "./projectLinks";
+import { DefaultsConflict, NewerDefaultsError, cleanDraft, draftProblem, instructionsMessage, modelProblem, resolveNewChat, toDefaults } from "./projectDefaults";
+import { PROJECTS_KEY, PROJECTS_VERSION, projectLinks, projectScope, type LinksStorage, type Lock } from "./projectLinks";
+import { ProjectsStore } from "./projects";
 
 const CONNECTION = { mode: "ssh" as const, sshTarget: "liam@hermes", url: "", username: "liam" };
 const SCOPE = projectScope(CONNECTION, "default");
@@ -86,7 +87,9 @@ describe("what a new chat starts with", () => {
 
   it("tidies what is kept", () => {
     expect(cleanDraft({ instructions: "  \n ", model: { ...opus, fast: true }, folder: "" })).toEqual({ model: opus });
-    expect(() => cleanDraft({ instructions: "x".repeat(20_001) })).toThrow("under 20,000");
+    expect(draftProblem({ instructions: "x".repeat(20_001) })).toContain("under 20,000");
+    expect(cleanDraft({ instructions: "x".repeat(20_001) }).instructions).toHaveLength(20_001);
+    expect(() => projectLinks(memoryStorage()).saveDefaults(SCOPE, "p", 0, { instructions: "x".repeat(20_001) })).toThrow("under 20,000");
     expect(toDefaults({ rev: 3, instructions: 5, model: { provider: "a" }, folder: "relative/dir" })).toEqual({ rev: 3 });
     expect(toDefaults({ rev: 0 })).toBeUndefined();
   });
@@ -122,6 +125,41 @@ describe("keeping the defaults", () => {
     expect(mine.saveDefaults(SCOPE, "p_1", 2, { instructions: "Mine" })).toEqual({ rev: 3, instructions: "Mine" });
   });
 
+  it("checks the revision on the same read it writes over", () => {
+    // A second read between the check and the write would let another window's save land unseen in between.
+    const storage = memoryStorage();
+    const links = projectLinks(storage);
+    links.saveDefaults(SCOPE, "p_1", 0, { instructions: "First" });
+    const calls: string[] = [];
+    const { getItem, setItem } = storage;
+    storage.getItem = (k) => (calls.push("read"), getItem(k));
+    storage.setItem = (k, v) => (calls.push("write"), setItem(k, v));
+    links.saveDefaults(SCOPE, "p_1", 1, { instructions: "Second" });
+    expect(calls).toEqual(["read", "write"]);
+  });
+
+  it("saves one window at a time, under a lock every window shares", async () => {
+    const storage = memoryStorage();
+    // A lock as the Web Locks API holds it: one holder at a time, in order.
+    let queue = Promise.resolve();
+    const held: string[] = [];
+    const lock: Lock = (name, run) => {
+      const next = queue.then(() => {
+        held.push(name);
+        return run();
+      });
+      queue = next.then(() => {}, () => {});
+      return next;
+    };
+    const a = new ProjectsStore({} as never, projectLinks(storage), SCOPE, "default", lock);
+    const b = new ProjectsStore({} as never, projectLinks(storage), SCOPE, "default", lock);
+    const results = await Promise.allSettled([a.saveDefaults("p_1", 0, { instructions: "A" }), b.saveDefaults("p_1", 0, { instructions: "B" })]);
+    expect(results.map((r) => r.status)).toEqual(["fulfilled", "rejected"]);
+    expect((results[1] as PromiseRejectedResult).reason).toBeInstanceOf(DefaultsConflict);
+    expect(held).toEqual(["hermes-chat.projects.defaults", "hermes-chat.projects.defaults"]);
+    expect(projectLinks(storage).read(SCOPE).defaults.p_1).toEqual({ rev: 1, instructions: "A" });
+  });
+
   it("removing every default keeps the revision, so the project inherits and old editors still conflict", () => {
     const links = projectLinks(memoryStorage());
     links.saveDefaults(SCOPE, "p_1", 0, { folder: "/srv/app" });
@@ -135,6 +173,12 @@ describe("keeping the defaults", () => {
     expect(links.read(SCOPE).defaults.p_1).toEqual({ rev: 4, instructions: "Newer" });
     expect(() => links.saveDefaults(SCOPE, "p_1", 4, { instructions: "Older" })).toThrow(NewerDefaultsError);
     expect(JSON.parse(storage.data.get(PROJECTS_KEY)!).scopes[SCOPE].defaults.p_1.extra).toBe(1);
+    // Other writes keep the newer app's defaults as it wrote them; deleting a project still drops its own.
+    links.select(SCOPE, "p_1");
+    links.setChat(SCOPE, "p_1", "chat", true);
+    expect(JSON.parse(storage.data.get(PROJECTS_KEY)!).scopes[SCOPE].defaults).toEqual({ p_1: { rev: 4, instructions: "Newer", extra: 1 } });
+    links.forgetProject(SCOPE, "p_1");
+    expect(JSON.parse(storage.data.get(PROJECTS_KEY)!).scopes?.[SCOPE]?.defaults).toBeUndefined();
   });
 
   it("says when the storage won't keep them, and doesn't pretend it did", () => {
