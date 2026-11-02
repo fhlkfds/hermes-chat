@@ -184,6 +184,18 @@ export function explain(f: ProbeFailure, d: SignInDetails): TestOutcome & { ok: 
         return out("This computer doesn't trust the server's HTTPS certificate.", [
           "Use a certificate from a trusted authority, or connect over SSH, or over Tailscale with http://.",
         ]);
+      if (!ssh && has(/another site/))
+        return out(`The dashboard's address sent Hermes Chat on to another site.`, [
+          "If a gateway such as Cloudflare Access is in front of the dashboard, add the headers it needs under Extra request headers, on the Server step.",
+          "Or connect over SSH, which goes straight to the dashboard.",
+        ]);
+      if (!ssh && has(/answered (401|403)/))
+        return out(`Something in front of the dashboard at ${hostOf(d.url)} turned Hermes Chat away.`, [
+          d.headers?.length
+            ? "Check the extra request headers' names and values, on the Server step. A Cloudflare Access service token needs CF-Access-Client-Id and CF-Access-Client-Secret."
+            : "If a gateway such as Cloudflare Access is in front of the dashboard, add the headers it needs under Extra request headers, on the Server step. A service token needs CF-Access-Client-Id and CF-Access-Client-Secret.",
+          "Or connect over SSH, which goes straight to the dashboard.",
+        ]);
       if (ssh)
         return out("The tunnel opened, but nothing answered on the server's port 9119.", [
           "Start the dashboard on the server: hermes dashboard",

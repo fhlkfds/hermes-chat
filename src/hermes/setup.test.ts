@@ -110,6 +110,19 @@ describe("Explaining a failed test", () => {
     expect(why({ stage: "reach", message: "The dashboard didn't answer within 15s." }, url).problem).toBe("Nothing answered at hermes.example.com:9119 in time.");
   });
 
+  it("points a gateway's refusal or redirect at the extra request headers", () => {
+    const refused = { stage: "reach", message: "The dashboard answered 403: Forbidden. You don't have permission to view this." } as const;
+    expect(why(refused, url)).toMatchObject({
+      problem: "Something in front of the dashboard at hermes.example.com:9119 turned Hermes Chat away.",
+      fixes: [expect.stringContaining("add the headers it needs under Extra request headers"), "Or connect over SSH, which goes straight to the dashboard."],
+      detail: refused.message,
+    });
+    const withHeaders = { ...url, headers: [{ name: "CF-Access-Client-Id", value: "id" }] };
+    expect(why(refused, withHeaders).fixes[0]).toMatch(/^Check the extra request headers' names and values/);
+    const away = "The dashboard sent Hermes Chat on to https://team.cloudflareaccess.com, another site. Hermes Chat doesn't follow it there.";
+    expect(why({ stage: "reach", message: away }, withHeaders).problem).toBe("The dashboard's address sent Hermes Chat on to another site.");
+  });
+
   it("explains sign-in failures from the dashboard's own status", () => {
     expect(why({ stage: "sign-in", message: "Too many sign-in attempts. Wait a minute and try again.", status: STATUS }).fixes).toEqual([
       "Wait a minute, then try again.",

@@ -4,6 +4,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Check, CircleAlert, Globe, KeyRound, Minus, Plus, ShieldAlert, ShieldCheck, Terminal, X } from "lucide-react";
 import type { ExtraHeader, SignInDetails } from "../hermes/tauriPipe";
+import type { Kept } from "../hermes/account";
 import type { Hermes } from "../hermes/transport";
 import { STAGES, missing, stageLabel, testConnection, type Probe, type ProviderKey, type ProviderSetup, type TestOutcome } from "../hermes/setup";
 import { routeLabel } from "./bits";
@@ -40,9 +41,10 @@ export function Onboarding({
   hermes?: Hermes;
   /**
    * Saves the tested sign-in and connects with it, in place of any connection in use. Rejects with why it couldn't.
-   * `notSaved`: why the keyring couldn't keep the password, when it couldn't.
+   * `notSaved`: why the keyring couldn't keep the password or the extra request headers, when it couldn't, and `kept`
+   * which of them it did keep.
    */
-  onConnect: (d: SignInDetails) => Promise<{ notSaved?: string }>;
+  onConnect: (d: SignInDetails) => Promise<{ notSaved?: string; kept?: Kept }>;
   /** Leaves setup with nothing changed. Absent on first run. */
   onCancel?: () => void;
   /** Leaves setup once a connection is saved. */
@@ -107,7 +109,8 @@ export function Onboarding({
     setConnecting(true);
     setConnectError(undefined);
     try {
-      setNotSaved((await onConnect(withHeaders(d))).notSaved);
+      const { notSaved, kept } = await onConnect(withHeaders(d));
+      setNotSaved(notSaved && `${notSaved.replace(/\.?$/, ".")} ${retypeLater(kept)}`);
       setSaved(true);
       setD((was) => ({ ...was, password: "" }));
       setStep("providers");
@@ -364,6 +367,13 @@ function Welcome({
 }
 
 /** The SSH or URL choice and its field, shared with the sign-in screen. */
+/** What the owner types again because the keyring couldn't keep it. */
+function retypeLater(kept: Kept = { password: false, headers: true }): string {
+  if (!kept.password && !kept.headers) return "You'll type the password and the extra request headers again at the next launch.";
+  if (!kept.headers) return "You'll type the extra request headers again at the next sign-in.";
+  return "You'll type the password again at the next launch.";
+}
+
 /** The owner's extra request headers without the rows left blank; Rust checks the rest (ADR 0006). */
 export const withHeaders = (d: SignInDetails): SignInDetails =>
   d.mode === "url" ? { ...d, headers: (d.headers ?? []).filter((h) => h.name.trim() || h.value.trim()) } : d;
@@ -556,7 +566,7 @@ function ProviderKeys({
   titleId: string;
   heading: RefObject<HTMLHeadingElement | null>;
   hermes: Hermes;
-  /** Why the keyring couldn't keep the dashboard password setup just saved. */
+  /** Why the keyring couldn't keep what setup just saved, and what to type again because of it. */
   notSaved?: string;
   onDone: () => void;
   doneLabel: string;
@@ -714,7 +724,7 @@ function ProviderKeys({
       <p className="muted">Hermes needs an API key for at least one model provider to answer.</p>
       {notSaved && (
         <p className="setup-warn" role="status">
-          <CircleAlert size={14} /> Connected. {notSaved.replace(/\.?$/, ".")} You'll type the password again at the next launch.
+          <CircleAlert size={14} /> Connected. {notSaved}
         </p>
       )}
       {body}

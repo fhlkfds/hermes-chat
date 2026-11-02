@@ -194,7 +194,7 @@ export default function App() {
       if (before) setColdStart(false);
       signedInWith.current = d;
       use(h);
-      return { notSaved };
+      return { notSaved, kept };
     } catch (e) {
       if (before) {
         const previous = signedInWith.current ?? (await savedSignIn(account));

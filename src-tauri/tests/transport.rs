@@ -1150,3 +1150,14 @@ async fn a_connection_test_stops_at_a_redirect_to_another_site() {
     assert!(failed.message.contains("another site"), "{}", failed.message);
     assert!(other.lock().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn a_connection_test_stops_where_a_gateway_turns_it_away() {
+    let (elsewhere, _) = other_site().await;
+    let (base, seen) = gated_stub(&elsewhere).await;
+    let failed = transport::probe(&base, &sign_in("hunter2"), "default").await.unwrap_err();
+    assert_eq!(failed.stage, Stage::Reach);
+    assert!(failed.message.contains("answered 403"), "{}", failed.message);
+    // It went no further: the password was never sent.
+    assert_eq!(seen.lock().unwrap().iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(), ["/api/status"]);
+}

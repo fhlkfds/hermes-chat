@@ -902,6 +902,11 @@ pub async fn probe_with(base: &Url, sign_in: &SignIn, profile: &str, step: Durat
                 _ => Ok(None),
             };
         }
+        // The route is public on a Hermes dashboard, so a refusal here is from something in front of it, such as
+        // Cloudflare Access without its headers. The request carried no secret, so its answer can be shown.
+        if matches!(resp.status(), StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
+            return Err(unexpected(resp).await);
+        }
         if !resp.status().is_success() {
             return Ok(None);
         }
