@@ -249,7 +249,7 @@ export function OutputsScreen({
           <span>
             {unindexed > 0 && `${unindexed} ${unindexed === 1 ? "chat hasn't" : "chats haven't"} been read for outputs yet. `}
             {inScopePartial > 0 &&
-              `Discovery is partial in ${inScopePartial} ${inScopePartial === 1 ? "chat" : "chats"}: older messages weren't read, a message was too big to read, a chat made more files than are kept, or a file tool's result didn't say which file it wrote. Add a file by its path if one is missing.`}
+              `Discovery is partial in ${inScopePartial} ${inScopePartial === 1 ? "chat" : "chats"}: older messages weren't read, a message was too big to read, a chat made more files than are kept, its files were dropped to stay within what this computer keeps (open the chat to read them again), or a file tool's result didn't say which file it wrote. Add a file by its path if one is missing.`}
           </span>
           {unindexed > 0 && (
             <button className="btn" disabled={!connected || busy} onClick={onIndexMore}>

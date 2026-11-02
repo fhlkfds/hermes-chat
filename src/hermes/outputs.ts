@@ -63,7 +63,8 @@ export type Output = {
  * file tool's result didn't say which file it wrote (older Hermes versions, or a result Hermes cut short).
  */
 export type ChatOutputs = { updatedAt: number; indexedAt: number; outputs: Output[]; partial?: IndexGaps };
-export type IndexGaps = { olderRows?: boolean; bigRows?: number; unlabelled?: number; tooMany?: boolean };
+/** `evicted`: its Outputs were dropped to stay within `OUTPUTS_KEPT`; opening the chat in Outputs reads them again. */
+export type IndexGaps = { olderRows?: boolean; bigRows?: number; unlabelled?: number; tooMany?: boolean; evicted?: boolean };
 
 /** The tools whose results name the files they wrote, and how. */
 const PRODUCERS = new Set(["write_file", "patch", "text_to_speech", "image_generate"]);
@@ -274,7 +275,8 @@ export type Version = { n: number; of: number; latest: boolean };
  */
 export function versions(outputs: Output[]): Map<string, Version> {
   const byPath = new Map<string, Output[]>();
-  for (const o of outputs) if (o.how !== "added") byPath.set(o.path, [...(byPath.get(o.path) ?? []), o]);
+  // The same path on the dashboard's machine and where the tools run is two files, not two versions of one.
+  for (const o of outputs) if (o.how !== "added") byPath.set(placeOf(o), [...(byPath.get(placeOf(o)) ?? []), o]);
   const out = new Map<string, Version>();
   for (const list of byPath.values()) {
     if (list.length < 2) continue;
@@ -320,14 +322,17 @@ export async function readRows(io: OutputsIo, chatId: string, stillWanted: () =>
     }
     const want = Math.min(limit, MAX_ROWS_PER_CHAT - offset);
     let page: StoredRow[];
+    const max = Math.min(PAGE_MAX_BYTES, CHAT_MAX_BYTES - read);
     try {
-      const answer = await io.rows(chatId, offset, want, Math.min(PAGE_MAX_BYTES, CHAT_MAX_BYTES - read));
+      const answer = await io.rows(chatId, offset, want, max);
       page = answer.rows;
       read += answer.bytes;
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       if (NO_ROUTE.test(message)) throw new OutputsUnsupported("This Hermes server can't list a chat's stored messages (GET /api/sessions/{id}/messages).");
       if (!TOO_BIG.test(message)) throw e;
+      // A refused page was read up to its limit before Rust stopped, so it spends that much of the budget.
+      read += max;
       if (CHAT_MAX_BYTES - read < PAGE_MAX_BYTES) {
         // What's left of the chat's budget is smaller than this page: the rest is older than what was read.
         partial.olderRows = true;
@@ -412,7 +417,11 @@ export async function checkPaths(io: OutputsIo, files: { path: string; host?: bo
 // --- What this computer keeps ---
 
 export const OUTPUTS_KEY = "hermes-chat.outputs";
-const OUTPUTS_VERSION = 1;
+/**
+ * The shape the document has now. Version 1 kept no `host`, so every audio file and image it found would be checked on
+ * the wrong machine: its chats are read again, and only the files the owner added are kept.
+ */
+const OUTPUTS_VERSION = 2;
 /** Most connections and profiles kept, and Outputs kept for one; the least recently indexed chats go first. */
 const SCOPES_KEPT = 8;
 export const OUTPUTS_KEPT = 3000;
@@ -465,6 +474,7 @@ function cleanScope(v: unknown): ScopeIndex {
 export function readScope(storage: OutputsStorage, scope: string): ScopeIndex {
   try {
     const doc = JSON.parse(storage.getItem(OUTPUTS_KEY) ?? "null") as Doc | null;
+    if (isObj(doc) && doc.v === 1 && isObj(doc.scopes) && isObj(doc.scopes[scope])) return { ...cleanScope(doc.scopes[scope]), chats: {} };
     return cleanScope(isObj(doc) && doc.v === OUTPUTS_VERSION && isObj(doc.scopes) ? doc.scopes[scope] : undefined);
   } catch {
     return EMPTY_SCOPE();
@@ -476,7 +486,12 @@ export function writeScope(storage: OutputsStorage, scope: string, index: ScopeI
   let doc: Doc;
   try {
     const read = JSON.parse(storage.getItem(OUTPUTS_KEY) ?? "null") as Doc | null;
-    doc = isObj(read) && read.v === OUTPUTS_VERSION && isObj(read.scopes) ? read : { v: OUTPUTS_VERSION, scopes: {} };
+    doc =
+      isObj(read) && read.v === OUTPUTS_VERSION && isObj(read.scopes)
+        ? read
+        : isObj(read) && read.v === 1 && isObj(read.scopes)
+          ? { v: OUTPUTS_VERSION, scopes: Object.fromEntries(Object.entries(read.scopes).map(([k, v]) => [k, { ...cleanScope(v), chats: {} }])) }
+          : { v: OUTPUTS_VERSION, scopes: {} };
   } catch {
     doc = { v: OUTPUTS_VERSION, scopes: {} };
   }
@@ -491,8 +506,9 @@ export function writeScope(storage: OutputsStorage, scope: string, index: ScopeI
 }
 
 /**
- * The index within `OUTPUTS_KEPT` Outputs: the chats indexed longest ago are dropped first, to be read again. Applied
- * to what is shown as well as to what is kept, so neither grows past it.
+ * The index within `OUTPUTS_KEPT` Outputs: the Outputs of the chats indexed longest ago are dropped first. Each such
+ * chat keeps its entry, marked `evicted`, so a profile-wide run doesn't read it again and push out another, round and
+ * round; opening the chat in Outputs reads it again. Applied to what is shown as well as to what is kept.
  */
 function trimmed<T extends Pick<ScopeIndex, "chats" | "added">>(index: T): T {
   let total = index.added.length + Object.values(index.chats).reduce((n, c) => n + c.outputs.length, 0);
@@ -500,8 +516,9 @@ function trimmed<T extends Pick<ScopeIndex, "chats" | "added">>(index: T): T {
   const chats = { ...index.chats };
   for (const [id, c] of Object.entries(chats).sort(([, a], [, b]) => a.indexedAt - b.indexedAt)) {
     if (total <= OUTPUTS_KEPT) break;
+    if (!c.outputs.length) continue;
     total -= c.outputs.length;
-    delete chats[id];
+    chats[id] = { ...c, outputs: [], partial: { ...c.partial, evicted: true } };
   }
   return { ...index, chats };
 }
@@ -552,6 +569,8 @@ export class OutputsIndex {
 
   /** False once the screen has let go of this index (another profile, sign-out): nothing it reads then lands or is kept. */
   private live = true;
+  /** Bumped by `cancel`, so work begun before it stays dropped even after `resume`. */
+  private generation = 0;
 
   private set(patch: Partial<OutputsSnapshot> | ((s: OutputsSnapshot) => Partial<OutputsSnapshot>), save = false) {
     if (!this.live) return;
@@ -570,6 +589,7 @@ export class OutputsIndex {
     this.checkSeq++;
     if (this.snap.indexing || this.snap.checking) this.set({ indexing: undefined, checking: false });
     this.live = false;
+    this.generation++;
   }
 
   /** Takes the index up again after `cancel`, reading what is kept now (React runs an effect's cleanup and body again). */
@@ -585,11 +605,13 @@ export class OutputsIndex {
    * active first, at most `MAX_CHATS_PER_RUN`. Each chat's Outputs replace its old ones once it is read, keeping the
    * availability already known for a path. A new run replaces one under way.
    */
-  async index(chats: ChatRef[], force = false): Promise<void> {
+  async index(chats: ChatRef[], force = false, rebuildEvicted = false): Promise<void> {
     if (!this.live) return;
     const seq = ++this.runSeq;
     const live = () => seq === this.runSeq && this.live;
-    const due = chats.filter((c) => force || this.snap.chats[c.id]?.updatedAt !== c.updatedAt).sort((a, b) => b.updatedAt - a.updatedAt);
+    const due = chats
+      .filter((c) => force || this.snap.chats[c.id]?.updatedAt !== c.updatedAt || (rebuildEvicted && this.snap.chats[c.id]?.partial?.evicted))
+      .sort((a, b) => b.updatedAt - a.updatedAt);
     const now = due.slice(0, MAX_CHATS_PER_RUN);
     this.set({ indexing: now.length ? { done: 0, total: now.length } : undefined, waiting: due.length - now.length, error: undefined });
     for (const [i, chat] of now.entries()) {
@@ -659,8 +681,9 @@ export class OutputsIndex {
     const key = outputKey(chatId ?? "", "added", p);
     if (this.snap.added.some((o) => o.key === key)) throw new Error("That file is already in Outputs.");
     if (this.snap.added.length >= ADDED_MAX) throw new Error(`Outputs keeps up to ${ADDED_MAX} files you added. Take one out first.`);
+    const generation = this.generation;
     const checked = (await checkPaths(this.io, [{ path: p }], this.now())).get(placeOf({ path: p }));
-    if (!this.live) throw new Error("Outputs now shows another profile, so the file wasn't added.");
+    if (!this.live || generation !== this.generation) throw new Error("Outputs now shows another profile, so the file wasn't added.");
     if (checked?.state !== "available") throw new Error(checked?.state === "folder" ? "That's a folder, not a file." : (checked?.why ?? "The server couldn't find that file."));
     const out: Output = { key, path: p, how: "added", at: this.now(), availability: checked, ...(chatId && { chatId }) };
     this.set((s) => ({ added: [...s.added.filter((o) => o.key !== key), out] }), true);

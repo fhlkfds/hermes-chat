@@ -409,7 +409,8 @@ export function Main({
   // Opening Outputs, or picking another scope, reads the chats in it that changed since they were last read. A chat
   // changing while it is open (a reply streaming) waits for Refresh, so a reply doesn't set off a read per word.
   useEffect(() => {
-    if (outputsOpen && status === "connected") void outputsIndex.index(outputsRefs());
+    // A chat opened on its own reads again the Outputs dropped to stay within the limit.
+    if (outputsOpen && status === "connected") void outputsIndex.index(outputsRefs(), false, shownOutputsScope === "chat");
   }, [outputsOpen, status, outputsIndex, shownOutputsScope, outputsChatKey]);
   const where = routeLabel(route) ?? (connection.mode === "ssh" ? `ssh://${connection.sshTarget}` : connection.url) ?? undefined;
 
@@ -988,7 +989,7 @@ export function Main({
             canAdd={shownOutputsScope !== "project"}
             onScope={setOutputsScope}
             onRefresh={async () => {
-              await outputsIndex.index(outputsRefs());
+              await outputsIndex.index(outputsRefs(), false, shownOutputsScope === "chat");
               if (outputsIndex.getSnapshot().unsupported === undefined) await outputsIndex.check(scopedOutputs(outputsIndex.getSnapshot()));
             }}
             onIndexMore={() => void outputsIndex.index(outputsRefs())}

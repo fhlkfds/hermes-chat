@@ -337,7 +337,7 @@ describe("what this computer keeps", () => {
     expect(Object.keys(readScope(storage, "conn|default").chats)).toEqual(["c"]);
     expect(storage.m.get(OUTPUTS_KEY)).not.toContain("SECRET BODY");
 
-    storage.m.set(OUTPUTS_KEY, JSON.stringify({ v: 1, scopes: { s: { chats: { c: { updatedAt: 1, outputs: [{ key: "k", path: "relative", how: "written" }, { key: "k2", path: "/ok", how: "nope" }] } } } } }));
+    storage.m.set(OUTPUTS_KEY, JSON.stringify({ v: 2, scopes: { s: { chats: { c: { updatedAt: 1, outputs: [{ key: "k", path: "relative", how: "written" }, { key: "k2", path: "/ok", how: "nope" }] } } } } }));
     expect(readScope(storage, "s").chats.c.outputs).toEqual([]);
     storage.m.set(OUTPUTS_KEY, "{not json");
     expect(readScope(storage, "s")).toMatchObject({ chats: {}, added: [] });
@@ -357,7 +357,8 @@ describe("what this computer keeps", () => {
     const kept = readScope(storage, "s");
     const total = Object.values(kept.chats).reduce((n, c) => n + c.outputs.length, 0);
     expect(total).toBeLessThanOrEqual(OUTPUTS_KEPT);
-    expect(Object.keys(kept.chats)).not.toContain("old");
+    // The oldest-read chat keeps its entry, without its Outputs, so it isn't read again round and round.
+    expect(kept.chats.old).toMatchObject({ outputs: [], partial: { evicted: true } });
 
     const full = new OutputsIndex(io, memory(true), "s");
     await full.index([{ id: "c", updatedAt: 1 }]);
@@ -432,7 +433,7 @@ describe("the review's cases", () => {
     await index.index(Array.from({ length: 5 }, (_, i) => ({ id: `c${i}`, updatedAt: i })));
     const snap = index.getSnapshot();
     expect(outputsIn(snap).length).toBeLessThanOrEqual(OUTPUTS_KEPT);
-    const kept = Object.values(snap.chats)[0];
+    const kept = Object.values(snap.chats).find((c) => c.outputs.length)!;
     expect(kept.outputs).toHaveLength(OUTPUTS_PER_CHAT);
     expect(kept.partial).toMatchObject({ tooMany: true });
     expect(kept.outputs.some((o) => o.rowId === OUTPUTS_PER_CHAT + 5)).toBe(true);
@@ -470,5 +471,75 @@ describe("the review's cases", () => {
     await old.check([{ key: "k", path: "/srv/old.txt", how: "written" }]);
     await old.index([{ id: "c", updatedAt: 1 }]);
     expect(readScope(storage, "s").added.map((o) => o.path)).toEqual(["/srv/new.txt"]);
+  });
+
+  it("finishes reading every chat even when their Outputs don't all fit, and reads a dropped chat again when it is opened", async () => {
+    let reads = 0;
+    const io: OutputsIo = {
+      rows: async (chatId, offset) => {
+        if (!offset) reads++;
+        return page(offset ? [] : Array.from({ length: OUTPUTS_PER_CHAT }, (_, i) => ({ id: i + 1, role: "tool", tool_name: "write_file", tool_call_id: `${chatId}-${i}`, content: JSON.stringify(written(`/srv/${chatId}/${i}.txt`)) })));
+      },
+      listDir: async () => ({ entries: [] }),
+    };
+    let t = 0;
+    const index = new OutputsIndex(io, memory(), "s", () => ++t);
+    const chats = Array.from({ length: 6 }, (_, i) => ({ id: `c${i}`, updatedAt: i }));
+    await index.index(chats);
+    expect(reads).toBe(6);
+    await index.index(chats);
+    await index.index(chats);
+    expect(reads).toBe(6);
+    expect(Object.keys(index.getSnapshot().chats)).toHaveLength(6);
+    const dropped = Object.entries(index.getSnapshot().chats).find(([, c]) => c.partial?.evicted)![0];
+    await index.index([chats.find((c) => c.id === dropped)!], false, true);
+    expect(reads).toBe(7);
+    expect(index.getSnapshot().chats[dropped].outputs).toHaveLength(OUTPUTS_PER_CHAT);
+  });
+
+  it("reads a version 1 document's chats again, since it kept no machine, and keeps the files the owner added", () => {
+    const storage = memory();
+    const image = { key: "k", chatId: "c", path: "/h/cat.png", how: "image", availability: { state: "missing", checkedAt: 1 } };
+    const added = { key: "a", path: "/srv/x.csv", how: "added" };
+    storage.m.set(OUTPUTS_KEY, JSON.stringify({ v: 1, scopes: { s: { chats: { c: { updatedAt: 5, indexedAt: 1, outputs: [image] } }, added: [added], usedAt: 1 } } }));
+    const read = readScope(storage, "s");
+    expect(read.chats).toEqual({});
+    expect(read.added.map((o) => o.path)).toEqual(["/srv/x.csv"]);
+  });
+
+  it("spends the byte budget on pages it was refused, so an endless run of oversized rows stops", async () => {
+    let calls = 0;
+    const io: OutputsIo = {
+      rows: async () => {
+        calls++;
+        throw new Error("it's 5.0 MB now, over the 4 MB limit");
+      },
+      listDir: async () => ({ entries: [] }),
+    };
+    const index = new OutputsIndex(io, memory(), "s");
+    await index.index([{ id: "c", updatedAt: 1 }]);
+    expect(calls).toBeLessThanOrEqual(CHAT_MAX_BYTES / (4 * 1024 * 1024));
+    expect(index.getSnapshot().chats.c.partial).toMatchObject({ olderRows: true });
+  });
+
+  it("doesn't call files on two machines two versions of one", () => {
+    const v = versions([
+      { key: "1", path: "/tmp/chart.png", how: "image", host: true, at: 1 },
+      { key: "2", path: "/tmp/chart.png", how: "written", at: 2 },
+    ]);
+    expect(v.size).toBe(0);
+  });
+
+  it("doesn't add a file whose check began before the index was let go, even once it is taken up again", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const storage = memory();
+    const index = new OutputsIndex({ rows: async () => page([]), listDir: async () => (await gate, { entries: [{ name: "x.csv", isDirectory: false }] }) }, storage, "s");
+    const adding = index.add("/srv/x.csv");
+    index.cancel();
+    index.resume();
+    release();
+    await expect(adding).rejects.toThrow(/another profile/);
+    expect(index.getSnapshot().added).toEqual([]);
   });
 });

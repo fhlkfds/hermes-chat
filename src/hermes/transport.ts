@@ -2167,7 +2167,8 @@ export class Hermes {
         const query = new URLSearchParams({ profile, order: "latest", limit: String(limit), offset: String(offset), inline_images: "false" });
         const body = await this.restGet(`${sessionPath(chatId)}/messages?${query}`, maxBytes);
         const res = JSON.parse(body) as { messages?: unknown };
-        return { rows: Array.isArray(res.messages) ? (res.messages as StoredOutputRow[]) : [], bytes: body.length };
+        // UTF-8 bytes, as Rust counted them against the limit.
+        return { rows: Array.isArray(res.messages) ? (res.messages as StoredOutputRow[]) : [], bytes: new TextEncoder().encode(body).byteLength };
       },
       listDir: async (path, host) => {
         // The dashboard's own machine, through the managed files routes Server files lists with (ADR 0012).
