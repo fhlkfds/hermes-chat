@@ -464,13 +464,7 @@ export class Hermes {
   private queueHolds = new Map<string, number>();
   /** A look at the queues is due once the current change is done (`pumpSoon`). */
   private pumpDue = false;
-  /** How many turns each chat has started on this connection (`message.start`). */
-  private turnsStarted = new Map<string, number>();
-  /**
-   * Chats whose queued message Hermes is holding for after another turn (`status: queued`): how many turns the chat had
-   * started when it went. The queue waits until that message's own turn has started and ended.
-   */
-  private heldByHermes = new Map<string, number>();
+
   /** Hermes's projects, each call naming its profile (projects.ts). Folders are read, never created. */
   readonly projects: ProjectsApi = projectsApi({
     rpc: (method, params) => this.request(method, params),
@@ -1065,10 +1059,6 @@ export class Hermes {
       if (!q.items.length || q.paused !== undefined || this.queueHolds.has(chatId)) continue;
       const chat = this.snapshot.chats.find((c) => c.id === chatId);
       if (!chat || chat.running || chat.loading || this.resuming.has(chatId) || this.submitting.has(chatId)) continue;
-      // Another turn's end doesn't count: the one Hermes held has to start, and end, first.
-      const held = this.heldByHermes.get(chatId);
-      if (held !== undefined && (this.turnsStarted.get(chatId) ?? 0) <= held) continue;
-      this.heldByHermes.delete(chatId);
       if (chat.items.some((i) => isOutgoing(i) || isWaiting(i))) continue;
       const profile = this.profile;
       if (!chat.runtimeId) {
@@ -1077,20 +1067,23 @@ export class Hermes {
         continue;
       }
       const [next, ...rest] = q.items;
-      // It leaves the queue and enters the outbox in one step, each kept on this computer before it goes: a crash then
-      // can neither lose it nor send it twice. If storage refuses either, it goes back in the queue, unsent.
-      if (!this.setQueue(chatId, { ...q, items: rest })) {
-        this.setQueue(chatId, { ...q, paused: PAUSED.unsaved });
-        continue;
-      }
+      // It enters the outbox and leaves the queue in one step, before anything goes. The outbox is written first, and
+      // must be kept on this computer: if storage refuses it, nothing is sent and the queue, untouched, keeps it.
       let kept = true;
       const going = this.deliver(chatId, next.text, next.attachments ?? [], { kept: (ok) => (kept = ok) });
       if (!kept) {
-        this.setQueue(chatId, { ...q, paused: PAUSED.unsaved });
+        this.pauseQueueFor(chatId, PAUSED.unsaved);
         continue;
       }
-      void going.then(({ delivery }) => {
-        if (delivery.delivery !== "accepted" && this.profile === profile) this.pauseQueueFor(chatId, PAUSED.notSent);
+      // ponytail: a full store refusing even this smaller write leaves the message in both the stored queue and the
+      // outbox; the queue shows it unsaved, and a crash before a later write lands brings it back paused. Tag outbox rows
+      // with the queued id and reconcile on load if that ever matters.
+      this.setQueue(chatId, { ...q, items: rest });
+      void going.then(({ delivery, held }) => {
+        if (this.profile !== profile) return;
+        if (delivery.delivery !== "accepted") this.pauseQueueFor(chatId, PAUSED.notSent);
+        // Hermes holds it behind a turn this app didn't start, whose end can't be told from its own: the owner says when.
+        else if (held) this.pauseQueueFor(chatId, PAUSED.held);
       });
     }
   }
@@ -1100,7 +1093,12 @@ export class Hermes {
    * promise. `queued`: it comes from the chat's queue, so Hermes is asked to hold it should a turn still be running
    * there, rather than redirect or interrupt that turn (`prompt.submit {queued}`, research doc).
    */
-  private async deliver(chatId: string, text: string, attachments: Attachment[], queued?: { kept: (ok: boolean) => void }): Promise<{ delivery: Delivery; itemId?: string }> {
+  private async deliver(
+    chatId: string,
+    text: string,
+    attachments: Attachment[],
+    queued?: { kept: (ok: boolean) => void },
+  ): Promise<{ delivery: Delivery; itemId?: string; held?: boolean }> {
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
     if (!chat) return { delivery: { delivery: "unsent", reason: "This chat isn't in the list." } };
     const profile = this.profile;
@@ -1135,7 +1133,6 @@ export class Hermes {
       this.saveOutbox(chatId);
       return { delivery: { delivery: "unsent", reason: PAUSED.unsaved } };
     }
-    const startsBefore = this.turnsStarted.get(chatId) ?? 0;
     try {
       // From here Hermes may have it: what went out, and the newest row the chat had, find it in the history later.
       const goingOut = (prompt: string) =>
@@ -1155,15 +1152,10 @@ export class Hermes {
       }
       this.setOutgoing(profile, chatId, user.id, confirmed);
       this.noteRows(chatId, [res.user_row_id]);
-      if (queued && res.status === "queued" && this.profile === profile) {
-        this.heldByHermes.set(chatId, startsBefore);
-        // Another turn's end may have shown the chat idle meanwhile, though Hermes is about to run this one.
-        if ((this.turnsStarted.get(chatId) ?? 0) <= startsBefore) this.patchChat(chatId, (c) => ({ ...c, running: true }));
-      }
       // Pin now if Hermes has stored the session; a new chat may not have its row yet, so the end of the turn
       // tries again.
       if (this.pinWanted.get(chatId)) this.track(this.writePin(chatId, profile));
-      return { delivery: { delivery: "accepted" }, itemId: user.id };
+      return { delivery: { delivery: "accepted" }, itemId: user.id, held: res.status === "queued" };
     } catch (e) {
       const unknown = e instanceof PromptUnconfirmedError;
       const reason = unknown ? `The connection dropped before Hermes confirmed it (${(e as Error).message}).` : (e as Error).message;
@@ -1553,7 +1545,6 @@ export class Hermes {
       return;
     }
     if (type === "message.start") this.turnStart.set(chat.id, chat.items.at(-1)?.id ?? null);
-    if (type === "message.start") this.turnsStarted.set(chat.id, (this.turnsStarted.get(chat.id) ?? 0) + 1);
     const usage = type === "message.complete" ? this.turnUsage(session_id!, payload.usage) : undefined;
     const from = this.turnStart.get(chat.id);
     if (type === "message.complete" || type === "error") this.turnStart.delete(chat.id);
@@ -1764,8 +1755,6 @@ export class Hermes {
     // Runtime sessions end with the connection.
     this.usageFrom.clear();
     this.turnStart.clear();
-    this.turnsStarted.clear();
-    this.heldByHermes.clear();
     for (const c of this.snapshot.chats) {
       if (c.runtimeId) this.staleItems.set(c.id, c.items.length);
       if (c.running || c.items.some(isWaiting)) this.resumeOnReconnect.add(c.id);
@@ -2592,6 +2581,7 @@ const PAUSED = {
   restored: "Hermes Chat closed, or showed another profile, since these were queued. Check the chat, then resume.",
   dropped: "The connection dropped, so the last reply wasn't watched to its end. Check the chat, then resume.",
   notSent: "A queued message didn't go, or may not have. Deal with it above, then resume.",
+  held: "Hermes is holding the last queued message until another reply in this chat ends. Check the chat, then resume.",
   unsaved: "This computer's storage is full, so the next message couldn't be kept safe while it went, and wasn't sent. Free some space (Settings → General → Clear local cache), then resume.",
 };
 
