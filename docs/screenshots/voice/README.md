@@ -6,6 +6,6 @@ The app connected through its real Rust transport to a local stub dashboard base
 
 Read aloud used a real Edge TTS MP3 obtained from the deployed Hermes server, served by the stub. WebKitGTK reached playback, Stop worked, and playback ended without an error. Audible output was not verified because the test environment had no speakers. The missing-microphone capture used the ordinary app without the mock device. The provider error reproduces the deployed server's actual missing-transcriber response.
 
-The final image shows a different-origin page reached through a reply link being refused microphone access (`NotAllowedError`), while the app's own page had access to the mock device. Reply links navigating the whole webview is existing behavior.
+The final image shows a different-origin page reached through a reply link being refused microphone access (`NotAllowedError`), while the app's own page had access to the mock device. These captures predate integration of the preview pane from main: reply links now open there, with device permissions disabled, instead of navigating the whole webview. The voice controls in these captures are unchanged.
 
 Physical microphone capture, speech recognition with a configured provider, and audible speaker output still need checking on the owner's desktop. The deployed default profile used local STT but lacked `faster-whisper` when checked.
