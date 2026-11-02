@@ -77,6 +77,8 @@ code, pre, kbd { font-family: var(--mono); }
 }
 .section-toggle:hover { color: var(--muted); }
 .section-toggle .dot { margin-left: 6px; width: 6px; height: 6px; }
+.section-toggle .spinner { margin-left: 6px; width: 9px; height: 9px; }
+.working-toggle { padding-top: 10px; }
 .chev { transition: transform 0.15s; flex: none; }
 .chev.open { transform: rotate(90deg); }
 .settled-list .row-title { color: var(--muted); }
@@ -388,6 +390,7 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 .settings-status { display: flex; align-items: center; gap: 12px; margin: 8px 0 18px; }
 .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
 .settings-row svg { vertical-align: -2px; }
+.settings-row input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); flex: none; }
 .big-num { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .back { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
 .back:hover { color: var(--text); }

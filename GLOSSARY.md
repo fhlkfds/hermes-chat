@@ -16,6 +16,10 @@ _Avoid_: open, live, current
 The state of a chat the owner has put out of the way. Settled chats sit in a collapsed section below the Active ones. Only the owner settles a chat; nothing settles on its own. A new message from another platform leaves a Settled chat where it is.
 _Avoid_: archived, done, closed
 
+**Working**:
+An optional, collapsible section of the list (turned on in Settings) that holds Active chats with a reply still running, so Active shows only the chats waiting on the owner. It starts collapsed. A chat moves back to Active when its reply ends. Working isn't a third state: the chat is still Active, and a Settled chat with a reply running stays in Settled.
+_Avoid_: busy, running (as a section name)
+
 **Settle** / **Unsettle**:
 The owner's manual actions that move a chat from Active to Settled, and back.
 
