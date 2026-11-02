@@ -398,10 +398,12 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .send.stop { background: var(--raised-2); color: var(--text); border: 1px solid var(--line-2); }
 .send.stop:hover { background: var(--raised-3); }
 
-/* Dictation (Voice.tsx): the recording strip in the composer bar, and the note above the composer. */
+/* Dictation (Voice.tsx): its own row so the controls fit beside the preview pane, and the note above the composer. */
 .dictation {
-  flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; font-size: calc(12.5rem / 14); color: var(--muted);
+  min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; margin-top: 8px;
+  font-size: calc(12.5rem / 14); color: var(--muted);
 }
+.dictation > .icon-btn, .dictation-stop { flex: none; }
 .dictation.recording { color: var(--text); }
 .dictation-fill { flex: 1; }
 .dictation-clock { font-variant-numeric: tabular-nums; color: var(--muted); }

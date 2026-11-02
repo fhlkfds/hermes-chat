@@ -844,7 +844,7 @@ function Composer({
           </button>
           {voice && !dictation.active && <MicButton dictation={dictation} blocked={micBlocked(status, voiceSetup)} />}
           {modelControls}
-          {dictation.active ? <DictationStrip dictation={dictation} /> : <span className="composer-keys">Enter to send · Shift+Enter for a new line</span>}
+          {!dictation.active && <span className="composer-keys">Enter to send · Shift+Enter for a new line</span>}
           {running ? (
             <button className="send stop" title={stopping ? "Stopping" : "Stop"} disabled={offline || stopping} onClick={onStop}>
               <Square size={12} fill="currentColor" />
@@ -855,6 +855,7 @@ function Composer({
             </button>
           )}
         </div>
+        {dictation.active && <DictationStrip dictation={dictation} />}
       </div>
     </div>
   );
