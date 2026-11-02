@@ -128,6 +128,13 @@ export function editFlags(body: Record<string, unknown> | undefined) {
   return flags;
 }
 
+/** Hermes's `_FS_PREVIEW_LANGUAGE_BY_EXT` and `_fs_mime_type` at `bf0203a`, as far as the tests need them. */
+const FS_LANGUAGES: Record<string, string> = { py: "python", md: "markdown", html: "html", ts: "typescript", json: "json", txt: "text", sh: "shell" };
+const FS_MIME: Record<string, string> = {
+  png: "image/png", jpg: "image/jpeg", svg: "image/svg+xml", py: "text/x-python", md: "text/markdown", html: "text/html",
+  txt: "text/plain", json: "application/json", pdf: "application/pdf", ts: "video/mp2t",
+};
+
 export class FakeHermes {
   /** Every request the client sent, in order. */
   readonly requests: Request[] = [];
@@ -165,6 +172,11 @@ export class FakeHermes {
   oneshotFailure?: string;
   /** The owner's local disk, by path, for attachments. */
   files: Record<string, FakeFile> = {};
+  /**
+   * The server's disk, by path, for the preview pane's `GET /api/fs/read-text` and `read-data-url`. A string is the
+   * file's text (or bytes, one char per byte); `{ dir: true }` is a folder.
+   */
+  serverFiles: Record<string, string | { dir: true }> = {};
   /** Whether this connection sent `client.capabilities {server_requests: true}`. */
   answersRequests = false;
   /** Server→client requests nobody has answered yet, by id. */
@@ -194,9 +206,11 @@ export class FakeHermes {
 
   /** Each profile's projects (`projects.db`), by profile name; a profile the server has but that isn't here has none. */
   projects: Record<string, FakeProject[]> = {};
-  /** The server's folders and files, by absolute path, for `GET /api/fs/list`. Folders end without a slash. */
+  /**
+   * More of the server's folders, by absolute path without a trailing slash, for `GET /api/fs/list`. That route lists
+   * these and `serverFiles` together; a `{ dir: true }` entry there is a folder too.
+   */
   serverDirs = new Set<string>();
-  serverFiles = new Set<string>();
   /** The server's git repositories, each one's worktrees with its own checkout first (`git worktree list`). */
   repos: FakeWorktree[][] = [];
   private projectSeq = 0;
@@ -405,10 +419,12 @@ export class FakeHermes {
     // `fs_list` (`hermes_cli/web_routers/files.py` at the deployed `bf0203a`): a folder's entries, or none and why.
     "GET /api/fs/list": ({ query }) => {
       const path = query.get("path") ?? "";
-      if (this.serverFiles.has(path)) return { entries: [], error: "ENOTDIR" };
-      if (!this.serverDirs.has(path)) return { entries: [], error: "ENOENT" };
-      const inside = [...this.serverDirs, ...this.serverFiles].filter((p) => p.startsWith(`${path}/`) && !p.slice(path.length + 1).includes("/"));
-      return { entries: inside.map((p) => ({ name: p.split("/").pop(), path: p, isDirectory: this.serverDirs.has(p) })) };
+      const isDir = (p: string) => this.serverDirs.has(p) || typeof this.serverFiles[p] === "object";
+      if (typeof this.serverFiles[path] === "string") return { entries: [], error: "ENOTDIR" };
+      if (!isDir(path)) return { entries: [], error: "ENOENT" };
+      const all = new Set([...this.serverDirs, ...Object.keys(this.serverFiles)]);
+      const inside = [...all].filter((p) => p.startsWith(`${path}/`) && !p.slice(path.length + 1).includes("/"));
+      return { entries: inside.map((p) => ({ name: p.split("/").pop(), path: p, isDirectory: isDir(p) })) };
     },
     // `git_worktrees_route`: every worktree of the repository the path is in, its own checkout first; none outside one.
     "GET /api/git/worktrees": ({ query }) => {
@@ -465,6 +481,30 @@ export class FakeHermes {
         }
       for (const s of store) if (s.title?.toLowerCase().includes(q.toLowerCase())) add(s, s.preview || `Session title matched: ${q}`, null);
       return { results: [...results.values()] };
+    },
+    // `hermes_cli/web_routers/files.py` `fs_read_text` at the deployed `bf0203a`, as probed live: the first 512 KB,
+    // binary judged by `_fs_looks_binary`, credential files refused.
+    "GET /api/fs/read-text": ({ query }) => {
+      const { path, data } = this.serverFile(query);
+      const head = data.slice(0, 4096);
+      const control = [...head].filter((c) => c.charCodeAt(0) < 32 && !"\t\n\r".includes(c)).length;
+      const ext = /\.([a-z0-9]+)$/i.exec(path)?.[1].toLowerCase() ?? "";
+      return {
+        binary: head.includes("\0") || (head.length > 0 && control / head.length > 0.12),
+        byteSize: data.length,
+        language: FS_LANGUAGES[ext] ?? "text",
+        mimeType: FS_MIME[ext] ?? "application/octet-stream",
+        path,
+        text: data.slice(0, 512 * 1024),
+        truncated: data.length > 512 * 1024,
+      };
+    },
+    // `fs_read_data_url`: any regular file as a data URL, up to 16 MB; the MIME type goes by its extension.
+    "GET /api/fs/read-data-url": ({ query }) => {
+      const { path, data } = this.serverFile(query);
+      if (data.length > 16 * 1024 * 1024) throw new Error(`The dashboard answered 413: {"detail":"File too large"}`);
+      const ext = /\.([a-z0-9]+)$/i.exec(path)?.[1].toLowerCase() ?? "";
+      return { dataUrl: `data:${FS_MIME[ext] ?? "application/octet-stream"};base64,${btoa(data)}` };
     },
     // `hermes_cli/web_routers/profiles.py` `_profile_to_dict` at the deployed `bf0203a`, trimmed to what matters here.
     "GET /api/profiles": () => ({
@@ -590,6 +630,21 @@ export class FakeHermes {
       },
     };
   };
+
+  /** A Server file for `/api/fs/*`, failing the way `_fs_regular_file` and `_is_sensitive_path` do at `bf0203a`. */
+  private serverFile(query: URLSearchParams): { path: string; data: string } {
+    const profile = query.get("profile");
+    if (profile && profile !== "default" && !(profile in this.otherProfiles))
+      throw new Error(`The dashboard answered 404: {"detail":"Profile '${profile}' does not exist."}`);
+    const path = query.get("path") ?? "";
+    const name = path.split("/").pop() ?? "";
+    if (/^\.env(\..*)?$|^auth\.json$|^config\.yaml$/i.test(name))
+      throw new Error(`The dashboard answered 403: {"detail":"Access to sensitive files is not allowed"}`);
+    const f = this.serverFiles[path];
+    if (f === undefined) throw new Error(`The dashboard answered 404: {"detail":"File not found"}`);
+    if (typeof f !== "string") throw new Error(`The dashboard answered 400: {"detail":"Path points to a directory"}`);
+    return { path, data: f };
+  }
 
   respond(id: number, result: unknown) {
     this.frame({ jsonrpc: "2.0", id, result });

@@ -23,7 +23,7 @@ function server() {
   s.sessions = [row("backup", 1, { pinned: true, title: "Nightly backup" }), row("nas", 2, { pinned: true, title: "NAS disks" })];
   s.otherProfiles = { work: [] };
   s.serverDirs = new Set(["/srv", "/srv/app", "/srv/app-feature", "/srv/notes"]);
-  s.serverFiles = new Set(["/srv/notes/todo.md"]);
+  s.serverFiles = { "/srv/notes/todo.md": "" };
   s.repos = [[{ path: "/srv/app", branch: "main" }, { path: "/srv/app-feature", branch: "feature/login" }]];
   return s;
 }

@@ -46,7 +46,7 @@ function server() {
   ];
   s.projects.default = [project("p_budget", "Budget Tracker", ["/srv/budget"])];
   s.serverDirs = new Set(["/srv", "/srv/app", "/srv/app-feature", "/srv/budget"]);
-  s.serverFiles = new Set(["/srv/readme.md"]);
+  s.serverFiles = { "/srv/readme.md": "" };
   s.repos = [[{ path: "/srv/app", branch: "main" }, { path: "/srv/app-feature", branch: "feature/login" }]];
   return s;
 }
