@@ -193,7 +193,17 @@ export function Main({
   // Projects are Hermes's, one store for each connection and profile; which chats are in each is kept on this computer.
   // A project picked in the switcher narrows the list to its chats. Active, Settled and Unread work as before inside it.
   const scope = projectScope(connection, profile);
-  const projects = useMemo(() => new ProjectsStore(hermes.projects, savedProjects, scope, profile), [hermes, scope]);
+  // Keep the same store and request queue when returning to a profile: a write still finishing for that profile
+  // must share ordering with its new reads and writes, rather than commit from an abandoned snapshot.
+  const projectStores = useMemo(() => new Map<string, ProjectsStore>(), [hermes]);
+  const projects = useMemo(() => {
+    let store = projectStores.get(scope);
+    if (!store) {
+      store = new ProjectsStore(hermes.projects, savedProjects, scope, profile);
+      projectStores.set(scope, store);
+    }
+    return store;
+  }, [hermes, scope, projectStores]);
   const proj = useSyncExternalStore(projects.subscribe, projects.getSnapshot);
   const listable = proj.projects.filter((p) => !p.archived);
   const shownProject = listable.find((p) => p.id === proj.selectedId);

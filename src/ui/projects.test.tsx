@@ -212,6 +212,44 @@ describe("a chat started while a project is shown", () => {
 });
 
 describe("the project screen", () => {
+  it("keeps one request queue when switching away from a profile and back during a folder write", async () => {
+    const s = server();
+    s.otherProfiles = { work: [] };
+    const { user, hermes } = await launch(s);
+    await pick(user, "Budget Tracker");
+    await user.click(screen.getByTitle("Project settings for Budget Tracker"));
+    const checkFolder = hermes.projects.checkFolder;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const checking = vi.spyOn(hermes.projects, "checkFolder").mockImplementation(async (profile, path) => {
+      if (path === "/srv/app") await gate;
+      return checkFolder(profile, path);
+    });
+    await user.type(screen.getByRole("textbox", { name: "Add a folder on the server" }), "/srv/app{Enter}");
+    expect(checking).toHaveBeenCalledWith("default", "/srv/app");
+    await act(async () => { await hermes.switchProfile("work"); });
+    await act(async () => { await hermes.switchProfile("default"); });
+    await user.click(switcher());
+    await user.click(screen.getByRole("button", { name: /New project/ }));
+    await user.type(screen.getByRole("textbox", { name: "New project name" }), "New lab{Enter}");
+    // A new store would create now and its links could later be erased by the old folder write.
+    expect(s.requests.filter((r) => r.method === "projects.create")).toHaveLength(0);
+    await act(async () => release());
+    await screen.findByRole("heading", { name: /New lab/ });
+    await user.click(screen.getByRole("button", { name: /Back to chat/ }));
+    await pick(user, "All chats");
+    await putInProject(user, "NAS disks", "New lab");
+    await pick(user, "New lab");
+    expect(activeTitles()).toEqual(["NAS disks"]);
+    expect(s.projects.default.find((p) => p.id === "p_budget")!.folders.map((f) => f.path)).toContain("/srv/app");
+    await user.click(switcher());
+    await act(async () => { await hermes.idle(); });
+    const scopes = Object.values(JSON.parse(localStorage.getItem(PROJECTS_KEY)!).scopes as Record<string, { chats: Record<string, string[]> }>);
+    const newProject = s.projects.default.find((p) => p.name === "New lab")!;
+    expect(scopes.some((scope) => scope.chats[newProject.id]?.includes("nas"))).toBe(true);
+    checking.mockRestore();
+  });
+
   it.each(["deleted", "archived"])("resumes tracking the visible chat when the project is %s elsewhere", async (change) => {
     const s = server();
     const { user, hermes } = await launch(s);
