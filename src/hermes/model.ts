@@ -65,6 +65,11 @@ export type Chat = {
   items: Item[];
   /** Its stored history is on the way (`Hermes.open`). */
   loading?: boolean;
+  /**
+   * The transcript on screen is the Saved copy this computer took at this time, not yet loaded from Hermes on this
+   * connection: Hermes can't be reached, or the history is still on the way.
+   */
+  savedAt?: number;
   running?: boolean;
   /** Stop was asked for; the reply keeps running until Hermes ends the turn (`Hermes.stop`). */
   stopping?: boolean;
