@@ -126,7 +126,24 @@ describe("Settings → Toolsets", () => {
     expect((await screen.findByRole("alert")).textContent).toMatch(/Hermes didn't confirm the change .*Read back just now, Web Search & Scraping is on/);
     expect(toggle("Web Search & Scraping").getAttribute("aria-checked")).toBe("true");
     await user.click(screen.getByRole("button", { name: "Refresh" }));
-    await waitFor(() => expect(screen.queryByText(/Hermes didn't confirm the change/)).toBeNull());
+    // The note stays, now saying what Hermes has, so the owner still sees that the change didn't go through.
+    expect(await screen.findByText(/Hermes didn't confirm the last change \(Can't reach the Hermes dashboard: connection reset\). Read back at .*, Web Search & Scraping is on./)).toBeTruthy();
+    expect(screen.queryByText(/so it may or may not have it/)).toBeNull();
+  });
+
+  it("takes a click while a read started by coming back to the window is still on its way", async () => {
+    const { server, user } = await shown();
+    let releaseRead!: () => void;
+    server.toolsetListGateOnce = new Promise((r) => (releaseRead = r));
+    act(() => void window.dispatchEvent(new Event("focus")));
+    await screen.findByText("Reading the toolsets from Hermes…");
+    expect((toggle("Web Search & Scraping") as HTMLButtonElement).disabled).toBe(false);
+    await user.click(toggle("Web Search & Scraping"));
+    expect(await screen.findByText(/Saved: Hermes reads Web Search & Scraping back as off/)).toBeTruthy();
+    act(() => releaseRead()); // The older read lands after the change's result and is dropped.
+    await waitFor(() => expect(screen.queryByText("Reading the toolsets from Hermes…")).toBeNull());
+    expect(toggle("Web Search & Scraping").getAttribute("aria-checked")).toBe("false");
+    expect(toolsetWrites(server)).toEqual(["default:web=false"]);
   });
 
   it("asks before turning on a toolset that may start an install on the server", async () => {

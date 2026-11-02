@@ -20,8 +20,11 @@ const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const onOff = (on: boolean) => (on ? "on" : "off");
 const timeOf = (at: number) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
-/** What happened to the latest change of one toolset, under its row. `unsettled`: a later read settles it. */
-type Note = { tone: "ok" | "warn" | "error"; text: string; unsettled?: boolean };
+/**
+ * What happened to the latest change of one toolset, under its row. `unsettled`: Hermes didn't confirm it, for this
+ * reason; a later read says what Hermes has instead of dropping the note.
+ */
+type Note = { tone: "ok" | "warn" | "error"; text: string; unsettled?: string };
 /** A change being checked before it's sent: whether it may start an install or bring MCP servers back. */
 type Checking = { name: string; enabled: boolean };
 
@@ -67,7 +70,7 @@ function noteFor(t: Toolset, enabled: boolean, r: ToolsetChange): Note {
     case "unknown":
       return {
         tone: "warn",
-        unsettled: true,
+        unsettled: r.reason,
         text:
           `Hermes didn't confirm the change (${r.reason}), so it may or may not have it. ` +
           (now === undefined ? "It's read again when Hermes is back; Refresh to check sooner." : `Read back just now, ${t.label} is ${onOff(now)}. Refresh to check again.`),
@@ -229,7 +232,16 @@ export function ToolsetSettings({
         // settled by this read: the switch shows what Hermes has.
         const before = new Map(shownList.current?.toolsets.map((t) => [t.name, t.enabled]));
         const moved = new Set(fresh.toolsets.filter((t) => before.has(t.name) && before.get(t.name) !== t.enabled).map((t) => t.name));
-        setNotes((n) => Object.fromEntries(Object.entries(n).filter(([name, note]) => !moved.has(name) && !note.unsettled)));
+        setNotes((n) =>
+          Object.fromEntries(
+            Object.entries(n).flatMap(([name, note]): [string, Note][] => {
+              const t = fresh.toolsets.find((x) => x.name === name);
+              if (note.unsettled !== undefined && t)
+                return [[name, { tone: "warn", text: `Hermes didn't confirm the last change (${note.unsettled}). Read back at ${timeOf(fresh.readAt)}, ${t.label} is ${onOff(t.enabled)}.` }]];
+              return moved.has(name) ? [] : [[name, note]];
+            }),
+          ),
+        );
         setList(fresh);
         if (support) setWrite(support);
         if (full) setGuards(g);
@@ -305,7 +317,9 @@ export function ToolsetSettings({
   };
 
   const toggle = async (t: Toolset) => {
-    if (checkingNow.current || readingNow.current || api.pending() || !connected) return;
+    // A read under way doesn't hold a change up: the write checks a fresh read itself, and a read older than its result
+    // is dropped. (Coming back to the window starts one, which must not swallow the click that brought the owner back.)
+    if (checkingNow.current || api.pending() || !connected) return;
     checkingNow.current = true;
     setAsk(undefined);
     setNotes(({ [t.name]: _gone, ...rest }) => rest);
@@ -365,7 +379,7 @@ export function ToolsetSettings({
     );
   }
 
-  const locked = !!pending || !!checking || reading;
+  const locked = !!pending || !!checking;
   const here = list.toolsets.filter((t) => t.platform === "cli");
   const elsewhere = list.toolsets.filter((t) => t.platform !== "cli");
   const row = (t: Toolset) => (
@@ -417,7 +431,7 @@ export function ToolsetSettings({
           {reading ? "Reading the toolsets from Hermes…" : loadError ? null : `Read from Hermes at ${timeOf(list.readAt)}.`}
           {loadError && <span className="sign-in-error">Couldn't read them again: {loadError}</span>}
         </div>
-        <button className="btn" disabled={!connected || locked} onClick={() => void read(true)}>
+        <button className="btn" disabled={!connected || locked || reading} onClick={() => void read(true)}>
           <RefreshCw size={14} /> Refresh
         </button>
       </div>
