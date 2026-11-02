@@ -103,6 +103,14 @@ _Avoid_: thinking level
 A model the owner starred in the model picker. Favorites are listed first, and are kept on this computer even when Hermes no longer offers the model.
 _Avoid_: pinned model (pinning is how Hermes stores Active, ADR 0002)
 
+**Usage**:
+The tokens a chat's model calls took in and gave out: input, cache read and written, output and its reasoning, and how many calls. A chat's usage is Hermes's own total for every call in it, from any client and across model changes. A reply's usage is shown only for a reply this app watched from start to finish, and is kept as long as its Saved copy.
+_Avoid_: tokens (alone, for the whole breakdown), stats
+
+**Cost**:
+What a chat's usage cost, only as Hermes recorded it: reported by the provider, estimated, at least an estimate, included in a subscription, or unknown. It counts only the calls Hermes could price. The app keeps no prices of its own, and shows no cost per reply.
+_Avoid_: price, spend, bill (except for a cost the provider reported)
+
 **Preview pane**:
 The resizable pane beside the chat that shows a web page, a Server file, a Local file or a tool call's output. It opens from a link in a reply, from an opened tool call, or from the chat's header. In a window too narrow for both, it covers the chat until the owner goes back to it. What it shows can't reach the app, the sign-in or this computer's other files (ADR 0007).
 _Avoid_: viewer, side panel, artifact (the official desktop app's word)

@@ -10,6 +10,7 @@ import { ApprovalCard } from "./ApprovalCard";
 import { Markdown } from "./Markdown";
 import { ArchiveButton, SettleButton, SourceIcon, Spinner, StoredTime, composing, highlight } from "./bits";
 import { AttachmentChip, Previews, readPreview } from "./previews";
+import { ChatUsageButton, ReplyUsageLine } from "./Usage";
 import { useOpenPreview } from "./previewContext";
 import { previewName, toolTargets } from "../hermes/preview";
 
@@ -83,7 +84,7 @@ const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateS
  * `onExport` are left out for a chat not started yet. `notLoaded`: the chat has no Saved copy and can't load until
  * Hermes is connected. `onRetry`, `onEdit` and `onDismiss` act on a message Hermes didn't take, or may not have.
  * `modelControls`: the model picker and reasoning pill, at the bottom left of the composer. `footer`: what goes under
- * the composer, the status bar. Ctrl+F opens the find bar.
+ * the composer, the status bar. Ctrl+F opens the find bar. `onUsage` refreshes the chat usage on opening its breakdown.
  * `headActions`: more buttons in the header, before Find.
  */
 export function ChatPane({
@@ -107,6 +108,7 @@ export function ChatPane({
   modelControls,
   projects,
   footer,
+  onUsage,
   headActions,
 }: {
   chat: Chat;
@@ -130,6 +132,7 @@ export function ChatPane({
   /** The names of the projects the chat is in, or a new chat will be put in. */
   projects?: string[];
   footer?: ReactNode;
+  onUsage?: () => void;
   headActions?: ReactNode;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -244,22 +247,26 @@ export function ChatPane({
             </span>
           ))}
         </div>
-        <div className="chat-head-actions">
-          {headActions}
-          <button
-            className="icon-btn"
-            title="Find in chat (Ctrl+F)"
-            onClick={openFind}
-          >
-            <Search size={16} />
-          </button>
-          {onExport && (
-            <button className="icon-btn" title="Export as Markdown" onClick={onExport}>
-              <FileDown size={16} />
+        <div className="chat-head-end">
+          {/* Outside the actions, whose dimming would show through its breakdown. */}
+          {onUsage && <ChatUsageButton chat={chat} onRefresh={onUsage} />}
+          <div className="chat-head-actions">
+            {headActions}
+            <button
+              className="icon-btn"
+              title="Find in chat (Ctrl+F)"
+              onClick={openFind}
+            >
+              <Search size={16} />
             </button>
-          )}
-          {onSettle && !chat.archived && <SettleButton settled={chat.settled} size={16} className="icon-btn" onSettle={onSettle} />}
-          {onArchive && !chat.running && <ArchiveButton archived={!!chat.archived} size={16} className="icon-btn" onArchive={onArchive} />}
+            {onExport && (
+              <button className="icon-btn" title="Export as Markdown" onClick={onExport}>
+                <FileDown size={16} />
+              </button>
+            )}
+            {onSettle && !chat.archived && <SettleButton settled={chat.settled} size={16} className="icon-btn" onSettle={onSettle} />}
+            {onArchive && !chat.running && <ArchiveButton archived={!!chat.archived} size={16} className="icon-btn" onArchive={onArchive} />}
+          </div>
         </div>
         {findOpen && (
           <div className="find" role="search">
@@ -439,12 +446,14 @@ const BlockView = memo(
           {live && <span className="cursor" />}
           {block.interrupted && <div className="stopped">Stopped</div>}
           <StoredTime at={block.at} />
+          {block.usage && !live && <ReplyUsageLine usage={block.usage} />}
         </div>
       );
     if (block.kind === "error")
       return (
         <div className="msg error" role="alert">
           {block.text}
+          {block.usage && <ReplyUsageLine usage={block.usage} />}
         </div>
       );
     if (block.kind === "thinking") return <Thought item={block} live={live} query={query} />;

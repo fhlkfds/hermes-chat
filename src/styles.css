@@ -951,3 +951,37 @@ button.status-item:disabled { opacity: 0.5; cursor: default; }
 .context-parts .part-label { flex: 1; color: var(--text-2); }
 .context-parts .part-tokens { color: var(--muted); font-variant-numeric: tabular-nums; }
 .menu-sep { height: 1px; margin: 4px 2px; background: var(--line-2); }
+
+/* token usage and cost (Usage.tsx): a line under each measured reply, and the chat's totals beside its title */
+.reply-usage { margin-top: 2px; }
+.usage-line {
+  font-size: calc(11.5rem / 14); color: var(--faint); font-variant-numeric: tabular-nums; padding: 1px 4px; margin-left: -4px;
+  border-radius: 5px;
+}
+.usage-line:hover, .usage-line[aria-expanded="true"] { color: var(--muted); background: var(--raised-2); }
+.usage-table { margin: 6px 0 0; display: grid; gap: 2px; font-size: calc(12rem / 14); max-width: 300px; }
+.usage-row { display: flex; justify-content: space-between; gap: 16px; }
+.usage-row dt { color: var(--muted); }
+.usage-row dd { margin: 0; color: var(--text-2); font-variant-numeric: tabular-nums; text-align: right; }
+.usage-row.sub dt { padding-left: 12px; color: var(--faint); }
+.usage-row.sub dd { color: var(--muted); }
+.chat-head-end { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.chat-usage { position: relative; display: flex; align-items: center; }
+.usage-pill {
+  display: inline-flex; align-items: center; height: 24px; padding: 0 9px; border-radius: 999px; border: 1px solid var(--line-2);
+  font-size: calc(11.5rem / 14); color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.usage-pill:hover, .usage-pill.on { color: var(--text); background: var(--raised-2); }
+.usage-pill.warn { color: var(--warn); }
+.usage-popover {
+  position: absolute; right: 0; top: calc(100% + 8px); z-index: 30; width: 300px; padding: 12px 14px; outline: none;
+  background: var(--raised); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: 0 16px 44px rgba(0, 0, 0, 0.5);
+  animation: menu-in 0.1s ease-out;
+}
+.usage-popover .usage-table { max-width: none; margin-top: 8px; }
+.usage-title { font-size: calc(12.5rem / 14); font-weight: 600; color: var(--text); }
+.usage-cost { display: flex; flex-direction: column; gap: 2px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.usage-cost-value { font-size: calc(13rem / 14); color: var(--text); font-variant-numeric: tabular-nums; }
+.usage-cost-detail, .usage-note { font-size: calc(11.5rem / 14); color: var(--muted); line-height: 1.45; }
+.usage-note { margin: 10px 0 0; color: var(--faint); }
+.usage-error { margin: 8px 0 0; font-size: calc(11.5rem / 14); color: var(--warn); line-height: 1.45; }
