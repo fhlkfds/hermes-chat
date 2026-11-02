@@ -40,11 +40,22 @@ makepkg -si
 
 To run it from a terminal, set the variable yourself: `WEBKIT_DISABLE_DMABUF_RENDERER=1 hermes-chat`.
 
+## Screenshots
+
+Ctrl+Shift+S (or the camera button in the composer) takes a screenshot of a region or window and attaches it to the message you're writing, for you to review before sending. Change or turn off the shortcut in Settings → General → Screenshots.
+
+- **Hyprland, Sway and other wlroots compositors:** install `slurp` and `grim` (`sudo pacman -S --needed slurp grim`). You drag a region, or click a window. Without them the app says what to install and captures nothing, because the screenshot portals there can't let you pick.
+- **GNOME and KDE Plasma:** the desktop's screenshot portal shows its own region and window picker. It needs `xdg-desktop-portal` and `xdg-desktop-portal-gnome` or `xdg-desktop-portal-kde`.
+
+That shortcut works only while Hermes Chat is focused. Wayland apps can't see keys pressed in other windows, so for a shortcut that works anywhere, bind a key in your desktop's settings to `hermes-chat --screenshot`. For example, on Hyprland: `bind = SUPER SHIFT, S, exec, hermes-chat --screenshot`. If Hermes Chat is open, the screenshot goes to the chat on screen. If it isn't open, or is on the sign-in screen, the screenshot is taken once you're signed in, if that's within two minutes. When it might need to start, use `env WEBKIT_DISABLE_DMABUF_RENDERER=1 hermes-chat --screenshot`.
+
+Captures wait in `$XDG_CACHE_HOME/hermes-chat/captures/` (usually `~/.cache/hermes-chat/captures/`), readable only by you. Nothing is uploaded until you send the message. A capture is deleted once Hermes confirms its message, when you remove it from the composer, or when you leave the composer without sending it. Failed or uncertain messages keep their screenshots in the chat's outbox for Retry, including across app restarts; confirmation, history reconciliation or Dismiss releases them. On quit, remaining captures wait for the next startup to reconcile the persisted outbox and remove leftovers that no message needs.
+
 ## Test
 
 ```sh
 npm test                                  # frontend transport against a fake Hermes
-cd src-tauri && cargo test --test transport --test media   # Rust transport against a stub server; who gets the microphone
+cd src-tauri && cargo test --lib --test transport --test media --test screenshot  # Rust transport, microphone origins, screenshot storage and requests
 ```
 
 `node bench/run.mjs` renders the chat pane with synthetic long chats (50, 200 and 800 turns) in headless Chromium and

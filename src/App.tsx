@@ -11,6 +11,10 @@ import { projectLinks, projectScope } from "./hermes/projectLinks";
 import { ProjectsStore, type Project } from "./hermes/projects";
 import { systemHeaderKeyring, systemKeyring } from "./hermes/tauriKeyring";
 import { desktopNotify } from "./hermes/tauriNotify";
+import { ScreenshotDesk, type ScreenshotApi } from "./hermes/screenshots";
+import { onDesktopScreenshot, screenshotSupport, showWindow, syncScreenshotOutbox, tauriScreenshots, type ScreenshotSupport } from "./hermes/tauriScreenshot";
+import { checkShortcut, shortcutLabel, shortcutOf } from "./ui/shortcut";
+
 import { tauriPipe, type SignInDetails } from "./hermes/tauriPipe";
 import { type Attachment, type Chat, type Found, isOutgoing } from "./hermes/model";
 import type { ModelPick } from "./hermes/models";
@@ -195,6 +199,31 @@ export default function App() {
   );
 }
 
+/** What the desktop is told when a desktop shortcut's screenshot is attached while Hermes Chat isn't focused. */
+const SCREENSHOT_ATTACHED = { title: "Screenshot attached", body: "Review it in Hermes Chat before you send it." };
+
+/** The real screenshot calls, and what a desktop shortcut does once its screenshot is attached. */
+export type Screenshots = {
+  api: ScreenshotApi;
+  syncOutbox?: () => Promise<void>;
+  /** Calls `fn` whenever a desktop shortcut asks for a screenshot; returns the function that stops it. */
+  onDesktopShortcut: (fn: () => void) => () => void;
+  /** A desktop shortcut's screenshot was attached: bring the window forward, and say so if it still isn't focused. */
+  attached: () => void;
+  /** How screenshots are taken on this desktop, for Settings. */
+  support?: () => Promise<ScreenshotSupport>;
+};
+const tauriScreenshotWiring: Screenshots = {
+  api: tauriScreenshots,
+  syncOutbox: syncScreenshotOutbox,
+  onDesktopShortcut: onDesktopScreenshot,
+  support: screenshotSupport,
+  attached: () =>
+    void showWindow().then(() => {
+      if (!document.hasFocus()) void desktopNotify(SCREENSHOT_ATTACHED).catch(() => {});
+    }),
+};
+
 export function Main({
   hermes,
   connection,
@@ -203,6 +232,7 @@ export function Main({
   kept = { password: true, headers: true },
   reopenLast = false,
   localFiles = tauriLocalFiles,
+  screenshots = tauriScreenshotWiring,
   onSignOut,
 }: {
   hermes: Hermes;
@@ -216,6 +246,7 @@ export function Main({
   reopenLast?: boolean;
   /** Where the preview pane's Local files come from: the Open dialog, through Rust. */
   localFiles?: LocalFiles;
+  screenshots?: Screenshots;
   onSignOut: () => Promise<void>;
 }) {
   const { profile, chats, olderPulled, archivedListed, status, route, unsecure, closedReason, syncError, others, models, switching } = useSyncExternalStore(
@@ -304,7 +335,7 @@ export function Main({
   // The model pick is sticky: new chats start on it, in this profile, until the owner picks another. It is kept on this
   // computer only and never becomes the profile's default. Picked in another profile, it gives way to this profile's
   // own model. A chat on screen shows the model it runs on, and a pick there switches that chat alone.
-  const { modelPicker, modelFavorites, previewWidth } = useSyncExternalStore(subscribeUIPrefs, getUIPrefs);
+  const { modelPicker, modelFavorites, previewWidth, screenshotShortcut } = useSyncExternalStore(subscribeUIPrefs, getUIPrefs);
   const catalog = models?.profile === profile ? models : undefined;
   const sticky: ModelPick | undefined = modelPicker?.profile === profile ? withoutProfile(modelPicker) : catalog?.defaultPick;
   const shownModel = (selected !== draft && selected.model) || sticky;
@@ -365,14 +396,49 @@ export function Main({
     }
   };
 
-  // The composer empties as the message goes. In a chat, the message shows there from the start, and if Hermes doesn't
-  // take it, or may not have, it stays there marked so, with Retry. If a new chat can't be started, there is no chat to
-  // show it in, so its text comes back into the composer.
+  // Screenshots go to the composer on screen. The desk lives as long as this signed-in window: signing out deletes any
+  // capture not yet sent. Made in an effect, so StrictMode's second mount gets a desk of its own.
+  const [desk, setDesk] = useState<ScreenshotDesk>();
+  const screenshotsRef = useRef(screenshots);
+  useEffect(() => {
+    const d = new ScreenshotDesk(screenshotsRef.current.api, (remote) => remote && screenshotsRef.current.attached());
+    setDesk(d);
+    return () => d.dispose();
+  }, []);
+  // Reveal the composer when Search, Settings, Projects or a narrow preview covers it, so the capture can be reviewed.
+  const takeScreenshot = (remote = false) => {
+    if (!desk) return;
+    setSettingsOpen(false);
+    setProjectOpen(false);
+    setSearchOpen(false);
+    if (!previewFits) setPreviewHidden(true);
+    void desk.capture({ remote });
+  };
+  const takeScreenshotRef = useRef(takeScreenshot);
+  takeScreenshotRef.current = takeScreenshot;
+  useEffect(() => (desk ? screenshotsRef.current.onDesktopShortcut(() => takeScreenshotRef.current(true)) : undefined), [desk]);
+
+  // Failed and unknown sends stay in the chat's outbox. Only failure to create the chat restores the composer.
   const send = async (text: string, attachments: Attachment[]) => {
+    const paths = attachments.map((a) => a.path);
+    desk?.hold(paths);
     const typed = savedDrafts.take(shownDraft);
     const to = await chatToSendIn();
-    if ("delivery" in to) return savedDrafts.putBack(draftOf(null), typed);
-    await hermes.send(to.id, text, attachments);
+    if ("delivery" in to) {
+      savedDrafts.putBack(draftOf(null), typed);
+      desk?.sent(attachments, false);
+      return;
+    }
+    try {
+      await hermes.send(to.id, text, attachments);
+    } finally {
+      try {
+        await screenshots.syncOutbox?.();
+        desk?.finish(paths);
+      } catch {
+        // Keep ownership if Rust could not protect the outbox yet. A later reconciliation can clean it up.
+      }
+    }
   };
 
   // Only the owner sends a failed message again; reconnecting never does. Editing one takes its words back into the
@@ -534,7 +600,13 @@ export function Main({
     // Only Ctrl/Cmd chords, and never mid-composition. No bare key does anything app-wide, so nothing typed
     // with focus outside an input can answer an Approval or stop a reply.
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || composing(e)) return;
+      if (composing(e)) return;
+      if (screenshotShortcut && shortcutOf(e) === screenshotShortcut && !checkShortcut(screenshotShortcut).error) {
+        e.preventDefault();
+        if (!e.repeat) takeScreenshot();
+        return;
+      }
+      if (!(e.ctrlKey || e.metaKey)) return;
       const k = e.key.toLowerCase();
       if (k === "k") {
         e.preventDefault();
@@ -675,6 +747,7 @@ export function Main({
                 cacheBytes={() => hermes.cacheBytes()}
                 appearance={appearance}
                 listFonts={systemFonts}
+                checkScreenshots={screenshots.support}
                 modelSettings={hermes.modelSettings}
                 onClearCache={() => hermes.clearCache()}
                 onPullOlder={() => hermes.pullOlderHistory()}
@@ -703,6 +776,8 @@ export function Main({
                 onExport={selected === draft ? undefined : () => exportSelected(selected)}
                 onArchive={selected === draft ? undefined : (a) => setArchived(selected.id, a)}
                 voice={voice}
+                screenshots={desk}
+                screenshotKeys={screenshotShortcut ? shortcutLabel(screenshotShortcut) : undefined}
                 onUsage={selected === draft ? undefined : () => void hermes.refreshUsage(selected.id)}
                 projects={selected === draft ? (shownProject ? [shownProject.name] : undefined) : projectNames(selected.id)}
                 headActions={

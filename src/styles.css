@@ -95,6 +95,7 @@ code, pre, kbd { font-family: var(--mono); }
 }
 .icon-btn:hover { background: var(--raised-2); color: var(--text); }
 .icon-btn.on { background: var(--raised-2); color: var(--text); }
+.icon-btn:disabled { opacity: 0.45; cursor: default; background: none; color: var(--muted); }
 
 .badge {
   font-size: calc(10.5rem / 14); font-weight: 500; letter-spacing: 0.02em; padding: 1px 6px; border-radius: 999px;
@@ -389,7 +390,7 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .composer textarea::placeholder { color: var(--faint); }
 .composer-bar { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
 .composer-bar > .icon-btn, .composer-bar > .send { flex: none; }
-.composer-keys { flex: 1; font-size: calc(11.5rem / 14); color: var(--faint); opacity: 0; transition: opacity 0.2s; }
+.composer-keys { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: calc(11.5rem / 14); color: var(--faint); opacity: 0; transition: opacity 0.2s; }
 .composer:focus-within .composer-keys { opacity: 1; }
 .send {
   width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center; background: var(--text); color: var(--on-text);
@@ -565,6 +566,7 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .attach-note { font-size: calc(12rem / 14); color: var(--muted); padding: 0 6px 8px; }
 .offline-note { font-size: calc(12rem / 14); color: var(--muted); padding: 0 6px 8px; }
 .composer-hint { font-size: calc(12rem / 14); color: var(--warn); padding: 0 6px 8px; }
+.capture-note { font-size: calc(12rem / 14); color: var(--muted); padding: 0 6px 8px; }
 .platform-note { display: flex; align-items: center; gap: 6px; font-size: calc(12rem / 14); color: var(--muted); padding: 0 6px 8px; }
 .conn-btn { position: relative; display: grid; place-items: center; width: 30px; height: 30px; border-radius: 8px; }
 .conn-btn:hover { background: var(--raised-2); }
@@ -822,6 +824,15 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 .menu-item:hover .menu-icon, .menu-item:focus-visible .menu-icon { color: inherit; }
 .menu-label { flex: 1; white-space: nowrap; }
 
+/* Screenshot settings: the shortcut recorder and the desktop shortcut examples. */
+.shortcut-controls { display: flex; gap: 8px; flex-shrink: 0; }
+.shortcut-key { min-width: 132px; justify-content: center; font-family: var(--mono); }
+.shortcut-key.recording { border-color: var(--accent, var(--text)); color: var(--text); }
+.screenshot-settings h3 { font-size: calc(13rem / 14); margin: 22px 0 6px; }
+.screenshot-settings p.settings-note { margin: 8px 0 0; }
+.shortcut-examples { margin: 6px 0 8px; padding-left: 18px; line-height: 1.7; }
+.screenshot-settings code { font-family: var(--mono); font-size: calc(11.5rem / 14); background: var(--raised-2); padding: 1px 5px; border-radius: 4px; }
+.warn-note { color: var(--warn); }
 /* projects (Projects.tsx, ADR 0007): the switcher under the profile's name, and the project screen */
 .sb-project { display: flex; padding: 0 12px 6px 14px; margin-top: -4px; }
 .project-switch { position: relative; min-width: 0; flex: 1; display: flex; align-items: center; gap: 2px; }
@@ -1020,3 +1031,15 @@ button.status-item:disabled { opacity: 0.5; cursor: default; }
 .usage-cost-detail, .usage-note { font-size: calc(11.5rem / 14); color: var(--muted); line-height: 1.45; }
 .usage-note { margin: 10px 0 0; color: var(--faint); }
 .usage-error { margin: 8px 0 0; font-size: calc(11.5rem / 14); color: var(--warn); line-height: 1.45; }
+
+/* Settings → Model → Text generation (ModelSettings.tsx): the composer's model controls, opening downward and left. */
+.text-gen { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.text-gen-label { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.text-gen-title { display: flex; align-items: center; gap: 6px; }
+.text-gen .small-icon { width: 22px; height: 22px; border-radius: 6px; }
+.text-gen-controls { flex: none; border: 0; padding: 0; margin: 0; min-width: 0; }
+.text-gen .model-popover { bottom: auto; top: calc(100% + 8px); left: auto; right: 0; }
+.text-gen .menu.pill-menu { bottom: auto; top: calc(100% + 8px); left: auto; right: 0; }
+.text-gen .model-options { left: auto; right: calc(100% + 6px); }
+.text-gen .model-options::before { right: auto; left: 100%; }
+.model-status { margin-top: 10px; }

@@ -1,7 +1,7 @@
 // Settings → Model: the main model, subagents, auxiliary (helper task) models and the guardrails, as Hermes has them
 // for the profile shown. Edits are one draft held here until a part is applied; leaving Settings drops it without
 // asking, as the official desktop app does. Reads and writes: modelSettings.ts.
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { CircleDollarSign, Pin, RotateCcw, ShieldAlert, TriangleAlert } from "lucide-react";
 import {
   AUX_AUTO,
@@ -9,6 +9,7 @@ import {
   EFFORT_LEVELS,
   EFFORT_OFF,
   SUBAGENT_ROUTES,
+  TEXT_TASK,
   auxChanged,
   auxPinWarning,
   auxProblem,
@@ -21,6 +22,7 @@ import {
   pinnedElsewhere,
   subagentChanged,
   subagentProblem,
+  type AuxDraft,
   type AuxTask,
   type CatalogProvider,
   type Draft,
@@ -29,6 +31,9 @@ import {
   type PinnedWarning,
   type SubagentRoute,
 } from "../hermes/modelSettings";
+import { isEffort, type ModelCatalog, type ModelPick } from "../hermes/models";
+import { getUIPrefs, subscribe as subscribeUIPrefs, toggleModelFavorite } from "../hermes/uiPrefs";
+import { ModelControls } from "./ModelPicker";
 
 const EFFORT_LABEL: Record<string, string> = {
   [EFFORT_OFF]: "Off",
@@ -163,6 +168,131 @@ function ApplyRow({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * The Text generation model: the model chat titles are made with, picked like a chat's model. Unlike the rest of this
+ * screen it's written as soon as it's picked, as it's one setting with nothing to review. Hermes keeps it as its
+ * `title_generation` helper task, so its own titles and every other client on the profile use it too.
+ */
+function TextGeneration({
+  saved,
+  api,
+  profile,
+  connected,
+  onSaved,
+}: {
+  saved: Settings;
+  api: ModelSettingsApi;
+  profile: string;
+  connected: boolean;
+  onSaved: (fresh: Settings) => void;
+}) {
+  const { modelFavorites } = useSyncExternalStore(subscribeUIPrefs, getUIPrefs);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  /** A model Hermes flagged as expensive, not written until the owner says Use anyway. */
+  const [ask, setAsk] = useState<{ next: AuxDraft; message: string }>();
+  const task = saved.auxiliary.find((t) => t.task === TEXT_TASK);
+  if (!task) return null;
+
+  const pinned = task.provider !== AUX_AUTO;
+  const current: ModelPick | undefined = pinned ? { provider: task.provider, model: task.model, ...(isEffort(task.effort) && { effort: task.effort }) } : undefined;
+  // The catalog this screen read, as the composer's picker lists it. A helper task has no fast mode, so none is offered.
+  const catalog: ModelCatalog = {
+    profile,
+    source: "server",
+    providers: saved.providers.map((p) => ({
+      slug: p.slug,
+      name: p.name,
+      models: p.models.map((model) => ({
+        provider: p.slug,
+        providerName: p.name,
+        model,
+        reasoning: p.caps[model]?.reasoning ?? true,
+        canDisableReasoning: true,
+        fast: false,
+        available: true,
+      })),
+    })),
+    // Left to inherit, it runs at the main model's effort.
+    defaultEffort: isEffort(saved.main.effort) ? saved.main.effort : undefined,
+  };
+
+  const write = async (next: AuxDraft, confirmed = false) => {
+    setBusy(true);
+    setError(undefined);
+    setAsk(undefined);
+    try {
+      const r = await api.applyAuxiliary(saved, { ...draftFrom(saved), auxiliary: { [TEXT_TASK]: next } }, confirmed ? [TEXT_TASK] : []);
+      if (r.applied) onSaved(await api.load());
+      else setAsk({ next, message: r.expensive });
+    } catch (e) {
+      setError(messageOf(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section>
+      <h2>Text generation</h2>
+      <div className="model-card text-gen" role="group" aria-label="Text generation model">
+        <div className="text-gen-label">
+          <div className="text-gen-title">
+            <span className="appearance-title">Text generation model</span>
+            {pinned && (
+              <button
+                className="icon-btn small-icon"
+                title="Use the main model"
+                aria-label="Use the main model for text generation"
+                disabled={busy || !connected}
+                onClick={() => void write({ provider: AUX_AUTO, model: "", effort: AUX_INHERIT })}
+              >
+                <RotateCcw size={13} />
+              </button>
+            )}
+          </div>
+          <span className="muted small">
+            Used for chat titles, including Regenerate title. Hermes keeps it for the <span className="mono">{profile}</span> profile, so its own
+            titles and other Hermes clients use it too.{" "}
+            {pinned ? "" : `Until you pick one, it's the main model, ${saved.main.model || "the profile's"}.`}
+          </span>
+        </div>
+        <fieldset className="text-gen-controls" disabled={busy || !connected}>
+          <ModelControls
+            catalog={catalog}
+            current={current}
+            defaultEffort={catalog.defaultEffort}
+            favorites={modelFavorites}
+            onPick={(p) => void write({ provider: p.provider, model: p.model, effort: p.effort ?? AUX_INHERIT })}
+            onToggleFavorite={toggleModelFavorite}
+          />
+        </fieldset>
+      </div>
+      {(busy || error) && (
+        <div className={`small model-status ${error ? "sign-in-error" : "muted"}`} role={error ? "alert" : "status"}>
+          {error ? `Couldn't set the text generation model: ${error}` : "Saving…"}
+        </div>
+      )}
+      {ask && (
+        <div className="confirm" role="alertdialog" aria-label="Expensive model">
+          <span className="confirm-msg">
+            <ShieldAlert size={12} /> Use {ask.next.model} for text generation?
+          </span>
+          <span className="confirm-detail">{ask.message}</span>
+          <div className="confirm-actions">
+            <button className="btn" onClick={() => setAsk(undefined)}>
+              Keep current
+            </button>
+            <button className="btn danger" onClick={() => void write(ask.next, true)}>
+              Use anyway
+            </button>
+          </div>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -380,6 +510,18 @@ export function ModelSettings({ api, profile, connected }: { api: ModelSettingsA
         />
       </section>
 
+      <TextGeneration
+        saved={saved}
+        api={api}
+        profile={profile}
+        connected={connected}
+        onSaved={(fresh) => {
+          setSaved(fresh);
+          // The other helper tasks' edits stay drafted; this one is what Hermes now has.
+          setDraft((d) => d && { ...d, auxiliary: { ...d.auxiliary, [TEXT_TASK]: draftFrom(fresh).auxiliary[TEXT_TASK] } });
+        }}
+      />
+
       <section>
         <h2>Subagents</h2>
         <p className="muted">
@@ -506,7 +648,7 @@ export function ModelSettings({ api, profile, connected }: { api: ModelSettingsA
           Helper tasks Hermes runs beside a chat. Each runs on the main model unless it's given one of its own, so cheap helpers can run cheap.
         </p>
         <div className="aux-list">
-          {saved.auxiliary.map((t: AuxTask) => {
+          {saved.auxiliary.filter((t) => t.task !== TEXT_TASK).map((t: AuxTask) => {
             const a = draft.auxiliary[t.task];
             const auto = a.provider === AUX_AUTO;
             return (

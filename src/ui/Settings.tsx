@@ -1,5 +1,5 @@
 // The Settings screen, in three tabs. General, ported from the prototype: the connection and Sign out, what shows on
-// launch, voice, the local cache, and older history. Appearance: how the app looks on this computer (AppearanceSettings.tsx).
+// launch, voice, screenshots, the local cache, and older history. Appearance: how the app looks on this computer (AppearanceSettings.tsx).
 // Model: the profile's models on Hermes (ModelSettings.tsx).
 // Profiles are switched in the list's header, not here (ADR 0001).
 import { useState } from "react";
@@ -15,6 +15,8 @@ import { ModelSettings } from "./ModelSettings";
 import { StartupSettings } from "./StartupSettings";
 import { VoiceSettings } from "./Voice";
 import type { VoiceSetup } from "../hermes/pipe";
+import { ScreenshotSettings } from "./ScreenshotSettings";
+import type { ScreenshotSupport } from "../hermes/tauriScreenshot";
 
 type Tab = "general" | "appearance" | "model";
 const TABS = [
@@ -47,6 +49,7 @@ export function SettingsScreen({
   cacheBytes,
   appearance,
   listFonts,
+  checkScreenshots,
   modelSettings,
   onClearCache,
   onPullOlder,
@@ -71,6 +74,8 @@ export function SettingsScreen({
   appearance: AppearanceStore;
   /** The installed font families, for the font pickers. */
   listFonts: () => Promise<Fonts>;
+  /** How screenshots are taken on this desktop; left out where there is no desktop app to ask. */
+  checkScreenshots?: () => Promise<ScreenshotSupport>;
   /** The profile's model setup on Hermes. */
   modelSettings: ModelSettingsApi;
   onClearCache: () => void;
@@ -189,6 +194,7 @@ export function SettingsScreen({
             <StartupSettings />
 
             <VoiceSettings status={status} profile={profile} setup={voiceSetup} />
+            <ScreenshotSettings checkSupport={checkScreenshots} />
 
             <section>
               <h2>Local cache</h2>

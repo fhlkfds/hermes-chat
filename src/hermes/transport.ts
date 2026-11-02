@@ -35,8 +35,14 @@ import { isUnsecure } from "./unsecure";
 import { readServerFile, type FileView } from "./preview";
 import { chatUsageOf, countersOf, newerChatUsage, replyUsage, ZERO_COUNTERS, type ReplyUsage, type UsageCounters } from "./usage";
 
-/** The `source` this app stamps on chats it starts. Legacy `session.create` stores any string as-is. */
-export const APP_SOURCE = "hermes-chat";
+/**
+ * The `source` this app stamps on chats it starts. Legacy `session.create` stores any string as-is, but the gateway
+ * takes an edit (rename, pin, archive, read) only on a local client's row whose source it knows (`LEGACY_LOCAL_SOURCES`,
+ * `authorize_history` at the deployed `bf0203a`): every edit of a `hermes-chat` row was answered 404 `not_found`.
+ */
+export const APP_SOURCE = "gui";
+/** What this app stamped before, still shown as this app's. Hermes won't edit these chats. */
+const OLD_APP_SOURCE = "hermes-chat";
 const READY_TIMEOUT_MS = 15_000;
 /** Waits before each try to reconnect a dropped connection. When the last try fails the app is Offline until the
  * owner asks to reconnect, so a wrong password isn't retried for ever. */
@@ -2253,11 +2259,11 @@ function findTerm(q: string, snippet: Found["snippet"]): string {
   return snippet.find((p) => p.hit)?.text ?? q;
 }
 
-/** A chat's Source from the session's `source` field. This app's own chats, and `gui` ones, show no icon. */
+/** A chat's Source from the session's `source` field. This app's own chats, `gui` ones, show no icon. */
 function toSource(source = ""): Source {
   switch (source) {
     case APP_SOURCE:
-    case "gui":
+    case OLD_APP_SOURCE:
       return "app";
     case "telegram":
     case "discord":
