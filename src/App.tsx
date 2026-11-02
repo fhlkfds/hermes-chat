@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { connect, readSaved, type Delivery, type Hermes } from "./hermes/transport";
 import { CHECK_EVERY_MS } from "./hermes/otherProfiles";
-import { type Account, type SavedSignIn, launchSignIn, savedSignIn, signIn, signOut } from "./hermes/account";
+import { type Account, type Kept, type SavedSignIn, launchSignIn, savedSignIn, signIn, signInForm, signOutToSignIn } from "./hermes/account";
 import { localChatCache } from "./hermes/chatCache";
 import { draftKey, drafts } from "./hermes/drafts";
 import { chatToReopen, forgetOpenChat, rememberOpenChat } from "./hermes/uiPrefs";
 import { exportChat } from "./hermes/exportChat";
 import { projectLinks, projectScope } from "./hermes/projectLinks";
 import { ProjectsStore, type Project } from "./hermes/projects";
-import { systemKeyring } from "./hermes/tauriKeyring";
+import { systemHeaderKeyring, systemKeyring } from "./hermes/tauriKeyring";
 import { desktopNotify } from "./hermes/tauriNotify";
 import { tauriPipe, type SignInDetails } from "./hermes/tauriPipe";
 import { type Attachment, type Chat, type Found, isOutgoing } from "./hermes/model";
@@ -26,7 +26,7 @@ import { SignIn } from "./ui/SignIn";
 import { ModelControls } from "./ui/ModelPicker";
 import { getUIPrefs, setUIPrefs, subscribe as subscribeUIPrefs, toggleModelFavorite, type StickyModelPick } from "./hermes/uiPrefs";
 
-const SAVED = "hermes-chat.sign-in"; // Everything but the password, which is in the system keyring.
+const SAVED = "hermes-chat.sign-in"; // Everything but the password and extra headers, which are in the system keyring.
 // Hermes also announces store changes over the socket; the poll catches anything it misses.
 const SYNC_EVERY_MS = 60_000;
 const TOAST_MS = 5_000;
@@ -49,6 +49,7 @@ function loadSignIn(): SavedSignIn {
 
 const account: Account = {
   keyring: systemKeyring,
+  headerKeyring: systemHeaderKeyring,
   store: { load: loadSignIn, save: (d) => localStorage.setItem(SAVED, JSON.stringify(d)) },
   connect: (d) => connect(tauriPipe(d), undefined, localChatCache(d), desktopNotify),
   readSaved: (d, reason) => readSaved(tauriPipe(d), reason, localChatCache(d), desktopNotify),
@@ -60,8 +61,11 @@ const savedProjects = projectLinks(localStorage);
 // Applied as the app loads, so the chosen fonts show from the first screen.
 const appearance = appearanceStore(localStorage, document.documentElement);
 
+/** The names of the extra request headers a sign-in sends; only a URL sends them. */
+const headerNames = (d: SignInDetails) => (d.mode === "url" ? (d.headers ?? []).map((h) => h.name.trim()) : []);
+
 /** What launch ends in: signed in with the saved password, or the sign-in screen and why. */
-type Launch = { hermes: Hermes } | { initial: SignInDetails; error?: string };
+type Launch = { hermes: Hermes; headers: string[] } | { initial: SignInDetails; error?: string };
 let launching: Promise<Launch> | undefined;
 
 /**
@@ -72,9 +76,9 @@ let launching: Promise<Launch> | undefined;
 function launch(): Promise<Launch> {
   return (launching ??= (async () => {
     const saved = await savedSignIn(account);
-    if (!saved) return { initial: { ...loadSignIn(), password: "" } };
+    if (!saved) return { initial: await signInForm(account) };
     try {
-      return { hermes: await launchSignIn(saved, account) };
+      return { hermes: await launchSignIn(saved, account), headers: headerNames(saved) };
     } catch (e) {
       return { initial: saved, error: messageOf(e) };
     }
@@ -88,12 +92,18 @@ export default function App() {
   const [error, setError] = useState<string>();
   // Why the keyring couldn't save the password at sign-in, shown once signed in.
   const [notSaved, setNotSaved] = useState<string>();
+  const [kept, setKept] = useState<Kept>({ password: true, headers: true });
   // Only the first sign-in after the app starts reopens the last chat; signing in again after Sign out starts fresh.
   const [coldStart, setColdStart] = useState(true);
+  // The names of the extra request headers the connection sends, for Settings.
+  const [headers, setHeaders] = useState<string[]>([]);
 
   useEffect(() => {
     void launch().then((l) => {
-      if ("hermes" in l) return setHermes(l.hermes);
+      if ("hermes" in l) {
+        setHeaders(l.headers);
+        return setHermes(l.hermes);
+      }
       setInitial(l.initial);
       setError(l.error);
     });
@@ -104,20 +114,19 @@ export default function App() {
       <Main
         hermes={hermes}
         connection={account.store.load()}
+        headers={headers}
         notSaved={notSaved}
+        kept={kept}
         reopenLast={coldStart}
         onSignOut={async () => {
-          let failure: string | undefined;
-          try {
-            await signOut(hermes, account);
-          } catch (e) {
-            failure = messageOf(e);
-          }
+          // Everything is read first, then shown at once: the sign-in screen keeps the details it mounts with.
+          const { initial, error } = await signOutToSignIn(hermes, account);
           setHermes(null);
           setColdStart(false);
           setNotSaved(undefined);
-          setInitial({ ...loadSignIn(), password: "" });
-          setError(failure);
+          setKept({ password: true, headers: true });
+          setInitial(initial);
+          setError(error);
         }}
       />
     );
@@ -137,8 +146,10 @@ export default function App() {
       onSignIn={async (d) => {
         setError(undefined);
         try {
-          const { hermes: h, notSaved } = await signIn(d, account);
+          const { hermes: h, notSaved, kept } = await signIn(d, account);
           setNotSaved(notSaved);
+          setKept(kept);
+          setHeaders(headerNames(d));
           setHermes(h);
         } catch (e) {
           setError(messageOf(e));
@@ -151,18 +162,24 @@ export default function App() {
 export function Main({
   hermes,
   connection,
+  headers = [],
   notSaved,
+  kept = { password: true, headers: true },
   reopenLast = false,
   onSignOut,
 }: {
   hermes: Hermes;
   connection: SavedSignIn;
+  /** The names of the extra request headers the connection sends. */
+  headers?: string[];
   notSaved?: string;
+  /** What the keyring kept at sign-in. */
+  kept?: Kept;
   /** This is the app starting: open the profile's last open chat, if the owner wants it reopened. */
   reopenLast?: boolean;
   onSignOut: () => Promise<void>;
 }) {
-  const { profile, chats, olderPulled, archivedListed, status, route, unsecure, closedReason, syncError, others, models } = useSyncExternalStore(
+  const { profile, chats, olderPulled, archivedListed, status, route, unsecure, closedReason, syncError, others, models, switching } = useSyncExternalStore(
     hermes.subscribe,
     hermes.getSnapshot,
   );
@@ -221,6 +238,8 @@ export function Main({
 
   // What the owner has typed and not sent, kept for each chat on this connection and profile.
   const draftOf = (chatId: string | null) => draftKey(connection, profile, chatId);
+  // An answer that comes after the owner switched profile belongs to the profile left, so it isn't shown.
+  const stillIn = (p: string) => hermes.profile === p;
   const shownDraft = draftOf(selectedId);
   const composerText = useSyncExternalStore(savedDrafts.subscribe, () => savedDrafts.get(shownDraft));
 
@@ -235,7 +254,7 @@ export function Main({
     setUIPrefs({ modelPicker: { ...pick, profile } });
     if (selected === draft) return;
     const id = selected.id;
-    hermes.setModel(id, pick).catch((e) => setToast({ text: `Couldn't switch this chat's model: ${messageOf(e)}`, at: Date.now() }));
+    hermes.setModel(id, pick).catch((e) => stillIn(profile) && setToast({ text: `Couldn't switch this chat's model: ${messageOf(e)}`, at: Date.now() }));
   };
 
   // Every move between chats is kept as the profile's last open chat, so it reopens at the next launch whether or not
@@ -281,7 +300,7 @@ export function Main({
       return { id };
     } catch (e) {
       const reason = `Couldn't start a chat: ${e instanceof Error ? e.message : String(e)}`;
-      setDraftError(reason);
+      if (stillIn(profile)) setDraftError(reason);
       return { delivery: { delivery: "unsent", reason } };
     }
   };
@@ -308,7 +327,7 @@ export function Main({
   };
 
   // The other profile's chats replace the list, so the pane starts a fresh draft. The profile left keeps its last open
-  // chat for the next launch.
+  // chat for the next launch, and each chat's draft. The list asks first if a reply is running or an Approval waiting.
   const switchProfile = (name: string) => {
     newChat(false);
     setProjectOpen(false);
@@ -343,7 +362,7 @@ export function Main({
     void hermes.delete(id).then((deleted) => {
       if (!deleted) return;
       projects.forgetChat(id);
-      setToast({ text: `Deleted: ${title}`, at: Date.now() });
+      if (stillIn(profile)) setToast({ text: `Deleted: ${title}`, at: Date.now() });
     });
   };
 
@@ -363,7 +382,9 @@ export function Main({
     const title = chats.find((c) => c.id === id)?.title ?? "";
     if (archived && id === selectedId && !archivedListed) newChat();
     const done = (ok: boolean) =>
-      ok && setToast({ text: `${archived ? "Archived" : "Restored"}: ${title}`, undo: archived ? () => setArchived(id, false) : undefined, at: Date.now() });
+      ok &&
+      stillIn(profile) &&
+      setToast({ text: `${archived ? "Archived" : "Restored"}: ${title}`, undo: archived ? () => setArchived(id, false) : undefined, at: Date.now() });
     void (archived ? hermes.archive(id) : hermes.restore(id)).then(done);
   };
 
@@ -516,6 +537,8 @@ export function Main({
             const of = projects.projectsOf(chatId);
             return { list: listable, of, onToggle: (id, on) => setInProject(chatId, listable.find((p) => p.id === id)!, on) };
           }}
+          switching={switching}
+          status={status}
           others={others}
           chats={listed}
           archivedListed={archivedListed}
@@ -531,6 +554,7 @@ export function Main({
           onListProfiles={() => hermes.profiles()}
           onCheckOthers={() => void hermes.checkOtherProfiles()}
           onSwitchProfile={switchProfile}
+          onRetrySwitch={() => void (status === "connected" ? hermes.sync() : hermes.reconnect())}
         />
       )}
       <main className="main">
@@ -548,7 +572,7 @@ export function Main({
               const { name } = shownProject;
               await projects.delete(shownProject.id);
               setProjectOpen(false);
-              setToast({ text: `Deleted the project ${name}. Its chats and folders are kept.`, at: Date.now() });
+              if (stillIn(profile)) setToast({ text: `Deleted the project ${name}. Its chats and folders are kept.`, at: Date.now() });
             }}
             onAddFolder={(path) => projects.addFolder(shownProject.id, path)}
             onRemoveFolder={(path) => projects.removeFolder(shownProject.id, path)}
@@ -570,7 +594,9 @@ export function Main({
             route={route}
             unsecure={unsecure}
             username={connection.username}
-            passwordSaved={!notSaved}
+            passwordSaved={kept.password}
+            headersSaved={kept.headers}
+            headers={route?.kind === "url" ? headers : []}
             profile={profile}
             olderPulled={olderPulled}
             cacheBytes={() => hermes.cacheBytes()}
@@ -584,7 +610,8 @@ export function Main({
           />
         ) : (
           <ChatPane
-            key={selected.id}
+            // Per profile too, so attachments picked in one profile's New chat pane don't carry over to another's.
+            key={`${profile}/${selected.id}`}
             chat={selected}
             notLoaded={selected !== draft && status !== "connected" && !selected.runtimeId && selected.items.every(isOutgoing)}
             findTarget={findTarget}
