@@ -159,14 +159,18 @@ function yoloBlocked(chat: Chat, status: ConnectionStatus): string | undefined {
   if (status !== "connected") return "Connect to Hermes to change YOLO for this chat.";
   if (!chat.runtimeId) return "YOLO can be changed once this chat has started.";
   if (chat.live?.yolo === undefined) return "Hermes hasn't reported YOLO for this chat yet, so it can't be changed from here.";
-  if (chat.live.yoloEverywhere) return "YOLO is on for every chat in Hermes's own settings, so it can't be turned off here.";
+  if (chat.live.yoloEverywhere) return "YOLO is on for every chat by Hermes's own settings or launch options, so it can't be turned off here.";
 }
 
-/** This chat's YOLO switch. Turning it on asks first, since Hermes then runs dangerous commands without asking. */
+/**
+ * This chat's YOLO switch. Turning it on asks first, since Hermes then runs dangerous commands without asking. Until
+ * Hermes reports the state it reads "unknown", never "off": YOLO may well be on.
+ */
 function YoloToggle({ chat, status, onYolo }: { chat: Chat; status: ConnectionStatus; onYolo: (on: boolean) => Promise<void> }) {
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
+  const known = chat.live?.yolo !== undefined;
   const on = !!chat.live?.yolo;
   const blocked = yoloBlocked(chat, status);
   const set = (next: boolean) => {
@@ -185,16 +189,16 @@ function YoloToggle({ chat, status, onYolo }: { chat: Chat; status: ConnectionSt
     <span className="status-anchor">
       <button
         className={`status-item status-yolo${on ? " on" : ""}${error ? " failed" : ""}`}
-        role="switch"
-        aria-checked={on}
-        aria-label="YOLO for this chat"
+        role={known ? "switch" : undefined}
+        aria-checked={known ? on : undefined}
+        aria-label={known ? "YOLO for this chat" : "YOLO for this chat: unknown"}
         aria-description={title}
         title={title}
         disabled={!!blocked || busy}
         onClick={() => (on ? set(false) : setConfirming(true))}
       >
         <Zap size={12} />
-        YOLO {on ? "on" : "off"}
+        YOLO {!known ? "unknown" : on ? "on" : "off"}
       </button>
       {confirming && (
         <Popover label="Turn on YOLO" onClose={() => setConfirming(false)}>

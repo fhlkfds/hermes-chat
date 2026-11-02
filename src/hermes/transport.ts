@@ -331,6 +331,9 @@ export class Hermes {
   private closedApprovals = new Map<string, ApprovalItem>();
   /** Approvals Hermes has been told are on screen (`approval.received`), by request id. */
   private shownApprovals = new Set<string>();
+  /** How many `session.info` events each runtime session has sent on this connection, so `setYolo` can tell
+   * whether Hermes reported the effective state before answering. */
+  private infoCount = new Map<string, number>();
   /** Hermes answered that it has no `approval.received`. */
   private noApprovalReceived = false;
   /** Messages Hermes hasn't accepted yet, so a Stop waits for the turn it stops. */
@@ -845,9 +848,21 @@ export class Hermes {
   async setYolo(chatId: string, on: boolean): Promise<void> {
     const runtimeId = this.snapshot.chats.find((c) => c.id === chatId)?.runtimeId;
     if (!runtimeId) throw new Error("This chat isn't open on Hermes.");
+    const infos = this.infoCount.get(runtimeId) ?? 0;
     const res = (await this.request("config.set", { session_id: runtimeId, profile: this.profile, key: "yolo", value: on ? "on" : "off" })) as { value?: unknown };
-    // Hermes also sends session.info, which has the final word.
-    this.patchChat(chatId, (c) => (c.runtimeId === runtimeId ? { ...c, live: { ...c.live, yolo: res.value === "1" || !!c.live?.yoloEverywhere } } : c));
+    // `value` is only the chat's own flag. Whether Hermes auto-approves also depends on its launch flag and
+    // approvals.mode, which only `session.info` reports; Hermes sends that just before this answer, when the session's
+    // agent exists (`methods_config_set.py` `_set_yolo`).
+    const reported = (this.infoCount.get(runtimeId) ?? 0) > infos;
+    this.patchChat(chatId, (c) => {
+      if (c.runtimeId !== runtimeId) return c;
+      // The chat's flag is on, so YOLO is on whatever else holds.
+      if (res.value === "1") return { ...c, live: { ...c.live, yolo: true } };
+      // Off for the chat, yet still on: something wider than this chat turns it on.
+      if (reported) return c.live?.yolo ? { ...c, live: { ...c.live, yoloEverywhere: true } } : c;
+      // Not reported: unknown until Hermes says, never assumed off.
+      return { ...c, live: { ...c.live, yolo: undefined, yoloEverywhere: undefined } };
+    });
   }
 
   /** What fills the chat's context window, by category, as Hermes estimates it now; empty when Hermes gives none. */
@@ -974,6 +989,7 @@ export class Hermes {
     }
     const chat = session_id ? this.snapshot.chats.find((c) => c.runtimeId === session_id) : undefined;
     if (!chat) return;
+    if (type === "session.info") this.infoCount.set(session_id!, (this.infoCount.get(session_id!) ?? 0) + 1);
     this.patchChat(chat.id, (c) => applyEvent(c, type, payload));
     if (type === "message.complete") this.stampTurn(chat.id, (payload.persisted_turn ?? {}) as PersistedTurn);
     // By the end of a turn Hermes has stored the session, so a pin that failed earlier can succeed.
@@ -1140,6 +1156,7 @@ export class Hermes {
     if (pipe) this.droppedClosing = pipe.close().catch(() => {}).finally(() => (this.droppedClosing = undefined));
     for (const p of this.pending.values()) p.reject(new ConnectionLostError(`Connection closed: ${reason}`));
     this.pending.clear();
+    this.infoCount.clear();
     this.earlyRequests.clear();
     for (const c of this.snapshot.chats) {
       if (c.runtimeId) this.staleItems.set(c.id, c.items.length);
