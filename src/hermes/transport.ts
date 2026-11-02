@@ -14,7 +14,10 @@
 // Each chat opened lately keeps a Saved copy of its transcript on this computer, shown while Hermes can't be reached
 // or the history is on the way; when the first connection at launch fails, the saved list and copies still open.
 // Unread chats in the other profiles are polled over dashboard REST (otherProfiles.ts).
+// The composer's model picker lists what `model.options` offers (models.ts) and switches one chat at a time with
+// session-scoped `config.set`; nothing here ever writes the profile's default model, reasoning or fast mode.
 import { APPROVAL_CHOICES, isBroadGrant, isWaiting, offeredChoices, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ConnectionStatus, type Found, type Item, type OtherProfiles, type Source } from "./model";
+import { catalogFromServer, fallbackCatalog, isEffort, modelKey, pickFromInfo, type ModelCatalog, type ModelPick } from "./models";
 import { noOthers, OtherProfilesCheck } from "./otherProfiles";
 import type { OpenPipe, Pipe, PipeEvent, Route } from "./pipe";
 import { isUnsecure } from "./unsecure";
@@ -34,6 +37,8 @@ const LIST_WINDOW_MS = 30 * 86_400_000;
 /** Dashboard REST caps `GET /api/sessions` pages at 100. */
 const PAGE_SIZE = 100;
 const MAX_PAGES = 20;
+/** How long the model list may take: Hermes may first fetch model metadata, which it bounds at 15 seconds. */
+const MODELS_TIMEOUT_MS = 30_000;
 /** Checking another profile for Unread chats reads one page of its most recent ones. */
 const OTHER_PAGE_SIZE = 50;
 /** The most chats one search lists; dashboard REST caps it at 100. */
@@ -122,7 +127,10 @@ type SearchRow = Pick<SessionRow, "id" | "source" | "title" | "preview" | "start
   role?: string | null;
 };
 /** Dashboard REST `GET /api/profiles` (`web_routers/profiles.py`), as far as this app reads it. */
-type ProfileList = { profiles: { name: string }[] };
+type ProfileList = { profiles: { name: string; model?: string | null; provider?: string | null }[] };
+
+/** Legacy `config.set` result for `model` (`ConfigSetResult`): an expensive model is applied only once confirmed. */
+type ConfigSet = { value?: unknown; confirm_required?: boolean; confirm_message?: string; deferred?: boolean; warning?: string };
 
 /** A history row from legacy `session.resume` (research doc §5, `TranscriptMessage`). Tool rows carry the call's
  * name, args and an 80-char `context`; Hermes keeps the result (`content`) only for edit tools. `timestamp`: when the
@@ -237,6 +245,8 @@ export type Snapshot = {
   closedReason?: string;
   syncError?: string;
   others: OtherProfiles;
+  /** The models the shown profile can switch to (`loadModels`); none until read. */
+  models?: ModelCatalog;
 };
 
 /**
@@ -341,6 +351,10 @@ export class Hermes {
   private background = new Set<Promise<unknown>>();
   /** When the shown profile's list last synced on this connection. */
   private listedAt?: number;
+  /** The model list being read, and for which profile. */
+  private modelsLoading?: { profile: string; done: Promise<void> };
+  /** A chat and model Hermes asked to confirm as expensive: picking it again for that chat confirms it. */
+  private confirmModel?: string;
   private others = new OtherProfilesCheck({
     scope: () => (this.pipe && this.snapshot.status === "connected" && !this.closing ? { connection: this.generation, profile: this.profile } : undefined),
     profiles: () => this.profiles(),
@@ -446,7 +460,7 @@ export class Hermes {
     this.resumeOnReconnect.clear();
     this.revealed.clear();
     this.cache.rememberProfile(name);
-    this.update({ profile: name, chats: this.cache.load(name), olderPulled: this.cache.olderPulled(name), archivedListed: false, syncError: undefined });
+    this.update({ profile: name, chats: this.cache.load(name), olderPulled: this.cache.olderPulled(name), archivedListed: false, syncError: undefined, models: undefined });
     // A reconnect under way may be opening the old profile's socket.
     await this.redialing;
     if (this.profile !== name || this.closing) return;
@@ -537,13 +551,28 @@ export class Hermes {
 
   getSnapshot = () => this.snapshot;
 
-  /** Starts a Chat in this app. It is Active from the start, and pinned once Hermes has stored it (ADR 0002). */
-  async newChat(): Promise<string> {
-    const res = (await this.request("session.create", { profile: this.profile, source: APP_SOURCE })) as {
+  /**
+   * Starts a Chat in this app. It is Active from the start, and pinned once Hermes has stored it (ADR 0002). `model`:
+   * what it runs on, for this chat only; left out, it runs on the profile's model.
+   */
+  async newChat(model?: ModelPick): Promise<string> {
+    const res = (await this.request("session.create", {
+      profile: this.profile,
+      source: APP_SOURCE,
+      // `SessionCreateParams`: each is this session's own override. `fast` left out keeps the profile's.
+      ...(model && {
+        model: model.model,
+        provider: model.provider,
+        ...(model.effort && { reasoning_effort: model.effort }),
+        ...(model.fast !== undefined && { fast: model.fast }),
+      }),
+    })) as {
       session_id: string;
       stored_session_id: string;
+      info?: unknown;
     };
     const chat: Chat = {
+      model: pickFromInfo(res.info) ?? model,
       id: res.stored_session_id,
       runtimeId: res.session_id,
       title: "New chat",
@@ -578,6 +607,61 @@ export class Hermes {
       this.patchChat(chatId, (c) =>
         c.running ? c : { ...c, items: [...withoutLoadError(c.items), { kind: "error", id: LOAD_ERROR_ID, text: `Couldn't load this chat: ${(e as Error).message}` }] },
       );
+    }
+  }
+
+  /**
+   * Reads the models the profile can switch to into the snapshot's `models`: Hermes's own list over the socket
+   * (`model.options`), else over dashboard REST, else a fallback list built around the model in use, which says why.
+   * Hermes's list is read once per profile; a fallback is tried again on the next call. Only read on a connection open
+   * for the profile shown, and dropped if that connection goes meanwhile: the app asks again once connected.
+   */
+  loadModels(): Promise<void> {
+    const profile = this.profile;
+    if (this.snapshot.models?.profile === profile && this.snapshot.models.source === "server") return Promise.resolve();
+    if (!this.pipe || this.pipeProfile !== profile || this.snapshot.status !== "connected") return Promise.resolve();
+    if (this.modelsLoading?.profile === profile) return this.modelsLoading.done;
+    const gen = this.generation;
+    const done: Promise<void> = this.readModels(profile)
+      .then((models) => void (this.profile === profile && this.generation === gen && this.update({ models })))
+      .finally(() => {
+        if (this.modelsLoading?.done === done) this.modelsLoading = undefined;
+      });
+    this.modelsLoading = { profile, done };
+    return done;
+  }
+
+  /**
+   * Switches a chat to `pick`, for that chat only: the profile's default model, reasoning and fast mode stay as they
+   * are. A chat not open on this connection is resumed first. During a reply Hermes applies it from the next turn.
+   * Rejects if Hermes refuses, and the chat shows its model as before. An expensive model Hermes asks to confirm is
+   * refused with its message; picking it again for the same chat confirms it.
+   */
+  async setModel(chatId: string, pick: ModelPick): Promise<void> {
+    const before = this.snapshot.chats.find((c) => c.id === chatId)?.model;
+    if (!this.snapshot.chats.some((c) => c.id === chatId)) throw new Error("This chat isn't in the list.");
+    this.patchChat(chatId, (c) => ({ ...c, model: pick }));
+    try {
+      const sid = await this.resume(chatId);
+      // Every write names the chat's session: without one, Hermes writes these keys to the profile's config. Given a
+      // session it no longer holds, it refuses rather than falling back (`_SESSION_SCOPED_KEYS`).
+      const set = (key: string, value: string, extra: Record<string, unknown> = {}) =>
+        this.request("config.set", { session_id: sid, profile: this.profile, key, value, ...extra }) as Promise<ConfigSet>;
+      if (before?.provider !== pick.provider || before?.model !== pick.model) {
+        const confirmKey = `${chatId} ${modelKey(pick)}`;
+        const confirmed = this.confirmModel === confirmKey;
+        const res = await set("model", `${pick.model} --provider ${pick.provider} --session`, confirmed ? { confirm_expensive_model: true } : {});
+        this.confirmModel = undefined;
+        if (res?.confirm_required) {
+          this.confirmModel = confirmKey;
+          throw new Error(`${withoutStop(res.confirm_message || "Hermes asks to confirm this model, which costs more")}. Pick it again to use it.`);
+        }
+      }
+      if (pick.effort && pick.effort !== before?.effort) await set("reasoning", pick.effort, { scope: "session" });
+      if (pick.fast !== undefined && pick.fast !== before?.fast) await set("fast", pick.fast ? "fast" : "normal");
+    } catch (e) {
+      this.patchChat(chatId, (c) => (c.model === pick ? { ...c, model: before } : c));
+      throw e;
     }
   }
 
@@ -981,6 +1065,12 @@ export class Hermes {
     }
     const chat = session_id ? this.snapshot.chats.find((c) => c.runtimeId === session_id) : undefined;
     if (!chat) return;
+    // Sent when the chat's model, reasoning or fast mode changes, here or in another Hermes client.
+    if (type === "session.info") {
+      const model = pickFromInfo(payload);
+      if (model) this.patchChat(chat.id, (c) => ({ ...c, model }));
+      return;
+    }
     this.patchChat(chat.id, (c) => applyEvent(c, type, payload));
     if (type === "message.complete") this.stampTurn(chat.id, (payload.persisted_turn ?? {}) as PersistedTurn);
     // By the end of a turn Hermes has stored the session, so a pin that failed earlier can succeed.
@@ -1246,6 +1336,7 @@ export class Hermes {
           running?: boolean;
           /** What a live session is still waiting on, oldest first. */
           open_requests?: ServerRequest[];
+          info?: unknown;
         };
         const history = historyItems(res.messages ?? []);
         const stale = this.staleItems.get(chatId) ?? 0;
@@ -1262,6 +1353,7 @@ export class Hermes {
         this.patchChat(chatId, (c) => ({
           ...c,
           runtimeId: res.session_id,
+          model: pickFromInfo(res.info) ?? c.model,
           running: c.running || !!res.running,
           savedAt: undefined,
           items: [...history, ...lost(c.items.slice(0, stale)), ...withoutLoadError(c.items.slice(stale))],
@@ -1627,6 +1719,44 @@ export class Hermes {
     return listTitle(row);
   }
 
+  /** See `loadModels`. */
+  private async readModels(profile: string): Promise<ModelCatalog> {
+    const why: string[] = [];
+    const read = async (what: string, ask: () => Promise<unknown>) => {
+      try {
+        const catalog = catalogFromServer(profile, await timeLimit(ask(), MODELS_TIMEOUT_MS));
+        if (!catalog) why.push(`${what} listed no models`);
+        return catalog;
+      } catch (e) {
+        why.push(`${what}: ${withoutStop((e as Error).message)}`);
+        return undefined;
+      }
+    };
+    const catalog =
+      (await read("model.options", () => this.request("model.options", { profile }))) ??
+      (await read("GET /api/model/options", () => this.rest("GET", `api/model/options?${new URLSearchParams({ profile })}`))) ??
+      fallbackCatalog(profile, await this.modelInUse(profile), why.join("; "));
+    catalog.defaultPick ??= await this.modelInUse(profile);
+    // `config.get reasoning` without a session reads the profile's effort; it writes nothing.
+    const effort = await timeLimit(this.request("config.get", { key: "reasoning", profile }), MODELS_TIMEOUT_MS).then(
+      (r) => (r as { value?: unknown } | undefined)?.value,
+      () => undefined,
+    );
+    return isEffort(effort) ? { ...catalog, defaultEffort: effort } : catalog;
+  }
+
+  /** The model a chat on this connection runs on, else the profile's, as dashboard REST lists the profiles. */
+  private async modelInUse(profile: string): Promise<ModelPick | undefined> {
+    const chat = this.snapshot.chats.find((c) => c.model)?.model;
+    if (chat) return { provider: chat.provider, model: chat.model };
+    try {
+      const p = ((await this.rest("GET", "api/profiles")) as ProfileList).profiles.find((p) => p.name === profile);
+      return p?.model ? { provider: p.provider || "custom", model: p.model } : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   private async rest(method: "GET" | "PATCH" | "DELETE", pathAndQuery: string, body?: unknown): Promise<unknown> {
     if (!this.pipe) throw new Error("Not connected to Hermes.");
     return JSON.parse(await this.pipe.request(method, pathAndQuery, body === undefined ? undefined : JSON.stringify(body)));
@@ -1729,6 +1859,13 @@ export function cleanTitle(answer: string): string {
       .slice(0, TITLE_MAX_CHARS)
       .replace(/[\uD800-\uDBFF]$/, "");
   return title.trim();
+}
+
+/** `p`, or a rejection once `ms` have passed without an answer. */
+function timeLimit<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error("Hermes didn't answer in time.")), ms)));
+  return Promise.race([p, late]).finally(() => clearTimeout(timer));
 }
 
 const sessionPath = (chatId: string) => `api/sessions/${encodeURIComponent(chatId)}`;

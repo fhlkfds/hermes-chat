@@ -1,4 +1,5 @@
 // What the UI renders. Terms follow GLOSSARY.md: a Chat is Active or Settled, may be Archived, and has one Source.
+import type { ModelPick } from "./models";
 
 export type Source = "app" | "telegram" | "discord" | "cli" | "desktop" | "other";
 
@@ -103,6 +104,11 @@ export type Chat = {
   running?: boolean;
   /** Stop was asked for; the reply keeps running until Hermes ends the turn (`Hermes.stop`). */
   stopping?: boolean;
+  /**
+   * The model the chat runs on: as Hermes last reported it for the chat, or as the owner last picked for it here.
+   * Unknown until the chat is started or resumed on this connection, or for a server that doesn't say.
+   */
+  model?: ModelPick;
 };
 
 export type ConnectionStatus = "connected" | "reconnecting" | "offline";
