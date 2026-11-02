@@ -123,7 +123,8 @@ type SearchRow = Pick<SessionRow, "id" | "source" | "title" | "preview" | "start
 type ProfileList = { profiles: { name: string }[] };
 
 /** A history row from legacy `session.resume` (research doc §5, `TranscriptMessage`). Tool rows carry the call's
- * name, args and an 80-char `context`; Hermes keeps the result (`content`) only for edit tools. */
+ * name, args and an 80-char `context`; Hermes keeps the result (`content`) only for edit tools. `timestamp`: when the
+ * row was stored, Unix seconds, sent only when positive (`session_history._history_to_messages` at `bf0203a`). */
 type TranscriptMessage = {
   role: string;
   text?: string | null;
@@ -132,7 +133,19 @@ type TranscriptMessage = {
   name?: string | null;
   context?: string | null;
   args?: Record<string, unknown> | null;
+  timestamp?: number | null;
 };
+
+/** Legacy `prompt.submit` result. `user_row_id`: the stored row of the message, when its turn started at once
+ * (`tui_gateway/methods_prompt.py` at `bf0203a`). */
+type Submitted = { user_row_id?: number | null };
+
+/** `message.complete` `persisted_turn`: the stored rows of the turn that ended (`agent/persisted_turn_receipt.py` at
+ * `bf0203a`). `final_assistant_row_id` is there only for a turn that completed with a stored final reply. */
+type PersistedTurn = { user_row_id?: number | null; final_assistant_row_id?: number | null };
+
+/** A row of dashboard REST `GET /api/sessions/{id}/messages` (`SELECT *` from `messages`), as far as this app reads it. */
+type StoredRow = { id: number; timestamp?: number | null };
 
 /** Legacy `image.attach_bytes` and `file.attach` results (research doc §7), as far as this app reads them. */
 type ImageAttached = { path: string };
@@ -299,6 +312,8 @@ export class Hermes {
   private noApprovalReceived = false;
   /** Messages Hermes hasn't accepted yet, so a Stop waits for the turn it stops. */
   private submitting = new Map<string, Promise<unknown>>();
+  /** Each chat's last message sent from here, until a turn ends, with the stored row Hermes gave it, if any. */
+  private turns = new Map<string, { user: Item; rowId: Promise<number | undefined> }>();
   private syncing?: Promise<Error | undefined>;
   private syncAgain = false;
   private background = new Set<Promise<unknown>>();
@@ -581,20 +596,23 @@ export class Hermes {
     const activating = chat.settled;
     const wantedBefore = this.pinWanted.get(chatId);
     if (activating) this.pinWanted.set(chatId, true);
+    const user: Item = { kind: "user", id: `u-${chat.items.length}`, text, ...(attachments.length && { attachments: attachments.map((a) => a.name) }) };
     this.patchChat(chatId, (c) => ({
       ...c,
       settled: false,
       running: true,
       updatedAt: Date.now(),
       title: c.items.length === 0 && c.runtimeId ? (text || attachments[0]?.name || c.title).slice(0, 48) : c.title,
-      items: [
-        ...c.items,
-        { kind: "user", id: `u-${c.items.length}`, text, ...(attachments.length && { attachments: attachments.map((a) => a.name) }) },
-      ],
+      items: [...c.items, user],
     }));
     try {
       const submitting = this.resume(chatId).then((runtimeId) => this.submit(runtimeId, text, attachments));
       this.submitting.set(chatId, submitting);
+      const rowId = submitting.then(
+        (r) => (typeof r.user_row_id === "number" ? r.user_row_id : undefined),
+        () => undefined,
+      );
+      this.turns.set(chatId, { user, rowId });
       try {
         await submitting;
       } finally {
@@ -877,6 +895,7 @@ export class Hermes {
     const chat = session_id ? this.snapshot.chats.find((c) => c.runtimeId === session_id) : undefined;
     if (!chat) return;
     this.patchChat(chat.id, (c) => applyEvent(c, type, payload));
+    if (type === "message.complete") this.stampTurn(chat.id, (payload.persisted_turn ?? {}) as PersistedTurn);
     // By the end of a turn Hermes has stored the session, so a pin that failed earlier can succeed.
     if (type === "message.complete" && this.pinWanted.has(chat.id)) this.track(this.writePin(chat.id));
     // The finished reply is newer than the read watermark, though the owner watched it come in.
@@ -907,6 +926,46 @@ export class Hermes {
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
     const items = chat?.items.filter((i) => i.kind === "user" || i.kind === "assistant" || i.kind === "thinking" || i.kind === "tool") ?? [];
     if (items.length) this.cache.saveTranscript(this.profile, chatId, items);
+  }
+
+  /**
+   * At the end of a turn, shows when Hermes stored the message sent from here and its final reply. Both are found by
+   * stored row id, never by their words: the message's comes from `prompt.submit`; the reply's from the turn's
+   * `persisted_turn`, which counts only when it names that same message. The times are then read from those rows.
+   * Anything not found that way keeps no time; reopening the chat after a reconnect reads every time from history.
+   */
+  private stampTurn(chatId: string, receipt: PersistedTurn) {
+    const turn = this.turns.get(chatId);
+    this.turns.delete(chatId);
+    const items = this.snapshot.chats.find((c) => c.id === chatId)?.items ?? [];
+    const from = turn ? items.indexOf(turn.user) : -1;
+    if (!turn || from < 0) return;
+    const reply = items.slice(from + 1).filter((i) => i.kind === "assistant").pop();
+    const profile = this.profile;
+    this.track(
+      (async () => {
+        const userRow = await turn.rowId;
+        if (userRow === undefined) return;
+        const wanted = new Map<number, Item>([[userRow, turn.user]]);
+        if (reply && receipt.user_row_id === userRow && typeof receipt.final_assistant_row_id === "number") wanted.set(receipt.final_assistant_row_id, reply);
+        // The newest 100 rows: a turn with more tool rows than that leaves its message without a time.
+        const query = new URLSearchParams({ profile, order: "latest", limit: "100", inline_images: "false" });
+        const res = (await this.rest("GET", `api/sessions/${encodeURIComponent(chatId)}/messages?${query}`)) as { messages?: StoredRow[] };
+        const at = new Map<Item, number>();
+        for (const m of res.messages ?? []) {
+          const item = wanted.get(m.id);
+          const t = storedAt(m.timestamp);
+          if (item && t) at.set(item, t);
+        }
+        if (at.size)
+          this.patchChat(chatId, (c) => ({
+            ...c,
+            items: c.items.map((i): Item => ((i.kind === "user" || i.kind === "assistant") && at.has(i) ? { ...i, at: at.get(i) } : i)),
+          }));
+        // The Saved copy was taken when the turn ended, before the times arrived.
+        if (at.size) this.saveTranscript(chatId);
+      })(),
+    );
   }
 
   /**
@@ -1060,9 +1119,9 @@ export class Hermes {
         }
       }
       const prompt = [refs.join("\n"), text].filter(Boolean).join("\n\n") || (queued.length ? IMAGE_ONLY_PROMPT : "");
-      return await this.request("prompt.submit", { session_id: runtimeId, profile: this.profile, text: prompt }).catch((e) => {
+      return (await this.request("prompt.submit", { session_id: runtimeId, profile: this.profile, text: prompt }).catch((e) => {
         throw e instanceof ConnectionLostError ? new PromptUnconfirmedError(e.message) : e;
-      });
+      })) as Submitted;
     } catch (e) {
       for (const path of queued) this.track(this.request("image.detach", { session_id: runtimeId, path }));
       throw e;
@@ -1430,10 +1489,14 @@ function historyItems(messages: TranscriptMessage[]): Item[] {
       ];
     // Assistant rows can be reasoning only; system rows are timeline notes this app doesn't show yet.
     if (!m.text?.trim()) return thought;
-    if (m.role === "user" || m.role === "assistant") return [...thought, { kind: m.role, id, text: m.text }];
+    const at = storedAt(m.timestamp);
+    if (m.role === "user" || m.role === "assistant") return [...thought, { kind: m.role, id, text: m.text, ...(at && { at }) }];
     return [];
   });
 }
+
+/** A stored Hermes time (Unix seconds) in ms, or nothing for a missing, zero or out-of-range one. */
+const storedAt = (s: unknown) => (typeof s === "number" && s > 0 && s * 1000 <= 8.64e15 ? s * 1000 : undefined);
 
 function approvalItem(r: ServerRequest): ApprovalItem {
   const p = r.params;

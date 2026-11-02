@@ -7,7 +7,7 @@ import type { ApprovalChoice, ApprovalItem, AttachCheck, Attachment, Chat, Conne
 import { SOURCE_LABEL, isWaiting } from "../hermes/model";
 import type { Undelivered } from "../hermes/drafts";
 import { Markdown } from "./Markdown";
-import { SettleButton, SourceIcon, Spinner, composing, highlight } from "./bits";
+import { SettleButton, SourceIcon, Spinner, StoredTime, composing, highlight } from "./bits";
 import { AttachmentChip, Previews, readPreview } from "./previews";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
@@ -271,6 +271,7 @@ export function ChatPane({
                     </div>
                   )}
                   {b.text && <div className="bubble-text">{highlight(b.text, q)}</div>}
+                  <StoredTime at={b.at} />
                 </div>
               );
             if (b.kind === "assistant")
@@ -279,6 +280,7 @@ export function ChatPane({
                   <Markdown text={b.text} query={q} />
                   {chat.running && b === last && <span className="cursor" />}
                   {b.interrupted && <div className="stopped">Stopped</div>}
+                  <StoredTime at={b.at} />
                 </div>
               );
             if (b.kind === "error")
