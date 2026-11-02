@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type RefObject } from "react";
+import { PanelRight } from "lucide-react";
 import { connect, readSaved, type Delivery, type Hermes } from "./hermes/transport";
 import { CHECK_EVERY_MS } from "./hermes/otherProfiles";
 import { type Account, type Kept, type SavedSignIn, launchSignIn, savedSignIn, signIn, signInForm, signOutToSignIn } from "./hermes/account";
@@ -21,6 +22,11 @@ import { StatusBar } from "./ui/StatusBar";
 import { systemFonts } from "./ui/tauriFonts";
 import { SignIn } from "./ui/SignIn";
 import { ModelControls } from "./ui/ModelPicker";
+import { PANE_MIN_WIDTH, PreviewPane } from "./ui/PreviewPane";
+import { PreviewContext } from "./ui/previewContext";
+import { tauriLocalFiles, type LocalFiles } from "./ui/tauriPreview";
+import type { PreviewTarget } from "./hermes/preview";
+import type { Route } from "./hermes/pipe";
 import { getUIPrefs, setUIPrefs, subscribe as subscribeUIPrefs, toggleModelFavorite, type StickyModelPick } from "./hermes/uiPrefs";
 
 const SAVED = "hermes-chat.sign-in"; // Everything but the password and extra headers, which are in the system keyring.
@@ -34,6 +40,35 @@ type Toast = { text: string; undo?: () => void; at: number };
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 const withoutProfile = ({ profile: _profile, ...pick }: StickyModelPick): ModelPick => pick;
+
+/** The narrowest the chat gets beside the preview pane; narrower than this and the pane covers the chat instead. */
+const CHAT_MIN_WIDTH = 440;
+const PREVIEW_DEFAULT_WIDTH = 480;
+
+/** How the preview pane names the Hermes server: the SSH target, or the dashboard's host. */
+function serverLabel(route?: Route): string {
+  if (!route) return "the server";
+  if (route.kind === "ssh") return route.target;
+  try {
+    return new URL(route.url).host;
+  } catch {
+    return route.url;
+  }
+}
+
+/** An element's width as it changes; 0 where it can't be measured (as in tests). */
+function useWidth(ref: RefObject<HTMLElement | null>): number {
+  const [width, setWidth] = useState(0);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    setWidth(el.clientWidth);
+    const ro = new ResizeObserver(([e]) => setWidth(e.contentRect.width));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref]);
+  return width;
+}
 
 function loadSignIn(): SavedSignIn {
   const blank = { mode: "ssh" as const, sshTarget: "", url: "", username: "" };
@@ -161,6 +196,7 @@ export function Main({
   notSaved,
   kept = { password: true, headers: true },
   reopenLast = false,
+  localFiles = tauriLocalFiles,
   onSignOut,
 }: {
   hermes: Hermes;
@@ -172,6 +208,8 @@ export function Main({
   kept?: Kept;
   /** This is the app starting: open the profile's last open chat, if the owner wants it reopened. */
   reopenLast?: boolean;
+  /** Where the preview pane's Local files come from: the Open dialog, through Rust. */
+  localFiles?: LocalFiles;
   onSignOut: () => Promise<void>;
 }) {
   const { profile, chats, olderPulled, archivedListed, status, route, unsecure, closedReason, syncError, others, models, switching } = useSyncExternalStore(
@@ -189,6 +227,21 @@ export function Main({
   const [searchOpen, setSearchOpen] = useState(false);
   // The search result the chat on screen was opened from; `at` tells one pick from the next.
   const [picked, setPicked] = useState<{ found: Found; at: number } | null>(null);
+  // What the preview pane beside the chat shows; null when it is closed. `previewHidden`: in a window too narrow for
+  // both, the pane covers the chat, and the owner has gone back to the chat without closing it.
+  const [preview, setPreview] = useState<PreviewTarget | null>(null);
+  const [previewHidden, setPreviewHidden] = useState(false);
+  // Counts what has been opened, so opening the same file again loads it again.
+  const [previewSeq, setPreviewSeq] = useState(0);
+  // The width while the owner drags the pane's edge; it is kept in the display preferences once they let go.
+  const [dragWidth, setDragWidth] = useState<number | null>(null);
+  const openPreview = useCallback((t: PreviewTarget) => {
+    setPreview(t);
+    setPreviewHidden(false);
+    setPreviewSeq((n) => n + 1);
+  }, []);
+  const mainRef = useRef<HTMLElement>(null);
+  const mainWidth = useWidth(mainRef);
 
   // No chat selected means a fresh draft; the Hermes session is created on the first message.
   const draft: Chat = {
@@ -210,7 +263,7 @@ export function Main({
   // The model pick is sticky: new chats start on it, in this profile, until the owner picks another. It is kept on this
   // computer only and never becomes the profile's default. Picked in another profile, it gives way to this profile's
   // own model. A chat on screen shows the model it runs on, and a pick there switches that chat alone.
-  const { modelPicker, modelFavorites } = useSyncExternalStore(subscribeUIPrefs, getUIPrefs);
+  const { modelPicker, modelFavorites, previewWidth } = useSyncExternalStore(subscribeUIPrefs, getUIPrefs);
   const catalog = models?.profile === profile ? models : undefined;
   const sticky: ModelPick | undefined = modelPicker?.profile === profile ? withoutProfile(modelPicker) : catalog?.defaultPick;
   const shownModel = (selected !== draft && selected.model) || sticky;
@@ -224,6 +277,7 @@ export function Main({
   // Every move between chats is kept as the profile's last open chat, so it reopens at the next launch whether or not
   // the app closes cleanly. Going somewhere also ends the wait to reopen the last one.
   const openChat = (id: string | null, remember = true) => {
+    setPreviewHidden(true);
     setSelectedId(id);
     setReopening(undefined);
     setPicked(null);
@@ -237,6 +291,7 @@ export function Main({
   };
 
   const pick = (found: Found) => {
+    setPreviewHidden(true);
     hermes.reveal(found);
     setSelectedId(found.chatId);
     setReopening(undefined);
@@ -290,6 +345,8 @@ export function Main({
   const switchProfile = (name: string) => {
     newChat(false);
     setToast(null);
+    // A Server file is read for the profile shown, so it doesn't carry over.
+    setPreview(null);
     void hermes.switchProfile(name);
   };
 
@@ -427,122 +484,163 @@ export function Main({
     return () => window.removeEventListener("keydown", onKey);
   });
 
+  // Side by side when the chat keeps its minimum width beside the narrowest pane; otherwise the pane covers the chat.
+  // Width 0 means it couldn't be measured, which counts as wide.
+  const previewFits = !mainWidth || mainWidth >= CHAT_MIN_WIDTH + PANE_MIN_WIDTH;
+  const paneMax = mainWidth ? mainWidth - CHAT_MIN_WIDTH : 1200;
+  const paneWidth = Math.min(Math.max(dragWidth ?? previewWidth ?? PREVIEW_DEFAULT_WIDTH, PANE_MIN_WIDTH), Math.max(PANE_MIN_WIDTH, paneMax));
+  // Settings covers the chat, and the pane with it.
+  const previewShown = !!preview && !settingsOpen && (previewFits || !previewHidden);
+  const previewCovers = previewShown && !previewFits;
+
   return (
-    <div className="app">
-      <Rail
-        status={status}
-        route={route}
-        unsecure={unsecure}
-        closedReason={closedReason}
-        onReconnect={() => void hermes.reconnect()}
-        onToggleList={() => setListOpen((o) => !o)}
-        onNew={() => newChat()}
-        onSearch={() => setSearchOpen(true)}
-        onSettings={() => setSettingsOpen(true)}
-      />
-      {listOpen && (
-        <ChatList
-          profile={profile}
-          switching={switching}
+    <PreviewContext.Provider value={openPreview}>
+      <div className="app">
+        <Rail
           status={status}
-          others={others}
-          chats={chats}
-          archivedListed={archivedListed}
-          syncError={syncError}
-          selectedId={settingsOpen ? null : selectedId}
-          onOpen={openChat}
-          onSettle={setSettled}
-          onArchive={setArchived}
-          onListArchived={(on) => void hermes.listArchived(on)}
-          onDelete={deleteChat}
-          onRename={(id, title, from) => hermes.rename(id, title, from)}
-          onRegenTitle={(id) => hermes.regenerateTitle(id)}
-          onListProfiles={() => hermes.profiles()}
-          onCheckOthers={() => void hermes.checkOtherProfiles()}
-          onSwitchProfile={switchProfile}
-          onRetrySwitch={() => void (status === "connected" ? hermes.sync() : hermes.reconnect())}
+          route={route}
+          unsecure={unsecure}
+          closedReason={closedReason}
+          onReconnect={() => void hermes.reconnect()}
+          onToggleList={() => setListOpen((o) => !o)}
+          onNew={() => newChat()}
+          onSearch={() => setSearchOpen(true)}
+          onSettings={() => setSettingsOpen(true)}
         />
-      )}
-      <main className="main">
-        {settingsOpen ? (
-          <SettingsScreen
-            status={status}
-            route={route}
-            unsecure={unsecure}
-            username={connection.username}
-            passwordSaved={kept.password}
-            headersSaved={kept.headers}
-            headers={route?.kind === "url" ? headers : []}
+        {listOpen && (
+          <ChatList
             profile={profile}
-            olderPulled={olderPulled}
-            cacheBytes={() => hermes.cacheBytes()}
-            appearance={appearance}
-            listFonts={systemFonts}
-            modelSettings={hermes.modelSettings}
-            onClearCache={() => hermes.clearCache()}
-            onPullOlder={() => hermes.pullOlderHistory()}
-            onSignOut={onSignOut}
-            onClose={() => setSettingsOpen(false)}
-          />
-        ) : (
-          <ChatPane
-            // Per profile too, so attachments picked in one profile's New chat pane don't carry over to another's.
-            key={`${profile}/${selected.id}`}
-            chat={selected}
-            notLoaded={selected !== draft && status !== "connected" && !selected.runtimeId && selected.items.every(isOutgoing)}
-            findTarget={findTarget}
+            switching={switching}
             status={status}
-            alsoPostsIn={hermes.alsoPostsIn(selected.id)}
-            draft={composerText}
-            onDraft={(text) => savedDrafts.set(shownDraft, text)}
-            onRetry={retry}
-            onEdit={edit}
-            onDismiss={(itemId) => hermes.dismiss(selected.id, itemId)}
-            onAttach={(paths) => hermes.checkAttachments(paths)}
-            onSend={send}
-            onStop={() => void hermes.stop(selected.id)}
-            onAnswer={(approvalId, choice, confirmed) => void hermes.answerApproval(selected.id, approvalId, choice, confirmed)}
-            onSettle={selected === draft ? undefined : (s) => setSettled(selected.id, s)}
-            onExport={selected === draft ? undefined : () => exportSelected(selected)}
-            onArchive={selected === draft ? undefined : (a) => setArchived(selected.id, a)}
-            onUsage={selected === draft ? undefined : () => void hermes.refreshUsage(selected.id)}
-            modelControls={
-              <ModelControls
-                catalog={catalog}
-                current={shownModel}
-                defaultEffort={catalog?.defaultEffort}
-                favorites={modelFavorites}
-                onPick={pickModel}
-                onToggleFavorite={toggleModelFavorite}
-              />
-            }
-            footer={
-              <StatusBar
-                chat={selected}
-                status={status}
-                onYolo={(on) => hermes.setYolo(selected.id, on)}
-                onBreakdown={() => hermes.contextBreakdown(selected.id)}
-              />
-            }
+            others={others}
+            chats={chats}
+            archivedListed={archivedListed}
+            syncError={syncError}
+            selectedId={settingsOpen ? null : selectedId}
+            onOpen={openChat}
+            onSettle={setSettled}
+            onArchive={setArchived}
+            onListArchived={(on) => void hermes.listArchived(on)}
+            onDelete={deleteChat}
+            onRename={(id, title, from) => hermes.rename(id, title, from)}
+            onRegenTitle={(id) => hermes.regenerateTitle(id)}
+            onListProfiles={() => hermes.profiles()}
+            onCheckOthers={() => void hermes.checkOtherProfiles()}
+            onSwitchProfile={switchProfile}
+            onRetrySwitch={() => void (status === "connected" ? hermes.sync() : hermes.reconnect())}
           />
         )}
-      </main>
-      {searchOpen && <SearchPalette onSearch={(q, archived) => hermes.search(q, { archived })} onPick={pick} onClose={() => setSearchOpen(false)} />}
-      {toast && (
-        <div className="toast" key={toast.at} role="status">
-          <span>{toast.text}</span>
-          {toast.undo && (
-            <button
-              onClick={() => {
-                toast.undo?.();
-                setToast(null);
+        <main className="main" ref={mainRef}>
+          <div className="main-chat" inert={previewCovers || undefined}>
+            {settingsOpen ? (
+              <SettingsScreen
+                status={status}
+                route={route}
+                unsecure={unsecure}
+                username={connection.username}
+                passwordSaved={kept.password}
+                headersSaved={kept.headers}
+                headers={route?.kind === "url" ? headers : []}
+                profile={profile}
+                olderPulled={olderPulled}
+                cacheBytes={() => hermes.cacheBytes()}
+                appearance={appearance}
+                listFonts={systemFonts}
+                modelSettings={hermes.modelSettings}
+                onClearCache={() => hermes.clearCache()}
+                onPullOlder={() => hermes.pullOlderHistory()}
+                onSignOut={onSignOut}
+                onClose={() => setSettingsOpen(false)}
+              />
+            ) : (
+              <ChatPane
+                key={`${profile}/${selected.id}`}
+                chat={selected}
+                notLoaded={selected !== draft && status !== "connected" && !selected.runtimeId && selected.items.every(isOutgoing)}
+                findTarget={findTarget}
+                status={status}
+                alsoPostsIn={hermes.alsoPostsIn(selected.id)}
+                draft={composerText}
+                onDraft={(text) => savedDrafts.set(shownDraft, text)}
+                onRetry={retry}
+                onEdit={edit}
+                onDismiss={(itemId) => hermes.dismiss(selected.id, itemId)}
+                onAttach={(paths) => hermes.checkAttachments(paths)}
+                onSend={send}
+                onStop={() => void hermes.stop(selected.id)}
+                onAnswer={(approvalId, choice, confirmed) => void hermes.answerApproval(selected.id, approvalId, choice, confirmed)}
+                onSettle={selected === draft ? undefined : (s) => setSettled(selected.id, s)}
+                onExport={selected === draft ? undefined : () => exportSelected(selected)}
+                onArchive={selected === draft ? undefined : (a) => setArchived(selected.id, a)}
+                onUsage={selected === draft ? undefined : () => void hermes.refreshUsage(selected.id)}
+                headActions={
+                  <button
+                    className={`icon-btn ${previewShown ? "on" : ""}`}
+                    title={!preview ? "Open the preview" : previewShown ? "Close the preview" : "Show the preview"}
+                    aria-pressed={previewShown}
+                    onClick={() => (!preview ? openPreview({ kind: "start" }) : previewShown ? setPreview(null) : setPreviewHidden(false))}
+                  >
+                    <PanelRight size={16} />
+                  </button>
+                }
+                footer={
+                  <StatusBar
+                    chat={selected}
+                    status={status}
+                    onYolo={(on) => hermes.setYolo(selected.id, on)}
+                    onBreakdown={() => hermes.contextBreakdown(selected.id)}
+                  />
+                }
+                modelControls={
+                  <ModelControls
+                    catalog={catalog}
+                    current={shownModel}
+                    defaultEffort={catalog?.defaultEffort}
+                    favorites={modelFavorites}
+                    onPick={pickModel}
+                    onToggleFavorite={toggleModelFavorite}
+                  />
+                }
+              />
+            )}
+          </div>
+          {preview && previewShown && (
+            <PreviewPane
+              key={previewSeq}
+              target={preview}
+              serverLabel={serverLabel(route)}
+              readServer={(path) => hermes.readServerFile(path)}
+              local={localFiles}
+              overlay={!previewFits}
+              width={paneWidth}
+              maxWidth={paneMax}
+              onResize={(w, done) => {
+                setDragWidth(done ? null : w);
+                if (done) setUIPrefs({ previewWidth: w });
               }}
-            >
-              Undo
-            </button>
+              onOpen={openPreview}
+              onHide={() => setPreviewHidden(true)}
+              onClose={() => setPreview(null)}
+            />
           )}
-        </div>
-      )}
-    </div>
+        </main>
+        {searchOpen && <SearchPalette onSearch={(q, archived) => hermes.search(q, { archived })} onPick={pick} onClose={() => setSearchOpen(false)} />}
+        {toast && (
+          <div className="toast" key={toast.at} role="status">
+            <span>{toast.text}</span>
+            {toast.undo && (
+              <button
+                onClick={() => {
+                  toast.undo?.();
+                  setToast(null);
+                }}
+              >
+                Undo
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    </PreviewContext.Provider>
   );
 }

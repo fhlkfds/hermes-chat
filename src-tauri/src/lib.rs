@@ -10,7 +10,7 @@ use tauri::ipc::Channel;
 use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Mutex;
-use transport::{Dashboard, ExtraHeader, LocalFile, Pipe, PipeEvent, SignIn};
+use transport::{Dashboard, ExtraHeader, LocalFile, LocalText, PickedFiles, Pipe, PipeEvent, SignIn};
 use tunnel::Tunnel;
 
 /// The owner's `hermes dashboard` port on the server's loopback (research doc, "SSH tunnel, Host header
@@ -207,6 +207,44 @@ async fn chat_export(app: tauri::AppHandle, markdown: String, file_name: String)
     Ok(Some(path.display().to_string()))
 }
 
+/// A local file the owner picked for the preview pane.
+#[derive(Serialize)]
+struct PickedFile {
+    path: String,
+    name: String,
+}
+
+/// Opens the native Open dialog for a file to preview. The webview never names the path: only a file picked here can
+/// be read by `preview_read_local`. `None`: the owner cancelled.
+#[tauri::command]
+async fn preview_pick_local(app: tauri::AppHandle, picked: State<'_, PickedFiles>) -> Result<Option<PickedFile>, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut dialog = app.dialog().file().set_title("Preview a file on this computer");
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.set_parent(&window);
+    }
+    dialog.pick_file(move |path| {
+        let _ = tx.send(path);
+    });
+    let Some(path) = rx.await.map_err(|e| e.to_string())? else { return Ok(None) };
+    let path = path.into_path().map_err(|e| e.to_string())?;
+    let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+    let path = picked.allow(&path.display().to_string()).map_err(|e| e.to_string())?;
+    Ok(Some(PickedFile { path, name }))
+}
+
+/// The start of a local file picked in `preview_pick_local`, as text.
+#[tauri::command]
+async fn preview_read_local(picked: State<'_, PickedFiles>, path: String) -> Result<LocalText, String> {
+    picked.read(&path).await.map_err(|e| e.to_string())
+}
+
+/// Image bytes from the same retained handle as text previews, never from a newly resolved path.
+#[tauri::command]
+async fn preview_read_local_image(picked: State<'_, PickedFiles>, path: String) -> Result<tauri::ipc::Response, String> {
+    picked.read_image(&path).await.map(tauri::ipc::Response::new).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn notify_desktop(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
     notify::show(app, title, body).await
@@ -222,6 +260,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
+        .manage(PickedFiles::default())
         .invoke_handler(tauri::generate_handler![
             hermes_connect,
             hermes_send,
@@ -238,6 +277,9 @@ pub fn run() {
             headers_save,
             headers_delete,
             chat_export,
+            preview_pick_local,
+            preview_read_local,
+            preview_read_local_image,
             notify_desktop,
             system_fonts
         ])

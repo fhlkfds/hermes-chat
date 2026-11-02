@@ -1,4 +1,4 @@
-// Token usage and cost, as Hermes counts them: research doc "Token usage and cost", ADR 0007.
+// Token usage and cost, as Hermes counts them: research doc "Token usage and cost", ADR 0008.
 //
 // Two sources, never added together:
 // - Per reply: Hermes's live session counters (`server._get_usage`, on `message.complete`, `session.info` and a live

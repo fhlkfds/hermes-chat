@@ -16,12 +16,13 @@
 // Unread chats in the other profiles are polled over dashboard REST (otherProfiles.ts).
 // Settings → Model reads and writes the profile's models over dashboard REST (modelSettings.ts).
 // The composer's model picker lists what `model.options` offers (models.ts) and switches one chat at a time with
+// The preview pane reads Server files over dashboard REST `GET /api/fs/*` (preview.ts).
 // session-scoped `config.set`; it never writes the profile's default model, reasoning or fast mode (Settings → Model does).
 // A message sent from here is marked in the transcript until Hermes confirms it (`Outgoing`). One Hermes didn't take,
 // or may not have, stays there with Retry, kept beside the cache so it outlives a restart, and never in a Saved copy.
 // Whether one Hermes may have got did arrive is settled by reading the chat's history back (ADR 0006).
 // Each chat's context fullness and YOLO come from its session's `info` and `usage`: research doc "Status bar".
-// Token usage and cost (usage.ts, ADR 0007): each reply's usage is how far its session's live counters moved during
+// Token usage and cost (usage.ts, ADR 0008): each reply's usage is how far its session's live counters moved during
 // its turn; each chat's totals and cost are Hermes's stored ones, read with the chat list and after each turn.
 import { APPROVAL_CHOICES, isBroadGrant, isOutgoing, isWaiting, offeredChoices, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ConnectionStatus, type ContextPart, type ContextUse, type Found, type Item, type OtherProfiles, type Outgoing, type OutgoingItem, type SessionLive, type Source } from "./model";
 import { catalogFromServer, fallbackCatalog, isEffort, modelKey, pickFromInfo, type ModelCatalog, type ModelPick } from "./models";
@@ -29,6 +30,7 @@ import { noOthers, OtherProfilesCheck } from "./otherProfiles";
 import { ModelSettingsApi } from "./modelSettings";
 import type { OpenPipe, Pipe, PipeEvent, RestMethod, Route } from "./pipe";
 import { isUnsecure } from "./unsecure";
+import { readServerFile, type FileView } from "./preview";
 import { chatUsageOf, countersOf, newerChatUsage, replyUsage, ZERO_COUNTERS, type ReplyUsage, type UsageCounters } from "./usage";
 
 /** The `source` this app stamps on chats it starts. Legacy `session.create` stores any string as-is. */
@@ -2005,6 +2007,14 @@ export class Hermes {
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * A file on the Hermes server, for the preview pane, read for the profile shown (preview.ts `readServerFile`). Hermes
+   * reads it where its tools run, which for a profile with an SSH terminal backend is that machine.
+   */
+  readServerFile(path: string): Promise<FileView> {
+    return readServerFile((q) => this.rest("GET", q), path, this.snapshot.profile);
   }
 
   private async rest(method: RestMethod, pathAndQuery: string, body?: unknown): Promise<unknown> {

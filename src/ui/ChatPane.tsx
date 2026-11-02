@@ -1,6 +1,6 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
 import { memo, type ReactNode, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
-import { ArrowUp, Brain, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, FileDown, HardDrive, Paperclip, RotateCcw, Search, Square, Wrench, X } from "lucide-react";
+import { ArrowUp, Brain, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, FileDown, Globe, HardDrive, Paperclip, RotateCcw, Search, Server, Square, Wrench, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
@@ -11,6 +11,8 @@ import { Markdown } from "./Markdown";
 import { ArchiveButton, SettleButton, SourceIcon, Spinner, StoredTime, composing, highlight } from "./bits";
 import { AttachmentChip, Previews, readPreview } from "./previews";
 import { ChatUsageButton, ReplyUsageLine } from "./Usage";
+import { useOpenPreview } from "./previewContext";
+import { previewName, toolTargets } from "../hermes/preview";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type ThinkingItem = Extract<Item, { kind: "thinking" }>;
@@ -83,6 +85,7 @@ const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateS
  * Hermes is connected. `onRetry`, `onEdit` and `onDismiss` act on a message Hermes didn't take, or may not have.
  * `modelControls`: the model picker and reasoning pill, at the bottom left of the composer. `footer`: what goes under
  * the composer, the status bar. Ctrl+F opens the find bar. `onUsage` refreshes the chat usage on opening its breakdown.
+ * `headActions`: more buttons in the header, before Find.
  */
 export function ChatPane({
   chat,
@@ -105,6 +108,7 @@ export function ChatPane({
   modelControls,
   footer,
   onUsage,
+  headActions,
 }: {
   chat: Chat;
   notLoaded?: boolean;
@@ -126,6 +130,7 @@ export function ChatPane({
   modelControls?: ReactNode;
   footer?: ReactNode;
   onUsage?: () => void;
+  headActions?: ReactNode;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   // The blocks are memoized, so they get one answer handler for the life of the pane.
@@ -238,6 +243,7 @@ export function ChatPane({
           {/* Outside the actions, whose dimming would show through its breakdown. */}
           {onUsage && <ChatUsageButton chat={chat} onRefresh={onUsage} />}
           <div className="chat-head-actions">
+            {headActions}
             <button
               className="icon-btn"
               title="Find in chat (Ctrl+F)"
@@ -538,7 +544,42 @@ function ToolRow({ t }: { t: ToolItem }) {
               <pre>{t.status === "running" ? "…" : t.result || "(empty)"}</pre>
             </>
           )}
+          <ToolPreviews t={t} />
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * What an opened tool call can show in the preview pane: the files and pages it names, which are on the Hermes server
+ * since that is where tools run, and its output.
+ */
+function ToolPreviews({ t }: { t: ToolItem }) {
+  const open = useOpenPreview();
+  if (!open) return null;
+  const targets = toolTargets(t, location.origin);
+  const output = t.status !== "running" && t.result ? t.result : undefined;
+  if (!targets.length && !output) return null;
+  return (
+    <div className="tool-previews">
+      <span className="tool-label">Preview</span>
+      {targets.map((x) => (
+        <button
+          key={x.kind === "server" ? `s:${x.path}` : x.kind === "web" ? `w:${x.url}` : x.kind}
+          className="preview-chip"
+          title={x.kind === "server" ? `${x.path}\nOn the Hermes server` : x.kind === "web" ? x.url : undefined}
+          onClick={() => open(x)}
+        >
+          {x.kind === "server" ? <Server size={12} /> : <Globe size={12} />}
+          <span>{previewName(x)}</span>
+        </button>
+      ))}
+      {output && (
+        <button className="preview-chip" title="What the tool call returned" onClick={() => open({ kind: "tool", name: t.name, text: output })}>
+          <Wrench size={12} />
+          <span>Output</span>
+        </button>
       )}
     </div>
   );
