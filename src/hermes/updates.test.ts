@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
 import { persist, unsaved } from "./unsaved";
-import { checkPackage, parseGitPkgver, releaseNotes, restoreDrafts, snapshotDrafts, updater, type Install, type Progress, type UpdateDeps } from "./updates";
+import { checkPackage, needsAttention, parseGitPkgver, releaseNotes, restoreDrafts, snapshotDrafts, updater, type Install, type Progress, type UpdateDeps } from "./updates";
 
 const NOW = Date.UTC(2026, 10, 2, 12);
 const pacman = (running: string, installed: string | null = running): Extract<Install, { kind: "pacman" }> => ({
@@ -205,6 +205,23 @@ describe("updater", () => {
     expect(u.getSnapshot()).toEqual({ state: "restart", from: "r312.ef433a2-1", to: "r313.4444444-1" });
   });
 
+  it("doesn't let a slower check replace a failed restart, so it can be tried again", async () => {
+    const kinds = [pacman("r312.ef433a2-1"), pacman("r312.ef433a2-1", "r313.4444444-1"), pacman("r312.ef433a2-1")];
+    let answer!: (r: Response) => void;
+    const get = vi.fn<typeof fetch>(async () => json({ status: "ahead", ahead_by: 1, behind_by: 0, commits: [commit("4444444", "Fix")] }));
+    const { u } = setup({ update_install_kind: () => kinds.shift(), app_restart: new Error("disk full") }, { fetch: get });
+    await u.check();
+    get.mockReturnValueOnce(new Promise((r) => (answer = r)));
+    const quiet = u.check({ installedOnly: true });
+    const full = u.check();
+    await quiet;
+    await u.restart();
+    expect(u.getSnapshot()).toMatchObject({ state: "error", restart: { to: "r313.4444444-1" } });
+    answer(json({ status: "ahead", ahead_by: 1, behind_by: 0, commits: [commit("4444444", "Fix")] }));
+    await full;
+    expect(u.getSnapshot()).toMatchObject({ state: "error", restart: { to: "r313.4444444-1" } });
+  });
+
   it("says why a copy isn't updated here", async () => {
     let { u } = setup({ update_install_kind: { kind: "unmanaged", version: "0.1.0" } });
     await u.check();
@@ -314,6 +331,62 @@ describe("drafts storage refused", () => {
     persist(() => localStorage, "hermes-chat.draft.a", "saved at last");
     expect(unsaved.has("hermes-chat.draft.a")).toBe(false);
     unsaved.clear();
+  });
+});
+
+describe("restoreAfterRestart", () => {
+  const snapshot = JSON.stringify({ "hermes-chat.draft.a": "half a thought" });
+  /** localStorage that refuses every write until `room` is made. */
+  const fullUntil = (room: { made: boolean }): UpdateDeps["storage"] => ({
+    length: 0,
+    key: () => null,
+    getItem: () => null,
+    removeItem: () => {},
+    setItem: (k, v) => {
+      if (!room.made) throw new Error("QuotaExceededError");
+      localStorage.setItem(k, v);
+    },
+  });
+
+  it("does nothing after a launch that wasn't a restart", async () => {
+    const { u, invoke } = setup({ restart_drafts_read: null });
+    await u.restoreAfterRestart();
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it("puts the drafts back, then deletes the saved copy", async () => {
+    localStorage.clear();
+    const { u, invoke } = setup({ restart_drafts_read: snapshot });
+    await u.restoreAfterRestart();
+    expect(localStorage.getItem("hermes-chat.draft.a")).toBe("half a thought");
+    expect(invoke).toHaveBeenLastCalledWith("restart_drafts_clear");
+  });
+
+  it("drops the chat cache to make room for the drafts", async () => {
+    localStorage.clear();
+    const room = { made: false };
+    const clearCache = vi.fn(() => void (room.made = true));
+    const u = updater({ invoke: (async (cmd: string) => (cmd === "restart_drafts_read" ? snapshot : undefined)) as UpdateDeps["invoke"], channel: () => 0, fetch: vi.fn<typeof fetch>(), storage: fullUntil(room), clearCache });
+    await u.restoreAfterRestart();
+    expect(clearCache).toHaveBeenCalled();
+    expect(localStorage.getItem("hermes-chat.draft.a")).toBe("half a thought");
+    expect(u.getSnapshot().state).toBe("idle");
+  });
+
+  it("sets the saved copy aside, never to be put back over newer drafts, and says where it is", async () => {
+    const calls: string[] = [];
+    const invoke = (async (cmd: string) => {
+      calls.push(cmd);
+      return cmd === "restart_drafts_read" ? snapshot : cmd === "restart_drafts_set_aside" ? "/home/me/.local/share/hermes-chat/restart-drafts-1.json" : pacman("r1.ef433a2-1", "r2.4444444-1");
+    }) as UpdateDeps["invoke"];
+    const u = updater({ invoke, channel: () => 0, fetch: vi.fn<typeof fetch>(), storage: fullUntil({ made: false }), clearCache: () => {} });
+    await u.restoreAfterRestart();
+    expect(calls).toEqual(["restart_drafts_read", "restart_drafts_set_aside"]);
+    const s = u.getSnapshot();
+    expect(s).toMatchObject({ state: "error", setAside: "/home/me/.local/share/hermes-chat/restart-drafts-1.json" });
+    expect(needsAttention(s)).toBe(true);
+    await u.check({ installedOnly: true });
+    expect(u.getSnapshot()).toBe(s);
   });
 });
 

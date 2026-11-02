@@ -133,15 +133,16 @@ function Status({ s, updates }: { s: UpdateState; updates: Updater }) {
     case "error":
       return (
         <>
-          <p className="sign-in-error" role="alert">
+          <p className="sign-in-error selectable" role="alert">
             {s.message}
           </p>
-          <button
+          {/* Drafts set aside: nothing to try again, and the notice stays until the app closes. */}
+          {!s.setAside && <button
             className="btn"
             onClick={() => void (s.restart ? updates.restart() : s.found?.via === "updater" ? updates.install() : updates.check())}
           >
             <RefreshCw size={14} /> Try again
-          </button>
+          </button>}
         </>
       );
   }

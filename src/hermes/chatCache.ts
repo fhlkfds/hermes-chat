@@ -66,6 +66,15 @@ function keysOf(prefix: string): string[] {
  */
 const cacheKeys = () => [...keysOf(LIST_PREFIX), ...keysOf(TRANSCRIPT_PREFIX)].filter((k) => k !== UI_PREFS_KEY);
 
+/** Deletes every connection's lists and Saved copies. */
+export function clearCachedChats() {
+  try {
+    for (const k of cacheKeys()) localStorage.removeItem(k);
+  } catch {
+    // Nothing can be deleted from a store that can't be read.
+  }
+}
+
 /** When a Saved copy was saved, read off the front of its JSON so the rest isn't parsed. */
 const savedAtOf = (k: string) => Number(/^\{"savedAt":(\d+)/.exec(localStorage.getItem(k) ?? "")?.[1] ?? 0);
 
@@ -294,11 +303,7 @@ export function localChatCache(connection: SavedSignIn): ChatCache {
       }
     },
     clear() {
-      try {
-        for (const k of cacheKeys()) localStorage.removeItem(k);
-      } catch {
-        // Nothing can be deleted from a store that can't be read.
-      }
+      clearCachedChats();
     },
     olderPulled(profile) {
       return pulledProfiles().includes(profile);

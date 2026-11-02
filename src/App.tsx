@@ -6,6 +6,7 @@ import { CHECK_EVERY_MS } from "./hermes/otherProfiles";
 import { type Account, type Kept, type SavedSignIn, launchSignIn, savedSignIn, signIn, signInForm, signOutToSignIn } from "./hermes/account";
 import { localChatCache } from "./hermes/chatCache";
 import { draftKey, drafts } from "./hermes/drafts";
+import { sending } from "./hermes/unsaved";
 import { chatToReopen, forgetOpenChat, rememberOpenChat } from "./hermes/uiPrefs";
 import { exportChat } from "./hermes/exportChat";
 import { projectLinks, projectScope } from "./hermes/projectLinks";
@@ -1057,7 +1058,10 @@ function ChatView({
     const paths = attachments.map((a) => a.path);
     screenshots?.hold(paths);
     const typed = savedDrafts.take(shownDraft);
-    const to = await chatToSendIn();
+    // In no outbox until its chat exists: an update's restart meanwhile keeps it as the draft (unsaved.ts).
+    const held = [shownDraft, typed] as const;
+    sending.add(held);
+    const to = await chatToSendIn().finally(() => sending.delete(held));
     if ("delivery" in to) {
       savedDrafts.putBack(draftOf(null), typed);
       screenshots?.sent(attachments, false);

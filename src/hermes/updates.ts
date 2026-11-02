@@ -6,7 +6,7 @@
 // notes. Only the package manager installs it; the app then asks to restart. A standalone AppImage built with an
 // update key uses Tauri's updater, which verifies the download's signature. Drafts survive the restart (`restart`).
 
-import { unsaved } from "./unsaved";
+import { sending, unsaved } from "./unsaved";
 
 export const REPO = "l0cky12/hermes-chat";
 
@@ -36,7 +36,7 @@ export type UpdateState =
   /** This copy isn't updated from here; `reason` says why and how to update it. */
   | { state: "unsupported"; version: string; reason: string }
   /** `found`: the update the failure was about, still there to try again. */
-  | { state: "error"; message: string; found?: Found; restart?: { from: string; to: string; found?: Found } };
+  | { state: "error"; message: string; found?: Found; restart?: { from: string; to: string; found?: Found }; setAside?: string };
 
 export type Progress = { event: "downloading"; downloaded: number; total: number | null } | { event: "installing" };
 
@@ -45,7 +45,9 @@ export type UpdateDeps = {
   /** Opens a progress channel for a command; returns the value to pass as its `onProgress`. */
   channel: (onMessage: (p: Progress) => void) => unknown;
   fetch: typeof fetch;
-  storage: Pick<Storage, "length" | "key" | "getItem">;
+  storage: Pick<Storage, "length" | "key" | "getItem" | "setItem" | "removeItem">;
+  /** Deletes the chat lists and Saved copies kept on this computer, to make room for drafts (chatCache.ts). */
+  clearCache?: () => void;
   now?: () => number;
 };
 
@@ -176,6 +178,8 @@ export type Updater = {
   install: () => Promise<void>;
   /** Saves the drafts, then restarts into the installed version. */
   restart: () => Promise<void>;
+  /** Puts back the drafts the last restart saved. Run before anything reads a draft. */
+  restoreAfterRestart: () => Promise<void>;
 };
 
 /**
@@ -198,6 +202,7 @@ export function snapshotDrafts(storage: UpdateDeps["storage"], pending: Readonly
     if (v === null) delete out[k];
     else out[k] = v;
   }
+  for (const [k, text] of sending) if (text) out[k] = out[k] ? `${out[k]}\n\n${text}` : text;
   return JSON.stringify(out);
 }
 
@@ -241,9 +246,12 @@ export function updater(deps: UpdateDeps): Updater {
   };
   const busy = () => ["checking", "installing", "restarting"].includes(state.state);
 
-  /** A check's result, unless an install or restart got under way meanwhile, which nothing a check finds replaces. */
+  /**
+   * A check's result, unless an install or restart got under way meanwhile, or a restart failed or drafts were set
+   * aside: nothing a check finds replaces those.
+   */
   const settle = (s: UpdateState) => {
-    if (!["installing", "restart", "restarting"].includes(state.state)) set(s);
+    if (!["installing", "restart", "restarting"].includes(state.state) && !(state.state === "error" && (state.restart || state.setAside))) set(s);
   };
 
   const check = async ({ installedOnly = false } = {}) => {
@@ -310,8 +318,23 @@ export function updater(deps: UpdateDeps): Updater {
     }
   };
 
-  return { getSnapshot: () => state, subscribe: (fn) => (listeners.add(fn), () => void listeners.delete(fn)), check, install, restart };
+  const restoreAfterRestart = async () => {
+    const saved = await deps.invoke<string | null>("restart_drafts_read");
+    if (saved === null) return;
+    // A full store: the chat lists and Saved copies are only a copy of what Hermes has, so they go to make room.
+    const restored = restoreDrafts(deps.storage, saved) || (deps.clearCache?.(), restoreDrafts(deps.storage, saved));
+    // Never put back again later, over what the owner types from now on.
+    if (restored) return void (await deps.invoke("restart_drafts_clear"));
+    const path = await deps.invoke<string>("restart_drafts_set_aside");
+    set({
+      state: "error",
+      setAside: path,
+      message: `Some drafts and unsent messages from before the restart couldn't be put back, because the app's storage on this computer is full. Their text is saved in ${path}.`,
+    });
+  };
+
+  return { getSnapshot: () => state, subscribe: (fn) => (listeners.add(fn), () => void listeners.delete(fn)), check, install, restart, restoreAfterRestart };
 }
 
 /** Whether the rail shows the update dot. */
-export const needsAttention = (s: UpdateState) => s.state === "available" || s.state === "restart";
+export const needsAttention = (s: UpdateState) => s.state === "available" || s.state === "restart" || (s.state === "error" && !!s.setAside);

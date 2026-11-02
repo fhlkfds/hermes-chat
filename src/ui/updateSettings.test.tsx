@@ -14,6 +14,7 @@ const fake = (s: UpdateState): Updater => ({
   check: vi.fn(async () => {}),
   install: vi.fn(async () => {}),
   restart: vi.fn(async () => {}),
+  restoreAfterRestart: vi.fn(async () => {}),
 });
 const pkg: Found = {
   from: "r312.ef433a2-1",

@@ -505,7 +505,8 @@ pub fn run(screenshot: bool) {
             update::update_download_and_install,
             update::app_restart,
             update::restart_drafts_read,
-            update::restart_drafts_clear
+            update::restart_drafts_clear,
+            update::restart_drafts_set_aside
         ])
         .build(context)
         .expect("error while building tauri application")

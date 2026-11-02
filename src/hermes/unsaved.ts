@@ -3,6 +3,12 @@
 // (updates.ts `snapshotDrafts`). null: the key was being deleted.
 export const unsaved = new Map<string, string | null>();
 
+/**
+ * Messages on their way that no outbox holds yet (a New chat send, while its chat is started), each with the draft key
+ * it was taken from. An update's restart keeps them as that draft (updates.ts `snapshotDrafts`).
+ */
+export const sending = new Set<readonly [key: string, text: string]>();
+
 /** Writes `value` under `key` (null deletes it), and notes it here if the write fails or there's no storage. False: it failed. */
 export function persist(storage: () => Pick<Storage, "setItem" | "removeItem">, key: string, value: string | null): boolean {
   try {

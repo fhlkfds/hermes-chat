@@ -219,6 +219,17 @@ pub async fn restart_drafts_clear(app: AppHandle) -> Result<(), String> {
     }
 }
 
+/// Moves the drafts saved by the last restart to a file of their own, never put back, when the webview couldn't put
+/// them all back (its storage is full), so they can't later overwrite what the owner types. Returns its path.
+#[tauri::command]
+pub async fn restart_drafts_set_aside(app: AppHandle) -> Result<String, String> {
+    let from = drafts_file(&app)?;
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let to = from.with_file_name(format!("restart-drafts-{secs}.json"));
+    std::fs::rename(&from, &to).map_err(|e| e.to_string())?;
+    Ok(to.display().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
