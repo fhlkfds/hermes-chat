@@ -892,6 +892,14 @@ export class Hermes {
     return this.snapshot.chats.filter((c) => !before.has(c.id) && c.updatedAt < cutoff);
   }
 
+  /**
+   * The shown profile's list has been read from Hermes on this connection, so a chat missing from it is gone (deleted,
+   * archived, or older than the list reaches), not just not yet synced.
+   */
+  hasListed(): boolean {
+    return this.listedAt !== undefined;
+  }
+
   /** The storage the chat lists and Saved copies kept on this computer take, in bytes. */
   cacheBytes(): number {
     return this.cache.bytes();
