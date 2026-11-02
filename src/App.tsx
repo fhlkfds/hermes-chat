@@ -3,6 +3,7 @@ import { connect, type Hermes } from "./hermes/transport";
 import { type Account, type SavedSignIn, savedSignIn, signIn, signOut } from "./hermes/account";
 import { localChatCache } from "./hermes/chatCache";
 import { systemKeyring } from "./hermes/tauriKeyring";
+import { desktopNotify } from "./hermes/tauriNotify";
 import { tauriPipe, type SignInDetails } from "./hermes/tauriPipe";
 import type { Attachment, Chat, Found } from "./hermes/model";
 import { ChatList, Rail } from "./ui/Sidebar";
@@ -33,7 +34,7 @@ function loadSignIn(): SavedSignIn {
 const account: Account = {
   keyring: systemKeyring,
   store: { load: loadSignIn, save: (d) => localStorage.setItem(SAVED, JSON.stringify(d)) },
-  connect: (d) => connect(tauriPipe(d), undefined, localChatCache),
+  connect: (d) => connect(tauriPipe(d), undefined, localChatCache, desktopNotify),
 };
 
 /** What launch ends in: signed in with the saved password, or the sign-in screen and why. */
@@ -209,6 +210,19 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
     const timer = setTimeout(() => setToast(null), TOAST_MS);
     return () => clearTimeout(timer);
   }, [toast]);
+
+  // Out of focus, Hermes notifies instead of marking the chat on screen read (transport.ts `setFocused`).
+  useEffect(() => {
+    hermes.setFocused(document.hasFocus());
+    const onFocus = () => hermes.setFocused(true);
+    const onBlur = () => hermes.setFocused(false);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, [hermes]);
 
   // An opened chat shows its stored history and is marked read; a chat already open on this connection is left as it
   // is. After a reconnect the chat on screen loads again. Settings covers the chat, so it isn't on screen meanwhile.
