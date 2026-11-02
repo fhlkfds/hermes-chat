@@ -21,7 +21,11 @@ function Row({ label, value, sub, note }: { label: string; value: string; sub?: 
 export function ReplyUsageLine({ usage }: { usage: ReplyUsage }) {
   const [open, setOpen] = useState(false);
   const id = useId();
-  const parts = [`${tokens(usage.input)} in`, ...(usage.cache ? [`${tokens(usage.cache)} cache`] : []), `${tokens(usage.output)} out`];
+  // Without the split, all the input shows as "in".
+  const parts =
+    usage.input === undefined
+      ? [`${tokens(usage.prompt)} in`, `${tokens(usage.output)} out`]
+      : [`${tokens(usage.input)} in`, ...(usage.cache ? [`${tokens(usage.cache!)} cache`] : []), `${tokens(usage.output)} out`];
   return (
     <div className="reply-usage">
       <button
@@ -35,8 +39,9 @@ export function ReplyUsageLine({ usage }: { usage: ReplyUsage }) {
       </button>
       {open && (
         <dl className="usage-table" id={id} ref={(el) => el?.scrollIntoView?.({ block: "nearest" })}>
-          <Row label="Input, not cached" value={full(usage.input)} />
-          <Row label="Cache read or written" value={full(usage.cache)} note="Hermes's live counts don't tell cache reads from cache writes." />
+          <Row label="Input" value={full(usage.prompt)} />
+          <Row label="not cached" value={full(usage.input)} sub />
+          <Row label="cache read or written" value={full(usage.cache)} sub note="Hermes's live counts don't tell cache reads from cache writes." />
           <Row label="Output" value={full(usage.output)} />
           <Row label="of which reasoning" value={full(usage.reasoning)} sub />
           <Row label="Model calls" value={full(usage.calls)} />

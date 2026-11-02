@@ -22,15 +22,22 @@ const STORED = {
 };
 
 describe("Hermes's live counters", () => {
-  it("reads `_get_usage`, its cache part being prompt less uncached input", () => {
-    expect(countersOf({ model: "m", input: 1200, output: 300, reasoning: 50, prompt: 5200, completion: 300, total: 5500, calls: 2 })).toEqual({
+  it("reads `_get_usage`: all the input, and its uncached part", () => {
+    expect(countersOf({ model: "m", input: 1200, output: 300, reasoning: 50, prompt: 5200, completion: 300, total: 5500, calls: 2, cache_hit_pct: 77 })).toEqual({
+      prompt: 5200,
       input: 1200,
-      cache: 4000,
       output: 300,
       reasoning: 50,
       calls: 2,
       model: "m",
     });
+  });
+
+  it("reads Hermes's stand-in for zero uncached input as zero when the cache was read", () => {
+    // `g("session_input_tokens", "session_prompt_tokens")` sends `prompt` while the uncached count is 0.
+    expect(countersOf({ input: 1000, prompt: 1000, output: 5, calls: 1, cache_hit_pct: 100 })).toMatchObject({ prompt: 1000, input: 0 });
+    // No cache read: all of it uncached.
+    expect(countersOf({ input: 1000, prompt: 1000, output: 5, calls: 1 })).toMatchObject({ prompt: 1000, input: 1000 });
   });
 
   it("counts an agent not built yet as zero, and anything not an object as unknown", () => {
@@ -41,15 +48,16 @@ describe("Hermes's live counters", () => {
   });
 
   it("ignores counts that aren't counts", () => {
-    expect(countersOf({ input: -5, output: "9", calls: Number.NaN, prompt: 10 })).toEqual({ input: 0, cache: 10, output: 0, reasoning: 0, calls: 0 });
+    expect(countersOf({ input: -5, output: "9", calls: Number.NaN, prompt: 10 })).toEqual({ prompt: 10, input: 0, output: 0, reasoning: 0, calls: 0 });
   });
 });
 
 describe("A reply's usage", () => {
-  const start = { input: 1200, cache: 4000, output: 300, reasoning: 50, calls: 2 };
+  const start = { prompt: 5200, input: 1200, output: 300, reasoning: 50, calls: 2 };
 
   it("is how far the counters moved during its turn, with the model of its last call", () => {
-    expect(replyUsage(start, { input: 1500, cache: 8000, output: 420, reasoning: 50, calls: 3, model: "b" })).toEqual({
+    expect(replyUsage(start, { prompt: 9500, input: 1500, output: 420, reasoning: 50, calls: 3, model: "b" })).toEqual({
+      prompt: 4300,
       input: 300,
       cache: 4000,
       output: 120,
@@ -59,18 +67,34 @@ describe("A reply's usage", () => {
     });
   });
 
-  it("is the end counters when any went down, since a rebuilt agent counts from zero", () => {
-    const end = { input: 90, cache: 0, output: 10, reasoning: 0, calls: 1 };
-    expect(replyUsage(start, end)).toEqual(end);
+  it("is the end counters when a running counter went down, since a rebuilt agent counts from zero", () => {
+    expect(replyUsage(start, { prompt: 90, input: 90, output: 10, reasoning: 0, calls: 1 })).toEqual({ prompt: 90, input: 90, cache: 0, output: 10, reasoning: 0, calls: 1 });
+  });
+
+  it("isn't mistaken for a rebuild when the first turn was all cache and the next wasn't", () => {
+    // Turn 1: 1,000 tokens read from the cache, none uncached; Hermes sends input = prompt and a cache hit.
+    const first = countersOf({ input: 1000, prompt: 1000, output: 10, calls: 1, cache_hit_pct: 100 })!;
+    expect(replyUsage(ZERO_COUNTERS, first)).toEqual({ prompt: 1000, input: 0, cache: 1000, output: 10, reasoning: 0, calls: 1 });
+    // Turn 2: 100 uncached and 1,000 cached more.
+    const second = countersOf({ input: 100, prompt: 2100, output: 25, calls: 2, cache_hit_pct: 95 })!;
+    expect(replyUsage(first, second)).toEqual({ prompt: 1100, input: 100, cache: 1000, output: 15, reasoning: 0, calls: 1 });
+  });
+
+  it("leaves the uncached part unknown when it doesn't fit, keeping the input total", () => {
+    // A session whose first calls were wholly cache writes reported as uncached, then a real uncached count.
+    const first = countersOf({ input: 1000, prompt: 1000, output: 10, calls: 1 })!;
+    const second = countersOf({ input: 100, prompt: 2100, output: 25, calls: 2 })!;
+    expect(replyUsage(first, second)).toEqual({ prompt: 1100, output: 15, reasoning: 0, calls: 1 });
   });
 
   it("is nothing for a turn that made no model call", () => {
     expect(replyUsage(start, { ...start })).toBeUndefined();
   });
 
-  it("comes back from a Saved copy only whole", () => {
-    expect(replyUsageOf({ input: 1, cache: 2, output: 3, reasoning: 0, calls: 1, model: "m" })).toEqual({ input: 1, cache: 2, output: 3, reasoning: 0, calls: 1, model: "m" });
-    expect(replyUsageOf({ input: 1, cache: 2, output: 3, calls: 1 })).toBeUndefined();
+  it("comes back from a Saved copy only whole, and its split only when it adds up", () => {
+    expect(replyUsageOf({ prompt: 3, input: 1, cache: 2, output: 3, reasoning: 0, calls: 1, model: "m" })).toEqual({ prompt: 3, input: 1, cache: 2, output: 3, reasoning: 0, calls: 1, model: "m" });
+    expect(replyUsageOf({ prompt: 9, input: 1, cache: 2, output: 3, reasoning: 0, calls: 1 })).toEqual({ prompt: 9, output: 3, reasoning: 0, calls: 1 });
+    expect(replyUsageOf({ input: 1, cache: 2, output: 3, reasoning: 0, calls: 1 })).toBeUndefined();
     expect(replyUsageOf(null)).toBeUndefined();
   });
 });
@@ -89,12 +113,15 @@ describe("A chat's stored usage", () => {
       readAt: 5,
     });
     expect(totalTokens(u)).toBe(42298 + 60160 + 1006);
-    expect(costLabel(u.cost)).toEqual({ short: "~$0.0030", detail: "Estimated by Hermes from the provider's published model prices. Your provider's bill may differ." });
+    expect(costLabel(u.cost)).toEqual({
+      short: "~$0.0030",
+      detail: "Estimated by Hermes from the provider's published model prices. Your provider's bill may differ. A call Hermes couldn't price isn't counted.",
+    });
   });
 
   it("names the pricing version when Hermes recorded one", () => {
     const u = chatUsageOf({ ...STORED, cost_source: "official_docs_snapshot", pricing_version: "anthropic-2026-09" }, 0)!;
-    expect(costLabel(u.cost).detail).toBe("Estimated by Hermes from a saved copy of the provider's price list (prices anthropic-2026-09). Your provider's bill may differ.");
+    expect(costLabel(u.cost).detail).toMatch(/^Estimated by Hermes from a saved copy of the provider's price list \(prices anthropic-2026-09\)\. /);
   });
 
   it("calls a cost billed only when the provider's figures are all of it", () => {
@@ -110,6 +137,20 @@ describe("A chat's stored usage", () => {
     const u = chatUsageOf({ ...STORED, cost_status: "unknown", estimated_cost_usd: 0.0012 }, 0)!;
     expect(u.cost).toEqual({ kind: "partial", usd: 0.0012, source: "provider_models_api" });
     expect(costLabel(u.cost).short).toBe("~$0.0012+");
+  });
+
+  it("never claims a total covers calls Hermes couldn't price, whatever the latest call's status", () => {
+    // An unpriced call, then one Hermes priced (or a provider reported, or a subscription covered): the row keeps only
+    // the latest status, and the unpriced call adds nothing to either sum.
+    for (const latest of [
+      { cost_status: "estimated", estimated_cost_usd: 0.002 },
+      { cost_status: "actual", actual_cost_usd: 0.002, estimated_cost_usd: 0.002 },
+      { cost_status: "included", cost_source: "none", estimated_cost_usd: 0 },
+    ]) {
+      const { detail } = costLabel(chatUsageOf({ ...STORED, ...latest }, 0)!.cost);
+      expect(detail).toContain("A call Hermes couldn't price isn't counted.");
+    }
+    expect(costLabel({ kind: "actual", usd: 0.002 }).detail).not.toMatch(/billed/i);
   });
 
   it("says a subscription route costs nothing per token", () => {

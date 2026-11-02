@@ -38,7 +38,7 @@ function pane(chat: Chat, onUsage = () => {}) {
   );
 }
 
-const measured = { input: 1234, cache: 60160, output: 1006, reasoning: 183, calls: 3, model: "z-ai/glm-5.3-flash" };
+const measured = { prompt: 61394, input: 1234, cache: 60160, output: 1006, reasoning: 183, calls: 3, model: "z-ai/glm-5.3-flash" };
 const stored = {
   input_tokens: 42298,
   output_tokens: 1006,
@@ -61,8 +61,9 @@ describe("A reply's usage", () => {
     const table = document.getElementById(line.getAttribute("aria-controls")!)!;
     const rows = [...table.querySelectorAll(".usage-row")].map((r) => [r.querySelector("dt")!.textContent, r.querySelector("dd")!.textContent]);
     expect(rows).toEqual([
-      ["Input, not cached", (1234).toLocaleString()],
-      ["Cache read or written", (60160).toLocaleString()],
+      ["Input", (61394).toLocaleString()],
+      ["not cached", (1234).toLocaleString()],
+      ["cache read or written", (60160).toLocaleString()],
       ["Output", (1006).toLocaleString()],
       ["of which reasoning", "183"],
       ["Model calls", "3"],
@@ -76,10 +77,19 @@ describe("A reply's usage", () => {
     pane(
       chatOf([
         { kind: "assistant", id: "a", text: "Old reply" },
-        { kind: "assistant", id: "b", text: "New reply", usage: { ...measured, cache: 0 } },
+        { kind: "assistant", id: "b", text: "New reply", usage: { ...measured, prompt: 1234, cache: 0 } },
       ]),
     );
     expect(screen.getAllByRole("button", { name: /^Tokens for this reply/ }).map((b) => b.textContent)).toEqual(["1.2k in · 1k out"]);
+  });
+
+  it("shows all the input as in, and its split as not reported, when Hermes's counts don't split it", async () => {
+    pane(chatOf([{ kind: "assistant", id: "a", text: "Hi", usage: { prompt: 1100, output: 15, reasoning: 0, calls: 1 } }]));
+    const line = screen.getByRole("button", { name: /^Tokens for this reply/ });
+    expect(line.textContent).toBe("1.1k in · 15 out");
+    await userEvent.click(line);
+    const table = document.getElementById(line.getAttribute("aria-controls")!)!;
+    expect([...table.querySelectorAll(".usage-row dd")].slice(0, 3).map((d) => d.textContent)).toEqual([(1100).toLocaleString(), "Not reported", "Not reported"]);
   });
 
   it("waits for the reply to finish", () => {
@@ -112,7 +122,7 @@ describe("A chat's usage", () => {
       ["Total", (103464).toLocaleString()],
       ["Model calls", "3"],
     ]);
-    expect(dialog.textContent).toContain("Estimated by Hermes from the provider's published model prices. Your provider's bill may differ.");
+    expect(dialog.textContent).toContain("Estimated by Hermes from the provider's published model prices. Your provider's bill may differ. A call Hermes couldn't price isn't counted.");
     expect(dialog.textContent).toContain("Its helper tasks, such as titling, aren't included.");
 
     fireEvent.keyDown(dialog, { key: "Escape" });

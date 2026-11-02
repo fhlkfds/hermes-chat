@@ -626,6 +626,8 @@ export class Hermes {
     this.showSaved(chatId);
     if (this.snapshot.status !== "connected") return;
     this.seen(chatId);
+    // A chat the list didn't bring totals for, such as an older one opened from a search, reads its own.
+    if (!this.snapshot.chats.find((c) => c.id === chatId)?.usage) this.track(this.refreshUsage(chatId));
     try {
       await this.resume(chatId);
       if (this.viewing === chatId) this.tellShown(chatId);
@@ -1233,33 +1235,32 @@ export class Hermes {
         if (userRow === undefined) return;
         const wanted = new Map<number, Item>([[userRow, turn.user]]);
         const replyRow = reply && receipt.user_row_id === userRow && typeof receipt.final_assistant_row_id === "number" ? receipt.final_assistant_row_id : undefined;
-        if (reply && replyRow !== undefined) wanted.set(replyRow, reply);
-        const at = new Map<Item, number>();
-        try {
-          // The newest 100 rows: a turn with more tool rows than that leaves its message without a time.
-          const query = new URLSearchParams({ profile, order: "latest", limit: "100", inline_images: "false" });
-          const res = (await this.rest("GET", `api/sessions/${encodeURIComponent(chatId)}/messages?${query}`)) as { messages?: StoredRow[] };
-          for (const m of res.messages ?? []) {
-            const item = wanted.get(m.id);
-            const t = storedAt(m.timestamp);
-            if (item && t) at.set(item, t);
-          }
-        } finally {
-          // The reply keeps its stored row even when its time can't be read: its usage is found again by it.
-          const row = (i: Item) => (i === reply ? replyRow : undefined);
-          if (at.size || replyRow !== undefined) {
-            this.patchChat(chatId, (c) => ({
-              ...c,
-              items: c.items.map((i): Item =>
-                (i.kind === "user" || i.kind === "assistant") && (at.has(i) || row(i) !== undefined)
-                  ? { ...i, ...(at.has(i) && { at: at.get(i) }), ...(i.kind === "assistant" && row(i) !== undefined && { rowId: row(i) }) }
-                  : i,
-              ),
-            }));
-            // The Saved copy was taken when the turn ended, before the times and row arrived.
+        if (reply?.kind === "assistant" && replyRow !== undefined) {
+          // The reply keeps its stored row from now, saved at once: its usage is found again by it after a reload,
+          // even one before its time is read, or when that read fails.
+          const withRow: Item = { ...reply, rowId: replyRow };
+          this.patchChat(chatId, (c) => ({ ...c, items: c.items.map((i) => (i === reply ? withRow : i)) }));
+          if (this.snapshot.chats.find((c) => c.id === chatId)?.items.includes(withRow)) {
             this.saveTranscript(chatId);
+            wanted.set(replyRow, withRow);
           }
         }
+        // The newest 100 rows: a turn with more tool rows than that leaves its message without a time.
+        const query = new URLSearchParams({ profile, order: "latest", limit: "100", inline_images: "false" });
+        const res = (await this.rest("GET", `api/sessions/${encodeURIComponent(chatId)}/messages?${query}`)) as { messages?: StoredRow[] };
+        const at = new Map<Item, number>();
+        for (const m of res.messages ?? []) {
+          const item = wanted.get(m.id);
+          const t = storedAt(m.timestamp);
+          if (item && t) at.set(item, t);
+        }
+        if (at.size)
+          this.patchChat(chatId, (c) => ({
+            ...c,
+            items: c.items.map((i): Item => ((i.kind === "user" || i.kind === "assistant") && at.has(i) ? { ...i, at: at.get(i) } : i)),
+          }));
+        // The Saved copy was taken when the turn ended, before the times arrived.
+        if (at.size) this.saveTranscript(chatId);
       })(),
     );
   }

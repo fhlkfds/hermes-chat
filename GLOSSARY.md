@@ -91,7 +91,7 @@ The tokens a chat's model calls took in and gave out: input, cache read and writ
 _Avoid_: tokens (alone, for the whole breakdown), stats
 
 **Cost**:
-What a chat's usage cost, only as Hermes recorded it: billed, estimated, at least an estimate, included in a subscription, or unknown. The app keeps no prices of its own, and shows no cost per reply.
+What a chat's usage cost, only as Hermes recorded it: reported by the provider, estimated, at least an estimate, included in a subscription, or unknown. It counts only the calls Hermes could price. The app keeps no prices of its own, and shows no cost per reply.
 _Avoid_: price, spend, bill (except for a cost the provider reported)
 
 **Unsecure**:
