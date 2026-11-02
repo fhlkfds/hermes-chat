@@ -29,7 +29,7 @@ import { catalogFromServer, fallbackCatalog, isEffort, modelKey, pickFromInfo, t
 import { noOthers, OtherProfilesCheck } from "./otherProfiles";
 // Projects are Hermes's own, read and written with legacy `projects.*` (projects.ts, research doc "Projects").
 import { projectsApi, type ProjectsApi } from "./projects";
-import { listServerCommands, runServerCommand, type CommandDef, type CommandResult } from "./commands";
+import { listServerCommands, runServerCommand, type CommandDef, type CommandResult, type ServerCommandList } from "./commands";
 import { ModelSettingsApi } from "./modelSettings";
 import type { OpenPipe, Pipe, PipeEvent, RestMethod, Route, Speech, Transcript, VoiceSetup } from "./pipe";
 import { remoteFiles, type RemoteFiles } from "./remoteFiles";
@@ -445,7 +445,7 @@ export class Hermes {
   /** When the shown profile's list last synced on this connection. */
   private listedAt?: number;
   /** The server commands listed for a connection and profile (`serverCommands`). */
-  private commandsRead?: { key: string; done: Promise<Set<string>> };
+  private commandsRead?: { key: string; done: Promise<ServerCommandList> };
   /** The voice set-up read for a connection and profile (`voiceSetup`). */
   private voiceRead?: { key: string; done: Promise<VoiceSetup> };
   /** The model list being read, and for which profile. */
@@ -581,7 +581,7 @@ export class Hermes {
    * The registry's server commands this Hermes lists for the shown profile (commands.ts). Read once per connection and
    * profile; a failed read is tried again on the next call.
    */
-  serverCommands(): Promise<Set<string>> {
+  serverCommands(): Promise<ServerCommandList> {
     if (!this.connectedPipe()) return Promise.reject(new Error("Not connected to Hermes."));
     const key = `${this.generation}/${this.profile}`;
     if (this.commandsRead?.key !== key) {

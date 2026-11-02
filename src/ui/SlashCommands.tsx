@@ -8,11 +8,12 @@ import { Spinner, composing } from "./bits";
 /**
  * What runs the commands for one composer. `why`: why a command can't run now, or undefined when it can. `run` resolves
  * with text to show under the composer, if any, and rejects saying why the command didn't run. It empties the Draft
- * only once the command has run, so a command that fails leaves the words typed.
+ * only once the command has run, and only while `still()` says the composer that ran it is still on its chat, so a
+ * command that fails or answers late leaves the words typed.
  */
 export type CommandHost = {
   why(def: CommandDef): string | undefined;
-  run(def: CommandDef, arg: string): Promise<string | undefined>;
+  run(def: CommandDef, arg: string, still: () => boolean): Promise<string | undefined>;
 };
 
 type Note = { title?: string; text: string; error?: boolean };
@@ -56,6 +57,10 @@ export function useSlashCommands(host: CommandHost | undefined, text: string, on
   const matches = open ? matchCommands(query) : [];
   const sel = Math.max(0, Math.min(index, matches.length - 1));
   useEffect(() => setIndex(0), [query]);
+  // The chosen command stays in view as the arrows move through a list taller than the menu.
+  useEffect(() => {
+    if (open) document.getElementById(`${listId}-${sel}`)?.scrollIntoView?.({ block: "nearest" });
+  }, [open, sel, listId]);
 
   const focusText = () => taRef.current?.focus();
   const accept = (def: CommandDef) => {
@@ -69,7 +74,7 @@ export function useSlashCommands(host: CommandHost | undefined, text: string, on
     setNote(undefined);
     setPending(def.name);
     try {
-      const out = await host!.run(def, arg);
+      const out = await host!.run(def, arg, () => mounted.current);
       if (mounted.current && out) setNote({ title: `/${def.name}`, text: out });
     } catch (e) {
       if (mounted.current) setNote({ text: `/${def.name} didn't run: ${e instanceof Error ? e.message : String(e)}`, error: true });

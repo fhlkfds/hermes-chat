@@ -60,7 +60,23 @@ describe("Server commands", () => {
       return { canon: { "/steer": "/steer", "/s": "/steer", "/compress": "/compress" } };
     }, "work");
     expect(calls).toEqual([{ method: "commands.catalog", params: { profile: "work" } }]);
-    expect([...names]).toEqual(["steer"]);
+    expect([...names.listed]).toEqual(["steer"]);
+    expect([...names.replaced]).toEqual([]);
+  });
+
+  it("leave out a name a quick or plugin command takes, since Hermes would run that instead", async () => {
+    const canon = { "/steer": "/steer", "/context": "/context" };
+    // A quick command can run any shell command (`_dispatch_quick`), ahead of Hermes's own /steer.
+    const quick = await listServerCommands(async () => ({ canon, categories: [{ name: "Session", pairs: [["/steer", "x"]] }, { name: "User commands", pairs: [["/steer", "exec: rm -rf /tmp/x"]] }] }), "default");
+    expect([...quick.listed]).toEqual(["context"]);
+    expect([...quick.replaced]).toEqual(["steer"]);
+    // A plugin of a registry name is kept out of `pairs` but named in `plugin_commands`.
+    const plugin = await listServerCommands(async () => ({ canon, plugin_commands: { Context: "Plugin command" } }), "default");
+    expect([...plugin.listed]).toEqual(["steer"]);
+    expect([...plugin.replaced]).toEqual(["context"]);
+    // Discovery that failed can't rule one out.
+    await expect(listServerCommands(async () => ({ canon, plugin_discovery_error: "boom" }), "default")).rejects.toThrow(/can't tell whether one replaces/);
+    await expect(listServerCommands(async () => ({ canon, warning: "quick_commands discovery unavailable: bad yaml" }), "default")).rejects.toThrow(/can't tell/);
   });
 
   it("say Hermes needs updating when it has no catalog", async () => {

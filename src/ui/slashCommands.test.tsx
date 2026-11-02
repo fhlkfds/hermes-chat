@@ -281,3 +281,70 @@ describe("A command's late answer", () => {
     expect(screen.queryByText(/Context window: late/)).toBeNull();
   });
 });
+
+describe("Review regressions", () => {
+  it("never runs a /steer that a quick command of that name would replace", async () => {
+    const { server, hermes, user } = await launch((s) => (s.quickCommands = { steer: "exec: ./deploy.sh" }));
+    await startReply(user, hermes);
+    await user.keyboard("/steer stop now{Enter}");
+    expect(screen.getByRole("alert").textContent).toMatch(/^\/steer can't run: This Hermes has a quick or plugin command called \/steer/);
+    expect(server.requests.some((r) => r.method === "command.dispatch")).toBe(false);
+    expect(composer().value).toBe("/steer stop now");
+  });
+
+  it("a /steer Hermes asks to send keeps what the owner typed meanwhile", async () => {
+    const { server, hermes, user } = await launch((s) => (s.steerable = false));
+    await startReply(user, hermes);
+    const dispatch = server.handlers["command.dispatch"];
+    let answer!: () => void;
+    server.handlers["command.dispatch"] = (r) => (answer = () => dispatch(r));
+    await user.keyboard("/steer then tidy up{Enter}");
+    await user.clear(composer());
+    await user.keyboard("Something else entirely");
+    act(() => answer());
+    await waitFor(() => expect(sent(server)).toEqual(["Run the backup", "then tidy up"]));
+    expect(composer().value).toBe("Something else entirely");
+  });
+
+  it("an answer that comes after the owner opened another chat leaves the first chat's text", async () => {
+    const { server, user } = await launch((s) => s.sessions.push(row("nginx", 2, { pinned: true, title: "Rotate nginx logs" })));
+    let answer!: () => void;
+    server.handlers["slash.exec"] = (r) => (answer = () => server.respond(r.id, { output: "Context window: late" }));
+    await user.click(composer());
+    await user.keyboard("/context{Enter}{Enter}");
+    await user.click(screen.getByRole("button", { name: /Rotate nginx logs/ }));
+    act(() => answer());
+    await user.click(screen.getByRole("button", { name: /Nightly backup/ }));
+    await waitFor(() => expect(composer().value).toBe("/context"));
+    expect(screen.queryByText(/Context window: late/)).toBeNull();
+  });
+
+  it("a delete Hermes refuses keeps the text in the chat", async () => {
+    const { server, user } = await launch();
+    server.rest["DELETE /api/sessions/backup"] = () => {
+      throw new Error(`The dashboard answered 403: {"detail":"Not allowed"}`);
+    };
+    await user.click(composer());
+    await user.keyboard("/delete{Enter}{Enter}");
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete" }));
+    await user.click(await screen.findByRole("button", { name: /Nightly backup/ }));
+    await waitFor(() => expect(composer().value).toBe("/delete"));
+  });
+
+  it("two panes on one chat can't run the same command twice", async () => {
+    const { server, user } = await launch();
+    let answer!: () => void;
+    server.handlers["slash.exec"] = (r) => (answer = () => server.respond(r.id, { output: "Context window: once" }));
+    await user.click(screen.getByRole("button", { name: "Split into two panes" }));
+    const [left, right] = screen.getAllByPlaceholderText<HTMLTextAreaElement>("Message Hermes");
+    await user.click(left);
+    await user.keyboard("/context{Enter}{Enter}");
+    await waitFor(() => expect(right.value).toBe("/context"));
+    await user.click(right);
+    await user.keyboard("{Enter}{Enter}");
+    expect((await screen.findByRole("alert")).textContent).toBe("/context didn't run: A command typed in this chat is still running.");
+    act(() => answer());
+    await screen.findByText(/Context window: once/);
+    expect(server.requests.filter((r) => r.method === "slash.exec")).toHaveLength(1);
+  });
+});

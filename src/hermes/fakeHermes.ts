@@ -196,6 +196,8 @@ export class FakeHermes {
   oneshotAnswer = "A new title";
   /** The server commands `commands.catalog` lists; undefined for a Hermes without the method. */
   commandCatalog: string[] | undefined = ["steer", "context", "compress", "help"];
+  /** The profile's quick commands (`quick_commands` in config.yaml), by name, with their description. */
+  quickCommands: Record<string, string> = {};
   /** A `/steer` is queued for the running turn; false answers as Hermes does with no turn running. */
   steerable = true;
   contextOutput = "Context window: 12,400 / 200,000 tokens (6%)\n  System prompt  3,100\n  Messages       9,300";
@@ -344,7 +346,12 @@ export class FakeHermes {
     "commands.catalog": (r) => {
       if (!this.commandCatalog) return this.fail(r.id, -32601, "unknown method: commands.catalog");
       const canon = Object.fromEntries(this.commandCatalog.flatMap((n) => [[`/${n}`, `/${n}`], ...(n === "steer" ? [["/s", "/steer"]] : [])]));
-      this.respond(r.id, { pairs: this.commandCatalog.map((n) => [`/${n}`, n]), canon, commands: {}, categories: [], skills: {}, skill_count: 0, warning: "" });
+      const user = Object.keys(this.quickCommands).map((n) => [`/${n}`, this.quickCommands[n]]);
+      this.respond(r.id, {
+        pairs: [...this.commandCatalog.map((n) => [`/${n}`, n]), ...user], canon, commands: {},
+        categories: [{ name: "Session", pairs: this.commandCatalog.map((n) => [`/${n}`, n]) }, ...(user.length ? [{ name: "User commands", pairs: user }] : [])],
+        skills: {}, skill_count: 0, warning: "", plugin_discovery_error: "", plugin_commands: {},
+      });
     },
     // `command.dispatch` `_cmd_steer`: queued for a running turn; with none, Hermes asks for it to be sent as a message.
     "command.dispatch": (r) => {

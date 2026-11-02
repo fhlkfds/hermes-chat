@@ -3,6 +3,7 @@ import { createPortal, flushSync } from "react-dom";
 import { Columns2, PanelRight, X } from "lucide-react";
 import { RenameConflict, connect, readSaved, type Delivery, type Hermes } from "./hermes/transport";
 import type { CommandHost } from "./ui/SlashCommands";
+import type { ServerCommandList } from "./hermes/commands";
 import { CHECK_EVERY_MS } from "./hermes/otherProfiles";
 import { type Account, type Kept, type SavedSignIn, launchSignIn, savedSignIn, signIn, signInForm, signOutToSignIn } from "./hermes/account";
 import { localChatCache } from "./hermes/chatCache";
@@ -532,10 +533,12 @@ export function Main({
   const deleteChat = (id: string) => {
     const title = chats.find((c) => c.id === id)?.title ?? "";
     clearChat(id);
-    void hermes.delete(id).then((deleted) => {
-      if (!deleted) return;
-      projects.forgetChat(id);
-      if (stillIn(profile)) setToast({ text: `Deleted: ${title}`, at: Date.now() });
+    return hermes.delete(id).then((deleted) => {
+      if (deleted) {
+        projects.forgetChat(id);
+        if (stillIn(profile)) setToast({ text: `Deleted: ${title}`, at: Date.now() });
+      }
+      return deleted;
     });
   };
 
@@ -1019,8 +1022,8 @@ function ChatView({
   onExport: () => void;
   onArchive: (archived: boolean) => void;
   onNew: () => void;
-  /** Deletes the chat once the owner has confirmed it. */
-  onDelete: () => void;
+  /** Deletes the chat once the owner has confirmed it; resolves with whether Hermes deleted it. */
+  onDelete: () => Promise<boolean>;
   paneControls: ReactNode;
   previewControls: ReactNode;
   screenshots?: ScreenshotDesk;
@@ -1104,8 +1107,10 @@ function ChatView({
 
   const visible = usePaneVisible();
 
-  // Slash commands (commands.ts). Each empties the Draft it was typed in only once it has run, and only if the owner
-  // hasn't changed it meanwhile. An answer for a profile no longer shown does nothing: its Draft stays as typed.
+  // Slash commands (commands.ts). Each empties the Draft it was typed in only once it has run, only if the owner hasn't
+  // changed it meanwhile, and only while the composer it was typed in is still on the chat (`still`). An answer after
+  // that does nothing: its Draft stays as typed. One command at a time per Draft, so two panes on one chat can't run it
+  // twice.
   const serverCommands = useServerCommands(hermes, status === "connected", profile);
   const commands: CommandHost = {
     why: (def) => {
@@ -1116,35 +1121,51 @@ function ChatView({
       if (def.scope === "local") return undefined;
       if (serverCommands.state === "loading") return "Checking whether this Hermes has it…";
       if (serverCommands.state === "failed") return `Couldn't check whether this Hermes has it: ${serverCommands.reason}`;
-      if (!serverCommands.names.has(def.name)) return "This Hermes doesn't list it, so it may not have it. Updating Hermes may add it.";
+      if (serverCommands.list.replaced.has(def.name))
+        return `This Hermes has a quick or plugin command called /${def.name}, which it would run instead, so Hermes Chat doesn't run it.`;
+      if (!serverCommands.list.listed.has(def.name)) return "This Hermes doesn't list it, so it may not have it. Updating Hermes may add it.";
       if (!chat.runtimeId) return "This chat is still loading from Hermes.";
       if (def.name === "steer" && !chat.running) return "No reply is running to steer. Send it as a message instead.";
       return undefined;
     },
-    run: async (def, arg) => {
-      const typed = savedDrafts.get(shownDraft);
-      const done = () => savedDrafts.get(shownDraft) === typed && savedDrafts.set(shownDraft, "");
-      if (def.name === "new" || def.name === "delete") {
-        done();
-        (def.name === "new" ? onNew : onDelete)();
-        return undefined;
-      }
-      if (def.name === "rename") {
-        try {
-          await hermes.rename(chat.id, arg.replace(/\s+/g, " "), chat.title);
-        } catch (e) {
-          throw e instanceof RenameConflict ? new Error(`This chat was renamed in another Hermes client meanwhile, to "${e.title}". Rename again to replace it.`) : e;
+    run: async (def, arg, still) => {
+      const key = shownDraft;
+      if (commandsRunning.has(key)) throw new Error("A command typed in this chat is still running.");
+      commandsRunning.add(key);
+      const typed = savedDrafts.get(key);
+      const done = () => savedDrafts.get(key) === typed && savedDrafts.set(key, "");
+      const here = () => still() && stillIn();
+      try {
+        if (def.name === "new") {
+          done();
+          onNew();
+          return undefined;
         }
+        // The pane gives way at once; the Draft goes only once Hermes has deleted the chat, so a refusal keeps it.
+        if (def.name === "delete") {
+          if (await onDelete()) done();
+          return undefined;
+        }
+        if (def.name === "rename") {
+          try {
+            await hermes.rename(chat.id, arg.replace(/\s+/g, " "), chat.title);
+          } catch (e) {
+            throw e instanceof RenameConflict ? new Error(`This chat was renamed in another Hermes client meanwhile, to "${e.title}". Rename again to replace it.`) : e;
+          }
+          if (here()) done();
+          return undefined;
+        }
+        const res = await hermes.runCommand(chat.id, def, arg);
+        if (!here()) return undefined;
         done();
-        return undefined;
+        if (res.kind === "output") return res.text;
+        // Hermes wants the words sent as the chat's next message instead, as for a /steer after the reply ended. It goes
+        // straight to the chat, so whatever the owner has typed since stays in the composer; a failure is a Failed message.
+        await hermes.send(chat.id, res.message);
+        return res.notice;
+      } finally {
+        commandsRunning.delete(key);
       }
-      const res = await hermes.runCommand(chat.id, def, arg);
-      if (!stillIn()) return undefined;
-      done();
-      if (res.kind === "output") return res.text;
-      // Hermes wants the words sent as the chat's next message instead, as for a /steer after the reply ended.
-      await send(res.message, []);
-      return res.notice;
     },
   };
 
@@ -1203,7 +1224,10 @@ function ChatView({
   );
 }
 
-type ServerCommands = { state: "loading" } | { state: "ready"; names: Set<string> } | { state: "failed"; reason: string };
+/** The Drafts whose slash command is running, by draft key, across both panes. */
+const commandsRunning = new Set<string>();
+
+type ServerCommands = { state: "loading" } | { state: "ready"; list: ServerCommandList } | { state: "failed"; reason: string };
 
 /** Which of the registry's server commands Hermes lists for `profile`, read once connected (`Hermes.serverCommands`). */
 function useServerCommands(hermes: Hermes, connected: boolean, profile: string): ServerCommands {
@@ -1212,7 +1236,7 @@ function useServerCommands(hermes: Hermes, connected: boolean, profile: string):
     if (!connected) return;
     let live = true;
     hermes.serverCommands().then(
-      (names) => live && setRead({ profile, value: { state: "ready", names } }),
+      (list) => live && setRead({ profile, value: { state: "ready", list } }),
       (e) => live && setRead({ profile, value: { state: "failed", reason: messageOf(e) } }),
     );
     return () => void (live = false);

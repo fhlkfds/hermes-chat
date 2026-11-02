@@ -14,7 +14,7 @@ Typing "/" at the start of the composer opens a menu of slash commands. The app 
 ## Why these
 
 - **Server commands need a structured, verified route.** `command.dispatch` takes the argument as its own field, so a multiline `/steer` reaches Hermes as typed. `_cmd_steer` queues the words for after the running turn's next tool call, or, with no turn running, answers `{type: "send", message}` and the app sends the words as the chat's next message. `slash.exec /context` is answered from the live session in-process (`_format_live_context_output`), so it doesn't start Hermes's slash worker, which is a full CLI process per chat.
-- **Availability comes from Hermes.** A server command is offered only if Hermes's `commands.catalog` lists it for the profile, read once per connection and profile. A Hermes without `commands.catalog` (JSON-RPC -32601) says it needs an update. A listed command still needs the chat open on Hermes (a runtime session), and `/steer` needs a reply running. Hiding a command isn't a permission: Hermes still applies its own Approvals to anything a command makes it run.
+- **Availability comes from Hermes.** A server command is offered only if Hermes's `commands.catalog` lists it for the profile, read once per connection and profile. Hermes runs a quick command (which can be any shell command) or a plugin command before its own command of the same name, so a name one of those takes isn't run from here, and a catalog whose quick or plugin discovery failed counts as unknown. Skill bundles and skills can't take a built-in's name at `bf0203a`. A Hermes without `commands.catalog` (JSON-RPC -32601) says it needs an update. A listed command still needs the chat open on Hermes (a runtime session), and `/steer` needs a reply running. Hiding a command isn't a permission: Hermes still applies its own Approvals to anything a command makes it run.
 - **Destructive commands reuse the existing question.** `/delete` asks with the chat list's words and buttons (Delete, Cancel focused, Escape or clicking away cancels), then runs the same delete.
 
 ## Considered options
@@ -27,6 +27,8 @@ Typing "/" at the start of the composer opens a menu of slash commands. The app 
 
 - A command name followed by words when it takes none, such as "/help me read this log", is a message. To send a registry command's text itself as a message, start it with a space; the space is trimmed when sending.
 - A command empties the Draft only once it has run, and only if the owner hasn't changed the text meanwhile. A failed or refused command keeps the text and says why under the composer.
-- A command's answer that arrives after the profile changed, or after the composer went to another chat, isn't shown, and its Draft stays as it was typed. Hermes may still have run it.
+- A command's answer that arrives after the profile changed, or after the composer went to another chat, isn't shown, and its Draft stays as it was typed. Hermes may still have run it. A `/steer` that Hermes answers with "send it" is sent straight to its chat, so text typed meanwhile stays in the composer.
+- `/delete` empties its Draft only once Hermes has deleted the chat; a refused delete brings the chat back with the text.
+- One command runs at a time per Draft, so two panes showing one chat can't run it twice.
 - Answers and notes are kept in memory, in the composer, until dismissed, the next command, or leaving the chat. The catalog check is kept in memory per connection and profile. Nothing new is stored on disk.
 - Adding a command means reading its handler in Hermes and adding it to the registry, with a test.
