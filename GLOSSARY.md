@@ -95,6 +95,18 @@ _Avoid_: thinking level
 A model the owner starred in the model picker. Favorites are listed first, and are kept on this computer even when Hermes no longer offers the model.
 _Avoid_: pinned model (pinning is how Hermes stores Active, ADR 0002)
 
+**Preview pane**:
+The resizable pane beside the chat that shows a web page, a Server file, a Local file or a tool call's output. It opens from a link in a reply, from an opened tool call, or from the chat's header. In a window too narrow for both, it covers the chat until the owner goes back to it. What it shows can't reach the app, the sign-in or this computer's other files (ADR 0007).
+_Avoid_: viewer, side panel, artifact (the official desktop app's word)
+
+**Server file**:
+A file on the Hermes server, by its full path there. Hermes reads it, and Hermes may refuse, for example a file with credentials. Paths in tool calls are Server files, since that is where Hermes runs its tools.
+_Avoid_: remote file
+
+**Local file**:
+A file on this computer that the owner picked to preview in the Open dialog. Hermes Chat reads it, and it isn't sent to Hermes.
+_Avoid_: attachment (that is a file sent with a message)
+
 **Extra request header**:
 A header name and value the owner adds to a URL connection, for a gateway in front of the dashboard such as Cloudflare Access. Hermes Chat sends it with every request to that dashboard and never to another site. Its value is kept in the system keyring and never shown in Settings (ADR 0006).
 _Avoid_: custom header, gateway token
