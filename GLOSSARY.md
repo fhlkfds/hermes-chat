@@ -43,7 +43,7 @@ A local file the owner sends with a message: an image Hermes looks at, or any ot
 _Avoid_: upload, file (when the attachment is meant)
 
 **Draft**:
-The text the owner has typed in a chat's composer and not sent. Each chat keeps its own draft, and so does the New chat pane, separately for each connection and profile. A draft is still there after switching chats or restarting the app. Sending empties it, and if Hermes doesn't take the message, its text comes back. Attachments aren't kept in a draft.
+The text the owner has typed in a chat's composer and not sent. Each chat keeps its own draft, and so does the New chat pane, separately for each connection and profile. A draft is still there after switching chats or restarting the app. Sending empties it, and if Hermes doesn't take the message, its text comes back. If the connection drops before Hermes confirms it got the message, Hermes may already be running it, so its text is held beside the composer instead, and only the owner sends it again or dismisses it. Attachments aren't kept in a draft.
 _Avoid_: unsent message, saved message
 
 **Approval**:

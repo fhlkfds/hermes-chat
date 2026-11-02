@@ -1,5 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { connect, type Hermes } from "./hermes/transport";
+import { connect, type Delivery, type Hermes } from "./hermes/transport";
 import { type Account, type SavedSignIn, savedSignIn, signIn, signOut } from "./hermes/account";
 import { localChatCache } from "./hermes/chatCache";
 import { draftKey, drafts } from "./hermes/drafts";
@@ -160,6 +160,7 @@ function Main({
   const draftOf = (chatId: string | null) => draftKey(connection, profile, chatId);
   const shownDraft = draftOf(selectedId);
   const composerText = useSyncExternalStore(savedDrafts.subscribe, () => savedDrafts.get(shownDraft));
+  const undelivered = useSyncExternalStore(savedDrafts.subscribe, () => savedDrafts.undelivered(shownDraft));
 
   const openChat = (id: string | null) => {
     setSelectedId(id);
@@ -184,23 +185,35 @@ function Main({
       ? { query: picked.found.find, itemId: hermes.locate(picked.found), at: picked.at }
       : undefined;
 
+  /** The chat to send in: the one on screen, or a new one started now for the New chat pane. */
+  const chatToSendIn = async (): Promise<{ id: string } | { delivery: Delivery }> => {
+    if (selectedId) return { id: selectedId };
+    try {
+      const id = await hermes.newChat();
+      openChat(id);
+      return { id };
+    } catch (e) {
+      const reason = `Couldn't start a chat: ${e instanceof Error ? e.message : String(e)}`;
+      setDraftError(reason);
+      return { delivery: { delivery: "unsent", reason } };
+    }
+  };
+
   // The composer empties as the message goes. If Hermes doesn't take it, the text comes back, in the new chat if one
-  // was started.
+  // was started; if Hermes may have it, it is held beside the composer until the owner sends it again or dismisses it.
   const send = async (text: string, attachments: Attachment[]) => {
     const typed = savedDrafts.take(shownDraft);
-    let id = selectedId;
-    if (!id) {
-      try {
-        id = await hermes.newChat();
-      } catch (e) {
-        setDraftError(`Couldn't start a chat: ${e instanceof Error ? e.message : String(e)}`);
-        savedDrafts.putBack(draftOf(null), typed);
-        return;
-      }
-      openChat(id);
-    }
-    if (!(await hermes.send(id, text, attachments))) savedDrafts.putBack(draftOf(id), typed);
+    const to = await chatToSendIn();
+    if ("delivery" in to) return savedDrafts.afterSend(draftOf(null), typed, to.delivery);
+    savedDrafts.afterSend(draftOf(to.id), typed, await hermes.send(to.id, text, attachments));
   };
+
+  // Only the owner sends a held message again; reconnecting never does.
+  const retry = (heldId: string) =>
+    void savedDrafts.retry(shownDraft, heldId, async (text) => {
+      const to = await chatToSendIn();
+      return "delivery" in to ? to.delivery : hermes.send(to.id, text.trim());
+    });
 
   // The other profile's chats replace the list, so the pane starts a fresh draft.
   const switchProfile = (name: string) => {
@@ -322,6 +335,9 @@ function Main({
             alsoPostsIn={hermes.alsoPostsIn(selected.id)}
             draft={composerText}
             onDraft={(text) => savedDrafts.set(shownDraft, text)}
+            undelivered={undelivered}
+            onRetry={retry}
+            onDismiss={(heldId) => savedDrafts.dismiss(shownDraft, heldId)}
             onAttach={(paths) => hermes.checkAttachments(paths)}
             onSend={send}
             onStop={() => void hermes.stop(selected.id)}
