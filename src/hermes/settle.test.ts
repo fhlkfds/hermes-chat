@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FakeHermes, row, type RestRequest } from "./fakeHermes";
+import { editFlags, FakeHermes, row, type RestRequest } from "./fakeHermes";
 import { connect } from "./transport";
 
 async function listed(...rows: ReturnType<typeof row>[]) {
@@ -14,7 +14,7 @@ async function listed(...rows: ReturnType<typeof row>[]) {
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-const patches = (server: FakeHermes) => server.restRequests.filter((r) => r.method === "PATCH").map((r) => r.body);
+const patches = (server: FakeHermes) => server.restRequests.filter((r) => r.method === "PATCH").map((r) => editFlags(r.body));
 
 /** Holds back the server's answers to PATCHes of `id` until the returned function is called. */
 function holdPatches(server: FakeHermes, id: string) {
@@ -42,6 +42,32 @@ describe("Settling and unsettling", () => {
     expect(chat("a").settled).toBe(true);
   });
 
+  it("names the session's current revision and a new request id, as Hermes requires of every edit", async () => {
+    const { server, hermes, stored } = await listed(row("a", 1, { pinned: true, runtime_revision: 4 }));
+    await hermes.settle("a");
+    await hermes.unsettle("a");
+    const sent = server.restRequests.filter((r) => r.method === "PATCH").map((r) => r.body!);
+    expect(sent.map((b) => b.expected_revision)).toEqual([4, 5]);
+    expect(new Set(sent.map((b) => b.request_id)).size).toBe(2);
+    expect(stored("a").runtime_revision).toBe(6);
+    expect(hermes.getSnapshot().syncError).toBeUndefined();
+  });
+
+  it("settles again when another edit of the chat lands between reading its revision and writing", async () => {
+    const { server, hermes, chat, stored } = await listed(row("a", 1, { pinned: true }));
+    const key = "GET /api/sessions/a/mutation-snapshot";
+    server.rest[key] = () => {
+      delete server.rest[key];
+      stored("a").runtime_revision = 1;
+      return { session_id: "a", exists: true, runtime_revision: 0, runtime_generation: 0 };
+    };
+    await hermes.settle("a");
+    expect(patches(server).map((b) => b.pinned)).toEqual([false, false]);
+    expect(stored("a").pinned).toBe(false);
+    expect(chat("a").settled).toBe(true);
+    expect(hermes.getSnapshot().syncError).toBeUndefined();
+  });
+
   it("moves a Settled chat to Active by pinning it", async () => {
     const { server, hermes, chat, stored } = await listed(row("tg", 1, { source: "telegram" }));
     await hermes.unsettle("tg");
@@ -63,7 +89,7 @@ describe("Settling and unsettling", () => {
     const { server, hermes, chat, stored } = await listed(row("a", 1, { pinned: true }));
     await hermes.settle("a");
     await hermes.unsettle("a");
-    expect(patches(server).map((b) => b!.pinned)).toEqual([false, true]);
+    expect(patches(server).map((b) => b.pinned)).toEqual([false, true]);
     expect(stored("a").pinned).toBe(true);
     expect(chat("a").settled).toBe(false);
   });
@@ -78,7 +104,7 @@ describe("Settling and unsettling", () => {
     expect(patches(server)).toHaveLength(1);
     answer();
     await Promise.all([settling, undoing]);
-    expect(patches(server).map((b) => b!.pinned)).toEqual([false, true]);
+    expect(patches(server).map((b) => b.pinned)).toEqual([false, true]);
     expect(stored("a").pinned).toBe(true);
     expect(chat("a").settled).toBe(false);
   });
@@ -175,7 +201,7 @@ describe("Settling and unsettling", () => {
     await hermes.settle("a");
     await hermes.send("a", "one more thing");
     await hermes.idle();
-    expect(patches(server).map((b) => b!.pinned)).toEqual([false, true]);
+    expect(patches(server).map((b) => b.pinned)).toEqual([false, true]);
     expect(stored("a").pinned).toBe(true);
     expect(chat("a").settled).toBe(false);
   });

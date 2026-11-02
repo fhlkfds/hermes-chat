@@ -81,6 +81,8 @@ type SessionRow = {
   unread?: boolean;
 };
 type SessionPage = { sessions: SessionRow[]; total: number };
+/** Dashboard REST `GET /api/sessions/{id}/mutation-snapshot`: the revision a session edit must name. */
+type MutationSnapshot = { exists: boolean; runtime_revision: number };
 /**
  * A row of dashboard REST `GET /api/sessions/search` (research doc "Searching chats"): one per chat, archived ones
  * too. `snippet` is FTS5's, with each matched word `>>>marked<<<`; `role` is the matched message's, and null when the
@@ -939,7 +941,7 @@ export class Hermes {
       if (pinned === undefined) return;
       const running = this.snapshot.chats.find((c) => c.id === chatId)?.running;
       try {
-        await this.rest("PATCH", `api/sessions/${encodeURIComponent(chatId)}`, { pinned, profile });
+        await this.patchSession(chatId, profile, { pinned });
         this.pinnedSinceListRead.add(chatId);
         if (this.pinWanted.get(chatId) === pinned) this.pinWanted.delete(chatId);
       } catch (e) {
@@ -958,7 +960,7 @@ export class Hermes {
    */
   private markRead(chatId: string) {
     this.patchChat(chatId, (c) => (c.unread ? { ...c, unread: false } : c));
-    const write: Promise<void> = this.rest("PATCH", `api/sessions/${encodeURIComponent(chatId)}`, { unread: false, profile: this.profile })
+    const write: Promise<void> = this.patchSession(chatId, this.profile, { unread: false })
       .then(() => void this.readSinceListRead.add(chatId))
       .catch(() => {})
       .finally(() => this.readWrites.get(chatId) === write && this.readWrites.delete(chatId));
@@ -1040,6 +1042,27 @@ export class Hermes {
       profile,
       chats.map(({ id, title, source, settled, updatedAt, unread }) => ({ id, title, source, settled, updatedAt, unread, items: [] })),
     );
+  }
+
+  /**
+   * Sets a session's sidebar flags. Hermes refuses a session edit without a request id and the session's current
+   * revision (409 `client_upgrade_required`), so each write first reads the revision from the mutation snapshot.
+   * The flags are plain values, so a write that loses to another edit of the same session (`revision_conflict`) is
+   * sent once more against the new revision. A profile switch can redial between the read and the write; the write
+   * names its profile, so it goes out on the new connection.
+   */
+  private async patchSession(chatId: string, profile: string, flags: { pinned?: boolean; unread?: boolean }): Promise<void> {
+    const path = `api/sessions/${encodeURIComponent(chatId)}`;
+    for (let attempt = 0; ; attempt++) {
+      const snapshot = (await this.rest("GET", `${path}/mutation-snapshot?${new URLSearchParams({ profile })}`)) as MutationSnapshot;
+      if (!this.pipe) await this.redialing;
+      try {
+        await this.rest("PATCH", path, { ...flags, profile, request_id: crypto.randomUUID(), expected_revision: snapshot.runtime_revision });
+        return;
+      } catch (e) {
+        if (attempt > 0 || !(e as Error).message.includes("revision_conflict")) throw e;
+      }
+    }
   }
 
   private async rest(method: "GET" | "PATCH" | "DELETE", pathAndQuery: string, body?: unknown): Promise<unknown> {
