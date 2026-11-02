@@ -30,7 +30,7 @@ import { noOthers, OtherProfilesCheck } from "./otherProfiles";
 // Projects are Hermes's own, read and written with legacy `projects.*` (projects.ts, research doc "Projects").
 import { projectsApi, type ProjectsApi } from "./projects";
 import { ModelSettingsApi } from "./modelSettings";
-import type { OpenPipe, Pipe, PipeEvent, RestMethod, Route } from "./pipe";
+import type { OpenPipe, Pipe, PipeEvent, RestMethod, Route, Speech, Transcript, VoiceSetup } from "./pipe";
 import { isUnsecure } from "./unsecure";
 import { readServerFile, type FileView } from "./preview";
 import { chatUsageOf, countersOf, newerChatUsage, replyUsage, ZERO_COUNTERS, type ReplyUsage, type UsageCounters } from "./usage";
@@ -397,6 +397,8 @@ export class Hermes {
   private background = new Set<Promise<unknown>>();
   /** When the shown profile's list last synced on this connection. */
   private listedAt?: number;
+  /** The voice set-up read for a connection and profile (`voiceSetup`). */
+  private voiceRead?: { key: string; done: Promise<VoiceSetup> };
   /** The model list being read, and for which profile. */
   private modelsLoading?: { profile: string; done: Promise<void> };
   /** A chat and model Hermes asked to confirm as expensive: picking it again for that chat confirms it. */
@@ -500,6 +502,40 @@ export class Hermes {
   async profiles(): Promise<string[]> {
     const res = (await this.rest("GET", "api/profiles")) as ProfileList;
     return res.profiles.map((p) => p.name);
+  }
+
+  /**
+   * The shown profile's voice set-up: whether the server can transcribe and read aloud, and with which providers. Read
+   * once per connection and profile; a failed read is tried again on the next call.
+   */
+  voiceSetup(): Promise<VoiceSetup> {
+    const pipe = this.connectedPipe();
+    if (!pipe) return Promise.reject(new Error("Not connected to Hermes."));
+    const key = `${this.generation}/${this.profile}`;
+    if (this.voiceRead?.key !== key) {
+      const done = pipe.voiceSetup(this.profile);
+      this.voiceRead = { key, done };
+      done.catch(() => {
+        if (this.voiceRead?.done === done) this.voiceRead = undefined;
+      });
+    }
+    return this.voiceRead.done;
+  }
+
+  /** Has Hermes transcribe a Dictation recording with the shown profile's speech-to-text provider. */
+  transcribe(audio: Uint8Array, mime: string): Promise<Transcript> {
+    const pipe = this.connectedPipe();
+    return pipe ? pipe.transcribe(this.profile, audio, mime) : Promise.reject(new Error("Not connected to Hermes."));
+  }
+
+  /** Has Hermes read `text` aloud with the shown profile's text-to-speech provider. */
+  speak(text: string): Promise<Speech> {
+    const pipe = this.connectedPipe();
+    return pipe ? pipe.speak(this.profile, text) : Promise.reject(new Error("Not connected to Hermes."));
+  }
+
+  private connectedPipe(): Pipe | undefined {
+    return this.snapshot.status === "connected" ? this.pipe : undefined;
   }
 
   /**

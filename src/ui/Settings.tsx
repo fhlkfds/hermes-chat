@@ -1,5 +1,5 @@
 // The Settings screen, in three tabs. General, ported from the prototype: the connection and Sign out, what shows on
-// launch, screenshots, the local cache, and older history. Appearance: how the app looks on this computer (AppearanceSettings.tsx).
+// launch, voice, screenshots, the local cache, and older history. Appearance: how the app looks on this computer (AppearanceSettings.tsx).
 // Model: the profile's models on Hermes (ModelSettings.tsx).
 // Profiles are switched in the list's header, not here (ADR 0001).
 import { useState } from "react";
@@ -13,6 +13,8 @@ import { AppearanceSettings } from "./AppearanceSettings";
 import type { ModelSettingsApi } from "../hermes/modelSettings";
 import { ModelSettings } from "./ModelSettings";
 import { StartupSettings } from "./StartupSettings";
+import { VoiceSettings } from "./Voice";
+import type { VoiceSetup } from "../hermes/pipe";
 import { ScreenshotSettings } from "./ScreenshotSettings";
 import type { ScreenshotSupport } from "../hermes/tauriScreenshot";
 
@@ -53,6 +55,7 @@ export function SettingsScreen({
   onPullOlder,
   onSignOut,
   onClose,
+  voiceSetup,
 }: {
   status: ConnectionStatus;
   route?: Route;
@@ -80,6 +83,8 @@ export function SettingsScreen({
   onPullOlder: () => Promise<Chat[]>;
   onSignOut: () => Promise<void>;
   onClose: () => void;
+  /** The shown profile's voice set-up, for the Voice section. */
+  voiceSetup?: () => Promise<VoiceSetup>;
 }) {
   const [bytes, setBytes] = useState(cacheBytes);
   const [confirmClear, setConfirmClear] = useState(false);
@@ -188,6 +193,7 @@ export function SettingsScreen({
 
             <StartupSettings />
 
+            <VoiceSettings status={status} profile={profile} setup={voiceSetup} />
             <ScreenshotSettings checkSupport={checkScreenshots} />
 
             <section>

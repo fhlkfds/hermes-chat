@@ -1,6 +1,6 @@
 // A fake Hermes dashboard for tests: it sits where the Rust pipe does and speaks wire-shaped legacy
 // JSON-RPC frames and dashboard REST bodies (shapes from the deployed contracts, see the research doc).
-import type { LocalFile, OpenPipe, PipeEvent, Route } from "./pipe";
+import type { LocalFile, OpenPipe, PipeEvent, Route, Speech, VoiceSetup } from "./pipe";
 
 type Request = { jsonrpc: "2.0"; id: number; method: string; params: Record<string, unknown> };
 /** The client's answer to a server→client request (`tui_gateway/server_requests.py`). */
@@ -196,6 +196,20 @@ export class FakeHermes {
   oneshotFailure?: string;
   /** The owner's local disk, by path, for attachments. */
   files: Record<string, FakeFile> = {};
+  /**
+   * The profile's voice set-up as the Rust side reads it (`Dashboard::voice_setup`). With `transcribe` or `speak`
+   * false the server has no such route, and calling it fails as Rust reports that.
+   */
+  voice: VoiceSetup = { transcribe: true, speak: true, sttEnabled: true, sttProvider: "local", ttsProvider: "edge" };
+  /** What Hermes hears in every recording (empty for no speech), or why transcribing fails. */
+  heard: string | Error = "Check the backup logs";
+  /** What reading aloud answers, or why it fails. */
+  speech: Speech | Error = { mime: "audio/mpeg", audio: new Uint8Array([0x49, 0x44, 0x33, 4]), provider: "edge" };
+  /** While set, transcribing and reading aloud wait for it before they answer. */
+  voiceGate?: Promise<void>;
+  /** Every recording sent to transcribe, and every text sent to read aloud, in order. */
+  readonly recordings: { profile: string; audio: Uint8Array; mime: string }[] = [];
+  readonly spoken: { profile: string; text: string }[] = [];
   /**
    * The server's disk, by path, for the preview pane's `GET /api/fs/read-text` and `read-data-url`. A string is the
    * file's text (or bytes, one char per byte); `{ dir: true }` is a folder.
@@ -632,6 +646,22 @@ export class FakeHermes {
         if (typeof bytes !== "string") throw new Error(`the fake has only a size for ${path}, no bytes to send`);
         await send(head + btoa(bytes) + tail);
       },
+      // Mirror `Dashboard::transcribe`, `speak` and `voice_setup` in src-tauri/src/transport.rs.
+      transcribe: async (profile, audio, mime) => {
+        this.recordings.push({ profile, audio, mime });
+        await this.voiceGate;
+        if (!this.voice.transcribe) throw new Error("This Hermes server can't transcribe recordings: it has no /api/audio/transcribe route. Updating Hermes adds it.");
+        if (this.heard instanceof Error) throw this.heard;
+        return { text: this.heard.trim(), provider: this.voice.sttProvider };
+      },
+      speak: async (profile, text) => {
+        this.spoken.push({ profile, text });
+        await this.voiceGate;
+        if (!this.voice.speak) throw new Error("This Hermes server can't read replies aloud: it has no /api/audio/speak route. Updating Hermes adds it.");
+        if (this.speech instanceof Error) throw this.speech;
+        return this.speech;
+      },
+      voiceSetup: async () => ({ ...this.voice }),
       request: async (method, pathAndQuery, body) => {
         const url = new URL(pathAndQuery, "http://dashboard/");
         const req: RestRequest = { method, path: url.pathname, query: url.searchParams, body: body === undefined ? undefined : JSON.parse(body) };

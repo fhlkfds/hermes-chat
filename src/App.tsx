@@ -20,6 +20,7 @@ import { type Attachment, type Chat, type Found, isOutgoing } from "./hermes/mod
 import type { ModelPick } from "./hermes/models";
 import { ChatList, Rail } from "./ui/Sidebar";
 import { ChatPane } from "./ui/ChatPane";
+import type { VoiceApi } from "./ui/Voice";
 import { SearchPalette } from "./ui/Search";
 import { SettingsScreen } from "./ui/Settings";
 import { composing, routeLabel } from "./ui/bits";
@@ -253,6 +254,10 @@ export function Main({
     hermes.getSnapshot,
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const voice = useMemo<VoiceApi>(
+    () => ({ setup: () => hermes.voiceSetup(), transcribe: (audio, mime) => hermes.transcribe(audio, mime), speak: (text) => hermes.speak(text) }),
+    [hermes],
+  );
   // The project screen covers the chat pane, as Settings does.
   const [projectOpen, setProjectOpen] = useState(false);
   // The chat to reopen at launch, until Hermes's list shows it is there or gone, or the owner goes somewhere first.
@@ -746,6 +751,7 @@ export function Main({
                 modelSettings={hermes.modelSettings}
                 onClearCache={() => hermes.clearCache()}
                 onPullOlder={() => hermes.pullOlderHistory()}
+                voiceSetup={voice.setup}
                 onSignOut={onSignOut}
                 onClose={() => setSettingsOpen(false)}
               />
@@ -769,6 +775,7 @@ export function Main({
                 onSettle={selected === draft ? undefined : (s) => setSettled(selected.id, s)}
                 onExport={selected === draft ? undefined : () => exportSelected(selected)}
                 onArchive={selected === draft ? undefined : (a) => setArchived(selected.id, a)}
+                voice={voice}
                 screenshots={desk}
                 screenshotKeys={screenshotShortcut ? shortcutLabel(screenshotShortcut) : undefined}
                 onUsage={selected === draft ? undefined : () => void hermes.refreshUsage(selected.id)}
