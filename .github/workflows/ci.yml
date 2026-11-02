@@ -38,5 +38,5 @@ jobs:
           workspaces: src-tauri
       # tauri::generate_context! needs frontendDist (../dist) to exist at compile time.
       - run: mkdir -p dist
-      - run: cargo test --test transport
+      - run: cargo test --test transport --test media
         working-directory: src-tauri

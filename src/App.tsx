@@ -460,7 +460,9 @@ export function Main({
           />
         ) : (
           <ChatPane
-            key={selected.id}
+            // The New chat pane keeps its id across profiles; a new pane per profile drops a recording or a Read aloud
+            // started in the old one.
+            key={`${profile}/${selected.id}`}
             chat={selected}
             notLoaded={selected !== draft && status !== "connected" && !selected.runtimeId && !selected.items.length}
             findTarget={findTarget}

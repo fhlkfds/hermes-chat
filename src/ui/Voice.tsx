@@ -5,7 +5,7 @@ import { Check, Mic, RotateCcw, Square, Volume2, X } from "lucide-react";
 import type { Speech, Transcript, VoiceSetup } from "../hermes/pipe";
 import type { ConnectionStatus } from "../hermes/model";
 import { MAX_RECORDING_SECONDS, clock, dictationBlocked, messageOf, readAloudBlocked, sttProvider, ttsProvider } from "../hermes/voice";
-import { type AudioEnv, type Capture, type Recording, startCapture } from "./recorder";
+import { type AudioEnv, type Capture, CaptureAborted, type Recording, startCapture } from "./recorder";
 import type { Speaker } from "./speaker";
 import { Spinner } from "./bits";
 
@@ -51,7 +51,8 @@ export function useDictation(transcribe: VoiceApi["transcribe"] | undefined, onT
   const [note, setNote] = useState<DictationNote>();
   const [, tick] = useReducer((n: number) => n + 1, 0);
   // `turn` is bumped by every start, stop and cancel, so a late answer for an earlier one is dropped.
-  const live = useRef<{ capture?: Capture; turn: number }>({ turn: 0 });
+  // `starting` aborts a microphone still opening, so Cancel or closing the chat closes it at once.
+  const live = useRef<{ capture?: Capture; starting?: AbortController; turn: number }>({ turn: 0 });
   const latest = useRef({ transcribe, onTranscript });
   latest.current = { transcribe, onTranscript };
 
@@ -59,6 +60,7 @@ export function useDictation(transcribe: VoiceApi["transcribe"] | undefined, onT
     const now = live.current;
     return () => {
       now.turn++;
+      now.starting?.abort();
       now.capture?.cancel();
       now.capture = undefined;
     };
@@ -105,28 +107,37 @@ export function useDictation(transcribe: VoiceApi["transcribe"] | undefined, onT
   const start = async () => {
     if (state.phase !== "idle" || !latest.current.transcribe) return;
     const turn = ++live.current.turn;
+    const starting = new AbortController();
+    live.current.starting = starting;
     setNote(undefined);
     setState({ phase: "starting" });
     try {
-      const capture = await startCapture((why) => {
-        if (turn !== live.current.turn) return;
-        live.current.capture = undefined;
-        live.current.turn++;
-        setState({ phase: "idle" });
-        setNote({ text: why });
-      }, env);
+      const capture = await startCapture(
+        (why) => {
+          if (turn !== live.current.turn) return;
+          live.current.capture = undefined;
+          live.current.turn++;
+          setState({ phase: "idle" });
+          setNote({ text: why });
+        },
+        starting.signal,
+        env,
+      );
       if (turn !== live.current.turn) return capture.cancel();
       live.current.capture = capture;
       setState({ phase: "recording", capture });
     } catch (e) {
-      if (turn !== live.current.turn) return;
+      if (turn !== live.current.turn || e instanceof CaptureAborted) return;
       setState({ phase: "idle" });
       setNote({ text: messageOf(e) });
+    } finally {
+      if (live.current.starting === starting) live.current.starting = undefined;
     }
   };
 
   const cancel = () => {
     live.current.turn++;
+    live.current.starting?.abort();
     live.current.capture?.cancel();
     live.current.capture = undefined;
     setState({ phase: "idle" });
@@ -165,8 +176,15 @@ export function MicButton({ dictation, blocked }: { dictation: Dictation; blocke
 export function DictationStrip({ dictation }: { dictation: Dictation }) {
   const { state } = dictation;
   if (state.phase === "idle") return null;
+  // While waiting, focus sits on Cancel: the button that started this is gone, and Esc has to reach the composer.
   const cancel = (
-    <button className="icon-btn" title="Cancel (Esc)" aria-label={state.phase === "recording" ? "Cancel recording" : "Cancel"} onClick={dictation.cancel}>
+    <button
+      className="icon-btn"
+      title="Cancel (Esc)"
+      aria-label={state.phase === "recording" ? "Cancel recording" : "Cancel"}
+      autoFocus={state.phase !== "recording"}
+      onClick={dictation.cancel}
+    >
       <X size={15} />
     </button>
   );

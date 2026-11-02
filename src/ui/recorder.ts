@@ -32,12 +32,18 @@ const browserEnv = (): AudioEnv => ({
 /** Why the microphone can't be used: shown to the owner as is. */
 export class MicError extends Error {}
 
+/** Thrown by `startCapture` when `signal` aborted it; the microphone is already closed. */
+export class CaptureAborted extends Error {}
+
 /**
  * Opens the microphone and starts recording. Rejects with a `MicError` saying why when there's no microphone, it's
  * refused or busy, or this window can't capture audio. `onLost` is called if the microphone goes away mid-recording,
- * after the capture has already closed it.
+ * after the capture has already closed it. Aborting `signal` while it starts closes whatever it has opened at once,
+ * even while it waits on the audio system, and it then rejects with `CaptureAborted`.
  */
-export async function startCapture(onLost: (why: string) => void, env: AudioEnv = browserEnv()): Promise<Capture> {
+export async function startCapture(onLost: (why: string) => void, signal?: AbortSignal, env: AudioEnv = browserEnv()): Promise<Capture> {
+  const aborted = () => new CaptureAborted("The recording was cancelled.");
+  if (signal?.aborted) throw aborted();
   if (!env.mediaDevices?.getUserMedia) throw new MicError("This window can't use a microphone: the system webview has audio capture turned off.");
   let stream: MediaStream;
   try {
@@ -47,6 +53,10 @@ export async function startCapture(onLost: (why: string) => void, env: AudioEnv 
   }
   const tracks = stream.getAudioTracks();
   const stopTracks = () => stream.getTracks().forEach((t) => t.stop());
+  if (signal?.aborted) {
+    stopTracks();
+    throw aborted();
+  }
   if (!tracks.length) {
     stopTracks();
     throw new MicError(micProblem(new DOMException("no audio track", "NotFoundError")));
@@ -69,6 +79,8 @@ export async function startCapture(onLost: (why: string) => void, env: AudioEnv 
     stopTracks();
     void ctx?.close().catch(() => {});
   };
+  // From here on, an abort closes the microphone straight away, not once startup finishes.
+  signal?.addEventListener("abort", close, { once: true });
 
   try {
     ctx = env.makeContext();
@@ -89,7 +101,13 @@ export async function startCapture(onLost: (why: string) => void, env: AudioEnv 
     if (ctx.state === "suspended") await ctx.resume();
   } catch (e) {
     close();
+    if (signal?.aborted) throw aborted();
     throw new MicError(`The microphone couldn't be recorded from: ${messageOf(e)}`);
+  }
+  signal?.removeEventListener("abort", close);
+  if (signal?.aborted || !open) {
+    close();
+    throw aborted();
   }
   for (const t of tracks)
     t.onended = () => {

@@ -44,7 +44,7 @@ To run it from a terminal, set the variable yourself: `WEBKIT_DISABLE_DMABUF_REN
 
 ```sh
 npm test                                  # frontend transport against a fake Hermes
-cd src-tauri && cargo test --test transport   # Rust transport against a stub server
+cd src-tauri && cargo test --test transport --test media   # Rust transport against a stub server; who gets the microphone
 ```
 
 `node bench/run.mjs` renders the chat pane with synthetic long chats (50, 200 and 800 turns) in headless Chromium and

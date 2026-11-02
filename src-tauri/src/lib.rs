@@ -1,4 +1,5 @@
 pub mod fonts;
+pub mod media;
 pub mod notify;
 pub mod saved_password;
 pub mod transport;
@@ -233,12 +234,20 @@ async fn system_fonts() -> fonts::Fonts {
     fonts::list().await
 }
 
-/// Dictation records from the microphone, and the app asks for it only when the owner starts a recording. The app shows
-/// only its own pages, so a microphone request is granted here; the camera and screen are never used, so asking for
-/// them is refused. Anything else gets WebKit's default.
-fn permission(kind: PermissionKind) -> PermissionResponse {
+/// Dictation records from the microphone, and the app asks for it only when the owner starts a recording, so a
+/// microphone request from the app's own page is granted here. Any other page (a link in a reply can navigate the
+/// webview away) is refused, as are the camera and screen, which the app never uses. Anything else gets WebKit's
+/// default.
+fn permission<R: tauri::Runtime>(webview: &tauri::Webview<R>, kind: PermissionKind) -> PermissionResponse {
     match kind {
-        PermissionKind::Microphone => PermissionResponse::Allow,
+        PermissionKind::Microphone => {
+            // In a dev build the page comes from the Vite server; a release build only trusts its bundled page.
+            let dev_url = if tauri::is_dev() { webview.config().build.dev_url.clone() } else { None };
+            match webview.url() {
+                Ok(page) if media::is_app_page(&page, dev_url.as_ref()) => PermissionResponse::Allow,
+                _ => PermissionResponse::Deny,
+            }
+        }
         PermissionKind::Camera | PermissionKind::DisplayCapture => PermissionResponse::Deny,
         _ => PermissionResponse::Default,
     }
@@ -248,7 +257,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
-        .on_permission_request(|_, kind| permission(kind))
+        .on_permission_request(|webview, kind| permission(&webview, kind))
         .setup(|app| {
             // WebKitGTK leaves `navigator.mediaDevices` out unless media capture is turned on.
             if let Some(window) = app.get_webview_window("main") {

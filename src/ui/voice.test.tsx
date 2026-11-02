@@ -16,6 +16,8 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ open: async () => null }));
 /** A stand-in microphone: `getUserMedia` either fails with `fail` or opens one track, and `say` feeds it samples. */
 class FakeMic {
   fail?: string;
+  /** The audio system never finishes starting: `resume()` hangs. */
+  hang = false;
   readonly track = { stopped: false, onended: null as null | (() => void), stop: () => void (this.track.stopped = true) };
   opened = 0;
   context?: { closed: boolean };
@@ -37,7 +39,7 @@ class FakeMic {
     });
     globalThis.AudioContext = class {
       sampleRate = 48_000;
-      state = "running";
+      state = mic.hang ? "suspended" : "running";
       destination = {};
       closed = false;
       constructor() {
@@ -45,7 +47,7 @@ class FakeMic {
       }
       createMediaStreamSource = () => ({ connect: () => {}, disconnect: () => {} });
       createScriptProcessor = () => (mic.processor = { onaudioprocess: null, connect: () => {}, disconnect: () => {} } as never);
-      resume = async () => {};
+      resume = () => (mic.hang ? new Promise<void>(() => {}) : Promise.resolve());
       close = async () => void (this.closed = true);
     } as unknown as typeof AudioContext;
   }
@@ -291,6 +293,62 @@ describe("Dictation", () => {
     expect(composer().value).toBe("");
     await user.click(screen.getByRole("button", { name: /Nightly backup/ }));
     expect(composer().value).toBe("");
+  });
+
+  it("closes the microphone at once when cancelled while the audio system is still starting", async () => {
+    const { user } = await signedIn();
+    mic.hang = true;
+    await user.click(dictate());
+    await screen.findByText("Waiting for the microphone…");
+    await waitFor(() => expect(mic.opened).toBe(1));
+    expect(mic.track.stopped).toBe(false);
+    await user.keyboard("{Escape}");
+    expect(mic.closed).toBe(true);
+    expect(screen.queryByText("Waiting for the microphone…")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("cancels with Esc while transcribing, after Done took the focus with it", async () => {
+    const { server, user, hermes } = await signedIn();
+    let release!: () => void;
+    server.voiceGate = new Promise((r) => (release = r));
+    await record(user);
+    mic.say(1);
+    await user.click(screen.getByRole("button", { name: /Done/ }));
+    await screen.findByText(/Transcribing/);
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Cancel" }));
+    await user.keyboard("{Escape}");
+    release();
+    await settle(hermes);
+    expect(composer().value).toBe("");
+    expect(document.activeElement).toBe(composer());
+  });
+
+  it("stays with its profile: switching closes the microphone, and a transcript on its way is dropped", async () => {
+    const server = new FakeHermes();
+    server.otherProfiles = { work: [] };
+    const { user, hermes } = await signedIn(server);
+    await record(user);
+    mic.say(1);
+    await act(() => hermes.switchProfile("work"));
+    await settle(hermes);
+    expect(mic.closed).toBe(true);
+    expect(screen.queryByRole("status", { name: "Recording" })).toBeNull();
+
+    let release!: () => void;
+    server.voiceGate = new Promise((r) => (release = r));
+    mic = new FakeMic();
+    mic.install();
+    await waitFor(() => expect(dictate().getAttribute("aria-disabled")).toBe("false"));
+    await record(user);
+    mic.say(1);
+    await user.click(screen.getByRole("button", { name: /Done/ }));
+    await screen.findByText(/Transcribing/);
+    await act(() => hermes.switchProfile("default"));
+    release();
+    await settle(hermes);
+    expect(composer().value).toBe("");
+    expect(server.recordings.map((r) => r.profile)).toEqual(["work"]);
   });
 
   it("can't start on a server without transcription, or with speech-to-text off, and says why", async () => {
