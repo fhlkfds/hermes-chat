@@ -64,6 +64,20 @@ export type TranscriptMessage = {
 /** A file on the owner's disk: its bytes as a string, a size alone for a file too big to make, or a folder. */
 export type FakeFile = string | { size: number } | { dir: true };
 
+/** A stored project as `Project.to_dict` sends it (`hermes_cli/projects_db.py` at the deployed `bf0203a`). */
+export type FakeProject = {
+  id: string;
+  slug: string;
+  name: string;
+  primary_path: string | null;
+  archived: boolean;
+  created_at: number;
+  folders: { path: string; label: string | null; is_primary: boolean; added_at: number }[];
+};
+
+/** One worktree of a repository on the server, as `GET /api/git/worktrees` lists it (`web_git.worktree_list`). */
+export type FakeWorktree = { path: string; branch?: string; detached?: boolean };
+
 /** A session's model as `SessionLiveInfo` carries it (`session.info`, and `info` on create and resume). */
 export type ModelInfo = { model: string; provider: string; reasoning_effort: string; fast: boolean };
 
@@ -105,6 +119,17 @@ export function modelOptions(): Record<string, unknown> {
 const DAY = 86_400;
 const MiB = 1024 * 1024;
 const now = () => Date.now() / 1000;
+
+/** `_normalize_path`: absolute (a relative path is read from the server's home folder), no trailing slash. */
+const serverPath = (path: string) => {
+  const p = path.trim().startsWith("/") ? path.trim() : `/home/liam/${path.trim()}`;
+  return p.replace(/\/+$/, "") || "/";
+};
+
+function setPrimary(p: FakeProject, path: string) {
+  for (const f of p.folders) f.is_primary = f.path === path;
+  p.primary_path = path;
+}
 
 /** A stored session `daysAgo` days old, unpinned and from this app unless overridden. */
 export function row(id: string, daysAgo: number, over: Partial<SessionRow> = {}): SessionRow {
@@ -194,6 +219,16 @@ export class FakeHermes {
   readonly runtime = new Map<string, string>();
   private created = new Map<string, { source: string; profile?: string }>(); // runtime id, until the first prompt stores it
 
+  /** Each profile's projects (`projects.db`), by profile name; a profile the server has but that isn't here has none. */
+  projects: Record<string, FakeProject[]> = {};
+  /**
+   * More of the server's folders, by absolute path without a trailing slash, for `GET /api/fs/list`. That route lists
+   * these and `serverFiles` together; a `{ dir: true }` entry there is a folder too.
+   */
+  serverDirs = new Set<string>();
+  /** The server's git repositories, each one's worktrees with its own checkout first (`git worktree list`). */
+  repos: FakeWorktree[][] = [];
+  private projectSeq = 0;
   /** The `info` session.create and session.resume answer with (`server._session_info`); empty, as from a server
    * that reports none of it, unless a test sets it. */
   sessionInfo: Record<string, unknown> = {};
@@ -337,12 +372,81 @@ export class FakeHermes {
       } else this.profileModel[profile] = info;
       this.respond(r.id, { key, value });
     },
+    // `tui_gateway/methods_projects.py` at the deployed `bf0203a`, checked live against a throwaway HERMES_HOME
+    // (research doc "Projects"): 5062 for an id that resolves to nothing, 5063 for an invalid argument, 4064 for a
+    // profile the server doesn't have. Writes answer with the refreshed project; delete with every project.
+    "projects.list": (r) => this.projectsOp(r, (list) => ({ projects: list, active_id: null })),
+    "projects.create": (r) =>
+      this.projectsOp(r, (list) => {
+        const name = String(r.params.name ?? "").trim();
+        if (!name) throw [5063, "project name must not be empty"];
+        const at = Math.floor(now());
+        const folders = ((r.params.folders as string[] | undefined) ?? []).map(serverPath);
+        const p: FakeProject = {
+          id: `p_${(++this.projectSeq).toString(16).padStart(8, "0")}`,
+          slug: name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "project",
+          name,
+          primary_path: folders[0] ?? null,
+          archived: false,
+          created_at: at,
+          folders: folders.map((path, i) => ({ path, label: null, is_primary: i === 0, added_at: at })),
+        };
+        list.push(p);
+        return { project: p };
+      }),
+    "projects.update": (r) =>
+      this.projectOp(r, (p) => {
+        if (r.params.name !== undefined && r.params.name !== null) {
+          const name = String(r.params.name).trim();
+          if (!name) throw [5063, "project name must not be empty"];
+          p.name = name;
+        }
+      }),
+    "projects.add_folder": (r) =>
+      this.projectOp(r, (p) => {
+        const path = serverPath(String(r.params.path ?? ""));
+        if (!p.folders.some((f) => f.path === path)) p.folders.push({ path, label: null, is_primary: false, added_at: Math.floor(now()) });
+        if (!p.folders.some((f) => f.is_primary)) setPrimary(p, path);
+      }),
+    "projects.remove_folder": (r) =>
+      this.projectOp(r, (p) => {
+        const path = serverPath(String(r.params.path ?? ""));
+        const was = p.folders.find((f) => f.path === path);
+        p.folders = p.folders.filter((f) => f.path !== path);
+        if (was?.is_primary) {
+          if (p.folders[0]) setPrimary(p, p.folders[0].path);
+          else p.primary_path = null;
+        }
+      }),
+    "projects.delete": (r) =>
+      this.projectsOp(r, (list) => {
+        const at = list.findIndex((p) => p.id === r.params.id);
+        if (at < 0) throw [5062, "no such project"];
+        list.splice(at, 1);
+        return { projects: list, active_id: null };
+      }),
     // Keepalive, answered by the WS layer in either protocol generation (research doc §1).
     "gateway.ping": (r) => this.respond(r.id, { ok: true }),
   };
 
   /** Per-route REST behaviour, keyed `METHOD /path`. A handler throws to fail the request. */
   readonly rest: Record<string, RestHandler> = {
+    // `fs_list` (`hermes_cli/web_routers/files.py` at the deployed `bf0203a`): a folder's entries, or none and why.
+    "GET /api/fs/list": ({ query }) => {
+      const path = query.get("path") ?? "";
+      const isDir = (p: string) => this.serverDirs.has(p) || typeof this.serverFiles[p] === "object";
+      if (typeof this.serverFiles[path] === "string") return { entries: [], error: "ENOTDIR" };
+      if (!isDir(path)) return { entries: [], error: "ENOENT" };
+      const all = new Set([...this.serverDirs, ...Object.keys(this.serverFiles)]);
+      const inside = [...all].filter((p) => p.startsWith(`${path}/`) && !p.slice(path.length + 1).includes("/"));
+      return { entries: inside.map((p) => ({ name: p.split("/").pop(), path: p, isDirectory: isDir(p) })) };
+    },
+    // `git_worktrees_route`: every worktree of the repository the path is in, its own checkout first; none outside one.
+    "GET /api/git/worktrees": ({ query }) => {
+      const path = query.get("path") ?? "";
+      const repo = this.repos.find((trees) => trees.some((t) => path === t.path || path.startsWith(`${t.path}/`)));
+      return { worktrees: (repo ?? []).map((t, i) => ({ path: t.path, branch: t.branch ?? null, isMain: i === 0, detached: !!t.detached, locked: false })) };
+    },
     "GET /api/sessions": ({ query }) => {
       // order=recent, archived=exclude|only|include, then every pinned row not already on the page, archived or not
       // (list_sessions_rich).
@@ -635,6 +739,28 @@ export class FakeHermes {
   /** The runtime session id the server handed out for a stored session. */
   runtimeIdOf(stored: string) {
     return [...this.runtime].reverse().find(([, s]) => s === stored)?.[0];
+  }
+
+  /** Runs a projects method on the profile's projects; `fn` throws `[code, message]` to fail it. */
+  private projectsOp(r: Request, fn: (list: FakeProject[]) => unknown) {
+    const profile = (r.params.profile as string | undefined) || "default";
+    if (!this.store(profile)) return this.fail(r.id, 4064, `Profile '${profile}' does not exist.`);
+    try {
+      this.respond(r.id, structuredClone(fn((this.projects[profile] ??= []))));
+    } catch (e) {
+      if (!Array.isArray(e)) throw e;
+      this.fail(r.id, e[0], e[1]);
+    }
+  }
+
+  /** A projects method on the one project `params.id` names, answering with it refreshed. */
+  private projectOp(r: Request, fn: (p: FakeProject) => void) {
+    this.projectsOp(r, (list) => {
+      const p = list.find((q) => q.id === r.params.id || q.slug === r.params.id);
+      if (!p) throw [5062, "no such project"];
+      fn(p);
+      return { project: p };
+    });
   }
 
   private stat(path: string): LocalFile {
