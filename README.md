@@ -8,7 +8,7 @@ Created in [T3 Code](https://t3.codes).
 
 ![Hermes Chat with a chat open, showing a reply with a table and the status bar](docs/screenshots/readme/chat.png)
 
-The application is built with Tauri 2, React 19, and TypeScript, and it uses Vite and Vitest. The Rust side does all network I/O: the SSH tunnel, HTTP sign-in, the dashboard REST relay, and the JSON-RPC WebSocket. It also handles the system keyring, desktop notifications, screenshots, and file access. The window is WebKitGTK (`webkit2gtk-4.1`).
+The application is built with Tauri 2, React 19, and TypeScript, and it uses Vite and Vitest. The Rust side handles all network traffic to Hermes: the SSH tunnel, HTTP sign-in, the dashboard REST relay, and the JSON-RPC WebSocket. Web pages in the preview pane and images in replies load in the webview. It also handles the system keyring, desktop notifications, screenshots, and file access. The window is WebKitGTK (`webkit2gtk-4.1`).
 
 ## Contents
 
@@ -44,7 +44,7 @@ These features are on the `main` branch.
 - **Screenshots.** Press Ctrl+Shift+S, or click the camera button, to attach a region or window. See [Screenshots](#screenshots).
 - **Voice.** Use **Dictation** to speak a message into the composer, and **Read aloud** to have Hermes speak a reply. Hermes does the transcription and speech on the server.
 - **Two panes.** Ctrl+\\ opens a second chat beside the first.
-- **Preview pane.** A resizable pane shows web links from replies, files on the Hermes server, local files you choose, and tool output. It shows them in sandboxed frames.
+- **Preview pane.** A resizable pane shows web links from replies, files on the Hermes server, local files you choose, and tool output. Web pages and HTML files load in sandboxed frames.
 - **Projects.** Projects are Hermes's own named groups of chats and server folders. Hermes stores the projects and their folders. This computer stores which chats are in each project.
 - **Models.** The composer has a model picker with reasoning effort, fast mode, and starred models. Settings → Model sets the profile's main model, subagent models, auxiliary models (including the Text generation model used for titles), and guardrails.
 - **Usage and cost.** You see token usage per reply and per chat. Cost appears only as Hermes recorded it, because the app keeps no price list.
@@ -170,14 +170,14 @@ Choose **URL** and enter the dashboard address, such as `http://hermes:9119` or 
 - a Tailscale address
 - a bare name, such as `hermes`, that resolves only to Tailscale addresses
 
-For HTTPS, the app uses the system OpenSSL and trust store. It also honours `HTTP_PROXY` and `HTTPS_PROXY`.
+For HTTPS, the app uses the system OpenSSL and trust store. `HTTP_PROXY` and `HTTPS_PROXY` apply to HTTP requests only. The WebSocket connects directly, so the dashboard must be reachable without a proxy.
 
 ### Extra request headers
 
 A gateway in front of the dashboard, such as Cloudflare Access, may need headers. Add them under **Extra request headers** on the sign-in screen, for example `CF-Access-Client-Id` and `CF-Access-Client-Secret`. Rust sends them with every request to that dashboard, including sign-in, REST calls, and the WebSocket handshake. It never sends them anywhere else:
 
 - With headers set, the app follows a redirect only within the dashboard's origin.
-- Changing the URL on the sign-in screen clears the filled-in header values, so they can't go to the new server.
+- Header values restored from the keyring belong to the URL they were saved for. Changing the URL on the sign-in screen clears them and keeps the names. Values you type yourself are not cleared, so check them before connecting to a different URL.
 - SSH connections don't send the headers.
 
 Settings shows the header names but never their values. The app reserves a few names, such as `Host`, `Cookie`, `Origin`, `Sec-WebSocket-*`, and `Proxy-*`. `Authorization` is allowed.
@@ -188,7 +188,7 @@ After a successful sign-in, the password is saved in the system keyring, and the
 
 ### Profiles
 
-Each Hermes profile has its own chats. The chat list header is the profile switcher. It also marks other profiles that have Unread chats, checking every two minutes. Switching happens in place, with the same sign-in. If a reply is running or an Approval is waiting, the app asks first. Hermes keeps the reply running and brings both back when you return. Drafts, Saved copies, and the model pick are kept per profile. The last profile you used opens at the next launch.
+Each Hermes profile has its own chats. The chat list header is the profile switcher. It also marks other profiles that have Unread chats, checking every two minutes. Switching happens in place, with the same sign-in. If a reply is running or an Approval is waiting, the app asks first. Hermes keeps the reply running and brings both back when you return. Drafts and Saved copies are kept per profile. Switching profile resets the composer's model pick to that profile's own default model. The last profile you used opens at the next launch.
 
 ## What is stored where
 
@@ -203,11 +203,12 @@ Hermes stores the chats and their history, titles, Archived state, and Unread st
 | Dashboard password | System keyring, service `hermes-chat`, account `dashboard-password` | Sign out |
 | Extra request headers (names, values, and their URL) | System keyring, account `extra-request-headers` | Signing in to the URL with no headers |
 | Sign-in mode, SSH target, URL, and username | Webview local storage (`hermes-chat.sign-in`) | Not removed by the app |
-| Chat list copy and **Saved copies** of recently opened chats (up to 2 MB in total) | Webview local storage | Clear local cache, deleting the chat, or the oldest copy going first when the storage limit is reached |
+| Chat list copy for each profile | Webview local storage | Clear local cache |
+| **Saved copies** of recently opened chats (up to 2 MB in total) | Webview local storage | Clear local cache, deleting the chat, or the oldest copy going first when the 2 MB limit is reached |
 | Drafts and **Failed messages** | Webview local storage, per connection, profile, and chat | Sending, Retry, or Dismiss. Clear local cache keeps them. |
 | Which chats are in each project | Webview local storage (`hermes-chat.projects`) | Deleting the project. Clear local cache keeps it. |
 | Display preferences, model pick, starred models, and reopen-last-chat | Webview local storage | Not removed by Clear local cache |
-| Screenshots waiting to send | `$XDG_CACHE_HOME/hermes-chat/captures/`, readable only by you | Confirmed delivery, removing them from the composer, or the next startup's cleanup |
+| Screenshots waiting to send | `$XDG_CACHE_HOME/hermes-chat/captures/`, readable only by you | Confirmed delivery, removing them from the composer, or leaving the composer without sending. A Failed message keeps its screenshots until delivery is confirmed, history reconciles it, or you Dismiss it. Startup cleanup removes only leftovers that no message needs. |
 | Pasted files | A private folder under `$TMPDIR/hermes-chat/` (usually `/tmp/hermes-chat/`) | Not removed by the app |
 | Exported chats | The file you chose in the Save dialog | You |
 
@@ -235,7 +236,7 @@ Webview local storage is in `$XDG_DATA_HOME/net.l0cky12.hermes-chat/localstorage
 - The app targets Linux on Arch with WebKitGTK; CI runs on Ubuntu. No other packages or installers exist.
 - Active and Settled don't sync between computers for chats that Hermes won't pin, such as chats started in this app.
 - Project membership is stored on this computer only. Other computers and Hermes clients don't see it.
-- Usage appears only for replies that the app watched from start to finish. Costs count only the calls Hermes could price.
+- Per-reply usage appears only for replies that the app watched from start to finish. Chat totals come from Hermes and cover every call. Costs count only the calls Hermes could price.
 - Framed web pages in the preview pane get no cookies, so sites that need a sign-in don't stay signed in. HTML files show as static documents.
 - Long transcripts render in full. Very long chats, especially two at once, can be slow while streaming or resizing.
 - On the legacy protocol, a reply to a Telegram or Discord chat should stay in Hermes clients and not be posted back to Telegram or Discord. This comes from reading Hermes's source and hasn't been tested live.
