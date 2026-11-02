@@ -74,6 +74,9 @@ export class FakeHermes {
   route: Route = { kind: "ssh", target: "liam@hermes" };
   /** While set, opening a pipe fails with this message, as the Rust side does when the server can't be reached. */
   refuse?: string;
+  /** While set, a frame sent rejects with this message and never arrives, as when the Rust side's outgoing queue has
+   * closed (`TransportError::Closed`). */
+  failSend?: string;
   /** How many pipes have been opened. */
   opened = 0;
   /** The `default` profile's stored sessions. A chat started over the WS gets a row on its first prompt. */
@@ -261,6 +264,7 @@ export class FakeHermes {
     // A new connection hasn't said yet whether it answers server→client requests.
     this.answersRequests = false;
     const send = async (text: string) => {
+      if (this.failSend !== undefined) throw new Error(this.failSend);
       const req = JSON.parse(text) as Request | Response;
       if (!("method" in req)) {
         this.responses.push(req);

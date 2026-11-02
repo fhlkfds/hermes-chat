@@ -1,10 +1,11 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowUp, Brain, ChevronDown, ChevronRight, ChevronUp, Paperclip, Search, ShieldAlert, Square, Wrench, X } from "lucide-react";
+import { ArrowUp, Brain, ChevronDown, ChevronRight, ChevronUp, CloudOff, HardDrive, Paperclip, Search, ShieldAlert, Square, Wrench, X } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import type { ApprovalChoice, ApprovalItem, AttachCheck, Attachment, Chat, ConnectionStatus, Item, Source } from "../hermes/model";
 import { SOURCE_LABEL, isWaiting } from "../hermes/model";
+import type { Undelivered } from "../hermes/drafts";
 import { Markdown } from "./Markdown";
 import { SettleButton, SourceIcon, Spinner, StoredTime, fmtSize, highlight } from "./bits";
 
@@ -37,15 +38,26 @@ const STATUS_NOTE: Record<ConnectionStatus, string | undefined> = {
   offline: "Offline. Click the status dot to reconnect.",
 };
 
+/** When a Saved copy was taken, as the note above it says it. */
+const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+
 /**
- * `alsoPostsIn`: the Telegram or Discord chat Hermes will also post its replies in. `onAnswer` answers an Approval card.
- * `onSettle` is left out for a chat not started yet. Ctrl+F opens the find bar.
+ * `alsoPostsIn`: the Telegram or Discord chat Hermes will also post its replies in. `draft`: the composer's text, kept
+ * outside the pane so it survives switching chats. `onAnswer` answers an Approval card. `onSettle` is left out for a
+ * chat not started yet. `notLoaded`: the chat has no Saved copy and can't load until Hermes is connected. Ctrl+F opens
+ * the find bar.
  */
 export function ChatPane({
   chat,
+  notLoaded,
   findTarget,
   status,
   alsoPostsIn,
+  draft,
+  onDraft,
+  undelivered,
+  onRetry,
+  onDismiss,
   onAttach,
   onSend,
   onStop,
@@ -53,9 +65,15 @@ export function ChatPane({
   onSettle,
 }: {
   chat: Chat;
+  notLoaded?: boolean;
   findTarget?: FindTarget;
   status: ConnectionStatus;
   alsoPostsIn?: Source;
+  draft: string;
+  onDraft: (text: string) => void;
+  undelivered: Undelivered[];
+  onRetry: (heldId: string) => void;
+  onDismiss: (heldId: string) => void;
   onAttach: (paths: string[]) => Promise<AttachCheck>;
   onSend: (text: string, attachments: Attachment[]) => void;
   onStop: () => void;
@@ -212,12 +230,30 @@ export function ChatPane({
               {chat.settled && " Replying here moves it to Active."}
             </div>
           )}
+          {chat.savedAt !== undefined && (
+            <div className="saved-note" role="note">
+              {status === "connected" ? <HardDrive size={13} /> : <CloudOff size={13} />}
+              <span>
+                <b>Saved copy</b> from {savedWhen(chat.savedAt)}.{" "}
+                {status === "connected"
+                  ? chat.loading
+                    ? "Loading the latest from Hermes…"
+                    : "It may be out of date."
+                  : "You're offline, so newer messages may be missing."}
+              </span>
+            </div>
+          )}
           {chat.loading && blocks.length === 0 && (
             <div className="loading-chat">
               <Spinner /> Loading chat
             </div>
           )}
-          {!chat.loading && blocks.length === 0 && <div className="empty-chat">What should Hermes work on?</div>}
+          {notLoaded && blocks.length === 0 && (
+            <div className="unloaded-chat">
+              <CloudOff size={14} /> This chat isn't saved on this computer. It loads once Hermes is connected.
+            </div>
+          )}
+          {!chat.loading && !notLoaded && blocks.length === 0 && <div className="empty-chat">What should Hermes work on?</div>}
           {blocks.map((b) => {
             if (b.kind === "user")
               return (
@@ -274,6 +310,11 @@ export function ChatPane({
         note={STATUS_NOTE[status]}
         hint={waiting ? "Hermes is waiting for your approval above." : undefined}
         alsoPostsIn={alsoPostsIn}
+        text={draft}
+        onText={onDraft}
+        undelivered={undelivered}
+        onRetry={onRetry}
+        onDismiss={onDismiss}
         onAttach={onAttach}
         onSend={(t, attachments) => {
           stickToBottom.current = true;
@@ -395,6 +436,35 @@ function ToolGroup({ tools }: { tools: ToolItem[] }) {
   );
 }
 
+/**
+ * A sent message kept beside the composer. One that may have reached Hermes says so, since sending it again could run
+ * it twice, tools included.
+ */
+function UndeliveredCard({ held, canSend, onRetry, onDismiss }: { held: Undelivered; canSend: boolean; onRetry: () => void; onDismiss: () => void }) {
+  const unknown = held.delivery === "unknown";
+  return (
+    <div className={`undelivered ${held.delivery}`} role="alert">
+      <div className="undelivered-head">
+        {unknown ? "Hermes may already have this message" : "This message wasn't sent"}
+      </div>
+      <div className="undelivered-why">
+        {unknown
+          ? "The connection dropped before Hermes confirmed it got it, so it may already be running, tools and all. Check the chat before sending it again."
+          : held.reason}
+      </div>
+      <div className="undelivered-text">{held.text}</div>
+      <div className="undelivered-actions">
+        <button className="btn" onClick={onDismiss} disabled={held.retrying}>
+          Dismiss
+        </button>
+        <button className="btn primary" onClick={onRetry} disabled={!canSend || held.retrying}>
+          {held.retrying ? "Sending…" : "Send again"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function Composer({
   offline,
   running,
@@ -402,6 +472,11 @@ function Composer({
   note,
   hint,
   alsoPostsIn,
+  text,
+  onText,
+  undelivered,
+  onRetry,
+  onDismiss,
   onAttach,
   onSend,
   onStop,
@@ -412,11 +487,17 @@ function Composer({
   note?: string;
   hint?: string;
   alsoPostsIn?: Source;
+  /** `onSend` empties it. */
+  text: string;
+  onText: (text: string) => void;
+  /** Sent messages Hermes didn't take, or may not have: each can be sent again or dismissed. */
+  undelivered: Undelivered[];
+  onRetry: (heldId: string) => void;
+  onDismiss: (heldId: string) => void;
   onAttach: (paths: string[]) => Promise<AttachCheck>;
   onSend: (text: string, attachments: Attachment[]) => void;
   onStop: () => void;
 }) {
-  const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [refused, setRefused] = useState<string[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -467,7 +548,6 @@ function Composer({
   const send = () => {
     if (offline || running || !sendable) return;
     onSend(text.trim(), attachments);
-    setText("");
     setAttachments([]);
     setRefused([]);
   };
@@ -481,6 +561,9 @@ function Composer({
           <SourceIcon source={alsoPostsIn} /> Hermes also posts its replies in this {SOURCE_LABEL[alsoPostsIn]} chat.
         </div>
       )}
+      {undelivered.map((u) => (
+        <UndeliveredCard key={u.id} held={u} canSend={!offline && !running} onRetry={() => onRetry(u.id)} onDismiss={() => onDismiss(u.id)} />
+      ))}
       {refused.map((r, i) => (
         <div key={i} className="attach-note" role="alert">
           {r}
@@ -508,7 +591,7 @@ function Composer({
           autoFocus
           placeholder="Message Hermes"
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => onText(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
