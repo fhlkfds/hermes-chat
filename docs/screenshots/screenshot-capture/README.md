@@ -6,3 +6,5 @@ These are actual screenshots of the Tauri application running in a headless Sway
 4. Screenshot shortcut and desktop binding instructions in Settings.
 
 The test session also exercised window selection, in-app Ctrl+Shift+S, cancellation, shortcut conflicts, no portal, private file permissions, and startup removal of an injected stale capture. Portal capture was exercised through real xdg-desktop-portal with the wlr backend while the application environment selected the portal path. This is not evidence of running native GNOME, KDE Plasma or Hyprland. No real remote Hermes server was used for these screenshots.
+
+These images were captured before integrating main at 70a37c3, which added the status bar and chat outbox. The final feature preserves that outbox: failed/unknown messages keep captures for Retry instead of restoring them to the composer. Automated integration and Rust lifecycle tests cover that behavior; these earlier desktop images establish the picker, local review, Send, and settings, not the final outbox behavior.

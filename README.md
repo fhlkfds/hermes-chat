@@ -45,7 +45,7 @@ Ctrl+Shift+S (or the camera button in the composer) takes a screenshot of a regi
 
 That shortcut works only while Hermes Chat is focused. Wayland apps can't see keys pressed in other windows, so for a shortcut that works anywhere, bind a key in your desktop's settings to `hermes-chat --screenshot`. For example, on Hyprland: `bind = SUPER SHIFT, S, exec, hermes-chat --screenshot`. If Hermes Chat is open, the screenshot goes to the chat on screen. If it isn't open, or is on the sign-in screen, the screenshot is taken once you're signed in, if that's within two minutes. When it might need to start, use `env WEBKIT_DISABLE_DMABUF_RENDERER=1 hermes-chat --screenshot`.
 
-Captures wait in `$XDG_RUNTIME_DIR/hermes-chat/captures/`, readable only by you. Each one is deleted once Hermes takes its message, when you remove it, when you leave the chat without sending it, and when the app quits. If Hermes doesn't confirm the message, the screenshot goes back in the composer instead. If the app is killed, its captures are deleted the next time it starts, or when you log out. Nothing is uploaded until you send the message.
+Captures wait in `$XDG_CACHE_HOME/hermes-chat/captures/` (usually `~/.cache/hermes-chat/captures/`), readable only by you. Nothing is uploaded until you send the message. A capture is deleted once Hermes confirms its message, when you remove it from the composer, or when you leave the composer without sending it. Failed or uncertain messages keep their screenshots in the chat's outbox for Retry, including across app restarts; confirmation, history reconciliation or Dismiss releases them. Quitting deletes composer captures, and startup removes crash leftovers that no outbox needs.
 
 ## Test
 

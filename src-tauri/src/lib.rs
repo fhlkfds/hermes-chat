@@ -58,7 +58,6 @@ impl Screenshots {
             return Ok(c.clone());
         }
         let c = Arc::new(screenshot::Captures::open(screenshot::default_root()?)?);
-        c.sweep();
         *slot = Some(c.clone());
         Ok(c)
     }
@@ -154,6 +153,13 @@ async fn screenshot_support() -> screenshot::Support {
     tokio::task::spawn_blocking(screenshot::support).await.unwrap_or_else(|e| screenshot::Support { ok: false, summary: e.to_string() })
 }
 
+/// The renderer supplies all persisted outboxes at startup and whenever they change, before cleanup.
+#[tauri::command]
+fn screenshot_sync_outbox(state: State<'_, Screenshots>, paths: Vec<String>) -> Result<(), screenshot::CaptureError> {
+    state.captures()?.retain_outbox(paths.into_iter().map(std::path::PathBuf::from));
+    Ok(())
+}
+
 /// Peeking leaves the request pending if the signed-in window goes away before handling it.
 #[tauri::command]
 fn screenshot_pending_request(state: State<'_, Screenshots>) -> Option<u64> {
@@ -174,6 +180,20 @@ fn screenshot_show_window(app: tauri::AppHandle) {
         let _ = window.show();
         let _ = window.set_focus();
     }
+}
+
+/// Saves a file pasted into the composer to a temp file and returns its path. Its bytes come as the raw body, not
+/// JSON, so a big screenshot isn't sent as a list of numbers; its name comes URI-encoded in the `x-name` header.
+#[tauri::command]
+async fn stage_clipboard_file(request: tauri::ipc::Request<'_>) -> Result<String, String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("The pasted file didn't arrive as bytes.".into());
+    };
+    let header = request.headers().get("x-name").and_then(|v| v.to_str().ok()).unwrap_or_default();
+    // encodeURIComponent never writes `+`, `&` or `=` bare, so one form-decoded key is exactly the name.
+    let name = url::form_urlencoded::parse(header.as_bytes()).next().map(|(k, _)| k.into_owned()).unwrap_or_default();
+    let path = transport::stage_clipboard_file(&name, bytes).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
@@ -258,7 +278,7 @@ pub fn run(screenshot: bool) {
         .manage(screenshots)
         .setup(|app| {
             use tauri::Emitter;
-            // Sweep crash leftovers on every start, even when no new capture is taken.
+            // Open storage at startup. The renderer supplies outbox references and triggers the startup sweep.
             if let Err(e) = app.state::<Screenshots>().captures() {
                 eprintln!("hermes-chat: couldn't clean up old screenshots: {e}");
             }
@@ -275,6 +295,7 @@ pub fn run(screenshot: bool) {
             hermes_send_file,
             hermes_stat_files,
             hermes_read_preview,
+            stage_clipboard_file,
             hermes_request,
             hermes_disconnect,
             password_load,
@@ -286,6 +307,7 @@ pub fn run(screenshot: bool) {
             screenshot_capture,
             screenshot_discard,
             screenshot_support,
+            screenshot_sync_outbox,
             screenshot_pending_request,
             screenshot_ack_request,
             screenshot_show_window

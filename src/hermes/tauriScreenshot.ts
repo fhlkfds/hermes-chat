@@ -2,6 +2,7 @@
 // `hermes-chat --screenshot` asks for one from a desktop shortcut (src-tauri/src/remote.rs).
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { outboxAttachmentPaths, subscribeOutbox } from "./chatCache";
 import type { Captured, ScreenshotApi } from "./screenshots";
 
 export const tauriScreenshots: ScreenshotApi = {
@@ -56,3 +57,15 @@ export function onDesktopScreenshot(fn: () => void): () => void {
 
 /** Brings the window forward, so the owner can review a screenshot a desktop shortcut attached. */
 export const showWindow = () => invoke<void>("screenshot_show_window").catch(() => {});
+
+// Serialize reconciliation, reading the latest outboxes when the work runs. Retry removes the old row and adds the
+// new one synchronously; looking after that completes never deletes a file in between those two rows.
+let syncing = Promise.resolve();
+export function syncScreenshotOutbox(): Promise<void> {
+  if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return Promise.resolve();
+  syncing = syncing.catch(() => {}).then(() => invoke<void>("screenshot_sync_outbox", { paths: outboxAttachmentPaths() }));
+  return syncing;
+}
+subscribeOutbox(() => void syncScreenshotOutbox().catch(() => {}));
+// Runs even at the sign-in screen: crash leftovers are swept with every connection's persisted outbox protected.
+void syncScreenshotOutbox().catch(() => {});

@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { onDesktopScreenshot } from "./tauriScreenshot";
+import { onDesktopScreenshot, syncScreenshotOutbox } from "./tauriScreenshot";
 
-const { invoke, listen } = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn() }));
+const { invoke, listen, paths } = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), paths: vi.fn(() => [] as string[]) }));
+vi.mock("./chatCache", () => ({ outboxAttachmentPaths: paths, subscribeOutbox: () => () => {} }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ listen }));
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -68,4 +69,16 @@ describe("Desktop screenshot request lifecycle", () => {
     await flush();
     expect(unlisten).toHaveBeenCalledTimes(1);
   });
+});
+
+it("reads the latest outbox after Retry replaces its row, never the transient empty outbox", async () => {
+  vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+  paths.mockReturnValue([]);
+  invoke.mockResolvedValue(undefined);
+  const sync = syncScreenshotOutbox();
+  // Retry removes one row and inserts its replacement before the microtask runs.
+  paths.mockReturnValue(["/private/captures/1/0/retry.png"]);
+  await sync;
+  expect(invoke).toHaveBeenLastCalledWith("screenshot_sync_outbox", { paths: ["/private/captures/1/0/retry.png"] });
+  vi.unstubAllGlobals();
 });

@@ -1,11 +1,11 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
 import { memo, type ReactNode, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
-import { ArrowUp, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CloudOff, FileDown, HardDrive, Paperclip, Search, Square, Wrench, X } from "lucide-react";
+import { ArrowUp, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, FileDown, HardDrive, Paperclip, RotateCcw, Search, Square, Wrench, X } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import type { ApprovalChoice, AttachCheck, Attachment, Chat, ConnectionStatus, Item, Source } from "../hermes/model";
-import { SOURCE_LABEL, isWaiting } from "../hermes/model";
-import type { Undelivered } from "../hermes/drafts";
+import type { ApprovalChoice, AttachCheck, Attachment, Chat, ConnectionStatus, Item, OutgoingItem, Source } from "../hermes/model";
+import { SOURCE_LABEL, isOutgoing, isWaiting } from "../hermes/model";
 import type { DeskState, ScreenshotDesk } from "../hermes/screenshots";
 import { ApprovalCard } from "./ApprovalCard";
 import { Markdown } from "./Markdown";
@@ -47,6 +47,33 @@ const STATUS_NOTE: Record<ConnectionStatus, string | undefined> = {
 
 const NOT_CAPTURING: DeskState = { capturing: false };
 const noDesk = () => () => {};
+/**
+ * The name a pasted file is saved under: its own, or for a screenshot (no name, or the webview's generic `image.png`)
+ * a local timestamp like `clipboard-2026-11-02T153000.png`, its extension from the MIME type.
+ */
+export function pastedName(f: { name: string; type: string }, now = new Date()): string {
+  if (f.name && !/^image\.\w+$/.test(f.name)) return f.name;
+  const local = new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 19).replaceAll(":", "");
+  return `clipboard-${local}.${/^\w+\/(\w+)$/.exec(f.type)?.[1] ?? "png"}`;
+}
+
+/**
+ * The images on the clipboard, as files. WebKitGTK leaves a paste event's `files` empty even for a screenshot, but the
+ * async clipboard API, asked during the paste, has it. Empty when there are none or the clipboard can't be read.
+ */
+async function clipboardImages(): Promise<File[]> {
+  try {
+    const items = await navigator.clipboard.read();
+    return await Promise.all(
+      items.flatMap((item) => {
+        const type = item.types.find((t) => t.startsWith("image/"));
+        return type ? [item.getType(type).then((b) => new File([b], "", { type }))] : [];
+      }),
+    );
+  } catch {
+    return [];
+  }
+}
 
 /** When a Saved copy was taken, as the note above it says it. */
 const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
@@ -55,9 +82,10 @@ const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateS
  * `alsoPostsIn`: the Telegram or Discord chat Hermes will also post its replies in. `draft`: the composer's text, kept
  * outside the pane so it survives switching chats. `onAnswer` answers an Approval card. `onSettle`, `onArchive` and
  * `onExport` are left out for a chat not started yet. `notLoaded`: the chat has no Saved copy and can't load until
- * Hermes is connected. `modelControls`: the model picker and reasoning pill, at the bottom left of the composer.
- * `screenshots`: where screenshots come from, to attach to the composer; `screenshotKeys` is their shortcut, if set.
- * Ctrl+F opens the find bar.
+ * Hermes is connected. `onRetry`, `onEdit` and `onDismiss` act on a message Hermes didn't take, or may not have.
+ * `modelControls`: the model picker and reasoning pill, at the bottom left of the composer. `footer`: what goes under
+ * the composer, the status bar. Ctrl+F opens the find bar.
+ * `screenshots` attaches captures to the composer; `screenshotKeys` is the configured shortcut.
  */
 export function ChatPane({
   chat,
@@ -67,8 +95,8 @@ export function ChatPane({
   alsoPostsIn,
   draft,
   onDraft,
-  undelivered,
   onRetry,
+  onEdit,
   onDismiss,
   onAttach,
   onSend,
@@ -80,6 +108,7 @@ export function ChatPane({
   modelControls,
   screenshots,
   screenshotKeys,
+  footer,
 }: {
   chat: Chat;
   notLoaded?: boolean;
@@ -88,9 +117,9 @@ export function ChatPane({
   alsoPostsIn?: Source;
   draft: string;
   onDraft: (text: string) => void;
-  undelivered: Undelivered[];
-  onRetry: (heldId: string) => void;
-  onDismiss: (heldId: string) => void;
+  onRetry: (itemId: string) => void;
+  onEdit: (itemId: string) => void;
+  onDismiss: (itemId: string) => void;
   onAttach: (paths: string[]) => Promise<AttachCheck>;
   onSend: (text: string, attachments: Attachment[]) => void;
   onStop: () => void;
@@ -101,6 +130,7 @@ export function ChatPane({
   modelControls?: ReactNode;
   screenshots?: ScreenshotDesk;
   screenshotKeys?: string;
+  footer?: ReactNode;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   // The blocks are memoized, so they get one answer handler for the life of the pane.
@@ -110,6 +140,12 @@ export function ChatPane({
     (approvalId: string, choice: ApprovalChoice, confirmed?: boolean) => onAnswerRef.current(approvalId, choice, confirmed),
     [],
   );
+  // So do failed messages, one handler for all three actions.
+  const outgoingRef = useRef({ retry: onRetry, edit: onEdit, dismiss: onDismiss });
+  outgoingRef.current = { retry: onRetry, edit: onEdit, dismiss: onDismiss };
+  const onOutgoing = useCallback((itemId: string, action: OutgoingAction) => outgoingRef.current[action](itemId), []);
+  // A failed message can be sent again once Hermes is connected and the chat has no reply running.
+  const canRetry = status === "connected" && !chat.loading && !chat.running;
   const findRef = useRef<HTMLInputElement>(null);
   const stickToBottom = useRef(true);
   const [findOpen, setFindOpen] = useState(false);
@@ -290,7 +326,7 @@ export function ChatPane({
               <Spinner /> Loading chat
             </div>
           )}
-          {notLoaded && blocks.length === 0 && (
+          {notLoaded && blocks.every((b) => b.kind === "user" && b.outgoing) && (
             <div className="unloaded-chat">
               <CloudOff size={14} /> This chat isn't saved on this computer. It loads once Hermes is connected.
             </div>
@@ -305,6 +341,8 @@ export function ChatPane({
               offline={status !== "connected" || !!chat.loading}
               movedAt={b.kind === "approval" ? movedAt : 0}
               onAnswer={answer}
+              canRetry={b.kind === "user" && !!b.outgoing && canRetry}
+              onOutgoing={onOutgoing}
             />
           ))}
           {/* A reply waiting on the owner isn't thinking, and streamed thinking shows its own row. */}
@@ -327,9 +365,6 @@ export function ChatPane({
         alsoPostsIn={alsoPostsIn}
         text={draft}
         onText={onDraft}
-        undelivered={undelivered}
-        onRetry={onRetry}
-        onDismiss={onDismiss}
         onAttach={onAttach}
         onSend={(t, attachments) => {
           stickToBottom.current = true;
@@ -340,14 +375,18 @@ export function ChatPane({
         screenshots={screenshots}
         screenshotKeys={screenshotKeys}
       />
+      {footer}
     </div>
   );
 }
 
+type OutgoingAction = "retry" | "edit" | "dismiss";
+
 /**
  * One block of the transcript. Memoized, so a streamed delta re-renders only the block it changes. `live`: the reply
  * or thinking is still streaming. `offline` and `movedAt` are for an Approval card; other blocks get `movedAt` 0, so
- * the transcript changing doesn't re-render them.
+ * the transcript changing doesn't re-render them. `canRetry` and `onOutgoing` are for a message Hermes didn't take, or
+ * may not have; other blocks get `canRetry` false.
  */
 const BlockView = memo(
   function BlockView({
@@ -357,6 +396,8 @@ const BlockView = memo(
     offline,
     movedAt,
     onAnswer,
+    canRetry,
+    onOutgoing,
   }: {
     block: Block;
     live: boolean;
@@ -364,10 +405,12 @@ const BlockView = memo(
     offline: boolean;
     movedAt: number;
     onAnswer: (approvalId: string, choice: ApprovalChoice, confirmed?: boolean) => void;
+    canRetry: boolean;
+    onOutgoing: (itemId: string, action: OutgoingAction) => void;
   }) {
     if (block.kind === "user")
       return (
-        <div className="msg user" data-item={block.id}>
+        <div className={`msg user${block.outgoing ? ` outgoing ${block.outgoing.state}` : ""}`} data-item={block.id}>
           {block.attachments && (
             <div className="msg-files">
               {block.attachments.map((name, i) => (
@@ -380,6 +423,9 @@ const BlockView = memo(
           )}
           {block.text && <div className="bubble-text">{highlight(block.text, query)}</div>}
           <StoredTime at={block.at} />
+          {isOutgoing(block) && block.outgoing.state !== "sending" && (
+            <SendFailed item={block} canRetry={canRetry} act={(action) => onOutgoing(block.id, action)} />
+          )}
         </div>
       );
     if (block.kind === "assistant")
@@ -403,8 +449,53 @@ const BlockView = memo(
     return <ToolGroup tools={block.tools} />;
   },
   (a, b) =>
-    sameBlock(a.block, b.block) && a.live === b.live && a.query === b.query && a.offline === b.offline && a.movedAt === b.movedAt && a.onAnswer === b.onAnswer,
+    sameBlock(a.block, b.block) &&
+    a.live === b.live &&
+    a.query === b.query &&
+    a.offline === b.offline &&
+    a.movedAt === b.movedAt &&
+    a.onAnswer === b.onAnswer &&
+    a.canRetry === b.canRetry &&
+    a.onOutgoing === b.onOutgoing,
 );
+
+/**
+ * Under a message Hermes didn't take, or may not have: why, and Retry, which sends the same words and files again as a
+ * new message. One Hermes may have says so, since sending it again could run it twice; reading the chat's history back
+ * once Hermes is connected settles it. Edit takes its words back into the composer, and is left out for a message with
+ * files, which the composer can't take back.
+ */
+/** A reason as a sentence: Hermes's own come as lowercase fragments, like "session busy". */
+const sentence = (text = "") => (text ? `${text[0].toUpperCase()}${text.slice(1)}${/[.!?)]$/.test(text) ? "" : "."}` : "");
+
+function SendFailed({ item, canRetry, act }: { item: OutgoingItem; canRetry: boolean; act: (action: OutgoingAction) => void }) {
+  const unknown = item.outgoing.state === "unknown";
+  return (
+    <div className={`send-failed ${item.outgoing.state}`} role="alert">
+      <div className="send-failed-why">
+        <CircleAlert size={13} />
+        <span>
+          {unknown ? "Hermes may already have this message. " : "Not sent. "}
+          {sentence(item.outgoing.reason)}
+          {unknown && " It's checked against the chat's history once Hermes is connected."}
+        </span>
+      </div>
+      <div className="send-failed-actions">
+        <button className="btn" onClick={() => act("dismiss")}>
+          Dismiss
+        </button>
+        {!item.outgoing.attachments?.length && (
+          <button className="btn" onClick={() => act("edit")}>
+            Edit
+          </button>
+        )}
+        <button className="btn primary" onClick={() => act("retry")} disabled={!canRetry} title={unknown ? "Send it again: Hermes may run it twice" : "Send it again"}>
+          <RotateCcw size={13} /> Retry
+        </button>
+      </div>
+    </div>
+  );
+}
 
 /**
  * The model's reasoning, folded to one line. `live`: it is still streaming, so the line shows its latest words.
@@ -483,35 +574,6 @@ function ToolGroup({ tools }: { tools: ToolItem[] }) {
   );
 }
 
-/**
- * A sent message kept beside the composer. One that may have reached Hermes says so, since sending it again could run
- * it twice, tools included.
- */
-function UndeliveredCard({ held, canSend, onRetry, onDismiss }: { held: Undelivered; canSend: boolean; onRetry: () => void; onDismiss: () => void }) {
-  const unknown = held.delivery === "unknown";
-  return (
-    <div className={`undelivered ${held.delivery}`} role="alert">
-      <div className="undelivered-head">
-        {unknown ? "Hermes may already have this message" : "This message wasn't sent"}
-      </div>
-      <div className="undelivered-why">
-        {unknown
-          ? "The connection dropped before Hermes confirmed it got it, so it may already be running, tools and all. Check the chat before sending it again."
-          : held.reason}
-      </div>
-      <div className="undelivered-text">{held.text}</div>
-      <div className="undelivered-actions">
-        <button className="btn" onClick={onDismiss} disabled={held.retrying}>
-          Dismiss
-        </button>
-        <button className="btn primary" onClick={onRetry} disabled={!canSend || held.retrying}>
-          {held.retrying ? "Sending…" : "Send again"}
-        </button>
-      </div>
-    </div>
-  );
-}
-
 function Composer({
   offline,
   running,
@@ -521,9 +583,6 @@ function Composer({
   alsoPostsIn,
   text,
   onText,
-  undelivered,
-  onRetry,
-  onDismiss,
   onAttach,
   onSend,
   onStop,
@@ -540,10 +599,6 @@ function Composer({
   /** `onSend` empties it. */
   text: string;
   onText: (text: string) => void;
-  /** Sent messages Hermes didn't take, or may not have: each can be sent again or dismissed. */
-  undelivered: Undelivered[];
-  onRetry: (heldId: string) => void;
-  onDismiss: (heldId: string) => void;
   onAttach: (paths: string[]) => Promise<AttachCheck>;
   onSend: (text: string, attachments: Attachment[]) => void;
   onStop: () => void;
@@ -567,8 +622,18 @@ function Composer({
   }, []);
   useEffect(() => previews.current?.sync(attachments), [attachments]);
 
-  /** Stages files the owner added; resolves to the paths staged. */
-  const add = async (paths: string[]): Promise<string[]> => {
+  // Files still being read, saved or checked: sending waits for them, so none misses the message it was added for.
+  const [attaching, setAttaching] = useState(0);
+  const busy = async <T,>(work: () => Promise<T>): Promise<T> => {
+    setAttaching((n) => n + 1);
+    try {
+      return await work();
+    } finally {
+      setAttaching((n) => n - 1);
+    }
+  };
+
+  const add = (paths: string[]) => busy(async () => {
     if (!paths.length) return [];
     try {
       const got = await onAttach(paths);
@@ -579,7 +644,7 @@ function Composer({
       setRefused([`Couldn't attach files: ${e instanceof Error ? e.message : String(e)}`]);
       return [];
     }
-  };
+  });
   const addRef = useRef(add);
   addRef.current = add;
 
@@ -617,6 +682,21 @@ function Composer({
     return () => void unlisten.then((stop) => stop());
   }, []);
 
+  // A pasted screenshot or file has no path of its own: Rust saves it to a temp file, which then attaches like a drop.
+  const paste = (pasted: File[] | Promise<File[]>) => busy(async () => {
+    try {
+      const files = await pasted;
+      const paths = await Promise.all(
+        files.map(async (f) =>
+          invoke<string>("stage_clipboard_file", await f.arrayBuffer(), { headers: { "x-name": encodeURIComponent(pastedName(f)) } }),
+        ),
+      );
+      await add(paths);
+    } catch (e) {
+      setRefused([`Couldn't attach the pasted files: ${e instanceof Error ? e.message : String(e)}`]);
+    }
+  });
+
   const pick = async () => {
     try {
       const paths = await openFileDialog({ multiple: true, directory: false });
@@ -633,7 +713,7 @@ function Composer({
     ta.style.height = Math.min(ta.scrollHeight, 240) + "px";
   }, [text]);
 
-  const sendable = !!text.trim() || attachments.length > 0;
+  const sendable = attaching === 0 && (!!text.trim() || attachments.length > 0);
   const send = () => {
     if (offline || running || !sendable) return;
     onSend(text.trim(), attachments);
@@ -650,9 +730,6 @@ function Composer({
           <SourceIcon source={alsoPostsIn} /> Hermes also posts its replies in this {SOURCE_LABEL[alsoPostsIn]} chat.
         </div>
       )}
-      {undelivered.map((u) => (
-        <UndeliveredCard key={u.id} held={u} canSend={!offline && !running} onRetry={() => onRetry(u.id)} onDismiss={() => onDismiss(u.id)} />
-      ))}
       {shot.capturing && (
         <div className="capture-note" role="status">
           Taking a screenshot: select a region or window, or press Esc to cancel.
@@ -687,6 +764,15 @@ function Composer({
           placeholder="Message Hermes"
           value={text}
           onChange={(e) => onText(e.target.value)}
+          onPaste={(e) => {
+            // Only files are taken over; text pastes as it always has.
+            if (dragging) return;
+            const files = Array.from(e.clipboardData.files);
+            if (files.length) {
+              e.preventDefault();
+              void paste(files);
+            } else if (!e.clipboardData.getData("text/plain")) void paste(clipboardImages());
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey && !composing(e)) {
               e.preventDefault();

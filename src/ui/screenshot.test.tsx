@@ -7,6 +7,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row } from "../hermes/fakeHermes";
 import { connect, type Hermes } from "../hermes/transport";
+import { localChatCache, outboxAttachmentPaths, subscribeOutbox } from "../hermes/chatCache";
 import { setUIPrefs } from "../hermes/uiPrefs";
 import type { Captured } from "../hermes/screenshots";
 import { Main, type Screenshots } from "../App";
@@ -18,8 +19,10 @@ beforeAll(() => {
   Element.prototype.scrollIntoView = () => {};
   globalThis.CSS ??= { escape: (s: string) => s } as typeof CSS;
 });
+const stopOutboxes: (() => void)[] = [];
 afterEach(() => {
   cleanup();
+  for (const stop of stopOutboxes.splice(0)) stop();
   localStorage.clear();
 });
 
@@ -36,6 +39,18 @@ function fakeRust(server: FakeHermes) {
   let desktopShortcut: (() => void) | undefined;
   let pending: { resolve: (c: Captured) => void; reject: (e: unknown) => void } | undefined;
   let n = 0;
+  let retained = new Set<string>();
+  const remove = (path: string) => {
+    if (server.files[path] === undefined) return;
+    discarded.push(path);
+    delete server.files[path];
+  };
+  const syncOutbox = async () => {
+    const next = new Set(outboxAttachmentPaths());
+    for (const path of retained) if (!next.has(path)) remove(path);
+    retained = next;
+  };
+  stopOutboxes.push(subscribeOutbox(() => { queueMicrotask(() => { void syncOutbox(); }); }));
   const wiring: Screenshots = {
     api: {
       capture: (name) => {
@@ -43,10 +58,10 @@ function fakeRust(server: FakeHermes) {
         return new Promise((resolve, reject) => (pending = { resolve, reject }));
       },
       discard: async (path) => {
-        discarded.push(path);
-        delete server.files[path];
+        if (!retained.has(path)) remove(path);
       },
     },
+    syncOutbox,
     onDesktopShortcut: (fn) => {
       desktopShortcut = fn;
       return () => (desktopShortcut = undefined);
@@ -76,7 +91,7 @@ async function signedIn() {
   const server = new FakeHermes();
   server.sessions = [row("backup", 1, { pinned: true, title: "Nightly backup" })];
   server.transcripts = { backup: [{ role: "user", text: "Why did the backup fail?" }] };
-  const hermes = await connect(server.openPipe);
+  const hermes = await connect(server.openPipe, undefined, localChatCache({ mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" }));
   const rust = fakeRust(server);
   const user = userEvent.setup();
   const view = render(
@@ -119,7 +134,7 @@ describe("Taking a screenshot for the composer", () => {
     expect(rust.attached).not.toHaveBeenCalled();
   });
 
-  it("puts the capture back in the composer when Hermes doesn't take the message", async () => {
+  it("keeps the capture in the failed message for Retry when Hermes rejects it", async () => {
     const { server, hermes, rust, user } = await signedIn();
     server.handlers["image.attach_bytes"] = (r) => server.fail(r.id, 4004, "unknown method image.attach_bytes");
     await user.keyboard("{Control>}{Shift>}s{/Shift}{/Control}");
@@ -128,14 +143,14 @@ describe("Taking a screenshot for the composer", () => {
     await user.type(composer(), "What's wrong here?{Enter}");
     await settle(hermes);
 
-    // Not deleted: it's the only copy, back for the owner to send again or remove.
-    await waitFor(() => expect(chips()).toHaveLength(1));
+    await screen.findByRole("button", { name: /Retry/ });
+    expect(chips()).toHaveLength(0);
     expect(rust.discarded).toEqual([]);
-    expect(screen.getByText(/so its screenshot is back here/)).toBeTruthy();
+    expect(hermes.getSnapshot().chats.flatMap((c) => c.items).some((i) => i.kind === "user" && i.outgoing?.attachments?.length === 1)).toBe(true);
     expect(server.requests.map((r) => r.method)).not.toContain("prompt.submit");
   });
 
-  it.each(["image.attach_bytes", "prompt.submit"])("keeps the capture after a disconnect during %s, then lets the owner remove it", async (method) => {
+  it.each(["image.attach_bytes", "prompt.submit"])("keeps the capture after a disconnect during %s, then lets the owner dismiss it", async (method) => {
     const { server, hermes, rust, user } = await signedIn();
     server.handlers[method] = () => server.drop("closed during send");
     await user.click(screen.getByRole("button", { name: "Attach a screenshot" }));
@@ -144,14 +159,35 @@ describe("Taking a screenshot for the composer", () => {
     await user.type(composer(), "What's wrong here?{Enter}");
     await settle(hermes);
 
-    await waitFor(() => expect(chips()).toHaveLength(1));
+    await screen.findByRole("button", { name: /Retry/ });
+    expect(chips()).toHaveLength(0);
     expect(rust.discarded).toEqual([]);
     expect(server.files[path]).toBe(PNG);
-    expect(screen.getByText(/so its screenshot is back here/)).toBeTruthy();
     expect(server.requests.filter((r) => r.method === method)).toHaveLength(1);
-    await user.click(screen.getByRole("button", { name: "Remove" }));
-    expect(rust.discarded).toEqual([path]);
+    await user.click(screen.getByRole("button", { name: "Dismiss" }));
+    await waitFor(() => expect(rust.discarded).toEqual([path]));
     expect(server.files[path]).toBeUndefined();
+  });
+
+  it("retries the failed message with its screenshot after leaving and returning to the chat", async () => {
+    const { server, hermes, rust, user } = await signedIn();
+    const accept = server.handlers["image.attach_bytes"];
+    server.handlers["image.attach_bytes"] = (r) => server.fail(r.id, 4004, "unknown method image.attach_bytes");
+    await user.click(screen.getByRole("button", { name: "Attach a screenshot" }));
+    const path = await rust.land();
+    await waitFor(() => expect(chips()).toHaveLength(1));
+    await user.type(composer(), "Explain the screen{Enter}");
+    await screen.findByRole("button", { name: /Retry/ });
+    await user.click(screen.getByRole("button", { name: /Nightly backup/ }));
+    expect(rust.discarded).toEqual([]);
+    expect(server.files[path]).toBe(PNG);
+    await user.click(screen.getByRole("button", { name: /Explain the screen/ }));
+    server.handlers["image.attach_bytes"] = accept;
+    await user.click(await screen.findByRole("button", { name: /Retry/ }));
+    await settle(hermes);
+    await waitFor(() => expect(rust.discarded).toEqual([path]));
+    expect(server.requests.filter((r) => r.method === "image.attach_bytes")).toHaveLength(2);
+    expect(server.requests.filter((r) => r.method === "prompt.submit")).toHaveLength(1);
   });
 
   it("deletes a capture the owner removes before sending", async () => {

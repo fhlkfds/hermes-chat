@@ -31,7 +31,7 @@ export type UIPrefs = {
   modelPicker: StickyModelPick | null;
   /** Starred models, as `provider/model`, listed first in the model picker. Kept even when Hermes no longer lists them. */
   modelFavorites: string[];
-  /** The status bar items shown, in order. */
+  /** The status bar items shown, in order (StatusBar.tsx). Empty: the bar is hidden. */
   statusBar: string[];
   /** The in-app shortcut that takes a screenshot for the composer, like `Ctrl+Shift+S` (ui/shortcut.ts); null: off. */
   screenshotShortcut: string | null;
@@ -40,6 +40,8 @@ export type UIPrefs = {
 /** The shape of a stored shortcut: modifiers in order, then one key (ui/shortcut.ts writes them). */
 const SHORTCUT = /^(?:Ctrl\+)?(?:Alt\+)?(?:Shift\+)?(?:Super\+)?(?:[A-Z0-9]|F(?:[1-9]|1\d|2[0-4])|PrintScreen|Pause|ScrollLock|Insert)$/;
 export const isShortcut = (s: unknown): s is string => typeof s === "string" && SHORTCUT.test(s);
+/** Every status bar item, in the bar's order; all shown until the owner picks otherwise. */
+export const STATUS_BAR_ITEMS = ["context", "yolo", "model", "status"] as const;
 
 export const DEFAULT_UI_PREFS: Readonly<UIPrefs> = Object.freeze({
   theme: "system",
@@ -48,7 +50,7 @@ export const DEFAULT_UI_PREFS: Readonly<UIPrefs> = Object.freeze({
   reasoningBlocks: true,
   modelPicker: null,
   modelFavorites: [],
-  statusBar: [],
+  statusBar: [...STATUS_BAR_ITEMS],
   screenshotShortcut: "Ctrl+Shift+S",
 });
 

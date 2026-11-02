@@ -415,3 +415,44 @@ fn reads_the_command_line_flag() {
     // The program's own name doesn't count.
     assert!(!hermes_chat::remote::asked(args(&["--screenshot"])));
 }
+
+#[test]
+fn outbox_captures_survive_exit_and_startup_until_the_message_leaves_the_outbox() {
+    let (root, captures) = fresh_root("outbox");
+    let source = root.0.join("source.png");
+    std::fs::write(&source, PNG).unwrap();
+    let mine = captures.adopt(&source, "pending", false).unwrap();
+    let dead_slot = root.0.join("captures/4194999/0");
+    std::fs::create_dir_all(&dead_slot).unwrap();
+    let old = dead_slot.join("unknown.png");
+    std::fs::write(&old, PNG).unwrap();
+    let unrelated = root.0.join("unrelated.png");
+    std::fs::write(&unrelated, PNG).unwrap();
+
+    captures.retain_outbox([mine.clone(), old.clone(), unrelated.clone()]);
+    captures.clear();
+    assert!(mine.exists() && old.exists());
+    assert!(!captures.discard(&mine));
+    drop(captures);
+
+    let restarted = Captures::open(root.0.join("captures")).unwrap();
+    restarted.retain_outbox([mine.clone(), old.clone()]);
+    assert!(mine.exists() && old.exists());
+    // Confirmation, history reconciliation or dismissal removes the outbox reference.
+    restarted.retain_outbox([]);
+    assert!(!mine.exists() && !old.exists());
+    assert!(unrelated.exists());
+}
+
+#[test]
+fn a_reused_process_slot_never_overwrites_an_outbox_capture() {
+    let (root, captures) = fresh_root("slot-reuse");
+    let old = captures.mine().join("0");
+    std::fs::create_dir_all(&old).unwrap();
+    let old_file = old.join("old.png");
+    std::fs::write(&old_file, PNG).unwrap();
+    let new = captures.slot("new.png").unwrap();
+    assert_ne!(new.parent(), Some(old.as_path()));
+    assert!(old_file.exists());
+    assert!(new.starts_with(root.0.join("captures")));
+}

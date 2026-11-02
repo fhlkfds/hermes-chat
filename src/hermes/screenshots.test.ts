@@ -200,3 +200,18 @@ describe("Screenshot names and notes", () => {
     expect(failureText({ kind: "denied" })).toBe("Your desktop didn't allow the screenshot.");
   });
 });
+
+it("keeps an in-flight capture when its composer unmounts, then releases it after outbox reconciliation", async () => {
+  const rust = fakeApi();
+  const desk = new ScreenshotDesk(rust.api);
+  desk.attachTo(sink().s);
+  const taking = desk.capture();
+  await rust.land({ path: "/c/1/0/a.png" });
+  await taking;
+  desk.hold(["/c/1/0/a.png"]);
+  desk.release(["/c/1/0/a.png"]);
+  desk.dispose();
+  expect(rust.discarded).toEqual([]);
+  desk.finish(["/c/1/0/a.png"]);
+  expect(rust.discarded).toEqual(["/c/1/0/a.png"]);
+});

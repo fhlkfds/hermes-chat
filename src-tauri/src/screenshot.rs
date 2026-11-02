@@ -8,16 +8,18 @@
 //! - Everywhere else (GNOME, KDE Plasma): the xdg-desktop-portal Screenshot portal, asked to be interactive, so the
 //!   desktop shows its own region and window picker. A portal too old to offer a picker is refused the same way.
 //!
-//! Captures are written to a private folder, `$XDG_RUNTIME_DIR/hermes-chat/captures/<pid>/`, which only this user can
-//! read and which is in memory on systemd systems. Each is deleted when it is removed from the composer, once its
-//! message is sent, and when the app exits; folders left by an app that crashed are swept at the next start. A file the
+//! Captures are written privately under `$XDG_CACHE_HOME/hermes-chat/captures/<pid>/`. Unsent composer captures are
+//! removed on abandonment or exit; a screenshot needed by a failed/unknown message stays with its outbox until
+//! accepted, reconciled or dismissed. Crash leftovers without an outbox reference are swept at startup. A file the
 //! portal wrote in a temporary folder is deleted once copied; one it saved anywhere else (some desktops keep a copy in
 //! Pictures) is the desktop's and is left alone.
 
 use serde::Serialize;
+use std::collections::HashSet;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 
 /// How long the owner has to pick a region or window before the capture gives up.
@@ -598,6 +600,7 @@ pub struct Captures {
     root: PathBuf,
     mine: PathBuf,
     next: AtomicU64,
+    retained: Mutex<HashSet<PathBuf>>,
 }
 
 fn my_uid() -> std::io::Result<u32> {
@@ -625,19 +628,15 @@ fn private_dir(dir: &Path) -> Result<(), CaptureError> {
     Ok(())
 }
 
-/// `$XDG_RUNTIME_DIR/hermes-chat/captures`, or `<temp>/hermes-chat-<uid>/captures` when there is no runtime folder.
+/// A private cache folder, durable across app restarts so a failed message can still be retried with its screenshot.
 pub fn default_root() -> Result<PathBuf, CaptureError> {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+    let cache = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
-        .filter(|p| p.is_absolute() && p.is_dir());
-    let base = match runtime {
-        Some(r) => r.join("hermes-chat"),
-        None => {
-            let uid = my_uid().map_err(|e| failed("Couldn't find a folder for screenshots", e))?;
-            std::env::temp_dir().join(format!("hermes-chat-{uid}"))
-        }
-    };
-    Ok(base.join("captures"))
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
+        .ok_or_else(|| CaptureError::Failed("Couldn't find a folder for screenshots.".into()))?;
+    std::fs::create_dir_all(&cache).map_err(|e| failed("Couldn't open the screenshot cache", e))?;
+    Ok(cache.join("hermes-chat").join("captures"))
 }
 
 /// A capture's file name without its extension: the webview's `screenshot-<local time>`, if it is plain enough.
@@ -711,6 +710,7 @@ impl Captures {
             root,
             mine,
             next: AtomicU64::new(0),
+            retained: Mutex::new(HashSet::new()),
         })
     }
 
@@ -722,13 +722,17 @@ impl Captures {
     /// A fresh path for a capture named `file_name`, in a private folder of its own, so names never clash.
     pub fn slot(&self, file_name: &str) -> Result<PathBuf, CaptureError> {
         private_dir(&self.mine)?;
-        let dir = self
-            .mine
-            .join(self.next.fetch_add(1, Ordering::Relaxed).to_string());
-        // A leftover from a crashed process with the same pid goes first.
-        let _ = std::fs::remove_dir_all(&dir);
-        private_dir(&dir)?;
-        Ok(dir.join(file_name))
+        loop {
+            let dir = self
+                .mine
+                .join(self.next.fetch_add(1, Ordering::Relaxed).to_string());
+            // A reused pid may still own a screenshot in a persisted outbox. Never overwrite an existing slot.
+            match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+                Ok(()) => return Ok(dir.join(file_name)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(failed("Couldn't save the screenshot", e)),
+            }
+        }
     }
 
     /// Copies a capture the portal saved into a slot, as `<name>.png` (or `.jpg`), readable only by this user, and
@@ -789,7 +793,7 @@ impl Captures {
 
     /// Deletes a staged capture and its folder. Anything else is left alone; returns whether it was one.
     pub fn discard(&self, path: &Path) -> bool {
-        if !self.owns(path) {
+        if !self.owns(path) || self.retained.lock().unwrap().contains(path) {
             return false;
         }
         let _ = std::fs::remove_file(path);
@@ -799,17 +803,57 @@ impl Captures {
         true
     }
 
-    /// Deletes every capture this process staged; at exit.
-    pub fn clear(&self) {
-        let _ = std::fs::remove_dir_all(&self.mine);
+    /// Tracks every connection's outbox. Previously retained captures go once no message needs them.
+    pub fn retain_outbox(&self, paths: impl IntoIterator<Item = PathBuf>) {
+        let valid = |p: &PathBuf| {
+            p.is_absolute()
+                && p.parent().and_then(Path::parent).and_then(Path::parent)
+                    == Some(self.root.as_path())
+                && !p.components().any(|c| {
+                    matches!(
+                        c,
+                        std::path::Component::ParentDir | std::path::Component::CurDir
+                    )
+                })
+        };
+        let next: HashSet<PathBuf> = paths.into_iter().filter(valid).collect();
+        let mut retained = self.retained.lock().unwrap();
+        for path in retained.difference(&next) {
+            if let Some(slot) = path.parent() {
+                let _ = std::fs::remove_dir_all(slot);
+            }
+        }
+        *retained = next;
+        drop(retained);
+        self.sweep();
     }
 
-    /// Deletes the folders of processes that are gone: captures left behind when the app crashed or was killed.
+    fn clear_instance(&self, dir: &Path) {
+        let retained = self.retained.lock().unwrap();
+        let Ok(slots) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for slot in slots.flatten() {
+            if !retained
+                .iter()
+                .any(|p| p.parent() == Some(slot.path().as_path()))
+            {
+                let _ = std::fs::remove_dir_all(slot.path());
+            }
+        }
+        let _ = std::fs::remove_dir(dir);
+    }
+
+    /// Deletes this process's composer captures at exit, preserving files still needed by an outbox.
+    pub fn clear(&self) {
+        self.clear_instance(&self.mine);
+    }
+
+    /// Deletes unreferenced captures from dead instances after the renderer supplies the persisted outboxes.
     pub fn sweep(&self) {
         self.sweep_except(instance_alive);
     }
 
-    /// `sweep`, with `alive` saying which pids are still a running Hermes Chat.
     pub fn sweep_except(&self, alive: impl Fn(u32) -> bool) {
         let Ok(entries) = std::fs::read_dir(&self.root) else {
             return;
@@ -820,7 +864,7 @@ impl Captures {
                 continue;
             };
             if pid != std::process::id() && !alive(pid) {
-                let _ = std::fs::remove_dir_all(e.path());
+                self.clear_instance(&e.path());
             }
         }
     }

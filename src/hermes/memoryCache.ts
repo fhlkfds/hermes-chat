@@ -1,7 +1,8 @@
 // An in-memory ChatCache for tests: `saved` holds each profile's list, `transcripts` the Saved copies by
-// `profile/chatId`, `profile` the one shown last, and `pulled` the profiles whose older history the owner pulled.
-// It has no storage limit.
-import type { Chat } from "./model";
+// `profile/chatId`, `profile` the one shown last, `pulled` the profiles whose older history the owner pulled, and
+// `outbox` each chat's messages Hermes hasn't confirmed, by `profile/chatId`, which `clear` keeps. Values are copied
+// through JSON, as localStorage would, so nothing kept shares objects with the app. It has no storage limit.
+import type { Chat, OutgoingItem } from "./model";
 import type { ChatCache, SavedTranscript } from "./transport";
 
 export type MemoryCache = ChatCache & {
@@ -9,6 +10,7 @@ export type MemoryCache = ChatCache & {
   transcripts: Record<string, SavedTranscript>;
   profile?: string;
   pulled: Set<string>;
+  outbox: Record<string, OutgoingItem[]>;
 };
 
 export function memoryCache({
@@ -21,6 +23,7 @@ export function memoryCache({
     transcripts: { ...transcripts },
     profile,
     pulled: new Set(),
+    outbox: {},
     load: (p) => cache.saved[p] ?? [],
     save: (p, chats) => void (cache.saved[p] = chats),
     loadTranscript: (p, id) => cache.transcripts[`${p}/${id}`],
@@ -32,6 +35,16 @@ export function memoryCache({
     clear: () => void ((cache.saved = {}), (cache.transcripts = {})),
     olderPulled: (p) => cache.pulled.has(p),
     rememberOlderPulled: (p) => void cache.pulled.add(p),
+    loadOutbox: (p) =>
+      Object.fromEntries(
+        Object.entries(cache.outbox)
+          .filter(([k]) => k.startsWith(`${p}/`))
+          .map(([k, rows]) => [k.slice(p.length + 1), JSON.parse(JSON.stringify(rows)) as OutgoingItem[]]),
+      ),
+    saveOutbox: (p, id, rows) => {
+      if (rows.length) cache.outbox[`${p}/${id}`] = JSON.parse(JSON.stringify(rows)) as OutgoingItem[];
+      else delete cache.outbox[`${p}/${id}`];
+    },
   };
   return cache;
 }

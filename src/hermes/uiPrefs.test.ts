@@ -42,7 +42,7 @@ afterEach(() => {
 
 describe("reading", () => {
   it("is the defaults when nothing is stored", () => {
-    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, modelFavorites: [], statusBar: [], screenshotShortcut: "Ctrl+Shift+S" });
+    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, modelFavorites: [], statusBar: ["context", "yolo", "model", "status"], screenshotShortcut: "Ctrl+Shift+S" });
     expect(getUIPrefs()).toEqual(DEFAULT_UI_PREFS);
   });
 

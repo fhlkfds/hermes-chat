@@ -116,7 +116,10 @@ describe("Sending attachments", () => {
     expect(server.requests.map((r) => r.method)).not.toContain("prompt.submit");
     expect(server.last("image.detach")!.params).toEqual({ session_id: runtime, path: "/hermes/images/upload_1.png" });
     expect(chat().running).toBe(false);
-    expect(chat().items.at(-1)).toEqual({ kind: "error", id: "e-1", text: "Couldn't attach disk report.txt: No space left on device" });
+    expect(chat().items.at(-1)).toMatchObject({
+      kind: "user",
+      outgoing: { state: "failed", reason: "Couldn't attach disk report.txt: No space left on device", attachments },
+    });
   });
 
   it("re-checks the size when sending, in case the file grew", async () => {
@@ -126,11 +129,7 @@ describe("Sending attachments", () => {
     await hermes.send(id, "Which cable is loose?", attachments);
 
     expect(server.requests.map((r) => r.method)).not.toContain("image.attach_bytes");
-    expect(chat().items.at(-1)).toEqual({
-      kind: "error",
-      id: "e-1",
-      text: "Couldn't attach rack.png: it's 30.0 MB now, over the 25 MB limit",
-    });
+    expect(chat().items.at(-1)).toMatchObject({ kind: "user", outgoing: { state: "failed", reason: "Couldn't attach rack.png: it's 30.0 MB now, over the 25 MB limit" } });
   });
 
   it("lets Stop wait until the attachments and message are sent", async () => {

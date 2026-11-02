@@ -64,6 +64,7 @@ export class ScreenshotDesk {
   /** Staged captures not yet discarded. */
   private readonly mine = new Set<string>();
   private waiting: Waiting[] = [];
+  private readonly sending = new Set<string>();
   private sink?: ScreenshotSink;
   private disposed = false;
 
@@ -134,20 +135,35 @@ export class ScreenshotDesk {
    */
   sent(attachments: readonly Attachment[], accepted: boolean) {
     const paths = attachments.map((a) => a.path);
+    for (const p of paths) this.sending.delete(p);
     if (accepted || this.disposed) return this.release(paths);
     const back = attachments.filter((a) => this.mine.has(a.path));
     if (back.length) void this.deliver({ paths: [], restored: back, remote: false, note: RESTORED });
   }
 
+  /** The outbox takes responsibility while sending; closing the composer must not remove its files. */
+  hold(paths: readonly string[]) {
+    for (const p of paths) if (this.mine.has(p)) this.sending.add(p);
+  }
+
+  /** Rust has reconciled the outbox; release anything it no longer needs. */
+  finish(paths: readonly string[]) {
+    for (const p of paths) this.sending.delete(p);
+    this.release(paths);
+  }
+
   /** Deletes any of `paths` that are captures: sent, removed from the composer, or left behind. Others are ignored. */
   release(paths: readonly string[]) {
-    for (const p of paths) if (this.mine.delete(p)) void this.api.discard(p).catch(() => {});
+    for (const p of paths) if (!this.sending.has(p) && this.mine.delete(p)) {
+      this.sending.delete(p);
+      void this.api.discard(p).catch(() => {});
+    }
   }
 
   /** The app is signing out or closing: every capture not yet sent is deleted, and one still being taken will be. */
   dispose() {
     this.disposed = true;
     this.waiting = [];
-    this.release([...this.mine]);
+    this.release([...this.mine].filter((p) => !this.sending.has(p)));
   }
 }
