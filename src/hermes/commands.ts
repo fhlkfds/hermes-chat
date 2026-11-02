@@ -1,4 +1,4 @@
-// Slash commands typed in the composer (GLOSSARY.md "Slash command", ADR 0013). A small explicit registry: actions this
+// Slash commands typed in the composer (GLOSSARY.md "Slash command", ADR 0014). A small explicit registry: actions this
 // app already has, and Hermes commands whose behaviour was read in Hermes's source at the deployed `bf0203a`. Nothing
 // typed is forwarded to Hermes as a command unless it is in this list; any other text starting with "/" is sent as an
 // ordinary message.

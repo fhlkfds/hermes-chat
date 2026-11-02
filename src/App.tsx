@@ -33,6 +33,7 @@ import { SettingsScreen } from "./ui/Settings";
 import { FileBrowser } from "./ui/FileBrowser";
 import { composing, routeLabel } from "./ui/bits";
 import { ProjectScreen, ProjectSwitcher, type ProjectUnread } from "./ui/Projects";
+import { ScheduledJobs } from "./ui/ScheduledJobs";
 import { appearanceStore } from "./ui/appearance";
 import { StatusBar } from "./ui/StatusBar";
 import { systemFonts } from "./ui/tauriFonts";
@@ -300,6 +301,8 @@ export function Main({
   );
   // The project screen covers the chat pane, as Settings does.
   const [projectOpen, setProjectOpen] = useState(false);
+  /** The Scheduled jobs screen covers the chat, as Settings does. */
+  const [jobsOpen, setJobsOpen] = useState(false);
   // Server files covers the chat panes too. The folder open last stays for this sign-in.
   const [filesOpen, setFilesOpen] = useState(false);
   const [filesPath, setFilesPath] = useState<string>();
@@ -406,6 +409,7 @@ export function Main({
     setSettingsOpen(false);
     setProjectOpen(false);
     setFilesOpen(false);
+    setJobsOpen(false);
     if (remember) rememberOpenChat(profile, id);
   };
 
@@ -421,6 +425,7 @@ export function Main({
     setSettingsOpen(false);
     setProjectOpen(false);
     setFilesOpen(false);
+    setJobsOpen(false);
   };
 
   // A second pane opens to the right and becomes the active one. Both panes may show the same chat: they are two views
@@ -436,6 +441,7 @@ export function Main({
     setSettingsOpen(false);
     setProjectOpen(false);
     setFilesOpen(false);
+    setJobsOpen(false);
     rememberOpenChat(profile, chatId);
   };
 
@@ -463,6 +469,7 @@ export function Main({
       setSettingsOpen(false);
       setProjectOpen(false);
       setFilesOpen(false);
+      setJobsOpen(false);
       setSearchOpen(false);
       if (!previewFits) setPreviewHidden(true);
     });
@@ -666,7 +673,7 @@ export function Main({
       } else if (e.code === "Backslash" || k === "\\") {
         e.preventDefault();
         toggleSplit();
-      } else if ((k === "1" || k === "2") && !e.shiftKey && !e.altKey && split && !settingsOpen && !filesOpen) {
+      } else if ((k === "1" || k === "2") && !e.shiftKey && !e.altKey && split && !settingsOpen && !filesOpen && !jobsOpen) {
         e.preventDefault();
         focusPane(panes[Number(k) - 1].key);
       }
@@ -680,8 +687,8 @@ export function Main({
   const previewFits = !mainWidth || mainWidth >= CHAT_MIN_WIDTH + PANE_MIN_WIDTH;
   const paneMax = mainWidth ? mainWidth - CHAT_MIN_WIDTH : 1200;
   const paneWidth = Math.min(Math.max(dragWidth ?? previewWidth ?? PREVIEW_DEFAULT_WIDTH, PANE_MIN_WIDTH), Math.max(PANE_MIN_WIDTH, paneMax));
-  // Settings covers the chat, and the pane with it; so do the project screen and Server files.
-  const covering = settingsOpen || projectScreenOpen || filesOpen;
+  // Settings covers the chat, and the pane with it; so do the project screen, Server files and Scheduled jobs.
+  const covering = settingsOpen || projectScreenOpen || filesOpen || jobsOpen;
   const previewShown = !!preview && !covering && (previewFits || !previewHidden);
   const previewCovers = previewShown && !previewFits;
 
@@ -770,10 +777,13 @@ export function Main({
         onFiles={() => {
           setSettingsOpen(false);
           setProjectOpen(false);
+          setJobsOpen(false);
           setFilesOpen((o) => !o);
         }}
         filesOpen={filesOpen && !settingsOpen && !projectScreenOpen}
-        onSettings={() => { setProjectOpen(false); setFilesOpen(false); setShowTextGeneration(undefined); setSettingsOpen(true); }}
+        onSettings={() => { setProjectOpen(false); setFilesOpen(false); setJobsOpen(false); setShowTextGeneration(undefined); setSettingsOpen(true); }}
+        onJobs={() => { setProjectOpen(false); setSettingsOpen(false); setFilesOpen(false); setJobsOpen(true); }}
+        jobsOpen={jobsOpen && !settingsOpen}
         updateWaiting={updateWaiting}
       />
       {listOpen && (
@@ -796,11 +806,13 @@ export function Main({
                   await projects.create(name);
                   setSettingsOpen(false);
                   setFilesOpen(false);
+                  setJobsOpen(false);
                   setProjectOpen(true);
                 }}
                 onManage={() => {
                   setSettingsOpen(false);
                   setFilesOpen(false);
+                  setJobsOpen(false);
                   setProjectOpen(true);
                 }}
               />
@@ -830,6 +842,7 @@ export function Main({
           onTextGenerationSettings={() => {
             setProjectOpen(false);
             setFilesOpen(false);
+            setJobsOpen(false);
             setShowTextGeneration({});
             setSettingsOpen(true);
           }}
@@ -841,7 +854,15 @@ export function Main({
       )}
       <main className="main" ref={mainRef}>
         <div className="main-chat" inert={previewCovers || undefined}>
-            {projectScreenOpen && shownProject && !settingsOpen ? (
+            {jobsOpen && !settingsOpen ? (
+              <ScheduledJobs
+                key={profile}
+                api={hermes.cron}
+                profile={profile}
+                connected={status === "connected"}
+                onClose={() => { flushSync(() => setJobsOpen(false)); focusPane(active.key); }}
+              />
+            ) : projectScreenOpen && shownProject && !settingsOpen ? (
               <ProjectScreen
                 key={shownProject.id}
                 project={shownProject}
