@@ -1,6 +1,8 @@
 pub mod fonts;
 pub mod notify;
+pub mod remote;
 pub mod saved_password;
+pub mod screenshot;
 pub mod transport;
 pub mod tunnel;
 
@@ -41,6 +43,30 @@ enum Route {
 
 #[derive(Default)]
 struct AppState(Mutex<Option<Connection>>);
+
+/// The private folder screenshots are staged in (screenshot.rs), opened at the first capture. And when the app was
+/// started by `hermes-chat --screenshot` with no window open yet, when that was, so the first signed-in window takes it.
+#[derive(Default)]
+struct Screenshots {
+    captures: std::sync::Mutex<Option<Arc<screenshot::Captures>>>,
+    asked_at_launch: std::sync::Mutex<Option<std::time::Instant>>,
+}
+
+/// How long a screenshot asked for at launch still waits for sign-in. Any later, and it would surprise the owner.
+const LAUNCH_REQUEST_FOR: std::time::Duration = std::time::Duration::from_secs(120);
+
+impl Screenshots {
+    fn captures(&self) -> Result<Arc<screenshot::Captures>, screenshot::CaptureError> {
+        let mut slot = self.captures.lock().unwrap();
+        if let Some(c) = &*slot {
+            return Ok(c.clone());
+        }
+        let c = Arc::new(screenshot::Captures::open(screenshot::default_root()?)?);
+        c.sweep();
+        *slot = Some(c.clone());
+        Ok(c)
+    }
+}
 
 #[tauri::command]
 async fn hermes_connect(
@@ -109,6 +135,43 @@ async fn hermes_stat_files(paths: Vec<String>) -> Vec<LocalFile> {
 #[tauri::command]
 async fn hermes_read_preview(path: String) -> Result<tauri::ipc::Response, String> {
     transport::read_preview(&path).await.map(tauri::ipc::Response::new).map_err(|e| e.to_string())
+}
+
+/// Takes a screenshot of a region or window the owner picks, staged privately as `<name>.png` for the composer.
+#[tauri::command]
+async fn screenshot_capture(state: State<'_, Screenshots>, name: String) -> Result<screenshot::Capture, screenshot::CaptureError> {
+    let captures = state.captures()?;
+    screenshot::capture(&captures, &name).await
+}
+
+/// Deletes a staged screenshot: removed from the composer, or its message sent. Paths that aren't one are ignored.
+#[tauri::command]
+fn screenshot_discard(state: State<'_, Screenshots>, path: String) {
+    if let Some(c) = &*state.captures.lock().unwrap() {
+        c.discard(std::path::Path::new(&path));
+    }
+}
+
+/// How screenshots are taken on this desktop, for Settings.
+#[tauri::command]
+async fn screenshot_support() -> screenshot::Support {
+    tokio::task::spawn_blocking(screenshot::support).await.unwrap_or_else(|e| screenshot::Support { ok: false, summary: e.to_string() })
+}
+
+/// Whether the app was started by `hermes-chat --screenshot` lately and nothing has taken that yet. True once.
+#[tauri::command]
+fn screenshot_launch_request(state: State<'_, Screenshots>) -> bool {
+    state.asked_at_launch.lock().unwrap().take().is_some_and(|at| at.elapsed() < LAUNCH_REQUEST_FOR)
+}
+
+/// Brings the window forward after a desktop shortcut's screenshot was attached, so the owner can review it.
+#[tauri::command]
+fn screenshot_show_window(app: tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
 }
 
 #[tauri::command]
@@ -181,10 +244,20 @@ async fn system_fonts() -> fonts::Fonts {
     fonts::list().await
 }
 
-pub fn run() {
+/// Starts the app. `screenshot`: it was started by `hermes-chat --screenshot`, with no other Hermes Chat to take it.
+pub fn run(screenshot: bool) {
+    let screenshots = Screenshots::default();
+    if screenshot {
+        *screenshots.asked_at_launch.lock().unwrap() = Some(std::time::Instant::now());
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
+        .manage(screenshots)
+        .setup(|app| {
+            remote::serve(app.handle().clone());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             hermes_connect,
             hermes_send,
@@ -198,8 +271,21 @@ pub fn run() {
             password_delete,
             chat_export,
             notify_desktop,
-            system_fonts
+            system_fonts,
+            screenshot_capture,
+            screenshot_discard,
+            screenshot_support,
+            screenshot_launch_request,
+            screenshot_show_window
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Screenshots never outlive the app.
+            if let tauri::RunEvent::Exit = event {
+                if let Some(c) = &*app.state::<Screenshots>().captures.lock().unwrap() {
+                    c.clear();
+                }
+            }
+        });
 }

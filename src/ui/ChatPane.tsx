@@ -1,11 +1,12 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
-import { memo, type ReactNode, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
-import { ArrowUp, Brain, ChevronDown, ChevronRight, ChevronUp, CloudOff, FileDown, HardDrive, Paperclip, Search, Square, Wrench, X } from "lucide-react";
+import { memo, type ReactNode, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
+import { ArrowUp, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CloudOff, FileDown, HardDrive, Paperclip, Search, Square, Wrench, X } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import type { ApprovalChoice, AttachCheck, Attachment, Chat, ConnectionStatus, Item, Source } from "../hermes/model";
 import { SOURCE_LABEL, isWaiting } from "../hermes/model";
 import type { Undelivered } from "../hermes/drafts";
+import type { DeskState, ScreenshotDesk } from "../hermes/screenshots";
 import { ApprovalCard } from "./ApprovalCard";
 import { Markdown } from "./Markdown";
 import { ArchiveButton, SettleButton, SourceIcon, Spinner, StoredTime, composing, highlight } from "./bits";
@@ -44,6 +45,9 @@ const STATUS_NOTE: Record<ConnectionStatus, string | undefined> = {
   offline: "Offline. Click the status dot to reconnect.",
 };
 
+const NOT_CAPTURING: DeskState = { capturing: false };
+const noDesk = () => () => {};
+
 /** When a Saved copy was taken, as the note above it says it. */
 const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 
@@ -51,8 +55,9 @@ const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateS
  * `alsoPostsIn`: the Telegram or Discord chat Hermes will also post its replies in. `draft`: the composer's text, kept
  * outside the pane so it survives switching chats. `onAnswer` answers an Approval card. `onSettle`, `onArchive` and
  * `onExport` are left out for a chat not started yet. `notLoaded`: the chat has no Saved copy and can't load until
- * Hermes is connected. `modelControls`: the model picker and reasoning pill, at the bottom left of the composer. Ctrl+F
- * opens the find bar.
+ * Hermes is connected. `modelControls`: the model picker and reasoning pill, at the bottom left of the composer.
+ * `screenshots`: where screenshots come from, to attach to the composer; `screenshotKeys` is their shortcut, if set.
+ * Ctrl+F opens the find bar.
  */
 export function ChatPane({
   chat,
@@ -73,6 +78,8 @@ export function ChatPane({
   onArchive,
   onExport,
   modelControls,
+  screenshots,
+  screenshotKeys,
 }: {
   chat: Chat;
   notLoaded?: boolean;
@@ -92,6 +99,8 @@ export function ChatPane({
   onArchive?: (archived: boolean) => void;
   onExport?: () => void;
   modelControls?: ReactNode;
+  screenshots?: ScreenshotDesk;
+  screenshotKeys?: string;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   // The blocks are memoized, so they get one answer handler for the life of the pane.
@@ -328,6 +337,8 @@ export function ChatPane({
         }}
         onStop={onStop}
         modelControls={modelControls}
+        screenshots={screenshots}
+        screenshotKeys={screenshotKeys}
       />
     </div>
   );
@@ -517,6 +528,8 @@ function Composer({
   onSend,
   onStop,
   modelControls,
+  screenshots,
+  screenshotKeys,
 }: {
   offline: boolean;
   running: boolean;
@@ -535,6 +548,9 @@ function Composer({
   onSend: (text: string, attachments: Attachment[]) => void;
   onStop: () => void;
   modelControls?: ReactNode;
+  /** Screenshots come from here, and staged ones go back to it to be deleted once sent, removed or left behind. */
+  screenshots?: ScreenshotDesk;
+  screenshotKeys?: string;
 }) {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [refused, setRefused] = useState<string[]>([]);
@@ -551,18 +567,35 @@ function Composer({
   }, []);
   useEffect(() => previews.current?.sync(attachments), [attachments]);
 
-  const add = async (paths: string[]) => {
-    if (!paths.length) return;
+  /** Stages files the owner added; resolves to the paths staged. */
+  const add = async (paths: string[]): Promise<string[]> => {
+    if (!paths.length) return [];
     try {
       const got = await onAttach(paths);
       setAttachments((cur) => [...cur, ...got.attachments.filter((a) => !cur.some((x) => x.path === a.path))]);
       setRefused(got.refused);
+      return got.attachments.map((a) => a.path);
     } catch (e) {
       setRefused([`Couldn't attach files: ${e instanceof Error ? e.message : String(e)}`]);
+      return [];
     }
   };
   const addRef = useRef(add);
   addRef.current = add;
+
+  // Screenshots attach here while this composer is on screen. Any still staged when it goes (another chat opened,
+  // signing out) are deleted: attachments aren't kept in a Draft.
+  const shot = useSyncExternalStore(screenshots?.subscribe ?? noDesk, screenshots?.getSnapshot ?? (() => NOT_CAPTURING));
+  const staged = useRef(attachments);
+  staged.current = attachments;
+  useEffect(() => {
+    if (!screenshots) return;
+    const stop = screenshots.attachTo({ attach: (paths) => addRef.current(paths), note: (text) => setRefused((cur) => [...cur, text]) });
+    return () => {
+      stop();
+      screenshots.release(staged.current.map((a) => a.path));
+    };
+  }, [screenshots]);
 
   // Tauri's native drop event, not HTML5 drops: it gives real file paths, so Rust can read the bytes.
   useEffect(() => {
@@ -612,6 +645,11 @@ function Composer({
       {undelivered.map((u) => (
         <UndeliveredCard key={u.id} held={u} canSend={!offline && !running} onRetry={() => onRetry(u.id)} onDismiss={() => onDismiss(u.id)} />
       ))}
+      {shot.capturing && (
+        <div className="capture-note" role="status">
+          Taking a screenshot: select a region or window, or press Esc to cancel.
+        </div>
+      )}
       {refused.map((r, i) => (
         <div key={i} className="attach-note" role="alert">
           {r}
@@ -626,7 +664,10 @@ function Composer({
                 key={f.path}
                 file={f}
                 preview={previews.current?.get(f.path)}
-                onRemove={() => setAttachments((cur) => cur.filter((x) => x.path !== f.path))}
+                onRemove={() => {
+                  setAttachments((cur) => cur.filter((x) => x.path !== f.path));
+                  screenshots?.release([f.path]);
+                }}
               />
             ))}
           </div>
@@ -649,6 +690,17 @@ function Composer({
           <button className="icon-btn" title="Attach files" onClick={() => void pick()}>
             <Paperclip size={16} />
           </button>
+          {screenshots && (
+            <button
+              className="icon-btn"
+              title={screenshotKeys ? `Attach a screenshot (${screenshotKeys})` : "Attach a screenshot"}
+              aria-label="Attach a screenshot"
+              disabled={shot.capturing}
+              onClick={() => void screenshots.capture()}
+            >
+              <Camera size={16} />
+            </button>
+          )}
           {modelControls}
           <span className="composer-keys">Enter to send · Shift+Enter for a new line</span>
           {running ? (

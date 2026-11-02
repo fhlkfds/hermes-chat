@@ -1,5 +1,5 @@
 // The Settings screen, in two tabs. General, ported from the prototype: the connection and Sign out, what shows on
-// launch, the local cache, and older history. Appearance: how the app looks on this computer (AppearanceSettings.tsx).
+// launch, screenshots, the local cache, and older history. Appearance: how the app looks on this computer (AppearanceSettings.tsx).
 // Profiles are switched in the list's header, not here (ADR 0001).
 import { useState } from "react";
 import { ArrowLeft, Download, KeyRound, Lock, LogOut, Palette, Settings2, Trash2 } from "lucide-react";
@@ -10,6 +10,8 @@ import { STATUS_LABEL, arrowSelect, fmtSize, routeLabel } from "./bits";
 import type { AppearanceStore, Fonts } from "./appearance";
 import { AppearanceSettings } from "./AppearanceSettings";
 import { StartupSettings } from "./StartupSettings";
+import { ScreenshotSettings } from "./ScreenshotSettings";
+import type { ScreenshotSupport } from "../hermes/tauriScreenshot";
 
 type Tab = "general" | "appearance";
 const TABS = [
@@ -39,6 +41,7 @@ export function SettingsScreen({
   cacheBytes,
   appearance,
   listFonts,
+  checkScreenshots,
   onClearCache,
   onPullOlder,
   onSignOut,
@@ -57,6 +60,8 @@ export function SettingsScreen({
   appearance: AppearanceStore;
   /** The installed font families, for the font pickers. */
   listFonts: () => Promise<Fonts>;
+  /** How screenshots are taken on this desktop; left out where there is no desktop app to ask. */
+  checkScreenshots?: () => Promise<ScreenshotSupport>;
   onClearCache: () => void;
   /** Resolves to the older chats added. */
   onPullOlder: () => Promise<Chat[]>;
@@ -146,6 +151,8 @@ export function SettingsScreen({
             </section>
 
             <StartupSettings />
+
+            <ScreenshotSettings checkSupport={checkScreenshots} />
 
             <section>
               <h2>Local cache</h2>

@@ -1,0 +1,128 @@
+// Screenshots for the composer. Rust takes the capture (src-tauri/src/screenshot.rs) and stages it in a private folder;
+// the desk hands it to the composer on screen, where it waits as an image attachment until the owner sends or removes
+// it. The desk remembers which staged files are its captures, so each one is deleted once it is sent, removed, or left
+// behind (a chat switched away from, or signing out). Nothing here sends anything to Hermes.
+
+/** Why a capture produced no image, as Rust reports it. */
+export type CaptureFailure = { kind: "cancelled" | "denied" | "unsupported" | "busy" | "failed"; message?: string };
+/** A capture staged on disk, and anything the owner should know about how it was taken. */
+export type Captured = { path: string; note?: string };
+
+export type ScreenshotApi = {
+  /** Rejects with a CaptureFailure, or a plain error when Rust couldn't be asked at all. */
+  capture: (name: string) => Promise<Captured>;
+  discard: (path: string) => Promise<void>;
+};
+
+/**
+ * The composer on screen. `attach` stages the files and resolves to the ones it kept (one too large for Hermes is
+ * refused, with its note). `note` shows a line above the composer.
+ */
+export type ScreenshotSink = { attach: (paths: string[]) => Promise<string[]>; note: (text: string) => void };
+
+export type DeskState = { capturing: boolean };
+
+/** `screenshot-2026-11-02-153417`, in local time: what a capture is called in the composer and in Hermes. */
+export function captureName(now = new Date()): string {
+  const local = new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString();
+  return `screenshot-${local.slice(0, 10)}-${local.slice(11, 19).replaceAll(":", "")}`;
+}
+
+const isFailure = (e: unknown): e is CaptureFailure => typeof e === "object" && e !== null && typeof (e as CaptureFailure).kind === "string";
+
+/** What the composer says when a capture didn't attach. Nothing for a cancelled one, or a second press while picking. */
+export function failureText(e: unknown): string | undefined {
+  if (!isFailure(e)) return `Couldn't take a screenshot: ${e instanceof Error ? e.message : String(e)}`;
+  switch (e.kind) {
+    case "cancelled":
+    case "busy":
+      return undefined;
+    case "denied":
+      return e.message ?? "Your desktop didn't allow the screenshot.";
+    case "unsupported":
+      return `Screenshots don't work on this desktop yet. ${e.message ?? ""}`.trim();
+    default:
+      return `Couldn't take a screenshot: ${e.message ?? "no reason given"}`;
+  }
+}
+
+/** A capture or a note waiting for a composer to show it. */
+type Waiting = { paths: string[]; note?: string; remote: boolean };
+
+export class ScreenshotDesk {
+  private state: DeskState = { capturing: false };
+  private readonly listeners = new Set<() => void>();
+  /** Staged captures not yet discarded. */
+  private readonly mine = new Set<string>();
+  private waiting: Waiting[] = [];
+  private sink?: ScreenshotSink;
+  private disposed = false;
+
+  /** `onAttached(remote)`: a capture went into the composer; `remote` when a desktop shortcut asked for it. */
+  constructor(
+    private readonly api: ScreenshotApi,
+    private readonly onAttached?: (remote: boolean) => void,
+  ) {}
+
+  subscribe = (fn: () => void) => {
+    this.listeners.add(fn);
+    return () => void this.listeners.delete(fn);
+  };
+  getSnapshot = (): DeskState => this.state;
+
+  private set(state: DeskState) {
+    this.state = state;
+    for (const fn of [...this.listeners]) fn();
+  }
+
+  /** Takes a screenshot and attaches it to the composer on screen. Does nothing while one is already being taken. */
+  async capture({ remote = false }: { remote?: boolean } = {}): Promise<void> {
+    if (this.state.capturing || this.disposed) return;
+    this.set({ capturing: true });
+    try {
+      const got = await this.api.capture(captureName());
+      if (this.disposed) return void this.api.discard(got.path).catch(() => {});
+      this.mine.add(got.path);
+      await this.deliver({ paths: [got.path], note: got.note, remote });
+    } catch (e) {
+      const text = failureText(e);
+      if (text && !this.disposed) await this.deliver({ paths: [], note: text, remote });
+    } finally {
+      this.set({ capturing: false });
+    }
+  }
+
+  /** The composer now on screen takes captures, and any that were waiting for one. Returns the function that stops it. */
+  attachTo(sink: ScreenshotSink): () => void {
+    this.sink = sink;
+    const waiting = this.waiting;
+    this.waiting = [];
+    for (const w of waiting) void this.deliver(w);
+    return () => {
+      if (this.sink === sink) this.sink = undefined;
+    };
+  }
+
+  private async deliver(w: Waiting) {
+    const sink = this.sink;
+    if (!sink) return void this.waiting.push(w);
+    if (w.paths.length) {
+      const kept = await sink.attach(w.paths);
+      this.release(w.paths.filter((p) => !kept.includes(p)));
+      if (kept.length) this.onAttached?.(w.remote);
+    }
+    if (w.note) sink.note(w.note);
+  }
+
+  /** Deletes any of `paths` that are captures: sent, removed from the composer, or left behind. Others are ignored. */
+  release(paths: readonly string[]) {
+    for (const p of paths) if (this.mine.delete(p)) void this.api.discard(p).catch(() => {});
+  }
+
+  /** The app is signing out or closing: every capture not yet sent is deleted, and one still being taken will be. */
+  dispose() {
+    this.disposed = true;
+    this.waiting = [];
+    this.release([...this.mine]);
+  }
+}

@@ -8,6 +8,9 @@ import { chatToReopen, forgetOpenChat, rememberOpenChat } from "./hermes/uiPrefs
 import { exportChat } from "./hermes/exportChat";
 import { systemKeyring } from "./hermes/tauriKeyring";
 import { desktopNotify } from "./hermes/tauriNotify";
+import { ScreenshotDesk, type ScreenshotApi } from "./hermes/screenshots";
+import { onDesktopScreenshot, screenshotSupport, showWindow, tauriScreenshots, type ScreenshotSupport } from "./hermes/tauriScreenshot";
+import { checkShortcut, shortcutLabel, shortcutOf } from "./ui/shortcut";
 import { tauriPipe, type SignInDetails } from "./hermes/tauriPipe";
 import type { Attachment, Chat, Found } from "./hermes/model";
 import type { ModelPick } from "./hermes/models";
@@ -142,12 +145,36 @@ export default function App() {
   );
 }
 
+/** What the desktop is told when a desktop shortcut's screenshot is attached while Hermes Chat isn't focused. */
+const SCREENSHOT_ATTACHED = { title: "Screenshot attached", body: "Review it in Hermes Chat before you send it." };
+
+/** The real screenshot calls, and what a desktop shortcut does once its screenshot is attached. */
+export type Screenshots = {
+  api: ScreenshotApi;
+  /** Calls `fn` whenever a desktop shortcut asks for a screenshot; returns the function that stops it. */
+  onDesktopShortcut: (fn: () => void) => () => void;
+  /** A desktop shortcut's screenshot was attached: bring the window forward, and say so if it still isn't focused. */
+  attached: () => void;
+  /** How screenshots are taken on this desktop, for Settings. */
+  support?: () => Promise<ScreenshotSupport>;
+};
+const tauriScreenshotWiring: Screenshots = {
+  api: tauriScreenshots,
+  onDesktopShortcut: onDesktopScreenshot,
+  support: screenshotSupport,
+  attached: () =>
+    void showWindow().then(() => {
+      if (!document.hasFocus()) void desktopNotify(SCREENSHOT_ATTACHED).catch(() => {});
+    }),
+};
+
 export function Main({
   hermes,
   connection,
   notSaved,
   reopenLast = false,
   onSignOut,
+  screenshots = tauriScreenshotWiring,
 }: {
   hermes: Hermes;
   connection: SavedSignIn;
@@ -155,6 +182,7 @@ export function Main({
   /** This is the app starting: open the profile's last open chat, if the owner wants it reopened. */
   reopenLast?: boolean;
   onSignOut: () => Promise<void>;
+  screenshots?: Screenshots;
 }) {
   const { profile, chats, olderPulled, archivedListed, status, route, unsecure, closedReason, syncError, others, models } = useSyncExternalStore(
     hermes.subscribe,
@@ -191,7 +219,7 @@ export function Main({
   // The model pick is sticky: new chats start on it, in this profile, until the owner picks another. It is kept on this
   // computer only and never becomes the profile's default. Picked in another profile, it gives way to this profile's
   // own model. A chat on screen shows the model it runs on, and a pick there switches that chat alone.
-  const { modelPicker, modelFavorites } = useSyncExternalStore(subscribeUIPrefs, getUIPrefs);
+  const { modelPicker, modelFavorites, screenshotShortcut } = useSyncExternalStore(subscribeUIPrefs, getUIPrefs);
   const catalog = models?.profile === profile ? models : undefined;
   const sticky: ModelPick | undefined = modelPicker?.profile === profile ? withoutProfile(modelPicker) : catalog?.defaultPick;
   const shownModel = (selected !== draft && selected.model) || sticky;
@@ -245,13 +273,37 @@ export function Main({
     }
   };
 
+  // Screenshots go to the composer on screen. The desk lives as long as this signed-in window: signing out deletes any
+  // capture not yet sent. Made in an effect, so StrictMode's second mount gets a desk of its own.
+  const [desk, setDesk] = useState<ScreenshotDesk>();
+  const screenshotsRef = useRef(screenshots);
+  useEffect(() => {
+    const d = new ScreenshotDesk(screenshotsRef.current.api, (remote) => remote && screenshotsRef.current.attached());
+    setDesk(d);
+    return () => d.dispose();
+  }, []);
+  // Settings covers the composer, so a screenshot closes it, to show where the capture went.
+  const takeScreenshot = (remote = false) => {
+    if (!desk) return;
+    setSettingsOpen(false);
+    void desk.capture({ remote });
+  };
+  const takeScreenshotRef = useRef(takeScreenshot);
+  takeScreenshotRef.current = takeScreenshot;
+  useEffect(() => (desk ? screenshotsRef.current.onDesktopShortcut(() => takeScreenshotRef.current(true)) : undefined), [desk]);
+
   // The composer empties as the message goes. If Hermes doesn't take it, the text comes back, in the new chat if one
   // was started; if Hermes may have it, it is held beside the composer until the owner sends it again or dismisses it.
+  // Screenshots sent with it are deleted once Hermes has them, or once the message fails: attachments don't come back.
   const send = async (text: string, attachments: Attachment[]) => {
-    const typed = savedDrafts.take(shownDraft);
-    const to = await chatToSendIn();
-    if ("delivery" in to) return savedDrafts.afterSend(draftOf(null), typed, to.delivery);
-    savedDrafts.afterSend(draftOf(to.id), typed, await hermes.send(to.id, text, attachments));
+    try {
+      const typed = savedDrafts.take(shownDraft);
+      const to = await chatToSendIn();
+      if ("delivery" in to) return savedDrafts.afterSend(draftOf(null), typed, to.delivery);
+      savedDrafts.afterSend(draftOf(to.id), typed, await hermes.send(to.id, text, attachments));
+    } finally {
+      desk?.release(attachments.map((a) => a.path));
+    }
   };
 
   // Only the owner sends a held message again; reconnecting never does.
@@ -384,7 +436,14 @@ export function Main({
     // Only Ctrl/Cmd chords, and never mid-composition. No bare key does anything app-wide, so nothing typed
     // with focus outside an input can answer an Approval or stop a reply.
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || composing(e)) return;
+      if (composing(e)) return;
+      // The screenshot shortcut works anywhere in the app, unless it clashes with one of the app's own.
+      if (screenshotShortcut && shortcutOf(e) === screenshotShortcut && !checkShortcut(screenshotShortcut).error) {
+        e.preventDefault();
+        if (!e.repeat) takeScreenshot();
+        return;
+      }
+      if (!(e.ctrlKey || e.metaKey)) return;
       const k = e.key.toLowerCase();
       if (k === "k") {
         e.preventDefault();
@@ -447,6 +506,7 @@ export function Main({
             cacheBytes={() => hermes.cacheBytes()}
             appearance={appearance}
             listFonts={systemFonts}
+            checkScreenshots={screenshots.support}
             onClearCache={() => hermes.clearCache()}
             onPullOlder={() => hermes.pullOlderHistory()}
             onSignOut={onSignOut}
@@ -472,6 +532,8 @@ export function Main({
             onSettle={selected === draft ? undefined : (s) => setSettled(selected.id, s)}
             onExport={selected === draft ? undefined : () => exportSelected(selected)}
             onArchive={selected === draft ? undefined : (a) => setArchived(selected.id, a)}
+            screenshots={desk}
+            screenshotKeys={screenshotShortcut ? shortcutLabel(screenshotShortcut) : undefined}
             modelControls={
               <ModelControls
                 catalog={catalog}

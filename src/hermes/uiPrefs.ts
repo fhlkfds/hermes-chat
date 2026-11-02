@@ -1,6 +1,6 @@
 // Display preferences for this computer: the theme, whether the last chat reopens at launch and which chat each profile
-// had open, whether reasoning shows, the model last picked and the starred models, and which items the status bar
-// shows. All of it lives in one versioned JSON document under one localStorage key, so "Clear local cache" can't touch
+// had open, whether reasoning shows, the model last picked and the starred models, which items the status bar shows,
+// and the screenshot shortcut. All of it lives in one versioned JSON document under one localStorage key, so "Clear local cache" can't touch
 // it (chatCache.ts) and later settings add fields here rather than new keys. Nothing here goes to Hermes. Every
 // settings feature reads and writes through this module.
 
@@ -33,7 +33,13 @@ export type UIPrefs = {
   modelFavorites: string[];
   /** The status bar items shown, in order. */
   statusBar: string[];
+  /** The in-app shortcut that takes a screenshot for the composer, like `Ctrl+Shift+S` (ui/shortcut.ts); null: off. */
+  screenshotShortcut: string | null;
 };
+
+/** The shape of a stored shortcut: modifiers in order, then one key (ui/shortcut.ts writes them). */
+const SHORTCUT = /^(?:Ctrl\+)?(?:Alt\+)?(?:Shift\+)?(?:Super\+)?(?:[A-Z0-9]|F(?:[1-9]|1\d|2[0-4])|PrintScreen|Pause|ScrollLock|Insert)$/;
+export const isShortcut = (s: unknown): s is string => typeof s === "string" && SHORTCUT.test(s);
 
 export const DEFAULT_UI_PREFS: Readonly<UIPrefs> = Object.freeze({
   theme: "system",
@@ -43,6 +49,7 @@ export const DEFAULT_UI_PREFS: Readonly<UIPrefs> = Object.freeze({
   modelPicker: null,
   modelFavorites: [],
   statusBar: [],
+  screenshotShortcut: "Ctrl+Shift+S",
 });
 
 /** A stored document as read, before its fields are checked. */
@@ -127,6 +134,7 @@ export function readUIPrefs(doc: UIPrefsDoc, d: Readonly<UIPrefs> = DEFAULT_UI_P
     modelPicker: pick === undefined ? (d.modelPicker && { ...d.modelPicker }) : pick,
     modelFavorites: toFavorites(doc.modelFavorites) ?? [...d.modelFavorites],
     statusBar: toStatusBar(doc.statusBar) ?? [...d.statusBar],
+    screenshotShortcut: doc.screenshotShortcut === null || isShortcut(doc.screenshotShortcut) ? doc.screenshotShortcut : d.screenshotShortcut,
   };
 }
 

@@ -62,6 +62,10 @@ _Avoid_: account, workspace, agent (as a name for a profile)
 A local file the owner sends with a message: an image Hermes looks at, or any other file Hermes can read. Hermes takes images up to 25 MB and other files up to 256 MB.
 _Avoid_: upload, file (when the attachment is meant)
 
+**Screenshot**:
+An image of a region or window of the owner's screen, taken from the composer by a shortcut or the camera button, and staged as an Attachment. It stays on this computer until the message is sent, and is deleted once sent, removed, or left behind in a chat the owner switches away from.
+_Avoid_: screen capture, snapshot
+
 **Draft**:
 The text the owner has typed in a chat's composer and not sent. Each chat keeps its own draft, and so does the New chat pane, separately for each connection and profile. A draft is still there after switching chats or restarting the app. Sending empties it, and if Hermes doesn't take the message, its text comes back. If the connection drops before Hermes confirms it got the message, Hermes may already be running it, so its text is held beside the composer instead, and only the owner sends it again or dismisses it. Attachments aren't kept in a draft.
 _Avoid_: unsent message, saved message

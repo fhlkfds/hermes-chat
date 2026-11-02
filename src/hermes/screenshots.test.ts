@@ -1,0 +1,164 @@
+// The screenshot desk: a capture goes to the composer on screen (or waits for one), failures turn into the notes the
+// owner reads, and every capture is deleted once it is sent, removed, refused or left behind.
+import { describe, expect, it, vi } from "vitest";
+import { ScreenshotDesk, captureName, failureText, type Captured, type ScreenshotApi, type ScreenshotSink } from "./screenshots";
+
+/** A Rust side whose captures land when the test says. */
+function fakeApi() {
+  const discarded: string[] = [];
+  const names: string[] = [];
+  let pending: { resolve: (c: Captured) => void; reject: (e: unknown) => void } | undefined;
+  const api: ScreenshotApi = {
+    capture: (name) => {
+      names.push(name);
+      return new Promise((resolve, reject) => (pending = { resolve, reject }));
+    },
+    discard: async (path) => void discarded.push(path),
+  };
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+  return {
+    api,
+    discarded,
+    names,
+    land: async (c: Captured) => (pending!.resolve(c), await flush()),
+    fail: async (e: unknown) => (pending!.reject(e), await flush()),
+  };
+}
+
+function sink(keep: (paths: string[]) => string[] = (p) => p) {
+  const attached: string[][] = [];
+  const notes: string[] = [];
+  const s: ScreenshotSink = { attach: async (paths) => (attached.push(paths), keep(paths)), note: (t) => void notes.push(t) };
+  return { s, attached, notes };
+}
+
+describe("Screenshot desk", () => {
+  it("attaches a capture to the composer on screen, and deletes it once released", async () => {
+    const rust = fakeApi();
+    const onAttached = vi.fn();
+    const desk = new ScreenshotDesk(rust.api, onAttached);
+    const composer = sink();
+    desk.attachTo(composer.s);
+
+    const taking = desk.capture();
+    expect(desk.getSnapshot()).toEqual({ capturing: true });
+    expect(rust.names[0]).toMatch(/^screenshot-\d{4}-\d\d-\d\d-\d{6}$/);
+    await rust.land({ path: "/run/user/1000/hermes-chat/captures/1/0/shot.png" });
+    await taking;
+
+    expect(composer.attached).toEqual([["/run/user/1000/hermes-chat/captures/1/0/shot.png"]]);
+    expect(onAttached).toHaveBeenCalledWith(false);
+    expect(desk.getSnapshot()).toEqual({ capturing: false });
+    expect(rust.discarded).toEqual([]);
+
+    // Releasing anything that isn't a capture does nothing; a capture is deleted once.
+    desk.release(["/home/liam/Pictures/rack.png", "/run/user/1000/hermes-chat/captures/1/0/shot.png"]);
+    desk.release(["/run/user/1000/hermes-chat/captures/1/0/shot.png"]);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(rust.discarded).toEqual(["/run/user/1000/hermes-chat/captures/1/0/shot.png"]);
+  });
+
+  it("takes one capture at a time", async () => {
+    const rust = fakeApi();
+    const desk = new ScreenshotDesk(rust.api);
+    void desk.capture();
+    void desk.capture();
+    expect(rust.names).toHaveLength(1);
+  });
+
+  it("holds a capture until a composer is on screen, with any note about it", async () => {
+    const rust = fakeApi();
+    const desk = new ScreenshotDesk(rust.api);
+    const taking = desk.capture({ remote: true });
+    await rust.land({ path: "/c/1/0/a.png", note: "Your desktop also saved its own copy at /home/liam/Pictures/a.png." });
+    await taking;
+
+    const composer = sink();
+    desk.attachTo(composer.s);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(composer.attached).toEqual([["/c/1/0/a.png"]]);
+    expect(composer.notes).toEqual(["Your desktop also saved its own copy at /home/liam/Pictures/a.png."]);
+  });
+
+  it("deletes a capture the composer refused, such as one too large for Hermes", async () => {
+    const rust = fakeApi();
+    const desk = new ScreenshotDesk(rust.api);
+    desk.attachTo(sink(() => []).s);
+    const taking = desk.capture();
+    await rust.land({ path: "/c/1/0/huge.png" });
+    await taking;
+    expect(rust.discarded).toEqual(["/c/1/0/huge.png"]);
+  });
+
+  it("says nothing when the owner cancels, and says why otherwise", async () => {
+    const rust = fakeApi();
+    const desk = new ScreenshotDesk(rust.api);
+    const composer = sink();
+    desk.attachTo(composer.s);
+    for (const failure of [
+      { kind: "cancelled" },
+      { kind: "denied", message: "Your desktop didn't allow Hermes Chat to take a screenshot." },
+      { kind: "unsupported", message: "No screenshot portal is running." },
+      { kind: "failed", message: "grim failed: out of memory" },
+      "Command screenshot_capture not found",
+    ]) {
+      const taking = desk.capture();
+      await rust.fail(failure);
+      await taking;
+    }
+    expect(composer.notes).toEqual([
+      "Your desktop didn't allow Hermes Chat to take a screenshot.",
+      "Screenshots don't work on this desktop yet. No screenshot portal is running.",
+      "Couldn't take a screenshot: grim failed: out of memory",
+      "Couldn't take a screenshot: Command screenshot_capture not found",
+    ]);
+    expect(composer.attached).toEqual([]);
+  });
+
+  it("deletes every capture when the window signs out, including one still being taken", async () => {
+    const rust = fakeApi();
+    const desk = new ScreenshotDesk(rust.api);
+    desk.attachTo(sink().s);
+    let taking = desk.capture();
+    await rust.land({ path: "/c/1/0/staged.png" });
+    await taking;
+
+    taking = desk.capture();
+    desk.dispose();
+    await rust.land({ path: "/c/1/1/late.png" });
+    await taking;
+    expect(rust.discarded.sort()).toEqual(["/c/1/0/staged.png", "/c/1/1/late.png"]);
+    // And nothing more is taken.
+    void desk.capture();
+    expect(rust.names).toHaveLength(2);
+  });
+
+  it("stops handing captures to a composer that has gone", async () => {
+    const rust = fakeApi();
+    const desk = new ScreenshotDesk(rust.api);
+    const first = sink();
+    const stop = desk.attachTo(first.s);
+    stop();
+    const taking = desk.capture();
+    await rust.land({ path: "/c/1/0/a.png" });
+    await taking;
+    expect(first.attached).toEqual([]);
+    const second = sink();
+    desk.attachTo(second.s);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(second.attached).toEqual([["/c/1/0/a.png"]]);
+  });
+});
+
+describe("Screenshot names and notes", () => {
+  it("names a capture by local time", () => {
+    const at = new Date(2026, 10, 2, 15, 34, 17);
+    expect(captureName(at)).toBe("screenshot-2026-11-02-153417");
+  });
+
+  it("has nothing to say about a second press while picking", () => {
+    expect(failureText({ kind: "busy" })).toBeUndefined();
+    expect(failureText({ kind: "cancelled" })).toBeUndefined();
+    expect(failureText({ kind: "denied" })).toBe("Your desktop didn't allow the screenshot.");
+  });
+});

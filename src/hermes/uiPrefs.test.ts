@@ -42,7 +42,7 @@ afterEach(() => {
 
 describe("reading", () => {
   it("is the defaults when nothing is stored", () => {
-    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, modelFavorites: [], statusBar: [] });
+    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, modelFavorites: [], statusBar: [], screenshotShortcut: "Ctrl+Shift+S" });
     expect(getUIPrefs()).toEqual(DEFAULT_UI_PREFS);
   });
 
@@ -65,6 +65,7 @@ describe("reading", () => {
         modelFavorites: ["openai/gpt-5", "no-slash", 7, "openai/gpt-5", "anthropic/claude-opus-5-5"],
         statusBar: ["model", 3, "", "tokens", "model"],
         lastOpenChat: { default: "c1", work: 7, "": "c2", home: "" },
+        screenshotShortcut: "Hyper+K",
       }),
     );
     expect(getUIPrefs()).toEqual({
@@ -75,7 +76,22 @@ describe("reading", () => {
       modelPicker: { provider: "anthropic", model: "claude-opus-5-5", effort: "max", fast: true },
       modelFavorites: ["openai/gpt-5", "anthropic/claude-opus-5-5"],
       statusBar: ["model", "tokens"],
+      screenshotShortcut: "Ctrl+Shift+S",
     });
+  });
+
+  it("keeps a screenshot shortcut in its stored shape, or none", () => {
+    for (const ok of ["Alt+F12", "Ctrl+Alt+Shift+Super+9", "PrintScreen", "Super+PrintScreen"]) {
+      setUIPrefs({ screenshotShortcut: ok });
+      expect(getUIPrefs().screenshotShortcut).toBe(ok);
+    }
+    setUIPrefs({ screenshotShortcut: null });
+    expect(getUIPrefs().screenshotShortcut).toBeNull();
+    // Out of order, unknown keys and lowercase letters aren't stored shapes; the last good value stays.
+    for (const bad of ["Shift+Ctrl+S", "Ctrl+s", "Ctrl+Tab", "Ctrl+", "F25", 7]) {
+      setUIPrefs({ screenshotShortcut: bad as string });
+      expect(getUIPrefs().screenshotShortcut).toBeNull();
+    }
   });
 
   it("keeps the profile a model was picked in, and drops an effort Hermes doesn't take", () => {
