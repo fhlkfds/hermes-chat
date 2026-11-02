@@ -511,5 +511,9 @@ pub fn run(screenshot: bool) {
         .expect("error while building tauri application")
         // Outbox persistence in the renderer can precede its asynchronous retention IPC. Leave remaining captures
         // for the next startup's sweep, after persisted references are known, rather than risk deleting Retry bytes.
-        .run(|_, _| {});
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                update::relaunch(app);
+            }
+        });
 }

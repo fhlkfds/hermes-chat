@@ -14,6 +14,7 @@ use tauri::utils::platform::{bundle_type, current_exe};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_updater::{Update, UpdaterExt};
 use tokio::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex, OnceCell};
 
 #[derive(Default)]
@@ -23,6 +24,8 @@ pub struct Updates {
     started: OnceCell<Option<(String, String)>>,
     /// The update the last check found, for the owner to install.
     found: Mutex<Option<Update>>,
+    /// The owner asked to restart: start the app again once this one has exited (`relaunch`).
+    restart: AtomicBool,
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -161,7 +164,7 @@ fn drafts_file(app: &AppHandle) -> Result<PathBuf, String> {
 /// restarts if that fails; the next launch puts them back (`restart_drafts_read`), in case the webview hadn't saved
 /// the last keystrokes when the process ended.
 #[tauri::command]
-pub async fn app_restart(app: AppHandle, drafts: String) -> Result<(), String> {
+pub async fn app_restart(app: AppHandle, state: State<'_, Updates>, drafts: String) -> Result<(), String> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     let path = drafts_file(&app)?;
@@ -172,7 +175,33 @@ pub async fn app_restart(app: AppHandle, drafts: String) -> Result<(), String> {
         file.sync_all()
     };
     save().map_err(|e| format!("Couldn't save your drafts before restarting, so the app didn't restart: {e}"))?;
-    app.restart()
+    // Not `app.restart()`: that starts the app with the same arguments, and a copy started by the desktop shortcut
+    // (`--screenshot`) would hand the screenshot to this one as it exits, and quit (main.rs).
+    state.restart.store(true, Ordering::Relaxed);
+    app.exit(0);
+    Ok(())
+}
+
+/// The arguments to start the app again with: the same, less `--screenshot`.
+fn relaunch_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Vec<std::ffi::OsString> {
+    args.into_iter().skip(1).filter(|a| a != "--screenshot").collect()
+}
+
+/// Starts the app again, if the owner asked to restart, from the binary it started from (or the AppImage, which the
+/// updater may have replaced). Called as the app exits (lib.rs).
+pub fn relaunch(app: &AppHandle) {
+    if !app.state::<Updates>().restart.load(Ordering::Relaxed) {
+        return;
+    }
+    let env = app.env();
+    match tauri::process::current_binary(&env) {
+        Ok(exe) => {
+            if let Err(e) = std::process::Command::new(exe).args(relaunch_args(env.args_os)).spawn() {
+                eprintln!("hermes-chat: couldn't start again after the update: {e}");
+            }
+        }
+        Err(e) => eprintln!("hermes-chat: couldn't find the app to start again after the update: {e}"),
+    }
 }
 
 /// The drafts saved by the last restart, if any. The file stays until the webview has put them all back
@@ -200,6 +229,12 @@ mod tests {
         assert_eq!(parse_query("hermes-chat 1:0.2.0-3"), Some("1:0.2.0-3".into()));
         assert_eq!(parse_query("hermes-chat-git"), None);
         assert_eq!(parse_query(""), None);
+    }
+
+    #[test]
+    fn restarts_without_asking_for_a_screenshot() {
+        let args = ["/usr/bin/hermes-chat", "--screenshot", "--other"].map(std::ffi::OsString::from);
+        assert_eq!(relaunch_args(args), ["--other"]);
     }
 
     #[test]
