@@ -8,17 +8,21 @@
 //! For voice it relays a recording to the dashboard's transcription route and a reply to its speech route, and reads
 //! which speech providers the profile uses without passing the rest of its config, keys and all, to the webview
 //! (research doc, "Voice").
+//! A direct connection can carry extra request headers for a gateway in front of the dashboard, such as Cloudflare
+//! Access, on every request and the WebSocket handshake (ADR 0006).
 
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
-use reqwest::{header, Method, StatusCode};
-use serde::Serialize;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use reqwest::{header, redirect, Method, StatusCode};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::net::IpAddr;
 use std::sync::Mutex;
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use url::Url;
 
@@ -28,6 +32,8 @@ const PASSWORD_PROVIDER: &str = "basic";
 pub struct SignIn {
     pub username: String,
     pub password: String,
+    /// Sent with every request to the dashboard, the WebSocket handshake included. Built by `extra_headers`.
+    pub headers: HeaderMap,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -58,6 +64,84 @@ pub enum TransportError {
     NoVoiceRoute(&'static str, &'static str),
     #[error("{0}")]
     Voice(String),
+    #[error("{0}")]
+    BadHeader(String),
+    #[error("The dashboard sent Hermes Chat on to {0}, another site. Hermes Chat doesn't follow it there, so your extra request headers aren't sent to it. If a gateway such as Cloudflare Access is in front of the dashboard, check the headers it needs.")]
+    Redirected(String),
+}
+
+/// An extra request header as the owner typed it in the sign-in screen.
+#[derive(Deserialize)]
+pub struct ExtraHeader {
+    pub name: String,
+    pub value: String,
+}
+
+const MAX_EXTRA_HEADERS: usize = 32;
+const MAX_HEADER_VALUE_BYTES: usize = 8 * 1024;
+
+/// Headers the transport or HTTP itself sets, or that would change how the request is framed or routed.
+fn reserved(name: &HeaderName) -> bool {
+    let n = name.as_str(); // always lowercase
+    matches!(
+        n,
+        "host" | "content-length" | "content-type" | "transfer-encoding" | "connection" | "upgrade" | "cookie" | "te" | "trailer"
+            | "keep-alive" | "expect" | "origin"
+    ) || n.starts_with("sec-websocket-")
+        || n.starts_with("proxy-")
+}
+
+/// Checks the owner's extra request headers and builds them, every value marked sensitive. Names are matched without
+/// regard to case: one set twice is refused, as is a reserved one (`reserved`). Spaces and tabs around a value are
+/// dropped; any other control character, a line break above all, is refused. Errors name the header, never its value.
+pub fn extra_headers(headers: &[ExtraHeader]) -> Result<HeaderMap, TransportError> {
+    if headers.len() > MAX_EXTRA_HEADERS {
+        return Err(TransportError::BadHeader(format!("Hermes Chat sends at most {MAX_EXTRA_HEADERS} extra request headers.")));
+    }
+    let mut map = HeaderMap::new();
+    for (i, h) in headers.iter().enumerate() {
+        let bad = |why: String| TransportError::BadHeader(format!("Extra request header {}: {why}", i + 1));
+        let raw = h.name.trim_matches([' ', '\t']);
+        if raw.is_empty() {
+            return Err(bad("enter its name.".into()));
+        }
+        let name = HeaderName::from_bytes(raw.as_bytes())
+            .map_err(|_| bad(format!("{raw:?} isn't a header name. Use letters, digits and dashes, such as CF-Access-Client-Id.")))?;
+        if reserved(&name) {
+            return Err(bad(format!("Hermes Chat sets {raw} itself.")));
+        }
+        if map.contains_key(&name) {
+            return Err(bad(format!("{raw} is set twice.")));
+        }
+        let value = h.value.trim_matches([' ', '\t']);
+        if value.is_empty() {
+            return Err(bad(format!("enter a value for {raw}.")));
+        }
+        if value.len() > MAX_HEADER_VALUE_BYTES {
+            return Err(bad(format!("the value of {raw} is over {} KB.", MAX_HEADER_VALUE_BYTES / 1024)));
+        }
+        // Visible ASCII, spaces and tabs only: no line breaks, other control characters or non-ASCII bytes, which
+        // `HeaderValue` would let through as obsolete text.
+        let printable = value.bytes().all(|b| b == b'\t' || (b' '..=b'~').contains(&b));
+        let mut value = HeaderValue::from_str(value)
+            .ok()
+            .filter(|_| printable)
+            .ok_or_else(|| bad(format!("the value of {raw} can only hold ASCII letters, digits, punctuation and spaces, on one line.")))?;
+        value.set_sensitive(true);
+        map.insert(name, value);
+    }
+    Ok(map)
+}
+
+/// With extra headers set, a redirect is followed only within the dashboard's origin (scheme, host and port), so
+/// the headers never reach another site. reqwest only strips its own credential headers on such a redirect.
+fn same_origin_redirects(attempt: redirect::Attempt) -> redirect::Action {
+    let from = attempt.previous().last().map(Url::origin);
+    if from.as_ref() == Some(&attempt.url().origin()) {
+        redirect::Policy::default().redirect(attempt)
+    } else {
+        attempt.stop()
+    }
 }
 
 const MIB: u64 = 1024 * 1024;
@@ -235,6 +319,51 @@ pub async fn read_preview(path: &str) -> Result<Vec<u8>, TransportError> {
     Ok(bytes)
 }
 
+/// Writes a file pasted into the composer to a new temp file and returns its path, so it attaches like a dropped
+/// one: a pasted screenshot has no file of its own. Each paste gets its own folder under `<temp>/hermes-chat`, so
+/// the same name pasted twice stays two files. `name` is cut down to a safe basename. Nothing removes these files.
+pub fn stage_clipboard_file(name: &str, bytes: &[u8]) -> Result<std::path::PathBuf, TransportError> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static PASTES: AtomicU64 = AtomicU64::new(0);
+    let io = |e: std::io::Error| TransportError::File(format!("couldn't save the pasted file: {e}"));
+
+    // Pastes can be private: only this user's folders, and not one someone else made (or linked) in a shared /tmp.
+    // Ownership matters, not just the mode: another user's folder could be opened up again after this check.
+    let root = std::env::temp_dir().join("hermes-chat");
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&root).map_err(io)?;
+    let meta = std::fs::symlink_metadata(&root).map_err(io)?;
+    let me = std::fs::metadata("/proc/self").map_err(io)?.uid();
+    if !meta.is_dir() || meta.uid() != me || meta.permissions().mode() & 0o077 != 0 {
+        return Err(TransportError::File(format!("couldn't save the pasted file: {} isn't private", root.display())));
+    }
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let dir = root.join(format!("{nanos}-{}-{}", std::process::id(), PASTES.fetch_add(1, Ordering::Relaxed)));
+    std::fs::DirBuilder::new().mode(0o700).create(&dir).map_err(io)?;
+    let path = dir.join(safe_name(name));
+    std::fs::write(&path, bytes).map_err(io)?;
+    Ok(path)
+}
+
+/// `name` as a plain file name: no folders, control characters or leading dots, a sane length, and its extension
+/// only when it looks like one (Hermes and the previews go by it).
+fn safe_name(name: &str) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or_default();
+    let base: String = base.chars().filter(|c| !c.is_control()).collect();
+    let base = base.trim().trim_start_matches('.');
+    let (stem, ext) = match base.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() && (1..=8).contains(&e.len()) && e.chars().all(|c| c.is_ascii_alphanumeric()) => (s, e),
+        _ => (base, ""),
+    };
+    // File names are capped at 255 bytes, not characters.
+    let mut stem = stem.to_owned();
+    while stem.len() > 200 {
+        stem.pop();
+    }
+    let stem = if stem.trim().is_empty() { "clipboard" } else { stem.as_str() };
+    if ext.is_empty() { stem.to_owned() } else { format!("{stem}.{ext}") }
+}
+
 /// Reads a whole file, refusing one over `max_bytes`; the size is checked again after reading, in case it grew.
 async fn read_capped(path: &str, max_bytes: u64) -> Result<Vec<u8>, TransportError> {
     let too_large = |size| TransportError::FileTooLarge { size, max: max_bytes };
@@ -303,12 +432,19 @@ pub struct Dashboard {
     http: reqwest::Client,
     base: Url,
     cookies: Mutex<Vec<(String, String)>>,
+    /// The owner's extra request headers; `http` sends them itself, the WebSocket handshake adds them.
+    headers: HeaderMap,
 }
 
 impl Dashboard {
     /// Sign in at `base`, the dashboard root (e.g. the local end of the SSH tunnel).
     pub async fn sign_in(base: &Url, sign_in: &SignIn) -> Result<Dashboard, TransportError> {
-        let dashboard = Dashboard { http: reqwest::Client::new(), base: base.clone(), cookies: Mutex::default() };
+        let mut http = reqwest::Client::builder().default_headers(sign_in.headers.clone());
+        if !sign_in.headers.is_empty() {
+            http = http.redirect(redirect::Policy::custom(same_origin_redirects));
+        }
+        let http = http.build().map_err(|e| TransportError::Unreachable(e.to_string()))?;
+        let dashboard = Dashboard { http, base: base.clone(), cookies: Mutex::default(), headers: sign_in.headers.clone() };
         let login = dashboard
             .http
             .post(endpoint(base, "auth/password-login"))
@@ -358,7 +494,11 @@ impl Dashboard {
             .set_scheme(if self.base.scheme() == "https" { "wss" } else { "ws" })
             .expect("http(s) URLs map to ws(s)");
         ws_url.query_pairs_mut().append_pair("ticket", ticket).append_pair("profile", profile);
-        let (ws, _) = tokio_tungstenite::connect_async(ws_url.as_str())
+        let mut handshake = ws_url.as_str().into_client_request().map_err(|e| TransportError::WebSocket(e.to_string()))?;
+        for (name, value) in &self.headers {
+            handshake.headers_mut().insert(name, value.clone());
+        }
+        let (ws, _) = tokio_tungstenite::connect_async(handshake)
             .await
             .map_err(|e| TransportError::WebSocket(e.to_string()))?;
 
@@ -401,15 +541,19 @@ impl Dashboard {
     }
 
     /// One dashboard REST call for the webview: `GET`, `PATCH` or `DELETE` on a path under `api/`, with a
-    /// JSON body. Returns the response body on 2xx.
+    /// JSON body. `POST` and `PUT` reach only Settings → Model's two writes: `POST api/model/set` and
+    /// `PUT api/config`. Returns the response body on 2xx.
     pub async fn request(&self, method: &str, path_and_query: &str, body: Option<String>) -> Result<String, TransportError> {
-        let method = match method {
-            "GET" => Method::GET,
-            "PATCH" => Method::PATCH,
-            "DELETE" => Method::DELETE,
-            other => return Err(TransportError::NotRelayed(format!("{other} requests"))),
-        };
         let (path, query) = path_and_query.split_once('?').unwrap_or((path_and_query, ""));
+        let method = match (method, path) {
+            ("GET", _) => Method::GET,
+            ("PATCH", _) => Method::PATCH,
+            ("DELETE", _) => Method::DELETE,
+            ("POST", "api/model/set") => Method::POST,
+            ("PUT", "api/config") => Method::PUT,
+            ("POST" | "PUT", _) => return Err(TransportError::NotRelayed(format!("{method} {path}"))),
+            (other, _) => return Err(TransportError::NotRelayed(format!("{other} requests"))),
+        };
         if !path.starts_with("api/") || path.split('/').any(|seg| seg == "..") {
             return Err(TransportError::NotRelayed(path.to_owned()));
         }
@@ -562,6 +706,13 @@ fn endpoint(base: &Url, path: &str) -> Url {
 }
 
 async fn unexpected(resp: reqwest::Response) -> TransportError {
+    // A redirect that came back unfollowed: `same_origin_redirects` stopped it at another site.
+    if resp.status().is_redirection() {
+        let to = resp.headers().get(header::LOCATION).and_then(|l| resp.url().join(l.to_str().ok()?).ok());
+        if let Some(to) = to.filter(|to| to.origin() != resp.url().origin()) {
+            return TransportError::Redirected(to.origin().ascii_serialization());
+        }
+    }
     let status = resp.status().as_u16();
     let body = resp.text().await.unwrap_or_default().chars().take(300).collect();
     TransportError::Unexpected { status, body }

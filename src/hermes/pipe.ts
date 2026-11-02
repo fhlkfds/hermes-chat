@@ -26,6 +26,9 @@ export type PipeEvent = { kind: "frame"; text: string } | { kind: "closed"; reas
  */
 export type Route = { kind: "ssh"; target: string } | { kind: "url"; url: string; addresses: string[] };
 
+/** The dashboard REST verbs the Rust side relays. POST and PUT reach only Settings → Model's two write routes. */
+export type RestMethod = "GET" | "PATCH" | "DELETE" | "POST" | "PUT";
+
 export interface Pipe {
   readonly route: Route;
   send(frame: string): Promise<void>;
@@ -33,7 +36,7 @@ export interface Pipe {
    * One dashboard REST call with the sign-in cookies, e.g. `request("GET", "api/sessions?order=recent")`.
    * `body` is JSON text. Resolves to the response body text on 2xx; rejects with a readable message otherwise.
    */
-  request(method: "GET" | "PATCH" | "DELETE", pathAndQuery: string, body?: string): Promise<string>;
+  request(method: RestMethod, pathAndQuery: string, body?: string): Promise<string>;
   statFiles(paths: string[]): Promise<LocalFile[]>;
   /**
    * Sends one frame: `head`, the file at `path` as base64, then `tail`. The bytes go from disk to Hermes

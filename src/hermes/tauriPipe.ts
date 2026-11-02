@@ -15,11 +15,17 @@ function fromBase64(b64: string): Uint8Array {
   return out;
 }
 
-/** `mode` picks which of `sshTarget` and `url` is used. */
-export type SignInDetails = { mode: "ssh" | "url"; sshTarget: string; url: string; username: string; password: string };
+/** An extra request header for a gateway in front of the dashboard, such as Cloudflare Access (ADR 0006). */
+export type ExtraHeader = { name: string; value: string };
+
+/**
+ * `mode` picks which of `sshTarget` and `url` is used. `headers` go with every request to a URL, never through the SSH
+ * tunnel; Rust checks them. Like the password, they are kept in the system keyring, never beside the rest.
+ */
+export type SignInDetails = { mode: "ssh" | "url"; sshTarget: string; url: string; username: string; password: string; headers?: ExtraHeader[] };
 
 export function tauriPipe(d: SignInDetails): OpenPipe {
-  const target = d.mode === "ssh" ? { kind: "ssh", target: d.sshTarget } : { kind: "url", url: d.url };
+  const target = d.mode === "ssh" ? { kind: "ssh", target: d.sshTarget } : { kind: "url", url: d.url, headers: d.headers ?? [] };
   return async (onEvent, profile) => {
     const channel = new Channel<PipeEvent>();
     channel.onmessage = onEvent;

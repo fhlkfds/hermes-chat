@@ -12,7 +12,7 @@ use tauri::webview::{PermissionKind, PermissionResponse};
 use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Mutex;
-use transport::{Dashboard, LocalFile, Pipe, PipeEvent, SignIn};
+use transport::{Dashboard, ExtraHeader, LocalFile, Pipe, PipeEvent, SignIn};
 use tunnel::Tunnel;
 
 /// The owner's `hermes dashboard` port on the server's loopback (research doc, "SSH tunnel, Host header
@@ -30,7 +30,13 @@ struct Connection {
 #[serde(tag = "kind", rename_all = "camelCase")]
 enum Target {
     Ssh { target: String },
-    Url { url: String },
+    /// `headers`: extra request headers for a gateway in front of the dashboard, such as Cloudflare Access (ADR 0006).
+    /// Only a direct connection sends them; the SSH tunnel goes straight to the dashboard.
+    Url {
+        url: String,
+        #[serde(default)]
+        headers: Vec<ExtraHeader>,
+    },
 }
 
 /// How the connection reached the dashboard, for the webview to show and to decide whether it is Unsecure.
@@ -55,19 +61,20 @@ async fn hermes_connect(
 ) -> Result<Route, String> {
     let mut slot = state.0.lock().await;
     *slot = None;
-    let (base, tunnel, route) = match target {
+    let (base, tunnel, route, headers) = match target {
         Target::Ssh { target } => {
             let tunnel = tunnel::open(&target, DASHBOARD_PORT).await.map_err(|e| e.to_string())?;
             let base = url::Url::parse(&format!("http://127.0.0.1:{}/", tunnel.local_port)).expect("valid URL");
-            (base, Some(tunnel), Route::Ssh { target: target.trim().to_owned() })
+            (base, Some(tunnel), Route::Ssh { target: target.trim().to_owned() }, Default::default())
         }
-        Target::Url { url } => {
+        Target::Url { url, headers } => {
+            let headers = transport::extra_headers(&headers).map_err(|e| e.to_string())?;
             let direct = transport::resolve_direct(&url).await.map_err(|e| e.to_string())?;
             let addresses = direct.addresses.iter().map(ToString::to_string).collect();
-            (direct.base, None, Route::Url { url: url.trim().to_owned(), addresses })
+            (direct.base, None, Route::Url { url: url.trim().to_owned(), addresses }, headers)
         }
     };
-    let dashboard = Dashboard::sign_in(&base, &SignIn { username, password }).await.map_err(|e| e.to_string())?;
+    let dashboard = Dashboard::sign_in(&base, &SignIn { username, password, headers }).await.map_err(|e| e.to_string())?;
     let pipe = dashboard
         .open_pipe(&profile, move |e| {
             let _ = on_event.send(e);
@@ -111,6 +118,20 @@ async fn hermes_stat_files(paths: Vec<String>) -> Vec<LocalFile> {
 #[tauri::command]
 async fn hermes_read_preview(path: String) -> Result<tauri::ipc::Response, String> {
     transport::read_preview(&path).await.map(tauri::ipc::Response::new).map_err(|e| e.to_string())
+}
+
+/// Saves a file pasted into the composer to a temp file and returns its path. Its bytes come as the raw body, not
+/// JSON, so a big screenshot isn't sent as a list of numbers; its name comes URI-encoded in the `x-name` header.
+#[tauri::command]
+async fn stage_clipboard_file(request: tauri::ipc::Request<'_>) -> Result<String, String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("The pasted file didn't arrive as bytes.".into());
+    };
+    let header = request.headers().get("x-name").and_then(|v| v.to_str().ok()).unwrap_or_default();
+    // encodeURIComponent never writes `+`, `&` or `=` bare, so one form-decoded key is exactly the name.
+    let name = url::form_urlencoded::parse(header.as_bytes()).next().map(|(k, _)| k.into_owned()).unwrap_or_default();
+    let path = transport::stage_clipboard_file(&name, bytes).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
@@ -187,17 +208,33 @@ async fn hermes_disconnect(state: State<'_, AppState>) -> Result<(), String> {
 
 #[tauri::command]
 async fn password_load() -> Result<Option<String>, String> {
-    saved_password::load().await
+    saved_password::load(saved_password::PASSWORD).await
 }
 
 #[tauri::command]
 async fn password_save(password: String) -> Result<(), String> {
-    saved_password::save(password).await
+    saved_password::save(saved_password::PASSWORD, password).await
 }
 
 #[tauri::command]
 async fn password_delete() -> Result<(), String> {
-    saved_password::delete().await
+    saved_password::delete(saved_password::PASSWORD).await
+}
+
+/// The extra request headers, names and values, as JSON the webview reads and writes.
+#[tauri::command]
+async fn headers_load() -> Result<Option<String>, String> {
+    saved_password::load(saved_password::HEADERS).await
+}
+
+#[tauri::command]
+async fn headers_save(headers: String) -> Result<(), String> {
+    saved_password::save(saved_password::HEADERS, headers).await
+}
+
+#[tauri::command]
+async fn headers_delete() -> Result<(), String> {
+    saved_password::delete(saved_password::HEADERS).await
 }
 
 /// Saves an exported chat (src/hermes/exportChat.ts) where the owner picks in the native Save dialog, which asks
@@ -276,6 +313,7 @@ pub fn run() {
             hermes_send_file,
             hermes_stat_files,
             hermes_read_preview,
+            stage_clipboard_file,
             hermes_request,
             hermes_transcribe,
             hermes_speak,
@@ -284,6 +322,9 @@ pub fn run() {
             password_load,
             password_save,
             password_delete,
+            headers_load,
+            headers_save,
+            headers_delete,
             chat_export,
             notify_desktop,
             system_fonts

@@ -97,13 +97,13 @@ describe("Hermes transport", () => {
     expect(chat(id).items.at(-1)).toMatchObject({ kind: "error", text: "Provider returned 529 overloaded" });
   });
 
-  it("shows a refused prompt as an error", async () => {
+  it("marks a refused prompt failed, with Hermes's reason", async () => {
     const { server, hermes, chat } = await signedIn();
     const id = await hermes.newChat();
     server.handlers["prompt.submit"] = (r) => server.fail(r.id, 4009, "session busy");
     expect(await hermes.send(id, "hi")).toEqual({ delivery: "unsent", reason: "session busy" });
     expect(chat(id)).toMatchObject({ running: false });
-    expect(chat(id).items.at(-1)).toMatchObject({ kind: "error", text: "session busy" });
+    expect(chat(id).items.at(-1)).toMatchObject({ kind: "user", text: "hi", outgoing: { state: "failed", reason: "session busy" } });
   });
 
   it("ignores events for chats it doesn't have", async () => {

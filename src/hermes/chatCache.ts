@@ -2,10 +2,12 @@
 // Saved copies of the chats opened lately, so they can be read while Hermes can't be reached, the profile shown last,
 // so the next sign-in opens it, and the profiles whose older history the owner pulled. All of it is kept apart per
 // connection (how the app reaches the dashboard, and as whom), never with the password.
+// Each chat's outbox, the messages sent from here that Hermes hasn't confirmed, is kept beside it, per connection,
+// profile and chat. It holds the owner's own words, so like a draft it isn't part of the cache.
 // Clearing the cache deletes every connection's chat lists and Saved copies, and nothing else: never the sign-in,
-// drafts, appearance or display preferences (uiPrefs.ts).
+// drafts, outboxes, appearance or display preferences (uiPrefs.ts).
 import type { SavedSignIn } from "./account";
-import type { Chat, Item, Source } from "./model";
+import type { Attachment, Chat, Item, Outgoing, OutgoingItem, Source } from "./model";
 import type { ChatCache, SavedTranscript } from "./transport";
 import { UI_PREFS_KEY } from "./uiPrefs";
 
@@ -13,6 +15,9 @@ const LIST_PREFIX = "hermes-chat.chats.";
 const TRANSCRIPT_PREFIX = "hermes-chat.transcript.";
 const PROFILE_PREFIX = "hermes-chat.profile.";
 const PULLED_PREFIX = "hermes-chat.older-pulled.";
+const OUTBOX_PREFIX = "hermes-chat.outbox.";
+/** Where drafts.ts kept a chat's sent messages Hermes didn't take, or may not have, before the outbox: moved into it. */
+const HELD_PREFIX = "hermes-chat.undelivered.";
 
 /**
  * The most storage the Saved copies take. The least recently saved go first past it. WebKitGTK gives the app about
@@ -103,6 +108,36 @@ function toItem(v: unknown): Item | undefined {
   }
 }
 
+const isAttachment = (a: unknown): a is Attachment => {
+  const f = a as Attachment | null;
+  return typeof f?.path === "string" && typeof f.name === "string" && typeof f.size === "number" && (f.kind === "image" || f.kind === "file");
+};
+
+/** A kept outbox row, rebuilt from its fields, or undefined if it isn't one. */
+function toOutgoing(v: unknown): OutgoingItem | undefined {
+  const item = toItem(v);
+  const o = (v as { outgoing?: Record<string, unknown> } | null)?.outgoing;
+  if (item?.kind !== "user" || !o || (o.state !== "sending" && o.state !== "failed" && o.state !== "unknown")) return undefined;
+  const sent = o.sent as Record<string, unknown> | undefined;
+  const attachments = Array.isArray(o.attachments) ? o.attachments.filter(isAttachment) : [];
+  const outgoing: Outgoing = {
+    state: o.state,
+    ...(str(o.reason) !== undefined && { reason: str(o.reason) }),
+    ...(attachments.length && { attachments }),
+    ...(typeof sent?.prompt === "string" && { sent: { prompt: sent.prompt, ...(num(sent.after) !== undefined && { after: num(sent.after) }) } }),
+  };
+  return { ...item, outgoing };
+}
+
+/** A message drafts.ts held, as an outbox row. One Hermes may have got is found in the history by its words alone. */
+function fromHeld(v: unknown): OutgoingItem | undefined {
+  const h = v as { id?: unknown; text?: unknown; delivery?: unknown; reason?: unknown } | null;
+  if (typeof h?.id !== "string" || typeof h.text !== "string" || (h.delivery !== "unsent" && h.delivery !== "unknown")) return undefined;
+  const unknown = h.delivery === "unknown";
+  const reason = typeof h.reason === "string" ? h.reason : undefined;
+  return { kind: "user", id: `u-held-${h.id}`, text: h.text, outgoing: { state: unknown ? "unknown" : "failed", reason, ...(unknown && { sent: { prompt: h.text } }) } };
+}
+
 /** The cache for one connection. `connection` may carry a password; it never goes into a key or value. */
 export function localChatCache(connection: SavedSignIn): ChatCache {
   const target = connection.mode === "ssh" ? connection.sshTarget : connection.url;
@@ -111,6 +146,33 @@ export function localChatCache(connection: SavedSignIn): ChatCache {
   const transcriptKey = (profile: string, chatId: string) => TRANSCRIPT_PREFIX + scope(profile, chatId);
   const profileKey = PROFILE_PREFIX + scope();
   const pulledKey = PULLED_PREFIX + scope();
+  const outboxKey = (profile: string, chatId: string) => OUTBOX_PREFIX + scope(profile, chatId);
+  /** The chat ids of the profile's keys under `prefix`: the key's scope with the chat id last. */
+  const chatsUnder = (prefix: string, profile: string) =>
+    keysOf(prefix + scope(profile).slice(0, -1) + ",").flatMap((k) => {
+      try {
+        const id: unknown = (JSON.parse(k.slice(prefix.length)) as unknown[]).at(-1);
+        return typeof id === "string" ? [{ k, id }] : [];
+      } catch {
+        return [];
+      }
+    });
+  const readJson = (k: string): unknown[] => {
+    try {
+      const v: unknown = JSON.parse(localStorage.getItem(k) ?? "[]");
+      return Array.isArray(v) ? v : [];
+    } catch {
+      return [];
+    }
+  };
+  const writeOutbox = (profile: string, chatId: string, items: OutgoingItem[]) => {
+    try {
+      if (items.length) localStorage.setItem(outboxKey(profile, chatId), JSON.stringify(items));
+      else localStorage.removeItem(outboxKey(profile, chatId));
+    } catch {
+      // Only a restart loses them.
+    }
+  };
 
   const pulledProfiles = (): string[] => {
     try {
@@ -206,6 +268,24 @@ export function localChatCache(connection: SavedSignIn): ChatCache {
     olderPulled(profile) {
       return pulledProfiles().includes(profile);
     },
+    loadOutbox(profile) {
+      try {
+        // Messages drafts.ts held move into the outbox the first time it is read.
+        for (const { k, id } of chatsUnder(HELD_PREFIX, profile)) {
+          const held = readJson(k).flatMap((h) => fromHeld(h) ?? []);
+          writeOutbox(profile, id, [...readJson(outboxKey(profile, id)).flatMap((r) => toOutgoing(r) ?? []), ...held]);
+          localStorage.removeItem(k);
+        }
+        return Object.fromEntries(
+          chatsUnder(OUTBOX_PREFIX, profile)
+            .map(({ k, id }) => [id, readJson(k).flatMap((r) => toOutgoing(r) ?? [])] as const)
+            .filter(([, rows]) => rows.length),
+        );
+      } catch {
+        return {};
+      }
+    },
+    saveOutbox: writeOutbox,
     rememberOlderPulled(profile) {
       try {
         const pulled = pulledProfiles();
