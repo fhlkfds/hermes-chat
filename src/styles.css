@@ -1238,15 +1238,15 @@ button.status-item:disabled { opacity: 0.5; cursor: default; }
 .inbox-open { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; text-align: left; padding: 8px; border-radius: 8px; }
 .inbox-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .inbox-kind { display: inline-flex; align-items: center; gap: 5px; font-size: calc(11.5rem / 14); font-weight: 500; color: var(--muted); }
-.inbox-row.approval .inbox-kind, .inbox-row.uncertain .inbox-kind { color: var(--warn); }
-.inbox-row.failed .inbox-kind { color: var(--bad); }
-.inbox-row.completed .inbox-kind { color: var(--accent); }
-.inbox-row.ended .inbox-kind { color: var(--faint); }
+.inbox-row.kind-approval .inbox-kind, .inbox-row.kind-uncertain .inbox-kind { color: var(--warn); }
+.inbox-row.kind-failed .inbox-kind { color: var(--bad); }
+.inbox-row.kind-completed .inbox-kind { color: var(--accent); }
+.inbox-row.is-ended .inbox-kind { color: var(--faint); }
 .inbox-time { color: var(--faint); font-size: calc(11.5rem / 14); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .inbox-title { color: var(--text); font-size: calc(13rem / 14); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .inbox-where { color: var(--faint); font-size: calc(11.5rem / 14); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .inbox-summary { color: var(--muted); font-size: calc(12rem / 14); line-height: 1.4; }
-.inbox-row.stale .inbox-summary { font-style: italic; }
+.inbox-row.is-stale .inbox-summary { font-style: italic; }
 .inbox-dismiss { margin-top: 6px; flex: none; }
 .inbox-empty { padding: 12px 16px; }
 @media (max-width: 520px) {

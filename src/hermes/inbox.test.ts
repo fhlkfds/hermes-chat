@@ -169,24 +169,108 @@ describe("The inbox", () => {
     expect(sends[1].summary).toBe("A message you sent may not have reached Hermes.");
   });
 
-  it("marks what it last saw from a profile it couldn't check, and from Hermes while the live check fails", async () => {
+  it("marks what it last saw from Hermes while the live check fails", async () => {
     const { server, hermes } = await signedIn();
     server.liveSessions = [{ id: "rt-x", session_key: "work-busy", status: "working", last_active: nowS() }];
     await hermes.checkOtherProfiles();
-
-    const list = server.rest["GET /api/sessions"];
-    server.rest["GET /api/sessions"] = (req) => {
-      if (req.query.get("profile") === "work") throw new Error("The dashboard answered 503: busy");
-      return list(req);
-    };
     server.handlers["session.active_list"] = (r) => server.fail(r.id, 5000, "store busy");
     vi.useFakeTimers({ now: Date.now() + 20_000 });
     await hermes.checkOtherProfiles();
 
-    const s = hermes.getSnapshot();
-    expect(s.others.byName.work.error).toContain("503");
-    expect(s.live).toMatchObject({ error: "store busy", checkedAt: expect.any(Number) });
-    expect(inbox(hermes).entries.map(brief)).toEqual(["completed work/work-done stale", "running work/work-busy stale"]);
+    expect(hermes.getSnapshot().live).toMatchObject({ error: "store busy", checkedAt: expect.any(Number) });
+    expect(inbox(hermes).entries.map(brief)).toEqual(["completed work/work-done", "running work/work-busy stale"]);
+  });
+
+  it("marks what it last saw from a profile it couldn't check, and puts no live session with a chat meanwhile", async () => {
+    const { server, hermes } = await signedIn();
+    server.liveSessions = [{ id: "rt-x", session_key: "work-busy", status: "working", last_active: nowS() }];
+    await hermes.checkOtherProfiles();
+    const list = server.rest["GET /api/sessions"];
+    server.rest["GET /api/sessions"] = (req) => {
+      if (req.query.get("profile") === "ops") throw new Error("The dashboard answered 503: busy");
+      return list(req);
+    };
+    vi.useFakeTimers({ now: Date.now() + 20_000 });
+    await hermes.checkOtherProfiles();
+
+    expect(hermes.getSnapshot().others.byName.ops.error).toContain("503");
+    // ops might hold a copy of the same session id, so the running session isn't put with work's chat on a guess.
+    const { entries, unmatched } = inbox(hermes);
+    expect(entries.map(brief)).toEqual(["completed work/work-done"]);
+    expect(unmatched).toBe(1);
+
+    server.rest["GET /api/sessions"] = (req) => {
+      if (req.query.get("profile") === "work") throw new Error("The dashboard answered 503: busy");
+      return list(req);
+    };
+    vi.setSystemTime(Date.now() + 20_000);
+    await hermes.checkOtherProfiles();
+    expect(inbox(hermes).entries.map(brief)).toEqual(["completed work/work-done stale"]);
+  });
+
+  it("puts a session this app started with its own profile by its runtime id, though a copied profile lists the same id", async () => {
+    vi.useFakeTimers();
+    const { server, hermes } = await signedIn();
+    const { id, runtime } = await replying(server, hermes);
+    server.otherProfiles.ops.push(row(id, 0, { title: "A copy" }));
+    await hermes.switchProfile("work");
+    await hermes.idle();
+    server.liveSessions = [{ id: runtime, session_key: id, status: "waiting", last_active: nowS() }];
+    await vi.advanceTimersByTimeAsync(20_000);
+    await hermes.checkOtherProfiles();
+
+    expect(inbox(hermes).entries.filter((e) => e.chatId === id).map(brief)).toEqual([`approval default/${id}`]);
+  });
+
+  it("goes by the chat on screen, not by an older check, once an Approval there has expired", async () => {
+    const { server, hermes } = await signedIn();
+    const { id, runtime } = await replying(server, hermes);
+    const asked = server.askApproval(runtime);
+    server.liveSessions = [{ id: runtime, session_key: id, status: "waiting", last_active: nowS() }];
+    await hermes.checkOtherProfiles();
+    server.cancelRequest(asked.id!, "timeout");
+
+    expect(inbox(hermes).entries.filter((e) => e.chatId === id && needsOwner(e))).toEqual([]);
+  });
+
+  it("keeps an Approval dismissed after switching away, when only a check says its chat waits", async () => {
+    vi.useFakeTimers();
+    const { server, hermes } = await signedIn();
+    const { id, runtime } = await replying(server, hermes);
+    server.askApproval(runtime);
+    const acks = inboxAcks(storage(), "server");
+    acks.dismiss(inbox(hermes).entries.find((e) => e.kind === "approval" && e.chatId === id)!);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    await hermes.switchProfile("work");
+    await hermes.idle();
+    server.liveSessions = [{ id: runtime, session_key: id, status: "waiting", last_active: nowS() - 1 }];
+    await vi.advanceTimersByTimeAsync(20_000);
+    await hermes.checkOtherProfiles();
+    const waiting = () => inbox(hermes).entries.find((e) => e.key === `waiting default ${id}`)!;
+    expect(acks.isDismissed(waiting())).toBe(true);
+
+    // Waiting again since then shows again.
+    server.liveSessions[0].last_active = nowS() + 5;
+    await vi.advanceTimersByTimeAsync(20_000);
+    await hermes.checkOtherProfiles();
+    expect(acks.isDismissed(waiting())).toBe(false);
+  });
+
+  it("keeps a failure seen in a profile after switching away from it, pointing at its error", async () => {
+    vi.useFakeTimers();
+    const { server, hermes } = await signedIn();
+    const { id, runtime } = await replying(server, hermes);
+    server.event(runtime, "message.complete", { status: "error", failure_reason: "provider timed out", text: "" });
+    const failed = inbox(hermes).entries.find((e) => e.kind === "failed")!;
+    expect(failed).toMatchObject({ profile: "default", chatId: id, itemId: expect.stringMatching(/^e-/) });
+
+    await hermes.switchProfile("work");
+    await hermes.idle();
+    await vi.advanceTimersByTimeAsync(20_000);
+    await hermes.checkOtherProfiles();
+    expect(inbox(hermes).entries.find((e) => e.kind === "failed")).toMatchObject({ key: failed.key, itemId: failed.itemId });
+    expect(JSON.stringify(hermes.getSnapshot().others)).not.toContain("provider timed out");
   });
 
   it("asks a server without session.active_list no more, and says so", async () => {
@@ -239,8 +323,9 @@ describe("The inbox", () => {
     // Another server's dismissals are its own.
     expect(inboxAcks(store, "other", () => now).isDismissed(e)).toBe(false);
 
+    // Expired on load, and in the store already open, without another dismissal first.
     now += 31 * 86_400_000;
-    acks.dismiss({ ...e, key: "x" });
+    expect(acks.isDismissed(e)).toBe(false);
     expect(inboxAcks(store, "server", () => now).isDismissed(e)).toBe(false);
   });
 });

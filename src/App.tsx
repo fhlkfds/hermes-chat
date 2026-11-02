@@ -338,7 +338,7 @@ export function Main({
   const acks = useMemo(() => inboxAcks(localStorage, ackScope), [ackScope]);
   const dismissed = useSyncExternalStore(acks.subscribe, acks.getSnapshot);
   const [seen] = useState(() => new Map<string, number>());
-  const [goTo, setGoTo] = useState<{ profile: string; chatId: string; itemId?: string; approval: boolean }>();
+  const [goTo, setGoTo] = useState<{ entry: InboxEntry; approval: boolean }>();
   const [focusItem, setFocusItem] = useState<{ pane: string; chatId: string; itemId?: string; approval: boolean }>();
 
   // The model pick is sticky: new chats start on it, in this profile, until the owner picks another. It is kept on this
@@ -532,19 +532,21 @@ export function Main({
   const openEntry = (e: InboxEntry) => {
     setInboxOpen(false);
     if (e.profile !== profile) switchProfile(e.profile);
-    setGoTo({ profile: e.profile, chatId: e.chatId, itemId: e.itemId, approval: e.kind === "approval" && !e.ended });
+    setGoTo({ entry: e, approval: e.kind === "approval" && !e.ended });
   };
 
   useEffect(() => {
-    if (!goTo || goTo.profile !== profile) return;
-    if (chats.some((c) => c.id === goTo.chatId)) {
-      const pane = panes.find((p) => p.chatId === goTo.chatId)?.key ?? active.key;
-      openChat(goTo.chatId, { pane });
-      setFocusItem({ pane, chatId: goTo.chatId, itemId: goTo.itemId, approval: goTo.approval });
+    const e = goTo?.entry;
+    if (!goTo || !e || e.profile !== profile) return;
+    if (chats.some((c) => c.id === e.chatId)) {
+      const pane = panes.find((p) => p.chatId === e.chatId)?.key ?? active.key;
+      openChat(e.chatId, { pane });
+      setFocusItem({ pane, chatId: e.chatId, itemId: e.itemId, approval: goTo.approval });
       setGoTo(undefined);
     } else if (!switching && hermes.hasListed()) {
-      setToast({ text: `That chat isn't in ${profile}'s list any more. It may have been archived or deleted.`, at: Date.now() });
-      setGoTo(undefined);
+      // The list holds the past month, so an older chat a check found is put in it the way a search result is. One
+      // deleted meanwhile says so once it fails to load.
+      hermes.reveal({ chatId: e.chatId, title: e.title, source: e.source ?? "app", settled: true, updatedAt: e.at || Date.now(), snippet: [] });
     }
   }, [goTo, profile, chats, switching]);
 

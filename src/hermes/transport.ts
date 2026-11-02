@@ -24,9 +24,10 @@
 // Each chat's context fullness and YOLO come from its session's `info` and `usage`: research doc "Status bar".
 // Token usage and cost (usage.ts, ADR 0008): each reply's usage is how far its session's live counters moved during
 // its turn; each chat's totals and cost are Hermes's stored ones, read with the chat list and after each turn.
-import { APPROVAL_CHOICES, isBroadGrant, isOutgoing, isWaiting, offeredChoices, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ConnectionStatus, type ContextPart, type ContextUse, type Found, type Item, type ListedChat, type LiveSession, type LiveSessions, type OtherProfiles, type Outgoing, type OutgoingItem, type SavedSend, type SessionLive, type Source } from "./model";
+import { APPROVAL_CHOICES, isBroadGrant, isOutgoing, isWaiting, offeredChoices, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ConnectionStatus, type ContextPart, type ContextUse, type Found, type Item, type ListedChat, type LiveSession, type LiveSessions, type OtherProfiles, type Outgoing, type OutgoingItem, type SavedSend, type SeenFailure, type SessionLive, type Source } from "./model";
 import { catalogFromServer, fallbackCatalog, isEffort, modelKey, pickFromInfo, type ModelCatalog, type ModelPick } from "./models";
 import { noOthers, OtherProfilesCheck } from "./otherProfiles";
+import { failureMark } from "./inbox";
 // Projects are Hermes's own, read and written with legacy `projects.*` (projects.ts, research doc "Projects").
 import { projectsApi, type ProjectsApi } from "./projects";
 import { ModelSettingsApi } from "./modelSettings";
@@ -458,6 +459,8 @@ export class Hermes {
     rpc: (method, params) => this.request(method, params),
     get: (pathAndQuery) => this.rest("GET", pathAndQuery),
   });
+  /** The profile and chat of each runtime session this app started or resumed, for as long as it runs. */
+  private runtimeOwners = new Map<string, { profile: string; chatId: string }>();
   /** The latest `session.active_list` read: its connection, when it started, and the read while under way. */
   private liveCheck?: { gen: number; at: number; done?: Promise<void> };
   private others = new OtherProfilesCheck({
@@ -623,8 +626,11 @@ export class Hermes {
       this.pipeProfile = undefined;
     }
     const unread = this.snapshot.chats.filter((c) => c.unread).length;
-    const chats = this.snapshot.chats.filter((c) => !c.archived).map((c): ListedChat => ({ id: c.id, title: c.title, at: c.updatedAt, unread: !!c.unread }));
-    this.others.switched(from, name, this.listedAt === undefined ? undefined : { unread, listedAt: this.listedAt, chats });
+    const chats = this.snapshot.chats.filter((c) => !c.archived).map((c): ListedChat => ({ id: c.id, title: c.title, at: c.updatedAt, unread: !!c.unread, source: c.source }));
+    const failures = this.snapshot.chats.flatMap((c) =>
+      c.items.flatMap((i): SeenFailure[] => (i.kind === "error" && i.id !== LOAD_ERROR_ID ? [{ chatId: c.id, title: c.title, itemId: i.id, mark: failureMark(i.text) }] : [])),
+    );
+    this.others.switched(from, name, this.listedAt === undefined ? undefined : { unread, listedAt: this.listedAt, chats }, failures);
     this.listedAt = undefined;
     this.viewing.clear();
     this.readWhenBack.clear();
@@ -675,7 +681,10 @@ export class Hermes {
           const row = obj(r);
           const status = row?.status === "waiting" ? "waiting" : row?.status === "working" || row?.status === "starting" ? "working" : undefined;
           const chatId = typeof row?.session_key === "string" ? row.session_key : "";
-          return status && chatId ? [{ chatId, status, at: typeof row?.last_active === "number" ? row.last_active * 1000 : 0 }] : [];
+          // A session this app started or resumed is known by its runtime id, which names its profile for sure.
+          const mine = typeof row?.id === "string" ? this.runtimeOwners.get(row.id) : undefined;
+          const at = typeof row?.last_active === "number" ? row.last_active * 1000 : 0;
+          return status && chatId ? [{ chatId, status, at, ...(mine?.chatId === chatId && { profile: mine.profile }) }] : [];
         });
         this.update({ live: { sessions, checkedAt: Date.now() } });
       } catch (e) {
@@ -805,6 +814,7 @@ export class Hermes {
     };
     // A new session's agent starts its counters from zero.
     this.usageFrom.set(res.session_id, countersOf((res.info as { usage?: unknown } | undefined)?.usage) ?? ZERO_COUNTERS);
+    this.runtimeOwners.set(res.session_id, { profile: this.profile, chatId: chat.id });
     this.pinWanted.set(chat.id, true);
     this.update({ chats: [chat, ...this.snapshot.chats] });
     return chat.id;
@@ -1644,6 +1654,8 @@ export class Hermes {
         this.failedTries = 0;
         this.resumeBusyChats();
         void this.sync();
+        // What was live before may have ended meanwhile, so it is asked again at once.
+        void this.checkLive();
       } catch (e) {
         if (this.closing) return;
         this.failedTries++;
@@ -1709,7 +1721,8 @@ export class Hermes {
     this.patchChat(chatId, (c) => ({ ...c, loading: true }));
     resuming = (async () => {
       try {
-        const res = (await this.request("session.resume", { session_id: chatId, profile: this.profile, inline_images: false })) as {
+        const profile = this.profile;
+        const res = (await this.request("session.resume", { session_id: chatId, profile, inline_images: false })) as {
           session_id: string;
           messages?: TranscriptMessage[];
           /** A live session's turn is still going. */
@@ -1719,6 +1732,7 @@ export class Hermes {
           info?: unknown;
           usage?: unknown;
         };
+        this.runtimeOwners.set(res.session_id, { profile, chatId });
         // A session reattached mid-turn has counters part of the way through it; a cold one has no agent yet, so its
         // counters start from zero once one is built (`_lazy_resume_info` carries no usage).
         const counters = countersOf((res.info as { usage?: unknown } | undefined)?.usage);
@@ -2059,7 +2073,7 @@ export class Hermes {
     const res = (await this.rest("GET", `api/sessions?${query}`)) as SessionPage;
     const chats = res.sessions
       .filter((r) => !r.archived && !this.deleted.has(r.id))
-      .map((r): ListedChat => ({ id: r.id, title: listTitle(r), at: lastActive(r), unread: !!r.unread && lastActive(r) >= cutoff }));
+      .map((r): ListedChat => ({ id: r.id, title: listTitle(r), at: lastActive(r), unread: !!r.unread && lastActive(r) >= cutoff, source: toSource(r.source) }));
     // As in syncOnce: the page also carries every pinned row, and the unpinned ones follow recency.
     const passedCutoff = res.sessions.some((r) => !r.pinned && lastActive(r) < cutoff);
     return { unread: chats.filter((c) => c.unread).length, more: !passedCutoff && res.sessions.length > 0 && OTHER_PAGE_SIZE < res.total, chats };

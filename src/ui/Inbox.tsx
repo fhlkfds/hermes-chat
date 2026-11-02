@@ -174,7 +174,7 @@ function Row({ entry: e, server, onOpen, onDismiss }: { entry: InboxEntry; serve
   const state = e.ended ? "Expired" : KIND_LABEL[e.kind];
   const whenText = when ? `${e.at ? "" : "noticed "}${relTime(when) === "now" ? "now" : `${relTime(when)} ago`}` : "time not known";
   return (
-    <li className={`inbox-row ${e.kind}${e.ended ? " ended" : ""}${e.stale ? " stale" : ""}`}>
+    <li className={`inbox-row kind-${e.kind}${e.ended ? " is-ended" : ""}${e.stale ? " is-stale" : ""}`}>
       <button
         className="inbox-open"
         aria-label={`${state}: ${e.title}, in ${e.profile} on ${server}, ${whenText}. ${e.summary}${e.stale ? " As last seen." : ""}`}

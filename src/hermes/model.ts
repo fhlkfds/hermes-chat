@@ -166,13 +166,28 @@ export type ConnectionStatus = "connected" | "reconnecting" | "offline";
  * chats and the list holds more, so more of them may be Unread. `checkedAt`: when that was read. `error`: why the
  * latest check failed; the other fields then come from an earlier check, if there was one.
  */
-export type OtherProfile = { unread?: number; more?: boolean; checkedAt?: number; error?: string; chats?: ListedChat[]; sends?: SavedSend[] };
+export type OtherProfile = {
+  unread?: number;
+  more?: boolean;
+  checkedAt?: number;
+  error?: string;
+  chats?: ListedChat[];
+  sends?: SavedSend[];
+  failures?: SeenFailure[];
+};
+
+/**
+ * A failure this app saw in a chat of a profile, before the owner switched away from it. Hermes keeps no record of it
+ * that a check could read, so it is kept, by its error row's id and a fingerprint of its text, until the owner is
+ * back in the profile. No text is kept.
+ */
+export type SeenFailure = { chatId: string; title: string; itemId: string; mark: string };
 
 /**
  * A chat in the page of another profile's list that the latest check read, for the inbox. `at`: its last activity
  * (Unix ms). `unread`: it counts towards the profile's Unread chats.
  */
-export type ListedChat = { id: string; title: string; at: number; unread: boolean };
+export type ListedChat = { id: string; title: string; at: number; unread: boolean; source?: Source };
 
 /** A Failed message this computer keeps for a chat in a profile not shown (`Outgoing`): Hermes didn't take it, or may not have. */
 export type SavedSend = { chatId: string; itemId: string; state: "failed" | "unknown"; title?: string };
@@ -183,10 +198,11 @@ export type OtherProfiles = { byName: Record<string, OtherProfile>; checkedAt?: 
 /**
  * The sessions live in the dashboard's own process, in every profile, as `session.active_list` last reported them:
  * the ones working on a turn, or waiting for the owner's answer. `chatId`: the stored session id. `at`: its last
- * activity (Unix ms). `error`: why the latest check failed; `sessions` are then from the one before. `unsupported`:
+ * activity (Unix ms). `profile`: the profile it is in, known only for a session this app started or resumed on the
+ * connection. `error`: why the latest check failed; `sessions` are then from the one before. `unsupported`:
  * this Hermes has no `session.active_list`.
  */
-export type LiveSession = { chatId: string; status: "working" | "waiting"; at: number };
+export type LiveSession = { chatId: string; status: "working" | "waiting"; at: number; profile?: string };
 export type LiveSessions = { sessions: LiveSession[]; checkedAt?: number; error?: string; unsupported?: boolean };
 
 /**

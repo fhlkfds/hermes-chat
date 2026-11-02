@@ -4,7 +4,7 @@
 // so it shows once. Dismissing an entry is kept on this computer, per connection, and touches nothing else: not
 // Unread, Active or Settled, nor Archived.
 import type { SavedSignIn } from "./account";
-import type { Chat, LiveSessions, OtherProfiles } from "./model";
+import type { Chat, LiveSessions, OtherProfiles, Source } from "./model";
 import { isOutgoing, isWaiting } from "./model";
 
 /**
@@ -32,6 +32,13 @@ export type InboxEntry = {
   ended?: boolean;
   /** From a check that failed, or while not connected: as last seen. */
   stale?: boolean;
+  /**
+   * The key the same Approval goes by once its chat is no longer on this connection, and only a check says it is
+   * waiting. Dismissing the entry dismisses that too, up to now.
+   */
+  alias?: string;
+  /** Where the chat was started, for a chat the profile's list may not hold, such as one older than a month. */
+  source?: Source;
 };
 
 /** What the inbox is worked out from: the shown profile's chats, and the latest checks of the server. */
@@ -80,10 +87,11 @@ export function inboxEntries({ profile, chats, connected, others, live, seen }: 
           at: 0,
           itemId: i.id,
           ended,
+          alias: `waiting ${profile} ${c.id}`,
           summary: ended ? "Hermes stopped waiting for an answer. Nothing is left to approve." : "A command is waiting for your approval.",
         });
       } else if (i.kind === "error" && i.id !== LOAD_ERROR_ID) {
-        add({ ...base, key: `failed ${profile} ${c.id} ${i.id} ${hash(i.text)}`, kind: "failed", at: 0, summary: "Something failed in this chat. Open it to see why." });
+        add(failureEntry({ ...base, itemId: i.id, mark: failureMark(i.text) }));
       } else if (isOutgoing(i) && i.outgoing.state !== "sending") {
         add(sendEntry({ ...base, itemId: i.id, state: i.outgoing.state, at: i.at ?? 0 }));
       }
@@ -96,34 +104,39 @@ export function inboxEntries({ profile, chats, connected, others, live, seen }: 
   for (const [name, p] of Object.entries(others.byName)) {
     const stale = !!p.error || !connected;
     for (const c of p.chats ?? [])
-      if (c.unread) add({ key: `completed ${name} ${c.id}`, kind: "completed", profile: name, chatId: c.id, title: c.title, at: c.at, stale, summary: "Something new since you last read it." });
+      if (c.unread)
+        add({ key: `completed ${name} ${c.id}`, kind: "completed", profile: name, chatId: c.id, title: c.title, source: c.source, at: c.at, stale, summary: "Something new since you last read it." });
+    for (const f of p.failures ?? []) add(failureEntry({ ...f, profile: name, stale: false }));
     for (const s of p.sends ?? []) {
       const title = p.chats?.find((c) => c.id === s.chatId)?.title ?? s.title ?? "Untitled chat";
       add(sendEntry({ profile: name, chatId: s.chatId, title, itemId: s.itemId, state: s.state, at: 0, stale: false }));
     }
   }
 
-  // Sessions working or waiting in the dashboard's process, in any profile. Rows don't say their profile, so each is
-  // put with the one chat that has its id among the chats read.
+  // Sessions working or waiting in the dashboard's process, in any profile. Rows don't say their profile. A session
+  // this app started or resumed is known by its runtime id. Any other is put with the one chat that has its id
+  // among the chats read, and only once every profile has been read: a stored id can repeat in a copied profile, and
+  // the copy could be in a profile that couldn't be read.
   let unmatched = 0;
   if (live) {
-    const owners = new Map<string, { profile: string; title: string }[]>();
-    const own = (id: string, o: { profile: string; title: string }) => owners.set(id, [...(owners.get(id) ?? []), o]);
-    for (const c of chats) own(c.id, { profile, title: c.title });
-    for (const [name, p] of Object.entries(others.byName)) for (const c of p.chats ?? []) own(c.id, { profile: name, title: c.title });
+    const owners = new Map<string, { profile: string; title: string; source?: Source }[]>();
+    const own = (id: string, o: { profile: string; title: string; source?: Source }) => owners.set(id, [...(owners.get(id) ?? []), o]);
+    for (const c of chats) own(c.id, { profile, title: c.title, source: c.source });
+    for (const [name, p] of Object.entries(others.byName)) for (const c of p.chats ?? []) own(c.id, { profile: name, title: c.title, source: c.source });
+    const everyProfileRead = others.checkedAt !== undefined && !others.error && Object.values(others.byName).every((p) => p.checkedAt !== undefined && !p.error);
     const stale = !!live.error || !connected;
     for (const s of live.sessions) {
-      const found = owners.get(s.chatId);
-      if (found?.length !== 1) {
+      const found = owners.get(s.chatId) ?? [];
+      const owner = s.profile ? (found.find((o) => o.profile === s.profile) ?? { profile: s.profile, title: "Untitled chat" }) : everyProfileRead && found.length === 1 ? found[0] : undefined;
+      if (!owner) {
         unmatched++;
         continue;
       }
-      const [{ profile: name, title }] = found;
-      const base = { profile: name, chatId: s.chatId, title, at: s.at, stale };
-      if (s.status === "working") add({ ...base, key: `running ${name} ${s.chatId}`, kind: "running", summary: "Hermes is working on a reply." });
-      // The shown profile's own cards say more, when this connection has the chat.
-      else if (!(name === profile && chats.find((c) => c.id === s.chatId)?.items.some(isWaiting)))
-        add({ ...base, key: `waiting ${name} ${s.chatId}`, kind: "approval", summary: "Hermes is waiting for your answer. Open the chat to see what it asks." });
+      // A chat this connection has resumed says itself, more surely and more lately, whether it runs or waits.
+      if (owner.profile === profile && chats.find((c) => c.id === s.chatId)?.runtimeId) continue;
+      const base = { profile: owner.profile, chatId: s.chatId, title: owner.title, source: owner.source, at: s.at, stale };
+      if (s.status === "working") add({ ...base, key: `running ${owner.profile} ${s.chatId}`, kind: "running", summary: "Hermes is working on a reply." });
+      else add({ ...base, key: `waiting ${owner.profile} ${s.chatId}`, kind: "approval", summary: "Hermes is waiting for your answer. Open the chat to see what it asks." });
     }
   }
 
@@ -137,6 +150,20 @@ export function inboxEntries({ profile, chats, connected, others, live, seen }: 
   }
   const list = [...entries.values()].sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind) || (b.at || b.noticedAt || 0) - (a.at || a.noticedAt || 0));
   return { entries: list, unmatched };
+}
+
+function failureEntry(f: { profile: string; chatId: string; title: string; itemId: string; mark: string; stale: boolean }): InboxEntry {
+  return {
+    key: `failed ${f.profile} ${f.chatId} ${f.itemId} ${f.mark}`,
+    kind: "failed",
+    profile: f.profile,
+    chatId: f.chatId,
+    title: f.title,
+    at: 0,
+    itemId: f.itemId,
+    stale: f.stale,
+    summary: "Something failed in this chat. Open it to see why.",
+  };
 }
 
 function sendEntry(s: { profile: string; chatId: string; title: string; itemId: string; state: "failed" | "unknown"; at: number; stale: boolean }): InboxEntry {
@@ -161,7 +188,7 @@ export const needsOwner = (e: InboxEntry) => e.kind !== "running" && !e.ended;
 export const dismissable = (e: InboxEntry) => e.kind !== "running";
 
 /** A short fingerprint of an error's text, so its key tells it from another error at the same place without keeping the text. */
-function hash(text: string): string {
+export function failureMark(text: string): string {
   let h = 5381;
   for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0;
   return (h >>> 0).toString(36);
@@ -200,20 +227,24 @@ export type InboxAcks = {
  */
 export function inboxAcks(storage: AckStorage, scope: string, now = () => Date.now()): InboxAcks {
   const key = PREFIX + scope;
+  const kept = (v: unknown): v is [number, number] => Array.isArray(v) && typeof v[0] === "number" && typeof v[1] === "number" && now() - v[1] < ACK_KEEP_MS;
+  const pruned = (next: Record<string, unknown>): Dismissed =>
+    Object.fromEntries(
+      Object.entries(next)
+        .filter((e): e is [string, [number, number]] => kept(e[1]))
+        .sort((a, b) => b[1][1] - a[1][1])
+        .slice(0, ACK_MAX),
+    );
   let state: Dismissed = {};
   try {
     const read = JSON.parse(storage.getItem(key) ?? "{}");
-    if (read && typeof read === "object") state = read;
+    if (read && typeof read === "object") state = pruned(read);
   } catch {
     // A damaged record is as good as none.
   }
   const listeners = new Set<() => void>();
   const save = (next: Dismissed) => {
-    const keep = Object.entries(next)
-      .filter(([, v]) => Array.isArray(v) && now() - v[1] < ACK_KEEP_MS)
-      .sort((a, b) => b[1][1] - a[1][1])
-      .slice(0, ACK_MAX);
-    state = Object.fromEntries(keep);
+    state = pruned(next);
     try {
       storage.setItem(key, JSON.stringify(state));
     } catch {
@@ -222,10 +253,11 @@ export function inboxAcks(storage: AckStorage, scope: string, now = () => Date.n
     listeners.forEach((fn) => fn());
   };
   return {
-    isDismissed: (e, s = state) => !!s[e.key] && s[e.key][0] >= e.at,
-    dismiss: (e) => save({ ...state, [e.key]: [e.at, now()] }),
+    isDismissed: (e, s = state) => kept(s[e.key]) && s[e.key][0] >= e.at,
+    dismiss: (e) => save({ ...state, [e.key]: [e.at, now()], ...(e.alias && { [e.alias]: [now(), now()] }) }),
     restore: (e) => {
       const { [e.key]: _gone, ...rest } = state;
+      if (e.alias) delete rest[e.alias];
       save(rest);
     },
     subscribe: (fn) => {

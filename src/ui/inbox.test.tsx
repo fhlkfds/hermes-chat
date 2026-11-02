@@ -28,7 +28,7 @@ let launches = 0;
 const nowS = () => Date.now() / 1000;
 
 /** Signed in to `default`, with an Unread chat there and in `work`, and a reply waiting on an Approval in `work`. */
-async function launch() {
+async function launch(setup: (server: FakeHermes) => void = () => {}) {
   const server = new FakeHermes();
   server.sessions = [
     row("backup", 1, { pinned: true, title: "Nightly backup", last_read_at: nowS() }),
@@ -41,6 +41,7 @@ async function launch() {
     ],
   };
   server.liveSessions = [{ id: "rt-w", session_key: "migrate", status: "waiting", last_active: nowS() - 300 }];
+  setup(server);
   const hermes = await connect(server.openPipe, undefined, memoryCache());
   running.push(hermes);
   render(<Main hermes={hermes} connection={{ mode: "ssh", sshTarget: `liam@hermes-${++launches}`, url: "", username: "liam" }} onSignOut={async () => {}} />);
@@ -112,6 +113,20 @@ describe("The inbox", () => {
     expect(screen.queryByRole("dialog", { name: /Inbox/ })).toBeNull();
     // Nothing was answered for the owner.
     expect(server.responses).toEqual([]);
+  });
+
+  it("opens a waiting chat older than the profile's list holds", async () => {
+    const { hermes, user } = await launch((server) => {
+      server.otherProfiles.work.push(row("audit", 40, { title: "Quarterly audit", last_read_at: nowS() }));
+      server.liveSessions = [{ id: "rt-a", session_key: "audit", status: "waiting", last_active: nowS() - 60 }];
+      server.openRequests.set("srq-audit", { sid: "rt-a", stored: "audit", method: "approval", params: { request_id: "apr-audit", command: "x", description: "y", choices: ["once", "deny"] } });
+    });
+    await user.click(inboxButton());
+    await user.click(rows().find((r) => r.getAttribute("aria-label")!.includes("Quarterly audit"))!);
+
+    await waitFor(() => expect(hermes.getSnapshot()).toMatchObject({ profile: "work", switching: undefined }));
+    await waitFor(() => expect(document.activeElement?.getAttribute("data-item")).toBe("srq-audit"));
+    expect(hermes.getSnapshot().chats.find((c) => c.id === "audit")).toMatchObject({ title: "Quarterly audit", settled: true });
   });
 
   it("opens the Approval card an entry is about, focusing the card and not an answer", async () => {
