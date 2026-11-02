@@ -241,6 +241,15 @@ describe("Saved copies in localStorage", () => {
     ]);
   });
 
+  it("keep when Hermes stored each message", () => {
+    const timed: Item[] = [
+      { kind: "user", id: "h-0", text: "How full is the NAS?", at: 1_700_000_000_000 },
+      { kind: "assistant", id: "h-2", text: "**82%** used.", at: 1_700_000_005_000 },
+    ];
+    cache.saveTranscript("default", "nas", timed);
+    expect(cache.loadTranscript("default", "nas")?.items).toEqual(timed);
+  });
+
   it("don't keep a copy bigger than the limit", () => {
     cache.saveTranscript("default", "small", sized(1_000));
     cache.saveTranscript("default", "huge", sized(TRANSCRIPT_LIMIT_BYTES * 2));

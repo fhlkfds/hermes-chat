@@ -1,3 +1,4 @@
+pub mod notify;
 pub mod saved_password;
 pub mod transport;
 pub mod tunnel;
@@ -102,6 +103,12 @@ async fn hermes_stat_files(paths: Vec<String>) -> Vec<LocalFile> {
     transport::stat_files(&paths).await
 }
 
+/// A staged image's bytes for its composer thumbnail, raw rather than as JSON.
+#[tauri::command]
+async fn hermes_read_preview(path: String) -> Result<tauri::ipc::Response, String> {
+    transport::read_preview(&path).await.map(tauri::ipc::Response::new).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn hermes_request(
     state: State<'_, AppState>,
@@ -138,6 +145,11 @@ async fn password_delete() -> Result<(), String> {
     saved_password::delete().await
 }
 
+#[tauri::command]
+async fn notify_desktop(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
+    notify::show(app, title, body).await
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -147,11 +159,13 @@ pub fn run() {
             hermes_send,
             hermes_send_file,
             hermes_stat_files,
+            hermes_read_preview,
             hermes_request,
             hermes_disconnect,
             password_load,
             password_save,
-            password_delete
+            password_delete,
+            notify_desktop
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

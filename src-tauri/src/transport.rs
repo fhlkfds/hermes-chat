@@ -3,8 +3,8 @@
 //! The webview speaks the protocol; this side never parses it (ADR 0003). Wire details:
 //! docs/research/hermes-gateway-api.md §2, §5 and "Password login and profiles".
 //! It also reads the files the owner attaches, so their bytes go from disk to Hermes without passing
-//! through the webview (§7). For a direct connection it resolves the host name in the URL the owner typed, so
-//! the webview can tell whether the connection is Unsecure.
+//! through the webview (§7), and the staged images the composer shows as thumbnails. For a direct connection it
+//! resolves the host name in the URL the owner typed, so the webview can tell whether the connection is Unsecure.
 
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
@@ -121,6 +121,48 @@ pub async fn stat_files(paths: &[String]) -> Vec<LocalFile> {
     out
 }
 
+/// The most an image preview reads: Hermes's own limit for images, so a bigger one was refused when attached.
+pub const PREVIEW_MAX_BYTES: u64 = 25 * MIB;
+
+/// Reads a staged image for the composer's thumbnail. Only image files up to `PREVIEW_MAX_BYTES`, judged by both
+/// their extension and their first bytes, so the webview can't use it to read anything else.
+pub async fn read_preview(path: &str) -> Result<Vec<u8>, TransportError> {
+    let p = std::path::Path::new(path);
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    // The extensions Hermes looks at as images (`IMAGE_EXTENSIONS` in transport.ts).
+    if !p.is_absolute() || !matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp") {
+        return Err(TransportError::File("it isn't an image".into()));
+    }
+    let bytes = read_capped(path, PREVIEW_MAX_BYTES).await?;
+    let b = bytes.as_slice();
+    let image = b.starts_with(b"\x89PNG\r\n\x1a\n")
+        || b.starts_with(b"\xff\xd8\xff")
+        || b.starts_with(b"GIF8")
+        || b.starts_with(b"BM")
+        || (b.len() >= 12 && b.starts_with(b"RIFF") && &b[8..12] == b"WEBP");
+    if !image {
+        return Err(TransportError::File("it isn't an image".into()));
+    }
+    Ok(bytes)
+}
+
+/// Reads a whole file, refusing one over `max_bytes`; the size is checked again after reading, in case it grew.
+async fn read_capped(path: &str, max_bytes: u64) -> Result<Vec<u8>, TransportError> {
+    let too_large = |size| TransportError::FileTooLarge { size, max: max_bytes };
+    let size = file_size(path).await?;
+    if size > max_bytes {
+        return Err(too_large(size));
+    }
+    // Read at most one byte past the limit, so a file that grew can't fill memory.
+    let mut bytes = Vec::with_capacity(size as usize);
+    let file = tokio::fs::File::open(path).await.map_err(|e| TransportError::File(e.to_string()))?;
+    file.take(max_bytes + 1).read_to_end(&mut bytes).await.map_err(|e| TransportError::File(e.to_string()))?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(too_large(bytes.len() as u64));
+    }
+    Ok(bytes)
+}
+
 async fn file_size(path: &str) -> Result<u64, TransportError> {
     let meta = tokio::fs::metadata(path).await.map_err(|e| TransportError::File(e.to_string()))?;
     if meta.is_dir() {
@@ -151,18 +193,7 @@ impl Pipe {
     /// Send one frame: `head`, the file at `path` as base64, then `tail`. Refuses a file over
     /// `max_bytes` without sending anything; the size is checked again after reading, in case it grew.
     pub async fn send_file(&self, head: &str, path: &str, tail: &str, max_bytes: u64) -> Result<(), TransportError> {
-        let too_large = |size| TransportError::FileTooLarge { size, max: max_bytes };
-        let size = file_size(path).await?;
-        if size > max_bytes {
-            return Err(too_large(size));
-        }
-        // Read at most one byte past the limit, so a file that grew can't fill memory.
-        let mut bytes = Vec::with_capacity(size as usize);
-        let file = tokio::fs::File::open(path).await.map_err(|e| TransportError::File(e.to_string()))?;
-        file.take(max_bytes + 1).read_to_end(&mut bytes).await.map_err(|e| TransportError::File(e.to_string()))?;
-        if bytes.len() as u64 > max_bytes {
-            return Err(too_large(bytes.len() as u64));
-        }
+        let bytes = read_capped(path, max_bytes).await?;
         let mut frame = String::with_capacity(head.len() + bytes.len().div_ceil(3) * 4 + tail.len());
         frame.push_str(head);
         base64::engine::general_purpose::STANDARD.encode_string(&bytes, &mut frame);

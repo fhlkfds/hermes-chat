@@ -17,11 +17,15 @@ export type Attachment = { path: string; name: string; size: number; kind: "imag
 /** Local files checked for attaching: the ones Hermes takes, and why each of the others can't go. */
 export type AttachCheck = { attachments: Attachment[]; refused: string[] };
 
+/**
+ * `at` on a message or reply: when Hermes stored it (Unix ms), read from its stored row. It is left out until that row
+ * is known, never filled in with when this app saw the message.
+ */
 export type Item =
   /** `attachments`: the names of the files sent with the message. */
-  | { kind: "user"; id: string; text: string; attachments?: string[] }
+  | { kind: "user"; id: string; text: string; attachments?: string[]; at?: number }
   /** `interrupted`: the owner, or another Hermes client, stopped this reply before it finished. */
-  | { kind: "assistant"; id: string; text: string; interrupted?: boolean }
+  | { kind: "assistant"; id: string; text: string; interrupted?: boolean; at?: number }
   /** The model's reasoning before a reply or a tool call, as Hermes streams or stores it. */
   | { kind: "thinking"; id: string; text: string }
   | {

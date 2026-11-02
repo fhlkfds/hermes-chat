@@ -43,6 +43,7 @@ export type TranscriptMessage = {
   timestamp?: number;
   display_kind?: string;
   reasoning?: string;
+  row_id?: number;
 };
 
 /** A file on the owner's disk: its bytes as a string, a size alone for a file too big to make, or a folder. */
@@ -86,6 +87,9 @@ export class FakeHermes {
   readonly wsProfiles: string[] = [];
   /** Stored session id -> its history, as `session.resume` projects it (`_history_to_messages`). */
   transcripts: Record<string, TranscriptMessage[]> = {};
+  /** The stored row id `prompt.submit` reports for the message (`user_row_id`, `tui_gateway/methods_prompt.py` at
+   * `bf0203a`). Unset, it reports none. */
+  userRowId?: number;
   /** The owner's local disk, by path, for attachments. */
   files: Record<string, FakeFile> = {};
   /** Whether this connection sent `client.capabilities {server_requests: true}`. */
@@ -134,7 +138,7 @@ export class FakeHermes {
         const stored = row(this.runtime.get(runtimeId)!, 0, { source: created.source, title: null, preview: String(r.params.text), message_count: 1 });
         this.store(created.profile)?.push(stored);
       }
-      this.respond(r.id, { status: "streaming" });
+      this.respond(r.id, { status: "streaming", ...(this.userRowId !== undefined && { user_row_id: this.userRowId }) });
     },
     // Attachments stage server-side for the session's next turn (research doc §7; `tui_gateway/methods_prompt.py`
     // at the deployed `bf0203a`). Images join `attached_images`; other files land in the session's
@@ -422,6 +426,13 @@ export class FakeHermes {
     if (typeof body.pinned === "boolean") s.pinned = body.pinned;
     if (typeof body.archived === "boolean") s.archived = body.archived;
     if (typeof body.unread === "boolean") s.last_read_at = body.unread ? 0 : now();
+    if (typeof body.title === "string") {
+      // `set_session_title`: titles are unique in a profile, and a clash is a 400 (`_mutate_session_request`).
+      const title = body.title.trim();
+      if (title && this.storeOrFail(body.profile as string | undefined).some((r) => r !== s && r.title === title))
+        throw new Error(`The dashboard answered 400: {"detail":"Title '${title}' is already in use by session ${id}"}`);
+      s.title = title || null;
+    }
     return { ok: true };
   }
 

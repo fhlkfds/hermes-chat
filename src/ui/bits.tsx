@@ -1,5 +1,5 @@
 // Small shared UI bits, ported from the prototype.
-import type { ReactNode } from "react";
+import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { Archive, ArchiveRestore, EyeOff, Globe, Monitor, RotateCcw, Send, Terminal } from "lucide-react";
 import type { ConnectionStatus, Source } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
@@ -87,6 +87,30 @@ export function ArchiveButton({
   );
 }
 
+/**
+ * A key pressed while an input method is composing belongs to the IME (Enter picks a candidate), so it must not
+ * send, pick or open anything. WebKitGTK reports some of these only as keyCode 229.
+ */
+export const composing = (e: KeyboardEvent | ReactKeyboardEvent) =>
+  ("nativeEvent" in e ? e.nativeEvent : e).isComposing || e.keyCode === 229;
+
+/**
+ * For a popover: when it closes, focus goes back to what had it when the popover opened, unless the owner has
+ * moved focus somewhere else meanwhile (clicked another control, or the popover's pick opened something that
+ * focuses itself).
+ */
+export function useReturnFocus() {
+  // Read while rendering, before the popover's own autoFocus moves focus into it.
+  const [opener] = useState(() => document.activeElement);
+  useEffect(
+    () => () => {
+      const now = document.activeElement;
+      if ((!now || now === document.body) && opener instanceof HTMLElement && opener.isConnected) opener.focus();
+    },
+    [],
+  );
+}
+
 export function Spinner() {
   return <span className="spinner" aria-label="working" />;
 }
@@ -99,6 +123,17 @@ export function relTime(ts: number) {
   if (s < 86400 * 7) return `${Math.floor(s / 86400)}d`;
   return `${Math.floor(s / (86400 * 7))}w`;
 }
+
+/** A stored message time (Unix ms) as a date and time in the owner's time zone, the same way everywhere. */
+export const storedTime = (at: number) => new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+
+/** When Hermes stored a message; nothing when that isn't known. */
+export const StoredTime = ({ at }: { at?: number }) =>
+  at === undefined ? null : (
+    <time className="msg-time" dateTime={new Date(at).toISOString()}>
+      {storedTime(at)}
+    </time>
+  );
 
 export const STATUS_LABEL: Record<ConnectionStatus, string> = { connected: "Connected", reconnecting: "Reconnecting…", offline: "Offline" };
 

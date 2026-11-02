@@ -87,9 +87,15 @@ code, pre, kbd { font-family: var(--mono); }
 .empty-hint { color: var(--faint); font-size: 12.5px; padding: 6px 10px 10px; }
 
 .row {
-  display: flex; align-items: center; gap: 8px; padding: 0 8px 0 10px; height: 32px; border-radius: 8px;
+  display: flex; align-items: center; gap: 8px; padding: 0 8px 0 0; height: 32px; border-radius: 8px;
   cursor: default; position: relative; user-select: none;
 }
+/* The part of the row that opens the chat; Settle and Delete sit beside it. */
+.row-open {
+  flex: 1; min-width: 0; height: 100%; display: flex; align-items: center; gap: 8px; padding-left: 10px;
+  text-align: left; cursor: default; border-radius: 8px;
+}
+.row-open:focus-visible { outline: 2px solid var(--line-2); outline-offset: -2px; }
 .row:hover { background: rgba(255, 255, 255, 0.04); }
 .row.sel { background: var(--raised-2); }
 .row.sel .row-title { color: var(--text); }
@@ -100,14 +106,24 @@ code, pre, kbd { font-family: var(--mono); }
   display: none; place-items: center; width: 24px; height: 24px; border-radius: 6px; color: var(--muted); flex: none;
 }
 .row-action:hover { background: rgba(255, 255, 255, 0.07); color: var(--text); }
-.row:hover .row-meta { display: none; }
-.row:hover .row-action { display: grid; }
-.row.confirming { background: rgba(248, 113, 113, 0.08); }
+.row:hover .row-meta, .row:focus-within .row-meta { display: none; }
+/* Keyboard focus anywhere in the row shows its actions, so Tab can reach them. */
+.row:hover .row-action, .row:focus-within .row-action { display: grid; }
+.row-action:focus-visible { outline: 2px solid var(--line-2); outline-offset: -2px; }
+.row.confirming { padding-left: 10px; background: rgba(248, 113, 113, 0.08); }
 .row.confirming .row-title { color: var(--muted); }
 .row-confirm { flex: none; font-size: 12px; padding: 3px 8px; border-radius: 6px; color: var(--muted); }
 .row-confirm:hover, .row-confirm:focus-visible { background: rgba(255, 255, 255, 0.07); color: var(--text); }
 .row-confirm.danger { color: var(--bad); font-weight: 500; background: rgba(248, 113, 113, 0.14); }
 .row-confirm.danger:hover, .row-confirm.danger:focus-visible { background: rgba(248, 113, 113, 0.26); color: #fca5a5; }
+.row.menu-open { background: rgba(255, 255, 255, 0.06); }
+.row.renaming { padding-left: 6px; flex-wrap: wrap; height: auto; min-height: 32px; }
+.row-rename {
+  flex: 1; min-width: 0; background: var(--bg); border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 6px; padding: 3px 7px;
+  font-size: 13.5px; outline: none;
+}
+.row-rename[aria-invalid="true"] { border-color: var(--warn); }
+.row-rename-error { flex-basis: 100%; color: var(--warn); font-size: 12px; line-height: 1.4; padding: 2px 2px 4px; }
 
 .conn { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--muted); min-width: 0; }
 .conn-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
@@ -194,6 +210,7 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 }
 @keyframes blink { 50% { opacity: 0; } }
 .stopped { font-size: 12px; color: var(--faint); margin-top: 4px; }
+.msg-time { display: block; font-size: 11.5px; color: var(--faint); margin-top: 4px; }
 .thinking { display: flex; gap: 5px; padding: 6px 0; }
 .thinking span { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); animation: bounce 1.2s infinite; }
 .thinking span:nth-child(2) { animation-delay: 0.15s; }
@@ -242,6 +259,9 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
   border: 1px solid rgba(245, 184, 74, 0.3); background: rgba(245, 184, 74, 0.05); border-radius: 12px; padding: 12px 14px;
 }
 .approval.answered { border-color: var(--line); background: transparent; padding: 8px 12px; }
+/* Focus rests on the card itself once its buttons go. */
+.approval:focus { outline: none; }
+.approval:focus-visible { outline: 2px solid var(--line-2); outline-offset: 2px; }
 .approval-head { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; color: var(--warn); }
 .approval.answered .approval-head { color: var(--muted); font-weight: 400; }
 .approval-cmd {
@@ -256,10 +276,10 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
   display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 14px; border-radius: 8px;
   background: var(--raised-2); font-size: 13px; font-weight: 500; border: 1px solid var(--line);
 }
-.btn:hover:not(:disabled) { background: #303035; }
-.btn:disabled { opacity: 0.45; cursor: default; }
+.btn:hover:not(:disabled, [aria-disabled="true"]) { background: #303035; }
+.btn:disabled, .btn[aria-disabled="true"] { opacity: 0.45; cursor: default; }
 .btn.primary { background: var(--text); color: #111; border-color: transparent; }
-.btn.primary:hover:not(:disabled) { background: #fff; }
+.btn.primary:hover:not(:disabled, [aria-disabled="true"]) { background: #fff; }
 .btn.danger { background: rgba(248, 113, 113, 0.14); color: var(--bad); border-color: transparent; }
 .btn.danger:hover { background: rgba(248, 113, 113, 0.22); }
 
@@ -354,6 +374,7 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
   display: inline-flex; align-items: center; gap: 6px; background: var(--raised-2); border-radius: 8px; padding: 4px 6px 4px 9px;
   font-size: 12.5px; color: #d0d0d5; max-width: 260px;
 }
+.chip-thumb { width: 28px; height: 28px; margin: -2px 0 -2px -5px; border-radius: 5px; object-fit: cover; flex: none; }
 .chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .msg-files { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .msg-files .chip { padding-right: 9px; }
@@ -432,3 +453,18 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 .back:hover { color: var(--text); }
 .confirm { display: flex; flex-direction: column; gap: 10px; max-width: 360px; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
 .confirm-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+/* chat menu (ChatMenu.tsx) */
+.menu {
+  position: fixed; z-index: 35; min-width: 180px; background: var(--raised); border: 1px solid var(--line-2); border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45); padding: 5px; display: flex; flex-direction: column; animation: menu-in 0.1s ease-out;
+}
+@keyframes menu-in { from { opacity: 0; transform: scale(0.98); } }
+.menu-item {
+  display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; padding: 6px 8px; border-radius: 6px; font-size: 13px;
+  color: #d0d0d5; outline: none;
+}
+.menu-item:hover, .menu-item:focus-visible { background: var(--raised-2); color: var(--text); }
+.menu-icon { display: grid; place-items: center; width: 16px; flex: none; color: var(--muted); }
+.menu-item:hover .menu-icon, .menu-item:focus-visible .menu-icon { color: inherit; }
+.menu-label { flex: 1; white-space: nowrap; }

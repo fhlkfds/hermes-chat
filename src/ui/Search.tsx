@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { Search } from "lucide-react";
 import type { Found } from "../hermes/model";
-import { SourceIcon, Spinner, highlight, relTime } from "./bits";
+import { SourceIcon, Spinner, composing, highlight, relTime, useReturnFocus } from "./bits";
 
 /** Typing this long without a pause sends the search. */
 const PAUSE_MS = 200;
@@ -24,6 +24,7 @@ export function SearchPalette({
   const [error, setError] = useState<string>();
   const [sel, setSel] = useState(0);
   const query = q.trim();
+  useReturnFocus();
 
   useEffect(() => {
     setError(undefined);
@@ -49,7 +50,14 @@ export function SearchPalette({
 
   return (
     <div className="palette-scrim" onMouseDown={onClose}>
-      <div className="palette" role="dialog" aria-label="Search chats" onMouseDown={(e) => e.stopPropagation()}>
+      <div
+        className="palette"
+        role="dialog"
+        aria-label="Search chats"
+        onMouseDown={(e) => e.stopPropagation()}
+        // Escape closes it from the box or from a result the owner tabbed to.
+        onKeyDown={(e) => e.key === "Escape" && !composing(e) && onClose()}
+      >
         <div className="palette-input">
           {searching ? <Spinner /> : <Search size={16} />}
           <input
@@ -58,8 +66,8 @@ export function SearchPalette({
             value={q}
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Escape") onClose();
-              else if (e.key === "ArrowDown") {
+              if (composing(e)) return;
+              if (e.key === "ArrowDown") {
                 e.preventDefault();
                 setSel((s) => Math.min(s + 1, found.length - 1));
               } else if (e.key === "ArrowUp") {
