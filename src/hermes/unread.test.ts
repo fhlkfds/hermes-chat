@@ -151,3 +151,71 @@ describe("The unread dot", () => {
     expect(hermes.getSnapshot().chats.find((c) => c.id === "a")?.unread).toBe(true);
   });
 });
+
+describe("The unread dot with two panes", () => {
+  it("stays off both chats on screen side by side", async () => {
+    const { hermes, chat, stored } = await listed([row("a", 1, { last_read_at: 0 }), row("b", 1, { last_read_at: 0 })]);
+    await hermes.open("a", "left");
+    await hermes.open("b", "right");
+    await hermes.idle();
+    activity(stored("a"));
+    activity(stored("b"));
+    await hermes.sync();
+    expect(chat("a").unread).toBe(false);
+    expect(chat("b").unread).toBe(false);
+  });
+
+  it("comes back for a chat once neither pane shows it", async () => {
+    const { hermes, chat, stored } = await listed([row("a", 1, { last_read_at: 0 }), row("b", 1, { last_read_at: 0 })]);
+    await hermes.open("a", "left");
+    await hermes.open("a", "right");
+    hermes.leave("a", "left");
+    await hermes.idle();
+    activity(stored("a"));
+    await hermes.sync();
+    // The right pane still has it on screen.
+    expect(chat("a").unread).toBe(false);
+    // The right pane moves on to another chat, which takes the place of the first.
+    await hermes.open("b", "right");
+    await hermes.idle();
+    activity(stored("a"));
+    await hermes.sync();
+    expect(chat("a").unread).toBe(true);
+    expect(chat("b").unread).toBe(false);
+  });
+
+  it("marks both chats on screen read once the window is back in focus", async () => {
+    const { server, hermes, stored } = await listed([row("a", 1, { last_read_at: Date.now() / 1000 }), row("b", 1, { last_read_at: Date.now() / 1000 })]);
+    await hermes.open("a", "left");
+    await hermes.open("b", "right");
+    await hermes.idle();
+    const opened = readWrites(server).length;
+    hermes.setFocused(false);
+    activity(stored("a"));
+    activity(stored("b"));
+    await hermes.sync();
+    await hermes.idle();
+    expect(readWrites(server).length).toBe(opened);
+    hermes.setFocused(true);
+    await hermes.idle();
+    expect(server.restRequests.filter((r) => r.method === "PATCH" && r.body?.unread === false).slice(-2).map((r) => r.path).sort()).toEqual([
+      "/api/sessions/a",
+      "/api/sessions/b",
+    ]);
+  });
+
+  it("isn't marked read when the window comes back after the pane has left the chat", async () => {
+    const { server, hermes, stored } = await listed([row("a", 1, { last_read_at: Date.now() / 1000 }), row("b", 1, { last_read_at: Date.now() / 1000 })]);
+    await hermes.open("a", "left");
+    await hermes.open("b", "right");
+    await hermes.idle();
+    hermes.setFocused(false);
+    activity(stored("a"));
+    await hermes.sync();
+    hermes.leave("a", "left");
+    const before = readWrites(server).length;
+    hermes.setFocused(true);
+    await hermes.idle();
+    expect(readWrites(server).length).toBe(before);
+  });
+});

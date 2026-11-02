@@ -2,7 +2,7 @@
 // menu uses too. Escape or a click elsewhere closes one, and focus goes back to what had it. The arrow keys move
 // between a menu's items.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { Check, Pencil, Sparkles } from "lucide-react";
+import { Check, Columns2, PanelLeft, PanelRight, Pencil, Sparkles } from "lucide-react";
 import type { Chat } from "../hermes/model";
 import type { Project } from "../hermes/projects";
 import { useReturnFocus } from "./bits";
@@ -12,12 +12,15 @@ export type ChatProjects = { list: Project[]; of: Set<string>; onToggle: (projec
 
 /**
  * The right-click menu for one chat, at the pointer, kept inside the window. `onRename` and `onRegenTitle` hand back
- * to the row.
+ * to the row. `onOpenIn` opens the chat in the left (0) or right (1) pane; with one pane (`split` false) the menu offers
+ * to open it in a second pane. The arrow keys move between its items.
  */
 export function ChatMenu({
   chat,
   x,
   y,
+  split = false,
+  onOpenIn,
   onRename,
   onRegenTitle,
   projects,
@@ -26,6 +29,8 @@ export function ChatMenu({
   chat: Chat;
   x: number;
   y: number;
+  split?: boolean;
+  onOpenIn?: (side: number) => void;
   onRename: () => void;
   onRegenTitle: () => void;
   projects?: ChatProjects;
@@ -60,6 +65,27 @@ export function ChatMenu({
         </span>
         <span className="menu-label">Regenerate title</span>
       </button>
+      {onOpenIn &&
+        (split
+          ? [
+              { side: 0, label: "Open in left pane", icon: <PanelLeft size={15} /> },
+              { side: 1, label: "Open in right pane", icon: <PanelRight size={15} /> },
+            ]
+          : [{ side: 1, label: "Open in a second pane", icon: <Columns2 size={15} /> }]
+        ).map((o) => (
+          <button
+            key={o.side}
+            role="menuitem"
+            className="menu-item"
+            onClick={() => {
+              onClose();
+              onOpenIn(o.side);
+            }}
+          >
+            <span className="menu-icon">{o.icon}</span>
+            <span className="menu-label">{o.label}</span>
+          </button>
+        ))}
       {!!projects?.list.length && (
         <div role="group" aria-label="Projects" className="menu-group">
           <div className="menu-heading" aria-hidden>

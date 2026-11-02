@@ -170,7 +170,7 @@ describe("a chat's menu", () => {
     s.projects.default = [];
     const { user } = await launch(s);
     await user.pointer({ keys: "[MouseRight]", target: screen.getByRole("button", { name: /NAS disks/ }) });
-    expect(screen.getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["Rename…", "Regenerate title"]);
+    expect(screen.getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["Rename…", "Regenerate title", "Open in a second pane"]);
     expect(screen.queryByRole("menuitemcheckbox")).toBeNull();
   });
 });
@@ -263,7 +263,8 @@ describe("the project screen", () => {
     else s.projects.default[0].archived = true;
     await user.click(switcher());
     await waitFor(() => expect(onScreen()).toBe("NAS disks"));
-    await waitFor(() => expect(open).toHaveBeenCalledWith("nas"));
+    const paneKey = document.querySelector<HTMLElement>("[data-pane]")!.dataset.pane!;
+    await waitFor(() => expect(open).toHaveBeenCalledWith("nas", paneKey));
     open.mockRestore();
   });
 
@@ -280,6 +281,15 @@ describe("the project screen", () => {
     const folder = screen.getByText("/srv/budget").closest("li")!;
     expect(within(folder).getByText("ssh://liam@hermes")).toBeTruthy();
     expect(within(folder).getByText("Main folder")).toBeTruthy();
+  });
+
+  it("returns to the focused composer after opening Settings from Project settings", async () => {
+    const { user } = await openScreen();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: "Back to chat" }));
+    expect(document.querySelector(".panes.covered")).toBeNull();
+    expect(document.activeElement).toBe(screen.getByPlaceholderText("Message Hermes"));
+    expect(screen.queryByRole("heading", { name: /Budget Tracker/ })).toBeNull();
   });
 
   it("adds a folder only once the server has it, and says why it refused one", async () => {

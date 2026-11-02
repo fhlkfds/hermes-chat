@@ -334,12 +334,13 @@ export class Hermes {
   private pinnedSinceListRead = new Set<string>();
   /** Chats renamed since the list sync under way read the list, which may predate the rename. */
   private retitledSinceListRead = new Set<string>();
-  /** The chat on screen. It is kept read: new activity in it doesn't show the dot. */
-  private viewing?: string;
+  /** The chats on screen, by the pane showing each (`open`). They are kept read: new activity in them doesn't show the
+   * dot. Two panes may show the same chat. */
+  private viewing = new Map<string, string>();
   /** The app's window has the owner's focus (`setFocused`). */
   private focused = true;
-  /** The chat on screen had something new while the window was out of focus, so it is marked read once it's back. */
-  private readWhenBack = false;
+  /** Chats on screen that had something new while the window was out of focus, so they are marked read once it's back. */
+  private readWhenBack = new Set<string>();
   /** Approvals already notified, or that arrived in focus, by runtime session and request id. Hermes lists one again
    * after a reconnect. */
   private notified = new Set<string>();
@@ -607,7 +608,8 @@ export class Hermes {
     const unread = this.snapshot.chats.filter((c) => c.unread).length;
     this.others.switched(from, name, this.listedAt === undefined ? undefined : { unread, listedAt: this.listedAt });
     this.listedAt = undefined;
-    this.viewing = undefined;
+    this.viewing.clear();
+    this.readWhenBack.clear();
     this.staleItems.clear();
     this.resumeOnReconnect.clear();
     this.revealed.clear();
@@ -700,9 +702,16 @@ export class Hermes {
    */
   setFocused(focused: boolean) {
     this.focused = focused;
-    if (!focused || !this.readWhenBack) return;
-    this.readWhenBack = false;
-    if (this.viewing) this.markRead(this.viewing);
+    if (!focused) return;
+    const back = [...this.readWhenBack];
+    this.readWhenBack.clear();
+    for (const chatId of back) if (this.isViewing(chatId)) this.markRead(chatId);
+  }
+
+  /** The chat is on screen in some pane. */
+  private isViewing(chatId: string): boolean {
+    for (const id of this.viewing.values()) if (id === chatId) return true;
+    return false;
   }
 
   subscribe = (fn: () => void) => {
@@ -756,10 +765,14 @@ export class Hermes {
    * `leave`: it is marked read on the server, and stays read while the owner is in it. Hermes counts a chat no client
    * has marked as read, and only marking it lets later activity show the dot. Out of focus, marking it waits until the
    * window is back. While not connected, the chat shows its Saved copy only; the app opens it again once connected.
+   * `pane`: which pane shows it, when the app shows two chats side by side. Opening a chat in a pane takes the place
+   * of the chat that pane showed before; the same chat may be open in both panes.
    */
-  async open(chatId: string): Promise<void> {
+  async open(chatId: string, pane = "main"): Promise<void> {
     if (!this.snapshot.chats.some((c) => c.id === chatId)) return;
-    this.viewing = chatId;
+    const before = this.viewing.get(pane);
+    this.viewing.set(pane, chatId);
+    if (before !== undefined && before !== chatId && !this.isViewing(before)) this.readWhenBack.delete(before);
     this.showSaved(chatId);
     if (this.snapshot.status !== "connected") return;
     this.seen(chatId);
@@ -767,7 +780,7 @@ export class Hermes {
     if (!this.snapshot.chats.find((c) => c.id === chatId)?.usage) this.track(this.refreshUsage(chatId));
     try {
       await this.resume(chatId);
-      if (this.viewing === chatId) this.tellShown(chatId);
+      if (this.isViewing(chatId)) this.tellShown(chatId);
     } catch (e) {
       // A reply sent meanwhile shares this resume and reports the failure itself.
       this.patchChat(chatId, (c) =>
@@ -849,11 +862,11 @@ export class Hermes {
     }
   }
 
-  /** The owner has moved off the chat; new activity in it shows the dot again. */
-  leave(chatId: string) {
-    if (this.viewing !== chatId) return;
-    this.viewing = undefined;
-    this.readWhenBack = false;
+  /** The owner has moved `pane` off the chat; unless another pane shows it, new activity in it shows the dot again. */
+  leave(chatId: string, pane = "main") {
+    if (this.viewing.get(pane) !== chatId) return;
+    this.viewing.delete(pane);
+    if (!this.isViewing(chatId)) this.readWhenBack.delete(chatId);
   }
 
   /** Checks local files the owner wants to attach: images up to 25 MB, other files up to 256 MB. */
@@ -1015,7 +1028,8 @@ export class Hermes {
     this.revealed.delete(chatId);
     this.staleItems.delete(chatId);
     this.resumeOnReconnect.delete(chatId);
-    if (this.viewing === chatId) this.viewing = undefined;
+    for (const [pane, id] of [...this.viewing]) if (id === chatId) this.viewing.delete(pane);
+    this.readWhenBack.delete(chatId);
     this.update({ chats: this.snapshot.chats.filter((c) => c.id !== chatId) });
     this.saveList(profile, this.snapshot.chats);
     // Deleted for good, so no copy of it stays on this computer either, even if Hermes refuses: it reloads when opened.
@@ -1373,7 +1387,7 @@ export class Hermes {
     // By the end of a turn Hermes has stored the session, so a pin that failed earlier can succeed.
     if (type === "message.complete" && this.pinWanted.has(chat.id)) this.track(this.writePin(chat.id));
     // The finished reply is newer than the read watermark, though the owner watched it come in.
-    if (type === "message.complete" && chat.id === this.viewing) this.seen(chat.id);
+    if (type === "message.complete" && this.isViewing(chat.id)) this.seen(chat.id);
     // A turn ends once; a repeated end finds the chat no longer running.
     if ((type === "message.complete" || type === "error") && chat.running) this.alert(NOTICES.finished);
     if (type === "message.complete") this.saveTranscript(chat.id);
@@ -1505,7 +1519,7 @@ export class Hermes {
       }
       return items.length > c.items.length ? { ...c, items } : c;
     });
-    if (chatId === this.viewing) this.tellShown(chatId);
+    if (this.isViewing(chatId)) this.tellShown(chatId);
   }
 
   /**
@@ -1865,10 +1879,10 @@ export class Hermes {
     this.saveList(profile, this.snapshot.chats);
   }
 
-  /** Marks the chat on screen read, or once the window is back in focus. */
+  /** Marks a chat on screen read, or once the window is back in focus. */
   private seen(chatId: string) {
     if (this.focused) this.markRead(chatId);
-    else this.readWhenBack = true;
+    else this.readWhenBack.add(chatId);
   }
 
   /** A desktop notification, out of focus only. A missing notification service, or one that refuses, changes nothing. */
@@ -1920,7 +1934,7 @@ export class Hermes {
     const known = new Map(this.snapshot.chats.map((c) => [c.id, c]));
     // A chat new to the list brings its outbox, kept on this computer.
     const outbox = loadOutbox(this.cache, profile);
-    let readOnScreen = false;
+    const readOnScreen = new Set<string>();
     const listed = [...rows.values()]
       .filter((r) => (this.isArchived(r) ? archivedListed : lastActive(r) >= cutoff) && !this.deleted.has(r.id))
       .map((r): Chat => {
@@ -1936,7 +1950,8 @@ export class Hermes {
         }
         // A row read before this app marked the chat read is stale too.
         const readHere = this.readWrites.has(r.id) || this.readSinceListRead.has(r.id);
-        if (r.id === this.viewing && r.unread && !readHere) readOnScreen = true;
+        const onScreen = this.isViewing(r.id);
+        if (onScreen && r.unread && !readHere) readOnScreen.add(r.id);
         return {
           items: outbox[r.id] ?? [],
           ...c,
@@ -1947,7 +1962,7 @@ export class Hermes {
           settled: !(wanted ?? r.pinned),
           archived: this.isArchived(r) || undefined,
           updatedAt: Math.max(c?.updatedAt ?? 0, lastActive(r)),
-          unread: !!r.unread && !readHere && r.id !== this.viewing,
+          unread: !!r.unread && !readHere && !onScreen,
           // List rows carry the stored token and cost totals too.
           usage: newerChatUsage(c?.usage, chatUsageOf(r, Date.now())),
         };
@@ -1962,7 +1977,7 @@ export class Hermes {
     this.listedAt = Date.now();
     const switched = !!this.snapshot.switching;
     this.update({ chats, syncError: undefined, switching: undefined });
-    if (readOnScreen) this.seen(this.viewing!);
+    for (const chatId of readOnScreen) this.seen(chatId);
     this.saveList(profile, chats);
     if (switched) this.cache.rememberProfile(profile);
     const busy = this.busyIn.get(profile);
