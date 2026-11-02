@@ -50,6 +50,10 @@ _Avoid_: unsent message, saved message
 Hermes asking the owner before it runs a command it counts as dangerous. It shows as a card in the chat, and the reply waits until the owner approves or denies it, Hermes stops waiting, or the reply is stopped.
 _Avoid_: permission, confirmation, prompt
 
+**Saved copy**:
+The transcript of a chat the owner opened lately, kept on this computer so it can be read while Hermes can't be reached, even after a restart. It shows with a note saying when it was saved, until the chat loads from Hermes again. Each connection and profile keeps its own, without the password, and a copy never holds Approvals or errors. The least recently saved copies are deleted first once they pass the storage limit, deleting a chat deletes its copy, and Clear local cache deletes them all.
+_Avoid_: cache (for one chat's copy), offline mode
+
 **Unsecure**:
 The warning on a connection whose traffic between this app and the server isn't encrypted.
 _Avoid_: insecure (the app's label is "Unsecure"), unsafe
