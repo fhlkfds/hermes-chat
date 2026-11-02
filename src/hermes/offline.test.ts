@@ -229,6 +229,18 @@ describe("Saved copies in localStorage", () => {
     expect(cache.bytes()).toBeLessThanOrEqual(TRANSCRIPT_LIMIT_BYTES);
   });
 
+  it("keep which listed chats are archived", () => {
+    const listed = { title: "NAS", source: "app" as const, settled: false, updatedAt: 5, items: [] };
+    cache.save("default", [
+      { id: "kept", ...listed, archived: true },
+      { id: "active", ...listed },
+    ]);
+    expect(cache.load("default").map((c) => [c.id, c.archived])).toEqual([
+      ["kept", true],
+      ["active", undefined],
+    ]);
+  });
+
   it("keep when Hermes stored each message", () => {
     const timed: Item[] = [
       { kind: "user", id: "h-0", text: "How full is the NAS?", at: 1_700_000_000_000 },

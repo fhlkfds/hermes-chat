@@ -118,6 +118,21 @@ describe("Deleting a chat", () => {
     expect(hermes.getSnapshot().syncError).toBeUndefined();
   });
 
+  it("waits for an archive still under way, so it doesn't report the chat deleted elsewhere", async () => {
+    const { server, hermes } = await listed(row("a", 1), row("b", 2));
+    const answer = hold(server, "PATCH /api/sessions/a");
+    const archiving = hermes.archive("a");
+    await tick();
+    const deleting = hermes.delete("a");
+    await tick();
+    expect(deletes(server)).toEqual([]);
+    answer();
+    expect(await deleting).toBe(true);
+    await archiving;
+    expect(deletes(server)).toEqual(["/api/sessions/a?profile=default"]);
+    expect(hermes.getSnapshot().syncError).toBeUndefined();
+  });
+
   it("deletes from the chat's own profile when the owner switches away meanwhile", async () => {
     const { server, hermes } = await listed(row("a", 1), row("b", 2));
     server.otherProfiles = { work: [row("w", 1)] };

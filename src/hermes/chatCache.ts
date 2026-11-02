@@ -51,6 +51,7 @@ function toChat(v: unknown): Chat | undefined {
     settled: typeof c.settled === "boolean" ? c.settled : true,
     updatedAt: num(c.updatedAt) ?? 0,
     ...(typeof c.unread === "boolean" && { unread: c.unread }),
+    ...(c.archived === true && { archived: true }),
     items: [],
   };
 }

@@ -257,6 +257,8 @@ describe("Search palette by keyboard", () => {
     await s.user.keyboard("backup");
     const hit = await screen.findByRole("button", { name: /Nightly backup.*Why did the backup fail/ });
     await s.user.tab();
+    expect(focused()).toBe(screen.getByRole("checkbox", { name: "Include archived" }));
+    await s.user.tab();
     expect(focused()).toBe(hit);
     await s.user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog", { name: "Search chats" })).toBeNull();
@@ -327,6 +329,8 @@ describe("Chat list by keyboard", () => {
     const s = await signedIn();
     button(/default/).focus();
     await s.user.tab();
+    expect(focused()).toBe(button("Archived chats"));
+    await s.user.tab();
     expect(focused()).toBe(rowButton("Nightly backup"));
     await s.user.keyboard("{Enter}");
     await settle(s.hermes);
@@ -347,11 +351,13 @@ describe("Chat list by keyboard", () => {
     expect(s.server.requests.filter((r) => r.method === "session.resume")).toEqual([]);
   });
 
-  it("reaches Settle and Delete with Tab; Escape or Cancel keeps the chat with focus back on Delete", async () => {
+  it("reaches Settle, Archive and Delete with Tab; Escape or Cancel keeps the chat with focus back on Delete", async () => {
     const s = await signedIn();
     rowButton("Nightly backup").focus();
     await s.user.tab();
     expect(focused()).toBe(screen.getAllByRole("button", { name: "Settle" })[0]);
+    await s.user.tab();
+    expect(focused()).toBe(screen.getAllByRole("button", { name: /^Archive:/ })[0]);
     await s.user.tab();
     const trash = screen.getAllByRole("button", { name: "Delete" })[0];
     expect(focused()).toBe(trash);

@@ -7,7 +7,7 @@ import type { ApprovalChoice, ApprovalItem, AttachCheck, Attachment, Chat, Conne
 import { SOURCE_LABEL, isWaiting } from "../hermes/model";
 import type { Undelivered } from "../hermes/drafts";
 import { Markdown } from "./Markdown";
-import { SettleButton, SourceIcon, Spinner, StoredTime, composing, highlight } from "./bits";
+import { ArchiveButton, SettleButton, SourceIcon, Spinner, StoredTime, composing, highlight } from "./bits";
 import { AttachmentChip, Previews, readPreview } from "./previews";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
@@ -44,9 +44,9 @@ const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateS
 
 /**
  * `alsoPostsIn`: the Telegram or Discord chat Hermes will also post its replies in. `draft`: the composer's text, kept
- * outside the pane so it survives switching chats. `onAnswer` answers an Approval card. `onSettle` is left out for a
- * chat not started yet. `notLoaded`: the chat has no Saved copy and can't load until Hermes is connected. Ctrl+F opens
- * the find bar.
+ * outside the pane so it survives switching chats. `onAnswer` answers an Approval card. `onSettle` and `onArchive` are
+ * left out for a chat not started yet. `notLoaded`: the chat has no Saved copy and can't load until Hermes is
+ * connected. Ctrl+F opens the find bar.
  */
 export function ChatPane({
   chat,
@@ -64,6 +64,7 @@ export function ChatPane({
   onStop,
   onAnswer,
   onSettle,
+  onArchive,
 }: {
   chat: Chat;
   notLoaded?: boolean;
@@ -80,6 +81,7 @@ export function ChatPane({
   onStop: () => void;
   onAnswer: (approvalId: string, choice: ApprovalChoice) => void;
   onSettle?: (settled: boolean) => void;
+  onArchive?: (archived: boolean) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const findRef = useRef<HTMLInputElement>(null);
@@ -168,6 +170,7 @@ export function ChatPane({
           {chat.source !== "app" && <SourceIcon source={chat.source} size={13} />}
           <span>{chat.title}</span>
           {chat.settled && <span className="badge">Settled</span>}
+          {chat.archived && <span className="badge">Archived</span>}
         </div>
         <div className="chat-head-actions">
           <button
@@ -177,7 +180,8 @@ export function ChatPane({
           >
             <Search size={16} />
           </button>
-          {onSettle && <SettleButton settled={chat.settled} size={16} className="icon-btn" onSettle={onSettle} />}
+          {onSettle && !chat.archived && <SettleButton settled={chat.settled} size={16} className="icon-btn" onSettle={onSettle} />}
+          {onArchive && !chat.running && <ArchiveButton archived={!!chat.archived} size={16} className="icon-btn" onArchive={onArchive} />}
         </div>
         {findOpen && (
           <div className="find" role="search">

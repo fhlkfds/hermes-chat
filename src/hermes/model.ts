@@ -1,4 +1,4 @@
-// What the UI renders. Terms follow GLOSSARY.md: a Chat is Active or Settled and has one Source.
+// What the UI renders. Terms follow GLOSSARY.md: a Chat is Active or Settled, may be Archived, and has one Source.
 
 export type Source = "app" | "telegram" | "discord" | "cli" | "desktop" | "other";
 
@@ -65,6 +65,8 @@ export type Chat = {
   title: string;
   source: Source;
   settled: boolean;
+  /** Archived in Hermes: hidden in every Hermes client, its history kept. Active or Settled stays as it was. */
+  archived?: boolean;
   updatedAt: number;
   /** Something happened in it since the owner last opened it here or in another Hermes client (ADR 0002). */
   unread?: boolean;
@@ -98,7 +100,7 @@ export type OtherProfiles = { byName: Record<string, OtherProfile>; checkedAt?: 
  * A chat found by searching all chats (`Hermes.search`). `snippet`: the text around the match, with the matched words
  * marked. `find`: what find-in-chat looks for when the chat opens; there is none when only the title matched.
  */
-export type Found = Pick<Chat, "title" | "source" | "settled" | "updatedAt"> & {
+export type Found = Pick<Chat, "title" | "source" | "settled" | "archived" | "updatedAt"> & {
   chatId: string;
   snippet: { text: string; hit?: boolean }[];
   find?: string;

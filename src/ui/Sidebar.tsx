@@ -1,14 +1,14 @@
 // Icon rail beside a chat list (ADR 0001), ported from the prototype's variants C and A. The list's header is the
 // profile switcher. Settings opens from the rail's foot. Right-clicking a chat opens its menu (ChatMenu.tsx).
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { Check, ChevronDown, ChevronRight, CircleAlert, LockOpen, Search, Settings, SquarePen, Trash2 } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, CircleAlert, EyeOff, LockOpen, Search, Settings, SquarePen, Trash2 } from "lucide-react";
 import type { Chat, ConnectionStatus, OtherProfile, OtherProfiles } from "../hermes/model";
 import { SOURCE_LABEL } from "../hermes/model";
 import { CHECK_EVERY_MS, totalUnread } from "../hermes/otherProfiles";
 import type { Route } from "../hermes/pipe";
 import { RenameConflict } from "../hermes/transport";
 import { ChatMenu } from "./ChatMenu";
-import { STATUS_LABEL, SettleButton, SourceIcon, Spinner, composing, relTime, routeLabel, useReturnFocus } from "./bits";
+import { ArchiveButton, STATUS_LABEL, SettleButton, SourceIcon, Spinner, composing, relTime, routeLabel, useReturnFocus } from "./bits";
 
 const byRecent = (a: Chat, b: Chat) => b.updatedAt - a.updatedAt;
 
@@ -131,16 +131,18 @@ function RenameRow({
 }
 
 /**
- * One chat in the list: a button that opens it, then its Settle and Delete buttons. Right-clicking it, or the Menu
- * key or Shift+F10 on it, opens its menu. The trash button asks before deleting, in the row itself: Escape, Cancel or
- * clicking away keeps the chat. Cancel stands where the trash button does, so React keeps the one button, and focus
- * with it, when the row goes back. A chat with a reply running can't be deleted.
+ * One chat in the list: a button that opens it, then its Settle, Archive and Delete buttons. Right-clicking it, or the
+ * Menu key or Shift+F10 on it, opens its menu. The trash button asks before deleting, in the row itself: Escape,
+ * Cancel or clicking away keeps the chat. Cancel and the trash button share a key, so React keeps the one button, and
+ * focus with it, when the row goes back. An archived chat has Restore in place of Settle and Archive. A chat with
+ * a reply running can't be archived, restored or deleted.
  */
 function ChatRow({
   chat,
   selected,
   onOpen,
   onSettle,
+  onArchive,
   onDelete,
   onRename,
 }: {
@@ -148,6 +150,7 @@ function ChatRow({
   selected: boolean;
   onOpen: () => void;
   onSettle: (settled: boolean) => void;
+  onArchive: (archived: boolean) => void;
   onDelete: () => void;
   onRename: (title: string, from: string) => Promise<unknown>;
 }) {
@@ -175,7 +178,7 @@ function ChatRow({
         <button className="row-confirm danger" title="Delete this chat in every Hermes client. This can't be undone." onClick={onDelete}>
           Delete
         </button>
-        <button className="row-confirm" autoFocus onClick={() => setConfirming(false)}>
+        <button key="trash" className="row-confirm" autoFocus onClick={() => setConfirming(false)}>
           Cancel
         </button>
       </div>
@@ -203,9 +206,11 @@ function ChatRow({
           {chat.running ? <Spinner /> : chat.unread ? <span className="dot" title="Unread" /> : relTime(chat.updatedAt)}
         </span>
       </button>
-      <SettleButton settled={chat.settled} size={14} className="row-action" onSettle={onSettle} />
+      {!chat.archived && <SettleButton settled={chat.settled} size={14} className="row-action" onSettle={onSettle} />}
+      {!chat.running && <ArchiveButton archived={!!chat.archived} size={14} className="row-action" onArchive={onArchive} />}
       {!chat.running && (
         <button
+          key="trash"
           className="row-action"
           title="Delete"
           onClick={(e) => {
@@ -399,14 +404,18 @@ function moveBetweenChats(e: KeyboardEvent<HTMLElement>) {
   rows[rows.indexOf(e.target as HTMLButtonElement) + (e.key === "ArrowDown" ? 1 : -1)]?.focus();
 }
 
+/** The chat list. `archivedListed`: it shows the profile's archived chats instead of the Active and Settled ones. */
 export function ChatList({
   profile,
   others,
   chats,
+  archivedListed,
   syncError,
   selectedId,
   onOpen,
   onSettle,
+  onArchive,
+  onListArchived,
   onDelete,
   onRename,
   onListProfiles,
@@ -416,10 +425,13 @@ export function ChatList({
   profile: string;
   others: OtherProfiles;
   chats: Chat[];
+  archivedListed: boolean;
   syncError?: string;
   selectedId: string | null;
   onOpen: (id: string) => void;
   onSettle: (id: string, settled: boolean) => void;
+  onArchive: (id: string, archived: boolean) => void;
+  onListArchived: (on: boolean) => void;
   onDelete: (id: string) => void;
   onRename: (id: string, title: string, from: string) => Promise<unknown>;
   onListProfiles: () => Promise<string[]>;
@@ -432,8 +444,9 @@ export function ChatList({
   useEffect(() => {
     if (selectedSettled) setSettledOpen(true);
   }, [selectedId]);
-  const active = chats.filter((c) => !c.settled).sort(byRecent);
-  const settled = chats.filter((c) => c.settled).sort(byRecent);
+  const active = chats.filter((c) => !c.settled && !c.archived).sort(byRecent);
+  const settled = chats.filter((c) => c.settled && !c.archived).sort(byRecent);
+  const archived = chats.filter((c) => c.archived).sort(byRecent);
   const settledUnread = settled.filter((c) => c.unread).length;
   const row = (c: Chat) => (
     <ChatRow
@@ -442,6 +455,7 @@ export function ChatList({
       selected={c.id === selectedId}
       onOpen={() => onOpen(c.id)}
       onSettle={(s) => onSettle(c.id, s)}
+      onArchive={(a) => onArchive(c.id, a)}
       onDelete={() => onDelete(c.id)}
       onRename={(title, from) => onRename(c.id, title, from)}
     />
@@ -450,6 +464,14 @@ export function ChatList({
     <aside className="sidebar" onKeyDown={moveBetweenChats}>
       <div className="sb-head">
         <ProfileSwitcher profile={profile} others={others} onListProfiles={onListProfiles} onCheckOthers={onCheckOthers} onSwitch={onSwitchProfile} />
+        <button
+          className={`icon-btn ${archivedListed ? "on" : ""}`}
+          title={archivedListed ? "Back to the chat list" : "Archived chats"}
+          aria-pressed={archivedListed}
+          onClick={() => onListArchived(!archivedListed)}
+        >
+          <EyeOff size={16} />
+        </button>
       </div>
       <div className="sb-scroll">
         {syncError && (
@@ -457,19 +479,30 @@ export function ChatList({
             {syncError}
           </div>
         )}
-        <div className="section-label">Active</div>
-        {active.length ? active.map(row) : <div className="empty-hint">Nothing active. Start a new chat.</div>}
+        {archivedListed ? (
+          <>
+            <div className="section-label">Archived</div>
+            {archived.length ? archived.map(row) : <div className="empty-hint">No archived chats.</div>}
+          </>
+        ) : (
+          <>
+            <div className="section-label">Active</div>
+            {active.length ? active.map(row) : <div className="empty-hint">Nothing active. Start a new chat.</div>}
+          </>
+        )}
       </div>
       {/* Settled is pinned to the foot of the list and opens upward as a drawer with its own scroll. */}
-      <div className={`settled-section ${settledOpen ? "open" : ""}`}>
-        <button className="section-toggle" aria-expanded={settledOpen} onClick={() => setSettledOpen((o) => !o)}>
-          <ChevronRight size={14} className={`chev ${settledOpen ? "open" : ""}`} />
-          Settled
-          <span className="count">{settled.length}</span>
-          {settledUnread > 0 && !settledOpen && <span className="dot" title={`${settledUnread} unread`} />}
-        </button>
-        {settledOpen && <div className="settled-list">{settled.map(row)}</div>}
-      </div>
+      {!archivedListed && (
+        <div className={`settled-section ${settledOpen ? "open" : ""}`}>
+          <button className="section-toggle" aria-expanded={settledOpen} onClick={() => setSettledOpen((o) => !o)}>
+            <ChevronRight size={14} className={`chev ${settledOpen ? "open" : ""}`} />
+            Settled
+            <span className="count">{settled.length}</span>
+            {settledUnread > 0 && !settledOpen && <span className="dot" title={`${settledUnread} unread`} />}
+          </button>
+          {settledOpen && <div className="settled-list">{settled.map(row)}</div>}
+        </div>
+      )}
     </aside>
   );
 }
