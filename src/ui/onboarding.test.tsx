@@ -374,11 +374,15 @@ describe("Setup from Settings", () => {
     expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
     await waitFor(() => expect(home.opened).toBe(2));
     expect([backend.keyring, savedSignIn().mode]).toEqual(["hunter2", "ssh"]);
+    // Back under setup, the chats wait: none is opened, or read, while setup covers them.
+    await waitFor(() => expect(document.querySelector(".panes")).toBeTruthy());
+    expect(document.querySelector(".panes")?.hasAttribute("inert")).toBe(true);
 
     // Cancel goes back to the old server, connected again.
     await user.click(screen.getByRole("button", { name: "Cancel setup" }));
     expect(dialog()).toBeNull();
     expect(home.closed).toBe(false);
+    expect(document.querySelector(".panes")?.hasAttribute("inert")).toBe(false);
   });
 
   it("puts the old connection back even when the keyring couldn't keep its password", async () => {

@@ -1167,3 +1167,37 @@ async fn a_connection_test_stops_where_a_gateway_turns_it_away() {
     // It went no further: the password was never sent.
     assert_eq!(seen.lock().unwrap().iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(), ["/api/status"]);
 }
+
+#[tokio::test]
+async fn a_provider_key_never_follows_a_redirect_to_another_site() {
+    let (elsewhere, other) = other_site().await;
+    let away = elsewhere.join("api/providers/validate").unwrap().to_string();
+    let app = Router::new()
+        .route("/auth/password-login", post(login))
+        .route("/api/env", get(env_rows))
+        .route("/api/providers/validate", post(move || async move { Redirect::temporary(&away) }));
+    // No extra headers, so the sign-in client would follow redirects anywhere.
+    let dashboard = Dashboard::sign_in(&serve(app).await, &sign_in("hunter2")).await.unwrap();
+    let err = dashboard.save_provider_key("default", "OPENROUTER_API_KEY", "sk-good").await.unwrap_err().to_string();
+    assert!(err.contains("307") && !err.contains("sk-good"), "{err}");
+    assert!(other.lock().unwrap().is_empty(), "the key went to another site");
+}
+
+#[tokio::test]
+async fn a_gateways_refusal_never_shows_the_header_values_it_turned_down() {
+    // A gateway that repeats what it was sent in its refusal.
+    let app = Router::new().route(
+        "/api/status",
+        get(|headers: HeaderMap| async move {
+            let secret = headers.get("cf-access-client-secret").and_then(|v| v.to_str().ok()).unwrap_or_default().to_owned();
+            (StatusCode::FORBIDDEN, format!("Forbidden: bad service token {secret}")).into_response()
+        }),
+    );
+    let base = serve(app).await;
+    let failed = transport::probe(&base, &access_sign_in(), "default").await.unwrap_err();
+    assert_eq!(failed.stage, Stage::Reach);
+    assert!(failed.message.contains("answered 403") && !failed.message.contains("s3cret"), "{}", failed.message);
+    // Without extra headers there is nothing to repeat, and the answer helps.
+    let failed = transport::probe(&base, &sign_in("hunter2"), "default").await.unwrap_err();
+    assert!(failed.message.contains("Forbidden: bad service token"), "{}", failed.message);
+}

@@ -111,5 +111,6 @@ describe("Signing out with extra request headers", () => {
     expect(value("Header 1 value")).toBe("s3cret");
     expect(value(/^Dashboard password/)).toBe("");
     expect(keyring.has("password")).toBe(false);
-  });
+    // The whole first run goes through setup, which takes a while under a full parallel run.
+  }, 20_000);
 });

@@ -143,8 +143,14 @@ pub fn extra_headers(headers: &[ExtraHeader]) -> Result<HeaderMap, TransportErro
 /// The HTTP client for one dashboard: the owner's extra request headers on every request and, with any set, redirects
 /// kept to the dashboard's origin.
 fn client(headers: &HeaderMap) -> Result<reqwest::Client, TransportError> {
+    client_kept_to_origin(headers, false)
+}
+
+/// `client`, with redirects kept to the dashboard's origin even without extra headers when `always` is set, as for a
+/// request that carries a provider key.
+fn client_kept_to_origin(headers: &HeaderMap, always: bool) -> Result<reqwest::Client, TransportError> {
     let mut http = reqwest::Client::builder().default_headers(headers.clone());
-    if !headers.is_empty() {
+    if always || !headers.is_empty() {
         http = http.redirect(redirect::Policy::custom(same_origin_redirects));
     }
     http.build().map_err(|e| TransportError::Unreachable(e.to_string()))
@@ -903,9 +909,17 @@ pub async fn probe_with(base: &Url, sign_in: &SignIn, profile: &str, step: Durat
             };
         }
         // The route is public on a Hermes dashboard, so a refusal here is from something in front of it, such as
-        // Cloudflare Access without its headers. The request carried no secret, so its answer can be shown.
+        // Cloudflare Access without its headers. Its answer is shown only when the request carried no extra headers:
+        // a gateway can echo the values it turned down.
         if matches!(resp.status(), StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
-            return Err(unexpected(resp).await);
+            return Err(if sign_in.headers.is_empty() {
+                unexpected(resp).await
+            } else {
+                TransportError::Unexpected {
+                    status: resp.status().as_u16(),
+                    body: "(not shown, as it may repeat your extra request headers)".into(),
+                }
+            });
         }
         if !resp.status().is_success() {
             return Ok(None);
@@ -1010,13 +1024,15 @@ impl Dashboard {
         if value.is_empty() || value.len() > 4096 || value.chars().any(char::is_control) {
             return Err(TransportError::KeyRejected("Paste the key on one line, without spaces around it.".into()));
         }
+        // The key never follows a redirect to another site, extra headers or not.
+        let http = client_kept_to_origin(&self.headers, true)?;
         let scoped = |path: &str| {
             let mut url = endpoint(&self.base, path);
             url.query_pairs_mut().append_pair("profile", profile);
             url
         };
 
-        let env: serde_json::Value = serde_json::from_str(&self.call(Method::GET, scoped("api/env"), None, true).await?)
+        let env: serde_json::Value = serde_json::from_str(&self.call(&http, Method::GET, scoped("api/env"), None, true).await?)
             .map_err(|e| TransportError::Unexpected { status: 200, body: format!("GET /api/env: {e}") })?;
         let row = &env[key];
         let is_provider_secret = row["provider"].as_str().is_some_and(|p| !p.is_empty())
@@ -1027,7 +1043,7 @@ impl Dashboard {
         }
 
         let body = json!({"key": key, "value": value}).to_string();
-        let checked = self.call(Method::POST, endpoint(&self.base, "api/providers/validate"), Some(body), false).await?;
+        let checked = self.call(&http, Method::POST, endpoint(&self.base, "api/providers/validate"), Some(body), false).await?;
         // Neither the answer nor serde's account of it is shown: either can quote the key.
         let checked: Validated = serde_json::from_str(&checked).map_err(|_| TransportError::Unexpected {
             status: 200,
@@ -1038,14 +1054,14 @@ impl Dashboard {
         }
 
         let body = json!({"key": key, "value": value, "provider_setup": true}).to_string();
-        self.call(Method::PUT, scoped("api/env"), Some(body), false).await?;
+        self.call(&http, Method::PUT, scoped("api/env"), Some(body), false).await?;
         Ok(SavedKey { verified: checked.ok && checked.reachable })
     }
 
     /// One signed-in call that the app itself makes, with a JSON body; the webview's are `request`. `show_failure`:
     /// a failed answer's body goes into the error; off for a request that carries a secret.
-    async fn call(&self, method: Method, url: Url, body: Option<String>, show_failure: bool) -> Result<String, TransportError> {
-        let mut req = self.http.request(method, url).header(header::COOKIE, self.cookie_header());
+    async fn call(&self, http: &reqwest::Client, method: Method, url: Url, body: Option<String>, show_failure: bool) -> Result<String, TransportError> {
+        let mut req = http.request(method, url).header(header::COOKIE, self.cookie_header());
         if let Some(body) = body {
             req = req.header(header::CONTENT_TYPE, "application/json").body(body);
         }

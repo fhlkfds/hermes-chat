@@ -940,7 +940,7 @@ export function Main({
             }}
           />
         ) : null}
-        <Split panes={slots} activeKey={active.key} onActivate={activate} covered={settingsOpen || projectScreenOpen || previewCovers} />
+        <Split panes={slots} activeKey={active.key} onActivate={activate} covered={covered || settingsOpen || projectScreenOpen || previewCovers} />
         </div>
           {preview && previewShown && (
             <PreviewPane
