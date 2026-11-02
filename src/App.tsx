@@ -4,19 +4,24 @@ import { CHECK_EVERY_MS } from "./hermes/otherProfiles";
 import { type Account, type SavedSignIn, launchSignIn, savedSignIn, signIn, signOut } from "./hermes/account";
 import { localChatCache } from "./hermes/chatCache";
 import { draftKey, drafts } from "./hermes/drafts";
+import { chatToReopen, forgetOpenChat, rememberOpenChat } from "./hermes/uiPrefs";
 import { exportChat } from "./hermes/exportChat";
 import { systemKeyring } from "./hermes/tauriKeyring";
 import { desktopNotify } from "./hermes/tauriNotify";
 import { tauriPipe, type SignInDetails } from "./hermes/tauriPipe";
 import type { Attachment, Chat, Found } from "./hermes/model";
+import type { ModelPick } from "./hermes/models";
 import { ChatList, Rail } from "./ui/Sidebar";
 import { ChatPane } from "./ui/ChatPane";
 import { SearchPalette } from "./ui/Search";
 import { SettingsScreen } from "./ui/Settings";
 import { composing } from "./ui/bits";
 import { appearanceStore } from "./ui/appearance";
+import { StatusBar } from "./ui/StatusBar";
 import { systemFonts } from "./ui/tauriFonts";
 import { SignIn } from "./ui/SignIn";
+import { ModelControls } from "./ui/ModelPicker";
+import { getUIPrefs, setUIPrefs, subscribe as subscribeUIPrefs, toggleModelFavorite, type StickyModelPick } from "./hermes/uiPrefs";
 
 const SAVED = "hermes-chat.sign-in"; // Everything but the password, which is in the system keyring.
 // Hermes also announces store changes over the socket; the poll catches anything it misses.
@@ -27,6 +32,8 @@ const TOAST_MS = 5_000;
 type Toast = { text: string; undo?: () => void; at: number };
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+const withoutProfile = ({ profile: _profile, ...pick }: StickyModelPick): ModelPick => pick;
 
 function loadSignIn(): SavedSignIn {
   const blank = { mode: "ssh" as const, sshTarget: "", url: "", username: "" };
@@ -76,6 +83,8 @@ export default function App() {
   const [error, setError] = useState<string>();
   // Why the keyring couldn't save the password at sign-in, shown once signed in.
   const [notSaved, setNotSaved] = useState<string>();
+  // Only the first sign-in after the app starts reopens the last chat; signing in again after Sign out starts fresh.
+  const [coldStart, setColdStart] = useState(true);
 
   useEffect(() => {
     void launch().then((l) => {
@@ -91,6 +100,7 @@ export default function App() {
         hermes={hermes}
         connection={account.store.load()}
         notSaved={notSaved}
+        reopenLast={coldStart}
         onSignOut={async () => {
           let failure: string | undefined;
           try {
@@ -99,6 +109,7 @@ export default function App() {
             failure = messageOf(e);
           }
           setHermes(null);
+          setColdStart(false);
           setNotSaved(undefined);
           setInitial({ ...loadSignIn(), password: "" });
           setError(failure);
@@ -136,19 +147,25 @@ export function Main({
   hermes,
   connection,
   notSaved,
+  reopenLast = false,
   onSignOut,
 }: {
   hermes: Hermes;
   connection: SavedSignIn;
   notSaved?: string;
+  /** This is the app starting: open the profile's last open chat, if the owner wants it reopened. */
+  reopenLast?: boolean;
   onSignOut: () => Promise<void>;
 }) {
-  const { profile, chats, olderPulled, archivedListed, status, route, unsecure, closedReason, syncError, others } = useSyncExternalStore(
+  const { profile, chats, olderPulled, archivedListed, status, route, unsecure, closedReason, syncError, others, models } = useSyncExternalStore(
     hermes.subscribe,
     hermes.getSnapshot,
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // The chat to reopen at launch, until Hermes's list shows it is there or gone, or the owner goes somewhere first.
+  const [reopening, setReopening] = useState(() => (reopenLast ? chatToReopen(profile) : undefined));
+  // Opened at once when the list saved on this computer has it, so the New chat pane doesn't show first.
+  const [selectedId, setSelectedId] = useState<string | null>(() => (reopening && chats.some((c) => c.id === reopening) ? reopening : null));
   const [listOpen, setListOpen] = useState(true);
   const [draftError, setDraftError] = useState<string>();
   const [toast, setToast] = useState<Toast | null>(notSaved ? { text: notSaved, at: Date.now() } : null);
@@ -172,20 +189,40 @@ export function Main({
   const composerText = useSyncExternalStore(savedDrafts.subscribe, () => savedDrafts.get(shownDraft));
   const undelivered = useSyncExternalStore(savedDrafts.subscribe, () => savedDrafts.undelivered(shownDraft));
 
-  const openChat = (id: string | null) => {
-    setSelectedId(id);
-    setPicked(null);
-    setSettingsOpen(false);
+  // The model pick is sticky: new chats start on it, in this profile, until the owner picks another. It is kept on this
+  // computer only and never becomes the profile's default. Picked in another profile, it gives way to this profile's
+  // own model. A chat on screen shows the model it runs on, and a pick there switches that chat alone.
+  const { modelPicker, modelFavorites } = useSyncExternalStore(subscribeUIPrefs, getUIPrefs);
+  const catalog = models?.profile === profile ? models : undefined;
+  const sticky: ModelPick | undefined = modelPicker?.profile === profile ? withoutProfile(modelPicker) : catalog?.defaultPick;
+  const shownModel = (selected !== draft && selected.model) || sticky;
+  const pickModel = (pick: ModelPick) => {
+    setUIPrefs({ modelPicker: { ...pick, profile } });
+    if (selected === draft) return;
+    const id = selected.id;
+    hermes.setModel(id, pick).catch((e) => setToast({ text: `Couldn't switch this chat's model: ${messageOf(e)}`, at: Date.now() }));
   };
 
-  const newChat = () => {
-    openChat(null);
+  // Every move between chats is kept as the profile's last open chat, so it reopens at the next launch whether or not
+  // the app closes cleanly. Going somewhere also ends the wait to reopen the last one.
+  const openChat = (id: string | null, remember = true) => {
+    setSelectedId(id);
+    setReopening(undefined);
+    setPicked(null);
+    setSettingsOpen(false);
+    if (remember) rememberOpenChat(profile, id);
+  };
+
+  const newChat = (remember = true) => {
+    openChat(null, remember);
     setDraftError(undefined);
   };
 
   const pick = (found: Found) => {
     hermes.reveal(found);
     setSelectedId(found.chatId);
+    setReopening(undefined);
+    rememberOpenChat(profile, found.chatId);
     setPicked({ found, at: Date.now() });
     setSearchOpen(false);
     setSettingsOpen(false);
@@ -199,7 +236,7 @@ export function Main({
   const chatToSendIn = async (): Promise<{ id: string } | { delivery: Delivery }> => {
     if (selectedId) return { id: selectedId };
     try {
-      const id = await hermes.newChat();
+      const id = await hermes.newChat(sticky);
       openChat(id);
       return { id };
     } catch (e) {
@@ -225,9 +262,10 @@ export function Main({
       return "delivery" in to ? to.delivery : hermes.send(to.id, text.trim());
     });
 
-  // The other profile's chats replace the list, so the pane starts a fresh draft.
+  // The other profile's chats replace the list, so the pane starts a fresh draft. The profile left keeps its last open
+  // chat for the next launch.
   const switchProfile = (name: string) => {
-    newChat();
+    newChat(false);
     setToast(null);
     void hermes.switchProfile(name);
   };
@@ -267,6 +305,22 @@ export function Main({
       ok && setToast({ text: `${archived ? "Archived" : "Restored"}: ${title}`, undo: archived ? () => setArchived(id, false) : undefined, at: Date.now() });
     void (archived ? hermes.archive(id) : hermes.restore(id)).then(done);
   };
+
+  // The chat to reopen opens as soon as the list has it, the saved one at first, and stays open once the list read from
+  // Hermes has it too. If that list doesn't, the chat was deleted, archived, or is older than the list reaches: the New
+  // chat pane shows instead, and the chat isn't looked for at the next launch.
+  useEffect(() => {
+    if (!reopening) return;
+    const listed = hermes.hasListed();
+    if (chats.some((c) => c.id === reopening)) {
+      setSelectedId(reopening);
+      if (!listed) return;
+    } else if (listed) {
+      setSelectedId(null);
+      forgetOpenChat(profile, reopening);
+    } else return;
+    setReopening(undefined);
+  }, [hermes, reopening, chats, profile]);
 
   useEffect(() => {
     if (!toast) return;
@@ -309,6 +363,17 @@ export function Main({
     return () => clearInterval(timer);
   }, [hermes]);
 
+  // The models the profile offers, read once connected, and again for each profile.
+  useEffect(() => {
+    if (status === "connected") void hermes.loadModels();
+  }, [hermes, status, profile]);
+
+  // Switching profile reseeds the pick to that profile's own model, once its list is read.
+  useEffect(() => {
+    const pick = getUIPrefs().modelPicker;
+    if (catalog?.defaultPick && pick?.profile !== profile) setUIPrefs({ modelPicker: { ...catalog.defaultPick, profile } });
+  }, [catalog, profile]);
+
   // Unread chats in the other profiles are polled, so the switcher can be up to CHECK_EVERY_MS behind.
   useEffect(() => {
     void hermes.checkOtherProfiles();
@@ -346,7 +411,7 @@ export function Main({
         closedReason={closedReason}
         onReconnect={() => void hermes.reconnect()}
         onToggleList={() => setListOpen((o) => !o)}
-        onNew={newChat}
+        onNew={() => newChat()}
         onSearch={() => setSearchOpen(true)}
         onSettings={() => setSettingsOpen(true)}
       />
@@ -364,6 +429,7 @@ export function Main({
           onListArchived={(on) => void hermes.listArchived(on)}
           onDelete={deleteChat}
           onRename={(id, title, from) => hermes.rename(id, title, from)}
+          onRegenTitle={(id) => hermes.regenerateTitle(id)}
           onListProfiles={() => hermes.profiles()}
           onCheckOthers={() => void hermes.checkOtherProfiles()}
           onSwitchProfile={switchProfile}
@@ -408,6 +474,24 @@ export function Main({
             onSettle={selected === draft ? undefined : (s) => setSettled(selected.id, s)}
             onExport={selected === draft ? undefined : () => exportSelected(selected)}
             onArchive={selected === draft ? undefined : (a) => setArchived(selected.id, a)}
+            modelControls={
+              <ModelControls
+                catalog={catalog}
+                current={shownModel}
+                defaultEffort={catalog?.defaultEffort}
+                favorites={modelFavorites}
+                onPick={pickModel}
+                onToggleFavorite={toggleModelFavorite}
+              />
+            }
+            footer={
+              <StatusBar
+                chat={selected}
+                status={status}
+                onYolo={(on) => hermes.setYolo(selected.id, on)}
+                onBreakdown={() => hermes.contextBreakdown(selected.id)}
+              />
+            }
           />
         )}
       </main>

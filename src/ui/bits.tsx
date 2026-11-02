@@ -162,3 +162,19 @@ export function highlight(text: string, query: string, className = "hit"): React
     ),
   );
 }
+
+const ARROW_STEP: Record<string, number> = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 };
+
+/**
+ * Arrow keys, Home and End move through a tablist's tabs or a radiogroup's radios, selecting as they go, as WAI-ARIA
+ * has it. For the group's onKeyDown; only the selected item is in the Tab order (tabIndex 0, the others -1).
+ */
+export function arrowSelect<T>(e: ReactKeyboardEvent<HTMLElement>, items: readonly T[], current: T, pick: (item: T) => void) {
+  const at = items.indexOf(current);
+  const next =
+    e.key === "Home" ? 0 : e.key === "End" ? items.length - 1 : e.key in ARROW_STEP ? (at + ARROW_STEP[e.key] + items.length) % items.length : -1;
+  if (next < 0) return;
+  e.preventDefault();
+  pick(items[next]);
+  e.currentTarget.querySelectorAll<HTMLElement>('[role="tab"], [role="radio"]')[next]?.focus();
+}

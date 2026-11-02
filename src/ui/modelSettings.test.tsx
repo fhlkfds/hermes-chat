@@ -46,6 +46,7 @@ async function shown() {
   const hermes = await connect(server.openPipe, "default");
   const user = userEvent.setup();
   render(<Shell hermes={hermes} />);
+  await user.click(screen.getByRole("tab", { name: /Model/ }));
   await screen.findByRole("combobox", { name: "Main provider" });
   return { server, user };
 }
@@ -98,6 +99,7 @@ describe("Leaving Settings", () => {
     expect(writes(server)).toEqual([]);
 
     await user.click(screen.getByRole("button", { name: "Open Settings" }));
+    await user.click(screen.getByRole("tab", { name: /Model/ }));
     await screen.findByRole("combobox", { name: "Main provider" });
     expect(select("Main provider").value).toBe("openrouter");
     expect(select("Main model").value).toBe("z-ai/glm-5.3-flash");

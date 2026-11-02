@@ -49,6 +49,44 @@ export type TranscriptMessage = {
 /** A file on the owner's disk: its bytes as a string, a size alone for a file too big to make, or a folder. */
 export type FakeFile = string | { size: number } | { dir: true };
 
+/** A session's model as `SessionLiveInfo` carries it (`session.info`, and `info` on create and resume). */
+export type ModelInfo = { model: string; provider: string; reasoning_effort: string; fast: boolean };
+
+/**
+ * A `model.options` result (`ModelOptionsResult`, `tui_gateway/contracts/config_free_tier_control.py` at upstream
+ * `c419cf7`): two signed-in providers. `gpt-4.1` has no reasoning control, and only Opus and GPT-5 take fast mode.
+ */
+export function modelOptions(): Record<string, unknown> {
+  return {
+    model: "claude-sonnet-4-5",
+    provider: "anthropic",
+    providers: [
+      {
+        slug: "anthropic",
+        name: "Anthropic",
+        models: ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"],
+        authenticated: true,
+        is_current: true,
+        capabilities: {
+          "claude-opus-4-5": { fast: true, reasoning: true, can_disable_reasoning: true },
+          "claude-sonnet-4-5": { fast: false, reasoning: true, can_disable_reasoning: true },
+          "claude-haiku-4-5": { fast: false, reasoning: true, can_disable_reasoning: true },
+        },
+      },
+      {
+        slug: "openai",
+        name: "OpenAI",
+        models: ["gpt-5", "gpt-4.1"],
+        authenticated: true,
+        capabilities: {
+          "gpt-5": { fast: true, reasoning: true, can_disable_reasoning: false },
+          "gpt-4.1": { fast: false, reasoning: false },
+        },
+      },
+    ],
+  };
+}
+
 const DAY = 86_400;
 const MiB = 1024 * 1024;
 const now = () => Date.now() / 1000;
@@ -90,6 +128,9 @@ export class FakeHermes {
   /** The stored row id `prompt.submit` reports for the message (`user_row_id`, `tui_gateway/methods_prompt.py` at
    * `bf0203a`). Unset, it reports none. */
   userRowId?: number;
+  /** What the model answers every `llm.oneshot` call with, unless `oneshotFailure` says why it failed. */
+  oneshotAnswer = "A new title";
+  oneshotFailure?: string;
   /** The owner's local disk, by path, for attachments. */
   files: Record<string, FakeFile> = {};
   /** Whether this connection sent `client.capabilities {server_requests: true}`. */
@@ -98,9 +139,30 @@ export class FakeHermes {
   readonly openRequests = new Map<string, OpenRequest>();
   /** The client's answers to server→client requests, in order. */
   readonly responses: Response[] = [];
+  /**
+   * What `model.options` answers. Undefined answers JSON-RPC "method not found", as a server without the method would.
+   * `model` and `provider` in it are the profile's default.
+   */
+  modelOptionsResult?: Record<string, unknown> = modelOptions();
+  /**
+   * What dashboard REST `GET /api/model/options` answers. Undefined serves the catalog in `modelConfig`, as Hermes
+   * does; null is a 404, as a dashboard without the route would answer.
+   */
+  restModelOptions?: Record<string, unknown> | null;
+  /**
+   * Each profile's default model, reasoning effort and fast mode, in its config.yaml. `config.set` writes here only
+   * when sent without a session, as Hermes does (`tui_gateway/methods_config_set.py` at upstream `c419cf7`).
+   */
+  profileModel: Record<string, ModelInfo> = {};
+  /** Stored session id -> the model it runs on, kept across resumes (`_persist_live_session_runtime`). */
+  readonly sessionModel = new Map<string, ModelInfo>();
   /** runtime session id -> stored session id, for every session.create / session.resume. */
   readonly runtime = new Map<string, string>();
   private created = new Map<string, { source: string; profile?: string }>(); // runtime id, until the first prompt stores it
+
+  /** The `info` session.create and session.resume answer with (`server._session_info`); empty, as from a server
+   * that reports none of it, unless a test sets it. */
+  sessionInfo: Record<string, unknown> = {};
 
   /** Per-method behaviour; tests override entries. Unhandled methods get no answer. */
   readonly handlers: Record<string, Handler> = {
@@ -110,7 +172,17 @@ export class FakeHermes {
       const stored = `20261031_12000${n}_abc123`;
       this.runtime.set(runtimeId, stored);
       this.created.set(runtimeId, { source: String(r.params.source ?? "tui"), profile: r.params.profile as string | undefined });
-      this.respond(r.id, { session_id: runtimeId, stored_session_id: stored, message_count: 0, messages: [], info: {} });
+      // `SessionCreateParams` `model` / `provider` / `reasoning_effort` / `fast`: the session's own overrides.
+      const base = this.defaultModel(r.params.profile as string | undefined);
+      const p = r.params;
+      const info: ModelInfo = {
+        model: typeof p.model === "string" ? p.model : base.model,
+        provider: typeof p.provider === "string" ? p.provider : base.provider,
+        reasoning_effort: typeof p.reasoning_effort === "string" ? p.reasoning_effort : base.reasoning_effort,
+        fast: typeof p.fast === "boolean" ? p.fast : base.fast,
+      };
+      this.sessionModel.set(stored, info);
+      this.respond(r.id, { session_id: runtimeId, stored_session_id: stored, message_count: 0, messages: [], info: { ...this.sessionInfo, ...info } });
     },
     "session.resume": (r) => {
       const stored = String(r.params.session_id);
@@ -123,12 +195,13 @@ export class FakeHermes {
         this.runtime.set(sid, stored);
         const messages = this.transcripts[stored] ?? [];
         const open_requests = open.map(([id, q]) => ({ id, method: q.method, params: { session_id: sid, ...q.params } }));
-        return this.respond(r.id, { session_id: sid, stored_session_id: stored, message_count: messages.length, messages, info: {}, running: true, open_requests });
+        return this.respond(r.id, { session_id: sid, stored_session_id: stored, message_count: messages.length, messages, info: this.sessionInfo, running: true, open_requests });
       }
       const runtimeId = `rt-r${++this.resumed}`;
       this.runtime.set(runtimeId, stored);
       const messages = this.transcripts[stored] ?? [];
-      this.respond(r.id, { session_id: runtimeId, stored_session_id: stored, message_count: messages.length, messages, info: {}, running: false });
+      const info = { ...this.sessionInfo, ...this.sessionModel.get(stored) };
+      this.respond(r.id, { session_id: runtimeId, stored_session_id: stored, message_count: messages.length, messages, info, running: false });
     },
     "prompt.submit": (r) => {
       const runtimeId = String(r.params.session_id);
@@ -176,6 +249,51 @@ export class FakeHermes {
     "approval.received": (r) => {
       const pending = [...this.openRequests.values()].some((q) => q.sid === r.params.session_id && q.params.request_id === r.params.request_id);
       this.respond(r.id, { acknowledged: pending });
+    },
+    // `tui_gateway/methods_session.py` at the deployed `bf0203a`: a stateless model call (default task
+    // `title_generation`) that answers `{text}`, or fails 5030 `one-shot generation failed: <why>`.
+    "llm.oneshot": (r) => {
+      if (!String(r.params.instructions ?? "").trim() && !String(r.params.input ?? "").trim())
+        return this.fail(r.id, 4030, "llm.oneshot requires a template or instructions/input");
+      if (this.oneshotFailure !== undefined) return this.fail(r.id, 5030, `one-shot generation failed: ${this.oneshotFailure}`);
+      this.respond(r.id, { text: this.oneshotAnswer });
+    },
+    "model.options": (r) => {
+      if (!this.modelOptionsResult) return this.fail(r.id, -32601, "Method not found: model.options");
+      // Without a session, `model` and `provider` are the profile's own.
+      const { model, provider } = this.defaultModel(r.params.profile as string | undefined);
+      this.respond(r.id, { ...this.modelOptionsResult, model, provider });
+    },
+    // `_cfg_get_reasoning`: the session's effort, else the profile's.
+    "config.get": (r) => {
+      if (r.params.key !== "reasoning") return this.fail(r.id, 4002, `unknown config key: ${r.params.key}`);
+      const stored = this.runtime.get(String(r.params.session_id ?? ""));
+      const info = (stored && this.sessionModel.get(stored)) || this.defaultModel(r.params.profile as string | undefined);
+      this.respond(r.id, { value: info.reasoning_effort || "medium", display: "show" });
+    },
+    // `config.set` for `model`, `reasoning` and `fast` (`tui_gateway/methods_config_set.py` at upstream `c419cf7`).
+    // With a session they change only that session, and `session.info` reports it; a session id the server doesn't
+    // hold is refused (4001). Without one they write the profile's config.
+    "config.set": (r) => {
+      const { key, value, session_id: sid } = r.params as { key: string; value: string; session_id?: string };
+      if (!["model", "reasoning", "fast"].includes(key)) return this.fail(r.id, 4002, `unknown config key: ${key}`);
+      const stored = sid ? this.runtime.get(sid) : undefined;
+      if (sid && !stored) return this.fail(r.id, 4001, "session not found");
+      const profile = (r.params.profile as string | undefined) ?? "default";
+      const info = stored ? { ...(this.sessionModel.get(stored) ?? this.defaultModel(profile)) } : { ...this.defaultModel(profile) };
+      if (key === "model") {
+        if (!stored) return this.fail(r.id, 4001, "session not found");
+        const [model, ...flags] = String(value).split(/\s+/);
+        const at = flags.indexOf("--provider");
+        info.model = model;
+        if (at >= 0) info.provider = flags[at + 1];
+      } else if (key === "reasoning") info.reasoning_effort = String(value);
+      else info.fast = value === "fast";
+      if (stored) {
+        this.sessionModel.set(stored, info);
+        this.event(sid!, "session.info", { ...info });
+      } else this.profileModel[profile] = info;
+      this.respond(r.id, { key, value });
     },
     // Keepalive, answered by the WS layer in either protocol generation (research doc §1).
     "gateway.ping": (r) => this.respond(r.id, { ok: true }),
@@ -239,18 +357,24 @@ export class FakeHermes {
         name,
         path: name === "default" ? "/home/liam/.hermes" : `/home/liam/.hermes/profiles/${name}`,
         is_default: name === "default",
-        model: null,
-        provider: null,
+        model: this.profileModel[name]?.model ?? null,
+        provider: this.profileModel[name]?.provider ?? null,
         description: "",
         display_name: "",
       })),
     }),
     // Settings → Model (hermes_cli/web_routers/models.py, config_env.py, delegation.py at the deployed `bf0203a`).
-    "GET /api/model/options": () => ({
-      model: this.modelConfig.model.default,
-      provider: this.modelConfig.model.provider,
-      providers: this.modelConfig.catalog.map((p) => ({ ...p, is_current: p.slug === this.modelConfig.model.provider, authenticated: true })),
-    }),
+    // `get_model_options` is also the REST twin of `model.options`, which the composer's picker falls back to.
+    "GET /api/model/options": () => {
+      if (this.restModelOptions === null) throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
+      return (
+        this.restModelOptions ?? {
+          model: this.modelConfig.model.default,
+          provider: this.modelConfig.model.provider,
+          providers: this.modelConfig.catalog.map((p) => ({ ...p, is_current: p.slug === this.modelConfig.model.provider, authenticated: true })),
+        }
+      );
+    },
     "GET /api/model/auxiliary": () => ({
       tasks: Object.entries(this.modelConfig.auxiliary).map(([task, a]) => ({
         task,
@@ -409,6 +533,11 @@ export class FakeHermes {
 
   last(method: string) {
     return [...this.requests].reverse().find((r) => r.method === method);
+  }
+
+  /** A profile's model, effort and fast mode as its config has them: Sonnet at medium effort unless a test set one. */
+  defaultModel(profile?: string | null): ModelInfo {
+    return this.profileModel[profile || "default"] ?? { model: "claude-sonnet-4-5", provider: "anthropic", reasoning_effort: "medium", fast: false };
   }
 
   /** The runtime session id the server handed out for a stored session. */
