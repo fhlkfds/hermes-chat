@@ -198,6 +198,61 @@ describe("Settings → Memory", () => {
     expect(screen.getByText("Unsaved")).toBeTruthy();
   });
 
+  it("settles a lost save without moving another entry's draft onto it", async () => {
+    const { s, hermes, user } = await shown();
+    await user.click(entry(SHORT));
+    await user.clear(editor());
+    await user.type(editor(), "Saved A");
+    s.dropOnLearning = "applied";
+    await user.click(button("Save"));
+    await screen.findByText(/may or may not have saved/);
+    await act(async () => void (await hermes.reconnect()));
+    await user.click(button("Cancel"));
+    await user.click(entry(FALCON));
+    await user.type(editor(), " Draft B");
+    await user.click(button(/Reload/));
+    expect((await screen.findByRole("status")).textContent).toMatch(/Hermes has the edit whose answer was lost/);
+    expect(editor().value).toBe(`${FALCON} Draft B`);
+    expect(screen.getByRole("group", { name: /Edit entry in MEMORY.md/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: named(FALCON) }).getAttribute("aria-current")).toBe("true");
+    expect(s.memory.default.memory).toEqual([FALCON, "Saved A"]);
+  });
+
+  it("keeps the draft a kept edit replaces in the editor", async () => {
+    const { s, user } = await shown();
+    await user.click(entry(SHORT));
+    await user.clear(editor());
+    await user.type(editor(), "Edit A");
+    s.memory.default.memory[1] = "Agent changed it";
+    await user.click(button("Save"));
+    await screen.findByRole("textbox", { name: "Your kept edit" });
+    await user.click(entry(FALCON));
+    await user.type(editor(), " Draft B");
+    await user.click(button(/Put your kept edit in this entry/));
+    expect(editor().value).toBe("Edit A");
+    expect(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Your kept edit 1" }).value).toBe("Edit A");
+    expect(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Your kept edit 2" }).value).toBe(`${FALCON} Draft B`);
+  });
+
+  it("drops a pending question about opening another file once a save starts", async () => {
+    const s = server();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const edit = s.handlers["learning.edit"];
+    s.handlers["learning.edit"] = (r) => void gate.then(() => edit(r));
+    const { user } = await shown({ s });
+    await user.click(entry(SHORT));
+    await user.type(editor(), " Saved.");
+    await user.click(screen.getByRole("tab", { name: /User profile/ }));
+    expect(screen.getByRole("alertdialog", { name: "Discard your edit?" })).toBeTruthy();
+    await user.click(button("Save"));
+    expect(screen.queryByRole("alertdialog", { name: "Discard your edit?" })).toBeNull();
+    release();
+    await screen.findByText(/Saved, and read back/);
+    expect(screen.getByRole("tab", { name: /Agent notes/ }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("group", { name: /Edit entry in MEMORY.md/ })).toBeTruthy();
+  });
+
   it("keeps every edit a conflict leaves, not only the latest", async () => {
     const { s, user } = await shown();
     await user.click(entry(SHORT));

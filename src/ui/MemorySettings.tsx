@@ -71,8 +71,8 @@ export function MemorySettings({
   // to put in an entry until they discard it. A later one never replaces an earlier one.
   const [kept, setKept] = useState<string[]>([]);
   const keep = (text: string) => setKept((k) => (k.includes(text) ? k : [...k, text]));
-  // The text of a save whose outcome is unknown, until a read shows whether Hermes has it.
-  const [unsure, setUnsure] = useState<string>();
+  // A save whose outcome is unknown, until a read shows whether Hermes has it: the text sent, and the entry it was for.
+  const [unsure, setUnsure] = useState<{ text: string; entryId: string }>();
   const [confirmDelete, setConfirmDelete] = useState(false);
   // Opening another entry or file while the open one has an unsaved edit asks first; this is what it would do.
   const [leaving, setLeaving] = useState<() => void>();
@@ -125,7 +125,10 @@ export function MemorySettings({
 
   const load = async (why: "first" | "reload") => {
     const n = ++reads.current;
-    if (why === "reload") setBusy("reload");
+    if (why === "reload") {
+      setBusy("reload");
+      setLeaving(undefined);
+    }
     setLoading(true);
     try {
       const next = await api.load(profile);
@@ -134,14 +137,19 @@ export function MemorySettings({
         // A read settles a save whose answer was lost: Hermes has the text, or it doesn't.
         const saved = Object.values(next.resources)
           .flatMap((r) => r.entries)
-          .find((e) => e.text === unsure);
+          .find((e) => e.text === unsure.text);
         setUnsure(undefined);
+        if (saved && editing?.entry.id !== unsure.entryId) {
+          // The owner moved on from that entry: say what became of the save, and leave what's open alone.
+          setNotice({ kind: "ok", text: "Hermes has the edit whose answer was lost: reading memory back shows it." });
+          return show(next);
+        }
         if (saved) {
           setView(next);
           setProblem(undefined);
           setSource(saved.source);
-          // Typing since the save stays, as an edit of the entry Hermes now has.
-          const typedSince = editing && pyStrip(editing.draft) !== unsure ? editing.draft : undefined;
+          // Typing since the save, in the same entry, stays as an edit of the entry Hermes now has.
+          const typedSince = editing && pyStrip(editing.draft) !== unsure.text ? editing.draft : undefined;
           setEditing({ entry: saved, draft: typedSince ?? saved.text });
           setNotice({
             kind: "ok",
@@ -151,7 +159,13 @@ export function MemorySettings({
           });
           return;
         }
-        setNotice({ kind: "unsure", text: "Hermes doesn't have your edit: reading memory back doesn't show it. Your edit is still here to save again." });
+        setNotice({
+          kind: "unsure",
+          text:
+            editing?.entry.id === unsure.entryId
+              ? "Hermes doesn't have your edit: reading memory back doesn't show it. Your edit is still here to save again."
+              : "Hermes doesn't have the edit whose answer was lost: reading memory back doesn't show it.",
+        });
       } else if (why === "reload") setNotice(undefined);
       show(next);
     } catch (e) {
@@ -203,6 +217,8 @@ export function MemorySettings({
     if (!editing) return;
     const at = editing;
     setBusy("save");
+    // A question about opening something else lapses: what it would open could change under the save.
+    setLeaving(undefined);
     setNotice(undefined);
     try {
       const { view: next, entry } = await api.save(profile, at.entry, at.draft);
@@ -222,7 +238,7 @@ export function MemorySettings({
           text: e instanceof MemoryConflictError ? e.message : `${e.message} Your edit is kept below.`,
         });
       } else if (e instanceof MemoryUnsureError) {
-        setUnsure(pyStrip(at.draft));
+        setUnsure({ text: pyStrip(at.draft), entryId: at.entry.id });
         setNotice({ kind: "unsure", text: e.message });
       } else if (e instanceof MemoryUnsupportedError) {
         keep(at.draft);
@@ -238,6 +254,7 @@ export function MemorySettings({
     if (!editing) return;
     const at = editing;
     setBusy("delete");
+    setLeaving(undefined);
     setConfirmDelete(false);
     setNotice(undefined);
     try {
@@ -423,7 +440,12 @@ export function MemorySettings({
                   {kept.map(
                     (text, i) =>
                       editing.draft !== text && (
-                        <button key={i} className="btn small-btn" disabled={!!busy} onClick={() => setEditing({ ...editing, draft: text, fromKept: text })}>
+                        <button key={i} className="btn small-btn" disabled={!!busy} onClick={() => {
+                            // The text it replaces is kept too, if it was an unsaved edit.
+                            if (editing.draft !== editing.entry.text) keep(editing.draft);
+                            setEditing({ ...editing, draft: text, fromKept: text });
+                          }}
+                        >
                           <Undo2 size={14} /> {kept.length === 1 ? "Put your kept edit in this entry" : `Put kept edit ${i + 1} in this entry`}
                         </button>
                       ),
