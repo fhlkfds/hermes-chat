@@ -86,6 +86,14 @@ _Avoid_: thinking level
 A model the owner starred in the model picker. Favorites are listed first, and are kept on this computer even when Hermes no longer offers the model.
 _Avoid_: pinned model (pinning is how Hermes stores Active, ADR 0002)
 
+**Usage**:
+The tokens a chat's model calls took in and gave out: input, cache read and written, output and its reasoning, and how many calls. A chat's usage is Hermes's own total for every call in it, from any client and across model changes. A reply's usage is shown only for a reply this app watched from start to finish, and is kept as long as its Saved copy.
+_Avoid_: tokens (alone, for the whole breakdown), stats
+
+**Cost**:
+What a chat's usage cost, only as Hermes recorded it: billed, estimated, at least an estimate, included in a subscription, or unknown. The app keeps no prices of its own, and shows no cost per reply.
+_Avoid_: price, spend, bill (except for a cost the provider reported)
+
 **Unsecure**:
 The warning on a connection whose traffic between this app and the server isn't encrypted.
 _Avoid_: insecure (the app's label is "Unsecure"), unsafe

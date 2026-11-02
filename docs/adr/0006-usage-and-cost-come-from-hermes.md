@@ -1,0 +1,18 @@
+# Usage and cost come from Hermes: stored totals per chat, live counters per reply, no price list here
+
+A chat's tokens and cost are Hermes's stored session totals (`input_tokens`, `cache_read_tokens`, `cache_write_tokens`, `output_tokens`, `reasoning_tokens`, `api_call_count`, `estimated_cost_usd`, `actual_cost_usd`, `cost_status`, `cost_source`, `pricing_version`), read from the chat list and from `GET /api/sessions/{id}` after each turn. A reply's tokens are how far the session's live counters (`usage` on `message.complete`, `session.info` and a live `session.resume`) moved during its turn. The app never adds replies up into a chat total, and it holds no prices: a cost shows only as Hermes recorded it, labelled by Hermes's own status.
+
+## Considered options
+
+- **Sum the replies into the chat total.** Rejected: the app sees only the turns it watched. Turns from Telegram, the CLI or another desktop, turns while the app was closed, and Hermes's own retries would be missing or counted twice. Hermes's stored counters already cover every call in the chat, across model switches.
+- **A price table in the app.** Rejected: prices change, differ by route and tier (cache writes, fast mode, long-context tiers, subscriptions), and Hermes already prices every call with them. A second table would disagree with Hermes and need its own versioning.
+- **Cost per reply from the change in the stored estimate across a turn.** Rejected: other clients and Hermes's flush timing make that delta unreliable. Hermes's live feed carries no cost, so a reply shows none.
+- **Read per-reply usage from history.** Not possible at `bf0203a`: `messages.token_count` is never written.
+
+## Consequences
+
+- A reply shows usage only if the app watched its turn from the start. A turn reattached mid-way, the turn after one that failed without its counters, and replies from other clients show none. The chat total still counts them.
+- A measured reply keeps its usage in the Saved copy and, after a reload, by its stored row id (`persisted_turn.final_assistant_row_id`, `row_id` in history). Once the Saved copy is gone (storage limit, Clear local cache, delete), so is that reply's usage.
+- The live feed doesn't split cache reads from cache writes, so a reply shows them together. The chat total splits them.
+- Hermes's `cost_status` is its latest call's. The total is called billed only when the provider's figures are all of it, and "at least" when the latest call couldn't be priced.
+- Hermes's helper tasks (titling, background review) are stored apart (`session_model_usage` with a `task`) and aren't in the chat total. Dashboard REST doesn't expose them per chat.

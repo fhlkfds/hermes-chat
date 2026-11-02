@@ -8,6 +8,7 @@ import type { SavedSignIn } from "./account";
 import type { Chat, Item, Source } from "./model";
 import type { ChatCache, SavedTranscript } from "./transport";
 import { UI_PREFS_KEY } from "./uiPrefs";
+import { replyUsageOf } from "./usage";
 
 const LIST_PREFIX = "hermes-chat.chats.";
 const TRANSCRIPT_PREFIX = "hermes-chat.transcript.";
@@ -77,8 +78,21 @@ function toItem(v: unknown): Item | undefined {
       const attachments = Array.isArray(i.attachments) ? i.attachments.filter((a): a is string => typeof a === "string") : undefined;
       return text === undefined ? undefined : { kind: "user", id, text, ...(attachments?.length && { attachments }), ...(at !== undefined && { at }) };
     }
-    case "assistant":
-      return text === undefined ? undefined : { kind: "assistant", id, text, ...(i.interrupted === true && { interrupted: true }), ...(at !== undefined && { at }) };
+    case "assistant": {
+      const rowId = Number.isSafeInteger(i.rowId) ? (i.rowId as number) : undefined;
+      const usage = replyUsageOf(i.usage);
+      return text === undefined
+        ? undefined
+        : {
+            kind: "assistant",
+            id,
+            text,
+            ...(i.interrupted === true && { interrupted: true }),
+            ...(at !== undefined && { at }),
+            ...(rowId !== undefined && { rowId }),
+            ...(usage && { usage }),
+          };
+    }
     case "thinking":
       return text === undefined ? undefined : { kind: "thinking", id, text };
     case "tool": {

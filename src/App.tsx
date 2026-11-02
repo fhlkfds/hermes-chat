@@ -472,6 +472,7 @@ export function Main({
             onSettle={selected === draft ? undefined : (s) => setSettled(selected.id, s)}
             onExport={selected === draft ? undefined : () => exportSelected(selected)}
             onArchive={selected === draft ? undefined : (a) => setArchived(selected.id, a)}
+            onUsage={selected === draft ? undefined : () => void hermes.refreshUsage(selected.id)}
             modelControls={
               <ModelControls
                 catalog={catalog}
