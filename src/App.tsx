@@ -861,6 +861,8 @@ export function Main({
             appearance={appearance}
             listFonts={systemFonts}
             modelSettings={hermes.modelSettings}
+            toolsets={hermes.toolsets}
+            runningReplies={chats.filter((c) => c.running).length}
             checkScreenshots={screenshots.support}
             voiceSetup={voice.setup}
             showTextGeneration={showTextGeneration}

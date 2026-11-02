@@ -649,8 +649,9 @@ impl Dashboard {
     }
 
     /// One dashboard REST call for the webview: `GET`, `PATCH` or `DELETE` on a path under `api/`, with a
-    /// JSON body. `POST` and `PUT` reach only Settings → Model's two writes: `POST api/model/set` and
-    /// `PUT api/config`. Returns the response body on 2xx.
+    /// JSON body. `POST` and `PUT` reach only Settings → Model's two writes, `POST api/model/set` and
+    /// `PUT api/config`, and Settings → Toolsets' switch, `PUT api/tools/toolsets/<name>` with exactly
+    /// `{"enabled": true|false}` (`toolset_toggle_allowed`). Returns the response body on 2xx.
     pub async fn request(&self, method: &str, path_and_query: &str, body: Option<String>) -> Result<String, TransportError> {
         let (path, query) = path_and_query.split_once('?').unwrap_or((path_and_query, ""));
         let method = match (method, path) {
@@ -659,6 +660,7 @@ impl Dashboard {
             ("DELETE", _) => Method::DELETE,
             ("POST", "api/model/set") => Method::POST,
             ("PUT", "api/config") => Method::PUT,
+            ("PUT", _) if toolset_toggle_allowed(path, body.as_deref()) => Method::PUT,
             ("POST" | "PUT", _) => return Err(TransportError::NotRelayed(format!("{method} {path}"))),
             (other, _) => return Err(TransportError::NotRelayed(format!("{other} requests"))),
         };
@@ -869,6 +871,38 @@ fn relay_url(base: &Url, path: &str, query: &str) -> Result<(Url, String), Trans
 fn is_file_route(path: &str) -> bool {
     let mut segs = path.split('/').filter(|seg| !seg.is_empty());
     segs.next() == Some("api") && matches!(segs.next(), Some("files" | "fs"))
+}
+
+/// The toolset name Settings → Toolsets sends, with an `enabled` that is neither true nor false, to learn whether the
+/// server has the toggle route without changing anything: FastAPI refuses the body before the route runs.
+pub const TOOLSET_PROBE_NAME: &str = "__hermes_chat_probe__";
+
+/// Whether a `PUT` is Settings → Toolsets' switch: `api/tools/toolsets/<name>`, one path segment of ASCII letters,
+/// digits, `_`, `-` and `.` (Hermes's own toolset keys), and a body that is exactly `{"enabled": true}` or
+/// `{"enabled": false}`. Nothing else under that prefix is relayed: not its `env`, `provider`, `model` or
+/// `post-setup` routes, which write secrets or run installs. The probe name takes only `{"enabled": "probe"}`.
+pub fn toolset_toggle_allowed(path: &str, body: Option<&str>) -> bool {
+    let Some(name) = path.strip_prefix("api/tools/toolsets/") else {
+        return false;
+    };
+    let safe = !name.is_empty()
+        && name != "."
+        && name != ".."
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'));
+    if !safe {
+        return false;
+    }
+    let Some(body) = body.and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok()) else {
+        return false;
+    };
+    let Some(fields) = body.as_object().filter(|o| o.len() == 1) else {
+        return false;
+    };
+    match (name == TOOLSET_PROBE_NAME, fields.get("enabled")) {
+        (false, Some(serde_json::Value::Bool(_))) => true,
+        (true, Some(serde_json::Value::String(s))) => s == "probe",
+        _ => false,
+    }
 }
 
 fn endpoint(base: &Url, path: &str) -> Url {

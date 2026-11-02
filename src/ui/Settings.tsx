@@ -1,9 +1,10 @@
-// The Settings screen, in three tabs. General, ported from the prototype: the connection and Sign out, what shows on
+// The Settings screen, in four tabs. General, ported from the prototype: the connection and Sign out, what shows on
 // launch, voice, screenshots, the local cache, and older history. Appearance: how the app looks on this computer (AppearanceSettings.tsx).
-// Model: the profile's models on Hermes (ModelSettings.tsx).
+// Model: the profile's models on Hermes (ModelSettings.tsx). Toolsets: which tools Hermes offers the model in the
+// profile (ToolsetSettings.tsx).
 // Profiles are switched in the list's header, not here (ADR 0001).
 import { useEffect, useState } from "react";
-import { ArrowLeft, Cpu, Download, KeyRound, Lock, LogOut, Palette, Settings2, ShieldCheck, Trash2 } from "lucide-react";
+import { ArrowLeft, Cpu, Download, KeyRound, Lock, LogOut, Palette, Settings2, ShieldCheck, Trash2, Wrench } from "lucide-react";
 import type { Chat, ConnectionStatus } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
 import { TRANSCRIPT_LIMIT_BYTES } from "../hermes/chatCache";
@@ -12,17 +13,20 @@ import type { AppearanceStore, Fonts } from "./appearance";
 import { AppearanceSettings } from "./AppearanceSettings";
 import type { ModelSettingsApi } from "../hermes/modelSettings";
 import { ModelSettings } from "./ModelSettings";
+import type { ToolsetsApi } from "../hermes/toolsets";
+import { ToolsetSettings } from "./ToolsetSettings";
 import { StartupSettings } from "./StartupSettings";
 import { VoiceSettings } from "./Voice";
 import type { VoiceSetup } from "../hermes/pipe";
 import { ScreenshotSettings } from "./ScreenshotSettings";
 import type { ScreenshotSupport } from "../hermes/tauriScreenshot";
 
-type Tab = "general" | "appearance" | "model";
-const TABS = [
+type Tab = "general" | "appearance" | "model" | "toolsets";
+const ALL_TABS = [
   { id: "general", label: "General", Icon: Settings2 },
   { id: "appearance", label: "Appearance", Icon: Palette },
   { id: "model", label: "Model", Icon: Cpu },
+  { id: "toolsets", label: "Toolsets", Icon: Wrench },
 ] as const;
 
 /** What a pull added: the older chats in Settled, and any pinned in another Hermes client, which are Active. */
@@ -51,6 +55,8 @@ export function SettingsScreen({
   listFonts,
   checkScreenshots,
   modelSettings,
+  toolsets,
+  runningReplies = 0,
   onClearCache,
   onPullOlder,
   onSignOut,
@@ -79,6 +85,10 @@ export function SettingsScreen({
   checkScreenshots?: () => Promise<ScreenshotSupport>;
   /** The profile's model setup on Hermes. */
   modelSettings: ModelSettingsApi;
+  /** The profile's toolsets on Hermes; without it there is no Toolsets tab. */
+  toolsets?: ToolsetsApi;
+  /** Chats of the shown profile with a reply running now. */
+  runningReplies?: number;
   onClearCache: () => void;
   /** Resolves to the older chats added. */
   onPullOlder: () => Promise<Chat[]>;
@@ -99,6 +109,7 @@ export function SettingsScreen({
   useEffect(() => {
     if (showTextGeneration) setTab("model");
   }, [showTextGeneration]);
+  const TABS = ALL_TABS.filter((t) => t.id !== "toolsets" || toolsets);
 
   const pull = async () => {
     setPulling(true);
@@ -149,6 +160,11 @@ export function SettingsScreen({
           <div id="settings-panel-model" role="tabpanel" aria-labelledby="settings-tab-model">
             {/* A draft lives only while this tab is open, and for one profile. */}
             <ModelSettings key={profile} api={modelSettings} profile={profile} connected={status === "connected"} showTextGeneration={showTextGeneration} />
+          </div>
+        ) : tab === "toolsets" && toolsets ? (
+          <div id="settings-panel-toolsets" role="tabpanel" aria-labelledby="settings-tab-toolsets">
+            {/* Read for one profile; switching profile reads the new one's afresh. */}
+            <ToolsetSettings key={profile} api={toolsets} profile={profile} connected={status === "connected"} runningReplies={runningReplies} />
           </div>
         ) : (
           <div id="settings-panel-general" role="tabpanel" aria-labelledby="settings-tab-general">

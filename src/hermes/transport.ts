@@ -30,6 +30,7 @@ import { noOthers, OtherProfilesCheck } from "./otherProfiles";
 // Projects are Hermes's own, read and written with legacy `projects.*` (projects.ts, research doc "Projects").
 import { projectsApi, type ProjectsApi } from "./projects";
 import { ModelSettingsApi } from "./modelSettings";
+import { ToolsetsApi } from "./toolsets";
 import type { OpenPipe, Pipe, PipeEvent, RestMethod, Route, Speech, Transcript, VoiceSetup } from "./pipe";
 import { remoteFiles, type RemoteFiles } from "./remoteFiles";
 import { isUnsecure } from "./unsecure";
@@ -488,6 +489,22 @@ export class Hermes {
   readonly modelSettings = new ModelSettingsApi(
     (method, pathAndQuery, body) => this.rest(method, pathAndQuery, body),
     () => this.profile,
+  );
+
+  /**
+   * Settings → Toolsets' reads and writes (toolsets.ts). Each call names its profile. Turning speech-to-text on or off
+   * changes what the Voice section reads, so its cached read is dropped.
+   */
+  readonly toolsets = new ToolsetsApi(
+    // Only over a connection that is up: never a closed or dropped pipe.
+    async (method, pathAndQuery, body) => {
+      const pipe = this.closing ? undefined : this.connectedPipe();
+      if (!pipe) throw new Error("Not connected to Hermes.");
+      return JSON.parse(await pipe.request(method, pathAndQuery, body === undefined ? undefined : JSON.stringify(body)));
+    },
+    (_profile, name) => {
+      if (name === "stt") this.voiceRead = undefined;
+    },
   );
 
   /** The profile whose chats are shown. */

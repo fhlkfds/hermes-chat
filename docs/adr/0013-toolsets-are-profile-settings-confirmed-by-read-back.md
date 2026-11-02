@@ -1,0 +1,19 @@
+# Toolsets are the profile's setting on Hermes, changed one at a time and confirmed by read-back
+
+Settings → Toolsets shows and changes which toolsets Hermes offers the model in the profile shown, through the dashboard's own routes at `bf0203a` (`hermes_cli/web_routers/tools.py`): `GET /api/tools/toolsets?profile=` to read, `PUT /api/tools/toolsets/{name}?profile=` with `{"enabled": true|false}` to change one. The setting is the profile's `platform_toolsets.<platform>` in its config.yaml (`stt.enabled` for speech-to-text). For every toolset but the platform-restricted ones the platform is `cli`, which is what Hermes builds this app's chats with (`tui_gateway/agent_factory._load_enabled_toolsets`), and also the CLI's, the TUI's and the official desktop app's. Each change is checked against a fresh read first and reported as saved only when a read afterwards shows it.
+
+## Considered options
+
+- **Per-chat toolsets.** Rejected: Hermes has no per-chat toolset setting on the dashboard. The legacy socket's `tools.configure` writes the same `platform_toolsets.cli` and then rebuilds the chat's agent (`_reset_session_agent`), which would change a chat under a running reply and still change every other chat too.
+- **Write the whole list with `PUT /api/config`.** Rejected: it merges a client's copy over the stored config, so a change made elsewhere between the read and the write would be lost, and it would bypass `_save_platform_tools`, which keeps MCP server entries and reconciles `agent.disabled_toolsets`. The toggle route changes one name under Hermes's config lock.
+- **Keep toggles on this computer.** Rejected: Hermes would never see them. A switch that isn't on the server is no switch.
+- **Trust a 200.** Rejected: Hermes can save a toolset on and still resolve it off (an `agent.disabled_toolsets` entry naming a composite such as `debugging` strips its tools). The read-back decides; the answer only adds the install Hermes started.
+
+## Consequences
+
+- The server has no revision or ETag for the toolset list, so "check, then write" leaves a short window in which another client's change to the same toolset can be overwritten. A change to a different toolset is never lost, since each write names one toolset and Hermes rewrites the list under its lock. One change is in flight at a time from this screen.
+- Whether the server takes changes is asked without changing anything: a `PUT` for a name no toolset has, with `enabled` that isn't a boolean. FastAPI answers 422 before the route runs; a server that took the body would still answer 400 for the name before reading the config. A server without the route answers its own 404 or 405, and the screen then shows each toolset's state without switches.
+- The Rust relay passes only `PUT api/tools/toolsets/<name>` with exactly `{"enabled": bool}` (and that probe), not the same prefix's `env`, `provider`, `model` or `post-setup` routes, which write keys or run installs.
+- Turning a toolset on can make Hermes start a background `hermes tools post-setup` install on the server. At `bf0203a` it does so only for `cua_driver` (Computer Use) while it isn't installed; the screen asks first in that case and reports `post_setup_started` afterwards. Other providers that report needing setup, such as web's `ddgs`, aren't installed by the toggle.
+- A first change through Hermes's route saves the profile's whole resolved list explicitly, plus Hermes's own `known_builtin_toolsets` and `known_plugin_toolsets` bookkeeping; every other config field is kept. That is what `hermes tools` does too; how toolsets added by a later Hermes are treated then follows Hermes's own `known_builtin_toolsets` record.
+- A change doesn't reach a chat Hermes already has open: agents keep the toolsets they were built with. The screen says so, and says when a reply is running in the profile.

@@ -609,6 +609,31 @@ export class FakeHermes {
   /** The profile's model setup, as `config.yaml` holds it, and the catalog `model.options` lists. */
   modelConfig: FakeModelConfig = fakeModelConfig();
 
+  /** The toolsets every profile lists (plugins aside, the catalog is the same for each). */
+  toolsetCatalog: FakeToolset[] = fakeToolsets();
+  /** Each profile's enabled toolsets, as its config.yaml resolves them; a profile not here has the defaults. */
+  toolsetsOn: Record<string, Set<string>> = {};
+  /**
+   * Which toolset routes this server has: all, `read-only` (a list but no toggle route) or `none` (neither), each
+   * missing one answering FastAPI's own 404.
+   */
+  toolsetRoutes: "all" | "read-only" | "none" = "all";
+  /** While set, the toggle route refuses every change with this status and reason, writing nothing. */
+  toolsetRefusal?: { status: number; detail: string };
+  /** Names `agent.disabled_toolsets` strips through a composite: saving them on still reads back off. */
+  toolsetSuppressed = new Set<string>();
+  /** While set, the toggle route waits for it after writing and before it answers. */
+  toolsetGate?: Promise<void>;
+  /** The next toggle writes, then answers with this error anyway (a failure after the save, such as a 500). */
+  failAfterToolsetWrite?: { status: number; detail: string };
+  /** After the next toggle, every toolset list read fails with a 500. */
+  toolsetReadsFailAfterWrite = false;
+  private toolsetReadsFailing = false;
+  /** The next toggle drops the connection before Hermes answers: `stored` wrote it first, `lost` never arrived. */
+  dropOnToolsetWrite?: "stored" | "lost";
+  /** Every toggle the route took, after validation: profile, name and value. */
+  readonly toolsetWrites: { profile: string; name: string; enabled: boolean }[] = [];
+
   private onEvent?: (e: PipeEvent) => void;
   private imagesStaged = 0;
   private resumed = 0;
@@ -681,6 +706,8 @@ export class FakeHermes {
           (method === "DELETE" && patch ? () => this.deleteSession(decodeURIComponent(patch[1]), req.query.get("profile")) : undefined) ??
           (method === "GET" && snapshot ? () => this.mutationSnapshot(snapshot[1], req.query.get("profile")) : undefined) ??
           (method === "GET" && messages ? () => this.storedMessages(decodeURIComponent(messages[1]), req.query) : undefined);
+        const toolset = /^\/api\/tools\/toolsets(?:\/([^/]+)(\/config)?)?$/.exec(req.path);
+        if (!handler && toolset) return JSON.stringify(await this.toolsetRoute(req, toolset[1], !!toolset[2]));
         if (!handler) throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
         return JSON.stringify(await handler(req));
       },
@@ -700,6 +727,62 @@ export class FakeHermes {
       },
     };
   };
+
+  /** A profile's enabled toolsets, its defaults when it has saved none: every listed one but `discord` and `image_gen`. */
+  enabledToolsets(profile: string): Set<string> {
+    return (this.toolsetsOn[profile] ??= new Set(this.toolsetCatalog.filter((t) => !["discord", "image_gen", "computer_use"].includes(t.name)).map((t) => t.name)));
+  }
+
+  /** `hermes_cli/web_routers/tools.py` at the deployed `bf0203a`: the list, one toolset's config, and the toggle. */
+  private async toolsetRoute(req: RestRequest, rawName: string | undefined, config: boolean): Promise<unknown> {
+    const notFound = () => new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
+    if (this.toolsetRoutes === "none") throw notFound();
+    const profile = req.query.get("profile") ?? "default";
+    if (profile !== "default" && !(profile in this.otherProfiles))
+      throw new Error(`The dashboard answered 404: {"detail":"Profile '${profile}' does not exist"}`);
+    const name = rawName === undefined ? undefined : decodeURIComponent(rawName);
+    const on = this.enabledToolsets(profile);
+    const known = (n: string) => this.toolsetCatalog.find((t) => t.name === n);
+    if (req.method === "GET" && name === undefined && this.toolsetReadsFailing)
+      throw new Error(`The dashboard answered 500: {"detail":"Internal Server Error"}`);
+    if (req.method === "GET" && name === undefined)
+      return this.toolsetCatalog.map(({ installs: _i, ...t }) => {
+        const enabled = on.has(t.name) && !this.toolsetSuppressed.has(t.name);
+        return { ...t, enabled, available: enabled };
+      });
+    if (req.method === "GET" && name !== undefined && config) {
+      const t = known(name);
+      if (!t) throw new Error(`The dashboard answered 400: {"detail":"Unknown toolset: ${name}"}`);
+      const providers = t.installs ? [{ name: "cua-driver", env_vars: [], post_setup: t.installs, status: "needs_setup", is_active: false }] : [];
+      // Web's keyless DuckDuckGo row reports `needs_setup` for its package, which the toggle never installs (checked live).
+      if (name === "web") providers.push({ name: "DuckDuckGo", env_vars: [], post_setup: "ddgs", status: "needs_setup", is_active: false });
+      return { name, has_category: providers.length > 0, providers, active_provider: null };
+    }
+    if (req.method === "PUT" && name !== undefined && !config) {
+      if (this.toolsetRoutes === "read-only") throw notFound();
+      // `ToolsetToggle`: FastAPI checks the body before the route runs.
+      if (typeof req.body?.enabled !== "boolean")
+        throw new Error(`The dashboard answered 422: {"detail":[{"type":"bool_parsing","loc":["body","enabled"],"msg":"Input should be a valid boolean"}]}`);
+      if (!known(name)) throw new Error(`The dashboard answered 400: {"detail":"Unknown toolset: ${name}"}`);
+      if (this.toolsetRefusal) throw new Error(`The dashboard answered ${this.toolsetRefusal.status}: ${JSON.stringify({ detail: this.toolsetRefusal.detail })}`);
+      const drop = this.dropOnToolsetWrite;
+      this.dropOnToolsetWrite = undefined;
+      if (drop === "lost") throw new Error("Can't reach the Hermes dashboard: connection reset");
+      const enabled = req.body.enabled;
+      this.toolsetWrites.push({ profile, name, enabled });
+      if (enabled) on.add(name);
+      else on.delete(name);
+      if (drop === "stored") throw new Error("Can't reach the Hermes dashboard: connection reset");
+      if (this.toolsetReadsFailAfterWrite) this.toolsetReadsFailing = true;
+      const late = this.failAfterToolsetWrite;
+      this.failAfterToolsetWrite = undefined;
+      if (late) throw new Error(`The dashboard answered ${late.status}: ${JSON.stringify({ detail: late.detail })}`);
+      await this.toolsetGate;
+      const installs = enabled ? known(name)?.installs : undefined;
+      return { ok: true, name, platform: known(name)!.platform, enabled, post_setup_started: installs ?? null };
+    }
+    throw notFound();
+  }
 
   /** A Server file for `/api/fs/*`, failing the way `_fs_regular_file` and `_is_sensitive_path` do at `bf0203a`. */
   private serverFile(query: URLSearchParams): { path: string; data: string } {
@@ -1003,4 +1086,33 @@ function formatRefValue(value: string): string {
   if (!/[\s()[\]{}<>"'`]/.test(value)) return value;
   const q = ["`", '"', "'"].find((q) => !value.includes(q));
   return q ? `${q}${value}${q}` : value;
+}
+
+/**
+ * A configurable toolset as `GET /api/tools/toolsets` lists it at the deployed `bf0203a` (`CONFIGURABLE_TOOLSETS`,
+ * labels through `gui_toolset_label`). `installs`: a provider `post_setup` the toolset still needs, which turning it on
+ * starts in the background (`toggle_toolset`'s install-on-enable).
+ */
+export type FakeToolset = {
+  name: string;
+  label: string;
+  description: string;
+  platform: string;
+  platform_label: string;
+  configured: boolean;
+  tools: string[];
+  installs?: string;
+};
+
+export function fakeToolsets(): FakeToolset[] {
+  const cli = { platform: "cli", platform_label: "CLI", configured: true };
+  return [
+    { name: "web", label: "Web Search & Scraping", description: "web_search, web_extract", ...cli, tools: ["web_extract", "web_search"] },
+    { name: "terminal", label: "Terminal & Processes", description: "terminal, process", ...cli, tools: ["process", "terminal"] },
+    { name: "file", label: "File Operations", description: "read, write, patch, search", ...cli, tools: ["patch", "read_file", "search_files", "write_file"] },
+    { name: "image_gen", label: "Image Generation", description: "image_generate", ...cli, configured: false, tools: ["image_generate"] },
+    { name: "stt", label: "Speech-to-Text", description: "voice transcription (gateway voice messages + voice mode)", ...cli, tools: [] },
+    { name: "discord", label: "Discord (read/participate)", description: "fetch messages, search members, create thread", platform: "discord", platform_label: "Discord", configured: true, tools: ["discord_fetch"] },
+    { name: "computer_use", label: "Computer Use (macOS/Windows/Linux)", description: "background desktop control via cua-driver", ...cli, tools: ["computer_use"], installs: "cua_driver" },
+  ];
 }

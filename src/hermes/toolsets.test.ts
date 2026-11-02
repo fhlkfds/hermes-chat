@@ -1,0 +1,264 @@
+// Settings → Toolsets' reads and writes against the fake dashboard, which mirrors `hermes_cli/web_routers/tools.py` at
+// the deployed `bf0203a`: discovery, the write check, compare-before-write, read-back, and profile isolation.
+import { describe, expect, it } from "vitest";
+import { FakeHermes, row } from "./fakeHermes";
+import { connect } from "./transport";
+import { PROBE_NAME, UnsupportedServerError, failureOf } from "./toolsets";
+
+async function connected(server = new FakeHermes()) {
+  const hermes = await connect(server.openPipe, "default");
+  return { server, hermes, api: hermes.toolsets };
+}
+
+const writes = (server: FakeHermes) => server.restRequests.filter((r) => r.method !== "GET").map((r) => [`${r.method} ${r.path}?${r.query}`, r.body]);
+const enabledIn = (server: FakeHermes, profile: string) => [...server.enabledToolsets(profile)].sort();
+
+describe("toolset discovery", () => {
+  it("lists the profile's toolsets as Hermes resolves them, with their scope", async () => {
+    const { server, api } = await connected();
+    const list = await api.list("default");
+    expect(list.profile).toBe("default");
+    expect(list.toolsets.map((t) => [t.name, t.enabled])).toEqual([
+      ["web", true],
+      ["terminal", true],
+      ["file", true],
+      ["image_gen", false],
+      ["stt", true],
+      ["discord", false],
+      ["computer_use", false],
+    ]);
+    const web = list.toolsets[0];
+    expect(web).toMatchObject({ label: "Web Search & Scraping", description: "web_search, web_extract", platform: "cli", configured: true, configOnly: false });
+    expect(list.toolsets.find((t) => t.name === "image_gen")?.configured).toBe(false);
+    expect(list.toolsets.find((t) => t.name === "stt")?.configOnly).toBe(true);
+    expect(list.toolsets.find((t) => t.name === "discord")).toMatchObject({ platform: "discord", platformLabel: "Discord" });
+    expect(server.restRequests.at(-1)).toMatchObject({ method: "GET", path: "/api/tools/toolsets" });
+    expect(server.restRequests.at(-1)?.query.get("profile")).toBe("default");
+  });
+
+  it("says when the server has no toolset routes", async () => {
+    const server = new FakeHermes();
+    server.toolsetRoutes = "none";
+    const { api } = await connected(server);
+    await expect(api.list("default")).rejects.toBeInstanceOf(UnsupportedServerError);
+    await expect(api.list("default")).rejects.toThrow("no /api/tools/toolsets route");
+  });
+
+  it("checks whether changes are taken without changing anything", async () => {
+    const { server, api } = await connected();
+    const before = enabledIn(server, "default");
+    expect(await api.writeSupport("default")).toEqual({ ok: true });
+    expect(writes(server)).toEqual([[`PUT /api/tools/toolsets/${PROBE_NAME}?profile=default`, { enabled: "probe" }]]);
+    expect(server.toolsetWrites).toEqual([]);
+    expect(enabledIn(server, "default")).toEqual(before);
+  });
+
+  it("finds a server that lists toolsets but can't change them", async () => {
+    const server = new FakeHermes();
+    server.toolsetRoutes = "read-only";
+    const { api } = await connected(server);
+    expect((await api.list("default")).toolsets.length).toBeGreaterThan(0);
+    expect(await api.writeSupport("default")).toEqual({ ok: false, reason: expect.stringContaining("no route to change them") });
+  });
+
+  it("finds a sign-in Hermes won't let change toolsets", async () => {
+    const { server, api } = await connected();
+    // A gateway or plugin in front of the route refusing the caller.
+    server.rest[`PUT /api/tools/toolsets/${PROBE_NAME}`] = () => {
+      throw new Error(`The dashboard answered 403: {"detail":"Read-only dashboard session"}`);
+    };
+    expect(await api.writeSupport("default")).toEqual({ ok: false, reason: "Hermes doesn't let this sign-in change toolsets: Read-only dashboard session" });
+  });
+
+  it("knows when providers still need an install that enabling may start", async () => {
+    const { api } = await connected();
+    expect(await api.pendingInstalls("default", "computer_use")).toEqual(["cua_driver"]);
+    expect(await api.pendingInstalls("default", "web")).toEqual([]);
+  });
+});
+
+describe("changing a toolset", () => {
+  it("writes only `enabled` for the named profile and reports saved once read back", async () => {
+    const { server, api } = await connected();
+    const r = await api.set("default", "web", false, true);
+    expect(r.kind).toBe("saved");
+    expect(writes(server)).toEqual([["PUT /api/tools/toolsets/web?profile=default", { enabled: false }]]);
+    expect(server.enabledToolsets("default").has("web")).toBe(false);
+    // Read before (compare) and after (verify).
+    const reads = server.restRequests.filter((q) => q.method === "GET" && q.path === "/api/tools/toolsets");
+    expect(reads).toHaveLength(2);
+    if (r.kind === "saved") expect(r.list.toolsets.find((t) => t.name === "web")?.enabled).toBe(false);
+  });
+
+  it("keeps every other toolset as it was", async () => {
+    const { server, api } = await connected();
+    await api.set("default", "image_gen", true, false);
+    expect(enabledIn(server, "default")).toEqual(["file", "image_gen", "stt", "terminal", "web"]);
+  });
+
+  it("reports an install Hermes started for it", async () => {
+    const { api } = await connected();
+    expect(await api.set("default", "computer_use", true, false)).toMatchObject({ kind: "saved", installing: "cua_driver" });
+  });
+
+  it("sends nothing when another client changed it since it was shown", async () => {
+    const { server, api } = await connected();
+    await api.list("default");
+    server.enabledToolsets("default").delete("terminal"); // Turned off in the official desktop app meanwhile.
+    const r = await api.set("default", "terminal", false, true);
+    expect(r).toMatchObject({ kind: "conflict", now: false });
+    expect(server.toolsetWrites).toEqual([]);
+    if (r.kind === "conflict") expect(r.list.toolsets.find((t) => t.name === "terminal")?.enabled).toBe(false);
+  });
+
+  it("sends nothing for a toolset Hermes no longer lists", async () => {
+    const { server, api } = await connected();
+    server.toolsetCatalog = server.toolsetCatalog.filter((t) => t.name !== "web");
+    expect(await api.set("default", "web", false, true)).toMatchObject({ kind: "conflict" });
+    expect(server.toolsetWrites).toEqual([]);
+  });
+
+  it("reports a refusal as nothing changed, with Hermes's reason", async () => {
+    const { server, api } = await connected();
+    server.toolsetRefusal = { status: 403, detail: "Profile is managed by an administrator" };
+    const r = await api.set("default", "web", false, true);
+    expect(r).toMatchObject({ kind: "rejected", reason: "Profile is managed by an administrator" });
+    expect(server.enabledToolsets("default").has("web")).toBe(true);
+    if (r.kind === "rejected") expect(r.list?.toolsets.find((t) => t.name === "web")?.enabled).toBe(true);
+  });
+
+  it("reads back after an error answer instead of assuming nothing changed", async () => {
+    const { server, api } = await connected();
+    server.failAfterToolsetWrite = { status: 500, detail: "post-write hook failed" };
+    expect(await api.set("default", "web", false, true)).toMatchObject({ kind: "saved", warning: "post-write hook failed" });
+    expect(server.enabledToolsets("default").has("web")).toBe(false);
+  });
+
+  it("treats a server error it can't read back as unknown, not as nothing changed", async () => {
+    const { server, api } = await connected();
+    // As when the profile's folder can't be written: the save fails with a 500, and so does the read after it.
+    server.failAfterToolsetWrite = { status: 500, detail: "Internal Server Error" };
+    server.toolsetReadsFailAfterWrite = true;
+    expect(await api.set("default", "web", false, true)).toMatchObject({ kind: "unknown", reason: "Internal Server Error" });
+  });
+
+  it("doesn't claim success when Hermes reads it back the other way", async () => {
+    const { server, api } = await connected();
+    // `agent.disabled_toolsets` strips it through a composite: the save goes in, the read-back is still off.
+    server.toolsetSuppressed.add("image_gen");
+    const r = await api.set("default", "image_gen", true, false);
+    expect(r.kind).toBe("mismatch");
+    if (r.kind === "mismatch") expect(r.list.toolsets.find((t) => t.name === "image_gen")?.enabled).toBe(false);
+  });
+
+  it("settles a dropped answer by reading back: Hermes had it", async () => {
+    const { server, api } = await connected();
+    server.dropOnToolsetWrite = "stored";
+    expect((await api.set("default", "web", false, true)).kind).toBe("saved");
+  });
+
+  it("settles a dropped answer by reading back: Hermes didn't get it", async () => {
+    const { server, api } = await connected();
+    server.dropOnToolsetWrite = "lost";
+    const r = await api.set("default", "web", false, true);
+    expect(r).toMatchObject({ kind: "unknown", reason: expect.stringContaining("connection reset") });
+    expect(server.enabledToolsets("default").has("web")).toBe(true);
+  });
+
+  it("fails before sending when it can't read the toolset first", async () => {
+    const { server, api, hermes } = await connected();
+    await hermes.close();
+    await expect(api.set("default", "web", false, true)).rejects.toThrow("Not connected");
+    expect(server.toolsetWrites).toEqual([]);
+  });
+
+  it("never sends a name the relay would refuse", async () => {
+    const { server, api } = await connected();
+    expect(await api.set("default", "../config", true, false)).toMatchObject({ kind: "rejected" });
+    expect(await api.set("default", PROBE_NAME, true, false)).toMatchObject({ kind: "rejected" });
+    expect(server.restRequests).toEqual([]);
+  });
+
+  it("goes through Hermes's profile config only, never an open chat's session", async () => {
+    const { server, hermes, api } = await connected();
+    server.sessions = [row("s1", 0)];
+    const before = server.requests.length;
+    await api.set("default", "web", false, true);
+    // No WS request (such as `tools.configure`, which resets the chat's agent) is sent.
+    expect(server.requests.length).toBe(before);
+    expect(hermes.getSnapshot().status).toBe("connected");
+  });
+});
+
+describe("concurrent changes", () => {
+  it("two different toolsets changed at once both land", async () => {
+    const { server, api } = await connected();
+    const [a, b] = await Promise.all([api.set("default", "web", false, true), api.set("default", "file", false, true)]);
+    expect([a.kind, b.kind]).toEqual(["saved", "saved"]);
+    expect(enabledIn(server, "default")).toEqual(["stt", "terminal"]);
+  });
+
+  it("a second change of the same toolset, from what was shown before the first, isn't sent", async () => {
+    const { server, api } = await connected();
+    const first = await api.set("default", "web", false, true);
+    // Another window, still showing it on, asks for off again; Hermes already has it off.
+    const second = await api.set("default", "web", false, true);
+    expect(first.kind).toBe("saved");
+    expect(second).toMatchObject({ kind: "conflict", now: false });
+    expect(server.toolsetWrites).toHaveLength(1);
+  });
+});
+
+describe("profile isolation", () => {
+  it("reads and writes each profile's own toolsets", async () => {
+    const server = new FakeHermes();
+    server.otherProfiles = { work: [] };
+    const { api } = await connected(server);
+    await api.set("work", "terminal", false, true);
+    expect(writes(server)).toEqual([["PUT /api/tools/toolsets/terminal?profile=work", { enabled: false }]]);
+    expect(server.enabledToolsets("work").has("terminal")).toBe(false);
+    expect(server.enabledToolsets("default").has("terminal")).toBe(true);
+    expect((await api.list("default")).toolsets.find((t) => t.name === "terminal")?.enabled).toBe(true);
+    expect((await api.list("work")).toolsets.find((t) => t.name === "terminal")?.enabled).toBe(false);
+  });
+
+  it("a change started before a profile switch still goes to the profile it was made in", async () => {
+    const server = new FakeHermes();
+    server.otherProfiles = { work: [] };
+    const { hermes, api } = await connected(server);
+    let release!: () => void;
+    server.toolsetGate = new Promise((r) => (release = r));
+    const pending = api.set("default", "web", false, true);
+    await new Promise((r) => setTimeout(r, 0));
+    const switching = hermes.switchProfile("work");
+    release();
+    await switching;
+    // Read back mid-switch it may not be confirmed, but it is never applied to the new profile.
+    expect(["saved", "unknown"]).toContain((await pending).kind);
+    expect(server.toolsetWrites).toEqual([{ profile: "default", name: "web", enabled: false }]);
+    expect(server.enabledToolsets("work").has("web")).toBe(true);
+  });
+});
+
+describe("speech-to-text", () => {
+  it("drops the cached voice set-up once it is switched", async () => {
+    const { server, hermes, api } = await connected();
+    expect((await hermes.voiceSetup()).sttEnabled).toBe(true);
+    await expect((await api.set("default", "stt", false, true)).kind).toBe("saved");
+    server.voice = { ...server.voice, sttEnabled: false };
+    expect((await hermes.voiceSetup()).sttEnabled).toBe(false);
+  });
+});
+
+describe("failureOf", () => {
+  it("reads the relay's wording", () => {
+    expect(failureOf(new Error(`The dashboard answered 400: {"detail":"Unknown toolset: x"}`))).toEqual({ status: 400, reason: "Unknown toolset: x" });
+    expect(failureOf(new Error(`The dashboard answered 422: {"detail":[{"msg":"Input should be a valid boolean"}]}`))).toEqual({
+      status: 422,
+      reason: "Input should be a valid boolean",
+    });
+    expect(failureOf(new Error("The dashboard sign-in has expired. Sign in again."))).toMatchObject({ status: 401, signedOut: true });
+    expect(failureOf(new Error("Hermes Chat doesn't relay PUT api/x."))).toMatchObject({ notRelayed: true });
+    expect(failureOf(new Error("Can't reach the Hermes dashboard: reset"))).toEqual({ reason: "Can't reach the Hermes dashboard: reset" });
+  });
+});

@@ -241,6 +241,9 @@ fn stub_routes() -> Router {
         .route("/api/model/set", post(echo_write))
         .route("/api/config", put(echo_write).get(config))
         .route("/api/model/moa", put(echo_write).post(echo_write))
+        .route("/api/tools/toolsets/{name}", put(echo_write))
+        .route("/api/tools/toolsets/{name}/env", put(echo_write))
+        .route("/api/tools/toolsets/{name}/post-setup", post(echo_write))
         .route("/api/rotate", get(rotate))
         .route("/api/expire", get(expire))
         .route("/api/busy", get(busy))
@@ -440,6 +443,49 @@ async fn relays_the_model_settings_writes() {
     let body = json!({"config": {"agent": {"reasoning_effort": "low"}}}).to_string();
     let got: Value = serde_json::from_str(&dashboard.request("PUT", "api/config?profile=default", Some(body)).await.unwrap()).unwrap();
     assert_eq!(got, json!({"uri": "/api/config?profile=default", "content_type": "application/json", "body": {"config": {"agent": {"reasoning_effort": "low"}}}}));
+}
+
+#[tokio::test]
+async fn relays_the_toolset_switch_with_only_enabled_in_the_body() {
+    let dashboard = signed_in().await;
+    let got: Value = serde_json::from_str(
+        &dashboard.request("PUT", "api/tools/toolsets/web?profile=work", Some(r#"{"enabled":false}"#.into())).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(got, json!({"uri": "/api/tools/toolsets/web?profile=work", "content_type": "application/json", "body": {"enabled": false}}));
+    // The write-support check: only the probe name, and only with its invalid body.
+    let probe = format!("api/tools/toolsets/{}?profile=work", transport::TOOLSET_PROBE_NAME);
+    assert!(dashboard.request("PUT", &probe, Some(r#"{"enabled":"probe"}"#.into())).await.is_ok());
+}
+
+#[tokio::test]
+async fn relays_no_other_toolset_write() {
+    let dashboard = signed_in().await;
+    let probe = format!("api/tools/toolsets/{}", transport::TOOLSET_PROBE_NAME);
+    for (method, path, body) in [
+        // Routes under the prefix that write secrets, pick providers or run installs.
+        ("PUT", "api/tools/toolsets/web/env", r#"{"enabled":true}"#),
+        ("PUT", "api/tools/toolsets/web/provider", r#"{"enabled":true}"#),
+        ("POST", "api/tools/toolsets/web/post-setup", r#"{"enabled":true}"#),
+        ("POST", "api/tools/toolsets/web", r#"{"enabled":true}"#),
+        // Bodies with anything but a boolean `enabled`.
+        ("PUT", "api/tools/toolsets/web", r#"{"enabled":true,"profile":"other"}"#),
+        ("PUT", "api/tools/toolsets/web", r#"{"enabled":"yes"}"#),
+        ("PUT", "api/tools/toolsets/web", r#"{}"#),
+        ("PUT", "api/tools/toolsets/web", r#"[true]"#),
+        ("PUT", "api/tools/toolsets/web", "not json"),
+        ("PUT", probe.as_str(), r#"{"enabled":false}"#),
+        ("PUT", "api/tools/toolsets/web", r#"{"enabled":"probe"}"#),
+        // Names this app never sends.
+        ("PUT", "api/tools/toolsets/", r#"{"enabled":true}"#),
+        ("PUT", "api/tools/toolsets/..", r#"{"enabled":true}"#),
+        ("PUT", "api/tools/toolsets/a%2Fb", r#"{"enabled":true}"#),
+        ("PUT", "api/tools/toolsets", r#"{"enabled":true}"#),
+    ] {
+        let err = dashboard.request(method, path, Some(body.into())).await.err().unwrap();
+        assert!(matches!(err, TransportError::NotRelayed(_)), "{method} {path} {body}: {err:?}");
+    }
+    assert!(dashboard.request("PUT", "api/tools/toolsets/web", None).await.is_err());
 }
 
 #[tokio::test]
