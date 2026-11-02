@@ -9,7 +9,9 @@
 // "Approvals on the legacy generation".
 // The list holds the past month's chats until the owner pulls older history for the profile; from then on it holds
 // them all.
-import { isWaiting, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ConnectionStatus, type Found, type Item, type Source } from "./model";
+// Unread chats in the other profiles are polled over dashboard REST (otherProfiles.ts).
+import { isWaiting, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ConnectionStatus, type Found, type Item, type OtherProfiles, type Source } from "./model";
+import { noOthers, OtherProfilesCheck } from "./otherProfiles";
 import type { OpenPipe, Pipe, PipeEvent, Route } from "./pipe";
 import { isUnsecure } from "./unsecure";
 
@@ -28,6 +30,8 @@ const LIST_WINDOW_MS = 30 * 86_400_000;
 /** Dashboard REST caps `GET /api/sessions` pages at 100. */
 const PAGE_SIZE = 100;
 const MAX_PAGES = 20;
+/** Checking another profile for Unread chats reads one page of its most recent ones. */
+const OTHER_PAGE_SIZE = 50;
 /** The most chats one search lists; dashboard REST caps it at 100. */
 const SEARCH_LIMIT = 50;
 
@@ -151,6 +155,7 @@ export class RpcError extends Error {
  * `profile`: the profile whose chats are shown. `route`: how the latest connection reached the dashboard. `unsecure`:
  * its traffic isn't encrypted (unsecure.ts). `closedReason`: why the connection dropped, or why the last try to
  * reconnect failed. `olderPulled`: the list holds the profile's chats older than a month too (`pullOlderHistory`).
+ * `others`: Unread chats in the profiles not shown, as last checked (`checkOtherProfiles`).
  */
 export type Snapshot = {
   profile: string;
@@ -161,6 +166,7 @@ export type Snapshot = {
   unsecure: boolean;
   closedReason?: string;
   syncError?: string;
+  others: OtherProfiles;
 };
 
 /**
@@ -232,13 +238,21 @@ export class Hermes {
   private syncing?: Promise<Error | undefined>;
   private syncAgain = false;
   private background = new Set<Promise<unknown>>();
+  /** When the shown profile's list last synced on this connection. */
+  private listedAt?: number;
+  private others = new OtherProfilesCheck({
+    scope: () => (this.pipe && this.snapshot.status === "connected" && !this.closing ? { connection: this.generation, profile: this.profile } : undefined),
+    profiles: () => this.profiles(),
+    unreadIn: (profile) => this.unreadIn(profile),
+    publish: (others) => this.update({ others }),
+  });
 
   constructor(
     private openPipe: OpenPipe,
     profile: string,
     private cache: ChatCache = noCache,
   ) {
-    this.snapshot = { profile, chats: cache.load(profile), olderPulled: cache.olderPulled(profile), status: "offline", unsecure: false };
+    this.snapshot = { profile, chats: cache.load(profile), olderPulled: cache.olderPulled(profile), status: "offline", unsecure: false, others: noOthers };
   }
 
   /** The profile whose chats are shown. */
@@ -314,6 +328,9 @@ export class Hermes {
    */
   async switchProfile(name: string): Promise<void> {
     if (name === this.profile) return;
+    const unread = this.snapshot.chats.filter((c) => c.unread).length;
+    this.others.switched(this.profile, name, this.listedAt === undefined ? undefined : { unread, listedAt: this.listedAt });
+    this.listedAt = undefined;
     this.viewing = undefined;
     this.staleItems.clear();
     this.resumeOnReconnect.clear();
@@ -326,6 +343,15 @@ export class Hermes {
     if (this.pipe && this.pipeProfile === name) return void this.sync();
     if (this.pipe) this.detach(`Switching to the ${name} profile.`);
     await this.reconnect();
+  }
+
+  /**
+   * Checks the profiles not shown for Unread chats, over dashboard REST and without switching the socket. Only reads:
+   * nothing is marked read. Runs at most every 15 seconds; the app calls it every `CHECK_EVERY_MS`. Results land in
+   * the snapshot's `others`.
+   */
+  checkOtherProfiles(): Promise<void> {
+    return this.others.check();
   }
 
   /**
@@ -1030,10 +1056,25 @@ export class Hermes {
     const listedIds = new Set(listed.map((c) => c.id));
     const onThisConnection = this.snapshot.chats.filter((c) => (c.runtimeId || this.revealed.has(c.id)) && !listedIds.has(c.id));
     const chats = [...onThisConnection, ...listed];
+    this.listedAt = Date.now();
     this.update({ chats, syncError: undefined });
     if (readOnScreen) this.markRead(this.viewing!);
     this.saveList(profile, chats);
     return undefined;
+  }
+
+  /**
+   * How many chats in another profile's list are Unread, counted as the list would show them, from one page of its
+   * most recent chats. `more`: the list reaches past that page, so there may be more.
+   */
+  private async unreadIn(profile: string): Promise<{ unread: number; more: boolean }> {
+    const cutoff = this.cache.olderPulled(profile) ? -Infinity : Date.now() - LIST_WINDOW_MS;
+    const query = new URLSearchParams({ profile, order: "recent", limit: String(OTHER_PAGE_SIZE), offset: "0", exclude_sources: "cron" });
+    const res = (await this.rest("GET", `api/sessions?${query}`)) as SessionPage;
+    const unread = res.sessions.filter((r) => r.unread && !r.archived && !this.deleted.has(r.id) && lastActive(r) >= cutoff).length;
+    // As in syncOnce: the page also carries every pinned row, and the unpinned ones follow recency.
+    const passedCutoff = res.sessions.some((r) => !r.pinned && lastActive(r) < cutoff);
+    return { unread, more: !passedCutoff && res.sessions.length > 0 && OTHER_PAGE_SIZE < res.total };
   }
 
   /** Keeps the profile's list for the next start, without the chats' transcripts. */

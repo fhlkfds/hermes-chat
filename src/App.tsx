@@ -1,5 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { connect, type Hermes } from "./hermes/transport";
+import { CHECK_EVERY_MS } from "./hermes/otherProfiles";
 import { type Account, type SavedSignIn, savedSignIn, signIn, signOut } from "./hermes/account";
 import { localChatCache } from "./hermes/chatCache";
 import { systemKeyring } from "./hermes/tauriKeyring";
@@ -120,7 +121,7 @@ export default function App() {
 }
 
 function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; username: string; notSaved?: string; onSignOut: () => Promise<void> }) {
-  const { profile, chats, olderPulled, status, route, unsecure, closedReason, syncError } = useSyncExternalStore(
+  const { profile, chats, olderPulled, status, route, unsecure, closedReason, syncError, others } = useSyncExternalStore(
     hermes.subscribe,
     hermes.getSnapshot,
   );
@@ -231,6 +232,13 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
     return () => clearInterval(timer);
   }, [hermes]);
 
+  // Unread chats in the other profiles are polled, so the switcher can be up to CHECK_EVERY_MS behind.
+  useEffect(() => {
+    void hermes.checkOtherProfiles();
+    const timer = setInterval(() => void hermes.checkOtherProfiles(), CHECK_EVERY_MS);
+    return () => clearInterval(timer);
+  }, [hermes]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey)) return;
@@ -266,6 +274,7 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
       {listOpen && (
         <ChatList
           profile={profile}
+          others={others}
           chats={chats}
           syncError={syncError}
           selectedId={settingsOpen ? null : selectedId}
@@ -273,6 +282,7 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
           onSettle={setSettled}
           onDelete={deleteChat}
           onListProfiles={() => hermes.profiles()}
+          onCheckOthers={() => void hermes.checkOtherProfiles()}
           onSwitchProfile={switchProfile}
         />
       )}

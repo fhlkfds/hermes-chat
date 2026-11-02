@@ -1,0 +1,119 @@
+// Unread chats in the profiles the app doesn't show. The socket announces store changes only for the profiles the
+// dashboard process serves (research doc "sessions.changed across profiles"), so the other profiles are polled over
+// dashboard REST instead, without touching the chat socket. A check only reads lists: it never moves a chat's read
+// watermark. Each check belongs to the connection and profile shown when it started; once either changes, what it
+// finds is dropped and it asks nothing more.
+import type { OtherProfile, OtherProfiles } from "./model";
+
+/** How often the app checks the other profiles. What it shows can be this far behind. */
+export const CHECK_EVERY_MS = 120_000;
+/** A check asked for sooner than this after the last one, for the same connection and profile, is skipped. */
+const MIN_GAP_MS = 15_000;
+/** The most profiles one check reads at once. */
+const AT_ONCE = 2;
+/** The most profiles one check reads; the ones checked longest ago go first, so a big server is covered in turns. */
+const PER_CHECK = 20;
+
+/** The connection (pipe generation) and the profile shown. */
+export type Scope = { connection: number; profile: string };
+
+/** What a check needs from the transport. `scope` is undefined while there is no connection. */
+export type OtherProfilesPort = {
+  scope(): Scope | undefined;
+  profiles(): Promise<string[]>;
+  unreadIn(profile: string): Promise<{ unread: number; more: boolean }>;
+  publish(others: OtherProfiles): void;
+};
+
+export const noOthers: OtherProfiles = { byName: {} };
+
+const sameScope = (a?: Scope, b?: Scope) => !!a && !!b && a.connection === b.connection && a.profile === b.profile;
+
+export class OtherProfilesCheck {
+  private state: OtherProfiles = noOthers;
+  private running?: { scope: Scope; done: Promise<void> };
+  private last?: { scope: Scope; at: number };
+
+  constructor(private port: OtherProfilesPort) {}
+
+  /**
+   * Checks the profiles not shown for Unread chats, a few at a time. A call while a check for the same connection and
+   * profile is running joins it; one less than `MIN_GAP_MS` after the last start is skipped.
+   */
+  check(): Promise<void> {
+    const scope = this.port.scope();
+    if (!scope) return Promise.resolve();
+    if (this.running && sameScope(this.running.scope, scope)) return this.running.done;
+    if (sameScope(this.last?.scope, scope) && Date.now() - this.last!.at < MIN_GAP_MS) return Promise.resolve();
+    this.last = { scope, at: Date.now() };
+    const done = this.run(scope).finally(() => this.running?.done === done && (this.running = undefined));
+    this.running = { scope, done };
+    return done;
+  }
+
+  /**
+   * The owner switched from `from` to `to`. `to` is shown now, so it leaves these results. `from` gets what its list
+   * showed, read at `listedAt`, if it was listed on this connection.
+   */
+  switched(from: string, to: string, fromList?: { unread: number; listedAt: number }) {
+    const { [to]: _shown, ...byName } = this.state.byName;
+    if (fromList) byName[from] = { unread: fromList.unread, more: false, checkedAt: fromList.listedAt };
+    this.publish({ ...this.state, byName });
+  }
+
+  private async run(scope: Scope) {
+    const current = () => sameScope(this.port.scope(), scope);
+    let names: string[];
+    try {
+      names = await this.port.profiles();
+    } catch (e) {
+      if (current()) this.publish({ ...this.state, error: `Couldn't list the profiles: ${(e as Error).message}` });
+      return;
+    }
+    if (!current()) return;
+    const others = names.filter((n) => n !== scope.profile);
+    // Profiles gone from the server leave the results.
+    const byName = Object.fromEntries(others.flatMap((n) => (this.state.byName[n] ? [[n, this.state.byName[n]]] : [])));
+    this.publish({ byName, error: undefined, checkedAt: Date.now() });
+    const due = [...others].sort((a, b) => (byName[a]?.checkedAt ?? -Infinity) - (byName[b]?.checkedAt ?? -Infinity)).slice(0, PER_CHECK);
+    await eachAtMost(due, AT_ONCE, async (name) => {
+      if (!current()) return;
+      let found: OtherProfile;
+      try {
+        found = { ...(await this.port.unreadIn(name)), checkedAt: Date.now() };
+      } catch (e) {
+        // An earlier answer stays, with the time it was read.
+        found = { ...this.state.byName[name], error: (e as Error).message };
+      }
+      if (current()) this.publish({ ...this.state, byName: { ...this.state.byName, [name]: found } });
+    });
+  }
+
+  private publish(state: OtherProfiles) {
+    this.state = state;
+    this.port.publish(state);
+  }
+}
+
+/**
+ * Totals the other profiles' results for the profile switcher: Unread chats across them, whether there may be more,
+ * and the profiles whose latest check failed.
+ */
+export function totalUnread(others: OtherProfiles): { unread: number; more: boolean; withUnread: string[]; failed: string[] } {
+  const entries = Object.entries(others.byName);
+  return {
+    unread: entries.reduce((n, [, p]) => n + (p.unread ?? 0), 0),
+    more: entries.some(([, p]) => p.more),
+    withUnread: entries.filter(([, p]) => (p.unread ?? 0) > 0).map(([n]) => n),
+    failed: entries.filter(([, p]) => p.error).map(([n]) => n),
+  };
+}
+
+/** Runs `fn` over `items`, at most `n` at a time. */
+async function eachAtMost<T>(items: T[], n: number, fn: (item: T) => Promise<void>) {
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) await fn(items[next++]);
+  };
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, worker));
+}
