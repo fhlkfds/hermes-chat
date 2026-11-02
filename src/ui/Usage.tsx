@@ -71,9 +71,12 @@ export function ChatUsageButton({ chat, onRefresh }: { chat: Pick<Chat, "usage" 
   if (!usage && !usageError) return null;
   const total = usage && totalTokens(usage);
   const cost = usage && costLabel(usage.cost);
-  const label = !usage
-    ? "Usage unknown"
-    : `${total !== undefined ? `${tokens(total)} tokens` : `${tokens(usage.input ?? 0)} in · ${tokens(usage.output ?? 0)} out`} · ${cost!.short}`;
+  // A count Hermes didn't report is left out here; the breakdown says so.
+  const counts =
+    total !== undefined
+      ? [`${tokens(total)} tokens`]
+      : [...(usage?.input !== undefined ? [`${tokens(usage.input)} in`] : []), ...(usage?.output !== undefined ? [`${tokens(usage.output)} out`] : [])];
+  const label = !usage ? "Usage unknown" : [...counts, cost!.short].join(" · ");
   return (
     <div className="chat-usage" ref={wrap}>
       <button

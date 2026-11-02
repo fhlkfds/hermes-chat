@@ -36,8 +36,10 @@ describe("Hermes's live counters", () => {
   it("reads Hermes's stand-in for zero uncached input as zero when the cache was read", () => {
     // `g("session_input_tokens", "session_prompt_tokens")` sends `prompt` while the uncached count is 0.
     expect(countersOf({ input: 1000, prompt: 1000, output: 5, calls: 1, cache_hit_pct: 100 })).toMatchObject({ prompt: 1000, input: 0 });
-    // No cache read: all of it uncached.
-    expect(countersOf({ input: 1000, prompt: 1000, output: 5, calls: 1 })).toMatchObject({ prompt: 1000, input: 1000 });
+    // A hit rate rounded to 0 still means the cache was read.
+    expect(countersOf({ input: 1000, prompt: 1000, output: 5, calls: 1, cache_hit_pct: 0 })).toMatchObject({ prompt: 1000, input: 0 });
+    // No cache read: all uncached, or all cache writes. Unknown.
+    expect(countersOf({ input: 1000, prompt: 1000, output: 5, calls: 1 })).toEqual({ prompt: 1000, output: 5, reasoning: 0, calls: 1 });
   });
 
   it("counts an agent not built yet as zero, and anything not an object as unknown", () => {
@@ -80,11 +82,15 @@ describe("A reply's usage", () => {
     expect(replyUsage(first, second)).toEqual({ prompt: 1100, input: 100, cache: 1000, output: 15, reasoning: 0, calls: 1 });
   });
 
-  it("leaves the uncached part unknown when it doesn't fit, keeping the input total", () => {
-    // A session whose first calls were wholly cache writes reported as uncached, then a real uncached count.
+  it("leaves the uncached part unknown while Hermes's counts can't tell it, keeping the input total", () => {
+    // Turn 1 wrote 1,000 tokens to the cache and sent none uncached: Hermes reports input = prompt, with no cache read.
     const first = countersOf({ input: 1000, prompt: 1000, output: 10, calls: 1 })!;
-    const second = countersOf({ input: 100, prompt: 2100, output: 25, calls: 2 })!;
-    expect(replyUsage(first, second)).toEqual({ prompt: 1100, output: 15, reasoning: 0, calls: 1 });
+    expect(replyUsage(ZERO_COUNTERS, first)).toEqual({ prompt: 1000, output: 10, reasoning: 0, calls: 1 });
+    // Turn 2 sent 2,000 uncached: its split would wrongly be 1,000 and 1,000 if turn 1 had been taken as uncached.
+    const second = countersOf({ input: 2000, prompt: 3000, output: 25, calls: 2 })!;
+    expect(replyUsage(first, second)).toEqual({ prompt: 2000, output: 15, reasoning: 0, calls: 1 });
+    // From then on both ends know theirs.
+    expect(replyUsage(second, countersOf({ input: 2300, prompt: 3400, output: 30, calls: 3 })!)).toMatchObject({ input: 300, cache: 100 });
   });
 
   it("is nothing for a turn that made no model call", () => {
@@ -115,13 +121,14 @@ describe("A chat's stored usage", () => {
     expect(totalTokens(u)).toBe(42298 + 60160 + 1006);
     expect(costLabel(u.cost)).toEqual({
       short: "~$0.0030",
-      detail: "Estimated by Hermes from the provider's published model prices. Your provider's bill may differ. A call Hermes couldn't price isn't counted.",
+      detail:
+        "Estimated by Hermes. Its latest call was priced from the provider's published model prices. Your provider's bill may differ. A call Hermes couldn't price isn't counted.",
     });
   });
 
   it("names the pricing version when Hermes recorded one", () => {
     const u = chatUsageOf({ ...STORED, cost_source: "official_docs_snapshot", pricing_version: "anthropic-2026-09" }, 0)!;
-    expect(costLabel(u.cost).detail).toMatch(/^Estimated by Hermes from a saved copy of the provider's price list \(prices anthropic-2026-09\)\. /);
+    expect(costLabel(u.cost).detail).toMatch(/^Estimated by Hermes\. Its latest call was priced from a saved copy of the provider's price list \(prices anthropic-2026-09\)\. /);
   });
 
   it("calls a cost billed only when the provider's figures are all of it", () => {
@@ -136,7 +143,7 @@ describe("A chat's stored usage", () => {
   it("says a chat cost at least the estimate when its latest call couldn't be priced", () => {
     const u = chatUsageOf({ ...STORED, cost_status: "unknown", estimated_cost_usd: 0.0012 }, 0)!;
     expect(u.cost).toEqual({ kind: "partial", usd: 0.0012, source: "provider_models_api" });
-    expect(costLabel(u.cost).short).toBe("~$0.0012+");
+    expect(costLabel(u.cost)).toEqual({ short: "~$0.0012+", detail: "At least this: Hermes estimated the calls it could price, and had no price for the latest one." });
   });
 
   it("never claims a total covers calls Hermes couldn't price, whatever the latest call's status", () => {

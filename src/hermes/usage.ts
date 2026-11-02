@@ -32,9 +32,8 @@ export const ZERO_COUNTERS: UsageCounters = { prompt: 0, input: 0, output: 0, re
  * The counters in a `usage` object from `_get_usage`, or undefined if it isn't one. An empty object is a session whose
  * agent isn't built yet: all zero. Hermes sends `input` as the uncached part of `prompt`, except that while that part is
  * still zero it sends `prompt` instead (`g("session_input_tokens", "session_prompt_tokens")`). So `input` equal to a
- * non-zero `prompt` while Hermes saw cache reads (it sends `cache_hit_pct` only then) means none of it was uncached.
- * Without cache reads it is taken as all uncached, which misses only a session whose every call so far was wholly
- * cache writes; `replyUsage` leaves a split that doesn't fit unknown.
+ * non-zero `prompt` while Hermes saw cache reads (it sends `cache_hit_pct`, perhaps rounded to 0, only then) means none
+ * of it was uncached. Without cache reads it could be all uncached or all cache writes, so it is left unknown.
  */
 export function countersOf(v: unknown): UsageCounters | undefined {
   const u = obj(v);
@@ -42,7 +41,7 @@ export function countersOf(v: unknown): UsageCounters | undefined {
   const sent = num(u.input) ?? 0;
   const prompt = num(u.prompt) ?? sent;
   const model = typeof u.model === "string" && u.model ? u.model : undefined;
-  const input = sent === prompt && prompt > 0 && (num(u.cache_hit_pct) ?? 0) > 0 ? 0 : sent;
+  const input = sent !== prompt || prompt === 0 ? sent : num(u.cache_hit_pct) !== undefined ? 0 : undefined;
   return {
     prompt,
     ...(input !== undefined && { input }),
@@ -201,14 +200,13 @@ export function costLabel(c: Cost): { short: string; detail: string } {
       return { short: usd(c.usd), detail: `Reported to Hermes by the provider, for each call it priced. ${UNPRICED_NOTE}` };
     case "estimated":
     case "partial": {
-      const from = c.source ? ` from ${SOURCE_LABEL[c.source] ?? c.source}` : "";
+      // Hermes keeps where its latest call's price came from, not each call's: for a partial cost that is the call it
+      // couldn't price, so none is named.
       const version = c.pricingVersion ? ` (prices ${c.pricingVersion})` : "";
+      const from = c.source ? ` Its latest call was priced from ${SOURCE_LABEL[c.source] ?? c.source}${version}.` : "";
       return c.kind === "estimated"
-        ? { short: `~${usd(c.usd)}`, detail: `Estimated by Hermes${from}${version}. Your provider's bill may differ. ${UNPRICED_NOTE}` }
-        : {
-            short: `~${usd(c.usd)}+`,
-            detail: `At least this: Hermes estimated the calls it could price${from}${version}, and had no price for the latest one.`,
-          };
+        ? { short: `~${usd(c.usd)}`, detail: `Estimated by Hermes.${from} Your provider's bill may differ. ${UNPRICED_NOTE}` }
+        : { short: `~${usd(c.usd)}+`, detail: "At least this: Hermes estimated the calls it could price, and had no price for the latest one." };
     }
     case "included":
       return {

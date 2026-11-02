@@ -16,6 +16,8 @@ const counters = (input: number, cached: number, output: number, calls: number, 
   completion: output,
   total: input + cached + output,
   calls,
+  // Hermes sends it only when the session has read the cache.
+  ...(cached > 0 && { cache_hit_pct: Math.round((cached / (input + cached)) * 100) }),
 });
 
 /** One turn: Hermes starts it, streams `text`, and ends it with the session's counters by then. */
@@ -63,8 +65,8 @@ describe("Usage per reply", () => {
     await hermes.idle();
 
     expect(replies(hermes, id)).toEqual([
-      ["Hello!", { prompt: 100, input: 100, cache: 0, output: 10, reasoning: 0, calls: 1, model: "z-ai/glm-5.3-flash" }],
-      ["Bye!", { prompt: 150, input: 50, cache: 100, output: 5, reasoning: 0, calls: 1, model: "z-ai/glm-5.3-flash" }],
+      ["Hello!", { prompt: 100, output: 10, reasoning: 0, calls: 1, model: "z-ai/glm-5.3-flash" }],
+      ["Bye!", { prompt: 150, output: 5, reasoning: 0, calls: 1, model: "z-ai/glm-5.3-flash" }],
     ]);
   });
 
@@ -80,8 +82,8 @@ describe("Usage per reply", () => {
     await hermes.idle();
 
     expect(replies(hermes, id).map(([, u]) => u)).toEqual([
-      { prompt: 100, input: 100, cache: 0, output: 10, reasoning: 0, calls: 1, model: "claude-sonnet-4-5" },
-      { prompt: 80, input: 80, cache: 0, output: 20, reasoning: 0, calls: 1, model: "gpt-5" },
+      { prompt: 100, output: 10, reasoning: 0, calls: 1, model: "claude-sonnet-4-5" },
+      { prompt: 80, output: 20, reasoning: 0, calls: 1, model: "gpt-5" },
     ]);
   });
 
@@ -93,7 +95,7 @@ describe("Usage per reply", () => {
     turn(server, rt, "Again!", counters(300, 0, 20, 1));
     await hermes.idle();
 
-    expect(replies(hermes, id)[1][1]).toEqual({ prompt: 300, input: 300, cache: 0, output: 20, reasoning: 0, calls: 1, model: "z-ai/glm-5.3-flash" });
+    expect(replies(hermes, id)[1][1]).toEqual({ prompt: 300, output: 20, reasoning: 0, calls: 1, model: "z-ai/glm-5.3-flash" });
   });
 
   it("measures a resumed chat from the counters Hermes resumed it with", async () => {
@@ -117,7 +119,7 @@ describe("Usage per reply", () => {
 
     expect(replies(hermes, "a")).toEqual([
       ["Before", undefined],
-      ["Now then.", { prompt: 100, input: 100, cache: 0, output: 10, reasoning: 0, calls: 1, model: "z-ai/glm-5.3-flash" }],
+      ["Now then.", { prompt: 100, output: 10, reasoning: 0, calls: 1, model: "z-ai/glm-5.3-flash" }],
     ]);
   });
 
@@ -138,7 +140,7 @@ describe("Usage per reply", () => {
 
     expect(replies(hermes, "a")).toEqual([
       ["Done.", undefined],
-      ["Welcome.", { prompt: 100, input: 100, cache: 0, output: 5, reasoning: 0, calls: 1, model: "z-ai/glm-5.3-flash" }],
+      ["Welcome.", { prompt: 100, output: 5, reasoning: 0, calls: 1, model: "z-ai/glm-5.3-flash" }],
     ]);
   });
 
@@ -170,7 +172,7 @@ describe("Usage per reply", () => {
     server.event(rt, "message.complete", { text: "", status: "error", error: "Rate limited", usage: counters(100, 0, 0, 3) });
     await hermes.idle();
 
-    expect(replies(hermes, id)).toEqual([["Rate limited", { prompt: 100, input: 100, cache: 0, output: 0, reasoning: 0, calls: 3, model: "z-ai/glm-5.3-flash" }]]);
+    expect(replies(hermes, id)).toEqual([["Rate limited", { prompt: 100, output: 0, reasoning: 0, calls: 3, model: "z-ai/glm-5.3-flash" }]]);
   });
 
   it("shows none for a turn that made no model call, or whose counters Hermes didn't send", async () => {
@@ -208,7 +210,7 @@ describe("Usage per reply", () => {
     turn(server, rt2, "Back.", counters(70, 0, 7, 1));
     await hermes.idle();
 
-    expect(replies(hermes, id).at(-1)).toEqual(["Back.", { prompt: 70, input: 70, cache: 0, output: 7, reasoning: 0, calls: 1, model: "z-ai/glm-5.3-flash" }]);
+    expect(replies(hermes, id).at(-1)).toEqual(["Back.", { prompt: 70, output: 7, reasoning: 0, calls: 1, model: "z-ai/glm-5.3-flash" }]);
   });
 
   it("keeps a measured reply's usage in its Saved copy and after the chat loads again, by stored row", async () => {
@@ -223,7 +225,7 @@ describe("Usage per reply", () => {
     await hermes.send("a", "Hi");
     turn(server, server.runtimeIdOf("a")!, "Hello!", counters(100, 0, 10, 1), { persisted_turn: { complete: true, user_row_id: 41, final_assistant_row_id: 42 } });
     await hermes.idle();
-    const measured = { prompt: 100, input: 100, cache: 0, output: 10, reasoning: 0, calls: 1, model: "z-ai/glm-5.3-flash" };
+    const measured = { prompt: 100, output: 10, reasoning: 0, calls: 1, model: "z-ai/glm-5.3-flash" };
     expect(cache.loadTranscript("default", "a")?.items[1]).toEqual({ kind: "assistant", id: "a-1", text: "Hello!", rowId: 42, usage: measured });
 
     // Restarted: the Saved copy shows first, then the stored history replaces it.
@@ -268,7 +270,7 @@ describe("Usage per reply", () => {
     answer();
     await hermes.idle();
 
-    expect(replies(again, "a")).toEqual([["Hello!", { prompt: 100, input: 100, cache: 0, output: 10, reasoning: 0, calls: 1, model: "z-ai/glm-5.3-flash" }]]);
+    expect(replies(again, "a")).toEqual([["Hello!", { prompt: 100, output: 10, reasoning: 0, calls: 1, model: "z-ai/glm-5.3-flash" }]]);
   });
 });
 

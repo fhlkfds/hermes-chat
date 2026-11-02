@@ -122,7 +122,8 @@ describe("A chat's usage", () => {
       ["Total", (103464).toLocaleString()],
       ["Model calls", "3"],
     ]);
-    expect(dialog.textContent).toContain("Estimated by Hermes from the provider's published model prices. Your provider's bill may differ. A call Hermes couldn't price isn't counted.");
+    expect(dialog.textContent).toContain("Estimated by Hermes. Its latest call was priced from the provider's published model prices.");
+    expect(dialog.textContent).toContain("A call Hermes couldn't price isn't counted.");
     expect(dialog.textContent).toContain("Its helper tasks, such as titling, aren't included.");
 
     fireEvent.keyDown(dialog, { key: "Escape" });
@@ -137,6 +138,11 @@ describe("A chat's usage", () => {
     const dialog = screen.getByRole("dialog");
     expect([...dialog.querySelectorAll(".usage-row dd")].map((d) => d.textContent)).toEqual(["900", "Not reported", "Not reported", "40", "Not reported", "Not reported", "Not reported"]);
     expect(dialog.textContent).toContain("Hermes hasn't recorded a cost for this chat.");
+  });
+
+  it("leaves a count Hermes didn't report out of the line, never showing it as zero", () => {
+    pane(chatOf([], { usage: chatUsageOf({ input_tokens: 900 }, Date.now()) }));
+    expect(screen.getByRole("button", { name: "Usage for this chat: 900 in · Cost unknown" })).toBeTruthy();
   });
 
   it("shows nothing before Hermes is read, and why when reading failed", async () => {
