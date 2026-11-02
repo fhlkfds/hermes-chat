@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type Account, type Keyring, savedSignIn, signIn, signInForm, signOut } from "./account";
+import { type Account, type Keyring, savedSignIn, signIn, signInForm, signOut, signOutToSignIn } from "./account";
 import { localChatCache } from "./chatCache";
 import { FakeHermes, row } from "./fakeHermes";
 import { memoryCache } from "./memoryCache";
@@ -91,7 +91,7 @@ describe("Extra request headers", () => {
   it("are saved in the system keyring, never beside the rest of the sign-in, and come back at launch", async () => {
     const first = account();
     await signIn(access, first.account);
-    expect(JSON.parse(first.headerKeyring.password!)).toEqual(access.headers);
+    expect(JSON.parse(first.headerKeyring.password!)).toEqual({ url: "https://hermes.example.com", headers: access.headers });
     expect(first.saved()).toEqual({ mode: "url", sshTarget: "liam@hermes", url: "https://hermes.example.com", username: "liam" });
     expect(JSON.stringify(first.saved())).not.toContain("s3cret");
     expect(await savedSignIn(first.account)).toEqual(access);
@@ -113,9 +113,15 @@ describe("Extra request headers", () => {
   });
 
   it("are none when the keyring entry is unreadable or isn't a list of headers", async () => {
-    for (const stored of ["not json", '{"name":"X"}', '[{"name":"X"},{"name":"Y","value":"1"},null]']) {
+    const url = '"url":""';
+    for (const [stored, want] of [
+      ["not json", []],
+      ['[{"name":"X","value":"1"}]', []],
+      [`{${url},"headers":{"name":"X"}}`, []],
+      [`{${url},"headers":[{"name":"X"},{"name":"Y","value":"1"},null]}`, [{ name: "Y", value: "1" }]],
+    ] as const) {
       const { account: a } = account(memoryKeyring("hunter2"), memoryKeyring(stored));
-      expect((await savedSignIn(a))?.headers).toEqual(stored.startsWith("[") ? [{ name: "Y", value: "1" }] : []);
+      expect((await savedSignIn(a))?.headers, stored).toEqual(want);
     }
   });
 
@@ -123,8 +129,37 @@ describe("Extra request headers", () => {
     const headerKeyring = memoryKeyring();
     headerKeyring.broken = "the keyring is locked";
     const { account: a } = account(memoryKeyring(), headerKeyring);
-    const { notSaved } = await signIn(access, a);
+    const { notSaved, kept } = await signIn(access, a);
     expect(notSaved).toBe("Couldn't save the extra request headers in the system keyring: the keyring is locked");
+    expect(kept).toEqual({ password: true, headers: false });
+  });
+
+  it("never go to another URL, even when the keyring couldn't save the new URL's headers", async () => {
+    const { account: a, headerKeyring } = account();
+    const { hermes } = await signIn(access, a);
+    await signOut(hermes, a);
+    headerKeyring.broken = "the keyring is locked";
+    const elsewhere: SignInDetails = { ...access, url: "https://other.example.com", headers: [{ name: "CF-Access-Client-Secret", value: "other" }] };
+    await signIn(elsewhere, a);
+    headerKeyring.broken = undefined;
+    // The keyring still holds the first URL's headers, but the saved sign-in is now the other URL.
+    expect(JSON.parse(headerKeyring.password!).url).toBe("https://hermes.example.com");
+    expect((await savedSignIn(a))?.headers).toEqual([]);
+    expect((await signInForm(a)).headers).toEqual([]);
+  });
+
+  it("are back on the sign-in screen only once Sign out has read them", async () => {
+    const { account: a, headerKeyring } = account();
+    const { hermes } = await signIn(access, a);
+    let release!: () => void;
+    const load = headerKeyring.load;
+    headerKeyring.load = () => new Promise((r) => (release = () => r(load())));
+    let done = false;
+    const out = signOutToSignIn(hermes, a).then((r) => ((done = true), r));
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    expect(done).toBe(false);
+    release();
+    expect(await out).toEqual({ initial: { ...access, password: "" }, error: undefined });
   });
 });
 

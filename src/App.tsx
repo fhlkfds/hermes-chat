@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { connect, readSaved, type Delivery, type Hermes } from "./hermes/transport";
 import { CHECK_EVERY_MS } from "./hermes/otherProfiles";
-import { type Account, type SavedSignIn, launchSignIn, PASSWORD_NOT_SAVED, savedSignIn, signIn, signInForm, signOut } from "./hermes/account";
+import { type Account, type Kept, type SavedSignIn, launchSignIn, savedSignIn, signIn, signInForm, signOutToSignIn } from "./hermes/account";
 import { localChatCache } from "./hermes/chatCache";
 import { draftKey, drafts } from "./hermes/drafts";
 import { chatToReopen, forgetOpenChat, rememberOpenChat } from "./hermes/uiPrefs";
@@ -86,6 +86,7 @@ export default function App() {
   const [error, setError] = useState<string>();
   // Why the keyring couldn't save the password at sign-in, shown once signed in.
   const [notSaved, setNotSaved] = useState<string>();
+  const [kept, setKept] = useState<Kept>({ password: true, headers: true });
   // Only the first sign-in after the app starts reopens the last chat; signing in again after Sign out starts fresh.
   const [coldStart, setColdStart] = useState(true);
   // The names of the extra request headers the connection sends, for Settings.
@@ -109,19 +110,17 @@ export default function App() {
         connection={account.store.load()}
         headers={headers}
         notSaved={notSaved}
+        kept={kept}
         reopenLast={coldStart}
         onSignOut={async () => {
-          let failure: string | undefined;
-          try {
-            await signOut(hermes, account);
-          } catch (e) {
-            failure = messageOf(e);
-          }
+          // Everything is read first, then shown at once: the sign-in screen keeps the details it mounts with.
+          const { initial, error } = await signOutToSignIn(hermes, account);
           setHermes(null);
           setColdStart(false);
           setNotSaved(undefined);
-          setInitial(await signInForm(account));
-          setError(failure);
+          setKept({ password: true, headers: true });
+          setInitial(initial);
+          setError(error);
         }}
       />
     );
@@ -141,8 +140,9 @@ export default function App() {
       onSignIn={async (d) => {
         setError(undefined);
         try {
-          const { hermes: h, notSaved } = await signIn(d, account);
+          const { hermes: h, notSaved, kept } = await signIn(d, account);
           setNotSaved(notSaved);
+          setKept(kept);
           setHeaders(headerNames(d));
           setHermes(h);
         } catch (e) {
@@ -158,6 +158,7 @@ export function Main({
   connection,
   headers = [],
   notSaved,
+  kept = { password: true, headers: true },
   reopenLast = false,
   onSignOut,
 }: {
@@ -166,6 +167,8 @@ export function Main({
   /** The names of the extra request headers the connection sends. */
   headers?: string[];
   notSaved?: string;
+  /** What the keyring kept at sign-in. */
+  kept?: Kept;
   /** This is the app starting: open the profile's last open chat, if the owner wants it reopened. */
   reopenLast?: boolean;
   onSignOut: () => Promise<void>;
@@ -455,7 +458,8 @@ export function Main({
             route={route}
             unsecure={unsecure}
             username={connection.username}
-            passwordSaved={!notSaved?.startsWith(PASSWORD_NOT_SAVED)}
+            passwordSaved={kept.password}
+            headersSaved={kept.headers}
             headers={route?.kind === "url" ? headers : []}
             profile={profile}
             olderPulled={olderPulled}

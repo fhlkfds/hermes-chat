@@ -35,6 +35,7 @@ export function SettingsScreen({
   username,
   passwordSaved,
   headers = [],
+  headersSaved = true,
   profile,
   olderPulled,
   cacheBytes,
@@ -53,6 +54,8 @@ export function SettingsScreen({
   passwordSaved: boolean;
   /** The names of the extra request headers the connection sends; their values are never shown. */
   headers?: string[];
+  /** The keyring kept the extra headers at sign-in. */
+  headersSaved?: boolean;
   profile: string;
   olderPulled: boolean;
   /** The storage the saved chat lists and Saved copies take now. */
@@ -154,12 +157,15 @@ export function SettingsScreen({
                       <span className="mono">{h}</span>
                     </span>
                   ))}
-                  . Their values are saved in your system keyring and never shown.
+                  .{" "}
+                  {headersSaved
+                    ? "Their values are saved in your system keyring and never shown."
+                    : "Their values are never shown. The system keyring couldn't save them, so you type them again at the next sign-in."}
                 </div>
               )}
               <p className="muted small settings-note">
                 Signing out deletes the saved password from the keyring. You type it again at the next sign-in.
-                {headers.length > 0 && " The extra request headers stay saved, to change or remove on the sign-in screen."}
+                {headers.length > 0 && headersSaved && " The extra request headers stay saved, to change or remove on the sign-in screen."}
               </p>
             </section>
 

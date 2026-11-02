@@ -22,33 +22,45 @@ export type Account = {
   readSaved: (d: SignInDetails, reason: string) => Hermes | undefined;
 };
 
-/** How `notSaved` starts when the password itself wasn't kept. */
-export const PASSWORD_NOT_SAVED = "Couldn't save the password in the system keyring";
-
 /** What the Rust side says when the dashboard turns the password down (`TransportError::BadCredentials`). */
 const WRONG_PASSWORD = "Wrong username or password.";
 
+/** What the keyring kept at sign-in. */
+export type Kept = { password: boolean; headers: boolean };
+
 /**
- * Signs in, and once Hermes has answered, saves the password in the keyring and the rest of the sign-in beside it.
- * A keyring that can't save doesn't stop the sign-in; `notSaved` says why the password wasn't kept.
+ * Signs in, and once Hermes has answered, saves the password and extra headers in the keyring and the rest of the
+ * sign-in beside it. A keyring that can't save doesn't stop the sign-in; `notSaved` says what wasn't kept and why.
  */
-export async function signIn(d: SignInDetails, account: Account): Promise<{ hermes: Hermes; notSaved?: string }> {
+export async function signIn(d: SignInDetails, account: Account): Promise<{ hermes: Hermes; notSaved?: string; kept: Kept }> {
   const hermes = await account.connect(d);
   const { password, headers = [], ...saved } = d;
   account.store.save(saved);
   const notSaved: string[] = [];
-  await account.keyring.save(password).catch((e: Error) => notSaved.push(`${PASSWORD_NOT_SAVED}: ${e.message}`));
-  await (headers.length ? account.headerKeyring.save(JSON.stringify(headers)) : account.headerKeyring.delete()).catch((e: Error) =>
-    notSaved.push(`Couldn't save the extra request headers in the system keyring: ${e.message}`),
-  );
-  return notSaved.length ? { hermes, notSaved: notSaved.join(" ") } : { hermes };
+  const kept = { password: true, headers: true };
+  await account.keyring.save(password).catch((e: Error) => {
+    kept.password = false;
+    notSaved.push(`Couldn't save the password in the system keyring: ${e.message}`);
+  });
+  // The headers are saved with the URL they were signed in to; `savedHeaders` gives them back for that URL only.
+  const savingHeaders = headers.length ? account.headerKeyring.save(JSON.stringify({ url: d.url, headers })) : account.headerKeyring.delete();
+  await savingHeaders.catch((e: Error) => {
+    kept.headers = false;
+    notSaved.push(`Couldn't save the extra request headers in the system keyring: ${e.message}`);
+  });
+  return notSaved.length ? { hermes, notSaved: notSaved.join(" "), kept } : { hermes, kept };
 }
 
-/** The saved extra request headers; none when nothing is saved, or the keyring can't be read. */
+/**
+ * The saved extra request headers, if they were saved for the URL saved beside the sign-in. None when nothing is
+ * saved, the keyring can't be read, or they belong to another URL: a sign-in to a new URL whose headers the keyring
+ * couldn't save leaves the old ones behind, and they must never go to the new one.
+ */
 async function savedHeaders(account: Account): Promise<ExtraHeader[]> {
   try {
-    const headers: unknown = JSON.parse((await account.headerKeyring.load()) ?? "[]");
-    return Array.isArray(headers) ? headers.filter((h): h is ExtraHeader => typeof h?.name === "string" && typeof h?.value === "string") : [];
+    const saved = JSON.parse((await account.headerKeyring.load()) ?? "null") as { url?: unknown; headers?: unknown } | null;
+    if (saved?.url !== account.store.load().url || !Array.isArray(saved.headers)) return [];
+    return saved.headers.filter((h): h is ExtraHeader => typeof h?.name === "string" && typeof h?.value === "string");
   } catch {
     return [];
   }
@@ -82,6 +94,20 @@ export async function launchSignIn(d: SignInDetails, account: Account): Promise<
     if (!offline) throw e;
     return offline;
   }
+}
+
+/**
+ * Signs out (`signOut`), then reads what the sign-in screen starts from. Both finish before it resolves, so the screen
+ * never shows with the details it had before. Never rejects; `error` says what Sign out couldn't do.
+ */
+export async function signOutToSignIn(hermes: Hermes, account: Account): Promise<{ initial: SignInDetails; error?: string }> {
+  let error: string | undefined;
+  try {
+    await signOut(hermes, account);
+  } catch (e) {
+    error = (e as Error).message;
+  }
+  return { initial: await signInForm(account), error };
 }
 
 /**
