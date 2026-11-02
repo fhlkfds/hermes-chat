@@ -51,6 +51,7 @@ function toChat(v: unknown): Chat | undefined {
     settled: typeof c.settled === "boolean" ? c.settled : true,
     updatedAt: num(c.updatedAt) ?? 0,
     ...(typeof c.unread === "boolean" && { unread: c.unread }),
+    ...(c.archived === true && { archived: true }),
     items: [],
   };
 }
@@ -64,13 +65,14 @@ function toItem(v: unknown): Item | undefined {
   const id = str(i?.id);
   if (!i || id === undefined) return undefined;
   const text = str(i.text);
+  const at = num(i.at);
   switch (i.kind) {
     case "user": {
       const attachments = Array.isArray(i.attachments) ? i.attachments.filter((a): a is string => typeof a === "string") : undefined;
-      return text === undefined ? undefined : { kind: "user", id, text, ...(attachments?.length && { attachments }) };
+      return text === undefined ? undefined : { kind: "user", id, text, ...(attachments?.length && { attachments }), ...(at !== undefined && { at }) };
     }
     case "assistant":
-      return text === undefined ? undefined : { kind: "assistant", id, text, ...(i.interrupted === true && { interrupted: true }) };
+      return text === undefined ? undefined : { kind: "assistant", id, text, ...(i.interrupted === true && { interrupted: true }), ...(at !== undefined && { at }) };
     case "thinking":
       return text === undefined ? undefined : { kind: "thinking", id, text };
     case "tool": {

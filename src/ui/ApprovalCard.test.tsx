@@ -15,11 +15,12 @@ const card = (over: Partial<ApprovalItem> = {}): ApprovalItem => ({
   ...over,
 });
 
-/** Each button's text, and whether it is disabled. */
+/** Each button's text, and whether it is disabled or says it does nothing (`aria-disabled`, still focusable). */
 function buttons(html: string) {
   return [...html.matchAll(/<button([^>]*)>(.*?)<\/button>/g)].map(([, attrs, text]) => ({
     text: text.replace(/<[^>]+>/g, ""),
     disabled: /\sdisabled=""/.test(attrs),
+    inert: /\saria-disabled="true"/.test(attrs),
   }));
 }
 
@@ -47,8 +48,11 @@ describe("Approval card", () => {
     expect(html).toContain("no answer this app can give");
   });
 
-  it("can't be answered while offline", () => {
-    expect(buttons(show(card(), true)).every((b) => b.disabled)).toBe(true);
+  it("can't be answered while offline, though its buttons keep focus", () => {
+    const offline = buttons(show(card(), true));
+    expect(offline.length).toBeGreaterThan(0);
+    expect(offline.every((b) => b.inert && !b.disabled)).toBe(true);
+    expect(buttons(show(card())).some((b) => b.inert)).toBe(false);
   });
 
   it("can't be answered once answered, or once Hermes stopped waiting", () => {

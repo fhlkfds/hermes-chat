@@ -31,8 +31,8 @@ describe("Opening a listed chat", () => {
     expect(resumes(server).map((r) => r.params)).toEqual([{ session_id: "tg", profile: "default", inline_images: false }]);
     expect(chat()).toMatchObject({ runtimeId: server.runtimeIdOf("tg"), loading: false, settled: true });
     expect(chat().items).toEqual([
-      { kind: "user", id: "h-0", text: "How full is the NAS?" },
-      { kind: "assistant", id: "h-1", text: "**82%** used.\n\n```sh\ndf -h /mnt/nas\n```" },
+      { kind: "user", id: "h-0", text: "How full is the NAS?", at: 1000 },
+      { kind: "assistant", id: "h-1", text: "**82%** used.\n\n```sh\ndf -h /mnt/nas\n```", at: 2000 },
     ]);
   });
 

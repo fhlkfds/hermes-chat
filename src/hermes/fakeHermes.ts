@@ -43,6 +43,7 @@ export type TranscriptMessage = {
   timestamp?: number;
   display_kind?: string;
   reasoning?: string;
+  row_id?: number;
 };
 
 /** A file on the owner's disk: its bytes as a string, a size alone for a file too big to make, or a folder. */
@@ -86,6 +87,9 @@ export class FakeHermes {
   readonly wsProfiles: string[] = [];
   /** Stored session id -> its history, as `session.resume` projects it (`_history_to_messages`). */
   transcripts: Record<string, TranscriptMessage[]> = {};
+  /** The stored row id `prompt.submit` reports for the message (`user_row_id`, `tui_gateway/methods_prompt.py` at
+   * `bf0203a`). Unset, it reports none. */
+  userRowId?: number;
   /** The owner's local disk, by path, for attachments. */
   files: Record<string, FakeFile> = {};
   /** Whether this connection sent `client.capabilities {server_requests: true}`. */
@@ -134,7 +138,7 @@ export class FakeHermes {
         const stored = row(this.runtime.get(runtimeId)!, 0, { source: created.source, title: null, preview: String(r.params.text), message_count: 1 });
         this.store(created.profile)?.push(stored);
       }
-      this.respond(r.id, { status: "streaming" });
+      this.respond(r.id, { status: "streaming", ...(this.userRowId !== undefined && { user_row_id: this.userRowId }) });
     },
     // Attachments stage server-side for the session's next turn (research doc §7; `tui_gateway/methods_prompt.py`
     // at the deployed `bf0203a`). Images join `attached_images`; other files land in the session's
@@ -180,10 +184,12 @@ export class FakeHermes {
   /** Per-route REST behaviour, keyed `METHOD /path`. A handler throws to fail the request. */
   readonly rest: Record<string, RestHandler> = {
     "GET /api/sessions": ({ query }) => {
-      // order=recent, archived=exclude, then every pinned row not already on the page (list_sessions_rich).
+      // order=recent, archived=exclude|only|include, then every pinned row not already on the page, archived or not
+      // (list_sessions_rich).
       const excluded = (query.get("exclude_sources") ?? "").split(",").filter(Boolean);
       const visible = this.storeOrFail(query.get("profile")).filter((s) => !excluded.includes(s.source));
-      const recent = visible.filter((s) => !s.archived).sort((a, b) => (b.last_active ?? b.started_at) - (a.last_active ?? a.started_at));
+      const archived = query.get("archived") ?? "exclude";
+      const recent = visible.filter((s) => archived === "include" || s.archived === (archived === "only")).sort((a, b) => (b.last_active ?? b.started_at) - (a.last_active ?? a.started_at));
       const offset = Number(query.get("offset") ?? 0);
       const limit = Number(query.get("limit") ?? 20);
       const page = recent.slice(offset, offset + limit);
@@ -292,6 +298,7 @@ export class FakeHermes {
         const handler =
           this.rest[`${method} ${req.path}`] ??
           (method === "PATCH" && patch ? () => this.patchSession(patch[1], req.body!) : undefined) ??
+          (method === "GET" && patch ? () => this.sessionDetail(decodeURIComponent(patch[1]), req.query.get("profile")) : undefined) ??
           (method === "DELETE" && patch ? () => this.deleteSession(decodeURIComponent(patch[1]), req.query.get("profile")) : undefined) ??
           (method === "GET" && snapshot ? () => this.mutationSnapshot(snapshot[1], req.query.get("profile")) : undefined);
         if (!handler) throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
@@ -394,6 +401,13 @@ export class FakeHermes {
     return { session_id: id, exists: !!s, runtime_revision: s?.runtime_revision ?? 0, runtime_generation: s ? 0 : null };
   }
 
+  /** `GET /api/sessions/{id}` (`get_session_detail` at the deployed `bf0203a`): the raw row, its flags stored as 0/1. */
+  private sessionDetail(id: string, profile: string | null) {
+    const s = this.storeOrFail(profile).find((r) => r.id === id);
+    if (!s) throw new Error(`The dashboard answered 404: {"detail":"Session not found"}`);
+    return { ...s, archived: s.archived ? 1 : 0, pinned: s.pinned ? 1 : 0, runtime_revision: s.runtime_revision ?? 0, profile: profile ?? "default" };
+  }
+
   /**
    * `PATCH /api/sessions/{id}`, fenced like the deployed `bf0203a` (`_mutate_session_request`, `mutate_runtime_session`):
    * an edit without `request_id` and `expected_revision` is refused, and so is one naming an old revision.
@@ -410,7 +424,15 @@ export class FakeHermes {
     if (body.expected_revision !== (s.runtime_revision ?? 0)) throw new Error(`The dashboard answered 409: {"detail":"revision_conflict"}`);
     s.runtime_revision = (s.runtime_revision ?? 0) + 1;
     if (typeof body.pinned === "boolean") s.pinned = body.pinned;
+    if (typeof body.archived === "boolean") s.archived = body.archived;
     if (typeof body.unread === "boolean") s.last_read_at = body.unread ? 0 : now();
+    if (typeof body.title === "string") {
+      // `set_session_title`: titles are unique in a profile, and a clash is a 400 (`_mutate_session_request`).
+      const title = body.title.trim();
+      if (title && this.storeOrFail(body.profile as string | undefined).some((r) => r !== s && r.title === title))
+        throw new Error(`The dashboard answered 400: {"detail":"Title '${title}' is already in use by session ${id}"}`);
+      s.title = title || null;
+    }
     return { ok: true };
   }
 

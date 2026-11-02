@@ -1,5 +1,5 @@
 // An Approval card: the command Hermes wants to run and the answers it offers. A broader grant asks again first.
-import { useState, type MouseEvent } from "react";
+import { useCallback, useId, useRef, useState, type MouseEvent } from "react";
 import { ShieldAlert } from "lucide-react";
 import type { ApprovalChoice, ApprovalItem } from "../hermes/model";
 import { isBroadGrant, offeredChoices } from "../hermes/model";
@@ -47,8 +47,10 @@ function endedNote(reason: string): string {
 }
 
 /**
- * Only the answers Hermes offers show. `movedAt`: when the transcript last changed (`useDeliberate`). `onAnswer` gets `confirmed` once the owner has confirmed a broader grant. A card
- * takes no focus when it arrives, so typing elsewhere never answers it.
+ * Only the answers Hermes offers show. `movedAt`: when the transcript last changed (`useDeliberate`). `onAnswer` gets
+ * `confirmed` once the owner has confirmed a broader grant. A card takes no focus when it arrives, so typing elsewhere
+ * never answers it. It is answered only by clicking, or by Enter or Space on a focused button; no shortcut answers it.
+ * Offline, the buttons stay focusable but do nothing, so a reconnect doesn't drop the owner's place.
  */
 export function ApprovalCard({
   item,
@@ -65,9 +67,17 @@ export function ApprovalCard({
   const deliberate = useDeliberate(movedAt);
   const closed = item.answer ?? item.ended;
   const choices = offeredChoices(item);
+  const card = useRef<HTMLDivElement>(null);
+  const headId = useId();
+  // The buttons go when the card closes, however it closes, and when a grant's confirmation opens or goes back. If one
+  // had focus, focus stays on the card instead of falling to the page, so the owner keeps their place and a repeated
+  // key lands on nothing.
+  const keepFocus = useCallback((actions: HTMLDivElement | null) => {
+    return () => void (actions?.contains(document.activeElement) && card.current?.isConnected && card.current.focus());
+  }, []);
   return (
-    <div className={`approval ${closed ? "answered" : ""}`}>
-      <div className="approval-head">
+    <div ref={card} tabIndex={-1} role="group" aria-labelledby={headId} className={`approval ${closed ? "answered" : ""}`}>
+      <div className="approval-head" id={headId}>
         <ShieldAlert size={15} />
         {item.answer ? ANSWERED_LABEL[item.answer] : item.ended ? endedNote(item.ended) : "Hermes wants to run a command"}
       </div>
@@ -81,17 +91,18 @@ export function ApprovalCard({
               choice={confirming}
               offline={offline}
               movedAt={movedAt}
+              keepFocus={keepFocus}
               onConfirm={() => onAnswer(confirming, true)}
               onBack={() => setConfirming(undefined)}
             />
           ) : choices.length ? (
-            <div className="approval-actions">
+            <div className="approval-actions" ref={keepFocus}>
               {choices.map((c) => (
                 <button
                   key={c}
                   className={`btn ${c === "once" ? "primary" : ""}`}
-                  disabled={offline}
-                  onClick={deliberate(() => (isBroadGrant(c) ? setConfirming(c) : onAnswer(c)))}
+                  aria-disabled={offline || undefined}
+                  onClick={deliberate(() => !offline && (isBroadGrant(c) ? setConfirming(c) : onAnswer(c)))}
                 >
                   {CHOICE_LABEL[c]}
                 </button>
@@ -115,6 +126,7 @@ export function ConfirmGrant({
   choice,
   offline,
   movedAt = 0,
+  keepFocus,
   onConfirm,
   onBack,
 }: {
@@ -122,6 +134,8 @@ export function ConfirmGrant({
   choice: ApprovalChoice;
   offline: boolean;
   movedAt?: number;
+  /** The card's ref for its buttons, which keeps focus on the card when they go. */
+  keepFocus?: (actions: HTMLDivElement | null) => void;
   onConfirm: () => void;
   onBack: () => void;
 }) {
@@ -135,8 +149,8 @@ export function ConfirmGrant({
           ? `Always allow ${what}? Hermes won't ask again before running them, in any chat.`
           : `Allow ${what} for the rest of this chat? Hermes won't ask again before running them here.`}
       </div>
-      <div className="approval-actions">
-        <button className="btn danger" disabled={offline} onClick={deliberate(onConfirm)}>
+      <div className="approval-actions" ref={keepFocus}>
+        <button className="btn danger" aria-disabled={offline || undefined} onClick={deliberate(() => !offline && onConfirm())}>
           {always ? "Yes, always allow" : "Yes, allow for this chat"}
         </button>
         <button className="btn" autoFocus onClick={onBack}>
