@@ -304,6 +304,7 @@ describe("Taking a screenshot for the composer", () => {
     rust.pressDesktopShortcut();
     expect(rust.names).toHaveLength(1);
     await screen.findByPlaceholderText("Message Hermes");
+    expect(document.activeElement).toBe(composer());
     await rust.land();
     await waitFor(() => expect(chips()).toHaveLength(1));
     expect(rust.attached).toHaveBeenCalledTimes(1);
@@ -364,6 +365,7 @@ describe("Taking a screenshot for the composer", () => {
 
     rust.pressDesktopShortcut();
     await screen.findByPlaceholderText("Message Hermes");
+    expect(document.activeElement).toBe(composer());
     await rust.land();
     await waitFor(() => expect(chips()).toHaveLength(1));
     expect(rust.attached).toHaveBeenCalledTimes(1);

@@ -421,10 +421,13 @@ export function Main({
   // Reveal the composer when Search, Settings, Projects or a narrow preview covers it, so the capture can be reviewed.
   const takeScreenshot = (remote = false) => {
     if (!desk) return;
-    setSettingsOpen(false);
-    setProjectOpen(false);
-    setSearchOpen(false);
-    if (!previewFits) setPreviewHidden(true);
+    flushSync(() => {
+      setSettingsOpen(false);
+      setProjectOpen(false);
+      setSearchOpen(false);
+      if (!previewFits) setPreviewHidden(true);
+    });
+    focusPane(active.key);
     void desk.capture({ remote });
   };
   const takeScreenshotRef = useRef(takeScreenshot);
