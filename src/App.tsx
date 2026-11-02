@@ -120,7 +120,7 @@ export default function App() {
 }
 
 function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; username: string; notSaved?: string; onSignOut: () => Promise<void> }) {
-  const { profile, chats, olderPulled, status, route, unsecure, closedReason, syncError } = useSyncExternalStore(
+  const { profile, chats, olderPulled, archivedListed, status, route, unsecure, closedReason, syncError } = useSyncExternalStore(
     hermes.subscribe,
     hermes.getSnapshot,
   );
@@ -204,6 +204,16 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
     void hermes.delete(id).then((deleted) => deleted && setToast({ text: `Deleted: ${title}`, at: Date.now() }));
   };
 
+  // Archiving hides the chat in every Hermes client and keeps its history; the toast shows once Hermes confirms it. The
+  // chat on screen gives way to a fresh draft, as it leaves the list. A write that didn't go in says why in the list.
+  const setArchived = (id: string, archived: boolean) => {
+    const title = chats.find((c) => c.id === id)?.title ?? "";
+    if (archived && id === selectedId && !archivedListed) newChat();
+    const done = (ok: boolean) =>
+      ok && setToast({ text: `${archived ? "Archived" : "Restored"}: ${title}`, undo: archived ? () => setArchived(id, false) : undefined, at: Date.now() });
+    void (archived ? hermes.archive(id) : hermes.restore(id)).then(done);
+  };
+
   useEffect(() => {
     if (!toast) return;
     const timer = setTimeout(() => setToast(null), TOAST_MS);
@@ -267,10 +277,13 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
         <ChatList
           profile={profile}
           chats={chats}
+          archivedListed={archivedListed}
           syncError={syncError}
           selectedId={settingsOpen ? null : selectedId}
           onOpen={openChat}
           onSettle={setSettled}
+          onArchive={setArchived}
+          onListArchived={(on) => void hermes.listArchived(on)}
           onDelete={deleteChat}
           onListProfiles={() => hermes.profiles()}
           onSwitchProfile={switchProfile}
@@ -304,10 +317,11 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
             onStop={() => void hermes.stop(selected.id)}
             onAnswer={(approvalId, choice) => void hermes.answerApproval(selected.id, approvalId, choice)}
             onSettle={selected === draft ? undefined : (s) => setSettled(selected.id, s)}
+            onArchive={selected === draft ? undefined : (a) => setArchived(selected.id, a)}
           />
         )}
       </main>
-      {searchOpen && <SearchPalette onSearch={(q) => hermes.search(q)} onPick={pick} onClose={() => setSearchOpen(false)} />}
+      {searchOpen && <SearchPalette onSearch={(q, archived) => hermes.search(q, { archived })} onPick={pick} onClose={() => setSearchOpen(false)} />}
       {toast && (
         <div className="toast" key={toast.at} role="status">
           <span>{toast.text}</span>

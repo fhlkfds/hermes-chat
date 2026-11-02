@@ -1,6 +1,6 @@
 // Small shared UI bits, ported from the prototype.
 import type { ReactNode } from "react";
-import { Archive, ArchiveRestore, Globe, Monitor, Send, Terminal } from "lucide-react";
+import { Archive, ArchiveRestore, EyeOff, Globe, Monitor, RotateCcw, Send, Terminal } from "lucide-react";
 import type { ConnectionStatus, Source } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
 import { SOURCE_LABEL } from "../hermes/model";
@@ -57,6 +57,32 @@ export function SettleButton({
       }}
     >
       {settled ? <ArchiveRestore size={size} /> : <Archive size={size} />}
+    </button>
+  );
+}
+
+/** Archives a chat in every Hermes client, or restores an archived one. */
+export function ArchiveButton({
+  archived,
+  size,
+  className,
+  onArchive,
+}: {
+  archived: boolean;
+  size: number;
+  className: string;
+  onArchive: (archived: boolean) => void;
+}) {
+  return (
+    <button
+      className={className}
+      title={archived ? "Restore" : "Archive: hide in every Hermes client, keeping its history"}
+      onClick={(e) => {
+        e.stopPropagation();
+        onArchive(!archived);
+      }}
+    >
+      {archived ? <RotateCcw size={size} /> : <EyeOff size={size} />}
     </button>
   );
 }

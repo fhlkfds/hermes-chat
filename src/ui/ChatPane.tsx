@@ -6,7 +6,7 @@ import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import type { ApprovalChoice, ApprovalItem, AttachCheck, Attachment, Chat, ConnectionStatus, Item, Source } from "../hermes/model";
 import { SOURCE_LABEL, isWaiting } from "../hermes/model";
 import { Markdown } from "./Markdown";
-import { SettleButton, SourceIcon, Spinner, fmtSize, highlight } from "./bits";
+import { ArchiveButton, SettleButton, SourceIcon, Spinner, fmtSize, highlight } from "./bits";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type ThinkingItem = Extract<Item, { kind: "thinking" }>;
@@ -39,7 +39,7 @@ const STATUS_NOTE: Record<ConnectionStatus, string | undefined> = {
 
 /**
  * `alsoPostsIn`: the Telegram or Discord chat Hermes will also post its replies in. `onAnswer` answers an Approval card.
- * `onSettle` is left out for a chat not started yet. Ctrl+F opens the find bar.
+ * `onSettle` and `onArchive` are left out for a chat not started yet. Ctrl+F opens the find bar.
  */
 export function ChatPane({
   chat,
@@ -51,6 +51,7 @@ export function ChatPane({
   onStop,
   onAnswer,
   onSettle,
+  onArchive,
 }: {
   chat: Chat;
   findTarget?: FindTarget;
@@ -61,6 +62,7 @@ export function ChatPane({
   onStop: () => void;
   onAnswer: (approvalId: string, choice: ApprovalChoice) => void;
   onSettle?: (settled: boolean) => void;
+  onArchive?: (archived: boolean) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const findRef = useRef<HTMLInputElement>(null);
@@ -149,6 +151,7 @@ export function ChatPane({
           {chat.source !== "app" && <SourceIcon source={chat.source} size={13} />}
           <span>{chat.title}</span>
           {chat.settled && <span className="badge">Settled</span>}
+          {chat.archived && <span className="badge">Archived</span>}
         </div>
         <div className="chat-head-actions">
           <button
@@ -158,7 +161,8 @@ export function ChatPane({
           >
             <Search size={16} />
           </button>
-          {onSettle && <SettleButton settled={chat.settled} size={16} className="icon-btn" onSettle={onSettle} />}
+          {onSettle && !chat.archived && <SettleButton settled={chat.settled} size={16} className="icon-btn" onSettle={onSettle} />}
+          {onArchive && !chat.running && <ArchiveButton archived={!!chat.archived} size={16} className="icon-btn" onArchive={onArchive} />}
         </div>
         {findOpen && (
           <div className="find" role="search">

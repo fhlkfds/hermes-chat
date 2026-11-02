@@ -8,7 +8,7 @@
 // Approvals come as legacy server→client requests, answered with a response frame: research doc §6 and
 // "Approvals on the legacy generation".
 // The list holds the past month's chats until the owner pulls older history for the profile; from then on it holds
-// them all.
+// them all. Archived chats are read only while the archived view is open (research doc "Session flags").
 import { isWaiting, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ConnectionStatus, type Found, type Item, type Source } from "./model";
 import type { OpenPipe, Pipe, PipeEvent, Route } from "./pipe";
 import { isUnsecure } from "./unsecure";
@@ -81,6 +81,8 @@ type SessionRow = {
   unread?: boolean;
 };
 type SessionPage = { sessions: SessionRow[]; total: number };
+/** Dashboard REST `GET /api/sessions/{id}`, as far as this app reads it. Flags come as stored, 0 or 1. */
+type SessionDetail = { archived?: boolean | number };
 /** Dashboard REST `GET /api/sessions/{id}/mutation-snapshot`: the revision a session edit must name. */
 type MutationSnapshot = { exists: boolean; runtime_revision: number };
 /**
@@ -156,6 +158,8 @@ export type Snapshot = {
   profile: string;
   chats: Chat[];
   olderPulled: boolean;
+  /** The list also holds the profile's archived chats, however old (`listArchived`). */
+  archivedListed: boolean;
   status: ConnectionStatus;
   route?: Route;
   unsecure: boolean;
@@ -216,6 +220,14 @@ export class Hermes {
   private resuming = new Map<string, Promise<string>>();
   /** Chats the owner picked from a search though the list doesn't hold them; they stay in it until the profile changes. */
   private revealed = new Set<string>();
+  /** Chats archived or restored here whose flag Hermes hasn't confirmed yet: the `archived` flag each should have.
+   * While a chat is here, this flag beats the one the server lists. */
+  private archiveWanted = new Map<string, boolean>();
+  /** The latest archive or restore of each chat, so a chat's writes go out one at a time, in order. */
+  private archiveWrites = new Map<string, Promise<boolean>>();
+  /** Archives and restores whose outcome couldn't be read back, and the profile and title of each. The next refresh
+   * reads them back before saying how they went. */
+  private archiveUnsure = new Map<string, { profile: string; title: string }>();
   /** Chats the owner deleted here, or is deleting. A list read before the delete can't bring one back. */
   private deleted = new Set<string>();
   /** Chats that had a turn running, or an Approval waiting, when the connection dropped. Reconnecting resumes them,
@@ -238,7 +250,7 @@ export class Hermes {
     profile: string,
     private cache: ChatCache = noCache,
   ) {
-    this.snapshot = { profile, chats: cache.load(profile), olderPulled: cache.olderPulled(profile), status: "offline", unsecure: false };
+    this.snapshot = { profile, chats: cache.load(profile), olderPulled: cache.olderPulled(profile), archivedListed: false, status: "offline", unsecure: false };
   }
 
   /** The profile whose chats are shown. */
@@ -319,7 +331,7 @@ export class Hermes {
     this.resumeOnReconnect.clear();
     this.revealed.clear();
     this.cache.rememberProfile(name);
-    this.update({ profile: name, chats: this.cache.load(name), olderPulled: this.cache.olderPulled(name), syncError: undefined });
+    this.update({ profile: name, chats: this.cache.load(name), olderPulled: this.cache.olderPulled(name), archivedListed: false, syncError: undefined });
     // A reconnect under way may be opening the old profile's socket.
     await this.redialing;
     if (this.profile !== name || this.closing) return;
@@ -329,17 +341,17 @@ export class Hermes {
   }
 
   /**
-   * Searches the words and titles of every chat in the profile, Active and Settled, however old.
-   * Chats archived in another Hermes client are left out, as they are from the list.
+   * Searches the words and titles of every chat in the profile, Active and Settled, however old. Archived chats are
+   * left out, as they are from the list, unless `archived` asks for them too.
    */
-  async search(text: string): Promise<Found[]> {
+  async search(text: string, { archived = false } = {}): Promise<Found[]> {
     const q = text.trim();
     if (!q) return [];
     const query = new URLSearchParams({ q, profile: this.profile, limit: String(SEARCH_LIMIT), exclude_sources: "cron" });
     const res = (await this.rest("GET", `api/sessions/search?${query}`)) as { results: SearchRow[] };
     const listed = new Map(this.snapshot.chats.map((c) => [c.id, c]));
     return res.results
-      .filter((r) => !r.archived && !this.deleted.has(r.id))
+      .filter((r) => (archived || !this.isArchived(r)) && !this.deleted.has(r.id))
       .map((r): Found => {
         const c = listed.get(r.id);
         const snippet = snippetParts(r.snippet ?? "");
@@ -350,6 +362,7 @@ export class Hermes {
           source: toSource(r.source),
           // Every pinned chat is listed, so one that isn't is Settled.
           settled: c?.settled ?? true,
+          ...(this.isArchived(r) && { archived: true }),
           updatedAt: Math.max(c?.updatedAt ?? 0, lastActive(r)),
           snippet,
           ...(role && { role, find: findTerm(q, snippet) }),
@@ -360,9 +373,9 @@ export class Hermes {
   /** Puts a found chat in the list, if it isn't there yet, so it can be opened (`open`). */
   reveal(found: Found) {
     if (this.snapshot.chats.some((c) => c.id === found.chatId)) return;
-    const { chatId: id, title, source, settled, updatedAt } = found;
+    const { chatId: id, title, source, settled, archived, updatedAt } = found;
     this.revealed.add(id);
-    this.update({ chats: [...this.snapshot.chats, { id, title, source, settled, updatedAt, items: [] }] });
+    this.update({ chats: [...this.snapshot.chats, { id, title, source, settled, archived, updatedAt, items: [] }] });
   }
 
   /**
@@ -511,6 +524,27 @@ export class Hermes {
   }
 
   /**
+   * Archives a chat in Hermes: it leaves the list here and in every Hermes client at once, and its history stays.
+   * Whether it is Active or Settled is kept for when it is restored. A chat with a reply running isn't archived.
+   * Resolves to whether Hermes has it archived, read back after the write (`writeArchived`).
+   */
+  archive(chatId: string): Promise<boolean> {
+    return this.setArchived(chatId, true);
+  }
+
+  /** Restores an archived chat: it is back in the list, Active or Settled as it was. `archive` undoes it. */
+  restore(chatId: string): Promise<boolean> {
+    return this.setArchived(chatId, false);
+  }
+
+  /** Puts the profile's archived chats in the list too, or takes them out, and refreshes it. */
+  listArchived(on: boolean): Promise<void> {
+    if (on === this.snapshot.archivedListed) return Promise.resolve();
+    this.update({ archivedListed: on });
+    return this.sync();
+  }
+
+  /**
    * Deletes a chat from Hermes for good, in every Hermes client (`DELETE /api/sessions/{id}`). It leaves the list here
    * at once; if Hermes refuses, it comes back and the list says why. A chat with a reply running isn't deleted: stop
    * the reply first. `profile` is the chat's, which the owner may switch away from while the delete is under way.
@@ -522,6 +556,8 @@ export class Hermes {
     const profile = this.profile;
     this.deleted.add(chatId);
     this.pinWanted.delete(chatId);
+    this.archiveWanted.delete(chatId);
+    this.archiveUnsure.delete(chatId);
     this.revealed.delete(chatId);
     this.staleItems.delete(chatId);
     this.resumeOnReconnect.delete(chatId);
@@ -529,8 +565,9 @@ export class Hermes {
     this.update({ chats: this.snapshot.chats.filter((c) => c.id !== chatId) });
     this.saveList(profile, this.snapshot.chats);
     try {
-      // A pin write still under way would otherwise land on a deleted session and report a failure.
-      await this.pinWrites.get(chatId);
+      // A pin or archive write still under way would otherwise land on a deleted session and report a failure.
+      const writes = [this.pinWrites.get(chatId), this.archiveWrites.get(chatId)].filter((w) => w);
+      if (writes.length) await Promise.all(writes);
       await this.rest("DELETE", `api/sessions/${encodeURIComponent(chatId)}?${new URLSearchParams({ profile })}`);
       return true;
     } catch (e) {
@@ -920,6 +957,104 @@ export class Hermes {
     return resuming;
   }
 
+  private setArchived(chatId: string, archived: boolean): Promise<boolean> {
+    const chat = this.snapshot.chats.find((c) => c.id === chatId);
+    if (!chat || chat.running || !!chat.archived === archived) return Promise.resolve(false);
+    const profile = this.profile;
+    this.archiveWanted.set(chatId, archived);
+    this.archiveUnsure.delete(chatId);
+    // A restored chat older than the list's month stays in it.
+    if (!archived) this.revealed.add(chatId);
+    this.patchChat(chatId, (c) => ({ ...c, archived }));
+    this.saveList(profile, this.snapshot.chats);
+    const write = (this.archiveWrites.get(chatId) ?? Promise.resolve(false)).then(() => this.writeArchived(chatId, chat.title, profile));
+    this.archiveWrites.set(chatId, write);
+    void write.finally(() => this.archiveWrites.get(chatId) === write && this.archiveWrites.delete(chatId));
+    return write;
+  }
+
+  /**
+   * Writes the chat's wanted archived flag, then reads the chat back, so only Hermes's answer says how it went. A write
+   * that loses to another edit goes again only while Hermes still has the flag as the owner saw it, so a newer archive
+   * or restore from another Hermes client isn't overwritten. When the answer is lost and the chat can't be read back,
+   * the chat stays where the owner put it and the next refresh reads it back. Resolves to whether Hermes has the chat
+   * as the owner wanted it.
+   */
+  private async writeArchived(chatId: string, title: string, profile: string): Promise<boolean> {
+    const archived = this.archiveWanted.get(chatId);
+    if (archived === undefined) return false;
+    let failure: Error | undefined;
+    try {
+      await this.patchSession(chatId, profile, { archived }, async () => (await this.readArchived(chatId, profile)) === !archived);
+    } catch (e) {
+      failure = e as Error;
+    }
+    let now: boolean | undefined;
+    try {
+      now = await this.readArchived(chatId, profile);
+    } catch (e) {
+      // The owner has changed their mind meanwhile; the next write reads back the chat.
+      if (this.archiveWanted.get(chatId) !== archived) return false;
+      this.archiveUnsure.set(chatId, { profile, title });
+      if (this.profile === profile) this.update({ syncError: unsureMessage(title, archived, e as Error) });
+      return false;
+    }
+    if (this.archiveWanted.get(chatId) === archived) this.showArchived(chatId, title, profile, archived, now, failure);
+    return now === archived;
+  }
+
+  /**
+   * Shows the chat as Hermes has it, read back after an archive or restore (`now`: whether it's archived, undefined
+   * when it's gone), and says why when that isn't what the owner asked for.
+   */
+  private showArchived(chatId: string, title: string, profile: string, wanted: boolean, now: boolean | undefined, failure?: Error) {
+    this.archiveWanted.delete(chatId);
+    this.archiveUnsure.delete(chatId);
+    if (this.profile !== profile) return;
+    if (now === undefined) {
+      this.deleted.add(chatId);
+      this.update({
+        chats: this.snapshot.chats.filter((c) => c.id !== chatId),
+        syncError: `"${title}" is no longer in Hermes: another Hermes client deleted it.`,
+      });
+    } else {
+      this.patchChat(chatId, (c) => ({ ...c, archived: now }));
+      const why = failure ? withoutStop(failure.message) : "another Hermes client changed it";
+      if (now !== wanted) this.update({ syncError: `Couldn't ${wanted ? "archive" : "restore"} "${title}": ${why}. It's shown as Hermes has it now.` });
+    }
+    this.saveList(profile, this.snapshot.chats);
+  }
+
+  /** Whether Hermes has the chat archived, from its stored row; undefined when the session is gone. */
+  private async readArchived(chatId: string, profile: string): Promise<boolean | undefined> {
+    try {
+      const row = (await this.rest("GET", `api/sessions/${encodeURIComponent(chatId)}?${new URLSearchParams({ profile })}`)) as SessionDetail;
+      return !!row.archived;
+    } catch (e) {
+      if ((e as Error).message.includes("answered 404")) return undefined;
+      throw e;
+    }
+  }
+
+  /** Reads back the archives and restores of the profile whose outcome wasn't known. */
+  private async checkUnsureArchives(profile: string) {
+    for (const [chatId, unsure] of this.archiveUnsure) {
+      const wanted = this.archiveWanted.get(chatId);
+      if (unsure.profile !== profile || wanted === undefined) continue;
+      try {
+        const now = await this.readArchived(chatId, profile);
+        if (this.archiveUnsure.get(chatId) === unsure) this.showArchived(chatId, unsure.title, profile, wanted, now);
+      } catch (e) {
+        if (this.profile === profile) this.update({ syncError: unsureMessage(unsure.title, wanted, e as Error) });
+      }
+    }
+  }
+
+  /** Whether a listed or found chat is archived: as the owner wants it while that isn't confirmed, else as Hermes has it. */
+  private isArchived(r: Pick<SessionRow, "id" | "archived">): boolean {
+    return this.archiveWanted.get(r.id) ?? !!r.archived;
+  }
+
   private setSettled(chatId: string, settled: boolean): Promise<void> {
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
     if (!chat || chat.settled === settled) return Promise.resolve();
@@ -973,23 +1108,12 @@ export class Hermes {
     const cutoff = this.snapshot.olderPulled ? -Infinity : Date.now() - LIST_WINDOW_MS;
     this.pinnedSinceListRead.clear();
     this.readSinceListRead.clear();
+    const archivedListed = this.snapshot.archivedListed;
     const rows = new Map<string, SessionRow>();
     try {
-      for (let page = 0; page < MAX_PAGES; page++) {
-        const offset = page * PAGE_SIZE;
-        const query = new URLSearchParams({
-          profile,
-          order: "recent",
-          limit: String(PAGE_SIZE),
-          offset: String(offset),
-          exclude_sources: "cron",
-        });
-        const res = (await this.rest("GET", `api/sessions?${query}`)) as SessionPage;
-        for (const r of res.sessions) rows.set(r.id, r);
-        // Every page also carries all pinned rows, out of order; the unpinned ones follow recency.
-        const passedCutoff = res.sessions.some((r) => !r.pinned && lastActive(r) < cutoff);
-        if (passedCutoff || res.sessions.length === 0 || offset + PAGE_SIZE >= res.total) break;
-      }
+      for (const r of await this.readList(profile, "exclude", cutoff)) rows.set(r.id, r);
+      // Every page also carries the pinned chats that aren't archived; the list has them already.
+      if (archivedListed) for (const r of await this.readList(profile, "only", -Infinity)) if (r.archived) rows.set(r.id, r);
     } catch (e) {
       if (this.profile === profile) this.update({ syncError: `Couldn't refresh the chat list: ${(e as Error).message}` });
       return e as Error;
@@ -1000,7 +1124,7 @@ export class Hermes {
     const known = new Map(this.snapshot.chats.map((c) => [c.id, c]));
     let readOnScreen = false;
     const listed = [...rows.values()]
-      .filter((r) => !r.archived && !this.deleted.has(r.id) && lastActive(r) >= cutoff)
+      .filter((r) => (this.isArchived(r) ? archivedListed : lastActive(r) >= cutoff) && !this.deleted.has(r.id))
       .map((r): Chat => {
         const c = known.get(r.id);
         // A row read before this app's latest write is stale; the chat stays where the owner put it until the next sync.
@@ -1021,26 +1145,55 @@ export class Hermes {
           title: r.title || r.preview || c?.title || "Untitled chat",
           source: toSource(r.source),
           settled: !(wanted ?? r.pinned),
+          archived: this.isArchived(r) || undefined,
           updatedAt: Math.max(c?.updatedAt ?? 0, lastActive(r)),
           unread: !!r.unread && !readHere && r.id !== this.viewing,
         };
       });
     // Chats started or resumed on this connection stay even before Hermes stores them (a new chat has no row
-    // until its first prompt), and so do chats picked from a search.
+    // until its first prompt), and so do chats picked from a search and chats being archived or restored.
     const listedIds = new Set(listed.map((c) => c.id));
-    const onThisConnection = this.snapshot.chats.filter((c) => (c.runtimeId || this.revealed.has(c.id)) && !listedIds.has(c.id));
+    const onThisConnection = this.snapshot.chats.filter(
+      (c) => (c.runtimeId || this.revealed.has(c.id) || this.archiveWanted.has(c.id)) && !listedIds.has(c.id),
+    );
     const chats = [...onThisConnection, ...listed];
     this.update({ chats, syncError: undefined });
     if (readOnScreen) this.markRead(this.viewing!);
     this.saveList(profile, chats);
+    await this.checkUnsureArchives(profile);
     return undefined;
+  }
+
+  /**
+   * Reads the profile's chats from dashboard REST, most recent first, `archived` ones excluded or only those, until
+   * the list passes `cutoff`. Every page also carries all pinned rows, archived or not, out of order; the unpinned
+   * ones follow recency.
+   */
+  private async readList(profile: string, archived: "exclude" | "only", cutoff: number): Promise<SessionRow[]> {
+    const rows: SessionRow[] = [];
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const offset = page * PAGE_SIZE;
+      const query = new URLSearchParams({
+        profile,
+        order: "recent",
+        limit: String(PAGE_SIZE),
+        offset: String(offset),
+        exclude_sources: "cron",
+        ...(archived === "only" && { archived }),
+      });
+      const res = (await this.rest("GET", `api/sessions?${query}`)) as SessionPage;
+      rows.push(...res.sessions);
+      const passedCutoff = res.sessions.some((r) => !r.pinned && lastActive(r) < cutoff);
+      if (passedCutoff || res.sessions.length === 0 || offset + PAGE_SIZE >= res.total) break;
+    }
+    return rows;
   }
 
   /** Keeps the profile's list for the next start, without the chats' transcripts. */
   private saveList(profile: string, chats: Chat[]) {
     this.cache.save(
       profile,
-      chats.map(({ id, title, source, settled, updatedAt, unread }) => ({ id, title, source, settled, updatedAt, unread, items: [] })),
+      chats.map(({ id, title, source, settled, archived, updatedAt, unread }) => ({ id, title, source, settled, archived, updatedAt, unread, items: [] })),
     );
   }
 
@@ -1048,10 +1201,15 @@ export class Hermes {
    * Sets a session's sidebar flags. Hermes refuses a session edit without a request id and the session's current
    * revision (409 `client_upgrade_required`), so each write first reads the revision from the mutation snapshot.
    * The flags are plain values, so a write that loses to another edit of the same session (`revision_conflict`) is
-   * sent once more against the new revision. A profile switch can redial between the read and the write; the write
-   * names its profile, so it goes out on the new connection.
+   * sent once more against the new revision, if `retry` agrees. A profile switch can redial between the read and the
+   * write; the write names its profile, so it goes out on the new connection.
    */
-  private async patchSession(chatId: string, profile: string, flags: { pinned?: boolean; unread?: boolean }): Promise<void> {
+  private async patchSession(
+    chatId: string,
+    profile: string,
+    flags: { pinned?: boolean; unread?: boolean; archived?: boolean },
+    retry: () => Promise<boolean> = async () => true,
+  ): Promise<void> {
     const path = `api/sessions/${encodeURIComponent(chatId)}`;
     for (let attempt = 0; ; attempt++) {
       const snapshot = (await this.rest("GET", `${path}/mutation-snapshot?${new URLSearchParams({ profile })}`)) as MutationSnapshot;
@@ -1060,7 +1218,7 @@ export class Hermes {
         await this.rest("PATCH", path, { ...flags, profile, request_id: crypto.randomUUID(), expected_revision: snapshot.runtime_revision });
         return;
       } catch (e) {
-        if (attempt > 0 || !(e as Error).message.includes("revision_conflict")) throw e;
+        if (attempt > 0 || !(e as Error).message.includes("revision_conflict") || !(await retry())) throw e;
       }
     }
   }
@@ -1105,6 +1263,12 @@ export class Hermes {
     for (const fn of this.listeners) fn();
   }
 }
+
+function unsureMessage(title: string, archived: boolean, e: Error): string {
+  return `Couldn't tell whether "${title}" was ${archived ? "archived" : "restored"}: ${withoutStop(e.message)}. It's checked again on the next refresh.`;
+}
+
+const withoutStop = (text: string) => text.replace(/\.$/, "");
 
 function lastActive(r: Pick<SessionRow, "last_active" | "started_at">): number {
   return (r.last_active ?? r.started_at ?? 0) * 1000;
