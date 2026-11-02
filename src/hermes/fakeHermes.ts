@@ -164,6 +164,10 @@ export class FakeHermes {
   readonly runtime = new Map<string, string>();
   private created = new Map<string, { source: string; profile?: string }>(); // runtime id, until the first prompt stores it
 
+  /** The `info` session.create and session.resume answer with (`server._session_info`); empty, as from a server
+   * that reports none of it, unless a test sets it. */
+  sessionInfo: Record<string, unknown> = {};
+
   /** Per-method behaviour; tests override entries. Unhandled methods get no answer. */
   readonly handlers: Record<string, Handler> = {
     "session.create": (r) => {
@@ -182,7 +186,7 @@ export class FakeHermes {
         fast: typeof p.fast === "boolean" ? p.fast : base.fast,
       };
       this.sessionModel.set(stored, info);
-      this.respond(r.id, { session_id: runtimeId, stored_session_id: stored, message_count: 0, messages: [], info });
+      this.respond(r.id, { session_id: runtimeId, stored_session_id: stored, message_count: 0, messages: [], info: { ...this.sessionInfo, ...info } });
     },
     "session.resume": (r) => {
       const stored = String(r.params.session_id);
@@ -195,12 +199,12 @@ export class FakeHermes {
         this.runtime.set(sid, stored);
         const messages = this.transcripts[stored] ?? [];
         const open_requests = open.map(([id, q]) => ({ id, method: q.method, params: { session_id: sid, ...q.params } }));
-        return this.respond(r.id, { session_id: sid, stored_session_id: stored, message_count: messages.length, messages, info: {}, running: true, open_requests });
+        return this.respond(r.id, { session_id: sid, stored_session_id: stored, message_count: messages.length, messages, info: this.sessionInfo, running: true, open_requests });
       }
       const runtimeId = `rt-r${++this.resumed}`;
       this.runtime.set(runtimeId, stored);
       const messages = this.transcripts[stored] ?? [];
-      const info = this.sessionModel.get(stored) ?? {};
+      const info = { ...this.sessionInfo, ...this.sessionModel.get(stored) };
       this.respond(r.id, { session_id: runtimeId, stored_session_id: stored, message_count: messages.length, messages, info, running: false });
     },
     // The message is stored as its turn starts (`user_row_id` is the staged row), so the history read back has it.

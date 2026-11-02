@@ -1,6 +1,7 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
 import { memo, type ReactNode, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { ArrowUp, Brain, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, FileDown, HardDrive, Paperclip, RotateCcw, Search, Square, Wrench, X } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import type { ApprovalChoice, AttachCheck, Attachment, Chat, ConnectionStatus, Item, OutgoingItem, Source } from "../hermes/model";
@@ -43,6 +44,34 @@ const STATUS_NOTE: Record<ConnectionStatus, string | undefined> = {
   offline: "Offline. Click the status dot to reconnect.",
 };
 
+/**
+ * The name a pasted file is saved under: its own, or for a screenshot (no name, or the webview's generic `image.png`)
+ * a local timestamp like `clipboard-2026-11-02T153000.png`, its extension from the MIME type.
+ */
+export function pastedName(f: { name: string; type: string }, now = new Date()): string {
+  if (f.name && !/^image\.\w+$/.test(f.name)) return f.name;
+  const local = new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 19).replaceAll(":", "");
+  return `clipboard-${local}.${/^\w+\/(\w+)$/.exec(f.type)?.[1] ?? "png"}`;
+}
+
+/**
+ * The images on the clipboard, as files. WebKitGTK leaves a paste event's `files` empty even for a screenshot, but the
+ * async clipboard API, asked during the paste, has it. Empty when there are none or the clipboard can't be read.
+ */
+async function clipboardImages(): Promise<File[]> {
+  try {
+    const items = await navigator.clipboard.read();
+    return await Promise.all(
+      items.flatMap((item) => {
+        const type = item.types.find((t) => t.startsWith("image/"));
+        return type ? [item.getType(type).then((b) => new File([b], "", { type }))] : [];
+      }),
+    );
+  } catch {
+    return [];
+  }
+}
+
 /** When a Saved copy was taken, as the note above it says it. */
 const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 
@@ -50,8 +79,9 @@ const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateS
  * `alsoPostsIn`: the Telegram or Discord chat Hermes will also post its replies in. `draft`: the composer's text, kept
  * outside the pane so it survives switching chats. `onAnswer` answers an Approval card. `onSettle`, `onArchive` and
  * `onExport` are left out for a chat not started yet. `notLoaded`: the chat has no Saved copy and can't load until
- * Hermes is connected. `onRetry`, `onEdit` and `onDismiss` act on a message Hermes didn't take, or may not have. `modelControls`: the model picker and reasoning pill, at the bottom left of the composer. Ctrl+F
- * opens the find bar.
+ * Hermes is connected. `onRetry`, `onEdit` and `onDismiss` act on a message Hermes didn't take, or may not have.
+ * `modelControls`: the model picker and reasoning pill, at the bottom left of the composer. `footer`: what goes under
+ * the composer, the status bar. Ctrl+F opens the find bar.
  */
 export function ChatPane({
   chat,
@@ -72,6 +102,7 @@ export function ChatPane({
   onArchive,
   onExport,
   modelControls,
+  footer,
 }: {
   chat: Chat;
   notLoaded?: boolean;
@@ -91,6 +122,7 @@ export function ChatPane({
   onArchive?: (archived: boolean) => void;
   onExport?: () => void;
   modelControls?: ReactNode;
+  footer?: ReactNode;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   // The blocks are memoized, so they get one answer handler for the life of the pane.
@@ -333,6 +365,7 @@ export function ChatPane({
         onStop={onStop}
         modelControls={modelControls}
       />
+      {footer}
     </div>
   );
 }
@@ -574,7 +607,18 @@ function Composer({
   }, []);
   useEffect(() => previews.current?.sync(attachments), [attachments]);
 
-  const add = async (paths: string[]) => {
+  // Files still being read, saved or checked: sending waits for them, so none misses the message it was added for.
+  const [attaching, setAttaching] = useState(0);
+  const busy = async (work: () => Promise<void>) => {
+    setAttaching((n) => n + 1);
+    try {
+      await work();
+    } finally {
+      setAttaching((n) => n - 1);
+    }
+  };
+
+  const add = (paths: string[]) => busy(async () => {
     if (!paths.length) return;
     try {
       const got = await onAttach(paths);
@@ -583,7 +627,7 @@ function Composer({
     } catch (e) {
       setRefused([`Couldn't attach files: ${e instanceof Error ? e.message : String(e)}`]);
     }
-  };
+  });
   const addRef = useRef(add);
   addRef.current = add;
 
@@ -598,6 +642,21 @@ function Composer({
     });
     return () => void unlisten.then((stop) => stop());
   }, []);
+
+  // A pasted screenshot or file has no path of its own: Rust saves it to a temp file, which then attaches like a drop.
+  const paste = (pasted: File[] | Promise<File[]>) => busy(async () => {
+    try {
+      const files = await pasted;
+      const paths = await Promise.all(
+        files.map(async (f) =>
+          invoke<string>("stage_clipboard_file", await f.arrayBuffer(), { headers: { "x-name": encodeURIComponent(pastedName(f)) } }),
+        ),
+      );
+      await add(paths);
+    } catch (e) {
+      setRefused([`Couldn't attach the pasted files: ${e instanceof Error ? e.message : String(e)}`]);
+    }
+  });
 
   const pick = async () => {
     try {
@@ -615,7 +674,7 @@ function Composer({
     ta.style.height = Math.min(ta.scrollHeight, 240) + "px";
   }, [text]);
 
-  const sendable = !!text.trim() || attachments.length > 0;
+  const sendable = attaching === 0 && (!!text.trim() || attachments.length > 0);
   const send = () => {
     if (offline || running || !sendable) return;
     onSend(text.trim(), attachments);
@@ -658,6 +717,15 @@ function Composer({
           placeholder="Message Hermes"
           value={text}
           onChange={(e) => onText(e.target.value)}
+          onPaste={(e) => {
+            // Only files are taken over; text pastes as it always has.
+            if (dragging) return;
+            const files = Array.from(e.clipboardData.files);
+            if (files.length) {
+              e.preventDefault();
+              void paste(files);
+            } else if (!e.clipboardData.getData("text/plain")) void paste(clipboardImages());
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey && !composing(e)) {
               e.preventDefault();

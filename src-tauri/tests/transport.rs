@@ -441,3 +441,54 @@ async fn refuses_to_preview_a_missing_or_oversized_image() {
     let err = transport::read_preview(&path_of(&big)).await.err().unwrap();
     assert_eq!(err.to_string(), "it's 25.0 MB now, over the 25 MB limit");
 }
+
+#[test]
+fn stages_a_pasted_file_as_a_private_temp_file() {
+    use std::os::unix::fs::PermissionsExt;
+    let png = b"\x89PNG\r\n\x1a\npasted";
+    let a = transport::stage_clipboard_file("clipboard-2026-11-02T153000.png", png).unwrap();
+    let b = transport::stage_clipboard_file("clipboard-2026-11-02T153000.png", png).unwrap();
+    for p in [&a, &b] {
+        assert!(p.is_absolute(), "{p:?}");
+        assert!(p.starts_with(std::env::temp_dir().join("hermes-chat")), "{p:?}");
+        assert_eq!(p.file_name().unwrap(), "clipboard-2026-11-02T153000.png");
+        assert_eq!(std::fs::read(p).unwrap(), png);
+        let folder = std::fs::metadata(p.parent().unwrap()).unwrap();
+        assert_eq!(folder.permissions().mode() & 0o777, 0o700, "{p:?}");
+    }
+    // The same screenshot pasted twice is two files, so both attach.
+    assert_ne!(a, b);
+    // Each staged file attaches like any other local file.
+    let got = tokio::runtime::Runtime::new().unwrap().block_on(transport::stat_files(&[path_of(&a)]));
+    assert_eq!(got[0].size, Some(png.len() as u64));
+    for p in [a, b] {
+        std::fs::remove_dir_all(p.parent().unwrap()).unwrap();
+    }
+}
+
+#[test]
+fn a_pasted_file_name_stays_a_plain_basename() {
+    for (hostile, want) in [
+        ("../../etc/passwd.png", "passwd.png"),
+        ("/etc/passwd", "passwd"),
+        ("..\\..\\boot.ini", "boot.ini"),
+        ("..", "clipboard"),
+        ("", "clipboard"),
+        ("  ", "clipboard"),
+        ("rack\n\u{7}photo.JPG", "rackphoto.JPG"),
+        (".bashrc", "bashrc"),
+        ("notes.tar.gz", "notes.tar.gz"),
+        ("report.<script>", "report.<script>"),
+        ("Résumé 2026.pdf", "Résumé 2026.pdf"),
+    ] {
+        let p = transport::stage_clipboard_file(hostile, b"x").unwrap();
+        assert_eq!(p.file_name().unwrap(), want, "{hostile:?}");
+        // Still inside its own fresh folder, not somewhere the name pointed.
+        assert_eq!(p.parent().unwrap().parent().unwrap(), std::env::temp_dir().join("hermes-chat"), "{hostile:?}");
+        std::fs::remove_dir_all(p.parent().unwrap()).unwrap();
+    }
+    let long = transport::stage_clipboard_file(&format!("{}.png", "é".repeat(300)), b"x").unwrap();
+    let name = long.file_name().unwrap().to_str().unwrap();
+    assert!(name.len() <= 255 && name.ends_with(".png"), "{name}");
+    std::fs::remove_dir_all(long.parent().unwrap()).unwrap();
+}
