@@ -459,6 +459,8 @@ export class Hermes {
     rpc: (method, params) => this.request(method, params),
     get: (pathAndQuery) => this.rest("GET", pathAndQuery),
   });
+  /** The titles chats had when the owner switched away from their profile, by `profile chatId`, for the inbox. */
+  private titlesSeen = new Map<string, string>();
   /** The profile and chat of each runtime session this app started or resumed, for as long as it runs. */
   private runtimeOwners = new Map<string, { profile: string; chatId: string }>();
   /** The latest `session.active_list` read: its connection, when it started, and the read while under way. */
@@ -627,6 +629,8 @@ export class Hermes {
     }
     const unread = this.snapshot.chats.filter((c) => c.unread).length;
     const chats = this.snapshot.chats.filter((c) => !c.archived).map((c): ListedChat => ({ id: c.id, title: c.title, at: c.updatedAt, unread: !!c.unread, source: c.source }));
+    // A chat started here may not be in the saved list yet, so its Failed messages keep the title it had.
+    for (const c of this.snapshot.chats) this.titlesSeen.set(`${from} ${c.id}`, c.title);
     const failures = this.snapshot.chats.flatMap((c) =>
       c.items.flatMap((i): SeenFailure[] => (i.kind === "error" && i.id !== LOAD_ERROR_ID ? [{ chatId: c.id, title: c.title, itemId: i.id, mark: failureMark(i.text) }] : [])),
     );
@@ -2084,7 +2088,7 @@ export class Hermes {
     const titles = new Map(this.cache.load(profile).map((c) => [c.id, c.title]));
     return Object.entries(loadOutbox(this.cache, profile)).flatMap(([chatId, rows]) =>
       rows.flatMap((r): SavedSend[] =>
-        r.outgoing.state === "sending" ? [] : [{ chatId, itemId: r.id, state: r.outgoing.state, title: titles.get(chatId) }],
+        r.outgoing.state === "sending" ? [] : [{ chatId, itemId: r.id, state: r.outgoing.state, title: titles.get(chatId) ?? this.titlesSeen.get(`${profile} ${chatId}`) }],
       ),
     );
   }

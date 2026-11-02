@@ -169,6 +169,19 @@ describe("The inbox", () => {
     expect(sends[1].summary).toBe("A message you sent may not have reached Hermes.");
   });
 
+  it("keeps the title of a new chat whose first message failed, after switching away", async () => {
+    vi.useFakeTimers();
+    const { server, hermes } = await signedIn();
+    const id = await hermes.newChat();
+    server.rejectPrompt = { code: 4009, message: "session busy" };
+    await hermes.send(id, "Draft the email");
+    await hermes.switchProfile("work");
+    await hermes.idle();
+    await vi.advanceTimersByTimeAsync(20_000);
+    await hermes.checkOtherProfiles();
+    expect(inbox(hermes).entries.find((e) => e.kind === "failed")).toMatchObject({ profile: "default", chatId: id, title: "Draft the email" });
+  });
+
   it("marks what it last saw from Hermes while the live check fails", async () => {
     const { server, hermes } = await signedIn();
     server.liveSessions = [{ id: "rt-x", session_key: "work-busy", status: "working", last_active: nowS() }];
@@ -231,6 +244,18 @@ describe("The inbox", () => {
     server.cancelRequest(asked.id!, "timeout");
 
     expect(inbox(hermes).entries.filter((e) => e.chatId === id && needsOwner(e))).toEqual([]);
+  });
+
+  it("shows an Approval once while the connection is down, though a check from before says its chat waits", async () => {
+    const { server, hermes } = await signedIn();
+    const { id, runtime } = await replying(server, hermes);
+    server.askApproval(runtime);
+    server.liveSessions = [{ id: runtime, session_key: id, status: "waiting", last_active: nowS() }];
+    await hermes.checkOtherProfiles();
+    server.refuse = "Connection refused";
+    server.drop();
+
+    expect(inbox(hermes).entries.filter((e) => e.chatId === id).map(brief)).toEqual([`approval default/${id} stale`]);
   });
 
   it("keeps an Approval dismissed after switching away, when only a check says its chat waits", async () => {

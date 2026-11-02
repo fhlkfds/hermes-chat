@@ -132,8 +132,10 @@ export function inboxEntries({ profile, chats, connected, others, live, seen }: 
         unmatched++;
         continue;
       }
-      // A chat this connection has resumed says itself, more surely and more lately, whether it runs or waits.
-      if (owner.profile === profile && chats.find((c) => c.id === s.chatId)?.runtimeId) continue;
+      // A chat this connection has resumed says itself, more surely and more lately, whether it runs or waits; so does
+      // one whose card from before a drop is still on screen.
+      const here = owner.profile === profile ? chats.find((c) => c.id === s.chatId) : undefined;
+      if (here && (here.runtimeId || here.items.some(isWaiting))) continue;
       const base = { profile: owner.profile, chatId: s.chatId, title: owner.title, source: owner.source, at: s.at, stale };
       if (s.status === "working") add({ ...base, key: `running ${owner.profile} ${s.chatId}`, kind: "running", summary: "Hermes is working on a reply." });
       else add({ ...base, key: `waiting ${owner.profile} ${s.chatId}`, kind: "approval", summary: "Hermes is waiting for your answer. Open the chat to see what it asks." });
