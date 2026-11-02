@@ -36,7 +36,7 @@ describe("Hermes transport", () => {
   it("sends a message and streams the reply into the chat", async () => {
     const { server, hermes, chat, runtime } = await signedIn();
     const id = await hermes.newChat();
-    await hermes.send(id, "What's the disk usage on the NAS?");
+    expect(await hermes.send(id, "What's the disk usage on the NAS?")).toBe(true);
     expect(server.last("prompt.submit")!.params).toEqual({ session_id: runtime(id), profile: "default", text: "What's the disk usage on the NAS?" });
     expect(chat(id)).toMatchObject({ title: "What's the disk usage on the NAS?", running: true });
 
@@ -92,7 +92,7 @@ describe("Hermes transport", () => {
     const { server, hermes, chat } = await signedIn();
     const id = await hermes.newChat();
     server.handlers["prompt.submit"] = (r) => server.fail(r.id, 4009, "session busy");
-    await hermes.send(id, "hi");
+    expect(await hermes.send(id, "hi")).toBe(false);
     expect(chat(id)).toMatchObject({ running: false });
     expect(chat(id).items.at(-1)).toMatchObject({ kind: "error", text: "session busy" });
   });
