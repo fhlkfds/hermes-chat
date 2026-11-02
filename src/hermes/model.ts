@@ -22,9 +22,26 @@ export type AttachCheck = { attachments: Attachment[]; refused: string[] };
  * `at` on a message or reply: when Hermes stored it (Unix ms), read from its stored row. It is left out until that row
  * is known, never filled in with when this app saw the message.
  */
+/**
+ * A message sent from this app that Hermes hasn't confirmed. `sending`: on its way. `failed`: Hermes didn't take it,
+ * or reading back its history showed it never arrived. `unknown`: it went out and the connection dropped, or the app
+ * closed, before Hermes answered, so Hermes may have it; the next read of the chat's history settles it. `reason`:
+ * why, for `failed` and `unknown`. `attachments`: the files sent with it, so Retry sends them again. `sent`: set as it
+ * goes out, to find it in the history: the prompt as sent, and the newest stored row the chat had then (`after`).
+ */
+export type Outgoing = {
+  state: "sending" | "failed" | "unknown";
+  reason?: string;
+  attachments?: Attachment[];
+  sent?: { prompt: string; after?: number };
+};
+
 export type Item =
-  /** `attachments`: the names of the files sent with the message. */
-  | { kind: "user"; id: string; text: string; attachments?: string[]; at?: number }
+  /**
+   * `attachments`: the names of the files sent with the message. `outgoing`: sent from here and not confirmed yet;
+   * a message Hermes has is plain.
+   */
+  | { kind: "user"; id: string; text: string; attachments?: string[]; at?: number; outgoing?: Outgoing }
   /** `interrupted`: the owner, or another Hermes client, stopped this reply before it finished. */
   | { kind: "assistant"; id: string; text: string; interrupted?: boolean; at?: number }
   /** The model's reasoning before a reply or a tool call, as Hermes streams or stores it. */
@@ -67,6 +84,11 @@ export const APPROVAL_CHOICES = ["once", "session", "always", "deny"] as const;
 export type ApprovalChoice = (typeof APPROVAL_CHOICES)[number];
 
 export type ApprovalItem = Extract<Item, { kind: "approval" }>;
+
+/** A message sent from here that Hermes hasn't confirmed (`Outgoing`). */
+export type OutgoingItem = Extract<Item, { kind: "user" }> & { outgoing: Outgoing };
+
+export const isOutgoing = (i: Item): i is OutgoingItem => i.kind === "user" && i.outgoing !== undefined;
 
 /** The answers the owner can give an Approval: the ones Hermes offers, less the broader grants it rules out. */
 export const offeredChoices = (i: ApprovalItem): ApprovalChoice[] =>

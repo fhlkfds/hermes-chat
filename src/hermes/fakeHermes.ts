@@ -126,8 +126,15 @@ export class FakeHermes {
   /** Stored session id -> its history, as `session.resume` projects it (`_history_to_messages`). */
   transcripts: Record<string, TranscriptMessage[]> = {};
   /** The stored row id `prompt.submit` reports for the message (`user_row_id`, `tui_gateway/methods_prompt.py` at
-   * `bf0203a`). Unset, it reports none. */
+   * `bf0203a`). Unset, it reports none, though the message is stored with a row of its own. */
   userRowId?: number;
+  /** While set, `prompt.submit` is refused with this error and nothing is stored, as Hermes answers a busy session. */
+  rejectPrompt?: { code: number; message: string };
+  /**
+   * The next `prompt.submit` drops the connection before Hermes answers it. `stored`: Hermes got the message and stored
+   * it first, so its history has it. `lost`: the frame never reached Hermes. Applies once.
+   */
+  dropOnPrompt?: "stored" | "lost";
   /** What the model answers every `llm.oneshot` call with, unless `oneshotFailure` says why it failed. */
   oneshotAnswer = "A new title";
   oneshotFailure?: string;
@@ -203,7 +210,12 @@ export class FakeHermes {
       const info = { ...this.sessionInfo, ...this.sessionModel.get(stored) };
       this.respond(r.id, { session_id: runtimeId, stored_session_id: stored, message_count: messages.length, messages, info, running: false });
     },
+    // The message is stored as its turn starts (`user_row_id` is the staged row), so the history read back has it.
     "prompt.submit": (r) => {
+      const drop = this.dropOnPrompt;
+      this.dropOnPrompt = undefined;
+      if (drop === "lost") return this.drop();
+      if (this.rejectPrompt) return this.fail(r.id, this.rejectPrompt.code, this.rejectPrompt.message);
       const runtimeId = String(r.params.session_id);
       const created = this.created.get(runtimeId);
       if (created) {
@@ -211,6 +223,9 @@ export class FakeHermes {
         const stored = row(this.runtime.get(runtimeId)!, 0, { source: created.source, title: null, preview: String(r.params.text), message_count: 1 });
         this.store(created.profile)?.push(stored);
       }
+      const stored = this.runtime.get(runtimeId);
+      if (stored) this.storeMessage(stored, { role: "user", text: String(r.params.text), row_id: this.userRowId });
+      if (drop === "stored") return this.drop();
       this.respond(r.id, { status: "streaming", ...(this.userRowId !== undefined && { user_row_id: this.userRowId }) });
     },
     // Attachments stage server-side for the session's next turn (research doc §7; `tui_gateway/methods_prompt.py`
@@ -459,12 +474,14 @@ export class FakeHermes {
         this.restRequests.push(req);
         const patch = /^\/api\/sessions\/([^/]+)$/.exec(req.path);
         const snapshot = /^\/api\/sessions\/([^/]+)\/mutation-snapshot$/.exec(req.path);
+        const messages = /^\/api\/sessions\/([^/]+)\/messages$/.exec(req.path);
         const handler =
           this.rest[`${method} ${req.path}`] ??
           (method === "PATCH" && patch ? () => this.patchSession(patch[1], req.body!) : undefined) ??
           (method === "GET" && patch ? () => this.sessionDetail(decodeURIComponent(patch[1]), req.query.get("profile")) : undefined) ??
           (method === "DELETE" && patch ? () => this.deleteSession(decodeURIComponent(patch[1]), req.query.get("profile")) : undefined) ??
-          (method === "GET" && snapshot ? () => this.mutationSnapshot(snapshot[1], req.query.get("profile")) : undefined);
+          (method === "GET" && snapshot ? () => this.mutationSnapshot(snapshot[1], req.query.get("profile")) : undefined) ??
+          (method === "GET" && messages ? () => this.storedMessages(decodeURIComponent(messages[1]), req.query) : undefined);
         if (!handler) throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
         return JSON.stringify(await handler(req));
       },
@@ -540,6 +557,15 @@ export class FakeHermes {
     return this.profileModel[profile || "default"] ?? { model: "claude-sonnet-4-5", provider: "anthropic", reasoning_effort: "medium", fast: false };
   }
 
+  /**
+   * Stores a message in a session's history, as `session.resume` and the stored rows read it back. It gets the next
+   * row id unless it brings one, and the time now.
+   */
+  storeMessage(stored: string, m: TranscriptMessage) {
+    const row_id = m.row_id ?? Math.max(0, ...Object.values(this.transcripts).flat().map((t) => t.row_id ?? 0)) + 1;
+    (this.transcripts[stored] ??= []).push({ timestamp: Math.floor(now()), ...m, row_id });
+  }
+
   /** The runtime session id the server handed out for a stored session. */
   runtimeIdOf(stored: string) {
     return [...this.runtime].reverse().find(([, s]) => s === stored)?.[0];
@@ -562,6 +588,21 @@ export class FakeHermes {
     const store = this.store(profile);
     if (!store) throw new Error(`The dashboard answered 404: {"detail":"Profile '${profile}' not found"}`);
     return store;
+  }
+
+  /**
+   * `GET /api/sessions/{id}/messages` (`hermes_cli/web_routers/sessions.py` at the deployed `bf0203a`): stored rows,
+   * `SELECT *` from `messages`, oldest first or `order=latest` newest first, a page of `limit` from `offset`. Only rows
+   * with a stored id are there: a live session's unstored tail isn't.
+   */
+  private storedMessages(id: string, query: URLSearchParams) {
+    const rows = (this.transcripts[id] ?? [])
+      .filter((m) => m.row_id !== undefined)
+      .map((m) => ({ id: m.row_id!, session_id: id, role: m.role, content: m.text ?? m.content ?? null, timestamp: m.timestamp ?? null }));
+    if (query.get("order") === "latest") rows.reverse();
+    const offset = Number(query.get("offset") ?? 0);
+    const limit = Number(query.get("limit") ?? 100);
+    return { session_id: id, profile: query.get("profile") ?? "default", messages: rows.slice(offset, offset + limit), pagination: {} };
   }
 
   /** `GET /api/sessions/{id}/mutation-snapshot` (`hermes_cli/web_routers/sessions.py` at the deployed `bf0203a`). */
