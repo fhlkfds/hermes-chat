@@ -1,4 +1,4 @@
-// Token usage and cost through the transport (ADR 0006): each reply measured from its session's live counters, never
+// Token usage and cost through the transport (ADR 0007): each reply measured from its session's live counters, never
 // twice, and each chat's totals and cost as Hermes stored them.
 import { describe, expect, it } from "vitest";
 import { FakeHermes, row } from "./fakeHermes";

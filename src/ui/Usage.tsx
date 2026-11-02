@@ -1,4 +1,4 @@
-// Token usage and cost (ADR 0006): one compact line under each reply this app measured, and a chat's totals beside its
+// Token usage and cost (ADR 0007): one compact line under each reply this app measured, and a chat's totals beside its
 // title. Either opens its breakdown. Counts Hermes didn't report say so; costs say how Hermes got them.
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { Chat } from "../hermes/model";
