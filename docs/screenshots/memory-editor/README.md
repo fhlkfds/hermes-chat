@@ -4,6 +4,10 @@ Captured on 2026-11-02 from the running Tauri debug application (WebKitGTK, buil
 on an Xvfb display, at the app's 1280 × 820 window. These are framebuffer captures, not browser mockups, and nothing was
 composited or retouched.
 
+Images 4 and 5 were captured from a build of `134755a`, after the independent review's fixes; the others from a build
+of `ef8f7ed`. The review's later changes don't alter what those other images show (they concern kept edits, lost
+answers and navigation while a save runs).
+
 The app was signed in by URL (`http://127.0.0.1:19331`, an SSH port-forward) to a **throwaway Hermes dashboard** run from
 the deployed `bf0203a` checkout on the Hermes server, with its own `HOME` under `/tmp`, a synthetic password, and only
 synthetic memory in two profiles (`default` and `research`). Every memory entry shown is made up. The real dashboard
