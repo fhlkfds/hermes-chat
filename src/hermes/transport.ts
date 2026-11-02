@@ -227,6 +227,50 @@ export class RenameConflict extends Error {
 }
 
 /**
+ * Regenerate title failed because Hermes has no working sign-in or key on the server for the provider of the
+ * profile's Text generation model. Hermes picks that model, not this app: `llm.oneshot` with no `task` runs the
+ * profile's `title_generation` helper task (`auxiliary.title_generation`). So the owner either signs Hermes in on the
+ * server, or picks another Text generation model in Settings → Model. Nothing switches provider on its own.
+ * `provider`: the provider's slug. `detail`: what Hermes said, word for word.
+ */
+export class TitleModelUnavailable extends Error {
+  constructor(
+    readonly provider: string,
+    readonly detail: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * The `TitleModelUnavailable` a failed `llm.oneshot` stands for, if it failed for want of the provider's credentials.
+ * The texts are Hermes's own at `c419cf7` (`agent/auxiliary_client.py` `_resolve_call_client`,
+ * `agent/auxiliary_unavailable.py`): a pin to Nous Portal reports `Nous Portal runtime credentials unavailable: <why>`,
+ * any other pinned provider `Provider '<slug>' is set in config.yaml but no API key was found` or `no credentials were
+ * found`. A rate limit, a timeout or a busy provider isn't a sign-in problem, so it keeps Hermes's words.
+ */
+export function titleModelUnavailable(why: string, profile: string): TitleModelUnavailable | undefined {
+  const detail = why.replace(/^one-shot generation failed:\s*/, "");
+  const otherSettings = "or pick another Text generation model in Settings → Model.";
+  const hermes = `hermes ${profile && profile !== "default" ? `-p ${profile} ` : ""}`;
+  if (/Nous Portal runtime credentials unavailable/i.test(detail) && !/rate.?limit|quota|temporarily|retry/i.test(detail))
+    return new TitleModelUnavailable(
+      "nous",
+      detail,
+      `Text generation runs on Nous Portal, and Hermes on the server isn't signed in to Nous Portal. Sign it in there with ` +
+        `\`${hermes}auth add nous\`, ${otherSettings}`,
+    );
+  const pinned = /Provider '([^']+)' is set in config\.yaml but no (?:API key|credentials) (?:was|were) found/.exec(detail);
+  if (pinned)
+    return new TitleModelUnavailable(
+      pinned[1],
+      detail,
+      `Text generation runs on ${pinned[1]}, and Hermes on the server has no API key or sign-in for it. Add one there, ${otherSettings}`,
+    );
+}
+
+/**
  * The connection dropped after a request went out and before Hermes answered it, so whether Hermes got it can't be
  * known. A JSON-RPC id means nothing on the next connection, so asking again there isn't safe.
  */
@@ -1052,7 +1096,8 @@ export class Hermes {
    * Asks Hermes for a new title made from the chat's last few stored messages, then renames the chat to it like
    * `rename` does. The messages are read with dashboard REST; the title comes from legacy `llm.oneshot`, a separate
    * model call on Hermes's title model that adds nothing to the chat. Rejects, leaving the old title, if the chat has
-   * no messages, Hermes gives no usable title, the profile changes meanwhile, or the rename fails.
+   * no messages, Hermes gives no usable title, the profile changes meanwhile, or the rename fails; with a
+   * `TitleModelUnavailable` if Hermes has no credentials for the title model's provider.
    */
   async regenerateTitle(chatId: string): Promise<string> {
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
@@ -1069,7 +1114,9 @@ export class Hermes {
     }
     const input = titleInput(rows);
     if (!input) throw new Error("This chat has no messages to make a title from.");
-    const { text } = (await this.request("llm.oneshot", { profile, instructions: TITLE_INSTRUCTIONS, input, max_tokens: 512 })) as { text?: string };
+    const { text } = (await this.request("llm.oneshot", { profile, instructions: TITLE_INSTRUCTIONS, input, max_tokens: 512 }).catch((e) => {
+      throw (e instanceof RpcError && titleModelUnavailable(e.message, profile)) || e;
+    })) as { text?: string };
     const title = cleanTitle(text ?? "");
     if (!title) throw new Error("Hermes didn't answer with a title.");
     if (this.profile !== profile) throw new Error("The profile changed before the title was ready.");

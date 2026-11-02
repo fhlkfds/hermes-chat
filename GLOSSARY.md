@@ -40,7 +40,7 @@ The owner's action that changes a chat's title, in every Hermes client. If the c
 _Avoid_: retitle
 
 **Regenerate title**:
-The owner's action that asks Hermes for a new title made from the chat's last five messages, then saves it as a Rename does. Asking adds nothing to the chat. If Hermes gives no usable title, the old one stays and the row says why.
+The owner's action that asks Hermes for a new title made from the chat's last five messages, then saves it as a Rename does. Asking adds nothing to the chat. If Hermes gives no usable title, the old one stays and the row says why. The title comes from the profile's Text generation model, which Hermes keeps and Settings → Model sets. If Hermes has no sign-in or key for that model's provider, the row says so, says how to fix it, and offers the setting. The app never tries another provider on its own.
 _Avoid_: auto-title (Hermes's own titling of a new chat), retitle
 
 **Unread**:
