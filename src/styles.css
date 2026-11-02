@@ -1027,9 +1027,9 @@ button.status-item:disabled { opacity: 0.5; cursor: default; }
   .chat-title { width: 100%; overflow: hidden; }
   .chat-head-end { width: 100%; justify-content: flex-end; }
   .chat-head-actions { flex: none; }
-  .chat-usage { min-width: 0; flex-shrink: 1; }
+  .chat-usage { position: static; min-width: 0; flex-shrink: 1; }
   .usage-pill { display: block; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
-  .usage-popover { width: min(300px, calc(100cqw - 24px)); }
+  .usage-popover { right: 12px; width: min(300px, calc(100cqw - 24px)); }
   .transcript-inner { padding: 14px 16px 32px; }
   .composer-wrap { padding: 0 12px 14px; }
   .find { right: 8px; top: calc(100% - 2px); }
