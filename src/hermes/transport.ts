@@ -33,6 +33,7 @@ import { ModelSettingsApi } from "./modelSettings";
 import type { OpenPipe, Pipe, PipeEvent, RestMethod, Route, Speech, Transcript, VoiceSetup } from "./pipe";
 import { remoteFiles, type RemoteFiles } from "./remoteFiles";
 import { isUnsecure } from "./unsecure";
+import { restartHold } from "./unsaved";
 import { readServerFile, type FileView } from "./preview";
 import { chatUsageOf, countersOf, newerChatUsage, replyUsage, ZERO_COUNTERS, type ReplyUsage, type UsageCounters } from "./usage";
 
@@ -100,7 +101,8 @@ export type ChatCache = {
   /** The profile's outbox, by chat. */
   loadOutbox(profile: string): Record<string, OutgoingItem[]>;
   /** Keeps a chat's outbox; none deletes it. */
-  saveOutbox(profile: string, chatId: string, items: OutgoingItem[]): void;
+  /** False: storage refused it, so it lasts until the app closes. */
+  saveOutbox(profile: string, chatId: string, items: OutgoingItem[]): boolean | void;
   /** Each chat's queue (ADR 0013), by chat id; chats with an empty queue are left out. */
   loadQueues(profile: string): Record<string, ChatQueue>;
   /** Keeps the chat's queue; none, or an empty one, deletes it. False: storage refused it, so it lasts until the app closes. */
@@ -183,7 +185,8 @@ type TranscriptMessage = {
 
 /** Legacy `prompt.submit` result. `user_row_id`: the stored row of the message, when its turn started at once
  * (`tui_gateway/methods_prompt.py` at `bf0203a`). */
-type Submitted = { user_row_id?: number | null };
+/** `status` `queued`: Hermes holds the message until a turn it is running ends (research doc). */
+type Submitted = { status?: string; user_row_id?: number | null };
 
 /** `message.complete` `persisted_turn`: the stored rows of the turn that ended (`agent/persisted_turn_receipt.py` at
  * `bf0203a`). `final_assistant_row_id` is there only for a turn that completed with a stored final reply. */
@@ -461,6 +464,13 @@ export class Hermes {
   private queueHolds = new Map<string, number>();
   /** A look at the queues is due once the current change is done (`pumpSoon`). */
   private pumpDue = false;
+  /** How many turns each chat has started on this connection (`message.start`). */
+  private turnsStarted = new Map<string, number>();
+  /**
+   * Chats whose queued message Hermes is holding for after another turn (`status: queued`): how many turns the chat had
+   * started when it went. The queue waits until that message's own turn has started and ended.
+   */
+  private heldByHermes = new Map<string, number>();
   /** Hermes's projects, each call naming its profile (projects.ts). Folders are read, never created. */
   readonly projects: ProjectsApi = projectsApi({
     rpc: (method, params) => this.request(method, params),
@@ -1025,12 +1035,13 @@ export class Hermes {
   }
 
   /** The one way a queue of the shown profile changes: in the snapshot, and kept on this computer. */
-  private setQueue(chatId: string, next: ChatQueue) {
+  private setQueue(chatId: string, next: ChatQueue): boolean {
     const kept = this.cache.saveQueue(this.profile, chatId, next);
     const queues = { ...this.snapshot.queues };
     if (next.items.length) queues[chatId] = { items: next.items, ...(next.paused !== undefined && { paused: next.paused }), ...(!kept && { unsaved: true }) };
     else delete queues[chatId];
     this.update({ queues });
+    return kept;
   }
 
   /** Looks at the queues once the change under way is done, so a send never starts inside another change. */
@@ -1049,11 +1060,15 @@ export class Hermes {
    * One Hermes may have is settled first by reading the chat's history back (ADR 0006), which loading the chat does.
    */
   private pump() {
-    if (this.closing || this.snapshot.status !== "connected") return;
+    if (this.closing || this.snapshot.status !== "connected" || restartHold.on) return;
     for (const [chatId, q] of Object.entries(this.snapshot.queues)) {
       if (!q.items.length || q.paused !== undefined || this.queueHolds.has(chatId)) continue;
       const chat = this.snapshot.chats.find((c) => c.id === chatId);
       if (!chat || chat.running || chat.loading || this.resuming.has(chatId) || this.submitting.has(chatId)) continue;
+      // Another turn's end doesn't count: the one Hermes held has to start, and end, first.
+      const held = this.heldByHermes.get(chatId);
+      if (held !== undefined && (this.turnsStarted.get(chatId) ?? 0) <= held) continue;
+      this.heldByHermes.delete(chatId);
       if (chat.items.some((i) => isOutgoing(i) || isWaiting(i))) continue;
       const profile = this.profile;
       if (!chat.runtimeId) {
@@ -1062,9 +1077,18 @@ export class Hermes {
         continue;
       }
       const [next, ...rest] = q.items;
-      // The outbox has it before the queue lets go of it, in the same step, so a crash loses neither.
-      const going = this.deliver(chatId, next.text, next.attachments ?? [], true);
-      this.setQueue(chatId, { ...q, items: rest });
+      // It leaves the queue and enters the outbox in one step, each kept on this computer before it goes: a crash then
+      // can neither lose it nor send it twice. If storage refuses either, it goes back in the queue, unsent.
+      if (!this.setQueue(chatId, { ...q, items: rest })) {
+        this.setQueue(chatId, { ...q, paused: PAUSED.unsaved });
+        continue;
+      }
+      let kept = true;
+      const going = this.deliver(chatId, next.text, next.attachments ?? [], { kept: (ok) => (kept = ok) });
+      if (!kept) {
+        this.setQueue(chatId, { ...q, paused: PAUSED.unsaved });
+        continue;
+      }
       void going.then(({ delivery }) => {
         if (delivery.delivery !== "accepted" && this.profile === profile) this.pauseQueueFor(chatId, PAUSED.notSent);
       });
@@ -1076,7 +1100,7 @@ export class Hermes {
    * promise. `queued`: it comes from the chat's queue, so Hermes is asked to hold it should a turn still be running
    * there, rather than redirect or interrupt that turn (`prompt.submit {queued}`, research doc).
    */
-  private async deliver(chatId: string, text: string, attachments: Attachment[], queued = false): Promise<{ delivery: Delivery; itemId?: string }> {
+  private async deliver(chatId: string, text: string, attachments: Attachment[], queued?: { kept: (ok: boolean) => void }): Promise<{ delivery: Delivery; itemId?: string }> {
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
     if (!chat) return { delivery: { delivery: "unsent", reason: "This chat isn't in the list." } };
     const profile = this.profile;
@@ -1099,12 +1123,24 @@ export class Hermes {
       items: [...c.items, user],
     }));
     // Kept from the start, so a message on its way when the app closes isn't lost.
-    this.saveOutbox(chatId);
+    const kept = this.saveOutbox(chatId);
+    queued?.kept(kept);
+    if (queued && !kept) {
+      // Not sent: its queue keeps it instead.
+      if (activating) {
+        if (wantedBefore === undefined) this.pinWanted.delete(chatId);
+        else this.pinWanted.set(chatId, wantedBefore);
+      }
+      this.patchChat(chatId, (c) => ({ ...c, running: false, settled: activating || c.settled, items: c.items.filter((i) => i.id !== user.id) }));
+      this.saveOutbox(chatId);
+      return { delivery: { delivery: "unsent", reason: PAUSED.unsaved } };
+    }
+    const startsBefore = this.turnsStarted.get(chatId) ?? 0;
     try {
       // From here Hermes may have it: what went out, and the newest row the chat had, find it in the history later.
       const goingOut = (prompt: string) =>
         this.setOutgoing(profile, chatId, user.id, (r) => withOutgoing(r, { sent: { prompt, ...(this.knownRow.has(chatId) && { after: this.knownRow.get(chatId) }) } }));
-      const submitting = this.resume(chatId).then((runtimeId) => this.submit(runtimeId, text, attachments, goingOut, queued));
+      const submitting = this.resume(chatId).then((runtimeId) => this.submit(runtimeId, text, attachments, goingOut, !!queued));
       this.submitting.set(chatId, submitting);
       const rowId = submitting.then(
         (r) => (typeof r.user_row_id === "number" ? r.user_row_id : undefined),
@@ -1119,6 +1155,11 @@ export class Hermes {
       }
       this.setOutgoing(profile, chatId, user.id, confirmed);
       this.noteRows(chatId, [res.user_row_id]);
+      if (queued && res.status === "queued" && this.profile === profile) {
+        this.heldByHermes.set(chatId, startsBefore);
+        // Another turn's end may have shown the chat idle meanwhile, though Hermes is about to run this one.
+        if ((this.turnsStarted.get(chatId) ?? 0) <= startsBefore) this.patchChat(chatId, (c) => ({ ...c, running: true }));
+      }
       // Pin now if Hermes has stored the session; a new chat may not have its row yet, so the end of the turn
       // tries again.
       if (this.pinWanted.get(chatId)) this.track(this.writePin(chatId, profile));
@@ -1512,6 +1553,7 @@ export class Hermes {
       return;
     }
     if (type === "message.start") this.turnStart.set(chat.id, chat.items.at(-1)?.id ?? null);
+    if (type === "message.start") this.turnsStarted.set(chat.id, (this.turnsStarted.get(chat.id) ?? 0) + 1);
     const usage = type === "message.complete" ? this.turnUsage(session_id!, payload.usage) : undefined;
     const from = this.turnStart.get(chat.id);
     if (type === "message.complete" || type === "error") this.turnStart.delete(chat.id);
@@ -1722,6 +1764,8 @@ export class Hermes {
     // Runtime sessions end with the connection.
     this.usageFrom.clear();
     this.turnStart.clear();
+    this.turnsStarted.clear();
+    this.heldByHermes.clear();
     for (const c of this.snapshot.chats) {
       if (c.runtimeId) this.staleItems.set(c.id, c.items.length);
       if (c.running || c.items.some(isWaiting)) this.resumeOnReconnect.add(c.id);
@@ -2341,9 +2385,10 @@ export class Hermes {
   }
 
   /** Keeps the chat's messages sent from here that Hermes hasn't confirmed, so they outlive a restart. */
-  private saveOutbox(chatId: string) {
+  /** False: storage refused it. */
+  private saveOutbox(chatId: string): boolean {
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
-    if (chat) this.cache.saveOutbox(this.profile, chatId, chat.items.filter(isOutgoing));
+    return !chat || this.cache.saveOutbox(this.profile, chatId, chat.items.filter(isOutgoing)) !== false;
   }
 
   /** Notes stored row ids seen in a chat, for `knownRow`. */
@@ -2547,6 +2592,7 @@ const PAUSED = {
   restored: "Hermes Chat closed, or showed another profile, since these were queued. Check the chat, then resume.",
   dropped: "The connection dropped, so the last reply wasn't watched to its end. Check the chat, then resume.",
   notSent: "A queued message didn't go, or may not have. Deal with it above, then resume.",
+  unsaved: "This computer's storage is full, so the next message couldn't be kept safe while it went, and wasn't sent. Free some space (Settings → General → Clear local cache), then resume.",
 };
 
 /** The profile's queues as kept. One with messages comes back paused: what its chat did meanwhile went unseen. */

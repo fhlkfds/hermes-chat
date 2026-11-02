@@ -6,7 +6,7 @@ import type { SavedSignIn } from "./account";
 import { localChatCache } from "./chatCache";
 import { FakeHermes, row } from "./fakeHermes";
 import { isOutgoing, QUEUE_LIMIT } from "./model";
-import { unsaved } from "./unsaved";
+import { restartHold, unsaved } from "./unsaved";
 import { snapshotDrafts } from "./updates";
 import { type Hermes, connect } from "./transport";
 
@@ -20,6 +20,7 @@ beforeEach(() => {
   store = new Map();
   full = false;
   unsaved.clear();
+  restartHold.on = false;
   vi.stubGlobal("localStorage", {
     get length() {
       return store.size;
@@ -311,6 +312,70 @@ describe("Uncertain sends, reconnects and restarts", () => {
     await flush();
     await hermes.idle();
     expect(q.sent().map((p) => p.text)).toEqual([expect.stringContaining("Run this")]);
+  });
+});
+
+describe("Review findings", () => {
+  it("storage full as one queued message would go: it stays queued, unsent, and nothing reaches Hermes", async () => {
+    const q = await replying();
+    q.hermes().enqueue("c1", "only one");
+    full = true;
+    await q.finish();
+    expect(q.sent()).toEqual([]);
+    expect(q.chat().items.some(isOutgoing)).toBe(false);
+    expect(q.queue()).toMatchObject({ items: [{ text: "only one" }], paused: expect.stringContaining("storage is full") });
+    // Storage kept the queue as it was before, so a crash now loses nothing.
+    expect(localChatCache(nas).loadQueues("default").c1.items.map((i) => i.text)).toEqual(["only one"]);
+    full = false;
+    q.hermes().resumeQueue("c1");
+    await flush();
+    expect(q.sent().map((p) => p.text)).toEqual(["only one"]);
+  });
+
+  it("storage full with more queued: the queue can't let go of the next one, so it isn't sent", async () => {
+    const q = await replying();
+    q.hermes().enqueue("c1", "first");
+    q.hermes().enqueue("c1", "second");
+    full = true;
+    await q.finish();
+    expect(q.sent()).toEqual([]);
+    expect(q.texts()).toEqual(["first", "second"]);
+    expect(q.queue()!.paused).toMatch(/storage is full/);
+    // Leaves nothing held in memory for the next test.
+    full = false;
+    for (const i of q.queue()!.items) q.hermes().removeQueued("c1", i.id);
+  });
+
+  it("an update's restart holds every queue from its snapshot on, so the restarted app can't send one twice", async () => {
+    const q = await replying();
+    q.hermes().enqueue("c1", "first");
+    snapshotDrafts(localStorage);
+    await q.finish();
+    expect(q.sent()).toEqual([]);
+    expect(q.texts()).toEqual(["first"]);
+  });
+
+  it("a queued message Hermes holds for another turn: that turn's end doesn't send the next, its own does", async () => {
+    const q = await replying();
+    q.hermes().enqueue("c1", "A");
+    q.hermes().enqueue("c1", "B");
+    // Another Hermes client started a turn first, so Hermes holds A until it ends.
+    const base = q.server.handlers["prompt.submit"];
+    q.server.handlers["prompt.submit"] = (r) => q.server.respond(r.id, { status: "queued" });
+    await q.finish();
+    expect(q.sent().map((p) => p.text)).toEqual(["A"]);
+    q.server.handlers["prompt.submit"] = base;
+    expect(q.chat().running).toBe(true);
+
+    // The other client's turn ends: B waits.
+    await q.finish();
+    expect(q.sent().map((p) => p.text)).toEqual(["A"]);
+    // A's own turn runs and ends: now B goes.
+    q.stream("A's answer");
+    await flush();
+    expect(q.sent()).toHaveLength(1);
+    await q.finish();
+    expect(q.sent().map((p) => p.text)).toEqual(["A", "B"]);
   });
 });
 

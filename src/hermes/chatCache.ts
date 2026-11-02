@@ -243,8 +243,10 @@ export function localChatCache(connection: SavedSignIn): ChatCache {
   const writeOutbox = (profile: string, chatId: string, items: OutgoingItem[]) => {
     const key = outboxKey(profile, chatId);
     liveOutboxes.set(key, items);
-    if (persist(() => localStorage, key, items.length ? JSON.stringify(items) : null)) liveOutboxes.delete(key);
+    const kept = persist(() => localStorage, key, items.length ? JSON.stringify(items) : null);
+    if (kept) liveOutboxes.delete(key);
     for (const fn of outboxListeners) fn();
+    return kept;
   };
 
   const pulledProfiles = (): string[] => {

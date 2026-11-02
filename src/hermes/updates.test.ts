@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
-import { persist, unsaved } from "./unsaved";
+import { persist, restartHold, unsaved } from "./unsaved";
 import { checkPackage, needsAttention, parseGitPkgver, releaseNotes, restoreDrafts, snapshotDrafts, updater, type Install, type Progress, type UpdateDeps } from "./updates";
 
 const NOW = Date.UTC(2026, 10, 2, 12);
@@ -311,9 +311,14 @@ describe("updater", () => {
     await u.restart();
     expect(invoke).toHaveBeenCalledWith("app_restart", { drafts: JSON.stringify({ "hermes-chat.draft.a": "half a thought", "hermes-chat.outbox.a": "[]" }) });
     expect(u.getSnapshot()).toMatchObject({ state: "error", message: expect.stringContaining("disk full"), restart: { from: "r1.ef433a2-1", to: "r2.4444444-1" } });
+    // Queued messages may go again, since the app didn't restart (ADR 0013).
+    expect(restartHold.on).toBe(false);
     answers.app_restart = undefined;
     await u.restart();
     expect(u.getSnapshot().state).toBe("restarting");
+    // Until the restarted app takes over, nothing in a queue goes.
+    expect(restartHold.on).toBe(true);
+    restartHold.on = false;
     expect(invoke).toHaveBeenCalledTimes(3);
   });
 });
