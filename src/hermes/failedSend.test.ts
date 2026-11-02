@@ -1,169 +1,384 @@
-// A message whose send fails, or whose fate can't be known, keeps its text, and is sent again only when the owner
-// asks. These run the real transport against FakeHermes and the draft store over an in-memory localStorage, the way
-// App wires them together.
+// A message whose send fails, or whose fate can't be known, stays in its chat with its words, and is sent again only
+// when the owner asks. Whether one Hermes may have got did arrive is settled by reading the chat's history back (ADR
+// 0006). These run the real transport against FakeHermes, and the real chat cache over a localStorage that outlives
+// a restart, the way App wires them together.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SavedSignIn } from "./account";
-import { type DraftStorage, draftKey, drafts } from "./drafts";
+import { localChatCache } from "./chatCache";
 import { FakeHermes, row } from "./fakeHermes";
-import { connect } from "./transport";
-
-function memoryStorage() {
-  const items = new Map<string, string>();
-  const storage: DraftStorage = {
-    getItem: (k) => items.get(k) ?? null,
-    setItem: (k, v) => void items.set(k, v),
-    removeItem: (k) => void items.delete(k),
-  };
-  return Object.assign(storage, { items });
-}
+import { type Item, isOutgoing } from "./model";
+import { type Hermes, connect, readSaved } from "./transport";
 
 const nas: SavedSignIn = { mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" };
-const TEXT = "Rotate the nginx logs and restart it";
+/** Sent as the owner typed it, inner spaces, line break and all. */
+const TEXT = "Rotate the nginx logs,\n  then restart it ✓";
+const ROTATE = "/home/liam/rotate.sh";
 
-/** Signed in, with one stored chat `c1` in the list, and its composer holding `TEXT`. */
+let store: Map<string, string>;
+beforeEach(() => {
+  store = new Map();
+  vi.stubGlobal("localStorage", {
+    get length() {
+      return store.size;
+    },
+    key: (i: number) => [...store.keys()][i] ?? null,
+    getItem: (k: string) => store.get(k) ?? null,
+    setItem: (k: string, v: string) => void store.set(k, v),
+    removeItem: (k: string) => void store.delete(k),
+  });
+  vi.useFakeTimers();
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
+
+/** The outbox kept on this computer for `c1`. */
+const kept = () => localChatCache(nas).loadOutbox("default").c1 ?? [];
+/** The Saved copy of `c1`. */
+const savedCopy = () => localChatCache(nas).loadTranscript("default", "c1")?.items ?? [];
+const plain = (items: Item[]) => items.filter((i) => i.kind === "user" && !i.outgoing && i.text === TEXT);
+
+/** Launches the app on `server`, signed in, with its list synced. */
+async function launch(server: FakeHermes) {
+  const hermes = await connect(server.openPipe, undefined, localChatCache(nas));
+  await hermes.sync();
+  return hermes;
+}
+
+function helpers(server: FakeHermes, hermes: () => Hermes) {
+  const chat = () => hermes().getSnapshot().chats.find((c) => c.id === "c1")!;
+  return {
+    chat,
+    /** The message sent from here, as the chat shows it. */
+    sent: () => chat().items.find((i) => i.kind === "user" && i.text === TEXT),
+    submits: () => server.requests.filter((r) => r.method === "prompt.submit"),
+    /** The owner's messages Hermes has stored for `c1`, with this text. */
+    stored: () => (server.transcripts.c1 ?? []).filter((m) => m.role === "user" && m.text === TEXT),
+  };
+}
+
+/** The chat `c1` with two stored rows, open in the app. */
 async function ready() {
   const server = new FakeHermes();
   server.sessions = [row("c1", 0)];
-  const hermes = await connect(server.openPipe);
-  await hermes.sync();
-  const storage = memoryStorage();
-  const d = drafts(storage);
-  const key = draftKey(nas, "default", "c1");
-  d.set(key, TEXT);
-  const submits = () => server.requests.filter((r) => r.method === "prompt.submit");
-  /** What App does on Enter: empty the composer, send, then keep the text as the outcome says. */
-  const send = async () => {
-    const text = d.take(key);
-    const delivery = await hermes.send("c1", text);
-    d.afterSend(key, text, delivery);
-    return delivery;
+  server.transcripts.c1 = [
+    { role: "user", text: "How full is the NAS?", row_id: 1 },
+    { role: "assistant", text: "82% used.", row_id: 2 },
+  ];
+  let hermes = await launch(server);
+  await hermes.open("c1");
+  /** Closes the app and launches it again on the same computer: `online` on the server, else while it can't be reached. */
+  const relaunch = async (online = true) => {
+    await hermes.close();
+    if (online) hermes = await launch(server);
+    else {
+      server.refuse = "Can't reach the Hermes dashboard: network is unreachable";
+      hermes = readSaved(server.openPipe, server.refuse, localChatCache(nas))!;
+    }
+    return hermes;
   };
-  const chat = () => hermes.getSnapshot().chats.find((c) => c.id === "c1")!;
-  return { server, hermes, storage, d, key, submits, send, chat };
+  return { server, hermes: () => hermes, relaunch, ...helpers(server, () => hermes) };
 }
 
-describe("Failed-send recovery", () => {
-  beforeEach(() => void vi.useFakeTimers());
-  afterEach(() => void vi.useRealTimers());
+describe("Case 1: the send fails before Hermes accepts it", () => {
+  it("Hermes refuses it: the message stays in the chat marked failed, word for word, with Hermes's reason", async () => {
+    const { server, hermes, chat, sent, stored } = await ready();
+    server.rejectPrompt = { code: 4009, message: "session busy" };
 
-  it("an acknowledged message is let go: the composer stays empty and nothing is held", async () => {
-    const { d, key, storage, submits, send } = await ready();
-    expect(await send()).toEqual({ delivery: "accepted" });
+    expect(await hermes().send("c1", TEXT)).toEqual({ delivery: "unsent", reason: "session busy" });
+    expect(sent()).toMatchObject({ text: TEXT, outgoing: { state: "failed", reason: "session busy" } });
+    expect(chat()).toMatchObject({ running: false });
+    // The message says it; there's no separate error line.
+    expect(chat().items.filter((i) => i.kind === "error")).toEqual([]);
+    expect(stored()).toEqual([]);
+  });
+
+  it("the connection can't take the frame: failed, and nothing reached Hermes", async () => {
+    const { server, hermes, sent, submits } = await ready();
+    server.failSend = "The connection to Hermes is closed.";
+    expect(await hermes().send("c1", TEXT)).toMatchObject({ delivery: "unsent" });
+    expect(sent()).toMatchObject({ outgoing: { state: "failed", reason: "The connection to Hermes is closed." } });
+    expect(submits()).toHaveLength(0);
+  });
+
+  it("the connection is down already: failed without going out", async () => {
+    const { server, hermes, sent, submits } = await ready();
+    server.refuse = "connection refused";
+    server.drop();
+    expect(await hermes().send("c1", TEXT)).toEqual({ delivery: "unsent", reason: "Not connected to Hermes." });
+    expect(sent()).toMatchObject({ outgoing: { state: "failed", reason: "Not connected to Hermes." } });
+    expect(submits()).toHaveLength(0);
+  });
+
+  it("a failed message is never saved as if Hermes had it, even when the chat is saved again later", async () => {
+    const { server, hermes, chat } = await ready();
+    server.rejectPrompt = { code: 4009, message: "session busy" };
+    await hermes().send("c1", TEXT);
+    server.rejectPrompt = undefined;
+    await hermes().send("c1", "Something else");
+    server.event(chat().runtimeId!, "message.complete", { text: "On it.", status: "complete" });
+
+    expect(plain(savedCopy())).toEqual([]);
+    expect(savedCopy().map((i) => (i.kind === "user" || i.kind === "assistant" ? i.text : i.kind))).toEqual([
+      "How full is the NAS?",
+      "82% used.",
+      "Something else",
+      "On it.",
+    ]);
+  });
+});
+
+describe("Case 2: Stop mid-stream", () => {
+  it("labels the reply stopped, not failed: the message stays sent, nothing is pending, and the Saved copy holds the turn", async () => {
+    const { server, hermes, chat, sent } = await ready();
+    await hermes().send("c1", TEXT);
+    const runtime = chat().runtimeId!;
+    server.event(runtime, "message.start");
+    server.event(runtime, "message.delta", { text: "Rotating" });
+    await hermes().stop("c1");
+    // What the wire sends for a stopped turn (research doc §8): `message.complete` with status "interrupted".
+    server.event(runtime, "message.complete", { text: "Rotating", status: "interrupted", partial: true });
+
+    expect(chat()).toMatchObject({ running: false, stopping: false });
+    expect(sent()).toEqual({ kind: "user", id: expect.any(String), text: TEXT });
+    expect(chat().items.at(-1)).toMatchObject({ kind: "assistant", text: "Rotating", interrupted: true });
+    expect(chat().items.some((i) => isOutgoing(i) || i.kind === "error")).toBe(false);
+    expect(kept()).toEqual([]);
+    expect(savedCopy().slice(-2)).toEqual([
+      { kind: "user", id: expect.any(String), text: TEXT },
+      { kind: "assistant", id: expect.any(String), text: "Rotating", interrupted: true },
+    ]);
+  });
+
+  it("after a restart the stopped turn reads back from the Saved copy as it was, with nothing pending", async () => {
+    const { server, hermes, chat, relaunch } = await ready();
+    await hermes().send("c1", TEXT);
+    const runtime = chat().runtimeId!;
+    server.event(runtime, "message.delta", { text: "Rotating" });
+    await hermes().stop("c1");
+    server.event(runtime, "message.complete", { text: "Rotating", status: "interrupted" });
+
+    const after = await relaunch(false);
+    await after.open("c1");
+    expect(chat().items.slice(-2)).toMatchObject([
+      { kind: "user", text: TEXT },
+      { kind: "assistant", text: "Rotating", interrupted: true },
+    ]);
+    expect(chat().items.some(isOutgoing)).toBe(false);
+    expect(chat().running).toBeFalsy();
+  });
+
+  it("Stop while the message is still going out, then Hermes refuses it: failed, never stopped, and not left running", async () => {
+    const { server, hermes, chat, sent } = await ready();
+    const submit = server.handlers["prompt.submit"];
+    let answer = () => {};
+    server.handlers["prompt.submit"] = (r) => void (answer = () => server.fail(r.id, 4009, "session busy"));
+
+    const sending = hermes().send("c1", TEXT);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sent()).toMatchObject({ outgoing: { state: "sending" } });
+    const stopping = hermes().stop("c1");
+    answer();
+    await Promise.all([sending, stopping]);
+    server.handlers["prompt.submit"] = submit;
+
+    expect(server.requests.map((r) => r.method)).not.toContain("session.interrupt");
+    expect(chat().running).toBe(false);
+    expect(chat().stopping).toBeFalsy();
+    expect(sent()).toMatchObject({ outgoing: { state: "failed", reason: "session busy" } });
+    expect(chat().items.some((i) => i.kind === "assistant" && i.interrupted)).toBe(false);
+  });
+});
+
+describe("Case 3: the connection drops mid-send", () => {
+  it("is marked as maybe sent, with why, until Hermes is back", async () => {
+    const { server, hermes, sent, submits } = await ready();
+    server.dropOnPrompt = "lost";
+    const delivery = await hermes().send("c1", TEXT);
+    expect(delivery).toEqual({ delivery: "unknown", reason: expect.stringContaining("closed by the server") });
+    expect(sent()).toMatchObject({ outgoing: { state: "unknown", reason: expect.stringContaining("dropped before Hermes confirmed it") } });
     expect(submits()).toHaveLength(1);
-    expect(d.get(key)).toBe("");
-    expect(d.undelivered(key)).toEqual([]);
-    expect(storage.items.size).toBe(0);
+    expect(kept()).toMatchObject([{ text: TEXT, outgoing: { state: "unknown" } }]);
   });
 
-  describe("fails before it goes out: definitely unsent", () => {
-    it("while the connection is down, the text comes back into the composer", async () => {
-      const { server, d, key, submits, send } = await ready();
-      server.refuse = "Can't reach the Hermes dashboard: connection refused";
-      server.drop();
-      expect(await send()).toEqual({ delivery: "unsent", reason: "Not connected to Hermes." });
-      expect(submits()).toHaveLength(0);
-      expect(d.get(key)).toBe(TEXT);
-      expect(d.undelivered(key)).toEqual([]);
-    });
+  it("on reconnect, a message Hermes stored shows from its history, and nothing is sent again", async () => {
+    const { server, hermes, chat, submits, stored } = await ready();
+    server.dropOnPrompt = "stored";
+    expect(await hermes().send("c1", TEXT)).toMatchObject({ delivery: "unknown" });
 
-    it("when the pipe can't take the frame, nothing was sent", async () => {
-      const { server, d, key, submits, send } = await ready();
-      server.failSend = "The connection to Hermes is closed.";
-      const delivery = await send();
-      expect(delivery).toMatchObject({ delivery: "unsent" });
-      expect(submits()).toHaveLength(0);
-      expect(d.get(key)).toBe(TEXT);
-    });
-
-    it("when Hermes answers with an error, it didn't take the message", async () => {
-      const { server, d, key, send } = await ready();
-      server.handlers["prompt.submit"] = (r) => server.fail(r.id, 4009, "session busy");
-      expect(await send()).toEqual({ delivery: "unsent", reason: "session busy" });
-      expect(d.get(key)).toBe(TEXT);
-    });
-
-    it("keeps the text aside, not over it, when the owner typed something new meanwhile", async () => {
-      const { server, hermes, d, key } = await ready();
-      server.refuse = "connection refused";
-      server.drop();
-      const text = d.take(key);
-      d.set(key, "something newer");
-      d.afterSend(key, text, await hermes.send("c1", text));
-      expect(d.get(key)).toBe("something newer");
-      expect(d.undelivered(key)).toMatchObject([{ text: TEXT, delivery: "unsent" }]);
-    });
+    await hermes().reconnect();
+    await hermes().idle();
+    expect(chat().items.some(isOutgoing)).toBe(false);
+    expect(plain(chat().items)).toHaveLength(1);
+    expect(stored()).toHaveLength(1);
+    expect(submits()).toHaveLength(1);
+    expect(kept()).toEqual([]);
   });
 
-  describe("the connection drops after it went out, before Hermes answered: unknown", () => {
-    /** Hermes gets the prompt and starts a tool, then the connection drops before the answer goes back. */
-    async function droppedMidSend() {
-      const ctx = await ready();
-      ctx.server.handlers["prompt.submit"] = (r) => {
-        ctx.server.event(String(r.params.session_id), "tool.start", { tool_id: "t1", name: "terminal", preview: "systemctl restart nginx" });
-        ctx.server.drop("closed by the server (1006 )");
-      };
-      const delivery = await ctx.send();
-      return { ...ctx, delivery };
-    }
+  it("on reconnect, the optimistic message goes when the history says it never arrived, and only a failed one with Retry stays", async () => {
+    const { server, hermes, chat, sent, submits } = await ready();
+    server.dropOnPrompt = "lost";
+    await hermes().send("c1", TEXT);
 
-    it("is reported as unknown, not as a failure", async () => {
-      const { delivery, submits } = await droppedMidSend();
-      expect(delivery).toEqual({ delivery: "unknown", reason: expect.stringContaining("closed by the server") });
-      expect(submits()).toHaveLength(1);
-    });
+    await hermes().reconnect();
+    await hermes().idle();
+    expect(plain(chat().items)).toEqual([]);
+    expect(sent()).toMatchObject({ outgoing: { state: "failed", reason: expect.stringContaining("never arrived") } });
+    expect(plain(savedCopy())).toEqual([]);
+    expect(submits()).toHaveLength(1);
+  });
 
-    it("keeps the text out of the composer, held with its uncertainty, and says so in the chat", async () => {
-      const { d, key, chat } = await droppedMidSend();
-      expect(d.get(key)).toBe("");
-      expect(d.undelivered(key)).toMatchObject([{ text: TEXT, delivery: "unknown" }]);
-      expect(chat().items.at(-1)).toMatchObject({ kind: "error", text: expect.stringContaining("may already have it") });
-    });
+  it("the same words sent earlier don't count as this message arriving", async () => {
+    const { server, chat, relaunch } = await ready();
+    server.transcripts.c1.push({ role: "user", text: TEXT, row_id: 3 }, { role: "assistant", text: "Done.", row_id: 4 });
+    const hermes = await relaunch();
+    await hermes.open("c1");
+    server.dropOnPrompt = "lost";
+    await hermes.send("c1", TEXT);
 
-    it("still holds it after a restart", async () => {
-      const { storage, key } = await droppedMidSend();
-      expect(drafts(storage).undelivered(key)).toMatchObject([{ text: TEXT, delivery: "unknown" }]);
-    });
+    await hermes.reconnect();
+    await hermes.idle();
+    const mine = chat().items.filter((i) => i.kind === "user" && i.text === TEXT);
+    expect(mine).toEqual([{ kind: "user", id: "h-2", text: TEXT }, expect.objectContaining({ outgoing: expect.objectContaining({ state: "failed" }) })]);
+  });
 
-    it("reconnecting sends nothing again, even when the history holds the same text", async () => {
-      const { server, hermes, d, key, submits } = await droppedMidSend();
-      server.transcripts.c1 = [{ role: "user", text: TEXT }];
-      await hermes.reconnect();
-      await hermes.open("c1");
-      await vi.advanceTimersByTimeAsync(60_000);
-      await hermes.idle();
-      expect(hermes.getSnapshot().status).toBe("connected");
-      expect(submits()).toHaveLength(1);
-      // Matching text isn't proof Hermes got this send, so it stays the owner's call.
-      expect(d.undelivered(key)).toMatchObject([{ text: TEXT, delivery: "unknown" }]);
-    });
+  it("Retry after reconnect lands normally: the same words, once, as a new message", async () => {
+    const { server, hermes, chat, sent, submits, stored } = await ready();
+    server.dropOnPrompt = "lost";
+    await hermes().send("c1", TEXT);
+    await hermes().reconnect();
+    await hermes().idle();
+    const failed = sent()!;
 
-    it("is sent again only when the owner retries, and let go once Hermes takes it", async () => {
-      const { server, hermes, d, key, submits } = await droppedMidSend();
-      server.handlers["prompt.submit"] = (r) => server.respond(r.id, { status: "streaming" });
-      await hermes.reconnect();
-      const [held] = d.undelivered(key);
+    expect(await hermes().retry("c1", failed.id)).toEqual({ delivery: "accepted" });
+    expect(submits()).toHaveLength(2);
+    expect(submits()[1].params.text).toBe(TEXT);
+    expect(chat().items.some(isOutgoing)).toBe(false);
+    expect(plain(chat().items)).toHaveLength(1);
+    expect(stored()).toHaveLength(1);
+    expect(kept()).toEqual([]);
+  });
 
-      expect(await d.retry(key, held.id, (t) => hermes.send("c1", t))).toEqual({ delivery: "accepted" });
-      expect(submits()).toHaveLength(2);
-      expect(submits()[1].params.text).toBe(TEXT);
-      expect(d.undelivered(key)).toEqual([]);
-      expect(d.get(key)).toBe("");
-    });
+  it("a retry that can't go out leaves a message Hermes may have as it was", async () => {
+    const { server, hermes, sent, submits } = await ready();
+    server.refuse = "connection refused";
+    server.dropOnPrompt = "lost";
+    await hermes().send("c1", TEXT);
+    const first = sent()!;
 
-    it("a retry that can't go out leaves it unknown, since the first send may still have landed", async () => {
-      const { hermes, d, key, submits } = await droppedMidSend();
-      const [held] = d.undelivered(key);
-      expect(await d.retry(key, held.id, (t) => hermes.send("c1", t))).toMatchObject({ delivery: "unsent" });
-      expect(submits()).toHaveLength(1);
-      expect(d.undelivered(key)).toMatchObject([{ id: held.id, text: TEXT, delivery: "unknown" }]);
-    });
+    expect(await hermes().retry("c1", first.id)).toMatchObject({ delivery: "unsent" });
+    expect(submits()).toHaveLength(1);
+    expect(sent()).toEqual(first);
+  });
 
-    it("can be dismissed", async () => {
-      const { storage, d, key } = await droppedMidSend();
-      const [held] = d.undelivered(key);
-      d.dismiss(key, held.id);
-      expect(d.undelivered(key)).toEqual([]);
-      expect(drafts(storage).undelivered(key)).toEqual([]);
-    });
+  it("can be dismissed, for good", async () => {
+    const { server, hermes, sent, chat } = await ready();
+    server.dropOnPrompt = "lost";
+    await hermes().send("c1", TEXT);
+    hermes().dismiss("c1", sent()!.id);
+    expect(chat().items.some(isOutgoing)).toBe(false);
+    expect(kept()).toEqual([]);
+  });
+});
+
+describe("Case 4: the app restarts mid-flight", () => {
+  /** Sends `TEXT`, and closes the app while Hermes hasn't answered; `storing`: Hermes got it and stored it. */
+  async function closedMidSend(storing: boolean) {
+    const ctx = await ready();
+    ctx.server.handlers["prompt.submit"] = (r) => {
+      if (storing) ctx.server.storeMessage(ctx.server.runtime.get(String(r.params.session_id))!, { role: "user", text: String(r.params.text) });
+    };
+    void ctx.hermes().send("c1", TEXT);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(kept()).toMatchObject([{ outgoing: { state: "sending", sent: { prompt: TEXT, after: 2 } } }]);
+    ctx.server.handlers["prompt.submit"] = new FakeHermes().handlers["prompt.submit"].bind(ctx.server);
+    return ctx;
+  }
+
+  it("nothing is still sending after relaunch, and the first refresh shows a message Hermes stored from its history", async () => {
+    const { server, chat, relaunch, submits } = await closedMidSend(true);
+    await relaunch(false);
+    expect(chat().items).toMatchObject([{ text: TEXT, outgoing: { state: "unknown", reason: "The app closed before Hermes confirmed it." } }]);
+
+    server.refuse = undefined;
+    const after = await relaunch();
+    await after.idle();
+    expect(chat().items.some(isOutgoing)).toBe(false);
+    expect(kept()).toEqual([]);
+    await after.open("c1");
+    expect(plain(chat().items)).toHaveLength(1);
+    expect(submits()).toHaveLength(1);
+  });
+
+  it("the first refresh marks failed a message Hermes never got", async () => {
+    const { chat, relaunch, submits } = await closedMidSend(false);
+    const after = await relaunch();
+    await after.idle();
+    expect(chat().items).toMatchObject([{ text: TEXT, outgoing: { state: "failed", reason: expect.stringContaining("never arrived") } }]);
+    expect(submits()).toHaveLength(1);
+  });
+
+  it("a message the app closed on before it went out comes back failed, with nothing to check", async () => {
+    const { server, chat, relaunch } = await ready();
+    server.sessions.push(row("c2", 0));
+    server.handlers["session.resume"] = () => {};
+    const before = await relaunch();
+    void before.send("c2", TEXT);
+    await vi.advanceTimersByTimeAsync(0);
+    server.handlers["session.resume"] = new FakeHermes().handlers["session.resume"].bind(server);
+
+    const after = await relaunch();
+    const c2 = after.getSnapshot().chats.find((c) => c.id === "c2")!;
+    expect(c2.items).toMatchObject([{ text: TEXT, outgoing: { state: "failed", reason: "The app closed before it went out." } }]);
+    expect(chat().items.some(isOutgoing)).toBe(false);
+  });
+});
+
+describe("The outbox on this computer", () => {
+  it("a failed message survives a cache save/reload cycle, attachments and all, and stays out of the Saved copy", async () => {
+    const { server, hermes, chat, relaunch } = await ready();
+    server.files[ROTATE] = "#!/bin/sh\nlogrotate -f /etc/logrotate.conf";
+    const { attachments } = await hermes().checkAttachments([ROTATE]);
+    server.rejectPrompt = { code: 4009, message: "session busy" };
+    await hermes().send("c1", TEXT, attachments);
+    const failed = chat().items.at(-1);
+
+    const after = await relaunch(false);
+    await after.open("c1");
+    expect(chat().items.at(-1)).toEqual(failed);
+    expect(chat().items.at(-1)).toMatchObject({ text: TEXT, attachments: ["rotate.sh"], outgoing: { state: "failed", reason: "session busy", attachments } });
+    expect(plain(savedCopy())).toEqual([]);
+
+    // Clear local cache deletes the lists and Saved copies; the owner's unsent words stay, as drafts do.
+    after.clearCache();
+    expect(kept()).toMatchObject([{ text: TEXT }]);
+  });
+
+  it("Retry sends the same words and files again, as a new message", async () => {
+    const { server, hermes, chat } = await ready();
+    server.files[ROTATE] = "#!/bin/sh\nlogrotate -f /etc/logrotate.conf";
+    const { attachments } = await hermes().checkAttachments([ROTATE]);
+    server.rejectPrompt = { code: 4009, message: "session busy" };
+    await hermes().send("c1", TEXT, attachments);
+    const failed = chat().items.at(-1)!;
+    server.rejectPrompt = undefined;
+
+    expect(await hermes().retry("c1", failed.id)).toEqual({ delivery: "accepted" });
+    expect(server.requests.filter((r) => r.method === "file.attach")).toHaveLength(2);
+    expect(server.last("prompt.submit")!.params.text).toBe(`@file:attachments/rotate.sh\n\n${TEXT}`);
+    expect(chat().items.filter((i) => i.kind === "user" && i.text === TEXT)).toEqual([{ kind: "user", id: expect.any(String), text: TEXT, attachments: ["rotate.sh"] }]);
+  });
+
+  it("brings in the messages the drafts store used to hold beside the composer", async () => {
+    const legacy = "hermes-chat.undelivered." + JSON.stringify(["ssh", "liam@hermes", "liam", "default", "c1"]);
+    store.set(legacy, JSON.stringify([{ id: "h1", text: TEXT, delivery: "unknown", reason: "closed", at: 1 }]));
+    const server = new FakeHermes();
+    server.sessions = [row("c1", 0)];
+    const hermes = await launch(server);
+    await hermes.idle();
+    // Its history doesn't have it, so reading back marks it failed.
+    expect(hermes.getSnapshot().chats[0].items).toMatchObject([{ text: TEXT, outgoing: { state: "failed" } }]);
+    expect(store.has(legacy)).toBe(false);
   });
 });

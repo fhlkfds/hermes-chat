@@ -23,8 +23,8 @@ function Host({ initial }: { initial: Chat }) {
           status="connected"
           draft=""
           onDraft={() => {}}
-          undelivered={[]}
           onRetry={() => {}}
+          onEdit={() => {}}
           onDismiss={() => {}}
           onAttach={async () => ({ attachments: [], refused: [] })}
           onSend={() => {}}

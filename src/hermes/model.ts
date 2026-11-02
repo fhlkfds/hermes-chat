@@ -22,9 +22,26 @@ export type AttachCheck = { attachments: Attachment[]; refused: string[] };
  * `at` on a message or reply: when Hermes stored it (Unix ms), read from its stored row. It is left out until that row
  * is known, never filled in with when this app saw the message.
  */
+/**
+ * A message sent from this app that Hermes hasn't confirmed. `sending`: on its way. `failed`: Hermes didn't take it,
+ * or reading back its history showed it never arrived. `unknown`: it went out and the connection dropped, or the app
+ * closed, before Hermes answered, so Hermes may have it; the next read of the chat's history settles it. `reason`:
+ * why, for `failed` and `unknown`. `attachments`: the files sent with it, so Retry sends them again. `sent`: set as it
+ * goes out, to find it in the history: the prompt as sent, and the newest stored row the chat had then (`after`).
+ */
+export type Outgoing = {
+  state: "sending" | "failed" | "unknown";
+  reason?: string;
+  attachments?: Attachment[];
+  sent?: { prompt: string; after?: number };
+};
+
 export type Item =
-  /** `attachments`: the names of the files sent with the message. */
-  | { kind: "user"; id: string; text: string; attachments?: string[]; at?: number }
+  /**
+   * `attachments`: the names of the files sent with the message. `outgoing`: sent from here and not confirmed yet;
+   * a message Hermes has is plain.
+   */
+  | { kind: "user"; id: string; text: string; attachments?: string[]; at?: number; outgoing?: Outgoing }
   /** `interrupted`: the owner, or another Hermes client, stopped this reply before it finished. */
   | { kind: "assistant"; id: string; text: string; interrupted?: boolean; at?: number }
   /** The model's reasoning before a reply or a tool call, as Hermes streams or stores it. */
@@ -68,6 +85,11 @@ export type ApprovalChoice = (typeof APPROVAL_CHOICES)[number];
 
 export type ApprovalItem = Extract<Item, { kind: "approval" }>;
 
+/** A message sent from here that Hermes hasn't confirmed (`Outgoing`). */
+export type OutgoingItem = Extract<Item, { kind: "user" }> & { outgoing: Outgoing };
+
+export const isOutgoing = (i: Item): i is OutgoingItem => i.kind === "user" && i.outgoing !== undefined;
+
 /** The answers the owner can give an Approval: the ones Hermes offers, less the broader grants it rules out. */
 export const offeredChoices = (i: ApprovalItem): ApprovalChoice[] =>
   i.choices.filter((c) => (c !== "session" || i.allowSession) && (c !== "always" || i.allowPermanent));
@@ -109,7 +131,24 @@ export type Chat = {
    * Unknown until the chat is started or resumed on this connection, or for a server that doesn't say.
    */
   model?: ModelPick;
+  /** What Hermes reports about the chat's session on this connection; gone when the connection drops. */
+  live?: SessionLive;
 };
+
+/**
+ * A chat's live session as Hermes reports it (`session.info`, `session.usage`, research doc "Status bar"); its model is
+ * `Chat.model`.
+ * `context`: how full the context window is, only once Hermes has measured it. `yolo`: Hermes runs commands it counts
+ * as dangerous without asking; undefined when Hermes doesn't report it. `yoloEverywhere`: on for every chat by Hermes's
+ * own settings, so this chat can't turn it off.
+ */
+export type SessionLive = { context?: ContextUse; yolo?: boolean; yoloEverywhere?: boolean };
+
+/** `used` of `max` tokens, `percent` full. `estimated`: Hermes counted part of it itself, not the provider. */
+export type ContextUse = { used: number; max: number; percent: number; estimated: boolean };
+
+/** One part of what fills the context window, as Hermes estimates it (`session.context_breakdown`). */
+export type ContextPart = { id: string; label: string; tokens: number; color?: string };
 
 export type ConnectionStatus = "connected" | "reconnecting" | "offline";
 

@@ -1,12 +1,12 @@
 // Icon rail beside a chat list (ADR 0001), ported from the prototype's variants C and A. The list's header is the
 // profile switcher. Settings opens from the rail's foot. Right-clicking a chat opens its menu (ChatMenu.tsx).
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { Check, ChevronDown, ChevronRight, CircleAlert, EyeOff, LockOpen, Search, Settings, SquarePen, Trash2 } from "lucide-react";
 import type { Chat, ConnectionStatus, OtherProfile, OtherProfiles } from "../hermes/model";
-import { SOURCE_LABEL } from "../hermes/model";
+import { SOURCE_LABEL, isWaiting } from "../hermes/model";
 import { CHECK_EVERY_MS, totalUnread } from "../hermes/otherProfiles";
 import type { Route } from "../hermes/pipe";
-import { RenameConflict } from "../hermes/transport";
+import { RenameConflict, type Snapshot } from "../hermes/transport";
 import { ChatMenu } from "./ChatMenu";
 import { ArchiveButton, STATUS_LABEL, SettleButton, SourceIcon, Spinner, composing, relTime, routeLabel, useReturnFocus } from "./bits";
 
@@ -321,24 +321,41 @@ function OtherBadge({ info }: { info?: OtherProfile }) {
 }
 
 /**
+ * What the owner leaves behind in `profile` by switching away now, if anything: an Approval waiting, or a reply
+ * running. Hermes keeps running the reply; an Approval waits only until Hermes stops waiting (its timeout).
+ */
+function leavingNote(profile: string, chats: Chat[]): string | undefined {
+  if (chats.some((c) => c.items.some(isWaiting)))
+    return `An approval is waiting in ${profile}. Hermes waits for your answer only until it times out: switch back and open the chat to answer it.`;
+  if (chats.some((c) => c.running)) return `A reply is still running in ${profile}. Hermes keeps it going, and it shows here when you switch back.`;
+}
+
+/**
  * The current profile's name with a ▾, which opens the server's profiles with a filter box (ADR 0001). Enter picks
  * the first match; Escape or a click outside closes it. A dot on it, and a count on each profile in the menu, show
  * Unread chats in the other profiles, as the latest poll found them. Opening the menu asks for a fresh check.
+ * `leaving`: what switching away now leaves behind, which the owner is asked about first.
  */
 function ProfileSwitcher({
   profile,
   others,
+  leaving,
   onListProfiles,
   onCheckOthers,
   onSwitch,
 }: {
   profile: string;
   others: OtherProfiles;
+  leaving?: string;
   onListProfiles: () => Promise<string[]>;
   onCheckOthers: () => void;
   onSwitch: (name: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  // The profile the owner picked while something was left behind here, and what, until they say whether to go. Kept
+  // as asked, so the question stays if the reply finishes meanwhile.
+  const [asking, setAsking] = useState<{ to: string; note: string }>();
+  const button = useRef<HTMLButtonElement>(null);
   const [profiles, setProfiles] = useState<string[]>();
   const [error, setError] = useState<string>();
   const box = useRef<HTMLDivElement>(null);
@@ -352,7 +369,7 @@ function ProfileSwitcher({
       (names) => current && setProfiles(names),
       (e) => current && setError(`Couldn't list profiles: ${e instanceof Error ? e.message : String(e)}`),
     );
-    const onDown = (e: MouseEvent) => box.current?.contains(e.target as Node) || setOpen(false);
+    const onDown = (e: MouseEvent) => box.current?.contains(e.target as Node) || close();
     window.addEventListener("mousedown", onDown);
     return () => {
       current = false;
@@ -361,19 +378,104 @@ function ProfileSwitcher({
   }, [open]);
 
   const elsewhere = totalUnread(others).unread > 0;
-  const pick = (name: string) => {
+  const close = () => {
     setOpen(false);
-    if (name !== profile) onSwitch(name);
+    setAsking(undefined);
+  };
+  // The options are gone once the question shows, so focus goes back to the switcher.
+  const answer = (go: boolean) => {
+    const to = asking?.to;
+    close();
+    button.current?.focus();
+    if (go && to) onSwitch(to);
+  };
+  const pick = (name: string) => {
+    if (name === profile) close();
+    else if (leaving) setAsking({ to: name, note: leaving });
+    else {
+      close();
+      onSwitch(name);
+    }
   };
 
   return (
     <div className="profile-switch" ref={box}>
-      <button className="profile-btn" title={switcherTip(others)} aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+      <button ref={button} className="profile-btn" title={switcherTip(others)} aria-expanded={open} onClick={() => (open ? close() : setOpen(true))}>
         <span className="profile-name">{profile}</span>
         {elsewhere && <span className="dot" aria-label="Unread chats in other profiles" />}
         <ChevronDown size={14} className="profile-chev" />
       </button>
-      {open && <ProfileMenu profile={profile} profiles={profiles} error={error} others={others} onPick={pick} onClose={() => setOpen(false)} />}
+      {open && asking && <LeaveProfile note={asking.note} to={asking.to} onGo={() => answer(true)} onStay={() => answer(false)} />}
+      {open && !asking && <ProfileMenu profile={profile} profiles={profiles} error={error} others={others} onPick={pick} onClose={close} />}
+    </div>
+  );
+}
+
+/** Asks before switching to `to` while something is left behind. Stay has focus, so a stray Enter stays. */
+function LeaveProfile({ note, to, onGo, onStay }: { note: string; to: string; onGo: () => void; onStay: () => void }) {
+  const noteId = useId();
+  return (
+    <div
+      className="profile-menu"
+      role="alertdialog"
+      aria-label={`Switch to ${to}?`}
+      aria-describedby={noteId}
+      onKeyDown={(e) => e.key === "Escape" && !composing(e) && onStay()}
+    >
+      <div className="confirm profile-leave">
+        <span id={noteId}>{note}</span>
+        <div className="confirm-actions">
+          <button className="btn" autoFocus onClick={onStay}>
+            Stay
+          </button>
+          <button className="btn primary" onClick={onGo}>
+            Switch anyway
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A switch of profile under way, until the new profile's list is read: connecting, then loading its chats. If that
+ * fails it says why, and offers to try again or go back to the profile the owner came from.
+ */
+function SwitchStatus({
+  profile,
+  switching,
+  status,
+  onRetry,
+  onBack,
+}: {
+  profile: string;
+  switching: NonNullable<Snapshot["switching"]>;
+  status: ConnectionStatus;
+  onRetry: () => void;
+  onBack: () => void;
+}) {
+  return (
+    <div className={`switch-status ${switching.error ? "failed" : ""}`} role="status" aria-label="Switching profile">
+      {switching.error ? (
+        <>
+          <span>
+            Couldn't open {profile}: {switching.error}
+          </span>
+          <div className="switch-actions">
+            <button className="btn" onClick={onRetry}>
+              Try again
+            </button>
+            <button className="btn" onClick={onBack}>
+              Back to {switching.from}
+            </button>
+          </div>
+        </>
+      ) : (
+        <span className="switch-progress">
+          <Spinner />
+          {status === "connected" ? `Loading ${profile}'s chats…` : `Connecting to ${profile}…`}
+        </span>
+      )}
     </div>
   );
 }
@@ -454,6 +556,8 @@ function moveBetweenChats(e: KeyboardEvent<HTMLElement>) {
 /** The chat list. `archivedListed`: it shows the profile's archived chats instead of the Active and Settled ones. */
 export function ChatList({
   profile,
+  switching,
+  status,
   others,
   chats,
   archivedListed,
@@ -472,8 +576,11 @@ export function ChatList({
   onListProfiles,
   onCheckOthers,
   onSwitchProfile,
+  onRetrySwitch,
 }: {
   profile: string;
+  switching?: Snapshot["switching"];
+  status: ConnectionStatus;
   others: OtherProfiles;
   chats: Chat[];
   archivedListed: boolean;
@@ -495,6 +602,7 @@ export function ChatList({
   onListProfiles: () => Promise<string[]>;
   onCheckOthers: () => void;
   onSwitchProfile: (name: string) => void;
+  onRetrySwitch: () => void;
 }) {
   const [settledOpen, setSettledOpen] = useState(false);
   // Opening a Settled chat, say from a search, shows it in the list; settling the chat on screen doesn't.
@@ -525,7 +633,14 @@ export function ChatList({
   return (
     <aside className="sidebar" onKeyDown={moveBetweenChats}>
       <div className="sb-head">
-        <ProfileSwitcher profile={profile} others={others} onListProfiles={onListProfiles} onCheckOthers={onCheckOthers} onSwitch={onSwitchProfile} />
+        <ProfileSwitcher
+          profile={profile}
+          others={others}
+          leaving={leavingNote(profile, chats)}
+          onListProfiles={onListProfiles}
+          onCheckOthers={onCheckOthers}
+          onSwitch={onSwitchProfile}
+        />
         <button
           className={`icon-btn ${archivedListed ? "on" : ""}`}
           title={archivedListed ? "Back to the chat list" : "Archived chats"}
@@ -536,7 +651,10 @@ export function ChatList({
         </button>
       </div>
       <div className="sb-scroll">
-        {syncError && (
+        {switching && (
+          <SwitchStatus profile={profile} switching={switching} status={status} onRetry={onRetrySwitch} onBack={() => onSwitchProfile(switching.from)} />
+        )}
+        {syncError && !switching?.error && (
           <div className="sync-error" role="status">
             {syncError}
           </div>

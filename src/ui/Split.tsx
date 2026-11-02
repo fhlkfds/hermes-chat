@@ -2,7 +2,7 @@
 // with the arrow keys; a double click puts it back in the middle. Where the window is too narrow for two panes, only the
 // active one shows, with a switcher above it; the other stays mounted, hidden, so its scroll, find bar and attachments
 // are as they were when it comes back.
-import { Fragment, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createContext, useContext, Fragment, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 
 /** The narrowest a pane gets beside another. Narrower than two of these, the panes take turns. */
@@ -21,6 +21,9 @@ export type PaneSlot = {
   node: ReactNode;
 };
 
+const PaneVisibility = createContext(true);
+export const usePaneVisible = () => useContext(PaneVisibility);
+
 export const PANE_NAMES = ["Left", "Right"] as const;
 
 const clamp = (r: number, min: number) => Math.min(1 - min, Math.max(min, r));
@@ -29,7 +32,7 @@ const clamp = (r: number, min: number) => Math.min(1 - min, Math.max(min, r));
  * The panes in order, one or two. `activeKey`: the pane keyboard shortcuts, the chat list and Search act on.
  * `onActivate`: the owner clicked, tabbed or switched into a pane.
  */
-export function Split({ panes, activeKey, onActivate }: { panes: PaneSlot[]; activeKey: string; onActivate: (key: string) => void }) {
+export function Split({ panes, activeKey, onActivate, covered = false }: { panes: PaneSlot[]; activeKey: string; onActivate: (key: string) => void; covered?: boolean }) {
   const box = useRef<HTMLDivElement>(null);
   // The left pane's share of the width. Kept here, so dragging re-renders the divider and not the chats.
   const [ratio, setRatio] = useState(0.5);
@@ -81,7 +84,7 @@ export function Split({ panes, activeKey, onActivate }: { panes: PaneSlot[]; act
   useEffect(() => () => void (dragging.current?.frame && cancelAnimationFrame(dragging.current.frame)), []);
 
   return (
-    <div ref={box} className={`panes ${split ? "split" : ""} ${narrow ? "narrow" : ""} ${resizing ? "resizing" : ""}`}>
+    <div ref={box} aria-hidden={covered || undefined} inert={covered || undefined} className={`panes ${covered ? "covered" : ""} ${split ? "split" : ""} ${narrow ? "narrow" : ""} ${resizing ? "resizing" : ""}`}>
       {narrow && (
         <div className="pane-switch" role="tablist" aria-label="Panes">
           {panes.map((p, i) => (
@@ -157,7 +160,7 @@ export function Split({ panes, activeKey, onActivate }: { panes: PaneSlot[]; act
                 onPointerDownCapture={() => active || onActivate(p.key)}
                 onFocusCapture={() => active || onActivate(p.key)}
               >
-                {p.node}
+                <PaneVisibility value={!hidden && !covered}>{p.node}</PaneVisibility>
               </section>
             </Fragment>
           );
