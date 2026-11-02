@@ -98,6 +98,26 @@ describe("Pasting into the composer", () => {
     expect(chips()).toHaveLength(0);
   });
 
+  it("holds a send until the pasted screenshot is attached, so it isn't left behind", async () => {
+    const { staged, onSend } = await setUp("Which cable is loose?");
+    // Saving the paste takes a while: it lands only when `land` is called.
+    const save = tauri.invoke;
+    let land = () => {};
+    tauri.invoke = (cmd, args, opts) =>
+      cmd === "stage_clipboard_file" ? new Promise((resolve) => (land = () => resolve(save(cmd, args, opts)))) : save(cmd, args, opts);
+
+    paste([new File([PNG], "", { type: "image/png" })]);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toHaveProperty("disabled", true));
+    fireEvent.keyDown(composer(), { key: "Enter" });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(onSend).not.toHaveBeenCalled();
+
+    land();
+    await waitFor(() => expect(chips()).toHaveLength(1));
+    fireEvent.keyDown(composer(), { key: "Enter" });
+    expect(onSend).toHaveBeenCalledWith("Which cable is loose?", [expect.objectContaining({ path: staged[0].path, kind: "image" })]);
+  });
+
   it("keeps a pasted file's own name", async () => {
     const { staged } = await setUp();
     paste([new File(["sda 92%"], "disk report.txt", { type: "text/plain" })]);

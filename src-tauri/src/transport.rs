@@ -150,16 +150,18 @@ pub async fn read_preview(path: &str) -> Result<Vec<u8>, TransportError> {
 /// one: a pasted screenshot has no file of its own. Each paste gets its own folder under `<temp>/hermes-chat`, so
 /// the same name pasted twice stays two files. `name` is cut down to a safe basename. Nothing removes these files.
 pub fn stage_clipboard_file(name: &str, bytes: &[u8]) -> Result<std::path::PathBuf, TransportError> {
-    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
     use std::sync::atomic::{AtomicU64, Ordering};
     static PASTES: AtomicU64 = AtomicU64::new(0);
     let io = |e: std::io::Error| TransportError::File(format!("couldn't save the pasted file: {e}"));
 
     // Pastes can be private: only this user's folders, and not one someone else made (or linked) in a shared /tmp.
+    // Ownership matters, not just the mode: another user's folder could be opened up again after this check.
     let root = std::env::temp_dir().join("hermes-chat");
     std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&root).map_err(io)?;
     let meta = std::fs::symlink_metadata(&root).map_err(io)?;
-    if !meta.is_dir() || meta.permissions().mode() & 0o077 != 0 {
+    let me = std::fs::metadata("/proc/self").map_err(io)?.uid();
+    if !meta.is_dir() || meta.uid() != me || meta.permissions().mode() & 0o077 != 0 {
         return Err(TransportError::File(format!("couldn't save the pasted file: {} isn't private", root.display())));
     }
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());

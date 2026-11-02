@@ -574,7 +574,18 @@ function Composer({
   }, []);
   useEffect(() => previews.current?.sync(attachments), [attachments]);
 
-  const add = async (paths: string[]) => {
+  // Files still being read, saved or checked: sending waits for them, so none misses the message it was added for.
+  const [attaching, setAttaching] = useState(0);
+  const busy = async (work: () => Promise<void>) => {
+    setAttaching((n) => n + 1);
+    try {
+      await work();
+    } finally {
+      setAttaching((n) => n - 1);
+    }
+  };
+
+  const add = (paths: string[]) => busy(async () => {
     if (!paths.length) return;
     try {
       const got = await onAttach(paths);
@@ -583,7 +594,7 @@ function Composer({
     } catch (e) {
       setRefused([`Couldn't attach files: ${e instanceof Error ? e.message : String(e)}`]);
     }
-  };
+  });
   const addRef = useRef(add);
   addRef.current = add;
 
@@ -600,8 +611,9 @@ function Composer({
   }, []);
 
   // A pasted screenshot or file has no path of its own: Rust saves it to a temp file, which then attaches like a drop.
-  const paste = async (files: File[]) => {
+  const paste = (pasted: File[] | Promise<File[]>) => busy(async () => {
     try {
+      const files = await pasted;
       const paths = await Promise.all(
         files.map(async (f) =>
           invoke<string>("stage_clipboard_file", await f.arrayBuffer(), { headers: { "x-name": encodeURIComponent(pastedName(f)) } }),
@@ -611,7 +623,7 @@ function Composer({
     } catch (e) {
       setRefused([`Couldn't attach the pasted files: ${e instanceof Error ? e.message : String(e)}`]);
     }
-  };
+  });
 
   const pick = async () => {
     try {
@@ -629,7 +641,7 @@ function Composer({
     ta.style.height = Math.min(ta.scrollHeight, 240) + "px";
   }, [text]);
 
-  const sendable = !!text.trim() || attachments.length > 0;
+  const sendable = attaching === 0 && (!!text.trim() || attachments.length > 0);
   const send = () => {
     if (offline || running || !sendable) return;
     onSend(text.trim(), attachments);
@@ -682,7 +694,7 @@ function Composer({
             if (files.length) {
               e.preventDefault();
               void paste(files);
-            } else if (!e.clipboardData.getData("text/plain")) void clipboardImages().then(paste);
+            } else if (!e.clipboardData.getData("text/plain")) void paste(clipboardImages());
           }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey && !composing(e)) {
