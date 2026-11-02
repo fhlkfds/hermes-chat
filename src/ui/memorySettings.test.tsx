@@ -292,6 +292,25 @@ describe("Settings → Memory", () => {
     expect(s.memory.default.memory).toEqual([`${SHORT} and more`, SHORT]);
   });
 
+  it("keeps the edit when a lost save can't be told apart from another entry with the same words", async () => {
+    const { s, hermes, user } = await shown();
+    await user.click(entry(FALCON));
+    await user.clear(editor());
+    await user.type(editor(), SHORT);
+    s.dropOnLearning = "lost";
+    await user.click(button("Save"));
+    await screen.findByText(/may or may not have saved/);
+    await act(async () => void (await hermes.reconnect()));
+    await user.type(editor(), " and more");
+    // The agent removes the entry being edited meanwhile.
+    s.memory.default.memory = [SHORT];
+    await user.click(button(/Reload/));
+    expect((await screen.findByRole("alert")).textContent).toMatch(/Can't tell whether Hermes saved your edit/);
+    expect(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Your kept edit" }).value).toBe(`${SHORT} and more`);
+    expect(screen.queryByRole("textbox", { name: /Entry in/ })).toBeNull();
+    expect(s.memory.default.memory).toEqual([SHORT]);
+  });
+
   it("still settles a kept edit put in an entry after a Reload", async () => {
     const { s, user } = await shown();
     await user.click(entry(SHORT));

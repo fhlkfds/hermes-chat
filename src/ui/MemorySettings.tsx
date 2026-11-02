@@ -72,8 +72,8 @@ export function MemorySettings({
   const [kept, setKept] = useState<string[]>([]);
   const keep = (text: string) => setKept((k) => (k.includes(text) ? k : [...k, text]));
   // A save whose outcome is unknown, until a read shows whether Hermes has it: the text sent, and the entry it was for
-  // (its id, file and text as read before the save).
-  const [unsure, setUnsure] = useState<{ text: string; entryId: string; source: MemorySource; from: string }>();
+  // (its id, file and text as read before the save), and whether another entry in that file already had the new text.
+  const [unsure, setUnsure] = useState<{ text: string; entryId: string; source: MemorySource; from: string; existed: boolean }>();
   const [confirmDelete, setConfirmDelete] = useState(false);
   // Opening another entry or file while the open one has an unsaved edit asks first; this is what it would do.
   const [leaving, setLeaving] = useState<() => void>();
@@ -138,9 +138,21 @@ export function MemorySettings({
         // A read settles a save whose answer was lost: Hermes has the text, or it doesn't.
         // Only the file the save was for: the same text in the other file is another entry. And while the entry's old
         // text is still there, the save didn't happen (an edit replaces it), even if another entry has the new text.
+        // If another entry already had the new text, a match proves nothing: the edit is kept for the owner to place.
         const entries = next.resources[unsure.source].entries;
-        const saved = entries.some((e) => e.text === unsure.from) ? undefined : entries.find((e) => e.text === unsure.text);
+        const oldThere = entries.some((e) => e.text === unsure.from);
+        const saved = oldThere || unsure.existed ? undefined : entries.find((e) => e.text === unsure.text);
         setUnsure(undefined);
+        if (!oldThere && unsure.existed) {
+          show(next);
+          if (editing?.entry.id === unsure.entryId && editing.draft !== editing.entry.text) keep(editing.draft);
+          setEditing((open) => (open?.entry.id === unsure.entryId ? undefined : open));
+          setNotice({
+            kind: "unsure",
+            text: "Can't tell whether Hermes saved your edit: the entry is gone, and another entry already had the same words. Your edit is kept below; nothing more was saved.",
+          });
+          return;
+        }
         if (saved && editing?.entry.id !== unsure.entryId) {
           // The owner moved on from that entry: say what became of the save, and leave what's open alone.
           setNotice({ kind: "ok", text: "Hermes has the edit whose answer was lost: reading memory back shows it." });
@@ -240,7 +252,9 @@ export function MemorySettings({
           text: e instanceof MemoryConflictError ? e.message : `${e.message} Your edit is kept below.`,
         });
       } else if (e instanceof MemoryUnsureError) {
-        setUnsure({ text: pyStrip(at.draft), entryId: at.entry.id, source: at.entry.source, from: at.entry.text });
+        const text = pyStrip(at.draft);
+        const existed = !!view?.resources[at.entry.source].entries.some((x) => x.id !== at.entry.id && x.text === text);
+        setUnsure({ text, entryId: at.entry.id, source: at.entry.source, from: at.entry.text, existed });
         setNotice({ kind: "unsure", text: e.message });
       } else if (e instanceof MemoryUnsupportedError) {
         keep(at.draft);
