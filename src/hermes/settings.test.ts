@@ -4,7 +4,7 @@ import { localChatCache } from "./chatCache";
 import { FakeHermes, row } from "./fakeHermes";
 import { memoryCache } from "./memoryCache";
 import type { SignInDetails } from "./tauriPipe";
-import { connect } from "./transport";
+import { connect, readSaved } from "./transport";
 
 const details: SignInDetails = { mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam", password: "hunter2" };
 
@@ -29,6 +29,7 @@ function account(keyring = memoryKeyring()) {
       if (d.password !== "hunter2") throw new Error("Wrong username or password.");
       return connect(server.openPipe, "default");
     },
+    readSaved: (_d, reason) => readSaved(server.openPipe, reason, memoryCache()),
   };
   return { server, keyring, account: a, saved: () => saved };
 }

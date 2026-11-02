@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { connect, type Hermes } from "./hermes/transport";
-import { type Account, type SavedSignIn, savedSignIn, signIn, signOut } from "./hermes/account";
+import { connect, readSaved, type Hermes } from "./hermes/transport";
+import { type Account, type SavedSignIn, launchSignIn, savedSignIn, signIn, signOut } from "./hermes/account";
 import { localChatCache } from "./hermes/chatCache";
 import { systemKeyring } from "./hermes/tauriKeyring";
 import { tauriPipe, type SignInDetails } from "./hermes/tauriPipe";
@@ -34,6 +34,7 @@ const account: Account = {
   keyring: systemKeyring,
   store: { load: loadSignIn, save: (d) => localStorage.setItem(SAVED, JSON.stringify(d)) },
   connect: (d) => connect(tauriPipe(d), undefined, localChatCache),
+  readSaved: (d, reason) => readSaved(tauriPipe(d), reason, localChatCache),
 };
 
 /** What launch ends in: signed in with the saved password, or the sign-in screen and why. */
@@ -41,15 +42,16 @@ type Launch = { hermes: Hermes } | { initial: SignInDetails; error?: string };
 let launching: Promise<Launch> | undefined;
 
 /**
- * Signs in with the saved password, if there is one. If that fails the sign-in screen has it filled in, so Connect
- * tries again. Runs once, though StrictMode runs effects twice.
+ * Signs in with the saved password, if there is one; if Hermes can't be reached, what this computer saved opens to
+ * read. If that fails the sign-in screen has it filled in, so Connect tries again. Runs once, though StrictMode runs
+ * effects twice.
  */
 function launch(): Promise<Launch> {
   return (launching ??= (async () => {
     const saved = await savedSignIn(account);
     if (!saved) return { initial: { ...loadSignIn(), password: "" } };
     try {
-      return { hermes: await account.connect(saved) };
+      return { hermes: await launchSignIn(saved, account) };
     } catch (e) {
       return { initial: saved, error: messageOf(e) };
     }
@@ -211,9 +213,10 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
   }, [toast]);
 
   // An opened chat shows its stored history and is marked read; a chat already open on this connection is left as it
-  // is. After a reconnect the chat on screen loads again. Settings covers the chat, so it isn't on screen meanwhile.
+  // is. Until connected it shows its Saved copy, and after a reconnect it loads again. Settings covers the chat, so it
+  // isn't on screen meanwhile.
   useEffect(() => {
-    if (!selectedId || status !== "connected" || settingsOpen) return;
+    if (!selectedId || settingsOpen) return;
     void hermes.open(selectedId);
     return () => hermes.leave(selectedId);
   }, [hermes, selectedId, status, settingsOpen]);
@@ -296,6 +299,7 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
           <ChatPane
             key={selected.id}
             chat={selected}
+            notLoaded={selected !== draft && status !== "connected" && !selected.runtimeId && !selected.items.length}
             findTarget={findTarget}
             status={status}
             alsoPostsIn={hermes.alsoPostsIn(selected.id)}

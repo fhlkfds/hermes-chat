@@ -1,6 +1,6 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowUp, Brain, ChevronDown, ChevronRight, ChevronUp, Paperclip, Search, ShieldAlert, Square, Wrench, X } from "lucide-react";
+import { ArrowUp, Brain, ChevronDown, ChevronRight, ChevronUp, CloudOff, HardDrive, Paperclip, Search, ShieldAlert, Square, Wrench, X } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import type { ApprovalChoice, ApprovalItem, AttachCheck, Attachment, Chat, ConnectionStatus, Item, Source } from "../hermes/model";
@@ -37,12 +37,17 @@ const STATUS_NOTE: Record<ConnectionStatus, string | undefined> = {
   offline: "Offline. Click the status dot to reconnect.",
 };
 
+/** When a Saved copy was taken, as the note above it says it. */
+const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+
 /**
  * `alsoPostsIn`: the Telegram or Discord chat Hermes will also post its replies in. `onAnswer` answers an Approval card.
- * `onSettle` is left out for a chat not started yet. Ctrl+F opens the find bar.
+ * `onSettle` is left out for a chat not started yet. `notLoaded`: the chat has no Saved copy and can't load until
+ * Hermes is connected. Ctrl+F opens the find bar.
  */
 export function ChatPane({
   chat,
+  notLoaded,
   findTarget,
   status,
   alsoPostsIn,
@@ -53,6 +58,7 @@ export function ChatPane({
   onSettle,
 }: {
   chat: Chat;
+  notLoaded?: boolean;
   findTarget?: FindTarget;
   status: ConnectionStatus;
   alsoPostsIn?: Source;
@@ -212,12 +218,30 @@ export function ChatPane({
               {chat.settled && " Replying here moves it to Active."}
             </div>
           )}
+          {chat.savedAt !== undefined && (
+            <div className="saved-note" role="note">
+              {status === "connected" ? <HardDrive size={13} /> : <CloudOff size={13} />}
+              <span>
+                <b>Saved copy</b> from {savedWhen(chat.savedAt)}.{" "}
+                {status === "connected"
+                  ? chat.loading
+                    ? "Loading the latest from Hermes…"
+                    : "It may be out of date."
+                  : "You're offline, so newer messages may be missing."}
+              </span>
+            </div>
+          )}
           {chat.loading && blocks.length === 0 && (
             <div className="loading-chat">
               <Spinner /> Loading chat
             </div>
           )}
-          {!chat.loading && blocks.length === 0 && <div className="empty-chat">What should Hermes work on?</div>}
+          {notLoaded && blocks.length === 0 && (
+            <div className="unloaded-chat">
+              <CloudOff size={14} /> This chat isn't saved on this computer. It loads once Hermes is connected.
+            </div>
+          )}
+          {!chat.loading && !notLoaded && blocks.length === 0 && <div className="empty-chat">What should Hermes work on?</div>}
           {blocks.map((b) => {
             if (b.kind === "user")
               return (
