@@ -6,7 +6,7 @@ import { CHECK_EVERY_MS } from "./hermes/otherProfiles";
 import { type Account, type Kept, type SavedSignIn, launchSignIn, savedSignIn, signIn, signInForm, signOutToSignIn } from "./hermes/account";
 import { localChatCache } from "./hermes/chatCache";
 import { draftKey, drafts } from "./hermes/drafts";
-import { sending } from "./hermes/unsaved";
+import { sending, type Sending } from "./hermes/unsaved";
 import { chatToReopen, forgetOpenChat, rememberOpenChat } from "./hermes/uiPrefs";
 import { exportChat } from "./hermes/exportChat";
 import { projectLinks, projectScope } from "./hermes/projectLinks";
@@ -1059,9 +1059,16 @@ function ChatView({
     screenshots?.hold(paths);
     const typed = savedDrafts.take(shownDraft);
     // In no outbox until its chat exists: an update's restart meanwhile keeps it as the draft (unsaved.ts).
-    const held = [shownDraft, typed] as const;
+    const held: Sending = { key: shownDraft, text: typed };
     sending.add(held);
     const to = await chatToSendIn().finally(() => sending.delete(held));
+    if (held.captured) {
+      // Saved as a draft for the restart, so it doesn't go. Should the restart fail, it is back in the composer.
+      const now = savedDrafts.get(held.key);
+      savedDrafts.set(held.key, now ? `${now}\n\n${typed}` : typed);
+      screenshots?.sent(attachments, false);
+      return;
+    }
     if ("delivery" in to) {
       savedDrafts.putBack(draftOf(null), typed);
       screenshots?.sent(attachments, false);

@@ -5,9 +5,11 @@ export const unsaved = new Map<string, string | null>();
 
 /**
  * Messages on their way that no outbox holds yet (a New chat send, while its chat is started), each with the draft key
- * it was taken from. An update's restart keeps them as that draft (updates.ts `snapshotDrafts`).
+ * it was taken from. An update's restart keeps them as that draft (updates.ts `snapshotDrafts`), and marks them
+ * `captured`: such a message never goes, since the restarted app has it as a draft.
  */
-export const sending = new Set<readonly [key: string, text: string]>();
+export type Sending = { key: string; text: string; captured?: boolean };
+export const sending = new Set<Sending>();
 
 /** Writes `value` under `key` (null deletes it), and notes it here if the write fails or there's no storage. False: it failed. */
 export function persist(storage: () => Pick<Storage, "setItem" | "removeItem">, key: string, value: string | null): boolean {

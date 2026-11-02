@@ -673,6 +673,8 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 .update-progress { width: 100%; height: 8px; accent-color: var(--accent); }
 .selectable { user-select: text; -webkit-user-select: text; }
 .restarting-overlay { position: fixed; inset: 0; display: grid; place-items: center; background: color-mix(in srgb, var(--bg) 70%, transparent); font-size: calc(14rem / 14); z-index: 100; }
+.recovery-failed { max-width: 480px; padding: 24px; }
+.recovery-failed p { margin: 0 0 12px; line-height: 1.55; }
 .big-num { font-size: calc(20rem / 14); font-weight: 600; font-variant-numeric: tabular-nums; }
 .select {
   height: 32px; padding: 0 8px; border-radius: 8px; background: var(--raised-2); border: 1px solid var(--line); color: var(--text);

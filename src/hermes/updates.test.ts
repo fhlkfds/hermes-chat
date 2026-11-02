@@ -362,6 +362,13 @@ describe("restoreAfterRestart", () => {
     expect(invoke).toHaveBeenLastCalledWith("restart_drafts_clear");
   });
 
+  it("reports a saved copy it couldn't delete, for the app not to open over it", async () => {
+    localStorage.clear();
+    const { u } = setup({ restart_drafts_read: snapshot, restart_drafts_clear: new Error("/data/restart-drafts.json: Permission denied") });
+    await expect(u.restoreAfterRestart()).rejects.toThrow("Permission denied");
+    expect(localStorage.getItem("hermes-chat.draft.a")).toBe("half a thought");
+  });
+
   it("drops the chat cache to make room for the drafts", async () => {
     localStorage.clear();
     const room = { made: false };

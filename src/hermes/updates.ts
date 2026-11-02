@@ -190,6 +190,7 @@ export const DRAFT_PREFIXES = ["hermes-chat.draft.", "hermes-chat.outbox.", "her
 const isDraftKey = (k: string) => DRAFT_PREFIXES.some((p) => k.startsWith(p));
 
 /** The drafts and outboxes in `storage`, with the latest of any its stores couldn't write there (unsaved.ts). */
+/** Also marks every message in `sending` captured. */
 export function snapshotDrafts(storage: UpdateDeps["storage"], pending: ReadonlyMap<string, string | null> = unsaved): string {
   const out: Record<string, string> = {};
   for (let i = 0; i < storage.length; i++) {
@@ -202,7 +203,10 @@ export function snapshotDrafts(storage: UpdateDeps["storage"], pending: Readonly
     if (v === null) delete out[k];
     else out[k] = v;
   }
-  for (const [k, text] of sending) if (text) out[k] = out[k] ? `${out[k]}\n\n${text}` : text;
+  for (const s of sending) {
+    s.captured = true;
+    if (s.text) out[s.key] = out[s.key] ? `${out[s.key]}\n\n${s.text}` : s.text;
+  }
   return JSON.stringify(out);
 }
 

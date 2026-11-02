@@ -16,11 +16,16 @@ export const appUpdates = updater({
   clearCache: clearCachedChats,
 });
 
-/** Puts back the drafts saved by an update's restart. Runs before the app first renders, so no draft is read before. */
-export async function restoreDraftsAfterRestart() {
+/**
+ * Puts back the drafts saved by an update's restart. Runs before the app first renders, so no draft is read before.
+ * Resolves to why it couldn't finish: the saved copy is still there to be put back, so the app mustn't open for
+ * editing, or the next launch would put it back over the edits.
+ */
+export async function restoreDraftsAfterRestart(): Promise<string | undefined> {
+  if (!("__TAURI_INTERNALS__" in window)) return; // A browser, in development: nothing was saved.
   try {
     await appUpdates.restoreAfterRestart();
-  } catch {
-    // Outside the app; or the saved copy couldn't be deleted or set aside, and the next launch puts it back again.
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e);
   }
 }

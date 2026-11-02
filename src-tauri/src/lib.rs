@@ -166,8 +166,10 @@ async fn screenshot_support() -> screenshot::Support {
 
 /// The renderer supplies all persisted outboxes at startup and whenever they change, before cleanup.
 #[tauri::command]
-fn screenshot_sync_outbox(state: State<'_, Screenshots>, paths: Vec<String>) -> Result<(), screenshot::CaptureError> {
-    state.captures()?.retain_outbox(paths.into_iter().map(std::path::PathBuf::from));
+fn screenshot_sync_outbox(app: tauri::AppHandle, state: State<'_, Screenshots>, paths: Vec<String>) -> Result<(), screenshot::CaptureError> {
+    // Also those of drafts an update's restart couldn't put back (update.rs).
+    let saved = update::saved_attachment_paths(&app);
+    state.captures()?.retain_outbox(paths.into_iter().map(std::path::PathBuf::from).chain(saved));
     Ok(())
 }
 

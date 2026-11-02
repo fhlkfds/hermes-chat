@@ -60,22 +60,23 @@ it("makes the window inert, and says so, while it restarts", async () => {
   expect(app.contains(overlay)).toBe(false);
 });
 
-it("keeps a New chat message whose chat is still being started for the restart", async () => {
+it("keeps a New chat message whose chat is still being started for the restart, and doesn't send it", async () => {
   const s = new FakeHermes();
   const create = s.handlers["session.create"];
   let held: Parameters<typeof create>[0] | undefined;
   s.handlers["session.create"] = (r) => void (held = r);
   await launch(s);
   const user = userEvent.setup();
-  await user.type(screen.getByPlaceholderText("Message Hermes"), "Plan the migration{Enter}");
+  const composer = screen.getByPlaceholderText<HTMLTextAreaElement>("Message Hermes");
+  await user.type(composer, "Plan the migration{Enter}");
   await waitFor(() => expect(held).toBeTruthy());
   // The composer is empty and no outbox has it yet; the restart's copy still does.
-  expect(screen.getByPlaceholderText<HTMLTextAreaElement>("Message Hermes").value).toBe("");
+  expect(composer.value).toBe("");
   expect(Object.values(JSON.parse(snapshotDrafts(localStorage)))).toEqual(["Plan the migration"]);
 
+  // The chat is made as the app restarts: the message, a draft in the restart's copy, isn't sent as well.
   await act(async () => create(held!));
   await waitFor(() => expect(sending.size).toBe(0));
-  // Sent: in its chat, and no longer kept as a draft.
-  await waitFor(() => expect(document.querySelector(".bubble-text")?.textContent).toBe("Plan the migration"));
-  expect(Object.keys(JSON.parse(snapshotDrafts(localStorage))).filter((k) => k.startsWith("hermes-chat.draft."))).toEqual([]);
+  expect(s.requests.some((r) => r.method === "prompt.submit")).toBe(false);
+  expect(Object.values(JSON.parse(snapshotDrafts(localStorage)))).toEqual(["Plan the migration"]);
 });

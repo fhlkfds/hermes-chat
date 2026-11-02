@@ -205,16 +205,23 @@ pub fn relaunch(app: &AppHandle) {
 }
 
 /// The drafts saved by the last restart, if any. The file stays until the webview has put them all back
-/// (`restart_drafts_clear`), so a crash or a full store at launch doesn't lose them.
+/// (`restart_drafts_clear`), so a crash or a full store at launch doesn't lose them. An error if it is there but can't
+/// be read: the app doesn't open over it.
 #[tauri::command]
-pub async fn restart_drafts_read(app: AppHandle) -> Option<String> {
-    std::fs::read_to_string(drafts_file(&app).ok()?).ok()
+pub async fn restart_drafts_read(app: AppHandle) -> Result<Option<String>, String> {
+    let path = drafts_file(&app)?;
+    match std::fs::read_to_string(&path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
 }
 
 #[tauri::command]
 pub async fn restart_drafts_clear(app: AppHandle) -> Result<(), String> {
-    match std::fs::remove_file(drafts_file(&app)?) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+    let path = drafts_file(&app)?;
+    match std::fs::remove_file(&path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("{}: {e}", path.display())),
         _ => Ok(()),
     }
 }
@@ -226,8 +233,54 @@ pub async fn restart_drafts_set_aside(app: AppHandle) -> Result<String, String> 
     let from = drafts_file(&app)?;
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     let to = from.with_file_name(format!("restart-drafts-{secs}.json"));
-    std::fs::rename(&from, &to).map_err(|e| e.to_string())?;
+    std::fs::rename(&from, &to).map_err(|e| format!("{}: {e}", from.display()))?;
     Ok(to.display().to_string())
+}
+
+/// The screenshots that drafts saved for a restart and not put back yet (`restart-drafts*.json`) attach, for screenshot
+/// cleanup to keep (lib.rs `screenshot_sync_outbox`) until the owner moves or deletes the file.
+// ponytail: reads every such file on each outbox sync; they exist only after a restore failed, so there is rarely one.
+pub fn saved_attachment_paths(app: &AppHandle) -> Vec<PathBuf> {
+    let mut paths = vec![];
+    let Ok(entries) = app.path().app_data_dir().and_then(|dir| Ok(std::fs::read_dir(dir)?)) else {
+        return paths;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with("restart-drafts") && name.ends_with(".json") {
+            if let Ok(text) = std::fs::read_to_string(entry.path()) {
+                attachment_paths(&text, &mut paths);
+            }
+        }
+    }
+    paths
+}
+
+/// Every `"path"` in `json`, looking into string values that are JSON themselves: each outbox is kept as one.
+fn attachment_paths(json: &str, out: &mut Vec<PathBuf>) {
+    use serde_json::Value;
+    fn walk(v: &Value, out: &mut Vec<PathBuf>) {
+        match v {
+            Value::Object(fields) => {
+                for (k, v) in fields {
+                    match v {
+                        Value::String(s) if k == "path" => out.push(s.into()),
+                        _ => walk(v, out),
+                    }
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|v| walk(v, out)),
+            Value::String(s) if s.starts_with(['[', '{']) => {
+                if let Ok(v) = serde_json::from_str(s) {
+                    walk(&v, out)
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Ok(v) = serde_json::from_str(json) {
+        walk(&v, out)
+    }
 }
 
 #[cfg(test)]
@@ -246,6 +299,15 @@ mod tests {
     fn restarts_without_asking_for_a_screenshot() {
         let args = ["/usr/bin/hermes-chat", "--screenshot", "--other"].map(std::ffi::OsString::from);
         assert_eq!(relaunch_args(args), ["--other"]);
+    }
+
+    #[test]
+    fn finds_the_screenshots_saved_outboxes_attach() {
+        let outbox = r#"[{"kind":"user","text":"look","outgoing":{"state":"unsent","attachments":[{"name":"a.png","path":"/c/1/a.png"}]}}]"#;
+        let saved = serde_json::json!({ "hermes-chat.outbox.x": outbox, "hermes-chat.draft.y": "[not json" }).to_string();
+        let mut paths = vec![];
+        attachment_paths(&saved, &mut paths);
+        assert_eq!(paths, [PathBuf::from("/c/1/a.png")]);
     }
 
     #[test]
