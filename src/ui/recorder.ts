@@ -81,6 +81,9 @@ export async function startCapture(onLost: (why: string) => void, signal?: Abort
   };
   // From here on, an abort closes the microphone straight away, not once startup finishes.
   signal?.addEventListener("abort", close, { once: true });
+  // A microphone unplugged while the audio system starts is noticed too, not only once recording.
+  let lostWhileStarting = false;
+  for (const t of tracks) t.onended = () => void (lostWhileStarting = true);
 
   try {
     ctx = env.makeContext();
@@ -108,6 +111,10 @@ export async function startCapture(onLost: (why: string) => void, signal?: Abort
   if (signal?.aborted || !open) {
     close();
     throw aborted();
+  }
+  if (lostWhileStarting || tracks.some((t) => t.readyState === "ended")) {
+    close();
+    throw new MicError("The microphone was disconnected before recording started. Check it's plugged in, then try again.");
   }
   for (const t of tracks)
     t.onended = () => {

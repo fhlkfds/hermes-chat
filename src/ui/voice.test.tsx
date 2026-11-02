@@ -18,7 +18,14 @@ class FakeMic {
   fail?: string;
   /** The audio system never finishes starting: `resume()` hangs. */
   hang = false;
-  readonly track = { stopped: false, onended: null as null | (() => void), stop: () => void (this.track.stopped = true) };
+  readonly track = {
+    stopped: false,
+    readyState: "live" as MediaStreamTrackState,
+    onended: null as null | (() => void),
+    stop: () => void (this.track.stopped = true),
+  };
+  /** Releases a `hang`ing `resume()`. */
+  resumed?: () => void;
   opened = 0;
   context?: { closed: boolean };
   private processor?: { onaudioprocess: null | ((e: unknown) => void) };
@@ -47,7 +54,7 @@ class FakeMic {
       }
       createMediaStreamSource = () => ({ connect: () => {}, disconnect: () => {} });
       createScriptProcessor = () => (mic.processor = { onaudioprocess: null, connect: () => {}, disconnect: () => {} } as never);
-      resume = () => (mic.hang ? new Promise<void>(() => {}) : Promise.resolve());
+      resume = () => (mic.hang ? new Promise<void>((r) => (mic.resumed = r)) : Promise.resolve());
       close = async () => void (this.closed = true);
     } as unknown as typeof AudioContext;
   }
@@ -306,6 +313,23 @@ describe("Dictation", () => {
     expect(mic.closed).toBe(true);
     expect(screen.queryByText("Waiting for the microphone…")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("says so when the microphone is unplugged while the audio system is still starting", async () => {
+    const { server, user } = await signedIn();
+    mic.hang = true;
+    await user.click(dictate());
+    await screen.findByText("Waiting for the microphone…");
+    await waitFor(() => expect(mic.resumed).toBeDefined());
+    act(() => {
+      mic.track.readyState = "ended";
+      mic.track.onended?.();
+    });
+    await act(async () => mic.resumed!());
+    expect((await screen.findByRole("alert")).textContent).toMatch(/disconnected before recording started/);
+    expect(mic.closed).toBe(true);
+    expect(screen.queryByRole("status", { name: "Recording" })).toBeNull();
+    expect(server.recordings).toEqual([]);
   });
 
   it("cancels with Esc while transcribing, after Done took the focus with it", async () => {
