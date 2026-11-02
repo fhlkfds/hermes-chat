@@ -1,4 +1,6 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { type ReactNode, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { flushSync } from "react-dom";
+import { Columns2, X } from "lucide-react";
 import { connect, readSaved, type Delivery, type Hermes } from "./hermes/transport";
 import { CHECK_EVERY_MS } from "./hermes/otherProfiles";
 import { type Account, type SavedSignIn, launchSignIn, savedSignIn, signIn, signOut } from "./hermes/account";
@@ -9,10 +11,11 @@ import { exportChat } from "./hermes/exportChat";
 import { systemKeyring } from "./hermes/tauriKeyring";
 import { desktopNotify } from "./hermes/tauriNotify";
 import { tauriPipe, type SignInDetails } from "./hermes/tauriPipe";
-import type { Attachment, Chat, Found } from "./hermes/model";
-import type { ModelPick } from "./hermes/models";
+import type { Attachment, Chat, ConnectionStatus, Found } from "./hermes/model";
+import type { ModelCatalog, ModelPick } from "./hermes/models";
 import { ChatList, Rail } from "./ui/Sidebar";
 import { ChatPane } from "./ui/ChatPane";
+import { PANE_NAMES, Split, type PaneSlot } from "./ui/Split";
 import { SearchPalette } from "./ui/Search";
 import { SettingsScreen } from "./ui/Settings";
 import { composing } from "./ui/bits";
@@ -142,6 +145,26 @@ export default function App() {
   );
 }
 
+/**
+ * One pane of the chat area. `chatId` null: the New chat pane. `draftError`: why the New chat pane couldn't start a
+ * chat. `picked`: the search result its chat was opened from; `at` tells one pick from the next.
+ */
+type Pane = { key: string; chatId: string | null; draftError?: string; picked?: { found: Found; at: number } };
+
+let panesMade = 0;
+/** A pane's key, which is also its name to Hermes for what is on screen (transport.ts `open`). */
+const newPaneKey = () => `pane-${++panesMade}`;
+
+/** The chat a pane on the New chat pane shows: nothing yet, or why the chat couldn't start. */
+const draftChat = (draftError?: string): Chat => ({
+  id: "draft",
+  title: "New chat",
+  source: "app",
+  settled: false,
+  updatedAt: Date.now(),
+  items: draftError ? [{ kind: "error", id: "e-draft", text: draftError }] : [],
+});
+
 export function Main({
   hermes,
   connection,
@@ -163,30 +186,22 @@ export function Main({
   const [settingsOpen, setSettingsOpen] = useState(false);
   // The chat to reopen at launch, until Hermes's list shows it is there or gone, or the owner goes somewhere first.
   const [reopening, setReopening] = useState(() => (reopenLast ? chatToReopen(profile) : undefined));
-  // Opened at once when the list saved on this computer has it, so the New chat pane doesn't show first.
-  const [selectedId, setSelectedId] = useState<string | null>(() => (reopening && chats.some((c) => c.id === reopening) ? reopening : null));
+  // One pane, or two side by side. The chat to reopen opens at once when the list saved on this computer has it, so the
+  // New chat pane doesn't show first.
+  const [panes, setPanes] = useState<Pane[]>(() => [
+    { key: newPaneKey(), chatId: reopening && chats.some((c) => c.id === reopening) ? reopening : null },
+  ]);
+  // The pane the chat list, Search, New chat and the keyboard shortcuts act on.
+  const [activeKey, setActiveKey] = useState(() => panes[0].key);
+  const activeKeyRef = useRef(activeKey);
+  activeKeyRef.current = activeKey;
+  const firstPane = useRef(panes[0].key);
+  const active = panes.find((p) => p.key === activeKey) ?? panes[0];
+  const other = panes.find((p) => p !== active);
+  const split = panes.length > 1;
   const [listOpen, setListOpen] = useState(true);
-  const [draftError, setDraftError] = useState<string>();
   const [toast, setToast] = useState<Toast | null>(notSaved ? { text: notSaved, at: Date.now() } : null);
   const [searchOpen, setSearchOpen] = useState(false);
-  // The search result the chat on screen was opened from; `at` tells one pick from the next.
-  const [picked, setPicked] = useState<{ found: Found; at: number } | null>(null);
-
-  // No chat selected means a fresh draft; the Hermes session is created on the first message.
-  const draft: Chat = {
-    id: "draft",
-    title: "New chat",
-    source: "app",
-    settled: false,
-    updatedAt: Date.now(),
-    items: draftError ? [{ kind: "error", id: "e-draft", text: draftError }] : [],
-  };
-  const selected = chats.find((c) => c.id === selectedId) ?? draft;
-  // What the owner has typed and not sent, kept for each chat on this connection and profile.
-  const draftOf = (chatId: string | null) => draftKey(connection, profile, chatId);
-  const shownDraft = draftOf(selectedId);
-  const composerText = useSyncExternalStore(savedDrafts.subscribe, () => savedDrafts.get(shownDraft));
-  const undelivered = useSyncExternalStore(savedDrafts.subscribe, () => savedDrafts.undelivered(shownDraft));
 
   // The model pick is sticky: new chats start on it, in this profile, until the owner picks another. It is kept on this
   // computer only and never becomes the profile's default. Picked in another profile, it gives way to this profile's
@@ -194,77 +209,91 @@ export function Main({
   const { modelPicker, modelFavorites } = useSyncExternalStore(subscribeUIPrefs, getUIPrefs);
   const catalog = models?.profile === profile ? models : undefined;
   const sticky: ModelPick | undefined = modelPicker?.profile === profile ? withoutProfile(modelPicker) : catalog?.defaultPick;
-  const shownModel = (selected !== draft && selected.model) || sticky;
-  const pickModel = (pick: ModelPick) => {
-    setUIPrefs({ modelPicker: { ...pick, profile } });
-    if (selected === draft) return;
-    const id = selected.id;
-    hermes.setModel(id, pick).catch((e) => setToast({ text: `Couldn't switch this chat's model: ${messageOf(e)}`, at: Date.now() }));
+
+  const patchPane = (key: string, patch: Partial<Pane>) => setPanes((ps) => ps.map((p) => (p.key === key ? { ...p, ...patch } : p)));
+
+  // The active pane's chat is the one kept as the profile's last open chat, so it reopens at the next launch.
+  const activate = (key: string) => {
+    if (key === activeKeyRef.current) return;
+    const pane = panes.find((p) => p.key === key);
+    if (!pane) return;
+    activeKeyRef.current = key;
+    setActiveKey(key);
+    rememberOpenChat(profile, pane.chatId);
   };
 
   // Every move between chats is kept as the profile's last open chat, so it reopens at the next launch whether or not
-  // the app closes cleanly. Going somewhere also ends the wait to reopen the last one.
-  const openChat = (id: string | null, remember = true) => {
-    setSelectedId(id);
+  // the app closes cleanly. Going somewhere also ends the wait to reopen the last one. A chat opens in the active pane
+  // unless another is named, and the pane it opens in becomes the active one.
+  const openChat = (id: string | null, { pane = active.key, remember = true, fresh = false } = {}) => {
+    patchPane(pane, { chatId: id, picked: undefined, ...(fresh && { draftError: undefined }) });
+    activeKeyRef.current = pane;
+    setActiveKey(pane);
     setReopening(undefined);
-    setPicked(null);
     setSettingsOpen(false);
     if (remember) rememberOpenChat(profile, id);
   };
 
-  const newChat = (remember = true) => {
-    openChat(null, remember);
-    setDraftError(undefined);
-  };
+  const newChat = (remember = true) => openChat(null, { remember, fresh: true });
 
   const pick = (found: Found) => {
     hermes.reveal(found);
-    setSelectedId(found.chatId);
+    patchPane(active.key, { chatId: found.chatId, picked: { found, at: Date.now() } });
     setReopening(undefined);
     rememberOpenChat(profile, found.chatId);
-    setPicked({ found, at: Date.now() });
     setSearchOpen(false);
     setSettingsOpen(false);
   };
-  const findTarget =
-    picked?.found.chatId === selected.id && picked.found.find
-      ? { query: picked.found.find, itemId: hermes.locate(picked.found), at: picked.at }
-      : undefined;
 
-  /** The chat to send in: the one on screen, or a new one started now for the New chat pane. */
-  const chatToSendIn = async (): Promise<{ id: string } | { delivery: Delivery }> => {
-    if (selectedId) return { id: selectedId };
-    try {
-      const id = await hermes.newChat(sticky);
-      openChat(id);
-      return { id };
-    } catch (e) {
-      const reason = `Couldn't start a chat: ${e instanceof Error ? e.message : String(e)}`;
-      setDraftError(reason);
-      return { delivery: { delivery: "unsent", reason } };
-    }
+  // A second pane opens to the right and becomes the active one. Both panes may show the same chat: they are two views
+  // of it, with one transcript, one draft and one reply, each scrolled and searched on its own.
+  const splitWith = (chatId: string | null) => {
+    if (split) return;
+    const key = newPaneKey();
+    setPanes((ps) => (ps.length > 1 ? ps : [...ps, { key, chatId }]));
+    activeKeyRef.current = key;
+    setActiveKey(key);
+    setReopening(undefined);
+    setSettingsOpen(false);
+    rememberOpenChat(profile, chatId);
   };
 
-  // The composer empties as the message goes. If Hermes doesn't take it, the text comes back, in the new chat if one
-  // was started; if Hermes may have it, it is held beside the composer until the owner sends it again or dismisses it.
-  const send = async (text: string, attachments: Attachment[]) => {
-    const typed = savedDrafts.take(shownDraft);
-    const to = await chatToSendIn();
-    if ("delivery" in to) return savedDrafts.afterSend(draftOf(null), typed, to.delivery);
-    savedDrafts.afterSend(draftOf(to.id), typed, await hermes.send(to.id, text, attachments));
+  /** Opens a chat in the left (0) or right (1) pane, opening the right one if there's one pane. */
+  const openIn = (id: string, side: number) => {
+    const pane = panes[side];
+    if (pane) openChat(id, { pane: pane.key });
+    else splitWith(id);
   };
 
-  // Only the owner sends a held message again; reconnecting never does.
-  const retry = (heldId: string) =>
-    void savedDrafts.retry(shownDraft, heldId, async (text) => {
-      const to = await chatToSendIn();
-      return "delivery" in to ? to.delivery : hermes.send(to.id, text.trim());
-    });
+  // The pane left takes the whole width and becomes the active one.
+  const closePane = (key: string) => {
+    const rest = panes.filter((p) => p.key !== key);
+    if (!rest.length || rest.length === panes.length) return;
+    setPanes(rest);
+    activeKeyRef.current = rest[0].key;
+    setActiveKey(rest[0].key);
+    rememberOpenChat(profile, rest[0].chatId);
+  };
 
-  // The other profile's chats replace the list, so the pane starts a fresh draft. The profile left keeps its last open
-  // chat for the next launch.
+  /** Ctrl+\: splits the chat on screen into a second pane, or closes the pane the owner isn't in. */
+  const toggleSplit = () => (other ? closePane(other.key) : splitWith(active.chatId));
+
+  // The panes showing a chat that leaves the list give way to the New chat pane. The active one does as New chat does.
+  const clearChat = (id: string) => {
+    if (!panes.some((p) => p.chatId === id)) return;
+    if (active.chatId === id) newChat();
+    setPanes((ps) => ps.map((p) => (p.chatId === id ? { ...p, chatId: null, picked: undefined, draftError: undefined } : p)));
+  };
+
+  // The other profile's chats replace the list, so one pane stays, on a fresh draft. The profile left keeps its last
+  // open chat for the next launch.
   const switchProfile = (name: string) => {
-    newChat(false);
+    const keep = active.key;
+    setPanes([{ key: keep, chatId: null }]);
+    activeKeyRef.current = keep;
+    setActiveKey(keep);
+    setReopening(undefined);
+    setSettingsOpen(false);
     setToast(null);
     void hermes.switchProfile(name);
   };
@@ -277,17 +306,17 @@ export function Main({
     setToast({ text: `${settled ? "Settled" : "Moved to Active"}: ${title}`, undo: () => move(!settled), at: Date.now() });
   };
 
-  // Deleting can't be undone, so the row asked first. The chat on screen gives way to a fresh draft. A refused
+  // Deleting can't be undone, so the row asked first. A pane showing the chat gives way to a fresh draft. A refused
   // delete says why in the list instead of the toast.
   const deleteChat = (id: string) => {
     const title = chats.find((c) => c.id === id)?.title ?? "";
-    if (id === selectedId) newChat();
+    clearChat(id);
     void hermes.delete(id).then((deleted) => deleted && setToast({ text: `Deleted: ${title}`, at: Date.now() }));
   };
 
   // One Save dialog at a time: a second click while it is open does nothing.
   const exporting = useRef(false);
-  const exportSelected = (chat: Chat) => {
+  const exportChatOnScreen = (chat: Chat) => {
     if (exporting.current) return;
     exporting.current = true;
     void exportChat(chat)
@@ -295,11 +324,12 @@ export function Main({
       .finally(() => (exporting.current = false));
   };
 
-  // Archiving hides the chat in every Hermes client and keeps its history; the toast shows once Hermes confirms it. The
-  // chat on screen gives way to a fresh draft, as it leaves the list. A write that didn't go in says why in the list.
+  // Archiving hides the chat in every Hermes client and keeps its history; the toast shows once Hermes confirms it. A
+  // pane showing the chat gives way to a fresh draft, as it leaves the list. A write that didn't go in says why in the
+  // list.
   const setArchived = (id: string, archived: boolean) => {
     const title = chats.find((c) => c.id === id)?.title ?? "";
-    if (archived && id === selectedId && !archivedListed) newChat();
+    if (archived && !archivedListed) clearChat(id);
     const done = (ok: boolean) =>
       ok && setToast({ text: `${archived ? "Archived" : "Restored"}: ${title}`, undo: archived ? () => setArchived(id, false) : undefined, at: Date.now() });
     void (archived ? hermes.archive(id) : hermes.restore(id)).then(done);
@@ -307,15 +337,16 @@ export function Main({
 
   // The chat to reopen opens as soon as the list has it, the saved one at first, and stays open once the list read from
   // Hermes has it too. If that list doesn't, the chat was deleted, archived, or is older than the list reaches: the New
-  // chat pane shows instead, and the chat isn't looked for at the next launch.
+  // chat pane shows instead, and the chat isn't looked for at the next launch. Only the first pane reopens anything;
+  // opening a second pane ends the wait.
   useEffect(() => {
     if (!reopening) return;
     const listed = hermes.hasListed();
     if (chats.some((c) => c.id === reopening)) {
-      setSelectedId(reopening);
+      patchPane(firstPane.current, { chatId: reopening });
       if (!listed) return;
     } else if (listed) {
-      setSelectedId(null);
+      patchPane(firstPane.current, { chatId: null });
       forgetOpenChat(profile, reopening);
     } else return;
     setReopening(undefined);
@@ -327,7 +358,7 @@ export function Main({
     return () => clearTimeout(timer);
   }, [toast]);
 
-  // Out of focus, Hermes notifies instead of marking the chat on screen read (transport.ts `setFocused`).
+  // Out of focus, Hermes notifies instead of marking the chats on screen read (transport.ts `setFocused`).
   useEffect(() => {
     hermes.setFocused(document.hasFocus());
     const onFocus = () => hermes.setFocused(true);
@@ -339,15 +370,6 @@ export function Main({
       window.removeEventListener("blur", onBlur);
     };
   }, [hermes]);
-
-  // An opened chat shows its stored history and is marked read; a chat already open on this connection is left as it
-  // is. Until connected it shows its Saved copy, and after a reconnect it loads again. Settings covers the chat, so it
-  // isn't on screen meanwhile.
-  useEffect(() => {
-    if (!selectedId || settingsOpen) return;
-    void hermes.open(selectedId);
-    return () => hermes.leave(selectedId);
-  }, [hermes, selectedId, status, settingsOpen]);
 
   // Back on the network: don't wait for the next retry, or for the owner if it gave up.
   useEffect(() => {
@@ -380,6 +402,12 @@ export function Main({
     return () => clearInterval(timer);
   }, [hermes]);
 
+  /** Makes a pane the active one and puts the cursor in its composer, as Ctrl+1 and Ctrl+2 do. */
+  const focusPane = (key: string) => {
+    flushSync(() => activate(key));
+    document.querySelector<HTMLTextAreaElement>(`[data-pane="${CSS.escape(key)}"] .composer textarea`)?.focus();
+  };
+
   useEffect(() => {
     // Only Ctrl/Cmd chords, and never mid-composition. No bare key does anything app-wide, so nothing typed
     // with focus outside an input can answer an Approval or stop a reply.
@@ -395,10 +423,68 @@ export function Main({
       } else if (k === "b") {
         e.preventDefault();
         setListOpen((o) => !o);
+      } else if (e.code === "Backslash" || k === "\\") {
+        e.preventDefault();
+        toggleSplit();
+      } else if ((k === "1" || k === "2") && !e.shiftKey && !e.altKey && split && !settingsOpen) {
+        e.preventDefault();
+        focusPane(panes[Number(k) - 1].key);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+  });
+
+  const slots: PaneSlot[] = panes.map((p, i) => {
+    const listed = p.chatId === null ? undefined : chats.find((c) => c.id === p.chatId);
+    const chat = listed ?? draftChat(p.draftError);
+    const isActive = p.key === active.key;
+    return {
+      key: p.key,
+      title: chat.title,
+      node: (
+        <ChatView
+          hermes={hermes}
+          connection={connection}
+          profile={profile}
+          status={status}
+          paneKey={p.key}
+          chatId={p.chatId}
+          chat={chat}
+          started={!!listed}
+          picked={p.picked}
+          active={!split || isActive}
+          split={split}
+          catalog={catalog}
+          sticky={sticky}
+          favorites={modelFavorites}
+          onStarted={(id) => {
+            // The chat started from this pane's New chat pane replaces it here, without taking the owner from the
+            // other pane if they went there meanwhile.
+            const stillActive = activeKeyRef.current === p.key;
+            patchPane(p.key, { chatId: id, picked: undefined });
+            setReopening(undefined);
+            if (stillActive) rememberOpenChat(profile, id);
+          }}
+          onDraftError={(reason) => patchPane(p.key, { draftError: reason })}
+          onToast={(text) => setToast({ text, at: Date.now() })}
+          onSettle={(s) => setSettled(chat.id, s)}
+          onExport={() => exportChatOnScreen(chat)}
+          onArchive={(a) => setArchived(chat.id, a)}
+          paneControls={
+            split ? (
+              <button className="icon-btn" title={`Close the ${PANE_NAMES[i].toLowerCase()} pane`} aria-label={`Close the ${PANE_NAMES[i].toLowerCase()} pane`} onClick={() => closePane(p.key)}>
+                <X size={16} />
+              </button>
+            ) : (
+              <button className="icon-btn" title="Split: open this chat in a second pane (Ctrl+\)" aria-label="Split into two panes" onClick={() => splitWith(p.chatId)}>
+                <Columns2 size={16} />
+              </button>
+            )
+          }
+        />
+      ),
+    };
   });
 
   return (
@@ -421,8 +507,11 @@ export function Main({
           chats={chats}
           archivedListed={archivedListed}
           syncError={syncError}
-          selectedId={settingsOpen ? null : selectedId}
-          onOpen={openChat}
+          selectedId={settingsOpen ? null : active.chatId}
+          alsoShownId={settingsOpen ? null : (other?.chatId ?? null)}
+          split={split}
+          onOpen={(id) => openChat(id)}
+          onOpenIn={openIn}
           onSettle={setSettled}
           onArchive={setArchived}
           onListArchived={(on) => void hermes.listArchived(on)}
@@ -453,36 +542,7 @@ export function Main({
             onClose={() => setSettingsOpen(false)}
           />
         ) : (
-          <ChatPane
-            key={selected.id}
-            chat={selected}
-            notLoaded={selected !== draft && status !== "connected" && !selected.runtimeId && !selected.items.length}
-            findTarget={findTarget}
-            status={status}
-            alsoPostsIn={hermes.alsoPostsIn(selected.id)}
-            draft={composerText}
-            onDraft={(text) => savedDrafts.set(shownDraft, text)}
-            undelivered={undelivered}
-            onRetry={retry}
-            onDismiss={(heldId) => savedDrafts.dismiss(shownDraft, heldId)}
-            onAttach={(paths) => hermes.checkAttachments(paths)}
-            onSend={send}
-            onStop={() => void hermes.stop(selected.id)}
-            onAnswer={(approvalId, choice, confirmed) => void hermes.answerApproval(selected.id, approvalId, choice, confirmed)}
-            onSettle={selected === draft ? undefined : (s) => setSettled(selected.id, s)}
-            onExport={selected === draft ? undefined : () => exportSelected(selected)}
-            onArchive={selected === draft ? undefined : (a) => setArchived(selected.id, a)}
-            modelControls={
-              <ModelControls
-                catalog={catalog}
-                current={shownModel}
-                defaultEffort={catalog?.defaultEffort}
-                favorites={modelFavorites}
-                onPick={pickModel}
-                onToggleFavorite={toggleModelFavorite}
-              />
-            }
-          />
+          <Split panes={slots} activeKey={active.key} onActivate={activate} />
         )}
       </main>
       {searchOpen && <SearchPalette onSearch={(q, archived) => hermes.search(q, { archived })} onPick={pick} onClose={() => setSearchOpen(false)} />}
@@ -502,5 +562,148 @@ export function Main({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * One pane's chat: its transcript and composer, and the draft kept for it. `chatId` null is the New chat pane; sending
+ * there starts a chat (`onStarted`). `started`: the chat is in the list, so it can be settled, archived or exported.
+ * `paneKey` tells Hermes which pane has the chat on screen, so a chat shown in both stays read until both leave it.
+ */
+function ChatView({
+  hermes,
+  connection,
+  profile,
+  status,
+  paneKey,
+  chatId,
+  chat,
+  started,
+  picked,
+  active,
+  split,
+  catalog,
+  sticky,
+  favorites,
+  onStarted,
+  onDraftError,
+  onToast,
+  onSettle,
+  onExport,
+  onArchive,
+  paneControls,
+}: {
+  hermes: Hermes;
+  connection: SavedSignIn;
+  profile: string;
+  status: ConnectionStatus;
+  paneKey: string;
+  chatId: string | null;
+  chat: Chat;
+  started: boolean;
+  picked?: { found: Found; at: number };
+  active: boolean;
+  split: boolean;
+  catalog?: ModelCatalog;
+  sticky?: ModelPick;
+  favorites: string[];
+  onStarted: (id: string) => void;
+  onDraftError: (reason: string) => void;
+  onToast: (text: string) => void;
+  onSettle: (settled: boolean) => void;
+  onExport: () => void;
+  onArchive: (archived: boolean) => void;
+  paneControls: ReactNode;
+}) {
+  // What the owner has typed and not sent, kept for each chat on this connection and profile. Two panes on one chat
+  // share its draft.
+  const draftOf = (id: string | null) => draftKey(connection, profile, id);
+  const shownDraft = draftOf(chatId);
+  const composerText = useSyncExternalStore(savedDrafts.subscribe, () => savedDrafts.get(shownDraft));
+  const undelivered = useSyncExternalStore(savedDrafts.subscribe, () => savedDrafts.undelivered(shownDraft));
+
+  const shownModel = (started && chat.model) || sticky;
+  const pickModel = (pick: ModelPick) => {
+    setUIPrefs({ modelPicker: { ...pick, profile } });
+    if (!started) return;
+    hermes.setModel(chat.id, pick).catch((e) => onToast(`Couldn't switch this chat's model: ${messageOf(e)}`));
+  };
+
+  const findTarget =
+    picked?.found.chatId === chat.id && picked.found.find ? { query: picked.found.find, itemId: hermes.locate(picked.found), at: picked.at } : undefined;
+
+  /** The chat to send in: the one in this pane, or a new one started now for the New chat pane. */
+  const chatToSendIn = async (): Promise<{ id: string } | { delivery: Delivery }> => {
+    if (chatId) return { id: chatId };
+    try {
+      const id = await hermes.newChat(sticky);
+      onStarted(id);
+      return { id };
+    } catch (e) {
+      const reason = `Couldn't start a chat: ${e instanceof Error ? e.message : String(e)}`;
+      onDraftError(reason);
+      return { delivery: { delivery: "unsent", reason } };
+    }
+  };
+
+  // The composer empties as the message goes. If Hermes doesn't take it, the text comes back, in the new chat if one
+  // was started; if Hermes may have it, it is held beside the composer until the owner sends it again or dismisses it.
+  const send = async (text: string, attachments: Attachment[]) => {
+    const typed = savedDrafts.take(shownDraft);
+    const to = await chatToSendIn();
+    if ("delivery" in to) return savedDrafts.afterSend(draftOf(null), typed, to.delivery);
+    savedDrafts.afterSend(draftOf(to.id), typed, await hermes.send(to.id, text, attachments));
+  };
+
+  // Only the owner sends a held message again; reconnecting never does.
+  const retry = (heldId: string) =>
+    void savedDrafts.retry(shownDraft, heldId, async (text) => {
+      const to = await chatToSendIn();
+      return "delivery" in to ? to.delivery : hermes.send(to.id, text.trim());
+    });
+
+  // An opened chat shows its stored history and is marked read; a chat already open on this connection is left as it
+  // is. Until connected it shows its Saved copy, and after a reconnect it loads again. Settings covers the panes, so
+  // the chats aren't on screen meanwhile.
+  useEffect(() => {
+    if (!chatId) return;
+    void hermes.open(chatId, paneKey);
+    return () => hermes.leave(chatId, paneKey);
+  }, [hermes, chatId, status, paneKey]);
+
+  return (
+    <ChatPane
+      key={chat.id}
+      chat={chat}
+      notLoaded={started && status !== "connected" && !chat.runtimeId && !chat.items.length}
+      findTarget={findTarget}
+      status={status}
+      alsoPostsIn={hermes.alsoPostsIn(chat.id)}
+      draft={composerText}
+      onDraft={(text) => savedDrafts.set(shownDraft, text)}
+      undelivered={undelivered}
+      onRetry={retry}
+      onDismiss={(heldId) => savedDrafts.dismiss(shownDraft, heldId)}
+      onAttach={(paths) => hermes.checkAttachments(paths)}
+      onSend={send}
+      onStop={() => void hermes.stop(chat.id)}
+      onAnswer={(approvalId, choice, confirmed) => void hermes.answerApproval(chat.id, approvalId, choice, confirmed)}
+      onSettle={started ? onSettle : undefined}
+      onExport={started ? onExport : undefined}
+      onArchive={started ? onArchive : undefined}
+      active={active}
+      split={split}
+      paneControls={paneControls}
+      modelControls={
+        <ModelControls
+          catalog={catalog}
+          current={shownModel}
+          defaultEffort={catalog?.defaultEffort}
+          favorites={favorites}
+          onPick={pickModel}
+          onToggleFavorite={toggleModelFavorite}
+        />
+      }
+    />
   );
 }

@@ -53,6 +53,9 @@ const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateS
  * `onExport` are left out for a chat not started yet. `notLoaded`: the chat has no Saved copy and can't load until
  * Hermes is connected. `modelControls`: the model picker and reasoning pill, at the bottom left of the composer. Ctrl+F
  * opens the find bar.
+ *
+ * Beside another pane (`split`), only the `active` pane answers Ctrl+F and takes focus as it opens, and files dropped
+ * on the window attach to the pane under the pointer. `paneControls`: the pane's own buttons, after the chat's.
  */
 export function ChatPane({
   chat,
@@ -73,6 +76,9 @@ export function ChatPane({
   onArchive,
   onExport,
   modelControls,
+  active = true,
+  split = false,
+  paneControls,
 }: {
   chat: Chat;
   notLoaded?: boolean;
@@ -92,8 +98,14 @@ export function ChatPane({
   onArchive?: (archived: boolean) => void;
   onExport?: () => void;
   modelControls?: ReactNode;
+  active?: boolean;
+  split?: boolean;
+  paneControls?: ReactNode;
 }) {
+  const rootRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const activeRef = useRef(active);
+  activeRef.current = active;
   // The blocks are memoized, so they get one answer handler for the life of the pane.
   const onAnswerRef = useRef(onAnswer);
   onAnswerRef.current = onAnswer;
@@ -128,7 +140,7 @@ export function ChatPane({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f" && !composing(e)) {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f" && !composing(e) && activeRef.current) {
         e.preventDefault();
         openFind();
       }
@@ -168,6 +180,21 @@ export function ChatPane({
     if (el && stickToBottom.current && !q) el.scrollTop = el.scrollHeight;
   });
 
+  // Resizing the pane rewraps the transcript without a render; one at the bottom stays there.
+  const qRef = useRef(q);
+  qRef.current = q;
+  useEffect(() => {
+    const el = scrollRef.current;
+    const inner = el?.firstElementChild;
+    if (!el || !inner || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      if (stickToBottom.current && !qRef.current) el.scrollTop = el.scrollHeight;
+    });
+    ro.observe(el);
+    ro.observe(inner);
+    return () => ro.disconnect();
+  }, []);
+
   const step = (d: number) => {
     if (!count) return;
     setMatchIndex((i) => (Math.min(i, count - 1) + d + count) % count);
@@ -179,14 +206,15 @@ export function ChatPane({
     setLanding(false);
   };
 
-  const blocks = toBlocks(chat.items);
+  // Rebuilt only when the chat changes, so a reply streaming in the other pane costs this one little.
+  const blocks = useMemo(() => toBlocks(chat.items), [chat.items]);
   // Cards ignore clicks for a moment after the transcript changes, since it may have moved them under the pointer.
   const movedAt = useMemo(() => performance.now(), [chat.items]);
   const last = chat.items[chat.items.length - 1];
   const waiting = chat.items.some(isWaiting);
 
   return (
-    <div className="chat">
+    <div className="chat" ref={rootRef}>
       <header className="chat-head">
         <div className="chat-title">
           {chat.source !== "app" && <SourceIcon source={chat.source} size={13} />}
@@ -209,6 +237,7 @@ export function ChatPane({
           )}
           {onSettle && !chat.archived && <SettleButton settled={chat.settled} size={16} className="icon-btn" onSettle={onSettle} />}
           {onArchive && !chat.running && <ArchiveButton archived={!!chat.archived} size={16} className="icon-btn" onArchive={onArchive} />}
+          {paneControls}
         </div>
         {findOpen && (
           <div className="find" role="search">
@@ -328,6 +357,12 @@ export function ChatPane({
         }}
         onStop={onStop}
         modelControls={modelControls}
+        autoFocus={active}
+        dropHere={(x, y) => {
+          if (!split) return true;
+          const r = rootRef.current?.getBoundingClientRect();
+          return !!r && x >= r.left && x < r.right && y >= r.top && y < r.bottom;
+        }}
       />
     </div>
   );
@@ -517,6 +552,8 @@ function Composer({
   onSend,
   onStop,
   modelControls,
+  autoFocus = true,
+  dropHere,
 }: {
   offline: boolean;
   running: boolean;
@@ -535,6 +572,9 @@ function Composer({
   onSend: (text: string, attachments: Attachment[]) => void;
   onStop: () => void;
   modelControls?: ReactNode;
+  autoFocus?: boolean;
+  /** Whether a drop at this point of the window, in CSS pixels, is for this composer. Left out, every drop is. */
+  dropHere?: (x: number, y: number) => boolean;
 }) {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [refused, setRefused] = useState<string[]>([]);
@@ -563,14 +603,21 @@ function Composer({
   };
   const addRef = useRef(add);
   addRef.current = add;
+  const dropHereRef = useRef(dropHere);
+  dropHereRef.current = dropHere;
 
-  // Tauri's native drop event, not HTML5 drops: it gives real file paths, so Rust can read the bytes.
+  // Tauri's native drop event, not HTML5 drops: it gives real file paths, so Rust can read the bytes. Every composer
+  // hears every drop; with two panes, the one under the pointer takes it. Tauri gives the point in physical pixels.
   useEffect(() => {
     const unlisten = getCurrentWebview().onDragDropEvent(({ payload }) => {
-      if (payload.type === "enter" || payload.type === "over") setDragging(true);
+      const here = (p: { x: number; y: number }) => {
+        const scale = window.devicePixelRatio || 1;
+        return dropHereRef.current?.(p.x / scale, p.y / scale) ?? true;
+      };
+      if (payload.type === "enter" || payload.type === "over") setDragging(here(payload.position));
       else {
         setDragging(false);
-        if (payload.type === "drop") void addRef.current(payload.paths);
+        if (payload.type === "drop" && here(payload.position)) void addRef.current(payload.paths);
       }
     });
     return () => void unlisten.then((stop) => stop());
@@ -634,7 +681,7 @@ function Composer({
         <textarea
           ref={taRef}
           rows={1}
-          autoFocus
+          autoFocus={autoFocus}
           placeholder="Message Hermes"
           value={text}
           onChange={(e) => onText(e.target.value)}

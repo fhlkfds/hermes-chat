@@ -151,6 +151,7 @@ code, pre, kbd { font-family: var(--mono); }
 .row:hover { background: var(--hover); }
 .row.sel { background: var(--raised-2); }
 .row.sel .row-title { color: var(--text); }
+.row.shown { box-shadow: inset 2px 0 0 var(--line-3); }
 .row-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
 .row.unread .row-title { color: var(--text); font-weight: 500; }
 .row-meta { font-size: calc(11.5rem / 14); color: var(--faint); flex: none; display: flex; align-items: center; }
@@ -209,6 +210,44 @@ code, pre, kbd { font-family: var(--mono); }
   padding: 5px 9px; border-radius: 7px; font-size: calc(12.5rem / 14); white-space: nowrap; pointer-events: none; z-index: 60;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
 }
+/* ---------- split panes (Split.tsx) ---------- */
+.panes { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.panes-row { flex: 1; min-height: 0; display: flex; position: relative; }
+.pane { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; position: relative; container-type: inline-size; }
+.pane > .chat { flex: 1; min-height: 0; }
+/* The active pane: an accent bar along its top, and its title at full strength. The other's header steps back. */
+.pane.active::before {
+  content: ""; position: absolute; left: 0; right: 0; top: 0; height: 2px; background: var(--accent); z-index: 5; pointer-events: none;
+}
+.panes.split .pane:not(.active) .chat-title { color: var(--muted); }
+.panes.narrow .pane.active::before { display: none; }
+/* Too narrow for two: the other pane stays laid out, so its scroll is kept, but out of sight and reach. */
+.pane.hidden { position: absolute; inset: 0; visibility: hidden; pointer-events: none; }
+.divider { flex: none; width: 6px; cursor: col-resize; position: relative; touch-action: none; z-index: 6; }
+.divider::after { content: ""; position: absolute; top: 0; bottom: 0; left: 2px; width: 1px; background: var(--line-2); transition: background 0.12s; }
+.divider:hover::after, .divider:focus-visible::after, .panes.resizing .divider::after { background: var(--accent); width: 2px; }
+.divider:focus-visible { outline: none; }
+.panes.resizing { cursor: col-resize; user-select: none; }
+.divider-ghost { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--accent); z-index: 7; pointer-events: none; }
+.pane-switch { display: flex; gap: 4px; padding: 6px 8px 0; border-bottom: 1px solid var(--line); flex: none; }
+.pane-tab {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 8px 8px 0 0;
+  color: var(--muted); font-size: calc(12.5rem / 14);
+}
+.pane-tab:hover { background: var(--hover); color: var(--text-2); }
+.pane-tab.on { background: var(--raised); color: var(--text); box-shadow: inset 0 2px 0 var(--accent); }
+.pane-tab:focus-visible { outline: 2px solid var(--line-2); outline-offset: -2px; }
+.pane-tab-side { font-weight: 500; flex: none; }
+.pane-tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A pane half a window wide gives the transcript the room its padding took. */
+@container (max-width: 560px) {
+  .chat-head { padding: 0 8px 0 14px; }
+  .transcript-inner { padding: 14px 16px 32px; }
+  .composer-wrap { padding: 0 12px 14px; }
+  .find { right: 8px; }
+  .find input { width: 120px; }
+}
+
 /* ---------- chat pane ---------- */
 .chat { display: flex; flex-direction: column; height: 100%; position: relative; }
 .chat-head {

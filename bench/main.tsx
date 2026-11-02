@@ -6,6 +6,7 @@ import { flushSync } from "react-dom";
 import "../src/styles.css";
 import type { Chat, Item } from "../src/hermes/model";
 import { ChatPane } from "../src/ui/ChatPane";
+import { Split } from "../src/ui/Split";
 import { makeChat, makeReply } from "./fixture";
 
 const root = createRoot(document.getElementById("root")!);
@@ -148,4 +149,150 @@ async function scroll(px = 120) {
   return { frameMs: stats(frames), over20ms: frames.filter((f) => f > 20).length };
 }
 
-Object.assign(window, { bench: { open, stream, find, scroll } });
+// Two chats side by side, as App shows them: both panes render again whenever either chat changes, since the app
+// re-renders on every change to Hermes's snapshot.
+let setPair: (p: [Chat, Chat]) => void = () => {};
+let pair: [Chat, Chat];
+
+function SplitHost({ initial }: { initial: [Chat, Chat] }) {
+  const [chats, set] = useState(initial);
+  setPair = set;
+  const pane = (chat: Chat, active: boolean) => (
+    <ChatPane
+      key={chat.id}
+      chat={chat}
+      status="connected"
+      draft=""
+      onDraft={() => {}}
+      undelivered={[]}
+      onRetry={() => {}}
+      onDismiss={() => {}}
+      onAttach={async () => ({ attachments: [], refused: [] })}
+      onSend={() => {}}
+      onStop={() => {}}
+      onAnswer={() => {}}
+      active={active}
+      split
+    />
+  );
+  return (
+    <div className="app">
+      <main className="main">
+        <Split
+          activeKey="b"
+          onActivate={() => {}}
+          panes={[
+            { key: "a", title: chats[0].title, node: pane(chats[0], false) },
+            { key: "b", title: chats[1].title, node: pane(chats[1], true) },
+          ]}
+        />
+      </main>
+    </div>
+  );
+}
+
+/** Opens two chats of `turns` turns side by side. */
+async function splitOpen(turns: number) {
+  root.render(<></>);
+  await painted();
+  pair = [{ ...makeChat(turns, 1), id: "left" }, { ...makeChat(turns, 2), id: "right" }];
+  const t0 = performance.now();
+  flushSync(() => root.render(<SplitHost key={++opened} initial={pair} />));
+  const t1 = performance.now();
+  const t2 = await painted();
+  return { turns, panes: 2, nodes: document.getElementsByTagName("*").length, commitMs: Math.round(t1 - t0), paintMs: Math.round(t2 - t0) };
+}
+
+/**
+ * Streams a reply into both panes at once, as two replies running together: each frame one delta lands in each chat,
+ * one after the other, and each re-renders both panes. `updateMs`: each delta's render, commit and forced layout.
+ */
+async function splitStream(chunk = 4) {
+  const reply = makeReply();
+  const items: [Item[], Item[]] = [
+    [...pair[0].items, { kind: "user", id: "u-live", text: "Stream something." }],
+    [...pair[1].items, { kind: "user", id: "u-live", text: "Stream something too." }],
+  ];
+  let chats: [Chat, Chat] = [
+    { ...pair[0], items: items[0], running: true },
+    { ...pair[1], items: items[1], running: true },
+  ];
+  flushSync(() => setPair(chats));
+  await painted();
+  const update: number[] = [];
+  const frames: number[] = [];
+  let last = performance.now();
+  for (let i = 0; i < reply.length; i += chunk) {
+    const text = reply.slice(i, i + chunk);
+    for (const side of [0, 1] as const) {
+      const list = [...chats[side].items];
+      const prev = list[list.length - 1];
+      if (prev.kind === "assistant") list[list.length - 1] = { ...prev, text: prev.text + text };
+      else list.push({ kind: "assistant", id: "a-live", text });
+      const next: [Chat, Chat] = [...chats];
+      next[side] = { ...chats[side], items: list };
+      chats = next;
+      const t0 = performance.now();
+      flushSync(() => setPair(chats));
+      update.push(performance.now() - t0);
+    }
+    const now = await frame();
+    frames.push(now - last);
+    last = now;
+  }
+  const bottoms = [...document.querySelectorAll<HTMLElement>(".transcript")].map((t) => t.scrollHeight - t.scrollTop - t.clientHeight < 2);
+  flushSync(() => setPair([{ ...chats[0], running: false }, { ...chats[1], running: false }]));
+  await painted();
+  return { deltas: update.length, updateMs: stats(update), frameMs: stats(frames), stuckToBottom: bottoms };
+}
+
+/** Moves the divider by keyboard, 5% a step, 12 steps there and back, timing each step until painted. */
+async function splitResize() {
+  const divider = document.querySelector<HTMLElement>(".divider")!;
+  divider.focus();
+  const steps: number[] = [];
+  for (const key of [...Array(6).fill("ArrowRight"), ...Array(12).fill("ArrowLeft"), ...Array(6).fill("ArrowRight")]) {
+    const t0 = performance.now();
+    flushSync(() => divider.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true })));
+    steps.push((await painted()) - t0);
+  }
+  const bottoms = [...document.querySelectorAll<HTMLElement>(".transcript")].map((t) => t.scrollHeight - t.scrollTop - t.clientHeight < 2);
+  return { stepMs: stats(steps), stuckToBottom: bottoms };
+}
+
+/** Records frame times while `run.mjs` drags the divider with real pointer input, and whether the guide line showed. */
+const dragWatch = {
+  frames: [] as number[],
+  ghost: false,
+  running: false,
+  start() {
+    this.frames = [];
+    this.ghost = false;
+    this.running = true;
+    let last = performance.now();
+    const tick = (now: number) => {
+      if (!this.running) return;
+      this.frames.push(now - last);
+      last = now;
+      this.ghost ||= !!document.querySelector(".divider-ghost");
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    const r = document.querySelector(".divider")!.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2, width: document.querySelector(".panes-row")!.getBoundingClientRect().width };
+  },
+  async stop() {
+    await painted();
+    this.running = false;
+    const bottoms = [...document.querySelectorAll<HTMLElement>(".transcript")].map((t) => t.scrollHeight - t.scrollTop - t.clientHeight < 2);
+    return {
+      frameMs: stats(this.frames),
+      over50ms: this.frames.filter((f) => f > 50).length,
+      guideLine: this.ghost,
+      ratio: document.querySelector(".divider")!.getAttribute("aria-valuenow"),
+      stuckToBottom: bottoms,
+    };
+  },
+};
+
+Object.assign(window, { bench: { open, stream, find, scroll, splitOpen, splitStream, splitResize, dragWatch } });

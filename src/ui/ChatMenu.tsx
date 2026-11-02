@@ -1,18 +1,21 @@
 // The menu a chat row opens on right-click, the Menu key or Shift+F10. Escape or a click elsewhere closes it, and focus
 // goes back to the chat.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Pencil, Sparkles } from "lucide-react";
+import { Columns2, PanelLeft, PanelRight, Pencil, Sparkles } from "lucide-react";
 import type { Chat } from "../hermes/model";
 import { useReturnFocus } from "./bits";
 
 /**
  * The right-click menu for one chat, at the pointer, kept inside the window. `onRename` and `onRegenTitle` hand back
- * to the row. The arrow keys move between its items.
+ * to the row. `onOpenIn` opens the chat in the left (0) or right (1) pane; with one pane (`split` false) the menu offers
+ * to open it in a second pane. The arrow keys move between its items.
  */
 export function ChatMenu({
   chat,
   x,
   y,
+  split = false,
+  onOpenIn,
   onRename,
   onRegenTitle,
   onClose,
@@ -20,6 +23,8 @@ export function ChatMenu({
   chat: Chat;
   x: number;
   y: number;
+  split?: boolean;
+  onOpenIn?: (side: number) => void;
   onRename: () => void;
   onRegenTitle: () => void;
   onClose: () => void;
@@ -100,6 +105,27 @@ export function ChatMenu({
         </span>
         <span className="menu-label">Regenerate title</span>
       </button>
+      {onOpenIn &&
+        (split
+          ? [
+              { side: 0, label: "Open in left pane", icon: <PanelLeft size={15} /> },
+              { side: 1, label: "Open in right pane", icon: <PanelRight size={15} /> },
+            ]
+          : [{ side: 1, label: "Open in a second pane", icon: <Columns2 size={15} /> }]
+        ).map((o) => (
+          <button
+            key={o.side}
+            role="menuitem"
+            className="menu-item"
+            onClick={() => {
+              onClose();
+              onOpenIn(o.side);
+            }}
+          >
+            <span className="menu-icon">{o.icon}</span>
+            <span className="menu-label">{o.label}</span>
+          </button>
+        ))}
     </div>
   );
 }

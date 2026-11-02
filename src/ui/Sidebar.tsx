@@ -141,7 +141,10 @@ function RenameRow({
 function ChatRow({
   chat,
   selected,
+  alsoShown,
+  split,
   onOpen,
+  onOpenIn,
   onSettle,
   onArchive,
   onDelete,
@@ -150,7 +153,12 @@ function ChatRow({
 }: {
   chat: Chat;
   selected: boolean;
+  /** The chat is in the pane that isn't active. */
+  alsoShown: boolean;
+  split: boolean;
   onOpen: () => void;
+  /** Opens the chat in the left (0) or right (1) pane. */
+  onOpenIn: (side: number) => void;
   onSettle: (settled: boolean) => void;
   onArchive: (archived: boolean) => void;
   onDelete: () => void;
@@ -204,7 +212,7 @@ function ChatRow({
     );
   return (
     <div
-      className={`row ${selected ? "sel" : ""} ${chat.unread ? "unread" : ""} ${menu ? "menu-open" : ""} ${retitleError ? "retitle-failed" : ""} ${retitling ? "retitling" : ""}`}
+      className={`row ${selected ? "sel" : ""} ${alsoShown ? "shown" : ""} ${chat.unread ? "unread" : ""} ${menu ? "menu-open" : ""} ${retitleError ? "retitle-failed" : ""} ${retitling ? "retitling" : ""}`}
       onContextMenu={(e) => {
         e.preventDefault();
         setRetitleError(undefined);
@@ -217,7 +225,7 @@ function ChatRow({
         ref={openButton}
         className="row-open"
         aria-current={selected || undefined}
-        title={retitling ? "Writing a new title…" : chat.source !== "app" ? `${chat.title} (from ${SOURCE_LABEL[chat.source]})` : chat.title}
+        title={`${retitling ? "Writing a new title…" : chat.source !== "app" ? `${chat.title} (from ${SOURCE_LABEL[chat.source]})` : chat.title}${alsoShown ? " (in the other pane)" : ""}`}
         onClick={() => {
           setRetitleError(undefined);
           onOpen();
@@ -244,7 +252,18 @@ function ChatRow({
           <Trash2 size={14} />
         </button>
       )}
-      {menu && <ChatMenu chat={chat} x={menu.x} y={menu.y} onRename={() => setRenaming(true)} onRegenTitle={regenTitle} onClose={closeMenu} />}
+      {menu && (
+        <ChatMenu
+          chat={chat}
+          x={menu.x}
+          y={menu.y}
+          split={split}
+          onOpenIn={onOpenIn}
+          onRename={() => setRenaming(true)}
+          onRegenTitle={regenTitle}
+          onClose={closeMenu}
+        />
+      )}
       {retitleError && (
         <div className="row-rename-error" role="alert">
           {retitleError}
@@ -440,7 +459,10 @@ export function ChatList({
   archivedListed,
   syncError,
   selectedId,
+  alsoShownId = null,
+  split = false,
   onOpen,
+  onOpenIn = () => {},
   onSettle,
   onArchive,
   onListArchived,
@@ -456,8 +478,14 @@ export function ChatList({
   chats: Chat[];
   archivedListed: boolean;
   syncError?: string;
+  /** The chat in the active pane. */
   selectedId: string | null;
+  /** The chat in the other pane, when there are two. */
+  alsoShownId?: string | null;
+  split?: boolean;
   onOpen: (id: string) => void;
+  /** Opens a chat in the left (0) or right (1) pane, opening the right one if there is one pane. */
+  onOpenIn?: (id: string, side: number) => void;
   onSettle: (id: string, settled: boolean) => void;
   onArchive: (id: string, archived: boolean) => void;
   onListArchived: (on: boolean) => void;
@@ -483,7 +511,10 @@ export function ChatList({
       key={c.id}
       chat={c}
       selected={c.id === selectedId}
+      alsoShown={c.id === alsoShownId && c.id !== selectedId}
+      split={split}
       onOpen={() => onOpen(c.id)}
+      onOpenIn={(side) => onOpenIn(c.id, side)}
       onSettle={(s) => onSettle(c.id, s)}
       onArchive={(a) => onArchive(c.id, a)}
       onDelete={() => onDelete(c.id)}
