@@ -7,6 +7,7 @@ pub mod screenshot;
 pub mod transport;
 pub mod tunnel;
 pub mod web_page;
+pub mod update;
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -165,8 +166,10 @@ async fn screenshot_support() -> screenshot::Support {
 
 /// The renderer supplies all persisted outboxes at startup and whenever they change, before cleanup.
 #[tauri::command]
-fn screenshot_sync_outbox(state: State<'_, Screenshots>, paths: Vec<String>) -> Result<(), screenshot::CaptureError> {
-    state.captures()?.retain_outbox(paths.into_iter().map(std::path::PathBuf::from));
+fn screenshot_sync_outbox(app: tauri::AppHandle, state: State<'_, Screenshots>, paths: Vec<String>) -> Result<(), screenshot::CaptureError> {
+    // Also those of drafts an update's restart couldn't put back (update.rs).
+    let saved = update::saved_attachment_paths(&app);
+    state.captures()?.retain_outbox(paths.into_iter().map(std::path::PathBuf::from).chain(saved));
     Ok(())
 }
 
@@ -427,10 +430,17 @@ pub fn run(screenshot: bool) {
     if screenshot {
         screenshots.requests.ask();
     }
-    tauri::Builder::default()
+    let context = tauri::generate_context!();
+    let mut builder = tauri::Builder::default();
+    // The updater needs a public key to start, so it is there only in a build given one (README, "Updates").
+    if update::configured(context.config()) {
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    }
+    builder
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .manage(screenshots)
+        .manage(update::Updates::default())
         .on_permission_request(|webview, kind| permission(&webview, kind))
         .setup(|app| {
             use tauri::Emitter;
@@ -447,6 +457,9 @@ pub fn run(screenshot: bool) {
             if let Err(e) = app.state::<Screenshots>().captures() {
                 eprintln!("hermes-chat: couldn't clean up old screenshots: {e}");
             }
+            // Which package the binary came from, read before anything can upgrade it.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move { handle.state::<update::Updates>().start().await });
             let handle = app.handle().clone();
             remote::serve(move || {
                 handle.state::<Screenshots>().requests.ask();
@@ -488,11 +501,22 @@ pub fn run(screenshot: bool) {
             screenshot_sync_outbox,
             screenshot_pending_request,
             screenshot_ack_request,
-            screenshot_show_window
+            screenshot_show_window,
+            update::update_install_kind,
+            update::update_check,
+            update::update_download_and_install,
+            update::app_restart,
+            update::restart_drafts_read,
+            update::restart_drafts_clear,
+            update::restart_drafts_set_aside
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         // Outbox persistence in the renderer can precede its asynchronous retention IPC. Leave remaining captures
         // for the next startup's sweep, after persisted references are known, rather than risk deleting Retry bytes.
-        .run(|_, _| {});
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                update::relaunch(app);
+            }
+        });
 }

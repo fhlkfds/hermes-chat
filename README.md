@@ -15,6 +15,7 @@ The application is built with Tauri 2, React 19, and TypeScript, and it uses Vit
 - [Server requirements](#server-requirements)
 - [Features](#features)
 - [Install on Arch Linux](#install-on-arch-linux)
+- [Updates](#updates)
 - [Development](#development)
 - [Connecting to Hermes](#connecting-to-hermes)
 - [What is stored where](#what-is-stored-where)
@@ -121,6 +122,36 @@ To start the app from a terminal, set the WebKit variable yourself:
 WEBKIT_DISABLE_DMABUF_RENDERER=1 hermes-chat
 ```
 
+## Updates
+
+Settings → General → **Updates** shows the installed version, what's newer, and what changed. It checks once at launch unless you turn that off. Nothing installs or restarts without you. A restart keeps your drafts and unsent messages: they're written to disk first, and the app doesn't restart if that fails. If the app's storage is too full to put them all back, it clears its cached chat lists and Saved copies to make room; failing that, it keeps them in a file and Settings says where. How an update installs depends on how the app was installed:
+
+- **The `hermes-chat-git` package** (pacman owns `/usr/bin/hermes-chat`): the app compares the package's commit with `main` on GitHub and lists the pull requests merged since. It never replaces the package's files. You run the update yourself, from your checkout: `git pull && cd packaging/aur && makepkg -si`. Back in the app, it sees the new version and offers **Restart now**.
+- **A standalone AppImage built with an update key**: Tauri's updater downloads the new AppImage, checks its signature against the public key built into the app, and replaces the AppImage. Then you restart.
+- **Anything else** (for example `npm run app`, or a binary you copied): the app says it isn't updated from here.
+
+The repo ships no AppImage, update server or signing key yet, so standalone updates are off. To turn them on for your own builds, generate a key once. Keep the private key and its password out of the repo:
+
+```sh
+npx tauri signer generate -w ~/.tauri/hermes-chat.key
+```
+
+Bump `version` in `src-tauri/tauri.conf.json` for each release; the updater compares semver. Then build with the signing key in the environment and the updater turned on:
+
+```sh
+TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/hermes-chat.key)" TAURI_SIGNING_PRIVATE_KEY_PASSWORD=… \
+npx tauri build --bundles appimage --config '{
+  "bundle": { "active": true, "createUpdaterArtifacts": true },
+  "plugins": { "updater": {
+    "pubkey": "<contents of ~/.tauri/hermes-chat.key.pub>",
+    "endpoints": ["https://github.com/l0cky12/hermes-chat/releases/latest/download/latest.json"],
+    "requireSignedVersion": true
+  } }
+}'
+```
+
+Publish the `.AppImage`, its `.sig`, and a `latest.json` in Tauri's [static JSON format](https://v2.tauri.app/plugin/updater/#static-json-file) at that endpoint. A build without `plugins.updater` (the PKGBUILD's, for one) doesn't load the updater at all.
+
 ## Development
 
 Install the Tauri 2 prerequisites, Node.js, and npm:
@@ -210,6 +241,7 @@ Hermes stores the chats and their history, titles, Archived state, and Unread st
 | Drafts and **Failed messages** | Webview local storage, per connection, profile, and chat | Sending, Retry, or Dismiss. Clear local cache keeps them. |
 | Which chats are in each project | Webview local storage (`hermes-chat.projects`) | Deleting the project. Clear local cache keeps it. |
 | Display preferences, model pick, starred models, and reopen-last-chat | Webview local storage | Not removed by Clear local cache |
+| Drafts and Failed messages saved for an update's restart | `$XDG_DATA_HOME/net.l0cky12.hermes-chat/restart-drafts.json`, readable only by you | Putting them back at the next launch. A copy that couldn't be put back is renamed `restart-drafts-<time>.json` and stays until you move or delete it; Settings says where. |
 | Screenshots waiting to send | `$XDG_CACHE_HOME/hermes-chat/captures/`, readable only by you | Confirmed delivery, removing them from the composer, or leaving the composer without sending. A Failed message keeps its screenshots until delivery is confirmed, history reconciles it, or you Dismiss it. Startup cleanup removes only leftovers that no message needs. |
 | Pasted files | A private folder under `$TMPDIR/hermes-chat/` (usually `/tmp/hermes-chat/`) | Not removed by the app |
 | Exported chats | The file you chose in the Save dialog | You |
@@ -243,6 +275,7 @@ Webview local storage is in `$XDG_DATA_HOME/net.l0cky12.hermes-chat/localstorage
 - Framed web pages in the preview pane get no cookies, so sites that need a sign-in don't stay signed in. HTML files show as static documents.
 - Long transcripts render in full. Very long chats, especially two at once, can be slow while streaming or resizing.
 - On the legacy protocol, a reply to a Telegram or Discord chat should stay in Hermes clients and not be posted back to Telegram or Discord. This comes from reading Hermes's source and hasn't been tested live.
+- The app doesn't install pacman updates itself: you run the PKGBUILD, and it offers the restart. In-app installation works only for an AppImage you build and sign yourself, since the repo publishes no releases or update server. Checking a package build asks GitHub without signing in, which allows 60 checks an hour.
 - The automated tests use a fake Hermes. Native Wayland screenshot pickers and real audio devices aren't covered.
 
 ## Project documents

@@ -25,6 +25,7 @@ export function Rail({
   onFiles,
   filesOpen = false,
   onSettings,
+  updateWaiting = false,
 }: {
   status: ConnectionStatus;
   route?: Route;
@@ -38,6 +39,8 @@ export function Rail({
   onFiles?: () => void;
   filesOpen?: boolean;
   onSettings: () => void;
+  /** An update is ready to install or restart into (Settings → Updates). */
+  updateWaiting?: boolean;
 }) {
   const where = routeLabel(route);
   // The full wording lives only in the tooltip (ADR 0001).
@@ -73,8 +76,9 @@ export function Rail({
           <span className={`conn-dot ${status} ${unsecure ? "unsecure" : ""}`} />
           {unsecure && <LockOpen className="conn-lock" size={9} strokeWidth={2.8} />}
         </button>
-        <button className="icon-btn" title="Settings" onClick={onSettings}>
+        <button className="icon-btn settings-btn" title={updateWaiting ? "Settings: an update is ready" : "Settings"} onClick={onSettings}>
           <Settings size={18} />
+          {updateWaiting && <span className="dot update-dot" />}
         </button>
       </div>
     </aside>

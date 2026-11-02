@@ -152,6 +152,10 @@ One view of a chat, its transcript and composer. The app can show two side by si
 chat list, Search and keyboard shortcuts target. This focus does not change whether a chat is Active or Settled.
 Two panes of one chat share its Draft and running reply; each has its own scroll, Find and pending Attachments.
 
+**Update**:
+A newer version of Hermes Chat itself. For the packaged app, the owner installs it with pacman, and the app never replaces pacman's files. For a standalone build made with an update key, the app installs it, after checking its signature. Either way the new version runs only after the owner restarts the app, and drafts and unsent messages are kept across the restart.
+_Avoid_: upgrade (pacman's word, for the package step only)
+
 ## Relationships
 
 - Every **Chat** is either **Active** or **Settled**, never both. An **Archived** chat keeps that state for when it is restored.
