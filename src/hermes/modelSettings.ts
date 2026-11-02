@@ -13,6 +13,11 @@ export const EFFORT_OFF = "none";
 export const AUX_INHERIT = "inherit";
 /** An auxiliary task on this provider runs on the main model (`auxiliary.<task>.provider: auto`). */
 export const AUX_AUTO = "auto";
+/**
+ * The helper task behind chat titles, Hermes's own and Regenerate title's (`llm.oneshot` defaults to it). Settings shows
+ * it on its own as the Text generation model.
+ */
+export const TEXT_TASK = "title_generation";
 
 /** What the catalog says a model can do (`model.options` → `providers[].capabilities[model]`). */
 export type ModelCaps = { fast: boolean; reasoning: boolean };
@@ -89,7 +94,7 @@ export type Draft = { main: MainModel; subagent: SubagentDraft; auxiliary: Recor
 
 /** Labels for the built-in helper tasks (`_AUX_TASK_SLOTS` at `bf0203a`); a plugin's task brings its own. */
 const AUX_LABELS: Record<string, [string, string]> = {
-  title_generation: ["Chat titles", "Names new chats."],
+  title_generation: ["Text generation", "Names chats."],
   compression: ["Compression", "Summarizes a long chat so it fits the context window."],
   vision: ["Vision", "Reads images for a main model that can't."],
   approval: ["Approval checks", "Judges whether a command needs your approval."],

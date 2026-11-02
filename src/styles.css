@@ -985,3 +985,15 @@ button.status-item:disabled { opacity: 0.5; cursor: default; }
 .usage-cost-detail, .usage-note { font-size: calc(11.5rem / 14); color: var(--muted); line-height: 1.45; }
 .usage-note { margin: 10px 0 0; color: var(--faint); }
 .usage-error { margin: 8px 0 0; font-size: calc(11.5rem / 14); color: var(--warn); line-height: 1.45; }
+
+/* Settings → Model → Text generation (ModelSettings.tsx): the composer's model controls, opening downward and left. */
+.text-gen { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.text-gen-label { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.text-gen-title { display: flex; align-items: center; gap: 6px; }
+.text-gen .small-icon { width: 22px; height: 22px; border-radius: 6px; }
+.text-gen-controls { flex: none; border: 0; padding: 0; margin: 0; min-width: 0; }
+.text-gen .model-popover { bottom: auto; top: calc(100% + 8px); left: auto; right: 0; }
+.text-gen .menu.pill-menu { bottom: auto; top: calc(100% + 8px); left: auto; right: 0; }
+.text-gen .model-options { left: auto; right: calc(100% + 6px); }
+.text-gen .model-options::before { right: auto; left: 100%; }
+.model-status { margin-top: 10px; }
