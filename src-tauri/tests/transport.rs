@@ -441,3 +441,49 @@ async fn refuses_to_preview_a_missing_or_oversized_image() {
     let err = transport::read_preview(&path_of(&big)).await.err().unwrap();
     assert_eq!(err.to_string(), "it's 25.0 MB now, over the 25 MB limit");
 }
+
+#[tokio::test]
+async fn reads_the_start_of_a_local_file_for_the_preview() {
+    let dir = scratch("local-text");
+    let notes = dir.join("notes.md");
+    std::fs::write(&notes, "# Notes\n\nCafé ☕\n").unwrap();
+    let t = transport::read_local_text(&path_of(&notes)).await.unwrap();
+    assert_eq!(t, transport::LocalText { size: 19, truncated: false, binary: false, text: "# Notes\n\nCafé ☕\n".into() });
+
+    // Only the first 512 KB is read, and the size says how big the file is.
+    let big = dir.join("big.log");
+    std::fs::write(&big, "x".repeat(transport::LOCAL_TEXT_MAX_BYTES as usize + 10)).unwrap();
+    let t = transport::read_local_text(&path_of(&big)).await.unwrap();
+    assert!(t.truncated);
+    assert_eq!(t.size, transport::LOCAL_TEXT_MAX_BYTES + 10);
+    assert_eq!(t.text.len() as u64, transport::LOCAL_TEXT_MAX_BYTES);
+}
+
+#[tokio::test]
+async fn a_binary_local_file_comes_back_without_its_bytes() {
+    let dir = scratch("local-binary");
+    let bin = dir.join("disk.img");
+    std::fs::write(&bin, b"\x7fELF\x02\x01\x01\0\0\0\0\0\0\0\0\0").unwrap();
+    let t = transport::read_local_text(&path_of(&bin)).await.unwrap();
+    assert!(t.binary);
+    assert_eq!(t.text, "");
+    assert_eq!(t.size, 16);
+}
+
+#[tokio::test]
+async fn refuses_a_folder_a_missing_file_or_a_relative_path_for_the_preview() {
+    let dir = scratch("local-refused");
+    let err = |p: String| async move { transport::read_local_text(&p).await.err().unwrap().to_string() };
+    assert_eq!(err(path_of(&dir)).await, "it's a folder");
+    assert_eq!(err(path_of(&dir.join("gone.txt"))).await, "No such file or directory (os error 2)");
+    assert_eq!(err("notes.txt".into()).await, "it isn't a full path");
+}
+
+#[test]
+fn only_files_picked_in_the_open_dialog_can_be_read_for_the_preview() {
+    let picked = transport::PickedFiles::default();
+    assert_eq!(picked.check("/home/liam/.ssh/id_ed25519").err().unwrap().to_string(), "it wasn't picked in the Open dialog");
+    picked.allow("/home/liam/notes.md");
+    assert!(picked.check("/home/liam/notes.md").is_ok());
+    assert!(picked.check("/home/liam/notes.md/../.ssh/id_ed25519").is_err());
+}

@@ -16,11 +16,13 @@
 // Unread chats in the other profiles are polled over dashboard REST (otherProfiles.ts).
 // The composer's model picker lists what `model.options` offers (models.ts) and switches one chat at a time with
 // session-scoped `config.set`; nothing here ever writes the profile's default model, reasoning or fast mode.
+// The preview pane reads Server files over dashboard REST `GET /api/fs/*` (preview.ts, research doc "Preview pane").
 import { APPROVAL_CHOICES, isBroadGrant, isWaiting, offeredChoices, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ConnectionStatus, type Found, type Item, type OtherProfiles, type Source } from "./model";
 import { catalogFromServer, fallbackCatalog, isEffort, modelKey, pickFromInfo, type ModelCatalog, type ModelPick } from "./models";
 import { noOthers, OtherProfilesCheck } from "./otherProfiles";
 import type { OpenPipe, Pipe, PipeEvent, Route } from "./pipe";
 import { isUnsecure } from "./unsecure";
+import { readServerFile, type FileView } from "./preview";
 
 /** The `source` this app stamps on chats it starts. Legacy `session.create` stores any string as-is. */
 export const APP_SOURCE = "hermes-chat";
@@ -1755,6 +1757,14 @@ export class Hermes {
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * A file on the Hermes server, for the preview pane, read for the profile shown (preview.ts `readServerFile`). Hermes
+   * reads it where its tools run, which for a profile with an SSH terminal backend is that machine.
+   */
+  readServerFile(path: string): Promise<FileView> {
+    return readServerFile((q) => this.rest("GET", q), path, this.snapshot.profile);
   }
 
   private async rest(method: "GET" | "PATCH" | "DELETE", pathAndQuery: string, body?: unknown): Promise<unknown> {

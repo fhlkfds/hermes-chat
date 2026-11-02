@@ -3,7 +3,8 @@
 //! The webview speaks the protocol; this side never parses it (ADR 0003). Wire details:
 //! docs/research/hermes-gateway-api.md §2, §5 and "Password login and profiles".
 //! It also reads the files the owner attaches, so their bytes go from disk to Hermes without passing
-//! through the webview (§7), and the staged images the composer shows as thumbnails. For a direct connection it
+//! through the webview (§7), the staged images the composer shows as thumbnails, and the start of a local file the
+//! owner picked for the preview pane (ADR 0006). For a direct connection it
 //! resolves the host name in the URL the owner typed, so the webview can tell whether the connection is Unsecure.
 
 use base64::Engine;
@@ -144,6 +145,55 @@ pub async fn read_preview(path: &str) -> Result<Vec<u8>, TransportError> {
         return Err(TransportError::File("it isn't an image".into()));
     }
     Ok(bytes)
+}
+
+/// The most of a local file the preview pane reads: the same as Hermes reads of a server file
+/// (`_FS_TEXT_PREVIEW_MAX_BYTES`), so both kinds of file show alike.
+pub const LOCAL_TEXT_MAX_BYTES: u64 = 512 * 1024;
+
+/// A local file's text for the preview pane: its first `LOCAL_TEXT_MAX_BYTES`, decoded as UTF-8 (bad bytes replaced),
+/// and whether it looks binary, the way Hermes judges a server file (`_fs_looks_binary`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LocalText {
+    pub size: u64,
+    pub truncated: bool,
+    pub binary: bool,
+    pub text: String,
+}
+
+/// Reads the start of a local file for the preview pane. Only absolute paths to regular files.
+pub async fn read_local_text(path: &str) -> Result<LocalText, TransportError> {
+    if !std::path::Path::new(path).is_absolute() {
+        return Err(TransportError::File("it isn't a full path".into()));
+    }
+    let size = file_size(path).await?;
+    let file = tokio::fs::File::open(path).await.map_err(|e| TransportError::File(e.to_string()))?;
+    let mut bytes = Vec::with_capacity(size.min(LOCAL_TEXT_MAX_BYTES) as usize);
+    file.take(LOCAL_TEXT_MAX_BYTES).read_to_end(&mut bytes).await.map_err(|e| TransportError::File(e.to_string()))?;
+    let head = &bytes[..bytes.len().min(4096)];
+    let control = head.iter().filter(|&&b| b < 32 && !matches!(b, 9 | 10 | 13)).count();
+    let binary = head.contains(&0) || (!head.is_empty() && control as f64 / head.len() as f64 > 0.12);
+    let text = if binary { String::new() } else { String::from_utf8_lossy(&bytes).into_owned() };
+    Ok(LocalText { size, truncated: size > bytes.len() as u64, binary, text })
+}
+
+/// The local files the owner picked for the preview pane in the native Open dialog, so the webview can read them again
+/// (Reload) but never names a file of its own to read.
+#[derive(Default)]
+pub struct PickedFiles(Mutex<std::collections::HashSet<String>>);
+
+impl PickedFiles {
+    pub fn allow(&self, path: &str) {
+        self.0.lock().unwrap().insert(path.to_owned());
+    }
+
+    pub fn check(&self, path: &str) -> Result<(), TransportError> {
+        if self.0.lock().unwrap().contains(path) {
+            Ok(())
+        } else {
+            Err(TransportError::File("it wasn't picked in the Open dialog".into()))
+        }
+    }
 }
 
 /// Reads a whole file, refusing one over `max_bytes`; the size is checked again after reading, in case it grew.
