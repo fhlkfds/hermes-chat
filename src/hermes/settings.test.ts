@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type Account, type Keyring, savedSignIn, signIn, signOut } from "./account";
+import { type Account, type Keyring, savedSignIn, signIn, signInAgain, signOut } from "./account";
 import { localChatCache } from "./chatCache";
 import { FakeHermes, row } from "./fakeHermes";
 import { memoryCache } from "./memoryCache";
+import { SignedOutError } from "./pipe";
 import type { SignInDetails } from "./tauriPipe";
 import { connect } from "./transport";
 
@@ -25,10 +26,8 @@ function account(keyring = memoryKeyring()) {
   const a: Account = {
     keyring,
     store: { load: () => saved, save: (d) => void (saved = d) },
-    connect: async (d) => {
-      if (d.password !== "hunter2") throw new Error("Wrong username or password.");
-      return connect(server.openPipe, "default");
-    },
+    connect: (d) => connect(a.openPipe(d), "default"),
+    openPipe: (d) => (d.password === "hunter2" ? server.openPipe : () => Promise.reject(new SignedOutError("Wrong username or password."))),
   };
   return { server, keyring, account: a, saved: () => saved };
 }
@@ -72,6 +71,35 @@ describe("Saved password", () => {
     const { hermes, notSaved } = await signIn(details, a);
     expect(hermes.getSnapshot().status).toBe("connected");
     expect(notSaved).toBe("Couldn't save the password in the system keyring: no Secret Service running");
+  });
+});
+
+describe("Sign in again", () => {
+  /** Signed in with `hunter2` while the keyring still holds an older password, then refused by Hermes. */
+  async function refused() {
+    const signed = account(memoryKeyring("old-password"));
+    const hermes = await signed.account.connect(details);
+    signed.account.store.save({ mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" });
+    signed.server.signedOut = "Wrong username or password.";
+    signed.server.drop();
+    await hermes.reconnect();
+    expect(hermes.getSnapshot().status).toBe("signedOut");
+    signed.server.signedOut = undefined;
+    return { ...signed, hermes };
+  }
+
+  it("reconnects the same connection and saves the new password once Hermes accepts it", async () => {
+    const { account: a, keyring, hermes } = await refused();
+    expect(await signInAgain(hermes, "hunter2", a)).toEqual({});
+    expect(hermes.getSnapshot().status).toBe("connected");
+    expect(keyring.password).toBe("hunter2");
+  });
+
+  it("saves nothing when Hermes refuses the new password too", async () => {
+    const { account: a, keyring, hermes } = await refused();
+    await expect(signInAgain(hermes, "wrong", a)).rejects.toThrow("Wrong username or password.");
+    expect(hermes.getSnapshot().status).toBe("signedOut");
+    expect(keyring.password).toBe("old-password");
   });
 });
 

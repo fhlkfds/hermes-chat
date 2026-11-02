@@ -5,6 +5,12 @@
 /** A local file as `statFiles` finds it: its size, or why it can't be attached (e.g. "it's a folder"). */
 export type LocalFile = { path: string; name: string; size?: number; error?: string };
 
+/**
+ * What opening the pipe or a REST call rejects with when the dashboard refuses the password, as opposed to failing to
+ * reach it: trying again with the same password won't help. An expired sign-in isn't one; the Rust side signs in again.
+ */
+export class SignedOutError extends Error {}
+
 export type PipeEvent = { kind: "frame"; text: string } | { kind: "closed"; reason: string };
 
 /**

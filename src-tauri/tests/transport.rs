@@ -11,14 +11,19 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use url::Url;
 
 const READY: &str = r#"{"jsonrpc":"2.0","method":"event","params":{"type":"gateway.ready","payload":{"skin":{},"change_events":true,"heartbeat":true,"replay_epoch":"e1"}}}"#;
 
+/// `changed-later` signs in once; after that the stub acts as if the owner changed the password on the server.
+static CHANGED: AtomicBool = AtomicBool::new(false);
+
 async fn login(Json(body): Json<Value>) -> Response {
-    if body == json!({"provider": "basic", "username": "liam", "password": "hunter2"}) {
+    let first_of_changed = body["password"] == "changed-later" && !CHANGED.swap(true, Ordering::SeqCst);
+    if body == json!({"provider": "basic", "username": "liam", "password": "hunter2"}) || first_of_changed {
         (
             AppendHeaders([
                 (header::SET_COOKIE, "hermes_session_at=AT; Path=/; HttpOnly; SameSite=Lax"),
@@ -253,11 +258,18 @@ async fn keeps_cookies_the_dashboard_rotates() {
 }
 
 #[tokio::test]
-async fn an_expired_sign_in_is_signed_out() {
+async fn signs_in_again_when_the_sign_in_expires() {
     let dashboard = signed_in().await;
     get_json(&dashboard, "api/expire").await;
+    assert_eq!(get_json(&dashboard, "api/sessions").await["cookie"], "hermes_session_at=AT; hermes_session_rt=RT");
+}
+
+#[tokio::test]
+async fn a_password_the_dashboard_no_longer_takes_is_bad_credentials() {
+    let dashboard = Dashboard::sign_in(&stub().await, &sign_in("changed-later")).await.expect("signed in");
+    get_json(&dashboard, "api/expire").await;
     let err = dashboard.request("GET", "api/sessions", None).await.err().unwrap();
-    assert!(matches!(err, TransportError::SignedOut), "{err:?}");
+    assert!(matches!(err, TransportError::BadCredentials), "{err:?}");
 }
 
 #[tokio::test]

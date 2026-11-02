@@ -83,3 +83,74 @@ export function SignIn({
     </div>
   );
 }
+
+/**
+ * Asks for the password after Hermes refused the saved one, over the chat, which stays as it is underneath. `where`:
+ * the server, as the owner typed it. `onSignIn` rejects with why the new password didn't connect either.
+ */
+export function SignInAgain({
+  username,
+  where,
+  onSignIn,
+  onClose,
+}: {
+  username: string;
+  where?: string;
+  onSignIn: (password: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  return (
+    <div className="dialog-scrim" onMouseDown={(e) => e.target === e.currentTarget && onClose()} onKeyDown={(e) => e.key === "Escape" && onClose()}>
+      <form
+        className="dialog conn-form"
+        role="dialog"
+        aria-label="Sign in again"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          if (!password || busy) return;
+          setBusy(true);
+          setError(undefined);
+          try {
+            await onSignIn(password);
+          } catch (err) {
+            setError(err instanceof Error ? err.message : String(err));
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        <h2>Sign in again</h2>
+        <p className="muted">
+          Hermes didn't accept the saved password for <span className="mono">{username}</span>
+          {where && (
+            <>
+              {" "}
+              on <span className="mono">{where}</span>
+            </>
+          )}
+          . Your chats stay as they are.
+        </p>
+        <label className="field">
+          <span className="field-label">Dashboard password</span>
+          <input type="password" autoFocus value={password} onChange={(e) => setPassword(e.target.value)} />
+        </label>
+        {error && (
+          <div className="sign-in-error" role="alert">
+            {error}
+          </div>
+        )}
+        <div className="dialog-actions">
+          <button type="button" className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn primary" type="submit" disabled={!password || busy}>
+            {busy ? "Connecting…" : "Sign in"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}

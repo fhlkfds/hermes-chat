@@ -7,8 +7,8 @@ use std::sync::Arc;
 use tauri::ipc::Channel;
 use tauri::State;
 use tokio::sync::Mutex;
-use transport::{Dashboard, LocalFile, Pipe, PipeEvent, SignIn};
-use tunnel::Tunnel;
+use transport::{Dashboard, LocalFile, Pipe, PipeEvent, SignIn, TransportError};
+use tunnel::{Tunnel, TunnelError};
 
 /// The owner's `hermes dashboard` port on the server's loopback (research doc, "SSH tunnel, Host header
 /// and protocol generation").
@@ -36,6 +36,28 @@ enum Route {
     Url { url: String, addresses: Vec<String> },
 }
 
+/// Why `hermes_connect` or `hermes_request` failed, as the webview gets it. `signed_out`: the dashboard refused
+/// the password, so trying again with it won't help, unlike a server that can't be reached.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CommandError {
+    message: String,
+    signed_out: bool,
+}
+
+impl From<TransportError> for CommandError {
+    fn from(e: TransportError) -> Self {
+        let signed_out = matches!(e, TransportError::BadCredentials | TransportError::SignedOut);
+        CommandError { message: e.to_string(), signed_out }
+    }
+}
+
+impl From<TunnelError> for CommandError {
+    fn from(e: TunnelError) -> Self {
+        CommandError { message: e.to_string(), signed_out: false }
+    }
+}
+
 #[derive(Default)]
 struct AppState(Mutex<Option<Connection>>);
 
@@ -47,28 +69,27 @@ async fn hermes_connect(
     password: String,
     profile: String,
     on_event: Channel<PipeEvent>,
-) -> Result<Route, String> {
+) -> Result<Route, CommandError> {
     let mut slot = state.0.lock().await;
     *slot = None;
     let (base, tunnel, route) = match target {
         Target::Ssh { target } => {
-            let tunnel = tunnel::open(&target, DASHBOARD_PORT).await.map_err(|e| e.to_string())?;
+            let tunnel = tunnel::open(&target, DASHBOARD_PORT).await?;
             let base = url::Url::parse(&format!("http://127.0.0.1:{}/", tunnel.local_port)).expect("valid URL");
             (base, Some(tunnel), Route::Ssh { target: target.trim().to_owned() })
         }
         Target::Url { url } => {
-            let direct = transport::resolve_direct(&url).await.map_err(|e| e.to_string())?;
+            let direct = transport::resolve_direct(&url).await?;
             let addresses = direct.addresses.iter().map(ToString::to_string).collect();
             (direct.base, None, Route::Url { url: url.trim().to_owned(), addresses })
         }
     };
-    let dashboard = Dashboard::sign_in(&base, &SignIn { username, password }).await.map_err(|e| e.to_string())?;
+    let dashboard = Dashboard::sign_in(&base, &SignIn { username, password }).await?;
     let pipe = dashboard
         .open_pipe(&profile, move |e| {
             let _ = on_event.send(e);
         })
-        .await
-        .map_err(|e| e.to_string())?;
+        .await?;
     *slot = Some(Connection { dashboard: Arc::new(dashboard), pipe: Arc::new(pipe), _tunnel: tunnel });
     Ok(route)
 }
@@ -77,7 +98,7 @@ async fn hermes_connect(
 async fn hermes_send(state: State<'_, AppState>, frame: String) -> Result<(), String> {
     match &*state.0.lock().await {
         Some(conn) => conn.pipe.send(frame).map_err(|e| e.to_string()),
-        None => Err(transport::TransportError::Closed.to_string()),
+        None => Err(TransportError::Closed.to_string()),
     }
 }
 
@@ -92,7 +113,7 @@ async fn hermes_send_file(
     // Reading a big file takes a while; don't hold the lock, so a Stop can still go out.
     let pipe = match &*state.0.lock().await {
         Some(conn) => conn.pipe.clone(),
-        None => return Err(transport::TransportError::Closed.to_string()),
+        None => return Err(TransportError::Closed.to_string()),
     };
     pipe.send_file(&head, &path, &tail, max_bytes).await.map_err(|e| e.to_string())
 }
@@ -108,13 +129,13 @@ async fn hermes_request(
     method: String,
     path: String,
     body: Option<String>,
-) -> Result<String, String> {
+) -> Result<String, CommandError> {
     // Don't hold the lock across the request, so frames keep flowing while it runs.
     let dashboard = match &*state.0.lock().await {
         Some(conn) => conn.dashboard.clone(),
-        None => return Err(transport::TransportError::Closed.to_string()),
+        None => return Err(TransportError::Closed.into()),
     };
-    dashboard.request(&method, &path, body).await.map_err(|e| e.to_string())
+    Ok(dashboard.request(&method, &path, body).await?)
 }
 
 #[tauri::command]

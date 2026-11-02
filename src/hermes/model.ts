@@ -18,8 +18,11 @@ export type Attachment = { path: string; name: string; size: number; kind: "imag
 export type AttachCheck = { attachments: Attachment[]; refused: string[] };
 
 export type Item =
-  /** `attachments`: the names of the files sent with the message. */
-  | { kind: "user"; id: string; text: string; attachments?: string[] }
+  /**
+   * `attachments`: the names of the files sent with the message. `unconfirmed`: the connection dropped before Hermes
+   * said it had the message. It is never sent again on its own; the next resume shows whether Hermes got it.
+   */
+  | { kind: "user"; id: string; text: string; attachments?: string[]; unconfirmed?: boolean }
   /** `interrupted`: the owner, or another Hermes client, stopped this reply before it finished. */
   | { kind: "assistant"; id: string; text: string; interrupted?: boolean }
   | {
@@ -70,7 +73,11 @@ export type Chat = {
   stopping?: boolean;
 };
 
-export type ConnectionStatus = "connected" | "reconnecting" | "offline";
+/**
+ * `offline`: reconnecting stopped, after the last try failed or because the server now speaks another protocol.
+ * `signedOut`: Hermes refused the saved password, so only signing in again reconnects.
+ */
+export type ConnectionStatus = "connected" | "reconnecting" | "offline" | "signedOut";
 
 /**
  * A chat found by searching all chats (`Hermes.search`). `snippet`: the text around the match, with the matched words

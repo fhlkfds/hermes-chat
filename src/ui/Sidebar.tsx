@@ -15,7 +15,7 @@ export function Rail({
   route,
   unsecure,
   closedReason,
-  onReconnect,
+  onRecover,
   onToggleList,
   onNew,
   onSearch,
@@ -25,7 +25,8 @@ export function Rail({
   route?: Route;
   unsecure: boolean;
   closedReason?: string;
-  onReconnect: () => void;
+  /** Reconnects, or asks for the password when Hermes refused the saved one. */
+  onRecover: () => void;
   onToggleList: () => void;
   onNew: () => void;
   onSearch: () => void;
@@ -38,7 +39,7 @@ export function Rail({
     where,
     unsecure && "Unsecure: traffic to the server isn't encrypted",
     status !== "connected" && closedReason,
-    status !== "connected" && "Click to reconnect",
+    status !== "connected" && (status === "signedOut" ? "Click to sign in again" : "Click to reconnect"),
   ]
     .filter(Boolean)
     .join(" · ");
@@ -56,7 +57,7 @@ export function Rail({
         </button>
       </div>
       <div className="rail-bottom">
-        <button className="conn-btn" title={tip} aria-label={tip} onClick={() => status !== "connected" && onReconnect()}>
+        <button className="conn-btn" title={tip} aria-label={tip} onClick={() => status !== "connected" && onRecover()}>
           <span className={`conn-dot ${status} ${unsecure ? "unsecure" : ""}`} />
           {unsecure && <LockOpen className="conn-lock" size={9} strokeWidth={2.8} />}
         </button>

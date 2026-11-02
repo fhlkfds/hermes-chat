@@ -4,7 +4,7 @@ import { useState } from "react";
 import { ArrowLeft, Download, KeyRound, Lock, LogOut, Trash2 } from "lucide-react";
 import type { Chat, ConnectionStatus } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
-import { STATUS_LABEL, fmtSize, routeLabel } from "./bits";
+import { RECOVER_LABEL, STATUS_LABEL, fmtSize, routeLabel } from "./bits";
 
 /** What a pull added: the older chats in Settled, and any pinned in another Hermes client, which are Active. */
 function pulledText(added: Chat[]): string {
@@ -19,6 +19,8 @@ function pulledText(added: Chat[]): string {
 
 export function SettingsScreen({
   status,
+  closedReason,
+  onRecover,
   route,
   unsecure,
   username,
@@ -32,6 +34,9 @@ export function SettingsScreen({
   onClose,
 }: {
   status: ConnectionStatus;
+  closedReason?: string;
+  /** Reconnects, or asks for the password when Hermes refused the saved one. */
+  onRecover: () => void;
   route?: Route;
   unsecure: boolean;
   username: string;
@@ -81,7 +86,13 @@ export function SettingsScreen({
             <span>{STATUS_LABEL[status]}</span>
             {unsecure && <span className="badge warn">Unsecure</span>}
             <span className="muted mono">{routeLabel(route)}</span>
+            {(status === "offline" || status === "signedOut") && (
+              <button className="btn settings-recover" onClick={onRecover}>
+                {RECOVER_LABEL(status)}
+              </button>
+            )}
           </div>
+          {status !== "connected" && closedReason && <p className="muted small settings-note">{closedReason}</p>}
           <div className="settings-row">
             <div className="muted small">
               <KeyRound size={12} /> Signed in as <span className="mono">{username}</span>.{" "}

@@ -22,6 +22,7 @@ use url::Url;
 /// The dashboard's username/password provider (`/api/status.auth_providers` on the live server).
 const PASSWORD_PROVIDER: &str = "basic";
 
+#[derive(Clone)]
 pub struct SignIn {
     pub username: String,
     pub password: String,
@@ -178,24 +179,39 @@ impl Drop for Pipe {
 }
 
 /// A signed-in dashboard session. It keeps the session cookies up to date: the dashboard rotates an
-/// expired access token through the refresh cookie on any request and sends the new ones back.
+/// expired access token through the refresh cookie on any request and sends the new ones back. Once the
+/// refresh token has expired too, it signs in again with the same password.
 pub struct Dashboard {
     http: reqwest::Client,
     base: Url,
     cookies: Mutex<Vec<(String, String)>>,
+    sign_in: SignIn,
+    /// Counts sign-ins, so REST calls that find the sign-in expired at the same time sign in again only once.
+    sign_ins: tokio::sync::Mutex<u64>,
 }
 
 impl Dashboard {
     /// Sign in at `base`, the dashboard root (e.g. the local end of the SSH tunnel).
     pub async fn sign_in(base: &Url, sign_in: &SignIn) -> Result<Dashboard, TransportError> {
-        let dashboard = Dashboard { http: reqwest::Client::new(), base: base.clone(), cookies: Mutex::default() };
-        let login = dashboard
+        let dashboard = Dashboard {
+            http: reqwest::Client::new(),
+            base: base.clone(),
+            cookies: Mutex::default(),
+            sign_in: sign_in.clone(),
+            sign_ins: tokio::sync::Mutex::default(),
+        };
+        dashboard.log_in().await?;
+        Ok(dashboard)
+    }
+
+    async fn log_in(&self) -> Result<(), TransportError> {
+        let login = self
             .http
-            .post(endpoint(base, "auth/password-login"))
+            .post(endpoint(&self.base, "auth/password-login"))
             .json(&json!({
                 "provider": PASSWORD_PROVIDER,
-                "username": sign_in.username,
-                "password": sign_in.password,
+                "username": self.sign_in.username,
+                "password": self.sign_in.password,
             }))
             .send()
             .await
@@ -206,8 +222,19 @@ impl Dashboard {
             StatusCode::TOO_MANY_REQUESTS => return Err(TransportError::RateLimited),
             _ => return Err(unexpected(login).await),
         }
-        dashboard.keep_cookies(&login);
-        Ok(dashboard)
+        self.keep_cookies(&login);
+        Ok(())
+    }
+
+    /// Signs in again after a REST call found the sign-in expired, unless another call already has since
+    /// sign-in number `seen`. Fails with `BadCredentials` if the dashboard no longer takes the password.
+    async fn sign_in_again(&self, seen: u64) -> Result<(), TransportError> {
+        let mut sign_ins = self.sign_ins.lock().await;
+        if *sign_ins == seen {
+            self.log_in().await?;
+            *sign_ins += 1;
+        }
+        Ok(())
     }
 
     /// Mint a WS ticket and open `/api/ws` for `profile`. Every frame the server sends, starting with
@@ -281,7 +308,8 @@ impl Dashboard {
     }
 
     /// One dashboard REST call for the webview: `GET` or `PATCH` on a path under `api/`, with a JSON
-    /// body. Returns the response body on 2xx.
+    /// body. Returns the response body on 2xx. A call that finds the sign-in expired signs in again and is
+    /// sent once more.
     pub async fn request(&self, method: &str, path_and_query: &str, body: Option<String>) -> Result<String, TransportError> {
         let method = match method {
             "GET" => Method::GET,
@@ -294,17 +322,27 @@ impl Dashboard {
         }
         let mut url = endpoint(&self.base, path);
         url.set_query(Some(query).filter(|q| !q.is_empty()));
-        let mut req = self.http.request(method, url).header(header::COOKIE, self.cookie_header());
-        if let Some(body) = body {
-            req = req.header(header::CONTENT_TYPE, "application/json").body(body);
+        let seen = *self.sign_ins.lock().await;
+        let mut resp = self.send(&method, &url, body.as_deref()).await?;
+        if resp.status() == StatusCode::UNAUTHORIZED {
+            self.sign_in_again(seen).await?;
+            resp = self.send(&method, &url, body.as_deref()).await?;
         }
-        let resp = req.send().await.map_err(|e| TransportError::Unreachable(e.to_string()))?;
-        self.keep_cookies(&resp);
         match resp.status() {
             s if s.is_success() => resp.text().await.map_err(|e| TransportError::Unreachable(e.to_string())),
             StatusCode::UNAUTHORIZED => Err(TransportError::SignedOut),
             _ => Err(unexpected(resp).await),
         }
+    }
+
+    async fn send(&self, method: &Method, url: &Url, body: Option<&str>) -> Result<reqwest::Response, TransportError> {
+        let mut req = self.http.request(method.clone(), url.clone()).header(header::COOKIE, self.cookie_header());
+        if let Some(body) = body {
+            req = req.header(header::CONTENT_TYPE, "application/json").body(body.to_owned());
+        }
+        let resp = req.send().await.map_err(|e| TransportError::Unreachable(e.to_string()))?;
+        self.keep_cookies(&resp);
+        Ok(resp)
     }
 
     /// Take in every Set-Cookie: a new value replaces the old one, an empty one deletes it. Only

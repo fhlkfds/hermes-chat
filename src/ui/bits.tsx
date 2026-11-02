@@ -74,7 +74,15 @@ export function relTime(ts: number) {
   return `${Math.floor(s / (86400 * 7))}w`;
 }
 
-export const STATUS_LABEL: Record<ConnectionStatus, string> = { connected: "Connected", reconnecting: "Reconnecting…", offline: "Offline" };
+export const STATUS_LABEL: Record<ConnectionStatus, string> = {
+  connected: "Connected",
+  reconnecting: "Reconnecting…",
+  offline: "Offline",
+  signedOut: "Signed out",
+};
+
+/** What brings the app back once reconnecting has stopped. */
+export const RECOVER_LABEL = (status: ConnectionStatus) => (status === "signedOut" ? "Sign in again" : "Try again");
 
 /** Where the connection goes, as the owner typed it. */
 export const routeLabel = (route?: Route) => (route?.kind === "ssh" ? `ssh://${route.target}` : route?.url);

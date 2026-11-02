@@ -3,6 +3,7 @@
 // "SSH tunnel, Host header and protocol generation". Only the legacy verbs are used (ADR 0003).
 // The chat list comes from dashboard REST, because the legacy `session.list` has no last-activity field.
 // Attachments: research doc §7. A dropped connection is reconnected on its own; keepalive: research doc §1.
+// Reconnecting never sends a message again: one the drop cut off is left for the owner.
 // One profile's chats show at a time; switching opens the connection again for the new profile.
 // Search runs on dashboard REST: research doc "Searching chats".
 // Approvals come as legacy server→client requests, answered with a response frame: research doc §6 and
@@ -10,15 +11,19 @@
 // The list holds the past month's chats until the owner pulls older history for the profile; from then on it holds
 // them all.
 import { isWaiting, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ConnectionStatus, type Found, type Item, type Source } from "./model";
-import type { OpenPipe, Pipe, PipeEvent, Route } from "./pipe";
+import { SignedOutError, type OpenPipe, type Pipe, type PipeEvent, type Route } from "./pipe";
 import { isUnsecure } from "./unsecure";
 
 /** The `source` this app stamps on chats it starts. Legacy `session.create` stores any string as-is. */
 export const APP_SOURCE = "hermes-chat";
 const READY_TIMEOUT_MS = 15_000;
-/** Waits before each try to reconnect a dropped connection. When the last try fails the app is Offline until the
- * owner asks to reconnect, so a wrong password isn't retried for ever. */
+/** Waits before each try to reconnect a dropped connection. When the last try fails the app is Offline until there's
+ * a sign the network is back (`maybeReconnect`) or the owner asks. A refused password stops it at once. */
 const RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 16_000];
+/** The clock is checked this often. A check that comes more than `ASLEEP_AFTER_MS` after the last one means the
+ * computer was asleep. */
+const CLOCK_CHECK_MS = 10_000;
+const ASLEEP_AFTER_MS = 30_000;
 /** A `gateway.ping` goes out this often. A connection that has sent nothing for longer than the official client's
  * heartbeat deadline is dropped. */
 const PING_EVERY_MS = 15_000;
@@ -135,6 +140,11 @@ export class ProtocolMismatchError extends Error {
   }
 }
 
+/** A request still waiting for its answer when the connection dropped. */
+class ConnectionLostError extends Error {}
+/** The connection dropped while `prompt.submit` waited for its answer: Hermes may or may not have the message. */
+class PromptCutOffError extends Error {}
+
 export class RpcError extends Error {
   constructor(
     readonly code: number,
@@ -146,8 +156,9 @@ export class RpcError extends Error {
 
 /**
  * `profile`: the profile whose chats are shown. `route`: how the latest connection reached the dashboard. `unsecure`:
- * its traffic isn't encrypted (unsecure.ts). `closedReason`: why the connection dropped, or why the last try to
- * reconnect failed. `olderPulled`: the list holds the profile's chats older than a month too (`pullOlderHistory`).
+ * its traffic isn't encrypted (unsecure.ts). `closedReason`: why the connection dropped, why the last try to
+ * reconnect failed, or why Hermes signed the app out. `olderPulled`: the list holds the profile's chats older than a
+ * month too (`pullOlderHistory`).
  */
 export type Snapshot = {
   profile: string;
@@ -186,6 +197,11 @@ export class Hermes {
   private redialing?: Promise<void>;
   private failedTries = 0;
   private retryTimer?: ReturnType<typeof setTimeout>;
+  /** Reconnecting stopped for a reason that doesn't change on its own (a refused password, another protocol), so
+   * only the owner starts it again. */
+  private waitForOwner = false;
+  private clock?: ReturnType<typeof setInterval>;
+  private lastTick = 0;
   private heartbeat?: ReturnType<typeof setInterval>;
   private lastHeard = 0;
   private closing = false;
@@ -229,6 +245,7 @@ export class Hermes {
   private background = new Set<Promise<unknown>>();
 
   constructor(
+    /** Replaced by `signInAgain`. */
     private openPipe: OpenPipe,
     profile: string,
     private cache: ChatCache = noCache,
@@ -285,6 +302,10 @@ export class Hermes {
     this.pipeProfile = profile;
     this.lastHeard = Date.now();
     this.heartbeat = setInterval(() => this.beat(), PING_EVERY_MS);
+    if (!this.clock) {
+      this.lastTick = Date.now();
+      this.clock = setInterval(() => this.checkClock(), CLOCK_CHECK_MS);
+    }
     this.update({ status: "connected", closedReason: undefined, route: pipe.route, unsecure: isUnsecure(pipe.route) });
     // Without this, Hermes never sends this connection an Approval (research doc §6).
     this.track(this.request("client.capabilities", { server_requests: true }));
@@ -292,8 +313,38 @@ export class Hermes {
 
   /** Tries to connect again now, after a drop or from Offline, and keeps retrying on its own if that fails. */
   reconnect(): Promise<void> {
+    this.waitForOwner = false;
     if (!this.redialing) this.failedTries = 0;
     return this.redial();
+  }
+
+  /**
+   * On a sign the network may be back (it came up, the window was shown again, the computer woke): reconnects now
+   * if the connection is down, unless reconnecting stopped for a reason that doesn't change on its own.
+   */
+  maybeReconnect(): Promise<void> {
+    if (this.waitForOwner || this.snapshot.status === "connected") return Promise.resolve();
+    return this.reconnect();
+  }
+
+  /**
+   * Connects with a new sign-in after Hermes refused the saved password. Chats, and the one on screen, stay as they
+   * are, and what was busy comes back as after any reconnect. If this one fails too, rejects and keeps the old one.
+   */
+  async signInAgain(openPipe: OpenPipe): Promise<void> {
+    clearTimeout(this.retryTimer);
+    await this.redialing;
+    if (this.snapshot.status === "connected") return;
+    const before = this.openPipe;
+    this.openPipe = openPipe;
+    try {
+      await this.dial();
+    } catch (e) {
+      this.openPipe = before;
+      throw e;
+    }
+    this.waitForOwner = false;
+    this.reattached();
   }
 
   /** The server's profiles by name, as dashboard REST lists them. One sign-in covers them all (research doc). */
@@ -482,6 +533,7 @@ export class Hermes {
       // tries again.
       if (this.pinWanted.get(chatId)) this.track(this.writePin(chatId, profile));
     } catch (e) {
+      if (e instanceof PromptCutOffError) return this.unconfirmed(chatId, e.message);
       if (activating) {
         if (wantedBefore === undefined) this.pinWanted.delete(chatId);
         else this.pinWanted.set(chatId, wantedBefore);
@@ -493,6 +545,29 @@ export class Hermes {
         items: [...c.items, errorItem(c, (e as Error).message)],
       }));
     }
+  }
+
+  /**
+   * The connection dropped after the chat's latest message went out but before Hermes said it had it. It isn't sent
+   * again: the message and a note stay below the history the next resume brings, and go once that history shows
+   * Hermes got it.
+   */
+  private unconfirmed(chatId: string, reason: string) {
+    const chat = this.snapshot.chats.find((c) => c.id === chatId);
+    const at = chat?.items.map((i) => i.kind).lastIndexOf("user") ?? -1;
+    if (!chat || at < 0) return;
+    const sent = chat.items[at];
+    this.staleItems.set(chatId, Math.min(this.staleItems.get(chatId) ?? at, at));
+    const note: Item = {
+      kind: "error",
+      id: `${sent.id}-unconfirmed`,
+      text: `${reason}. Hermes may not have this message, and Hermes Chat won't send it again on its own.`,
+    };
+    this.patchChat(chatId, (c) => ({
+      ...c,
+      running: false,
+      items: [...c.items.map((i) => (i === sent ? { ...sent, unconfirmed: true } : i)), note],
+    }));
   }
 
   /** Moves a chat to Settled here at once, and unpins it on the server (ADR 0002). `unsettle` undoes it. */
@@ -643,6 +718,7 @@ export class Hermes {
     this.generation++;
     clearTimeout(this.retryTimer);
     clearInterval(this.heartbeat);
+    clearInterval(this.clock);
     await this.pipe?.close();
   }
 
@@ -756,7 +832,7 @@ export class Hermes {
     clearInterval(this.heartbeat);
     // Lets the Rust side end the tunnel.
     if (pipe) this.droppedClosing = pipe.close().catch(() => {}).finally(() => (this.droppedClosing = undefined));
-    for (const p of this.pending.values()) p.reject(new Error(`Connection closed: ${reason}`));
+    for (const p of this.pending.values()) p.reject(new ConnectionLostError(`Connection closed: ${reason}`));
     this.pending.clear();
     this.earlyRequests.clear();
     for (const c of this.snapshot.chats) {
@@ -776,6 +852,27 @@ export class Hermes {
     this.retryTimer = setTimeout(() => void this.redial(), wait);
   }
 
+  /** Stops reconnecting until the owner asks: `offline`, or `signedOut` when Hermes refused the password. */
+  private stopReconnecting(status: "offline" | "signedOut") {
+    this.waitForOwner = true;
+    clearTimeout(this.retryTimer);
+    this.update({ status });
+  }
+
+  /** Hermes refused the password on a REST call: the connection is let go, as the next one would be refused too. */
+  private signedOut(reason: string) {
+    if (this.pipe) this.detach(reason);
+    this.update({ closedReason: reason });
+    this.stopReconnecting("signedOut");
+  }
+
+  /** On a new connection, what was busy when the last one dropped comes back and the list refreshes. */
+  private reattached() {
+    this.failedTries = 0;
+    this.resumeBusyChats();
+    void this.sync();
+  }
+
   private redial(): Promise<void> {
     if (this.closing || this.snapshot.status === "connected") return Promise.resolve();
     this.redialing ??= (async () => {
@@ -783,15 +880,14 @@ export class Hermes {
       this.update({ status: "reconnecting" });
       try {
         await this.dial();
-        this.failedTries = 0;
-        this.resumeBusyChats();
-        void this.sync();
+        this.reattached();
       } catch (e) {
         if (this.closing) return;
         this.failedTries++;
         this.update({ closedReason: (e as Error).message });
-        // A server that changed protocol won't change back on its own.
-        if (e instanceof ProtocolMismatchError) this.update({ status: "offline" });
+        // Neither a refused password nor a server that changed protocol changes back on its own.
+        if (e instanceof SignedOutError) this.stopReconnecting("signedOut");
+        else if (e instanceof ProtocolMismatchError) this.stopReconnecting("offline");
         else this.retryLater();
       } finally {
         this.redialing = undefined;
@@ -804,6 +900,19 @@ export class Hermes {
   private beat() {
     if (Date.now() - this.lastHeard > SILENCE_LIMIT_MS) return this.dropped("Hermes stopped answering.");
     this.request("gateway.ping", {}).catch(() => {});
+  }
+
+  /**
+   * Notices the computer waking from sleep by a clock check that came late. The connection is checked at once rather
+   * than at the next ping, and one that is down is reconnected now, however long ago reconnecting gave up.
+   */
+  private checkClock() {
+    const now = Date.now();
+    const slept = now - this.lastTick > ASLEEP_AFTER_MS;
+    this.lastTick = now;
+    if (!slept) return;
+    if (this.snapshot.status === "connected") this.beat();
+    else void this.maybeReconnect();
   }
 
   /**
@@ -831,7 +940,9 @@ export class Hermes {
         }
       }
       const prompt = [refs.join("\n"), text].filter(Boolean).join("\n\n") || (queued.length ? IMAGE_ONLY_PROMPT : "");
-      return await this.request("prompt.submit", { session_id: runtimeId, profile: this.profile, text: prompt });
+      return await this.request("prompt.submit", { session_id: runtimeId, profile: this.profile, text: prompt }).catch((e) => {
+        throw e instanceof ConnectionLostError ? new PromptCutOffError(e.message) : e;
+      });
     } catch (e) {
       for (const path of queued) this.track(this.request("image.detach", { session_id: runtimeId, path }));
       throw e;
@@ -869,7 +980,7 @@ export class Hermes {
           ...c,
           runtimeId: res.session_id,
           running: c.running || !!res.running,
-          items: [...history, ...lost(c.items.slice(0, stale)), ...withoutLoadError(c.items.slice(stale))],
+          items: [...history, ...lost(c.items.slice(0, stale)), ...checkUnconfirmed(withoutLoadError(c.items.slice(stale)), history)],
         }));
         this.showApprovals(chatId, asking);
         return res.session_id;
@@ -1002,8 +1113,14 @@ export class Hermes {
   }
 
   private async rest(method: "GET" | "PATCH", pathAndQuery: string, body?: unknown): Promise<unknown> {
-    if (!this.pipe) throw new Error("Not connected to Hermes.");
-    return JSON.parse(await this.pipe.request(method, pathAndQuery, body === undefined ? undefined : JSON.stringify(body)));
+    const pipe = this.pipe;
+    if (!pipe) throw new Error("Not connected to Hermes.");
+    try {
+      return JSON.parse(await pipe.request(method, pathAndQuery, body === undefined ? undefined : JSON.stringify(body)));
+    } catch (e) {
+      if (e instanceof SignedOutError && pipe === this.pipe) this.signedOut(e.message);
+      throw e;
+    }
   }
 
   private track(p: Promise<unknown>) {
@@ -1112,6 +1229,29 @@ function historyItems(messages: TranscriptMessage[]): Item[] {
 function approvalItem(r: ServerRequest): ApprovalItem {
   const p = r.params;
   return { kind: "approval", id: r.id, requestId: String(p.request_id ?? ""), command: String(p.command ?? ""), description: String(p.description ?? "") };
+}
+
+/**
+ * Checks messages a drop cut off (`unconfirmed`) against the history a resume brought. One Hermes got ends the
+ * history, so the copy here and its note go. One it didn't get stays, and the note says so. A message with no text
+ * of its own can't be found, so it stays unconfirmed.
+ */
+function checkUnconfirmed(items: Item[], history: Item[]): Item[] {
+  const lastSent = [...history].reverse().find((i) => i.kind === "user")?.text.trim();
+  const got = new Set<string>();
+  const missing = new Set<string>();
+  for (const i of items) {
+    if (i.kind !== "user" || !i.unconfirmed || !i.text) continue;
+    (lastSent?.endsWith(i.text) ? got : missing).add(i.id);
+  }
+  return items.flatMap((i): Item[] => {
+    const of = i.kind === "error" ? i.id.replace(/-unconfirmed$/, "") : i.id;
+    if (got.has(of)) return [];
+    if (!missing.has(of)) return [i];
+    if (i.kind === "user") return [{ ...i, unconfirmed: false }];
+    if (i.kind === "error") return [{ ...i, text: "Hermes didn't get this message before the connection dropped. Hermes Chat didn't send it again." }];
+    return [i];
+  });
 }
 
 const endWaitingApprovals = (items: Item[], ended: string) => items.map((i): Item => (isWaiting(i) ? { ...i, ended } : i));

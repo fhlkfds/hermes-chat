@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { connect, type Hermes } from "./hermes/transport";
-import { type Account, type SavedSignIn, savedSignIn, signIn, signOut } from "./hermes/account";
+import { type Account, type SavedSignIn, savedSignIn, signIn, signInAgain, signOut } from "./hermes/account";
 import { localChatCache } from "./hermes/chatCache";
 import { systemKeyring } from "./hermes/tauriKeyring";
 import { tauriPipe, type SignInDetails } from "./hermes/tauriPipe";
@@ -9,7 +9,8 @@ import { ChatList, Rail } from "./ui/Sidebar";
 import { ChatPane } from "./ui/ChatPane";
 import { SearchPalette } from "./ui/Search";
 import { SettingsScreen } from "./ui/Settings";
-import { SignIn } from "./ui/SignIn";
+import { SignIn, SignInAgain } from "./ui/SignIn";
+import { routeLabel } from "./ui/bits";
 
 const SAVED = "hermes-chat.sign-in"; // Everything but the password, which is in the system keyring.
 // Hermes also announces store changes over the socket; the poll catches anything it misses.
@@ -34,6 +35,7 @@ const account: Account = {
   keyring: systemKeyring,
   store: { load: loadSignIn, save: (d) => localStorage.setItem(SAVED, JSON.stringify(d)) },
   connect: (d) => connect(tauriPipe(d), undefined, localChatCache),
+  openPipe: tauriPipe,
 };
 
 /** What launch ends in: signed in with the saved password, or the sign-in screen and why. */
@@ -130,6 +132,7 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
   const [draftError, setDraftError] = useState<string>();
   const [toast, setToast] = useState<Toast | null>(notSaved ? { text: notSaved, at: Date.now() } : null);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [askPassword, setAskPassword] = useState(false);
   // The search result the chat on screen was opened from; `at` tells one pick from the next.
   const [picked, setPicked] = useState<{ found: Found; at: number } | null>(null);
 
@@ -210,12 +213,23 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
     return () => hermes.leave(selectedId);
   }, [hermes, selectedId, status, settingsOpen]);
 
-  // Back on the network: don't wait for the next retry, or for the owner if it gave up.
+  // Maybe back on the network, or the owner is back at the window: don't wait for the next retry, or for the owner if
+  // reconnecting gave up. A refused password still waits for the owner.
   useEffect(() => {
-    const onOnline = () => void hermes.reconnect();
-    window.addEventListener("online", onOnline);
-    return () => window.removeEventListener("online", onOnline);
+    const maybeBack = () => void hermes.maybeReconnect();
+    const onShown = () => document.visibilityState === "visible" && maybeBack();
+    window.addEventListener("online", maybeBack);
+    window.addEventListener("focus", maybeBack);
+    document.addEventListener("visibilitychange", onShown);
+    return () => {
+      window.removeEventListener("online", maybeBack);
+      window.removeEventListener("focus", maybeBack);
+      document.removeEventListener("visibilitychange", onShown);
+    };
   }, [hermes]);
+
+  // Once reconnecting has stopped: sign in again if Hermes refused the saved password, else try again.
+  const recover = () => (status === "signedOut" ? setAskPassword(true) : void hermes.reconnect());
 
   useEffect(() => {
     void hermes.sync();
@@ -249,7 +263,7 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
         route={route}
         unsecure={unsecure}
         closedReason={closedReason}
-        onReconnect={() => void hermes.reconnect()}
+        onRecover={recover}
         onToggleList={() => setListOpen((o) => !o)}
         onNew={newChat}
         onSearch={() => setSearchOpen(true)}
@@ -271,6 +285,8 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
         {settingsOpen ? (
           <SettingsScreen
             status={status}
+            closedReason={closedReason}
+            onRecover={recover}
             route={route}
             unsecure={unsecure}
             username={username}
@@ -289,6 +305,8 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
             chat={selected}
             findTarget={findTarget}
             status={status}
+            closedReason={closedReason}
+            onRecover={recover}
             alsoPostsIn={hermes.alsoPostsIn(selected.id)}
             onAttach={(paths) => hermes.checkAttachments(paths)}
             onSend={send}
@@ -298,6 +316,18 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
           />
         )}
       </main>
+      {askPassword && (
+        <SignInAgain
+          username={username}
+          where={routeLabel(route)}
+          onSignIn={async (password) => {
+            const { notSaved } = await signInAgain(hermes, password, account);
+            setAskPassword(false);
+            if (notSaved) setToast({ text: notSaved, at: Date.now() });
+          }}
+          onClose={() => setAskPassword(false)}
+        />
+      )}
       {searchOpen && <SearchPalette onSearch={(q) => hermes.search(q)} onPick={pick} onClose={() => setSearchOpen(false)} />}
       {toast && (
         <div className="toast" key={toast.at} role="status">

@@ -1,6 +1,6 @@
 // A fake Hermes dashboard for tests: it sits where the Rust pipe does and speaks wire-shaped legacy
 // JSON-RPC frames and dashboard REST bodies (shapes from the deployed contracts, see the research doc).
-import type { LocalFile, OpenPipe, PipeEvent, Route } from "./pipe";
+import { SignedOutError, type LocalFile, type OpenPipe, type PipeEvent, type Route } from "./pipe";
 
 type Request = { jsonrpc: "2.0"; id: number; method: string; params: Record<string, unknown> };
 /** The client's answer to a server→client request (`tui_gateway/server_requests.py`). */
@@ -65,6 +65,9 @@ export class FakeHermes {
   route: Route = { kind: "ssh", target: "liam@hermes" };
   /** While set, opening a pipe fails with this message, as the Rust side does when the server can't be reached. */
   refuse?: string;
+  /** While set, opening a pipe and REST calls fail with this message, as the Rust side does when the dashboard refuses
+   * the password. */
+  signedOut?: string;
   /** How many pipes have been opened. */
   opened = 0;
   /** The `default` profile's stored sessions. A chat started over the WS gets a row on its first prompt. */
@@ -238,6 +241,7 @@ export class FakeHermes {
 
   openPipe: OpenPipe = async (onEvent, profile) => {
     if (this.refuse !== undefined) throw new Error(this.refuse);
+    if (this.signedOut !== undefined) throw new SignedOutError(this.signedOut);
     this.opened++;
     this.wsProfiles.push(profile);
     this.closed = false;
@@ -275,6 +279,7 @@ export class FakeHermes {
         const url = new URL(pathAndQuery, "http://dashboard/");
         const req: RestRequest = { method, path: url.pathname, query: url.searchParams, body: body === undefined ? undefined : JSON.parse(body) };
         this.restRequests.push(req);
+        if (this.signedOut !== undefined) throw new SignedOutError(this.signedOut);
         const patch = /^\/api\/sessions\/([^/]+)$/.exec(req.path);
         const handler = this.rest[`${method} ${req.path}`] ?? (method === "PATCH" && patch ? () => this.patchSession(patch[1], req.body!) : undefined);
         if (!handler) throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);

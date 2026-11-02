@@ -1,12 +1,12 @@
 // Transcript, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowUp, ChevronDown, ChevronRight, ChevronUp, Paperclip, Search, ShieldAlert, Square, Wrench, X } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import type { ApprovalChoice, ApprovalItem, AttachCheck, Attachment, Chat, ConnectionStatus, Item, Source } from "../hermes/model";
 import { SOURCE_LABEL, isWaiting } from "../hermes/model";
 import { Markdown } from "./Markdown";
-import { SettleButton, SourceIcon, Spinner, fmtSize, highlight } from "./bits";
+import { RECOVER_LABEL, SettleButton, SourceIcon, Spinner, fmtSize, highlight } from "./bits";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type Block = { kind: "tools"; id: string; tools: ToolItem[] } | Exclude<Item, ToolItem>;
@@ -30,20 +30,37 @@ function toBlocks(items: Item[]): Block[] {
  */
 export type FindTarget = { query: string; itemId?: string; at: number };
 
-const STATUS_NOTE: Record<ConnectionStatus, string | undefined> = {
-  connected: undefined,
-  reconnecting: "Reconnecting to Hermes…",
-  offline: "Offline. Click the status dot to reconnect.",
-};
+/**
+ * What the composer says while the app isn't connected. Once reconnecting has stopped, it says why and offers the one
+ * thing that brings the app back: trying again, or signing in again when Hermes refused the saved password.
+ */
+function ConnectionNote({ status, reason, onRecover }: { status: ConnectionStatus; reason?: string; onRecover: () => void }) {
+  if (status === "connected") return null;
+  if (status === "reconnecting") return <div className="offline-note">Reconnecting to Hermes…</div>;
+  return (
+    <div className="recover-note" role="alert">
+      <div>
+        <div>{status === "signedOut" ? "Hermes didn't accept the saved password." : "Hermes Chat stopped trying to reconnect."}</div>
+        {reason && <div className="recover-reason">{reason}</div>}
+      </div>
+      <button className="btn" onClick={onRecover}>
+        {RECOVER_LABEL(status)}
+      </button>
+    </div>
+  );
+}
 
 /**
  * `alsoPostsIn`: the Telegram or Discord chat Hermes will also post its replies in. `onAnswer` answers an Approval card.
- * `onSettle` is left out for a chat not started yet. Ctrl+F opens the find bar.
+ * `onSettle` is left out for a chat not started yet. `closedReason` and `onRecover`: why the connection is down, and
+ * what to do once reconnecting has stopped. Ctrl+F opens the find bar.
  */
 export function ChatPane({
   chat,
   findTarget,
   status,
+  closedReason,
+  onRecover,
   alsoPostsIn,
   onAttach,
   onSend,
@@ -54,6 +71,8 @@ export function ChatPane({
   chat: Chat;
   findTarget?: FindTarget;
   status: ConnectionStatus;
+  closedReason?: string;
+  onRecover: () => void;
   alsoPostsIn?: Source;
   onAttach: (paths: string[]) => Promise<AttachCheck>;
   onSend: (text: string, attachments: Attachment[]) => void;
@@ -267,7 +286,7 @@ export function ChatPane({
         offline={status !== "connected"}
         running={!!chat.running}
         stopping={!!chat.stopping}
-        note={STATUS_NOTE[status]}
+        note={status === "connected" ? undefined : <ConnectionNote status={status} reason={closedReason} onRecover={onRecover} />}
         hint={waiting ? "Hermes is waiting for your approval above." : undefined}
         alsoPostsIn={alsoPostsIn}
         onAttach={onAttach}
@@ -386,7 +405,7 @@ function Composer({
   offline: boolean;
   running: boolean;
   stopping: boolean;
-  note?: string;
+  note?: ReactNode;
   hint?: string;
   alsoPostsIn?: Source;
   onAttach: (paths: string[]) => Promise<AttachCheck>;
@@ -451,7 +470,7 @@ function Composer({
 
   return (
     <div className="composer-wrap">
-      {note && <div className="offline-note">{note}</div>}
+      {note}
       {!note && hint && <div className="composer-hint">{hint}</div>}
       {alsoPostsIn && (
         <div className="platform-note">

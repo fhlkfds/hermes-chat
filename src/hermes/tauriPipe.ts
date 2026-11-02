@@ -2,10 +2,15 @@
 // `/api/ws` frames and REST calls. It also reads the files the owner attaches, so their bytes never pass through the
 // webview.
 import { Channel, invoke } from "@tauri-apps/api/core";
-import type { LocalFile, OpenPipe, PipeEvent, Route } from "./pipe";
+import { SignedOutError, type LocalFile, type OpenPipe, type PipeEvent, type Route } from "./pipe";
 
-// A failed command rejects with the Rust error's text, not an Error.
-export const asError = (e: unknown) => Promise.reject(new Error(String(e)));
+// A failed command rejects with the Rust error's text, not an Error; `hermes_connect` and `hermes_request` with
+// `{message, signedOut}` (lib.rs `CommandError`).
+export const asError = (e: unknown) => {
+  if (typeof e !== "object" || e === null || !("message" in e)) return Promise.reject(new Error(String(e)));
+  const message = String(e.message);
+  return Promise.reject("signedOut" in e && e.signedOut ? new SignedOutError(message) : new Error(message));
+};
 
 /** `mode` picks which of `sshTarget` and `url` is used. */
 export type SignInDetails = { mode: "ssh" | "url"; sshTarget: string; url: string; username: string; password: string };

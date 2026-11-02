@@ -46,6 +46,10 @@ _Avoid_: permission, confirmation, prompt
 The warning on a connection whose traffic between this app and the server isn't encrypted.
 _Avoid_: insecure (the app's label is "Unsecure"), unsafe
 
+**Signed out**:
+The connection state when Hermes refuses the saved password, for example after it was changed on the server. Unlike Offline, the app never tries again on its own; signing in again reconnects and keeps the chats and the one on screen. A sign-in that merely expired isn't this: the app signs in again by itself.
+_Avoid_: logged out, unauthorized, expired
+
 ## Relationships
 
 - Every **Chat** is either **Active** or **Settled**, never both.

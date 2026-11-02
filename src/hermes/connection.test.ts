@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row } from "./fakeHermes";
-import type { OpenPipe, Route } from "./pipe";
+import { SignedOutError, type OpenPipe, type Route } from "./pipe";
 import { connect } from "./transport";
 
 async function signedIn(server = new FakeHermes()) {
@@ -183,6 +183,151 @@ describe("Reconnecting", () => {
     await vi.advanceTimersByTimeAsync(5 * 60_000);
     expect(status()).toBe("connected");
     expect(server.requests.filter((r) => r.method === "gateway.ping").length).toBeGreaterThan(5);
+  });
+});
+
+describe("Recovery", () => {
+  beforeEach(() => void vi.useFakeTimers());
+  afterEach(() => void vi.useRealTimers());
+
+  const texts = (items: { kind: string; text?: string }[]) => items.map((i) => i.text ?? i.kind);
+  const submits = (server: FakeHermes) => server.requests.filter((r) => r.method === "prompt.submit");
+  /** The computer sleeps for `ms`; timers due meanwhile run once it wakes, as they do in the webview. */
+  const sleep = async (ms: number) => {
+    vi.setSystemTime(Date.now() + ms);
+    await vi.advanceTimersByTimeAsync(10_000);
+  };
+
+  async function gaveUp() {
+    const signed = await signedIn();
+    signed.server.refuse = "Can't reach the Hermes dashboard: Network is unreachable";
+    signed.server.drop();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(signed.status()).toBe("offline");
+    signed.server.refuse = undefined;
+    return signed;
+  }
+
+  it("tries again when the computer wakes, however long ago reconnecting gave up", async () => {
+    const { server, status } = await gaveUp();
+    await sleep(8 * 3_600_000);
+    expect(status()).toBe("connected");
+    expect(server.opened).toBe(2);
+  });
+
+  it("checks the connection as soon as the computer wakes, and reconnects one that went quiet", async () => {
+    const { server, status } = await signedIn();
+    await sleep(20 * 60_000);
+    expect(server.closed).toBe(true);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(status()).toBe("connected");
+    expect(server.opened).toBe(2);
+  });
+
+  it("tries again on a sign the network is back, after reconnecting gave up", async () => {
+    const { server, hermes, status } = await gaveUp();
+    await hermes.maybeReconnect();
+    expect(status()).toBe("connected");
+    expect(server.opened).toBe(2);
+  });
+
+  it("stays connected, sending nothing extra, on a sign the network is back", async () => {
+    const { server, hermes } = await signedIn();
+    await hermes.maybeReconnect();
+    expect(server.opened).toBe(1);
+  });
+
+  it("stops at once, and stays stopped, when Hermes refuses the saved password", async () => {
+    const { server, hermes, status } = await signedIn();
+    server.signedOut = "Wrong username or password.";
+    server.drop();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(hermes.getSnapshot()).toMatchObject({ status: "signedOut", closedReason: "Wrong username or password." });
+
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    await hermes.maybeReconnect();
+    await sleep(3_600_000);
+    expect(status()).toBe("signedOut");
+    expect(server.opened).toBe(1);
+  });
+
+  it("tells a refused password apart from a server it can't reach", async () => {
+    const { server, status } = await signedIn();
+    server.refuse = "Can't reach the Hermes dashboard: connection refused";
+    server.drop();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(status()).toBe("reconnecting");
+  });
+
+  it("signs out when Hermes refuses the password on a list refresh", async () => {
+    const { server, hermes, status } = await signedIn();
+    server.signedOut = "Wrong username or password.";
+    await hermes.sync();
+    expect(hermes.getSnapshot()).toMatchObject({ status: "signedOut", closedReason: "Wrong username or password." });
+    expect(server.closed).toBe(true);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(status()).toBe("signedOut");
+    expect(server.opened).toBe(1);
+  });
+
+  it("signs in again with a new password, keeping the chats and their history", async () => {
+    const server = new FakeHermes();
+    server.sessions = [row("a", 1, { pinned: true })];
+    server.transcripts = { a: [{ role: "user", text: "hi" }, { role: "assistant", text: "Hello!" }] };
+    const { hermes, status, chat } = await signedIn(server);
+    await hermes.sync();
+    await hermes.open("a");
+    server.signedOut = "Wrong username or password.";
+    server.drop();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(status()).toBe("signedOut");
+
+    await expect(hermes.signInAgain(async () => Promise.reject(new SignedOutError("Wrong username or password.")))).rejects.toThrow("Wrong username");
+    expect(status()).toBe("signedOut");
+
+    server.signedOut = undefined;
+    await hermes.signInAgain(server.openPipe);
+    expect(status()).toBe("connected");
+    expect(texts(chat("a").items)).toEqual(["hi", "Hello!"]);
+    await hermes.open("a");
+    expect(texts(chat("a").items)).toEqual(["hi", "Hello!"]);
+  });
+
+  async function cutOff(hermesGotIt: boolean) {
+    const server = new FakeHermes();
+    server.sessions = [row("a", 1, { pinned: true })];
+    server.transcripts = { a: [{ role: "user", text: "hi" }, { role: "assistant", text: "Hello!" }] };
+    const signed = await signedIn(server);
+    await signed.hermes.sync();
+    await signed.hermes.open("a");
+    server.handlers["prompt.submit"] = () => {}; // The drop comes before Hermes answers.
+    const sending = signed.hermes.send("a", "Restart nginx");
+    await vi.advanceTimersByTimeAsync(0);
+    if (hermesGotIt) server.transcripts.a.push({ role: "user", text: "Restart nginx" });
+    server.drop();
+    await sending;
+    return signed;
+  }
+
+  it("never sends a message again after reconnecting, and shows one Hermes got once", async () => {
+    const { server, hermes, chat } = await cutOff(true);
+    expect(chat("a").items.at(-1)).toMatchObject({ kind: "error", text: expect.stringContaining("won't send it again") });
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    await hermes.open("a");
+    await hermes.idle();
+    expect(submits(server)).toHaveLength(1);
+    expect(texts(chat("a").items)).toEqual(["hi", "Hello!", "Restart nginx"]);
+  });
+
+  it("keeps a message Hermes didn't get, saying it wasn't sent again", async () => {
+    const { server, hermes, chat } = await cutOff(false);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await hermes.open("a");
+    await hermes.idle();
+    expect(submits(server)).toHaveLength(1);
+    expect(texts(chat("a").items)).toEqual(["hi", "Hello!", "Restart nginx", "Hermes didn't get this message before the connection dropped. Hermes Chat didn't send it again."]);
+    expect(chat("a").settled).toBe(false);
   });
 });
 

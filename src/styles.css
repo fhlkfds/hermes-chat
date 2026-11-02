@@ -105,6 +105,7 @@ code, pre, kbd { font-family: var(--mono); }
 .conn-dot.connected { background: var(--ok); box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.12); }
 .conn-dot.reconnecting { background: var(--warn); animation: pulse 1s ease-in-out infinite; }
 .conn-dot.offline { background: var(--faint); }
+.conn-dot.signedOut { background: var(--bad); }
 .conn-dot.unsecure { outline: 2px solid var(--warn); outline-offset: 3px; }
 @keyframes pulse { 50% { opacity: 0.35; } }
 
@@ -334,6 +335,12 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .chip button:hover { background: var(--line-2); color: var(--text); }
 .attach-note { font-size: 12px; color: var(--muted); padding: 0 6px 8px; }
 .offline-note { font-size: 12px; color: var(--muted); padding: 0 6px 8px; }
+.recover-note {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px; font-size: 13px; margin-bottom: 10px;
+  background: var(--raised); border: 1px solid var(--line-2); border-radius: 12px; padding: 10px 10px 10px 14px;
+}
+.recover-reason { color: var(--muted); font-size: 12px; margin-top: 2px; overflow-wrap: anywhere; }
+.recover-note .btn { flex: none; }
 .composer-hint { font-size: 12px; color: var(--warn); padding: 0 6px 8px; }
 .platform-note { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); padding: 0 6px 8px; }
 .conn-btn { position: relative; display: grid; place-items: center; width: 30px; height: 30px; border-radius: 8px; }
@@ -386,6 +393,18 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 .settings p { margin: 0 0 16px; font-size: 13px; line-height: 1.55; }
 .settings p.settings-note { margin: 12px 0 0; font-size: 12px; }
 .settings-status { display: flex; align-items: center; gap: 12px; margin: 8px 0 18px; }
+.settings-recover { margin-left: auto; }
+
+/* sign in again, over the chat */
+.dialog-scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); z-index: 40; display: grid; place-items: center; }
+.dialog {
+  width: min(400px, 92vw); background: var(--raised); border: 1px solid var(--line-2); border-radius: 14px; padding: 20px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
+}
+.dialog h2 { font-size: 16px; font-weight: 600; margin: 0; }
+.dialog p { margin: 0; font-size: 13px; line-height: 1.5; }
+.dialog .field input { background: var(--bg); }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
 .settings-row svg { vertical-align: -2px; }
 .big-num { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
