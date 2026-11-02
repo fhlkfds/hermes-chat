@@ -590,12 +590,15 @@ export class Hermes {
   /**
    * Answers an Approval with the owner's choice, in a response frame to Hermes's request (research doc §6). One
    * already answered, or that Hermes stopped waiting for, is left alone, and so is a choice Hermes didn't offer, or a
-   * broader grant (`isBroadGrant`) the owner hasn't `confirmed`. If the answer can't go, the chat says so and the
-   * card stays waiting.
+   * broader grant (`isBroadGrant`) the owner hasn't `confirmed`. So is a card from before a drop until its chat is
+   * loaded again, which tells whether Hermes still waits on it. If the answer can't go, the chat says so and the card
+   * stays waiting.
    */
   async answerApproval(chatId: string, approvalId: string, choice: ApprovalChoice, confirmed = false): Promise<void> {
-    const card = this.snapshot.chats.find((c) => c.id === chatId)?.items.find((i) => i.id === approvalId);
+    const chat = this.snapshot.chats.find((c) => c.id === chatId);
+    const card = chat?.items.find((i) => i.id === approvalId);
     if (!card || !isWaiting(card) || !offeredChoices(card).includes(choice) || (isBroadGrant(choice) && !confirmed)) return;
+    if (this.snapshot.status === "connected" && !chat?.runtimeId) return;
     const answer = (a?: ApprovalChoice) =>
       this.patchChat(chatId, (c) => ({ ...c, items: c.items.map((i) => (i.id === approvalId && i.kind === "approval" ? { ...i, answer: a } : i)) }));
     answer(choice);

@@ -252,7 +252,7 @@ export function ChatPane({
               );
             if (b.kind === "thinking") return <Thought key={b.id} item={b} live={!!chat.running && b === last} query={q} />;
             if (b.kind === "approval")
-              return <ApprovalCard key={b.id} item={b} offline={status !== "connected"} onAnswer={(c, confirmed) => onAnswer(b.id, c, confirmed)} />;
+              return <ApprovalCard key={b.id} item={b} offline={status !== "connected" || !!chat.loading} onAnswer={(c, confirmed) => onAnswer(b.id, c, confirmed)} />;
             return <ToolGroup key={b.id} tools={b.tools} />;
           })}
           {/* A reply waiting on the owner isn't thinking, and streamed thinking shows its own row. */}

@@ -60,6 +60,12 @@ describe("Approval card", () => {
     expect(timedOut).toContain("Timed out without an answer");
   });
 
+  it("shows hidden characters in the command and description", () => {
+    const html = show(card({ command: "rm -rf /tmp/\u202Egol.\u200Bsh\n  ls\tx", description: "a\u2066b" }));
+    expect(html).toContain("rm -rf /tmp/\\u{202E}gol.\\u{200B}sh\n  ls\tx");
+    expect(html).toContain("a\\u{2066}b");
+  });
+
   it("asks the owner to confirm allowing the command for the rest of the chat", () => {
     const html = renderToStaticMarkup(<ConfirmGrant item={card()} choice="session" offline={false} onConfirm={() => {}} onBack={() => {}} />);
     expect(html).toContain("for the rest of this chat");

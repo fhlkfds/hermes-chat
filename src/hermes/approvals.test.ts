@@ -358,6 +358,27 @@ describe("Approvals after a reconnect", () => {
     expect(server.responses).toEqual([]);
   });
 
+  it("doesn't answer a card from before the drop until its chat is loaded again", async () => {
+    vi.useFakeTimers();
+    const { server, hermes, id: chatId, runtime, card } = await replying();
+    const { id } = server.askApproval(runtime);
+    const resume = server.handlers["session.resume"];
+    let reload = () => {};
+    server.handlers["session.resume"] = (r) => (reload = () => resume(r));
+    server.drop();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(hermes.getSnapshot().status).toBe("connected");
+
+    await hermes.answerApproval(chatId, id!, "once");
+    expect(server.responses).toEqual([]);
+    expect(card()).not.toHaveProperty("answer");
+
+    reload();
+    await hermes.idle();
+    await hermes.answerApproval(chatId, id!, "once");
+    expect(server.responses).toEqual([{ jsonrpc: "2.0", id, result: { choice: "once", all: false } }]);
+  });
+
   it("tells Hermes again that a card is on screen only if it hadn't before", async () => {
     vi.useFakeTimers();
     const { server, hermes, id: chatId, runtime } = await replying();
