@@ -24,6 +24,7 @@ afterEach(() => {
   cleanup();
   for (const stop of stopOutboxes.splice(0)) stop();
   localStorage.clear();
+  vi.unstubAllGlobals();
 });
 
 const MiB = 1024 * 1024;
@@ -263,6 +264,47 @@ describe("Taking a screenshot for the composer", () => {
     await rust.land();
     await waitFor(() => expect(chips()).toHaveLength(1));
     expect(rust.attached).toHaveBeenCalledTimes(1);
+  });
+
+  it("reveals the attachment and capture errors when a narrow preview covers the composer", async () => {
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(private cb: ResizeObserverCallback) {}
+      observe() {
+        this.cb([{ contentRect: { width: 600 } } as ResizeObserverEntry], this as unknown as ResizeObserver);
+      }
+      disconnect() {}
+    });
+    const { rust, user } = await signedIn();
+    await user.click(screen.getByRole("button", { name: "Open the preview" }));
+    expect(document.querySelector(".main-chat")!.hasAttribute("inert")).toBe(true);
+
+    rust.pressDesktopShortcut();
+    expect(document.querySelector(".main-chat")!.hasAttribute("inert")).toBe(false);
+    expect(document.querySelector("aside.preview")).toBeNull();
+    await rust.land();
+    await waitFor(() => expect(chips()).toHaveLength(1));
+
+    await user.click(screen.getByRole("button", { name: "Show the preview" }));
+    rust.pressDesktopShortcut();
+    await rust.fail({ kind: "denied", message: "Screenshot permission denied" });
+    expect((await screen.findByRole("alert")).textContent).toContain("Screenshot permission denied");
+    expect(document.querySelector(".main-chat")!.hasAttribute("inert")).toBe(false);
+  });
+
+  it("reveals the composer for a desktop screenshot while project settings are open", async () => {
+    const { server, rust, user } = await signedIn();
+    await user.click(document.querySelector<HTMLElement>(".project-btn")!);
+    await user.click(screen.getByRole("button", { name: /New project/ }));
+    await user.type(screen.getByRole("textbox", { name: "New project name" }), "Capture review{Enter}");
+    await screen.findByRole("heading", { name: "Capture review" });
+    expect(screen.queryByPlaceholderText("Message Hermes")).toBeNull();
+
+    rust.pressDesktopShortcut();
+    await screen.findByPlaceholderText("Message Hermes");
+    await rust.land();
+    await waitFor(() => expect(chips()).toHaveLength(1));
+    expect(rust.attached).toHaveBeenCalledTimes(1);
+    expect(server.requests.some((r) => r.method === "image.attach_bytes")).toBe(false);
   });
 
   it("does nothing on the shortcut once it is turned off", async () => {

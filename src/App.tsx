@@ -400,10 +400,12 @@ export function Main({
     setDesk(d);
     return () => d.dispose();
   }, []);
-  // Settings covers the composer, so a screenshot closes it, to show where the capture went.
+  // Reveal the composer when Settings, Projects or a narrow preview covers it, so the capture can be reviewed.
   const takeScreenshot = (remote = false) => {
     if (!desk) return;
     setSettingsOpen(false);
+    setProjectOpen(false);
+    if (!previewFits) setPreviewHidden(true);
     void desk.capture({ remote });
   };
   const takeScreenshotRef = useRef(takeScreenshot);
