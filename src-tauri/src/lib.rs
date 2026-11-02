@@ -1,6 +1,8 @@
 pub mod fonts;
 pub mod notify;
+pub mod remote;
 pub mod saved_password;
+pub mod screenshot;
 pub mod transport;
 pub mod tunnel;
 
@@ -47,6 +49,25 @@ enum Route {
 
 #[derive(Default)]
 struct AppState(Mutex<Option<Connection>>);
+
+/// Private screenshot storage and desktop requests waiting for a signed-in window.
+#[derive(Default)]
+struct Screenshots {
+    captures: std::sync::Mutex<Option<Arc<screenshot::Captures>>>,
+    requests: remote::Requests,
+}
+
+impl Screenshots {
+    fn captures(&self) -> Result<Arc<screenshot::Captures>, screenshot::CaptureError> {
+        let mut slot = self.captures.lock().unwrap();
+        if let Some(c) = &*slot {
+            return Ok(c.clone());
+        }
+        let c = Arc::new(screenshot::Captures::open(screenshot::default_root()?)?);
+        *slot = Some(c.clone());
+        Ok(c)
+    }
+}
 
 #[tauri::command]
 async fn hermes_connect(
@@ -116,6 +137,56 @@ async fn hermes_stat_files(paths: Vec<String>) -> Vec<LocalFile> {
 #[tauri::command]
 async fn hermes_read_preview(path: String) -> Result<tauri::ipc::Response, String> {
     transport::read_preview(&path).await.map(tauri::ipc::Response::new).map_err(|e| e.to_string())
+}
+
+/// Takes a screenshot of a region or window the owner picks, staged privately as `<name>.png` for the composer.
+#[tauri::command]
+async fn screenshot_capture(state: State<'_, Screenshots>, name: String) -> Result<screenshot::Capture, screenshot::CaptureError> {
+    let captures = state.captures()?;
+    screenshot::capture(&captures, &name).await
+}
+
+/// Deletes a staged screenshot: removed from the composer, or its message sent. Paths that aren't one are ignored.
+#[tauri::command]
+fn screenshot_discard(state: State<'_, Screenshots>, path: String) {
+    if let Some(c) = &*state.captures.lock().unwrap() {
+        c.discard(std::path::Path::new(&path));
+    }
+}
+
+/// How screenshots are taken on this desktop, for Settings.
+#[tauri::command]
+async fn screenshot_support() -> screenshot::Support {
+    tokio::task::spawn_blocking(screenshot::support).await.unwrap_or_else(|e| screenshot::Support { ok: false, summary: e.to_string() })
+}
+
+/// The renderer supplies all persisted outboxes at startup and whenever they change, before cleanup.
+#[tauri::command]
+fn screenshot_sync_outbox(state: State<'_, Screenshots>, paths: Vec<String>) -> Result<(), screenshot::CaptureError> {
+    state.captures()?.retain_outbox(paths.into_iter().map(std::path::PathBuf::from));
+    Ok(())
+}
+
+/// Peeking leaves the request pending if the signed-in window goes away before handling it.
+#[tauri::command]
+fn screenshot_pending_request(state: State<'_, Screenshots>) -> Option<u64> {
+    state.requests.pending()
+}
+
+/// A live window started handling this request. A newer request remains pending.
+#[tauri::command]
+fn screenshot_ack_request(state: State<'_, Screenshots>, id: u64) {
+    state.requests.acknowledge(id);
+}
+
+/// Brings the window forward after a desktop shortcut's screenshot was attached, so the owner can review it.
+#[tauri::command]
+fn screenshot_show_window(app: tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
 }
 
 /// Saves a file pasted into the composer to a temp file and returns its path. Its bytes come as the raw body, not
@@ -256,10 +327,29 @@ async fn system_fonts() -> fonts::Fonts {
     fonts::list().await
 }
 
-pub fn run() {
+/// Starts the app. `screenshot`: it was started by `hermes-chat --screenshot`, with no other Hermes Chat to take it.
+pub fn run(screenshot: bool) {
+    let screenshots = Screenshots::default();
+    if screenshot {
+        screenshots.requests.ask();
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
+        .manage(screenshots)
+        .setup(|app| {
+            use tauri::Emitter;
+            // Open storage at startup. The renderer supplies outbox references and triggers the startup sweep.
+            if let Err(e) = app.state::<Screenshots>().captures() {
+                eprintln!("hermes-chat: couldn't clean up old screenshots: {e}");
+            }
+            let handle = app.handle().clone();
+            remote::serve(move || {
+                handle.state::<Screenshots>().requests.ask();
+                let _ = handle.emit(remote::EVENT, ());
+            });
+            Ok(())
+        })
         .manage(PickedFiles::default())
         .invoke_handler(tauri::generate_handler![
             hermes_connect,
@@ -281,8 +371,18 @@ pub fn run() {
             preview_read_local,
             preview_read_local_image,
             notify_desktop,
-            system_fonts
+            system_fonts,
+            screenshot_capture,
+            screenshot_discard,
+            screenshot_support,
+            screenshot_sync_outbox,
+            screenshot_pending_request,
+            screenshot_ack_request,
+            screenshot_show_window
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        // Outbox persistence in the renderer can precede its asynchronous retention IPC. Leave remaining captures
+        // for the next startup's sweep, after persisted references are known, rather than risk deleting Retry bytes.
+        .run(|_, _| {});
 }

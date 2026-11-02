@@ -42,7 +42,7 @@ afterEach(() => {
 
 describe("reading", () => {
   it("is the defaults when nothing is stored", () => {
-    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, modelFavorites: [], statusBar: ["context", "yolo", "model", "status"], previewWidth: null });
+    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, modelFavorites: [], statusBar: ["context", "yolo", "model", "status"], previewWidth: null, screenshotShortcut: "Ctrl+Shift+S" });
     expect(getUIPrefs()).toEqual(DEFAULT_UI_PREFS);
   });
 
@@ -76,7 +76,7 @@ describe("reading", () => {
       modelPicker: { provider: "anthropic", model: "claude-opus-5-5", effort: "max", fast: true },
       modelFavorites: ["openai/gpt-5", "anthropic/claude-opus-5-5"],
       statusBar: ["model", "tokens"],
-      previewWidth: null,
+      previewWidth: null, screenshotShortcut: "Ctrl+Shift+S",
     });
   });
 
@@ -323,4 +323,18 @@ describe("the last open chat", () => {
     rememberOpenChat("work", null);
     expect(fn).not.toHaveBeenCalled();
   });
+  it("keeps a screenshot shortcut in its stored shape, or none", () => {
+    for (const ok of ["Alt+F12", "Ctrl+Alt+Shift+Super+9", "PrintScreen", "Super+PrintScreen"]) {
+      setUIPrefs({ screenshotShortcut: ok });
+      expect(getUIPrefs().screenshotShortcut).toBe(ok);
+    }
+    setUIPrefs({ screenshotShortcut: null });
+    expect(getUIPrefs().screenshotShortcut).toBeNull();
+    // Out of order, unknown keys and lowercase letters aren't stored shapes; the last good value stays.
+    for (const bad of ["Shift+Ctrl+S", "Ctrl+s", "Ctrl+Tab", "Ctrl+", "F25", 7]) {
+      setUIPrefs({ screenshotShortcut: bad as string });
+      expect(getUIPrefs().screenshotShortcut).toBeNull();
+    }
+  });
+
 });

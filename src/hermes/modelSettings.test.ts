@@ -40,7 +40,7 @@ describe("Reading the model setup", () => {
     expect(s.main).toEqual({ provider: "openrouter", model: "z-ai/glm-5.3-flash", effort: "high", fast: false });
     expect(s.subagent).toEqual({ provider: "", model: "", maxIterations: 50, maxConcurrent: 3, timeoutSeconds: 0, effort: "", directEndpoint: false });
     expect(s.auxiliary.map((t) => [t.task, t.label, t.provider, t.model, t.effort])).toEqual([
-      ["title_generation", "Chat titles", "openrouter", "deepseek/deepseek-v4-flash", AUX_INHERIT],
+      ["title_generation", "Text generation", "openrouter", "deepseek/deepseek-v4-flash", AUX_INHERIT],
       ["compression", "Compression", "openrouter", "deepseek/deepseek-v4-flash", AUX_INHERIT],
       ["vision", "Vision", "openrouter", "google/gemini-3.7-flash", AUX_INHERIT],
       ["approval", "Approval checks", AUX_AUTO, "", "none"],

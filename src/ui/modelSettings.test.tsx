@@ -70,7 +70,7 @@ describe("Settings → Model", () => {
     expect(select("Compression effort").value).toBe("inherit");
     expect(select("Approval checks provider").value).toBe("auto");
     expect(select("Approval checks effort").value).toBe("none");
-    expect(screen.getByText(/Chat titles, Compression and Vision are pinned to OpenRouter/)).toBeTruthy();
+    expect(screen.getByText(/Text generation, Compression and Vision are pinned to OpenRouter/)).toBeTruthy();
   });
 
   it("can't apply a provider switch until a model is picked for the new provider", async () => {
@@ -119,7 +119,7 @@ describe("Guardrail: helper tasks pinned to another provider", () => {
 
     const ask = screen.getByRole("alertdialog", { name: "Auxiliary models still pinned" });
     expect(ask.textContent).toContain("Auxiliary models still pinned to OpenRouter — apply anyway?");
-    expect(ask.textContent).toContain("Chat titles, Compression and Vision will keep running there");
+    expect(ask.textContent).toContain("Text generation, Compression and Vision will keep running there");
     expect(writes(server)).toEqual([]);
 
     await user.click(within(ask).getByRole("button", { name: "Cancel" }));
@@ -219,5 +219,56 @@ describe("Subagents and auxiliary models", () => {
     await waitFor(() => expect(server.modelConfig.auxiliary.compression).toEqual({ provider: "openai-codex", model: "gpt-6.1-mini", reasoning_effort: "none" }));
     expect(select("Main reasoning effort").value).toBe("low");
     expect(server.modelConfig.agent.reasoning_effort).toBe("high");
+  });
+});
+
+describe("Text generation model", () => {
+  const card = () => screen.getByRole("group", { name: "Text generation model" });
+
+  it("is picked like a chat's model and written at once, and the helper list no longer shows it", async () => {
+    const { server, user } = await shown();
+    expect(within(card()).getByRole("button", { name: "Model: deepseek/deepseek-v4-flash" })).toBeTruthy();
+    expect(screen.queryByRole("group", { name: "Text generation" })).toBeNull();
+
+    await user.click(within(card()).getByRole("button", { name: /^Model:/ }));
+    await user.click(await within(card()).findByRole("button", { name: /^google\/gemini-3.7-flash/ }));
+
+    await waitFor(() => expect(server.modelConfig.auxiliary.title_generation).toEqual({ provider: "openrouter", model: "google/gemini-3.7-flash" }));
+    expect(writes(server)).toEqual([
+      ["POST /api/model/set", { scope: "auxiliary", task: "title_generation", provider: "openrouter", model: "google/gemini-3.7-flash", reasoning_effort: null }],
+    ]);
+    expect(await within(card()).findByRole("button", { name: "Model: google/gemini-3.7-flash" })).toBeTruthy();
+    // Another helper task's draft is untouched, so there's nothing to apply.
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "Apply auxiliary models" }).disabled).toBe(true);
+  });
+
+  it("sets its reasoning effort from the pill", async () => {
+    const { server, user } = await shown();
+    await user.click(await within(card()).findByRole("button", { name: /^Reasoning effort:/ }));
+    await user.click(screen.getByRole("menuitemradio", { name: "Low" }));
+    await waitFor(() => expect(server.modelConfig.auxiliary.title_generation.reasoning_effort).toBe("low"));
+  });
+
+  it("goes back to the main model with reset", async () => {
+    const { server, user } = await shown();
+    await user.click(within(card()).getByRole("button", { name: "Use the main model for text generation" }));
+    await waitFor(() => expect(server.modelConfig.auxiliary.title_generation).toEqual({ provider: "auto", model: "" }));
+    expect(await within(card()).findByText(/Until you pick one, it's the main model, z-ai\/glm-5.3-flash/)).toBeTruthy();
+    expect(within(card()).queryByRole("button", { name: "Use the main model for text generation" })).toBeNull();
+  });
+
+  it("asks before an expensive model, and Keep current writes nothing", async () => {
+    const { server, user } = await shown();
+    await user.click(within(card()).getByRole("button", { name: /^Model:/ }));
+    await user.click(within(await within(card()).findByRole("group", { name: "OpenRouter" })).getByRole("button", { name: /^anthropic\/claude-fable-5.1/ }));
+    const ask = await screen.findByRole("alertdialog", { name: "Expensive model" });
+    expect(ask.textContent).toContain("Use anthropic/claude-fable-5.1 for text generation?");
+    await user.click(within(ask).getByRole("button", { name: "Keep current" }));
+    expect(server.modelConfig.auxiliary.title_generation.model).toBe("deepseek/deepseek-v4-flash");
+
+    await user.click(within(card()).getByRole("button", { name: /^Model:/ }));
+    await user.click(within(await within(card()).findByRole("group", { name: "OpenRouter" })).getByRole("button", { name: /^anthropic\/claude-fable-5.1/ }));
+    await user.click(within(await screen.findByRole("alertdialog", { name: "Expensive model" })).getByRole("button", { name: "Use anyway" }));
+    await waitFor(() => expect(server.modelConfig.auxiliary.title_generation.model).toBe("anthropic/claude-fable-5.1"));
   });
 });

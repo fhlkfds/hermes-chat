@@ -20,6 +20,27 @@ const OUTBOX_PREFIX = "hermes-chat.outbox.";
 /** Where drafts.ts kept a chat's sent messages Hermes didn't take, or may not have, before the outbox: moved into it. */
 const HELD_PREFIX = "hermes-chat.undelivered.";
 
+const outboxListeners = new Set<() => void>();
+// Include writes the store couldn't keep: those outboxes still exist in the running transport.
+const liveOutboxes = new Map<string, OutgoingItem[]>();
+export function subscribeOutbox(fn: () => void): () => void {
+  outboxListeners.add(fn);
+  return () => void outboxListeners.delete(fn);
+}
+
+/** Attachment paths in every connection/profile's outbox, for local screenshot lifetime management. */
+export function outboxAttachmentPaths(): string[] {
+  const rows = new Map<string, OutgoingItem[]>();
+  for (const k of keysOf(OUTBOX_PREFIX)) {
+    try {
+      const value: unknown = JSON.parse(localStorage.getItem(k) ?? "[]");
+      if (Array.isArray(value)) rows.set(k, value.flatMap((r) => toOutgoing(r) ?? []));
+    } catch { /* A malformed row holds no attachment. */ }
+  }
+  for (const [k, items] of liveOutboxes) rows.set(k, items);
+  return [...new Set([...rows.values()].flatMap((items) => items.flatMap((r) => r.outgoing.attachments?.map((a) => a.path) ?? [])))];
+}
+
 /**
  * The most storage the Saved copies take. The least recently saved go first past it. WebKitGTK gives the app about
  * 5 MB of localStorage, which the chat lists and sign-in share.
@@ -180,12 +201,15 @@ export function localChatCache(connection: SavedSignIn): ChatCache {
     }
   };
   const writeOutbox = (profile: string, chatId: string, items: OutgoingItem[]) => {
+    liveOutboxes.set(outboxKey(profile, chatId), items);
     try {
       if (items.length) localStorage.setItem(outboxKey(profile, chatId), JSON.stringify(items));
       else localStorage.removeItem(outboxKey(profile, chatId));
+      liveOutboxes.delete(outboxKey(profile, chatId));
     } catch {
       // Only a restart loses them.
     }
+    for (const fn of outboxListeners) fn();
   };
 
   const pulledProfiles = (): string[] => {
