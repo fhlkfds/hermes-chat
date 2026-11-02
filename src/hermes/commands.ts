@@ -76,23 +76,34 @@ export type CommandResult = { kind: "output"; text: string } | { kind: "send"; m
 const NO_SUCH_METHOD = -32601;
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
-/** The registry's server commands Hermes lists (`listed`), and those a quick or plugin command of the same name replaces. */
-export type ServerCommandList = { listed: Set<string>; replaced: Set<string> };
+/**
+ * The registry's server commands Hermes lists (`listed`); those a quick or plugin command of the same name replaces
+ * (`replaced`); and those that might be replaced by one Hermes couldn't list (`unsure`).
+ */
+export type ServerCommandList = { listed: Set<string>; replaced: Set<string>; unsure: Set<string> };
+
+/**
+ * Commands that go through `command.dispatch`, which runs a quick command (any shell command) or a plugin command before
+ * Hermes's own of the same name (`_dispatch_quick`, `_dispatch_plugin`). `slash.exec /context` is answered from the live
+ * session before any of those (`_live_slash_command_output`), so nothing can replace it.
+ */
+const REPLACEABLE = new Set(["steer"]);
 
 /**
  * The registry's server commands that this Hermes lists in `commands.catalog` for `profile`, the catalog the official
- * clients' menus are built from. Hermes runs a quick command or a plugin command before its own command of the same
- * name, and a quick command can run any shell command, so a name one of them takes is `replaced` and never run from
- * here. Rejects saying why when Hermes has no catalog, or couldn't tell which quick or plugin commands it has.
+ * clients' menus are built from. A replaceable command whose name a quick or plugin command takes is `replaced`, and
+ * `unsure` when Hermes's discovery of those failed: a failed skill discovery overwrites the warning a failed quick
+ * command discovery left (`command_discovery.command_catalog`). Neither is run from here. Rejects saying why when Hermes
+ * has no catalog.
  */
 export async function listServerCommands(rpc: Rpc, profile: string): Promise<ServerCommandList> {
   const res = await rpc("commands.catalog", { profile }).catch((e) => {
     throw isObj(e) && e.code === NO_SUCH_METHOD ? new Error("This Hermes doesn't list its commands. Update Hermes to use them here.") : e;
   });
   if (!isObj(res)) throw new Error("Hermes gave no list of its commands.");
-  // A failed discovery may have left out a quick or plugin command (`command_discovery.command_catalog`).
-  if ((typeof res.plugin_discovery_error === "string" && res.plugin_discovery_error) || /quick_commands discovery unavailable/.test(String(res.warning ?? "")))
-    throw new Error("Hermes couldn't list its quick and plugin commands, so it can't tell whether one replaces these.");
+  const failed =
+    (typeof res.plugin_discovery_error === "string" && !!res.plugin_discovery_error) ||
+    /(quick_commands|plugin command|skill) discovery unavailable/.test(String(res.warning ?? ""));
   // `canon`: every listed name and alias, lower-cased, to the command's own name. Quick commands are listed under
   // "User commands" and plugin commands in `plugin_commands`, by name without the slash.
   const canon = isObj(res.canon) ? res.canon : {};
@@ -101,10 +112,9 @@ export async function listServerCommands(rpc: Rpc, profile: string): Promise<Ser
     if (isObj(c) && (c.name === "User commands" || c.name === "Plugin commands") && Array.isArray(c.pairs))
       for (const p of c.pairs) if (Array.isArray(p) && typeof p[0] === "string") taken.add(p[0].toLowerCase());
   const server = COMMANDS.filter((c) => c.scope === "server").map((c) => c.name);
-  return {
-    listed: new Set(server.filter((n) => canon[`/${n}`] === `/${n}` && !taken.has(`/${n}`))),
-    replaced: new Set(server.filter((n) => taken.has(`/${n}`))),
-  };
+  const replaced = new Set(server.filter((n) => REPLACEABLE.has(n) && taken.has(`/${n}`)));
+  const unsure = new Set(server.filter((n) => REPLACEABLE.has(n) && failed && !replaced.has(n)));
+  return { listed: new Set(server.filter((n) => canon[`/${n}`] === `/${n}` && !replaced.has(n) && !unsure.has(n))), replaced, unsure };
 }
 
 /**

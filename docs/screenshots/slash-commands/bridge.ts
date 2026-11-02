@@ -50,6 +50,7 @@ function readFrames(sock: Socket, onText: (t: string) => void) {
       if (buf.length < 2) return;
       const op = buf[0] & 15;
       let len = buf[1] & 127, off = 2;
+      if (buf.length < (len === 126 ? 4 : len === 127 ? 10 : 2)) return;
       if (len === 126) (len = buf.readUInt16BE(2)), (off = 4);
       else if (len === 127) (len = Number(buf.readBigUInt64BE(2))), (off = 10);
       if (buf.length < off + 4 + len) return;

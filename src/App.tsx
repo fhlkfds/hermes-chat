@@ -1123,6 +1123,8 @@ function ChatView({
       if (serverCommands.state === "failed") return `Couldn't check whether this Hermes has it: ${serverCommands.reason}`;
       if (serverCommands.list.replaced.has(def.name))
         return `This Hermes has a quick or plugin command called /${def.name}, which it would run instead, so Hermes Chat doesn't run it.`;
+      if (serverCommands.list.unsure.has(def.name))
+        return `Hermes couldn't list its quick and plugin commands, so it can't tell whether one would run instead of /${def.name}.`;
       if (!serverCommands.list.listed.has(def.name)) return "This Hermes doesn't list it, so it may not have it. Updating Hermes may add it.";
       if (!chat.runtimeId) return "This chat is still loading from Hermes.";
       if (def.name === "steer" && !chat.running) return "No reply is running to steer. Send it as a message instead.";
