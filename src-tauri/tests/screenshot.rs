@@ -7,7 +7,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
-    let map: HashMap<String, String> = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    let map: HashMap<String, String> = pairs
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
     move |k| map.get(k).cloned()
 }
 fn tools(names: &'static [&'static str]) -> impl Fn(&str) -> bool {
@@ -16,44 +19,100 @@ fn tools(names: &'static [&'static str]) -> impl Fn(&str) -> bool {
 
 #[test]
 fn picks_slurp_and_grim_on_wlroots_compositors_and_the_portal_elsewhere() {
-    let hypr = env(&[("WAYLAND_DISPLAY", "wayland-1"), ("HYPRLAND_INSTANCE_SIGNATURE", "abc"), ("XDG_CURRENT_DESKTOP", "Hyprland")]);
-    assert_eq!(screenshot::plan(&hypr, tools(&["grim", "slurp", "hyprctl"])), Method::GrimSlurp(Windows::Hyprland));
+    let hypr = env(&[
+        ("WAYLAND_DISPLAY", "wayland-1"),
+        ("HYPRLAND_INSTANCE_SIGNATURE", "abc"),
+        ("XDG_CURRENT_DESKTOP", "Hyprland"),
+    ]);
+    assert_eq!(
+        screenshot::plan(&hypr, tools(&["grim", "slurp", "hyprctl"])),
+        Method::GrimSlurp(Windows::Hyprland)
+    );
     // Without hyprctl, slurp still picks regions.
-    assert_eq!(screenshot::plan(&hypr, tools(&["grim", "slurp"])), Method::GrimSlurp(Windows::None));
+    assert_eq!(
+        screenshot::plan(&hypr, tools(&["grim", "slurp"])),
+        Method::GrimSlurp(Windows::None)
+    );
     // Without slurp or grim nothing is captured: the portal there can't let the owner pick, so it would take the whole
     // screen without asking.
-    assert_eq!(screenshot::plan(&hypr, tools(&["grim"])), Method::NeedsSlurpAndGrim);
-    assert_eq!(screenshot::plan(&hypr, tools(&["slurp", "hyprctl"])), Method::NeedsSlurpAndGrim);
+    assert_eq!(
+        screenshot::plan(&hypr, tools(&["grim"])),
+        Method::NeedsSlurpAndGrim
+    );
+    assert_eq!(
+        screenshot::plan(&hypr, tools(&["slurp", "hyprctl"])),
+        Method::NeedsSlurpAndGrim
+    );
 
-    let sway = env(&[("WAYLAND_DISPLAY", "wayland-1"), ("SWAYSOCK", "/run/user/1000/sway-ipc.sock")]);
-    assert_eq!(screenshot::plan(&sway, tools(&["grim", "slurp", "swaymsg"])), Method::GrimSlurp(Windows::Sway));
-    let river = env(&[("WAYLAND_DISPLAY", "wayland-1"), ("XDG_CURRENT_DESKTOP", "river")]);
-    assert_eq!(screenshot::plan(&river, tools(&["grim", "slurp"])), Method::GrimSlurp(Windows::None));
+    let sway = env(&[
+        ("WAYLAND_DISPLAY", "wayland-1"),
+        ("SWAYSOCK", "/run/user/1000/sway-ipc.sock"),
+    ]);
+    assert_eq!(
+        screenshot::plan(&sway, tools(&["grim", "slurp", "swaymsg"])),
+        Method::GrimSlurp(Windows::Sway)
+    );
+    let river = env(&[
+        ("WAYLAND_DISPLAY", "wayland-1"),
+        ("XDG_CURRENT_DESKTOP", "river"),
+    ]);
+    assert_eq!(
+        screenshot::plan(&river, tools(&["grim", "slurp"])),
+        Method::GrimSlurp(Windows::None)
+    );
 
     // GNOME and Plasma have their own picker behind the portal, even with grim and slurp installed.
     let all = tools(&["grim", "slurp", "hyprctl", "swaymsg"]);
     for desktop in ["GNOME", "KDE", "ubuntu:GNOME"] {
-        let e = env(&[("WAYLAND_DISPLAY", "wayland-0"), ("XDG_CURRENT_DESKTOP", desktop)]);
+        let e = env(&[
+            ("WAYLAND_DISPLAY", "wayland-0"),
+            ("XDG_CURRENT_DESKTOP", desktop),
+        ]);
         assert_eq!(screenshot::plan(&e, &all), Method::Portal, "{desktop}");
     }
     // An X11 session, even of a desktop named like a wlroots one, goes through the portal.
-    let x11 = env(&[("DISPLAY", ":0"), ("XDG_SESSION_TYPE", "x11"), ("XDG_CURRENT_DESKTOP", "sway")]);
+    let x11 = env(&[
+        ("DISPLAY", ":0"),
+        ("XDG_SESSION_TYPE", "x11"),
+        ("XDG_CURRENT_DESKTOP", "sway"),
+    ]);
     assert_eq!(screenshot::plan(&x11, &all), Method::Portal);
     assert_eq!(screenshot::plan(env(&[]), &all), Method::Portal);
 }
 
 #[test]
 fn reads_what_slurp_answers() {
-    assert_eq!(screenshot::slurp_outcome(true, b"12,-40 300x200\n", b""), Ok("12,-40 300x200".into()));
-    assert_eq!(screenshot::slurp_outcome(false, b"", b"selection cancelled\n"), Err(CaptureError::Cancelled));
+    assert_eq!(
+        screenshot::slurp_outcome(true, b"12,-40 300x200\n", b""),
+        Ok("12,-40 300x200".into())
+    );
+    assert_eq!(
+        screenshot::slurp_outcome(false, b"", b"selection cancelled\n"),
+        Err(CaptureError::Cancelled)
+    );
     assert!(matches!(
         screenshot::slurp_outcome(false, b"", b"compositor doesn't support wlr-layer-shell-unstable-v1\n"),
         Err(CaptureError::Unsupported(m)) if m.contains("layer-shell")
     ));
-    assert!(matches!(screenshot::slurp_outcome(false, b"", b"failed to create display\n"), Err(CaptureError::Failed(m)) if m.contains("failed to create display")));
+    assert!(
+        matches!(screenshot::slurp_outcome(false, b"", b"failed to create display\n"), Err(CaptureError::Failed(m)) if m.contains("failed to create display"))
+    );
     // Anything but a non-empty region is refused, so nothing odd reaches grim's arguments.
-    for odd in [&b""[..], b"0,0 0x10", b"--help", b"1,2 3x4 extra", b"a,b cxd"] {
-        assert!(matches!(screenshot::slurp_outcome(true, odd, b""), Err(CaptureError::Failed(_))), "{:?}", String::from_utf8_lossy(odd));
+    for odd in [
+        &b""[..],
+        b"0,0 0x10",
+        b"--help",
+        b"1,2 3x4 extra",
+        b"a,b cxd",
+    ] {
+        assert!(
+            matches!(
+                screenshot::slurp_outcome(true, odd, b""),
+                Err(CaptureError::Failed(_))
+            ),
+            "{:?}",
+            String::from_utf8_lossy(odd)
+        );
     }
 }
 
@@ -61,33 +120,65 @@ fn reads_what_slurp_answers() {
 fn reads_what_grim_answers() {
     assert_eq!(screenshot::grim_outcome(true, b""), Ok(()));
     assert!(matches!(
-        screenshot::grim_outcome(false, b"compositor doesn't support wlr-screencopy-unstable-v1\n"),
+        screenshot::grim_outcome(
+            false,
+            b"compositor doesn't support wlr-screencopy-unstable-v1\n"
+        ),
         Err(CaptureError::Unsupported(_))
     ));
-    assert!(matches!(screenshot::grim_outcome(false, b"failed to write png\n"), Err(CaptureError::Failed(m)) if m.contains("failed to write png")));
+    assert!(
+        matches!(screenshot::grim_outcome(false, b"failed to write png\n"), Err(CaptureError::Failed(m)) if m.contains("failed to write png"))
+    );
 }
 
 #[test]
 fn reads_the_portal_answer() {
-    assert_eq!(portal::response(0, Some("file:///tmp/Screenshot%20from%20now.png")), Ok(PathBuf::from("/tmp/Screenshot from now.png")));
+    assert_eq!(
+        portal::response(0, Some("file:///tmp/Screenshot%20from%20now.png")),
+        Ok(PathBuf::from("/tmp/Screenshot from now.png"))
+    );
     assert_eq!(portal::response(1, None), Err(CaptureError::Cancelled));
-    assert!(matches!(portal::response(2, None), Err(CaptureError::Denied(m)) if m.contains("privacy")));
-    assert!(matches!(portal::response(0, None), Err(CaptureError::Failed(_))));
-    assert!(matches!(portal::response(0, Some("https://example.com/a.png")), Err(CaptureError::Failed(_))));
+    assert!(
+        matches!(portal::response(2, None), Err(CaptureError::Denied(m)) if m.contains("privacy"))
+    );
+    assert!(matches!(
+        portal::response(0, None),
+        Err(CaptureError::Failed(_))
+    ));
+    assert!(matches!(
+        portal::response(0, Some("https://example.com/a.png")),
+        Err(CaptureError::Failed(_))
+    ));
 }
 
 #[test]
 fn explains_portal_errors() {
-    assert!(matches!(portal::explain("org.freedesktop.DBus.Error.ServiceUnknown", "x"), CaptureError::Unsupported(m) if m.contains("xdg-desktop-portal")));
-    assert!(matches!(portal::explain("org.freedesktop.DBus.Error.UnknownMethod", "x"), CaptureError::Unsupported(_)));
-    assert!(matches!(portal::explain("org.freedesktop.portal.Error.NotAllowed", "x"), CaptureError::Denied(_)));
-    assert!(matches!(portal::explain("org.freedesktop.DBus.Error.AccessDenied", "x"), CaptureError::Denied(_)));
-    assert!(matches!(portal::explain("org.freedesktop.DBus.Error.NoReply", "timed out"), CaptureError::Failed(m) if m.contains("timed out")));
+    assert!(
+        matches!(portal::explain("org.freedesktop.DBus.Error.ServiceUnknown", "x"), CaptureError::Unsupported(m) if m.contains("xdg-desktop-portal"))
+    );
+    assert!(matches!(
+        portal::explain("org.freedesktop.DBus.Error.UnknownMethod", "x"),
+        CaptureError::Unsupported(_)
+    ));
+    assert!(matches!(
+        portal::explain("org.freedesktop.portal.Error.NotAllowed", "x"),
+        CaptureError::Denied(_)
+    ));
+    assert!(matches!(
+        portal::explain("org.freedesktop.DBus.Error.AccessDenied", "x"),
+        CaptureError::Denied(_)
+    ));
+    assert!(
+        matches!(portal::explain("org.freedesktop.DBus.Error.NoReply", "timed out"), CaptureError::Failed(m) if m.contains("timed out"))
+    );
 }
 
 #[test]
 fn errors_reach_the_webview_as_kind_and_message() {
-    assert_eq!(serde_json::to_value(CaptureError::Cancelled).unwrap(), serde_json::json!({ "kind": "cancelled" }));
+    assert_eq!(
+        serde_json::to_value(CaptureError::Cancelled).unwrap(),
+        serde_json::json!({ "kind": "cancelled" })
+    );
     assert_eq!(
         serde_json::to_value(CaptureError::Denied("no".into())).unwrap(),
         serde_json::json!({ "kind": "denied", "message": "no" })
@@ -105,7 +196,10 @@ fn outlines_the_windows_on_screen_for_slurp() {
         {"at":[5,5],"size":[100,100],"workspace":{"id":-98},"mapped":true,"hidden":false},
         {"at":[5,5],"size":[0,100],"workspace":{"id":1},"mapped":true,"hidden":false}
     ]"#;
-    assert_eq!(screenshot::hyprland_boxes(clients, monitors), ["10,20 800x600", "1930,0 640x480", "5,5 100x100"]);
+    assert_eq!(
+        screenshot::hyprland_boxes(clients, monitors),
+        ["10,20 800x600", "1930,0 640x480", "5,5 100x100"]
+    );
     assert!(screenshot::hyprland_boxes("not json", monitors).is_empty());
 
     let tree = r#"{"type":"root","nodes":[{"type":"output","nodes":[{"type":"workspace","nodes":[
@@ -113,14 +207,27 @@ fn outlines_the_windows_on_screen_for_slurp() {
         {"type":"con","pid":43,"app_id":"firefox","visible":false,"rect":{"x":0,"y":0,"width":960,"height":1080}},
         {"type":"con","layout":"splitv","nodes":[{"type":"con","pid":44,"window":7,"visible":true,"rect":{"x":960,"y":0,"width":960,"height":540}}]}
       ],"floating_nodes":[{"type":"floating_con","pid":45,"app_id":"pavucontrol","visible":true,"rect":{"x":100,"y":100,"width":400,"height":300}}]}]}]}"#;
-    assert_eq!(screenshot::sway_boxes(tree), ["0,0 960x1080", "960,0 960x540", "100,100 400x300"]);
+    assert_eq!(
+        screenshot::sway_boxes(tree),
+        ["0,0 960x1080", "960,0 960x540", "100,100 400x300"]
+    );
 }
 
 #[test]
 fn names_captures_plainly() {
-    assert_eq!(screenshot::capture_stem("screenshot-2026-11-02-153417"), "screenshot-2026-11-02-153417");
+    assert_eq!(
+        screenshot::capture_stem("screenshot-2026-11-02-153417"),
+        "screenshot-2026-11-02-153417"
+    );
     assert_eq!(screenshot::capture_stem("screenshot.png"), "screenshot");
-    for odd in ["", "../../etc/passwd", ".hidden", "a b", "name\n", &"x".repeat(101)] {
+    for odd in [
+        "",
+        "../../etc/passwd",
+        ".hidden",
+        "a b",
+        "name\n",
+        &"x".repeat(101),
+    ] {
         assert_eq!(screenshot::capture_stem(odd), "screenshot", "{odd:?}");
     }
     assert_eq!(screenshot::image_ext(b"\x89PNG\r\n\x1a\nrest"), Some("png"));
@@ -152,7 +259,9 @@ fn stages_captures_privately_and_deletes_the_portals_scratch_copy() {
     let source = root.0.join("portal-out.png");
     std::fs::write(&source, PNG).unwrap();
 
-    let a = captures.adopt(&source, "screenshot-2026-11-02-153417", true).unwrap();
+    let a = captures
+        .adopt(&source, "screenshot-2026-11-02-153417", true)
+        .unwrap();
     assert_eq!(a.file_name().unwrap(), "screenshot-2026-11-02-153417.png");
     assert!(a.starts_with(captures.mine()), "{a:?}");
     assert_eq!(std::fs::read(&a).unwrap(), PNG);
@@ -164,14 +273,19 @@ fn stages_captures_privately_and_deletes_the_portals_scratch_copy() {
 
     // A copy the desktop saved elsewhere is kept, and the same name twice is two files.
     std::fs::write(&source, PNG).unwrap();
-    let b = captures.adopt(&source, "screenshot-2026-11-02-153417", false).unwrap();
+    let b = captures
+        .adopt(&source, "screenshot-2026-11-02-153417", false)
+        .unwrap();
     assert!(source.exists());
     assert_ne!(a, b);
     assert_eq!(a.file_name(), b.file_name());
 
     // Not an image: refused, and nothing is left behind, not even the portal's scratch copy.
     std::fs::write(&source, b"<html>").unwrap();
-    assert!(matches!(captures.adopt(&source, "x", true), Err(CaptureError::Failed(_))));
+    assert!(matches!(
+        captures.adopt(&source, "x", true),
+        Err(CaptureError::Failed(_))
+    ));
     assert!(!source.exists());
     assert_eq!(std::fs::read_dir(captures.mine()).unwrap().count(), 2);
     // The desktop's own copy is kept, even when refused.
@@ -189,7 +303,12 @@ fn discards_only_its_own_captures() {
     let b = captures.adopt(&source, "shot", false).unwrap();
 
     // Nothing outside this process's folder can be deleted through discard.
-    for other in [source.clone(), captures.mine().join("x.png"), a.parent().unwrap().join("../../../s.png"), PathBuf::from("relative/x/y.png")] {
+    for other in [
+        source.clone(),
+        captures.mine().join("x.png"),
+        a.parent().unwrap().join("../../../s.png"),
+        PathBuf::from("relative/x/y.png"),
+    ] {
         assert!(!captures.discard(&other), "{other:?}");
     }
     assert!(source.exists());
@@ -233,7 +352,11 @@ fn counts_only_a_running_hermes_chat_as_alive() {
     // pid_max is at most 2^22 on Linux, so no process has this one.
     assert!(!screenshot::instance_alive(4_194_999));
     // A child that has exited but isn't reaped yet is a zombie: gone.
-    let mut child = std::process::Command::new(std::env::current_exe().unwrap()).arg("--list").stdout(std::process::Stdio::null()).spawn().unwrap();
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .arg("--list")
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
     let pid = child.id();
     for _ in 0..200 {
         let state = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
@@ -251,9 +374,15 @@ fn refuses_a_captures_folder_someone_else_could_open() {
     let base = std::env::temp_dir().join(format!("hermes-chat-test-open-{}", std::process::id()));
     let _root = Root(base.clone());
     std::fs::create_dir_all(base.join("captures")).unwrap();
-    std::fs::set_permissions(base.join("captures"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::set_permissions(
+        base.join("captures"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
     std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
-    assert!(matches!(Captures::open(base.join("captures")), Err(CaptureError::Failed(m)) if m.contains("private")));
+    assert!(
+        matches!(Captures::open(base.join("captures")), Err(CaptureError::Failed(m)) if m.contains("private"))
+    );
 
     // A link in place of the folder is refused too, even to a private folder.
     let real = base.join("real");
@@ -278,7 +407,10 @@ fn knows_a_scratch_file_from_the_desktops_own_copy() {
 #[test]
 fn reads_the_command_line_flag() {
     let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-    assert!(hermes_chat::remote::asked(args(&["hermes-chat", "--screenshot"])));
+    assert!(hermes_chat::remote::asked(args(&[
+        "hermes-chat",
+        "--screenshot"
+    ])));
     assert!(!hermes_chat::remote::asked(args(&["hermes-chat"])));
     // The program's own name doesn't count.
     assert!(!hermes_chat::remote::asked(args(&["--screenshot"])));

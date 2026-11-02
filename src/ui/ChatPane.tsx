@@ -594,7 +594,11 @@ function Composer({
   staged.current = attachments;
   useEffect(() => {
     if (!screenshots) return;
-    const stop = screenshots.attachTo({ attach: (paths) => addRef.current(paths), note: (text) => setRefused((cur) => [...cur, text]) });
+    const stop = screenshots.attachTo({
+      attach: (paths) => addRef.current(paths),
+      restore: (back) => setAttachments((cur) => [...cur, ...back.filter((a) => !cur.some((x) => x.path === a.path))]),
+      note: (text) => setRefused((cur) => [...cur, text]),
+    });
     return () => {
       stop();
       screenshots.release(staged.current.map((a) => a.path));

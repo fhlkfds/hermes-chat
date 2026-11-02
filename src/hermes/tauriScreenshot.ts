@@ -19,11 +19,39 @@ export const screenshotSupport = () => invoke<ScreenshotSupport>("screenshot_sup
  * made before this window was signed in (or one that started the app) is taken now, if it's recent.
  */
 export function onDesktopScreenshot(fn: () => void): () => void {
-  const take = () => void invoke<boolean>("screenshot_take_request").then((asked) => asked && fn(), () => {});
-  // Outside the app (tests, a plain browser) there is no Rust to listen to, and nothing to do.
-  const stop = listen("screenshot-requested", take).catch(() => undefined);
-  take();
-  return () => void stop.then((s) => s?.());
+  let live = true;
+  let running = false;
+  let again = false;
+  const take = async () => {
+    again = true;
+    if (running || !live) return;
+    running = true;
+    try {
+      while (live && again) {
+        again = false;
+        const id = await invoke<number | null>("screenshot_pending_request");
+        // Cleanup may have run while Rust answered. No acknowledgement: the next live window will take it.
+        if (!live) return;
+        if (id !== null) {
+          fn();
+          await invoke<void>("screenshot_ack_request", { id });
+        }
+      }
+    } catch {
+      // Outside the desktop app there is no Rust to ask.
+    } finally {
+      running = false;
+    }
+  };
+  // Listen before peeking, so a request made during registration is also observed.
+  const stop = listen("screenshot-requested", () => void take()).then((unlisten) => {
+    if (live) void take();
+    return unlisten;
+  }).catch(() => undefined);
+  return () => {
+    live = false;
+    void stop.then((s) => s?.());
+  };
 }
 
 /** Brings the window forward, so the owner can review a screenshot a desktop shortcut attached. */

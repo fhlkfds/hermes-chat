@@ -28,7 +28,7 @@ function fakeApi() {
 function sink(keep: (paths: string[]) => string[] = (p) => p) {
   const attached: string[][] = [];
   const notes: string[] = [];
-  const s: ScreenshotSink = { attach: async (paths) => (attached.push(paths), keep(paths)), note: (t) => void notes.push(t) };
+  const s: ScreenshotSink = { attach: async (paths) => (attached.push(paths), keep(paths)), restore: (back) => void attached.push(back.map((a) => a.path)), note: (t) => void notes.push(t) };
   return { s, attached, notes };
 }
 
@@ -138,7 +138,7 @@ describe("Screenshot desk", () => {
     const desk = new ScreenshotDesk(rust.api);
     // The first composer's check is still running when it goes (another chat opened).
     let check!: (kept: string[]) => void;
-    const first: ScreenshotSink = { attach: () => new Promise((r) => (check = r)), note: () => {} };
+    const first: ScreenshotSink = { restore: () => {}, attach: () => new Promise((r) => (check = r)), note: () => {} };
     const stop = desk.attachTo(first);
     const taking = desk.capture();
     await rust.land({ path: "/c/1/0/a.png" });
@@ -160,13 +160,13 @@ describe("Screenshot desk", () => {
     await rust.land({ path: "/c/1/0/a.png" });
     await taking;
 
-    desk.sent(["/c/1/0/a.png", "/home/liam/rack.png"], false);
+    desk.sent(["/c/1/0/a.png", "/home/liam/rack.png"].map((path) => ({ path, name: "a.png", size: 10, kind: "image" })), false);
     await new Promise((r) => setTimeout(r, 0));
     expect(composer.attached).toEqual([["/c/1/0/a.png"], ["/c/1/0/a.png"]]);
     expect(composer.notes).toEqual(["Hermes didn't confirm it got your message, so its screenshot is back here. Send it again, or remove it."]);
     expect(rust.discarded).toEqual([]);
 
-    desk.sent(["/c/1/0/a.png"], true);
+    desk.sent([{ path: "/c/1/0/a.png", name: "a.png", size: 10, kind: "image" }], true);
     await new Promise((r) => setTimeout(r, 0));
     expect(rust.discarded).toEqual(["/c/1/0/a.png"]);
   });

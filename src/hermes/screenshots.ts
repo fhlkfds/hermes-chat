@@ -3,6 +3,8 @@
 // it. The desk remembers which staged files are its captures, so each one is deleted once it is sent, removed, or left
 // behind (a chat switched away from, or signing out). Nothing here sends anything to Hermes.
 
+import type { Attachment } from "./model";
+
 /** Why a capture produced no image, as Rust reports it. */
 export type CaptureFailure = { kind: "cancelled" | "denied" | "unsupported" | "busy" | "failed"; message?: string };
 /** A capture staged on disk, and anything the owner should know about how it was taken. */
@@ -18,7 +20,12 @@ export type ScreenshotApi = {
  * The composer on screen. `attach` stages the files and resolves to the ones it kept (one too large for Hermes is
  * refused, with its note). `note` shows a line above the composer.
  */
-export type ScreenshotSink = { attach: (paths: string[]) => Promise<string[]>; note: (text: string) => void };
+export type ScreenshotSink = {
+  attach: (paths: string[]) => Promise<string[]>;
+  /** Already validated captures returning after an unconfirmed send; works while disconnected. */
+  restore: (attachments: Attachment[]) => void;
+  note: (text: string) => void;
+};
 
 export type DeskState = { capturing: boolean };
 
@@ -49,7 +56,7 @@ export function failureText(e: unknown): string | undefined {
 const RESTORED = "Hermes didn't confirm it got your message, so its screenshot is back here. Send it again, or remove it.";
 
 /** A capture or a note waiting for a composer to show it. */
-type Waiting = { paths: string[]; note?: string; remote: boolean };
+type Waiting = { paths: string[]; restored?: Attachment[]; note?: string; remote: boolean };
 
 export class ScreenshotDesk {
   private state: DeskState = { capturing: false };
@@ -108,7 +115,9 @@ export class ScreenshotDesk {
   private async deliver(w: Waiting): Promise<void> {
     const sink = this.sink;
     if (!sink) return void this.waiting.push(w);
-    if (w.paths.length) {
+    if (w.restored) {
+      sink.restore(w.restored.filter((a) => this.mine.has(a.path)));
+    } else if (w.paths.length) {
       const kept = await sink.attach(w.paths);
       // The composer went while it checked them (another chat opened, or Settings): they go to the one on screen
       // now, unless the old one already let them go.
@@ -123,10 +132,11 @@ export class ScreenshotDesk {
    * Puts captures sent with a message Hermes didn't confirm back in the composer on screen, so they aren't lost with
    * it; others are deleted. `accepted`: Hermes took the message.
    */
-  sent(paths: readonly string[], accepted: boolean) {
+  sent(attachments: readonly Attachment[], accepted: boolean) {
+    const paths = attachments.map((a) => a.path);
     if (accepted || this.disposed) return this.release(paths);
-    const back = paths.filter((p) => this.mine.has(p));
-    if (back.length) void this.deliver({ paths: back, remote: false, note: RESTORED });
+    const back = attachments.filter((a) => this.mine.has(a.path));
+    if (back.length) void this.deliver({ paths: [], restored: back, remote: false, note: RESTORED });
   }
 
   /** Deletes any of `paths` that are captures: sent, removed from the composer, or left behind. Others are ignored. */

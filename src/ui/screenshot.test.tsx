@@ -42,7 +42,10 @@ function fakeRust(server: FakeHermes) {
         names.push(name);
         return new Promise((resolve, reject) => (pending = { resolve, reject }));
       },
-      discard: async (path) => void discarded.push(path),
+      discard: async (path) => {
+        discarded.push(path);
+        delete server.files[path];
+      },
     },
     onDesktopShortcut: (fn) => {
       desktopShortcut = fn;
@@ -130,6 +133,25 @@ describe("Taking a screenshot for the composer", () => {
     expect(rust.discarded).toEqual([]);
     expect(screen.getByText(/so its screenshot is back here/)).toBeTruthy();
     expect(server.requests.map((r) => r.method)).not.toContain("prompt.submit");
+  });
+
+  it.each(["image.attach_bytes", "prompt.submit"])("keeps the capture after a disconnect during %s, then lets the owner remove it", async (method) => {
+    const { server, hermes, rust, user } = await signedIn();
+    server.handlers[method] = () => server.drop("closed during send");
+    await user.click(screen.getByRole("button", { name: "Attach a screenshot" }));
+    const path = await rust.land();
+    await waitFor(() => expect(chips()).toHaveLength(1));
+    await user.type(composer(), "What's wrong here?{Enter}");
+    await settle(hermes);
+
+    await waitFor(() => expect(chips()).toHaveLength(1));
+    expect(rust.discarded).toEqual([]);
+    expect(server.files[path]).toBe(PNG);
+    expect(screen.getByText(/so its screenshot is back here/)).toBeTruthy();
+    expect(server.requests.filter((r) => r.method === method)).toHaveLength(1);
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+    expect(rust.discarded).toEqual([path]);
+    expect(server.files[path]).toBeUndefined();
   });
 
   it("deletes a capture the owner removes before sending", async () => {

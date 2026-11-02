@@ -44,17 +44,12 @@ enum Route {
 #[derive(Default)]
 struct AppState(Mutex<Option<Connection>>);
 
-/// The private folder screenshots are staged in (screenshot.rs), opened at the first capture. And when a desktop
-/// shortcut last asked for a screenshot (`hermes-chat --screenshot`, remote.rs) that no signed-in window has taken yet:
-/// at launch, or at the sign-in screen, it waits for one.
+/// Private screenshot storage and desktop requests waiting for a signed-in window.
 #[derive(Default)]
 struct Screenshots {
     captures: std::sync::Mutex<Option<Arc<screenshot::Captures>>>,
-    asked_at: std::sync::Mutex<Option<std::time::Instant>>,
+    requests: remote::Requests,
 }
-
-/// How long a desktop shortcut's screenshot waits for a signed-in window. Any later, and it would surprise the owner.
-const REQUEST_WAITS_FOR: std::time::Duration = std::time::Duration::from_secs(120);
 
 impl Screenshots {
     fn captures(&self) -> Result<Arc<screenshot::Captures>, screenshot::CaptureError> {
@@ -159,10 +154,16 @@ async fn screenshot_support() -> screenshot::Support {
     tokio::task::spawn_blocking(screenshot::support).await.unwrap_or_else(|e| screenshot::Support { ok: false, summary: e.to_string() })
 }
 
-/// Whether a desktop shortcut asked for a screenshot lately that no window has taken yet. True once per request.
+/// Peeking leaves the request pending if the signed-in window goes away before handling it.
 #[tauri::command]
-fn screenshot_take_request(state: State<'_, Screenshots>) -> bool {
-    state.asked_at.lock().unwrap().take().is_some_and(|at| at.elapsed() < REQUEST_WAITS_FOR)
+fn screenshot_pending_request(state: State<'_, Screenshots>) -> Option<u64> {
+    state.requests.pending()
+}
+
+/// A live window started handling this request. A newer request remains pending.
+#[tauri::command]
+fn screenshot_ack_request(state: State<'_, Screenshots>, id: u64) {
+    state.requests.acknowledge(id);
 }
 
 /// Brings the window forward after a desktop shortcut's screenshot was attached, so the owner can review it.
@@ -249,7 +250,7 @@ async fn system_fonts() -> fonts::Fonts {
 pub fn run(screenshot: bool) {
     let screenshots = Screenshots::default();
     if screenshot {
-        *screenshots.asked_at.lock().unwrap() = Some(std::time::Instant::now());
+        screenshots.requests.ask();
     }
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -257,9 +258,13 @@ pub fn run(screenshot: bool) {
         .manage(screenshots)
         .setup(|app| {
             use tauri::Emitter;
+            // Sweep crash leftovers on every start, even when no new capture is taken.
+            if let Err(e) = app.state::<Screenshots>().captures() {
+                eprintln!("hermes-chat: couldn't clean up old screenshots: {e}");
+            }
             let handle = app.handle().clone();
             remote::serve(move || {
-                *handle.state::<Screenshots>().asked_at.lock().unwrap() = Some(std::time::Instant::now());
+                handle.state::<Screenshots>().requests.ask();
                 let _ = handle.emit(remote::EVENT, ());
             });
             Ok(())
@@ -281,7 +286,8 @@ pub fn run(screenshot: bool) {
             screenshot_capture,
             screenshot_discard,
             screenshot_support,
-            screenshot_take_request,
+            screenshot_pending_request,
+            screenshot_ack_request,
             screenshot_show_window
         ])
         .build(tauri::generate_context!())

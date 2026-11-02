@@ -307,7 +307,7 @@ export function Main({
       savedDrafts.afterSend(draftOf(to.id), typed, delivery);
     } finally {
       desk?.sent(
-        attachments.map((a) => a.path),
+        attachments,
         accepted,
       );
     }
