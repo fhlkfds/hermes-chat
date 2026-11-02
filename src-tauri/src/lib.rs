@@ -1,3 +1,4 @@
+pub mod notify;
 pub mod saved_password;
 pub mod transport;
 pub mod tunnel;
@@ -144,6 +145,11 @@ async fn password_delete() -> Result<(), String> {
     saved_password::delete().await
 }
 
+#[tauri::command]
+async fn notify_desktop(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
+    notify::show(app, title, body).await
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -158,7 +164,8 @@ pub fn run() {
             hermes_disconnect,
             password_load,
             password_save,
-            password_delete
+            password_delete,
+            notify_desktop
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
