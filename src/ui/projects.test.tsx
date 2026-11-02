@@ -170,7 +170,7 @@ describe("a chat's menu", () => {
     s.projects.default = [];
     const { user } = await launch(s);
     await user.pointer({ keys: "[MouseRight]", target: screen.getByRole("button", { name: /NAS disks/ }) });
-    expect(screen.getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["Rename…", "Regenerate title"]);
+    expect(screen.getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["Rename…", "Regenerate title", "Open in a second pane"]);
     expect(screen.queryByRole("menuitemcheckbox")).toBeNull();
   });
 });
@@ -263,7 +263,8 @@ describe("the project screen", () => {
     else s.projects.default[0].archived = true;
     await user.click(switcher());
     await waitFor(() => expect(onScreen()).toBe("NAS disks"));
-    await waitFor(() => expect(open).toHaveBeenCalledWith("nas"));
+    const paneKey = document.querySelector<HTMLElement>("[data-pane]")!.dataset.pane!;
+    await waitFor(() => expect(open).toHaveBeenCalledWith("nas", paneKey));
     open.mockRestore();
   });
 

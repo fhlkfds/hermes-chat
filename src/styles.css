@@ -1023,7 +1023,13 @@ button.status-item:disabled { opacity: 0.5; cursor: default; }
 
 /* A pane half a window wide gives the transcript the room its padding took. */
 @container (max-width: 560px) {
-  .chat-head { padding: 0 8px 0 14px; }
+  .chat-head { height: auto; min-height: 48px; flex-wrap: wrap; gap: 6px; padding: 8px 12px; }
+  .chat-title { width: 100%; overflow: hidden; }
+  .chat-head-end { width: 100%; justify-content: flex-end; }
+  .chat-head-actions { flex: none; }
+  .chat-usage { min-width: 0; flex-shrink: 1; }
+  .usage-pill { display: block; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+  .usage-popover { width: min(300px, calc(100cqw - 24px)); }
   .transcript-inner { padding: 14px 16px 32px; }
   .composer-wrap { padding: 0 12px 14px; }
   .find { right: 8px; }

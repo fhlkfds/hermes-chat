@@ -361,6 +361,7 @@ export function Main({
   // of it, with one transcript, one draft and one reply, each scrolled and searched on its own.
   const splitWith = (chatId: string | null) => {
     if (split) return;
+    setPreviewHidden(true);
     const key = newPaneKey();
     setPanes((ps) => (ps.length > 1 ? ps : [...ps, { key, chatId }]));
     activeKeyRef.current = key;
