@@ -35,7 +35,7 @@ _Avoid_: origin, platform (as an attribute of a chat)
 A chat whose source is anything other than this app. Imported chats start Settled.
 
 **Profile**:
-A separate Hermes agent setup on the server, with its own chats. The app shows one profile's chats at a time.
+A separate Hermes agent setup on the server, with its own chats. The app shows one profile's chats at a time. The profile switcher shows which other profiles have Unread chats, checked every two minutes, so it can lag behind.
 _Avoid_: account, workspace, agent (as a name for a profile)
 
 **Attachment**:
