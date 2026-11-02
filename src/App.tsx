@@ -1,9 +1,10 @@
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { connect, readSaved, type Delivery, type Hermes } from "./hermes/transport";
 import { CHECK_EVERY_MS } from "./hermes/otherProfiles";
 import { type Account, type SavedSignIn, launchSignIn, savedSignIn, signIn, signOut } from "./hermes/account";
 import { localChatCache } from "./hermes/chatCache";
 import { draftKey, drafts } from "./hermes/drafts";
+import { exportChat } from "./hermes/exportChat";
 import { systemKeyring } from "./hermes/tauriKeyring";
 import { desktopNotify } from "./hermes/tauriNotify";
 import { tauriPipe, type SignInDetails } from "./hermes/tauriPipe";
@@ -243,6 +244,16 @@ export function Main({
     void hermes.delete(id).then((deleted) => deleted && setToast({ text: `Deleted: ${title}`, at: Date.now() }));
   };
 
+  // One Save dialog at a time: a second click while it is open does nothing.
+  const exporting = useRef(false);
+  const exportSelected = (chat: Chat) => {
+    if (exporting.current) return;
+    exporting.current = true;
+    void exportChat(chat)
+      .then((text) => text && setToast({ text, at: Date.now() }))
+      .finally(() => (exporting.current = false));
+  };
+
   // Archiving hides the chat in every Hermes client and keeps its history; the toast shows once Hermes confirms it. The
   // chat on screen gives way to a fresh draft, as it leaves the list. A write that didn't go in says why in the list.
   const setArchived = (id: string, archived: boolean) => {
@@ -388,6 +399,7 @@ export function Main({
             onStop={() => void hermes.stop(selected.id)}
             onAnswer={(approvalId, choice) => void hermes.answerApproval(selected.id, approvalId, choice)}
             onSettle={selected === draft ? undefined : (s) => setSettled(selected.id, s)}
+            onExport={selected === draft ? undefined : () => exportSelected(selected)}
             onArchive={selected === draft ? undefined : (a) => setArchived(selected.id, a)}
           />
         )}

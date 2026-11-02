@@ -31,6 +31,10 @@ _Avoid_: unarchive, hide, remove
 The owner's action that removes a chat from Hermes for good, in every Hermes client. Unlike settling, it can't be undone, so the app asks first. A chat with a reply running can't be deleted.
 _Avoid_: remove, archive
 
+**Export**:
+Saving one chat as a Markdown file, in a place the owner picks in the Save dialog. The file holds only what Hermes Chat has loaded for the chat. It names attachments but never includes their contents. It also warns that the chat itself may contain sensitive information.
+_Avoid_: download, backup
+
 **Rename**:
 The owner's action that changes a chat's title, in every Hermes client. If the chat was renamed or edited elsewhere since the owner started, nothing is overwritten: the app shows the newer title and the owner chooses whether to save again.
 _Avoid_: retitle

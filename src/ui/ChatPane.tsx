@@ -1,6 +1,6 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
 import { useCallback, useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
-import { ArrowUp, Brain, ChevronDown, ChevronRight, ChevronUp, CloudOff, HardDrive, Paperclip, Search, ShieldAlert, Square, Wrench, X } from "lucide-react";
+import { ArrowUp, Brain, ChevronDown, ChevronRight, ChevronUp, CloudOff, FileDown, HardDrive, Paperclip, Search, ShieldAlert, Square, Wrench, X } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import type { ApprovalChoice, ApprovalItem, AttachCheck, Attachment, Chat, ConnectionStatus, Item, Source } from "../hermes/model";
@@ -44,9 +44,9 @@ const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateS
 
 /**
  * `alsoPostsIn`: the Telegram or Discord chat Hermes will also post its replies in. `draft`: the composer's text, kept
- * outside the pane so it survives switching chats. `onAnswer` answers an Approval card. `onSettle` and `onArchive` are
- * left out for a chat not started yet. `notLoaded`: the chat has no Saved copy and can't load until Hermes is
- * connected. Ctrl+F opens the find bar.
+ * outside the pane so it survives switching chats. `onAnswer` answers an Approval card. `onSettle`, `onArchive` and
+ * `onExport` are left out for a chat not started yet. `notLoaded`: the chat has no Saved copy and can't load until
+ * Hermes is connected. Ctrl+F opens the find bar.
  */
 export function ChatPane({
   chat,
@@ -65,6 +65,7 @@ export function ChatPane({
   onAnswer,
   onSettle,
   onArchive,
+  onExport,
 }: {
   chat: Chat;
   notLoaded?: boolean;
@@ -82,6 +83,7 @@ export function ChatPane({
   onAnswer: (approvalId: string, choice: ApprovalChoice) => void;
   onSettle?: (settled: boolean) => void;
   onArchive?: (archived: boolean) => void;
+  onExport?: () => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const findRef = useRef<HTMLInputElement>(null);
@@ -180,6 +182,11 @@ export function ChatPane({
           >
             <Search size={16} />
           </button>
+          {onExport && (
+            <button className="icon-btn" title="Export as Markdown" onClick={onExport}>
+              <FileDown size={16} />
+            </button>
+          )}
           {onSettle && !chat.archived && <SettleButton settled={chat.settled} size={16} className="icon-btn" onSettle={onSettle} />}
           {onArchive && !chat.running && <ArchiveButton archived={!!chat.archived} size={16} className="icon-btn" onArchive={onArchive} />}
         </div>

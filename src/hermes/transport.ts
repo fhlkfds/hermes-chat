@@ -1628,7 +1628,7 @@ function toSource(source = ""): Source {
   }
 }
 
-const LOAD_ERROR_ID = "load-error";
+export const LOAD_ERROR_ID = "load-error";
 const withoutLoadError = (items: Item[]) => items.filter((i) => i.id !== LOAD_ERROR_ID);
 
 /**
