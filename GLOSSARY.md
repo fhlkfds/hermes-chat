@@ -44,7 +44,7 @@ The owner's action that asks Hermes for a new title made from the chat's last fi
 _Avoid_: auto-title (Hermes's own titling of a new chat), retitle
 
 **Unread**:
-A chat with something new in it since the owner last opened it, in this app or any other Hermes client. It shows a dot, and so does the collapsed Settled header when a Settled chat is unread. The chat on screen never shows the dot.
+A chat with something new in it since the owner last opened it, in this app or any other Hermes client. It shows a dot, and so does the collapsed Settled header when a Settled chat is unread. A chat visible on screen never shows the dot. With two panes, both visible chats stay read; a pane hidden by the narrow-window switcher or Settings does not mark its chat read.
 _Avoid_: new, unseen
 
 **Source**:
@@ -142,6 +142,11 @@ _Avoid_: custom header, gateway token
 **Unsecure**:
 The warning on a connection whose traffic between this app and the server isn't encrypted.
 _Avoid_: insecure (the app's label is "Unsecure"), unsafe
+
+**Pane**:
+One view of a chat, its transcript and composer. The app can show two side by side. The focused pane is the one the
+chat list, Search and keyboard shortcuts target. This focus does not change whether a chat is Active or Settled.
+Two panes of one chat share its Draft and running reply; each has its own scroll, Find and pending Attachments.
 
 ## Relationships
 

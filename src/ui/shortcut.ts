@@ -57,6 +57,8 @@ export function checkShortcut(s: string): { error?: string; warning?: string } {
   if (/^[A-Z0-9]$/.test(key) && !mods.has("Ctrl") && !mods.has("Alt") && !mods.has("Super"))
     return { error: "Add Ctrl, Alt or Super, so typing that key doesn't take a screenshot." };
   if ((mods.has("Ctrl") || mods.has("Super")) && APP_KEYS[key]) return { error: `${label} already ${APP_KEYS[key]} in Hermes Chat.` };
+  if ((mods.has("Ctrl") || mods.has("Super")) && !mods.has("Shift") && !mods.has("Alt") && (key === "1" || key === "2"))
+    return { error: `${label} already focuses the ${key === "1" ? "left" : "right"} pane in Hermes Chat.` };
   if (mods.has("Ctrl") && !mods.has("Alt") && !mods.has("Super") && EDIT_KEYS[key])
     return { error: `${label} ${EDIT_KEYS[key]} while you type. Pick another shortcut.` };
   if (mods.has("Ctrl") && mods.has("Alt") && /^F(?:[1-9]|1[0-2])$/.test(key)) return { error: `${label} switches to a text console on Linux.` };

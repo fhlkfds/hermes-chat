@@ -135,6 +135,34 @@ async function record(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("Dictation", () => {
+  it("releases the microphone and drops pending transcripts when focus moves to another mounted pane", async () => {
+    const { server, user, hermes } = await signedIn();
+    await user.click(screen.getByRole("button", { name: "Split into two panes" }));
+    await user.click(screen.getByRole("button", { name: /Nightly backup/ }));
+    const [left, right] = [...document.querySelectorAll<HTMLElement>(".pane")];
+    await user.click(within(left).getByRole("button", { name: "Dictate" }));
+    await within(left).findByRole("status", { name: "Recording" });
+    await user.click(within(right).getByPlaceholderText("Message Hermes"));
+    expect(mic.closed).toBe(true);
+    expect(within(left).queryByRole("status", { name: "Recording" })).toBeNull();
+    expect(document.activeElement).toBe(within(right).getByPlaceholderText("Message Hermes"));
+
+    let release!: () => void;
+    server.voiceGate = new Promise((resolve) => { release = resolve; });
+    mic = new FakeMic();
+    mic.install();
+    await user.click(within(left).getByRole("button", { name: "Dictate" }));
+    await within(left).findByRole("status", { name: "Recording" });
+    mic.say(1);
+    await user.click(within(left).getByRole("button", { name: /Done/ }));
+    await user.click(within(right).getByPlaceholderText("Message Hermes"));
+    release();
+    await settle(hermes);
+    expect(within(left).getByPlaceholderText<HTMLTextAreaElement>("Message Hermes").value).toBe("");
+    expect(within(right).getByPlaceholderText<HTMLTextAreaElement>("Message Hermes").value).toBe("");
+    expect(document.activeElement).toBe(within(right).getByPlaceholderText("Message Hermes"));
+  });
+
   it("records until Done, then puts what Hermes heard after the typed text, and closes the microphone", async () => {
     const { server, user, hermes } = await signedIn();
     await user.type(composer(), "Hi.");
@@ -467,6 +495,18 @@ describe("Read aloud", () => {
     await user.click(screen.getByRole("button", { name: /NAS disks/ }));
     expect(played.pause).toHaveBeenCalled();
     expect(played.revoked).toEqual(["blob:audio-1"]);
+  });
+
+  it("stops Read aloud when focus moves to another mounted pane", async () => {
+    const { user } = await inBackup();
+    await user.click(screen.getByRole("button", { name: "Split into two panes" }));
+    const [left, right] = [...document.querySelectorAll<HTMLElement>(".pane")];
+    await user.click(within(left).getByRole("button", { name: /Read aloud/ }));
+    await within(left).findByRole("button", { name: "Stop" });
+    await user.click(within(right).getByPlaceholderText("Message Hermes"));
+    expect(played.revoked).toEqual(["blob:audio-1"]);
+    expect(within(left).getByRole("button", { name: /Read aloud/ }).getAttribute("aria-pressed")).toBe("false");
+    expect(document.activeElement).toBe(within(right).getByPlaceholderText("Message Hermes"));
   });
 });
 

@@ -58,6 +58,9 @@ describe("Shortcuts that clash", () => {
     expect(checkShortcut("Ctrl+Shift+N").error).toBe("Ctrl+Shift+N already starts a new chat in Hermes Chat.");
     expect(checkShortcut("Ctrl+Alt+B").error).toMatch(/chat list/);
     expect(checkShortcut("Super+F").error).toMatch(/finds in the chat/);
+    expect(checkShortcut("Ctrl+1").error).toMatch(/left pane/);
+    expect(checkShortcut("Super+2").error).toMatch(/right pane/);
+    expect(checkShortcut("Ctrl+Shift+1")).toEqual({});
   });
 
   it("refuses editing shortcuts and the desktop's own fixed ones", () => {

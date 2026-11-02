@@ -330,7 +330,7 @@ describe("Closing and resizing", () => {
     expect(screen.getByRole("button", { name: "Show the preview" })).toBeTruthy();
   });
 
-  it.each(["chat", "new", "search"])("shows the destination after %s navigation while the preview covers the chat", async (destination) => {
+  it.each(["chat", "new", "search", "split"])("shows the destination after %s navigation while the preview covers the chat", async (destination) => {
     vi.stubGlobal(
       "ResizeObserver",
       class {
@@ -348,6 +348,9 @@ describe("Closing and resizing", () => {
       await user.click(screen.getByRole("button", { name: "New chat (Ctrl+N)" }));
     } else if (destination === "chat") {
       await user.click(screen.getByRole("button", { name: /Another chat/ }));
+    } else if (destination === "split") {
+      await user.pointer({ keys: "[MouseRight]", target: screen.getByRole("button", { name: /Another chat/ }) });
+      await user.click(screen.getByRole("menuitem", { name: "Open in a second pane" }));
     } else {
       await user.click(screen.getByRole("button", { name: "Search all chats (Ctrl+K)" }));
       await user.type(screen.getByPlaceholderText("Search all chats, including Settled"), "Another");
@@ -356,9 +359,14 @@ describe("Closing and resizing", () => {
     await settle(hermes);
     expect(paneOpen()).toBe(false);
     expect(document.querySelector(".main-chat")!.hasAttribute("inert")).toBe(false);
-    expect(screen.getByPlaceholderText("Message Hermes")).toBeTruthy();
-    if (destination !== "new") expect(document.querySelector(".chat-head")!.textContent).toContain("Another chat");
-    await user.click(screen.getByRole("button", { name: "Show the preview" }));
+    const destinationPane = document.querySelector<HTMLElement>(destination === "split" ? ".pane.active" : ".pane")!;
+    expect(within(destinationPane).getByPlaceholderText("Message Hermes")).toBeTruthy();
+    if (destination !== "new") expect(destinationPane.querySelector(".chat-head")!.textContent).toContain("Another chat");
+    if (destination === "split") {
+      expect(document.querySelectorAll(".pane")).toHaveLength(2);
+      expect(document.querySelector(".panes.covered")).toBeNull();
+    }
+    await user.click(within(destinationPane).getByRole("button", { name: "Show the preview" }));
     expect(within(pane()).getByTitle("Web page: https://docs.example.com/crash")).toBeTruthy();
   });
 

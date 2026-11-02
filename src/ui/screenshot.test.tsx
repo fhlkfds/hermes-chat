@@ -2,7 +2,7 @@
 // Screenshots in the signed-in app, driven the way the owner would, against a fake Hermes. Only the Rust side of a
 // capture is faked: the attach check, the chip, sending and the upload are the real code. Each test checks what reached
 // Hermes and which captures were deleted.
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row } from "../hermes/fakeHermes";
@@ -109,6 +109,49 @@ const chips = () =>
   [...document.querySelectorAll(".composer .chip")].filter((c) => /screenshot-\d{4}-\d\d-\d\d-\d{6}\.png/.test(c.textContent ?? ""));
 
 describe("Taking a screenshot for the composer", () => {
+  it("routes captures to the focused pane and retains each pane's staged captures across focus changes", async () => {
+    const { rust, user } = await signedIn();
+    await user.click(screen.getByRole("button", { name: "Split into two panes" }));
+    await user.click(screen.getByRole("button", { name: /Nightly backup/ }));
+    const [left, right] = [...document.querySelectorAll<HTMLElement>(".pane")];
+    await user.click(within(left).getByRole("button", { name: "Attach a screenshot" }));
+    const first = await rust.land();
+    await waitFor(() => expect(left.querySelectorAll(".chip")).toHaveLength(1));
+    expect(right.querySelectorAll(".chip")).toHaveLength(0);
+    await user.click(within(right).getByRole("button", { name: "Attach a screenshot" }));
+    const second = await rust.land();
+    await waitFor(() => expect(right.querySelectorAll(".chip")).toHaveLength(1));
+    expect(left.querySelectorAll(".chip")).toHaveLength(1);
+    expect(rust.discarded).toEqual([]);
+    await user.click(within(left).getByRole("button", { name: "Close the left pane" }));
+    await waitFor(() => expect(rust.discarded).toEqual([first]));
+    expect(chips()).toHaveLength(1);
+    expect(rust.discarded).not.toContain(second);
+  });
+
+  it("moves a capture to the newly focused pane if attachment validation finishes after focus changes", async () => {
+    const { hermes, rust, user } = await signedIn();
+    await user.click(screen.getByRole("button", { name: "Split into two panes" }));
+    await user.click(screen.getByRole("button", { name: /Nightly backup/ }));
+    const [left, right] = [...document.querySelectorAll<HTMLElement>(".pane")];
+    const check = hermes.checkAttachments.bind(hermes);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const checking = vi.spyOn(hermes, "checkAttachments").mockImplementationOnce(async (paths) => {
+      await gate;
+      return check(paths);
+    });
+    await user.click(within(left).getByRole("button", { name: "Attach a screenshot" }));
+    const path = await rust.land();
+    await waitFor(() => expect(checking).toHaveBeenCalledTimes(1));
+    await user.click(within(right).getByPlaceholderText("Message Hermes"));
+    await act(async () => release());
+    await waitFor(() => expect(right.querySelectorAll(".chip")).toHaveLength(1));
+    expect(left.querySelectorAll(".chip")).toHaveLength(0);
+    expect(rust.discarded).not.toContain(path);
+    checking.mockRestore();
+  });
+
   it("attaches the capture for review, then sends it to Hermes and deletes it", async () => {
     const { server, hermes, rust, user } = await signedIn();
     await user.keyboard("{Control>}{Shift>}s{/Shift}{/Control}");
@@ -256,11 +299,12 @@ describe("Taking a screenshot for the composer", () => {
   it("takes a desktop shortcut's screenshot into the chat on screen, out of Settings", async () => {
     const { rust, user } = await signedIn();
     await user.click(screen.getByTitle("Settings"));
-    expect(screen.queryByPlaceholderText("Message Hermes")).toBeNull();
+    expect(document.querySelector(".panes.covered")?.hasAttribute("inert")).toBe(true);
 
     rust.pressDesktopShortcut();
     expect(rust.names).toHaveLength(1);
     await screen.findByPlaceholderText("Message Hermes");
+    expect(document.activeElement).toBe(composer());
     await rust.land();
     await waitFor(() => expect(chips()).toHaveLength(1));
     expect(rust.attached).toHaveBeenCalledTimes(1);
@@ -317,10 +361,11 @@ describe("Taking a screenshot for the composer", () => {
     await user.click(screen.getByRole("button", { name: /New project/ }));
     await user.type(screen.getByRole("textbox", { name: "New project name" }), "Capture review{Enter}");
     await screen.findByRole("heading", { name: "Capture review" });
-    expect(screen.queryByPlaceholderText("Message Hermes")).toBeNull();
+    expect(document.querySelector(".panes.covered")?.hasAttribute("inert")).toBe(true);
 
     rust.pressDesktopShortcut();
     await screen.findByPlaceholderText("Message Hermes");
+    expect(document.activeElement).toBe(composer());
     await rust.land();
     await waitFor(() => expect(chips()).toHaveLength(1));
     expect(rust.attached).toHaveBeenCalledTimes(1);

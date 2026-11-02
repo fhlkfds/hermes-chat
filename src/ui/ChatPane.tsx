@@ -90,12 +90,11 @@ const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateS
  * `alsoPostsIn`: the Telegram or Discord chat Hermes will also post its replies in. `draft`: the composer's text, kept
  * outside the pane so it survives switching chats. `onAnswer` answers an Approval card. `onSettle`, `onArchive` and
  * `onExport` are left out for a chat not started yet. `notLoaded`: the chat has no Saved copy and can't load until
- * Hermes is connected. `onRetry`, `onEdit` and `onDismiss` act on a message Hermes didn't take, or may not have.
- * `modelControls`: the model picker and reasoning pill, at the bottom left of the composer. `footer`: what goes under
- * the composer, the status bar. `voice` supplies Dictation and Read aloud. Ctrl+F opens the find bar.
- * `onUsage` refreshes the chat usage on opening its breakdown.
- * `screenshots` attaches captures to the composer; `screenshotKeys` is the configured shortcut.
- * `headActions`: more buttons in the header, before Find.
+ * Hermes is connected. `onRetry`, `onEdit` and `onDismiss` act on failed or unconfirmed messages. `modelControls`
+ * contains the model picker; `footer` contains the status bar. Only the active pane answers Ctrl+F and takes focus as
+ * it opens. Native drops attach to the pane under the pointer. `paneControls` follows the chat's own buttons.
+ * `screenshots` attaches captures; `screenshotKeys` names the shortcut.
+ * `voice` supplies Dictation and Read aloud.
  */
 export function ChatPane({
   chat,
@@ -116,6 +115,10 @@ export function ChatPane({
   onArchive,
   onExport,
   modelControls,
+  active = true,
+  visible = true,
+  split = false,
+  paneControls,
   voice,
   screenshots,
   screenshotKeys,
@@ -142,6 +145,10 @@ export function ChatPane({
   onArchive?: (archived: boolean) => void;
   onExport?: () => void;
   modelControls?: ReactNode;
+  active?: boolean;
+  visible?: boolean;
+  split?: boolean;
+  paneControls?: ReactNode;
   voice?: VoiceApi;
   screenshots?: ScreenshotDesk;
   screenshotKeys?: string;
@@ -151,7 +158,10 @@ export function ChatPane({
   onUsage?: () => void;
   headActions?: ReactNode;
 }) {
+  const rootRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const activeRef = useRef(active);
+  activeRef.current = active;
   const voiceSetup = useVoiceSetup(voice, status === "connected");
   // One reply reads aloud at a time; closing the chat stops it and lets go of its audio.
   const voiceRef = useRef(voice);
@@ -164,6 +174,7 @@ export function ChatPane({
     return () => s.dispose();
   }, [!voice]);
   const listen = speaker && { speaker, blocked: listenBlocked(status, voiceSetup) };
+  useEffect(() => { if (!active) speaker?.stop(); }, [active, speaker]);
   // The blocks are memoized, so they get one answer handler for the life of the pane.
   const onAnswerRef = useRef(onAnswer);
   onAnswerRef.current = onAnswer;
@@ -204,7 +215,7 @@ export function ChatPane({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f" && !composing(e)) {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f" && !composing(e) && activeRef.current) {
         e.preventDefault();
         openFind();
       }
@@ -244,6 +255,21 @@ export function ChatPane({
     if (el && stickToBottom.current && !q) el.scrollTop = el.scrollHeight;
   });
 
+  // Resizing the pane rewraps the transcript without a render; one at the bottom stays there.
+  const qRef = useRef(q);
+  qRef.current = q;
+  useEffect(() => {
+    const el = scrollRef.current;
+    const inner = el?.firstElementChild;
+    if (!el || !inner || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      if (stickToBottom.current && !qRef.current) el.scrollTop = el.scrollHeight;
+    });
+    ro.observe(el);
+    ro.observe(inner);
+    return () => ro.disconnect();
+  }, []);
+
   const step = (d: number) => {
     if (!count) return;
     setMatchIndex((i) => (Math.min(i, count - 1) + d + count) % count);
@@ -255,14 +281,15 @@ export function ChatPane({
     setLanding(false);
   };
 
-  const blocks = toBlocks(chat.items);
+  // Rebuilt only when the chat changes, so a reply streaming in the other pane costs this one little.
+  const blocks = useMemo(() => toBlocks(chat.items), [chat.items]);
   // Cards ignore clicks for a moment after the transcript changes, since it may have moved them under the pointer.
   const movedAt = useMemo(() => performance.now(), [chat.items]);
   const last = chat.items[chat.items.length - 1];
   const waiting = chat.items.some(isWaiting);
 
   return (
-    <div className="chat">
+    <div className="chat" ref={rootRef}>
       <header className="chat-head">
         <div className="chat-title">
           {chat.source !== "app" && <SourceIcon source={chat.source} size={13} />}
@@ -294,6 +321,7 @@ export function ChatPane({
             )}
             {onSettle && !chat.archived && <SettleButton settled={chat.settled} size={16} className="icon-btn" onSettle={onSettle} />}
             {onArchive && !chat.running && <ArchiveButton archived={!!chat.archived} size={16} className="icon-btn" onArchive={onArchive} />}
+            {paneControls}
           </div>
         </div>
         {findOpen && (
@@ -414,6 +442,13 @@ export function ChatPane({
         }}
         onStop={onStop}
         modelControls={modelControls}
+        autoFocus={active}
+        dropHere={(x, y) => {
+          if (!visible) return false;
+          if (!split) return true;
+          const r = rootRef.current?.getBoundingClientRect();
+          return !!r && x >= r.left && x < r.right && y >= r.top && y < r.bottom;
+        }}
         voice={voice}
         voiceSetup={voiceSetup}
         status={status}
@@ -676,6 +711,8 @@ function Composer({
   onSend,
   onStop,
   modelControls,
+  autoFocus = true,
+  dropHere,
   voice,
   voiceSetup,
   status,
@@ -695,6 +732,9 @@ function Composer({
   onSend: (text: string, attachments: Attachment[]) => void;
   onStop: () => void;
   modelControls?: ReactNode;
+  autoFocus?: boolean;
+  /** Whether a drop at this point of the window, in CSS pixels, is for this composer. Left out, every drop is. */
+  dropHere?: (x: number, y: number) => boolean;
   voice?: VoiceApi;
   voiceSetup?: VoiceSetup;
   status: ConnectionStatus;
@@ -703,12 +743,15 @@ function Composer({
   screenshotKeys?: string;
 }) {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const focused = useRef(autoFocus);
+  focused.current = autoFocus;
   // The transcript joins the text as it is when it arrives, typed meanwhile included.
   const textRef = useRef(text);
   textRef.current = text;
   // Focus goes back to the text once a recording is done with, whichever way, since the controls it was on are gone.
   const wasDictating = useRef(false);
   const dictation = useDictation(voice?.transcribe, (heard) => {
+    if (!focused.current) return;
     const next = withTranscript(textRef.current, heard);
     onText(next);
     const ta = taRef.current;
@@ -732,9 +775,11 @@ function Composer({
   }, []);
   useEffect(() => previews.current?.sync(attachments), [attachments]);
   useEffect(() => {
-    if (wasDictating.current && !dictation.active) taRef.current?.focus();
+    if (wasDictating.current && !dictation.active && autoFocus) taRef.current?.focus();
     wasDictating.current = dictation.active;
   }, [dictation.active]);
+  // Leaving a pane (including Settings or the narrow switcher) releases its microphone and drops late transcripts.
+  useEffect(() => { if (!autoFocus) dictation.cancel(); }, [autoFocus]);
 
   // Files still being read, saved or checked: sending waits for them, so none misses the message it was added for.
   const [attaching, setAttaching] = useState(0);
@@ -747,20 +792,24 @@ function Composer({
     }
   };
 
-  const add = (paths: string[]) => busy(async () => {
+  const add = (paths: string[], stillHere = () => true) => busy(async () => {
     if (!paths.length) return [];
     try {
       const got = await onAttach(paths);
+      if (!stillHere()) return [];
       setAttachments((cur) => [...cur, ...got.attachments.filter((a) => !cur.some((x) => x.path === a.path))]);
       setRefused(got.refused);
       return got.attachments.map((a) => a.path);
     } catch (e) {
+      if (!stillHere()) return [];
       setRefused([`Couldn't attach files: ${e instanceof Error ? e.message : String(e)}`]);
       return [];
     }
   });
   const addRef = useRef(add);
   addRef.current = add;
+  const dropHereRef = useRef(dropHere);
+  dropHereRef.current = dropHere;
 
   // Screenshots attach here while this composer is on screen. Any still staged when it goes (another chat opened,
   // signing out) are deleted: attachments aren't kept in a Draft.
@@ -772,25 +821,34 @@ function Composer({
   const staged = useRef(attachments);
   staged.current = attachments;
   useEffect(() => {
-    if (!screenshots) return;
+    if (!screenshots || !autoFocus) return;
+    let current = true;
     const stop = screenshots.attachTo({
-      attach: (paths) => addRef.current(paths),
+      attach: (paths) => addRef.current(paths, () => current),
+      detach: (paths) => setAttachments((cur) => cur.filter((a) => !paths.includes(a.path))),
       restore: (back) => setAttachments((cur) => [...cur, ...back.filter((a) => !cur.some((x) => x.path === a.path))]),
       note: (text) => setRefused((cur) => [...cur, text]),
     });
     return () => {
+      current = false;
       stop();
-      screenshots.release(staged.current.map((a) => a.path));
     };
-  }, [screenshots]);
+  }, [screenshots, autoFocus]);
+  // Focus changes only transfer capture routing. A pane retains its staged attachments until its composer leaves.
+  useEffect(() => () => screenshots?.release(staged.current.map((a) => a.path)), [screenshots]);
 
-  // Tauri's native drop event, not HTML5 drops: it gives real file paths, so Rust can read the bytes.
+  // Tauri's native drop event, not HTML5 drops: it gives real file paths, so Rust can read the bytes. Every composer
+  // hears every drop; with two panes, the one under the pointer takes it. Tauri gives the point in physical pixels.
   useEffect(() => {
     const unlisten = getCurrentWebview().onDragDropEvent(({ payload }) => {
-      if (payload.type === "enter" || payload.type === "over") setDragging(true);
+      const here = (p: { x: number; y: number }) => {
+        const scale = window.devicePixelRatio || 1;
+        return dropHereRef.current?.(p.x / scale, p.y / scale) ?? true;
+      };
+      if (payload.type === "enter" || payload.type === "over") setDragging(here(payload.position));
       else {
         setDragging(false);
-        if (payload.type === "drop") void addRef.current(payload.paths);
+        if (payload.type === "drop" && here(payload.position)) void addRef.current(payload.paths);
       }
     });
     return () => void unlisten.then((stop) => stop());
@@ -883,7 +941,7 @@ function Composer({
         <textarea
           ref={taRef}
           rows={1}
-          autoFocus
+          autoFocus={autoFocus}
           placeholder="Message Hermes"
           value={text}
           onChange={(e) => onText(e.target.value)}

@@ -1,5 +1,6 @@
 // Builds the bench page, serves it, and runs `window.bench` in headless Chromium over the DevTools protocol: timings for
-// opening, streaming, find-in-chat and scrolling per chat size, the first open cold, plus memory after each open.
+// opening, streaming, find-in-chat and scrolling per chat size, the first open cold, plus memory after each open. Then
+// the same size twice side by side: opening both, two replies streaming at once, and moving the divider.
 // Uses Playwright's cached headless shell (`npx playwright install chromium-headless-shell`) or $CHROME; no npm deps.
 // Usage: [THROTTLE=4] node bench/run.mjs [turns...]   (default 50 200 800; THROTTLE slows the CPU that many times)
 import { build, preview } from "vite";
@@ -71,6 +72,20 @@ async function timed(expression) {
   return { ...value, scriptMs: ms("ScriptDuration"), styleMs: ms("RecalcStyleDuration"), layoutMs: ms("LayoutDuration") };
 }
 
+// Drags the divider 30% of the width to the left and back with real mouse input, a move every 16 ms.
+async function drag() {
+  const { x, y, width } = await evaluate("bench.dragWatch.start()");
+  const mouse = (type, px) => send("Input.dispatchMouseEvent", { type, x: px, y, button: "left", buttons: type === "mouseReleased" ? 0 : 1, clickCount: 1 });
+  await mouse("mousePressed", x);
+  const path = [...Array(30).keys()].map((i) => x - (width * 0.3 * (i + 1)) / 30);
+  for (const px of [...path, ...path.reverse().slice(1), x - width * 0.1]) {
+    await mouse("mouseMoved", px);
+    await new Promise((r) => setTimeout(r, 16));
+  }
+  await mouse("mouseReleased", x - width * 0.1);
+  return evaluate("bench.dragWatch.stop()");
+}
+
 try {
   await send("Performance.enable");
   if (Number(process.env.THROTTLE) > 1) await send("Emulation.setCPUThrottlingRate", { rate: Number(process.env.THROTTLE) });
@@ -84,6 +99,10 @@ try {
     console.log("stream", await timed("bench.stream()"));
     console.log("find  ", await timed(`bench.find("const")`));
     console.log("scroll", await timed("bench.scroll()"));
+    console.log("split open  ", await timed(`bench.splitOpen(${turns})`), await memory());
+    console.log("split stream", await timed("bench.splitStream()"));
+    console.log("split resize", await timed("bench.splitResize()"));
+    console.log("split drag  ", await drag());
   }
 } finally {
   ws.close();

@@ -22,6 +22,8 @@ export type ScreenshotApi = {
  */
 export type ScreenshotSink = {
   attach: (paths: string[]) => Promise<string[]>;
+  /** A mounted pane lost capture routing while validation finished; remove its provisional copies before rerouting. */
+  detach?: (paths: string[]) => void;
   /** Already validated captures returning after an unconfirmed send; works while disconnected. */
   restore: (attachments: Attachment[]) => void;
   note: (text: string) => void;
@@ -122,7 +124,10 @@ export class ScreenshotDesk {
       const kept = await sink.attach(w.paths);
       // The composer went while it checked them (another chat opened, or Settings): they go to the one on screen
       // now, unless the old one already let them go.
-      if (this.sink !== sink) return this.deliver({ ...w, paths: w.paths.filter((p) => this.mine.has(p)) });
+      if (this.sink !== sink) {
+        sink.detach?.(w.paths);
+        return this.deliver({ ...w, paths: w.paths.filter((p) => this.mine.has(p)) });
+      }
       this.release(w.paths.filter((p) => !kept.includes(p)));
       if (kept.length) this.onAttached?.(w.remote);
     }
