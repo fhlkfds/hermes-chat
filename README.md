@@ -177,7 +177,7 @@ For HTTPS, the app uses the system OpenSSL and trust store. `HTTP_PROXY` and `HT
 A gateway in front of the dashboard, such as Cloudflare Access, may need headers. Add them under **Extra request headers** on the sign-in screen, for example `CF-Access-Client-Id` and `CF-Access-Client-Secret`. Rust sends them with every request to that dashboard, including sign-in, REST calls, and the WebSocket handshake. It never sends them anywhere else:
 
 - With headers set, the app follows a redirect only within the dashboard's origin.
-- Header values restored from the keyring belong to the URL they were saved for. Changing the URL on the sign-in screen clears them and keeps the names. Values you type yourself are not cleared, so check them before connecting to a different URL.
+- If saved headers were restored from the keyring, the first change to the URL clears every header value and keeps the names. Otherwise, changing the URL keeps the values you entered, so check them before connecting to a different server.
 - SSH connections don't send the headers.
 
 Settings shows the header names but never their values. The app reserves a few names, such as `Host`, `Cookie`, `Origin`, `Sec-WebSocket-*`, and `Proxy-*`. `Authorization` is allowed.
