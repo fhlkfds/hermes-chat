@@ -146,6 +146,49 @@ pub async fn read_preview(path: &str) -> Result<Vec<u8>, TransportError> {
     Ok(bytes)
 }
 
+/// Writes a file pasted into the composer to a new temp file and returns its path, so it attaches like a dropped
+/// one: a pasted screenshot has no file of its own. Each paste gets its own folder under `<temp>/hermes-chat`, so
+/// the same name pasted twice stays two files. `name` is cut down to a safe basename. Nothing removes these files.
+pub fn stage_clipboard_file(name: &str, bytes: &[u8]) -> Result<std::path::PathBuf, TransportError> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static PASTES: AtomicU64 = AtomicU64::new(0);
+    let io = |e: std::io::Error| TransportError::File(format!("couldn't save the pasted file: {e}"));
+
+    // Pastes can be private: only this user's folders, and not one someone else made (or linked) in a shared /tmp.
+    let root = std::env::temp_dir().join("hermes-chat");
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&root).map_err(io)?;
+    let meta = std::fs::symlink_metadata(&root).map_err(io)?;
+    if !meta.is_dir() || meta.permissions().mode() & 0o077 != 0 {
+        return Err(TransportError::File(format!("couldn't save the pasted file: {} isn't private", root.display())));
+    }
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let dir = root.join(format!("{nanos}-{}-{}", std::process::id(), PASTES.fetch_add(1, Ordering::Relaxed)));
+    std::fs::DirBuilder::new().mode(0o700).create(&dir).map_err(io)?;
+    let path = dir.join(safe_name(name));
+    std::fs::write(&path, bytes).map_err(io)?;
+    Ok(path)
+}
+
+/// `name` as a plain file name: no folders, control characters or leading dots, a sane length, and its extension
+/// only when it looks like one (Hermes and the previews go by it).
+fn safe_name(name: &str) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or_default();
+    let base: String = base.chars().filter(|c| !c.is_control()).collect();
+    let base = base.trim().trim_start_matches('.');
+    let (stem, ext) = match base.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() && (1..=8).contains(&e.len()) && e.chars().all(|c| c.is_ascii_alphanumeric()) => (s, e),
+        _ => (base, ""),
+    };
+    // File names are capped at 255 bytes, not characters.
+    let mut stem = stem.to_owned();
+    while stem.len() > 200 {
+        stem.pop();
+    }
+    let stem = if stem.trim().is_empty() { "clipboard" } else { stem.as_str() };
+    if ext.is_empty() { stem.to_owned() } else { format!("{stem}.{ext}") }
+}
+
 /// Reads a whole file, refusing one over `max_bytes`; the size is checked again after reading, in case it grew.
 async fn read_capped(path: &str, max_bytes: u64) -> Result<Vec<u8>, TransportError> {
     let too_large = |size| TransportError::FileTooLarge { size, max: max_bytes };

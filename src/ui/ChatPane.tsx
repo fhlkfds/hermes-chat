@@ -1,6 +1,7 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
 import { memo, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { ArrowUp, Brain, ChevronDown, ChevronRight, ChevronUp, CloudOff, FileDown, HardDrive, Paperclip, Search, Square, Wrench, X } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import type { ApprovalChoice, AttachCheck, Attachment, Chat, ConnectionStatus, Item, Source } from "../hermes/model";
@@ -43,6 +44,34 @@ const STATUS_NOTE: Record<ConnectionStatus, string | undefined> = {
   reconnecting: "Reconnecting to Hermes…",
   offline: "Offline. Click the status dot to reconnect.",
 };
+
+/**
+ * The name a pasted file is saved under: its own, or for a screenshot (no name, or the webview's generic `image.png`)
+ * a local timestamp like `clipboard-2026-11-02T153000.png`, its extension from the MIME type.
+ */
+export function pastedName(f: { name: string; type: string }, now = new Date()): string {
+  if (f.name && !/^image\.\w+$/.test(f.name)) return f.name;
+  const local = new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 19).replaceAll(":", "");
+  return `clipboard-${local}.${/^\w+\/(\w+)$/.exec(f.type)?.[1] ?? "png"}`;
+}
+
+/**
+ * The images on the clipboard, as files. WebKitGTK leaves a paste event's `files` empty even for a screenshot, but the
+ * async clipboard API, asked during the paste, has it. Empty when there are none or the clipboard can't be read.
+ */
+async function clipboardImages(): Promise<File[]> {
+  try {
+    const items = await navigator.clipboard.read();
+    return await Promise.all(
+      items.flatMap((item) => {
+        const type = item.types.find((t) => t.startsWith("image/"));
+        return type ? [item.getType(type).then((b) => new File([b], "", { type }))] : [];
+      }),
+    );
+  } catch {
+    return [];
+  }
+}
 
 /** When a Saved copy was taken, as the note above it says it. */
 const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
@@ -570,6 +599,20 @@ function Composer({
     return () => void unlisten.then((stop) => stop());
   }, []);
 
+  // A pasted screenshot or file has no path of its own: Rust saves it to a temp file, which then attaches like a drop.
+  const paste = async (files: File[]) => {
+    try {
+      const paths = await Promise.all(
+        files.map(async (f) =>
+          invoke<string>("stage_clipboard_file", await f.arrayBuffer(), { headers: { "x-name": encodeURIComponent(pastedName(f)) } }),
+        ),
+      );
+      await add(paths);
+    } catch (e) {
+      setRefused([`Couldn't attach the pasted files: ${e instanceof Error ? e.message : String(e)}`]);
+    }
+  };
+
   const pick = async () => {
     try {
       const paths = await openFileDialog({ multiple: true, directory: false });
@@ -632,6 +675,15 @@ function Composer({
           placeholder="Message Hermes"
           value={text}
           onChange={(e) => onText(e.target.value)}
+          onPaste={(e) => {
+            // Only files are taken over; text pastes as it always has.
+            if (dragging) return;
+            const files = Array.from(e.clipboardData.files);
+            if (files.length) {
+              e.preventDefault();
+              void paste(files);
+            } else if (!e.clipboardData.getData("text/plain")) void clipboardImages().then(paste);
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey && !composing(e)) {
               e.preventDefault();
