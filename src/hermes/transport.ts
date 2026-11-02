@@ -197,6 +197,13 @@ export class RenameConflict extends Error {
 export class ConnectionLostError extends Error {}
 
 /**
+ * Hermes has the session but won't edit it, and answers as if it weren't there. At `bf0203a` the gateway takes edits
+ * only for sessions it has a route for (Telegram, CLI, API), so every chat a WS client started is refused with 404
+ * `not_found` (`gateway/session_authority.py` `authorize`, `gateway/session_api.py` `restore_api_session`).
+ */
+class EditRefusedError extends Error {}
+
+/**
  * What became of a message `send` sent. `accepted`: Hermes answered that it took it. `unsent`: it never went out, or
  * Hermes answered that it didn't take it. `unknown`: it went out and the connection dropped before Hermes answered,
  * so Hermes may be running it, tools and all.
@@ -1357,13 +1364,27 @@ export class Hermes {
         await this.patchSession(chatId, profile, { pinned });
         this.pinnedSinceListRead.add(chatId);
         if (this.pinWanted.get(chatId) === pinned) this.pinWanted.delete(chatId);
+        this.patchChat(chatId, (c) => (c.settledHere ? { ...c, settledHere: undefined } : c));
       } catch (e) {
+        if (e instanceof EditRefusedError) return this.keepSettledHere(chatId, profile, pinned);
         if (!running) this.update({ syncError: `Couldn't keep a chat ${pinned ? "Active" : "Settled"} on the server: ${(e as Error).message}` });
       }
     });
     this.pinWrites.set(chatId, write);
     void write.finally(() => this.pinWrites.get(chatId) === write && this.pinWrites.delete(chatId));
     return write;
+  }
+
+  /**
+   * Hermes won't store the chat's pinned flag, so whether it is Active or Settled is kept in this computer's list
+   * instead, and not written again until the owner moves it. Off the chat's profile it stays wanted, and is written
+   * when the owner comes back to it.
+   */
+  private keepSettledHere(chatId: string, profile: string, pinned: boolean) {
+    if (this.profile !== profile) return;
+    if (this.pinWanted.get(chatId) === pinned) this.pinWanted.delete(chatId);
+    this.patchChat(chatId, (c) => ({ ...c, settledHere: true }));
+    this.saveList(profile, this.snapshot.chats);
   }
 
   /** Marks the chat on screen read, or once the window is back in focus. */
@@ -1425,7 +1446,8 @@ export class Hermes {
       .map((r): Chat => {
         const c = known.get(r.id);
         // A row read before this app's latest write is stale; the chat stays where the owner put it until the next sync.
-        const wanted = this.pinWanted.get(r.id) ?? (c && this.pinnedSinceListRead.has(r.id) ? !c.settled : undefined);
+        // So is the flag of a chat whose state is kept here.
+        const wanted = this.pinWanted.get(r.id) ?? (c && (c.settledHere || this.pinnedSinceListRead.has(r.id)) ? !c.settled : undefined);
         // A write under way may still change the flag, so only an idle chat's flag can confirm it or need a retry. A
         // message still on the way may fail, and the chat then goes back to Settled, so it isn't pinned before then.
         if (this.pinWanted.has(r.id) && !this.pinWrites.has(r.id) && !this.pinnedSinceListRead.has(r.id)) {
@@ -1506,7 +1528,17 @@ export class Hermes {
   private saveList(profile: string, chats: Chat[]) {
     this.cache.save(
       profile,
-      chats.map(({ id, title, source, settled, archived, updatedAt, unread }) => ({ id, title, source, settled, archived, updatedAt, unread, items: [] })),
+      chats.map(({ id, title, source, settled, settledHere, archived, updatedAt, unread }) => ({
+        id,
+        title,
+        source,
+        settled,
+        settledHere,
+        archived,
+        updatedAt,
+        unread,
+        items: [],
+      })),
     );
   }
 
@@ -1514,7 +1546,8 @@ export class Hermes {
    * Sets a session's sidebar flags. Hermes refuses a session edit without a request id and the session's current
    * revision (409 `client_upgrade_required`), so each write first reads the revision from the mutation snapshot.
    * The flags are plain values, so a write that loses to another edit of the same session (`revision_conflict`) is
-   * sent once more against the new revision, if `retry` agrees.
+   * sent once more against the new revision, if `retry` agrees. A session Hermes has but answers 404 for is
+   * `EditRefusedError`.
    */
   private async patchSession(
     chatId: string,
@@ -1523,10 +1556,11 @@ export class Hermes {
     retry: () => Promise<boolean> = async () => true,
   ): Promise<void> {
     for (let attempt = 0; ; attempt++) {
-      const revision = await this.revision(chatId, profile);
+      const { exists, runtime_revision } = await this.mutationSnapshot(chatId, profile);
       try {
-        return await this.fencedPatch(chatId, profile, flags, revision);
+        return await this.fencedPatch(chatId, profile, flags, runtime_revision);
       } catch (e) {
+        if (exists && (e as Error).message.includes("answered 404")) throw new EditRefusedError((e as Error).message);
         if (attempt > 0 || !(e as Error).message.includes("revision_conflict") || !(await retry())) throw e;
       }
     }
@@ -1534,8 +1568,12 @@ export class Hermes {
 
   /** The session's current revision, which every session edit must name (`GET .../mutation-snapshot`). */
   private async revision(chatId: string, profile: string): Promise<number> {
+    return (await this.mutationSnapshot(chatId, profile)).runtime_revision;
+  }
+
+  private async mutationSnapshot(chatId: string, profile: string): Promise<MutationSnapshot> {
     const query = new URLSearchParams({ profile });
-    return ((await this.rest("GET", `${sessionPath(chatId)}/mutation-snapshot?${query}`)) as MutationSnapshot).runtime_revision;
+    return (await this.rest("GET", `${sessionPath(chatId)}/mutation-snapshot?${query}`)) as MutationSnapshot;
   }
 
   /**

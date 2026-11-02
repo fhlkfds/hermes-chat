@@ -85,6 +85,8 @@ export type Chat = {
   title: string;
   source: Source;
   settled: boolean;
+  /** Whether it is Active or Settled is kept on this computer, because Hermes won't store it for this chat (ADR 0002). */
+  settledHere?: boolean;
   /** Archived in Hermes: hidden in every Hermes client, its history kept. Active or Settled stays as it was. */
   archived?: boolean;
   updatedAt: number;
