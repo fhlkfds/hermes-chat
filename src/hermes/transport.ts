@@ -22,13 +22,18 @@
 // or may not have, stays there with Retry, kept beside the cache so it outlives a restart, and never in a Saved copy.
 // Whether one Hermes may have got did arrive is settled by reading the chat's history back (ADR 0006).
 // Each chat's context fullness and YOLO come from its session's `info` and `usage`: research doc "Status bar".
+// Token usage and cost (usage.ts, ADR 0008): each reply's usage is how far its session's live counters moved during
+// its turn; each chat's totals and cost are Hermes's stored ones, read with the chat list and after each turn.
 import { APPROVAL_CHOICES, isBroadGrant, isOutgoing, isWaiting, offeredChoices, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ConnectionStatus, type ContextPart, type ContextUse, type Found, type Item, type OtherProfiles, type Outgoing, type OutgoingItem, type SessionLive, type Source } from "./model";
 import { catalogFromServer, fallbackCatalog, isEffort, modelKey, pickFromInfo, type ModelCatalog, type ModelPick } from "./models";
 import { noOthers, OtherProfilesCheck } from "./otherProfiles";
+// Projects are Hermes's own, read and written with legacy `projects.*` (projects.ts, research doc "Projects").
+import { projectsApi, type ProjectsApi } from "./projects";
 import { ModelSettingsApi } from "./modelSettings";
 import type { OpenPipe, Pipe, PipeEvent, RestMethod, Route, Speech, Transcript, VoiceSetup } from "./pipe";
 import { isUnsecure } from "./unsecure";
 import { readServerFile, type FileView } from "./preview";
+import { chatUsageOf, countersOf, newerChatUsage, replyUsage, ZERO_COUNTERS, type ReplyUsage, type UsageCounters } from "./usage";
 
 /** The `source` this app stamps on chats it starts. Legacy `session.create` stores any string as-is. */
 export const APP_SOURCE = "hermes-chat";
@@ -371,6 +376,13 @@ export class Hermes {
   private submitting = new Map<string, Promise<unknown>>();
   /** Each chat's last message sent from here, until a turn ends, with the stored row Hermes gave it, if any. */
   private turns = new Map<string, { userId: string; rowId: Promise<number | undefined> }>();
+  /**
+   * Each live session's usage counters as its next turn starts, by runtime id: what that turn's reply is measured from.
+   * `unknown` when they can't be known, such as after reattaching mid-turn, so that reply shows no usage.
+   */
+  private usageFrom = new Map<string, UsageCounters | "unknown">();
+  /** Last item before a running turn, by stable id; null for an empty transcript. Older Failed messages can go away. */
+  private turnStart = new Map<string, string | null>();
   /** The newest stored row each chat is known to have, from its history and the turns sent from here. A message that
    * may have reached Hermes is looked for only past the row its chat had when it went out. */
   private knownRow = new Map<string, number>();
@@ -385,6 +397,11 @@ export class Hermes {
   private modelsLoading?: { profile: string; done: Promise<void> };
   /** A chat and model Hermes asked to confirm as expensive: picking it again for that chat confirms it. */
   private confirmModel?: string;
+  /** Hermes's projects, each call naming its profile (projects.ts). Folders are read, never created. */
+  readonly projects: ProjectsApi = projectsApi({
+    rpc: (method, params) => this.request(method, params),
+    get: (pathAndQuery) => this.rest("GET", pathAndQuery),
+  });
   private others = new OtherProfilesCheck({
     scope: () => (this.pipe && this.snapshot.status === "connected" && !this.closing ? { connection: this.generation, profile: this.profile } : undefined),
     profiles: () => this.profiles(),
@@ -679,6 +696,8 @@ export class Hermes {
       items: [],
       live: withLive(undefined, res.info),
     };
+    // A new session's agent starts its counters from zero.
+    this.usageFrom.set(res.session_id, countersOf((res.info as { usage?: unknown } | undefined)?.usage) ?? ZERO_COUNTERS);
     this.pinWanted.set(chat.id, true);
     this.update({ chats: [chat, ...this.snapshot.chats] });
     return chat.id;
@@ -697,6 +716,8 @@ export class Hermes {
     this.showSaved(chatId);
     if (this.snapshot.status !== "connected") return;
     this.seen(chatId);
+    // A chat the list didn't bring totals for, such as an older one opened from a search, reads its own.
+    if (!this.snapshot.chats.find((c) => c.id === chatId)?.usage) this.track(this.refreshUsage(chatId));
     try {
       await this.resume(chatId);
       if (this.viewing === chatId) this.tellShown(chatId);
@@ -760,6 +781,24 @@ export class Hermes {
     } catch (e) {
       this.patchChat(chatId, (c) => (c.model === pick ? { ...c, model: before } : c));
       throw e;
+    }
+  }
+
+  /**
+   * Reads the chat's tokens and cost from Hermes's stored session into its `usage`; on failure `usageError` says why. A
+   * chat Hermes hasn't stored yet (one started here, before its first message) has none, and that isn't a failure.
+   */
+  async refreshUsage(chatId: string): Promise<void> {
+    const profile = this.profile;
+    if (this.snapshot.status !== "connected" || !this.snapshot.chats.some((c) => c.id === chatId)) return;
+    try {
+      const row = await this.rest("GET", `api/sessions/${encodeURIComponent(chatId)}?${new URLSearchParams({ profile })}`);
+      if (this.profile !== profile) return;
+      const read = chatUsageOf(row, Date.now());
+      this.patchChat(chatId, (c) => ({ ...c, usage: newerChatUsage(c.usage, read), usageError: undefined }));
+    } catch (e) {
+      if (this.profile !== profile || (e as Error).message.includes("answered 404")) return;
+      this.patchChat(chatId, (c) => ({ ...c, usageError: `Couldn't read usage from Hermes: ${(e as Error).message}` }));
     }
   }
 
@@ -1244,14 +1283,27 @@ export class Hermes {
       this.infoCount.set(chat.runtimeId!, (this.infoCount.get(chat.runtimeId!) ?? 0) + 1);
       const model = pickFromInfo(payload);
       this.patchChat(chat.id, (c) => ({ ...c, ...(model && { model }), live: withLive(c.live, payload) }));
+      // Between turns its usage is where the next turn starts; one sent during a turn is part of the way through it.
+      const counters = countersOf(payload.usage);
+      if (counters && !chat.running) this.usageFrom.set(session_id!, counters);
       return;
     }
-    this.patchChat(chat.id, (c) => applyEvent(c, type, payload));
+    if (type === "message.start") this.turnStart.set(chat.id, chat.items.at(-1)?.id ?? null);
+    const usage = type === "message.complete" ? this.turnUsage(session_id!, payload.usage) : undefined;
+    const from = this.turnStart.get(chat.id);
+    if (type === "message.complete" || type === "error") this.turnStart.delete(chat.id);
+    // A turn that failed without a `message.complete` ends without counters, so the next one can't be measured.
+    if (type === "error") this.usageFrom.set(session_id!, "unknown");
+    this.patchChat(chat.id, (c) => {
+      const next = applyEvent(c, type, payload);
+      return usage ? { ...next, items: withReplyUsage(next.items, usage, from) } : next;
+    });
     if (type === "message.complete") {
       const receipt = (payload.persisted_turn ?? {}) as PersistedTurn;
       this.noteRows(chat.id, [receipt.user_row_id, receipt.final_assistant_row_id, ...(Array.isArray(receipt.row_ids) ? receipt.row_ids : [])]);
       this.stampTurn(chat.id, receipt);
     }
+    if (type === "message.complete") this.track(this.refreshUsage(chat.id));
     // By the end of a turn Hermes has stored the session, so a pin that failed earlier can succeed.
     if (type === "message.complete" && this.pinWanted.has(chat.id)) this.track(this.writePin(chat.id));
     // The finished reply is newer than the read watermark, though the owner watched it come in.
@@ -1259,6 +1311,17 @@ export class Hermes {
     // A turn ends once; a repeated end finds the chat no longer running.
     if ((type === "message.complete" || type === "error") && chat.running) this.alert(NOTICES.finished);
     if (type === "message.complete") this.saveTranscript(chat.id);
+  }
+
+  /**
+   * The usage of the turn a `message.complete` ends, from the counters it carries (`usage.ts`). Those counters are where
+   * the session's next turn starts. Undefined when this turn's start isn't known, or it made no model call.
+   */
+  private turnUsage(runtimeId: string, raw: unknown): ReplyUsage | undefined {
+    const end = countersOf(raw);
+    const start = this.usageFrom.get(runtimeId);
+    this.usageFrom.set(runtimeId, end ?? "unknown");
+    return end && start && start !== "unknown" ? replyUsage(start, end) : undefined;
   }
 
   /**
@@ -1304,7 +1367,17 @@ export class Hermes {
         const userRow = await turn.rowId;
         if (userRow === undefined) return;
         const wanted = new Map<number, string>([[userRow, turn.userId]]);
-        if (reply && receipt.user_row_id === userRow && typeof receipt.final_assistant_row_id === "number") wanted.set(receipt.final_assistant_row_id, reply.id);
+        const replyRow = reply && receipt.user_row_id === userRow && typeof receipt.final_assistant_row_id === "number" ? receipt.final_assistant_row_id : undefined;
+        if (reply?.kind === "assistant" && replyRow !== undefined) {
+          // The reply keeps its stored row from now, saved at once: its usage is found again by it after a reload,
+          // even one before its time is read, or when that read fails.
+          const withRow: Item = { ...reply, rowId: replyRow };
+          this.patchChat(chatId, (c) => ({ ...c, items: c.items.map((i) => (i === reply ? withRow : i)) }));
+          if (this.snapshot.chats.find((c) => c.id === chatId)?.items.includes(withRow)) {
+            this.saveTranscript(chatId);
+            wanted.set(replyRow, withRow.id);
+          }
+        }
         // The newest 100 rows: a turn with more tool rows than that leaves its message without a time.
         const query = new URLSearchParams({ profile, order: "latest", limit: "100", inline_images: "false" });
         const res = (await this.rest("GET", `api/sessions/${encodeURIComponent(chatId)}/messages?${query}`)) as { messages?: StoredRow[] };
@@ -1419,6 +1492,9 @@ export class Hermes {
     this.pending.clear();
     this.infoCount.clear();
     this.earlyRequests.clear();
+    // Runtime sessions end with the connection.
+    this.usageFrom.clear();
+    this.turnStart.clear();
     for (const c of this.snapshot.chats) {
       if (c.runtimeId) this.staleItems.set(c.id, c.items.length);
       if (c.running || c.items.some(isWaiting)) this.resumeOnReconnect.add(c.id);
@@ -1528,7 +1604,17 @@ export class Hermes {
           info?: unknown;
           usage?: unknown;
         };
-        const history = historyItems(res.messages ?? []);
+        // A session reattached mid-turn has counters part of the way through it; a cold one has no agent yet, so its
+        // counters start from zero once one is built (`_lazy_resume_info` carries no usage).
+        const counters = countersOf((res.info as { usage?: unknown } | undefined)?.usage);
+        this.usageFrom.set(res.session_id, res.running ? "unknown" : (counters ?? ZERO_COUNTERS));
+        // Hermes stores no usage per reply, so the replies this app measured keep theirs by stored row.
+        const measured = new Map<number, ReplyUsage>();
+        for (const i of this.snapshot.chats.find((c) => c.id === chatId)?.items ?? [])
+          if (i.kind === "assistant" && i.rowId !== undefined && i.usage) measured.set(i.rowId, i.usage);
+        const history = historyItems(res.messages ?? []).map((i): Item =>
+          i.kind === "assistant" && i.rowId !== undefined && measured.has(i.rowId) ? { ...i, usage: measured.get(i.rowId) } : i,
+        );
         const readBack = (res.messages ?? []).map((m) => ({ role: m.role, text: m.text ?? "", rowId: typeof m.row_id === "number" ? m.row_id : undefined }));
         this.noteRows(chatId, readBack.map((m) => m.rowId));
         const stale = this.staleItems.get(chatId) ?? 0;
@@ -1796,6 +1882,8 @@ export class Hermes {
           archived: this.isArchived(r) || undefined,
           updatedAt: Math.max(c?.updatedAt ?? 0, lastActive(r)),
           unread: !!r.unread && !readHere && r.id !== this.viewing,
+          // List rows carry the stored token and cost totals too.
+          usage: newerChatUsage(c?.usage, chatUsageOf(r, Date.now())),
         };
       });
     // Chats started or resumed on this connection stay even before Hermes stores them (a new chat has no row
@@ -2276,7 +2364,8 @@ function historyItems(messages: TranscriptMessage[]): Item[] {
     // Assistant rows can be reasoning only; system rows are timeline notes this app doesn't show yet.
     if (!m.text?.trim()) return thought;
     const at = storedAt(m.timestamp);
-    if (m.role === "user" || m.role === "assistant") return [...thought, { kind: m.role, id, text: m.text, ...(at && { at }) }];
+    const rowId = m.role === "assistant" && Number.isSafeInteger(m.row_id) ? (m.row_id as number) : undefined;
+    if (m.role === "user" || m.role === "assistant") return [...thought, { kind: m.role, id, text: m.text, ...(at && { at }), ...(rowId !== undefined && { rowId }) }];
     return [];
   });
 }
@@ -2346,6 +2435,25 @@ function markInterrupted(items: Item[]): Item[] {
   if (last?.kind === "assistant") out[out.length - 1] = { ...last, interrupted: true };
   else out.push({ kind: "assistant", id: `a-${out.length}`, text: "", interrupted: true });
   return out;
+}
+
+/**
+ * Gives a turn's usage to its reply: the last reply or error after the turn started (`from`, else the last message),
+ * unless it has some already, which a repeated `message.complete` would find.
+ */
+function withReplyUsage(items: Item[], usage: ReplyUsage, from?: string | null): Item[] {
+  const start = from === null ? 0 : from === undefined ? items.map((i) => i.kind).lastIndexOf("user") + 1 : items.findIndex((i) => i.id === from) + 1;
+  // If the boundary itself disappeared, there is no reliable turn to attach these counters to.
+  if (typeof from === "string" && start === 0) return items;
+  for (let n = items.length - 1; n >= start; n--) {
+    const i = items[n];
+    if (i.kind !== "assistant" && i.kind !== "error") continue;
+    if (i.usage) return items;
+    const out = [...items];
+    out[n] = { ...i, usage };
+    return out;
+  }
+  return items;
 }
 
 // Fold one session event into a chat. Text deltas extend the trailing assistant item, or start a new one

@@ -37,9 +37,9 @@ describe("Times on stored history", () => {
     expect(items()).toEqual([
       { kind: "user", id: "h-0", text: "How full is the NAS?", at: T * 1000 },
       { kind: "thinking", id: "h-1-r", text: "Check df" },
-      { kind: "assistant", id: "h-1", text: "Let me look.", at: (T + 2) * 1000 },
+      { kind: "assistant", id: "h-1", text: "Let me look.", at: (T + 2) * 1000, rowId: 2 },
       { kind: "tool", id: "h-2", name: "terminal", preview: "df -h", status: "done" },
-      { kind: "assistant", id: "h-3", text: "82% used.", at: (T + 9) * 1000 },
+      { kind: "assistant", id: "h-3", text: "82% used.", at: (T + 9) * 1000, rowId: 4 },
     ]);
   });
 
@@ -110,7 +110,7 @@ describe("Times on a turn sent from here", () => {
       { kind: "user", id: "u-0", text: "Disk usage?", at: T * 1000 },
       { kind: "assistant", id: "a-1", text: "Let me look." },
       expect.objectContaining({ kind: "tool", id: "c1" }),
-      { kind: "assistant", id: "a-3", text: "82% used.", at: (T + 9) * 1000 },
+      { kind: "assistant", id: "a-3", text: "82% used.", at: (T + 9) * 1000, rowId: 44 },
     ]);
     expect(Object.fromEntries(messageReads(server)[0].query)).toEqual({ profile: "default", order: "latest", limit: "100", inline_images: "false" });
   });
@@ -135,7 +135,7 @@ describe("Times on a turn sent from here", () => {
 
     expect(cache.loadTranscript("default", "a")?.items).toEqual([
       { kind: "user", id: "u-0", text: "Disk usage?", at: T * 1000 },
-      { kind: "assistant", id: "a-1", text: "82% used.", at: (T + 9) * 1000 },
+      { kind: "assistant", id: "a-1", text: "82% used.", at: (T + 9) * 1000, rowId: 42 },
     ]);
   });
 
@@ -154,7 +154,7 @@ describe("Times on a turn sent from here", () => {
 
     expect(items()).toEqual([
       { kind: "user", id: "u-0", text: "Hi" },
-      { kind: "assistant", id: "a-1", text: "Hello!" },
+      { kind: "assistant", id: "a-1", text: "Hello!", rowId: 42 },
     ]);
   });
 
@@ -221,7 +221,7 @@ describe("Times on a turn sent from here", () => {
 
     expect(items()).toEqual([
       { kind: "user", id: "u-0", text: "Hi" },
-      { kind: "assistant", id: "a-1", text: "Hello!" },
+      { kind: "assistant", id: "a-1", text: "Hello!", rowId: 42 },
     ]);
   });
 
@@ -237,7 +237,7 @@ describe("Times on a turn sent from here", () => {
 
     expect(items()).toEqual([
       { kind: "user", id: "u-0", text: "Hi" },
-      { kind: "assistant", id: "a-1", text: "Hello!" },
+      { kind: "assistant", id: "a-1", text: "Hello!", rowId: 42 },
     ]);
     expect(hermes.getSnapshot().syncError).toBeUndefined();
   });
@@ -261,7 +261,7 @@ describe("Times on a turn sent from here", () => {
 
     expect(items()).toEqual([
       { kind: "user", id: "u-0", text: "Hi", at: T * 1000 },
-      { kind: "assistant", id: "a-1", text: "Hello!", at: (T + 1) * 1000 },
+      { kind: "assistant", id: "a-1", text: "Hello!", at: (T + 1) * 1000, rowId: 42 },
     ]);
   });
 
@@ -287,7 +287,7 @@ describe("Times on a turn sent from here", () => {
 
     expect(items()).toEqual([
       { kind: "user", id: "h-0", text: "Hi", at: T * 1000 },
-      { kind: "assistant", id: "h-1", text: "Hello!", at: (T + 1) * 1000 },
+      { kind: "assistant", id: "h-1", text: "Hello!", at: (T + 1) * 1000, rowId: 42 },
     ]);
   });
 });

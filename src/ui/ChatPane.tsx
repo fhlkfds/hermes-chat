@@ -15,6 +15,7 @@ import { Speaker } from "./speaker";
 import { DictationNoteView, DictationStrip, ListenButton, MicButton, type VoiceApi, listenBlocked, micBlocked, useDictation, useVoiceSetup } from "./Voice";
 import { withTranscript } from "../hermes/voice";
 import type { VoiceSetup } from "../hermes/pipe";
+import { ChatUsageButton, ReplyUsageLine } from "./Usage";
 import { useOpenPreview } from "./previewContext";
 import { previewName, toolTargets } from "../hermes/preview";
 
@@ -89,6 +90,7 @@ const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateS
  * Hermes is connected. `onRetry`, `onEdit` and `onDismiss` act on a message Hermes didn't take, or may not have.
  * `modelControls`: the model picker and reasoning pill, at the bottom left of the composer. `footer`: what goes under
  * the composer, the status bar. `voice` supplies Dictation and Read aloud. Ctrl+F opens the find bar.
+ * `onUsage` refreshes the chat usage on opening its breakdown.
  * `headActions`: more buttons in the header, before Find.
  */
 export function ChatPane({
@@ -111,7 +113,9 @@ export function ChatPane({
   onExport,
   modelControls,
   voice,
+  projects,
   footer,
+  onUsage,
   headActions,
 }: {
   chat: Chat;
@@ -133,7 +137,10 @@ export function ChatPane({
   onExport?: () => void;
   modelControls?: ReactNode;
   voice?: VoiceApi;
+  /** The names of the projects the chat is in, or a new chat will be put in. */
+  projects?: string[];
   footer?: ReactNode;
+  onUsage?: () => void;
   headActions?: ReactNode;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -254,23 +261,32 @@ export function ChatPane({
           <span>{chat.title}</span>
           {chat.settled && <span className="badge">Settled</span>}
           {chat.archived && <span className="badge">Archived</span>}
+          {projects?.map((name) => (
+            <span key={name} className="badge project-badge" title={`In the project ${name}`}>
+              {name}
+            </span>
+          ))}
         </div>
-        <div className="chat-head-actions">
-          {headActions}
-          <button
-            className="icon-btn"
-            title="Find in chat (Ctrl+F)"
-            onClick={openFind}
-          >
-            <Search size={16} />
-          </button>
-          {onExport && (
-            <button className="icon-btn" title="Export as Markdown" onClick={onExport}>
-              <FileDown size={16} />
+        <div className="chat-head-end">
+          {/* Outside the actions, whose dimming would show through its breakdown. */}
+          {onUsage && <ChatUsageButton chat={chat} onRefresh={onUsage} />}
+          <div className="chat-head-actions">
+            {headActions}
+            <button
+              className="icon-btn"
+              title="Find in chat (Ctrl+F)"
+              onClick={openFind}
+            >
+              <Search size={16} />
             </button>
-          )}
-          {onSettle && !chat.archived && <SettleButton settled={chat.settled} size={16} className="icon-btn" onSettle={onSettle} />}
-          {onArchive && !chat.running && <ArchiveButton archived={!!chat.archived} size={16} className="icon-btn" onArchive={onArchive} />}
+            {onExport && (
+              <button className="icon-btn" title="Export as Markdown" onClick={onExport}>
+                <FileDown size={16} />
+              </button>
+            )}
+            {onSettle && !chat.archived && <SettleButton settled={chat.settled} size={16} className="icon-btn" onSettle={onSettle} />}
+            {onArchive && !chat.running && <ArchiveButton archived={!!chat.archived} size={16} className="icon-btn" onArchive={onArchive} />}
+          </div>
         </div>
         {findOpen && (
           <div className="find" role="search">
@@ -459,12 +475,14 @@ const BlockView = memo(
           {block.interrupted && <div className="stopped">Stopped</div>}
           {listen && !live && block.text.trim() && <ListenButton speaker={listen.speaker} itemId={block.id} text={block.text} blocked={listen.blocked} />}
           <StoredTime at={block.at} />
+          {block.usage && !live && <ReplyUsageLine usage={block.usage} />}
         </div>
       );
     if (block.kind === "error")
       return (
         <div className="msg error" role="alert">
           {block.text}
+          {block.usage && <ReplyUsageLine usage={block.usage} />}
         </div>
       );
     if (block.kind === "thinking") return <Thought item={block} live={live} query={query} />;

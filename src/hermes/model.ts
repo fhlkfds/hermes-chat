@@ -1,5 +1,6 @@
 // What the UI renders. Terms follow GLOSSARY.md: a Chat is Active or Settled, may be Archived, and has one Source.
 import type { ModelPick } from "./models";
+import type { ChatUsage, ReplyUsage } from "./usage";
 
 export type Source = "app" | "telegram" | "discord" | "cli" | "desktop" | "other";
 
@@ -37,13 +38,13 @@ export type Outgoing = {
 };
 
 export type Item =
-  /**
-   * `attachments`: the names of the files sent with the message. `outgoing`: sent from here and not confirmed yet;
-   * a message Hermes has is plain.
-   */
+  /** `attachments`: names sent with the message. `outgoing`: sent from here and not confirmed yet. */
   | { kind: "user"; id: string; text: string; attachments?: string[]; at?: number; outgoing?: Outgoing }
-  /** `interrupted`: the owner, or another Hermes client, stopped this reply before it finished. */
-  | { kind: "assistant"; id: string; text: string; interrupted?: boolean; at?: number }
+  /**
+   * `interrupted`: the owner, or another Hermes client, stopped this reply before it finished. `rowId`: its stored row,
+   * once known. `usage`: the tokens its turn took, only for a reply this app watched finish (`usage.ts`).
+   */
+  | { kind: "assistant"; id: string; text: string; interrupted?: boolean; at?: number; rowId?: number; usage?: ReplyUsage }
   /** The model's reasoning before a reply or a tool call, as Hermes streams or stores it. */
   | { kind: "thinking"; id: string; text: string }
   | {
@@ -77,7 +78,8 @@ export type Item =
       answer?: ApprovalChoice;
       ended?: string;
     }
-  | { kind: "error"; id: string; text: string };
+  /** `usage`: the tokens a failed turn took before it failed, as for a reply. */
+  | { kind: "error"; id: string; text: string; usage?: ReplyUsage };
 
 /** How the owner answers an Approval: run it this once, for the rest of the chat, always, or not at all. */
 export const APPROVAL_CHOICES = ["once", "session", "always", "deny"] as const;
@@ -133,6 +135,12 @@ export type Chat = {
   model?: ModelPick;
   /** What Hermes reports about the chat's session on this connection; gone when the connection drops. */
   live?: SessionLive;
+  /**
+   * Its tokens and cost over its whole life, as Hermes last recorded them (`usage.ts`). Unknown until read from Hermes on
+   * this connection. `usageError`: why the latest read failed; `usage` is then the earlier read, if any.
+   */
+  usage?: ChatUsage;
+  usageError?: string;
 };
 
 /**
