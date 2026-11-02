@@ -19,6 +19,10 @@ _Avoid_: archived, done, closed
 **Settle** / **Unsettle**:
 The owner's manual actions that move a chat from Active to Settled, and back.
 
+**Delete**:
+The owner's action that removes a chat from Hermes for good, in every Hermes client. Unlike settling, it can't be undone, so the app asks first. A chat with a reply running can't be deleted.
+_Avoid_: remove, archive
+
 **Unread**:
 A chat with something new in it since the owner last opened it, in this app or any other Hermes client. It shows a dot, and so does the collapsed Settled header when a Settled chat is unread. The chat on screen never shows the dot.
 _Avoid_: new, unseen

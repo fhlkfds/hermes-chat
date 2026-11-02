@@ -100,6 +100,7 @@ type ProfileList = { profiles: { name: string }[] };
 type TranscriptMessage = {
   role: string;
   text?: string | null;
+  reasoning?: string | null;
   content?: unknown;
   name?: string | null;
   context?: string | null;
@@ -215,6 +216,8 @@ export class Hermes {
   private resuming = new Map<string, Promise<string>>();
   /** Chats the owner picked from a search though the list doesn't hold them; they stay in it until the profile changes. */
   private revealed = new Set<string>();
+  /** Chats the owner deleted here, or is deleting. A list read before the delete can't bring one back. */
+  private deleted = new Set<string>();
   /** Chats that had a turn running, or an Approval waiting, when the connection dropped. Reconnecting resumes them,
    * which brings back what Hermes is still waiting on. */
   private resumeOnReconnect = new Set<string>();
@@ -336,7 +339,7 @@ export class Hermes {
     const res = (await this.rest("GET", `api/sessions/search?${query}`)) as { results: SearchRow[] };
     const listed = new Map(this.snapshot.chats.map((c) => [c.id, c]));
     return res.results
-      .filter((r) => !r.archived)
+      .filter((r) => !r.archived && !this.deleted.has(r.id))
       .map((r): Found => {
         const c = listed.get(r.id);
         const snippet = snippetParts(r.snippet ?? "");
@@ -531,6 +534,39 @@ export class Hermes {
   /** Moves a chat to Active here at once, and pins it on the server. `settle` undoes it. */
   unsettle(chatId: string): Promise<void> {
     return this.setSettled(chatId, false);
+  }
+
+  /**
+   * Deletes a chat from Hermes for good, in every Hermes client (`DELETE /api/sessions/{id}`). It leaves the list here
+   * at once; if Hermes refuses, it comes back and the list says why. A chat with a reply running isn't deleted: stop
+   * the reply first. `profile` is the chat's, which the owner may switch away from while the delete is under way.
+   * Resolves to whether Hermes deleted it.
+   */
+  async delete(chatId: string): Promise<boolean> {
+    const chat = this.snapshot.chats.find((c) => c.id === chatId);
+    if (!chat || chat.running) return false;
+    const profile = this.profile;
+    this.deleted.add(chatId);
+    this.pinWanted.delete(chatId);
+    this.revealed.delete(chatId);
+    this.staleItems.delete(chatId);
+    this.resumeOnReconnect.delete(chatId);
+    if (this.viewing === chatId) this.viewing = undefined;
+    this.update({ chats: this.snapshot.chats.filter((c) => c.id !== chatId) });
+    this.saveList(profile, this.snapshot.chats);
+    try {
+      // A pin write still under way would otherwise land on a deleted session and report a failure.
+      await this.pinWrites.get(chatId);
+      await this.rest("DELETE", `api/sessions/${encodeURIComponent(chatId)}?${new URLSearchParams({ profile })}`);
+      return true;
+    } catch (e) {
+      this.deleted.delete(chatId);
+      if (this.profile !== profile) return false;
+      const chats = this.snapshot.chats.some((c) => c.id === chatId) ? this.snapshot.chats : [...this.snapshot.chats, chat];
+      this.update({ chats, syncError: `Couldn't delete "${chat.title}": ${(e as Error).message}` });
+      this.saveList(profile, chats);
+      return false;
+    }
   }
 
   /**
@@ -990,7 +1026,7 @@ export class Hermes {
     const known = new Map(this.snapshot.chats.map((c) => [c.id, c]));
     let readOnScreen = false;
     const listed = [...rows.values()]
-      .filter((r) => !r.archived && lastActive(r) >= cutoff)
+      .filter((r) => !r.archived && !this.deleted.has(r.id) && lastActive(r) >= cutoff)
       .map((r): Chat => {
         const c = known.get(r.id);
         // A row read before this app's latest write is stale; the chat stays where the owner put it until the next sync.
@@ -1022,14 +1058,19 @@ export class Hermes {
     const chats = [...onThisConnection, ...listed];
     this.update({ chats, syncError: undefined });
     if (readOnScreen) this.markRead(this.viewing!);
+    this.saveList(profile, chats);
+    return undefined;
+  }
+
+  /** Keeps the profile's list for the next start, without the chats' transcripts. */
+  private saveList(profile: string, chats: Chat[]) {
     this.cache.save(
       profile,
       chats.map(({ id, title, source, settled, updatedAt, unread }) => ({ id, title, source, settled, updatedAt, unread, items: [] })),
     );
-    return undefined;
   }
 
-  private async rest(method: "GET" | "PATCH", pathAndQuery: string, body?: unknown): Promise<unknown> {
+  private async rest(method: "GET" | "PATCH" | "DELETE", pathAndQuery: string, body?: unknown): Promise<unknown> {
     if (!this.pipe) throw new Error("Not connected to Hermes.");
     return JSON.parse(await this.pipe.request(method, pathAndQuery, body === undefined ? undefined : JSON.stringify(body)));
   }
@@ -1122,10 +1163,14 @@ function overLimit(name: string, size: number): string | undefined {
 const LOAD_ERROR_ID = "load-error";
 const withoutLoadError = (items: Item[]) => items.filter((i) => i.id !== LOAD_ERROR_ID);
 
-/** Stored history as transcript items. Hermes doesn't keep tool results, except for edit tools. */
+/**
+ * Stored history as transcript items. Hermes doesn't keep tool results, except for edit tools. An assistant row's
+ * reasoning shows as thinking before its text.
+ */
 function historyItems(messages: TranscriptMessage[]): Item[] {
   return messages.flatMap((m, i): Item[] => {
     const id = `h-${i}`;
+    const thought: Item[] = m.role === "assistant" && m.reasoning?.trim() ? [{ kind: "thinking", id: `${id}-r`, text: m.reasoning.trim() }] : [];
     if (m.role === "tool")
       return [
         {
@@ -1139,8 +1184,8 @@ function historyItems(messages: TranscriptMessage[]): Item[] {
         },
       ];
     // Assistant rows can be reasoning only; system rows are timeline notes this app doesn't show yet.
-    if (!m.text?.trim()) return [];
-    if (m.role === "user" || m.role === "assistant") return [{ kind: m.role, id, text: m.text }];
+    if (!m.text?.trim()) return thought;
+    if (m.role === "user" || m.role === "assistant") return [...thought, { kind: m.role, id, text: m.text }];
     return [];
   });
 }
@@ -1173,13 +1218,28 @@ function markInterrupted(items: Item[]): Item[] {
 }
 
 // Fold one session event into a chat. Text deltas extend the trailing assistant item, or start a new one
-// after a tool call.
+// after a tool call; reasoning deltas do the same with thinking items.
 function applyEvent(c: Chat, type: string, p: Record<string, unknown>): Chat {
   const items = [...c.items];
   const last = items[items.length - 1];
   switch (type) {
     case "message.start":
       return { ...c, running: true, updatedAt: Date.now() };
+    // `thinking.delta` is Hermes's spinner and wait notices, not reasoning, so it isn't shown.
+    case "reasoning.delta": {
+      const text = p.text;
+      if (typeof text !== "string" || !text) return c;
+      if (last?.kind === "thinking") items[items.length - 1] = { ...last, text: last.text + text };
+      else items.push({ kind: "thinking", id: `r-${items.length}`, text });
+      return { ...c, items, updatedAt: Date.now() };
+    }
+    // A response's reasoning in one go, up to 500 characters, when the model didn't stream it.
+    case "reasoning.available": {
+      const text = typeof p.text === "string" ? p.text.trim() : "";
+      if (!text || last?.kind === "thinking") return c;
+      items.push({ kind: "thinking", id: `r-${items.length}`, text });
+      return { ...c, items };
+    }
     case "message.delta": {
       const text = p.text;
       if (typeof text !== "string" || !text) return c;
@@ -1219,6 +1279,12 @@ function applyEvent(c: Chat, type: string, p: Record<string, unknown>): Chat {
       // Providers that don't stream send the whole reply here; a streamed turn repeats text it already sent.
       const lastUser = items.map((i) => i.kind).lastIndexOf("user");
       const answered = items.slice(lastUser + 1).some((i) => i.kind === "assistant");
+      // The last response's reasoning, for a turn that showed none: it goes before the reply.
+      const reasoning = typeof p.reasoning === "string" ? p.reasoning.trim() : "";
+      if (reasoning && !items.slice(lastUser + 1).some((i) => i.kind === "thinking")) {
+        const reply = items.map((i) => i.kind).lastIndexOf("assistant");
+        items.splice(reply > lastUser ? reply : items.length, 0, { kind: "thinking", id: `r-${items.length}`, text: reasoning });
+      }
       if (!answered && typeof p.text === "string" && p.text) items.push({ kind: "assistant", id: `a-${items.length}`, text: p.text });
       const end = { ...c, running: false, stopping: false, updatedAt: Date.now() };
       // Stopped here or from another Hermes client.

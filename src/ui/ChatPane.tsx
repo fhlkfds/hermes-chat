@@ -1,7 +1,7 @@
-// Transcript, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
+// Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
 // Messages, tool calls and commands can be copied; screenshots and files can be pasted into the composer.
 import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent } from "react";
-import { ArrowUp, ChevronDown, ChevronRight, ChevronUp, Paperclip, Search, ShieldAlert, Square, Wrench, X } from "lucide-react";
+import { ArrowUp, Brain, ChevronDown, ChevronRight, ChevronUp, Paperclip, Search, ShieldAlert, Square, Wrench, X } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import type { ApprovalChoice, ApprovalItem, AttachCheck, Attachment, Chat, ConnectionStatus, Item, PastedFile, Source } from "../hermes/model";
@@ -11,6 +11,7 @@ import { CopyButton, SettleButton, SourceIcon, Spinner, fmtSize, highlight } fro
 import { pastedFiles } from "./clipboard";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
+type ThinkingItem = Extract<Item, { kind: "thinking" }>;
 type Block = { kind: "tools"; id: string; tools: ToolItem[] } | Exclude<Item, ToolItem>;
 
 // Consecutive tool calls collapse into one group so a long run doesn't dominate the transcript.
@@ -254,12 +255,13 @@ export function ChatPane({
                   {b.text}
                 </div>
               );
+            if (b.kind === "thinking") return <Thought key={b.id} item={b} live={!!chat.running && b === last} query={q} />;
             if (b.kind === "approval")
               return <ApprovalCard key={b.id} item={b} offline={status !== "connected"} onAnswer={(c) => onAnswer(b.id, c)} />;
             return <ToolGroup key={b.id} tools={b.tools} />;
           })}
-          {/* A reply waiting on the owner isn't thinking. */}
-          {chat.running && last?.kind !== "assistant" && !(last && isWaiting(last)) && (
+          {/* A reply waiting on the owner isn't thinking, and streamed thinking shows its own row. */}
+          {chat.running && last?.kind !== "assistant" && last?.kind !== "thinking" && !(last && isWaiting(last)) && (
             <div className="msg assistant thinking">
               <span />
               <span />
@@ -327,6 +329,25 @@ function ApprovalCard({ item, offline, onAnswer }: { item: ApprovalItem; offline
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+/**
+ * The model's reasoning, folded to one line. `live`: it is still streaming, so the line shows its latest words.
+ */
+function Thought({ item, live, query }: { item: ThinkingItem; live: boolean; query: string }) {
+  const [open, setOpen] = useState(false);
+  const latest = item.text.trimEnd().split("\n").pop();
+  return (
+    <div className="tools" data-item={item.id}>
+      <button className="tool-line" onClick={() => setOpen((o) => !o)}>
+        {live ? <Spinner /> : <Brain size={13} />}
+        <span className="thought-label">{live ? "Thinking" : "Thought"}</span>
+        <span className="tool-preview thought-preview">{live && !open ? latest : ""}</span>
+        <ChevronRight size={13} className={`chev ${open ? "open" : ""}`} />
+      </button>
+      {open && <div className="thought-body">{highlight(item.text, query)}</div>}
     </div>
   );
 }

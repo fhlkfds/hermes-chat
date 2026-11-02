@@ -196,6 +196,14 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
     setToast({ text: `${settled ? "Settled" : "Moved to Active"}: ${title}`, undo: () => move(!settled), at: Date.now() });
   };
 
+  // Deleting can't be undone, so the row asked first. The chat on screen gives way to a fresh draft. A refused
+  // delete says why in the list instead of the toast.
+  const deleteChat = (id: string) => {
+    const title = chats.find((c) => c.id === id)?.title ?? "";
+    if (id === selectedId) newChat();
+    void hermes.delete(id).then((deleted) => deleted && setToast({ text: `Deleted: ${title}`, at: Date.now() }));
+  };
+
   useEffect(() => {
     if (!toast) return;
     const timer = setTimeout(() => setToast(null), TOAST_MS);
@@ -263,6 +271,7 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
           selectedId={settingsOpen ? null : selectedId}
           onOpen={openChat}
           onSettle={setSettled}
+          onDelete={deleteChat}
           onListProfiles={() => hermes.profiles()}
           onSwitchProfile={switchProfile}
         />

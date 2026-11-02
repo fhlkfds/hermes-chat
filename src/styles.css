@@ -79,6 +79,9 @@ code, pre, kbd { font-family: var(--mono); }
 .section-toggle .dot { margin-left: 6px; width: 6px; height: 6px; }
 .chev { transition: transform 0.15s; flex: none; }
 .chev.open { transform: rotate(90deg); }
+.settled-section { flex: none; display: flex; flex-direction: column; max-height: 55%; padding: 0 8px 10px; }
+.settled-section.open { border-top: 1px solid var(--line); }
+.settled-list { overflow-y: auto; min-height: 0; }
 .settled-list .row-title { color: var(--muted); }
 .sync-error { color: var(--warn); font-size: 12px; padding: 6px 10px 10px; }
 .empty-hint { color: var(--faint); font-size: 12.5px; padding: 6px 10px 10px; }
@@ -99,6 +102,12 @@ code, pre, kbd { font-family: var(--mono); }
 .row-action:hover { background: rgba(255, 255, 255, 0.07); color: var(--text); }
 .row:hover .row-meta { display: none; }
 .row:hover .row-action { display: grid; }
+.row.confirming { background: rgba(248, 113, 113, 0.08); }
+.row.confirming .row-title { color: var(--muted); }
+.row-confirm { flex: none; font-size: 12px; padding: 3px 8px; border-radius: 6px; color: var(--muted); }
+.row-confirm:hover, .row-confirm:focus-visible { background: rgba(255, 255, 255, 0.07); color: var(--text); }
+.row-confirm.danger { color: var(--bad); font-weight: 500; background: rgba(248, 113, 113, 0.14); }
+.row-confirm.danger:hover, .row-confirm.danger:focus-visible { background: rgba(248, 113, 113, 0.26); color: #fca5a5; }
 
 .conn { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--muted); min-width: 0; }
 .conn-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
@@ -214,6 +223,12 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .tool-dur { font-size: 11.5px; color: var(--faint); flex: none; font-variant-numeric: tabular-nums; }
 .tool-group-body { border-left: 1px solid var(--line-2); margin: 2px 0 2px 2px; padding-left: 14px; }
 .tool-body { margin: 2px 0 8px 22px; }
+.thought-label { font-size: 13px; color: #b9b9c0; flex: none; }
+.thought-preview { font-family: inherit; font-size: 12.5px; }
+.thought-body {
+  margin: 2px 0 6px 2px; padding-left: 14px; border-left: 1px solid var(--line-2); font-size: 13px; line-height: 1.6;
+  color: var(--muted); white-space: pre-wrap; word-wrap: break-word;
+}
 .tool-label {
   display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: var(--faint); margin: 8px 0 4px;
   text-transform: uppercase; letter-spacing: 0.05em;

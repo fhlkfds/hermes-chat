@@ -20,7 +20,7 @@ export interface Pipe {
    * One dashboard REST call with the sign-in cookies, e.g. `request("GET", "api/sessions?order=recent")`.
    * `body` is JSON text. Resolves to the response body text on 2xx; rejects with a readable message otherwise.
    */
-  request(method: "GET" | "PATCH", pathAndQuery: string, body?: string): Promise<string>;
+  request(method: "GET" | "PATCH" | "DELETE", pathAndQuery: string, body?: string): Promise<string>;
   statFiles(paths: string[]): Promise<LocalFile[]>;
   /** Writes a pasted file's bytes to a new local file named `name`, so it can be attached; resolves to its path. */
   savePasted(name: string, bytes: Uint8Array): Promise<string>;

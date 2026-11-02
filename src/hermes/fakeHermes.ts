@@ -283,7 +283,10 @@ export class FakeHermes {
         const req: RestRequest = { method, path: url.pathname, query: url.searchParams, body: body === undefined ? undefined : JSON.parse(body) };
         this.restRequests.push(req);
         const patch = /^\/api\/sessions\/([^/]+)$/.exec(req.path);
-        const handler = this.rest[`${method} ${req.path}`] ?? (method === "PATCH" && patch ? () => this.patchSession(patch[1], req.body!) : undefined);
+        const handler =
+          this.rest[`${method} ${req.path}`] ??
+          (method === "PATCH" && patch ? () => this.patchSession(patch[1], req.body!) : undefined) ??
+          (method === "DELETE" && patch ? () => this.deleteSession(decodeURIComponent(patch[1]), req.query.get("profile")) : undefined);
         if (!handler) throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
         return JSON.stringify(await handler(req));
       },
@@ -384,6 +387,19 @@ export class FakeHermes {
     if (typeof body.pinned === "boolean") s.pinned = body.pinned;
     if (typeof body.unread === "boolean") s.last_read_at = body.unread ? 0 : now();
     return { ok: true };
+  }
+
+  /**
+   * `delete_session_endpoint` in `hermes_cli/web_routers/sessions.py` at upstream `c419cf7`: the row and its messages
+   * go for good. A session already gone counts as deleted.
+   */
+  private deleteSession(id: string, profile: string | null) {
+    const store = this.storeOrFail(profile);
+    const i = store.findIndex((r) => r.id === id);
+    if (i < 0) return { ok: true, already_absent: true };
+    store.splice(i, 1);
+    delete this.transcripts[id];
+    return { ok: true, deleted_ids: [id] };
   }
 
   private frame(f: unknown) {

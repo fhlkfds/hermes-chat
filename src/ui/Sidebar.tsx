@@ -1,7 +1,7 @@
 // Icon rail beside a chat list (ADR 0001), ported from the prototype's variants C and A. The list's header is the
 // profile switcher. Settings opens from the rail's foot.
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, ChevronRight, LockOpen, Search, Settings, SquarePen } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, LockOpen, Search, Settings, SquarePen, Trash2 } from "lucide-react";
 import type { Chat, ConnectionStatus } from "../hermes/model";
 import { SOURCE_LABEL } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
@@ -68,17 +68,40 @@ export function Rail({
   );
 }
 
+/**
+ * One chat in the list. Its trash button asks before deleting, in the row itself: Escape, Cancel or clicking away
+ * keeps the chat. A chat with a reply running can't be deleted.
+ */
 function ChatRow({
   chat,
   selected,
   onOpen,
   onSettle,
+  onDelete,
 }: {
   chat: Chat;
   selected: boolean;
   onOpen: () => void;
   onSettle: (settled: boolean) => void;
+  onDelete: () => void;
 }) {
+  const [confirming, setConfirming] = useState(false);
+  if (confirming)
+    return (
+      <div
+        className={`row confirming ${selected ? "sel" : ""}`}
+        onKeyDown={(e) => e.key === "Escape" && setConfirming(false)}
+        onBlur={(e) => e.currentTarget.contains(e.relatedTarget) || setConfirming(false)}
+      >
+        <span className="row-title">{chat.title}</span>
+        <button className="row-confirm danger" title="Delete this chat in every Hermes client. This can't be undone." onClick={onDelete}>
+          Delete
+        </button>
+        <button className="row-confirm" autoFocus onClick={() => setConfirming(false)}>
+          Cancel
+        </button>
+      </div>
+    );
   return (
     <div
       className={`row ${selected ? "sel" : ""} ${chat.unread ? "unread" : ""}`}
@@ -91,6 +114,18 @@ function ChatRow({
         {chat.running ? <Spinner /> : chat.unread ? <span className="dot" title="Unread" /> : relTime(chat.updatedAt)}
       </span>
       <SettleButton settled={chat.settled} size={14} className="row-action" onSettle={onSettle} />
+      {!chat.running && (
+        <button
+          className="row-action"
+          title="Delete"
+          onClick={(e) => {
+            e.stopPropagation();
+            setConfirming(true);
+          }}
+        >
+          <Trash2 size={14} />
+        </button>
+      )}
     </div>
   );
 }
@@ -180,6 +215,7 @@ export function ChatList({
   selectedId,
   onOpen,
   onSettle,
+  onDelete,
   onListProfiles,
   onSwitchProfile,
 }: {
@@ -189,6 +225,7 @@ export function ChatList({
   selectedId: string | null;
   onOpen: (id: string) => void;
   onSettle: (id: string, settled: boolean) => void;
+  onDelete: (id: string) => void;
   onListProfiles: () => Promise<string[]>;
   onSwitchProfile: (name: string) => void;
 }) {
@@ -202,7 +239,14 @@ export function ChatList({
   const settled = chats.filter((c) => c.settled).sort(byRecent);
   const settledUnread = settled.filter((c) => c.unread).length;
   const row = (c: Chat) => (
-    <ChatRow key={c.id} chat={c} selected={c.id === selectedId} onOpen={() => onOpen(c.id)} onSettle={(s) => onSettle(c.id, s)} />
+    <ChatRow
+      key={c.id}
+      chat={c}
+      selected={c.id === selectedId}
+      onOpen={() => onOpen(c.id)}
+      onSettle={(s) => onSettle(c.id, s)}
+      onDelete={() => onDelete(c.id)}
+    />
   );
   return (
     <aside className="sidebar">
@@ -217,6 +261,9 @@ export function ChatList({
         )}
         <div className="section-label">Active</div>
         {active.length ? active.map(row) : <div className="empty-hint">Nothing active. Start a new chat.</div>}
+      </div>
+      {/* Settled is pinned to the foot of the list and opens upward as a drawer with its own scroll. */}
+      <div className={`settled-section ${settledOpen ? "open" : ""}`}>
         <button className="section-toggle" onClick={() => setSettledOpen((o) => !o)}>
           <ChevronRight size={14} className={`chev ${settledOpen ? "open" : ""}`} />
           Settled
