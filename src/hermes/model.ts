@@ -103,7 +103,23 @@ export type Chat = {
   running?: boolean;
   /** Stop was asked for; the reply keeps running until Hermes ends the turn (`Hermes.stop`). */
   stopping?: boolean;
+  /** What Hermes reports about the chat's session on this connection; gone when the connection drops. */
+  live?: SessionLive;
 };
+
+/**
+ * A chat's live session as Hermes reports it (`session.info`, `session.usage`, research doc "Status bar").
+ * `context`: how full the context window is, only once Hermes has measured it. `yolo`: Hermes runs commands it counts
+ * as dangerous without asking; undefined when Hermes doesn't report it. `yoloEverywhere`: on for every chat by Hermes's
+ * own settings, so this chat can't turn it off.
+ */
+export type SessionLive = { model?: string; context?: ContextUse; yolo?: boolean; yoloEverywhere?: boolean };
+
+/** `used` of `max` tokens, `percent` full. `estimated`: Hermes counted part of it itself, not the provider. */
+export type ContextUse = { used: number; max: number; percent: number; estimated: boolean };
+
+/** One part of what fills the context window, as Hermes estimates it (`session.context_breakdown`). */
+export type ContextPart = { id: string; label: string; tokens: number; color?: string };
 
 export type ConnectionStatus = "connected" | "reconnecting" | "offline";
 

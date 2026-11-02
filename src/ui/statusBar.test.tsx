@@ -1,0 +1,219 @@
+// @vitest-environment jsdom
+// The status bar: what it shows is kept, the context meter reads Hermes's own usage frames, and YOLO is only offered
+// when Hermes reports it for the chat. Driven against a fake Hermes speaking the deployed wire shapes.
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it } from "vitest";
+import { FakeHermes, row } from "../hermes/fakeHermes";
+import { connect, type Hermes } from "../hermes/transport";
+import { StatusBar, loadStatusBar, statusBarStore } from "./StatusBar";
+
+const KEY = "hermes-chat.ui-prefs";
+
+function memoryStorage(saved?: unknown) {
+  const items = new Map<string, string>();
+  if (saved !== undefined) items.set(KEY, JSON.stringify(saved));
+  return { getItem: (k: string) => items.get(k) ?? null, setItem: (k: string, v: string) => void items.set(k, v), items };
+}
+
+/** A `session.usage` event payload as the deployed `_start_usage_ticker` sends it (`server._get_usage`). */
+const USAGE_TICK = {
+  usage: {
+    model: "claude-opus-5-5",
+    input: 41_000,
+    output: 1_200,
+    total: 42_200,
+    calls: 3,
+    context_used: 46_000,
+    context_max: 200_000,
+    context_percent: 23,
+    context_source: "provider_usage",
+    context_estimated: false,
+  },
+};
+
+afterEach(cleanup);
+
+/** A new chat started on a fake Hermes, its bar on screen and kept up to date. */
+async function barFor(server = new FakeHermes(), storage = memoryStorage()) {
+  const hermes = await connect(server.openPipe);
+  const id = await hermes.newChat();
+  const prefs = statusBarStore(storage);
+  const chat = () => hermes.getSnapshot().chats.find((c) => c.id === id)!;
+  const bar = () => (
+    <StatusBar
+      chat={chat()}
+      status={hermes.getSnapshot().status}
+      prefs={prefs}
+      onYolo={(on) => hermes.setYolo(id, on)}
+      onBreakdown={() => hermes.contextBreakdown(id)}
+    />
+  );
+  const view = render(bar());
+  hermes.subscribe(() => view.rerender(bar()));
+  return { server, hermes, id, runtime: server.runtimeIdOf(id)!, storage, chat };
+}
+
+const settle = (hermes: Hermes) => act(async () => void (await hermes.idle()));
+
+describe("What the status bar shows", () => {
+  it("keeps the items picked from its right-click menu, beside other ui-prefs", async () => {
+    const storage = memoryStorage({ other: 1 });
+    await barFor(undefined, storage);
+    expect(screen.getByText("Connected")).toBeTruthy();
+
+    fireEvent.contextMenu(screen.getByRole("contentinfo", { name: "Status bar" }));
+    const connection = screen.getByRole("menuitemcheckbox", { name: "Connection" });
+    expect(connection.getAttribute("aria-checked")).toBe("true");
+    await userEvent.click(connection);
+
+    expect(screen.queryByText("Connected")).toBeNull();
+    expect(screen.getByRole("menuitemcheckbox", { name: "Connection" }).getAttribute("aria-checked")).toBe("false");
+    expect(JSON.parse(storage.items.get(KEY)!)).toEqual({ other: 1, statusBar: { shown: true, items: ["context", "yolo", "model"] } });
+    // Kept across a restart; ticking it again puts it back in its place.
+    expect(loadStatusBar(storage).items).toEqual(["context", "yolo", "model"]);
+    await userEvent.click(screen.getByRole("menuitemcheckbox", { name: "Connection" }));
+    expect(loadStatusBar(storage).items).toEqual(["context", "yolo", "model", "status"]);
+  });
+
+  it("hides the whole bar from its menu, and stays hidden", async () => {
+    const { storage } = await barFor();
+    fireEvent.contextMenu(screen.getByRole("contentinfo", { name: "Status bar" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Hide bar" }));
+
+    expect(screen.queryByRole("contentinfo", { name: "Status bar" })).toBeNull();
+    expect(loadStatusBar(storage)).toEqual({ shown: false, items: ["context", "yolo", "model", "status"] });
+  });
+
+  it("drops anything kept that isn't an item, and shows everything when nothing readable is kept", () => {
+    expect(loadStatusBar(memoryStorage({ statusBar: { shown: "no", items: ["model", "weather", 3] } }))).toEqual({ shown: true, items: ["model"] });
+    expect(loadStatusBar({ getItem: () => "{oops", setItem: () => {} })).toEqual({ shown: true, items: ["context", "yolo", "model", "status"] });
+  });
+});
+
+describe("Context meter", () => {
+  it("shows how full the context is once Hermes measures it, and the model", async () => {
+    const { server, runtime, chat } = await barFor();
+    // Before the first API call Hermes has no measure, and the bar makes none up.
+    expect(screen.queryByText(/% full/)).toBeNull();
+
+    act(() => server.event(runtime, "session.usage", USAGE_TICK));
+    expect(chat().live?.context).toEqual({ used: 46_000, max: 200_000, percent: 23, estimated: false });
+    expect(screen.getByText("23% full")).toBeTruthy();
+    expect(screen.getByText("claude-opus-5-5")).toBeTruthy();
+
+    // The turn's last word on usage replaces the ticks.
+    act(() => server.event(runtime, "message.complete", { text: "Done", usage: { ...USAGE_TICK.usage, context_used: 182_000, context_percent: 91, context_estimated: true } }));
+    expect(screen.getByText("91% full").closest("button")!.className).toContain("full");
+    // A usage frame without a measure clears it rather than keeping an old number.
+    act(() => server.event(runtime, "session.usage", { usage: { model: "claude-opus-5-5", calls: 0 } }));
+    expect(screen.queryByText(/% full/)).toBeNull();
+  });
+
+  it("opens the breakdown by category that Hermes gives", async () => {
+    const { server, hermes, runtime } = await barFor();
+    server.handlers["session.context_breakdown"] = (r) =>
+      server.respond(r.id, {
+        categories: [
+          { id: "system_prompt", label: "System prompt", tokens: 6_000, color: "#7c3aed" },
+          { id: "conversation", label: "Conversation", tokens: 40_000, color: "#0ea5e9" },
+          { id: "junk", tokens: "lots" },
+        ],
+        context_max: 200_000,
+        context_used: 46_000,
+      });
+    act(() => server.event(runtime, "session.usage", USAGE_TICK));
+
+    await userEvent.click(screen.getByText("23% full"));
+    await settle(hermes);
+    const dialog = screen.getByRole("dialog", { name: "Context window" });
+    expect(dialog.textContent).toContain("46,000 of 200,000 tokens");
+    const parts = screen.getByRole("list", { name: "Breakdown by category" });
+    expect([...parts.querySelectorAll("li")].map((li) => li.textContent)).toEqual(["System prompt6,000", "Conversation40,000"]);
+    expect(server.last("session.context_breakdown")!.params).toEqual({ session_id: runtime });
+
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("says so when Hermes gives no breakdown", async () => {
+    const { server, hermes, runtime } = await barFor();
+    server.handlers["session.context_breakdown"] = (r) => server.respond(r.id, { categories: [], context_max: 200_000 });
+    act(() => server.event(runtime, "session.usage", USAGE_TICK));
+    await userEvent.click(screen.getByText("23% full"));
+    await settle(hermes);
+    expect(screen.getByRole("dialog").textContent).toContain("Hermes gave no breakdown for this chat.");
+  });
+});
+
+describe("A chat's live session", () => {
+  it("comes from session.resume when a chat is reopened, and is forgotten when the connection drops", async () => {
+    const server = new FakeHermes();
+    server.sessions = [row("nas", 1)];
+    server.sessionInfo = { model: "m", yolo: true, approval_mode: "manual", usage: USAGE_TICK.usage };
+    const hermes = await connect(server.openPipe);
+    await hermes.sync();
+    await hermes.open("nas");
+    const nas = () => hermes.getSnapshot().chats.find((c) => c.id === "nas")!;
+    expect(nas().live).toEqual({ model: "m", yolo: true, yoloEverywhere: false, context: { used: 46_000, max: 200_000, percent: 23, estimated: false } });
+
+    server.drop();
+    expect(nas().live).toBeUndefined();
+  });
+});
+
+describe("YOLO for this chat", () => {
+  const yolo = () => screen.getByRole("switch", { name: "YOLO for this chat" }) as HTMLButtonElement;
+
+  it("is disabled, and says why, when Hermes doesn't report YOLO for the chat", async () => {
+    // The fake's session.create answers with an empty `info`, as a server without the setting would.
+    const { server } = await barFor();
+    expect(yolo().disabled).toBe(true);
+    expect(yolo().title).toBe("Hermes hasn't reported YOLO for this chat yet, so it can't be changed from here.");
+    expect(server.last("config.set")).toBeUndefined();
+  });
+
+  it("is disabled when Hermes's own settings turn it on for every chat", async () => {
+    const { server, runtime } = await barFor();
+    act(() => server.event(runtime, "session.info", { model: "m", yolo: true, approval_mode: "off" }));
+    expect(yolo().disabled).toBe(true);
+    expect(yolo().getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("turns on for this chat only after the owner confirms, and off again", async () => {
+    const server = new FakeHermes();
+    server.handlers["config.set"] = (r) => server.respond(r.id, { key: "yolo", value: r.params.value === "on" ? "1" : "0", scope: "session" });
+    const { hermes, runtime, chat } = await barFor(server);
+    act(() => server.event(runtime, "session.info", { model: "m", yolo: false, approval_mode: "manual" }));
+    expect(yolo().disabled).toBe(false);
+
+    await userEvent.click(yolo());
+    // Cancel has focus, so a stray Enter backs out.
+    await userEvent.keyboard("{Enter}");
+    expect(server.last("config.set")).toBeUndefined();
+
+    await userEvent.click(yolo());
+    await userEvent.click(screen.getByRole("button", { name: "Turn on" }));
+    await settle(hermes);
+    expect(server.last("config.set")!.params).toEqual({ session_id: runtime, profile: "default", key: "yolo", value: "on" });
+    expect(chat().live?.yolo).toBe(true);
+    expect(yolo().getAttribute("aria-checked")).toBe("true");
+
+    await userEvent.click(yolo());
+    await settle(hermes);
+    expect(server.last("config.set")!.params.value).toBe("off");
+    expect(yolo().getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("shows why when Hermes refuses the change", async () => {
+    const server = new FakeHermes();
+    server.handlers["config.set"] = (r) => server.fail(r.id, 4002, "unknown config key: yolo");
+    const { hermes, runtime } = await barFor(server);
+    act(() => server.event(runtime, "session.info", { yolo: false }));
+    await userEvent.click(yolo());
+    await userEvent.click(screen.getByRole("button", { name: "Turn on" }));
+    await settle(hermes);
+    expect(yolo().title).toBe("Couldn't change YOLO: unknown config key: yolo");
+    expect(yolo().getAttribute("aria-checked")).toBe("false");
+  });
+});

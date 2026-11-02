@@ -1,9 +1,11 @@
 // Settings, Appearance: the interface and code fonts and sizes, and Word wrap, each with a preview of what it changes.
-// Changes apply at once and are kept on this computer only (appearance.ts).
+// Changes apply at once and are kept on this computer only (appearance.ts). Also whether the status bar shows
+// (StatusBar.tsx), so a bar hidden from its own menu can come back.
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { RotateCcw } from "lucide-react";
 import { DEFAULT_APPEARANCE, MONO_SIZES, UI_SIZES, type Appearance, type AppearanceStore, type Fonts } from "./appearance";
 import { Markdown } from "./Markdown";
+import type { StatusBarStore } from "./StatusBar";
 
 const UI_SAMPLE = "Chats that need attention sit at the top; settled ones wait below. Press Ctrl+K to search every chat.";
 const CODE_SAMPLE = [
@@ -81,8 +83,9 @@ function FontRow({
   );
 }
 
-export function AppearanceSettings({ store, listFonts }: { store: AppearanceStore; listFonts: () => Promise<Fonts> }) {
+export function AppearanceSettings({ store, statusBar, listFonts }: { store: AppearanceStore; statusBar: StatusBarStore; listFonts: () => Promise<Fonts> }) {
   const a = useSyncExternalStore(store.subscribe, store.get);
+  const bar = useSyncExternalStore(statusBar.subscribe, statusBar.get);
   const [fonts, setFonts] = useState<Fonts>({ all: [], mono: [] });
   useEffect(() => {
     let live = true;
@@ -145,6 +148,18 @@ export function AppearanceSettings({ store, listFonts }: { store: AppearanceStor
           aria-labelledby="word-wrap-label"
           onClick={() => set({ wordWrap: !a.wordWrap })}
         >
+          <span className="switch-knob" />
+        </button>
+      </div>
+
+      <div className="appearance-row">
+        <div className="appearance-label">
+          <div className="appearance-title" id="status-bar-label">
+            Status bar
+          </div>
+          <div className="muted small">Context, YOLO, model and connection under the chat. Right-click it to pick what it shows.</div>
+        </div>
+        <button className="switch" role="switch" aria-checked={bar.shown} aria-labelledby="status-bar-label" onClick={() => statusBar.set({ shown: !bar.shown })}>
           <span className="switch-knob" />
         </button>
       </div>

@@ -9,6 +9,7 @@ import { TRANSCRIPT_LIMIT_BYTES } from "../hermes/chatCache";
 import { STATUS_LABEL, fmtSize, routeLabel } from "./bits";
 import type { AppearanceStore, Fonts } from "./appearance";
 import { AppearanceSettings } from "./AppearanceSettings";
+import type { StatusBarStore } from "./StatusBar";
 
 /** What a pull added: the older chats in Settled, and any pinned in another Hermes client, which are Active. */
 function pulledText(added: Chat[]): string {
@@ -31,6 +32,7 @@ export function SettingsScreen({
   olderPulled,
   cacheBytes,
   appearance,
+  statusBar,
   listFonts,
   onClearCache,
   onPullOlder,
@@ -48,6 +50,7 @@ export function SettingsScreen({
   /** The storage the saved chat lists and Saved copies take now. */
   cacheBytes: () => number;
   appearance: AppearanceStore;
+  statusBar: StatusBarStore;
   /** The installed font families, for the font pickers. */
   listFonts: () => Promise<Fonts>;
   onClearCache: () => void;
@@ -110,7 +113,7 @@ export function SettingsScreen({
           <p className="muted small settings-note">Signing out deletes the saved password from the keyring. You type it again at the next sign-in.</p>
         </section>
 
-        <AppearanceSettings store={appearance} listFonts={listFonts} />
+        <AppearanceSettings store={appearance} statusBar={statusBar} listFonts={listFonts} />
 
         <section>
           <h2>Local cache</h2>

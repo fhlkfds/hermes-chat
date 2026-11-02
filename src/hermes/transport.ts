@@ -14,7 +14,8 @@
 // Each chat opened lately keeps a Saved copy of its transcript on this computer, shown while Hermes can't be reached
 // or the history is on the way; when the first connection at launch fails, the saved list and copies still open.
 // Unread chats in the other profiles are polled over dashboard REST (otherProfiles.ts).
-import { APPROVAL_CHOICES, isBroadGrant, isWaiting, offeredChoices, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ConnectionStatus, type Found, type Item, type OtherProfiles, type Source } from "./model";
+// Each chat's model, context fullness and YOLO come from its session's `info` and `usage`: research doc "Status bar".
+import { APPROVAL_CHOICES, isBroadGrant, isWaiting, offeredChoices, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ConnectionStatus, type ContextPart, type ContextUse, type Found, type Item, type OtherProfiles, type SessionLive, type Source } from "./model";
 import { noOthers, OtherProfilesCheck } from "./otherProfiles";
 import type { OpenPipe, Pipe, PipeEvent, Route } from "./pipe";
 import { isUnsecure } from "./unsecure";
@@ -542,6 +543,7 @@ export class Hermes {
     const res = (await this.request("session.create", { profile: this.profile, source: APP_SOURCE })) as {
       session_id: string;
       stored_session_id: string;
+      info?: unknown;
     };
     const chat: Chat = {
       id: res.stored_session_id,
@@ -551,6 +553,7 @@ export class Hermes {
       settled: false,
       updatedAt: Date.now(),
       items: [],
+      live: withLive(undefined, res.info),
     };
     this.pinWanted.set(chat.id, true);
     this.update({ chats: [chat, ...this.snapshot.chats] });
@@ -832,6 +835,32 @@ export class Hermes {
       answer(undefined);
       this.patchChat(chatId, (c) => ({ ...c, items: [...c.items, errorItem(c, `Couldn't answer Hermes: ${(e as Error).message}`)] }));
     }
+  }
+
+  /**
+   * Turns YOLO on or off for this chat only: Hermes then runs commands it counts as dangerous without asking
+   * (`config.set yolo`, session scope; research doc "Status bar"). Hermes keeps it with the chat. Rejects if the
+   * chat isn't open on this connection or Hermes refuses.
+   */
+  async setYolo(chatId: string, on: boolean): Promise<void> {
+    const runtimeId = this.snapshot.chats.find((c) => c.id === chatId)?.runtimeId;
+    if (!runtimeId) throw new Error("This chat isn't open on Hermes.");
+    const res = (await this.request("config.set", { session_id: runtimeId, profile: this.profile, key: "yolo", value: on ? "on" : "off" })) as { value?: unknown };
+    // Hermes also sends session.info, which has the final word.
+    this.patchChat(chatId, (c) => (c.runtimeId === runtimeId ? { ...c, live: { ...c.live, yolo: res.value === "1" || !!c.live?.yoloEverywhere } } : c));
+  }
+
+  /** What fills the chat's context window, by category, as Hermes estimates it now; empty when Hermes gives none. */
+  async contextBreakdown(chatId: string): Promise<ContextPart[]> {
+    const runtimeId = this.snapshot.chats.find((c) => c.id === chatId)?.runtimeId;
+    if (!runtimeId) return [];
+    const res = (await this.request("session.context_breakdown", { session_id: runtimeId })) as { categories?: unknown };
+    return (Array.isArray(res?.categories) ? res.categories : []).flatMap((v): ContextPart[] => {
+      const p = obj(v);
+      return p && typeof p.id === "string" && typeof p.label === "string" && typeof p.tokens === "number"
+        ? [{ id: p.id, label: p.label, tokens: p.tokens, ...(typeof p.color === "string" && { color: p.color }) }]
+        : [];
+    });
   }
 
   /**
@@ -1119,7 +1148,7 @@ export class Hermes {
     this.update({
       status: "reconnecting",
       closedReason: reason,
-      chats: this.snapshot.chats.map((c) => (c.runtimeId || c.running ? { ...c, runtimeId: undefined, running: false, stopping: false } : c)),
+      chats: this.snapshot.chats.map((c) => (c.runtimeId || c.running ? { ...c, runtimeId: undefined, live: undefined, running: false, stopping: false } : c)),
     });
   }
 
@@ -1210,6 +1239,8 @@ export class Hermes {
           running?: boolean;
           /** What a live session is still waiting on, oldest first. */
           open_requests?: ServerRequest[];
+          info?: unknown;
+          usage?: unknown;
         };
         const history = historyItems(res.messages ?? []);
         const stale = this.staleItems.get(chatId) ?? 0;
@@ -1226,6 +1257,7 @@ export class Hermes {
         this.patchChat(chatId, (c) => ({
           ...c,
           runtimeId: res.session_id,
+          live: withLive(undefined, res.info, res.usage),
           running: c.running || !!res.running,
           savedAt: undefined,
           items: [...history, ...lost(c.items.slice(0, stale)), ...withoutLoadError(c.items.slice(stale))],
@@ -1744,6 +1776,30 @@ function approvalItem(r: ServerRequest): ApprovalItem {
 const endWaitingApprovals = (items: Item[], ended: string, which = (_: ApprovalItem) => true) =>
   items.map((i): Item => (isWaiting(i) && which(i) ? { ...i, ended } : i));
 
+const obj = (v: unknown) => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined);
+
+/**
+ * `prev` updated from a session's `info` (`server._session_info`) and `usage` (`server._get_usage`, or `info.usage`).
+ * Context fullness only as Hermes measured it: none until it has. YOLO only when Hermes reports it.
+ */
+function withLive(prev: SessionLive | undefined, info?: unknown, usage?: unknown): SessionLive | undefined {
+  const i = obj(info);
+  const u = obj(usage) ?? obj(i?.usage);
+  if (!i && !u) return prev;
+  const live: SessionLive = { ...prev };
+  const model = [i?.model, u?.model].find((m): m is string => typeof m === "string" && m !== "");
+  if (model) live.model = model;
+  if (typeof i?.yolo === "boolean") Object.assign(live, { yolo: i.yolo, yoloEverywhere: i.approval_mode === "off" });
+  if (u) live.context = contextUse(u);
+  return live;
+}
+
+function contextUse(u: Record<string, unknown>): ContextUse | undefined {
+  const { context_used: used, context_max: max, context_percent: percent } = u;
+  if (typeof used !== "number" || typeof max !== "number" || typeof percent !== "number" || max <= 0) return undefined;
+  return { used, max, percent, estimated: u.context_estimated === true };
+}
+
 function errorItem(c: Chat, text: string): Item {
   return { kind: "error", id: `e-${c.items.length}`, text };
 }
@@ -1819,6 +1875,11 @@ function applyEvent(c: Chat, type: string, p: Record<string, unknown>): Chat {
             : i,
         ),
       };
+    case "session.info":
+      return { ...c, live: withLive(c.live, p) };
+    // Every second or so while a turn runs.
+    case "session.usage":
+      return { ...c, live: withLive(c.live, undefined, p.usage) };
     case "request.cancel":
       // Hermes stopped waiting: timed out, interrupted, or answered in another Hermes client.
       return { ...c, items: endWaitingApprovals(items, String(p.reason || "withdrawn"), (i) => i.id === p.id) };
@@ -1838,7 +1899,7 @@ function applyEvent(c: Chat, type: string, p: Record<string, unknown>): Chat {
         items.splice(reply > lastUser ? reply : items.length, 0, { kind: "thinking", id: `r-${items.length}`, text: reasoning });
       }
       if (!answered && typeof p.text === "string" && p.text) items.push({ kind: "assistant", id: `a-${items.length}`, text: p.text });
-      const end = { ...c, running: false, stopping: false, updatedAt: Date.now() };
+      const end = { ...c, live: withLive(c.live, undefined, p.usage), running: false, stopping: false, updatedAt: Date.now() };
       // Stopped here or from another Hermes client.
       if (p.status === "interrupted") return { ...end, items: markInterrupted(endWaitingApprovals(items, "turn ended")) };
       const failure = p.error ?? (p.status === "error" ? p.failure_reason ?? "The turn failed." : undefined);

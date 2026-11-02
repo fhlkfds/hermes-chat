@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_APPEARANCE, appearanceStore, cssFamily, loadAppearance } from "./appearance";
 import { AppearanceSettings } from "./AppearanceSettings";
+import { statusBarStore } from "./StatusBar";
 
 const KEY = "hermes-chat.appearance";
 
@@ -68,7 +69,7 @@ describe("Settings, Appearance", () => {
     const storage = memoryStorage(saved);
     const root = document.createElement("html");
     const store = appearanceStore(storage, root);
-    render(<AppearanceSettings store={store} listFonts={fonts} />);
+    render(<AppearanceSettings store={store} statusBar={statusBarStore(storage)} listFonts={fonts} />);
     return { storage, root, store };
   }
 

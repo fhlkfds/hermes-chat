@@ -15,6 +15,7 @@ import { SearchPalette } from "./ui/Search";
 import { SettingsScreen } from "./ui/Settings";
 import { composing } from "./ui/bits";
 import { appearanceStore } from "./ui/appearance";
+import { StatusBar, statusBarStore } from "./ui/StatusBar";
 import { systemFonts } from "./ui/tauriFonts";
 import { SignIn } from "./ui/SignIn";
 
@@ -47,6 +48,7 @@ const account: Account = {
 const savedDrafts = drafts(localStorage);
 // Applied as the app loads, so the chosen fonts show from the first screen.
 const appearance = appearanceStore(localStorage, document.documentElement);
+const statusBar = statusBarStore(localStorage);
 
 /** What launch ends in: signed in with the saved password, or the sign-in screen and why. */
 type Launch = { hermes: Hermes } | { initial: SignInDetails; error?: string };
@@ -381,6 +383,7 @@ export function Main({
             olderPulled={olderPulled}
             cacheBytes={() => hermes.cacheBytes()}
             appearance={appearance}
+            statusBar={statusBar}
             listFonts={systemFonts}
             onClearCache={() => hermes.clearCache()}
             onPullOlder={() => hermes.pullOlderHistory()}
@@ -407,6 +410,15 @@ export function Main({
             onSettle={selected === draft ? undefined : (s) => setSettled(selected.id, s)}
             onExport={selected === draft ? undefined : () => exportSelected(selected)}
             onArchive={selected === draft ? undefined : (a) => setArchived(selected.id, a)}
+            footer={
+              <StatusBar
+                chat={selected}
+                status={status}
+                prefs={statusBar}
+                onYolo={(on) => hermes.setYolo(selected.id, on)}
+                onBreakdown={() => hermes.contextBreakdown(selected.id)}
+              />
+            }
           />
         )}
       </main>

@@ -102,6 +102,10 @@ export class FakeHermes {
   readonly runtime = new Map<string, string>();
   private created = new Map<string, { source: string; profile?: string }>(); // runtime id, until the first prompt stores it
 
+  /** The `info` session.create and session.resume answer with (`server._session_info`); empty, as from a server
+   * that reports none of it, unless a test sets it. */
+  sessionInfo: Record<string, unknown> = {};
+
   /** Per-method behaviour; tests override entries. Unhandled methods get no answer. */
   readonly handlers: Record<string, Handler> = {
     "session.create": (r) => {
@@ -110,7 +114,7 @@ export class FakeHermes {
       const stored = `20261031_12000${n}_abc123`;
       this.runtime.set(runtimeId, stored);
       this.created.set(runtimeId, { source: String(r.params.source ?? "tui"), profile: r.params.profile as string | undefined });
-      this.respond(r.id, { session_id: runtimeId, stored_session_id: stored, message_count: 0, messages: [], info: {} });
+      this.respond(r.id, { session_id: runtimeId, stored_session_id: stored, message_count: 0, messages: [], info: this.sessionInfo });
     },
     "session.resume": (r) => {
       const stored = String(r.params.session_id);
@@ -123,12 +127,12 @@ export class FakeHermes {
         this.runtime.set(sid, stored);
         const messages = this.transcripts[stored] ?? [];
         const open_requests = open.map(([id, q]) => ({ id, method: q.method, params: { session_id: sid, ...q.params } }));
-        return this.respond(r.id, { session_id: sid, stored_session_id: stored, message_count: messages.length, messages, info: {}, running: true, open_requests });
+        return this.respond(r.id, { session_id: sid, stored_session_id: stored, message_count: messages.length, messages, info: this.sessionInfo, running: true, open_requests });
       }
       const runtimeId = `rt-r${++this.resumed}`;
       this.runtime.set(runtimeId, stored);
       const messages = this.transcripts[stored] ?? [];
-      this.respond(r.id, { session_id: runtimeId, stored_session_id: stored, message_count: messages.length, messages, info: {}, running: false });
+      this.respond(r.id, { session_id: runtimeId, stored_session_id: stored, message_count: messages.length, messages, info: this.sessionInfo, running: false });
     },
     "prompt.submit": (r) => {
       const runtimeId = String(r.params.session_id);
