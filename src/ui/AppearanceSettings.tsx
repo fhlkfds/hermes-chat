@@ -1,9 +1,11 @@
-// Settings, Appearance: the interface and code fonts and sizes, and Word wrap, each with a preview of what it changes.
-// Changes apply at once and are kept on this computer only (appearance.ts).
+// Settings, the Appearance tab: the color scheme, themes, contrast and chat width (ThemePicker.tsx), then the interface
+// and code fonts and sizes, and Word wrap, each with a preview of what it changes. Changes apply at once and are kept
+// on this computer only (appearance.ts).
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { RotateCcw } from "lucide-react";
 import { DEFAULT_APPEARANCE, MONO_SIZES, UI_SIZES, type Appearance, type AppearanceStore, type Fonts } from "./appearance";
 import { Markdown } from "./Markdown";
+import { ThemeSettings } from "./ThemePicker";
 
 const UI_SAMPLE = "Chats that need attention sit at the top; settled ones wait below. Press Ctrl+K to search every chat.";
 const CODE_SAMPLE = [
@@ -95,59 +97,61 @@ export function AppearanceSettings({ store, listFonts }: { store: AppearanceStor
   const otherFonts = fonts.all.filter((f) => !fonts.mono.includes(f));
 
   return (
-    <section>
-      <h2>Appearance</h2>
-      <p className="muted">How Hermes Chat looks on this computer. Changes apply at once.</p>
+    <>
+      <ThemeSettings store={store} />
+      <section>
+        <h2>Fonts</h2>
 
-      <FontRow
-        title="Interface font"
-        hint="Everything outside code blocks and tool output."
-        changed={a.uiFont !== d.uiFont || a.uiSize !== d.uiSize}
-        onReset={() => set({ uiFont: d.uiFont, uiSize: d.uiSize })}
-      >
-        <FontSelect label="Interface font" value={a.uiFont} groups={[["Installed fonts", fonts.all]]} onChange={(uiFont) => set({ uiFont })} />
-        <SizeSelect label="Interface font size" value={a.uiSize} sizes={UI_SIZES} onChange={(uiSize) => set({ uiSize })} />
-      </FontRow>
-      <div className="appearance-preview ui-preview">{UI_SAMPLE}</div>
-
-      <FontRow
-        title="Code font"
-        hint="Code blocks, tool output, and commands waiting for approval."
-        changed={a.monoFont !== d.monoFont || a.monoSize !== d.monoSize}
-        onReset={() => set({ monoFont: d.monoFont, monoSize: d.monoSize })}
-      >
-        <FontSelect
-          label="Code font"
-          value={a.monoFont}
-          groups={[
-            ["Monospace", fonts.mono],
-            ["Other fonts", otherFonts],
-          ]}
-          onChange={(monoFont) => set({ monoFont })}
-        />
-        <SizeSelect label="Code font size" value={a.monoSize} sizes={MONO_SIZES} onChange={(monoSize) => set({ monoSize })} />
-      </FontRow>
-      <div className="appearance-preview code-preview">
-        <Markdown text={CODE_SAMPLE} />
-      </div>
-
-      <div className="appearance-row">
-        <div className="appearance-label">
-          <div className="appearance-title" id="word-wrap-label">
-            Word wrap
-          </div>
-          <div className="muted small">Wrap long lines in code blocks instead of scrolling sideways.</div>
-        </div>
-        <button
-          className="switch"
-          role="switch"
-          aria-checked={a.wordWrap}
-          aria-labelledby="word-wrap-label"
-          onClick={() => set({ wordWrap: !a.wordWrap })}
+        <FontRow
+          title="Interface font"
+          hint="Everything outside code blocks and tool output."
+          changed={a.uiFont !== d.uiFont || a.uiSize !== d.uiSize}
+          onReset={() => set({ uiFont: d.uiFont, uiSize: d.uiSize })}
         >
-          <span className="switch-knob" />
-        </button>
-      </div>
-    </section>
+          <FontSelect label="Interface font" value={a.uiFont} groups={[["Installed fonts", fonts.all]]} onChange={(uiFont) => set({ uiFont })} />
+          <SizeSelect label="Interface font size" value={a.uiSize} sizes={UI_SIZES} onChange={(uiSize) => set({ uiSize })} />
+        </FontRow>
+        <div className="appearance-preview ui-preview">{UI_SAMPLE}</div>
+
+        <FontRow
+          title="Code font"
+          hint="Code blocks, tool output, and commands waiting for approval."
+          changed={a.monoFont !== d.monoFont || a.monoSize !== d.monoSize}
+          onReset={() => set({ monoFont: d.monoFont, monoSize: d.monoSize })}
+        >
+          <FontSelect
+            label="Code font"
+            value={a.monoFont}
+            groups={[
+              ["Monospace", fonts.mono],
+              ["Other fonts", otherFonts],
+            ]}
+            onChange={(monoFont) => set({ monoFont })}
+          />
+          <SizeSelect label="Code font size" value={a.monoSize} sizes={MONO_SIZES} onChange={(monoSize) => set({ monoSize })} />
+        </FontRow>
+        <div className="appearance-preview code-preview">
+          <Markdown text={CODE_SAMPLE} />
+        </div>
+
+        <div className="appearance-row">
+          <div className="appearance-label">
+            <div className="appearance-title" id="word-wrap-label">
+              Word wrap
+            </div>
+            <div className="muted small">Wrap long lines in code blocks instead of scrolling sideways.</div>
+          </div>
+          <button
+            className="switch"
+            role="switch"
+            aria-checked={a.wordWrap}
+            aria-labelledby="word-wrap-label"
+            onClick={() => set({ wordWrap: !a.wordWrap })}
+          >
+            <span className="switch-knob" />
+          </button>
+        </div>
+      </section>
+    </>
   );
 }
