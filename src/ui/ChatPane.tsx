@@ -1,11 +1,12 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
-import { memo, type ReactNode, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
-import { ArrowUp, Brain, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, FileDown, Globe, HardDrive, Paperclip, RotateCcw, Search, Server, Square, Wrench, X } from "lucide-react";
+import { memo, type ReactNode, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
+import { ArrowUp, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, FileDown, Globe, HardDrive, Paperclip, RotateCcw, Search, Server, Square, Wrench, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import type { ApprovalChoice, AttachCheck, Attachment, Chat, ConnectionStatus, Item, OutgoingItem, Source } from "../hermes/model";
 import { SOURCE_LABEL, isOutgoing, isWaiting } from "../hermes/model";
+import type { DeskState, ScreenshotDesk } from "../hermes/screenshots";
 import { ApprovalCard } from "./ApprovalCard";
 import { Markdown } from "./Markdown";
 import { ArchiveButton, SettleButton, SourceIcon, Spinner, StoredTime, composing, highlight } from "./bits";
@@ -47,6 +48,8 @@ const STATUS_NOTE: Record<ConnectionStatus, string | undefined> = {
   offline: "Offline. Click the status dot to reconnect.",
 };
 
+const NOT_CAPTURING: DeskState = { capturing: false };
+const noDesk = () => () => {};
 /**
  * The name a pasted file is saved under: its own, or for a screenshot (no name, or the webview's generic `image.png`)
  * a local timestamp like `clipboard-2026-11-02T153000.png`, its extension from the MIME type.
@@ -85,6 +88,7 @@ const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateS
  * Hermes is connected. `onRetry`, `onEdit` and `onDismiss` act on a message Hermes didn't take, or may not have.
  * `modelControls`: the model picker and reasoning pill, at the bottom left of the composer. `footer`: what goes under
  * the composer, the status bar. Ctrl+F opens the find bar. `onUsage` refreshes the chat usage on opening its breakdown.
+ * `screenshots` attaches captures to the composer; `screenshotKeys` is the configured shortcut.
  * `headActions`: more buttons in the header, before Find.
  */
 export function ChatPane({
@@ -106,6 +110,8 @@ export function ChatPane({
   onArchive,
   onExport,
   modelControls,
+  screenshots,
+  screenshotKeys,
   projects,
   footer,
   onUsage,
@@ -129,6 +135,8 @@ export function ChatPane({
   onArchive?: (archived: boolean) => void;
   onExport?: () => void;
   modelControls?: ReactNode;
+  screenshots?: ScreenshotDesk;
+  screenshotKeys?: string;
   /** The names of the projects the chat is in, or a new chat will be put in. */
   projects?: string[];
   footer?: ReactNode;
@@ -385,6 +393,8 @@ export function ChatPane({
         }}
         onStop={onStop}
         modelControls={modelControls}
+        screenshots={screenshots}
+        screenshotKeys={screenshotKeys}
       />
       {footer}
     </div>
@@ -635,6 +645,8 @@ function Composer({
   onSend,
   onStop,
   modelControls,
+  screenshots,
+  screenshotKeys,
 }: {
   offline: boolean;
   running: boolean;
@@ -649,6 +661,9 @@ function Composer({
   onSend: (text: string, attachments: Attachment[]) => void;
   onStop: () => void;
   modelControls?: ReactNode;
+  /** Screenshots come from here, and staged ones go back to it to be deleted once sent, removed or left behind. */
+  screenshots?: ScreenshotDesk;
+  screenshotKeys?: string;
 }) {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [refused, setRefused] = useState<string[]>([]);
@@ -667,27 +682,51 @@ function Composer({
 
   // Files still being read, saved or checked: sending waits for them, so none misses the message it was added for.
   const [attaching, setAttaching] = useState(0);
-  const busy = async (work: () => Promise<void>) => {
+  const busy = async <T,>(work: () => Promise<T>): Promise<T> => {
     setAttaching((n) => n + 1);
     try {
-      await work();
+      return await work();
     } finally {
       setAttaching((n) => n - 1);
     }
   };
 
   const add = (paths: string[]) => busy(async () => {
-    if (!paths.length) return;
+    if (!paths.length) return [];
     try {
       const got = await onAttach(paths);
       setAttachments((cur) => [...cur, ...got.attachments.filter((a) => !cur.some((x) => x.path === a.path))]);
       setRefused(got.refused);
+      return got.attachments.map((a) => a.path);
     } catch (e) {
       setRefused([`Couldn't attach files: ${e instanceof Error ? e.message : String(e)}`]);
+      return [];
     }
   });
   const addRef = useRef(add);
   addRef.current = add;
+
+  // Screenshots attach here while this composer is on screen. Any still staged when it goes (another chat opened,
+  // signing out) are deleted: attachments aren't kept in a Draft.
+  const shot = useSyncExternalStore(screenshots?.subscribe ?? noDesk, screenshots?.getSnapshot ?? (() => NOT_CAPTURING));
+  // A new screenshot replaces the notes about the last thing attached.
+  useEffect(() => {
+    if (shot.capturing) setRefused([]);
+  }, [shot.capturing]);
+  const staged = useRef(attachments);
+  staged.current = attachments;
+  useEffect(() => {
+    if (!screenshots) return;
+    const stop = screenshots.attachTo({
+      attach: (paths) => addRef.current(paths),
+      restore: (back) => setAttachments((cur) => [...cur, ...back.filter((a) => !cur.some((x) => x.path === a.path))]),
+      note: (text) => setRefused((cur) => [...cur, text]),
+    });
+    return () => {
+      stop();
+      screenshots.release(staged.current.map((a) => a.path));
+    };
+  }, [screenshots]);
 
   // Tauri's native drop event, not HTML5 drops: it gives real file paths, so Rust can read the bytes.
   useEffect(() => {
@@ -749,6 +788,11 @@ function Composer({
           <SourceIcon source={alsoPostsIn} /> Hermes also posts its replies in this {SOURCE_LABEL[alsoPostsIn]} chat.
         </div>
       )}
+      {shot.capturing && (
+        <div className="capture-note" role="status">
+          Taking a screenshot: select a region or window, or press Esc to cancel.
+        </div>
+      )}
       {refused.map((r, i) => (
         <div key={i} className="attach-note" role="alert">
           {r}
@@ -763,7 +807,10 @@ function Composer({
                 key={f.path}
                 file={f}
                 preview={previews.current?.get(f.path)}
-                onRemove={() => setAttachments((cur) => cur.filter((x) => x.path !== f.path))}
+                onRemove={() => {
+                  setAttachments((cur) => cur.filter((x) => x.path !== f.path));
+                  screenshots?.release([f.path]);
+                }}
               />
             ))}
           </div>
@@ -795,6 +842,17 @@ function Composer({
           <button className="icon-btn" title="Attach files" onClick={() => void pick()}>
             <Paperclip size={16} />
           </button>
+          {screenshots && (
+            <button
+              className="icon-btn"
+              title={screenshotKeys ? `Attach a screenshot (${screenshotKeys})` : "Attach a screenshot"}
+              aria-label="Attach a screenshot"
+              disabled={shot.capturing}
+              onClick={() => void screenshots.capture()}
+            >
+              <Camera size={16} />
+            </button>
+          )}
           {modelControls}
           <span className="composer-keys">Enter to send · Shift+Enter for a new line</span>
           {running ? (
