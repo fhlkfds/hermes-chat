@@ -1,3 +1,4 @@
+pub mod fonts;
 pub mod notify;
 pub mod saved_password;
 pub mod transport;
@@ -174,6 +175,12 @@ async fn notify_desktop(app: tauri::AppHandle, title: String, body: String) -> R
     notify::show(app, title, body).await
 }
 
+/// The installed font families, for the Appearance settings.
+#[tauri::command]
+async fn system_fonts() -> fonts::Fonts {
+    fonts::list().await
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -190,7 +197,8 @@ pub fn run() {
             password_save,
             password_delete,
             chat_export,
-            notify_desktop
+            notify_desktop,
+            system_fonts
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
