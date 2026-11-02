@@ -1,6 +1,7 @@
 // A fake Hermes dashboard for tests: it sits where the Rust pipe does and speaks wire-shaped legacy
 // JSON-RPC frames and dashboard REST bodies (shapes from the deployed contracts, see the research doc).
 import type { LocalFile, OpenPipe, PipeEvent, Route } from "./pipe";
+import type { SavedKey } from "./setup";
 
 type Request = { jsonrpc: "2.0"; id: number; method: string; params: Record<string, unknown> };
 /** The client's answer to a server→client request (`tui_gateway/server_requests.py`). */
@@ -87,6 +88,34 @@ export function modelOptions(): Record<string, unknown> {
   };
 }
 
+/** A profile's `GET /api/env`, trimmed: three provider keys (OpenRouter set), a shared key, and rows that aren't provider keys. */
+export function fakeEnv(): Record<string, Record<string, unknown>> {
+  const key = (provider: string, provider_label: string, url: string, over: Record<string, unknown> = {}) => ({
+    is_set: false,
+    redacted_value: null,
+    url,
+    is_password: true,
+    channel_managed: false,
+    provider,
+    provider_label,
+    provider_primary: true,
+    provider_profiles: [],
+    ...over,
+  });
+  return {
+    OPENROUTER_API_KEY: key("openrouter", "OpenRouter", "https://openrouter.ai/keys", { is_set: true, redacted_value: "sk-…f3" }),
+    ANTHROPIC_API_KEY: key("anthropic", "Anthropic", "https://console.anthropic.com/settings/keys"),
+    ANTHROPIC_TOKEN: key("anthropic", "Anthropic", "", { provider_primary: false }),
+    DEEPSEEK_API_KEY: key("deepseek", "DeepSeek", "https://platform.deepseek.com/api_keys"),
+    DASHSCOPE_API_KEY: key("alibaba", "Alibaba Cloud (DashScope)", "", {
+      provider_profiles: [{ provider: "alibaba-cn", provider_label: "Alibaba Cloud China", url: "", primary: true }],
+    }),
+    OPENAI_BASE_URL: key("openai-api", "OpenAI", "", { is_password: false }),
+    TELEGRAM_BOT_TOKEN: { is_set: true, redacted_value: "12…9", is_password: true, channel_managed: true, provider: "", provider_label: "" },
+    MY_CUSTOM_VAR: { is_set: true, redacted_value: "…", is_password: true, channel_managed: false, provider: "", custom: true },
+  };
+}
+
 const DAY = 86_400;
 const MiB = 1024 * 1024;
 const now = () => Date.now() / 1000;
@@ -156,6 +185,21 @@ export class FakeHermes {
   /** runtime session id -> stored session id, for every session.create / session.resume. */
   readonly runtime = new Map<string, string>();
   private created = new Map<string, { source: string; profile?: string }>(); // runtime id, until the first prompt stores it
+
+  /**
+   * The profile's `.env` rows as `GET /api/env` lists them (`hermes_cli/web_routers/config_env.py` at the deployed
+   * `bf0203a`), trimmed. Undefined is a 404, as on a server without the route.
+   */
+  env?: Record<string, Record<string, unknown>> = fakeEnv();
+  /** Provider keys saved through `saveProviderKey`, as (profile, env var, key). */
+  readonly savedKeys: { profile: string; envVar: string; key: string }[] = [];
+  /** What the provider says of a key: `sk-bad` is turned down, `sk-offline` can't be checked, anything else passes. */
+  checkKey = (key: string): { ok: boolean; reachable: boolean; message: string } =>
+    key === "sk-bad"
+      ? { ok: false, reachable: true, message: "That API key was rejected. Double-check it and try again." }
+      : key === "sk-offline"
+        ? { ok: false, reachable: false, message: "Could not reach the provider to verify the key." }
+        : { ok: true, reachable: true, message: "" };
 
   /** Per-method behaviour; tests override entries. Unhandled methods get no answer. */
   readonly handlers: Record<string, Handler> = {
@@ -349,6 +393,10 @@ export class FakeHermes {
       if (!this.restModelOptions) throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
       return this.restModelOptions;
     },
+    "GET /api/env": () => {
+      if (!this.env) throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
+      return this.env;
+    },
     // `hermes_cli/web_routers/profiles.py` `_profile_to_dict` at the deployed `bf0203a`, trimmed to what matters here.
     "GET /api/profiles": () => ({
       profiles: ["default", ...Object.keys(this.otherProfiles)].map((name) => ({
@@ -420,11 +468,26 @@ export class FakeHermes {
         if (!handler) throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
         return JSON.stringify(await handler(req));
       },
+      // Mirrors the Rust side's `Dashboard::save_provider_key`: only a listed provider secret, checked, then saved.
+      saveProviderKey: async (profile, envVar, key) => this.saveProviderKey(profile, envVar, key),
       close: async () => {
         this.closed = true;
       },
     };
   };
+
+  private saveProviderKey(profile: string, envVar: string, key: string): SavedKey {
+    const row = this.env?.[envVar];
+    if (!row || !row.provider || row.is_password !== true || row.channel_managed === true)
+      throw new Error(`Hermes Chat doesn't relay ${envVar}: Hermes doesn't list it as a model provider's key.`);
+    const value = key.trim();
+    if (!value || /[\u0000-\u001f]/.test(value)) throw new Error("Paste the key on one line, without spaces around it.");
+    const checked = this.checkKey(value);
+    if (!checked.ok && checked.reachable) throw new Error(checked.message);
+    this.savedKeys.push({ profile, envVar, key: value });
+    this.env![envVar] = { ...row, is_set: true, redacted_value: `${value.slice(0, 3)}…${value.slice(-2)}` };
+    return { verified: checked.ok && checked.reachable, message: checked.message };
+  }
 
   respond(id: number, result: unknown) {
     this.frame({ jsonrpc: "2.0", id, result });

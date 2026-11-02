@@ -86,6 +86,14 @@ _Avoid_: thinking level
 A model the owner starred in the model picker. Favorites are listed first, and are kept on this computer even when Hermes no longer offers the model.
 _Avoid_: pinned model (pinning is how Hermes stores Active, ADR 0002)
 
+**Setup**:
+The steps that connect Hermes Chat to a Hermes server: the server, the dashboard sign-in, then optionally a Provider key. Setup tests the connection before it keeps anything, and says what to fix when the test fails. It opens by itself only on a computer with nothing set up, and again from Settings or the sign-in screen. Cancelling it leaves the connection as it was.
+_Avoid_: onboarding (fine in conversation, not in the app), wizard, first-run (that's only when setup opens by itself)
+
+**Provider key**:
+A model provider's API key that the owner gives Hermes through Setup. The provider checks it first. Hermes keeps it in the profile's `.env` on the server, and Hermes Chat never stores it.
+_Avoid_: token, secret, credential (too broad)
+
 **Unsecure**:
 The warning on a connection whose traffic between this app and the server isn't encrypted.
 _Avoid_: insecure (the app's label is "Unsecure"), unsafe

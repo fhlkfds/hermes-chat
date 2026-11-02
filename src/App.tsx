@@ -8,7 +8,8 @@ import { chatToReopen, forgetOpenChat, rememberOpenChat } from "./hermes/uiPrefs
 import { exportChat } from "./hermes/exportChat";
 import { systemKeyring } from "./hermes/tauriKeyring";
 import { desktopNotify } from "./hermes/tauriNotify";
-import { tauriPipe, type SignInDetails } from "./hermes/tauriPipe";
+import { tauriPipe, tauriProbe, type SignInDetails } from "./hermes/tauriPipe";
+import { isSetUp } from "./hermes/setup";
 import type { Attachment, Chat, Found } from "./hermes/model";
 import type { ModelPick } from "./hermes/models";
 import { ChatList, Rail } from "./ui/Sidebar";
@@ -19,6 +20,7 @@ import { composing } from "./ui/bits";
 import { appearanceStore } from "./ui/appearance";
 import { systemFonts } from "./ui/tauriFonts";
 import { SignIn } from "./ui/SignIn";
+import { Onboarding, type SetupMode } from "./ui/Onboarding";
 import { ModelControls } from "./ui/ModelPicker";
 import { getUIPrefs, setUIPrefs, subscribe as subscribeUIPrefs, toggleModelFavorite, type StickyModelPick } from "./hermes/uiPrefs";
 
@@ -54,19 +56,29 @@ const savedDrafts = drafts(localStorage);
 // Applied as the app loads, so the chosen fonts show from the first screen.
 const appearance = appearanceStore(localStorage, document.documentElement);
 
-/** What launch ends in: signed in with the saved password, or the sign-in screen and why. */
-type Launch = { hermes: Hermes } | { initial: SignInDetails; error?: string };
+/**
+ * What launch ends in: signed in with the saved password, or the sign-in screen and why. `firstRun`: nothing is set up
+ * on this computer, so setup opens instead of the sign-in screen.
+ */
+type Launch = { hermes: Hermes } | { initial: SignInDetails; error?: string; firstRun?: boolean };
+
+/** Setup, open over whatever else shows, and where it was opened from. */
+type Setup = { mode: SetupMode; initial: SignInDetails };
 let launching: Promise<Launch> | undefined;
 
 /**
  * Signs in with the saved password, if there is one; if Hermes can't be reached, what this computer saved opens to
- * read. If that fails the sign-in screen has it filled in, so Connect tries again. Runs once, though StrictMode runs
- * effects twice.
+ * read. If that fails the sign-in screen has it filled in, so Connect tries again. With no password saved, the
+ * sign-in screen asks for it, unless nothing at all is set up yet: then it's the first run, and setup opens. Runs
+ * once, though StrictMode runs effects twice.
  */
 function launch(): Promise<Launch> {
   return (launching ??= (async () => {
     const saved = await savedSignIn(account);
-    if (!saved) return { initial: { ...loadSignIn(), password: "" } };
+    if (!saved) {
+      const stored = loadSignIn();
+      return { initial: { ...stored, password: "" }, firstRun: !isSetUp(stored) };
+    }
     try {
       return { hermes: await launchSignIn(saved, account) };
     } catch (e) {
@@ -84,23 +96,77 @@ export default function App() {
   const [notSaved, setNotSaved] = useState<string>();
   // Only the first sign-in after the app starts reopens the last chat; signing in again after Sign out starts fresh.
   const [coldStart, setColdStart] = useState(true);
+  const [setup, setSetup] = useState<Setup>();
+  // Counts connections, so the main screen starts afresh for each one.
+  const [connections, setConnections] = useState(0);
+  const current = useRef<Hermes | null>(null);
+  current.current = hermes;
 
   useEffect(() => {
     void launch().then((l) => {
       if ("hermes" in l) return setHermes(l.hermes);
       setInitial(l.initial);
       setError(l.error);
+      if (l.firstRun) setSetup({ mode: "first-run", initial: l.initial });
     });
   }, []);
 
+  const use = (h: Hermes | null) => {
+    setHermes(h);
+    setConnections((n) => n + 1);
+  };
+
+  /**
+   * Setup's Save and connect. Rust holds one connection, so the one in use closes first, or its reconnects would take
+   * the connection back. If the new one fails after all, the saved one is put back as at launch.
+   */
+  const connectWith = async (d: SignInDetails) => {
+    const before = current.current;
+    if (before) await before.close().catch(() => {});
+    try {
+      const { hermes: h, notSaved } = await signIn(d, account);
+      setNotSaved(notSaved);
+      setError(undefined);
+      // The last chat open was on the other connection.
+      if (before) setColdStart(false);
+      use(h);
+      return { notSaved };
+    } catch (e) {
+      if (before) {
+        const saved = await savedSignIn(account);
+        const back = saved ? await launchSignIn(saved, account).catch(() => null) : null;
+        use(back);
+        if (!back) setInitial({ ...loadSignIn(), password: "" });
+      }
+      throw e;
+    }
+  };
+
+  const setupLayer = setup && (
+    <Onboarding
+      key={setup.mode}
+      mode={setup.mode}
+      initial={setup.initial}
+      probe={tauriProbe}
+      hermes={hermes ?? undefined}
+      onConnect={connectWith}
+      onCancel={setup.mode === "first-run" ? undefined : () => setSetup(undefined)}
+      onDone={() => setSetup(undefined)}
+    />
+  );
+
   if (hermes)
     return (
-      <Main
-        hermes={hermes}
-        connection={account.store.load()}
-        notSaved={notSaved}
-        reopenLast={coldStart}
-        onSignOut={async () => {
+      <>
+        <Main
+          key={connections}
+          hermes={hermes}
+          connection={account.store.load()}
+          notSaved={notSaved}
+          reopenLast={coldStart}
+          covered={!!setup}
+          onSetUp={() => setSetup({ mode: "reconfigure", initial: { ...loadSignIn(), password: "" } })}
+          onSignOut={async () => {
           let failure: string | undefined;
           try {
             await signOut(hermes, account);
@@ -113,8 +179,11 @@ export default function App() {
           setInitial({ ...loadSignIn(), password: "" });
           setError(failure);
         }}
-      />
+        />
+        {setupLayer}
+      </>
     );
+  if (setupLayer) return setupLayer;
   if (!initial)
     return (
       <div className="first-run">
@@ -128,6 +197,7 @@ export default function App() {
     <SignIn
       initial={initial}
       error={error}
+      onSetUp={() => setSetup({ mode: "sign-in", initial: { ...initial, password: "" } })}
       onSignIn={async (d) => {
         setError(undefined);
         try {
@@ -147,6 +217,8 @@ export function Main({
   connection,
   notSaved,
   reopenLast = false,
+  covered = false,
+  onSetUp,
   onSignOut,
 }: {
   hermes: Hermes;
@@ -154,6 +226,10 @@ export function Main({
   notSaved?: string;
   /** This is the app starting: open the profile's last open chat, if the owner wants it reopened. */
   reopenLast?: boolean;
+  /** Setup is open over the app: nothing here takes focus or keys. */
+  covered?: boolean;
+  /** Opens setup from Settings. */
+  onSetUp?: () => void;
   onSignOut: () => Promise<void>;
 }) {
   const { profile, chats, olderPulled, archivedListed, status, route, unsecure, closedReason, syncError, others, models } = useSyncExternalStore(
@@ -384,7 +460,7 @@ export function Main({
     // Only Ctrl/Cmd chords, and never mid-composition. No bare key does anything app-wide, so nothing typed
     // with focus outside an input can answer an Approval or stop a reply.
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || composing(e)) return;
+      if (covered || !(e.ctrlKey || e.metaKey) || composing(e)) return;
       const k = e.key.toLowerCase();
       if (k === "k") {
         e.preventDefault();
@@ -402,7 +478,7 @@ export function Main({
   });
 
   return (
-    <div className="app">
+    <div className="app" inert={covered}>
       <Rail
         status={status}
         route={route}
@@ -450,6 +526,7 @@ export function Main({
             onClearCache={() => hermes.clearCache()}
             onPullOlder={() => hermes.pullOlderHistory()}
             onSignOut={onSignOut}
+            onSetUp={onSetUp}
             onClose={() => setSettingsOpen(false)}
           />
         ) : (

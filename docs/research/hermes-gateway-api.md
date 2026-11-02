@@ -350,6 +350,17 @@ The deployed checkout was confirmed at `bf0203a` with a clean tree over SSH. The
 - **REST rows share the id.** Dashboard `GET /api/sessions/{id}/messages?profile=&order=latest&limit=` returns `{session_id, profile, messages: [...], pagination}`. The rows are `SELECT *` from `messages`, so `id` and `timestamp` are present (`hermes_cli/web_routers/sessions.py:739-781`; `get_messages`, `_row_to_message_dict`).
 - What the app does: history items take `timestamp` from their own resume row. For a turn sent from the app, it reads the newest stored rows once the turn ends. The message takes the time of its `user_row_id` row. The final reply takes the time of `final_assistant_row_id`, but only when the receipt's `user_row_id` is that same message. Anything else shows no time. Neither path has been exercised against the live server: that needs a test message, which was not sent.
 
+### Provider keys and the connection test (2026-11-02, deployed `bf0203a`, source read over SSH)
+
+Read-only: the deployed source was grepped and the provider catalog listed with the server's own Python under a throwaway `HOME`. Nothing was written, and no key was sent.
+
+- **Public status.** `GET /api/status` is on the auth gate's public list (`hermes_cli/dashboard_auth/public_paths.py:15`). Unauthenticated, it answers `version`, `auth_required` and `auth_providers`, which tell a Hermes dashboard from something else on the port and say whether `basic` (username/password) sign-in is offered.
+- **`GET /api/env?profile=`** (`hermes_cli/web_routers/config_env.py:259`) returns one row per variable: `is_set`, `redacted_value` (a server-side redacted preview), `is_password`, `channel_managed` (messaging tokens owned by the Channels page), `provider`, `provider_label`, `provider_primary` (the provider's main key) and `provider_profiles` (other providers that share the variable). Values are never returned. `POST /api/env/reveal` returns one, rate-limited; the app doesn't call it.
+- **`POST /api/providers/validate {key, value}`** (`config_env.py:997`) → `{ok, reachable, message}`. It probes the provider for `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY` and `GEMINI_API_KEY`. For others it answers `{ok: true, reachable: false}`. `ok: false, reachable: true` means the provider turned the key down. It calls `_require_token`, which behind the auth gate accepts the cookie session (`web_server.py:318-340`).
+- **`PUT /api/env?profile= {key, value, provider_setup?}`** (`config_env.py:328`) saves the key in the profile's `.env` and updates any stale `config.yaml` copy of it (`save_provider_env_credential`). A redacted preview sent as the value is refused with 400.
+- **Variable names.** Every `keys`-tab provider's `api_key_env_vars` ends `_API_KEY`, `_KEY` or `_TOKEN` (`hermes_cli/provider_catalog.py`). For example `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `HF_TOKEN`, `COPILOT_GITHUB_TOKEN`. Account providers (`nous`, `openai-codex`, `xai-oauth`, `minimax-oauth`, `qwen-oauth`) sign in through `/api/providers/oauth/*`, which the app doesn't use.
+- **Basic sign-in config.** The dashboard's username and password are under `dashboard.basic_auth` in `config.yaml`.
+
 ## Open risks
 
 Items marked UNCONFIRMED above, plus things that must be checked against the user's live Debian server:

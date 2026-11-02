@@ -1,6 +1,7 @@
 // The pipe under the frontend Hermes transport: JSON-RPC text frames in and out of `/api/ws`, plus
 // signed-in dashboard REST calls and the local files the owner attaches. In the app it is the Rust side
 // (tauriPipe.ts); in tests it is FakeHermes.
+import type { SavedKey } from "./setup";
 
 /** A local file as `statFiles` finds it: its size, or why it can't be attached (e.g. "it's a folder"). */
 export type LocalFile = { path: string; name: string; size?: number; error?: string };
@@ -27,6 +28,12 @@ export interface Pipe {
    * without passing through the webview. Rejects without sending if the file is now over `maxBytes`.
    */
   sendFile(head: string, path: string, tail: string, maxBytes: number): Promise<void>;
+  /**
+   * Gives Hermes a model provider's API key for `profile`, after the provider has checked it. Only an env var Hermes
+   * lists as a provider's secret is written, and the key isn't kept on this computer. Rejects if the provider turns
+   * it down (src-tauri `Dashboard::save_provider_key`).
+   */
+  saveProviderKey(profile: string, envVar: string, key: string): Promise<SavedKey>;
   close(): Promise<void>;
 }
 

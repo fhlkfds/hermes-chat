@@ -5,6 +5,8 @@ use axum::extract::{Path, Query, RawQuery};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{AppendHeaders, IntoResponse, Response};
 use axum::routing::{get, patch, post};
+use hermes_chat::transport::{ProbeFailure, SavedKey, Stage};
+use std::sync::Mutex;
 use axum::{Json, Router};
 use hermes_chat::transport::{self, Dashboard, LocalFile, PipeEvent, SignIn, TransportError};
 use serde_json::{json, Value};
@@ -75,6 +77,46 @@ async fn expire() -> Response {
     (AppendHeaders([(header::SET_COOKIE, "hermes_session_at=; Max-Age=0; Path=/")]), Json(json!({}))).into_response()
 }
 
+/// `GET /api/status`, which answers without a sign-in.
+async fn status() -> Response {
+    Json(json!({"version": "0.22.5", "auth_required": true, "auth_providers": ["basic"]})).into_response()
+}
+
+/// Keys `PUT /api/env` saved, as (query, body), for every test; each test uses its own profile.
+static SAVED_KEYS: Mutex<Vec<(String, Value)>> = Mutex::new(Vec::new());
+
+/// `GET /api/env`, trimmed: one provider key, a messaging token the Channels page owns, and a base URL.
+async fn env_rows(headers: HeaderMap) -> Response {
+    if !cookie(&headers).contains("hermes_session_at=AT") {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    Json(json!({
+        "OPENROUTER_API_KEY": {"is_set": false, "provider": "openrouter", "is_password": true, "channel_managed": false},
+        "TELEGRAM_BOT_TOKEN": {"is_set": true, "provider": "", "is_password": true, "channel_managed": true},
+        "OPENAI_BASE_URL": {"is_set": false, "provider": "openai-api", "is_password": false, "channel_managed": false},
+    }))
+    .into_response()
+}
+
+/// `PUT /api/env`. A key of `sk-echo` gets FastAPI's 422, which echoes what it was sent.
+async fn save_env(RawQuery(query): RawQuery, Json(body): Json<Value>) -> Response {
+    if body["value"] == "sk-echo" {
+        return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"detail": [{"msg": "bad", "input": body}]}))).into_response();
+    }
+    SAVED_KEYS.lock().unwrap().push((query.unwrap_or_default(), body));
+    Json(json!({"ok": true})).into_response()
+}
+
+/// `POST /api/providers/validate`: `sk-good` passes, `sk-bad` is turned down, `sk-offline` can't be checked.
+async fn validate(Json(body): Json<Value>) -> Response {
+    Json(match body["value"].as_str() {
+        Some("sk-bad") => json!({"ok": false, "reachable": true, "message": "That API key was rejected. Double-check it and try again."}),
+        Some("sk-offline") => json!({"ok": false, "reachable": false, "message": "Could not reach the provider to verify the key."}),
+        _ => json!({"ok": true, "reachable": true, "message": ""}),
+    })
+    .into_response()
+}
+
 async fn busy() -> Response {
     (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"detail": "Session store is busy"}))).into_response()
 }
@@ -126,7 +168,10 @@ async fn stub() -> Url {
         .route("/api/sessions/{id}", patch(patch_session).delete(delete_session))
         .route("/api/rotate", get(rotate))
         .route("/api/expire", get(expire))
-        .route("/api/busy", get(busy));
+        .route("/api/busy", get(busy))
+        .route("/api/status", get(status))
+        .route("/api/env", get(env_rows).put(save_env))
+        .route("/api/providers/validate", post(validate));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -440,4 +485,88 @@ async fn refuses_to_preview_a_missing_or_oversized_image() {
     f.set_len(transport::PREVIEW_MAX_BYTES + 1).unwrap();
     let err = transport::read_preview(&path_of(&big)).await.err().unwrap();
     assert_eq!(err.to_string(), "it's 25.0 MB now, over the 25 MB limit");
+}
+
+#[tokio::test]
+async fn a_connection_test_reads_the_status_signs_in_and_waits_for_hermes() {
+    let probed = transport::probe(&stub().await, &sign_in("hunter2"), "default").await.expect("test passes");
+    assert_eq!(serde_json::from_str::<Value>(&probed.status.unwrap()).unwrap()["auth_providers"], json!(["basic"]));
+    assert_eq!(serde_json::from_str::<Value>(&probed.ready).unwrap()["params"]["type"], "gateway.ready");
+}
+
+#[tokio::test]
+async fn a_connection_test_says_the_password_was_wrong_and_keeps_the_status() {
+    let failed = transport::probe(&stub().await, &sign_in("nope"), "default").await.unwrap_err();
+    assert_eq!((failed.stage, failed.message.as_str()), (Stage::SignIn, "Wrong username or password."));
+    assert!(failed.status.unwrap().contains("0.22.5"));
+}
+
+#[tokio::test]
+async fn a_connection_test_says_when_nothing_answers() {
+    let free = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap();
+    let failed = transport::probe(&Url::parse(&format!("http://{free}/")).unwrap(), &sign_in("hunter2"), "default").await.unwrap_err();
+    assert_eq!(failed.stage, Stage::Reach);
+    assert!(failed.message.contains("Can't reach the Hermes dashboard") && failed.message.to_lowercase().contains("refused"), "{}", failed.message);
+}
+
+#[tokio::test]
+async fn a_connection_test_gives_up_on_a_port_that_never_answers() {
+    let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = silent.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut held = vec![];
+        while let Ok((sock, _)) = silent.accept().await {
+            held.push(sock);
+        }
+    });
+    let base = Url::parse(&format!("http://{addr}/")).unwrap();
+    let failed = transport::probe_with(&base, &sign_in("hunter2"), "default", Duration::from_millis(300)).await.unwrap_err();
+    assert_eq!(failed, ProbeFailure::new(Stage::Reach, "The dashboard didn't answer within 0s."));
+}
+
+fn saved_for(profile: &str) -> Vec<Value> {
+    SAVED_KEYS.lock().unwrap().iter().filter(|(q, _)| q == &format!("profile={profile}")).map(|(_, b)| b.clone()).collect()
+}
+
+#[tokio::test]
+async fn saves_a_provider_key_the_provider_accepts() {
+    let dashboard = signed_in().await;
+    let saved = dashboard.save_provider_key("keys-good", "OPENROUTER_API_KEY", "  sk-good ").await.unwrap();
+    assert_eq!(saved, SavedKey { verified: true, message: "".into() });
+    assert_eq!(saved_for("keys-good"), vec![json!({"key": "OPENROUTER_API_KEY", "value": "sk-good", "provider_setup": true})]);
+}
+
+#[tokio::test]
+async fn saves_a_key_the_provider_could_not_check_and_says_so() {
+    let dashboard = signed_in().await;
+    let saved = dashboard.save_provider_key("keys-offline", "OPENROUTER_API_KEY", "sk-offline").await.unwrap();
+    assert_eq!(saved, SavedKey { verified: false, message: "Could not reach the provider to verify the key.".into() });
+    assert_eq!(saved_for("keys-offline").len(), 1);
+}
+
+#[tokio::test]
+async fn does_not_save_a_key_the_provider_turns_down() {
+    let dashboard = signed_in().await;
+    let err = dashboard.save_provider_key("keys-bad", "OPENROUTER_API_KEY", "sk-bad").await.unwrap_err();
+    assert_eq!(err.to_string(), "That API key was rejected. Double-check it and try again.");
+    assert!(saved_for("keys-bad").is_empty());
+}
+
+#[tokio::test]
+async fn saves_only_what_hermes_lists_as_a_provider_key() {
+    let dashboard = signed_in().await;
+    for key in ["TELEGRAM_BOT_TOKEN", "OPENAI_BASE_URL", "NOT_LISTED_API_KEY", "HERMES_DASHBOARD_SESSION_TOKEN", "PATH"] {
+        let err = dashboard.save_provider_key("keys-refused", key, "sk-good").await.unwrap_err();
+        assert!(matches!(err, TransportError::NotRelayed(_)), "{key}: {err:?}");
+    }
+    let err = dashboard.save_provider_key("keys-refused", "OPENROUTER_API_KEY", "sk-good\nEVIL=1").await.unwrap_err();
+    assert!(matches!(err, TransportError::KeyRejected(_)), "{err:?}");
+    assert!(saved_for("keys-refused").is_empty());
+}
+
+#[tokio::test]
+async fn a_failed_key_save_never_shows_the_key() {
+    let dashboard = signed_in().await;
+    let err = dashboard.save_provider_key("keys-echo", "OPENROUTER_API_KEY", "sk-echo").await.unwrap_err().to_string();
+    assert!(err.contains("422") && !err.contains("sk-echo"), "{err}");
 }

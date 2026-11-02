@@ -21,6 +21,7 @@ import { catalogFromServer, fallbackCatalog, isEffort, modelKey, pickFromInfo, t
 import { noOthers, OtherProfilesCheck } from "./otherProfiles";
 import type { OpenPipe, Pipe, PipeEvent, Route } from "./pipe";
 import { isUnsecure } from "./unsecure";
+import { providerKeys, readyProviders, type ProviderSetup, type SavedKey } from "./setup";
 
 /** The `source` this app stamps on chats it starts. Legacy `session.create` stores any string as-is. */
 export const APP_SOURCE = "hermes-chat";
@@ -437,6 +438,36 @@ export class Hermes {
   reconnect(): Promise<void> {
     if (!this.redialing) this.failedTries = 0;
     return this.redial();
+  }
+
+  /**
+   * The model providers the shown profile's Hermes can use now, and those it can take an API key for (setup.ts).
+   * A server without `GET /api/env` says so in `unsupported`, and the keys are set on the server instead.
+   */
+  async providerSetup(): Promise<ProviderSetup> {
+    const profile = this.profile;
+    const query = new URLSearchParams({ profile });
+    const options = await timeLimit(this.request("model.options", { profile }), MODELS_TIMEOUT_MS)
+      .catch(() => this.rest("GET", `api/model/options?${query}`))
+      .catch(() => undefined);
+    const ready = readyProviders(options);
+    try {
+      return { keys: providerKeys(await this.rest("GET", `api/env?${query}`)), ready };
+    } catch (e) {
+      return { keys: [], ready, unsupported: (e as Error).message };
+    }
+  }
+
+  /**
+   * Gives the shown profile's Hermes a model provider's API key (`Pipe.saveProviderKey`), then reads its model list
+   * again, so the new provider's models can be picked.
+   */
+  async saveProviderKey(envVar: string, key: string): Promise<SavedKey> {
+    if (!this.pipe) throw new Error("Not connected to Hermes.");
+    const saved = await this.pipe.saveProviderKey(this.profile, envVar, key);
+    if (this.snapshot.models?.profile === this.profile) this.update({ models: undefined });
+    void this.loadModels();
+    return saved;
   }
 
   /** The server's profiles by name, as dashboard REST lists them. One sign-in covers them all (research doc). */

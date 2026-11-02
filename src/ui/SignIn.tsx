@@ -1,18 +1,22 @@
 // Sign-in over SSH (ADR 0003) or straight to a dashboard URL, built from the prototype's first-run screen and its
 // connection form.
 import { useState } from "react";
-import { Globe, KeyRound, Terminal } from "lucide-react";
+import { KeyRound } from "lucide-react";
 import type { SignInDetails } from "../hermes/tauriPipe";
+import { ServerFields } from "./Onboarding";
 
 export function SignIn({
   initial,
   error,
   onSignIn,
+  onSetUp,
 }: {
   /** The saved sign-in; the password is filled in when launch couldn't sign in with it. */
   initial: SignInDetails;
   error?: string;
   onSignIn: (d: SignInDetails) => Promise<void>;
+  /** Opens setup, to test and save a different connection step by step. */
+  onSetUp?: () => void;
 }) {
   const [d, setD] = useState<SignInDetails>(initial);
   const [busy, setBusy] = useState(false);
@@ -37,31 +41,7 @@ export function SignIn({
             }
           }}
         >
-          <div className="seg" role="group" aria-label="Connect through">
-            <button type="button" className={d.mode === "ssh" ? "on" : ""} onClick={() => set({ mode: "ssh" })}>
-              SSH
-            </button>
-            <button type="button" className={d.mode === "url" ? "on" : ""} onClick={() => set({ mode: "url" })}>
-              URL
-            </button>
-          </div>
-          {d.mode === "ssh" ? (
-            <label className="field">
-              <span className="field-label">SSH target</span>
-              <input value={d.sshTarget} onChange={(e) => set({ sshTarget: e.target.value })} placeholder="liam@hermes" />
-              <span className="field-hint block">
-                <Terminal size={12} /> Uses your <code>~/.ssh/config</code> and ssh-agent. The key must work without a prompt.
-              </span>
-            </label>
-          ) : (
-            <label className="field">
-              <span className="field-label">Dashboard URL</span>
-              <input value={d.url} onChange={(e) => set({ url: e.target.value })} placeholder="http://hermes:9119" />
-              <span className="field-hint block">
-                <Globe size={12} /> <code>http://</code> isn't encrypted unless it stays on this computer or on Tailscale.
-              </span>
-            </label>
-          )}
+          <ServerFields d={d} set={set} />
           <label className="field">
             <span className="field-label">Dashboard username</span>
             <input value={d.username} onChange={(e) => set({ username: e.target.value })} />
@@ -78,6 +58,11 @@ export function SignIn({
           <button className="btn primary" type="submit" disabled={!ready || busy}>
             {busy ? "Connecting…" : "Connect"}
           </button>
+          {onSetUp && (
+            <button type="button" className="link setup-link" disabled={busy} onClick={onSetUp}>
+              Set up a different server…
+            </button>
+          )}
         </form>
       </div>
     </div>

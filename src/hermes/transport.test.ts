@@ -129,7 +129,7 @@ describe("Hermes transport", () => {
     await expect(
       connect(async (onEvent) => {
         onEvent({ kind: "closed", reason: "closed by the server (4401 )" });
-        return { route: { kind: "ssh", target: "liam@hermes" }, send: async () => {}, request: async () => "", statFiles: async () => [], sendFile: async () => {}, close: async () => {} };
+        return { route: { kind: "ssh", target: "liam@hermes" }, send: async () => {}, request: async () => "", statFiles: async () => [], sendFile: async () => {}, saveProviderKey: async () => ({ verified: true, message: "" }), close: async () => {} };
       }),
     ).rejects.toThrow("4401");
   });

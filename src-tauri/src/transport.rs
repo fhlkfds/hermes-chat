@@ -5,14 +5,17 @@
 //! It also reads the files the owner attaches, so their bytes go from disk to Hermes without passing
 //! through the webview (§7), and the staged images the composer shows as thumbnails. For a direct connection it
 //! resolves the host name in the URL the owner typed, so the webview can tell whether the connection is Unsecure.
+//! Setup uses two more things here: `probe`, which tests a sign-in without keeping it, and
+//! `Dashboard::save_provider_key`, which gives Hermes a model provider's API key.
 
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use reqwest::{header, Method, StatusCode};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::net::IpAddr;
 use std::sync::Mutex;
+use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -51,6 +54,9 @@ pub enum TransportError {
     FileTooLarge { size: u64, max: u64 },
     #[error("{0}")]
     File(String),
+    /// The provider turned down an API key the owner typed (`POST /api/providers/validate`).
+    #[error("{0}")]
+    KeyRejected(String),
 }
 
 const MIB: u64 = 1024 * 1024;
@@ -372,4 +378,217 @@ async fn unexpected(resp: reqwest::Response) -> TransportError {
     let status = resp.status().as_u16();
     let body = resp.text().await.unwrap_or_default().chars().take(300).collect();
     TransportError::Unexpected { status, body }
+}
+
+/// How far a connection test got before it failed, so setup can say what to fix.
+/// `Address`: the URL or SSH target, or the SSH tunnel. `Reach`: the dashboard's HTTP port. `SignIn`: the
+/// username and password. `Chat`: the `/api/ws` chat connection. `Cancelled`: the owner stopped the test.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Stage {
+    Address,
+    Reach,
+    SignIn,
+    Chat,
+    Cancelled,
+}
+
+/// A failed connection test. `status`: the dashboard's `GET /api/status` body, when it answered one, so setup can
+/// tell a Hermes dashboard from something else on the port, and which sign-in methods it offers.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ProbeFailure {
+    pub stage: Stage,
+    pub message: String,
+    pub status: Option<String>,
+}
+
+impl ProbeFailure {
+    pub fn new(stage: Stage, message: impl Into<String>) -> Self {
+        ProbeFailure { stage, message: message.into(), status: None }
+    }
+}
+
+/// A connection test that went through: the dashboard's `GET /api/status` body (none if it didn't answer one) and
+/// the first frame `/api/ws` sent, which the webview checks is a legacy `gateway.ready`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Probed {
+    pub status: Option<String>,
+    pub ready: String,
+}
+
+/// How long each step of a connection test may take. The app's own sign-in has no limit, but a test the owner is
+/// watching should say where it stuck.
+pub const PROBE_STEP_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Tests a sign-in at `base` the way `Dashboard::sign_in` and `open_pipe` do it, without keeping anything: reads
+/// `/api/status` (no sign-in needed), signs in, opens `/api/ws` for `profile` and waits for its first frame, then
+/// closes it. The app's own connection, if there is one, is untouched.
+pub async fn probe(base: &Url, sign_in: &SignIn, profile: &str) -> Result<Probed, ProbeFailure> {
+    probe_with(base, sign_in, profile, PROBE_STEP_TIMEOUT).await
+}
+
+pub async fn probe_with(base: &Url, sign_in: &SignIn, profile: &str, step: Duration) -> Result<Probed, ProbeFailure> {
+    let timed_out = |what: &str| format!("{what} didn't answer within {}s.", step.as_secs());
+    let http = reqwest::Client::new();
+    let status = match tokio::time::timeout(step, http.get(endpoint(base, "api/status")).send()).await {
+        Err(_) => return Err(ProbeFailure::new(Stage::Reach, timed_out("The dashboard"))),
+        Ok(Err(e)) => return Err(ProbeFailure::new(Stage::Reach, TransportError::Unreachable(describe(&e)).to_string())),
+        Ok(Ok(resp)) if resp.status().is_success() => resp.text().await.ok(),
+        Ok(Ok(_)) => None,
+    };
+    let fail = |stage, message: String| ProbeFailure { stage, message, status: status.clone() };
+    let dashboard = match tokio::time::timeout(step, Dashboard::sign_in(base, sign_in)).await {
+        Err(_) => return Err(fail(Stage::SignIn, timed_out("The dashboard's sign-in"))),
+        Ok(Err(e)) => return Err(fail(Stage::SignIn, e.to_string())),
+        Ok(Ok(d)) => d,
+    };
+    let (tx, rx) = tokio::sync::oneshot::channel::<PipeEvent>();
+    let tx = Mutex::new(Some(tx));
+    let pipe = match tokio::time::timeout(
+        step,
+        dashboard.open_pipe(profile, move |e| {
+            if let Some(tx) = tx.lock().unwrap().take() {
+                let _ = tx.send(e);
+            }
+        }),
+    )
+    .await
+    {
+        Err(_) => return Err(fail(Stage::Chat, timed_out("The chat connection"))),
+        Ok(Err(e)) => return Err(fail(Stage::Chat, e.to_string())),
+        Ok(Ok(p)) => p,
+    };
+    let first = tokio::time::timeout(step, rx).await;
+    drop(pipe);
+    match first {
+        Ok(Ok(PipeEvent::Frame { text })) => Ok(Probed { status, ready: text }),
+        Ok(Ok(PipeEvent::Closed { reason })) => Err(fail(Stage::Chat, format!("The chat connection closed before Hermes was ready: {reason}"))),
+        Ok(Err(_)) => Err(fail(Stage::Chat, "The chat connection closed before Hermes was ready.".into())),
+        Err(_) => Err(fail(Stage::Chat, timed_out("Hermes"))),
+    }
+}
+
+/// A request error with its causes, which say what actually went wrong ("Connection refused", "dns error", a
+/// certificate problem); reqwest's own message only names the URL.
+fn describe(e: &reqwest::Error) -> String {
+    let mut parts = vec![e.to_string()];
+    let mut source = std::error::Error::source(e);
+    while let Some(s) = source {
+        let text = s.to_string();
+        if !parts.iter().any(|p| p.contains(&text)) {
+            parts.push(text);
+        }
+        source = s.source();
+    }
+    parts.join(": ")
+}
+
+/// What became of a provider key saved with `Dashboard::save_provider_key`. `verified`: the provider accepted it.
+/// Otherwise Hermes couldn't check it (no check for that provider, or the provider couldn't be reached) and
+/// `message` may say why; it is saved either way.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SavedKey {
+    pub verified: bool,
+    pub message: String,
+}
+
+/// `POST /api/providers/validate`'s answer (`hermes_cli/web_routers/config_env.py` at the deployed `bf0203a`).
+#[derive(Deserialize)]
+struct Validated {
+    ok: bool,
+    reachable: bool,
+    #[serde(default)]
+    message: String,
+}
+
+/// An env var name that can hold a model provider's API key: upper-case, ending `_API_KEY`, `_KEY` or `_TOKEN`,
+/// and not one of Hermes's own (`HERMES_…`, such as the dashboard session token).
+fn provider_key_name(key: &str) -> bool {
+    let shape = (2..=64).contains(&key.len())
+        && key.starts_with(|c: char| c.is_ascii_uppercase())
+        && key.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+    shape && !key.starts_with("HERMES_") && (key.ends_with("_KEY") || key.ends_with("_TOKEN"))
+}
+
+impl Dashboard {
+    /// Gives the profile's Hermes a model provider's API key, the way the dashboard's Keys page does
+    /// (`hermes_cli/web_routers/config_env.py` at the deployed `bf0203a`):
+    ///
+    /// 1. `GET /api/env?profile=` must list `key` as a provider's secret, so nothing else in the profile's `.env`
+    ///    can be written this way, whatever the webview asks.
+    /// 2. `POST /api/providers/validate` asks the provider about the key. A key it turns down isn't saved.
+    /// 3. `PUT /api/env?profile=` saves it in the profile's `.env` on the server.
+    ///
+    /// The key never comes back in an error: any echo of it in the dashboard's answer is blanked out.
+    pub async fn save_provider_key(&self, profile: &str, key: &str, value: &str) -> Result<SavedKey, TransportError> {
+        let value = value.trim();
+        if !provider_key_name(key) {
+            return Err(TransportError::NotRelayed(format!("{key}: not a model provider's key")));
+        }
+        if value.is_empty() || value.len() > 4096 || value.chars().any(char::is_control) {
+            return Err(TransportError::KeyRejected("Paste the key on one line, without spaces around it.".into()));
+        }
+        let scoped = |path: &str| {
+            let mut url = endpoint(&self.base, path);
+            url.query_pairs_mut().append_pair("profile", profile);
+            url
+        };
+        let hide = |e: TransportError| match e {
+            TransportError::Unexpected { status, body } => TransportError::Unexpected { status, body: body.replace(value, "[key]") },
+            other => other,
+        };
+
+        let env: serde_json::Value = serde_json::from_str(&self.call(Method::GET, scoped("api/env"), None).await?)
+            .map_err(|e| TransportError::Unexpected { status: 200, body: format!("GET /api/env: {e}") })?;
+        let row = &env[key];
+        let is_provider_secret = row["provider"].as_str().is_some_and(|p| !p.is_empty())
+            && row["is_password"] == json!(true)
+            && row["channel_managed"] != json!(true);
+        if !is_provider_secret {
+            return Err(TransportError::NotRelayed(format!("{key}: Hermes doesn't list it as a model provider's key")));
+        }
+
+        let body = json!({"key": key, "value": value}).to_string();
+        let checked = self.call(Method::POST, endpoint(&self.base, "api/providers/validate"), Some(body)).await.map_err(hide)?;
+        let checked: Validated = serde_json::from_str(&checked)
+            .map_err(|e| TransportError::Unexpected { status: 200, body: format!("POST /api/providers/validate: {e}") })?;
+        if !checked.ok && checked.reachable {
+            let why = if checked.message.is_empty() { "The provider turned the key down." } else { checked.message.as_str() };
+            return Err(TransportError::KeyRejected(why.replace(value, "[key]")));
+        }
+
+        let body = json!({"key": key, "value": value, "provider_setup": true}).to_string();
+        self.call(Method::PUT, scoped("api/env"), Some(body)).await.map_err(hide)?;
+        Ok(SavedKey { verified: checked.ok && checked.reachable, message: checked.message.replace(value, "[key]") })
+    }
+
+    /// One signed-in call that the app itself makes, with a JSON body; the webview's are `request`.
+    async fn call(&self, method: Method, url: Url, body: Option<String>) -> Result<String, TransportError> {
+        let mut req = self.http.request(method, url).header(header::COOKIE, self.cookie_header());
+        if let Some(body) = body {
+            req = req.header(header::CONTENT_TYPE, "application/json").body(body);
+        }
+        let resp = req.send().await.map_err(|e| TransportError::Unreachable(e.to_string()))?;
+        self.keep_cookies(&resp);
+        match resp.status() {
+            s if s.is_success() => resp.text().await.map_err(|e| TransportError::Unreachable(e.to_string())),
+            StatusCode::UNAUTHORIZED => Err(TransportError::SignedOut),
+            _ => Err(unexpected(resp).await),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::provider_key_name;
+
+    #[test]
+    fn only_provider_key_names() {
+        for ok in ["OPENROUTER_API_KEY", "HF_TOKEN", "GITHUB_TOKEN", "Z_AI_API_KEY", "DASHSCOPE_API_KEY"] {
+            assert!(provider_key_name(ok), "{ok}");
+        }
+        for bad in ["HERMES_DASHBOARD_SESSION_TOKEN", "PATH", "OPENAI_BASE_URL", "openrouter_api_key", "_API_KEY", "A B_KEY", "X\nY_KEY", ""] {
+            assert!(!provider_key_name(bad), "{bad}");
+        }
+    }
 }

@@ -23,7 +23,7 @@ npm run app
 
 `npm run app` sets `WEBKIT_DISABLE_DMABUF_RENDERER=1`, which fixes the blank WebKitGTK window on some Wayland setups.
 
-To sign in, enter an SSH target whose key works without a prompt (for example `liam@hermes`, or an alias from `~/.ssh/config`), plus the Hermes dashboard username and password. Or switch to URL and enter the dashboard's address, for example `http://hermes:9119`.
+The first launch opens Setup (`docs/adr/0006-setup-tests-a-sign-in-before-keeping-it.md`). Enter an SSH target whose key works without a prompt (for example `liam@hermes`, or an alias from `~/.ssh/config`), or switch to URL and enter the dashboard's address, for example `http://hermes:9119`. Then enter the Hermes dashboard username and password. Setup tests the connection, says what to fix if it fails, and saves it only once it works. It can then give Hermes a model provider's API key. To change the connection later, use Settings → Run setup again.
 
 ## Install
 

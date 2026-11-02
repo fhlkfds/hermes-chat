@@ -10,7 +10,7 @@ use tauri::ipc::Channel;
 use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Mutex;
-use transport::{Dashboard, LocalFile, Pipe, PipeEvent, SignIn};
+use transport::{Dashboard, LocalFile, Pipe, PipeEvent, ProbeFailure, SavedKey, SignIn, Stage};
 use tunnel::Tunnel;
 
 /// The owner's `hermes dashboard` port on the server's loopback (research doc, "SSH tunnel, Host header
@@ -39,8 +39,26 @@ enum Route {
     Url { url: String, addresses: Vec<String> },
 }
 
+/// `probe`: the connection test running now, so setup can stop it, and a new one replaces it.
 #[derive(Default)]
-struct AppState(Mutex<Option<Connection>>);
+struct AppState(Mutex<Option<Connection>>, std::sync::Mutex<Option<tokio::task::AbortHandle>>);
+
+/// The dashboard root for `target`, the tunnel that reaches it (SSH only), and the route to report. Failures are
+/// the owner's address or SSH (`Stage::Address`).
+async fn open_target(target: Target) -> Result<(url::Url, Option<Tunnel>, Route), String> {
+    Ok(match target {
+        Target::Ssh { target } => {
+            let tunnel = tunnel::open(&target, DASHBOARD_PORT).await.map_err(|e| e.to_string())?;
+            let base = url::Url::parse(&format!("http://127.0.0.1:{}/", tunnel.local_port)).expect("valid URL");
+            (base, Some(tunnel), Route::Ssh { target: target.trim().to_owned() })
+        }
+        Target::Url { url } => {
+            let direct = transport::resolve_direct(&url).await.map_err(|e| e.to_string())?;
+            let addresses = direct.addresses.iter().map(ToString::to_string).collect();
+            (direct.base, None, Route::Url { url: url.trim().to_owned(), addresses })
+        }
+    })
+}
 
 #[tauri::command]
 async fn hermes_connect(
@@ -53,18 +71,7 @@ async fn hermes_connect(
 ) -> Result<Route, String> {
     let mut slot = state.0.lock().await;
     *slot = None;
-    let (base, tunnel, route) = match target {
-        Target::Ssh { target } => {
-            let tunnel = tunnel::open(&target, DASHBOARD_PORT).await.map_err(|e| e.to_string())?;
-            let base = url::Url::parse(&format!("http://127.0.0.1:{}/", tunnel.local_port)).expect("valid URL");
-            (base, Some(tunnel), Route::Ssh { target: target.trim().to_owned() })
-        }
-        Target::Url { url } => {
-            let direct = transport::resolve_direct(&url).await.map_err(|e| e.to_string())?;
-            let addresses = direct.addresses.iter().map(ToString::to_string).collect();
-            (direct.base, None, Route::Url { url: url.trim().to_owned(), addresses })
-        }
-    };
+    let (base, tunnel, route) = open_target(target).await?;
     let dashboard = Dashboard::sign_in(&base, &SignIn { username, password }).await.map_err(|e| e.to_string())?;
     let pipe = dashboard
         .open_pipe(&profile, move |e| {
@@ -74,6 +81,57 @@ async fn hermes_connect(
         .map_err(|e| e.to_string())?;
     *slot = Some(Connection { dashboard: Arc::new(dashboard), pipe: Arc::new(pipe), _tunnel: tunnel });
     Ok(route)
+}
+
+/// A connection test that went through: how it reached the dashboard, plus what `transport::probe` read.
+#[derive(Serialize)]
+struct ProbeResult {
+    route: Route,
+    #[serde(flatten)]
+    probed: transport::Probed,
+}
+
+/// Tests a sign-in for setup without keeping it, so the app's own connection, if any, carries on. Its own SSH
+/// tunnel, if it opened one, closes when the test ends. A new test, or `hermes_probe_cancel`, stops the one before.
+#[tauri::command]
+async fn hermes_probe(
+    state: State<'_, AppState>,
+    target: Target,
+    username: String,
+    password: String,
+    profile: String,
+) -> Result<ProbeResult, ProbeFailure> {
+    let task = tokio::spawn(async move {
+        let (base, _tunnel, route) = open_target(target).await.map_err(|e| ProbeFailure::new(Stage::Address, e))?;
+        let probed = transport::probe(&base, &SignIn { username, password }, &profile).await?;
+        Ok(ProbeResult { route, probed })
+    });
+    if let Some(before) = state.1.lock().unwrap().replace(task.abort_handle()) {
+        before.abort();
+    }
+    match task.await {
+        Ok(result) => result,
+        Err(e) if e.is_cancelled() => Err(ProbeFailure::new(Stage::Cancelled, "The test was stopped.")),
+        Err(e) => Err(ProbeFailure::new(Stage::Address, e.to_string())),
+    }
+}
+
+#[tauri::command]
+fn hermes_probe_cancel(state: State<'_, AppState>) {
+    if let Some(task) = state.1.lock().unwrap().take() {
+        task.abort();
+    }
+}
+
+/// Gives the signed-in Hermes a model provider's API key for `profile` (`Dashboard::save_provider_key`). The key
+/// goes to the server and isn't kept on this computer.
+#[tauri::command]
+async fn hermes_save_provider_key(state: State<'_, AppState>, profile: String, key: String, value: String) -> Result<SavedKey, String> {
+    let dashboard = match &*state.0.lock().await {
+        Some(conn) => conn.dashboard.clone(),
+        None => return Err(transport::TransportError::Closed.to_string()),
+    };
+    dashboard.save_provider_key(&profile, &key, &value).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -193,6 +251,9 @@ pub fn run() {
             hermes_read_preview,
             hermes_request,
             hermes_disconnect,
+            hermes_probe,
+            hermes_probe_cancel,
+            hermes_save_provider_key,
             password_load,
             password_save,
             password_delete,

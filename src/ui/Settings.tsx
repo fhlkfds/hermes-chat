@@ -2,7 +2,7 @@
 // launch, the local cache, and older history. Appearance: how the app looks on this computer (AppearanceSettings.tsx).
 // Profiles are switched in the list's header, not here (ADR 0001).
 import { useState } from "react";
-import { ArrowLeft, Download, KeyRound, Lock, LogOut, Palette, Settings2, Trash2 } from "lucide-react";
+import { ArrowLeft, Download, KeyRound, Lock, LogOut, Palette, PlugZap, Settings2, Trash2 } from "lucide-react";
 import type { Chat, ConnectionStatus } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
 import { TRANSCRIPT_LIMIT_BYTES } from "../hermes/chatCache";
@@ -42,6 +42,7 @@ export function SettingsScreen({
   onClearCache,
   onPullOlder,
   onSignOut,
+  onSetUp,
   onClose,
 }: {
   status: ConnectionStatus;
@@ -61,6 +62,8 @@ export function SettingsScreen({
   /** Resolves to the older chats added. */
   onPullOlder: () => Promise<Chat[]>;
   onSignOut: () => Promise<void>;
+  /** Opens setup again, to change the connection or give Hermes a model provider's key. */
+  onSetUp?: () => void;
   onClose: () => void;
 }) {
   const [bytes, setBytes] = useState(cacheBytes);
@@ -143,6 +146,17 @@ export function SettingsScreen({
                 </button>
               </div>
               <p className="muted small settings-note">Signing out deletes the saved password from the keyring. You type it again at the next sign-in.</p>
+              {onSetUp && (
+                <div className="settings-row settings-setup">
+                  <div className="muted small">
+                    Connect to another server, or give Hermes a model provider's API key. The connection in use stays until a new one is tested and
+                    saved.
+                  </div>
+                  <button className="btn" onClick={onSetUp}>
+                    <PlugZap size={14} /> Run setup again
+                  </button>
+                </div>
+              )}
             </section>
 
             <StartupSettings />
