@@ -51,7 +51,7 @@ export function Split({ panes, activeKey, onActivate, covered = false }: { panes
 
   // Unmeasured (as in tests), the panes are taken to fit.
   const narrow = split && width !== undefined && width < 2 * MIN_PANE_PX + DIVIDER_PX;
-  const min = width ? Math.min(0.5, MIN_PANE_PX / width) : 0.2;
+  const min = width ? Math.min(0.5, MIN_PANE_PX / (width - DIVIDER_PX)) : 0.2;
   const shown = clamp(ratio, min);
 
   const dragging = useRef<{ frame?: number; x: number; slow: boolean } | null>(null);
@@ -59,7 +59,7 @@ export function Split({ panes, activeKey, onActivate, covered = false }: { panes
   const [ghost, setGhost] = useState<number | null>(null);
   const ratioAt = (clientX: number) => {
     const r = box.current?.getBoundingClientRect();
-    return r?.width ? clamp((clientX - r.left) / r.width, Math.min(0.5, MIN_PANE_PX / r.width)) : undefined;
+    return r?.width ? clamp((clientX - r.left - DIVIDER_PX / 2) / (r.width - DIVIDER_PX), Math.min(0.5, MIN_PANE_PX / (r.width - DIVIDER_PX))) : undefined;
   };
   // Live while the panes keep up; once a step is slow, the guide line stands in for the rest of the drag.
   const dragTo = (d: NonNullable<typeof dragging.current>) => {
@@ -92,9 +92,17 @@ export function Split({ panes, activeKey, onActivate, covered = false }: { panes
               key={p.key}
               role="tab"
               aria-selected={p.key === activeKey}
+              tabIndex={p.key === activeKey ? 0 : -1}
               className={`pane-tab ${p.key === activeKey ? "on" : ""}`}
               title={`${PANE_NAMES[i]} pane: ${p.title} (Ctrl+${i + 1})`}
               onClick={() => onActivate(p.key)}
+              onKeyDown={(e) => {
+                const next = e.key === "ArrowLeft" || e.key === "ArrowRight" ? 1 - i : e.key === "Home" ? 0 : e.key === "End" ? 1 : undefined;
+                if (next === undefined) return;
+                e.preventDefault();
+                onActivate(panes[next].key);
+                (e.currentTarget.parentElement?.children[next] as HTMLElement)?.focus();
+              }}
             >
               <span className="pane-tab-side">{PANE_NAMES[i]}</span>
               <span className="pane-tab-title">{p.title}</span>

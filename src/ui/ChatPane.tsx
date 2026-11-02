@@ -103,6 +103,7 @@ export function ChatPane({
   onExport,
   modelControls,
   active = true,
+  visible = true,
   split = false,
   paneControls,
   footer,
@@ -126,6 +127,7 @@ export function ChatPane({
   onExport?: () => void;
   modelControls?: ReactNode;
   active?: boolean;
+  visible?: boolean;
   split?: boolean;
   paneControls?: ReactNode;
   footer?: ReactNode;
@@ -392,6 +394,7 @@ export function ChatPane({
         modelControls={modelControls}
         autoFocus={active}
         dropHere={(x, y) => {
+          if (!visible) return false;
           if (!split) return true;
           const r = rootRef.current?.getBoundingClientRect();
           return !!r && x >= r.left && x < r.right && y >= r.top && y < r.bottom;

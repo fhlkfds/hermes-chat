@@ -214,6 +214,8 @@ export function Main({
   const activeKeyRef = useRef(activeKey);
   activeKeyRef.current = activeKey;
   const firstPane = useRef(panes[0].key);
+  const panesRef = useRef(panes);
+  panesRef.current = panes;
   const active = panes.find((p) => p.key === activeKey) ?? panes[0];
   const other = panes.find((p) => p !== active);
   const split = panes.length > 1;
@@ -293,6 +295,7 @@ export function Main({
     activeKeyRef.current = rest[0].key;
     setActiveKey(rest[0].key);
     rememberOpenChat(profile, rest[0].chatId);
+    requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(`[data-pane="${CSS.escape(rest[0].key)}"] .composer textarea`)?.focus());
   };
 
   /** Ctrl+\: splits the chat on screen into a second pane, or closes the pane the owner isn't in. */
@@ -483,12 +486,15 @@ export function Main({
           onStarted={(id) => {
             // The chat started from this pane's New chat pane replaces it here, without taking the owner from the
             // other pane if they went there meanwhile.
+            if (panesRef.current.find((now) => now.key === p.key) !== p) return;
             const stillActive = activeKeyRef.current === p.key;
             patchPane(p.key, { chatId: id, picked: undefined });
             setReopening(undefined);
             if (stillActive) rememberOpenChat(profile, id);
           }}
-          onDraftError={(reason) => patchPane(p.key, { draftError: reason })}
+          onDraftError={(reason) => {
+            if (panesRef.current.find((now) => now.key === p.key) === p) patchPane(p.key, { draftError: reason });
+          }}
           onToast={(text) => setToast({ text, at: Date.now() })}
           onSettle={(s) => setSettled(chat.id, s)}
           onExport={() => exportChatOnScreen(chat)}
@@ -721,6 +727,7 @@ function ChatView({
       onExport={started ? onExport : undefined}
       onArchive={started ? onArchive : undefined}
       active={active}
+      visible={visible}
       split={split}
       paneControls={paneControls}
       footer={<StatusBar chat={chat} status={status} onYolo={(on) => hermes.setYolo(chat.id, on)} onBreakdown={() => hermes.contextBreakdown(chat.id)} />}
