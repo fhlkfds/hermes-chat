@@ -32,6 +32,7 @@ The application is built with Tauri 2, React 19, and TypeScript, and it uses Vit
 - For SSH: the dashboard must listen on port **9119** on the server's loopback address. The tunnel always forwards to `127.0.0.1:9119` on the server.
 - For voice: speech-to-text and text-to-speech providers set up for the profile on the server (`hermes tools`).
 - For Projects: a Hermes that has the `projects.*` methods. Without them, the chat list works and the project switcher says that Hermes needs an update.
+- For the inbox's running and waiting work in other profiles: legacy `session.active_list` on the dashboard socket, which Hermes at `bf0203a` has. Without it, the inbox still lists Unread chats and Failed messages in every profile, and the shown profile's running replies and Approvals, and says it can't see running work elsewhere.
 - For Server files: a dashboard that serves its managed-files routes, `GET /api/files` and `GET /api/files/read`, which the dashboard's own Files tab uses. Hermes at `bf0203a` does. Without them, the Server files screen says that this Hermes needs a dashboard with the Files tab. To limit browsing to one folder, start the dashboard with `HERMES_DASHBOARD_FILES_ROOT=/that/folder`.
 
 ## Features
@@ -53,6 +54,7 @@ These features are on the `main` branch.
 - **Usage and cost.** You see token usage per reply and per chat. Cost appears only as Hermes recorded it, because the app keeps no price list.
 - **Status bar.** The status bar shows how full the context window is, a per-chat YOLO switch, the model, and the connection state. Right-click it to choose the items.
 - **Appearance.** Choose light, dark, or system mode, themes (with a theme editor), contrast, interface and code fonts, sizes, word wrap, and chat width.
+- **Inbox.** The inbox button on the rail lists, for every profile on the server, chats with a reply running, an Approval waiting, a failure or a Failed message, and completed replies not read yet. Its badge counts the ones that need you. Filter by Running, Needs approval, Failed or Completed. Each entry names its profile, chat and server and says when; opening it switches profile if needed and opens the chat at the Approval card or message. Nothing is approved, retried or resent from the inbox. Dismissing an entry hides it from the inbox only. See [The inbox](#the-inbox).
 - **Desktop notifications.** While the window isn't focused, the app posts a notification when a reply finishes or an Approval is waiting. This needs a freedesktop notification service, such as mako, dunst, swaync, GNOME, or KDE.
 - **Drafts and reopening.** Drafts are kept for each chat, profile, and connection, and they survive restarts. The app can reopen the last chat at launch.
 
@@ -90,6 +92,16 @@ bind = SUPER SHIFT, S, exec, env WEBKIT_DISABLE_DMABUF_RENDERER=1 hermes-chat --
 ```
 
 If Hermes Chat is running, the screenshot goes to the chat on screen. If it isn't running, or is on the sign-in screen, the screenshot is taken once you sign in, if you sign in within two minutes.
+
+### The inbox
+
+The inbox opens beside the rail and leaves the chat panes as they are, so a chat open in either pane stays read and leaves the inbox. Up and Down move between entries, Enter opens one, and Escape closes the inbox. It reads:
+
+- the profile shown, live over its connection;
+- the other profiles' 50 most recent chats, checked every two minutes with the profile switcher's dots, and every 30 seconds while the inbox is open;
+- what is working or waiting in any profile, from Hermes's `session.active_list`, at most every 15 seconds.
+
+The inbox says when it last checked, and which profiles, or which of Hermes's answers, it couldn't read. Their entries are marked "as last seen" until a check succeeds. Opening an entry in another profile switches to it, asking first if a reply is running or an Approval waiting here, as the switcher does. Entries are keyed by stable ids, so a reconnect that reports the same reply or Approval again doesn't add it twice, and an Approval Hermes stopped waiting on shows as expired, never as waiting again. See [ADR 0013](docs/adr/0013-the-inbox-is-derived-and-its-dismissals-are-local.md).
 
 ## Install on Arch Linux
 
@@ -240,6 +252,7 @@ Hermes stores the chats and their history, titles, Archived state, and Unread st
 | **Saved copies** of recently opened chats (up to 2 MB in total) | Webview local storage | Clear local cache, deleting the chat, or the oldest copy going first when the 2 MB limit is reached |
 | Drafts and **Failed messages** | Webview local storage, per connection, profile, and chat | Sending, Retry, or Dismiss. Clear local cache keeps them. |
 | Which chats are in each project | Webview local storage (`hermes-chat.projects`) | Deleting the project. Clear local cache keeps it. |
+| Inbox dismissals: each dismissed entry's key (profile, chat id, and Approval request or message id) and times, per connection. No chat text. | Webview local storage (`hermes-chat.inbox-dismissed.*`) | Kept 30 days, at most 1000; the oldest go first. Clear local cache keeps them. |
 | Display preferences, model pick, starred models, and reopen-last-chat | Webview local storage | Not removed by Clear local cache |
 | Drafts and Failed messages saved for an update's restart | `$XDG_DATA_HOME/net.l0cky12.hermes-chat/restart-drafts.json`, readable only by you | Putting them back at the next launch. A copy that couldn't be put back is renamed `restart-drafts-<time>.json` and stays until you move or delete it; Settings says where. |
 | Screenshots waiting to send | `$XDG_CACHE_HOME/hermes-chat/captures/`, readable only by you | Confirmed delivery, removing them from the composer, or leaving the composer without sending. A Failed message keeps its screenshots until delivery is confirmed, history reconciles it, or you Dismiss it. Startup cleanup removes only leftovers that no message needs. |
@@ -276,6 +289,7 @@ Webview local storage is in `$XDG_DATA_HOME/net.l0cky12.hermes-chat/localstorage
 - Long transcripts render in full. Very long chats, especially two at once, can be slow while streaming or resizing.
 - On the legacy protocol, a reply to a Telegram or Discord chat should stay in Hermes clients and not be posted back to Telegram or Discord. This comes from reading Hermes's source and hasn't been tested live.
 - The app doesn't install pacman updates itself: you run the PKGBUILD, and it offers the restart. In-app installation works only for an AppImage you build and sign yourself, since the repo publishes no releases or update server. Checking a package build asks GitHub without signing in, which allows 60 checks an hour.
+- The inbox sees running and waiting work in other profiles only for sessions live in the dashboard's own process, such as chats run from this app or the official desktop app. Work running in the CLI, a messaging gateway or cron shows once its chat is Unread. A background chat waiting on you shows as waiting, without what it asks, until you open it. Approval and error entries show when the app first noticed them, since Hermes gives no time for them. The inbox covers the one server signed in to.
 - The automated tests use a fake Hermes. Native Wayland screenshot pickers and real audio devices aren't covered.
 
 ## Project documents

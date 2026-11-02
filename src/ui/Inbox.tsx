@@ -1,0 +1,242 @@
+// The inbox: what needs the owner, or finished, across the server's profiles (hermes/inbox.ts). It opens beside the
+// rail over the chat list, and leaves the chat panes as they are, so the chats on screen stay read. Opening an entry
+// goes to its chat, in its profile, and to the Approval card or message it is about. Nothing here answers, retries
+// or resends: that happens in the chat, the usual way.
+import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import { CircleAlert, CircleCheck, CircleHelp, Loader, RefreshCw, ShieldAlert, X } from "lucide-react";
+import type { LiveSessions, OtherProfiles } from "../hermes/model";
+import { INBOX_FILTERS, dismissable, needsOwner, type InboxEntry, type InboxFilter, type InboxKind } from "../hermes/inbox";
+import { composing, relTime, storedTime, useReturnFocus } from "./bits";
+
+const FILTER_LABEL: Record<InboxFilter, string> = {
+  all: "All",
+  approval: "Needs approval",
+  failed: "Failed",
+  completed: "Completed",
+  running: "Running",
+};
+
+const KIND_LABEL: Record<InboxKind, string> = {
+  running: "Running",
+  approval: "Needs approval",
+  failed: "Failed",
+  uncertain: "May not have sent",
+  completed: "Completed, unread",
+};
+
+const KIND_ICON: Record<InboxKind, typeof X> = {
+  running: Loader,
+  approval: ShieldAlert,
+  failed: CircleAlert,
+  uncertain: CircleHelp,
+  completed: CircleCheck,
+};
+
+/** How long ago, in words, for the notes on how fresh the inbox is. */
+const ago = (at: number) => (relTime(at) === "now" ? "just now" : `${relTime(at)} ago`);
+
+/**
+ * `entries`: the ones not dismissed. `server`: how the connection names the server. `leaving`: what switching away
+ * from the shown profile leaves behind, which the owner is asked about before an entry takes them to another profile.
+ * `unmatched`: live sessions the inbox couldn't put with one chat.
+ */
+export function Inbox({
+  entries,
+  unmatched,
+  server,
+  profile,
+  connected,
+  others,
+  live,
+  leaving,
+  onOpen,
+  onDismiss,
+  onRefresh,
+  onClose,
+}: {
+  entries: InboxEntry[];
+  unmatched: number;
+  server: string;
+  profile: string;
+  connected: boolean;
+  others: OtherProfiles;
+  live?: LiveSessions;
+  leaving?: string;
+  onOpen: (e: InboxEntry) => void;
+  onDismiss: (e: InboxEntry) => void;
+  onRefresh: () => void;
+  onClose: () => void;
+}) {
+  const [filter, setFilter] = useState<InboxFilter>("all");
+  // The entry in another profile the owner picked while something here would be left behind.
+  const [asking, setAsking] = useState<InboxEntry>();
+  // After a dismissal, the row to put focus on, so it doesn't fall to the page.
+  const [focusAt, setFocusAt] = useState<number>();
+  const list = useRef<HTMLUListElement>(null);
+  const headId = useId();
+  useReturnFocus();
+
+  const shown = entries.filter((e) => (INBOX_FILTERS[filter] as readonly InboxKind[]).includes(e.kind));
+  const count = (f: InboxFilter) => entries.filter((e) => (INBOX_FILTERS[f] as readonly InboxKind[]).includes(e.kind) && (f === "running" || needsOwner(e))).length;
+
+  // Opening puts focus on the first entry, or on Close when there is none.
+  useEffect(() => void (list.current?.querySelector<HTMLElement>(".inbox-open") ?? document.querySelector<HTMLElement>(".inbox .inbox-close"))?.focus(), []);
+
+  useEffect(() => {
+    if (focusAt === undefined) return;
+    const rows = list.current?.querySelectorAll<HTMLButtonElement>(".inbox-open");
+    (rows?.[Math.min(focusAt, rows.length - 1)] ?? document.querySelector<HTMLElement>(".inbox .inbox-close"))?.focus();
+    setFocusAt(undefined);
+  }, [focusAt]);
+
+  const open = (e: InboxEntry) => (e.profile !== profile && leaving ? setAsking(e) : onOpen(e));
+  const dismiss = (e: InboxEntry) => {
+    setFocusAt(shown.indexOf(e));
+    onDismiss(e);
+  };
+
+  // Up and Down move between the entries; Escape closes, or backs out of the question first.
+  const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
+    if (composing(e)) return;
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      if (asking) setAsking(undefined);
+      else onClose();
+      return;
+    }
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    const rows = Array.from(list.current?.querySelectorAll<HTMLButtonElement>(".inbox-open") ?? []);
+    const at = rows.indexOf(document.activeElement as HTMLButtonElement);
+    if (at < 0) return;
+    e.preventDefault();
+    rows[at + (e.key === "ArrowDown" ? 1 : -1)]?.focus();
+  };
+
+  return (
+    <section className="inbox" role="dialog" aria-labelledby={headId} onKeyDown={onKeyDown}>
+      <header className="inbox-head">
+        <div className="inbox-heading">
+          <h2 id={headId}>Inbox</h2>
+          <span className="inbox-server" title="The server these come from">
+            {server}
+          </span>
+        </div>
+        <button className="icon-btn" title="Check now" aria-label="Check now" onClick={onRefresh} disabled={!connected}>
+          <RefreshCw size={15} />
+        </button>
+        <button className="icon-btn inbox-close" title="Close the inbox (Escape)" aria-label="Close the inbox" onClick={onClose}>
+          <X size={16} />
+        </button>
+      </header>
+      <div className="inbox-filters" role="group" aria-label="Show">
+        {(Object.keys(FILTER_LABEL) as InboxFilter[]).map((f) => (
+          <button key={f} className={`inbox-filter ${filter === f ? "on" : ""}`} aria-pressed={filter === f} onClick={() => setFilter(f)}>
+            {FILTER_LABEL[f]}
+            {count(f) > 0 && <span className="count">{count(f)}</span>}
+          </button>
+        ))}
+      </div>
+      <Freshness connected={connected} others={others} live={live} unmatched={unmatched} />
+      {asking && (
+        <div className="confirm inbox-leave" role="alertdialog" aria-label={`Switch to ${asking.profile}?`}>
+          <span>{leaving}</span>
+          <div className="confirm-actions">
+            <button className="btn" autoFocus onClick={() => setAsking(undefined)}>
+              Stay
+            </button>
+            <button className="btn primary" onClick={() => onOpen(asking)}>
+              Switch to {asking.profile}
+            </button>
+          </div>
+        </div>
+      )}
+      <ul className="inbox-list" ref={list} aria-label={FILTER_LABEL[filter]}>
+        {shown.map((e) => (
+          <Row key={e.key} entry={e} server={server} onOpen={() => open(e)} onDismiss={() => dismiss(e)} />
+        ))}
+      </ul>
+      {!shown.length && <div className="empty-hint inbox-empty">{emptyNote(filter)}</div>}
+    </section>
+  );
+}
+
+function emptyNote(filter: InboxFilter): string {
+  if (filter === "running") return "Nothing is running.";
+  if (filter === "approval") return "No Approval is waiting.";
+  if (filter === "failed") return "Nothing has failed.";
+  if (filter === "completed") return "Nothing unread.";
+  return "Nothing needs you.";
+}
+
+function Row({ entry: e, server, onOpen, onDismiss }: { entry: InboxEntry; server: string; onOpen: () => void; onDismiss: () => void }) {
+  const Icon = KIND_ICON[e.kind];
+  const when = e.at || e.noticedAt;
+  const state = e.ended ? "Expired" : KIND_LABEL[e.kind];
+  const whenText = when ? `${e.at ? "" : "noticed "}${relTime(when) === "now" ? "now" : `${relTime(when)} ago`}` : "time not known";
+  return (
+    <li className={`inbox-row ${e.kind}${e.ended ? " ended" : ""}${e.stale ? " stale" : ""}`}>
+      <button
+        className="inbox-open"
+        aria-label={`${state}: ${e.title}, in ${e.profile} on ${server}, ${whenText}. ${e.summary}${e.stale ? " As last seen." : ""}`}
+        onClick={onOpen}
+      >
+        <span className="inbox-line">
+          <span className="inbox-kind">
+            <Icon size={13} aria-hidden />
+            {state}
+          </span>
+          {when ? (
+            <time className="inbox-time" dateTime={new Date(when).toISOString()} title={`${e.at ? "" : "Noticed "}${storedTime(when)}`}>
+              {whenText}
+            </time>
+          ) : (
+            <span className="inbox-time">{whenText}</span>
+          )}
+        </span>
+        <span className="inbox-title">{e.title}</span>
+        <span className="inbox-where">
+          {e.profile} · {server}
+        </span>
+        <span className="inbox-summary">
+          {e.summary}
+          {e.stale && " As last seen."}
+        </span>
+      </button>
+      {dismissable(e) && (
+        <button className="icon-btn inbox-dismiss" title="Dismiss from the inbox" aria-label={`Dismiss “${e.title}” from the inbox`} onClick={onDismiss}>
+          <X size={14} />
+        </button>
+      )}
+    </li>
+  );
+}
+
+/** How fresh the inbox is, and which of its sources couldn't be read. */
+function Freshness({ connected, others, live, unmatched }: { connected: boolean; others: OtherProfiles; live?: LiveSessions; unmatched: number }) {
+  const failed = Object.entries(others.byName).filter(([, p]) => p.error);
+  const partial = Object.entries(others.byName).filter(([, p]) => p.more).map(([n]) => n);
+  const notes = [
+    !connected && { err: true, text: "Not connected to Hermes: showing what was last seen." },
+    others.error && { err: true, text: others.error },
+    failed.length && {
+      err: true,
+      text: `Couldn't check ${failed.map(([n]) => n).join(", ")}: their entries are as last seen.`,
+      title: failed.map(([n, p]) => `${n}: ${p.error}`).join("\n"),
+    },
+    live?.unsupported && { err: false, text: "This Hermes doesn't report what runs or waits in other profiles. Open a profile to see its chats' replies and Approvals." },
+    live?.error && { err: true, text: `Couldn't ask Hermes what is running: ${live.error}` },
+    partial.length && { err: false, text: `Only the 50 most recent chats in ${partial.join(", ")} were checked.` },
+    unmatched > 0 && { err: false, text: `${unmatched} running or waiting session${unmatched === 1 ? "" : "s"} couldn't be matched to one chat, so ${unmatched === 1 ? "it isn't" : "they aren't"} listed.` },
+  ].filter((n): n is { err: boolean; text: string; title?: string } => !!n);
+  const checked = [others.checkedAt && `profiles ${ago(others.checkedAt)}`, live?.checkedAt && `running work ${ago(live.checkedAt)}`].filter(Boolean);
+  return (
+    <div className="inbox-fresh" role="status">
+      <div className="inbox-note">{checked.length ? `Checked ${checked.join(", ")}.` : "Not checked yet."}</div>
+      {notes.map((n) => (
+        <div key={n.text} className={`inbox-note ${n.err ? "err" : ""}`} title={n.title}>
+          {n.text}
+        </div>
+      ))}
+    </div>
+  );
+}

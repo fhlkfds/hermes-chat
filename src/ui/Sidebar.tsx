@@ -1,7 +1,7 @@
 // Icon rail beside a chat list (ADR 0001), ported from the prototype's variants C and A. The list's header is the
 // profile switcher. Settings opens from the rail's foot. Right-clicking a chat opens its menu (ChatMenu.tsx).
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { Check, ChevronDown, ChevronRight, CircleAlert, EyeOff, FolderOpen, LockOpen, Search, Settings, SquarePen, Trash2 } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, CircleAlert, EyeOff, FolderOpen, Inbox as InboxIcon, LockOpen, Search, Settings, SquarePen, Trash2 } from "lucide-react";
 import type { Chat, ConnectionStatus, OtherProfile, OtherProfiles } from "../hermes/model";
 import { SOURCE_LABEL, isWaiting } from "../hermes/model";
 import { CHECK_EVERY_MS, totalUnread } from "../hermes/otherProfiles";
@@ -24,6 +24,9 @@ export function Rail({
   onSearch,
   onFiles,
   filesOpen = false,
+  onInbox,
+  inboxOpen = false,
+  inboxCount = 0,
   onSettings,
   updateWaiting = false,
 }: {
@@ -38,6 +41,10 @@ export function Rail({
   /** Opens Server files, the read-only browser for the files on the Hermes server (FileBrowser.tsx). */
   onFiles?: () => void;
   filesOpen?: boolean;
+  /** Opens or closes the inbox (Inbox.tsx); `inboxCount`: its entries that need the owner. */
+  onInbox?: () => void;
+  inboxOpen?: boolean;
+  inboxCount?: number;
   onSettings: () => void;
   /** An update is ready to install or restart into (Settings → Updates). */
   updateWaiting?: boolean;
@@ -65,6 +72,18 @@ export function Rail({
         <button className="icon-btn" title="Search all chats (Ctrl+K)" onClick={onSearch}>
           <Search size={18} />
         </button>
+        {onInbox && (
+          <button
+            className={`icon-btn inbox-btn ${inboxOpen ? "on" : ""}`}
+            title={inboxCount ? `Inbox: ${inboxCount} need${inboxCount === 1 ? "s" : ""} you` : "Inbox"}
+            aria-label={inboxCount ? `Inbox, ${inboxCount} need${inboxCount === 1 ? "s" : ""} you` : "Inbox"}
+            aria-expanded={inboxOpen}
+            onClick={onInbox}
+          >
+            <InboxIcon size={18} />
+            {inboxCount > 0 && <span className="badge" aria-hidden>{inboxCount > 99 ? "99+" : inboxCount}</span>}
+          </button>
+        )}
         {onFiles && (
           <button className={`icon-btn ${filesOpen ? "on" : ""}`} title="Server files (read-only)" aria-pressed={filesOpen} onClick={onFiles}>
             <FolderOpen size={18} />
@@ -359,7 +378,7 @@ function OtherBadge({ info }: { info?: OtherProfile }) {
  * What the owner leaves behind in `profile` by switching away now, if anything: an Approval waiting, or a reply
  * running. Hermes keeps running the reply; an Approval waits only until Hermes stops waiting (its timeout).
  */
-function leavingNote(profile: string, chats: Chat[]): string | undefined {
+export function leavingNote(profile: string, chats: Chat[]): string | undefined {
   if (chats.some((c) => c.items.some(isWaiting)))
     return `An approval is waiting in ${profile}. Hermes waits for your answer only until it times out: switch back and open the chat to answer it.`;
   if (chats.some((c) => c.running)) return `A reply is still running in ${profile}. Hermes keeps it going, and it shows here when you switch back.`;

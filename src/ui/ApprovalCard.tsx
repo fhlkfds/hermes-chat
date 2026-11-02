@@ -76,7 +76,7 @@ export function ApprovalCard({
     return () => void (actions?.contains(document.activeElement) && card.current?.isConnected && card.current.focus());
   }, []);
   return (
-    <div ref={card} tabIndex={-1} role="group" aria-labelledby={headId} className={`approval ${closed ? "answered" : ""}`}>
+    <div ref={card} tabIndex={-1} role="group" aria-labelledby={headId} data-item={item.id} className={`approval ${closed ? "answered" : ""}`}>
       <div className="approval-head" id={headId}>
         <ShieldAlert size={15} />
         {item.answer ? ANSWERED_LABEL[item.answer] : item.ended ? endedNote(item.ended) : "Hermes wants to run a command"}
