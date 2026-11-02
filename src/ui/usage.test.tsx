@@ -26,8 +26,8 @@ function pane(chat: Chat, onUsage = () => {}) {
       status="connected"
       draft=""
       onDraft={() => {}}
-      undelivered={[]}
       onRetry={() => {}}
+      onEdit={() => {}}
       onDismiss={() => {}}
       onAttach={async () => ({ attachments: [], refused: [] })}
       onSend={() => {}}
@@ -162,8 +162,8 @@ describe("A chat's usage", () => {
         status="connected"
         draft=""
         onDraft={() => {}}
-        undelivered={[]}
-        onRetry={() => {}}
+          onRetry={() => {}}
+      onEdit={() => {}}
         onDismiss={() => {}}
         onAttach={async () => ({ attachments: [], refused: [] })}
         onSend={() => {}}

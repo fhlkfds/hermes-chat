@@ -55,8 +55,8 @@ async function setUp(draft = "") {
       status="connected"
       draft={draft}
       onDraft={onDraft}
-      undelivered={[]}
       onRetry={() => {}}
+      onEdit={() => {}}
       onDismiss={() => {}}
       onAttach={(paths) => hermes.checkAttachments(paths)}
       onSend={onSend}

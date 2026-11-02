@@ -55,6 +55,30 @@ describe("Usage per reply", () => {
     ]);
   });
 
+  it("counts only model calls after retrying a rejected send and saves its reply row before timestamps arrive", async () => {
+    const server = new FakeHermes();
+    const cache = memoryCache();
+    const hermes = await connect(server.openPipe, undefined, cache);
+    const id = await hermes.newChat();
+    const rt = server.runtimeIdOf(id)!;
+    await hermes.send(id, "First");
+    turn(server, rt, "First reply", counters(100, 400, 10, 1));
+    server.rejectPrompt = { code: 4009, message: "session busy" };
+    expect(await hermes.send(id, "Try again")).toMatchObject({ delivery: "unsent" });
+    const failed = hermes.getSnapshot().chats.find((c) => c.id === id)!.items.at(-1)!;
+    server.rejectPrompt = undefined;
+    server.userRowId = 41;
+    expect(await hermes.retry(id, failed.id)).toEqual({ delivery: "accepted" });
+    turn(server, rt, "Retried reply", counters(150, 600, 30, 2), {
+      persisted_turn: { complete: true, user_row_id: 41, final_assistant_row_id: 42 },
+    });
+    await hermes.idle();
+    const usage = { prompt: 250, input: 50, cache: 200, output: 20, reasoning: 0, calls: 1, model: "z-ai/glm-5.3-flash" };
+    expect(replies(hermes, id).at(-1)).toEqual(["Retried reply", usage]);
+    expect(cache.loadTranscript("default", id)?.items.at(-1)).toMatchObject({ kind: "assistant", rowId: 42, usage });
+    expect(hermes.getSnapshot().chats.find((c) => c.id === id)!.items.filter((i) => i.kind === "user" && i.text === "Try again")).toHaveLength(1);
+  });
+
   it("isn't counted again when Hermes repeats the end of a turn", async () => {
     const { server, hermes, id, rt } = await newChat();
     await hermes.send(id, "Hi");
