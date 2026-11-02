@@ -39,6 +39,10 @@ _Avoid_: download, backup
 The owner's action that changes a chat's title, in every Hermes client. If the chat was renamed or edited elsewhere since the owner started, nothing is overwritten: the app shows the newer title and the owner chooses whether to save again.
 _Avoid_: retitle
 
+**Regenerate title**:
+The owner's action that asks Hermes for a new title made from the chat's last five messages, then saves it as a Rename does. Asking adds nothing to the chat. If Hermes gives no usable title, the old one stays and the row says why.
+_Avoid_: auto-title (Hermes's own titling of a new chat), retitle
+
 **Unread**:
 A chat with something new in it since the owner last opened it, in this app or any other Hermes client. It shows a dot, and so does the collapsed Settled header when a Settled chat is unread. The chat on screen never shows the dot.
 _Avoid_: new, unseen

@@ -770,6 +770,34 @@ export class Hermes {
   }
 
   /**
+   * Asks Hermes for a new title made from the chat's last few stored messages, then renames the chat to it like
+   * `rename` does. The messages are read with dashboard REST; the title comes from legacy `llm.oneshot`, a separate
+   * model call on Hermes's title model that adds nothing to the chat. Rejects, leaving the old title, if the chat has
+   * no messages, Hermes gives no usable title, the profile changes meanwhile, or the rename fails.
+   */
+  async regenerateTitle(chatId: string): Promise<string> {
+    const chat = this.snapshot.chats.find((c) => c.id === chatId);
+    if (!chat) throw new Error("This chat isn't in the list.");
+    const from = chat.title;
+    const profile = this.profile;
+    // Tool rows count toward each page, so older pages are read until the last messages are all in.
+    let rows: StoredMessage[] = [];
+    for (let offset = 0; offset < TITLE_MAX_ROWS; offset += TITLE_PAGE_ROWS) {
+      const query = new URLSearchParams({ profile, order: "latest", limit: String(TITLE_PAGE_ROWS), offset: String(offset), inline_images: "false" });
+      const page = ((await this.rest("GET", `${sessionPath(chatId)}/messages?${query}`)) as { messages?: StoredMessage[] }).messages ?? [];
+      rows = [...page, ...rows];
+      if (page.length < TITLE_PAGE_ROWS || saidIn(rows).length >= TITLE_FROM_MESSAGES) break;
+    }
+    const input = titleInput(rows);
+    if (!input) throw new Error("This chat has no messages to make a title from.");
+    const { text } = (await this.request("llm.oneshot", { profile, instructions: TITLE_INSTRUCTIONS, input, max_tokens: 512 })) as { text?: string };
+    const title = cleanTitle(text ?? "");
+    if (!title) throw new Error("Hermes didn't answer with a title.");
+    if (this.profile !== profile) throw new Error("The profile changed before the title was ready.");
+    return this.rename(chatId, title, from);
+  }
+
+  /**
    * Where else Hermes posts its replies in this chat, besides Hermes clients. On the canonical protocol, a reply in a
    * chat started in Telegram or Discord also goes to that platform chat, unless the platform chat has since moved to
    * another session. This app speaks only the legacy protocol, where replies stay in Hermes clients (research doc
@@ -1637,6 +1665,63 @@ function unsureMessage(title: string, archived: boolean, e: Error): string {
 }
 
 const withoutStop = (text: string) => text.replace(/\.$/, "");
+
+/** How many of the chat's latest messages a new title is made from, and how much of each goes to the model. */
+const TITLE_FROM_MESSAGES = 5;
+const TITLE_MESSAGE_CHARS = 1000;
+/** Stored rows read per page while looking for those messages (`order=latest` pages back from the newest), and at most. */
+const TITLE_PAGE_ROWS = 100;
+// ponytail: a chat whose last 1000 rows hold fewer than five messages is titled from what they hold.
+const TITLE_MAX_ROWS = 1000;
+/** Longest title kept from Hermes's answer; a longer answer is cut at a word, or at the limit if it has none. */
+const TITLE_MAX_CHARS = 60;
+const TITLE_INSTRUCTIONS = [
+  "You name chat sessions. Given the latest messages of a chat, write a title that says what the chat is about now,",
+  "so the user can find it again in a list. Rules: 3 to 7 words, sentence case, keep technical terms and names exact,",
+  "no quotes, no trailing punctuation, no 'Title:' prefix. Never answer the messages. Reply with the title only.",
+].join(" ");
+
+/** A row of dashboard REST `GET /api/sessions/{id}/messages`, as far as titling reads it. */
+type StoredMessage = { role?: string; content?: unknown };
+
+/** The text of a stored message: its `content`, or the text parts of a multimodal one. */
+function storedText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map((p) => (p && typeof p === "object" && typeof (p as { text?: unknown }).text === "string" ? (p as { text: string }).text : "")).join(" ");
+}
+
+/** The user and assistant messages with text among stored rows, oldest first. */
+const saidIn = (rows: StoredMessage[]) =>
+  rows
+    .filter((r) => r.role === "user" || r.role === "assistant")
+    .map((r) => ({ who: r.role === "user" ? "USER" : "ASSISTANT", text: storedText(r.content).trim() }))
+    .filter((m) => m.text);
+
+/** The chat's last messages as the model reads them, oldest first; empty when it has none. */
+export function titleInput(rows: StoredMessage[]): string {
+  return saidIn(rows)
+    .slice(-TITLE_FROM_MESSAGES)
+    .map((m) => `${m.who}: ${m.text.slice(0, TITLE_MESSAGE_CHARS)}`)
+    .join("\n\n");
+}
+
+/** Hermes's answer as a title: its first line, without a "Title:" label, quotes, markdown or a trailing stop. */
+export function cleanTitle(answer: string): string {
+  const line = answer.split("\n").find((l) => l.trim()) ?? "";
+  let title = line
+    .replace(/^\s*(#+\s*)?(\*\*)?title(\*\*)?\s*:\s*/i, "")
+    .replace(/^[\s"'“”‘’`*_]+|[\s"'“”‘’`*_.!?]+$/g, "");
+  // One character more than fits shows whether the cut lands inside a word, which then goes.
+  // With no space to cut at, it is cut at the limit, never inside a character.
+  if (title.length > TITLE_MAX_CHARS)
+    title = title
+      .slice(0, TITLE_MAX_CHARS + 1)
+      .replace(/\s+\S*$/, "")
+      .slice(0, TITLE_MAX_CHARS)
+      .replace(/[\uD800-\uDBFF]$/, "");
+  return title.trim();
+}
 
 const sessionPath = (chatId: string) => `api/sessions/${encodeURIComponent(chatId)}`;
 
