@@ -385,7 +385,7 @@ export function Main({
   };
   const projectNames = (chatId: string) => listable.filter((p) => proj.chats[p.id]?.includes(chatId)).map((p) => p.name);
 
-  // Outputs: one index for each connection and profile, like projects (outputs.ts, ADR 0013). Leaving a profile, or
+  // Outputs: one index for each connection and profile, like projects (outputs.ts, ADR 0014). Leaving a profile, or
   // signing out, stops its run and drops whatever it reads afterwards.
   const outputsIndex = useMemo(() => new OutputsIndex(hermes.outputsIo(profile), localStorage, scope), [hermes, scope]);
   useEffect(() => {

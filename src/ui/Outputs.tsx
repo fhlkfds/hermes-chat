@@ -1,5 +1,5 @@
 // Outputs: the files Hermes's tools reported writing, for the open chat, the project the list shows, or every chat in
-// the profile (outputs.ts, ADR 0013). It opens from the rail and takes the chat pane's place, as Server files does; a
+// the profile (outputs.ts, ADR 0014). It opens from the rail and takes the chat pane's place, as Server files does; a
 // file opens in the preview pane beside it. Paths a reply only mentions aren't listed.
 import { useMemo, useState } from "react";
 import { ArrowLeft, CircleAlert, File, FileArchive, FileAudio, FileImage, FileText, FolderOpen, LocateFixed, Eye, Plus, RefreshCw, Trash2, WifiOff, X } from "lucide-react";

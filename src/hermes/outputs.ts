@@ -1,5 +1,5 @@
 // Outputs: the files Hermes's tools reported writing, found in the chats' stored tool results (GLOSSARY.md "Output",
-// ADR 0013). Only a tool that says, in its own structured result, which file it wrote counts: `write_file`, `patch`
+// ADR 0014). Only a tool that says, in its own structured result, which file it wrote counts: `write_file`, `patch`
 // (files it created), `text_to_speech` and `image_generate`. A path that a reply, a terminal command or any other tool
 // merely mentions is never an Output.
 //
