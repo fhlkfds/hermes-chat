@@ -131,6 +131,11 @@ _Avoid_: custom header, gateway token
 The warning on a connection whose traffic between this app and the server isn't encrypted.
 _Avoid_: insecure (the app's label is "Unsecure"), unsafe
 
+**Pane**:
+One view of a chat, its transcript and composer. The app can show two side by side. The focused pane is the one the
+chat list, Search and keyboard shortcuts target. This focus does not change whether a chat is Active or Settled.
+Two panes of one chat share its Draft and running reply; each has its own scroll, Find and pending Attachments.
+
 ## Relationships
 
 - Every **Chat** is either **Active** or **Settled**, never both. An **Archived** chat keeps that state for when it is restored.
@@ -145,10 +150,5 @@ _Avoid_: insecure (the app's label is "Unsecure"), unsafe
 - **Imported chat** vs pulling older history: the list holds the past month's chats until the owner pulls older history in Settings, after which it holds all of the profile's chats. Pulled chats come in Settled unless pinned, but they are Imported chats only if their Source isn't this app.
 - **Draft** vs the New chat pane: the code also calls the pane for a chat not started yet "the draft". In this glossary a Draft is only the composer's unsent text.
 - **Source** vs the `source` field on a Hermes session: the app derives a chat's Source from that field, but the field has more values than the app shows. `hermes-chat` and `gui` count as this app, and `cli` and `tui` as the command line. `cron` chats aren't listed, and any other value (for example `api_server`, `webhook`) shows as "another Hermes platform".
-
-**Pane**:
-One view of a chat, its transcript and composer. The app can show two side by side. The focused pane is the one the
-chat list, Search and keyboard shortcuts target. This focus does not change whether a chat is Active or Settled.
-Two panes of one chat share its Draft and running reply; each has its own scroll, Find and pending Attachments.
 - The project the list shows vs Hermes's *active* project: Hermes keeps one active project per profile for its own CLI and the official desktop app (`projects.set_active`). Picking a project in this app's list never changes it; the pick is kept on this computer.
 - **Project** vs a chat's working folder: Hermes also groups chats by the folder each one runs in (`cwd`). This app doesn't: a chat is in a project only when the owner put it there, or started it while the list showed the project. Putting a chat in a project doesn't change the folder it runs in.
