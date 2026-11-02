@@ -1,12 +1,12 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { ArrowUp, Brain, ChevronDown, ChevronRight, ChevronUp, Paperclip, Search, ShieldAlert, Square, Wrench, X } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import type { ApprovalChoice, ApprovalItem, AttachCheck, Attachment, Chat, ConnectionStatus, Item, Source } from "../hermes/model";
 import { SOURCE_LABEL, isWaiting } from "../hermes/model";
 import { Markdown } from "./Markdown";
-import { SettleButton, SourceIcon, Spinner, fmtSize, highlight } from "./bits";
+import { SettleButton, SourceIcon, Spinner, composing, fmtSize, highlight } from "./bits";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type ThinkingItem = Extract<Item, { kind: "thinking" }>;
@@ -90,7 +90,7 @@ export function ChatPane({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f" && !composing(e)) {
         e.preventDefault();
         openFind();
       }
@@ -175,6 +175,7 @@ export function ChatPane({
                 stickToBottom.current = false;
               }}
               onKeyDown={(e) => {
+                if (composing(e)) return;
                 if (e.key === "Enter" || e.key === "ArrowDown" || e.key === "ArrowUp") {
                   e.preventDefault();
                   step(e.key === "ArrowUp" || (e.key === "Enter" && e.shiftKey) ? -1 : 1);
@@ -290,11 +291,23 @@ function endedNote(reason: string): string {
   return "Hermes stopped waiting for an answer";
 }
 
+/**
+ * Answered only by clicking, or by Enter or Space on a focused Approve or Deny; no shortcut answers it. Offline, the
+ * buttons stay focusable but do nothing, so a reconnect doesn't drop the owner's place.
+ */
 function ApprovalCard({ item, offline, onAnswer }: { item: ApprovalItem; offline: boolean; onAnswer: (c: ApprovalChoice) => void }) {
   const closed = item.answer ?? item.ended;
+  const card = useRef<HTMLDivElement>(null);
+  const headId = useId();
+  // The buttons go when the card closes, however it closes. If one had focus, focus stays on the card instead of
+  // falling to the page, so the owner keeps their place and a repeated key lands on nothing.
+  const keepFocus = useCallback((actions: HTMLDivElement | null) => {
+    return () => void (actions?.contains(document.activeElement) && card.current?.focus());
+  }, []);
+  const answer = (c: ApprovalChoice) => !offline && onAnswer(c);
   return (
-    <div className={`approval ${closed ? "answered" : ""}`}>
-      <div className="approval-head">
+    <div ref={card} tabIndex={-1} role="group" aria-labelledby={headId} className={`approval ${closed ? "answered" : ""}`}>
+      <div className="approval-head" id={headId}>
         <ShieldAlert size={15} />
         {item.answer ? (item.answer === "deny" ? "Denied" : "Approved") : item.ended ? endedNote(item.ended) : "Hermes wants to run a command"}
       </div>
@@ -302,11 +315,11 @@ function ApprovalCard({ item, offline, onAnswer }: { item: ApprovalItem; offline
       {!closed && (
         <>
           {item.description && <div className="approval-desc">{item.description}</div>}
-          <div className="approval-actions">
-            <button className="btn primary" disabled={offline} onClick={() => onAnswer("once")}>
+          <div className="approval-actions" ref={keepFocus}>
+            <button className="btn primary" aria-disabled={offline || undefined} onClick={() => answer("once")}>
               Approve
             </button>
-            <button className="btn" disabled={offline} onClick={() => onAnswer("deny")}>
+            <button className="btn" aria-disabled={offline || undefined} onClick={() => answer("deny")}>
               Deny
             </button>
           </div>
@@ -324,7 +337,7 @@ function Thought({ item, live, query }: { item: ThinkingItem; live: boolean; que
   const latest = item.text.trimEnd().split("\n").pop();
   return (
     <div className="tools" data-item={item.id}>
-      <button className="tool-line" onClick={() => setOpen((o) => !o)}>
+      <button className="tool-line" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
         {live ? <Spinner /> : <Brain size={13} />}
         <span className="thought-label">{live ? "Thinking" : "Thought"}</span>
         <span className="tool-preview thought-preview">{live && !open ? latest : ""}</span>
@@ -340,7 +353,7 @@ function ToolRow({ t }: { t: ToolItem }) {
   const summary = t.status === "stopped" ? "stopped" : t.summary;
   return (
     <div className={`tool ${open ? "open" : ""}`}>
-      <button className="tool-line" onClick={() => setOpen((o) => !o)}>
+      <button className="tool-line" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
         {t.status === "running" ? <Spinner /> : <ChevronRight size={13} className={`chev ${open ? "open" : ""}`} />}
         <span className="tool-name">{t.name}</span>
         <span className="tool-preview">{t.preview}</span>
@@ -376,7 +389,7 @@ function ToolGroup({ tools }: { tools: ToolItem[] }) {
   const names = [...new Set(tools.map((t) => t.name))].join(", ");
   return (
     <div className="tools">
-      <button className="tool-line group" onClick={() => setOpen((o) => !o)}>
+      <button className="tool-line group" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
         {running ? <Spinner /> : <Wrench size={13} />}
         <span className="tool-name">{tools.length} tool calls</span>
         <span className="tool-preview">{running ? `${running.name} · ${running.preview ?? ""}` : names}</span>
@@ -508,7 +521,7 @@ function Composer({
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
+            if (e.key === "Enter" && !e.shiftKey && !composing(e)) {
               e.preventDefault();
               send();
             }

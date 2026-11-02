@@ -9,6 +9,7 @@ import { ChatList, Rail } from "./ui/Sidebar";
 import { ChatPane } from "./ui/ChatPane";
 import { SearchPalette } from "./ui/Search";
 import { SettingsScreen } from "./ui/Settings";
+import { composing } from "./ui/bits";
 import { SignIn } from "./ui/SignIn";
 
 const SAVED = "hermes-chat.sign-in"; // Everything but the password, which is in the system keyring.
@@ -119,7 +120,7 @@ export default function App() {
   );
 }
 
-function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; username: string; notSaved?: string; onSignOut: () => Promise<void> }) {
+export function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; username: string; notSaved?: string; onSignOut: () => Promise<void> }) {
   const { profile, chats, olderPulled, status, route, unsecure, closedReason, syncError } = useSyncExternalStore(
     hermes.subscribe,
     hermes.getSnapshot,
@@ -232,8 +233,10 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
   }, [hermes]);
 
   useEffect(() => {
+    // Only Ctrl/Cmd chords, and never mid-composition. No bare key does anything app-wide, so nothing typed
+    // with focus outside an input can answer an Approval or stop a reply.
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey)) return;
+      if (!(e.ctrlKey || e.metaKey) || composing(e)) return;
       const k = e.key.toLowerCase();
       if (k === "k") {
         e.preventDefault();
