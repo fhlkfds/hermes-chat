@@ -9,6 +9,8 @@
 // "Approvals on the legacy generation".
 // The list holds the past month's chats until the owner pulls older history for the profile; from then on it holds
 // them all.
+// Pinned and Snoozed chats are kept on this computer, since Hermes's `pinned` flag already stores Active (ADR 0005).
+// Renaming and marking unread go to Hermes; a regenerated title comes from legacy `llm.oneshot`.
 import { isWaiting, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ConnectionStatus, type Found, type Item, type Source } from "./model";
 import type { OpenPipe, Pipe, PipeEvent, Route } from "./pipe";
 import { isUnsecure } from "./unsecure";
@@ -30,6 +32,29 @@ const PAGE_SIZE = 100;
 const MAX_PAGES = 20;
 /** The most chats one search lists; dashboard REST caps it at 100. */
 const SEARCH_LIMIT = 50;
+/** The longest wait one timer can hold is about 24 days, so a later wake is checked again on the way. */
+const MAX_WAIT_MS = 86_400_000;
+/** How much of a chat goes to the model that titles it: each message's start, then the chat's start and end. */
+const TITLE_MESSAGE_CHARS = 600;
+const TITLE_HEAD_CHARS = 1_500;
+const TITLE_TAIL_CHARS = 4_500;
+/**
+ * Hermes's own titling prompt (`agent/title_generator.py` at the deployed `bf0203a`), asked about the whole chat
+ * instead of its opening message, since the point of regenerating is a chat that has moved on.
+ */
+const TITLE_INSTRUCTIONS = `You name chat sessions. Given a conversation, write a title that lets the user find it again in a list.
+
+Rules:
+- 3 to 7 words, sentence case (capitalize only the first word and proper nouns).
+- Name what the conversation is about now, not only how it opened.
+- Name what the user wants DONE, not that they asked a question.
+- Keep technical terms, filenames, numbers, and error codes exact.
+- Drop filler words: the, this, my, a, an.
+- No trailing punctuation, no quotes, no tool names, no 'Title:' prefix.
+- Never answer or continue the conversation. Name it.
+- Write the title in the same language as the conversation.
+
+Reply with JSON only: {"title": "..."}`;
 
 const MiB = 1024 * 1024;
 /** The most legacy `image.attach_bytes` and `file.attach` take (research doc §7). PDFs go as files: `pdf.attach`
@@ -42,9 +67,15 @@ const IMAGE_ONLY_PROMPT = "What do you see in this image?";
 /** Stands in for a file's base64 in a frame; the pipe swaps the bytes in. JSON can't hold a raw NUL. */
 const FILE_MARK = "\u0000file\u0000";
 
+/** One profile's Pinned chats, and its Snoozed chats with the time each wakes (Unix ms). */
+export type ProfileMarks = { pinned: string[]; snoozed: Record<string, number> };
+/** Every profile's marks, by profile name. */
+export type ChatMarks = Record<string, ProfileMarks>;
+
 /**
- * Where each profile's last synced chat list, the profile shown last, and the profiles whose older history was pulled
- * are kept between launches. `bytes`: the storage the chat lists take; `clear` deletes them, and only them.
+ * Where each profile's last synced chat list, the profile shown last, the profiles whose older history was pulled,
+ * and the owner's Pinned and Snoozed chats are kept between launches. `bytes`: the storage the chat lists take;
+ * `clear` deletes them, and only them: the marks stay.
  */
 export type ChatCache = {
   load(profile: string): Chat[];
@@ -55,6 +86,8 @@ export type ChatCache = {
   clear(): void;
   olderPulled(profile: string): boolean;
   rememberOlderPulled(profile: string): void;
+  marks(): ChatMarks;
+  saveMarks(marks: ChatMarks): void;
 };
 const noCache: ChatCache = {
   load: () => [],
@@ -65,6 +98,8 @@ const noCache: ChatCache = {
   clear: () => {},
   olderPulled: () => false,
   rememberOlderPulled: () => {},
+  marks: () => ({}),
+  saveMarks: () => {},
 };
 
 /** A row of dashboard REST `GET /api/sessions`; times are Unix seconds. */
@@ -81,6 +116,8 @@ type SessionRow = {
   unread?: boolean;
 };
 type SessionPage = { sessions: SessionRow[]; total: number };
+/** Dashboard REST `GET /api/sessions/{id}`: the whole stored row, as far as this app reads it. */
+type SessionDetail = { cwd?: string | null; git_repo_root?: string | null };
 /**
  * A row of dashboard REST `GET /api/sessions/search` (research doc "Searching chats"): one per chat, archived ones
  * too. `snippet` is FTS5's, with each matched word `>>>marked<<<`; `role` is the matched message's, and null when the
@@ -206,10 +243,21 @@ export class Hermes {
   private pinnedSinceListRead = new Set<string>();
   /** The chat on screen. It is kept read: new activity in it doesn't show the dot. */
   private viewing?: string;
-  /** The latest write marking each chat read, while it is under way. */
-  private readWrites = new Map<string, Promise<void>>();
-  /** Chats marked read since the list sync under way read the list, which may predate the write. */
-  private readSinceListRead = new Set<string>();
+  /** The latest write marking each chat read or unread, while it is under way, and whether it marks it unread. */
+  private readWrites = new Map<string, { unread: boolean; write: Promise<void> }>();
+  /** Chats marked read (false) or unread (true) since the list sync under way read the list, which may predate the
+   * write. */
+  private readSinceListRead = new Map<string, boolean>();
+  /** Titles the owner gave chats here that Hermes hasn't listed yet. While a chat is here, this title beats the
+   * listed one. */
+  private titleWanted = new Map<string, string>();
+  /** The latest title write for each chat, while it is under way. */
+  private titleWrites = new Map<string, Promise<unknown>>();
+  /** Chats renamed since the list sync under way read the list, which may predate the write. */
+  private retitledSinceListRead = new Set<string>();
+  /** The owner's Pinned and Snoozed chats in every profile (ADR 0005). */
+  private marks: ChatMarks;
+  private wakeTimer?: ReturnType<typeof setTimeout>;
   /** Resumes in flight, so opening a chat and replying in it share one. */
   private resuming = new Map<string, Promise<string>>();
   /** Chats the owner picked from a search though the list doesn't hold them; they stay in it until the profile changes. */
@@ -236,7 +284,10 @@ export class Hermes {
     profile: string,
     private cache: ChatCache = noCache,
   ) {
-    this.snapshot = { profile, chats: cache.load(profile), olderPulled: cache.olderPulled(profile), status: "offline", unsecure: false };
+    this.marks = cache.marks();
+    this.snapshot = { profile, chats: [], olderPulled: cache.olderPulled(profile), status: "offline", unsecure: false };
+    this.update({ chats: cache.load(profile) });
+    this.scheduleWake();
   }
 
   /** The profile whose chats are shown. */
@@ -461,7 +512,10 @@ export class Hermes {
     const profile = this.profile;
     const activating = chat.settled;
     const wantedBefore = this.pinWanted.get(chatId);
-    if (activating) this.pinWanted.set(chatId, true);
+    if (activating) {
+      this.pinWanted.set(chatId, true);
+      this.mark(chatId, { snoozedUntil: undefined });
+    }
     this.patchChat(chatId, (c) => ({
       ...c,
       settled: false,
@@ -498,14 +552,134 @@ export class Hermes {
     }
   }
 
-  /** Moves a chat to Settled here at once, and unpins it on the server (ADR 0002). `unsettle` undoes it. */
+  /** Moves a chat to Settled here at once, and unpins it on the server (ADR 0002). A Pinned chat is unpinned too. `unsettle` undoes it. */
   settle(chatId: string): Promise<void> {
+    this.mark(chatId, { pinned: false });
     return this.setSettled(chatId, true);
   }
 
-  /** Moves a chat to Active here at once, and pins it on the server. `settle` undoes it. */
+  /** Moves a chat to Active here at once, and pins it on the server. A Snoozed chat stops snoozing. `settle` undoes it. */
   unsettle(chatId: string): Promise<void> {
+    this.mark(chatId, { snoozedUntil: undefined });
     return this.setSettled(chatId, false);
+  }
+
+  /**
+   * Pins a chat: it sits at the top of the list, above the other Active chats. A Settled or Snoozed chat moves to
+   * Active. Pins are kept on this computer (ADR 0005). `unpin` undoes it.
+   */
+  pin(chatId: string): Promise<void> {
+    if (!this.snapshot.chats.some((c) => c.id === chatId)) return Promise.resolve();
+    this.mark(chatId, { pinned: true, snoozedUntil: undefined });
+    return this.setSettled(chatId, false);
+  }
+
+  /** Unpins a chat; it stays Active, in its place by last activity. */
+  unpin(chatId: string) {
+    this.mark(chatId, { pinned: false });
+  }
+
+  /**
+   * Snoozes a chat until `until` (Unix ms): it is Settled now, in every Hermes client, and moves back to Active,
+   * unread, when the time comes. A Pinned chat is unpinned. The wake time is kept on this computer (ADR 0005), so the
+   * chat wakes once this app is running and connected at or after that time.
+   */
+  snooze(chatId: string, until: number): Promise<void> {
+    if (!this.snapshot.chats.some((c) => c.id === chatId)) return Promise.resolve();
+    this.mark(chatId, { pinned: false, snoozedUntil: until });
+    return this.setSettled(chatId, true);
+  }
+
+  /** Wakes a Snoozed chat now: it moves back to Active, without the unread dot. */
+  unsnooze(chatId: string): Promise<void> {
+    return this.unsettle(chatId);
+  }
+
+  /**
+   * Renames a chat in every Hermes client (`PATCH {title}`). The new title shows here at once; if Hermes refuses,
+   * for example because another chat has that title, the old one comes back and this rejects with why. An empty
+   * title changes nothing.
+   */
+  async rename(chatId: string, title: string): Promise<void> {
+    const chat = this.snapshot.chats.find((c) => c.id === chatId);
+    const wanted = title.trim();
+    if (!chat || !wanted || wanted === chat.title) return;
+    const profile = this.profile;
+    this.titleWanted.set(chatId, wanted);
+    this.patchChat(chatId, (c) => ({ ...c, title: wanted }));
+    const write = this.rest("PATCH", `api/sessions/${encodeURIComponent(chatId)}`, { title: wanted, profile });
+    this.titleWrites.set(chatId, write);
+    try {
+      await write;
+      this.retitledSinceListRead.add(chatId);
+    } catch (e) {
+      if (this.titleWanted.get(chatId) === wanted) {
+        this.titleWanted.delete(chatId);
+        if (this.profile === profile) this.patchChat(chatId, (c) => (c.title === wanted ? { ...c, title: chat.title } : c));
+      }
+      throw e;
+    } finally {
+      if (this.titleWrites.get(chatId) === write) this.titleWrites.delete(chatId);
+    }
+  }
+
+  /**
+   * Asks Hermes's model for a new title from the whole chat, then renames the chat to it. The title comes from legacy
+   * `llm.oneshot`, which runs outside the chat and adds nothing to it. A chat not yet open on this connection is
+   * loaded first. Resolves to the new title.
+   */
+  async regenerateTitle(chatId: string): Promise<string> {
+    const chat = await this.loaded(chatId);
+    const input = titleInput(chat.items);
+    if (!input) throw new Error("There's nothing in this chat to name yet.");
+    const res = (await this.request("llm.oneshot", {
+      instructions: TITLE_INSTRUCTIONS,
+      input,
+      task: "title_generation",
+      max_tokens: 256,
+      profile: this.profile,
+      // Lends the chat's model, as Hermes's own titling does.
+      session_id: chat.runtimeId,
+    })) as { text?: string };
+    const title = parseTitle(res.text ?? "");
+    if (!title) throw new Error("Hermes's model didn't come up with a title.");
+    await this.rename(chatId, title);
+    return title;
+  }
+
+  /**
+   * Marks a chat unread, or read, in every Hermes client (`PATCH {unread}`). Marking the chat on screen unread means
+   * the owner is moving off it, so new activity in it shows the dot again. Rejects with why if Hermes refuses; the
+   * next refresh then shows the chat as Hermes has it.
+   */
+  setUnread(chatId: string, unread: boolean): Promise<void> {
+    if (unread && this.viewing === chatId) this.viewing = undefined;
+    return this.writeRead(chatId, unread);
+  }
+
+  /**
+   * The chat as Markdown, to paste somewhere else: its title, then each message the owner sent and each reply, oldest
+   * first. Tool calls, Approvals and errors are left out. A chat not yet open on this connection is loaded first.
+   */
+  async transcript(chatId: string): Promise<string> {
+    const chat = await this.loaded(chatId);
+    const messages = chat.items.flatMap((i) => {
+      if (i.kind === "user") {
+        const files = i.attachments?.length ? `\n\n_Attached: ${i.attachments.join(", ")}_` : "";
+        return [`**You:** ${i.text.trim()}${files}`];
+      }
+      return i.kind === "assistant" && i.text.trim() ? [`**Hermes:** ${i.text.trim()}`] : [];
+    });
+    return [`# ${chat.title}`, ...messages].join("\n\n") + "\n";
+  }
+
+  /** The folder Hermes works in for this chat, as it stored it: the session's `cwd`, else its git repository's root. */
+  async workingFolder(chatId: string): Promise<string> {
+    const query = new URLSearchParams({ profile: this.profile });
+    const row = (await this.rest("GET", `api/sessions/${encodeURIComponent(chatId)}?${query}`)) as SessionDetail;
+    const folder = row.cwd?.trim() || row.git_repo_root?.trim();
+    if (!folder) throw new Error("Hermes hasn't stored a working folder for this chat.");
+    return folder;
   }
 
   /**
@@ -530,6 +704,7 @@ export class Hermes {
       // A pin write still under way would otherwise land on a deleted session and report a failure.
       await this.pinWrites.get(chatId);
       await this.rest("DELETE", `api/sessions/${encodeURIComponent(chatId)}?${new URLSearchParams({ profile })}`);
+      this.mark(chatId, { pinned: false, snoozedUntil: undefined }, profile);
       return true;
     } catch (e) {
       this.deleted.delete(chatId);
@@ -678,6 +853,7 @@ export class Hermes {
     this.abortDial?.(new Error("Closed by the app."));
     this.generation++;
     clearTimeout(this.retryTimer);
+    clearTimeout(this.wakeTimer);
     clearInterval(this.heartbeat);
     await this.pipe?.close();
   }
@@ -957,13 +1133,89 @@ export class Hermes {
    * the dot again.
    */
   private markRead(chatId: string) {
-    this.patchChat(chatId, (c) => (c.unread ? { ...c, unread: false } : c));
-    const write: Promise<void> = this.rest("PATCH", `api/sessions/${encodeURIComponent(chatId)}`, { unread: false, profile: this.profile })
-      .then(() => void this.readSinceListRead.add(chatId))
-      .catch(() => {})
-      .finally(() => this.readWrites.get(chatId) === write && this.readWrites.delete(chatId));
-    this.readWrites.set(chatId, write);
-    this.track(write);
+    this.track(this.writeRead(chatId, false));
+  }
+
+  /**
+   * Shows or clears the chat's dot here at once, and moves its shared read watermark (`PATCH {unread}`): to now for
+   * read, back to the start for unread.
+   */
+  private writeRead(chatId: string, unread: boolean): Promise<void> {
+    this.patchChat(chatId, (c) => (!!c.unread === unread ? c : { ...c, unread }));
+    const write: Promise<void> = this.rest("PATCH", `api/sessions/${encodeURIComponent(chatId)}`, { unread, profile: this.profile })
+      .then(() => void this.readSinceListRead.set(chatId, unread))
+      .finally(() => this.readWrites.get(chatId)?.write === write && this.readWrites.delete(chatId));
+    this.readWrites.set(chatId, { unread, write });
+    return write;
+  }
+
+  /** The chat with its whole history, resuming it on this connection first if it isn't yet. */
+  private async loaded(chatId: string): Promise<Chat> {
+    await this.resume(chatId);
+    const chat = this.snapshot.chats.find((c) => c.id === chatId);
+    if (!chat) throw new Error("The chat isn't in the list any more.");
+    return chat;
+  }
+
+  /** Changes a chat's Pinned and Snoozed marks in `profile`, keeps them on this computer, and shows them. */
+  private mark(chatId: string, change: { pinned?: boolean; snoozedUntil?: number }, profile = this.profile) {
+    const was = this.marks[profile] ?? { pinned: [], snoozed: {} };
+    let pinned = was.pinned;
+    if (change.pinned !== undefined && change.pinned !== pinned.includes(chatId))
+      pinned = change.pinned ? [...pinned, chatId] : pinned.filter((id) => id !== chatId);
+    let snoozed = was.snoozed;
+    if ("snoozedUntil" in change && change.snoozedUntil !== snoozed[chatId]) {
+      const { [chatId]: _, ...others } = snoozed;
+      snoozed = change.snoozedUntil === undefined ? others : { ...others, [chatId]: change.snoozedUntil };
+    }
+    if (pinned === was.pinned && snoozed === was.snoozed) return;
+    const { [profile]: _, ...others } = this.marks;
+    this.marks = pinned.length || Object.keys(snoozed).length ? { ...others, [profile]: { pinned, snoozed } } : others;
+    this.cache.saveMarks(this.marks);
+    this.update({ chats: this.snapshot.chats });
+    this.scheduleWake();
+  }
+
+  /** Sets the timer for the next Snoozed chat to wake, in any profile. */
+  private scheduleWake() {
+    clearTimeout(this.wakeTimer);
+    const next = Math.min(...Object.values(this.marks).flatMap((m) => Object.values(m.snoozed)));
+    if (this.closing || next === Infinity) return;
+    this.wakeTimer = setTimeout(() => this.wake(), Math.min(Math.max(next - Date.now(), 0), MAX_WAIT_MS));
+  }
+
+  /**
+   * Wakes the Snoozed chats whose time has come, in every profile: each moves to Active, at the top, and is marked
+   * unread unless it's on screen. While the app isn't connected they wait: the sync after reconnecting wakes them.
+   */
+  private wake() {
+    if (this.snapshot.status !== "connected") return;
+    const now = Date.now();
+    let woke = false;
+    for (const [profile, { snoozed }] of Object.entries(this.marks))
+      for (const [chatId, until] of Object.entries(snoozed)) {
+        if (until > now) continue;
+        if (profile !== this.profile || !this.snapshot.chats.some((c) => c.id === chatId)) {
+          this.track(this.wakeUnlisted(profile, chatId, until));
+          continue;
+        }
+        woke = true;
+        this.patchChat(chatId, (c) => ({ ...c, updatedAt: Math.max(c.updatedAt, now) }));
+        this.track(this.unsettle(chatId));
+        if (chatId !== this.viewing) this.track(this.writeRead(chatId, true));
+      }
+    if (woke) this.saveList(this.profile, this.snapshot.chats);
+    this.scheduleWake();
+  }
+
+  /**
+   * Wakes a Snoozed chat that isn't in the list on screen: one in another profile, or older than the list goes back.
+   * Hermes is told at once; the chat shows when its profile's list is next read. A failed write tries again at the
+   * next sync.
+   */
+  private async wakeUnlisted(profile: string, chatId: string, until: number) {
+    await this.rest("PATCH", `api/sessions/${encodeURIComponent(chatId)}`, { pinned: true, unread: true, profile });
+    if (this.marks[profile]?.snoozed[chatId] === until) this.mark(chatId, { snoozedUntil: undefined }, profile);
   }
 
   private async syncOnce(): Promise<Error | undefined> {
@@ -971,6 +1223,9 @@ export class Hermes {
     const cutoff = this.snapshot.olderPulled ? -Infinity : Date.now() - LIST_WINDOW_MS;
     this.pinnedSinceListRead.clear();
     this.readSinceListRead.clear();
+    // A title written before this read is in it.
+    for (const id of this.retitledSinceListRead) if (!this.titleWrites.has(id)) this.titleWanted.delete(id);
+    this.retitledSinceListRead.clear();
     const rows = new Map<string, SessionRow>();
     try {
       for (let page = 0; page < MAX_PAGES; page++) {
@@ -996,9 +1251,13 @@ export class Hermes {
     if (this.profile !== profile) return undefined;
 
     const known = new Map(this.snapshot.chats.map((c) => [c.id, c]));
+    const marks = this.marks[profile];
+    // A Pinned or Snoozed chat stays however old, and so does one that woke here within the window.
+    const recent = (r: SessionRow) =>
+      lastActive(r) >= cutoff || (known.get(r.id)?.updatedAt ?? 0) >= cutoff || !!marks?.pinned.includes(r.id) || marks?.snoozed[r.id] !== undefined;
     let readOnScreen = false;
     const listed = [...rows.values()]
-      .filter((r) => !r.archived && !this.deleted.has(r.id) && lastActive(r) >= cutoff)
+      .filter((r) => !r.archived && !this.deleted.has(r.id) && recent(r))
       .map((r): Chat => {
         const c = known.get(r.id);
         // A row read before this app's latest write is stale; the chat stays where the owner put it until the next sync.
@@ -1009,18 +1268,18 @@ export class Hermes {
           if (wanted === !!r.pinned) this.pinWanted.delete(r.id);
           else if (!this.submitting.has(r.id)) this.track(this.writePin(r.id));
         }
-        // A row read before this app marked the chat read is stale too.
-        const readHere = this.readWrites.has(r.id) || this.readSinceListRead.has(r.id);
-        if (r.id === this.viewing && r.unread && !readHere) readOnScreen = true;
+        // A row read before this app marked the chat read or unread is stale too.
+        const unreadHere = this.readWrites.get(r.id)?.unread ?? this.readSinceListRead.get(r.id);
+        if (r.id === this.viewing && r.unread && unreadHere === undefined) readOnScreen = true;
         return {
           items: [],
           ...c,
           id: r.id,
-          title: r.title || r.preview || c?.title || "Untitled chat",
+          title: this.titleWanted.get(r.id) ?? (r.title || r.preview || c?.title || "Untitled chat"),
           source: toSource(r.source),
           settled: !(wanted ?? r.pinned),
           updatedAt: Math.max(c?.updatedAt ?? 0, lastActive(r)),
-          unread: !!r.unread && !readHere && r.id !== this.viewing,
+          unread: r.id !== this.viewing && (unreadHere ?? !!r.unread),
         };
       });
     // Chats started or resumed on this connection stay even before Hermes stores them (a new chat has no row
@@ -1029,8 +1288,15 @@ export class Hermes {
     const onThisConnection = this.snapshot.chats.filter((c) => (c.runtimeId || this.revealed.has(c.id)) && !listedIds.has(c.id));
     const chats = [...onThisConnection, ...listed];
     this.update({ chats, syncError: undefined });
+    // Moved in another Hermes client: a Pinned chat that is now Settled is unpinned, and a Snoozed one that is now
+    // Active stops snoozing.
+    for (const c of listed) {
+      if (c.settled && marks?.pinned.includes(c.id)) this.mark(c.id, { pinned: false });
+      if (!c.settled && marks?.snoozed[c.id] !== undefined) this.mark(c.id, { snoozedUntil: undefined });
+    }
     if (readOnScreen) this.markRead(this.viewing!);
     this.saveList(profile, chats);
+    this.wake();
     return undefined;
   }
 
@@ -1078,8 +1344,19 @@ export class Hermes {
   }
 
   private update(patch: Partial<Snapshot>) {
+    if (patch.chats) patch = { ...patch, chats: this.withMarks(patch.chats, patch.profile ?? this.snapshot.profile) };
     this.snapshot = { ...this.snapshot, ...patch };
     for (const fn of this.listeners) fn();
+  }
+
+  /** The chats with their Pinned and Snoozed marks in `profile`. */
+  private withMarks(chats: Chat[], profile: string): Chat[] {
+    const m = this.marks[profile];
+    return chats.map((c) => {
+      const pinned = m?.pinned.includes(c.id) || undefined;
+      const snoozedUntil = m?.snoozed[c.id];
+      return c.pinned === pinned && c.snoozedUntil === snoozedUntil ? c : { ...c, pinned, snoozedUntil };
+    });
   }
 }
 
@@ -1122,6 +1399,39 @@ function toSource(source = ""): Source {
     default:
       return "other";
   }
+}
+
+/**
+ * What the titling model reads: each message's start, labelled, keeping the chat's start and end when it's long.
+ * Empty when the chat has no messages yet.
+ */
+function titleInput(items: Item[]): string {
+  const lines = items.flatMap((i) =>
+    (i.kind === "user" || i.kind === "assistant") && i.text.trim()
+      ? [`${i.kind === "user" ? "User" : "Assistant"}: ${i.text.trim().slice(0, TITLE_MESSAGE_CHARS)}`]
+      : [],
+  );
+  const text = lines.join("\n\n");
+  if (text.length <= TITLE_HEAD_CHARS + TITLE_TAIL_CHARS) return text;
+  return `${text.slice(0, TITLE_HEAD_CHARS)}\n\n[…]\n\n${text.slice(-TITLE_TAIL_CHARS)}`;
+}
+
+/** The title in the model's reply, `{"title": "..."}` maybe in a code fence, or failing that its first line. */
+function parseTitle(reply: string): string {
+  const text = reply.replace(/```(?:json)?/gi, "").trim();
+  let title = text.split("\n")[0] ?? "";
+  try {
+    const parsed: unknown = JSON.parse(/\{[\s\S]*\}/.exec(text)?.[0] ?? "null");
+    if (parsed && typeof parsed === "object" && "title" in parsed && typeof parsed.title === "string") title = parsed.title;
+  } catch {
+    // Not JSON: the first line stands.
+  }
+  return title
+    .replace(/^title:\s*/i, "")
+    .replace(/^["'“”‘’`]+|["'“”‘’`]+$/g, "")
+    .replace(/[.!?;:,]+$/, "")
+    .trim()
+    .slice(0, 80);
 }
 
 const LOAD_ERROR_ID = "load-error";

@@ -70,6 +70,10 @@ export type Chat = {
   running?: boolean;
   /** Stop was asked for; the reply keeps running until Hermes ends the turn (`Hermes.stop`). */
   stopping?: boolean;
+  /** The owner keeps it at the top of the list, above the other Active chats (ADR 0005). Only an Active chat is pinned. */
+  pinned?: boolean;
+  /** Snoozed: Settled until this time (Unix ms), then Active and unread again (ADR 0005). */
+  snoozedUntil?: number;
 };
 
 export type ConnectionStatus = "connected" | "reconnecting" | "offline";

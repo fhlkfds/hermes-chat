@@ -24,6 +24,9 @@ export type SessionRow = {
   archived: boolean;
   /** The read watermark: unread when activity postdates it. `null` = never tracked = read; 0 = marked unread. */
   last_read_at: number | null;
+  /** Where the agent works; only `GET /api/sessions/{id}` shows it. */
+  cwd?: string | null;
+  git_repo_root?: string | null;
 };
 
 /**
@@ -77,6 +80,8 @@ export class FakeHermes {
   transcripts: Record<string, TranscriptMessage[]> = {};
   /** The owner's local disk, by path, for attachments. */
   files: Record<string, FakeFile> = {};
+  /** What the model answers `llm.oneshot` with. */
+  oneshotReply = '{"title": "Fix nightly backup cron"}';
   /** Whether this connection sent `client.capabilities {server_requests: true}`. */
   answersRequests = false;
   /** Server→client requests nobody has answered yet, by id. */
@@ -164,6 +169,13 @@ export class FakeHermes {
     },
     // Keepalive, answered by the WS layer in either protocol generation (research doc §1).
     "gateway.ping": (r) => this.respond(r.id, { ok: true }),
+    // `tui_gateway/methods_session.py` at the deployed `bf0203a`: one stateless model call, outside any chat. The
+    // fake model answers with `oneshotReply`.
+    "llm.oneshot": (r) => {
+      if (!r.params.template && !String(r.params.instructions ?? "").trim() && !String(r.params.input ?? "").trim())
+        return this.fail(r.id, 4030, "llm.oneshot requires a template or instructions/input");
+      this.respond(r.id, { text: this.oneshotReply });
+    },
   };
 
   /** Per-route REST behaviour, keyed `METHOD /path`. A handler throws to fail the request. */
@@ -279,6 +291,7 @@ export class FakeHermes {
         const handler =
           this.rest[`${method} ${req.path}`] ??
           (method === "PATCH" && patch ? () => this.patchSession(patch[1], req.body!) : undefined) ??
+          (method === "GET" && patch ? () => this.sessionDetail(decodeURIComponent(patch[1]), req.query.get("profile")) : undefined) ??
           (method === "DELETE" && patch ? () => this.deleteSession(decodeURIComponent(patch[1]), req.query.get("profile")) : undefined);
         if (!handler) throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
         return JSON.stringify(await handler(req));
@@ -379,7 +392,21 @@ export class FakeHermes {
     if (!s) throw new Error(`The dashboard answered 404: {"detail":"Session not found"}`);
     if (typeof body.pinned === "boolean") s.pinned = body.pinned;
     if (typeof body.unread === "boolean") s.last_read_at = body.unread ? 0 : now();
+    if (typeof body.title === "string") {
+      // `set_session_title`: titles are unique in a profile, and a clash is a 400 (`_mutate_session_request`).
+      const title = body.title.trim();
+      if (title && this.storeOrFail(body.profile as string | undefined).some((r) => r !== s && r.title === title))
+        throw new Error(`The dashboard answered 400: {"detail":"Title '${title}' is already in use by session ${id}"}`);
+      s.title = title || null;
+    }
     return { ok: true };
+  }
+
+  /** `get_session_detail` in `hermes_cli/web_routers/sessions.py`: the whole stored row. */
+  private sessionDetail(id: string, profile: string | null) {
+    const s = this.storeOrFail(profile).find((r) => r.id === id);
+    if (!s) throw new Error(`The dashboard answered 404: {"detail":"Session not found"}`);
+    return { cwd: null, git_repo_root: null, git_branch: null, ...s, profile: profile ?? "default" };
   }
 
   /**

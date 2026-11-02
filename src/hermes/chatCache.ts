@@ -1,13 +1,14 @@
 // Each profile's last synced chat list, kept in localStorage so the list shows as soon as Hermes connects, the
-// profile shown last, so the next sign-in opens it, and the profiles whose older history the owner pulled.
-// Clearing the cache deletes the chat lists only.
+// profile shown last, so the next sign-in opens it, the profiles whose older history the owner pulled, and the
+// owner's Pinned and Snoozed chats. Clearing the cache deletes the chat lists only.
 import type { Chat } from "./model";
-import type { ChatCache } from "./transport";
+import type { ChatCache, ChatMarks } from "./transport";
 
 const LIST_PREFIX = "hermes-chat.chats.";
 const key = (profile: string) => `${LIST_PREFIX}${profile}`;
 const PROFILE_KEY = "hermes-chat.profile";
 const PULLED_KEY = "hermes-chat.older-pulled";
+const MARKS_KEY = "hermes-chat.marks";
 
 /** The keys of the saved chat lists. */
 function listKeys(): string[] {
@@ -82,6 +83,30 @@ export const localChatCache: ChatCache = {
       if (!pulled.includes(profile)) localStorage.setItem(PULLED_KEY, JSON.stringify([...pulled, profile]));
     } catch {
       // The next launch shows the past month only, until the owner pulls again.
+    }
+  },
+  marks() {
+    try {
+      const saved: unknown = JSON.parse(localStorage.getItem(MARKS_KEY) ?? "{}");
+      if (!saved || typeof saved !== "object") return {};
+      const marks: ChatMarks = {};
+      for (const [profile, m] of Object.entries(saved as Record<string, { pinned?: unknown; snoozed?: unknown }>)) {
+        const pinned = Array.isArray(m?.pinned) ? m.pinned.filter((id): id is string => typeof id === "string") : [];
+        const snoozed = Object.fromEntries(
+          Object.entries(m?.snoozed && typeof m.snoozed === "object" ? m.snoozed : {}).filter(([, t]) => typeof t === "number"),
+        ) as Record<string, number>;
+        marks[profile] = { pinned, snoozed };
+      }
+      return marks;
+    } catch {
+      return {};
+    }
+  },
+  saveMarks(marks) {
+    try {
+      localStorage.setItem(MARKS_KEY, JSON.stringify(marks));
+    } catch {
+      // Pins and snoozes made now last until the app closes.
     }
   },
 };

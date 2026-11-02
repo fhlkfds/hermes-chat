@@ -1,11 +1,12 @@
 // Icon rail beside a chat list (ADR 0001), ported from the prototype's variants C and A. The list's header is the
-// profile switcher. Settings opens from the rail's foot.
-import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, ChevronRight, LockOpen, Search, Settings, SquarePen, Trash2 } from "lucide-react";
+// profile switcher. Settings opens from the rail's foot. Right-clicking a chat opens its menu (ChatMenu.tsx).
+import { useCallback, useEffect, useRef, useState } from "react";
+import { AlarmClock, Check, ChevronDown, ChevronRight, LockOpen, Search, Settings, SquarePen, Trash2 } from "lucide-react";
 import type { Chat, ConnectionStatus } from "../hermes/model";
 import { SOURCE_LABEL } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
-import { STATUS_LABEL, SettleButton, SourceIcon, Spinner, relTime, routeLabel } from "./bits";
+import { STATUS_LABEL, SettleButton, SourceIcon, Spinner, relTime, routeLabel, wakeLabel } from "./bits";
+import { ChatMenu, SnoozeDialog, type ChatAction } from "./ChatMenu";
 
 const byRecent = (a: Chat, b: Chat) => b.updatedAt - a.updatedAt;
 
@@ -68,59 +69,133 @@ export function Rail({
   );
 }
 
+/** When a Snoozed chat wakes, short enough for its row: the time today, else the day. */
+function wakeShort(t: number) {
+  const d = new Date(t);
+  if (d.toDateString() === new Date().toDateString()) return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return t - Date.now() < 6 * 86_400_000 ? d.toLocaleDateString([], { weekday: "short" }) : d.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+/** A row asking for something in place: a new title, or whether to delete the chat. */
+type RowMode = "rename" | "confirm-delete";
+
+/** The chat's title in a text box. Enter or clicking away saves it; Escape keeps the old one. */
+function RenameRow({ chat, selected, onDone }: { chat: Chat; selected: boolean; onDone: (title?: string) => void }) {
+  const done = useRef(false);
+  const finish = (title?: string) => {
+    if (done.current) return;
+    done.current = true;
+    onDone(title);
+  };
+  return (
+    <div className={`row renaming ${selected ? "sel" : ""}`}>
+      <input
+        className="row-rename"
+        aria-label="Chat title"
+        autoFocus
+        defaultValue={chat.title}
+        onFocus={(e) => e.currentTarget.select()}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") finish(e.currentTarget.value);
+          else if (e.key === "Escape") finish();
+        }}
+        onBlur={(e) => finish(e.currentTarget.value)}
+      />
+    </div>
+  );
+}
+
 /**
- * One chat in the list. Its trash button asks before deleting, in the row itself: Escape, Cancel or clicking away
- * keeps the chat. A chat with a reply running can't be deleted.
+ * One chat in the list. Right-clicking it opens its menu. Its trash button asks before deleting, in the row itself:
+ * Escape, Cancel or clicking away keeps the chat. A chat with a reply running can't be deleted.
  */
 function ChatRow({
   chat,
   selected,
+  mode,
+  menuOpen,
   onOpen,
-  onSettle,
-  onDelete,
+  onAction,
+  onMode,
+  onMenu,
 }: {
   chat: Chat;
   selected: boolean;
+  mode?: RowMode;
+  menuOpen: boolean;
   onOpen: () => void;
-  onSettle: (settled: boolean) => void;
-  onDelete: () => void;
+  onAction: (action: ChatAction) => void;
+  onMode: (mode?: RowMode) => void;
+  onMenu: (x: number, y: number) => void;
 }) {
-  const [confirming, setConfirming] = useState(false);
-  if (confirming)
+  if (mode === "rename")
+    return (
+      <RenameRow
+        chat={chat}
+        selected={selected}
+        onDone={(title) => {
+          onMode();
+          if (title?.trim() && title.trim() !== chat.title) onAction({ kind: "rename", title });
+        }}
+      />
+    );
+  if (mode === "confirm-delete")
     return (
       <div
         className={`row confirming ${selected ? "sel" : ""}`}
-        onKeyDown={(e) => e.key === "Escape" && setConfirming(false)}
-        onBlur={(e) => e.currentTarget.contains(e.relatedTarget) || setConfirming(false)}
+        onKeyDown={(e) => e.key === "Escape" && onMode()}
+        onBlur={(e) => e.currentTarget.contains(e.relatedTarget) || onMode()}
       >
         <span className="row-title">{chat.title}</span>
-        <button className="row-confirm danger" title="Delete this chat in every Hermes client. This can't be undone." onClick={onDelete}>
+        <button
+          className="row-confirm danger"
+          title="Delete this chat in every Hermes client. This can't be undone."
+          onClick={() => {
+            onMode();
+            onAction({ kind: "delete" });
+          }}
+        >
           Delete
         </button>
-        <button className="row-confirm" autoFocus onClick={() => setConfirming(false)}>
+        <button className="row-confirm" autoFocus onClick={() => onMode()}>
           Cancel
         </button>
       </div>
     );
   return (
     <div
-      className={`row ${selected ? "sel" : ""} ${chat.unread ? "unread" : ""}`}
+      className={`row ${selected ? "sel" : ""} ${chat.unread ? "unread" : ""} ${menuOpen ? "menu-open" : ""}`}
       onClick={onOpen}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        onMenu(e.clientX, e.clientY);
+      }}
       title={chat.source !== "app" ? `${chat.title} (from ${SOURCE_LABEL[chat.source]})` : chat.title}
     >
       {chat.source !== "app" && <SourceIcon source={chat.source} />}
       <span className="row-title">{chat.title}</span>
       <span className="row-meta">
-        {chat.running ? <Spinner /> : chat.unread ? <span className="dot" title="Unread" /> : relTime(chat.updatedAt)}
+        {chat.running ? (
+          <Spinner />
+        ) : chat.unread ? (
+          <span className="dot" title="Unread" />
+        ) : chat.snoozedUntil ? (
+          <span className="snoozed" title={`Snoozed until ${wakeLabel(chat.snoozedUntil)}`}>
+            <AlarmClock size={11} strokeWidth={2.4} />
+            {wakeShort(chat.snoozedUntil)}
+          </span>
+        ) : (
+          relTime(chat.updatedAt)
+        )}
       </span>
-      <SettleButton settled={chat.settled} size={14} className="row-action" onSettle={onSettle} />
+      <SettleButton settled={chat.settled} size={14} className="row-action" onSettle={(settled) => onAction({ kind: "settle", settled })} />
       {!chat.running && (
         <button
           className="row-action"
           title="Delete"
           onClick={(e) => {
             e.stopPropagation();
-            setConfirming(true);
+            onMode("confirm-delete");
           }}
         >
           <Trash2 size={14} />
@@ -214,8 +289,7 @@ export function ChatList({
   syncError,
   selectedId,
   onOpen,
-  onSettle,
-  onDelete,
+  onAction,
   onListProfiles,
   onSwitchProfile,
 }: {
@@ -224,18 +298,25 @@ export function ChatList({
   syncError?: string;
   selectedId: string | null;
   onOpen: (id: string) => void;
-  onSettle: (id: string, settled: boolean) => void;
-  onDelete: (id: string) => void;
+  onAction: (id: string, action: ChatAction) => void;
   onListProfiles: () => Promise<string[]>;
   onSwitchProfile: (name: string) => void;
 }) {
   const [settledOpen, setSettledOpen] = useState(false);
+  const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [rowMode, setRowMode] = useState<{ id: string; mode: RowMode } | null>(null);
+  // The chat whose custom snooze time is being picked.
+  const [snoozing, setSnoozing] = useState<string | null>(null);
+  const closeMenu = useCallback(() => setMenu(null), []);
+  const menuChat = menu && chats.find((c) => c.id === menu.id);
+  const snoozeChat = snoozing && chats.find((c) => c.id === snoozing);
   // Opening a Settled chat, say from a search, shows it in the list; settling the chat on screen doesn't.
   const selectedSettled = chats.some((c) => c.id === selectedId && c.settled);
   useEffect(() => {
     if (selectedSettled) setSettledOpen(true);
   }, [selectedId]);
-  const active = chats.filter((c) => !c.settled).sort(byRecent);
+  const pinned = chats.filter((c) => c.pinned && !c.settled).sort(byRecent);
+  const active = chats.filter((c) => !c.settled && !c.pinned).sort(byRecent);
   const settled = chats.filter((c) => c.settled).sort(byRecent);
   const settledUnread = settled.filter((c) => c.unread).length;
   const row = (c: Chat) => (
@@ -243,9 +324,12 @@ export function ChatList({
       key={c.id}
       chat={c}
       selected={c.id === selectedId}
+      mode={rowMode?.id === c.id ? rowMode.mode : undefined}
+      menuOpen={menu?.id === c.id}
       onOpen={() => onOpen(c.id)}
-      onSettle={(s) => onSettle(c.id, s)}
-      onDelete={() => onDelete(c.id)}
+      onAction={(a) => onAction(c.id, a)}
+      onMode={(mode) => setRowMode(mode ? { id: c.id, mode } : null)}
+      onMenu={(x, y) => setMenu({ id: c.id, x, y })}
     />
   );
   return (
@@ -259,8 +343,18 @@ export function ChatList({
             {syncError}
           </div>
         )}
+        {pinned.length > 0 && (
+          <>
+            <div className="section-label">Pinned</div>
+            {pinned.map(row)}
+          </>
+        )}
         <div className="section-label">Active</div>
-        {active.length ? active.map(row) : <div className="empty-hint">Nothing active. Start a new chat.</div>}
+        {active.length ? (
+          active.map(row)
+        ) : (
+          <div className="empty-hint">{pinned.length ? "Nothing else active." : "Nothing active. Start a new chat."}</div>
+        )}
       </div>
       {/* Settled is pinned to the foot of the list and opens upward as a drawer with its own scroll. */}
       <div className={`settled-section ${settledOpen ? "open" : ""}`}>
@@ -272,6 +366,28 @@ export function ChatList({
         </button>
         {settledOpen && <div className="settled-list">{settled.map(row)}</div>}
       </div>
+      {menuChat && (
+        <ChatMenu
+          chat={menuChat}
+          x={menu.x}
+          y={menu.y}
+          onAction={(a) => onAction(menuChat.id, a)}
+          onRename={() => setRowMode({ id: menuChat.id, mode: "rename" })}
+          onDelete={() => setRowMode({ id: menuChat.id, mode: "confirm-delete" })}
+          onCustomSnooze={() => setSnoozing(menuChat.id)}
+          onClose={closeMenu}
+        />
+      )}
+      {snoozeChat && (
+        <SnoozeDialog
+          chat={snoozeChat}
+          onSnooze={(until) => {
+            setSnoozing(null);
+            onAction(snoozeChat.id, { kind: "snooze", until });
+          }}
+          onClose={() => setSnoozing(null)}
+        />
+      )}
     </aside>
   );
 }

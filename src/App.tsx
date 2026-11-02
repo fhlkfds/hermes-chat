@@ -6,6 +6,8 @@ import { systemKeyring } from "./hermes/tauriKeyring";
 import { tauriPipe, type SignInDetails } from "./hermes/tauriPipe";
 import type { Attachment, Chat, Found } from "./hermes/model";
 import { ChatList, Rail } from "./ui/Sidebar";
+import type { ChatAction } from "./ui/ChatMenu";
+import { Spinner, copyText, wakeLabel } from "./ui/bits";
 import { ChatPane } from "./ui/ChatPane";
 import { SearchPalette } from "./ui/Search";
 import { SettingsScreen } from "./ui/Settings";
@@ -16,8 +18,11 @@ const SAVED = "hermes-chat.sign-in"; // Everything but the password, which is in
 const SYNC_EVERY_MS = 60_000;
 const TOAST_MS = 5_000;
 
-/** A short notice above the composer; `undo` puts back what it reports. `at` restarts the timer for a repeat. */
-type Toast = { text: string; undo?: () => void; at: number };
+/**
+ * A short notice above the composer; `undo` puts back what it reports. `at` restarts the timer for a repeat. A `busy`
+ * one says something is under way, and stays until the outcome replaces it.
+ */
+type Toast = { text: string; undo?: () => void; at: number; busy?: boolean };
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -204,8 +209,47 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
     void hermes.delete(id).then((deleted) => deleted && setToast({ text: `Deleted: ${title}`, at: Date.now() }));
   };
 
+  const say = (text: string, undo?: () => void) => setToast({ text, undo, at: Date.now() });
+  // Reports in the toast why an action failed.
+  const failed = (what: string) => (e: unknown) => say(`Couldn't ${what}: ${messageOf(e)}`);
+
+  /** Does what the owner picked in a chat's menu, or one of its row buttons. */
+  const act = (id: string, action: ChatAction) => {
+    const title = chats.find((c) => c.id === id)?.title ?? "";
+    switch (action.kind) {
+      case "settle":
+        return setSettled(id, action.settled);
+      case "delete":
+        return deleteChat(id);
+      case "pin":
+        return action.pinned ? void hermes.pin(id) : hermes.unpin(id);
+      case "snooze":
+        if (action.until === undefined) return void hermes.unsnooze(id);
+        void hermes.snooze(id, action.until);
+        return say(`Snoozed until ${wakeLabel(action.until)}: ${title}`, () => void hermes.unsnooze(id));
+      case "rename":
+        return void hermes.rename(id, action.title).catch(failed("rename the chat"));
+      case "regenerate-title":
+        setToast({ text: `Asking Hermes for a new title: ${title}`, busy: true, at: Date.now() });
+        return void hermes.regenerateTitle(id).then(
+          (t) => say(`Renamed: ${t}`, () => void hermes.rename(id, title).catch(failed("rename the chat"))),
+          failed("regenerate the title"),
+        );
+      case "unread":
+        // The chat on screen never shows the dot, so marking it unread moves off it.
+        if (action.unread && id === selectedId) newChat();
+        return void hermes.setUnread(id, action.unread).catch(failed(`mark the chat ${action.unread ? "unread" : "read"}`));
+      case "copy-chat":
+        return void copyText(hermes.transcript(id)).then(() => say(`Copied the chat: ${title}`), failed("copy the chat"));
+      case "copy-folder": {
+        const folder = hermes.workingFolder(id);
+        return void copyText(folder).then(async () => say(`Copied: ${await folder}`), failed("copy the working folder"));
+      }
+    }
+  };
+
   useEffect(() => {
-    if (!toast) return;
+    if (!toast || toast.busy) return;
     const timer = setTimeout(() => setToast(null), TOAST_MS);
     return () => clearTimeout(timer);
   }, [toast]);
@@ -270,8 +314,7 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
           syncError={syncError}
           selectedId={settingsOpen ? null : selectedId}
           onOpen={openChat}
-          onSettle={setSettled}
-          onDelete={deleteChat}
+          onAction={act}
           onListProfiles={() => hermes.profiles()}
           onSwitchProfile={switchProfile}
         />
@@ -310,6 +353,7 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
       {searchOpen && <SearchPalette onSearch={(q) => hermes.search(q)} onPick={pick} onClose={() => setSearchOpen(false)} />}
       {toast && (
         <div className="toast" key={toast.at} role="status">
+          {toast.busy && <Spinner />}
           <span>{toast.text}</span>
           {toast.undo && (
             <button

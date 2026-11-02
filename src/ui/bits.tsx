@@ -74,6 +74,40 @@ export function relTime(ts: number) {
   return `${Math.floor(s / (86400 * 7))}w`;
 }
 
+/** When a Snoozed chat wakes, as short as stays clear: "4:30 PM", "Tomorrow 9:00 AM", "Fri 9:00 AM", "Dec 3 9:00 AM". */
+export function wakeLabel(t: number, now = Date.now()) {
+  const d = new Date(t);
+  const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const day = (offset: number) => {
+    const n = new Date(now);
+    n.setDate(n.getDate() + offset);
+    return n.toDateString();
+  };
+  if (d.toDateString() === day(0)) return time;
+  if (d.toDateString() === day(1)) return `Tomorrow ${time}`;
+  if (t - now < 6 * 86_400_000) return `${d.toLocaleDateString([], { weekday: "short" })} ${time}`;
+  return `${d.toLocaleDateString([], { month: "short", day: "numeric" })} ${time}`;
+}
+
+/**
+ * Puts text on the clipboard. Text still on its way goes in a ClipboardItem, so the webview still counts the click
+ * that asked for it once the text arrives. Rejects with why the text couldn't be had, or the clipboard's refusal.
+ */
+export async function copyText(text: Promise<string>): Promise<void> {
+  let failure: unknown;
+  const kept = text.catch((e) => {
+    failure = e;
+    throw e;
+  });
+  try {
+    if (typeof ClipboardItem !== "undefined" && navigator.clipboard.write)
+      await navigator.clipboard.write([new ClipboardItem({ "text/plain": kept.then((t) => new Blob([t], { type: "text/plain" })) })]);
+    else await navigator.clipboard.writeText(await kept);
+  } catch (e) {
+    throw failure ?? e;
+  }
+}
+
 export const STATUS_LABEL: Record<ConnectionStatus, string> = { connected: "Connected", reconnecting: "Reconnecting…", offline: "Offline" };
 
 /** Where the connection goes, as the owner typed it. */
