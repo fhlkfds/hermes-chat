@@ -19,6 +19,7 @@ import type { VoiceSetup } from "../hermes/pipe";
 import { ChatUsageButton, ReplyUsageLine } from "./Usage";
 import { useOpenPreview } from "./previewContext";
 import { previewName, toolTargets } from "../hermes/preview";
+import { type CommandHost, useSlashCommands } from "./SlashCommands";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type ThinkingItem = Extract<Item, { kind: "thinking" }>;
@@ -94,7 +95,7 @@ const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateS
  * contains the model picker; `footer` contains the status bar. Only the active pane answers Ctrl+F and takes focus as
  * it opens. Native drops attach to the pane under the pointer. `paneControls` follows the chat's own buttons.
  * `screenshots` attaches captures; `screenshotKeys` names the shortcut.
- * `voice` supplies Dictation and Read aloud.
+ * `voice` supplies Dictation and Read aloud. `commands` runs the slash commands typed in the composer.
  */
 export function ChatPane({
   chat,
@@ -126,6 +127,7 @@ export function ChatPane({
   footer,
   onUsage,
   headActions,
+  commands,
 }: {
   chat: Chat;
   notLoaded?: boolean;
@@ -157,6 +159,7 @@ export function ChatPane({
   footer?: ReactNode;
   onUsage?: () => void;
   headActions?: ReactNode;
+  commands?: CommandHost;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -454,6 +457,7 @@ export function ChatPane({
         status={status}
         screenshots={screenshots}
         screenshotKeys={screenshotKeys}
+        commands={commands}
       />
       {footer}
     </div>
@@ -718,6 +722,7 @@ function Composer({
   status,
   screenshots,
   screenshotKeys,
+  commands,
 }: {
   offline: boolean;
   running: boolean;
@@ -741,6 +746,7 @@ function Composer({
   /** Screenshots come from here, and staged ones go back to it to be deleted once sent, removed or left behind. */
   screenshots?: ScreenshotDesk;
   screenshotKeys?: string;
+  commands?: CommandHost;
 }) {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const focused = useRef(autoFocus);
@@ -886,7 +892,9 @@ function Composer({
   }, [text]);
 
   const sendable = attaching === 0 && (!!text.trim() || attachments.length > 0);
+  const slash = useSlashCommands(commands, text, onText, taRef);
   const send = () => {
+    if (slash.run()) return;
     if (offline || running || !sendable) return;
     onSend(text.trim(), attachments);
     setAttachments([]);
@@ -921,6 +929,7 @@ function Composer({
           {r}
         </div>
       ))}
+      {slash.view}
       <div className={`composer ${dragging ? "dragging" : ""}`}>
         {dragging && <div className="drop-overlay">Drop files to attach</div>}
         {attachments.length > 0 && (
@@ -944,6 +953,7 @@ function Composer({
           autoFocus={autoFocus}
           placeholder="Message Hermes"
           value={text}
+          {...slash.inputProps}
           onChange={(e) => onText(e.target.value)}
           onPaste={(e) => {
             // Only files are taken over; text pastes as it always has.
@@ -955,6 +965,7 @@ function Composer({
             } else if (!e.clipboardData.getData("text/plain")) void paste(clipboardImages());
           }}
           onKeyDown={(e) => {
+            if (slash.onKeyDown(e)) return;
             if (e.key === "Enter" && !e.shiftKey && !composing(e)) {
               e.preventDefault();
               send();

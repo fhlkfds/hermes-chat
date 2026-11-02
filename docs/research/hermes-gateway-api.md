@@ -426,6 +426,16 @@ The deployed checkout was confirmed at `bf0203a` over SSH. Its routes were read 
 - **Read answer.** `{name, path, size, mime_type, data_url: "data:<mime>;base64,...", root, locked_root, can_change_path}`, for a regular file up to `_MANAGED_FILE_MAX_BYTES` = 100 MiB (else 413 `File is too large`). There is no partial read: a 2.3 MB log came back as one 3.1 MB answer. A missing path is 404 `Path not found`, a folder 400 `Path is not a file`.
 - **What the app does** (ADR 0012). It lists with `GET /api/files` and previews with `GET /api/files/read`. Text up to 1 MiB and images up to 10 MiB are read; anything bigger is refused from its listed size, before any request. The read goes through `hermes_get_limited`, which stops reading and refuses the answer once it passes about 4/3 of that limit, in case the file grew since it was listed.
 
+### Slash commands (2026-11-02, deployed `bf0203a`, source read and in-process call)
+
+Read in `tui_gateway/methods_tools.py`, `methods_slash.py`, `command_discovery.py` and `hermes_cli/commands.py` at `bf0203a`. `command_catalog()` and the `command.dispatch` / `slash.exec` handlers were then called in-process from that checkout, with `HERMES_HOME` set to an empty temporary folder, so no profile or live session was touched.
+
+- **`commands.catalog {profile?, session_id?}`** → `{pairs: [[key, desc]], canon: {lower-cased key or alias: key}, commands, categories, skills, skill_count, warning, plugin_discovery_error, plugin_commands}`. `canon` had `/steer` (alias `/s`) and `/context`. Registry commands marked `gateway_only`, and `sethome`, `commands`, `approve` and `deny`, aren't listed. An older server answers -32601.
+- **`command.dispatch {name, arg, session_id}`**: stages quick > plugin > bundle > skill > built-in; anything else is 4018 `not a quick/plugin/bundle/skill command`. `steer` with an empty `arg` is 4004 `usage: /steer <prompt>`. With no turn running (or no session) it answers `{type: "send", message: arg, notice: "No agent running; sent as next turn: …"}`; with one running, `agent.steer(arg)` and `{type: "exec", output: "⏩ Steer queued — arrives after the next tool call: …"}`. The argument arrived with its new lines and indentation.
+- **`slash.exec {command, session_id}`**: 4001 `session not found` for an unknown runtime id. `/context` on a local session is answered in-process from the live session (`_format_live_context_output`) as `{output}`. Most other commands go to a per-session slash worker, a full CLI process.
+- **Not used**: `/compress` changes the session's key (`_sync_session_key_after_compress`); `/undo` and `/retry` rewind stored history and answer `prefill` / `send`. The app would have to reload the transcript and follow a new chat id.
+- What the app does: ADR 0013.
+
 ## Open risks
 
 Items marked UNCONFIRMED above, plus things that must be checked against the user's live Debian server:

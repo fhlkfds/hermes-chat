@@ -194,6 +194,11 @@ export class FakeHermes {
   dropOnPrompt?: "stored" | "lost";
   /** What the model answers every `llm.oneshot` call with, unless `oneshotFailure` says why it failed. */
   oneshotAnswer = "A new title";
+  /** The server commands `commands.catalog` lists; undefined for a Hermes without the method. */
+  commandCatalog: string[] | undefined = ["steer", "context", "compress", "help"];
+  /** A `/steer` is queued for the running turn; false answers as Hermes does with no turn running. */
+  steerable = true;
+  contextOutput = "Context window: 12,400 / 200,000 tokens (6%)\n  System prompt  3,100\n  Messages       9,300";
   oneshotFailure?: string;
   /** The owner's local disk, by path, for attachments. */
   files: Record<string, FakeFile> = {};
@@ -333,6 +338,28 @@ export class FakeHermes {
     "image.detach": (r) => {
       this.imagesStaged--;
       this.respond(r.id, { detached: true, count: this.imagesStaged });
+    },
+    // `commands.catalog` (tui_gateway/methods_tools.py, `command_discovery.command_catalog`) at the deployed `bf0203a`:
+    // `canon` maps every listed name and alias to the command's own name. Older servers have no such method.
+    "commands.catalog": (r) => {
+      if (!this.commandCatalog) return this.fail(r.id, -32601, "unknown method: commands.catalog");
+      const canon = Object.fromEntries(this.commandCatalog.flatMap((n) => [[`/${n}`, `/${n}`], ...(n === "steer" ? [["/s", "/steer"]] : [])]));
+      this.respond(r.id, { pairs: this.commandCatalog.map((n) => [`/${n}`, n]), canon, commands: {}, categories: [], skills: {}, skill_count: 0, warning: "" });
+    },
+    // `command.dispatch` `_cmd_steer`: queued for a running turn; with none, Hermes asks for it to be sent as a message.
+    "command.dispatch": (r) => {
+      const sid = String(r.params.session_id);
+      if (!this.runtime.has(sid)) return this.fail(r.id, 4001, "session not found");
+      if (r.params.name !== "steer") return this.fail(r.id, 4018, `not a quick/plugin/bundle/skill command: ${r.params.name}`);
+      const arg = String(r.params.arg ?? "");
+      if (!arg) return this.fail(r.id, 4004, "usage: /steer <prompt>");
+      if (!this.steerable) return this.respond(r.id, { type: "send", message: arg, notice: `No agent running; sent as next turn: ${arg}` });
+      this.respond(r.id, { type: "exec", output: `⏩ Steer queued — arrives after the next tool call: ${arg}` });
+    },
+    // `slash.exec` for `/context`, answered from the live session.
+    "slash.exec": (r) => {
+      if (!this.runtime.has(String(r.params.session_id))) return this.fail(r.id, 4001, "session not found");
+      this.respond(r.id, { output: this.contextOutput });
     },
     // Legacy `session.interrupt` (tui_gateway/methods_session_interrupt.py). The turn then ends with a
     // `message.complete` whose status is "interrupted"; tests send that themselves.

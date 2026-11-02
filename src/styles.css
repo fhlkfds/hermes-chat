@@ -598,6 +598,45 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .offline-note { font-size: calc(12rem / 14); color: var(--muted); padding: 0 6px 8px; }
 .composer-hint { font-size: calc(12rem / 14); color: var(--warn); padding: 0 6px 8px; }
 .capture-note { font-size: calc(12rem / 14); color: var(--muted); padding: 0 6px 8px; }
+/* Slash commands (src/ui/SlashCommands.tsx): in the flow above the composer, so they fit a narrow or split pane. */
+.cmd-menu, .cmd-help, .cmd-note, .cmd-confirm {
+  background: var(--raised); border: 1px solid var(--line-2); border-radius: var(--radius); margin-bottom: 8px; font-size: calc(12.5rem / 14);
+}
+.cmd-menu { padding: 4px; }
+.cmd-menu [role="listbox"] { max-height: 240px; overflow-y: auto; }
+.cmd-option {
+  display: grid; grid-template-columns: auto auto 1fr auto; column-gap: 8px; align-items: baseline;
+  padding: 6px 8px; border-radius: 7px; cursor: pointer;
+}
+.cmd-option.sel { background: var(--hover-2); }
+.cmd-option .cmd-scope { grid-column: 4; grid-row: 1; }
+.cmd-option .cmd-desc { grid-column: 1 / -1; color: var(--muted); }
+.cmd-option .cmd-why, .cmd-help .cmd-why { grid-column: 1 / -1; color: var(--warn); }
+.cmd-option.unavailable .cmd-name { color: var(--muted); }
+.cmd-name { font-family: var(--mono); color: var(--text-strong); }
+.cmd-args { font-family: var(--mono); color: var(--faint); }
+.cmd-scope { font-size: calc(11rem / 14); padding: 1px 6px; border-radius: 5px; background: var(--raised-3); color: var(--muted); justify-self: end; }
+.cmd-scope.server { background: var(--accent-soft); color: var(--accent); }
+.cmd-empty { padding: 6px 8px; color: var(--muted); }
+.cmd-keys { padding: 4px 8px 2px; color: var(--faint); font-size: calc(11.5rem / 14); border-top: 1px solid var(--line); margin-top: 4px; }
+.cmd-help { padding: 8px 12px 10px; max-height: 50vh; overflow-y: auto; }
+.cmd-help-head { display: flex; align-items: center; justify-content: space-between; }
+.cmd-help h2 { font-size: calc(13rem / 14); margin: 0; }
+.cmd-help h3 { font-size: calc(12rem / 14); color: var(--muted); font-weight: 500; margin: 10px 0 4px; }
+.cmd-help p { color: var(--muted); margin: 4px 0; }
+.cmd-help dl { margin: 0; }
+.cmd-help dl > div { display: grid; grid-template-columns: minmax(120px, auto) 1fr; gap: 2px 12px; padding: 3px 0; }
+.cmd-help dt { display: flex; gap: 6px; }
+.cmd-help dd { margin: 0; display: grid; }
+.cmd-help code { color: var(--text-strong); }
+.cmd-note { display: flex; gap: 8px; align-items: flex-start; padding: 6px 6px 6px 10px; color: var(--text-2); }
+.cmd-note.pending { align-items: center; color: var(--muted); padding: 8px 10px; }
+.cmd-note.error { color: var(--bad); }
+.cmd-note-body { flex: 1; min-width: 0; padding-top: 3px; }
+.cmd-note-title { font-family: var(--mono); color: var(--muted); margin-bottom: 4px; }
+.cmd-output { margin: 0; max-height: 240px; overflow: auto; white-space: pre-wrap; font-size: calc(var(--mono-size) - 1px); color: var(--text-2); }
+.cmd-confirm { display: flex; gap: 6px; align-items: center; padding: 6px 6px 6px 10px; }
+.cmd-confirm span { flex: 1; color: var(--text-2); }
 .platform-note { display: flex; align-items: center; gap: 6px; font-size: calc(12rem / 14); color: var(--muted); padding: 0 6px 8px; }
 .conn-btn { position: relative; display: grid; place-items: center; width: 30px; height: 30px; border-radius: 8px; }
 .conn-btn:hover { background: var(--raised-2); }

@@ -29,6 +29,7 @@ import { catalogFromServer, fallbackCatalog, isEffort, modelKey, pickFromInfo, t
 import { noOthers, OtherProfilesCheck } from "./otherProfiles";
 // Projects are Hermes's own, read and written with legacy `projects.*` (projects.ts, research doc "Projects").
 import { projectsApi, type ProjectsApi } from "./projects";
+import { listServerCommands, runServerCommand, type CommandDef, type CommandResult } from "./commands";
 import { ModelSettingsApi } from "./modelSettings";
 import type { OpenPipe, Pipe, PipeEvent, RestMethod, Route, Speech, Transcript, VoiceSetup } from "./pipe";
 import { remoteFiles, type RemoteFiles } from "./remoteFiles";
@@ -443,6 +444,8 @@ export class Hermes {
   private background = new Set<Promise<unknown>>();
   /** When the shown profile's list last synced on this connection. */
   private listedAt?: number;
+  /** The server commands listed for a connection and profile (`serverCommands`). */
+  private commandsRead?: { key: string; done: Promise<Set<string>> };
   /** The voice set-up read for a connection and profile (`voiceSetup`). */
   private voiceRead?: { key: string; done: Promise<VoiceSetup> };
   /** The model list being read, and for which profile. */
@@ -572,6 +575,30 @@ export class Hermes {
       });
     }
     return this.voiceRead.done;
+  }
+
+  /**
+   * The registry's server commands this Hermes lists for the shown profile (commands.ts). Read once per connection and
+   * profile; a failed read is tried again on the next call.
+   */
+  serverCommands(): Promise<Set<string>> {
+    if (!this.connectedPipe()) return Promise.reject(new Error("Not connected to Hermes."));
+    const key = `${this.generation}/${this.profile}`;
+    if (this.commandsRead?.key !== key) {
+      const done = listServerCommands((method, params) => this.request(method, params), this.profile);
+      this.commandsRead = { key, done };
+      done.catch(() => {
+        if (this.commandsRead?.done === done) this.commandsRead = undefined;
+      });
+    }
+    return this.commandsRead.done;
+  }
+
+  /** Runs a server command in the chat's live session (commands.ts). Rejects if the chat isn't open on Hermes. */
+  runCommand(chatId: string, def: CommandDef, arg: string): Promise<CommandResult> {
+    const runtimeId = this.snapshot.chats.find((c) => c.id === chatId)?.runtimeId;
+    if (!runtimeId) return Promise.reject(new Error("This chat isn't open on Hermes."));
+    return runServerCommand((method, params) => this.request(method, params), runtimeId, def, arg);
   }
 
   /** Has Hermes transcribe a Dictation recording with the shown profile's speech-to-text provider. */

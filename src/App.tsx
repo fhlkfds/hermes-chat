@@ -1,7 +1,8 @@
 import { type ReactNode, type RefObject, useCallback, useLayoutEffect, useMemo, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { Columns2, PanelRight, X } from "lucide-react";
-import { connect, readSaved, type Delivery, type Hermes } from "./hermes/transport";
+import { RenameConflict, connect, readSaved, type Delivery, type Hermes } from "./hermes/transport";
+import type { CommandHost } from "./ui/SlashCommands";
 import { CHECK_EVERY_MS } from "./hermes/otherProfiles";
 import { type Account, type Kept, type SavedSignIn, launchSignIn, savedSignIn, signIn, signInForm, signOutToSignIn } from "./hermes/account";
 import { localChatCache } from "./hermes/chatCache";
@@ -727,6 +728,8 @@ export function Main({
           onSettle={(s) => setSettled(chat.id, s)}
           onExport={() => exportChatOnScreen(chat)}
           onArchive={(a) => setArchived(chat.id, a)}
+          onNew={() => newChat()}
+          onDelete={() => deleteChat(chat.id)}
           previewControls={
             <button className={`icon-btn ${previewShown ? "on" : ""}`} title={!preview ? "Open the preview" : previewShown ? "Close the preview" : "Show the preview"} aria-pressed={previewShown}
               onClick={() => (!preview ? openPreview({ kind: "start" }) : previewShown ? setPreview(null) : setPreviewHidden(false))}>
@@ -984,6 +987,8 @@ function ChatView({
   onSettle,
   onExport,
   onArchive,
+  onNew,
+  onDelete,
   paneControls,
   previewControls,
   screenshots,
@@ -1013,6 +1018,9 @@ function ChatView({
   onSettle: (settled: boolean) => void;
   onExport: () => void;
   onArchive: (archived: boolean) => void;
+  onNew: () => void;
+  /** Deletes the chat once the owner has confirmed it. */
+  onDelete: () => void;
   paneControls: ReactNode;
   previewControls: ReactNode;
   screenshots?: ScreenshotDesk;
@@ -1096,6 +1104,50 @@ function ChatView({
 
   const visible = usePaneVisible();
 
+  // Slash commands (commands.ts). Each empties the Draft it was typed in only once it has run, and only if the owner
+  // hasn't changed it meanwhile. An answer for a profile no longer shown does nothing: its Draft stays as typed.
+  const serverCommands = useServerCommands(hermes, status === "connected", profile);
+  const commands: CommandHost = {
+    why: (def) => {
+      if (def.name === "help" || def.name === "new") return undefined;
+      if (!started) return "This chat hasn't started yet. Send a message first.";
+      if (status !== "connected") return "Not connected to Hermes.";
+      if (def.name === "delete" && chat.running) return "A chat with a reply running can't be deleted.";
+      if (def.scope === "local") return undefined;
+      if (serverCommands.state === "loading") return "Checking whether this Hermes has it…";
+      if (serverCommands.state === "failed") return `Couldn't check whether this Hermes has it: ${serverCommands.reason}`;
+      if (!serverCommands.names.has(def.name)) return "This Hermes doesn't list it, so it may not have it. Updating Hermes may add it.";
+      if (!chat.runtimeId) return "This chat is still loading from Hermes.";
+      if (def.name === "steer" && !chat.running) return "No reply is running to steer. Send it as a message instead.";
+      return undefined;
+    },
+    run: async (def, arg) => {
+      const typed = savedDrafts.get(shownDraft);
+      const done = () => savedDrafts.get(shownDraft) === typed && savedDrafts.set(shownDraft, "");
+      if (def.name === "new" || def.name === "delete") {
+        done();
+        (def.name === "new" ? onNew : onDelete)();
+        return undefined;
+      }
+      if (def.name === "rename") {
+        try {
+          await hermes.rename(chat.id, arg.replace(/\s+/g, " "), chat.title);
+        } catch (e) {
+          throw e instanceof RenameConflict ? new Error(`This chat was renamed in another Hermes client meanwhile, to "${e.title}". Rename again to replace it.`) : e;
+        }
+        done();
+        return undefined;
+      }
+      const res = await hermes.runCommand(chat.id, def, arg);
+      if (!stillIn()) return undefined;
+      done();
+      if (res.kind === "output") return res.text;
+      // Hermes wants the words sent as the chat's next message instead, as for a /steer after the reply ended.
+      await send(res.message, []);
+      return res.notice;
+    },
+  };
+
   // An opened chat shows its stored history and is marked read; a chat already open on this connection is left as it
   // is. Until connected it shows its Saved copy, and after a reconnect it loads again. Settings covers the panes, so
   // the chats aren't on screen meanwhile.
@@ -1133,6 +1185,7 @@ function ChatView({
       screenshots={screenshots}
       screenshotKeys={screenshotKeys}
       voice={voice}
+      commands={commands}
       paneControls={paneControls}
       headActions={previewControls}
       footer={<StatusBar chat={chat} status={status} onYolo={(on) => hermes.setYolo(chat.id, on)} onBreakdown={() => hermes.contextBreakdown(chat.id)} />}
@@ -1148,4 +1201,21 @@ function ChatView({
       }
     />
   );
+}
+
+type ServerCommands = { state: "loading" } | { state: "ready"; names: Set<string> } | { state: "failed"; reason: string };
+
+/** Which of the registry's server commands Hermes lists for `profile`, read once connected (`Hermes.serverCommands`). */
+function useServerCommands(hermes: Hermes, connected: boolean, profile: string): ServerCommands {
+  const [read, setRead] = useState<{ profile: string; value: ServerCommands }>();
+  useEffect(() => {
+    if (!connected) return;
+    let live = true;
+    hermes.serverCommands().then(
+      (names) => live && setRead({ profile, value: { state: "ready", names } }),
+      (e) => live && setRead({ profile, value: { state: "failed", reason: messageOf(e) } }),
+    );
+    return () => void (live = false);
+  }, [hermes, connected, profile]);
+  return read?.profile === profile ? read.value : { state: "loading" };
 }
