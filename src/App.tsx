@@ -1,7 +1,9 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { connect, type Hermes } from "./hermes/transport";
-import { type Account, type SavedSignIn, savedSignIn, signIn, signOut } from "./hermes/account";
+import { connect, readSaved, type Delivery, type Hermes } from "./hermes/transport";
+import { CHECK_EVERY_MS } from "./hermes/otherProfiles";
+import { type Account, type SavedSignIn, launchSignIn, savedSignIn, signIn, signOut } from "./hermes/account";
 import { localChatCache } from "./hermes/chatCache";
+import { draftKey, drafts } from "./hermes/drafts";
 import { systemKeyring } from "./hermes/tauriKeyring";
 import { tauriPipe, type SignInDetails } from "./hermes/tauriPipe";
 import type { Attachment, Chat, Found } from "./hermes/model";
@@ -34,23 +36,27 @@ function loadSignIn(): SavedSignIn {
 const account: Account = {
   keyring: systemKeyring,
   store: { load: loadSignIn, save: (d) => localStorage.setItem(SAVED, JSON.stringify(d)) },
-  connect: (d) => connect(tauriPipe(d), undefined, localChatCache),
+  connect: (d) => connect(tauriPipe(d), undefined, localChatCache(d)),
+  readSaved: (d, reason) => readSaved(tauriPipe(d), reason, localChatCache(d)),
 };
+
+const savedDrafts = drafts(localStorage);
 
 /** What launch ends in: signed in with the saved password, or the sign-in screen and why. */
 type Launch = { hermes: Hermes } | { initial: SignInDetails; error?: string };
 let launching: Promise<Launch> | undefined;
 
 /**
- * Signs in with the saved password, if there is one. If that fails the sign-in screen has it filled in, so Connect
- * tries again. Runs once, though StrictMode runs effects twice.
+ * Signs in with the saved password, if there is one; if Hermes can't be reached, what this computer saved opens to
+ * read. If that fails the sign-in screen has it filled in, so Connect tries again. Runs once, though StrictMode runs
+ * effects twice.
  */
 function launch(): Promise<Launch> {
   return (launching ??= (async () => {
     const saved = await savedSignIn(account);
     if (!saved) return { initial: { ...loadSignIn(), password: "" } };
     try {
-      return { hermes: await account.connect(saved) };
+      return { hermes: await launchSignIn(saved, account) };
     } catch (e) {
       return { initial: saved, error: messageOf(e) };
     }
@@ -77,7 +83,7 @@ export default function App() {
     return (
       <Main
         hermes={hermes}
-        username={account.store.load().username}
+        connection={account.store.load()}
         notSaved={notSaved}
         onSignOut={async () => {
           let failure: string | undefined;
@@ -120,8 +126,18 @@ export default function App() {
   );
 }
 
-export function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; username: string; notSaved?: string; onSignOut: () => Promise<void> }) {
-  const { profile, chats, olderPulled, status, route, unsecure, closedReason, syncError } = useSyncExternalStore(
+export function Main({
+  hermes,
+  connection,
+  notSaved,
+  onSignOut,
+}: {
+  hermes: Hermes;
+  connection: SavedSignIn;
+  notSaved?: string;
+  onSignOut: () => Promise<void>;
+}) {
+  const { profile, chats, olderPulled, status, route, unsecure, closedReason, syncError, others } = useSyncExternalStore(
     hermes.subscribe,
     hermes.getSnapshot,
   );
@@ -144,6 +160,11 @@ export function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes
     items: draftError ? [{ kind: "error", id: "e-draft", text: draftError }] : [],
   };
   const selected = chats.find((c) => c.id === selectedId) ?? draft;
+  // What the owner has typed and not sent, kept for each chat on this connection and profile.
+  const draftOf = (chatId: string | null) => draftKey(connection, profile, chatId);
+  const shownDraft = draftOf(selectedId);
+  const composerText = useSyncExternalStore(savedDrafts.subscribe, () => savedDrafts.get(shownDraft));
+  const undelivered = useSyncExternalStore(savedDrafts.subscribe, () => savedDrafts.undelivered(shownDraft));
 
   const openChat = (id: string | null) => {
     setSelectedId(id);
@@ -168,19 +189,35 @@ export function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes
       ? { query: picked.found.find, itemId: hermes.locate(picked.found), at: picked.at }
       : undefined;
 
-  const send = async (text: string, attachments: Attachment[]) => {
-    let id = selectedId;
-    if (!id) {
-      try {
-        id = await hermes.newChat();
-      } catch (e) {
-        setDraftError(`Couldn't start a chat: ${e instanceof Error ? e.message : String(e)}`);
-        return;
-      }
+  /** The chat to send in: the one on screen, or a new one started now for the New chat pane. */
+  const chatToSendIn = async (): Promise<{ id: string } | { delivery: Delivery }> => {
+    if (selectedId) return { id: selectedId };
+    try {
+      const id = await hermes.newChat();
       openChat(id);
+      return { id };
+    } catch (e) {
+      const reason = `Couldn't start a chat: ${e instanceof Error ? e.message : String(e)}`;
+      setDraftError(reason);
+      return { delivery: { delivery: "unsent", reason } };
     }
-    await hermes.send(id, text, attachments);
   };
+
+  // The composer empties as the message goes. If Hermes doesn't take it, the text comes back, in the new chat if one
+  // was started; if Hermes may have it, it is held beside the composer until the owner sends it again or dismisses it.
+  const send = async (text: string, attachments: Attachment[]) => {
+    const typed = savedDrafts.take(shownDraft);
+    const to = await chatToSendIn();
+    if ("delivery" in to) return savedDrafts.afterSend(draftOf(null), typed, to.delivery);
+    savedDrafts.afterSend(draftOf(to.id), typed, await hermes.send(to.id, text, attachments));
+  };
+
+  // Only the owner sends a held message again; reconnecting never does.
+  const retry = (heldId: string) =>
+    void savedDrafts.retry(shownDraft, heldId, async (text) => {
+      const to = await chatToSendIn();
+      return "delivery" in to ? to.delivery : hermes.send(to.id, text.trim());
+    });
 
   // The other profile's chats replace the list, so the pane starts a fresh draft.
   const switchProfile = (name: string) => {
@@ -212,9 +249,10 @@ export function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes
   }, [toast]);
 
   // An opened chat shows its stored history and is marked read; a chat already open on this connection is left as it
-  // is. After a reconnect the chat on screen loads again. Settings covers the chat, so it isn't on screen meanwhile.
+  // is. Until connected it shows its Saved copy, and after a reconnect it loads again. Settings covers the chat, so it
+  // isn't on screen meanwhile.
   useEffect(() => {
-    if (!selectedId || status !== "connected" || settingsOpen) return;
+    if (!selectedId || settingsOpen) return;
     void hermes.open(selectedId);
     return () => hermes.leave(selectedId);
   }, [hermes, selectedId, status, settingsOpen]);
@@ -229,6 +267,13 @@ export function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes
   useEffect(() => {
     void hermes.sync();
     const timer = setInterval(() => void hermes.sync(), SYNC_EVERY_MS);
+    return () => clearInterval(timer);
+  }, [hermes]);
+
+  // Unread chats in the other profiles are polled, so the switcher can be up to CHECK_EVERY_MS behind.
+  useEffect(() => {
+    void hermes.checkOtherProfiles();
+    const timer = setInterval(() => void hermes.checkOtherProfiles(), CHECK_EVERY_MS);
     return () => clearInterval(timer);
   }, [hermes]);
 
@@ -269,6 +314,7 @@ export function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes
       {listOpen && (
         <ChatList
           profile={profile}
+          others={others}
           chats={chats}
           syncError={syncError}
           selectedId={settingsOpen ? null : selectedId}
@@ -276,6 +322,7 @@ export function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes
           onSettle={setSettled}
           onDelete={deleteChat}
           onListProfiles={() => hermes.profiles()}
+          onCheckOthers={() => void hermes.checkOtherProfiles()}
           onSwitchProfile={switchProfile}
         />
       )}
@@ -285,7 +332,7 @@ export function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes
             status={status}
             route={route}
             unsecure={unsecure}
-            username={username}
+            username={connection.username}
             passwordSaved={!notSaved}
             profile={profile}
             olderPulled={olderPulled}
@@ -299,9 +346,15 @@ export function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes
           <ChatPane
             key={selected.id}
             chat={selected}
+            notLoaded={selected !== draft && status !== "connected" && !selected.runtimeId && !selected.items.length}
             findTarget={findTarget}
             status={status}
             alsoPostsIn={hermes.alsoPostsIn(selected.id)}
+            draft={composerText}
+            onDraft={(text) => savedDrafts.set(shownDraft, text)}
+            undelivered={undelivered}
+            onRetry={retry}
+            onDismiss={(heldId) => savedDrafts.dismiss(shownDraft, heldId)}
             onAttach={(paths) => hermes.checkAttachments(paths)}
             onSend={send}
             onStop={() => void hermes.stop(selected.id)}
