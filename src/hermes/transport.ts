@@ -14,8 +14,9 @@
 // Each chat opened lately keeps a Saved copy of its transcript on this computer, shown while Hermes can't be reached
 // or the history is on the way; when the first connection at launch fails, the saved list and copies still open.
 // Unread chats in the other profiles are polled over dashboard REST (otherProfiles.ts).
+// Settings → Model reads and writes the profile's models over dashboard REST (modelSettings.ts).
 // The composer's model picker lists what `model.options` offers (models.ts) and switches one chat at a time with
-// session-scoped `config.set`; nothing here ever writes the profile's default model, reasoning or fast mode.
+// session-scoped `config.set`; it never writes the profile's default model, reasoning or fast mode (Settings → Model does).
 // A message sent from here is marked in the transcript until Hermes confirms it (`Outgoing`). One Hermes didn't take,
 // or may not have, stays there with Retry, kept beside the cache so it outlives a restart, and never in a Saved copy.
 // Whether one Hermes may have got did arrive is settled by reading the chat's history back (ADR 0006).
@@ -23,7 +24,8 @@
 import { APPROVAL_CHOICES, isBroadGrant, isOutgoing, isWaiting, offeredChoices, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ConnectionStatus, type ContextPart, type ContextUse, type Found, type Item, type OtherProfiles, type Outgoing, type OutgoingItem, type SessionLive, type Source } from "./model";
 import { catalogFromServer, fallbackCatalog, isEffort, modelKey, pickFromInfo, type ModelCatalog, type ModelPick } from "./models";
 import { noOthers, OtherProfilesCheck } from "./otherProfiles";
-import type { OpenPipe, Pipe, PipeEvent, Route } from "./pipe";
+import { ModelSettingsApi } from "./modelSettings";
+import type { OpenPipe, Pipe, PipeEvent, RestMethod, Route } from "./pipe";
 import { isUnsecure } from "./unsecure";
 
 /** The `source` this app stamps on chats it starts. Legacy `session.create` stores any string as-is. */
@@ -397,6 +399,12 @@ export class Hermes {
     hermes.dropped(reason);
     return hermes;
   }
+
+  /** Settings → Model's reads and writes, for the profile shown (modelSettings.ts). */
+  readonly modelSettings = new ModelSettingsApi(
+    (method, pathAndQuery, body) => this.rest(method, pathAndQuery, body),
+    () => this.profile,
+  );
 
   /** The profile whose chats are shown. */
   get profile(): string {
@@ -1873,7 +1881,7 @@ export class Hermes {
     }
   }
 
-  private async rest(method: "GET" | "PATCH" | "DELETE", pathAndQuery: string, body?: unknown): Promise<unknown> {
+  private async rest(method: RestMethod, pathAndQuery: string, body?: unknown): Promise<unknown> {
     if (!this.pipe) throw new Error("Not connected to Hermes.");
     return JSON.parse(await this.pipe.request(method, pathAndQuery, body === undefined ? undefined : JSON.stringify(body)));
   }

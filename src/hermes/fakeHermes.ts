@@ -151,8 +151,11 @@ export class FakeHermes {
    * `model` and `provider` in it are the profile's default.
    */
   modelOptionsResult?: Record<string, unknown> = modelOptions();
-  /** What dashboard REST `GET /api/model/options` answers; undefined is a 404. */
-  restModelOptions?: Record<string, unknown>;
+  /**
+   * What dashboard REST `GET /api/model/options` answers. Undefined serves the catalog in `modelConfig`, as Hermes
+   * does; null is a 404, as a dashboard without the route would answer.
+   */
+  restModelOptions?: Record<string, unknown> | null;
   /**
    * Each profile's default model, reasoning effort and fast mode, in its config.yaml. `config.set` writes here only
    * when sent without a session, as Hermes does (`tui_gateway/methods_config_set.py` at upstream `c419cf7`).
@@ -363,11 +366,6 @@ export class FakeHermes {
       for (const s of store) if (s.title?.toLowerCase().includes(q.toLowerCase())) add(s, s.preview || `Session title matched: ${q}`, null);
       return { results: [...results.values()] };
     },
-    // `hermes_cli/web_routers/models.py` `get_model_options` at upstream `c419cf7`: the REST twin of `model.options`.
-    "GET /api/model/options": () => {
-      if (!this.restModelOptions) throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
-      return this.restModelOptions;
-    },
     // `hermes_cli/web_routers/profiles.py` `_profile_to_dict` at the deployed `bf0203a`, trimmed to what matters here.
     "GET /api/profiles": () => ({
       profiles: ["default", ...Object.keys(this.otherProfiles)].map((name) => ({
@@ -380,7 +378,53 @@ export class FakeHermes {
         display_name: "",
       })),
     }),
+    // Settings → Model (hermes_cli/web_routers/models.py, config_env.py, delegation.py at the deployed `bf0203a`).
+    // `get_model_options` is also the REST twin of `model.options`, which the composer's picker falls back to.
+    "GET /api/model/options": () => {
+      if (this.restModelOptions === null) throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
+      return (
+        this.restModelOptions ?? {
+          model: this.modelConfig.model.default,
+          provider: this.modelConfig.model.provider,
+          providers: this.modelConfig.catalog.map((p) => ({ ...p, is_current: p.slug === this.modelConfig.model.provider, authenticated: true })),
+        }
+      );
+    },
+    "GET /api/model/auxiliary": () => ({
+      tasks: Object.entries(this.modelConfig.auxiliary).map(([task, a]) => ({
+        task,
+        provider: a.provider || "auto",
+        model: a.model,
+        base_url: a.base_url ?? "",
+        reasoning_effort: a.reasoning_effort || null,
+        local_endpoint: /^https?:\/\/(127\.|10\.|192\.168\.|localhost)/.test(a.base_url ?? ""),
+      })),
+      main: { provider: this.modelConfig.model.provider, model: this.modelConfig.model.default },
+    }),
+    "GET /api/config": () => ({ model: this.modelConfig.model.default, agent: { ...this.modelConfig.agent }, delegation: { ...this.modelConfig.delegation } }),
+    "GET /api/delegation/routing": () => ({
+      configured: "default",
+      blocked_reason: null,
+      backends: [],
+      model_map: { options: this.modelConfig.modelMap, default: null },
+      profile_routes: { profiles: [], default: null },
+      profiles: ["default"],
+    }),
+    "POST /api/model/set": ({ body }) => this.setModel(body ?? {}),
+    "PUT /api/config": ({ body }) => {
+      // `ConfigUpdate` needs `config`; the rest deep-merges over the stored file (`update_config`).
+      const config = body?.config;
+      if (!config || typeof config !== "object")
+        throw new Error(`The dashboard answered 422: {"detail":[{"type":"missing","loc":["body","config"],"msg":"Field required"}]}`);
+      const c = config as { agent?: Record<string, string>; delegation?: Record<string, unknown> };
+      Object.assign(this.modelConfig.agent, c.agent ?? {});
+      Object.assign(this.modelConfig.delegation, c.delegation ?? {});
+      return { ok: true };
+    },
   };
+
+  /** The profile's model setup, as `config.yaml` holds it, and the catalog `model.options` lists. */
+  modelConfig: FakeModelConfig = fakeModelConfig();
 
   private onEvent?: (e: PipeEvent) => void;
   private imagesStaged = 0;
@@ -615,9 +659,91 @@ export class FakeHermes {
     return { ok: true, deleted_ids: [id] };
   }
 
+  /**
+   * `POST /api/model/set` (`set_model_assignment`, `_apply_model_assignment_sync` at the deployed `bf0203a`). A main
+   * model Hermes prices above its safety threshold isn't written: it answers `confirm_required` until the request
+   * carries `confirm_expensive_model`.
+   */
+  private setModel(body: Record<string, unknown>) {
+    const text = (k: string) => (typeof body[k] === "string" ? (body[k] as string).trim() : "");
+    const [scope, provider, model, task] = [text("scope").toLowerCase(), text("provider"), text("model"), text("task")];
+    if (scope !== "main" && scope !== "auxiliary") throw new Error(`The dashboard answered 400: {"detail":"scope must be 'main' or 'auxiliary'"}`);
+    const priced = this.modelConfig.expensive[`${provider}/${model}`];
+    if (model && priced && body.confirm_expensive_model !== true)
+      return {
+        ok: false,
+        scope,
+        provider,
+        model,
+        confirm_required: true,
+        confirm_message: [`${model} has known pricing above Hermes' safety threshold.`, `Input tokens: $${priced[0].toFixed(2)}/M`, `Output tokens: $${priced[1].toFixed(2)}/M`, "Pricing source: models.dev."].join("\n"),
+      };
+    if (scope === "main") {
+      if (!provider || !model) throw new Error(`The dashboard answered 400: {"detail":"provider and model required for main"}`);
+      this.modelConfig.model = { provider, default: model };
+      return { ok: true, scope, provider, model, base_url: "", gateway_tools: [], stale_aux: [] };
+    }
+    if (!provider) throw new Error(`The dashboard answered 400: {"detail":"provider required for auxiliary"}`);
+    const slot = this.modelConfig.auxiliary[task];
+    if (!slot) throw new Error(`The dashboard answered 400: {"detail":"unknown auxiliary task: ${task}"}`);
+    const effort = body.reasoning_effort;
+    if (typeof effort === "string" && !["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(effort))
+      throw new Error(`The dashboard answered 400: {"detail":"reasoning_effort must be one of: none, minimal, low, medium, high, xhigh, max, ultra"}`);
+    if (provider.toLowerCase() !== slot.provider.toLowerCase()) delete slot.base_url;
+    slot.provider = provider;
+    slot.model = model;
+    if (effort === null) delete slot.reasoning_effort;
+    else if (typeof effort === "string") slot.reasoning_effort = effort;
+    return { ok: true, scope, tasks: [task], provider, model, ...("reasoning_effort" in body ? { reasoning_effort: effort } : {}) };
+  }
+
   private frame(f: unknown) {
     this.onEvent?.({ kind: "frame", text: JSON.stringify(f) });
   }
+}
+
+/** A model catalog row (`model.options` → `providers[]`), trimmed to what Settings → Model reads. */
+export type FakeProvider = { slug: string; name: string; models: string[]; capabilities: Record<string, { fast: boolean; reasoning: boolean }>; api_url?: string };
+export type FakeAuxSlot = { provider: string; model: string; base_url?: string; reasoning_effort?: string };
+export type FakeModelConfig = {
+  model: { provider: string; default: string };
+  agent: { reasoning_effort: string; service_tier: string };
+  /** `delegation` as `GET /api/config` returns it, defaults filled in. */
+  delegation: Record<string, unknown>;
+  auxiliary: Record<string, FakeAuxSlot>;
+  catalog: FakeProvider[];
+  /** "provider/model" -> [input, output] $ per million tokens, for models priced above Hermes's threshold. */
+  expensive: Record<string, [number, number]>;
+  /** `delegation.backends.model_map.options`. */
+  modelMap: Record<string, unknown>[];
+};
+
+const caps = (models: string[], fast: string[] = []) => Object.fromEntries(models.map((m) => [m, { fast: fast.includes(m), reasoning: true }]));
+
+/** A profile set up like the owner's: OpenRouter for the main model, helper tasks pinned to cheap OpenRouter models. */
+export function fakeModelConfig(): FakeModelConfig {
+  const openrouter = ["z-ai/glm-5.3-flash", "deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro", "google/gemini-3.7-flash", "anthropic/claude-fable-5.1"];
+  const nous = ["hermes-5-405b", "hermes-5-70b", "anthropic/claude-fable-5.1"];
+  const codex = ["gpt-6.1-sol", "gpt-6.1-mini"];
+  return {
+    model: { provider: "openrouter", default: "z-ai/glm-5.3-flash" },
+    agent: { reasoning_effort: "high", service_tier: "normal" },
+    delegation: { provider: "", model: "", base_url: "", max_iterations: 50, max_concurrent_children: 3, child_timeout_seconds: 0, reasoning_effort: "" },
+    auxiliary: {
+      title_generation: { provider: "openrouter", model: "deepseek/deepseek-v4-flash" },
+      compression: { provider: "openrouter", model: "deepseek/deepseek-v4-flash" },
+      vision: { provider: "openrouter", model: "google/gemini-3.7-flash" },
+      approval: { provider: "auto", model: "", reasoning_effort: "none" },
+      review: { provider: "auto", model: "" },
+    },
+    catalog: [
+      { slug: "openrouter", name: "OpenRouter", models: openrouter, capabilities: caps(openrouter) },
+      { slug: "nous", name: "Nous Portal", models: nous, capabilities: caps(nous) },
+      { slug: "openai-codex", name: "ChatGPT or Codex Subscription", models: codex, capabilities: caps(codex, ["gpt-6.1-sol"]) },
+    ],
+    expensive: { "openrouter/anthropic/claude-fable-5.1": [30, 150], "nous/anthropic/claude-fable-5.1": [30, 150] },
+    modelMap: [],
+  };
 }
 
 /** `SessionDB.session_unread`: activity postdates the read watermark, and `null` means read. */

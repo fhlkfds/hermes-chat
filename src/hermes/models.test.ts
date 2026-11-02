@@ -43,6 +43,7 @@ describe("The model list", () => {
   it("falls back to common models around the profile's own model when Hermes lists none, and says why", async () => {
     const { server, hermes } = await signedIn();
     server.modelOptionsResult = undefined;
+    server.restModelOptions = null;
     server.profileModel.default = { model: "anthropic/claude-sonnet-4.5", provider: "openrouter", reasoning_effort: "medium", fast: false };
     await hermes.loadModels();
 
@@ -57,6 +58,7 @@ describe("The model list", () => {
   it("tries Hermes again after a fallback, and keeps Hermes's list once it has it", async () => {
     const { server, hermes } = await signedIn();
     server.modelOptionsResult = undefined;
+    server.restModelOptions = null;
     await hermes.loadModels();
     expect(hermes.getSnapshot().models!.source).toBe("fallback");
 
