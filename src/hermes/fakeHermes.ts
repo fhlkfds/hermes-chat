@@ -90,6 +90,9 @@ export class FakeHermes {
   /** The stored row id `prompt.submit` reports for the message (`user_row_id`, `tui_gateway/methods_prompt.py` at
    * `bf0203a`). Unset, it reports none. */
   userRowId?: number;
+  /** What the model answers every `llm.oneshot` call with, unless `oneshotFailure` says why it failed. */
+  oneshotAnswer = "A new title";
+  oneshotFailure?: string;
   /** The owner's local disk, by path, for attachments. */
   files: Record<string, FakeFile> = {};
   /** Whether this connection sent `client.capabilities {server_requests: true}`. */
@@ -176,6 +179,14 @@ export class FakeHermes {
     "approval.received": (r) => {
       const pending = [...this.openRequests.values()].some((q) => q.sid === r.params.session_id && q.params.request_id === r.params.request_id);
       this.respond(r.id, { acknowledged: pending });
+    },
+    // `tui_gateway/methods_session.py` at the deployed `bf0203a`: a stateless model call (default task
+    // `title_generation`) that answers `{text}`, or fails 5030 `one-shot generation failed: <why>`.
+    "llm.oneshot": (r) => {
+      if (!String(r.params.instructions ?? "").trim() && !String(r.params.input ?? "").trim())
+        return this.fail(r.id, 4030, "llm.oneshot requires a template or instructions/input");
+      if (this.oneshotFailure !== undefined) return this.fail(r.id, 5030, `one-shot generation failed: ${this.oneshotFailure}`);
+      this.respond(r.id, { text: this.oneshotAnswer });
     },
     // Keepalive, answered by the WS layer in either protocol generation (research doc §1).
     "gateway.ping": (r) => this.respond(r.id, { ok: true }),

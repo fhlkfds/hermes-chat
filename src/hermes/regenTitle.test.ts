@@ -1,0 +1,101 @@
+import { describe, expect, it } from "vitest";
+import { editFlags, FakeHermes, row } from "./fakeHermes";
+import { cleanTitle, connect } from "./transport";
+
+type Stored = { id: number; role: string; content: unknown };
+
+/** Stored rows, oldest first: the first two messages fall outside the last five a title is made from. */
+const talk: Stored[] = [
+  { id: 1, role: "user", content: "Plan my trip to Lisbon" },
+  { id: 2, role: "assistant", content: "Here is a Lisbon plan" },
+  { id: 3, role: "user", content: [{ type: "text", text: "Actually, let's fix the backup job" }, { type: "image_url", image_url: { url: "x" } }] },
+  { id: 4, role: "assistant", content: "" },
+  { id: 5, role: "tool", content: "systemctl status backup: inactive" },
+  { id: 6, role: "assistant", content: "The backup timer is disabled" },
+  { id: 7, role: "user", content: "Enable it and run it nightly" },
+  { id: 8, role: "assistant", content: "Done, it runs at 02:00" },
+  { id: 9, role: "user", content: "Thanks" },
+];
+
+async function listed(rows: Stored[] = talk) {
+  const server = new FakeHermes();
+  server.sessions = [row("a", 1, { title: "Lisbon trip" })];
+  server.rest["GET /api/sessions/a/messages"] = () => ({ session_id: "a", profile: "default", messages: rows, pagination: {} });
+  const hermes = await connect(server.openPipe);
+  await hermes.sync();
+  const title = () => hermes.getSnapshot().chats.find((c) => c.id === "a")!.title;
+  const asks = () => server.requests.filter((r) => r.method === "llm.oneshot");
+  const patches = () => server.restRequests.filter((r) => r.method === "PATCH");
+  return { server, hermes, title, asks, patches };
+}
+
+describe("Regenerating a chat's title", () => {
+  it("asks Hermes's title model about the last five messages, and saves its answer as the title", async () => {
+    const { server, hermes, title, asks, patches } = await listed();
+    server.oneshotAnswer = 'Title: "Nightly backup job fix."';
+
+    expect(await hermes.regenerateTitle("a")).toBe("Nightly backup job fix");
+
+    const read = server.restRequests.find((r) => r.path === "/api/sessions/a/messages")!;
+    expect(Object.fromEntries(read.query)).toMatchObject({ profile: "default", order: "latest" });
+    const [ask] = asks();
+    expect(ask.params.profile).toBe("default");
+    expect(ask.params.input).toBe(
+      [
+        "USER: Actually, let's fix the backup job",
+        "ASSISTANT: The backup timer is disabled",
+        "USER: Enable it and run it nightly",
+        "ASSISTANT: Done, it runs at 02:00",
+        "USER: Thanks",
+      ].join("\n\n"),
+    );
+    // Nothing goes into the chat itself.
+    expect(server.requests.some((r) => r.method === "prompt.submit" || r.method === "session.resume")).toBe(false);
+    expect(editFlags(patches()[0].body)).toEqual({ title: "Nightly backup job fix", profile: "default" });
+    expect(title()).toBe("Nightly backup job fix");
+  });
+
+  it("keeps the old title and says why when the model call fails", async () => {
+    const { server, hermes, title, patches } = await listed();
+    server.oneshotFailure = "no title model configured";
+
+    await expect(hermes.regenerateTitle("a")).rejects.toThrow("no title model configured");
+    expect(patches()).toEqual([]);
+    expect(title()).toBe("Lisbon trip");
+  });
+
+  it("keeps the old title when Hermes answers with nothing", async () => {
+    const { server, hermes, title, patches } = await listed();
+    server.oneshotAnswer = '  ""  ';
+
+    await expect(hermes.regenerateTitle("a")).rejects.toThrow("Hermes didn't answer with a title.");
+    expect(patches()).toEqual([]);
+    expect(title()).toBe("Lisbon trip");
+  });
+
+  it("asks nothing for a chat without messages", async () => {
+    const { hermes, asks } = await listed([{ id: 1, role: "tool", content: "ok" }]);
+
+    await expect(hermes.regenerateTitle("a")).rejects.toThrow("no messages");
+    expect(asks()).toEqual([]);
+  });
+});
+
+describe("cleanTitle", () => {
+  it.each([
+    ["Backup fix", "Backup fix"],
+    ["**Title:** Backup fix.", "Backup fix"],
+    ["“Backup fix”\n\nThis names the chat.", "Backup fix"],
+    ["# Title: `Backup fix`", "Backup fix"],
+    ["", ""],
+  ])("%j -> %j", (answer, title) => expect(cleanTitle(answer)).toBe(title));
+
+  it("cuts a long answer at a word", () => {
+    expect(cleanTitle("Investigate why the nightly backup job stopped running after the last system upgrade")).toBe(
+      "Investigate why the nightly backup job stopped running after",
+    );
+    expect(cleanTitle("Investigate why the nightly backup job stopped running afterwards")).toBe(
+      "Investigate why the nightly backup job stopped running",
+    );
+  });
+});

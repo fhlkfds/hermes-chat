@@ -360,6 +360,7 @@ export function Main({
           onListArchived={(on) => void hermes.listArchived(on)}
           onDelete={deleteChat}
           onRename={(id, title, from) => hermes.rename(id, title, from)}
+          onRegenTitle={(id) => hermes.regenerateTitle(id)}
           onListProfiles={() => hermes.profiles()}
           onCheckOthers={() => void hermes.checkOtherProfiles()}
           onSwitchProfile={switchProfile}
