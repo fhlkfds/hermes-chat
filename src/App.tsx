@@ -24,6 +24,7 @@ import { isOutgoing, type Attachment, type Chat, type ConnectionStatus, type Fou
 import type { ModelCatalog, ModelPick } from "./hermes/models";
 import { ChatList, Rail } from "./ui/Sidebar";
 import { ChatPane } from "./ui/ChatPane";
+import type { QueueApi } from "./ui/Queue";
 import { PANE_NAMES, Split, usePaneVisible, type PaneSlot } from "./ui/Split";
 import type { VoiceApi } from "./ui/Voice";
 import { SearchPalette } from "./ui/Search";
@@ -1085,6 +1086,26 @@ function ChatView({
       }
     }
   };
+  // The chat's queue, shared by every pane showing it (ADR 0013). A chat not started yet has none.
+  const queue = useSyncExternalStore(hermes.subscribe, () => hermes.getSnapshot().queues[chat.id]);
+  const queueApi: QueueApi | undefined = started
+    ? {
+        add: (text, attachments) => {
+          const why = hermes.enqueue(chat.id, text, attachments);
+          if (why) return why;
+          // The queue keeps its screenshots now, until they go or the owner removes the message (chatCache.ts).
+          screenshots?.hold(attachments.map((a) => a.path));
+          savedDrafts.set(shownDraft, "");
+          return undefined;
+        },
+        edit: (id, text) => hermes.editQueued(chat.id, id, text),
+        remove: (id) => hermes.removeQueued(chat.id, id),
+        move: (id, by) => hermes.moveQueued(chat.id, id, by),
+        pause: () => hermes.pauseQueue(chat.id),
+        resume: () => hermes.resumeQueue(chat.id),
+        hold: () => hermes.holdQueue(chat.id),
+      }
+    : undefined;
   const retry = (itemId: string) => void hermes.retry(chat.id, itemId);
   const edit = (itemId: string) => {
     const row = chat.items.find((i) => i.id === itemId);
@@ -1135,6 +1156,8 @@ function ChatView({
       voice={voice}
       paneControls={paneControls}
       headActions={previewControls}
+      queue={queue}
+      queueApi={queueApi}
       footer={<StatusBar chat={chat} status={status} onYolo={(on) => hermes.setYolo(chat.id, on)} onBreakdown={() => hermes.contextBreakdown(chat.id)} />}
       modelControls={
         <ModelControls

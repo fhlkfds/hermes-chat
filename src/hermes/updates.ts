@@ -184,9 +184,10 @@ export type Updater = {
 
 /**
  * What a restart must not lose, as a snapshot to put back after it: every draft (drafts.ts), every chat's outbox of
- * messages Hermes hasn't confirmed, and held messages from before the outbox, not yet moved into it (chatCache.ts).
+ * messages Hermes hasn't confirmed and queue of messages waiting to go, and held messages from before the outbox, not
+ * yet moved into it (chatCache.ts).
  */
-export const DRAFT_PREFIXES = ["hermes-chat.draft.", "hermes-chat.outbox.", "hermes-chat.undelivered."];
+export const DRAFT_PREFIXES = ["hermes-chat.draft.", "hermes-chat.outbox.", "hermes-chat.queue.", "hermes-chat.undelivered."];
 const isDraftKey = (k: string) => DRAFT_PREFIXES.some((p) => k.startsWith(p));
 
 /** The drafts and outboxes in `storage`, with the latest of any its stores couldn't write there (unsaved.ts). */

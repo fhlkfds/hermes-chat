@@ -429,6 +429,46 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .send:disabled { background: var(--raised-2); color: var(--faint); cursor: default; }
 .send.stop { background: var(--raised-2); color: var(--text); border: 1px solid var(--line-2); }
 .send.stop:hover { background: var(--raised-3); }
+.send.queue { background: var(--accent-soft); color: var(--accent); }
+.send.queue:hover:not(:disabled) { background: var(--accent); color: var(--on-text); }
+.send.queue:disabled { background: var(--raised-2); color: var(--faint); }
+
+/* The chat's queue (Queue.tsx), above the composer and as wide as it. */
+.queue {
+  width: calc(100% - 56px); max-width: var(--chat-width); margin: 0 auto 8px; border: 1px solid var(--line-2); border-radius: 12px;
+  background: var(--raised); font-size: calc(12.5rem / 14); max-height: 40vh; display: flex; flex-direction: column;
+}
+.queue.paused { border-color: color-mix(in srgb, var(--warn) 45%, var(--line-2)); }
+.queue-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; padding: 8px 10px 6px 12px; color: var(--muted); }
+.queue-title { color: var(--text); font-weight: 600; }
+.queue-state { flex: 1; min-width: 12em; }
+.queue.paused .queue-state { color: var(--warn); }
+.queue-toggle { height: 26px; padding: 0 10px; font-size: calc(12rem / 14); }
+.queue-note { padding: 0 12px 6px; color: var(--warn); }
+.queue-list { list-style: none; margin: 0; padding: 0 6px; overflow-y: auto; min-height: 0; }
+.queue-item { display: flex; align-items: flex-start; gap: 8px; padding: 6px; border-radius: 8px; border-top: 1px solid var(--line); }
+.queue-item:first-child { border-top: 0; }
+.queue-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.queue-pos {
+  flex: none; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; background: var(--raised-2);
+  color: var(--muted); font-size: calc(11rem / 14); font-variant-numeric: tabular-nums; margin-top: 1px;
+}
+.queue-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.queue-text { color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.queue-edit {
+  width: 100%; resize: vertical; background: var(--bg, transparent); border: 1px solid var(--line-3); border-radius: 6px; padding: 4px 6px;
+  font: inherit; color: var(--text); outline: none;
+}
+.queue-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; color: var(--faint); font-size: calc(11.5rem / 14); }
+.queue-badge { padding: 0 6px; border-radius: 6px; background: var(--raised-2); color: var(--muted); }
+.queue-badge.next { background: var(--accent-soft); color: var(--accent); }
+.queue-badge.paused { color: var(--warn); }
+.queue-files { display: inline-flex; align-items: center; gap: 3px; }
+.queue-gone { color: var(--warn); }
+.queue-actions { flex: none; display: flex; align-items: center; gap: 2px; }
+.queue-actions .icon-btn { width: 26px; height: 26px; }
+.queue-actions .btn { height: 26px; padding: 0 10px; font-size: calc(12rem / 14); }
+.queue-foot { padding: 6px 12px 8px; color: var(--faint); font-size: calc(11.5rem / 14); border-top: 1px solid var(--line); }
 
 /* Dictation (Voice.tsx): its own row so the controls fit beside the preview pane, and the note above the composer. */
 .dictation {

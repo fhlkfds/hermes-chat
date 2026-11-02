@@ -76,8 +76,12 @@ An image of a region or window of the owner's screen, taken from the composer by
 _Avoid_: screen capture, snapshot
 
 **Draft**:
-The text the owner has typed in a chat's composer and not sent. Each chat keeps its own draft, and so does the New chat pane, separately for each connection and profile. A draft is still there after switching chats or restarting the app. Sending empties it. A message Hermes doesn't take becomes a Failed message, not a draft again. Only when a new chat can't be started does the text come back into the composer. Attachments aren't kept in a draft.
+The text the owner has typed in a chat's composer and not sent. Each chat keeps its own draft, and so does the New chat pane, separately for each connection and profile. A draft is still there after switching chats or restarting the app. Sending or queuing it empties it. A message Hermes doesn't take becomes a Failed message, not a draft again. Only when a new chat can't be started does the text come back into the composer. Attachments aren't kept in a draft.
 _Avoid_: unsent message, saved message
+
+**Queued message**:
+A message the owner lined up while Hermes replied, to go after the reply. Each chat has its own queue, and both panes of a chat show it. The owner can edit, reorder and remove queued messages, and pause and resume the queue. Hermes Chat sends them one at a time, each once the previous reply has ended and nothing in the chat waits on the owner. It sends them only while it is open, connected and showing their profile. The queue pauses on its own after a reply that was stopped, failed, or asked for an Approval. It also pauses when a queued message doesn't go, when the connection drops, and when the queue is loaded again after a restart or a profile switch. A queued message that goes becomes an outgoing message, and if Hermes doesn't take it, a Failed message. Queued messages and their attachments are kept on this computer, for each connection, profile and chat, never on the server (ADR 0013).
+_Avoid_: pending message, scheduled message, Hermes's queue (Hermes's own queue holds messages sent while a turn runs; this app doesn't use it as the queue)
 
 **Dictation**:
 Speaking a message instead of typing it. The microphone is open only between the owner starting a recording and pressing Done or cancelling. Hermes turns the recording into text with the profile's speech-to-text provider, and the text goes into the composer after anything already typed, for the owner to edit and send. Nothing reaches the chat until the owner sends it. Cancelling, or opening another chat, drops the recording. A recording Hermes couldn't transcribe is held in memory until the owner tries again or discards it. Recordings are never saved on this computer.
@@ -150,7 +154,8 @@ _Avoid_: insecure (the app's label is "Unsecure"), unsafe
 **Pane**:
 One view of a chat, its transcript and composer. The app can show two side by side. The focused pane is the one the
 chat list, Search and keyboard shortcuts target. This focus does not change whether a chat is Active or Settled.
-Two panes of one chat share its Draft and running reply; each has its own scroll, Find and pending Attachments.
+Two panes of one chat share its Draft, Queued messages and running reply; each has its own scroll, Find and pending
+Attachments.
 
 **Update**:
 A newer version of Hermes Chat itself. For the packaged app, the owner installs it with pacman, and the app never replaces pacman's files. For a standalone build made with an update key, the app installs it, after checking its signature. Either way the new version runs only after the owner restarts the app, and drafts and unsent messages are kept across the restart.
@@ -167,6 +172,7 @@ _Avoid_: upgrade (pacman's word, for the package step only)
 ## Flagged ambiguities
 
 - **Settled** vs **Archived**: they are different things. Archiving sets Hermes's own "archived" flag and hides a chat in every Hermes client; settling is this app's view of the owner's attention, stored as the "pinned" flag. Neither touches the other (ADR 0005).
+- **Queued message** vs **Draft** vs **Failed message**: a Draft hasn't been sent or queued; a Queued message waits in the chat's queue to be sent by this app; a Failed message was sent, and Hermes didn't take it or may not have. A queued message that goes leaves the queue, and becomes a Failed message only if Hermes doesn't take it.
 - **Imported chat** vs pulling older history: the list holds the past month's chats until the owner pulls older history in Settings, after which it holds all of the profile's chats. Pulled chats come in Settled unless pinned, but they are Imported chats only if their Source isn't this app.
 - **Draft** vs the New chat pane: the code also calls the pane for a chat not started yet "the draft". In this glossary a Draft is only the composer's unsent text.
 - **Dictation** and **Read aloud** vs Hermes's voice mode: Hermes's `/voice` mode (`voice.record`, `voice.tts` over the socket) records with the server's own microphone and speaks through the server's speakers. This app never uses it. Dictation records on this computer, and both use the server only to transcribe and to make the audio.

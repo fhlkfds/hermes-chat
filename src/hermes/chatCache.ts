@@ -3,11 +3,12 @@
 // so the next sign-in opens it, and the profiles whose older history the owner pulled. All of it is kept apart per
 // connection (how the app reaches the dashboard, and as whom), never with the password.
 // Each chat's outbox, the messages sent from here that Hermes hasn't confirmed, is kept beside it, per connection,
-// profile and chat. It holds the owner's own words, so like a draft it isn't part of the cache.
+// profile and chat. It holds the owner's own words, so like a draft it isn't part of the cache. So is each chat's
+// queue of messages waiting to go after its reply (ADR 0013).
 // Clearing the cache deletes every connection's chat lists and Saved copies, and nothing else: never the sign-in,
 // drafts, outboxes, appearance or display preferences (uiPrefs.ts).
 import type { SavedSignIn } from "./account";
-import type { Attachment, Chat, Item, Outgoing, OutgoingItem, Source } from "./model";
+import type { Attachment, Chat, ChatQueue, Item, Outgoing, OutgoingItem, Queued, Source } from "./model";
 import type { ChatCache, SavedTranscript } from "./transport";
 import { UI_PREFS_KEY } from "./uiPrefs";
 import { replyUsageOf } from "./usage";
@@ -18,28 +19,42 @@ const TRANSCRIPT_PREFIX = "hermes-chat.transcript.";
 const PROFILE_PREFIX = "hermes-chat.profile.";
 const PULLED_PREFIX = "hermes-chat.older-pulled.";
 const OUTBOX_PREFIX = "hermes-chat.outbox.";
+const QUEUE_PREFIX = "hermes-chat.queue.";
 /** Where drafts.ts kept a chat's sent messages Hermes didn't take, or may not have, before the outbox: moved into it. */
 const HELD_PREFIX = "hermes-chat.undelivered.";
 
 const outboxListeners = new Set<() => void>();
-// Include writes the store couldn't keep: those outboxes still exist in the running transport.
+// Include writes the store couldn't keep: those outboxes and queues still exist in the running transport.
 const liveOutboxes = new Map<string, OutgoingItem[]>();
+const liveQueues = new Map<string, ChatQueue>();
 export function subscribeOutbox(fn: () => void): () => void {
   outboxListeners.add(fn);
   return () => void outboxListeners.delete(fn);
 }
 
-/** Attachment paths in every connection/profile's outbox, for local screenshot lifetime management. */
+/** Attachment paths in every connection/profile's outbox and queue, for local screenshot lifetime management. */
 export function outboxAttachmentPaths(): string[] {
+  const read = (k: string): unknown => {
+    try {
+      return JSON.parse(localStorage.getItem(k) ?? "null");
+    } catch {
+      return null; // A malformed row holds no attachment.
+    }
+  };
   const rows = new Map<string, OutgoingItem[]>();
   for (const k of keysOf(OUTBOX_PREFIX)) {
-    try {
-      const value: unknown = JSON.parse(localStorage.getItem(k) ?? "[]");
-      if (Array.isArray(value)) rows.set(k, value.flatMap((r) => toOutgoing(r) ?? []));
-    } catch { /* A malformed row holds no attachment. */ }
+    const value = read(k);
+    if (Array.isArray(value)) rows.set(k, value.flatMap((r) => toOutgoing(r) ?? []));
   }
   for (const [k, items] of liveOutboxes) rows.set(k, items);
-  return [...new Set([...rows.values()].flatMap((items) => items.flatMap((r) => r.outgoing.attachments?.map((a) => a.path) ?? [])))];
+  const queued = new Map<string, Queued[]>();
+  for (const k of keysOf(QUEUE_PREFIX)) queued.set(k, toQueue(read(k))?.items ?? []);
+  for (const [k, q] of liveQueues) queued.set(k, q.items);
+  const files = [
+    ...[...rows.values()].flatMap((items) => items.flatMap((r) => r.outgoing.attachments ?? [])),
+    ...[...queued.values()].flatMap((items) => items.flatMap((q) => q.attachments ?? [])),
+  ];
+  return [...new Set(files.map((a) => a.path))];
 }
 
 /**
@@ -174,6 +189,19 @@ function toOutgoing(v: unknown): OutgoingItem | undefined {
   return { ...item, outgoing };
 }
 
+/** A kept queue, rebuilt from its fields, or undefined if it isn't one. Messages that aren't one are left out. */
+function toQueue(v: unknown): ChatQueue | undefined {
+  const q = v as { items?: unknown; paused?: unknown } | null;
+  if (!q || !Array.isArray(q.items)) return undefined;
+  const items = q.items.flatMap((i): Queued[] => {
+    const r = i as Record<string, unknown> | null;
+    if (typeof r?.id !== "string" || typeof r.text !== "string") return [];
+    const attachments = Array.isArray(r.attachments) ? r.attachments.filter(isAttachment) : [];
+    return [{ id: r.id, text: r.text, ...(attachments.length && { attachments }) }];
+  });
+  return { items, ...(typeof q.paused === "string" && { paused: q.paused }) };
+}
+
 /** A message drafts.ts held, as an outbox row. One Hermes may have got is found in the history by its words alone. */
 function fromHeld(v: unknown): OutgoingItem | undefined {
   const h = v as { id?: unknown; text?: unknown; delivery?: unknown; reason?: unknown } | null;
@@ -192,9 +220,10 @@ export function localChatCache(connection: SavedSignIn): ChatCache {
   const profileKey = PROFILE_PREFIX + scope();
   const pulledKey = PULLED_PREFIX + scope();
   const outboxKey = (profile: string, chatId: string) => OUTBOX_PREFIX + scope(profile, chatId);
+  const queueKey = (profile: string, chatId: string) => QUEUE_PREFIX + scope(profile, chatId);
   /** The chat ids of the profile's keys under `prefix`: the key's scope with the chat id last. */
-  const chatsUnder = (prefix: string, profile: string) =>
-    keysOf(prefix + scope(profile).slice(0, -1) + ",").flatMap((k) => {
+  const chatsUnder = (prefix: string, profile: string, keys = keysOf(prefix + scope(profile).slice(0, -1) + ",")) =>
+    keys.filter((k) => k.startsWith(prefix + scope(profile).slice(0, -1) + ",")).flatMap((k) => {
       try {
         const id: unknown = (JSON.parse(k.slice(prefix.length)) as unknown[]).at(-1);
         return typeof id === "string" ? [{ k, id }] : [];
@@ -326,6 +355,38 @@ export function localChatCache(connection: SavedSignIn): ChatCache {
       }
     },
     saveOutbox: writeOutbox,
+    loadQueues(profile) {
+      try {
+        const queues: Record<string, ChatQueue> = {};
+        for (const { k, id } of chatsUnder(QUEUE_PREFIX, profile)) {
+          try {
+            const q = toQueue(JSON.parse(localStorage.getItem(k) ?? "null"));
+            if (q?.items.length) queues[id] = q;
+          } catch {
+            // A malformed queue holds nothing to send.
+          }
+        }
+        // One storage refused is kept in memory instead, and is the latest.
+        for (const { k, id } of chatsUnder(QUEUE_PREFIX, profile, [...liveQueues.keys()])) {
+          const q = liveQueues.get(k)!;
+          if (q.items.length) queues[id] = { ...q, unsaved: true };
+          else delete queues[id];
+        }
+        return queues;
+      } catch {
+        return {};
+      }
+    },
+    saveQueue(profile, chatId, q) {
+      // A failed write keeps the queue in memory, here and for an update's restart (unsaved.ts), as for an outbox.
+      const key = queueKey(profile, chatId);
+      const kept = { items: q?.items ?? [], ...(q?.paused !== undefined && { paused: q.paused }) };
+      liveQueues.set(key, kept);
+      const ok = persist(() => localStorage, key, kept.items.length ? JSON.stringify(kept) : null);
+      if (ok) liveQueues.delete(key);
+      for (const fn of outboxListeners) fn();
+      return ok;
+    },
     rememberOlderPulled(profile) {
       try {
         const pulled = pulledProfiles();

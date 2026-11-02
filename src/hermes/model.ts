@@ -92,6 +92,22 @@ export type OutgoingItem = Extract<Item, { kind: "user" }> & { outgoing: Outgoin
 
 export const isOutgoing = (i: Item): i is OutgoingItem => i.kind === "user" && i.outgoing !== undefined;
 
+/**
+ * A Queued message: words and files the owner lined up to send after the chat's reply (ADR 0013). `id` is stable for
+ * its life in the queue. Once it goes it leaves the queue and is an outgoing message (`Outgoing`) like any other.
+ */
+export type Queued = { id: string; text: string; attachments?: Attachment[] };
+
+/**
+ * A chat's queue, kept on this computer per connection, profile and chat. `paused`: why it waits for the owner's
+ * Resume (the owner paused it, or the last reply ended in a way the owner should look at first). `unsaved`: the last
+ * write to this computer's storage failed, so it lasts only until the app closes.
+ */
+export type ChatQueue = { items: Queued[]; paused?: string; unsaved?: boolean };
+
+/** The most messages one chat's queue holds. */
+export const QUEUE_LIMIT = 20;
+
 /** The answers the owner can give an Approval: the ones Hermes offers, less the broader grants it rules out. */
 export const offeredChoices = (i: ApprovalItem): ApprovalChoice[] =>
   i.choices.filter((c) => (c !== "session" || i.allowSession) && (c !== "always" || i.allowPermanent));
