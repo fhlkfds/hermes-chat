@@ -1,7 +1,8 @@
-// Display preferences for this computer: the theme, whether the last chat reopens at launch, whether reasoning shows,
-// the model last picked, and which items the status bar shows. All of it lives in one versioned JSON document under
-// one localStorage key, so "Clear local cache" can't touch it (chatCache.ts) and later settings add fields here rather
-// than new keys. Nothing here goes to Hermes. Every settings feature reads and writes through this module.
+// Display preferences for this computer: the theme, whether the last chat reopens at launch and which chat each profile
+// had open, whether reasoning shows, the model last picked, and which items the status bar shows. All of it lives in
+// one versioned JSON document under one localStorage key, so "Clear local cache" can't touch it (chatCache.ts) and later
+// settings add fields here rather than new keys. Nothing here goes to Hermes. Every settings feature reads and writes
+// through this module.
 
 export const UI_PREFS_KEY = "hermes-ui-prefs";
 /** The shape the document has now. Bump it, and add a step to UI_PREFS_MIGRATIONS, when a field changes meaning. */
@@ -17,6 +18,8 @@ export type UIPrefs = {
   theme: Theme;
   /** Open the chat that was on screen when the app last closed. */
   reopenLastChat: boolean;
+  /** Each profile's chat on screen last, kept as the owner moves between chats; a profile on the New chat pane has none. */
+  lastOpenChat: Record<string, string>;
   /** Show the model's reasoning blocks in transcripts. */
   reasoningBlocks: boolean;
   /** null: no sticky pick, so Hermes's default model is used. */
@@ -28,6 +31,7 @@ export type UIPrefs = {
 export const DEFAULT_UI_PREFS: Readonly<UIPrefs> = Object.freeze({
   theme: "system",
   reopenLastChat: true,
+  lastOpenChat: Object.freeze({}) as Record<string, string>,
   reasoningBlocks: true,
   modelPicker: null,
   statusBar: [],
@@ -84,12 +88,22 @@ function toStatusBar(v: unknown): string[] | undefined {
   return [...new Set(items)];
 }
 
+/** The most profiles `lastOpenChat` keeps; a document edited by hand can't grow the prefs without end. */
+const LAST_OPEN_LIMIT = 100;
+
+function toLastOpenChat(v: unknown): Record<string, string> | undefined {
+  if (!isDoc(v)) return undefined;
+  const entries = Object.entries(v).filter(([profile, id]) => str(profile) !== undefined && str(id) !== undefined);
+  return Object.fromEntries(entries.slice(0, LAST_OPEN_LIMIT)) as Record<string, string>;
+}
+
 /** The prefs `doc` holds, each field that is missing or not a valid value taken from `d`: the defaults, unless given. */
 export function readUIPrefs(doc: UIPrefsDoc, d: Readonly<UIPrefs> = DEFAULT_UI_PREFS): UIPrefs {
   const pick = toModelPick(doc.modelPicker);
   return {
     theme: THEMES.includes(doc.theme as Theme) ? (doc.theme as Theme) : d.theme,
     reopenLastChat: typeof doc.reopenLastChat === "boolean" ? doc.reopenLastChat : d.reopenLastChat,
+    lastOpenChat: toLastOpenChat(doc.lastOpenChat) ?? { ...d.lastOpenChat },
     reasoningBlocks: typeof doc.reasoningBlocks === "boolean" ? doc.reasoningBlocks : d.reasoningBlocks,
     modelPicker: pick === undefined ? (d.modelPicker && { ...d.modelPicker }) : pick,
     statusBar: toStatusBar(doc.statusBar) ?? [...d.statusBar],
@@ -194,4 +208,28 @@ export function subscribe(fn: UIPrefsListener): () => void {
     if (!listeners.delete(fn) || listeners.size > 0) return;
     globalThis.removeEventListener?.("storage", onStorage);
   };
+}
+
+/**
+ * Records `chatId` as `profile`'s chat on screen, for "Reopen last chat on launch". null: the profile is on the New chat
+ * pane, so nothing reopens for it. Called as the owner moves between chats, not as the app closes, which may not run.
+ */
+export function rememberOpenChat(profile: string, chatId: string | null): void {
+  const { lastOpenChat } = getUIPrefs();
+  if ((lastOpenChat[profile] ?? null) === chatId) return;
+  const next = { ...lastOpenChat };
+  if (chatId === null) delete next[profile];
+  else next[profile] = chatId;
+  setUIPrefs({ lastOpenChat: next });
+}
+
+/** Forgets `profile`'s last open chat if it is still `chatId`: the chat is no longer in the profile's list. */
+export function forgetOpenChat(profile: string, chatId: string): void {
+  if (getUIPrefs().lastOpenChat[profile] === chatId) rememberOpenChat(profile, null);
+}
+
+/** The chat to reopen for `profile` at launch: its last open chat, if the owner wants it reopened. */
+export function chatToReopen(profile: string): string | undefined {
+  const prefs = getUIPrefs();
+  return prefs.reopenLastChat ? prefs.lastOpenChat[profile] : undefined;
 }

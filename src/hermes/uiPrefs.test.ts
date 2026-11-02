@@ -7,8 +7,11 @@ import {
   DEFAULT_UI_PREFS,
   UI_PREFS_KEY,
   UI_PREFS_VERSION,
+  chatToReopen,
+  forgetOpenChat,
   getUIPrefs,
   migrateUIPrefs,
+  rememberOpenChat,
   setUIPrefs,
   subscribe,
   type UIPrefs,
@@ -38,7 +41,7 @@ afterEach(() => {
 
 describe("reading", () => {
   it("is the defaults when nothing is stored", () => {
-    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, reasoningBlocks: true, modelPicker: null, statusBar: [] });
+    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, statusBar: [] });
     expect(getUIPrefs()).toEqual(DEFAULT_UI_PREFS);
   });
 
@@ -59,11 +62,13 @@ describe("reading", () => {
         reasoningBlocks: "no",
         modelPicker: { provider: "anthropic", model: "claude-opus-5-5", effort: "max", fast: true, extra: 1 },
         statusBar: ["model", 3, "", "tokens", "model"],
+        lastOpenChat: { default: "c1", work: 7, "": "c2", home: "" },
       }),
     );
     expect(getUIPrefs()).toEqual({
       theme: "system",
       reopenLastChat: false,
+      lastOpenChat: { default: "c1" },
       reasoningBlocks: true,
       modelPicker: { provider: "anthropic", model: "claude-opus-5-5", effort: "max", fast: true },
       statusBar: ["model", "tokens"],
@@ -244,5 +249,48 @@ describe("Clear local cache", () => {
     // The prefs never count toward the cache's size either.
     setUIPrefs({ theme: "light" });
     expect(cache.bytes()).toBe(0);
+  });
+});
+
+describe("the last open chat", () => {
+  it("is kept for each profile apart", () => {
+    rememberOpenChat("default", "c1");
+    rememberOpenChat("work", "w1");
+    rememberOpenChat("default", "c2");
+    expect(stored().lastOpenChat).toEqual({ default: "c2", work: "w1" });
+    expect(chatToReopen("default")).toBe("c2");
+    expect(chatToReopen("work")).toBe("w1");
+    expect(chatToReopen("home")).toBeUndefined();
+  });
+
+  it("is dropped for a profile on the New chat pane, and the others stay", () => {
+    rememberOpenChat("default", "c1");
+    rememberOpenChat("work", "w1");
+    rememberOpenChat("default", null);
+    expect(stored().lastOpenChat).toEqual({ work: "w1" });
+  });
+
+  it("is forgotten only while it is still the chat named", () => {
+    rememberOpenChat("default", "c1");
+    forgetOpenChat("default", "c0");
+    expect(chatToReopen("default")).toBe("c1");
+    forgetOpenChat("default", "c1");
+    expect(chatToReopen("default")).toBeUndefined();
+  });
+
+  it("isn't reopened with the setting off, and is still kept", () => {
+    setUIPrefs({ reopenLastChat: false });
+    rememberOpenChat("default", "c1");
+    expect(chatToReopen("default")).toBeUndefined();
+    setUIPrefs({ reopenLastChat: true });
+    expect(chatToReopen("default")).toBe("c1");
+  });
+
+  it("writes nothing when the chat is already the one kept", () => {
+    rememberOpenChat("default", "c1");
+    const fn = listen();
+    rememberOpenChat("default", "c1");
+    rememberOpenChat("work", null);
+    expect(fn).not.toHaveBeenCalled();
   });
 });
