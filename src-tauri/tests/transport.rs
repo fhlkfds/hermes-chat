@@ -4,11 +4,14 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, RawQuery};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{AppendHeaders, IntoResponse, Response};
-use axum::routing::{get, patch, post};
+use axum::routing::{get, patch, post, put};
 use hermes_chat::transport::{ProbeFailure, SavedKey, Stage};
-use std::sync::Mutex;
 use axum::{Json, Router};
-use hermes_chat::transport::{self, Dashboard, LocalFile, PipeEvent, SignIn, TransportError};
+use axum::extract::{Request, State};
+use axum::middleware::{self, Next};
+use axum::response::Redirect;
+use hermes_chat::transport::{self, Dashboard, ExtraHeader, LocalFile, PipeEvent, SignIn, TransportError};
+use std::sync::{Arc, Mutex};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -67,6 +70,12 @@ async fn delete_session(Path(id): Path<String>, RawQuery(query): RawQuery) -> Re
     Json(json!({"deleted": id, "query": query})).into_response()
 }
 
+/// Settings → Model's writes: `POST /api/model/set` and `PUT /api/config` echo what they got.
+async fn echo_write(axum::extract::OriginalUri(uri): axum::extract::OriginalUri, headers: HeaderMap, body: String) -> Response {
+    let content_type = headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("");
+    Json(json!({"uri": uri.to_string(), "content_type": content_type, "body": serde_json::from_str::<Value>(&body).unwrap()})).into_response()
+}
+
 /// The dashboard rotating an expired access token through the refresh cookie (dashboard_auth middleware).
 async fn rotate() -> Response {
     (AppendHeaders([(header::SET_COOKIE, "hermes_session_at=AT2; Path=/; HttpOnly")]), Json(json!({}))).into_response()
@@ -121,6 +130,76 @@ async fn busy() -> Response {
     (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"detail": "Session store is busy"}))).into_response()
 }
 
+/// The audio routes and config as `hermes_cli/web_routers/audio.py` and `config_env.py` answer them at the deployed
+/// `bf0203a`. Profile `old` stands for a server without them (FastAPI's own 404); profile `nobody` doesn't exist.
+fn audio_gate(headers: &HeaderMap, q: &HashMap<String, String>) -> Option<Response> {
+    if !cookie(headers).split("; ").any(|c| c == "hermes_session_at=AT") {
+        return Some((StatusCode::UNAUTHORIZED, Json(json!({"error": "session_expired"}))).into_response());
+    }
+    match q.get("profile").map(String::as_str) {
+        Some("old") => Some((StatusCode::NOT_FOUND, Json(json!({"detail": "Not Found"}))).into_response()),
+        // The deployed dashboard's catch-all GET route makes a POST to a path it lacks a 405 (checked live).
+        Some("older") => Some((StatusCode::METHOD_NOT_ALLOWED, Json(json!({"detail": "Method Not Allowed"}))).into_response()),
+        Some("nobody") => Some((StatusCode::NOT_FOUND, Json(json!({"detail": "Profile 'nobody' not found"}))).into_response()),
+        _ => None,
+    }
+}
+
+/// What the deployed `bf0203a` answers when the profile has no working transcriber (checked live, 2026-11-02).
+const NO_STT: &str = "No STT provider available. Install faster-whisper for free local transcription, configure HERMES_LOCAL_STT_COMMAND or install a local whisper CLI, set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral Voxtral Transcribe, configure xAI OAuth or set XAI_API_KEY for xAI Grok STT, set ELEVENLABS_API_KEY for ElevenLabs Scribe, or set VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY for the OpenAI Whisper API.";
+
+async fn transcribe(headers: HeaderMap, Query(q): Query<HashMap<String, String>>, Json(body): Json<Value>) -> Response {
+    if let Some(r) = audio_gate(&headers, &q) {
+        return r;
+    }
+    let data_url = body["data_url"].as_str().unwrap_or("");
+    let Some((head, encoded)) = data_url.strip_prefix("data:").and_then(|u| u.split_once(',')) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({"detail": "Invalid audio payload"}))).into_response();
+    };
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).unwrap();
+    if bytes == b"quiet" {
+        return Json(json!({"ok": true, "transcript": "", "provider": "local"})).into_response();
+    }
+    if bytes == b"no-stt" {
+        return (StatusCode::BAD_REQUEST, Json(json!({"detail": NO_STT}))).into_response();
+    }
+    if bytes == b"broken" {
+        return (StatusCode::BAD_REQUEST, Json(json!({"detail": "No STT provider available. Install faster-whisper"}))).into_response();
+    }
+    let said = format!("  {} bytes of {head} as {} for {}  ", bytes.len(), body["mime_type"], q["profile"]);
+    Json(json!({"ok": true, "transcript": said, "provider": "local"})).into_response()
+}
+
+async fn speak(headers: HeaderMap, Query(q): Query<HashMap<String, String>>, Json(body): Json<Value>) -> Response {
+    if let Some(r) = audio_gate(&headers, &q) {
+        return r;
+    }
+    use base64::Engine;
+    match body["text"].as_str().unwrap_or("").trim() {
+        "" => (StatusCode::BAD_REQUEST, Json(json!({"detail": "Text is required"}))).into_response(),
+        "fail" => (StatusCode::BAD_REQUEST, Json(json!({"detail": "edge-tts is not installed"}))).into_response(),
+        "html" => Json(json!({"ok": true, "data_url": "data:text/html;base64,PGI+", "mime_type": "text/html"})).into_response(),
+        text => {
+            let audio = base64::engine::general_purpose::STANDARD.encode(format!("ID3:{text}"));
+            Json(json!({"ok": true, "data_url": format!("data:audio/mpeg;base64,{audio}"), "mime_type": "audio/mpeg", "provider": "edge"})).into_response()
+        }
+    }
+}
+
+/// `GET /api/config` answers the whole config, unredacted: provider sections can hold API keys.
+async fn config(headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
+    if let Some(r) = audio_gate(&headers, &q) {
+        return r;
+    }
+    Json(json!({
+        "model": {"default": "glm-5.3-flash", "api_key": "sk-model-SECRET"},
+        "stt": {"enabled": false, "provider": "groq", "groq": {"api_key": "gsk-SECRET"}},
+        "tts": {"provider": "openai", "openai": {"api_key": "sk-tts-SECRET", "voice": "alloy"}},
+    }))
+    .into_response()
+}
+
 async fn api_ws(ws: WebSocketUpgrade, Query(q): Query<HashMap<String, String>>) -> Response {
     if q.get("ticket").map(String::as_str) != Some("TICKET-1") {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -160,18 +239,30 @@ async fn session(mut ws: WebSocket, profile: Option<String>) {
 }
 
 async fn stub() -> Url {
-    let app = Router::new()
+    serve(stub_routes()).await
+}
+
+fn stub_routes() -> Router {
+    Router::new()
         .route("/auth/password-login", post(login))
         .route("/api/auth/ws-ticket", post(ws_ticket))
         .route("/api/ws", get(api_ws))
         .route("/api/sessions", get(list_sessions))
         .route("/api/sessions/{id}", patch(patch_session).delete(delete_session))
+        .route("/api/model/set", post(echo_write))
+        .route("/api/config", put(echo_write).get(config))
+        .route("/api/model/moa", put(echo_write).post(echo_write))
         .route("/api/rotate", get(rotate))
         .route("/api/expire", get(expire))
         .route("/api/busy", get(busy))
         .route("/api/status", get(status))
         .route("/api/env", get(env_rows).put(save_env))
-        .route("/api/providers/validate", post(validate));
+        .route("/api/providers/validate", post(validate))
+        .route("/api/audio/transcribe", post(transcribe))
+        .route("/api/audio/speak", post(speak))
+}
+
+async fn serve(app: Router) -> Url {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -179,7 +270,58 @@ async fn stub() -> Url {
 }
 
 fn sign_in(password: &str) -> SignIn {
-    SignIn { username: "liam".into(), password: password.into() }
+    SignIn { username: "liam".into(), password: password.into(), headers: Default::default() }
+}
+
+fn header(name: &str, value: &str) -> ExtraHeader {
+    ExtraHeader { name: name.into(), value: value.into() }
+}
+
+/// Every request a stub got: its path, and the value of `cf-access-client-secret` it carried.
+type Seen = Arc<Mutex<Vec<(String, Option<String>)>>>;
+
+/// Notes every request in `seen`, then refuses any without the Cloudflare Access service token, as Access would.
+async fn access_gate(State(seen): State<Seen>, req: Request, next: Next) -> Response {
+    let (id, secret) = (header_of(&req, "cf-access-client-id"), header_of(&req, "cf-access-client-secret"));
+    seen.lock().unwrap().push((req.uri().path().to_owned(), secret.clone()));
+    if id.as_deref() == Some("id.access") && secret.as_deref() == Some("s3cret") {
+        next.run(req).await
+    } else {
+        (StatusCode::FORBIDDEN, "Forbidden. You don't have permission to view this.").into_response()
+    }
+}
+
+/// A server on another origin that notes every request it gets.
+async fn other_site() -> (Url, Seen) {
+    let seen = Seen::default();
+    let app = Router::new().fallback(|| async { "elsewhere" }).layer(middleware::from_fn_with_state(seen.clone(), note));
+    (serve(app).await, seen)
+}
+
+async fn note(State(seen): State<Seen>, req: Request, next: Next) -> Response {
+    let secret = header_of(&req, "cf-access-client-secret");
+    seen.lock().unwrap().push((req.uri().path().to_owned(), secret));
+    next.run(req).await
+}
+
+fn header_of(req: &Request, name: &str) -> Option<String> {
+    req.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_owned)
+}
+
+/// The stub behind an Access-style gate, with one redirect within the dashboard and one to `elsewhere`.
+async fn gated_stub(elsewhere: &Url) -> (Url, Seen) {
+    let seen = Seen::default();
+    let away = elsewhere.join("steal").unwrap().to_string();
+    let app = stub_routes()
+        .route("/api/moved", get(|| async { Redirect::temporary("/api/sessions?moved=1") }))
+        .route("/api/away", get(move || async move { Redirect::temporary(&away) }))
+        .layer(middleware::from_fn_with_state(seen.clone(), access_gate));
+    (serve(app).await, seen)
+}
+
+fn access_sign_in() -> SignIn {
+    let headers = transport::extra_headers(&[header("CF-Access-Client-Id", "id.access"), header("CF-Access-Client-Secret", "s3cret")]).unwrap();
+    SignIn { headers, ..sign_in("hunter2") }
 }
 
 async fn next(rx: &mut mpsc::UnboundedReceiver<PipeEvent>) -> PipeEvent {
@@ -302,6 +444,17 @@ async fn relays_a_rest_delete() {
 }
 
 #[tokio::test]
+async fn relays_the_model_settings_writes() {
+    let dashboard = signed_in().await;
+    let body = json!({"scope": "main", "provider": "nous", "model": "m"}).to_string();
+    let got: Value = serde_json::from_str(&dashboard.request("POST", "api/model/set?profile=default", Some(body)).await.unwrap()).unwrap();
+    assert_eq!(got, json!({"uri": "/api/model/set?profile=default", "content_type": "application/json", "body": {"scope": "main", "provider": "nous", "model": "m"}}));
+    let body = json!({"config": {"agent": {"reasoning_effort": "low"}}}).to_string();
+    let got: Value = serde_json::from_str(&dashboard.request("PUT", "api/config?profile=default", Some(body)).await.unwrap()).unwrap();
+    assert_eq!(got, json!({"uri": "/api/config?profile=default", "content_type": "application/json", "body": {"config": {"agent": {"reasoning_effort": "low"}}}}));
+}
+
+#[tokio::test]
 async fn keeps_cookies_the_dashboard_rotates() {
     let dashboard = signed_in().await;
     get_json(&dashboard, "api/rotate").await;
@@ -324,9 +477,21 @@ async fn a_failed_rest_call_reports_status_and_body() {
 }
 
 #[tokio::test]
-async fn relays_only_get_patch_and_delete_under_api() {
+async fn relays_only_get_patch_and_delete_under_api_and_the_two_model_writes() {
     let dashboard = signed_in().await;
-    for (method, path) in [("GET", "auth/logout"), ("GET", "api/../auth/logout"), ("DELETE", "auth/logout"), ("PUT", "api/sessions/x"), ("POST", "api/sessions")] {
+    for (method, path) in [
+        ("GET", "auth/logout"),
+        ("GET", "api/../auth/logout"),
+        ("DELETE", "auth/logout"),
+        ("PUT", "api/sessions/x"),
+        ("POST", "api/sessions"),
+        ("POST", "api/model/moa"),
+        ("PUT", "api/model/moa"),
+        ("PUT", "api/model/set"),
+        ("POST", "api/config"),
+        ("POST", "api/model/set/../../auth/logout"),
+        ("OPTIONS", "api/config"),
+    ] {
         let err = dashboard.request(method, path, None).await.err().unwrap();
         assert!(matches!(err, TransportError::NotRelayed(_)), "{method} {path}: {err:?}");
     }
@@ -592,4 +757,396 @@ async fn a_connection_test_gives_up_on_a_status_body_that_never_comes() {
     let failed = transport::probe_with(&base, &sign_in("hunter2"), "default", Duration::from_millis(300)).await.unwrap_err();
     assert_eq!(failed.stage, Stage::Reach);
     assert!(started.elapsed() < Duration::from_secs(3));
+}
+
+#[tokio::test]
+async fn transcribes_a_recording_as_a_data_url_for_the_profile() {
+    let dashboard = signed_in().await;
+    let got = dashboard.transcribe("work email", "audio/wav; codecs=1", b"RIFF....WAVE").await.unwrap();
+    assert_eq!(got.text, r#"12 bytes of audio/wav;base64 as "audio/wav" for work email"#);
+    assert_eq!(got.provider.as_deref(), Some("local"));
+}
+
+#[tokio::test]
+async fn hearing_no_speech_is_an_empty_transcript() {
+    let got = signed_in().await.transcribe("default", "audio/wav", b"quiet").await.unwrap();
+    assert_eq!(got, transport::Transcript { text: String::new(), provider: Some("local".into()) });
+}
+
+#[tokio::test]
+async fn refuses_a_recording_that_is_not_audio_empty_or_too_long_without_sending_it() {
+    let dashboard = signed_in().await;
+    for (mime, len) in [("text/plain", 10), ("audio/", 10), ("audio/wav\r\nx: y", 10), ("audio/wav", 0), ("audio/wav", 25 * 1024 * 1024 + 1)] {
+        let err = dashboard.transcribe("old", mime, &vec![0u8; len]).await.err().unwrap();
+        // Profile `old` would answer 404; these never reach it.
+        assert!(matches!(err, TransportError::Voice(_)), "{mime} {len}: {err:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_server_without_the_audio_routes_says_so() {
+    let dashboard = signed_in().await;
+    let err = dashboard.transcribe("old", "audio/wav", b"RIFF").await.err().unwrap();
+    assert_eq!(err.to_string(), "This Hermes server can't transcribe recordings: it has no /api/audio/transcribe route. Updating Hermes adds it.");
+    let err = dashboard.speak("old", "Hello").await.err().unwrap();
+    assert!(matches!(err, TransportError::NoVoiceRoute("read replies aloud", _)), "{err:?}");
+}
+
+#[tokio::test]
+async fn a_refusal_carries_hermess_reason() {
+    let dashboard = signed_in().await;
+    let err = dashboard.transcribe("default", "audio/wav", b"broken").await.err().unwrap();
+    assert_eq!(err.to_string(), "Hermes couldn't transcribe the recording: No STT provider available. Install faster-whisper");
+    let err = dashboard.transcribe("nobody", "audio/wav", b"RIFF").await.err().unwrap();
+    assert_eq!(err.to_string(), "Hermes couldn't transcribe the recording: Profile 'nobody' not found");
+    let err = dashboard.speak("default", "fail").await.err().unwrap();
+    assert_eq!(err.to_string(), "Hermes couldn't read it aloud: edge-tts is not installed");
+}
+
+#[tokio::test]
+async fn reads_a_reply_aloud_as_audio_bytes() {
+    let speech = signed_in().await.speak("default", "Hello there").await.unwrap();
+    assert_eq!(speech, transport::Speech { mime: "audio/mpeg".into(), audio: b"ID3:Hello there".to_vec(), provider: Some("edge".into()) });
+}
+
+#[tokio::test]
+async fn refuses_speech_that_is_not_audio_or_has_no_text() {
+    let dashboard = signed_in().await;
+    assert!(matches!(dashboard.speak("default", "html").await, Err(TransportError::Voice(_))));
+    assert!(matches!(dashboard.speak("old", "  ").await, Err(TransportError::Voice(_))));
+}
+
+#[tokio::test]
+async fn an_expired_sign_in_is_signed_out_for_voice_too() {
+    let dashboard = signed_in().await;
+    get_json(&dashboard, "api/expire").await;
+    assert!(matches!(dashboard.transcribe("default", "audio/wav", b"RIFF").await, Err(TransportError::SignedOut)));
+    assert!(matches!(dashboard.voice_setup("default").await, Err(TransportError::SignedOut)));
+}
+
+#[tokio::test]
+async fn reads_the_voice_setup_without_passing_on_any_key() {
+    let setup = signed_in().await.voice_setup("default").await.unwrap();
+    assert_eq!(
+        setup,
+        transport::VoiceSetup { transcribe: true, speak: true, stt_enabled: Some(false), stt_provider: Some("groq".into()), tts_provider: Some("openai".into()) }
+    );
+    let json = serde_json::to_string(&setup).unwrap();
+    assert!(!json.contains("SECRET"), "{json}");
+    assert_eq!(json, r#"{"transcribe":true,"speak":true,"sttEnabled":false,"sttProvider":"groq","ttsProvider":"openai"}"#);
+}
+
+#[tokio::test]
+async fn a_server_without_voice_has_neither_route() {
+    for profile in ["old", "older"] {
+        let setup = signed_in().await.voice_setup(profile).await.unwrap();
+        assert_eq!(setup, transport::VoiceSetup { transcribe: false, speak: false, stt_enabled: None, stt_provider: None, tts_provider: None }, "{profile}");
+    }
+}
+
+#[tokio::test]
+async fn reads_the_start_of_a_local_file_for_the_preview() {
+    let dir = scratch("local-text");
+    let notes = dir.join("notes.md");
+    std::fs::write(&notes, "# Notes\n\nCafé ☕\n").unwrap();
+    let t = transport::read_local_text(&path_of(&notes)).await.unwrap();
+    assert_eq!(t, transport::LocalText { size: 19, truncated: false, binary: false, text: "# Notes\n\nCafé ☕\n".into() });
+
+    // Only the first 512 KB is read, and the size says how big the file is.
+    let big = dir.join("big.log");
+    std::fs::write(&big, "x".repeat(transport::LOCAL_TEXT_MAX_BYTES as usize + 10)).unwrap();
+    let t = transport::read_local_text(&path_of(&big)).await.unwrap();
+    assert!(t.truncated);
+    assert_eq!(t.size, transport::LOCAL_TEXT_MAX_BYTES + 10);
+    assert_eq!(t.text.len() as u64, transport::LOCAL_TEXT_MAX_BYTES);
+}
+
+#[tokio::test]
+async fn a_binary_local_file_comes_back_without_its_bytes() {
+    let dir = scratch("local-binary");
+    let bin = dir.join("disk.img");
+    std::fs::write(&bin, b"\x7fELF\x02\x01\x01\0\0\0\0\0\0\0\0\0").unwrap();
+    let t = transport::read_local_text(&path_of(&bin)).await.unwrap();
+    assert!(t.binary);
+    assert_eq!(t.text, "");
+    assert_eq!(t.size, 16);
+}
+
+#[tokio::test]
+async fn refuses_a_folder_a_missing_file_or_a_relative_path_for_the_preview() {
+    let dir = scratch("local-refused");
+    let err = |p: String| async move { transport::read_local_text(&p).await.err().unwrap().to_string() };
+    assert_eq!(err(path_of(&dir)).await, "it's a folder");
+    assert_eq!(err(path_of(&dir.join("gone.txt"))).await, "No such file or directory (os error 2)");
+    assert_eq!(err("notes.txt".into()).await, "it isn't a full path");
+}
+
+#[tokio::test]
+async fn only_files_picked_in_the_open_dialog_can_be_read_for_the_preview() {
+    let picked = transport::PickedFiles::default();
+    assert_eq!(picked.read("/home/liam/.ssh/id_ed25519").await.err().unwrap().to_string(), "it wasn't picked in the Open dialog");
+    let dir = scratch("picked-files");
+    let notes = dir.join("notes.md");
+    std::fs::write(&notes, "notes").unwrap();
+    let path = picked.allow(&path_of(&notes)).unwrap();
+    assert_eq!(picked.read(&path).await.unwrap().text, "notes");
+    assert!(picked.read(&format!("{path}/../secret")).await.is_err());
+}
+
+#[tokio::test]
+async fn reload_uses_the_picked_file_even_after_path_or_symlink_replacement() {
+    use std::os::unix::fs::symlink;
+    let dir = scratch("picked-replaced");
+    let notes = dir.join("notes.md");
+    let secret = dir.join("secret");
+    std::fs::write(&notes, "picked").unwrap();
+    std::fs::write(&secret, "not picked").unwrap();
+    let picked = transport::PickedFiles::default();
+    let path = picked.allow(&path_of(&notes)).unwrap();
+    std::fs::rename(&notes, dir.join("original")).unwrap();
+    symlink(&secret, &notes).unwrap();
+    assert_eq!(picked.read(&path).await.unwrap().text, "picked");
+    std::fs::remove_file(&notes).unwrap();
+    std::fs::write(&notes, "replacement").unwrap();
+    assert_eq!(picked.read(&path).await.unwrap().text, "picked");
+    // In-place changes to the actual picked file still appear on Reload, even with simultaneous reads.
+    std::fs::write(dir.join("original"), "updated").unwrap();
+    let (a, b) = tokio::join!(picked.read(&path), picked.read(&path));
+    assert_eq!(a.unwrap().text, "updated");
+    assert_eq!(b.unwrap().text, "updated");
+}
+
+#[tokio::test]
+async fn local_preview_refuses_fifos_and_devices_without_waiting_for_a_writer() {
+    let dir = scratch("picked-fifo");
+    let fifo = dir.join("pipe");
+    let cpath = std::ffi::CString::new(path_of(&fifo)).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o600) }, 0);
+    for path in [path_of(&fifo), "/dev/zero".into()] {
+        let read = tokio::time::timeout(Duration::from_secs(2), transport::read_local_text(&path)).await.unwrap();
+        assert_eq!(read.err().unwrap().to_string(), "it isn't a regular file");
+        assert!(transport::PickedFiles::default().allow(&path).is_err());
+    }
+}
+
+#[tokio::test]
+async fn passes_on_hermess_whole_reason_for_having_no_transcriber() {
+    let err = signed_in().await.transcribe("default", "audio/wav", b"no-stt").await.err().unwrap();
+    assert_eq!(err.to_string(), format!("Hermes couldn't transcribe the recording: {NO_STT}"));
+}
+
+#[tokio::test]
+async fn voice_requests_carry_the_gate_headers_too() {
+    let (elsewhere, _) = other_site().await;
+    let (base, seen) = gated_stub(&elsewhere).await;
+    let dashboard = Dashboard::sign_in(&base, &access_sign_in()).await.unwrap();
+    dashboard.transcribe("default", "audio/wav", b"RIFF").await.unwrap();
+    dashboard.speak("default", "Hello").await.unwrap();
+    assert!(dashboard.voice_setup("default").await.unwrap().speak);
+    let seen = seen.lock().unwrap();
+    let paths: Vec<&str> = seen.iter().map(|(path, _)| path.as_str()).collect();
+    assert_eq!(paths, ["/auth/password-login", "/api/audio/transcribe", "/api/audio/speak", "/api/audio/transcribe", "/api/audio/speak", "/api/config"]);
+    assert!(seen.iter().all(|(_, secret)| secret.as_deref() == Some("s3cret")));
+}
+
+#[tokio::test]
+async fn voice_redirects_to_another_origin_stop_without_sending_credentials_or_audio() {
+    let (elsewhere, other_seen) = other_site().await;
+    let away = elsewhere.join("steal").unwrap().to_string();
+    let speak_away = away.clone();
+    let app = Router::new()
+        .route("/auth/password-login", post(login))
+        .route("/api/audio/transcribe", post(move || async move { Redirect::temporary(&away) }))
+        .route("/api/audio/speak", post(move || async move { Redirect::temporary(&speak_away) }));
+    let dashboard = Dashboard::sign_in(&serve(app).await, &access_sign_in()).await.unwrap();
+    for err in [
+        dashboard.transcribe("default", "audio/wav", b"private audio").await.err().unwrap(),
+        dashboard.speak("default", "private reply").await.err().unwrap(),
+    ] {
+        assert!(matches!(&err, TransportError::Redirected(to) if *to == elsewhere.origin().ascii_serialization()), "{err:?}");
+        assert!(!err.to_string().contains("s3cret"));
+    }
+    assert!(other_seen.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn local_image_preview_keeps_the_picked_handle_and_checks_its_content_and_size() {
+    let dir = scratch("picked-image");
+    let image = dir.join("image.png");
+    std::fs::write(&image, b"\x89PNG\r\n\x1a\noriginal").unwrap();
+    let picked = transport::PickedFiles::default();
+    assert!(picked.read_image(&path_of(&image)).await.is_err());
+    let path = picked.allow(&path_of(&image)).unwrap();
+    std::fs::rename(&image, dir.join("original.png")).unwrap();
+    std::fs::write(&image, b"\x89PNG\r\n\x1a\nreplacement").unwrap();
+    assert_eq!(picked.read_image(&path).await.unwrap(), b"\x89PNG\r\n\x1a\noriginal");
+    std::fs::write(dir.join("original.png"), "secret text").unwrap();
+    assert_eq!(picked.read_image(&path).await.err().unwrap().to_string(), "it isn't an image");
+    let f = std::fs::OpenOptions::new().write(true).open(dir.join("original.png")).unwrap();
+    f.set_len(transport::PREVIEW_MAX_BYTES + 1).unwrap();
+    assert!(matches!(picked.read_image(&path).await, Err(TransportError::FileTooLarge { .. })));
+}
+
+#[tokio::test]
+async fn extra_headers_go_with_the_sign_in_rest_calls_and_the_socket() {
+    let (elsewhere, _) = other_site().await;
+    let (base, seen) = gated_stub(&elsewhere).await;
+    let dashboard = Dashboard::sign_in(&base, &access_sign_in()).await.expect("signed in through the gate");
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let _pipe = dashboard.open_pipe("default", move |e| drop(tx.send(e))).await.expect("socket opened through the gate");
+    assert_eq!(frame(next(&mut rx).await)["params"]["type"], "gateway.ready");
+    assert_eq!(get_json(&dashboard, "api/sessions?order=recent").await["query"], "order=recent");
+
+    let seen = seen.lock().unwrap().clone();
+    let paths: Vec<&str> = seen.iter().map(|(p, _)| p.as_str()).collect();
+    assert_eq!(paths, ["/auth/password-login", "/api/auth/ws-ticket", "/api/ws", "/api/sessions"]);
+    assert!(seen.iter().all(|(_, secret)| secret.as_deref() == Some("s3cret")), "{seen:?}");
+}
+
+#[tokio::test]
+async fn without_the_extra_headers_the_gate_refuses() {
+    let (elsewhere, _) = other_site().await;
+    let (base, _) = gated_stub(&elsewhere).await;
+    let err = Dashboard::sign_in(&base, &sign_in("hunter2")).await.err().unwrap();
+    assert!(matches!(err, TransportError::Unexpected { status: 403, .. }), "{err:?}");
+}
+
+#[tokio::test]
+async fn extra_headers_follow_a_redirect_within_the_dashboard_only() {
+    let (elsewhere, other_seen) = other_site().await;
+    let (base, _) = gated_stub(&elsewhere).await;
+    let dashboard = Dashboard::sign_in(&base, &access_sign_in()).await.expect("signed in");
+    assert_eq!(get_json(&dashboard, "api/moved").await["query"], "moved=1");
+
+    let err = dashboard.request("GET", "api/away", None).await.err().unwrap();
+    let origin = elsewhere.origin().ascii_serialization();
+    assert!(matches!(&err, TransportError::Redirected(to) if *to == origin), "{err:?}");
+    assert!(!err.to_string().contains("s3cret"));
+    assert!(other_seen.lock().unwrap().is_empty(), "the other site was asked: {:?}", other_seen.lock().unwrap());
+}
+
+#[tokio::test]
+async fn a_sign_in_redirected_to_another_site_stops_there() {
+    // Cloudflare Access sends a request without a valid token to its login page, on another origin.
+    let (elsewhere, other_seen) = other_site().await;
+    let login = elsewhere.join("cdn-cgi/access/login").unwrap().to_string();
+    let base = serve(Router::new().route("/auth/password-login", post(move || async move { Redirect::to(&login) }))).await;
+    let err = Dashboard::sign_in(&base, &access_sign_in()).await.err().unwrap();
+    assert!(matches!(err, TransportError::Redirected(_)), "{err:?}");
+    assert!(other_seen.lock().unwrap().is_empty());
+}
+
+#[test]
+fn builds_extra_headers_and_marks_their_values_sensitive() {
+    let map = transport::extra_headers(&[header(" CF-Access-Client-Id ", " id.access\t"), header("Authorization", "Bearer abc")]).unwrap();
+    assert_eq!(map.len(), 2);
+    let id = map.get("cf-access-client-id").unwrap();
+    assert_eq!(id.to_str().unwrap(), "id.access");
+    assert!(id.is_sensitive());
+    assert!(!format!("{map:?}").contains("Bearer abc"), "{map:?}");
+    assert!(transport::extra_headers(&[]).unwrap().is_empty());
+}
+
+#[test]
+fn refuses_extra_headers_that_are_malformed_reserved_or_set_twice() {
+    let cases = [
+        (vec![header("", "v")], "Extra request header 1: enter its name."),
+        (vec![header("X-Ok", "v"), header("Bad Header", "v")], "Extra request header 2: \"Bad Header\" isn't a header name."),
+        (vec![header("X-A\r\nX-Evil", "v")], "Extra request header 1: \"X-A\\r\\nX-Evil\" isn't a header name."),
+        (vec![header("X-A", "ok\r\nX-Evil: 1")], "Extra request header 1: the value of X-A can only hold"),
+        (vec![header("X-A", "ok\nmore")], "Extra request header 1: the value of X-A can only hold"),
+        (vec![header("X-A", "caf\u{e9}")], "Extra request header 1: the value of X-A can only hold"),
+        (vec![header("X-A", "  ")], "Extra request header 1: enter a value for X-A."),
+        (vec![header("X-A", &"a".repeat(8 * 1024 + 1))], "Extra request header 1: the value of X-A is over 8 KB."),
+        (vec![header("X-A", "1"), header("x-a", "2")], "Extra request header 2: x-a is set twice."),
+        (vec![header("Host", "evil")], "Extra request header 1: Hermes Chat sets Host itself."),
+        (vec![header("Cookie", "a=b")], "Extra request header 1: Hermes Chat sets Cookie itself."),
+        (vec![header("content-length", "0")], "Extra request header 1: Hermes Chat sets content-length itself."),
+        (vec![header("Sec-WebSocket-Key", "x")], "Extra request header 1: Hermes Chat sets Sec-WebSocket-Key itself."),
+        (vec![header("Proxy-Authorization", "x")], "Extra request header 1: Hermes Chat sets Proxy-Authorization itself."),
+        ((0..33).map(|i| header(&format!("X-{i}"), "v")).collect(), "Hermes Chat sends at most 32 extra request headers."),
+    ];
+    for (headers, want) in cases {
+        let err = transport::extra_headers(&headers).err().unwrap_or_else(|| panic!("accepted {:?}", headers.iter().map(|h| (&h.name, &h.value)).collect::<Vec<_>>())).to_string();
+        assert!(err.starts_with(want), "got {err:?}, want {want:?}");
+        // An error names the header, never its value.
+        for h in &headers {
+            if h.value.trim().len() > 1 && !h.name.is_empty() {
+                assert!(!err.contains(h.value.trim()), "{err:?} shows the value of {}", h.name);
+            }
+        }
+    }
+}
+
+#[test]
+fn stages_a_pasted_file_as_a_private_temp_file() {
+    use std::os::unix::fs::PermissionsExt;
+    let png = b"\x89PNG\r\n\x1a\npasted";
+    let a = transport::stage_clipboard_file("clipboard-2026-11-02T153000.png", png).unwrap();
+    let b = transport::stage_clipboard_file("clipboard-2026-11-02T153000.png", png).unwrap();
+    for p in [&a, &b] {
+        assert!(p.is_absolute(), "{p:?}");
+        assert!(p.starts_with(std::env::temp_dir().join("hermes-chat")), "{p:?}");
+        assert_eq!(p.file_name().unwrap(), "clipboard-2026-11-02T153000.png");
+        assert_eq!(std::fs::read(p).unwrap(), png);
+        let folder = std::fs::metadata(p.parent().unwrap()).unwrap();
+        assert_eq!(folder.permissions().mode() & 0o777, 0o700, "{p:?}");
+    }
+    // The same screenshot pasted twice is two files, so both attach.
+    assert_ne!(a, b);
+    // Each staged file attaches like any other local file.
+    let got = tokio::runtime::Runtime::new().unwrap().block_on(transport::stat_files(&[path_of(&a)]));
+    assert_eq!(got[0].size, Some(png.len() as u64));
+    for p in [a, b] {
+        std::fs::remove_dir_all(p.parent().unwrap()).unwrap();
+    }
+}
+
+#[test]
+fn a_pasted_file_name_stays_a_plain_basename() {
+    for (hostile, want) in [
+        ("../../etc/passwd.png", "passwd.png"),
+        ("/etc/passwd", "passwd"),
+        ("..\\..\\boot.ini", "boot.ini"),
+        ("..", "clipboard"),
+        ("", "clipboard"),
+        ("  ", "clipboard"),
+        ("rack\n\u{7}photo.JPG", "rackphoto.JPG"),
+        (".bashrc", "bashrc"),
+        ("notes.tar.gz", "notes.tar.gz"),
+        ("report.<script>", "report.<script>"),
+        ("Résumé 2026.pdf", "Résumé 2026.pdf"),
+    ] {
+        let p = transport::stage_clipboard_file(hostile, b"x").unwrap();
+        assert_eq!(p.file_name().unwrap(), want, "{hostile:?}");
+        // Still inside its own fresh folder, not somewhere the name pointed.
+        assert_eq!(p.parent().unwrap().parent().unwrap(), std::env::temp_dir().join("hermes-chat"), "{hostile:?}");
+        std::fs::remove_dir_all(p.parent().unwrap()).unwrap();
+    }
+    let long = transport::stage_clipboard_file(&format!("{}.png", "é".repeat(300)), b"x").unwrap();
+    let name = long.file_name().unwrap().to_str().unwrap();
+    assert!(name.len() <= 255 && name.ends_with(".png"), "{name}");
+    std::fs::remove_dir_all(long.parent().unwrap()).unwrap();
+}
+
+#[tokio::test]
+async fn a_connection_test_sends_the_extra_headers_on_every_request() {
+    let (elsewhere, _) = other_site().await;
+    let (base, seen) = gated_stub(&elsewhere).await;
+    transport::probe(&base, &access_sign_in(), "default").await.expect("test passes through the gate");
+    let seen = seen.lock().unwrap();
+    let paths: Vec<_> = seen.iter().map(|(p, _)| p.as_str()).collect();
+    assert!(["/api/status", "/auth/password-login", "/api/ws"].iter().all(|p| paths.contains(p)), "{paths:?}");
+    assert!(seen.iter().all(|(_, secret)| secret.as_deref() == Some("s3cret")), "{seen:?}");
+}
+
+#[tokio::test]
+async fn a_connection_test_stops_at_a_redirect_to_another_site() {
+    let (elsewhere, other) = other_site().await;
+    let away = elsewhere.join("login").unwrap().to_string();
+    let app = Router::new().route("/api/status", get(move || async move { Redirect::temporary(&away) }));
+    let failed = transport::probe(&serve(app).await, &access_sign_in(), "default").await.unwrap_err();
+    assert_eq!(failed.stage, Stage::Reach);
+    assert!(failed.message.contains("another site"), "{}", failed.message);
+    assert!(other.lock().unwrap().is_empty());
 }

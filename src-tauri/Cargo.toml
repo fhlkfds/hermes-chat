@@ -15,8 +15,10 @@ tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "net", "time", "sync"] }
-reqwest = { version = "0.13", default-features = false, features = ["json"] }
-tokio-tungstenite = "0.30"
+# TLS through the system's OpenSSL and trust store, so https:// and wss:// dashboards (such as one behind
+# Cloudflare Access) work.
+reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls"] }
+tokio-tungstenite = { version = "0.30", features = ["native-tls"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 thiserror = "2"
 url = "2"
@@ -26,6 +28,10 @@ keyring = { version = "3.6", features = ["sync-secret-service", "crypto-rust"] }
 # Both already come with keyring and tauri; used directly for desktop notifications (notify.rs).
 dbus = "0.9"
 gtk = "0.18"
+# Already comes with tauri (wry turns on `v2_40`); used to turn on WebKitGTK's media capture for dictation.
+webkit2gtk = { version = "2.0", features = ["v2_40"] }
+
+libc = "0.2"
 
 [dev-dependencies]
 axum = { version = "0.8", features = ["ws"] }

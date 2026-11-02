@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { KeyRound } from "lucide-react";
 import type { SignInDetails } from "../hermes/tauriPipe";
-import { ServerFields } from "./Onboarding";
+import { ServerFields, withHeaders } from "./Onboarding";
 
 export function SignIn({
   initial,
@@ -35,7 +35,7 @@ export function SignIn({
             if (!ready || busy) return;
             setBusy(true);
             try {
-              await onSignIn(d);
+              await onSignIn(withHeaders(d));
             } finally {
               setBusy(false);
             }

@@ -1,4 +1,4 @@
-// Setup: the first-run flow that connects Hermes Chat to a Hermes server (ADR 0006). It tests a sign-in before
+// Setup: the first-run flow that connects Hermes Chat to a Hermes server (ADR 0009). It tests a sign-in before
 // keeping it, explains a failed test in terms of what to fix, and lists the model providers whose API key the owner
 // can give the server. The Rust side does the testing (`hermes_probe`) and the key saving (`hermes_save_provider_key`).
 import type { SavedSignIn } from "./account";

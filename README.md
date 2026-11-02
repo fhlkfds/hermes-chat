@@ -23,7 +23,11 @@ npm run app
 
 `npm run app` sets `WEBKIT_DISABLE_DMABUF_RENDERER=1`, which fixes the blank WebKitGTK window on some Wayland setups.
 
-The first launch opens Setup (`docs/adr/0006-setup-tests-a-sign-in-before-keeping-it.md`). Enter an SSH target whose key works without a prompt (for example `liam@hermes`, or an alias from `~/.ssh/config`), or switch to URL and enter the dashboard's address, for example `http://hermes:9119`. Then enter the Hermes dashboard username and password. Setup tests the connection, says what to fix if it fails, and saves it only once it works. It can then give Hermes a model provider's API key. To change the connection later, use Settings → Run setup again.
+The first launch opens Setup (`docs/adr/0009-setup-tests-a-sign-in-before-keeping-it.md`). Enter an SSH target whose key works without a prompt (for example `liam@hermes`, or an alias from `~/.ssh/config`), or switch to URL and enter the dashboard's address, for example `http://hermes:9119`. If a gateway such as Cloudflare Access sits in front of it, add the headers it needs under **Extra request headers**, for example `CF-Access-Client-Id` and `CF-Access-Client-Secret` (ADR 0006). Then enter the Hermes dashboard username and password. Setup tests the connection, says what to fix if it fails, and saves it only once it works. It can then give Hermes a model provider's API key. To change the connection later, use Settings → Run setup again. A computer that already has a saved sign-in keeps signing in as before.
+
+## Voice
+
+The composer's microphone button starts Dictation: speak, press Done, and the text appears in the composer to edit before sending. Read aloud, under each reply, has Hermes speak it. Hermes does the transcribing and the speaking on the server, with the profile's speech-to-text and text-to-speech providers (set them with `hermes tools` on the server). Settings → General → Voice shows which providers the profile uses and what each one needs. The app needs a working microphone and a PipeWire or PulseAudio sound server.
 
 ## Install
 
@@ -36,11 +40,22 @@ makepkg -si
 
 To run it from a terminal, set the variable yourself: `WEBKIT_DISABLE_DMABUF_RENDERER=1 hermes-chat`.
 
+## Screenshots
+
+Ctrl+Shift+S (or the camera button in the composer) takes a screenshot of a region or window and attaches it to the message you're writing, for you to review before sending. Change or turn off the shortcut in Settings → General → Screenshots.
+
+- **Hyprland, Sway and other wlroots compositors:** install `slurp` and `grim` (`sudo pacman -S --needed slurp grim`). You drag a region, or click a window. Without them the app says what to install and captures nothing, because the screenshot portals there can't let you pick.
+- **GNOME and KDE Plasma:** the desktop's screenshot portal shows its own region and window picker. It needs `xdg-desktop-portal` and `xdg-desktop-portal-gnome` or `xdg-desktop-portal-kde`.
+
+That shortcut works only while Hermes Chat is focused. Wayland apps can't see keys pressed in other windows, so for a shortcut that works anywhere, bind a key in your desktop's settings to `hermes-chat --screenshot`. For example, on Hyprland: `bind = SUPER SHIFT, S, exec, hermes-chat --screenshot`. If Hermes Chat is open, the screenshot goes to the chat on screen. If it isn't open, or is on the sign-in screen, the screenshot is taken once you're signed in, if that's within two minutes. When it might need to start, use `env WEBKIT_DISABLE_DMABUF_RENDERER=1 hermes-chat --screenshot`.
+
+Captures wait in `$XDG_CACHE_HOME/hermes-chat/captures/` (usually `~/.cache/hermes-chat/captures/`), readable only by you. Nothing is uploaded until you send the message. A capture is deleted once Hermes confirms its message, when you remove it from the composer, or when you leave the composer without sending it. Failed or uncertain messages keep their screenshots in the chat's outbox for Retry, including across app restarts; confirmation, history reconciliation or Dismiss releases them. On quit, remaining captures wait for the next startup to reconcile the persisted outbox and remove leftovers that no message needs.
+
 ## Test
 
 ```sh
 npm test                                  # frontend transport against a fake Hermes
-cd src-tauri && cargo test --test transport   # Rust transport against a stub server
+cd src-tauri && cargo test --lib --test transport --test media --test screenshot  # Rust transport, microphone origins, screenshot storage and requests
 ```
 
 `node bench/run.mjs` renders the chat pane with synthetic long chats (50, 200 and 800 turns) in headless Chromium and

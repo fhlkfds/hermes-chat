@@ -1,6 +1,6 @@
 // Display preferences for this computer: the theme, whether the last chat reopens at launch and which chat each profile
-// had open, whether reasoning shows, the model last picked and the starred models, and which items the status bar
-// shows. All of it lives in one versioned JSON document under one localStorage key, so "Clear local cache" can't touch
+// had open, whether reasoning shows, the model last picked and the starred models, which items the status bar shows,
+// and the screenshot shortcut and preview pane width. All preferences live in one versioned localStorage document.
 // it (chatCache.ts) and later settings add fields here rather than new keys. Nothing here goes to Hermes. Every
 // settings feature reads and writes through this module.
 
@@ -31,9 +31,19 @@ export type UIPrefs = {
   modelPicker: StickyModelPick | null;
   /** Starred models, as `provider/model`, listed first in the model picker. Kept even when Hermes no longer lists them. */
   modelFavorites: string[];
-  /** The status bar items shown, in order. */
+  /** The status bar items shown, in order (StatusBar.tsx). Empty: the bar is hidden. */
   statusBar: string[];
+  /** The in-app shortcut that takes a screenshot for the composer, like `Ctrl+Shift+S` (ui/shortcut.ts); null: off. */
+  screenshotShortcut: string | null;
+  /** How wide the owner made the preview pane, in px; null until they resize it. */
+  previewWidth: number | null;
 };
+
+/** The shape of a stored shortcut: modifiers in order, then one key (ui/shortcut.ts writes them). */
+const SHORTCUT = /^(?:Ctrl\+)?(?:Alt\+)?(?:Shift\+)?(?:Super\+)?(?:[A-Z0-9]|F(?:[1-9]|1\d|2[0-4])|PrintScreen|Pause|ScrollLock|Insert)$/;
+export const isShortcut = (s: unknown): s is string => typeof s === "string" && SHORTCUT.test(s);
+/** Every status bar item, in the bar's order; all shown until the owner picks otherwise. */
+export const STATUS_BAR_ITEMS = ["context", "yolo", "model", "status"] as const;
 
 export const DEFAULT_UI_PREFS: Readonly<UIPrefs> = Object.freeze({
   theme: "system",
@@ -42,7 +52,9 @@ export const DEFAULT_UI_PREFS: Readonly<UIPrefs> = Object.freeze({
   reasoningBlocks: true,
   modelPicker: null,
   modelFavorites: [],
-  statusBar: [],
+  statusBar: [...STATUS_BAR_ITEMS],
+  screenshotShortcut: "Ctrl+Shift+S",
+  previewWidth: null,
 });
 
 /** A stored document as read, before its fields are checked. */
@@ -107,6 +119,10 @@ function toStatusBar(v: unknown): string[] | undefined {
   return [...new Set(items)];
 }
 
+/** A preview width, in px, that a window could have. */
+const toPreviewWidth = (v: unknown): number | null | undefined =>
+  v === null ? null : typeof v === "number" && Number.isInteger(v) && v >= 200 && v <= 8000 ? v : undefined;
+
 /** The most profiles `lastOpenChat` keeps; a document edited by hand can't grow the prefs without end. */
 const LAST_OPEN_LIMIT = 100;
 
@@ -119,6 +135,7 @@ function toLastOpenChat(v: unknown): Record<string, string> | undefined {
 /** The prefs `doc` holds, each field that is missing or not a valid value taken from `d`: the defaults, unless given. */
 export function readUIPrefs(doc: UIPrefsDoc, d: Readonly<UIPrefs> = DEFAULT_UI_PREFS): UIPrefs {
   const pick = toModelPick(doc.modelPicker);
+  const previewWidth = toPreviewWidth(doc.previewWidth);
   return {
     theme: THEMES.includes(doc.theme as Theme) ? (doc.theme as Theme) : d.theme,
     reopenLastChat: typeof doc.reopenLastChat === "boolean" ? doc.reopenLastChat : d.reopenLastChat,
@@ -127,6 +144,8 @@ export function readUIPrefs(doc: UIPrefsDoc, d: Readonly<UIPrefs> = DEFAULT_UI_P
     modelPicker: pick === undefined ? (d.modelPicker && { ...d.modelPicker }) : pick,
     modelFavorites: toFavorites(doc.modelFavorites) ?? [...d.modelFavorites],
     statusBar: toStatusBar(doc.statusBar) ?? [...d.statusBar],
+    screenshotShortcut: doc.screenshotShortcut === null || isShortcut(doc.screenshotShortcut) ? doc.screenshotShortcut : d.screenshotShortcut,
+    previewWidth: previewWidth === undefined ? d.previewWidth : previewWidth,
   };
 }
 

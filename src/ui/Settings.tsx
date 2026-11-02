@@ -1,20 +1,28 @@
-// The Settings screen, in two tabs. General, ported from the prototype: the connection and Sign out, what shows on
-// launch, the local cache, and older history. Appearance: how the app looks on this computer (AppearanceSettings.tsx).
+// The Settings screen, in three tabs. General, ported from the prototype: the connection and Sign out, what shows on
+// launch, voice, screenshots, the local cache, and older history. Appearance: how the app looks on this computer (AppearanceSettings.tsx).
+// Model: the profile's models on Hermes (ModelSettings.tsx).
 // Profiles are switched in the list's header, not here (ADR 0001).
 import { useState } from "react";
-import { ArrowLeft, Download, KeyRound, Lock, LogOut, Palette, PlugZap, Settings2, Trash2 } from "lucide-react";
+import { ArrowLeft, Cpu, Download, KeyRound, Lock, LogOut, Palette, PlugZap, Settings2, ShieldCheck, Trash2 } from "lucide-react";
 import type { Chat, ConnectionStatus } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
 import { TRANSCRIPT_LIMIT_BYTES } from "../hermes/chatCache";
 import { STATUS_LABEL, arrowSelect, fmtSize, routeLabel } from "./bits";
 import type { AppearanceStore, Fonts } from "./appearance";
 import { AppearanceSettings } from "./AppearanceSettings";
+import type { ModelSettingsApi } from "../hermes/modelSettings";
+import { ModelSettings } from "./ModelSettings";
 import { StartupSettings } from "./StartupSettings";
+import { VoiceSettings } from "./Voice";
+import type { VoiceSetup } from "../hermes/pipe";
+import { ScreenshotSettings } from "./ScreenshotSettings";
+import type { ScreenshotSupport } from "../hermes/tauriScreenshot";
 
-type Tab = "general" | "appearance";
+type Tab = "general" | "appearance" | "model";
 const TABS = [
   { id: "general", label: "General", Icon: Settings2 },
   { id: "appearance", label: "Appearance", Icon: Palette },
+  { id: "model", label: "Model", Icon: Cpu },
 ] as const;
 
 /** What a pull added: the older chats in Settled, and any pinned in another Hermes client, which are Active. */
@@ -34,16 +42,21 @@ export function SettingsScreen({
   unsecure,
   username,
   passwordSaved,
+  headers = [],
+  headersSaved = true,
   profile,
   olderPulled,
   cacheBytes,
   appearance,
   listFonts,
+  checkScreenshots,
+  modelSettings,
   onClearCache,
   onPullOlder,
   onSignOut,
   onSetUp,
   onClose,
+  voiceSetup,
 }: {
   status: ConnectionStatus;
   route?: Route;
@@ -51,6 +64,10 @@ export function SettingsScreen({
   username: string;
   /** The keyring kept the password at sign-in. */
   passwordSaved: boolean;
+  /** The names of the extra request headers the connection sends; their values are never shown. */
+  headers?: string[];
+  /** The keyring kept the extra headers at sign-in. */
+  headersSaved?: boolean;
   profile: string;
   olderPulled: boolean;
   /** The storage the saved chat lists and Saved copies take now. */
@@ -58,6 +75,10 @@ export function SettingsScreen({
   appearance: AppearanceStore;
   /** The installed font families, for the font pickers. */
   listFonts: () => Promise<Fonts>;
+  /** How screenshots are taken on this desktop; left out where there is no desktop app to ask. */
+  checkScreenshots?: () => Promise<ScreenshotSupport>;
+  /** The profile's model setup on Hermes. */
+  modelSettings: ModelSettingsApi;
   onClearCache: () => void;
   /** Resolves to the older chats added. */
   onPullOlder: () => Promise<Chat[]>;
@@ -65,6 +86,8 @@ export function SettingsScreen({
   /** Opens setup again, to change the connection or give Hermes a model provider's key. */
   onSetUp?: () => void;
   onClose: () => void;
+  /** The shown profile's voice set-up, for the Voice section. */
+  voiceSetup?: () => Promise<VoiceSetup>;
 }) {
   const [bytes, setBytes] = useState(cacheBytes);
   const [confirmClear, setConfirmClear] = useState(false);
@@ -119,6 +142,11 @@ export function SettingsScreen({
           <div id="settings-panel-appearance" role="tabpanel" aria-labelledby="settings-tab-appearance">
             <AppearanceSettings store={appearance} listFonts={listFonts} />
           </div>
+        ) : tab === "model" ? (
+          <div id="settings-panel-model" role="tabpanel" aria-labelledby="settings-tab-model">
+            {/* A draft lives only while this tab is open, and for one profile. */}
+            <ModelSettings key={profile} api={modelSettings} profile={profile} connected={status === "connected"} />
+          </div>
         ) : (
           <div id="settings-panel-general" role="tabpanel" aria-labelledby="settings-tab-general">
             <section>
@@ -145,7 +173,25 @@ export function SettingsScreen({
                   <LogOut size={14} /> {signingOut ? "Signing out…" : "Sign out"}
                 </button>
               </div>
-              <p className="muted small settings-note">Signing out deletes the saved password from the keyring. You type it again at the next sign-in.</p>
+              {headers.length > 0 && (
+                <div className="muted small settings-headers">
+                  <ShieldCheck size={12} /> Sends {headers.length === 1 ? "an extra request header" : `${headers.length} extra request headers`}:{" "}
+                  {headers.map((h, i) => (
+                    <span key={i}>
+                      {i > 0 && ", "}
+                      <span className="mono">{h}</span>
+                    </span>
+                  ))}
+                  .{" "}
+                  {headersSaved
+                    ? "Their values are saved in your system keyring and never shown."
+                    : "Their values are never shown. The system keyring couldn't save them, so you type them again at the next sign-in."}
+                </div>
+              )}
+              <p className="muted small settings-note">
+                Signing out deletes the saved password from the keyring. You type it again at the next sign-in.
+                {headers.length > 0 && headersSaved && " The extra request headers stay saved, to change or remove on the sign-in screen."}
+              </p>
               {onSetUp && (
                 <div className="settings-row settings-setup">
                   <div className="muted small">
@@ -160,6 +206,9 @@ export function SettingsScreen({
             </section>
 
             <StartupSettings />
+
+            <VoiceSettings status={status} profile={profile} setup={voiceSetup} />
+            <ScreenshotSettings checkSupport={checkScreenshots} />
 
             <section>
               <h2>Local cache</h2>

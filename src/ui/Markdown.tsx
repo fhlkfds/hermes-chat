@@ -1,5 +1,6 @@
 // Markdown with highlighted, copyable code blocks and find-in-chat marks. Ported from the prototype. Single newlines
-// are kept as line breaks, since replies often put one item per line.
+// are kept as line breaks, since replies often put one item per line. Links open in the preview pane, never in the
+// app's own window (previewContext.tsx).
 import { memo, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -7,6 +8,7 @@ import remarkBreaks from "remark-breaks";
 import rehypeHighlight from "rehype-highlight";
 import { Check, Copy } from "lucide-react";
 import { escapeRe } from "./bits";
+import { PreviewLink } from "./previewContext";
 
 type HastNode = { type: string; value?: string; tagName?: string; properties?: Record<string, unknown>; children?: HastNode[] };
 
@@ -79,7 +81,14 @@ export const Markdown = memo(function Markdown({ text, query = "" }: { text: str
     <ReactMarkdown
       remarkPlugins={[remarkGfm, remarkBreaks]}
       rehypePlugins={[() => highlightCode, rehypeFind(query)]}
-      components={{ pre: ({ children }) => <CodeBlock>{children}</CodeBlock> }}
+      components={{
+        pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
+        a: ({ href, title, children }) => (
+          <PreviewLink href={href} title={title}>
+            {children}
+          </PreviewLink>
+        ),
+      }}
     >
       {text}
     </ReactMarkdown>

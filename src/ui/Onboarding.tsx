@@ -1,9 +1,9 @@
-// Setup: connecting Hermes Chat to a Hermes server, step by step (ADR 0006). It opens by itself on a computer with no
+// Setup: connecting Hermes Chat to a Hermes server, step by step (ADR 0009). It opens by itself on a computer with no
 // connection set up, from the sign-in screen to set up a different server, and from Settings to change the connection
 // or give Hermes a model provider's key. Nothing is kept until a tested connection is saved.
 import { useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
-import { Check, CircleAlert, Globe, KeyRound, Minus, ShieldAlert, Terminal, X } from "lucide-react";
-import type { SignInDetails } from "../hermes/tauriPipe";
+import { Check, CircleAlert, Globe, KeyRound, Minus, Plus, ShieldAlert, ShieldCheck, Terminal, X } from "lucide-react";
+import type { ExtraHeader, SignInDetails } from "../hermes/tauriPipe";
 import type { Hermes } from "../hermes/transport";
 import { STAGES, missing, stageLabel, testConnection, type Probe, type ProviderKey, type ProviderSetup, type TestOutcome } from "../hermes/setup";
 import { routeLabel } from "./bits";
@@ -97,7 +97,7 @@ export function Onboarding({
     testing.current = true;
     setTest({ state: "testing" });
     setConnectError(undefined);
-    const outcome = await testConnection(probe, d);
+    const outcome = await testConnection(probe, withHeaders(d));
     if (mine !== run.current) return;
     testing.current = false;
     setTest(outcome.ok || outcome.stage !== "cancelled" ? { state: "done", outcome } : { state: "idle" });
@@ -107,7 +107,7 @@ export function Onboarding({
     setConnecting(true);
     setConnectError(undefined);
     try {
-      setNotSaved((await onConnect(d)).notSaved);
+      setNotSaved((await onConnect(withHeaders(d))).notSaved);
       setSaved(true);
       setD((was) => ({ ...was, password: "" }));
       setStep("providers");
@@ -364,7 +364,24 @@ function Welcome({
 }
 
 /** The SSH or URL choice and its field, shared with the sign-in screen. */
+/** The owner's extra request headers without the rows left blank; Rust checks the rest (ADR 0006). */
+export const withHeaders = (d: SignInDetails): SignInDetails =>
+  d.mode === "url" ? { ...d, headers: (d.headers ?? []).filter((h) => h.name.trim() || h.value.trim()) } : d;
+
+/** Where the dashboard is: an SSH target, or a URL with any extra request headers. Shared with the sign-in screen. */
 export function ServerFields({ d, set }: { d: SignInDetails; set: (patch: Partial<SignInDetails>) => void }) {
+  const headers = d.headers ?? [];
+  const setHeader = (i: number, patch: Partial<ExtraHeader>) => set({ headers: headers.map((h, j) => (j === i ? { ...h, ...patch } : h)) });
+  // Header values filled in from the keyring belong to the URL they were saved for (account.ts). Once the URL is
+  // changed, they are cleared, names kept, so a gateway's secrets never go to another server.
+  const [restoredFor, setRestoredFor] = useState(() => (d.headers?.some((h) => h.value) ? d.url.trim() : undefined));
+  const [cleared, setCleared] = useState(false);
+  const setUrl = (url: string) => {
+    if (restoredFor === undefined || url.trim() === restoredFor) return set({ url });
+    set({ url, headers: headers.map((h) => ({ ...h, value: "" })) });
+    setRestoredFor(undefined);
+    setCleared(true);
+  };
   return (
     <>
       <div className="seg" role="group" aria-label="Connect through">
@@ -390,18 +407,64 @@ export function ServerFields({ d, set }: { d: SignInDetails; set: (patch: Partia
           {(a) => <input {...a} value={d.sshTarget} onChange={(e) => set({ sshTarget: e.target.value })} placeholder="liam@hermes" spellCheck={false} />}
         </Field>
       ) : (
-        <Field
-          key="url"
-          label="Dashboard URL"
-          block
-          hint={
-            <>
-              <Globe size={12} /> <code>http://</code> isn't encrypted unless it stays on this computer or on Tailscale.
-            </>
-          }
-        >
-          {(a) => <input {...a} value={d.url} onChange={(e) => set({ url: e.target.value })} placeholder="http://hermes:9119" spellCheck={false} />}
-        </Field>
+        <>
+          <Field
+            key="url"
+            label="Dashboard URL"
+            block
+            hint={
+              <>
+                <Globe size={12} /> <code>http://</code> isn't encrypted unless it stays on this computer or on Tailscale.
+              </>
+            }
+          >
+            {(a) => <input {...a} value={d.url} onChange={(e) => setUrl(e.target.value)} placeholder="http://hermes:9119" spellCheck={false} />}
+          </Field>
+          <fieldset className="field extra-headers">
+            <legend className="field-label">Extra request headers</legend>
+            {headers.map((h, i) => (
+              <div className="header-row" key={i}>
+                <input
+                  aria-label={`Header ${i + 1} name`}
+                  placeholder="CF-Access-Client-Id"
+                  spellCheck={false}
+                  autoComplete="off"
+                  value={h.name}
+                  onChange={(e) => setHeader(i, { name: e.target.value })}
+                />
+                <input
+                  aria-label={`Header ${i + 1} value`}
+                  type="password"
+                  placeholder="Value"
+                  autoComplete="off"
+                  value={h.value}
+                  onChange={(e) => setHeader(i, { value: e.target.value })}
+                />
+                <button
+                  type="button"
+                  className="icon-btn"
+                  aria-label={`Remove header ${i + 1}`}
+                  title="Remove"
+                  onClick={() => set({ headers: headers.filter((_, j) => j !== i) })}
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            ))}
+            <button type="button" className="btn add-header" onClick={() => set({ headers: [...headers, { name: "", value: "" }] })}>
+              <Plus size={14} /> Add header
+            </button>
+            {cleared && headers.length > 0 && (
+              <span className="field-hint block" role="status">
+                The URL changed, so the saved header values were cleared. Enter them for this URL.
+              </span>
+            )}
+            <span className="field-hint block">
+              <ShieldCheck size={12} /> For a gateway in front of the dashboard, such as Cloudflare Access. Sent with every request to this URL, never
+              to another site. Saved in your system keyring.
+            </span>
+          </fieldset>
+        </>
       )}
     </>
   );
