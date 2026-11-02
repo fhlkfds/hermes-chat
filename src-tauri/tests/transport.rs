@@ -393,3 +393,40 @@ async fn a_direct_url_whose_name_does_not_resolve_is_unreachable() {
     let err = transport::resolve_direct("http://no-such-host.invalid:9119").await.err().unwrap();
     assert!(matches!(err, TransportError::Unreachable(_)), "{err:?}");
 }
+
+#[tokio::test]
+async fn reads_a_staged_image_for_its_preview() {
+    let dir = scratch("preview");
+    let png = dir.join("rack.PNG");
+    std::fs::write(&png, b"\x89PNG\r\n\x1a\nrest").unwrap();
+    assert_eq!(transport::read_preview(&path_of(&png)).await.unwrap(), b"\x89PNG\r\n\x1a\nrest");
+    let webp = dir.join("cat.webp");
+    std::fs::write(&webp, b"RIFF\0\0\0\0WEBPVP8 ").unwrap();
+    assert!(transport::read_preview(&path_of(&webp)).await.is_ok());
+}
+
+#[tokio::test]
+async fn previews_only_images() {
+    let dir = scratch("preview-not-image");
+    let txt = dir.join("notes.txt");
+    std::fs::write(&txt, b"\x89PNG\r\n\x1a\n").unwrap();
+    // Named like an image but isn't one, e.g. a secret renamed.
+    let fake = dir.join("id_rsa.png");
+    std::fs::write(&fake, b"-----BEGIN OPENSSH PRIVATE KEY-----").unwrap();
+    for p in [path_of(&txt), path_of(&fake), "rack.png".into()] {
+        assert_eq!(transport::read_preview(&p).await.err().unwrap().to_string(), "it isn't an image", "{p}");
+    }
+}
+
+#[tokio::test]
+async fn refuses_to_preview_a_missing_or_oversized_image() {
+    let dir = scratch("preview-refused");
+    let err = transport::read_preview(&path_of(&dir.join("gone.png"))).await.err().unwrap();
+    assert_eq!(err.to_string(), "No such file or directory (os error 2)");
+
+    let big = dir.join("big.png");
+    let f = std::fs::File::create(&big).unwrap();
+    f.set_len(transport::PREVIEW_MAX_BYTES + 1).unwrap();
+    let err = transport::read_preview(&path_of(&big)).await.err().unwrap();
+    assert_eq!(err.to_string(), "it's 25.0 MB now, over the 25 MB limit");
+}

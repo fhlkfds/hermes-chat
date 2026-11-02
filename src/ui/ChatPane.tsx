@@ -1,12 +1,13 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 import { ArrowUp, Brain, ChevronDown, ChevronRight, ChevronUp, Paperclip, Search, ShieldAlert, Square, Wrench, X } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import type { ApprovalChoice, ApprovalItem, AttachCheck, Attachment, Chat, ConnectionStatus, Item, Source } from "../hermes/model";
 import { SOURCE_LABEL, isWaiting } from "../hermes/model";
 import { Markdown } from "./Markdown";
-import { SettleButton, SourceIcon, Spinner, fmtSize, highlight } from "./bits";
+import { SettleButton, SourceIcon, Spinner, highlight } from "./bits";
+import { AttachmentChip, Previews, readPreview } from "./previews";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type ThinkingItem = Extract<Item, { kind: "thinking" }>;
@@ -419,6 +420,16 @@ function Composer({
   const [refused, setRefused] = useState<string[]>([]);
   const [dragging, setDragging] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const previews = useRef<Previews>(null);
+  const [, previewed] = useReducer((n: number) => n + 1, 0);
+
+  // Thumbnails follow the staged list, so removing, sending or replacing an image releases its preview.
+  useEffect(() => {
+    const p = new Previews(readPreview, previewed);
+    previews.current = p;
+    return () => p.dispose();
+  }, []);
+  useEffect(() => previews.current?.sync(attachments), [attachments]);
 
   const add = async (paths: string[]) => {
     if (!paths.length) return;
@@ -489,14 +500,12 @@ function Composer({
         {attachments.length > 0 && (
           <div className="chips">
             {attachments.map((f) => (
-              <span key={f.path} className="chip" title={f.path}>
-                <Paperclip size={12} />
-                <span className="chip-name">{f.name}</span>
-                <span className="chip-size">{fmtSize(f.size)}</span>
-                <button title="Remove" onClick={() => setAttachments((cur) => cur.filter((x) => x.path !== f.path))}>
-                  <X size={12} />
-                </button>
-              </span>
+              <AttachmentChip
+                key={f.path}
+                file={f}
+                preview={previews.current?.get(f.path)}
+                onRemove={() => setAttachments((cur) => cur.filter((x) => x.path !== f.path))}
+              />
             ))}
           </div>
         )}
