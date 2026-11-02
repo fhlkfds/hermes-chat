@@ -1,7 +1,8 @@
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { connect, type Hermes } from "./hermes/transport";
 import { type Account, type SavedSignIn, savedSignIn, signIn, signOut } from "./hermes/account";
 import { localChatCache } from "./hermes/chatCache";
+import { exportChat } from "./hermes/exportChat";
 import { systemKeyring } from "./hermes/tauriKeyring";
 import { tauriPipe, type SignInDetails } from "./hermes/tauriPipe";
 import type { Attachment, Chat, Found } from "./hermes/model";
@@ -204,6 +205,16 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
     void hermes.delete(id).then((deleted) => deleted && setToast({ text: `Deleted: ${title}`, at: Date.now() }));
   };
 
+  // One Save dialog at a time: a second click while it is open does nothing.
+  const exporting = useRef(false);
+  const exportSelected = (chat: Chat) => {
+    if (exporting.current) return;
+    exporting.current = true;
+    void exportChat(chat)
+      .then((text) => text && setToast({ text, at: Date.now() }))
+      .finally(() => (exporting.current = false));
+  };
+
   useEffect(() => {
     if (!toast) return;
     const timer = setTimeout(() => setToast(null), TOAST_MS);
@@ -304,6 +315,7 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
             onStop={() => void hermes.stop(selected.id)}
             onAnswer={(approvalId, choice) => void hermes.answerApproval(selected.id, approvalId, choice)}
             onSettle={selected === draft ? undefined : (s) => setSettled(selected.id, s)}
+            onExport={selected === draft ? undefined : () => exportSelected(selected)}
           />
         )}
       </main>

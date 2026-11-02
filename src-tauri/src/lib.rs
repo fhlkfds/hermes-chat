@@ -5,7 +5,8 @@ pub mod tunnel;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::ipc::Channel;
-use tauri::State;
+use tauri::{Manager, State};
+use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Mutex;
 use transport::{Dashboard, LocalFile, Pipe, PipeEvent, SignIn};
 use tunnel::Tunnel;
@@ -138,6 +139,29 @@ async fn password_delete() -> Result<(), String> {
     saved_password::delete().await
 }
 
+/// Saves an exported chat (src/hermes/exportChat.ts) where the owner picks in the native Save dialog, which asks
+/// before replacing a file. The webview never names the path. `None`: the owner cancelled, and nothing was written.
+#[tauri::command]
+async fn chat_export(app: tauri::AppHandle, markdown: String, file_name: String) -> Result<Option<String>, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_title("Export chat — the file may contain sensitive information from the chat")
+        .set_file_name(file_name)
+        .add_filter("Markdown", &["md"]);
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.set_parent(&window);
+    }
+    dialog.save_file(move |path| {
+        let _ = tx.send(path);
+    });
+    let Some(path) = rx.await.map_err(|e| e.to_string())? else { return Ok(None) };
+    let path = path.into_path().map_err(|e| e.to_string())?;
+    std::fs::write(&path, markdown).map_err(|e| e.to_string())?;
+    Ok(Some(path.display().to_string()))
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -151,7 +175,8 @@ pub fn run() {
             hermes_disconnect,
             password_load,
             password_save,
-            password_delete
+            password_delete,
+            chat_export
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

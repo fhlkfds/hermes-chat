@@ -23,6 +23,10 @@ The owner's manual actions that move a chat from Active to Settled, and back.
 The owner's action that removes a chat from Hermes for good, in every Hermes client. Unlike settling, it can't be undone, so the app asks first. A chat with a reply running can't be deleted.
 _Avoid_: remove, archive
 
+**Export**:
+Saving one chat as a Markdown file, in a place the owner picks in the Save dialog. The file holds only what Hermes Chat has loaded for the chat. It names attachments but never includes their contents. It also warns that the chat itself may contain sensitive information.
+_Avoid_: download, backup
+
 **Unread**:
 A chat with something new in it since the owner last opened it, in this app or any other Hermes client. It shows a dot, and so does the collapsed Settled header when a Settled chat is unread. The chat on screen never shows the dot.
 _Avoid_: new, unseen

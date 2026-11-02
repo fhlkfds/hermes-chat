@@ -1,6 +1,6 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowUp, Brain, ChevronDown, ChevronRight, ChevronUp, Paperclip, Search, ShieldAlert, Square, Wrench, X } from "lucide-react";
+import { ArrowUp, Brain, ChevronDown, ChevronRight, ChevronUp, FileDown, Paperclip, Search, ShieldAlert, Square, Wrench, X } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import type { ApprovalChoice, ApprovalItem, AttachCheck, Attachment, Chat, ConnectionStatus, Item, Source } from "../hermes/model";
@@ -39,7 +39,7 @@ const STATUS_NOTE: Record<ConnectionStatus, string | undefined> = {
 
 /**
  * `alsoPostsIn`: the Telegram or Discord chat Hermes will also post its replies in. `onAnswer` answers an Approval card.
- * `onSettle` is left out for a chat not started yet. Ctrl+F opens the find bar.
+ * `onSettle` and `onExport` are left out for a chat not started yet. Ctrl+F opens the find bar.
  */
 export function ChatPane({
   chat,
@@ -51,6 +51,7 @@ export function ChatPane({
   onStop,
   onAnswer,
   onSettle,
+  onExport,
 }: {
   chat: Chat;
   findTarget?: FindTarget;
@@ -61,6 +62,7 @@ export function ChatPane({
   onStop: () => void;
   onAnswer: (approvalId: string, choice: ApprovalChoice) => void;
   onSettle?: (settled: boolean) => void;
+  onExport?: () => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const findRef = useRef<HTMLInputElement>(null);
@@ -158,6 +160,11 @@ export function ChatPane({
           >
             <Search size={16} />
           </button>
+          {onExport && (
+            <button className="icon-btn" title="Export as Markdown" onClick={onExport}>
+              <FileDown size={16} />
+            </button>
+          )}
           {onSettle && <SettleButton settled={chat.settled} size={16} className="icon-btn" onSettle={onSettle} />}
         </div>
         {findOpen && (
