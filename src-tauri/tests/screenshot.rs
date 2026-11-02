@@ -449,6 +449,7 @@ fn a_reused_process_slot_never_overwrites_an_outbox_capture() {
     let (root, captures) = fresh_root("slot-reuse");
     let old = captures.mine().join("0");
     std::fs::create_dir_all(&old).unwrap();
+    std::fs::set_permissions(captures.mine(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let old_file = old.join("old.png");
     std::fs::write(&old_file, PNG).unwrap();
     let new = captures.slot("new.png").unwrap();
