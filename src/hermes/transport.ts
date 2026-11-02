@@ -780,10 +780,15 @@ export class Hermes {
     if (!chat) throw new Error("This chat isn't in the list.");
     const from = chat.title;
     const profile = this.profile;
-    // Tool rows count toward the limit, so a page holds more rows than the messages a title needs.
-    const query = new URLSearchParams({ profile, order: "latest", limit: "50", inline_images: "false" });
-    const res = (await this.rest("GET", `${sessionPath(chatId)}/messages?${query}`)) as { messages?: StoredMessage[] };
-    const input = titleInput(res.messages ?? []);
+    // Tool rows count toward each page, so older pages are read until the last messages are all in.
+    let rows: StoredMessage[] = [];
+    for (let offset = 0; offset < TITLE_MAX_ROWS; offset += TITLE_PAGE_ROWS) {
+      const query = new URLSearchParams({ profile, order: "latest", limit: String(TITLE_PAGE_ROWS), offset: String(offset), inline_images: "false" });
+      const page = ((await this.rest("GET", `${sessionPath(chatId)}/messages?${query}`)) as { messages?: StoredMessage[] }).messages ?? [];
+      rows = [...page, ...rows];
+      if (page.length < TITLE_PAGE_ROWS || saidIn(rows).length >= TITLE_FROM_MESSAGES) break;
+    }
+    const input = titleInput(rows);
     if (!input) throw new Error("This chat has no messages to make a title from.");
     const { text } = (await this.request("llm.oneshot", { profile, instructions: TITLE_INSTRUCTIONS, input, max_tokens: 512 })) as { text?: string };
     const title = cleanTitle(text ?? "");
@@ -1664,7 +1669,11 @@ const withoutStop = (text: string) => text.replace(/\.$/, "");
 /** How many of the chat's latest messages a new title is made from, and how much of each goes to the model. */
 const TITLE_FROM_MESSAGES = 5;
 const TITLE_MESSAGE_CHARS = 1000;
-/** Longest title kept from Hermes's answer; a longer answer is cut at a word. */
+/** Stored rows read per page while looking for those messages (`order=latest` pages back from the newest), and at most. */
+const TITLE_PAGE_ROWS = 100;
+// ponytail: a chat whose last 1000 rows hold fewer than five messages is titled from what they hold.
+const TITLE_MAX_ROWS = 1000;
+/** Longest title kept from Hermes's answer; a longer answer is cut at a word, or at the limit if it has none. */
 const TITLE_MAX_CHARS = 60;
 const TITLE_INSTRUCTIONS = [
   "You name chat sessions. Given the latest messages of a chat, write a title that says what the chat is about now,",
@@ -1682,12 +1691,16 @@ function storedText(content: unknown): string {
   return content.map((p) => (p && typeof p === "object" && typeof (p as { text?: unknown }).text === "string" ? (p as { text: string }).text : "")).join(" ");
 }
 
-/** The chat's last messages as the model reads them, oldest first; empty when it has none. */
-export function titleInput(rows: StoredMessage[]): string {
-  return rows
+/** The user and assistant messages with text among stored rows, oldest first. */
+const saidIn = (rows: StoredMessage[]) =>
+  rows
     .filter((r) => r.role === "user" || r.role === "assistant")
     .map((r) => ({ who: r.role === "user" ? "USER" : "ASSISTANT", text: storedText(r.content).trim() }))
-    .filter((m) => m.text)
+    .filter((m) => m.text);
+
+/** The chat's last messages as the model reads them, oldest first; empty when it has none. */
+export function titleInput(rows: StoredMessage[]): string {
+  return saidIn(rows)
     .slice(-TITLE_FROM_MESSAGES)
     .map((m) => `${m.who}: ${m.text.slice(0, TITLE_MESSAGE_CHARS)}`)
     .join("\n\n");
@@ -1700,7 +1713,13 @@ export function cleanTitle(answer: string): string {
     .replace(/^\s*(#+\s*)?(\*\*)?title(\*\*)?\s*:\s*/i, "")
     .replace(/^[\s"'“”‘’`*_]+|[\s"'“”‘’`*_.!?]+$/g, "");
   // One character more than fits shows whether the cut lands inside a word, which then goes.
-  if (title.length > TITLE_MAX_CHARS) title = title.slice(0, TITLE_MAX_CHARS + 1).replace(/\s+\S*$/, "");
+  // With no space to cut at, it is cut at the limit, never inside a character.
+  if (title.length > TITLE_MAX_CHARS)
+    title = title
+      .slice(0, TITLE_MAX_CHARS + 1)
+      .replace(/\s+\S*$/, "")
+      .slice(0, TITLE_MAX_CHARS)
+      .replace(/[\uD800-\uDBFF]$/, "");
   return title.trim();
 }
 

@@ -20,7 +20,12 @@ const talk: Stored[] = [
 async function listed(rows: Stored[] = talk) {
   const server = new FakeHermes();
   server.sessions = [row("a", 1, { title: "Lisbon trip" })];
-  server.rest["GET /api/sessions/a/messages"] = () => ({ session_id: "a", profile: "default", messages: rows, pagination: {} });
+  // `order=latest` pages back from the newest row and returns each page oldest first (`get_messages` at `bf0203a`).
+  server.rest["GET /api/sessions/a/messages"] = ({ query }) => {
+    const limit = Number(query.get("limit")), offset = Number(query.get("offset") ?? 0);
+    const end = Math.max(0, rows.length - offset);
+    return { session_id: "a", profile: "default", messages: rows.slice(Math.max(0, end - limit), end), pagination: {} };
+  };
   const hermes = await connect(server.openPipe);
   await hermes.sync();
   const title = () => hermes.getSnapshot().chats.find((c) => c.id === "a")!.title;
@@ -53,6 +58,18 @@ describe("Regenerating a chat's title", () => {
     expect(server.requests.some((r) => r.method === "prompt.submit" || r.method === "session.resume")).toBe(false);
     expect(editFlags(patches()[0].body)).toEqual({ title: "Nightly backup job fix", profile: "default" });
     expect(title()).toBe("Nightly backup job fix");
+  });
+
+  it("reads older pages until it has the last five messages, past a long run of tool rows", async () => {
+    const tools = Array.from({ length: 150 }, (_, i) => ({ id: 100 + i, role: "tool", content: `step ${i}` }));
+    const { server, hermes, asks } = await listed([...talk, ...tools]);
+
+    await hermes.regenerateTitle("a");
+
+    const reads = server.restRequests.filter((r) => r.path === "/api/sessions/a/messages").map((r) => r.query.get("offset"));
+    expect(reads).toEqual(["0", "100"]);
+    expect(String(asks()[0].params.input).split("\n\n")).toHaveLength(5);
+    expect(asks()[0].params.input).toContain("USER: Thanks");
   });
 
   it("keeps the old title and says why when the model call fails", async () => {
@@ -97,5 +114,12 @@ describe("cleanTitle", () => {
     expect(cleanTitle("Investigate why the nightly backup job stopped running afterwards")).toBe(
       "Investigate why the nightly backup job stopped running",
     );
+  });
+
+  it("cuts an answer with no space to cut at at the limit", () => {
+    expect(cleanTitle("x".repeat(80))).toBe("x".repeat(60));
+    expect(cleanTitle("夜".repeat(70))).toBe("夜".repeat(60));
+    // Never half of a character written as two UTF-16 units.
+    expect(cleanTitle(`${"x".repeat(59)}😀more`)).toBe("x".repeat(59));
   });
 });
