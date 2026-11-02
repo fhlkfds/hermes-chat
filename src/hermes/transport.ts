@@ -9,6 +9,8 @@
 // "Approvals on the legacy generation".
 // The list holds the past month's chats until the owner pulls older history for the profile; from then on it holds
 // them all.
+// While the window is out of focus, a reply finishing or an Approval arriving shows a desktop notification, and the chat
+// on screen isn't marked read.
 // Each chat opened lately keeps a Saved copy of its transcript on this computer, shown while Hermes can't be reached
 // or the history is on the way; when the first connection at launch fails, the saved list and copies still open.
 // Unread chats in the other profiles are polled over dashboard REST (otherProfiles.ts).
@@ -70,6 +72,14 @@ export type ChatCache = {
   olderPulled(profile: string): boolean;
   rememberOlderPulled(profile: string): void;
 };
+/** Shows a desktop notification; rejects if it can't. */
+export type Notify = (n: { title: string; body: string }) => Promise<void>;
+/** What notifications say. They never quote a chat's title or messages, or an Approval's command. */
+export const NOTICES = {
+  finished: { title: "Hermes finished a reply", body: "Open Hermes Chat to read it." },
+  approval: { title: "Hermes is asking for approval", body: "A command is waiting for your answer in Hermes Chat." },
+};
+
 const noCache: ChatCache = {
   load: () => [],
   save: () => {},
@@ -169,6 +179,16 @@ export class ProtocolMismatchError extends Error {
 }
 
 /**
+ * A rename that would have overwritten another edit of the chat, made in another Hermes client since the owner
+ * started. `title`: the chat's title on the server now, which the app shows instead.
+ */
+export class RenameConflict extends Error {
+  constructor(readonly title: string) {
+    super(`This chat changed in another Hermes client and is now called "${title}". Save again to rename it anyway.`);
+  }
+}
+
+/**
  * The connection dropped after a request went out and before Hermes answered it, so whether Hermes got it can't be
  * known. A JSON-RPC id means nothing on the next connection, so asking again there isn't safe.
  */
@@ -212,8 +232,8 @@ export type Snapshot = {
  * Connects to Hermes for `profile`, by default the one shown last; rejects if the first connection fails. Later drops
  * are reconnected by the returned Hermes.
  */
-export async function connect(openPipe: OpenPipe, profile?: string, cache: ChatCache = noCache): Promise<Hermes> {
-  const hermes = new Hermes(openPipe, profile ?? cache.lastProfile() ?? "default", cache);
+export async function connect(openPipe: OpenPipe, profile?: string, cache: ChatCache = noCache, notify?: Notify): Promise<Hermes> {
+  const hermes = new Hermes(openPipe, profile ?? cache.lastProfile() ?? "default", cache, notify);
   await hermes.dial();
   return hermes;
 }
@@ -223,8 +243,8 @@ export async function connect(openPipe: OpenPipe, profile?: string, cache: ChatC
  * profile shown last, its chat list and the Saved copies of the chats opened lately, which keeps trying to connect as
  * after a drop. Undefined when no chat list is saved, so there is nothing to read.
  */
-export function readSaved(openPipe: OpenPipe, reason: string, cache: ChatCache): Hermes | undefined {
-  return Hermes.readSaved(openPipe, reason, cache);
+export function readSaved(openPipe: OpenPipe, reason: string, cache: ChatCache, notify?: Notify): Hermes | undefined {
+  return Hermes.readSaved(openPipe, reason, cache, notify);
 }
 
 export class Hermes {
@@ -260,8 +280,17 @@ export class Hermes {
   private pinWrites = new Map<string, Promise<void>>();
   /** Chats whose pinned flag was written since the list sync under way read the list, which may predate the write. */
   private pinnedSinceListRead = new Set<string>();
+  /** Chats renamed since the list sync under way read the list, which may predate the rename. */
+  private retitledSinceListRead = new Set<string>();
   /** The chat on screen. It is kept read: new activity in it doesn't show the dot. */
   private viewing?: string;
+  /** The app's window has the owner's focus (`setFocused`). */
+  private focused = true;
+  /** The chat on screen had something new while the window was out of focus, so it is marked read once it's back. */
+  private readWhenBack = false;
+  /** Approvals already notified, or that arrived in focus, by runtime session and request id. Hermes lists one again
+   * after a reconnect. */
+  private notified = new Set<string>();
   /** The latest write marking each chat read, while it is under way. */
   private readWrites = new Map<string, Promise<void>>();
   /** Chats marked read since the list sync under way read the list, which may predate the write. */
@@ -301,13 +330,14 @@ export class Hermes {
     private openPipe: OpenPipe,
     profile: string,
     private cache: ChatCache = noCache,
+    private notify: Notify = () => Promise.resolve(),
   ) {
     this.snapshot = { profile, chats: cache.load(profile), olderPulled: cache.olderPulled(profile), status: "offline", unsecure: false, others: noOthers };
   }
 
   /** See `readSaved`. */
-  static readSaved(openPipe: OpenPipe, reason: string, cache: ChatCache): Hermes | undefined {
-    const hermes = new Hermes(openPipe, cache.lastProfile() ?? "default", cache);
+  static readSaved(openPipe: OpenPipe, reason: string, cache: ChatCache, notify?: Notify): Hermes | undefined {
+    const hermes = new Hermes(openPipe, cache.lastProfile() ?? "default", cache, notify);
     if (!hermes.snapshot.chats.length) return undefined;
     hermes.dropped(reason);
     return hermes;
@@ -430,7 +460,8 @@ export class Hermes {
         const role = r.role === "user" || r.role === "assistant" ? r.role : undefined;
         return {
           chatId: r.id,
-          title: r.title || r.preview || c?.title || "Untitled chat",
+          // The list's title, so a chat is called the same in both while the search index catches up with a rename.
+          title: c?.title ?? listTitle(r),
           source: toSource(r.source),
           // Every pinned chat is listed, so one that isn't is Settled.
           settled: c?.settled ?? true,
@@ -465,6 +496,17 @@ export class Hermes {
     return (holding(longest) || holding(flat(found.find ?? "")) || undefined)?.id;
   }
 
+  /**
+   * Whether the app's window has the owner's focus. Out of focus, a reply finishing or an Approval arriving shows a
+   * desktop notification, and the chat on screen isn't marked read; once the window is back in focus, it is.
+   */
+  setFocused(focused: boolean) {
+    this.focused = focused;
+    if (!focused || !this.readWhenBack) return;
+    this.readWhenBack = false;
+    if (this.viewing) this.markRead(this.viewing);
+  }
+
   subscribe = (fn: () => void) => {
     this.listeners.add(fn);
     return () => void this.listeners.delete(fn);
@@ -496,15 +538,15 @@ export class Hermes {
    * Opens a chat: one this connection hasn't resumed yet is resumed now and shows its stored history, and its Saved
    * copy meanwhile. If that fails the chat shows why, and the next open tries again. The chat is on screen until
    * `leave`: it is marked read on the server, and stays read while the owner is in it. Hermes counts a chat no client
-   * has marked as read, and only marking it lets later activity show the dot. While not connected, the chat shows its
-   * Saved copy only; the app opens it again once connected.
+   * has marked as read, and only marking it lets later activity show the dot. Out of focus, marking it waits until the
+   * window is back. While not connected, the chat shows its Saved copy only; the app opens it again once connected.
    */
   async open(chatId: string): Promise<void> {
     if (!this.snapshot.chats.some((c) => c.id === chatId)) return;
     this.viewing = chatId;
     this.showSaved(chatId);
     if (this.snapshot.status !== "connected") return;
-    this.markRead(chatId);
+    this.seen(chatId);
     try {
       await this.resume(chatId);
       if (this.viewing === chatId) this.tellShown(chatId);
@@ -518,7 +560,9 @@ export class Hermes {
 
   /** The owner has moved off the chat; new activity in it shows the dot again. */
   leave(chatId: string) {
-    if (this.viewing === chatId) this.viewing = undefined;
+    if (this.viewing !== chatId) return;
+    this.viewing = undefined;
+    this.readWhenBack = false;
   }
 
   /** Checks local files the owner wants to attach: images up to 25 MB, other files up to 256 MB. */
@@ -638,6 +682,44 @@ export class Hermes {
       this.saveList(profile, chats);
       return false;
     }
+  }
+
+  /**
+   * Renames a chat in every Hermes client (`PATCH {title}`). `from` is the title the owner was looking at when they
+   * started; the edit names the session's revision, so it can't overwrite a rename made elsewhere meanwhile. The
+   * title shown here changes only once Hermes reads it back, and resolves to it. Rejects, leaving the old title, if
+   * the title is empty, Hermes refuses it, or it's unclear whether it was saved; with a `RenameConflict` if the chat
+   * changed elsewhere first. Nothing is retried on its own.
+   */
+  async rename(chatId: string, proposed: string, from: string): Promise<string> {
+    const title = proposed.trim();
+    if (!title) throw new Error("A chat needs a title.");
+    if (title === from) return from;
+    const profile = this.profile;
+    // Read in this order, a rename elsewhere either shows in the title or makes the revision stale.
+    const revision = await this.revision(chatId, profile);
+    const current = await this.readTitle(chatId, profile);
+    // An earlier try whose answer was lost may have saved it already.
+    if (current === title) return this.retitled(chatId, current);
+    if (current !== from) throw new RenameConflict(this.retitled(chatId, current));
+    try {
+      await this.fencedPatch(chatId, profile, { title }, revision);
+    } catch (e) {
+      const why = (e as Error).message;
+      const conflict = why.includes("revision_conflict");
+      if (!conflict && /^The dashboard answered 4/.test(why)) throw e;
+      // The edit may have landed though its answer was lost, so the title as stored now decides.
+      const now = await this.readTitle(chatId, profile).catch(() => {
+        throw new Error(`Couldn't tell whether Hermes saved the new title: ${why}`);
+      });
+      if (now === title) return this.retitled(chatId, now);
+      if (conflict) throw new RenameConflict(this.retitled(chatId, now));
+      throw e;
+    }
+    const saved = await this.readTitle(chatId, profile).catch((e) => {
+      throw new Error(`Couldn't tell whether Hermes saved the new title: ${(e as Error).message}`);
+    });
+    return this.retitled(chatId, saved);
   }
 
   /**
@@ -817,7 +899,9 @@ export class Hermes {
     // By the end of a turn Hermes has stored the session, so a pin that failed earlier can succeed.
     if (type === "message.complete" && this.pinWanted.has(chat.id)) this.track(this.writePin(chat.id));
     // The finished reply is newer than the read watermark, though the owner watched it come in.
-    if (type === "message.complete" && chat.id === this.viewing) this.markRead(chat.id);
+    if (type === "message.complete" && chat.id === this.viewing) this.seen(chat.id);
+    // A turn ends once; a repeated end finds the chat no longer running.
+    if ((type === "message.complete" || type === "error") && chat.running) this.alert(NOTICES.finished);
     if (type === "message.complete") this.saveTranscript(chat.id);
   }
 
@@ -878,6 +962,8 @@ export class Hermes {
             ...c,
             items: c.items.map((i): Item => ((i.kind === "user" || i.kind === "assistant") && at.has(i) ? { ...i, at: at.get(i) } : i)),
           }));
+        // The Saved copy was taken when the turn ended, before the times arrived.
+        if (at.size) this.saveTranscript(chatId);
       })(),
     );
   }
@@ -900,6 +986,10 @@ export class Hermes {
 
   /** Adds a card for each Approval request the chat doesn't show yet. A request can be listed more than once. */
   private showApprovals(chatId: string, reqs: ServerRequest[]) {
+    const runtimeId = this.snapshot.chats.find((c) => c.id === chatId)?.runtimeId;
+    const fresh = reqs.filter((r) => r.method === "approval" && !this.notified.has(`${runtimeId} ${r.id}`));
+    for (const r of fresh) this.notified.add(`${runtimeId} ${r.id}`);
+    if (fresh.length) this.alert(NOTICES.approval);
     this.patchChat(chatId, (c) => {
       const shown = new Set(c.items.map((i) => i.id));
       const cards = reqs.filter((r) => r.method === "approval" && !shown.has(r.id) && shown.add(r.id)).map(approvalItem);
@@ -1118,6 +1208,17 @@ export class Hermes {
     return write;
   }
 
+  /** Marks the chat on screen read, or once the window is back in focus. */
+  private seen(chatId: string) {
+    if (this.focused) this.markRead(chatId);
+    else this.readWhenBack = true;
+  }
+
+  /** A desktop notification, out of focus only. A missing notification service, or one that refuses, changes nothing. */
+  private alert(n: { title: string; body: string }) {
+    if (!this.focused) this.track(Promise.resolve().then(() => this.notify(n)));
+  }
+
   /**
    * Clears the chat's dot here at once and moves its shared read watermark to now (`PATCH {unread: false}`), so
    * opening it here clears the dot in every Hermes client. A failed write isn't reported: the next refresh shows
@@ -1133,11 +1234,19 @@ export class Hermes {
     this.track(write);
   }
 
+  /** Shows the title Hermes read back for a renamed chat. */
+  private retitled(chatId: string, title: string): string {
+    this.retitledSinceListRead.add(chatId);
+    this.patchChat(chatId, (c) => ({ ...c, title }));
+    return title;
+  }
+
   private async syncOnce(): Promise<Error | undefined> {
     const profile = this.profile;
     const cutoff = this.snapshot.olderPulled ? -Infinity : Date.now() - LIST_WINDOW_MS;
     this.pinnedSinceListRead.clear();
     this.readSinceListRead.clear();
+    this.retitledSinceListRead.clear();
     const rows = new Map<string, SessionRow>();
     try {
       for (let page = 0; page < MAX_PAGES; page++) {
@@ -1183,7 +1292,8 @@ export class Hermes {
           items: [],
           ...c,
           id: r.id,
-          title: r.title || r.preview || c?.title || "Untitled chat",
+          // A row read before this app's latest rename is stale too.
+          title: c && this.retitledSinceListRead.has(r.id) ? c.title : listTitle(r, c?.title),
           source: toSource(r.source),
           settled: !(wanted ?? r.pinned),
           updatedAt: Math.max(c?.updatedAt ?? 0, lastActive(r)),
@@ -1197,7 +1307,7 @@ export class Hermes {
     const chats = [...onThisConnection, ...listed];
     this.listedAt = Date.now();
     this.update({ chats, syncError: undefined });
-    if (readOnScreen) this.markRead(this.viewing!);
+    if (readOnScreen) this.seen(this.viewing!);
     this.saveList(profile, chats);
     return undefined;
   }
@@ -1228,21 +1338,38 @@ export class Hermes {
    * Sets a session's sidebar flags. Hermes refuses a session edit without a request id and the session's current
    * revision (409 `client_upgrade_required`), so each write first reads the revision from the mutation snapshot.
    * The flags are plain values, so a write that loses to another edit of the same session (`revision_conflict`) is
-   * sent once more against the new revision. A profile switch can redial between the read and the write; the write
-   * names its profile, so it goes out on the new connection.
+   * sent once more against the new revision.
    */
   private async patchSession(chatId: string, profile: string, flags: { pinned?: boolean; unread?: boolean }): Promise<void> {
-    const path = `api/sessions/${encodeURIComponent(chatId)}`;
     for (let attempt = 0; ; attempt++) {
-      const snapshot = (await this.rest("GET", `${path}/mutation-snapshot?${new URLSearchParams({ profile })}`)) as MutationSnapshot;
-      if (!this.pipe) await this.redialing;
+      const revision = await this.revision(chatId, profile);
       try {
-        await this.rest("PATCH", path, { ...flags, profile, request_id: crypto.randomUUID(), expected_revision: snapshot.runtime_revision });
-        return;
+        return await this.fencedPatch(chatId, profile, flags, revision);
       } catch (e) {
         if (attempt > 0 || !(e as Error).message.includes("revision_conflict")) throw e;
       }
     }
+  }
+
+  /** The session's current revision, which every session edit must name (`GET .../mutation-snapshot`). */
+  private async revision(chatId: string, profile: string): Promise<number> {
+    const query = new URLSearchParams({ profile });
+    return ((await this.rest("GET", `${sessionPath(chatId)}/mutation-snapshot?${query}`)) as MutationSnapshot).runtime_revision;
+  }
+
+  /**
+   * One session edit against `revision`, with a new request id. A profile switch can redial between reading the
+   * revision and writing; the edit names its profile, so it goes out on the new connection.
+   */
+  private async fencedPatch(chatId: string, profile: string, edit: Record<string, unknown>, revision: number): Promise<void> {
+    if (!this.pipe) await this.redialing;
+    await this.rest("PATCH", sessionPath(chatId), { ...edit, profile, request_id: crypto.randomUUID(), expected_revision: revision });
+  }
+
+  /** The chat's title as Hermes stores it now (`GET /api/sessions/{id}`), shown the way the list shows it. */
+  private async readTitle(chatId: string, profile: string): Promise<string> {
+    const row = (await this.rest("GET", `${sessionPath(chatId)}?${new URLSearchParams({ profile })}`)) as SessionRow;
+    return listTitle(row);
   }
 
   private async rest(method: "GET" | "PATCH" | "DELETE", pathAndQuery: string, body?: unknown): Promise<unknown> {
@@ -1284,6 +1411,13 @@ export class Hermes {
     this.snapshot = { ...this.snapshot, ...patch };
     for (const fn of this.listeners) fn();
   }
+}
+
+const sessionPath = (chatId: string) => `api/sessions/${encodeURIComponent(chatId)}`;
+
+/** A session's title as the list shows it: an untitled one by its first words. */
+function listTitle(r: Pick<SessionRow, "title" | "preview">, known?: string): string {
+  return r.title || r.preview || known || "Untitled chat";
 }
 
 /** `prompt.submit` went out and the connection dropped before Hermes answered it. */

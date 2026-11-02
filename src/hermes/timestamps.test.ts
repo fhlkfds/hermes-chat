@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { FakeHermes, row, type TranscriptMessage } from "./fakeHermes";
+import { memoryCache } from "./memoryCache";
 import { connect } from "./transport";
 
 /** A stored time, Unix seconds, as Hermes keeps it. */
@@ -112,6 +113,30 @@ describe("Times on a turn sent from here", () => {
       { kind: "assistant", id: "a-3", text: "82% used.", at: (T + 9) * 1000 },
     ]);
     expect(Object.fromEntries(messageReads(server)[0].query)).toEqual({ profile: "default", order: "latest", limit: "100", inline_images: "false" });
+  });
+
+  it("keeps the times in the chat's Saved copy", async () => {
+    const server = new FakeHermes();
+    server.sessions = [row("a", 1)];
+    server.transcripts = { a: [] };
+    const cache = memoryCache();
+    const hermes = await connect(server.openPipe, undefined, cache);
+    await hermes.sync();
+    server.userRowId = 41;
+    storedRows(server, [
+      { id: 41, role: "user", content: "Disk usage?", timestamp: T },
+      { id: 42, role: "assistant", content: "82% used.", timestamp: T + 9 },
+    ]);
+    await hermes.send("a", "Disk usage?");
+    const rt = server.runtimeIdOf("a")!;
+    server.event(rt, "message.delta", { text: "82% used." });
+    server.event(rt, "message.complete", completed("82% used.", { row_ids: [41, 42], user_row_id: 41, final_assistant_row_id: 42 }));
+    await hermes.idle();
+
+    expect(cache.loadTranscript("default", "a")?.items).toEqual([
+      { kind: "user", id: "u-0", text: "Disk usage?", at: T * 1000 },
+      { kind: "assistant", id: "a-1", text: "82% used.", at: (T + 9) * 1000 },
+    ]);
   });
 
   it("leaves the times off when the named rows aren't on the stored page, even if rows with the same words are", async () => {

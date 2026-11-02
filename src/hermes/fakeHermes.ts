@@ -296,6 +296,7 @@ export class FakeHermes {
         const handler =
           this.rest[`${method} ${req.path}`] ??
           (method === "PATCH" && patch ? () => this.patchSession(patch[1], req.body!) : undefined) ??
+          (method === "GET" && patch ? () => this.sessionDetail(decodeURIComponent(patch[1]), req.query.get("profile")) : undefined) ??
           (method === "DELETE" && patch ? () => this.deleteSession(decodeURIComponent(patch[1]), req.query.get("profile")) : undefined) ??
           (method === "GET" && snapshot ? () => this.mutationSnapshot(snapshot[1], req.query.get("profile")) : undefined);
         if (!handler) throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
@@ -415,7 +416,21 @@ export class FakeHermes {
     s.runtime_revision = (s.runtime_revision ?? 0) + 1;
     if (typeof body.pinned === "boolean") s.pinned = body.pinned;
     if (typeof body.unread === "boolean") s.last_read_at = body.unread ? 0 : now();
+    if (typeof body.title === "string") {
+      // `set_session_title`: titles are unique in a profile, and a clash is a 400 (`_mutate_session_request`).
+      const title = body.title.trim();
+      if (title && this.storeOrFail(body.profile as string | undefined).some((r) => r !== s && r.title === title))
+        throw new Error(`The dashboard answered 400: {"detail":"Title '${title}' is already in use by session ${id}"}`);
+      s.title = title || null;
+    }
     return { ok: true };
+  }
+
+  /** `get_session_detail` in `hermes_cli/web_routers/sessions.py`: the whole stored row. */
+  private sessionDetail(id: string, profile: string | null) {
+    const s = this.storeOrFail(profile).find((r) => r.id === id);
+    if (!s) throw new Error(`The dashboard answered 404: {"detail":"Session not found"}`);
+    return { ...s, profile: profile ?? "default" };
   }
 
   /**

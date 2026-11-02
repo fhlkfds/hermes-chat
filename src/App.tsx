@@ -5,12 +5,14 @@ import { type Account, type SavedSignIn, launchSignIn, savedSignIn, signIn, sign
 import { localChatCache } from "./hermes/chatCache";
 import { draftKey, drafts } from "./hermes/drafts";
 import { systemKeyring } from "./hermes/tauriKeyring";
+import { desktopNotify } from "./hermes/tauriNotify";
 import { tauriPipe, type SignInDetails } from "./hermes/tauriPipe";
 import type { Attachment, Chat, Found } from "./hermes/model";
 import { ChatList, Rail } from "./ui/Sidebar";
 import { ChatPane } from "./ui/ChatPane";
 import { SearchPalette } from "./ui/Search";
 import { SettingsScreen } from "./ui/Settings";
+import { composing } from "./ui/bits";
 import { SignIn } from "./ui/SignIn";
 
 const SAVED = "hermes-chat.sign-in"; // Everything but the password, which is in the system keyring.
@@ -35,8 +37,8 @@ function loadSignIn(): SavedSignIn {
 const account: Account = {
   keyring: systemKeyring,
   store: { load: loadSignIn, save: (d) => localStorage.setItem(SAVED, JSON.stringify(d)) },
-  connect: (d) => connect(tauriPipe(d), undefined, localChatCache(d)),
-  readSaved: (d, reason) => readSaved(tauriPipe(d), reason, localChatCache(d)),
+  connect: (d) => connect(tauriPipe(d), undefined, localChatCache(d), desktopNotify),
+  readSaved: (d, reason) => readSaved(tauriPipe(d), reason, localChatCache(d), desktopNotify),
 };
 
 const savedDrafts = drafts(localStorage);
@@ -125,7 +127,7 @@ export default function App() {
   );
 }
 
-function Main({
+export function Main({
   hermes,
   connection,
   notSaved,
@@ -247,6 +249,19 @@ function Main({
     return () => clearTimeout(timer);
   }, [toast]);
 
+  // Out of focus, Hermes notifies instead of marking the chat on screen read (transport.ts `setFocused`).
+  useEffect(() => {
+    hermes.setFocused(document.hasFocus());
+    const onFocus = () => hermes.setFocused(true);
+    const onBlur = () => hermes.setFocused(false);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, [hermes]);
+
   // An opened chat shows its stored history and is marked read; a chat already open on this connection is left as it
   // is. Until connected it shows its Saved copy, and after a reconnect it loads again. Settings covers the chat, so it
   // isn't on screen meanwhile.
@@ -277,8 +292,10 @@ function Main({
   }, [hermes]);
 
   useEffect(() => {
+    // Only Ctrl/Cmd chords, and never mid-composition. No bare key does anything app-wide, so nothing typed
+    // with focus outside an input can answer an Approval or stop a reply.
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey)) return;
+      if (!(e.ctrlKey || e.metaKey) || composing(e)) return;
       const k = e.key.toLowerCase();
       if (k === "k") {
         e.preventDefault();
@@ -318,6 +335,7 @@ function Main({
           onOpen={openChat}
           onSettle={setSettled}
           onDelete={deleteChat}
+          onRename={(id, title, from) => hermes.rename(id, title, from)}
           onListProfiles={() => hermes.profiles()}
           onCheckOthers={() => void hermes.checkOtherProfiles()}
           onSwitchProfile={switchProfile}

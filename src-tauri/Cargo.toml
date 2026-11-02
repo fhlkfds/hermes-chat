@@ -23,6 +23,9 @@ url = "2"
 base64 = "0.22"
 tauri-plugin-dialog = "2"
 keyring = { version = "3.6", features = ["sync-secret-service", "crypto-rust"] }
+# Both already come with keyring and tauri; used directly for desktop notifications (notify.rs).
+dbus = "0.9"
+gtk = "0.18"
 
 [dev-dependencies]
 axum = { version = "0.8", features = ["ws"] }
