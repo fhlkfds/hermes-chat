@@ -73,6 +73,7 @@ export function ChatPane({
   onArchive,
   onExport,
   modelControls,
+  projects,
 }: {
   chat: Chat;
   notLoaded?: boolean;
@@ -92,6 +93,8 @@ export function ChatPane({
   onArchive?: (archived: boolean) => void;
   onExport?: () => void;
   modelControls?: ReactNode;
+  /** The names of the projects the chat is in, or a new chat will be put in. */
+  projects?: string[];
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   // The blocks are memoized, so they get one answer handler for the life of the pane.
@@ -193,6 +196,11 @@ export function ChatPane({
           <span>{chat.title}</span>
           {chat.settled && <span className="badge">Settled</span>}
           {chat.archived && <span className="badge">Archived</span>}
+          {projects?.map((name) => (
+            <span key={name} className="badge project-badge" title={`In the project ${name}`}>
+              {name}
+            </span>
+          ))}
         </div>
         <div className="chat-head-actions">
           <button

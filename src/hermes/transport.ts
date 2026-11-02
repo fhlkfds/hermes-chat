@@ -16,9 +16,11 @@
 // Unread chats in the other profiles are polled over dashboard REST (otherProfiles.ts).
 // The composer's model picker lists what `model.options` offers (models.ts) and switches one chat at a time with
 // session-scoped `config.set`; nothing here ever writes the profile's default model, reasoning or fast mode.
+// Projects are Hermes's own, read and written with legacy `projects.*` (projects.ts, research doc "Projects").
 import { APPROVAL_CHOICES, isBroadGrant, isWaiting, offeredChoices, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ConnectionStatus, type Found, type Item, type OtherProfiles, type Source } from "./model";
 import { catalogFromServer, fallbackCatalog, isEffort, modelKey, pickFromInfo, type ModelCatalog, type ModelPick } from "./models";
 import { noOthers, OtherProfilesCheck } from "./otherProfiles";
+import { projectsApi, type ProjectsApi } from "./projects";
 import type { OpenPipe, Pipe, PipeEvent, Route } from "./pipe";
 import { isUnsecure } from "./unsecure";
 
@@ -355,6 +357,11 @@ export class Hermes {
   private modelsLoading?: { profile: string; done: Promise<void> };
   /** A chat and model Hermes asked to confirm as expensive: picking it again for that chat confirms it. */
   private confirmModel?: string;
+  /** Hermes's projects, each call naming its profile (projects.ts). Folders are read, never created. */
+  readonly projects: ProjectsApi = projectsApi({
+    rpc: (method, params) => this.request(method, params),
+    get: (pathAndQuery) => this.rest("GET", pathAndQuery),
+  });
   private others = new OtherProfilesCheck({
     scope: () => (this.pipe && this.snapshot.status === "connected" && !this.closing ? { connection: this.generation, profile: this.profile } : undefined),
     profiles: () => this.profiles(),

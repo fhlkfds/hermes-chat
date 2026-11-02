@@ -358,6 +358,9 @@ describe("Chat list by keyboard", () => {
     button(/default/).focus();
     await s.user.tab();
     expect(focused()).toBe(button("Archived chats"));
+    // The project switcher sits under the profile's name, before the chats.
+    await s.user.tab();
+    expect(focused()).toBe(button(/All chats/));
     await s.user.tab();
     expect(focused()).toBe(rowButton("Nightly backup"));
     await s.user.keyboard("{Enter}");
