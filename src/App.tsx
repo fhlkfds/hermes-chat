@@ -388,7 +388,10 @@ export function Main({
   // Outputs: one index for each connection and profile, like projects (outputs.ts, ADR 0013). Leaving a profile, or
   // signing out, stops its run and drops whatever it reads afterwards.
   const outputsIndex = useMemo(() => new OutputsIndex(hermes.outputsIo(profile), localStorage, scope), [hermes, scope]);
-  useEffect(() => () => outputsIndex.cancel(), [outputsIndex]);
+  useEffect(() => {
+    outputsIndex.resume();
+    return () => outputsIndex.cancel();
+  }, [outputsIndex]);
   const outSnap = useSyncExternalStore(outputsIndex.subscribe, outputsIndex.getSnapshot);
   const outputsChatId = active.chatId && chats.some((c) => c.id === active.chatId) ? active.chatId : null;
   // A scope that has nothing to show (no chat open, no project picked) gives way to the next wider one.
@@ -979,6 +982,7 @@ export function Main({
             scope={shownOutputsScope}
             scopes={{ chat: outputsChatId ? chats.find((c) => c.id === outputsChatId)?.title : undefined, project: shownProject?.name, profile }}
             unindexed={outSnap.indexing ? 0 : outputsChats.filter((c) => !outSnap.chats[c.id]).length}
+            partialChats={outputsChats.filter((c) => outSnap.chats[c.id]?.partial).length}
             chatTitle={(id) => chats.find((c) => c.id === id)?.title}
             status={status}
             canAdd={shownOutputsScope !== "project"}
@@ -990,7 +994,7 @@ export function Main({
             onIndexMore={() => void outputsIndex.index(outputsRefs())}
             onAdd={(path) => outputsIndex.add(path, shownOutputsScope === "chat" ? (outputsChatId ?? undefined) : undefined)}
             onRemove={(key) => outputsIndex.remove(key)}
-            onPreview={(o) => openPreview({ kind: "server", path: o.path })}
+            onPreview={(o) => openPreview({ kind: "server", path: o.path, ...(o.host && { host: true }) })}
             onJump={(o) => {
               if (!o.chatId || !o.callId) return;
               if (!chats.some((c) => c.id === o.chatId)) {
@@ -1018,7 +1022,7 @@ export function Main({
               key={previewSeq}
               target={preview}
               serverLabel={serverLabel(route)}
-              readServer={(path) => hermes.readServerFile(path)}
+              readServer={(path, host) => (host ? hermes.readHostFile(path) : hermes.readServerFile(path))}
               local={localFiles}
               web={webPages}
               overlay={!previewFits}

@@ -4,6 +4,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { FakeHermes, row, type TranscriptMessage } from "./fakeHermes";
 import { connect, type Hermes } from "./transport";
 import {
+  ADDED_MAX,
+  CHAT_MAX_BYTES,
+  OUTPUTS_PER_CHAT,
+  compactRows,
   MAX_CHATS_PER_RUN,
   MAX_ROWS_PER_CHAT,
   OUTPUTS_KEY,
@@ -48,6 +52,9 @@ function call(id: string, name: string, args: Record<string, unknown>, result: u
   ];
 }
 
+/** A page of stored rows as `OutputsIo.rows` answers it. */
+const page = (rows: StoredRow[]) => ({ rows, bytes: JSON.stringify(rows).length });
+
 const written = (path: string, bytes = 12) => ({ bytes_written: bytes, dirs_created: false, resolved_path: path, files_modified: [path] });
 
 describe("which tool results are Outputs", () => {
@@ -57,10 +64,10 @@ describe("which tool results are Outputs", () => {
       { path: "/srv/a.ts", how: "created" },
     ]);
     expect(producedBy("text_to_speech", JSON.stringify({ success: true, file_path: "/h/.hermes/audio/tts_1.mp3", file_paths: ["/h/.hermes/audio/tts_1.mp3", "/h/.hermes/audio/tts_2.mp3"], media_tag: "MEDIA:/h/.hermes/audio/tts_1.mp3" }))).toEqual([
-      { path: "/h/.hermes/audio/tts_1.mp3", how: "speech" },
-      { path: "/h/.hermes/audio/tts_2.mp3", how: "speech" },
+      { path: "/h/.hermes/audio/tts_1.mp3", how: "speech", host: true },
+      { path: "/h/.hermes/audio/tts_2.mp3", how: "speech", host: true },
     ]);
-    expect(producedBy("image_generate", JSON.stringify({ success: true, image: "/h/.hermes/cache/images/cat.png" }))).toEqual([{ path: "/h/.hermes/cache/images/cat.png", how: "image" }]);
+    expect(producedBy("image_generate", JSON.stringify({ success: true, image: "/h/.hermes/cache/images/cat.png" }))).toEqual([{ path: "/h/.hermes/cache/images/cat.png", how: "image", host: true }]);
   });
 
   it("lists nothing for a failed call, a provider URL, an edit of an existing file, or another tool's paths", () => {
@@ -153,7 +160,8 @@ describe("indexing chats on a fake Hermes", () => {
         { role: "assistant", text: "Done: /srv/out/report.md", row_id: 8 },
       ];
       s.serverFiles["/srv/out/report.md"] = "# R2";
-      s.serverFiles["/srv/out/chart.png"] = "PNG";
+      // Hermes saves images itself, on the dashboard's machine: the managed files routes list it.
+      s.managedFiles.nodes = { "/srv/out/chart.png": { bytes: "\x89PNG" } };
     });
     const storage = memory();
     const index = new OutputsIndex(hermes.outputsIo("default"), storage, "scope");
@@ -171,6 +179,8 @@ describe("indexing chats on a fake Hermes", () => {
 
     await index.check(found);
     expect(outputsIn(index.getSnapshot()).map((o) => o.availability?.state)).toEqual(["available", "available", "available"]);
+    expect(server.restRequests.filter((r) => r.path === "/api/files").map((r) => r.query.get("path"))).toEqual(["/srv/out"]);
+    expect(server.restRequests.filter((r) => r.path === "/api/fs/list").map((r) => r.query.get("path"))).toEqual(["/srv/out"]);
 
     // Reconnect, then a new run with the chat changed: the same keys, and nothing twice.
     server.drop();
@@ -242,7 +252,7 @@ describe("indexing chats on a fake Hermes", () => {
     const io: OutputsIo = {
       rows: async () => {
         await gate;
-        return [{ id: 1, role: "tool", tool_name: "write_file", tool_call_id: "w", content: JSON.stringify(written("/srv/late.txt")) }];
+        return page([{ id: 1, role: "tool", tool_name: "write_file", tool_call_id: "w", content: JSON.stringify(written("/srv/late.txt")) }]);
       },
       listDir: async () => ({ entries: [] }),
     };
@@ -278,21 +288,22 @@ describe("checking where files are", () => {
     });
     const io = hermes.outputsIo("default");
     server.rest["GET /api/fs/list"] = ((list) => (req) => (req.query.get("path") === "/locked" ? { entries: [], error: "EACCES" } : list(req)))(server.rest["GET /api/fs/list"]);
-    const found = await checkPaths(io, ["/srv/out/kept.txt", "/srv/out/renamed-from.txt", "/srv/out/dir.txt", "/srv/gone/x.txt", "/locked/x.txt"], 5);
+    const paths = ["/srv/out/kept.txt", "/srv/out/renamed-from.txt", "/srv/out/dir.txt", "/srv/gone/x.txt", "/locked/x.txt"];
+    const found = await checkPaths(io, paths.map((path) => ({ path })), 5);
     expect(Object.fromEntries([...found].map(([p, a]) => [p, a.state]))).toEqual({
-      "/srv/out/kept.txt": "available",
-      "/srv/out/renamed-from.txt": "missing",
-      "/srv/out/dir.txt": "folder",
-      "/srv/gone/x.txt": "missing",
-      "/locked/x.txt": "forbidden",
+      "tools:/srv/out/kept.txt": "available",
+      "tools:/srv/out/renamed-from.txt": "missing",
+      "tools:/srv/out/dir.txt": "folder",
+      "tools:/srv/gone/x.txt": "missing",
+      "tools:/locked/x.txt": "forbidden",
     });
     expect(server.restRequests.filter((r) => r.path === "/api/fs/list").map((r) => r.query.get("path"))).toEqual(["/srv/out", "/srv/gone", "/locked"]);
   });
 
   it("reports a refused listing as forbidden and another failure as unknown", async () => {
-    const io = (err: string): OutputsIo => ({ rows: async () => [], listDir: () => Promise.reject(new Error(err)) });
-    expect((await checkPaths(io('The dashboard answered 403: {"detail":"Access denied"}'), ["/a/b"])).get("/a/b")?.state).toBe("forbidden");
-    expect((await checkPaths(io("Can't reach the Hermes dashboard"), ["/a/b"])).get("/a/b")).toMatchObject({ state: "unknown", why: "Can't reach the Hermes dashboard" });
+    const io = (err: string): OutputsIo => ({ rows: async () => page([]), listDir: () => Promise.reject(new Error(err)) });
+    expect((await checkPaths(io('The dashboard answered 403: {"detail":"Access denied"}'), [{ path: "/a/b" }])).get("tools:/a/b")?.state).toBe("forbidden");
+    expect((await checkPaths(io("Can't reach the Hermes dashboard"), [{ path: "/a/b" }])).get("tools:/a/b")).toMatchObject({ state: "unknown", why: "Can't reach the Hermes dashboard" });
   });
 
   it("adds a Server file the owner names only once it is there", async () => {
@@ -318,7 +329,7 @@ describe("what this computer keeps", () => {
   it("keeps each connection and profile apart, holds metadata only, and survives a hand-edited document", async () => {
     const storage = memory();
     const io: OutputsIo = {
-      rows: async () => [{ id: 1, role: "tool", tool_name: "write_file", tool_call_id: "w", content: JSON.stringify({ ...written("/srv/a.md"), content: "SECRET BODY" }) }],
+      rows: async () => page([{ id: 1, role: "tool", tool_name: "write_file", tool_call_id: "w", content: JSON.stringify({ ...written("/srv/a.md"), content: "SECRET BODY" }) }]),
       listDir: async () => ({ entries: [] }),
     };
     await new OutputsIndex(io, storage, "conn|default").index([{ id: "c", updatedAt: 1 }]);
@@ -337,8 +348,8 @@ describe("what this computer keeps", () => {
     let t = 0;
     const perChat = 1000;
     const io: OutputsIo = {
-      rows: async (chatId) =>
-        Array.from({ length: perChat }, (_, i) => ({ id: i + 1, role: "tool", tool_name: "write_file", tool_call_id: `${chatId}-${i}`, content: JSON.stringify(written(`/srv/${chatId}/${i}.txt`)) })),
+      rows: async (chatId, offset) =>
+        page(offset ? [] : Array.from({ length: perChat }, (_, i) => ({ id: i + 1, role: "tool", tool_name: "write_file", tool_call_id: `${chatId}-${i}`, content: JSON.stringify(written(`/srv/${chatId}/${i}.txt`)) }))),
       listDir: async () => ({ entries: [] }),
     };
     const index = new OutputsIndex(io, storage, "s", () => ++t);
@@ -352,5 +363,112 @@ describe("what this computer keeps", () => {
     await full.index([{ id: "c", updatedAt: 1 }]);
     expect(full.getSnapshot().notSaved).toBe(true);
     expect(outputsIn(full.getSnapshot())).toHaveLength(perChat);
+  });
+});
+
+describe("the review's cases", () => {
+  it("keeps the files a patch created before it failed part-way", () => {
+    expect(producedBy("patch", JSON.stringify({ success: false, error: "hunk 2 failed", files_created: ["/srv/new.ts"], files_modified: [] }))).toEqual([
+      { path: "/srv/new.ts", how: "created" },
+    ]);
+  });
+
+  it("puts text_to_speech audio and a local image on the dashboard's machine, and a workspace image where the tools run", () => {
+    expect(producedBy("text_to_speech", JSON.stringify({ success: true, file_path: "/h/.hermes/audio/a.mp3" }))).toEqual([{ path: "/h/.hermes/audio/a.mp3", how: "speech", host: true }]);
+    expect(producedBy("image_generate", JSON.stringify({ success: true, image: "/h/.hermes/cache/images/c.png" }))).toEqual([{ path: "/h/.hermes/cache/images/c.png", how: "image", host: true }]);
+    expect(producedBy("image_generate", JSON.stringify({ success: true, image: "/h/.hermes/cache/images/c.png", host_image: "/h/.hermes/cache/images/c.png", agent_visible_image: "~/.hermes/cache/images/c.png" }))).toEqual([
+      { path: "~/.hermes/cache/images/c.png", how: "image" },
+    ]);
+  });
+
+  it("checks a file on the dashboard's machine with that machine's listing", async () => {
+    const calls: [string, boolean | undefined][] = [];
+    const io: OutputsIo = {
+      rows: async () => page([]),
+      listDir: async (path, host) => {
+        calls.push([path, host]);
+        return { entries: host ? [{ name: "a.mp3", isDirectory: false }] : [] };
+      },
+    };
+    const found = await checkPaths(io, [{ path: "/h/audio/a.mp3", host: true }, { path: "/h/audio/a.mp3" }]);
+    expect(calls).toEqual([["/h/audio", true], ["/h/audio", false]]);
+    expect(found.get("host:/h/audio/a.mp3")?.state).toBe("available");
+    expect(found.get("tools:/h/audio/a.mp3")?.state).toBe("missing");
+  });
+
+  it("holds only the fields it needs from each page, not a patch's diff or a written file's contents", () => {
+    const rows = compactRows([
+      { id: 1, role: "assistant", tool_calls: JSON.stringify([{ id: "w", function: { name: "write_file", arguments: JSON.stringify({ path: "/srv/a", content: "BODY".repeat(1000) }) } }, { id: "t", function: { name: "terminal", arguments: "{}" } }]) },
+      { id: 2, role: "tool", tool_name: "patch", tool_call_id: "p", content: JSON.stringify({ success: true, diff: "DIFF".repeat(1000), files_created: ["/srv/b"] }) },
+      { id: 3, role: "tool", tool_name: "read_file", tool_call_id: "r", content: "CONTENTS".repeat(1000) },
+      { id: 4, role: "user", content: "hello" },
+    ]);
+    const text = JSON.stringify(rows);
+    expect(text).not.toMatch(/BODY|DIFF|CONTENTS|hello|terminal/);
+    expect(outputsFromRows("c", rows).outputs.map((o) => o.path)).toEqual(["/srv/b"]);
+  });
+
+  it("stops reading a chat once its byte budget is spent, and says older rows weren't read", async () => {
+    let reads = 0;
+    const io: OutputsIo = {
+      rows: async (_c, _o, limit) => {
+        reads++;
+        return { rows: Array.from({ length: limit }, (_, i) => ({ id: i, role: "user" })), bytes: 3.9 * 1024 * 1024 };
+      },
+      listDir: async () => ({ entries: [] }),
+    };
+    const index = new OutputsIndex(io, memory(), "s");
+    await index.index([{ id: "c", updatedAt: 1 }]);
+    expect(reads).toBeLessThanOrEqual(Math.ceil(CHAT_MAX_BYTES / (3.9 * 1024 * 1024)));
+    expect(index.getSnapshot().chats.c.partial).toMatchObject({ olderRows: true });
+  });
+
+  it("keeps the newest Outputs of a chat that made too many, and bounds what is shown as well as what is kept", async () => {
+    const many = (chatId: string, n: number) =>
+      Array.from({ length: n }, (_, i) => ({ id: i + 1, role: "tool", tool_name: "write_file", tool_call_id: `${chatId}-${i}`, content: JSON.stringify(written(`/srv/${chatId}/${i}.txt`)) }));
+    const io: OutputsIo = { rows: async (chatId, offset) => page(offset ? [] : many(chatId, OUTPUTS_PER_CHAT + 5)), listDir: async () => ({ entries: [] }) };
+    let t = 0;
+    const index = new OutputsIndex(io, memory(), "s", () => ++t);
+    await index.index(Array.from({ length: 5 }, (_, i) => ({ id: `c${i}`, updatedAt: i })));
+    const snap = index.getSnapshot();
+    expect(outputsIn(snap).length).toBeLessThanOrEqual(OUTPUTS_KEPT);
+    const kept = Object.values(snap.chats)[0];
+    expect(kept.outputs).toHaveLength(OUTPUTS_PER_CHAT);
+    expect(kept.partial).toMatchObject({ tooMany: true });
+    expect(kept.outputs.some((o) => o.rowId === OUTPUTS_PER_CHAT + 5)).toBe(true);
+  });
+
+  it("refuses more added files than it keeps", async () => {
+    const io: OutputsIo = { rows: async () => page([]), listDir: async () => ({ entries: Array.from({ length: ADDED_MAX + 1 }, (_, i) => ({ name: `f${i}`, isDirectory: false })) }) };
+    const index = new OutputsIndex(io, memory(), "s");
+    for (let i = 0; i < ADDED_MAX; i++) await index.add(`/srv/f${i}`);
+    await expect(index.add(`/srv/f${ADDED_MAX}`)).rejects.toThrow(/up to 200/);
+    expect(index.getSnapshot().added).toHaveLength(ADDED_MAX);
+  });
+
+  it("never lets an index left behind overwrite what a newer one for the same profile kept", async () => {
+    const storage = memory();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const slow: OutputsIo = {
+      rows: async () => page([]),
+      listDir: async () => {
+        await gate;
+        return { entries: [{ name: "old.txt", isDirectory: false }, { name: "new.txt", isDirectory: false }] };
+      },
+    };
+    const old = new OutputsIndex(slow, storage, "s");
+    const adding = old.add("/srv/old.txt");
+    const refreshing = old.check([{ key: "k", path: "/srv/old.txt", how: "written" }]);
+    old.cancel();
+    const fresh = new OutputsIndex({ ...slow, listDir: async () => ({ entries: [{ name: "new.txt", isDirectory: false }] }) }, storage, "s");
+    await fresh.add("/srv/new.txt");
+    release();
+    await expect(adding).rejects.toThrow(/another profile/);
+    await refreshing;
+    // A cancelled index starts nothing new either, as a Refresh's check after its run.
+    await old.check([{ key: "k", path: "/srv/old.txt", how: "written" }]);
+    await old.index([{ id: "c", updatedAt: 1 }]);
+    expect(readScope(storage, "s").added.map((o) => o.path)).toEqual(["/srv/new.txt"]);
   });
 });

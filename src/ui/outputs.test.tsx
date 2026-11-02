@@ -53,7 +53,8 @@ function server() {
     ...call("i1", "image_generate", { prompt: "cat" }, JSON.stringify({ success: true, image: "/srv/img/cat.png" }), 2),
   ];
   s.serverFiles["/srv/out/report.md"] = "# Report\nv2";
-  s.serverFiles["/srv/img/cat.png"] = "\x89PNG";
+  // Hermes saves generated images on the dashboard's own machine, which the managed files routes read.
+  s.managedFiles.nodes = { "/srv/img/cat.png": { bytes: "\x89PNG\r\n\x1a\n" } };
   return s;
 }
 
@@ -211,5 +212,25 @@ describe("Outputs", () => {
     expect(shown()).toHaveLength(250);
     await user.type(screen.getByRole("textbox", { name: /Search outputs/ }), "f249.");
     expect(shown()).toEqual(["f249.txt"]);
+  });
+
+  it("says discovery is partial in a chat whose file tools didn't say what they wrote, though none was found", async () => {
+    const s = server();
+    s.transcripts.cats = call("s1", "text_to_speech", { text: "hi" }, "Audio saved (result cut short", 1);
+    const { user } = await launch(s);
+    await openChat(user, "Cat pictures");
+    await openOutputs(user);
+    expect(screen.getByText(/No files from Hermes's tools in this chat yet/)).toBeTruthy();
+    expect(screen.getByText(/Discovery is partial in 1 chat/)).toBeTruthy();
+  });
+
+  it("previews an image Hermes saved on the dashboard's machine through the managed files routes", async () => {
+    const { server, user } = await launch();
+    await openChat(user, "Cat pictures");
+    await openOutputs(user);
+    expect(screen.getByText("On the dashboard's machine")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Preview cat.png" }));
+    await waitFor(() => expect(server.restRequests.some((r) => r.path === "/api/files/read" && r.query.get("path") === "/srv/img/cat.png")).toBe(true));
+    expect(server.restRequests.some((r) => r.path.startsWith("/api/fs/read"))).toBe(false);
   });
 });

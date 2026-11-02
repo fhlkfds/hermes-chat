@@ -64,7 +64,8 @@ export function PreviewPane({
 }: {
   target: PreviewTarget;
   serverLabel: string;
-  readServer: (path: string) => Promise<FileView>;
+  /** `host`: the file is on the dashboard's own machine (preview.ts `PreviewTarget`). */
+  readServer: (path: string, host?: boolean) => Promise<FileView>;
   local: LocalFiles;
   web: WebPages;
   overlay: boolean;
@@ -174,7 +175,7 @@ export function PreviewPane({
         ) : target.kind === "tool" ? (
           <pre className="preview-pre">{target.text || "(empty)"}</pre>
         ) : target.kind === "server" ? (
-          <FileBody key={reloads} name={target.path} load={() => readServer(target.path)} />
+          <FileBody key={reloads} name={target.path} load={() => readServer(target.path, target.host)} />
         ) : (
           <FileBody key={reloads} name={target.name} load={() => local.read(target)} />
         )}

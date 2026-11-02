@@ -4,9 +4,10 @@
 // merely mentions is never an Output.
 //
 // The stored rows come from dashboard REST `GET /api/sessions/{id}/messages`, the newest first, a bounded number of
-// rows per chat and chats per run. Whether a file is still there is read with `GET /api/fs/list` on its folder, the same
-// route family the preview pane reads files through, for the profile shown, so it is the machine the tools ran on. The
-// index is metadata only (paths, sizes the tool reported, which message made each file), kept on this computer per
+// rows per chat and chats per run. A file written by a file tool is on the machine the profile's tools run on (its SSH
+// workspace, if it has one): whether it is still there is read with `GET /api/fs/list` on its folder, the route family
+// the preview pane reads it through. Audio and images Hermes saves itself are on the dashboard's own machine, read with
+// the managed files routes Server files uses (`host`). The index is metadata only (paths, sizes the tool reported, which message made each file), kept on this computer per
 // connection and profile; no file's contents are copied.
 
 /** A stored row of `GET /api/sessions/{id}/messages` (`SELECT *` from `messages`), as far as Outputs reads it. */
@@ -35,7 +36,9 @@ export type OutputHow = "written" | "created" | "speech" | "image" | "added";
 export type Availability = { state: "available" | "missing" | "forbidden" | "folder" | "unknown"; checkedAt: number; why?: string };
 
 /**
- * One Output: one file, as one tool call (or the owner) produced it. The same path written by two calls is two
+ * One Output: one file, as one tool call (or the owner) produced it. `host`: it is on the dashboard's own machine
+ * (`text_to_speech` audio, an `image_generate` image), not where the profile's tools run; for a profile without an SSH
+ * terminal those are the same machine. The same path written by two calls is two
  * Outputs, two versions of the file. `key` is the same however often the chat is indexed: chat, call (or stored row)
  * and path. `callId`: the tool call, to go to it in the chat. `rowId`: the stored row of the tool's result. `at`: when
  * Hermes stored it (Unix ms). `size`: bytes, as the tool reported writing them.
@@ -45,6 +48,7 @@ export type Output = {
   chatId?: string;
   path: string;
   how: OutputHow;
+  host?: boolean;
   tool?: string;
   callId?: string;
   rowId?: number;
@@ -59,7 +63,7 @@ export type Output = {
  * file tool's result didn't say which file it wrote (older Hermes versions, or a result Hermes cut short).
  */
 export type ChatOutputs = { updatedAt: number; indexedAt: number; outputs: Output[]; partial?: IndexGaps };
-export type IndexGaps = { olderRows?: boolean; bigRows?: number; unlabelled?: number };
+export type IndexGaps = { olderRows?: boolean; bigRows?: number; unlabelled?: number; tooMany?: boolean };
 
 /** The tools whose results name the files they wrote, and how. */
 const PRODUCERS = new Set(["write_file", "patch", "text_to_speech", "image_generate"]);
@@ -70,6 +74,11 @@ export const MAX_CHATS_PER_RUN = 25;
 const PAGE_ROWS = 100;
 /** The most one page's answer may be. Tool results such as `read_file` can be large; a bigger page is read in smaller ones. */
 export const PAGE_MAX_BYTES = 4 * 1024 * 1024;
+/** The most of a chat's stored rows read in all; past it, older rows aren't read. */
+export const CHAT_MAX_BYTES = 64 * 1024 * 1024;
+/** Most Outputs kept for one chat (the newest), and most files the owner can add to one profile. */
+export const OUTPUTS_PER_CHAT = 1000;
+export const ADDED_MAX = 200;
 /** Most folders listed in one availability check. */
 export const MAX_FOLDERS_PER_CHECK = 40;
 
@@ -109,9 +118,12 @@ function callArgs(rows: StoredRow[]): Map<string, Record<string, unknown>> {
  * doesn't say (an older Hermes, or a result cut short), so the chat's index is marked partial. A failed call made
  * nothing. `args`: the call's arguments, for an older `write_file` result that has no `resolved_path`.
  */
-export function producedBy(tool: string, content: unknown, args?: Record<string, unknown>): { path: string; how: OutputHow; size?: number }[] | undefined {
+export function producedBy(tool: string, content: unknown, args?: Record<string, unknown>): { path: string; how: OutputHow; size?: number; host?: boolean }[] | undefined {
   const r = parseJson(content);
   if (!isObj(r)) return undefined;
+  // A patch that failed part-way still lists the files it created before it failed.
+  if (tool === "patch" && Array.isArray(r.files_created) && r.files_created.some(isOutputPath))
+    return r.files_created.filter(isOutputPath).map((path) => ({ path, how: "created" as const }));
   if (r.error || r.success === false) return [];
   switch (tool) {
     case "write_file": {
@@ -127,12 +139,16 @@ export function producedBy(tool: string, content: unknown, args?: Record<string,
     case "text_to_speech": {
       const paths = Array.isArray(r.file_paths) ? r.file_paths : [r.file_path];
       const found = paths.filter(isOutputPath);
-      return found.length ? found.map((path) => ({ path, how: "speech" as const })) : undefined;
+      // Hermes saves the audio itself, on the dashboard's machine (`tools/tts_tool.py` `_default_output_dir`).
+      return found.length ? found.map((path) => ({ path, how: "speech" as const, host: true })) : undefined;
     }
     case "image_generate": {
-      // `image` is the file Hermes saved, or the provider's URL when it saved none: a web address isn't a Server file.
+      // `image` is the file Hermes saved on the dashboard's machine, or the provider's URL when it saved none: a web
+      // address isn't a Server file. With a non-local terminal, `agent_visible_image` is the same file where the tools
+      // run, which is where the preview reads.
+      if (isOutputPath(r.agent_visible_image)) return [{ path: r.agent_visible_image, how: "image" }];
       const path = [r.host_image, r.image].find(isOutputPath);
-      if (path) return [{ path, how: "image" }];
+      if (path) return [{ path, how: "image", host: true }];
       return typeof r.image === "string" && /^https?:/i.test(r.image) ? [] : undefined;
     }
   }
@@ -158,10 +174,37 @@ export function outputsFromRows(chatId: string, rows: StoredRow[]): { outputs: O
     for (const m of made) {
       const key = outputKey(chatId, callId ?? (rowId !== undefined ? `row:${rowId}` : ""), m.path);
       if (found.has(key) || (!callId && rowId === undefined)) continue;
-      found.set(key, { key, chatId, path: m.path, how: m.how, tool, ...(callId && { callId }), ...(rowId !== undefined && { rowId }), ...(at && { at }), ...(m.size !== undefined && { size: m.size }) });
+      found.set(key, { key, chatId, path: m.path, how: m.how, ...(m.host && { host: true }), tool, ...(callId && { callId }), ...(rowId !== undefined && { rowId }), ...(at && { at }), ...(m.size !== undefined && { size: m.size }) });
     }
   }
   return { outputs: [...found.values()], unlabelled };
+}
+
+/** The result fields `producedBy` reads; everything else in a stored result (a patch's diff, say) is dropped at once. */
+const RESULT_FIELDS = ["error", "success", "resolved_path", "files_modified", "files_created", "bytes_written", "file_path", "file_paths", "image", "host_image", "agent_visible_image"];
+
+/**
+ * A page of stored rows cut down to what finding Outputs needs, so a chat's whole history isn't held while it is read:
+ * producer tool rows with only the result fields `producedBy` reads, and the producer calls of assistant rows with only
+ * their `path` argument. Every other row goes.
+ */
+export function compactRows(rows: StoredRow[]): StoredRow[] {
+  return rows.flatMap((r): StoredRow[] => {
+    if (r.role === "tool" && PRODUCERS.has(r.tool_name ?? "")) {
+      const parsed = parseJson(r.content);
+      const content = isObj(parsed) ? Object.fromEntries(RESULT_FIELDS.filter((k) => k in parsed).map((k) => [k, parsed[k]])) : null;
+      return [{ id: r.id, role: "tool", tool_name: r.tool_name, tool_call_id: r.tool_call_id, timestamp: r.timestamp, content }];
+    }
+    if (r.role !== "assistant" || !r.tool_calls) return [];
+    const calls = parseJson(r.tool_calls);
+    if (!Array.isArray(calls)) return [];
+    const kept = calls.flatMap((c) => {
+      if (!isObj(c) || !str(c.id) || !isObj(c.function) || c.function.name !== "write_file") return [];
+      const args = parseJson(c.function.arguments);
+      return isObj(args) && isOutputPath(args.path) ? [{ id: c.id, function: { name: "write_file", arguments: { path: args.path } } }] : [];
+    });
+    return kept.length ? [{ id: r.id, role: "assistant", tool_calls: kept }] : [];
+  });
 }
 
 export const outputKey = (chatId: string, producer: string, path: string) => JSON.stringify([chatId, producer, path]);
@@ -245,10 +288,13 @@ export function versions(outputs: Output[]): Map<string, Version> {
 
 /** How the index reaches Hermes, for one profile. Both reject with the transport's message. */
 export type OutputsIo = {
-  /** One page of a chat's stored rows, newest first, refused past `maxBytes`. */
-  rows(chatId: string, offset: number, limit: number, maxBytes: number): Promise<StoredRow[]>;
-  /** `GET /api/fs/list` of a folder: its entries, or none and an errno-like `error`. */
-  listDir(path: string): Promise<{ entries: { name: string; isDirectory: boolean }[]; error?: string }>;
+  /** One page of a chat's stored rows, newest first, refused past `maxBytes`; `bytes`: how big the answer was. */
+  rows(chatId: string, offset: number, limit: number, maxBytes: number): Promise<{ rows: StoredRow[]; bytes: number }>;
+  /**
+   * A folder's entries, or none and an errno-like `error` (`ENOENT`, `ENOTDIR`, `EACCES`): where the profile's tools
+   * run (`GET /api/fs/list`), or with `host` on the dashboard's own machine (`GET /api/files`).
+   */
+  listDir(path: string, host?: boolean): Promise<{ entries: { name: string; isDirectory: boolean }[]; error?: string }>;
 };
 
 const TOO_BIG = /over the .* MB limit/;
@@ -266,15 +312,27 @@ export async function readRows(io: OutputsIo, chatId: string, stillWanted: () =>
   const partial: IndexGaps = {};
   let offset = 0;
   let limit = PAGE_ROWS;
+  let read = 0;
   while (offset < MAX_ROWS_PER_CHAT && stillWanted()) {
+    if (read >= CHAT_MAX_BYTES) {
+      partial.olderRows = true;
+      return { rows, partial };
+    }
     const want = Math.min(limit, MAX_ROWS_PER_CHAT - offset);
     let page: StoredRow[];
     try {
-      page = await io.rows(chatId, offset, want, PAGE_MAX_BYTES);
+      const answer = await io.rows(chatId, offset, want, Math.min(PAGE_MAX_BYTES, CHAT_MAX_BYTES - read));
+      page = answer.rows;
+      read += answer.bytes;
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       if (NO_ROUTE.test(message)) throw new OutputsUnsupported("This Hermes server can't list a chat's stored messages (GET /api/sessions/{id}/messages).");
       if (!TOO_BIG.test(message)) throw e;
+      if (CHAT_MAX_BYTES - read < PAGE_MAX_BYTES) {
+        // What's left of the chat's budget is smaller than this page: the rest is older than what was read.
+        partial.olderRows = true;
+        return { rows, partial };
+      }
       if (want > 1) {
         limit = Math.max(1, Math.floor(want / 5));
         continue;
@@ -284,7 +342,7 @@ export async function readRows(io: OutputsIo, chatId: string, stillWanted: () =>
       limit = PAGE_ROWS;
       continue;
     }
-    rows.push(...page);
+    rows.push(...compactRows(page));
     offset += page.length;
     if (page.length < want) return { rows, partial };
     limit = PAGE_ROWS;
@@ -301,6 +359,9 @@ export function splitPath(path: string): { dir: string; name: string } {
   return { dir: at === 0 ? "/" : clean.slice(0, at), name: clean.slice(at + 1) };
 }
 
+/** Where a file is: its path, on the tools' machine or (`host`) the dashboard's. Availability is kept by this. */
+export const placeOf = (o: { path: string; host?: boolean }) => `${o.host ? "host" : "tools"}:${o.path}`;
+
 const FOLDER_ERRORS: Record<string, Omit<Availability, "checkedAt">> = {
   ENOENT: { state: "missing", why: "Its folder isn't on the server any more." },
   ENOTDIR: { state: "missing", why: "Its folder isn't a folder any more." },
@@ -308,32 +369,37 @@ const FOLDER_ERRORS: Record<string, Omit<Availability, "checkedAt">> = {
 };
 
 /**
- * Checks where each of `paths` is now, one folder listing per folder, at most `MAX_FOLDERS_PER_CHECK` folders; paths
- * past that get no answer. Rejects with `OutputsUnsupported` on a server without `GET /api/fs/list`.
+ * Checks where each file is now, one folder listing per folder and machine, at most `MAX_FOLDERS_PER_CHECK` folders;
+ * files past that get no answer. Answers are keyed by `placeOf`. Rejects with `OutputsUnsupported` on a server without
+ * `GET /api/fs/list`.
  */
-export async function checkPaths(io: OutputsIo, paths: string[], now = Date.now()): Promise<Map<string, Availability>> {
-  const byDir = new Map<string, string[]>();
-  for (const p of paths) {
-    const { dir } = splitPath(p);
-    if (!byDir.has(dir) && byDir.size >= MAX_FOLDERS_PER_CHECK) continue;
-    byDir.set(dir, [...(byDir.get(dir) ?? []), p]);
+export async function checkPaths(io: OutputsIo, files: { path: string; host?: boolean }[], now = Date.now()): Promise<Map<string, Availability>> {
+  const byDir = new Map<string, { dir: string; host: boolean; files: { path: string; host?: boolean }[] }>();
+  for (const f of files) {
+    const { dir } = splitPath(f.path);
+    const key = placeOf({ path: dir, host: f.host });
+    if (!byDir.has(key) && byDir.size >= MAX_FOLDERS_PER_CHECK) continue;
+    const group = byDir.get(key) ?? { dir, host: !!f.host, files: [] };
+    group.files.push(f);
+    byDir.set(key, group);
   }
   const out = new Map<string, Availability>();
-  for (const [dir, inDir] of byDir) {
+  for (const { dir, host, files: inDir } of byDir.values()) {
     let listing: Awaited<ReturnType<OutputsIo["listDir"]>>;
     try {
-      listing = await io.listDir(dir);
+      listing = await io.listDir(dir, host);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      if (NO_ROUTE.test(message)) throw new OutputsUnsupported("This Hermes server can't list folders for the preview (GET /api/fs/list).");
+      if (NO_ROUTE.test(message) && !host) throw new OutputsUnsupported("This Hermes server can't list folders for the preview (GET /api/fs/list).");
       const forbidden = /answered 403/.test(message);
-      for (const p of inDir) out.set(p, forbidden ? { state: "forbidden", checkedAt: now, why: "The server refused to list its folder." } : { state: "unknown", checkedAt: now, why: message });
+      for (const p of inDir) out.set(placeOf(p), forbidden ? { state: "forbidden", checkedAt: now, why: "The server refused to list its folder." } : { state: "unknown", checkedAt: now, why: message });
       continue;
     }
     const err = listing.error ? (FOLDER_ERRORS[listing.error] ?? { state: "unknown" as const, why: `The server couldn't list its folder (${listing.error}).` }) : undefined;
     const names = new Map(listing.entries.map((e) => [e.name, e.isDirectory]));
-    for (const p of inDir) {
-      const { name } = splitPath(p);
+    for (const f of inDir) {
+      const p = placeOf(f);
+      const { name } = splitPath(f.path);
       if (err) out.set(p, { ...err, checkedAt: now });
       else if (!names.has(name))
         out.set(p, { state: "missing", checkedAt: now, why: "Its folder doesn't list it: it was deleted, moved or renamed, or Hermes hides it." });
@@ -368,6 +434,7 @@ function cleanOutput(v: unknown): Output | undefined {
     key: v.key,
     path: v.path,
     how,
+    ...(v.host === true && { host: true }),
     ...(str(v.chatId) && { chatId: v.chatId as string }),
     ...(str(v.tool) && { tool: v.tool as string }),
     ...(str(v.callId) && { callId: v.callId as string }),
@@ -391,7 +458,7 @@ function cleanScope(v: unknown): ScopeIndex {
         ...(isObj(c.partial) && { partial: c.partial as IndexGaps }),
       };
     }
-  const added = Array.isArray(v.added) ? v.added.flatMap((o) => cleanOutput(o) ?? []) : [];
+  const added = Array.isArray(v.added) ? v.added.flatMap((o) => cleanOutput(o) ?? []).slice(-ADDED_MAX) : [];
   return { chats, added, usedAt: typeof v.usedAt === "number" ? v.usedAt : 0 };
 }
 
@@ -423,8 +490,11 @@ export function writeScope(storage: OutputsStorage, scope: string, index: ScopeI
   }
 }
 
-/** The index within `OUTPUTS_KEPT` Outputs: the chats indexed longest ago are dropped first, to be read again. */
-function trimmed(index: ScopeIndex): ScopeIndex {
+/**
+ * The index within `OUTPUTS_KEPT` Outputs: the chats indexed longest ago are dropped first, to be read again. Applied
+ * to what is shown as well as to what is kept, so neither grows past it.
+ */
+function trimmed<T extends Pick<ScopeIndex, "chats" | "added">>(index: T): T {
   let total = index.added.length + Object.values(index.chats).reduce((n, c) => n + c.outputs.length, 0);
   if (total <= OUTPUTS_KEPT) return index;
   const chats = { ...index.chats };
@@ -480,18 +550,34 @@ export class OutputsIndex {
   };
   getSnapshot = () => this.snap;
 
+  /** False once the screen has let go of this index (another profile, sign-out): nothing it reads then lands or is kept. */
+  private live = true;
+
   private set(patch: Partial<OutputsSnapshot> | ((s: OutputsSnapshot) => Partial<OutputsSnapshot>), save = false) {
-    const next = { ...this.snap, ...(typeof patch === "function" ? patch(this.snap) : patch) };
+    if (!this.live) return;
+    const next = trimmed({ ...this.snap, ...(typeof patch === "function" ? patch(this.snap) : patch) });
     if (save) next.notSaved = !writeScope(this.storage, this.scope, { chats: next.chats, added: next.added, usedAt: this.now() });
     this.snap = next;
     for (const fn of this.listeners) fn();
   }
 
-  /** Stops the run and check under way; whatever they read later is dropped. For a profile switch or sign-out. */
+  /**
+   * Lets go of the index: the run, check or addition under way stops, and whatever it reads later is dropped and never
+   * saved, so it can't overwrite what a newer index for the same profile kept. For a profile switch or sign-out.
+   */
   cancel() {
     this.runSeq++;
     this.checkSeq++;
     if (this.snap.indexing || this.snap.checking) this.set({ indexing: undefined, checking: false });
+    this.live = false;
+  }
+
+  /** Takes the index up again after `cancel`, reading what is kept now (React runs an effect's cleanup and body again). */
+  resume() {
+    if (this.live) return;
+    const kept = readScope(this.storage, this.scope);
+    this.live = true;
+    this.set({ chats: kept.chats, added: kept.added });
   }
 
   /**
@@ -500,8 +586,9 @@ export class OutputsIndex {
    * availability already known for a path. A new run replaces one under way.
    */
   async index(chats: ChatRef[], force = false): Promise<void> {
+    if (!this.live) return;
     const seq = ++this.runSeq;
-    const live = () => seq === this.runSeq;
+    const live = () => seq === this.runSeq && this.live;
     const due = chats.filter((c) => force || this.snap.chats[c.id]?.updatedAt !== c.updatedAt).sort((a, b) => b.updatedAt - a.updatedAt);
     const now = due.slice(0, MAX_CHATS_PER_RUN);
     this.set({ indexing: now.length ? { done: 0, total: now.length } : undefined, waiting: due.length - now.length, error: undefined });
@@ -518,13 +605,16 @@ export class OutputsIndex {
         return this.set({ indexing: undefined, error: `Couldn't read a chat's messages: ${message}` });
       }
       if (!live()) return;
-      const { outputs, unlabelled } = outputsFromRows(chat.id, read.rows);
-      const known = new Map(this.snap.chats[chat.id]?.outputs.map((o) => [o.path, o.availability]));
-      const partial: IndexGaps = { ...read.partial, ...(unlabelled && { unlabelled }) };
+      const found = outputsFromRows(chat.id, read.rows);
+      const { unlabelled } = found;
+      // The newest ones, when a chat made more than can be kept.
+      const outputs = found.outputs.sort((a, b) => (b.rowId ?? 0) - (a.rowId ?? 0)).slice(0, OUTPUTS_PER_CHAT);
+      const known = new Map(this.snap.chats[chat.id]?.outputs.map((o) => [placeOf(o), o.availability]));
+      const partial: IndexGaps = { ...read.partial, ...(unlabelled && { unlabelled }), ...(found.outputs.length > OUTPUTS_PER_CHAT && { tooMany: true }) };
       const entry: ChatOutputs = {
         updatedAt: chat.updatedAt,
         indexedAt: this.now(),
-        outputs: outputs.map((o) => (known.get(o.path) ? { ...o, availability: known.get(o.path) } : o)),
+        outputs: outputs.map((o) => (known.get(placeOf(o)) ? { ...o, availability: known.get(placeOf(o)) } : o)),
         ...(Object.keys(partial).length && { partial }),
       };
       this.set((s) => ({ chats: { ...s.chats, [chat.id]: entry }, indexing: { done: i + 1, total: now.length } }), true);
@@ -534,11 +624,13 @@ export class OutputsIndex {
 
   /** Reads where each of `outputs` is now (`checkPaths`) and keeps the answers. */
   async check(outputs: Output[]): Promise<void> {
+    if (!this.live) return;
     const seq = ++this.checkSeq;
     this.set({ checking: true, error: undefined });
     let found: Map<string, Availability>;
     try {
-      found = await checkPaths(this.io, [...new Set(outputs.map((o) => o.path))], this.now());
+      const places = new Map(outputs.map((o) => [placeOf(o), { path: o.path, host: o.host }]));
+      found = await checkPaths(this.io, [...places.values()], this.now());
     } catch (e) {
       if (seq !== this.checkSeq) return;
       const message = e instanceof Error ? e.message : String(e);
@@ -546,7 +638,7 @@ export class OutputsIndex {
     }
     if (seq !== this.checkSeq) return;
     const keys = new Set(outputs.map((o) => o.key));
-    const update = (o: Output) => (keys.has(o.key) && found.has(o.path) ? { ...o, availability: found.get(o.path) } : o);
+    const update = (o: Output) => (keys.has(o.key) && found.has(placeOf(o)) ? { ...o, availability: found.get(placeOf(o)) } : o);
     this.set(
       (s) => ({
         checking: false,
@@ -566,10 +658,12 @@ export class OutputsIndex {
     if (!isOutputPath(p)) throw new Error("Enter a full path on the Hermes server, starting with / or ~/.");
     const key = outputKey(chatId ?? "", "added", p);
     if (this.snap.added.some((o) => o.key === key)) throw new Error("That file is already in Outputs.");
-    const checked = (await checkPaths(this.io, [p], this.now())).get(p);
+    if (this.snap.added.length >= ADDED_MAX) throw new Error(`Outputs keeps up to ${ADDED_MAX} files you added. Take one out first.`);
+    const checked = (await checkPaths(this.io, [{ path: p }], this.now())).get(placeOf({ path: p }));
+    if (!this.live) throw new Error("Outputs now shows another profile, so the file wasn't added.");
     if (checked?.state !== "available") throw new Error(checked?.state === "folder" ? "That's a folder, not a file." : (checked?.why ?? "The server couldn't find that file."));
     const out: Output = { key, path: p, how: "added", at: this.now(), availability: checked, ...(chatId && { chatId }) };
-    this.set((s) => ({ added: [...s.added, out] }), true);
+    this.set((s) => ({ added: [...s.added.filter((o) => o.key !== key), out] }), true);
     return out;
   }
 

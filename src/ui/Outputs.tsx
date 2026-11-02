@@ -51,6 +51,7 @@ export function OutputsScreen({
   scope,
   scopes,
   unindexed,
+  partialChats,
   chatTitle,
   status,
   canAdd,
@@ -72,6 +73,8 @@ export function OutputsScreen({
   scopes: { chat?: string; project?: string; profile: string };
   /** Chats in the scope whose Outputs haven't been read yet. */
   unindexed: number;
+  /** Chats in the scope whose discovery is partial (outputs.ts `IndexGaps`), with or without Outputs found. */
+  partialChats: number;
   chatTitle: (chatId: string) => string | undefined;
   status: ConnectionStatus;
   /** Whether a file can be added here: to this chat, or to the profile; a project has no files of its own. */
@@ -103,10 +106,7 @@ export function OutputsScreen({
         (!q || o.path.toLowerCase().includes(q) || (o.chatId && chatTitle(o.chatId)?.toLowerCase().includes(q))),
     );
   }, [sorted, query, type, chatTitle]);
-  const inScopePartial = useMemo(() => {
-    const ids = new Set(outputs.map((o) => o.chatId));
-    return Object.entries(snapshot.chats).filter(([id, c]) => c.partial && (scope === "profile" || ids.has(id))).length;
-  }, [snapshot.chats, outputs, scope]);
+  const inScopePartial = partialChats;
   const busy = !!snapshot.indexing || !!snapshot.checking;
   const scopeName = scope === "chat" ? "this chat" : scope === "project" ? `the project ${scopes.project}` : `the ${scopes.profile} profile`;
 
@@ -249,7 +249,7 @@ export function OutputsScreen({
           <span>
             {unindexed > 0 && `${unindexed} ${unindexed === 1 ? "chat hasn't" : "chats haven't"} been read for outputs yet. `}
             {inScopePartial > 0 &&
-              `Discovery is partial in ${inScopePartial} ${inScopePartial === 1 ? "chat" : "chats"}: older messages weren't read, a message was too big to read, or a file tool's result didn't say which file it wrote. Add a file by its path if one is missing.`}
+              `Discovery is partial in ${inScopePartial} ${inScopePartial === 1 ? "chat" : "chats"}: older messages weren't read, a message was too big to read, a chat made more files than are kept, or a file tool's result didn't say which file it wrote. Add a file by its path if one is missing.`}
           </span>
           {unindexed > 0 && (
             <button className="btn" disabled={!connected || busy} onClick={onIndexMore}>
@@ -307,6 +307,7 @@ export function OutputsScreen({
                           )}
                         </span>
                         <span className="out-path mono muted small">{shownPath(o.path)}</span>
+                        {o.host && <span className="out-path muted small">On the dashboard's machine</span>}
                       </td>
                       <td className="muted">{TYPE_LABEL[kind]}</td>
                       <td className="num muted" title={o.size === undefined ? "The tool didn't report a size" : "As the tool reported writing it"}>
