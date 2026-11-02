@@ -9,7 +9,10 @@ import { connect, type Hermes } from "../hermes/transport";
 import { UI_PREFS_KEY } from "../hermes/uiPrefs";
 import { Main } from "../App";
 
-vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }) }));
+const drops = vi.hoisted(() => new Set<(e: { payload: unknown }) => void>());
+vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({
+  onDragDropEvent: async (cb: (e: { payload: unknown }) => void) => { drops.add(cb); return () => drops.delete(cb); },
+}) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: async () => null }));
 
 beforeAll(() => {
@@ -21,6 +24,8 @@ afterEach(async () => {
   cleanup();
   await Promise.all(running.splice(0).map((h) => h.close()));
   localStorage.clear();
+  drops.clear();
+  vi.restoreAllMocks();
 });
 
 const settle = (hermes: Hermes) => act(async () => void (await hermes.idle()));
@@ -281,6 +286,59 @@ describe("Shortcuts with two panes", () => {
     await settle(s.hermes);
     expect([titleIn(0), titleIn(1)]).toEqual(["VPN tunnel", "NAS disks"]);
     expect(within(pane(0)).getByPlaceholderText<HTMLInputElement>("Find in chat").value).toBe("tunnel");
+  });
+});
+
+describe("Pane lifecycle regressions", () => {
+  it("keeps navigation when a New chat started earlier finishes creating", async () => {
+    const s = await signedIn();
+    const create = s.server.handlers["session.create"];
+    let answer!: () => void;
+    s.server.handlers["session.create"] = (r) => { answer = () => create(r); };
+    await s.user.type(composerIn(0), "Background start{Enter}");
+    await waitFor(() => expect(answer).toBeTypeOf("function"));
+    await s.user.click(rowButton("NAS disks"));
+    act(() => answer());
+    await settle(s.hermes);
+    expect(titleIn(0)).toBe("NAS disks");
+  });
+
+  it("puts keyboard focus in the surviving pane when the focused pane closes", async () => {
+    const s = await sideBySide();
+    await s.user.click(within(pane(1)).getByRole("button", { name: "Close the right pane" }));
+    await waitFor(() => expect(document.activeElement).toBe(composerIn(0)));
+  });
+
+  it("preserves find state while Settings covers the panes and stops marking them read", async () => {
+    const s = await sideBySide();
+    await s.user.keyboard("{Control>}f{/Control}");
+    await s.user.type(within(pane(1)).getByPlaceholderText("Find in chat"), "disks");
+    await s.user.click(screen.getByRole("button", { name: "Settings" }));
+    const hidden = document.querySelector(".panes.covered");
+    expect(hidden).toBeTruthy();
+    expect(hidden?.getAttribute("inert")).not.toBeNull();
+    await s.user.click(screen.getByRole("button", { name: "Back to chat" }));
+    expect(document.querySelector(".panes.covered")).toBeNull();
+    expect(document.activeElement).toBe(composerIn(1));
+    expect(within(pane(1)).getByPlaceholderText<HTMLInputElement>("Find in chat").value).toBe("disks");
+  });
+
+  it("routes a native drop only to the visible narrow pane, despite overlapping pane bounds", async () => {
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(() => ({
+      x: 324, y: 0, left: 324, right: 760, top: 0, bottom: 800, width: 436, height: 800, toJSON() {},
+    }));
+    const observe = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver;
+    try {
+      const s = await sideBySide();
+      expect(pane(0).classList.contains("hidden")).toBe(true);
+      s.server.files["/tmp/narrow.txt"] = "only the right pane";
+      await act(async () => {
+        for (const drop of drops) drop({ payload: { type: "drop", paths: ["/tmp/narrow.txt"], position: { x: 500, y: 300 } } });
+      });
+      expect(pane(0).textContent).not.toContain("narrow.txt");
+      expect(pane(1).textContent).toContain("narrow.txt");
+    } finally { globalThis.ResizeObserver = observe; }
   });
 });
 

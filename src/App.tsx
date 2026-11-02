@@ -646,7 +646,10 @@ export function Main({
             onClearCache={() => hermes.clearCache()}
             onPullOlder={() => hermes.pullOlderHistory()}
             onSignOut={onSignOut}
-            onClose={() => setSettingsOpen(false)}
+            onClose={() => {
+              flushSync(() => setSettingsOpen(false));
+              focusPane(active.key);
+            }}
           />
         ) : null}
         <Split panes={slots} activeKey={active.key} onActivate={activate} covered={settingsOpen || previewCovers} />

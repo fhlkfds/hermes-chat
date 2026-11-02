@@ -241,15 +241,6 @@ code, pre, kbd { font-family: var(--mono); }
 .pane-tab:focus-visible { outline: 2px solid var(--line-2); outline-offset: -2px; }
 .pane-tab-side { font-weight: 500; flex: none; }
 .pane-tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* A pane half a window wide gives the transcript the room its padding took. */
-@container (max-width: 560px) {
-  .chat-head { padding: 0 8px 0 14px; }
-  .transcript-inner { padding: 14px 16px 32px; }
-  .composer-wrap { padding: 0 12px 14px; }
-  .find { right: 8px; }
-  .find input { width: 120px; }
-}
-
 /* ---------- chat pane ---------- */
 .chat { display: flex; flex-direction: column; height: 100%; position: relative; }
 .chat-head {
@@ -949,3 +940,12 @@ button.status-item:disabled { opacity: 0.5; cursor: default; }
 /* Settings covers mounted panes so their scroll, find and attachment state survives. */
 .main { position: relative; }
 .panes.covered { position: absolute; inset: 0; visibility: hidden; pointer-events: none; }
+
+/* A pane half a window wide gives the transcript the room its padding took. */
+@container (max-width: 560px) {
+  .chat-head { padding: 0 8px 0 14px; }
+  .transcript-inner { padding: 14px 16px 32px; }
+  .composer-wrap { padding: 0 12px 14px; }
+  .find { right: 8px; }
+  .find input { width: 120px; }
+}

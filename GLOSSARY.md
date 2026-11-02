@@ -44,7 +44,7 @@ The owner's action that asks Hermes for a new title made from the chat's last fi
 _Avoid_: auto-title (Hermes's own titling of a new chat), retitle
 
 **Unread**:
-A chat with something new in it since the owner last opened it, in this app or any other Hermes client. It shows a dot, and so does the collapsed Settled header when a Settled chat is unread. The chat on screen never shows the dot.
+A chat with something new in it since the owner last opened it, in this app or any other Hermes client. It shows a dot, and so does the collapsed Settled header when a Settled chat is unread. A chat visible on screen never shows the dot. With two panes, both visible chats stay read; a pane hidden by the narrow-window switcher or Settings does not mark its chat read.
 _Avoid_: new, unseen
 
 **Source**:
@@ -128,3 +128,8 @@ _Avoid_: insecure (the app's label is "Unsecure"), unsafe
 - **Imported chat** vs pulling older history: the list holds the past month's chats until the owner pulls older history in Settings, after which it holds all of the profile's chats. Pulled chats come in Settled unless pinned, but they are Imported chats only if their Source isn't this app.
 - **Draft** vs the New chat pane: the code also calls the pane for a chat not started yet "the draft". In this glossary a Draft is only the composer's unsent text.
 - **Source** vs the `source` field on a Hermes session: the app derives a chat's Source from that field, but the field has more values than the app shows. `hermes-chat` and `gui` count as this app, and `cli` and `tui` as the command line. `cron` chats aren't listed, and any other value (for example `api_server`, `webhook`) shows as "another Hermes platform".
+
+**Pane**:
+One view of a chat, its transcript and composer. The app can show two side by side. The focused pane is the one the
+chat list, Search and keyboard shortcuts target. This focus does not change whether a chat is Active or Settled.
+Two panes of one chat share its Draft and running reply; each has its own scroll, Find and pending Attachments.
