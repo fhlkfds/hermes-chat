@@ -49,6 +49,7 @@ function toChat(v: unknown): Chat | undefined {
     title: c.title,
     source: SOURCES.includes(c.source as Source) ? (c.source as Source) : "other",
     settled: typeof c.settled === "boolean" ? c.settled : true,
+    ...(c.settledHere === true && { settledHere: true }),
     updatedAt: num(c.updatedAt) ?? 0,
     ...(typeof c.unread === "boolean" && { unread: c.unread }),
     ...(c.archived === true && { archived: true }),

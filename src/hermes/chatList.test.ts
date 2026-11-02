@@ -180,14 +180,16 @@ describe("Active is Hermes's pinned flag", () => {
   it("pins at the end of the turn if Hermes hadn't stored the chat yet, and keeps it Active meanwhile", async () => {
     const { server, hermes, chat } = await signedIn();
     const id = await hermes.newChat();
+    server.rest[`GET /api/sessions/${id}/mutation-snapshot`] = () => ({ session_id: id, exists: false, runtime_revision: 0 });
     server.rest[`PATCH /api/sessions/${id}`] = () => {
-      throw new Error(`The dashboard answered 404: {"detail":"Session not found"}`);
+      throw new Error(`The dashboard answered 404: {"detail":"not_found"}`);
     };
     await hermes.send(id, "hello");
     await hermes.sync();
     expect(chat(id).settled).toBe(false);
     expect(hermes.getSnapshot().syncError).toBeUndefined();
 
+    delete server.rest[`GET /api/sessions/${id}/mutation-snapshot`];
     delete server.rest[`PATCH /api/sessions/${id}`];
     server.event(server.runtimeIdOf(id)!, "message.complete", { text: "Hi!", status: "complete" });
     await hermes.idle();
@@ -205,6 +207,44 @@ describe("Active is Hermes's pinned flag", () => {
     await hermes.idle();
     expect(hermes.getSnapshot().syncError).toBe("Couldn't keep a chat Active on the server: The dashboard answered 503: busy");
     expect(chat(id).settled).toBe(false);
+  });
+
+  it("keeps Active and Settled on this computer for a chat Hermes has but won't pin", async () => {
+    // bf0203a answers 404 not_found to every edit of a session started by a WS client.
+    const server = new FakeHermes();
+    const cache = memoryCache();
+    const { hermes, chat } = await signedIn(server, cache);
+    const id = await hermes.newChat();
+    const refuse = () => {
+      throw new Error(`The dashboard answered 404: {"detail":"not_found"}`);
+    };
+    server.rest[`PATCH /api/sessions/${id}`] = refuse;
+    await hermes.send(id, "hello");
+    server.event(server.runtimeIdOf(id)!, "message.complete", { text: "Hi!", status: "complete" });
+    await hermes.idle();
+    await hermes.sync();
+    await hermes.idle();
+    expect(hermes.getSnapshot().syncError).toBeUndefined();
+    expect(chat(id)).toMatchObject({ settled: false, settledHere: true });
+
+    // Refreshing doesn't write it again, and settling is kept too.
+    const patches = () => server.restRequests.filter((r) => r.method === "PATCH").length;
+    const before = patches();
+    await hermes.sync();
+    await hermes.idle();
+    expect(patches()).toBe(before);
+    await hermes.settle(id);
+    await hermes.sync();
+    expect(hermes.getSnapshot().syncError).toBeUndefined();
+    expect(chat(id).settled).toBe(true);
+
+    // The next start shows it where the owner left it, though Hermes has it unpinned.
+    await hermes.unsettle(id);
+    await hermes.close();
+    const again = await signedIn(server, cache);
+    await again.hermes.sync();
+    expect(server.sessions.find((s) => s.id === id)!.pinned).toBeFalsy();
+    expect(again.chat(id).settled).toBe(false);
   });
 
   it("resumes a Settled chat to reply in it, then makes it Active and pins it", async () => {
