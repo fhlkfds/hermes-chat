@@ -382,12 +382,7 @@ pub fn run(screenshot: bool) {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app, event| {
-            // Screenshots never outlive the app.
-            if let tauri::RunEvent::Exit = event {
-                if let Some(c) = &*app.state::<Screenshots>().captures.lock().unwrap() {
-                    c.clear();
-                }
-            }
-        });
+        // Outbox persistence in the renderer can precede its asynchronous retention IPC. Leave remaining captures
+        // for the next startup's sweep, after persisted references are known, rather than risk deleting Retry bytes.
+        .run(|_, _| {});
 }

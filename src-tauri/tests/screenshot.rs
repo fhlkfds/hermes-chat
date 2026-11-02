@@ -457,3 +457,57 @@ fn a_reused_process_slot_never_overwrites_an_outbox_capture() {
     assert!(old_file.exists());
     assert!(new.starts_with(root.0.join("captures")));
 }
+
+#[test]
+fn shutdown_before_retention_ipc_preserves_bytes_for_startup_reconciliation() {
+    let (root, captures) = fresh_root("shutdown-race");
+    let source = root.0.join("source.png");
+    std::fs::write(&source, PNG).unwrap();
+    let pending = captures.adopt(&source, "pending", false).unwrap();
+    // The renderer persisted this path but the retention IPC never ran. Native shutdown drops the store without
+    // clearing it. Use a dead pid to model the next launch's view of the previous process.
+    let dead = root.0.join("captures/4194999");
+    std::fs::rename(captures.mine(), &dead).unwrap();
+    let pending = dead.join(pending.strip_prefix(captures.mine()).unwrap());
+    drop(captures);
+    assert!(pending.exists());
+    let restarted = Captures::open(root.0.join("captures")).unwrap();
+    restarted.retain_outbox([pending.clone()]);
+    assert!(pending.exists());
+    restarted.retain_outbox([]);
+    assert!(!pending.exists());
+}
+
+#[test]
+fn cleanup_never_follows_linked_instances_or_retargeted_outbox_ancestors() {
+    use std::os::unix::fs::symlink;
+    let (root, captures) = fresh_root("cleanup-links");
+    let outside = root.0.join("outside");
+    std::fs::create_dir_all(outside.join("0")).unwrap();
+    let kept = outside.join("0/kept.png");
+    std::fs::write(&kept, PNG).unwrap();
+    let dead = root.0.join("captures/4194999");
+    symlink(&outside, &dead).unwrap();
+    captures.sweep_except(|_| false);
+    captures.retain_outbox([dead.join("0/kept.png")]);
+    captures.retain_outbox([]);
+    assert!(kept.exists());
+    std::fs::remove_file(&dead).unwrap();
+
+    // A previously valid retained instance is replaced by a symlink before its reference disappears.
+    std::fs::create_dir_all(dead.join("0")).unwrap();
+    let old = dead.join("0/kept.png");
+    std::fs::write(&old, PNG).unwrap();
+    captures.retain_outbox([old]);
+    std::fs::remove_dir_all(&dead).unwrap();
+    symlink(&outside, &dead).unwrap();
+    captures.retain_outbox([]);
+    assert!(kept.exists());
+
+    // Discard also refuses a linked slot, even in this process's own instance.
+    let slot = captures.slot("kept.png").unwrap();
+    std::fs::remove_dir(slot.parent().unwrap()).unwrap();
+    symlink(outside.join("0"), slot.parent().unwrap()).unwrap();
+    captures.discard(&slot);
+    assert!(kept.exists());
+}

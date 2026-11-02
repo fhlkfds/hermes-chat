@@ -791,13 +791,38 @@ impl Captures {
             })
     }
 
-    /// Deletes a staged capture and its folder. Anything else is left alone; returns whether it was one.
-    pub fn discard(&self, path: &Path) -> bool {
-        if !self.owns(path) || self.retained.lock().unwrap().contains(path) {
+    /// Checks every storage ancestor before traversal or deletion. In particular, a pid folder supplied by the
+    /// filesystem or a persisted outbox must never redirect cleanup through a symlink outside capture storage.
+    fn real_storage_dir(&self, dir: &Path) -> bool {
+        let Ok(relative) = dir.strip_prefix(&self.root) else {
+            return false;
+        };
+        let mut current = self.root.clone();
+        let real_dir = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir());
+        if !self.root.parent().is_some_and(real_dir) || !real_dir(&current) {
             return false;
         }
-        let _ = std::fs::remove_file(path);
-        if let Some(dir) = path.parent() {
+        for component in relative.components() {
+            if !matches!(component, std::path::Component::Normal(_)) {
+                return false;
+            }
+            current.push(component);
+            if !real_dir(&current) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Deletes a staged capture and its folder. Anything else is left alone; returns whether it was one.
+    pub fn discard(&self, path: &Path) -> bool {
+        if !self.owns(path)
+            || !self.real_storage_dir(&self.mine)
+            || self.retained.lock().unwrap().contains(path)
+        {
+            return false;
+        }
+        if let Some(dir) = path.parent().filter(|dir| self.real_storage_dir(dir)) {
             let _ = std::fs::remove_dir_all(dir);
         }
         true
@@ -809,6 +834,7 @@ impl Captures {
             p.is_absolute()
                 && p.parent().and_then(Path::parent).and_then(Path::parent)
                     == Some(self.root.as_path())
+                && p.parent().is_some_and(|slot| self.real_storage_dir(slot))
                 && !p.components().any(|c| {
                     matches!(
                         c,
@@ -819,7 +845,7 @@ impl Captures {
         let next: HashSet<PathBuf> = paths.into_iter().filter(valid).collect();
         let mut retained = self.retained.lock().unwrap();
         for path in retained.difference(&next) {
-            if let Some(slot) = path.parent() {
+            if let Some(slot) = path.parent().filter(|slot| self.real_storage_dir(slot)) {
                 let _ = std::fs::remove_dir_all(slot);
             }
         }
@@ -829,6 +855,9 @@ impl Captures {
     }
 
     fn clear_instance(&self, dir: &Path) {
+        if !self.real_storage_dir(dir) {
+            return;
+        }
         let retained = self.retained.lock().unwrap();
         let Ok(slots) = std::fs::read_dir(dir) else {
             return;
@@ -844,7 +873,8 @@ impl Captures {
         let _ = std::fs::remove_dir(dir);
     }
 
-    /// Deletes this process's composer captures at exit, preserving files still needed by an outbox.
+    /// Explicitly clears this process's unretained captures. Never call at exit: renderer outbox persistence can
+    /// precede its retention IPC, so startup must reconcile persisted references before removing leftovers.
     pub fn clear(&self) {
         self.clear_instance(&self.mine);
     }
@@ -855,6 +885,9 @@ impl Captures {
     }
 
     pub fn sweep_except(&self, alive: impl Fn(u32) -> bool) {
+        if !self.real_storage_dir(&self.root) {
+            return;
+        }
         let Ok(entries) = std::fs::read_dir(&self.root) else {
             return;
         };
