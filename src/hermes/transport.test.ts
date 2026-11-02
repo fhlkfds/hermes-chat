@@ -21,6 +21,7 @@ describe("Hermes transport", () => {
       chats: [],
       olderPulled: false,
       archivedListed: false,
+      listed: false,
       others: { byName: {} },
       status: "connected",
       route: { kind: "ssh", target: "liam@hermes" },

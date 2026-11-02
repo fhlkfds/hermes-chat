@@ -4,6 +4,7 @@ import { CHECK_EVERY_MS } from "./hermes/otherProfiles";
 import { type Account, type SavedSignIn, launchSignIn, savedSignIn, signIn, signOut } from "./hermes/account";
 import { localChatCache } from "./hermes/chatCache";
 import { draftKey, drafts } from "./hermes/drafts";
+import { chatToReopen, forgetOpenChat, getUIPrefs, rememberOpenChat } from "./hermes/uiPrefs";
 import { exportChat } from "./hermes/exportChat";
 import { systemKeyring } from "./hermes/tauriKeyring";
 import { desktopNotify } from "./hermes/tauriNotify";
@@ -76,6 +77,8 @@ export default function App() {
   const [error, setError] = useState<string>();
   // Why the keyring couldn't save the password at sign-in, shown once signed in.
   const [notSaved, setNotSaved] = useState<string>();
+  // Only the first sign-in after launch reopens the last chat; signing in again after Sign out starts fresh.
+  const signedOut = useRef(false);
 
   useEffect(() => {
     void launch().then((l) => {
@@ -91,6 +94,7 @@ export default function App() {
         hermes={hermes}
         connection={account.store.load()}
         notSaved={notSaved}
+        reopenLast={!signedOut.current}
         onSignOut={async () => {
           let failure: string | undefined;
           try {
@@ -98,6 +102,7 @@ export default function App() {
           } catch (e) {
             failure = messageOf(e);
           }
+          signedOut.current = true;
           setHermes(null);
           setNotSaved(undefined);
           setInitial({ ...loadSignIn(), password: "" });
@@ -132,23 +137,37 @@ export default function App() {
   );
 }
 
+/** The chat reopening at launch, until Hermes's list settles whether it is still there. */
+type Reopening = { profile: string; chatId: string; opened: boolean };
+
 export function Main({
   hermes,
   connection,
   notSaved,
+  reopenLast = false,
   onSignOut,
 }: {
   hermes: Hermes;
   connection: SavedSignIn;
   notSaved?: string;
+  /** This is the first sign-in since the app started, so the chat on screen when it last closed may reopen. */
+  reopenLast?: boolean;
   onSignOut: () => Promise<void>;
 }) {
-  const { profile, chats, olderPulled, archivedListed, status, route, unsecure, closedReason, syncError, others } = useSyncExternalStore(
+  const { profile, chats, olderPulled, archivedListed, listed, status, route, unsecure, closedReason, syncError, others } = useSyncExternalStore(
     hermes.subscribe,
     hermes.getSnapshot,
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const reopening = useRef<Reopening>(undefined);
+  // At launch, the profile's last chat opens at once if the list saved on this computer has it (uiPrefs.ts).
+  const [selectedId, setSelectedId] = useState<string | null>(() => {
+    const chatId = reopenLast ? chatToReopen(getUIPrefs(), profile) : undefined;
+    if (!chatId) return null;
+    const opened = chats.some((c) => c.id === chatId);
+    reopening.current = { profile, chatId, opened };
+    return opened ? chatId : null;
+  });
   const [listOpen, setListOpen] = useState(true);
   const [draftError, setDraftError] = useState<string>();
   const [toast, setToast] = useState<Toast | null>(notSaved ? { text: notSaved, at: Date.now() } : null);
@@ -172,10 +191,18 @@ export function Main({
   const composerText = useSyncExternalStore(savedDrafts.subscribe, () => savedDrafts.get(shownDraft));
   const undelivered = useSyncExternalStore(savedDrafts.subscribe, () => savedDrafts.undelivered(shownDraft));
 
-  const openChat = (id: string | null) => {
+  /** Puts `id` on screen, or the New chat pane for null. Wherever the owner goes wins over the chat reopening. */
+  const show = (id: string | null) => {
+    reopening.current = undefined;
     setSelectedId(id);
     setPicked(null);
     setSettingsOpen(false);
+  };
+
+  // Every move between chats is kept, so the next launch reopens whatever was on screen last.
+  const openChat = (id: string | null) => {
+    show(id);
+    rememberOpenChat(profile, id);
   };
 
   const newChat = () => {
@@ -185,10 +212,9 @@ export function Main({
 
   const pick = (found: Found) => {
     hermes.reveal(found);
-    setSelectedId(found.chatId);
+    openChat(found.chatId);
     setPicked({ found, at: Date.now() });
     setSearchOpen(false);
-    setSettingsOpen(false);
   };
   const findTarget =
     picked?.found.chatId === selected.id && picked.found.find
@@ -225,9 +251,12 @@ export function Main({
       return "delivery" in to ? to.delivery : hermes.send(to.id, text.trim());
     });
 
-  // The other profile's chats replace the list, so the pane starts a fresh draft.
+  // The other profile's chats replace the list, so the pane starts a fresh draft, and that is what the new profile has
+  // on screen last. The old profile keeps its last chat.
   const switchProfile = (name: string) => {
-    newChat();
+    show(null);
+    setDraftError(undefined);
+    rememberOpenChat(name, null);
     setToast(null);
     void hermes.switchProfile(name);
   };
@@ -267,6 +296,24 @@ export function Main({
       ok && setToast({ text: `${archived ? "Archived" : "Restored"}: ${title}`, undo: archived ? () => setArchived(id, false) : undefined, at: Date.now() });
     void (archived ? hermes.archive(id) : hermes.restore(id)).then(done);
   };
+
+  // The chat reopening at launch opens once the list holds it. If the list read from Hermes doesn't have it, it was
+  // deleted, archived or aged out of the list, so the launch falls back to the New chat pane and it is forgotten.
+  useEffect(() => {
+    const r = reopening.current;
+    if (!r) return;
+    if (profile !== r.profile) return void (reopening.current = undefined);
+    const there = chats.some((c) => c.id === r.chatId);
+    if (there && !r.opened) {
+      r.opened = true;
+      setSelectedId(r.chatId);
+    }
+    if (!listed) return;
+    reopening.current = undefined;
+    if (there) return;
+    forgetOpenChat(r.profile, r.chatId);
+    if (r.opened) setSelectedId(null);
+  }, [chats, listed, profile]);
 
   useEffect(() => {
     if (!toast) return;

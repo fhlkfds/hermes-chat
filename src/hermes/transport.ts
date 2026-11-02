@@ -231,6 +231,8 @@ export type Snapshot = {
   olderPulled: boolean;
   /** The list also holds the profile's archived chats, however old (`listArchived`). */
   archivedListed: boolean;
+  /** The list has been read from Hermes for this profile since it was shown, not only loaded from this computer. */
+  listed: boolean;
   status: ConnectionStatus;
   route?: Route;
   unsecure: boolean;
@@ -354,7 +356,7 @@ export class Hermes {
     private cache: ChatCache = noCache,
     private notify: Notify = () => Promise.resolve(),
   ) {
-    this.snapshot = { profile, chats: cache.load(profile), olderPulled: cache.olderPulled(profile), archivedListed: false, status: "offline", unsecure: false, others: noOthers };
+    this.snapshot = { profile, chats: cache.load(profile), olderPulled: cache.olderPulled(profile), archivedListed: false, listed: false, status: "offline", unsecure: false, others: noOthers };
   }
 
   /** See `readSaved`. */
@@ -446,7 +448,7 @@ export class Hermes {
     this.resumeOnReconnect.clear();
     this.revealed.clear();
     this.cache.rememberProfile(name);
-    this.update({ profile: name, chats: this.cache.load(name), olderPulled: this.cache.olderPulled(name), archivedListed: false, syncError: undefined });
+    this.update({ profile: name, chats: this.cache.load(name), olderPulled: this.cache.olderPulled(name), archivedListed: false, listed: false, syncError: undefined });
     // A reconnect under way may be opening the old profile's socket.
     await this.redialing;
     if (this.profile !== name || this.closing) return;
@@ -1478,7 +1480,7 @@ export class Hermes {
     );
     const chats = [...onThisConnection, ...listed];
     this.listedAt = Date.now();
-    this.update({ chats, syncError: undefined });
+    this.update({ chats, listed: true, syncError: undefined });
     if (readOnScreen) this.seen(this.viewing!);
     this.saveList(profile, chats);
     await this.checkUnsureArchives(profile);

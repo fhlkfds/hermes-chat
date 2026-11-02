@@ -1,7 +1,7 @@
-// The Settings screen, ported from the prototype: the connection and Sign out, appearance, the local cache, and older
-// history.
+// The Settings screen, ported from the prototype: the connection and Sign out, appearance, what opens at launch, the
+// local cache, and older history.
 // Profiles are switched in the list's header, not here (ADR 0001).
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { ArrowLeft, Download, KeyRound, Lock, LogOut, Trash2 } from "lucide-react";
 import type { Chat, ConnectionStatus } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
@@ -9,6 +9,36 @@ import { TRANSCRIPT_LIMIT_BYTES } from "../hermes/chatCache";
 import { STATUS_LABEL, fmtSize, routeLabel } from "./bits";
 import type { AppearanceStore, Fonts } from "./appearance";
 import { AppearanceSettings } from "./AppearanceSettings";
+import { getUIPrefs, setUIPrefs, subscribe } from "../hermes/uiPrefs";
+
+/** Whether the chat on screen when the app closed opens again at the next launch (uiPrefs `reopenLastChat`). */
+function LaunchSettings() {
+  const { reopenLastChat } = useSyncExternalStore(subscribe, getUIPrefs);
+  return (
+    <section>
+      <h2>Launch</h2>
+      <div className="appearance-row">
+        <div className="appearance-label">
+          <div className="appearance-title" id="reopen-last-chat-label">
+            Reopen last chat on launch
+          </div>
+          <div className="muted small">
+            Open the chat you were in when Hermes Chat closed, in the profile you were using. When it's off, the app starts on a new chat.
+          </div>
+        </div>
+        <button
+          className="switch"
+          role="switch"
+          aria-checked={reopenLastChat}
+          aria-labelledby="reopen-last-chat-label"
+          onClick={() => setUIPrefs({ reopenLastChat: !reopenLastChat })}
+        >
+          <span className="switch-knob" />
+        </button>
+      </div>
+    </section>
+  );
+}
 
 /** What a pull added: the older chats in Settled, and any pinned in another Hermes client, which are Active. */
 function pulledText(added: Chat[]): string {
@@ -111,6 +141,8 @@ export function SettingsScreen({
         </section>
 
         <AppearanceSettings store={appearance} listFonts={listFonts} />
+
+        <LaunchSettings />
 
         <section>
           <h2>Local cache</h2>
