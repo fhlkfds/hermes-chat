@@ -1,6 +1,6 @@
 // Icon rail beside a chat list (ADR 0001), ported from the prototype's variants C and A. The list's header is the
 // profile switcher. Settings opens from the rail's foot. Right-clicking a chat opens its menu (ChatMenu.tsx).
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Check, ChevronDown, ChevronRight, CircleAlert, LockOpen, Search, Settings, SquarePen, Trash2 } from "lucide-react";
 import type { Chat, ConnectionStatus, OtherProfile, OtherProfiles } from "../hermes/model";
 import { SOURCE_LABEL } from "../hermes/model";
@@ -8,7 +8,7 @@ import { CHECK_EVERY_MS, totalUnread } from "../hermes/otherProfiles";
 import type { Route } from "../hermes/pipe";
 import { RenameConflict } from "../hermes/transport";
 import { ChatMenu } from "./ChatMenu";
-import { STATUS_LABEL, SettleButton, SourceIcon, Spinner, relTime, routeLabel } from "./bits";
+import { STATUS_LABEL, SettleButton, SourceIcon, Spinner, composing, relTime, routeLabel, useReturnFocus } from "./bits";
 
 const byRecent = (a: Chat, b: Chat) => b.updatedAt - a.updatedAt;
 
@@ -114,6 +114,7 @@ function RenameRow({
         onChange={(e) => setDraft(e.target.value)}
         onFocus={(e) => e.currentTarget.select()}
         onKeyDown={(e) => {
+          if (composing(e)) return;
           if (e.key === "Enter") save();
           else if (e.key === "Escape" && !saving) onDone();
         }}
@@ -130,8 +131,10 @@ function RenameRow({
 }
 
 /**
- * One chat in the list. Right-clicking it opens its menu. Its trash button asks before deleting, in the row itself:
- * Escape, Cancel or clicking away keeps the chat. A chat with a reply running can't be deleted.
+ * One chat in the list: a button that opens it, then its Settle and Delete buttons. Right-clicking it, or the Menu
+ * key or Shift+F10 on it, opens its menu. The trash button asks before deleting, in the row itself: Escape, Cancel or
+ * clicking away keeps the chat. Cancel stands where the trash button does, so React keeps the one button, and focus
+ * with it, when the row goes back. A chat with a reply running can't be deleted.
  */
 function ChatRow({
   chat,
@@ -152,6 +155,14 @@ function ChatRow({
   const [renaming, setRenaming] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const closeMenu = useCallback(() => setMenu(null), []);
+  const openButton = useRef<HTMLButtonElement>(null);
+  const wasRenaming = useRef(false);
+  // The rename box replaces the row; once it closes, focus goes back to the chat unless the owner moved it elsewhere.
+  useEffect(() => {
+    const now = document.activeElement;
+    if (wasRenaming.current && !renaming && (!now || now === document.body)) openButton.current?.focus();
+    wasRenaming.current = renaming;
+  }, [renaming]);
   if (renaming) return <RenameRow chat={chat} selected={selected} onRename={onRename} onDone={() => setRenaming(false)} />;
   if (confirming)
     return (
@@ -172,18 +183,26 @@ function ChatRow({
   return (
     <div
       className={`row ${selected ? "sel" : ""} ${chat.unread ? "unread" : ""} ${menu ? "menu-open" : ""}`}
-      onClick={onOpen}
       onContextMenu={(e) => {
         e.preventDefault();
-        setMenu({ x: e.clientX, y: e.clientY });
+        // From the keyboard the event has no pointer position, so the menu opens under the row.
+        const r = e.currentTarget.getBoundingClientRect();
+        setMenu(e.clientX || e.clientY ? { x: e.clientX, y: e.clientY } : { x: r.left + 8, y: r.bottom });
       }}
-      title={chat.source !== "app" ? `${chat.title} (from ${SOURCE_LABEL[chat.source]})` : chat.title}
     >
-      {chat.source !== "app" && <SourceIcon source={chat.source} />}
-      <span className="row-title">{chat.title}</span>
-      <span className="row-meta">
-        {chat.running ? <Spinner /> : chat.unread ? <span className="dot" title="Unread" /> : relTime(chat.updatedAt)}
-      </span>
+      <button
+        ref={openButton}
+        className="row-open"
+        aria-current={selected || undefined}
+        title={chat.source !== "app" ? `${chat.title} (from ${SOURCE_LABEL[chat.source]})` : chat.title}
+        onClick={onOpen}
+      >
+        {chat.source !== "app" && <SourceIcon source={chat.source} />}
+        <span className="row-title">{chat.title}</span>
+        <span className="row-meta">
+          {chat.running ? <Spinner /> : chat.unread ? <span className="dot" title="Unread" /> : relTime(chat.updatedAt)}
+        </span>
+      </button>
       <SettleButton settled={chat.settled} size={14} className="row-action" onSettle={onSettle} />
       {!chat.running && (
         <button
@@ -270,13 +289,11 @@ function ProfileSwitcher({
   const [open, setOpen] = useState(false);
   const [profiles, setProfiles] = useState<string[]>();
   const [error, setError] = useState<string>();
-  const [filter, setFilter] = useState("");
   const box = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
     let current = true;
-    setFilter("");
     setError(undefined);
     onCheckOthers();
     onListProfiles().then(
@@ -292,7 +309,6 @@ function ProfileSwitcher({
   }, [open]);
 
   const elsewhere = totalUnread(others).unread > 0;
-  const shown = (profiles ?? [profile]).filter((p) => p.toLowerCase().includes(filter.trim().toLowerCase()));
   const pick = (name: string) => {
     setOpen(false);
     if (name !== profile) onSwitch(name);
@@ -305,47 +321,82 @@ function ProfileSwitcher({
         {elsewhere && <span className="dot" aria-label="Unread chats in other profiles" />}
         <ChevronDown size={14} className="profile-chev" />
       </button>
-      {open && (
-        <div className="profile-menu" role="listbox" aria-label="Profiles">
-          <input
-            className="profile-filter"
-            autoFocus
-            placeholder="Filter profiles"
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") setOpen(false);
-              else if (e.key === "Enter" && shown[0]) pick(shown[0]);
-            }}
-          />
-          <div className="profile-options">
-            {shown.map((p) => (
-              <button
-                key={p}
-                role="option"
-                aria-selected={p === profile}
-                title={p === profile ? undefined : otherTip(others.byName[p])}
-                className={`profile-option ${p === profile ? "on" : ""}`}
-                onClick={() => pick(p)}
-              >
-                <span className="row-title">{p}</span>
-                {p === profile ? <Check size={14} /> : <OtherBadge info={others.byName[p]} />}
-              </button>
-            ))}
-            {!profiles && !error && <div className="profile-hint">Loading profiles…</div>}
-            {profiles && shown.length === 0 && <div className="profile-hint">No profile matches.</div>}
-            {error && <div className="profile-hint err">{error}</div>}
-          </div>
-          {others.error && <div className="profile-hint err">{others.error}</div>}
-          {profiles && profiles.length > 1 && (
-            <div className="profile-hint">
-              Unread checked every {CHECK_EVERY_MS / 60_000} min{others.checkedAt ? `, last ${ago(others.checkedAt)}` : ""}
-            </div>
-          )}
+      {open && <ProfileMenu profile={profile} profiles={profiles} error={error} others={others} onPick={pick} onClose={() => setOpen(false)} />}
+    </div>
+  );
+}
+
+/** The open profile menu. Closing it puts focus back on the profile button. */
+function ProfileMenu({
+  profile,
+  profiles,
+  error,
+  others,
+  onPick,
+  onClose,
+}: {
+  profile: string;
+  profiles?: string[];
+  error?: string;
+  others: OtherProfiles;
+  onPick: (name: string) => void;
+  onClose: () => void;
+}) {
+  const [filter, setFilter] = useState("");
+  useReturnFocus();
+
+  const shown = (profiles ?? [profile]).filter((p) => p.toLowerCase().includes(filter.trim().toLowerCase()));
+
+  return (
+    <div
+      className="profile-menu"
+      role="listbox"
+      aria-label="Profiles"
+      // Escape closes it from the filter or from an option the owner tabbed to.
+      onKeyDown={(e) => e.key === "Escape" && !composing(e) && onClose()}
+    >
+      <input
+        className="profile-filter"
+        autoFocus
+        placeholder="Filter profiles"
+        value={filter}
+        onChange={(e) => setFilter(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && !composing(e) && shown[0] && onPick(shown[0])}
+      />
+      <div className="profile-options">
+        {shown.map((p) => (
+          <button
+            key={p}
+            role="option"
+            aria-selected={p === profile}
+            title={p === profile ? undefined : otherTip(others.byName[p])}
+            className={`profile-option ${p === profile ? "on" : ""}`}
+            onClick={() => onPick(p)}
+          >
+            <span className="row-title">{p}</span>
+            {p === profile ? <Check size={14} /> : <OtherBadge info={others.byName[p]} />}
+          </button>
+        ))}
+        {!profiles && !error && <div className="profile-hint">Loading profiles…</div>}
+        {profiles && shown.length === 0 && <div className="profile-hint">No profile matches.</div>}
+        {error && <div className="profile-hint err">{error}</div>}
+      </div>
+      {others.error && <div className="profile-hint err">{others.error}</div>}
+      {profiles && profiles.length > 1 && (
+        <div className="profile-hint">
+          Unread checked every {CHECK_EVERY_MS / 60_000} min{others.checkedAt ? `, last ${ago(others.checkedAt)}` : ""}
         </div>
       )}
     </div>
   );
+}
+
+/** Up and Down move focus between the chats in the list, Active then Settled, without opening them. */
+function moveBetweenChats(e: KeyboardEvent<HTMLElement>) {
+  if ((e.key !== "ArrowDown" && e.key !== "ArrowUp") || !(e.target as Element).classList.contains("row-open")) return;
+  e.preventDefault();
+  const rows = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>(".row-open"));
+  rows[rows.indexOf(e.target as HTMLButtonElement) + (e.key === "ArrowDown" ? 1 : -1)]?.focus();
 }
 
 export function ChatList({
@@ -396,7 +447,7 @@ export function ChatList({
     />
   );
   return (
-    <aside className="sidebar">
+    <aside className="sidebar" onKeyDown={moveBetweenChats}>
       <div className="sb-head">
         <ProfileSwitcher profile={profile} others={others} onListProfiles={onListProfiles} onCheckOthers={onCheckOthers} onSwitch={onSwitchProfile} />
       </div>
@@ -411,7 +462,7 @@ export function ChatList({
       </div>
       {/* Settled is pinned to the foot of the list and opens upward as a drawer with its own scroll. */}
       <div className={`settled-section ${settledOpen ? "open" : ""}`}>
-        <button className="section-toggle" onClick={() => setSettledOpen((o) => !o)}>
+        <button className="section-toggle" aria-expanded={settledOpen} onClick={() => setSettledOpen((o) => !o)}>
           <ChevronRight size={14} className={`chev ${settledOpen ? "open" : ""}`} />
           Settled
           <span className="count">{settled.length}</span>

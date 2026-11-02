@@ -1,12 +1,15 @@
-// The menu a chat row opens on right-click. Escape or a click elsewhere closes it.
+// The menu a chat row opens on right-click, the Menu key or Shift+F10. Escape or a click elsewhere closes it, and focus
+// goes back to the chat.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Pencil } from "lucide-react";
 import type { Chat } from "../hermes/model";
+import { useReturnFocus } from "./bits";
 
 /** The right-click menu for one chat, at the pointer, kept inside the window. `onRename` hands back to the row. */
 export function ChatMenu({ chat, x, y, onRename, onClose }: { chat: Chat; x: number; y: number; onRename: () => void; onClose: () => void }) {
   const menu = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ left: x, top: y });
+  useReturnFocus();
 
   useLayoutEffect(() => {
     const r = menu.current!.getBoundingClientRect();
@@ -35,9 +38,11 @@ export function ChatMenu({ chat, x, y, onRename, onClose }: { chat: Chat; x: num
       role="menu"
       aria-label={`Actions for ${chat.title}`}
       style={{ left: pos.left, top: pos.top }}
-      onContextMenu={(e) => e.preventDefault()}
-      // The menu sits inside its row, which would open the chat.
-      onClick={(e) => e.stopPropagation()}
+      // The menu sits inside its row, which would open another menu.
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      }}
       onKeyDown={(e) => {
         if (e.key === "Escape") {
           e.preventDefault();

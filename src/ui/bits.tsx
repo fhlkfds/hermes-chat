@@ -1,5 +1,5 @@
 // Small shared UI bits, ported from the prototype.
-import type { ReactNode } from "react";
+import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { Archive, ArchiveRestore, Globe, Monitor, Send, Terminal } from "lucide-react";
 import type { ConnectionStatus, Source } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
@@ -58,6 +58,30 @@ export function SettleButton({
     >
       {settled ? <ArchiveRestore size={size} /> : <Archive size={size} />}
     </button>
+  );
+}
+
+/**
+ * A key pressed while an input method is composing belongs to the IME (Enter picks a candidate), so it must not
+ * send, pick or open anything. WebKitGTK reports some of these only as keyCode 229.
+ */
+export const composing = (e: KeyboardEvent | ReactKeyboardEvent) =>
+  ("nativeEvent" in e ? e.nativeEvent : e).isComposing || e.keyCode === 229;
+
+/**
+ * For a popover: when it closes, focus goes back to what had it when the popover opened, unless the owner has
+ * moved focus somewhere else meanwhile (clicked another control, or the popover's pick opened something that
+ * focuses itself).
+ */
+export function useReturnFocus() {
+  // Read while rendering, before the popover's own autoFocus moves focus into it.
+  const [opener] = useState(() => document.activeElement);
+  useEffect(
+    () => () => {
+      const now = document.activeElement;
+      if ((!now || now === document.body) && opener instanceof HTMLElement && opener.isConnected) opener.focus();
+    },
+    [],
   );
 }
 
