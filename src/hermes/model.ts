@@ -22,6 +22,8 @@ export type Item =
   | { kind: "user"; id: string; text: string; attachments?: string[] }
   /** `interrupted`: the owner, or another Hermes client, stopped this reply before it finished. */
   | { kind: "assistant"; id: string; text: string; interrupted?: boolean }
+  /** The model's reasoning before a reply or a tool call, as Hermes streams or stores it. */
+  | { kind: "thinking"; id: string; text: string }
   | {
       kind: "tool";
       id: string;
