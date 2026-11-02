@@ -2,7 +2,7 @@
 // A Server file is read on the Hermes server through dashboard REST `GET /api/fs/read-text` and
 // `GET /api/fs/read-data-url` (research doc "Preview pane"). A Local file is one the owner picked on this computer in
 // the native Open dialog; Rust reads it (src-tauri/src/transport.rs `read_local_text`). Web pages load in a sandboxed
-// frame (ADR 0006). Everything shown is untrusted: nothing here turns it into HTML the app itself renders.
+// frame (ADR 0007). Everything shown is untrusted: nothing here turns it into HTML the app itself renders.
 import type { Item } from "./model";
 
 /**
@@ -61,7 +61,7 @@ export function previewName(t: PreviewTarget): string {
 
 /**
  * A web address the pane will load, or why it won't. Only http(s); no username or password in it; and never the app's
- * own origin, since a frame on it could reach the app (ADR 0006).
+ * own origin, since a frame on it could reach the app (ADR 0007).
  */
 export function checkWebUrl(raw: string, appOrigin: string): { url: string } | { error: string } {
   let u: URL;

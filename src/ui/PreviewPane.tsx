@@ -1,5 +1,5 @@
 // The preview pane beside the chat: a web page, a Server file, a Local file or a tool call's output (GLOSSARY.md
-// "Preview pane"). Everything it shows is untrusted (ADR 0006): web pages load in a sandboxed frame that can't reach the
+// "Preview pane"). Everything it shows is untrusted (ADR 0007): web pages load in a sandboxed frame that can't reach the
 // app, HTML files render with scripts and network off, and Markdown renders without raw HTML, as replies do.
 import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { AlertTriangle, ArrowLeft, Check, Copy, FileQuestion, Globe, Laptop, Plus, RotateCw, Server, Wrench, X } from "lucide-react";
@@ -451,7 +451,7 @@ function WebView({ url }: { url: string }) {
   }, []);
   const onLoad = () => {
     // A page that redirected the frame onto the app's own origin could reach the app; such a frame is emptied at once.
-    // The frame-src policy (index.html) and Tauri's invoke key are the main guards; this is the last one (ADR 0006).
+    // The frame-src policy (index.html) and Tauri's invoke key are the main guards; this is the last one (ADR 0007).
     try {
       const href = frame.current?.contentWindow?.location.href;
       if (href !== undefined && href !== "about:blank") {
