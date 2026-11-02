@@ -17,6 +17,7 @@ import { SearchPalette } from "./ui/Search";
 import { SettingsScreen } from "./ui/Settings";
 import { composing } from "./ui/bits";
 import { appearanceStore } from "./ui/appearance";
+import { StatusBar } from "./ui/StatusBar";
 import { systemFonts } from "./ui/tauriFonts";
 import { SignIn } from "./ui/SignIn";
 import { ModelControls } from "./ui/ModelPicker";
@@ -480,6 +481,14 @@ export function Main({
                 favorites={modelFavorites}
                 onPick={pickModel}
                 onToggleFavorite={toggleModelFavorite}
+              />
+            }
+            footer={
+              <StatusBar
+                chat={selected}
+                status={status}
+                onYolo={(on) => hermes.setYolo(selected.id, on)}
+                onBreakdown={() => hermes.contextBreakdown(selected.id)}
               />
             }
           />

@@ -51,8 +51,8 @@ const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateS
  * `alsoPostsIn`: the Telegram or Discord chat Hermes will also post its replies in. `draft`: the composer's text, kept
  * outside the pane so it survives switching chats. `onAnswer` answers an Approval card. `onSettle`, `onArchive` and
  * `onExport` are left out for a chat not started yet. `notLoaded`: the chat has no Saved copy and can't load until
- * Hermes is connected. `modelControls`: the model picker and reasoning pill, at the bottom left of the composer. Ctrl+F
- * opens the find bar.
+ * Hermes is connected. `modelControls`: the model picker and reasoning pill, at the bottom left of the composer.
+ * `footer`: what goes under the composer, the status bar. Ctrl+F opens the find bar.
  */
 export function ChatPane({
   chat,
@@ -73,6 +73,7 @@ export function ChatPane({
   onArchive,
   onExport,
   modelControls,
+  footer,
 }: {
   chat: Chat;
   notLoaded?: boolean;
@@ -92,6 +93,7 @@ export function ChatPane({
   onArchive?: (archived: boolean) => void;
   onExport?: () => void;
   modelControls?: ReactNode;
+  footer?: ReactNode;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   // The blocks are memoized, so they get one answer handler for the life of the pane.
@@ -329,6 +331,7 @@ export function ChatPane({
         onStop={onStop}
         modelControls={modelControls}
       />
+      {footer}
     </div>
   );
 }

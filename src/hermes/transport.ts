@@ -16,7 +16,8 @@
 // Unread chats in the other profiles are polled over dashboard REST (otherProfiles.ts).
 // The composer's model picker lists what `model.options` offers (models.ts) and switches one chat at a time with
 // session-scoped `config.set`; nothing here ever writes the profile's default model, reasoning or fast mode.
-import { APPROVAL_CHOICES, isBroadGrant, isWaiting, offeredChoices, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ConnectionStatus, type Found, type Item, type OtherProfiles, type Source } from "./model";
+// Each chat's context fullness and YOLO come from its session's `info` and `usage`: research doc "Status bar".
+import { APPROVAL_CHOICES, isBroadGrant, isWaiting, offeredChoices, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ConnectionStatus, type ContextPart, type ContextUse, type Found, type Item, type OtherProfiles, type SessionLive, type Source } from "./model";
 import { catalogFromServer, fallbackCatalog, isEffort, modelKey, pickFromInfo, type ModelCatalog, type ModelPick } from "./models";
 import { noOthers, OtherProfilesCheck } from "./otherProfiles";
 import type { OpenPipe, Pipe, PipeEvent, Route } from "./pipe";
@@ -340,6 +341,9 @@ export class Hermes {
   private closedApprovals = new Map<string, ApprovalItem>();
   /** Approvals Hermes has been told are on screen (`approval.received`), by request id. */
   private shownApprovals = new Set<string>();
+  /** How many `session.info` events each runtime session has sent on this connection, so `setYolo` can tell
+   * whether Hermes reported the effective state before answering. */
+  private infoCount = new Map<string, number>();
   /** Hermes answered that it has no `approval.received`. */
   private noApprovalReceived = false;
   /** Messages Hermes hasn't accepted yet, so a Stop waits for the turn it stops. */
@@ -580,6 +584,7 @@ export class Hermes {
       settled: false,
       updatedAt: Date.now(),
       items: [],
+      live: withLive(undefined, res.info),
     };
     this.pinWanted.set(chat.id, true);
     this.update({ chats: [chat, ...this.snapshot.chats] });
@@ -947,6 +952,44 @@ export class Hermes {
   }
 
   /**
+   * Turns YOLO on or off for this chat only: Hermes then runs commands it counts as dangerous without asking
+   * (`config.set yolo`, session scope; research doc "Status bar"). Hermes keeps it with the chat. Rejects if the
+   * chat isn't open on this connection or Hermes refuses.
+   */
+  async setYolo(chatId: string, on: boolean): Promise<void> {
+    const runtimeId = this.snapshot.chats.find((c) => c.id === chatId)?.runtimeId;
+    if (!runtimeId) throw new Error("This chat isn't open on Hermes.");
+    const infos = this.infoCount.get(runtimeId) ?? 0;
+    const res = (await this.request("config.set", { session_id: runtimeId, profile: this.profile, key: "yolo", value: on ? "on" : "off" })) as { value?: unknown };
+    // `value` is only the chat's own flag. Whether Hermes auto-approves also depends on its launch flag and
+    // approvals.mode, which only `session.info` reports; Hermes sends that just before this answer, when the session's
+    // agent exists (`methods_config_set.py` `_set_yolo`).
+    const reported = (this.infoCount.get(runtimeId) ?? 0) > infos;
+    this.patchChat(chatId, (c) => {
+      if (c.runtimeId !== runtimeId) return c;
+      // The chat's flag is on, so YOLO is on whatever else holds.
+      if (res.value === "1") return { ...c, live: { ...c.live, yolo: true } };
+      // Off for the chat, yet still on: something wider than this chat turns it on.
+      if (reported) return c.live?.yolo ? { ...c, live: { ...c.live, yoloEverywhere: true } } : c;
+      // Not reported: unknown until Hermes says, never assumed off.
+      return { ...c, live: { ...c.live, yolo: undefined, yoloEverywhere: undefined } };
+    });
+  }
+
+  /** What fills the chat's context window, by category, as Hermes estimates it now; empty when Hermes gives none. */
+  async contextBreakdown(chatId: string): Promise<ContextPart[]> {
+    const runtimeId = this.snapshot.chats.find((c) => c.id === chatId)?.runtimeId;
+    if (!runtimeId) return [];
+    const res = (await this.request("session.context_breakdown", { session_id: runtimeId })) as { categories?: unknown };
+    return (Array.isArray(res?.categories) ? res.categories : []).flatMap((v): ContextPart[] => {
+      const p = obj(v);
+      return p && typeof p.id === "string" && typeof p.label === "string" && typeof p.tokens === "number"
+        ? [{ id: p.id, label: p.label, tokens: p.tokens, ...(typeof p.color === "string" && { color: p.color }) }]
+        : [];
+    });
+  }
+
+  /**
    * Refreshes the chat list from dashboard REST: the profile's chats active in the past month, or all of them once
    * older history is pulled, Active when pinned. A call while a sync is running asks for one more pass and resolves
    * with it.
@@ -1065,10 +1108,11 @@ export class Hermes {
     }
     const chat = session_id ? this.snapshot.chats.find((c) => c.runtimeId === session_id) : undefined;
     if (!chat) return;
-    // Sent when the chat's model, reasoning or fast mode changes, here or in another Hermes client.
+    // Sent when the chat's model, reasoning, fast mode or YOLO changes, here or in another Hermes client.
     if (type === "session.info") {
+      this.infoCount.set(chat.runtimeId!, (this.infoCount.get(chat.runtimeId!) ?? 0) + 1);
       const model = pickFromInfo(payload);
-      if (model) this.patchChat(chat.id, (c) => ({ ...c, model }));
+      this.patchChat(chat.id, (c) => ({ ...c, ...(model && { model }), live: withLive(c.live, payload) }));
       return;
     }
     this.patchChat(chat.id, (c) => applyEvent(c, type, payload));
@@ -1237,6 +1281,7 @@ export class Hermes {
     if (pipe) this.droppedClosing = pipe.close().catch(() => {}).finally(() => (this.droppedClosing = undefined));
     for (const p of this.pending.values()) p.reject(new ConnectionLostError(`Connection closed: ${reason}`));
     this.pending.clear();
+    this.infoCount.clear();
     this.earlyRequests.clear();
     for (const c of this.snapshot.chats) {
       if (c.runtimeId) this.staleItems.set(c.id, c.items.length);
@@ -1245,7 +1290,7 @@ export class Hermes {
     this.update({
       status: "reconnecting",
       closedReason: reason,
-      chats: this.snapshot.chats.map((c) => (c.runtimeId || c.running ? { ...c, runtimeId: undefined, running: false, stopping: false } : c)),
+      chats: this.snapshot.chats.map((c) => (c.runtimeId || c.running ? { ...c, runtimeId: undefined, live: undefined, running: false, stopping: false } : c)),
     });
   }
 
@@ -1337,6 +1382,7 @@ export class Hermes {
           /** What a live session is still waiting on, oldest first. */
           open_requests?: ServerRequest[];
           info?: unknown;
+          usage?: unknown;
         };
         const history = historyItems(res.messages ?? []);
         const stale = this.staleItems.get(chatId) ?? 0;
@@ -1354,6 +1400,7 @@ export class Hermes {
           ...c,
           runtimeId: res.session_id,
           model: pickFromInfo(res.info) ?? c.model,
+          live: withLive(undefined, res.info, res.usage),
           running: c.running || !!res.running,
           savedAt: undefined,
           items: [...history, ...lost(c.items.slice(0, stale)), ...withoutLoadError(c.items.slice(stale))],
@@ -1974,6 +2021,29 @@ function approvalItem(r: ServerRequest): ApprovalItem {
 const endWaitingApprovals = (items: Item[], ended: string, which = (_: ApprovalItem) => true) =>
   items.map((i): Item => (isWaiting(i) && which(i) ? { ...i, ended } : i));
 
+const obj = (v: unknown) => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined);
+
+/**
+ * `prev` updated from a session's `info` (`server._session_info`) and `usage` (`server._get_usage`, or `info.usage`).
+ * The model is `Chat.model` (`pickFromInfo`).
+ * Context fullness only as Hermes measured it: none until it has. YOLO only when Hermes reports it.
+ */
+function withLive(prev: SessionLive | undefined, info?: unknown, usage?: unknown): SessionLive | undefined {
+  const i = obj(info);
+  const u = obj(usage) ?? obj(i?.usage);
+  if (!i && !u) return prev;
+  const live: SessionLive = { ...prev };
+  if (typeof i?.yolo === "boolean") Object.assign(live, { yolo: i.yolo, yoloEverywhere: i.approval_mode === "off" });
+  if (u) live.context = contextUse(u);
+  return live;
+}
+
+function contextUse(u: Record<string, unknown>): ContextUse | undefined {
+  const { context_used: used, context_max: max, context_percent: percent } = u;
+  if (typeof used !== "number" || typeof max !== "number" || typeof percent !== "number" || max <= 0) return undefined;
+  return { used, max, percent, estimated: u.context_estimated === true };
+}
+
 function errorItem(c: Chat, text: string): Item {
   return { kind: "error", id: `e-${c.items.length}`, text };
 }
@@ -2049,6 +2119,9 @@ function applyEvent(c: Chat, type: string, p: Record<string, unknown>): Chat {
             : i,
         ),
       };
+    // Every second or so while a turn runs.
+    case "session.usage":
+      return { ...c, live: withLive(c.live, undefined, p.usage) };
     case "request.cancel":
       // Hermes stopped waiting: timed out, interrupted, or answered in another Hermes client.
       return { ...c, items: endWaitingApprovals(items, String(p.reason || "withdrawn"), (i) => i.id === p.id) };
@@ -2068,7 +2141,7 @@ function applyEvent(c: Chat, type: string, p: Record<string, unknown>): Chat {
         items.splice(reply > lastUser ? reply : items.length, 0, { kind: "thinking", id: `r-${items.length}`, text: reasoning });
       }
       if (!answered && typeof p.text === "string" && p.text) items.push({ kind: "assistant", id: `a-${items.length}`, text: p.text });
-      const end = { ...c, running: false, stopping: false, updatedAt: Date.now() };
+      const end = { ...c, live: withLive(c.live, undefined, p.usage), running: false, stopping: false, updatedAt: Date.now() };
       // Stopped here or from another Hermes client.
       if (p.status === "interrupted") return { ...end, items: markInterrupted(endWaitingApprovals(items, "turn ended")) };
       const failure = p.error ?? (p.status === "error" ? p.failure_reason ?? "The turn failed." : undefined);
