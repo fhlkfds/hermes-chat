@@ -1,5 +1,5 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, Brain, ChevronDown, ChevronRight, ChevronUp, Paperclip, Search, Square, Wrench, X } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
@@ -140,6 +140,8 @@ export function ChatPane({
   };
 
   const blocks = toBlocks(chat.items);
+  // Cards ignore clicks for a moment after the transcript changes, since it may have moved them under the pointer.
+  const movedAt = useMemo(() => performance.now(), [chat.items]);
   const last = chat.items[chat.items.length - 1];
   const waiting = chat.items.some(isWaiting);
 
@@ -252,7 +254,15 @@ export function ChatPane({
               );
             if (b.kind === "thinking") return <Thought key={b.id} item={b} live={!!chat.running && b === last} query={q} />;
             if (b.kind === "approval")
-              return <ApprovalCard key={b.id} item={b} offline={status !== "connected" || !!chat.loading} onAnswer={(c, confirmed) => onAnswer(b.id, c, confirmed)} />;
+              return (
+                <ApprovalCard
+                  key={b.id}
+                  item={b}
+                  offline={status !== "connected" || !!chat.loading}
+                  movedAt={movedAt}
+                  onAnswer={(c, confirmed) => onAnswer(b.id, c, confirmed)}
+                />
+              );
             return <ToolGroup key={b.id} tools={b.tools} />;
           })}
           {/* A reply waiting on the owner isn't thinking, and streamed thinking shows its own row. */}

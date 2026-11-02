@@ -29,12 +29,13 @@ const ARM_MS = 400;
 
 /**
  * Wraps a button's action so it runs only on a deliberate click: not the second click of a double click (`detail`
- * counts them; a keyboard press has none), and not within `ARM_MS` of the buttons appearing.
+ * counts them; a keyboard press has none), and not within `ARM_MS` of the buttons appearing or of `movedAt`, when
+ * the transcript last changed and may have moved them under the pointer.
  */
-function useDeliberate() {
+function useDeliberate(movedAt: number) {
   const [shownAt] = useState(() => performance.now());
   return (act: () => void) => (e: MouseEvent) => {
-    if (e.detail <= 1 && e.timeStamp - shownAt >= ARM_MS) act();
+    if (e.detail <= 1 && e.timeStamp - Math.max(shownAt, movedAt) >= ARM_MS) act();
   };
 }
 
@@ -46,20 +47,22 @@ function endedNote(reason: string): string {
 }
 
 /**
- * Only the answers Hermes offers show. `onAnswer` gets `confirmed` once the owner has confirmed a broader grant. A card
+ * Only the answers Hermes offers show. `movedAt`: when the transcript last changed (`useDeliberate`). `onAnswer` gets `confirmed` once the owner has confirmed a broader grant. A card
  * takes no focus when it arrives, so typing elsewhere never answers it.
  */
 export function ApprovalCard({
   item,
   offline,
+  movedAt = 0,
   onAnswer,
 }: {
   item: ApprovalItem;
   offline: boolean;
+  movedAt?: number;
   onAnswer: (c: ApprovalChoice, confirmed?: boolean) => void;
 }) {
   const [confirming, setConfirming] = useState<ApprovalChoice>();
-  const deliberate = useDeliberate();
+  const deliberate = useDeliberate(movedAt);
   const closed = item.answer ?? item.ended;
   const choices = offeredChoices(item);
   return (
@@ -77,6 +80,7 @@ export function ApprovalCard({
               item={item}
               choice={confirming}
               offline={offline}
+              movedAt={movedAt}
               onConfirm={() => onAnswer(confirming, true)}
               onBack={() => setConfirming(undefined)}
             />
@@ -110,16 +114,18 @@ export function ConfirmGrant({
   item,
   choice,
   offline,
+  movedAt = 0,
   onConfirm,
   onBack,
 }: {
   item: ApprovalItem;
   choice: ApprovalChoice;
   offline: boolean;
+  movedAt?: number;
   onConfirm: () => void;
   onBack: () => void;
 }) {
-  const deliberate = useDeliberate();
+  const deliberate = useDeliberate(movedAt);
   const what = item.description ? `commands Hermes flags as “${visible(item.description)}”` : "commands like this";
   const always = choice === "always";
   return (
