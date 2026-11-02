@@ -160,7 +160,8 @@ export function Main({
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
   const reopening = useRef<Reopening>(undefined);
-  // At launch, the profile's last chat opens at once if the list saved on this computer has it (uiPrefs.ts).
+  // At launch, the profile's last chat opens at once if the list saved on this computer has it (uiPrefs.ts). Otherwise
+  // the app starts on the New chat pane, which is then what this profile has on screen last.
   const [selectedId, setSelectedId] = useState<string | null>(() => {
     const chatId = reopenLast ? chatToReopen(getUIPrefs(), profile) : undefined;
     if (!chatId) return null;
@@ -168,6 +169,10 @@ export function Main({
     reopening.current = { profile, chatId, opened };
     return opened ? chatId : null;
   });
+  useEffect(() => {
+    if (!reopening.current) rememberOpenChat(profile, null);
+    // Only at mount: later moves are kept as they happen.
+  }, []);
   const [listOpen, setListOpen] = useState(true);
   const [draftError, setDraftError] = useState<string>();
   const [toast, setToast] = useState<Toast | null>(notSaved ? { text: notSaved, at: Date.now() } : null);
@@ -298,7 +303,8 @@ export function Main({
   };
 
   // The chat reopening at launch opens once the list holds it. If the list read from Hermes doesn't have it, it was
-  // deleted, archived or aged out of the list, so the launch falls back to the New chat pane and it is forgotten.
+  // deleted, archived or aged out of the list, so the launch falls back to the New chat pane and it is forgotten. The
+  // list on screen isn't enough for that: a chat resumed here stays in it after Hermes stops listing it.
   useEffect(() => {
     const r = reopening.current;
     if (!r) return;
@@ -310,10 +316,10 @@ export function Main({
     }
     if (!listed) return;
     reopening.current = undefined;
-    if (there) return;
+    if (hermes.listedByHermes(r.chatId)) return;
     forgetOpenChat(r.profile, r.chatId);
     if (r.opened) setSelectedId(null);
-  }, [chats, listed, profile]);
+  }, [hermes, chats, listed, profile]);
 
   useEffect(() => {
     if (!toast) return;
@@ -443,7 +449,11 @@ export function Main({
             status={status}
             alsoPostsIn={hermes.alsoPostsIn(selected.id)}
             draft={composerText}
-            onDraft={(text) => savedDrafts.set(shownDraft, text)}
+            onDraft={(text) => {
+              // Typing in the New chat pane while the last chat waits for the list keeps the owner where they are.
+              if (!reopening.current?.opened) reopening.current = undefined;
+              savedDrafts.set(shownDraft, text);
+            }}
             undelivered={undelivered}
             onRetry={retry}
             onDismiss={(heldId) => savedDrafts.dismiss(shownDraft, heldId)}

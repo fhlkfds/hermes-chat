@@ -46,7 +46,7 @@ function server() {
  * Starts the app as a cold launch does: fresh modules, a new connection, the first sign-in. `cache` stands in for the
  * chat lists kept on this computer, and its `profile` for the profile shown last.
  */
-async function launch(s: FakeHermes, cache: MemoryCache, { wait = true } = {}) {
+async function launch(s: FakeHermes, cache: MemoryCache, { wait = true, reopenLast = true } = {}) {
   if (running) {
     cleanup();
     await running.close();
@@ -56,7 +56,7 @@ async function launch(s: FakeHermes, cache: MemoryCache, { wait = true } = {}) {
   const { connect } = await import("../hermes/transport");
   const hermes = await connect(s.openPipe, undefined, cache);
   running = hermes;
-  render(<Main hermes={hermes} connection={connection} reopenLast onSignOut={async () => {}} />);
+  render(<Main hermes={hermes} connection={connection} reopenLast={reopenLast} onSignOut={async () => {}} />);
   if (wait) await settle(hermes);
   return { hermes, user: userEvent.setup() };
 }
@@ -106,10 +106,32 @@ describe("Reopen last chat on launch", () => {
     expect(toggle.getAttribute("aria-checked")).toBe("true");
     await user.click(toggle);
     expect(toggle.getAttribute("aria-checked")).toBe("false");
+    // Moves made while it is off are kept too.
+    await openRow(user, hermes, "Nightly backup");
+    expect(lastOpen()).toEqual({ default: "backup" });
 
+    const second = await launch(s, cache);
+    expect(onScreen()).toBe("New chat");
+    // What is on screen now is the New chat pane, so turning it back on and closing reopens nothing.
+    expect(lastOpen()).toEqual({});
+    await second.user.click(screen.getByTitle("Settings"));
+    await second.user.click(screen.getByRole("switch", { name: "Reopen last chat on launch" }));
     await launch(s, cache);
     expect(onScreen()).toBe("New chat");
-    expect(lastOpen()).toEqual({ default: "nas" });
+  });
+
+  it("starts fresh after Sign out, and that is what reopens next", async () => {
+    const s = server();
+    const cache = memoryCache();
+    const { hermes, user } = await launch(s, cache);
+    await openRow(user, hermes, "NAS disks");
+
+    // Signing in again in the same run: not a launch.
+    await launch(s, cache, { reopenLast: false });
+    expect(onScreen()).toBe("New chat");
+    expect(lastOpen()).toEqual({});
+    await launch(s, cache);
+    expect(onScreen()).toBe("New chat");
   });
 
   it("keeps each profile's last chat apart", async () => {
@@ -151,12 +173,55 @@ describe("Reopen last chat on launch", () => {
     expect(lastOpen()).toEqual({});
   });
 
+  it("falls back for a chat Hermes no longer lists even once it has been resumed here", async () => {
+    const s = server();
+    const cache = memoryCache();
+    const { hermes, user } = await launch(s, cache);
+    await openRow(user, hermes, "NAS disks");
+
+    // Archived in another Hermes client while the app was closed. The list is held back until the chat, opened from the
+    // saved list, has been resumed on the new connection.
+    s.sessions = s.sessions.map((r) => (r.id === "nas" ? { ...r, archived: true } : r));
+    const list = s.rest["GET /api/sessions"];
+    const held: (() => void)[] = [];
+    s.rest["GET /api/sessions"] = (req: RestRequest) => new Promise((resolve) => held.push(() => resolve(list(req))));
+    const second = await launch(s, cache, { wait: false });
+    expect(onScreen()).toBe("NAS disks");
+    await screen.findByText("How full is the NAS?");
+    await waitFor(() => expect(held).not.toHaveLength(0));
+    expect(second.hermes.getSnapshot().chats.find((c) => c.id === "nas")?.runtimeId).toBeTruthy();
+
+    s.rest["GET /api/sessions"] = list;
+    act(() => held.splice(0).forEach((release) => release()));
+    await settle(second.hermes);
+    expect(onScreen()).toBe("New chat");
+    expect(lastOpen()).toEqual({});
+  });
+
   it("falls back at once for a chat neither list has", async () => {
     const s = server();
     localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ v: 1, lastOpenChat: { default: "gone", work: "q4" } }));
     await launch(s, memoryCache());
     expect(onScreen()).toBe("New chat");
     expect(lastOpen()).toEqual({ work: "q4" });
+  });
+
+  it("keeps the owner on the New chat pane once they start typing there", async () => {
+    const s = server();
+    localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ v: 1, lastOpenChat: { default: "nas" } }));
+    const list = s.rest["GET /api/sessions"];
+    const held: (() => void)[] = [];
+    s.rest["GET /api/sessions"] = (req: RestRequest) => new Promise((resolve) => held.push(() => resolve(list(req))));
+    const { hermes, user } = await launch(s, memoryCache(), { wait: false });
+    await waitFor(() => expect(held).not.toHaveLength(0));
+
+    await user.type(screen.getByPlaceholderText("Message Hermes"), "Is the UPS on battery?");
+    s.rest["GET /api/sessions"] = list;
+    act(() => held.splice(0).forEach((release) => release()));
+    await settle(hermes);
+    await screen.findByRole("button", { name: /NAS disks/ });
+    expect(onScreen()).toBe("New chat");
+    expect(screen.getByPlaceholderText<HTMLTextAreaElement>("Message Hermes").value).toBe("Is the UPS on battery?");
   });
 
   it("lets wherever the owner goes before the list arrives win", async () => {

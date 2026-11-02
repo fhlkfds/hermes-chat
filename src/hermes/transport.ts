@@ -343,6 +343,8 @@ export class Hermes {
   private background = new Set<Promise<unknown>>();
   /** When the shown profile's list last synced on this connection. */
   private listedAt?: number;
+  /** The chats Hermes's latest list read for the shown profile had, without those kept only on this connection. */
+  private hermesListed = new Set<string>();
   private others = new OtherProfilesCheck({
     scope: () => (this.pipe && this.snapshot.status === "connected" && !this.closing ? { connection: this.generation, profile: this.profile } : undefined),
     profiles: () => this.profiles(),
@@ -443,6 +445,7 @@ export class Hermes {
     const unread = this.snapshot.chats.filter((c) => c.unread).length;
     this.others.switched(this.profile, name, this.listedAt === undefined ? undefined : { unread, listedAt: this.listedAt });
     this.listedAt = undefined;
+    this.hermesListed = new Set();
     this.viewing = undefined;
     this.staleItems.clear();
     this.resumeOnReconnect.clear();
@@ -538,6 +541,15 @@ export class Hermes {
   };
 
   getSnapshot = () => this.snapshot;
+
+  /**
+   * Whether Hermes's latest list read for the shown profile has the chat. The list on screen can also hold chats only
+   * this connection knows of (started, resumed or revealed here), so a chat in it may be gone from Hermes's list.
+   * False until the list has been read (`listed`).
+   */
+  listedByHermes(chatId: string): boolean {
+    return this.hermesListed.has(chatId);
+  }
 
   /** Starts a Chat in this app. It is Active from the start, and pinned once Hermes has stored it (ADR 0002). */
   async newChat(): Promise<string> {
@@ -1480,6 +1492,7 @@ export class Hermes {
     );
     const chats = [...onThisConnection, ...listed];
     this.listedAt = Date.now();
+    this.hermesListed = listedIds;
     this.update({ chats, listed: true, syncError: undefined });
     if (readOnScreen) this.seen(this.viewing!);
     this.saveList(profile, chats);
