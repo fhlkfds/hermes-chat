@@ -1,0 +1,481 @@
+// Settings → Memory: the built-in memory Hermes keeps for the profile shown, edited one entry at a time on the server
+// (memory.ts, GLOSSARY.md "Memory", ADR 0011). Nothing is written until the owner presses Save, and every write is
+// checked against the entry as it was read, then read back. An edit Hermes didn't take is kept on screen to copy or put
+// in another entry; it is never stored on this computer. Memory text is shown as plain text, never rendered.
+import { useEffect, useRef, useState } from "react";
+import { AlertTriangle, Check, Copy, Info, RefreshCw, Trash2, Undo2 } from "lucide-react";
+import type { ConnectionStatus } from "../hermes/model";
+import {
+  MEMORY_RESOURCES,
+  MemoryConflictError,
+  MemoryPermissionError,
+  MemoryUnsupportedError,
+  MemoryUnsureError,
+  MemoryUnverifiedError,
+  charCount,
+  entryProblem,
+  pyStrip,
+  resourceChars,
+  resourceOf,
+  type MemoryApi,
+  type MemoryEntry,
+  type MemorySource,
+  type MemoryView,
+} from "../hermes/memory";
+
+/** The entry open in the editor: as last read from Hermes, and the owner's text for it. */
+type Editing = { entry: MemoryEntry; draft: string };
+type Notice = { kind: "ok" | "error" | "conflict" | "unsure"; text: string };
+/** Why memory couldn't be read: the server or the profile is unsupported here, a permission refusal, or another failure. */
+type LoadProblem = { kind: "server" | "profile" | "permission" | "error"; text: string };
+
+const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const entriesText = (n: number) => `${n} ${n === 1 ? "entry" : "entries"}`;
+/** An entry's first line, for the list; the editor shows all of it. */
+const firstLine = (text: string) => text.split("\n").find((l) => l.trim()) ?? text;
+
+/** Whether there's an unsaved edit Settings → Memory would lose by closing. */
+export const memoryDirty = (editing: Editing | undefined, recovered: string | undefined) =>
+  recovered !== undefined || (!!editing && editing.draft !== editing.entry.text);
+
+export function MemorySettings({
+  api,
+  profile,
+  status,
+  server,
+  onDirtyChange,
+}: {
+  api: MemoryApi;
+  profile: string;
+  status: ConnectionStatus;
+  /** The server, as Settings names the connection (`routeLabel`). */
+  server: string;
+  /** Called with whether an unsaved edit is open, and with false once this goes. */
+  onDirtyChange: (dirty: boolean) => void;
+}) {
+  const connected = status === "connected";
+  const [view, setView] = useState<MemoryView>();
+  const [problem, setProblem] = useState<LoadProblem>();
+  const [loading, setLoading] = useState(false);
+  const [source, setSource] = useState<MemorySource>("memory");
+  const [editing, setEditing] = useState<Editing>();
+  const [busy, setBusy] = useState<"save" | "delete" | "reload">();
+  const [notice, setNotice] = useState<Notice>();
+  // The owner's text that Hermes didn't take (a conflict, or a save that read back differently), kept to copy or to
+  // put in an entry, until they discard it.
+  const [recovered, setRecovered] = useState<string>();
+  // The text of a save whose outcome is unknown, until a read shows whether Hermes has it.
+  const [unsure, setUnsure] = useState<string>();
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  // Opening another entry or file while the open one has an unsaved edit asks first; this is what it would do.
+  const [leaving, setLeaving] = useState<() => void>();
+  // Answers for this profile only: a late answer after the screen went away, or after a newer read, is dropped.
+  const alive = useRef(true);
+  const reads = useRef(0);
+
+  const dirty = memoryDirty(editing, recovered);
+  useEffect(() => onDirtyChange(dirty), [dirty]);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+      onDirtyChange(false);
+    };
+  }, []);
+
+  /** Puts a fresh read on screen, keeping the open edit if its entry is still there as it was. */
+  const show = (next: MemoryView, opts: { keep?: Editing } = {}) => {
+    setView(next);
+    setProblem(undefined);
+    const open = opts.keep ?? editing;
+    if (!open) return;
+    const still = next.resources[open.entry.source].entries.find((e) => e.id === open.entry.id);
+    if (still) return setEditing({ entry: still, draft: open.draft });
+    // The entry changed or went: an edit in it is kept, never dropped.
+    if (open.draft !== open.entry.text) {
+      setRecovered(open.draft);
+      setNotice({ kind: "conflict", text: "The entry you were editing changed on the server, or was removed. Your edit is kept below; nothing was saved." });
+    }
+    setEditing(undefined);
+  };
+
+  const failLoad = (e: unknown) => {
+    if (e instanceof MemoryUnsupportedError) setProblem({ kind: e.reason, text: e.message });
+    else if (e instanceof MemoryPermissionError) setProblem({ kind: "permission", text: e.message });
+    else setProblem({ kind: "error", text: `Couldn't read memory from Hermes: ${messageOf(e)}` });
+  };
+
+  const load = async (why: "first" | "reload") => {
+    const n = ++reads.current;
+    if (why === "reload") setBusy("reload");
+    setLoading(true);
+    try {
+      const next = await api.load(profile);
+      if (!alive.current || n !== reads.current) return;
+      if (unsure !== undefined) {
+        // A read settles a save whose answer was lost: Hermes has the text, or it doesn't.
+        const saved = Object.values(next.resources)
+          .flatMap((r) => r.entries)
+          .find((e) => e.text === unsure);
+        setUnsure(undefined);
+        if (saved) {
+          setView(next);
+          setProblem(undefined);
+          setSource(saved.source);
+          setEditing({ entry: saved, draft: saved.text });
+          setNotice({ kind: "ok", text: "Hermes has your edit: reading memory back shows it." });
+          return;
+        }
+        setNotice({ kind: "unsure", text: "Hermes doesn't have your edit: reading memory back doesn't show it. Your edit is still here to save again." });
+      } else if (why === "reload") setNotice(undefined);
+      show(next);
+    } catch (e) {
+      if (!alive.current || n !== reads.current) return;
+      if (editing && editing.draft !== editing.entry.text && e instanceof MemoryUnsupportedError) {
+        setRecovered(editing.draft);
+        setEditing(undefined);
+      }
+      failLoad(e);
+    } finally {
+      if (alive.current && n === reads.current) {
+        setLoading(false);
+        setBusy(undefined);
+      }
+    }
+  };
+
+  // Read once connected; after a drop, the screen keeps what it read, and the owner's edit, until Reload.
+  useEffect(() => {
+    if (connected && !view && !problem && !loading) void load("first");
+  }, [connected]);
+
+  /** Runs `go` now, or once the owner agrees to drop the open entry's unsaved edit. A kept edit stays either way. */
+  const leaveEntry = (go: () => void) => {
+    const run = () => {
+      setLeaving(undefined);
+      setConfirmDelete(false);
+      setNotice(undefined);
+      go();
+    };
+    if (editing && editing.draft !== editing.entry.text) setLeaving(() => run);
+    else run();
+  };
+
+  const open = (entry: MemoryEntry) => {
+    if (editing?.entry.id !== entry.id) leaveEntry(() => setEditing({ entry, draft: entry.text }));
+  };
+
+  const pickSource = (s: MemorySource) => {
+    if (s !== source)
+      leaveEntry(() => {
+        setSource(s);
+        setEditing(undefined);
+      });
+  };
+
+  const save = async () => {
+    if (!editing) return;
+    const at = editing;
+    setBusy("save");
+    setNotice(undefined);
+    try {
+      const { view: next, entry } = await api.save(profile, at.entry, at.draft);
+      if (!alive.current) return;
+      setView(next);
+      setEditing({ entry, draft: entry.text });
+      if (recovered !== undefined && pyStrip(recovered) === entry.text) setRecovered(undefined);
+      setNotice({ kind: "ok", text: `Saved, and read back from Hermes. New chats on ${profile} start with it.` });
+    } catch (e) {
+      if (!alive.current) return;
+      if (e instanceof MemoryConflictError || e instanceof MemoryUnverifiedError) {
+        setView(e.view);
+        setRecovered(at.draft);
+        setEditing(undefined);
+        setNotice({
+          kind: "conflict",
+          text: e instanceof MemoryConflictError ? e.message : `${e.message} Your edit is kept below.`,
+        });
+      } else if (e instanceof MemoryUnsureError) {
+        setUnsure(pyStrip(at.draft));
+        setNotice({ kind: "unsure", text: e.message });
+      } else if (e instanceof MemoryUnsupportedError) {
+        setRecovered(at.draft);
+        setEditing(undefined);
+        failLoad(e);
+      } else setNotice({ kind: "error", text: `${messageOf(e)} Your edit is still here.` });
+    } finally {
+      if (alive.current) setBusy(undefined);
+    }
+  };
+
+  const remove = async () => {
+    if (!editing) return;
+    const at = editing;
+    setBusy("delete");
+    setConfirmDelete(false);
+    setNotice(undefined);
+    try {
+      const next = await api.remove(profile, at.entry);
+      if (!alive.current) return;
+      setView(next);
+      setEditing(undefined);
+      setNotice({ kind: "ok", text: "Removed, and read back from Hermes: the entry is gone." });
+    } catch (e) {
+      if (!alive.current) return;
+      if (e instanceof MemoryConflictError || e instanceof MemoryUnverifiedError) {
+        setView(e.view);
+        if (at.draft !== at.entry.text) setRecovered(at.draft);
+        setEditing(undefined);
+        setNotice({ kind: "conflict", text: e instanceof MemoryConflictError ? "This entry changed on the server, or was removed, since you opened it. Nothing was removed." : e.message });
+      } else if (e instanceof MemoryUnsureError) setNotice({ kind: "unsure", text: e.message });
+      else if (e instanceof MemoryUnsupportedError) failLoad(e);
+      else setNotice({ kind: "error", text: messageOf(e) });
+    } finally {
+      if (alive.current) setBusy(undefined);
+    }
+  };
+
+  const resource = view?.resources[source];
+  const meta = resourceOf(source);
+  const filePath = view?.home ? `${view.home.replace(/\/+$/, "")}/memories/${meta.file}` : meta.file;
+  const changed = !!editing && editing.draft !== editing.entry.text;
+  const draftProblem = changed && editing ? entryProblem(editing.draft) : undefined;
+
+  return (
+    <>
+      <section aria-labelledby="memory-heading">
+        <h2 id="memory-heading">Memory</h2>
+        <p className="muted">
+          What Hermes remembers between chats on this profile: its own notes, and what it knows about you. It's kept in two files on the server, and
+          editing here changes them there. The agent also adds, changes and removes entries itself during chats.
+        </p>
+        <dl className="memory-identity">
+          <div>
+            <dt>Server</dt>
+            <dd className="mono">{server}</dd>
+          </div>
+          <div>
+            <dt>Profile</dt>
+            <dd className="mono">{profile}</dd>
+          </div>
+          {view && (
+            <div>
+              <dt>File</dt>
+              <dd className="mono">{filePath}</dd>
+            </div>
+          )}
+        </dl>
+
+        {problem ? (
+          <div className={`memory-state ${problem.kind}`} role="alert">
+            {problem.kind === "server" || problem.kind === "profile" ? <Info size={14} /> : <AlertTriangle size={14} />}
+            <div>
+              <div className="memory-state-title">
+                {problem.kind === "server"
+                  ? "This Hermes server can't edit memory"
+                  : problem.kind === "profile"
+                    ? "This profile's memory can't be edited here"
+                    : problem.kind === "permission"
+                      ? "Hermes refused"
+                      : "Couldn't read memory"}
+              </div>
+              <div className="small">{problem.text}</div>
+            </div>
+            {problem.kind !== "server" && (
+              <button className="btn" disabled={!connected || loading} onClick={() => void load("reload")}>
+                <RefreshCw size={14} /> {loading ? "Trying…" : "Try again"}
+              </button>
+            )}
+          </div>
+        ) : !view ? (
+          <div className="memory-state" role="status">
+            <div className="small muted">{connected ? "Reading memory from Hermes…" : "Not connected to Hermes. Memory shows once it's connected."}</div>
+          </div>
+        ) : (
+          <>
+            {!connected && (
+              <div className="memory-state warn" role="status">
+                <AlertTriangle size={14} />
+                <div className="small">Not connected to Hermes. This is memory as last read; reconnect to save or reload.</div>
+              </div>
+            )}
+            {view.provider && (
+              <p className="muted small">
+                <Info size={12} /> This profile also uses the <span className="mono">{view.provider}</span> memory provider. What it stores is kept by that
+                provider, not in these files, and isn't shown here.
+              </p>
+            )}
+            <div className="memory-resources" role="tablist" aria-label="Memory files">
+              {MEMORY_RESOURCES.map((r) => {
+                const n = view.resources[r.source].entries.length;
+                return (
+                  <button
+                    key={r.source}
+                    role="tab"
+                    id={`memory-tab-${r.source}`}
+                    aria-selected={source === r.source}
+                    aria-controls="memory-panel"
+                    className={`memory-resource ${source === r.source ? "on" : ""}`}
+                    onClick={() => pickSource(r.source)}
+                  >
+                    <span className="memory-resource-name">{r.name}</span>
+                    <span className="mono muted">{r.file}</span>
+                    <span className="muted small">{entriesText(n)}</span>
+                  </button>
+                );
+              })}
+              <button
+                className="btn memory-reload"
+                disabled={!connected || !!busy}
+                onClick={() => void load("reload")}
+                title="Read memory from Hermes again. An edit you're making is kept."
+              >
+                <RefreshCw size={14} /> {busy === "reload" ? "Reloading…" : "Reload"}
+              </button>
+            </div>
+
+            <div id="memory-panel" role="tabpanel" aria-labelledby={`memory-tab-${source}`}>
+              <p className="muted small memory-about">
+                {meta.about} {resource && `${entriesText(resource.entries.length)}, ${resourceChars(resource.entries).toLocaleString()} characters.`}
+              </p>
+              {resource && !resource.entries.length ? (
+                <div className="memory-empty muted small">
+                  {resource.bytes
+                    ? `Hermes lists no entries, though ${meta.file} holds ${resource.bytes.toLocaleString()} bytes. Hermes may not be able to read the file.`
+                    : `There's nothing in ${meta.file} yet. Hermes adds to it during chats.`}
+                </div>
+              ) : (
+                <ul className="memory-entries" aria-label={`${meta.name} entries`}>
+                  {resource?.entries.map((e) => (
+                    <li key={e.id}>
+                      <button className={`memory-entry ${editing?.entry.id === e.id ? "on" : ""}`} aria-current={editing?.entry.id === e.id || undefined} onClick={() => open(e)}>
+                        <span className="memory-entry-text">{firstLine(e.text)}</span>
+                        <span className="muted small">{charCount(e.text).toLocaleString()} characters</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {leaving && (
+                <div className="confirm memory-leave" role="alertdialog" aria-label="Discard your edit?">
+                  <span className="confirm-msg">Discard your unsaved edit to this entry? Nothing of it has been saved to Hermes.</span>
+                  <div className="confirm-actions">
+                    <button className="btn" autoFocus onClick={() => setLeaving(undefined)}>
+                      Keep editing
+                    </button>
+                    <button className="btn danger" onClick={leaving}>
+                      Discard edit
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {editing && (
+                <div className="memory-editor" role="group" aria-label={`Edit entry in ${meta.file}`}>
+                  <label className="field">
+                    <span className="field-label">
+                      Entry in <span className="mono">{meta.file}</span>
+                      {changed && <span className="badge warn">Unsaved</span>}
+                    </span>
+                    <textarea
+                      className="memory-text"
+                      value={editing.draft}
+                      spellCheck={false}
+                      rows={Math.min(14, Math.max(4, editing.draft.split("\n").length + 1))}
+                      disabled={!!busy}
+                      onChange={(e) => setEditing({ ...editing, draft: e.target.value })}
+                    />
+                    <span className={`field-hint ${draftProblem ? "err" : ""}`}>
+                      {draftProblem ?? `${charCount(pyStrip(editing.draft)).toLocaleString()} characters. Hermes refuses an edit that takes the file past its limit.`}
+                    </span>
+                  </label>
+                  {recovered !== undefined && editing.draft !== recovered && (
+                    <button className="btn small-btn" disabled={!!busy} onClick={() => setEditing({ ...editing, draft: recovered })}>
+                      <Undo2 size={14} /> Put your kept edit in this entry
+                    </button>
+                  )}
+                  {confirmDelete ? (
+                    <div className="confirm" role="alertdialog" aria-label="Remove this entry?">
+                      <span className="confirm-msg">
+                        <Trash2 size={12} /> Remove this entry from {meta.file} on the server? Hermes forgets it in new chats. It can't be undone from here.
+                      </span>
+                      <div className="confirm-actions">
+                        <button className="btn" autoFocus onClick={() => setConfirmDelete(false)}>
+                          Keep it
+                        </button>
+                        <button className="btn danger" onClick={() => void remove()}>
+                          Remove entry
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="memory-actions">
+                      <button className="btn danger" disabled={!connected || !!busy || changed} onClick={() => setConfirmDelete(true)} title={changed ? "Save or cancel your edit first." : undefined}>
+                        <Trash2 size={14} /> {busy === "delete" ? "Removing…" : "Delete"}
+                      </button>
+                      <div className="confirm-actions">
+                        <button
+                          className="btn"
+                          disabled={!!busy}
+                          onClick={() => {
+                            setEditing(undefined);
+                            setNotice(undefined);
+                          }}
+                        >
+                          Cancel
+                        </button>
+                        <button className="btn primary" disabled={!connected || !changed || !!draftProblem || !!busy} onClick={() => void save()}>
+                          {busy === "save" ? "Saving…" : "Save"}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {notice && (
+                <div className={`memory-notice ${notice.kind}`} role={notice.kind === "ok" ? "status" : "alert"}>
+                  {notice.kind === "ok" ? <Check size={14} /> : <AlertTriangle size={14} />}
+                  <span>{notice.text}</span>
+                </div>
+              )}
+
+              <p className="muted small settings-note">
+                To add a memory, ask Hermes in a chat to remember it. Hermes has no call for adding one from another app.
+              </p>
+            </div>
+          </>
+        )}
+
+        {recovered !== undefined && (
+          <div className="memory-recovered" role="group" aria-label="Your kept edit">
+            <div className="field-label">
+              Your kept edit <span className="muted small">(not saved anywhere; it goes when you leave this screen)</span>
+            </div>
+            <textarea className="memory-text" readOnly value={recovered} rows={Math.min(8, Math.max(3, recovered.split("\n").length + 1))} aria-label="Your kept edit" />
+            <div className="confirm-actions">
+              <button className="btn" onClick={() => void navigator.clipboard?.writeText(recovered).catch(() => {})}>
+                <Copy size={14} /> Copy
+              </button>
+              <button className="btn" onClick={() => setRecovered(undefined)}>
+                Discard it
+              </button>
+            </div>
+            <p className="muted small">Open an entry and press "Put your kept edit in this entry" to save it there, after checking what Hermes has now.</p>
+          </div>
+        )}
+      </section>
+
+      <section>
+        <h2>When edits take effect</h2>
+        <p className="muted">
+          Hermes reads memory into a chat when the chat starts, so a saved edit reaches chats started after it, from any Hermes client. A chat that's
+          already going keeps the memory it started with until Hermes compresses its history, when it reads memory again. Saving changes only the file;
+          it never restarts Hermes. Hermes leaves out of a chat any entry that looks like an attempt to take over the agent, and shows a note in its
+          place.
+        </p>
+      </section>
+    </>
+  );
+}

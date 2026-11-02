@@ -1,9 +1,9 @@
 // The Settings screen, in three tabs. General, ported from the prototype: the connection and Sign out, what shows on
 // launch, voice, screenshots, the local cache, and older history. Appearance: how the app looks on this computer (AppearanceSettings.tsx).
-// Model: the profile's models on Hermes (ModelSettings.tsx).
+// Model: the profile's models on Hermes (ModelSettings.tsx). Memory: what Hermes remembers for the profile (MemorySettings.tsx).
 // Profiles are switched in the list's header, not here (ADR 0001).
 import { useState } from "react";
-import { ArrowLeft, Cpu, Download, KeyRound, Lock, LogOut, Palette, Settings2, ShieldCheck, Trash2 } from "lucide-react";
+import { ArrowLeft, Brain, Cpu, Download, KeyRound, Lock, LogOut, Palette, Settings2, ShieldCheck, Trash2 } from "lucide-react";
 import type { Chat, ConnectionStatus } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
 import { TRANSCRIPT_LIMIT_BYTES } from "../hermes/chatCache";
@@ -12,17 +12,20 @@ import type { AppearanceStore, Fonts } from "./appearance";
 import { AppearanceSettings } from "./AppearanceSettings";
 import type { ModelSettingsApi } from "../hermes/modelSettings";
 import { ModelSettings } from "./ModelSettings";
+import type { MemoryApi } from "../hermes/memory";
+import { MemorySettings } from "./MemorySettings";
 import { StartupSettings } from "./StartupSettings";
 import { VoiceSettings } from "./Voice";
 import type { VoiceSetup } from "../hermes/pipe";
 import { ScreenshotSettings } from "./ScreenshotSettings";
 import type { ScreenshotSupport } from "../hermes/tauriScreenshot";
 
-type Tab = "general" | "appearance" | "model";
+type Tab = "general" | "appearance" | "model" | "memory";
 const TABS = [
   { id: "general", label: "General", Icon: Settings2 },
   { id: "appearance", label: "Appearance", Icon: Palette },
   { id: "model", label: "Model", Icon: Cpu },
+  { id: "memory", label: "Memory", Icon: Brain },
 ] as const;
 
 /** What a pull added: the older chats in Settled, and any pinned in another Hermes client, which are Active. */
@@ -51,6 +54,9 @@ export function SettingsScreen({
   listFonts,
   checkScreenshots,
   modelSettings,
+  memory,
+  onMemoryDirty = () => {},
+  guard = (go) => go(),
   onClearCache,
   onPullOlder,
   onSignOut,
@@ -78,6 +84,12 @@ export function SettingsScreen({
   checkScreenshots?: () => Promise<ScreenshotSupport>;
   /** The profile's model setup on Hermes. */
   modelSettings: ModelSettingsApi;
+  /** The profile's memory on Hermes; the Memory tab shows only with it. */
+  memory?: MemoryApi;
+  /** Called with whether the Memory tab has an unsaved edit. */
+  onMemoryDirty?: (dirty: boolean) => void;
+  /** Runs `go` at once, or once the owner agrees to drop an unsaved memory edit. */
+  guard?: (go: () => void) => void;
   onClearCache: () => void;
   /** Resolves to the older chats added. */
   onPullOlder: () => Promise<Chat[]>;
@@ -93,6 +105,8 @@ export function SettingsScreen({
   const [pullError, setPullError] = useState<string>();
   const [signingOut, setSigningOut] = useState(false);
   const [tab, setTab] = useState<Tab>("general");
+  const tabs = TABS.filter((t) => t.id !== "memory" || memory);
+  const pickTab = (id: Tab) => id !== tab && guard(() => setTab(id));
 
   const pull = async () => {
     setPulling(true);
@@ -117,9 +131,9 @@ export function SettingsScreen({
           className="settings-tabs"
           role="tablist"
           aria-label="Settings"
-          onKeyDown={(e) => arrowSelect(e, TABS.map((t) => t.id), tab, setTab)}
+          onKeyDown={(e) => arrowSelect(e, tabs.map((t) => t.id), tab, pickTab)}
         >
-          {TABS.map(({ id, label, Icon }) => (
+          {tabs.map(({ id, label, Icon }) => (
             <button
               key={id}
               id={`settings-tab-${id}`}
@@ -128,14 +142,19 @@ export function SettingsScreen({
               aria-selected={tab === id}
               tabIndex={tab === id ? 0 : -1}
               aria-controls={`settings-panel-${id}`}
-              onClick={() => setTab(id)}
+              onClick={() => pickTab(id)}
             >
               <Icon size={14} /> {label}
             </button>
           ))}
         </div>
 
-        {tab === "appearance" ? (
+        {tab === "memory" && memory ? (
+          <div id="settings-panel-memory" role="tabpanel" aria-labelledby="settings-tab-memory">
+            {/* An edit lives only while this tab is open, and for one profile; leaving with one asks first. */}
+            <MemorySettings key={profile} api={memory} profile={profile} status={status} server={routeLabel(route) ?? "not known until connected"} onDirtyChange={onMemoryDirty} />
+          </div>
+        ) : tab === "appearance" ? (
           <div id="settings-panel-appearance" role="tabpanel" aria-labelledby="settings-tab-appearance">
             <AppearanceSettings store={appearance} listFonts={listFonts} />
           </div>

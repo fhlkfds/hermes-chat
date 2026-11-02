@@ -29,6 +29,12 @@ To sign in, enter an SSH target whose key works without a prompt (for example `l
 
 The composer's microphone button starts Dictation: speak, press Done, and the text appears in the composer to edit before sending. Read aloud, under each reply, has Hermes speak it. Hermes does the transcribing and the speaking on the server, with the profile's speech-to-text and text-to-speech providers (set them with `hermes tools` on the server). Settings → General → Voice shows which providers the profile uses and what each one needs. The app needs a working microphone and a PipeWire or PulseAudio sound server.
 
+## Memory
+
+Settings → Memory shows what Hermes remembers for the profile: its own notes (`memories/MEMORY.md`) and what it knows about you (`memories/USER.md`), both on the server. Pick an entry to change it, then press Save, or Delete it. Cancel drops your edit and Reload reads memory again without losing it. Before saving, the app checks that the entry hasn't changed on the server since you opened it; if it has, nothing is written and your text stays on screen to copy or put in an entry. After saving, it reads memory back to confirm. Edits reach chats that start afterwards; Hermes isn't restarted.
+
+Hermes's memory calls (`learning.*` over `/api/ws`) reach only the profile its dashboard runs as, so other profiles' memory can't be edited from the app (ADR 0011). There is no call for adding an entry: ask Hermes in a chat to remember something.
+
 ## Install
 
 `packaging/aur/PKGBUILD` builds `hermes-chat-git` from `main` on GitHub. It installs the `hermes-chat` binary, its icons, and a launcher that sets `WEBKIT_DISABLE_DMABUF_RENDERER=1`. To build and install it:

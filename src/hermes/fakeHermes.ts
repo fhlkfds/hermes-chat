@@ -120,6 +120,21 @@ const DAY = 86_400;
 const MiB = 1024 * 1024;
 const now = () => Date.now() / 1000;
 
+/**
+ * A memory entry's fingerprint in its node id. Hermes's is the first 12 hex digits of the SHA-256 of the text
+ * (`agent/learning_graph.memory_fingerprint`); the client never computes one, so the fake uses a stand-in digest.
+ */
+export function fingerprint(text: string): string {
+  let a = 0x811c9dc5;
+  let b = 0x01000193;
+  for (const ch of text) {
+    const c = ch.codePointAt(0)!;
+    a = Math.imul(a ^ c, 0x01000193) >>> 0;
+    b = Math.imul(b ^ c, 0x5bd1e995) >>> 0;
+  }
+  return (a.toString(16).padStart(8, "0") + b.toString(16).padStart(8, "0")).slice(0, 12);
+}
+
 /** `_normalize_path`: absolute (a relative path is read from the server's home folder), no trailing slash. */
 const serverPath = (path: string) => {
   const p = path.trim().startsWith("/") ? path.trim() : `/home/liam/${path.trim()}`;
@@ -255,6 +270,29 @@ export class FakeHermes {
   /** The `info` session.create and session.resume answer with (`server._session_info`); empty, as from a server
    * that reports none of it, unless a test sets it. */
   sessionInfo: Record<string, unknown> = {};
+
+  /**
+   * Each profile's built-in memory, by profile name: `memory` is MEMORY.md's entries and `profile` USER.md's, as
+   * `MemoryStore._parse_entries` reads them (stripped, none empty). A profile not here has none.
+   */
+  memory: Record<string, { memory: string[]; profile: string[] }> = {};
+  /** The profile the dashboard process runs as (`GET /api/profiles/active` → `current`), whose memory `learning.*` reach. */
+  servedProfile = "default";
+  /** Each memory file's limit in characters (`memory_char_limit`, `user_char_limit` defaults at `bf0203a`). */
+  memoryLimit: Record<"memory" | "profile", number> = { memory: 2200, profile: 1375 };
+  /** False: a server older than the `learning.*` methods, which answers them "method not found". */
+  learningMethods = true;
+  /** An external memory provider the profile uses (`GET /api/memory` → `active`); none when empty. */
+  memoryProvider = "";
+  /** Runs before each `learning.*` request is answered, e.g. to change memory as the agent would meanwhile. */
+  beforeLearning?: (method: string, params: Record<string, unknown>) => void;
+  /** Answers the next `learning.edit` or `learning.delete` with this JSON-RPC error instead of writing. Applies once. */
+  learningError?: { code: number; message: string };
+  /**
+   * The next `learning.edit` or `learning.delete` drops the connection before Hermes answers. `applied`: Hermes wrote
+   * it first. `lost`: the frame never reached Hermes. Applies once.
+   */
+  dropOnLearning?: "applied" | "lost";
 
   /** Per-method behaviour; tests override entries. Unhandled methods get no answer. */
   readonly handlers: Record<string, Handler> = {
@@ -450,6 +488,17 @@ export class FakeHermes {
       }),
     // Keepalive, answered by the WS layer in either protocol generation (research doc §1).
     "gateway.ping": (r) => this.respond(r.id, { ok: true }),
+    // Memory (`tui_gateway/methods_tools.py` and `agent/learning_mutations.py` at the deployed `bf0203a`). The calls take
+    // no profile and act on the served profile's memory; their contracts refuse any extra param.
+    "learning.frames": (r) => this.learning(r, ["cols", "rows", "frames"], () => this.memoryFrames()),
+    "learning.detail": (r) =>
+      this.learning(r, ["id"], () => {
+        const found = this.memoryEntry(String(r.params.id ?? ""));
+        if (typeof found === "string") return { ok: false, message: found };
+        return { ok: true, kind: "memory", id: r.params.id, label: found.text.split("\n")[0].slice(0, 80), content: found.text };
+      }),
+    "learning.edit": (r) => this.learning(r, ["id", "content"], () => this.memoryWrite(r, String(r.params.content ?? ""))),
+    "learning.delete": (r) => this.learning(r, ["id"], () => this.memoryWrite(r, null)),
   };
 
   /** Per-route REST behaviour, keyed `METHOD /path`. A handler throws to fail the request. */
@@ -543,6 +592,17 @@ export class FakeHermes {
       if (data.length > 16 * 1024 * 1024) throw new Error(`The dashboard answered 413: {"detail":"File too large"}`);
       const ext = /\.([a-z0-9]+)$/i.exec(path)?.[1].toLowerCase() ?? "";
       return { dataUrl: `data:${FS_MIME[ext] ?? "application/octet-stream"};base64,${btoa(data)}` };
+    },
+    // `get_active_profile_endpoint`: the sticky profile, and the one this dashboard process runs as.
+    "GET /api/profiles/active": () => ({ active: "default", current: this.servedProfile }),
+    // `get_memory_status` (`hermes_cli/web_routers/ops.py`): the provider and the built-in files' sizes in bytes.
+    "GET /api/memory": ({ query }) => {
+      const profile = query.get("profile") || this.servedProfile;
+      if (profile !== "default" && !(profile in this.otherProfiles) && !(profile in this.memory))
+        throw new Error(`The dashboard answered 404: {"detail":"Profile '${profile}' does not exist."}`);
+      const m = this.memory[profile] ?? { memory: [], profile: [] };
+      const bytes = (entries: string[]) => new TextEncoder().encode(entries.join("\n§\n")).length;
+      return { active: this.memoryProvider, providers: [], builtin_files: { memory: bytes(m.memory), user: bytes(m.profile) } };
     },
     // `hermes_cli/web_routers/profiles.py` `_profile_to_dict` at the deployed `bf0203a`, trimmed to what matters here.
     "GET /api/profiles": () => ({
@@ -684,6 +744,80 @@ export class FakeHermes {
       },
     };
   };
+
+  /**
+   * One `learning.*` request: "method not found" on a server without them, 4000 for a param the contract doesn't
+   * have (pydantic `extra="forbid"`), else `answer`'s result.
+   */
+  private learning(r: Request, allowed: string[], answer: () => unknown) {
+    if (!this.learningMethods) return this.fail(r.id, -32601, `unknown method: ${r.method}`);
+    const extra = Object.keys(r.params ?? {}).find((k) => !allowed.includes(k));
+    if (extra) return this.fail(r.id, 4000, `invalid params for ${r.method}: ${extra}: Extra inputs are not permitted`);
+    this.beforeLearning?.(r.method, r.params);
+    const result = answer();
+    if (result !== undefined) this.respond(r.id, result);
+  }
+
+  /** The served profile's memory cards, MEMORY.md's first (`agent/learning_graph._memory_cards`). */
+  private memoryCards(): { source: "memory" | "profile"; text: string; id: string }[] {
+    const m = this.memory[this.servedProfile] ?? { memory: [], profile: [] };
+    const cards = [...m.memory.map((text) => ({ source: "memory" as const, text })), ...m.profile.map((text) => ({ source: "profile" as const, text }))];
+    return cards.map((c, i) => ({ ...c, id: `memory:${c.source}:${i}:${fingerprint(c.text)}` }));
+  }
+
+  /** `learning.frames`, trimmed to the parts that carry nodes: every card in one day's bucket. */
+  private memoryFrames() {
+    const cards = this.memoryCards();
+    const nodes = cards.map((c) => ({ id: c.id, glyph: "◆", label: c.text.slice(0, 40), fullLabel: c.text.split("\n")[0], meta: "memory", body: c.text.slice(0, 1200), style: "memory" }));
+    return {
+      frames: [],
+      legend: [],
+      categories: [],
+      buckets: cards.length ? [{ index: 0, label: "2 Nov", date: "2 Nov 2026", skills: 0, memories: cards.length, total: cards.length, nodes }] : [],
+      summary: [],
+      axis: { start: "", end: "" },
+      count: cards.length,
+      cols: 20,
+      rows: 10,
+    };
+  }
+
+  /** The entry a memory node id names, found by its fingerprint as `_locate_memory` does, or why it can't be. */
+  private memoryEntry(id: string): { source: "memory" | "profile"; text: string } | string {
+    const parts = id.split(":");
+    if (parts.length !== 4 || parts[0] !== "memory" || (parts[1] !== "memory" && parts[1] !== "profile")) return `bad memory node id: '${id}'`;
+    const found = this.memoryCards().find((c) => c.source === parts[1] && fingerprint(c.text) === parts[3]);
+    return found ?? "memory node id is stale — refresh the graph";
+  }
+
+  /** `learning.edit` (`content`) or `learning.delete` (null), under the same refusals as `_mutate_memory`. */
+  private memoryWrite(r: Request, content: string | null): unknown {
+    if (this.learningError) {
+      const { code, message } = this.learningError;
+      this.learningError = undefined;
+      return this.fail(r.id, code, message);
+    }
+    const found = this.memoryEntry(String(r.params.id ?? ""));
+    const body = content?.trim();
+    if (content !== null && !body) return { ok: false, message: "empty memory — use delete to remove it" };
+    if (typeof found === "string") return { ok: false, message: found };
+    const m = (this.memory[this.servedProfile] ??= { memory: [], profile: [] });
+    const entries = m[found.source];
+    const next = entries.flatMap((e) => (e === found.text ? (body === undefined ? [] : [body]) : [e]));
+    const total = [...next.join("\n§\n")].length;
+    const limit = this.memoryLimit[found.source];
+    if (body !== undefined && total > limit)
+      return { ok: false, message: `Replacement would put memory at ${total.toLocaleString("en-US")}/${limit.toLocaleString("en-US")} chars. Shorten the new content.` };
+    const drop = this.dropOnLearning;
+    this.dropOnLearning = undefined;
+    if (drop !== "lost") m[found.source] = [...new Set(next)];
+    if (drop) {
+      this.drop();
+      return undefined;
+    }
+    const name = found.source === "memory" ? "MEMORY.md" : "USER.md";
+    return { ok: true, message: body === undefined ? `deleted memory from ${name}` : `updated memory in ${name}` };
+  }
 
   /** A Server file for `/api/fs/*`, failing the way `_fs_regular_file` and `_is_sensitive_path` do at `bf0203a`. */
   private serverFile(query: URLSearchParams): { path: string; data: string } {

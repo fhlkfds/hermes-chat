@@ -25,6 +25,7 @@ import { PANE_NAMES, Split, usePaneVisible, type PaneSlot } from "./ui/Split";
 import type { VoiceApi } from "./ui/Voice";
 import { SearchPalette } from "./ui/Search";
 import { SettingsScreen } from "./ui/Settings";
+import { LeaveMemoryEdit, useCloseGuard } from "./ui/LeaveMemoryEdit";
 import { composing, routeLabel } from "./ui/bits";
 import { ProjectScreen, ProjectSwitcher, type ProjectUnread } from "./ui/Projects";
 import { appearanceStore } from "./ui/appearance";
@@ -273,6 +274,22 @@ export function Main({
     hermes.getSnapshot,
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // An unsaved edit in Settings → Memory (MemorySettings.tsx). While there is one, Settings stays open: what the owner
+  // does to leave it asks first (`guard`), and anything else that would close Settings, such as the open chat being
+  // deleted in another client, leaves it open instead.
+  const memoryDirty = useRef(false);
+  const [memoryUnsaved, setMemoryUnsaved] = useState(false);
+  const [leaveAsk, setLeaveAsk] = useState<{ go: () => void; stay?: () => void }>();
+  const onMemoryDirty = (dirty: boolean) => {
+    memoryDirty.current = dirty;
+    setMemoryUnsaved(dirty);
+  };
+  /** Runs `go` at once, or once the owner agrees to drop the unsaved memory edit. `stay` runs if they keep it. */
+  const guard = (go: () => void, stay?: () => void) => (memoryDirty.current ? setLeaveAsk({ go, stay }) : go());
+  const closeSettings = () => {
+    if (!memoryDirty.current) setSettingsOpen(false);
+  };
+  useCloseGuard(memoryUnsaved, (close) => guard(close));
   const voice = useMemo<VoiceApi>(
     () => ({ setup: () => hermes.voiceSetup(), transcribe: (audio, mime) => hermes.transcribe(audio, mime), speak: (text) => hermes.speak(text) }),
     [hermes],
@@ -375,7 +392,7 @@ export function Main({
     activeKeyRef.current = pane;
     setActiveKey(pane);
     setReopening(undefined);
-    setSettingsOpen(false);
+    closeSettings();
     setProjectOpen(false);
     if (remember) rememberOpenChat(profile, id);
   };
@@ -389,7 +406,7 @@ export function Main({
     setReopening(undefined);
     rememberOpenChat(profile, found.chatId);
     setSearchOpen(false);
-    setSettingsOpen(false);
+    closeSettings();
     setProjectOpen(false);
   };
 
@@ -403,7 +420,7 @@ export function Main({
     activeKeyRef.current = key;
     setActiveKey(key);
     setReopening(undefined);
-    setSettingsOpen(false);
+    closeSettings();
     setProjectOpen(false);
     rememberOpenChat(profile, chatId);
   };
@@ -428,7 +445,7 @@ export function Main({
   const takeScreenshot = (remote = false) => {
     if (!desk) return;
     flushSync(() => {
-      setSettingsOpen(false);
+      closeSettings();
       setProjectOpen(false);
       setSearchOpen(false);
       if (!previewFits) setPreviewHidden(true);
@@ -438,7 +455,9 @@ export function Main({
   };
   const takeScreenshotRef = useRef(takeScreenshot);
   takeScreenshotRef.current = takeScreenshot;
-  useEffect(() => (desk ? screenshotsRef.current.onDesktopShortcut(() => takeScreenshotRef.current(true)) : undefined), [desk]);
+  const guardRef = useRef(guard);
+  guardRef.current = guard;
+  useEffect(() => (desk ? screenshotsRef.current.onDesktopShortcut(() => guardRef.current(() => takeScreenshotRef.current(true))) : undefined), [desk]);
 
   // The pane left takes the whole width and becomes the active one.
   const closePane = (key: string) => {
@@ -469,7 +488,7 @@ export function Main({
     activeKeyRef.current = keep;
     setActiveKey(keep);
     setReopening(undefined);
-    setSettingsOpen(false);
+    closeSettings();
     setProjectOpen(false);
     setToast(null);
     setPreview(null);
@@ -614,7 +633,7 @@ export function Main({
       if (composing(e)) return;
       if (screenshotShortcut && shortcutOf(e) === screenshotShortcut && !checkShortcut(screenshotShortcut).error) {
         e.preventDefault();
-        if (!e.repeat) takeScreenshot();
+        if (!e.repeat) guard(() => takeScreenshot());
         return;
       }
       if (!(e.ctrlKey || e.metaKey)) return;
@@ -624,13 +643,13 @@ export function Main({
         setSearchOpen((o) => !o);
       } else if (k === "n") {
         e.preventDefault();
-        newChat();
+        guard(() => newChat());
       } else if (k === "b") {
         e.preventDefault();
         setListOpen((o) => !o);
       } else if (e.code === "Backslash" || k === "\\") {
         e.preventDefault();
-        toggleSplit();
+        guard(toggleSplit);
       } else if ((k === "1" || k === "2") && !e.shiftKey && !e.altKey && split && !settingsOpen) {
         e.preventDefault();
         focusPane(panes[Number(k) - 1].key);
@@ -727,7 +746,7 @@ export function Main({
         closedReason={closedReason}
         onReconnect={() => void hermes.reconnect()}
         onToggleList={() => setListOpen((o) => !o)}
-        onNew={() => newChat()}
+        onNew={() => guard(() => newChat())}
         onSearch={() => setSearchOpen(true)}
         onSettings={() => { setProjectOpen(false); setSettingsOpen(true); }}
       />
@@ -749,13 +768,15 @@ export function Main({
                 }}
                 onCreate={async (name) => {
                   await projects.create(name);
-                  setSettingsOpen(false);
+                  closeSettings();
                   setProjectOpen(true);
                 }}
-                onManage={() => {
-                  setSettingsOpen(false);
-                  setProjectOpen(true);
-                }}
+                onManage={() =>
+                  guard(() => {
+                    closeSettings();
+                    setProjectOpen(true);
+                  })
+                }
               />
             }
             projectsOf={(chatId) => {
@@ -772,8 +793,8 @@ export function Main({
           selectedId={settingsOpen || projectScreenOpen ? null : active.chatId}
           alsoShownId={settingsOpen || projectScreenOpen ? null : (other?.chatId ?? null)}
           split={split}
-          onOpen={(id) => openChat(id)}
-          onOpenIn={openIn}
+          onOpen={(id) => guard(() => openChat(id))}
+          onOpenIn={(id, side) => guard(() => openIn(id, side))}
           onSettle={setSettled}
           onArchive={setArchived}
           onListArchived={(on) => void hermes.listArchived(on)}
@@ -782,7 +803,7 @@ export function Main({
           onRegenTitle={(id) => hermes.regenerateTitle(id)}
           onListProfiles={() => hermes.profiles()}
           onCheckOthers={() => void hermes.checkOtherProfiles()}
-          onSwitchProfile={switchProfile}
+          onSwitchProfile={(name) => guard(() => switchProfile(name))}
           onRetrySwitch={() => void (status === "connected" ? hermes.sync() : hermes.reconnect())}
         />
       )}
@@ -833,15 +854,20 @@ export function Main({
             appearance={appearance}
             listFonts={systemFonts}
             modelSettings={hermes.modelSettings}
+            memory={hermes.memory}
+            onMemoryDirty={onMemoryDirty}
+            guard={(go) => guard(go)}
             checkScreenshots={screenshots.support}
             voiceSetup={voice.setup}
             onClearCache={() => hermes.clearCache()}
             onPullOlder={() => hermes.pullOlderHistory()}
-            onSignOut={onSignOut}
-            onClose={() => {
-              flushSync(() => setSettingsOpen(false));
-              focusPane(active.key);
-            }}
+            onSignOut={() => new Promise<void>((resolve) => guard(() => void onSignOut().finally(resolve), resolve))}
+            onClose={() =>
+              guard(() => {
+                flushSync(() => setSettingsOpen(false));
+                focusPane(active.key);
+              })
+            }
           />
         ) : null}
         <Split panes={slots} activeKey={active.key} onActivate={activate} covered={settingsOpen || projectScreenOpen || previewCovers} />
@@ -866,7 +892,30 @@ export function Main({
             />
           )}
       </main>
-      {searchOpen && <SearchPalette onSearch={(q, archived) => hermes.search(q, { archived })} onPick={pick} onClose={() => setSearchOpen(false)} />}
+      {searchOpen && (
+        <SearchPalette
+          onSearch={(q, archived) => hermes.search(q, { archived })}
+          onPick={(found) => {
+            setSearchOpen(false);
+            guard(() => pick(found));
+          }}
+          onClose={() => setSearchOpen(false)}
+        />
+      )}
+      {leaveAsk && (
+        <LeaveMemoryEdit
+          profile={profile}
+          onStay={() => {
+            leaveAsk.stay?.();
+            setLeaveAsk(undefined);
+          }}
+          onDiscard={() => {
+            onMemoryDirty(false);
+            setLeaveAsk(undefined);
+            leaveAsk.go();
+          }}
+        />
+      )}
       {toast && (
         <div className="toast" key={toast.at} role="status">
           <span>{toast.text}</span>
