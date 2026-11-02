@@ -4,7 +4,8 @@
 #   npm run tauri -- build --debug --no-bundle
 #   npx rolldown docs/screenshots/slash-commands/bridge.ts --platform node -o /tmp/slash-bridge.mjs
 #   docs/screenshots/slash-commands/drive.sh
-# App data goes to a throwaway folder and the app gets its own D-Bus session, so sign-in can't reach your keyring.
+# App data goes to a throwaway folder and the app runs on its own D-Bus session bus, not your desktop's. On that bus
+# the keyring save timed out here, and nothing was written to the login keyring; check yours before relying on it.
 APP=${APP:-$(git rev-parse --show-toplevel)/src-tauri/target/debug/hermes-chat}
 S=/tmp/slash-shots; rm -rf $S/data $S/cache $S/config $S/out; mkdir -p $S/data $S/cache $S/config $S/out
 node /tmp/slash-bridge.mjs 47800 > /tmp/slash-bridge.log 2>&1 & BRIDGE=$!
