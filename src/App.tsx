@@ -321,6 +321,7 @@ export function Main({
           onOpen={openChat}
           onSettle={setSettled}
           onDelete={deleteChat}
+          onRename={(id, title, from) => hermes.rename(id, title, from)}
           onListProfiles={() => hermes.profiles()}
           onCheckOthers={() => void hermes.checkOtherProfiles()}
           onSwitchProfile={switchProfile}

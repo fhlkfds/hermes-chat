@@ -376,6 +376,24 @@ describe("Chat list by keyboard", () => {
     await settle(s.hermes);
     expect(deletes(s.server).map((r) => r.path)).toEqual(["/api/sessions/backup"]);
   });
+
+  it("opens a chat's menu from the keyboard; Escape closes it, and renaming from it, with focus back on the chat", async () => {
+    const s = await signedIn();
+    // The Menu key or Shift+F10 fires contextmenu on the focused chat, with no pointer position.
+    rowButton("Nightly backup").focus();
+    fireEvent.contextMenu(rowButton("Nightly backup"));
+    expect(focused()).toBe(screen.getByRole("menuitem", { name: "Rename…" }));
+    await s.user.keyboard("{Escape}");
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(focused()).toBe(rowButton("Nightly backup"));
+
+    fireEvent.contextMenu(rowButton("Nightly backup"));
+    await s.user.keyboard("{Enter}");
+    expect(focused()).toBe(screen.getByRole("textbox", { name: "Chat title" }));
+    await s.user.keyboard("Restic backup{Enter}");
+    await waitFor(() => expect(focused()).toBe(rowButton("Restic backup")));
+    expect(s.server.restRequests.filter((r) => r.method === "PATCH").map((r) => r.body?.title)).toEqual(["Restic backup"]);
+  });
 });
 
 describe("Existing shortcuts", () => {
