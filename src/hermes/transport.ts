@@ -151,6 +151,19 @@ export class ProtocolMismatchError extends Error {
   }
 }
 
+/**
+ * The connection dropped after a request went out and before Hermes answered it, so whether Hermes got it can't be
+ * known. A JSON-RPC id means nothing on the next connection, so asking again there isn't safe.
+ */
+export class ConnectionLostError extends Error {}
+
+/**
+ * What became of a message `send` sent. `accepted`: Hermes answered that it took it. `unsent`: it never went out, or
+ * Hermes answered that it didn't take it. `unknown`: it went out and the connection dropped before Hermes answered,
+ * so Hermes may be running it, tools and all.
+ */
+export type Delivery = { delivery: "accepted" } | { delivery: "unsent" | "unknown"; reason: string };
+
 export class RpcError extends Error {
   constructor(
     readonly code: number,
@@ -488,11 +501,12 @@ export class Hermes {
 
   /**
    * Sends a message and its attachments. A chat not yet open on this connection is resumed first; a Settled one
-   * becomes Active.
+   * becomes Active. Resolves to what became of the message (`Delivery`); if Hermes didn't take it, or may not have,
+   * the chat says why. Nothing here ever sends it again.
    */
-  async send(chatId: string, text: string, attachments: Attachment[] = []): Promise<void> {
+  async send(chatId: string, text: string, attachments: Attachment[] = []): Promise<Delivery> {
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
-    if (!chat) return;
+    if (!chat) return { delivery: "unsent", reason: "This chat isn't in the list." };
     const profile = this.profile;
     const activating = chat.settled;
     const wantedBefore = this.pinWanted.get(chatId);
@@ -519,7 +533,10 @@ export class Hermes {
       // Pin now if Hermes has stored the session; a new chat may not have its row yet, so the end of the turn
       // tries again.
       if (this.pinWanted.get(chatId)) this.track(this.writePin(chatId, profile));
+      return { delivery: "accepted" };
     } catch (e) {
+      const reason = (e as Error).message;
+      const unknown = e instanceof PromptUnconfirmedError;
       if (activating) {
         if (wantedBefore === undefined) this.pinWanted.delete(chatId);
         else this.pinWanted.set(chatId, wantedBefore);
@@ -528,8 +545,9 @@ export class Hermes {
         ...c,
         running: false,
         settled: activating || c.settled,
-        items: [...c.items, errorItem(c, (e as Error).message)],
+        items: [...c.items, errorItem(c, unknown ? `Hermes may already have it: the connection dropped before Hermes confirmed it (${reason}).` : reason)],
       }));
+      return { delivery: unknown ? "unknown" : "unsent", reason };
     }
   }
 
@@ -853,7 +871,7 @@ export class Hermes {
     clearInterval(this.heartbeat);
     // Lets the Rust side end the tunnel.
     if (pipe) this.droppedClosing = pipe.close().catch(() => {}).finally(() => (this.droppedClosing = undefined));
-    for (const p of this.pending.values()) p.reject(new Error(`Connection closed: ${reason}`));
+    for (const p of this.pending.values()) p.reject(new ConnectionLostError(`Connection closed: ${reason}`));
     this.pending.clear();
     this.earlyRequests.clear();
     for (const c of this.snapshot.chats) {
@@ -928,7 +946,9 @@ export class Hermes {
         }
       }
       const prompt = [refs.join("\n"), text].filter(Boolean).join("\n\n") || (queued.length ? IMAGE_ONLY_PROMPT : "");
-      return await this.request("prompt.submit", { session_id: runtimeId, profile: this.profile, text: prompt });
+      return await this.request("prompt.submit", { session_id: runtimeId, profile: this.profile, text: prompt }).catch((e) => {
+        throw e instanceof ConnectionLostError ? new PromptUnconfirmedError(e.message) : e;
+      });
     } catch (e) {
       for (const path of queued) this.track(this.request("image.detach", { session_id: runtimeId, path }));
       throw e;
@@ -1167,6 +1187,9 @@ export class Hermes {
     for (const fn of this.listeners) fn();
   }
 }
+
+/** `prompt.submit` went out and the connection dropped before Hermes answered it. */
+class PromptUnconfirmedError extends Error {}
 
 function lastActive(r: Pick<SessionRow, "last_active" | "started_at">): number {
   return (r.last_active ?? r.started_at ?? 0) * 1000;
