@@ -182,6 +182,7 @@ export function ChatList({
   onSettle,
   onListProfiles,
   onSwitchProfile,
+  workingSection,
 }: {
   profile: string;
   chats: Chat[];
@@ -191,14 +192,19 @@ export function ChatList({
   onSettle: (id: string, settled: boolean) => void;
   onListProfiles: () => Promise<string[]>;
   onSwitchProfile: (name: string) => void;
+  /** Active chats with a reply running sit in their own Working section, collapsed at first (Settings). */
+  workingSection: boolean;
 }) {
   const [settledOpen, setSettledOpen] = useState(false);
+  const [workingOpen, setWorkingOpen] = useState(false);
   // Opening a Settled chat, say from a search, shows it in the list; settling the chat on screen doesn't.
   const selectedSettled = chats.some((c) => c.id === selectedId && c.settled);
   useEffect(() => {
     if (selectedSettled) setSettledOpen(true);
   }, [selectedId]);
-  const active = chats.filter((c) => !c.settled).sort(byRecent);
+  const isWorking = (c: Chat) => workingSection && !c.settled && !!c.running;
+  const working = chats.filter(isWorking).sort(byRecent);
+  const active = chats.filter((c) => !c.settled && !isWorking(c)).sort(byRecent);
   const settled = chats.filter((c) => c.settled).sort(byRecent);
   const settledUnread = settled.filter((c) => c.unread).length;
   const row = (c: Chat) => (
@@ -215,8 +221,23 @@ export function ChatList({
             {syncError}
           </div>
         )}
+        {working.length > 0 && (
+          <>
+            <button className="section-toggle working-toggle" aria-expanded={workingOpen} onClick={() => setWorkingOpen((o) => !o)}>
+              <ChevronRight size={14} className={`chev ${workingOpen ? "open" : ""}`} />
+              Working
+              <span className="count">{working.length}</span>
+              {!workingOpen && <Spinner />}
+            </button>
+            {workingOpen && <div className="working-list">{working.map(row)}</div>}
+          </>
+        )}
         <div className="section-label">Active</div>
-        {active.length ? active.map(row) : <div className="empty-hint">Nothing active. Start a new chat.</div>}
+        {active.length ? (
+          active.map(row)
+        ) : (
+          <div className="empty-hint">{working.length ? "Nothing needs you right now." : "Nothing active. Start a new chat."}</div>
+        )}
         <button className="section-toggle" onClick={() => setSettledOpen((o) => !o)}>
           <ChevronRight size={14} className={`chev ${settledOpen ? "open" : ""}`} />
           Settled

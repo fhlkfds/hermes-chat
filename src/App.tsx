@@ -12,6 +12,7 @@ import { SettingsScreen } from "./ui/Settings";
 import { SignIn } from "./ui/SignIn";
 
 const SAVED = "hermes-chat.sign-in"; // Everything but the password, which is in the system keyring.
+const WORKING_SECTION = "hermes-chat.working-section";
 // Hermes also announces store changes over the socket; the poll catches anything it misses.
 const SYNC_EVERY_MS = 60_000;
 const TOAST_MS = 5_000;
@@ -130,6 +131,7 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
   const [draftError, setDraftError] = useState<string>();
   const [toast, setToast] = useState<Toast | null>(notSaved ? { text: notSaved, at: Date.now() } : null);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [workingSection, setWorkingSection] = useState(() => localStorage.getItem(WORKING_SECTION) === "on");
   // The search result the chat on screen was opened from; `at` tells one pick from the next.
   const [picked, setPicked] = useState<{ found: Found; at: number } | null>(null);
 
@@ -265,6 +267,7 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
           onSettle={setSettled}
           onListProfiles={() => hermes.profiles()}
           onSwitchProfile={switchProfile}
+          workingSection={workingSection}
         />
       )}
       <main className="main">
@@ -277,6 +280,11 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
             passwordSaved={!notSaved}
             profile={profile}
             olderPulled={olderPulled}
+            workingSection={workingSection}
+            onWorkingSection={(on) => {
+              localStorage.setItem(WORKING_SECTION, on ? "on" : "off");
+              setWorkingSection(on);
+            }}
             cacheBytes={() => hermes.cacheBytes()}
             onClearCache={() => hermes.clearCache()}
             onPullOlder={() => hermes.pullOlderHistory()}

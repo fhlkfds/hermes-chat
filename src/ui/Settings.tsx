@@ -1,4 +1,5 @@
-// The Settings screen, ported from the prototype: the connection and Sign out, the local cache, and older history.
+// The Settings screen, ported from the prototype: the connection and Sign out, the chat list, the local cache, and
+// older history.
 // Profiles are switched in the list's header, not here (ADR 0001).
 import { useState } from "react";
 import { ArrowLeft, Download, KeyRound, Lock, LogOut, Trash2 } from "lucide-react";
@@ -25,6 +26,8 @@ export function SettingsScreen({
   passwordSaved,
   profile,
   olderPulled,
+  workingSection,
+  onWorkingSection,
   cacheBytes,
   onClearCache,
   onPullOlder,
@@ -39,6 +42,8 @@ export function SettingsScreen({
   passwordSaved: boolean;
   profile: string;
   olderPulled: boolean;
+  workingSection: boolean;
+  onWorkingSection: (on: boolean) => void;
   /** The storage the saved chat lists take now. */
   cacheBytes: () => number;
   onClearCache: () => void;
@@ -99,6 +104,17 @@ export function SettingsScreen({
             </button>
           </div>
           <p className="muted small settings-note">Signing out deletes the saved password from the keyring. You type it again at the next sign-in.</p>
+        </section>
+
+        <section>
+          <h2>Chat list</h2>
+          <label className="settings-row">
+            <span className="muted">
+              Show a Working section for Active chats with a reply still running, so Active holds only the chats waiting on you. It starts
+              collapsed.
+            </span>
+            <input type="checkbox" checked={workingSection} onChange={(e) => onWorkingSection(e.target.checked)} />
+          </label>
         </section>
 
         <section>
