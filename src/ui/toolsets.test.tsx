@@ -190,6 +190,20 @@ describe("Settings → Toolsets", () => {
     expect(within(stt).getByText(/Its provider, Local Whisper, isn't installed or set up on the server/)).toBeTruthy();
   });
 
+  it("an older provider check landing after a newer one doesn't replace what it found", async () => {
+    const server = new FakeHermes();
+    let releaseOld!: () => void;
+    server.toolsetConfigGate.stt = new Promise((r) => (releaseOld = r)); // The first check sees stt ready, slowly.
+    const { user } = await shown(server);
+    server.toolsetProviders.stt = [{ name: "Local Whisper", status: "needs_setup", is_active: true }];
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+    const stt = () => toggle("Speech-to-Text").closest(".toolset-row") as HTMLElement;
+    expect(await within(stt()).findByText("Needs setup")).toBeTruthy();
+    act(() => releaseOld());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(within(stt()).getByText("Needs setup")).toBeTruthy();
+  });
+
   it("says when coding focus mode or a server pin replaces the list", async () => {
     const server = new FakeHermes();
     server.codingFocus.default = true;

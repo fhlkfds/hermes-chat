@@ -198,6 +198,8 @@ export function ToolsetSettings({
   const live = useRef(true);
   /** Bumped by each change's result: a read that started before it is older than what's shown, and is dropped. */
   const stamp = useRef(0);
+  /** Bumped by each provider-readiness read: only the latest one's answer is shown. */
+  const readinessRead = useRef(0);
   const shownList = useRef<ToolsetList | undefined>(undefined);
   shownList.current = list;
   useEffect(() => {
@@ -248,7 +250,10 @@ export function ToolsetSettings({
         setLoadError(undefined);
         setUnsupported(undefined);
         setReread(false);
-        if (full) void api.setupProblems(profile, fresh).then((p) => live.current && setProblems(p));
+        if (full) {
+          const mine = ++readinessRead.current;
+          void api.setupProblems(profile, fresh).then((p) => live.current && mine === readinessRead.current && setProblems(p));
+        }
       } catch (e) {
         if (!live.current || stamp.current !== started) return;
         if (e instanceof UnsupportedServerError) setUnsupported(e.message);

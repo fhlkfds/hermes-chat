@@ -646,6 +646,8 @@ export class FakeHermes {
   };
   /** While set, the next toolset list read waits for it (once). */
   toolsetListGateOnce?: Promise<void>;
+  /** While set, `GET /api/tools/toolsets/{name}/config` for that name waits for it. */
+  toolsetConfigGate: Record<string, Promise<void>> = {};
   /** While set, `GET /api/tools/toolsets/{name}/config` fails with this. */
   toolsetConfigFailure?: string;
   /** The next toggle writes, then answers with this error anyway (a failure after the save, such as a 500). */
@@ -788,6 +790,14 @@ export class FakeHermes {
       const t = known(name);
       if (!t) throw new Error(`The dashboard answered 400: {"detail":"Unknown toolset: ${name}"}`);
       if (this.toolsetConfigFailure) throw new Error(this.toolsetConfigFailure);
+      const gate = this.toolsetConfigGate[name];
+      const providersNow = (this.toolsetProviders[name] ?? []).map((p) => ({ ...p }));
+      if (gate) {
+        delete this.toolsetConfigGate[name];
+        await gate;
+        const providers = providersNow.map((p) => ({ env_vars: [], post_setup: null, ...p }));
+        return { name, has_category: providers.length > 0, providers, active_provider: providers.find((p) => p.is_active)?.name ?? null };
+      }
       const providers = (this.toolsetProviders[name] ?? []).map((p) => ({ env_vars: [], post_setup: null, ...p }));
       const active = providers.find((p) => p.is_active)?.name ?? null;
       return { name, has_category: providers.length > 0, providers, active_provider: active };
