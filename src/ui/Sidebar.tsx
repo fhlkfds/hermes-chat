@@ -1,9 +1,10 @@
 // Icon rail beside a chat list (ADR 0001), ported from the prototype's variants C and A. The list's header is the
 // profile switcher. Settings opens from the rail's foot. Right-clicking a chat opens its menu (ChatMenu.tsx).
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, ChevronRight, LockOpen, Search, Settings, SquarePen, Trash2 } from "lucide-react";
-import type { Chat, ConnectionStatus } from "../hermes/model";
+import { Check, ChevronDown, ChevronRight, CircleAlert, LockOpen, Search, Settings, SquarePen, Trash2 } from "lucide-react";
+import type { Chat, ConnectionStatus, OtherProfile, OtherProfiles } from "../hermes/model";
 import { SOURCE_LABEL } from "../hermes/model";
+import { CHECK_EVERY_MS, totalUnread } from "../hermes/otherProfiles";
 import type { Route } from "../hermes/pipe";
 import { RenameConflict } from "../hermes/transport";
 import { ChatMenu } from "./ChatMenu";
@@ -201,17 +202,69 @@ function ChatRow({
   );
 }
 
+const ago = (ts: number) => (relTime(ts) === "now" ? "just now" : `${relTime(ts)} ago`);
+const unreadCount = (p: OtherProfile) => `${p.unread}${p.more ? "+" : ""}`;
+const CHECKED_EVERY = `Other profiles are checked every ${CHECK_EVERY_MS / 60_000} minutes`;
+
+/** What the latest check of another profile found, and when; an earlier answer is kept through a failed check. */
+function otherTip(p?: OtherProfile): string {
+  const found = (q: OtherProfile) =>
+    q.checkedAt === undefined
+      ? undefined
+      : `${q.unread ? `${unreadCount(q)} unread` : "No unread chats"}${q.more ? " in its most recent chats" : ""}, checked ${ago(q.checkedAt)}`;
+  if (p?.error) return [`Couldn't check: ${p.error}`, found(p) && `Earlier: ${found(p)}`].filter(Boolean).join(". ");
+  return (p && found(p)) ?? "Not checked yet";
+}
+
+/** The switcher's tooltip: which other profiles have Unread chats, which couldn't be checked, and how fresh it is. */
+function switcherTip(others: OtherProfiles): string {
+  const { withUnread, failed } = totalUnread(others);
+  return [
+    "Switch profile",
+    withUnread.length && `Unread chats in ${withUnread.map((n) => `${n} (${unreadCount(others.byName[n])})`).join(", ")}`,
+    failed.length && `Couldn't check ${failed.join(", ")}`,
+    others.error,
+    `${CHECKED_EVERY}${others.checkedAt ? `; last ${ago(others.checkedAt)}` : ""}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/**
+ * A dot and count for another profile with Unread chats, and a mark when its latest check failed; the count beside
+ * the mark is from an earlier check.
+ */
+function OtherBadge({ info }: { info?: OtherProfile }) {
+  if (!info?.unread && !info?.error) return null;
+  return (
+    <span className="profile-unread">
+      {!!info.unread && (
+        <>
+          <span className="dot" />
+          {unreadCount(info)}
+        </>
+      )}
+      {info.error && <CircleAlert size={13} className="profile-unknown" />}
+    </span>
+  );
+}
+
 /**
  * The current profile's name with a ▾, which opens the server's profiles with a filter box (ADR 0001). Enter picks
- * the first match; Escape or a click outside closes it.
+ * the first match; Escape or a click outside closes it. A dot on it, and a count on each profile in the menu, show
+ * Unread chats in the other profiles, as the latest poll found them. Opening the menu asks for a fresh check.
  */
 function ProfileSwitcher({
   profile,
+  others,
   onListProfiles,
+  onCheckOthers,
   onSwitch,
 }: {
   profile: string;
+  others: OtherProfiles;
   onListProfiles: () => Promise<string[]>;
+  onCheckOthers: () => void;
   onSwitch: (name: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -225,6 +278,7 @@ function ProfileSwitcher({
     let current = true;
     setFilter("");
     setError(undefined);
+    onCheckOthers();
     onListProfiles().then(
       (names) => current && setProfiles(names),
       (e) => current && setError(`Couldn't list profiles: ${e instanceof Error ? e.message : String(e)}`),
@@ -237,6 +291,7 @@ function ProfileSwitcher({
     };
   }, [open]);
 
+  const elsewhere = totalUnread(others).unread > 0;
   const shown = (profiles ?? [profile]).filter((p) => p.toLowerCase().includes(filter.trim().toLowerCase()));
   const pick = (name: string) => {
     setOpen(false);
@@ -245,8 +300,9 @@ function ProfileSwitcher({
 
   return (
     <div className="profile-switch" ref={box}>
-      <button className="profile-btn" title="Switch profile" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+      <button className="profile-btn" title={switcherTip(others)} aria-expanded={open} onClick={() => setOpen((o) => !o)}>
         <span className="profile-name">{profile}</span>
+        {elsewhere && <span className="dot" aria-label="Unread chats in other profiles" />}
         <ChevronDown size={14} className="profile-chev" />
       </button>
       {open && (
@@ -264,15 +320,28 @@ function ProfileSwitcher({
           />
           <div className="profile-options">
             {shown.map((p) => (
-              <button key={p} role="option" aria-selected={p === profile} className={`profile-option ${p === profile ? "on" : ""}`} onClick={() => pick(p)}>
+              <button
+                key={p}
+                role="option"
+                aria-selected={p === profile}
+                title={p === profile ? undefined : otherTip(others.byName[p])}
+                className={`profile-option ${p === profile ? "on" : ""}`}
+                onClick={() => pick(p)}
+              >
                 <span className="row-title">{p}</span>
-                {p === profile && <Check size={14} />}
+                {p === profile ? <Check size={14} /> : <OtherBadge info={others.byName[p]} />}
               </button>
             ))}
             {!profiles && !error && <div className="profile-hint">Loading profiles…</div>}
             {profiles && shown.length === 0 && <div className="profile-hint">No profile matches.</div>}
             {error && <div className="profile-hint err">{error}</div>}
           </div>
+          {others.error && <div className="profile-hint err">{others.error}</div>}
+          {profiles && profiles.length > 1 && (
+            <div className="profile-hint">
+              Unread checked every {CHECK_EVERY_MS / 60_000} min{others.checkedAt ? `, last ${ago(others.checkedAt)}` : ""}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -281,6 +350,7 @@ function ProfileSwitcher({
 
 export function ChatList({
   profile,
+  others,
   chats,
   syncError,
   selectedId,
@@ -289,9 +359,11 @@ export function ChatList({
   onDelete,
   onRename,
   onListProfiles,
+  onCheckOthers,
   onSwitchProfile,
 }: {
   profile: string;
+  others: OtherProfiles;
   chats: Chat[];
   syncError?: string;
   selectedId: string | null;
@@ -300,6 +372,7 @@ export function ChatList({
   onDelete: (id: string) => void;
   onRename: (id: string, title: string, from: string) => Promise<unknown>;
   onListProfiles: () => Promise<string[]>;
+  onCheckOthers: () => void;
   onSwitchProfile: (name: string) => void;
 }) {
   const [settledOpen, setSettledOpen] = useState(false);
@@ -325,7 +398,7 @@ export function ChatList({
   return (
     <aside className="sidebar">
       <div className="sb-head">
-        <ProfileSwitcher profile={profile} onListProfiles={onListProfiles} onSwitch={onSwitchProfile} />
+        <ProfileSwitcher profile={profile} others={others} onListProfiles={onListProfiles} onCheckOthers={onCheckOthers} onSwitch={onSwitchProfile} />
       </div>
       <div className="sb-scroll">
         {syncError && (
