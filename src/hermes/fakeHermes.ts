@@ -26,6 +26,21 @@ export type SessionRow = {
   last_read_at: number | null;
   /** Bumped by every session edit; an edit must name the current one. Missing means 0. */
   runtime_revision?: number;
+  /**
+   * Hermes's stored usage for every model call in the session (`sessions` columns at the deployed `bf0203a`; both list
+   * and detail rows carry them). Hermes's helper tasks are kept apart and aren't counted here.
+   */
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
+  reasoning_tokens?: number;
+  api_call_count?: number;
+  estimated_cost_usd?: number | null;
+  actual_cost_usd?: number | null;
+  cost_status?: string | null;
+  cost_source?: string | null;
+  pricing_version?: string | null;
 };
 
 /**
@@ -48,6 +63,20 @@ export type TranscriptMessage = {
 
 /** A file on the owner's disk: its bytes as a string, a size alone for a file too big to make, or a folder. */
 export type FakeFile = string | { size: number } | { dir: true };
+
+/** A stored project as `Project.to_dict` sends it (`hermes_cli/projects_db.py` at the deployed `bf0203a`). */
+export type FakeProject = {
+  id: string;
+  slug: string;
+  name: string;
+  primary_path: string | null;
+  archived: boolean;
+  created_at: number;
+  folders: { path: string; label: string | null; is_primary: boolean; added_at: number }[];
+};
+
+/** One worktree of a repository on the server, as `GET /api/git/worktrees` lists it (`web_git.worktree_list`). */
+export type FakeWorktree = { path: string; branch?: string; detached?: boolean };
 
 /** A session's model as `SessionLiveInfo` carries it (`session.info`, and `info` on create and resume). */
 export type ModelInfo = { model: string; provider: string; reasoning_effort: string; fast: boolean };
@@ -91,6 +120,17 @@ const DAY = 86_400;
 const MiB = 1024 * 1024;
 const now = () => Date.now() / 1000;
 
+/** `_normalize_path`: absolute (a relative path is read from the server's home folder), no trailing slash. */
+const serverPath = (path: string) => {
+  const p = path.trim().startsWith("/") ? path.trim() : `/home/liam/${path.trim()}`;
+  return p.replace(/\/+$/, "") || "/";
+};
+
+function setPrimary(p: FakeProject, path: string) {
+  for (const f of p.folders) f.is_primary = f.path === path;
+  p.primary_path = path;
+}
+
 /**
  * The sources whose stored rows the gateway takes a session edit on. A local client's row is owner history only with a
  * source the native resume adopts (`LEGACY_LOCAL_SOURCES` in `hermes_state_local_migration.py`, plus `import`;
@@ -111,6 +151,13 @@ export function editFlags(body: Record<string, unknown> | undefined) {
   const { request_id: _id, expected_revision: _revision, ...flags } = body ?? {};
   return flags;
 }
+
+/** Hermes's `_FS_PREVIEW_LANGUAGE_BY_EXT` and `_fs_mime_type` at `bf0203a`, as far as the tests need them. */
+const FS_LANGUAGES: Record<string, string> = { py: "python", md: "markdown", html: "html", ts: "typescript", json: "json", txt: "text", sh: "shell" };
+const FS_MIME: Record<string, string> = {
+  png: "image/png", jpg: "image/jpeg", svg: "image/svg+xml", py: "text/x-python", md: "text/markdown", html: "text/html",
+  txt: "text/plain", json: "application/json", pdf: "application/pdf", ts: "video/mp2t",
+};
 
 export class FakeHermes {
   /** Every request the client sent, in order. */
@@ -149,6 +196,11 @@ export class FakeHermes {
   oneshotFailure?: string;
   /** The owner's local disk, by path, for attachments. */
   files: Record<string, FakeFile> = {};
+  /**
+   * The server's disk, by path, for the preview pane's `GET /api/fs/read-text` and `read-data-url`. A string is the
+   * file's text (or bytes, one char per byte); `{ dir: true }` is a folder.
+   */
+  serverFiles: Record<string, string | { dir: true }> = {};
   /** Whether this connection sent `client.capabilities {server_requests: true}`. */
   answersRequests = false;
   /** Server→client requests nobody has answered yet, by id. */
@@ -176,6 +228,16 @@ export class FakeHermes {
   readonly runtime = new Map<string, string>();
   private created = new Map<string, { source: string; profile?: string }>(); // runtime id, until the first prompt stores it
 
+  /** Each profile's projects (`projects.db`), by profile name; a profile the server has but that isn't here has none. */
+  projects: Record<string, FakeProject[]> = {};
+  /**
+   * More of the server's folders, by absolute path without a trailing slash, for `GET /api/fs/list`. That route lists
+   * these and `serverFiles` together; a `{ dir: true }` entry there is a folder too.
+   */
+  serverDirs = new Set<string>();
+  /** The server's git repositories, each one's worktrees with its own checkout first (`git worktree list`). */
+  repos: FakeWorktree[][] = [];
+  private projectSeq = 0;
   /** The `info` session.create and session.resume answer with (`server._session_info`); empty, as from a server
    * that reports none of it, unless a test sets it. */
   sessionInfo: Record<string, unknown> = {};
@@ -319,12 +381,81 @@ export class FakeHermes {
       } else this.profileModel[profile] = info;
       this.respond(r.id, { key, value });
     },
+    // `tui_gateway/methods_projects.py` at the deployed `bf0203a`, checked live against a throwaway HERMES_HOME
+    // (research doc "Projects"): 5062 for an id that resolves to nothing, 5063 for an invalid argument, 4064 for a
+    // profile the server doesn't have. Writes answer with the refreshed project; delete with every project.
+    "projects.list": (r) => this.projectsOp(r, (list) => ({ projects: list, active_id: null })),
+    "projects.create": (r) =>
+      this.projectsOp(r, (list) => {
+        const name = String(r.params.name ?? "").trim();
+        if (!name) throw [5063, "project name must not be empty"];
+        const at = Math.floor(now());
+        const folders = ((r.params.folders as string[] | undefined) ?? []).map(serverPath);
+        const p: FakeProject = {
+          id: `p_${(++this.projectSeq).toString(16).padStart(8, "0")}`,
+          slug: name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "project",
+          name,
+          primary_path: folders[0] ?? null,
+          archived: false,
+          created_at: at,
+          folders: folders.map((path, i) => ({ path, label: null, is_primary: i === 0, added_at: at })),
+        };
+        list.push(p);
+        return { project: p };
+      }),
+    "projects.update": (r) =>
+      this.projectOp(r, (p) => {
+        if (r.params.name !== undefined && r.params.name !== null) {
+          const name = String(r.params.name).trim();
+          if (!name) throw [5063, "project name must not be empty"];
+          p.name = name;
+        }
+      }),
+    "projects.add_folder": (r) =>
+      this.projectOp(r, (p) => {
+        const path = serverPath(String(r.params.path ?? ""));
+        if (!p.folders.some((f) => f.path === path)) p.folders.push({ path, label: null, is_primary: false, added_at: Math.floor(now()) });
+        if (!p.folders.some((f) => f.is_primary)) setPrimary(p, path);
+      }),
+    "projects.remove_folder": (r) =>
+      this.projectOp(r, (p) => {
+        const path = serverPath(String(r.params.path ?? ""));
+        const was = p.folders.find((f) => f.path === path);
+        p.folders = p.folders.filter((f) => f.path !== path);
+        if (was?.is_primary) {
+          if (p.folders[0]) setPrimary(p, p.folders[0].path);
+          else p.primary_path = null;
+        }
+      }),
+    "projects.delete": (r) =>
+      this.projectsOp(r, (list) => {
+        const at = list.findIndex((p) => p.id === r.params.id);
+        if (at < 0) throw [5062, "no such project"];
+        list.splice(at, 1);
+        return { projects: list, active_id: null };
+      }),
     // Keepalive, answered by the WS layer in either protocol generation (research doc §1).
     "gateway.ping": (r) => this.respond(r.id, { ok: true }),
   };
 
   /** Per-route REST behaviour, keyed `METHOD /path`. A handler throws to fail the request. */
   readonly rest: Record<string, RestHandler> = {
+    // `fs_list` (`hermes_cli/web_routers/files.py` at the deployed `bf0203a`): a folder's entries, or none and why.
+    "GET /api/fs/list": ({ query }) => {
+      const path = query.get("path") ?? "";
+      const isDir = (p: string) => this.serverDirs.has(p) || typeof this.serverFiles[p] === "object";
+      if (typeof this.serverFiles[path] === "string") return { entries: [], error: "ENOTDIR" };
+      if (!isDir(path)) return { entries: [], error: "ENOENT" };
+      const all = new Set([...this.serverDirs, ...Object.keys(this.serverFiles)]);
+      const inside = [...all].filter((p) => p.startsWith(`${path}/`) && !p.slice(path.length + 1).includes("/"));
+      return { entries: inside.map((p) => ({ name: p.split("/").pop(), path: p, isDirectory: isDir(p) })) };
+    },
+    // `git_worktrees_route`: every worktree of the repository the path is in, its own checkout first; none outside one.
+    "GET /api/git/worktrees": ({ query }) => {
+      const path = query.get("path") ?? "";
+      const repo = this.repos.find((trees) => trees.some((t) => path === t.path || path.startsWith(`${t.path}/`)));
+      return { worktrees: (repo ?? []).map((t, i) => ({ path: t.path, branch: t.branch ?? null, isMain: i === 0, detached: !!t.detached, locked: false })) };
+    },
     "GET /api/sessions": ({ query }) => {
       // order=recent, archived=exclude|only|include, then every pinned row not already on the page, archived or not
       // (list_sessions_rich).
@@ -374,6 +505,30 @@ export class FakeHermes {
         }
       for (const s of store) if (s.title?.toLowerCase().includes(q.toLowerCase())) add(s, s.preview || `Session title matched: ${q}`, null);
       return { results: [...results.values()] };
+    },
+    // `hermes_cli/web_routers/files.py` `fs_read_text` at the deployed `bf0203a`, as probed live: the first 512 KB,
+    // binary judged by `_fs_looks_binary`, credential files refused.
+    "GET /api/fs/read-text": ({ query }) => {
+      const { path, data } = this.serverFile(query);
+      const head = data.slice(0, 4096);
+      const control = [...head].filter((c) => c.charCodeAt(0) < 32 && !"\t\n\r".includes(c)).length;
+      const ext = /\.([a-z0-9]+)$/i.exec(path)?.[1].toLowerCase() ?? "";
+      return {
+        binary: head.includes("\0") || (head.length > 0 && control / head.length > 0.12),
+        byteSize: data.length,
+        language: FS_LANGUAGES[ext] ?? "text",
+        mimeType: FS_MIME[ext] ?? "application/octet-stream",
+        path,
+        text: data.slice(0, 512 * 1024),
+        truncated: data.length > 512 * 1024,
+      };
+    },
+    // `fs_read_data_url`: any regular file as a data URL, up to 16 MB; the MIME type goes by its extension.
+    "GET /api/fs/read-data-url": ({ query }) => {
+      const { path, data } = this.serverFile(query);
+      if (data.length > 16 * 1024 * 1024) throw new Error(`The dashboard answered 413: {"detail":"File too large"}`);
+      const ext = /\.([a-z0-9]+)$/i.exec(path)?.[1].toLowerCase() ?? "";
+      return { dataUrl: `data:${FS_MIME[ext] ?? "application/octet-stream"};base64,${btoa(data)}` };
     },
     // `hermes_cli/web_routers/profiles.py` `_profile_to_dict` at the deployed `bf0203a`, trimmed to what matters here.
     "GET /api/profiles": () => ({
@@ -500,6 +655,21 @@ export class FakeHermes {
     };
   };
 
+  /** A Server file for `/api/fs/*`, failing the way `_fs_regular_file` and `_is_sensitive_path` do at `bf0203a`. */
+  private serverFile(query: URLSearchParams): { path: string; data: string } {
+    const profile = query.get("profile");
+    if (profile && profile !== "default" && !(profile in this.otherProfiles))
+      throw new Error(`The dashboard answered 404: {"detail":"Profile '${profile}' does not exist."}`);
+    const path = query.get("path") ?? "";
+    const name = path.split("/").pop() ?? "";
+    if (/^\.env(\..*)?$|^auth\.json$|^config\.yaml$/i.test(name))
+      throw new Error(`The dashboard answered 403: {"detail":"Access to sensitive files is not allowed"}`);
+    const f = this.serverFiles[path];
+    if (f === undefined) throw new Error(`The dashboard answered 404: {"detail":"File not found"}`);
+    if (typeof f !== "string") throw new Error(`The dashboard answered 400: {"detail":"Path points to a directory"}`);
+    return { path, data: f };
+  }
+
   respond(id: number, result: unknown) {
     this.frame({ jsonrpc: "2.0", id, result });
   }
@@ -578,6 +748,28 @@ export class FakeHermes {
   /** The runtime session id the server handed out for a stored session. */
   runtimeIdOf(stored: string) {
     return [...this.runtime].reverse().find(([, s]) => s === stored)?.[0];
+  }
+
+  /** Runs a projects method on the profile's projects; `fn` throws `[code, message]` to fail it. */
+  private projectsOp(r: Request, fn: (list: FakeProject[]) => unknown) {
+    const profile = (r.params.profile as string | undefined) || "default";
+    if (!this.store(profile)) return this.fail(r.id, 4064, `Profile '${profile}' does not exist.`);
+    try {
+      this.respond(r.id, structuredClone(fn((this.projects[profile] ??= []))));
+    } catch (e) {
+      if (!Array.isArray(e)) throw e;
+      this.fail(r.id, e[0], e[1]);
+    }
+  }
+
+  /** A projects method on the one project `params.id` names, answering with it refreshed. */
+  private projectOp(r: Request, fn: (p: FakeProject) => void) {
+    this.projectsOp(r, (list) => {
+      const p = list.find((q) => q.id === r.params.id || q.slug === r.params.id);
+      if (!p) throw [5062, "no such project"];
+      fn(p);
+      return { project: p };
+    });
   }
 
   private stat(path: string): LocalFile {
