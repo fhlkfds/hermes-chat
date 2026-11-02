@@ -721,6 +721,34 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 .back:hover { color: var(--text); }
 .confirm { display: flex; flex-direction: column; gap: 10px; max-width: 360px; font-size: calc(12.5rem / 14); color: var(--muted); line-height: 1.5; }
 .confirm-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.confirm-msg { color: var(--text); }
+.confirm-msg svg { vertical-align: -1px; margin-right: 2px; }
+.confirm-detail { white-space: pre-line; font-family: var(--mono); font-size: calc(12rem / 14); }
+
+/* Settings → Model (ModelSettings.tsx) */
+.model-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 14px; }
+.model-grid.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.model-field { min-width: 0; }
+.model-field .select, .model-field input[type="number"] { width: 100%; min-width: 0; }
+.model-field input[type="number"] { height: 32px; padding: 0 10px; }
+.model-field .select:disabled { opacity: 0.55; }
+.check { display: inline-flex; align-items: center; gap: 8px; height: 32px; color: var(--text); font-size: calc(13rem / 14); }
+.check input { accent-color: var(--accent); width: 15px; height: 15px; }
+.model-apply { margin-top: 18px; align-items: flex-start; }
+.model-apply > .small { padding-top: 7px; }
+.model-card { margin-top: 14px; border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; }
+.settings p.model-note { margin: 12px 0 0; }
+.settings p.model-note svg { vertical-align: -2px; }
+.aux-list { margin-top: 6px; }
+.aux-row { padding: 12px 0; border-top: 1px solid var(--line); }
+.aux-row:first-child { border-top: 0; }
+.aux-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.aux-head > .select { flex: none; width: 230px; }
+.aux-label { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.aux-pickers { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr); gap: 8px; margin-top: 8px; }
+.aux-pickers .select { width: 100%; min-width: 0; }
+.guard { margin-top: 14px; }
+.guard .appearance-title svg { color: var(--muted); margin-right: 3px; }
 
 /* chat menu (ChatMenu.tsx) */
 .menu {

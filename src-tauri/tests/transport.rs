@@ -4,7 +4,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, RawQuery};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{AppendHeaders, IntoResponse, Response};
-use axum::routing::{get, patch, post};
+use axum::routing::{get, patch, post, put};
 use axum::{Json, Router};
 use hermes_chat::transport::{self, Dashboard, LocalFile, PipeEvent, SignIn, TransportError};
 use serde_json::{json, Value};
@@ -63,6 +63,12 @@ async fn patch_session(Path(id): Path<String>, headers: HeaderMap, body: String)
 
 async fn delete_session(Path(id): Path<String>, RawQuery(query): RawQuery) -> Response {
     Json(json!({"deleted": id, "query": query})).into_response()
+}
+
+/// Settings → Model's writes: `POST /api/model/set` and `PUT /api/config` echo what they got.
+async fn echo_write(axum::extract::OriginalUri(uri): axum::extract::OriginalUri, headers: HeaderMap, body: String) -> Response {
+    let content_type = headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("");
+    Json(json!({"uri": uri.to_string(), "content_type": content_type, "body": serde_json::from_str::<Value>(&body).unwrap()})).into_response()
 }
 
 /// The dashboard rotating an expired access token through the refresh cookie (dashboard_auth middleware).
@@ -124,6 +130,9 @@ async fn stub() -> Url {
         .route("/api/ws", get(api_ws))
         .route("/api/sessions", get(list_sessions))
         .route("/api/sessions/{id}", patch(patch_session).delete(delete_session))
+        .route("/api/model/set", post(echo_write))
+        .route("/api/config", put(echo_write))
+        .route("/api/model/moa", put(echo_write).post(echo_write))
         .route("/api/rotate", get(rotate))
         .route("/api/expire", get(expire))
         .route("/api/busy", get(busy));
@@ -257,6 +266,17 @@ async fn relays_a_rest_delete() {
 }
 
 #[tokio::test]
+async fn relays_the_model_settings_writes() {
+    let dashboard = signed_in().await;
+    let body = json!({"scope": "main", "provider": "nous", "model": "m"}).to_string();
+    let got: Value = serde_json::from_str(&dashboard.request("POST", "api/model/set?profile=default", Some(body)).await.unwrap()).unwrap();
+    assert_eq!(got, json!({"uri": "/api/model/set?profile=default", "content_type": "application/json", "body": {"scope": "main", "provider": "nous", "model": "m"}}));
+    let body = json!({"config": {"agent": {"reasoning_effort": "low"}}}).to_string();
+    let got: Value = serde_json::from_str(&dashboard.request("PUT", "api/config?profile=default", Some(body)).await.unwrap()).unwrap();
+    assert_eq!(got, json!({"uri": "/api/config?profile=default", "content_type": "application/json", "body": {"config": {"agent": {"reasoning_effort": "low"}}}}));
+}
+
+#[tokio::test]
 async fn keeps_cookies_the_dashboard_rotates() {
     let dashboard = signed_in().await;
     get_json(&dashboard, "api/rotate").await;
@@ -279,9 +299,21 @@ async fn a_failed_rest_call_reports_status_and_body() {
 }
 
 #[tokio::test]
-async fn relays_only_get_patch_and_delete_under_api() {
+async fn relays_only_get_patch_and_delete_under_api_and_the_two_model_writes() {
     let dashboard = signed_in().await;
-    for (method, path) in [("GET", "auth/logout"), ("GET", "api/../auth/logout"), ("DELETE", "auth/logout"), ("PUT", "api/sessions/x"), ("POST", "api/sessions")] {
+    for (method, path) in [
+        ("GET", "auth/logout"),
+        ("GET", "api/../auth/logout"),
+        ("DELETE", "auth/logout"),
+        ("PUT", "api/sessions/x"),
+        ("POST", "api/sessions"),
+        ("POST", "api/model/moa"),
+        ("PUT", "api/model/moa"),
+        ("PUT", "api/model/set"),
+        ("POST", "api/config"),
+        ("POST", "api/model/set/../../auth/logout"),
+        ("OPTIONS", "api/config"),
+    ] {
         let err = dashboard.request(method, path, None).await.err().unwrap();
         assert!(matches!(err, TransportError::NotRelayed(_)), "{method} {path}: {err:?}");
     }
