@@ -1,12 +1,14 @@
 // Transcript, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+// Messages, tool calls and commands can be copied; screenshots and files can be pasted into the composer.
+import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent } from "react";
 import { ArrowUp, ChevronDown, ChevronRight, ChevronUp, Paperclip, Search, ShieldAlert, Square, Wrench, X } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import type { ApprovalChoice, ApprovalItem, AttachCheck, Attachment, Chat, ConnectionStatus, Item, Source } from "../hermes/model";
+import type { ApprovalChoice, ApprovalItem, AttachCheck, Attachment, Chat, ConnectionStatus, Item, PastedFile, Source } from "../hermes/model";
 import { SOURCE_LABEL, isWaiting } from "../hermes/model";
 import { Markdown } from "./Markdown";
-import { SettleButton, SourceIcon, Spinner, fmtSize, highlight } from "./bits";
+import { CopyButton, SettleButton, SourceIcon, Spinner, fmtSize, highlight } from "./bits";
+import { pastedFiles } from "./clipboard";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type Block = { kind: "tools"; id: string; tools: ToolItem[] } | Exclude<Item, ToolItem>;
@@ -37,7 +39,8 @@ const STATUS_NOTE: Record<ConnectionStatus, string | undefined> = {
 };
 
 /**
- * `alsoPostsIn`: the Telegram or Discord chat Hermes will also post its replies in. `onAnswer` answers an Approval card.
+ * `alsoPostsIn`: the Telegram or Discord chat Hermes will also post its replies in. `onAttach` checks local files to
+ * attach, and `onAttachPasted` files pasted as bytes. `onAnswer` answers an Approval card.
  * `onSettle` is left out for a chat not started yet. Ctrl+F opens the find bar.
  */
 export function ChatPane({
@@ -46,6 +49,7 @@ export function ChatPane({
   status,
   alsoPostsIn,
   onAttach,
+  onAttachPasted,
   onSend,
   onStop,
   onAnswer,
@@ -56,6 +60,7 @@ export function ChatPane({
   status: ConnectionStatus;
   alsoPostsIn?: Source;
   onAttach: (paths: string[]) => Promise<AttachCheck>;
+  onAttachPasted: (files: PastedFile[]) => Promise<AttachCheck>;
   onSend: (text: string, attachments: Attachment[]) => void;
   onStop: () => void;
   onAnswer: (approvalId: string, choice: ApprovalChoice) => void;
@@ -232,13 +237,14 @@ export function ChatPane({
                     </div>
                   )}
                   {b.text && <div className="bubble-text">{highlight(b.text, q)}</div>}
+                  {b.text && <MessageActions text={b.text} />}
                 </div>
               );
             if (b.kind === "assistant")
               return (
                 <div key={b.id} className="msg assistant" data-item={b.id}>
                   <Markdown text={b.text} query={q} />
-                  {chat.running && b === last && <span className="cursor" />}
+                  {chat.running && b === last ? <span className="cursor" /> : b.text && <MessageActions text={b.text} />}
                   {b.interrupted && <div className="stopped">Stopped</div>}
                 </div>
               );
@@ -271,12 +277,22 @@ export function ChatPane({
         hint={waiting ? "Hermes is waiting for your approval above." : undefined}
         alsoPostsIn={alsoPostsIn}
         onAttach={onAttach}
+        onAttachPasted={onAttachPasted}
         onSend={(t, attachments) => {
           stickToBottom.current = true;
           onSend(t, attachments);
         }}
         onStop={onStop}
       />
+    </div>
+  );
+}
+
+/** Under a message: copies its text, as Markdown for a reply. Shows on hover. */
+function MessageActions({ text }: { text: string }) {
+  return (
+    <div className="msg-actions">
+      <CopyButton className="icon-btn" title="Copy message" text={() => text} />
     </div>
   );
 }
@@ -295,6 +311,7 @@ function ApprovalCard({ item, offline, onAnswer }: { item: ApprovalItem; offline
       <div className="approval-head">
         <ShieldAlert size={15} />
         {item.answer ? (item.answer === "deny" ? "Denied" : "Approved") : item.ended ? endedNote(item.ended) : "Hermes wants to run a command"}
+        <CopyButton className="icon-btn approval-copy" title="Copy command" text={() => item.command} />
       </div>
       <pre className="approval-cmd">{item.command}</pre>
       {!closed && (
@@ -317,6 +334,7 @@ function ApprovalCard({ item, offline, onAnswer }: { item: ApprovalItem; offline
 function ToolRow({ t }: { t: ToolItem }) {
   const [open, setOpen] = useState(false);
   const summary = t.status === "stopped" ? "stopped" : t.summary;
+  const args = JSON.stringify(t.args ?? {}, null, 2);
   return (
     <div className={`tool ${open ? "open" : ""}`}>
       <button className="tool-line" onClick={() => setOpen((o) => !o)}>
@@ -328,17 +346,27 @@ function ToolRow({ t }: { t: ToolItem }) {
       </button>
       {open && (
         <div className="tool-body">
-          <div className="tool-label">Arguments</div>
-          <pre>{JSON.stringify(t.args ?? {}, null, 2)}</pre>
+          <ToolLabel label="Arguments" text={args} />
+          <pre>{args}</pre>
           {/* Stored history keeps no result for most tools. */}
           {(t.status === "running" || t.result !== undefined) && (
             <>
-              <div className="tool-label">Result</div>
+              <ToolLabel label="Result" text={t.status === "running" ? undefined : t.result} />
               <pre>{t.status === "running" ? "…" : t.result || "(empty)"}</pre>
             </>
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/** A tool call's Arguments or Result heading, with a copy button when there is `text` to copy. */
+function ToolLabel({ label, text }: { label: string; text?: string }) {
+  return (
+    <div className="tool-label">
+      {label}
+      {text && <CopyButton className="icon-btn tool-copy" title={`Copy ${label.toLowerCase()}`} text={() => text} />}
     </div>
   );
 }
@@ -380,6 +408,7 @@ function Composer({
   hint,
   alsoPostsIn,
   onAttach,
+  onAttachPasted,
   onSend,
   onStop,
 }: {
@@ -390,6 +419,7 @@ function Composer({
   hint?: string;
   alsoPostsIn?: Source;
   onAttach: (paths: string[]) => Promise<AttachCheck>;
+  onAttachPasted: (files: PastedFile[]) => Promise<AttachCheck>;
   onSend: (text: string, attachments: Attachment[]) => void;
   onStop: () => void;
 }) {
@@ -399,18 +429,39 @@ function Composer({
   const [dragging, setDragging] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
 
-  const add = async (paths: string[]) => {
-    if (!paths.length) return;
+  const take = async (check: () => Promise<AttachCheck>) => {
     try {
-      const got = await onAttach(paths);
+      const got = await check();
       setAttachments((cur) => [...cur, ...got.attachments.filter((a) => !cur.some((x) => x.path === a.path))]);
       setRefused(got.refused);
     } catch (e) {
       setRefused([`Couldn't attach files: ${e instanceof Error ? e.message : String(e)}`]);
     }
   };
+  const add = async (paths: string[]) => {
+    if (paths.length) await take(() => onAttach(paths));
+  };
   const addRef = useRef(add);
   addRef.current = add;
+
+  // Ctrl+V outside a text field pastes into the composer: focusing it first makes the paste land there.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const paste = ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v") || (e.shiftKey && e.key === "Insert");
+      const target = e.target as HTMLElement | null;
+      if (paste && !target?.closest("input, textarea, select, [contenteditable]")) taRef.current?.focus();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Pasted files are attached; a text paste goes in as usual.
+  const paste = (e: ClipboardEvent) => {
+    const { paths, files } = pastedFiles(e.clipboardData);
+    if (!paths.length && !files.length) return;
+    e.preventDefault();
+    void (paths.length ? add(paths) : take(() => onAttachPasted(files)));
+  };
 
   // Tauri's native drop event, not HTML5 drops: it gives real file paths, so Rust can read the bytes.
   useEffect(() => {
@@ -486,6 +537,7 @@ function Composer({
           placeholder="Message Hermes"
           value={text}
           onChange={(e) => setText(e.target.value)}
+          onPaste={paste}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
@@ -494,7 +546,7 @@ function Composer({
           }}
         />
         <div className="composer-bar">
-          <button className="icon-btn" title="Attach files" onClick={() => void pick()}>
+          <button className="icon-btn" title="Attach files (or paste or drop them)" onClick={() => void pick()}>
             <Paperclip size={16} />
           </button>
           <span className="composer-keys">Enter to send · Shift+Enter for a new line</span>

@@ -232,6 +232,7 @@ export class FakeHermes {
 
   private onEvent?: (e: PipeEvent) => void;
   private imagesStaged = 0;
+  private pasted = 0;
   private resumed = 0;
   private asked = 0;
   closed = false;
@@ -263,6 +264,12 @@ export class FakeHermes {
       send,
       // Mirrors the Rust side (src-tauri/src/transport.rs): sizes from the disk, and a size check before sending.
       statFiles: async (paths) => paths.map((path) => this.stat(path)),
+      // Mirrors src-tauri/src/pasted.rs: each paste in its own folder, under the last part of its name.
+      savePasted: async (name, bytes) => {
+        const path = `/home/liam/.cache/hermes-chat/pasted/${++this.pasted}/${name.split("/").pop() || "pasted"}`;
+        this.files[path] = String.fromCharCode(...bytes);
+        return path;
+      },
       sendFile: async (head, path, tail, maxBytes) => {
         const f = this.stat(path);
         if (f.error) throw new Error(f.error);

@@ -9,7 +9,7 @@
 // "Approvals on the legacy generation".
 // The list holds the past month's chats until the owner pulls older history for the profile; from then on it holds
 // them all.
-import { isWaiting, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ConnectionStatus, type Found, type Item, type Source } from "./model";
+import { isWaiting, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ConnectionStatus, type Found, type Item, type PastedFile, type Source } from "./model";
 import type { OpenPipe, Pipe, PipeEvent, Route } from "./pipe";
 import { isUnsecure } from "./unsecure";
 
@@ -37,6 +37,8 @@ const MiB = 1024 * 1024;
 const LIMITS = { image: { bytes: 25 * MiB, what: "images" }, file: { bytes: 256 * MiB, what: "files" } };
 /** The images Hermes looks at (`cli._IMAGE_EXTENSIONS`); anything else is staged as a file. */
 const IMAGE_EXTENSIONS = /\.(png|jpe?g|gif|webp|bmp)$/i;
+/** The extension a pasted image gets when the clipboard doesn't name it, by MIME type. */
+const IMAGE_TYPES: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp", "image/bmp": "bmp" };
 /** What the official desktop app asks when an image is sent with no text. */
 const IMAGE_ONLY_PROMPT = "What do you see in this image?";
 /** Stands in for a file's base64 in a frame; the pipe swaps the bytes in. JSON can't hold a raw NUL. */
@@ -439,13 +441,39 @@ export class Hermes {
         refused.push(`Couldn't attach ${f.name}: ${f.error}`);
         continue;
       }
-      const kind = IMAGE_EXTENSIONS.test(f.name) ? "image" : "file";
-      const limit = LIMITS[kind];
-      if (f.size > limit.bytes)
-        refused.push(`${f.name} is ${(f.size / MiB).toFixed(1)} MB. Hermes takes ${limit.what} up to ${limit.bytes / MiB} MB.`);
-      else attachments.push({ path: f.path, name: f.name, size: f.size, kind });
+      const tooBig = overLimit(f.name, f.size);
+      if (tooBig) refused.push(tooBig);
+      else attachments.push({ path: f.path, name: f.name, size: f.size, kind: kindOf(f.name) });
     }
     return { attachments, refused };
+  }
+
+  /**
+   * Attaches files pasted as bytes: each one Hermes takes is written to a local file, then checked like any other.
+   * An image the clipboard doesn't name (a screenshot, say) is named for the time it was pasted.
+   */
+  async attachPasted(files: PastedFile[]): Promise<AttachCheck> {
+    if (!this.pipe) throw new Error("Not connected to Hermes.");
+    const paths: string[] = [];
+    const refused: string[] = [];
+    const at = new Date().toTimeString().slice(0, 8).replaceAll(":", ".");
+    for (const [i, f] of files.entries()) {
+      const ext = IMAGE_TYPES[f.type] ?? /\.(\w+)$/.exec(f.name)?.[1];
+      const unnamed = /^(image\.\w+)?$/i.test(f.name);
+      const name = unnamed ? `Pasted image ${at}${files.length > 1 ? ` (${i + 1})` : ""}${ext ? `.${ext}` : ""}` : f.name;
+      const tooBig = overLimit(name, f.size);
+      if (tooBig) {
+        refused.push(tooBig);
+        continue;
+      }
+      try {
+        paths.push(await this.pipe.savePasted(name, await f.bytes()));
+      } catch (e) {
+        refused.push(`Couldn't attach ${name}: ${(e as Error).message}`);
+      }
+    }
+    const checked = await this.checkAttachments(paths);
+    return { attachments: checked.attachments, refused: [...refused, ...checked.refused] };
   }
 
   /**
@@ -1081,6 +1109,14 @@ function toSource(source = ""): Source {
     default:
       return "other";
   }
+}
+
+const kindOf = (name: string): Attachment["kind"] => (IMAGE_EXTENSIONS.test(name) ? "image" : "file");
+
+/** Why Hermes won't take a file this big, if it won't. */
+function overLimit(name: string, size: number): string | undefined {
+  const limit = LIMITS[kindOf(name)];
+  if (size > limit.bytes) return `${name} is ${(size / MiB).toFixed(1)} MB. Hermes takes ${limit.what} up to ${limit.bytes / MiB} MB.`;
 }
 
 const LOAD_ERROR_ID = "load-error";

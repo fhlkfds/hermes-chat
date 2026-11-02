@@ -14,6 +14,12 @@ export const SOURCE_LABEL: Record<Source, string> = {
 /** A local file the owner is sending with a message: an image Hermes looks at, or any other file. */
 export type Attachment = { path: string; name: string; size: number; kind: "image" | "file" };
 
+/**
+ * A file pasted from the clipboard as bytes, with no local path: a screenshot, say. `type`: its MIME type, if known.
+ * `bytes` is only read for a file Hermes takes.
+ */
+export type PastedFile = { name: string; type: string; size: number; bytes(): Promise<Uint8Array> };
+
 /** Local files checked for attaching: the ones Hermes takes, and why each of the others can't go. */
 export type AttachCheck = { attachments: Attachment[]; refused: string[] };
 

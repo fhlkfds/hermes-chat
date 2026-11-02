@@ -21,6 +21,9 @@ export function tauriPipe(d: SignInDetails): OpenPipe {
       send: (frame) => invoke("hermes_send", { frame }),
       request: (method, path, body) => invoke<string>("hermes_request", { method, path, body }).catch(asError),
       statFiles: (paths) => invoke<LocalFile[]>("hermes_stat_files", { paths }),
+      // The bytes go as the raw request body; header values must be ASCII.
+      savePasted: (name, bytes) =>
+        invoke<string>("hermes_save_pasted", bytes, { headers: { "x-name": encodeURIComponent(name) } }).catch(asError),
       sendFile: (head, path, tail, maxBytes) => invoke<void>("hermes_send_file", { head, path, tail, maxBytes }).catch(asError),
       close: () => invoke("hermes_disconnect"),
     };

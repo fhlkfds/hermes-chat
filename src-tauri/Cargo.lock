@@ -1605,6 +1605,7 @@ dependencies = [
  "base64 0.22.1",
  "futures-util",
  "keyring",
+ "percent-encoding",
  "reqwest",
  "serde",
  "serde_json",

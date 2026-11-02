@@ -35,7 +35,7 @@ A separate Hermes agent setup on the server, with its own chats. The app shows o
 _Avoid_: account, workspace, agent (as a name for a profile)
 
 **Attachment**:
-A local file the owner sends with a message: an image Hermes looks at, or any other file Hermes can read. Hermes takes images up to 25 MB and other files up to 256 MB.
+A local file the owner sends with a message: an image Hermes looks at, or any other file Hermes can read. The owner picks, drops or pastes it into the composer; a pasted screenshot counts too. Hermes takes images up to 25 MB and other files up to 256 MB.
 _Avoid_: upload, file (when the attachment is meant)
 
 **Approval**:

@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { PastedFile } from "./model";
 import { FakeHermes, row } from "./fakeHermes";
 import { connect } from "./transport";
 
@@ -52,6 +53,64 @@ describe("Choosing files to attach", () => {
       attachments: [],
       refused: ["Couldn't attach notes: it's a folder", "Couldn't attach gone.txt: No such file or directory (os error 2)"],
     });
+  });
+});
+
+describe("Pasting files", () => {
+  const pasted = (name: string, type: string, bytes: string): PastedFile => ({
+    name,
+    type,
+    size: bytes.length,
+    bytes: async () => Uint8Array.from(bytes, (c) => c.charCodeAt(0)),
+  });
+  const PASTED = "/home/liam/.cache/hermes-chat/pasted";
+
+  afterEach(() => vi.useRealTimers());
+
+  it("saves a pasted screenshot to disk, names it for when it was pasted, and sends it as an image", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 10, 1, 14, 3, 22));
+    const { server, hermes, id, runtime } = await signedIn();
+    const got = await hermes.attachPasted([pasted("image.png", "image/png", "\x89PNG shot")]);
+    expect(got).toEqual({
+      attachments: [{ path: `${PASTED}/1/Pasted image 14.03.22.png`, name: "Pasted image 14.03.22.png", size: 9, kind: "image" }],
+      refused: [],
+    });
+
+    await hermes.send(id, "What's this error?", got.attachments);
+    expect(server.last("image.attach_bytes")!.params).toEqual({
+      session_id: runtime,
+      filename: "Pasted image 14.03.22.png",
+      content_base64: b64("\x89PNG shot"),
+    });
+  });
+
+  it("keeps the name of a pasted file, and numbers unnamed images pasted together", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 10, 1, 9, 0, 5));
+    const { hermes } = await signedIn();
+    const got = await hermes.attachPasted([
+      pasted("image.png", "image/png", "a"),
+      pasted("", "image/jpeg", "b"),
+      pasted("disk report.txt", "text/plain", "sda 92%"),
+    ]);
+    expect(got.attachments.map((a) => [a.name, a.kind])).toEqual([
+      ["Pasted image 09.00.05 (1).png", "image"],
+      ["Pasted image 09.00.05 (2).jpg", "image"],
+      ["disk report.txt", "file"],
+    ]);
+  });
+
+  it("refuses a pasted file over the limit without reading it", async () => {
+    const { hermes } = await signedIn();
+    const huge: PastedFile = { name: "dump.png", type: "image/png", size: 26 * MiB, bytes: () => Promise.reject(new Error("read it")) };
+    expect(await hermes.attachPasted([huge])).toEqual({ attachments: [], refused: ["dump.png is 26.0 MB. Hermes takes images up to 25 MB."] });
+  });
+
+  it("says why a pasted file couldn't be saved", async () => {
+    const { hermes } = await signedIn();
+    const unreadable: PastedFile = { name: "notes.txt", type: "text/plain", size: 3, bytes: () => Promise.reject(new Error("NotReadableError")) };
+    expect(await hermes.attachPasted([unreadable])).toEqual({ attachments: [], refused: ["Couldn't attach notes.txt: NotReadableError"] });
   });
 });
 

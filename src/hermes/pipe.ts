@@ -22,6 +22,8 @@ export interface Pipe {
    */
   request(method: "GET" | "PATCH", pathAndQuery: string, body?: string): Promise<string>;
   statFiles(paths: string[]): Promise<LocalFile[]>;
+  /** Writes a pasted file's bytes to a new local file named `name`, so it can be attached; resolves to its path. */
+  savePasted(name: string, bytes: Uint8Array): Promise<string>;
   /**
    * Sends one frame: `head`, the file at `path` as base64, then `tail`. The bytes go from disk to Hermes
    * without passing through the webview. Rejects without sending if the file is now over `maxBytes`.

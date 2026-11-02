@@ -5,8 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import rehypeHighlight from "rehype-highlight";
-import { Check, Copy } from "lucide-react";
-import { escapeRe } from "./bits";
+import { CopyButton, escapeRe } from "./bits";
 
 type HastNode = { type: string; value?: string; tagName?: string; properties?: Record<string, unknown>; children?: HastNode[] };
 
@@ -38,23 +37,12 @@ function rehypeFind(query: string) {
 
 function CodeBlock({ children }: { children?: ReactNode }) {
   const ref = useRef<HTMLPreElement>(null);
-  const [copied, setCopied] = useState(false);
   const [lang, setLang] = useState("");
   return (
     <div className="code">
       <div className="code-head">
         <span>{lang}</span>
-        <button
-          className="code-copy"
-          onClick={() => {
-            void navigator.clipboard.writeText(ref.current?.innerText ?? "");
-            setCopied(true);
-            setTimeout(() => setCopied(false), 1200);
-          }}
-        >
-          {copied ? <Check size={13} /> : <Copy size={13} />}
-          {copied ? "Copied" : "Copy"}
-        </button>
+        <CopyButton className="code-copy" title="Copy code" label text={() => ref.current?.innerText ?? ""} />
       </div>
       <pre
         ref={(el) => {

@@ -1,3 +1,4 @@
+pub mod pasted;
 pub mod saved_password;
 pub mod transport;
 pub mod tunnel;
@@ -5,7 +6,7 @@ pub mod tunnel;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::ipc::Channel;
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 use tokio::sync::Mutex;
 use transport::{Dashboard, LocalFile, Pipe, PipeEvent, SignIn};
 use tunnel::Tunnel;
@@ -102,6 +103,23 @@ async fn hermes_stat_files(paths: Vec<String>) -> Vec<LocalFile> {
     transport::stat_files(&paths).await
 }
 
+/// Saves the bytes of a pasted file (the raw request body) to disk and returns its path, so it can be attached.
+/// The file's name comes URI-encoded in the `x-name` header.
+#[tauri::command]
+async fn hermes_save_pasted(app: AppHandle, request: tauri::ipc::Request<'_>) -> Result<String, String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("expected the pasted file's bytes".into());
+    };
+    let name = request.headers().get("x-name").and_then(|v| v.to_str().ok()).unwrap_or_default();
+    let name = percent_encoding::percent_decode_str(name).decode_utf8_lossy();
+    let path = pasted::save(&pasted_dir(&app)?, &name, bytes).await.map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+fn pasted_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(app.path().app_cache_dir().map_err(|e| e.to_string())?.join("pasted"))
+}
+
 #[tauri::command]
 async fn hermes_request(
     state: State<'_, AppState>,
@@ -142,11 +160,18 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
+        .setup(|app| {
+            if let Ok(dir) = pasted_dir(app.handle()) {
+                tauri::async_runtime::spawn(async move { pasted::clear_old(&dir).await });
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             hermes_connect,
             hermes_send,
             hermes_send_file,
             hermes_stat_files,
+            hermes_save_pasted,
             hermes_request,
             hermes_disconnect,
             password_load,

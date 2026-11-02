@@ -20,6 +20,7 @@ tokio-tungstenite = "0.30"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 thiserror = "2"
 url = "2"
+percent-encoding = "2"
 base64 = "0.22"
 tauri-plugin-dialog = "2"
 keyring = { version = "3.6", features = ["sync-secret-service", "crypto-rust"] }

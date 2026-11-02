@@ -291,6 +291,7 @@ function Main({ hermes, username, notSaved, onSignOut }: { hermes: Hermes; usern
             status={status}
             alsoPostsIn={hermes.alsoPostsIn(selected.id)}
             onAttach={(paths) => hermes.checkAttachments(paths)}
+            onAttachPasted={(files) => hermes.attachPasted(files)}
             onSend={send}
             onStop={() => void hermes.stop(selected.id)}
             onAnswer={(approvalId, choice) => void hermes.answerApproval(selected.id, approvalId, choice)}

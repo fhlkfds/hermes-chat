@@ -1,9 +1,10 @@
 // Small shared UI bits, ported from the prototype.
-import type { ReactNode } from "react";
-import { Archive, ArchiveRestore, Globe, Monitor, Send, Terminal } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import { Archive, ArchiveRestore, Check, Copy, Globe, Monitor, Send, Terminal } from "lucide-react";
 import type { ConnectionStatus, Source } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
 import { SOURCE_LABEL } from "../hermes/model";
+import { copyText } from "./clipboard";
 
 // Approximate brand marks; the real app should use proper icon assets.
 function DiscordGlyph({ size = 12 }: { size?: number }) {
@@ -57,6 +58,25 @@ export function SettleButton({
       }}
     >
       {settled ? <ArchiveRestore size={size} /> : <Archive size={size} />}
+    </button>
+  );
+}
+
+/** Copies `text()` to the clipboard and shows a tick for a moment. `label`: words to show next to the icon. */
+export function CopyButton({ text, className, title = "Copy", label }: { text: () => string; className: string; title?: string; label?: boolean }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      className={className}
+      title={title}
+      onClick={async () => {
+        if (!(await copyText(text()))) return;
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1200);
+      }}
+    >
+      {copied ? <Check size={13} /> : <Copy size={13} />}
+      {label && (copied ? "Copied" : "Copy")}
     </button>
   );
 }
