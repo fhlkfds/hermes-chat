@@ -25,6 +25,7 @@ export function memoryCache({
     save: (p, chats) => void (cache.saved[p] = chats),
     loadTranscript: (p, id) => cache.transcripts[`${p}/${id}`],
     saveTranscript: (p, id, items) => void (cache.transcripts[`${p}/${id}`] = { items, savedAt: Date.now() }),
+    deleteTranscript: (p, id) => void delete cache.transcripts[`${p}/${id}`],
     lastProfile: () => cache.profile,
     rememberProfile: (p) => void (cache.profile = p),
     bytes: () => [...Object.values(cache.saved), ...Object.values(cache.transcripts)].reduce((n, v) => n + JSON.stringify(v).length * 2, 0),

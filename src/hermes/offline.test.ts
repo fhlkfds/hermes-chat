@@ -5,6 +5,7 @@ import { FakeHermes, row, type TranscriptMessage } from "./fakeHermes";
 import { type MemoryCache, memoryCache } from "./memoryCache";
 import type { Item } from "./model";
 import type { SignInDetails } from "./tauriPipe";
+import type { SavedSignIn } from "./account";
 import { type ChatCache, type Hermes, connect, readSaved } from "./transport";
 
 const history: TranscriptMessage[] = [
@@ -33,6 +34,8 @@ function offlineLaunch(server: FakeHermes, cache: ChatCache) {
   server.refuse = "Can't reach the Hermes dashboard: network is unreachable";
   return readSaved(server.openPipe, server.refuse, cache);
 }
+
+const nas: SavedSignIn = { mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" };
 
 const chat = (hermes: Hermes, id: string) => hermes.getSnapshot().chats.find((c) => c.id === id)!;
 
@@ -197,48 +200,197 @@ describe("Saved copies in localStorage", () => {
     vi.useRealTimers();
   });
 
+  const cache = localChatCache(nas);
+
   /** A transcript whose copy takes about `bytes` of storage. */
   const sized = (bytes: number): Item[] => [{ kind: "assistant", id: "a-0", text: "x".repeat(bytes / 2 - 100) }];
 
   it("load back as saved, with when they were saved", () => {
     vi.setSystemTime(1_700_000_000_000);
-    localChatCache.saveTranscript("work", "a/b", historyItems);
-    expect(localChatCache.loadTranscript("work", "a/b")).toEqual({ items: historyItems, savedAt: 1_700_000_000_000 });
-    expect(localChatCache.loadTranscript("default", "a/b")).toBeUndefined();
+    cache.saveTranscript("work", "a/b", historyItems);
+    expect(cache.loadTranscript("work", "a/b")).toEqual({ items: historyItems, savedAt: 1_700_000_000_000 });
+    expect(cache.loadTranscript("default", "a/b")).toBeUndefined();
   });
 
   it("let go of the least recently saved copies past the storage limit", () => {
     const quarter = TRANSCRIPT_LIMIT_BYTES / 4;
     for (const [i, id] of ["a", "b", "c", "d"].entries()) {
       vi.setSystemTime(1_000 + i);
-      localChatCache.saveTranscript("default", id, sized(quarter - 200));
+      cache.saveTranscript("default", id, sized(quarter - 200));
     }
     // Saving `a` again makes it the newest; `b` is now the oldest and goes when `e` needs room.
     vi.setSystemTime(2_000);
-    localChatCache.saveTranscript("default", "a", sized(quarter - 200));
+    cache.saveTranscript("default", "a", sized(quarter - 200));
     vi.setSystemTime(2_001);
-    localChatCache.saveTranscript("default", "e", sized(quarter - 200));
+    cache.saveTranscript("default", "e", sized(quarter - 200));
 
-    const kept = ["a", "b", "c", "d", "e"].filter((id) => localChatCache.loadTranscript("default", id));
+    const kept = ["a", "b", "c", "d", "e"].filter((id) => cache.loadTranscript("default", id));
     expect(kept).toEqual(["a", "c", "d", "e"]);
-    expect(localChatCache.bytes()).toBeLessThanOrEqual(TRANSCRIPT_LIMIT_BYTES);
+    expect(cache.bytes()).toBeLessThanOrEqual(TRANSCRIPT_LIMIT_BYTES);
   });
 
   it("don't keep a copy bigger than the limit", () => {
-    localChatCache.saveTranscript("default", "small", sized(1_000));
-    localChatCache.saveTranscript("default", "huge", sized(TRANSCRIPT_LIMIT_BYTES * 2));
-    expect(localChatCache.loadTranscript("default", "huge")).toBeUndefined();
-    expect(localChatCache.loadTranscript("default", "small")).toBeDefined();
+    cache.saveTranscript("default", "small", sized(1_000));
+    cache.saveTranscript("default", "huge", sized(TRANSCRIPT_LIMIT_BYTES * 2));
+    expect(cache.loadTranscript("default", "huge")).toBeUndefined();
+    expect(cache.loadTranscript("default", "small")).toBeDefined();
   });
 
   it("are counted and cleared with the chat lists, leaving the sign-in", () => {
-    localChatCache.save("default", []);
-    localChatCache.saveTranscript("default", "nas", historyItems);
-    expect(localChatCache.bytes()).toBe(
+    cache.save("default", []);
+    cache.saveTranscript("default", "nas", historyItems);
+    expect(cache.bytes()).toBe(
       [...store].filter(([k]) => k !== "hermes-chat.sign-in").reduce((n, [k, v]) => n + 2 * (k.length + v.length), 0),
     );
-    localChatCache.clear();
-    expect(localChatCache.bytes()).toBe(0);
+    cache.clear();
+    expect(cache.bytes()).toBe(0);
     expect([...store.keys()]).toEqual(["hermes-chat.sign-in"]);
+  });
+});
+
+describe("Saved copies stay apart, private and inert", () => {
+  let store: Map<string, string>;
+  const fakeStorage = () => ({
+    get length() {
+      return store.size;
+    },
+    key: (i: number) => [...store.keys()][i] ?? null,
+    getItem: (k: string) => store.get(k) ?? null,
+    setItem: (k: string, v: string) => void store.set(k, v),
+    removeItem: (k: string) => void store.delete(k),
+  });
+  beforeEach(() => {
+    store = new Map();
+    vi.stubGlobal("localStorage", fakeStorage());
+  });
+  afterEach(() => void vi.unstubAllGlobals());
+
+  const others: SavedSignIn[] = [
+    { ...nas, sshTarget: "liam@backup" },
+    { ...nas, username: "admin" },
+    { mode: "url", sshTarget: "liam@hermes", url: "http://10.0.0.5:9119", username: "liam" },
+  ];
+
+  it("are kept apart per connection, profile and chat", async () => {
+    const mine = localChatCache(nas);
+    mine.save("default", [{ id: "nas", title: "NAS", source: "app", settled: false, updatedAt: 1, items: [] }]);
+    mine.rememberProfile("work");
+    mine.saveTranscript("default", "nas", historyItems);
+    for (const other of others.map(localChatCache)) {
+      expect(other.load("default")).toEqual([]);
+      expect(other.lastProfile()).toBeUndefined();
+      expect(other.loadTranscript("default", "nas")).toBeUndefined();
+      expect(readSaved(new FakeHermes().openPipe, "unreachable", other)).toBeUndefined();
+    }
+    expect(mine.loadTranscript("work", "nas")).toBeUndefined();
+    expect(mine.loadTranscript("default", "other")).toBeUndefined();
+    expect(mine.loadTranscript("default", "nas")?.items).toEqual(historyItems);
+  });
+
+  it("never hold the password", async () => {
+    const details: SignInDetails = { ...nas, password: "hunter2-secret" };
+    const cache = localChatCache(details);
+    const { server, hermes } = await firstLaunch(cache as MemoryCache);
+    await hermes.open("nas");
+    await hermes.send("nas", "Clean the logs");
+    server.event(server.runtimeIdOf("nas")!, "message.complete", { text: "Done.", status: "complete" });
+    expect(cache.loadTranscript("default", "nas")?.items.length).toBeGreaterThan(0);
+    for (const [k, v] of store) expect(k + v).not.toContain("hunter2-secret");
+    await hermes.close();
+  });
+
+  it("load nothing actionable: no Approval cards, errors or malformed items", async () => {
+    const mine = localChatCache(nas);
+    mine.saveTranscript("default", "nas", historyItems);
+    const [k] = [...store.keys()].filter((k) => k.includes("transcript"));
+    const saved = JSON.parse(store.get(k)!);
+    saved.items.push(
+      { kind: "approval", id: "srq-1", requestId: "apr-1", command: "rm -rf /", description: "recursive delete" },
+      { kind: "error", id: "e-9", text: "old error" },
+      { kind: "user", id: "u-9" },
+      { kind: "tool", id: "t-9", name: "terminal", status: "exploded" },
+      null,
+      "junk",
+    );
+    store.set(k, JSON.stringify(saved));
+    expect(mine.loadTranscript("default", "nas")?.items).toEqual(historyItems);
+
+    // Even a card that reached the screen offline can't be answered from a Saved copy.
+    const server = new FakeHermes();
+    server.sessions = [row("nas", 1, { pinned: true })];
+    mine.save("default", [{ id: "nas", title: "NAS", source: "app", settled: false, updatedAt: 1, items: [] }]);
+    const hermes = readSaved(server.openPipe, "unreachable", mine)!;
+    await hermes.open("nas");
+    expect(chat(hermes, "nas").items.some((i) => i.kind === "approval")).toBe(false);
+    await hermes.answerApproval("nas", "srq-1", "once");
+    expect(server.responses).toEqual([]);
+    await hermes.close();
+  });
+
+  it("survive corrupt entries without crashing", async () => {
+    const mine = localChatCache(nas);
+    mine.save("default", []);
+    mine.saveTranscript("default", "nas", historyItems);
+    for (const k of store.keys()) store.set(k, k.includes("transcript") ? '{"savedAt":"soon","items":{}}' : "[{\"id\":\"nas\",\"title\":\"NAS\"},{\"id\":3},null");
+    expect(mine.loadTranscript("default", "nas")).toBeUndefined();
+    expect(mine.load("default")).toEqual([]);
+
+    for (const k of store.keys()) store.set(k, k.includes("transcript") ? '{"savedAt":5,"items":[]}' : '[{"id":"nas","title":"NAS"},{"id":3},null]');
+    expect(mine.load("default")).toEqual([{ id: "nas", title: "NAS", source: "other", settled: true, updatedAt: 0, items: [] }]);
+    const hermes = readSaved(new FakeHermes().openPipe, "unreachable", mine)!;
+    await expect(hermes.open("nas")).resolves.toBeUndefined();
+    expect(chat(hermes, "nas").items).toEqual([]);
+    await hermes.close();
+  });
+
+  it("survive storage that can't be used at all", async () => {
+    const broken = () => {
+      throw new Error("SecurityError: localStorage is disabled");
+    };
+    vi.stubGlobal("localStorage", { get length() { return broken(); }, key: broken, getItem: broken, setItem: broken, removeItem: broken });
+    const mine = localChatCache(nas);
+    const { server, hermes } = await firstLaunch(mine as MemoryCache);
+    await hermes.open("nas");
+    server.event(server.runtimeIdOf("nas")!, "message.complete", { text: "Done.", status: "complete" });
+    expect(mine.bytes()).toBe(0);
+    expect(() => mine.clear()).not.toThrow();
+    expect(readSaved(server.openPipe, "unreachable", mine)).toBeUndefined();
+    await hermes.close();
+  });
+
+  it("clearing deletes every connection's lists and Saved copies, and nothing else", () => {
+    store.set("hermes-chat.sign-in", '{"username":"liam"}');
+    store.set("hermes-chat.draft.x", "half a thought");
+    store.set("other-app", "x");
+    for (const c of [nas, ...others].map(localChatCache)) {
+      c.save("default", []);
+      c.saveTranscript("default", "nas", historyItems);
+      c.rememberProfile("default");
+    }
+    localChatCache(nas).clear();
+    expect([...store.keys()].filter((k) => k.includes("chats") || k.includes("transcript"))).toEqual([]);
+    expect(store.get("hermes-chat.sign-in")).toBe('{"username":"liam"}');
+    expect(store.get("hermes-chat.draft.x")).toBe("half a thought");
+    expect(store.get("other-app")).toBe("x");
+  });
+});
+
+describe("Deleting a chat", () => {
+  it("deletes its Saved copy too", async () => {
+    const { hermes, cache } = await firstLaunch();
+    await hermes.open("nas");
+    expect(cache.loadTranscript("default", "nas")).toBeDefined();
+    hermes.leave("nas");
+    expect(await hermes.delete("nas")).toBe(true);
+    expect(cache.loadTranscript("default", "nas")).toBeUndefined();
+  });
+});
+
+describe("Saved copies keep the agent's thinking", () => {
+  it("as Hermes stores it", async () => {
+    const { server, hermes, cache } = await firstLaunch();
+    server.transcripts.nas[2] = { ...history[2], reasoning: "Check the mount first." };
+    await hermes.open("nas");
+    expect(cache.loadTranscript("default", "nas")?.items.map((i) => i.kind)).toEqual(["user", "tool", "thinking", "assistant"]);
   });
 });

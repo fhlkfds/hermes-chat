@@ -33,8 +33,8 @@ function loadSignIn(): SavedSignIn {
 const account: Account = {
   keyring: systemKeyring,
   store: { load: loadSignIn, save: (d) => localStorage.setItem(SAVED, JSON.stringify(d)) },
-  connect: (d) => connect(tauriPipe(d), undefined, localChatCache),
-  readSaved: (d, reason) => readSaved(tauriPipe(d), reason, localChatCache),
+  connect: (d) => connect(tauriPipe(d), undefined, localChatCache(d)),
+  readSaved: (d, reason) => readSaved(tauriPipe(d), reason, localChatCache(d)),
 };
 
 /** What launch ends in: signed in with the saved password, or the sign-in screen and why. */

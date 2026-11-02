@@ -153,9 +153,9 @@ describe("Clear local cache", () => {
       });
       // localStorage keeps text as UTF-16: two bytes a character, key and value.
       const listBytes = 2 * ("hermes-chat.chats.default[]".length + 'hermes-chat.chats.work[{"id":"w"}]'.length);
-      expect(localChatCache.bytes()).toBe(listBytes);
-      localChatCache.clear();
-      expect(localChatCache.bytes()).toBe(0);
+      expect(localChatCache({ mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" }).bytes()).toBe(listBytes);
+      localChatCache({ mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" }).clear();
+      expect(localChatCache({ mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" }).bytes()).toBe(0);
       expect([...store.keys()]).toEqual(["hermes-chat.sign-in", "hermes-chat.profile", "other-app"]);
     });
   });

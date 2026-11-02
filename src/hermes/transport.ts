@@ -58,6 +58,7 @@ export type ChatCache = {
   save(profile: string, chats: Chat[]): void;
   loadTranscript(profile: string, chatId: string): SavedTranscript | undefined;
   saveTranscript(profile: string, chatId: string, items: Item[]): void;
+  deleteTranscript(profile: string, chatId: string): void;
   lastProfile(): string | undefined;
   rememberProfile(profile: string): void;
   bytes(): number;
@@ -70,6 +71,7 @@ const noCache: ChatCache = {
   save: () => {},
   loadTranscript: () => undefined,
   saveTranscript: () => {},
+  deleteTranscript: () => {},
   lastProfile: () => undefined,
   rememberProfile: () => {},
   bytes: () => 0,
@@ -559,6 +561,8 @@ export class Hermes {
     if (this.viewing === chatId) this.viewing = undefined;
     this.update({ chats: this.snapshot.chats.filter((c) => c.id !== chatId) });
     this.saveList(profile, this.snapshot.chats);
+    // Deleted for good, so no copy of it stays on this computer either, even if Hermes refuses: it reloads when opened.
+    this.cache.deleteTranscript(profile, chatId);
     try {
       // A pin write still under way would otherwise land on a deleted session and report a failure.
       await this.pinWrites.get(chatId);
@@ -768,12 +772,12 @@ export class Hermes {
   }
 
   /**
-   * Saves the chat's transcript as its Saved copy. Only what Hermes stores goes in: messages and tool calls, not
-   * Approvals or errors, which belong to this connection.
+   * Saves the chat's transcript as its Saved copy. Only what Hermes stores goes in: messages, thinking and tool calls,
+   * not Approvals or errors, which belong to this connection.
    */
   private saveTranscript(chatId: string) {
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
-    const items = chat?.items.filter((i) => i.kind === "user" || i.kind === "assistant" || i.kind === "tool") ?? [];
+    const items = chat?.items.filter((i) => i.kind === "user" || i.kind === "assistant" || i.kind === "thinking" || i.kind === "tool") ?? [];
     if (items.length) this.cache.saveTranscript(this.profile, chatId, items);
   }
 
