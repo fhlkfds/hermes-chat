@@ -372,8 +372,8 @@ export class Hermes {
    * `unknown` when they can't be known, such as after reattaching mid-turn, so that reply shows no usage.
    */
   private usageFrom = new Map<string, UsageCounters | "unknown">();
-  /** How many items each chat had when its running turn started: its reply comes after them. */
-  private turnStart = new Map<string, number>();
+  /** Last item before a running turn, by stable id; null for an empty transcript. Older Failed messages can go away. */
+  private turnStart = new Map<string, string | null>();
   /** The newest stored row each chat is known to have, from its history and the turns sent from here. A message that
    * may have reached Hermes is looked for only past the row its chat had when it went out. */
   private knownRow = new Map<string, number>();
@@ -1211,7 +1211,7 @@ export class Hermes {
       if (counters && !chat.running) this.usageFrom.set(session_id!, counters);
       return;
     }
-    if (type === "message.start") this.turnStart.set(chat.id, chat.items.length);
+    if (type === "message.start") this.turnStart.set(chat.id, chat.items.at(-1)?.id ?? null);
     const usage = type === "message.complete" ? this.turnUsage(session_id!, payload.usage) : undefined;
     const from = this.turnStart.get(chat.id);
     if (type === "message.complete" || type === "error") this.turnStart.delete(chat.id);
@@ -2343,8 +2343,10 @@ function markInterrupted(items: Item[]): Item[] {
  * Gives a turn's usage to its reply: the last reply or error after the turn started (`from`, else the last message),
  * unless it has some already, which a repeated `message.complete` would find.
  */
-function withReplyUsage(items: Item[], usage: ReplyUsage, from?: number): Item[] {
-  const start = from ?? items.map((i) => i.kind).lastIndexOf("user") + 1;
+function withReplyUsage(items: Item[], usage: ReplyUsage, from?: string | null): Item[] {
+  const start = from === null ? 0 : from === undefined ? items.map((i) => i.kind).lastIndexOf("user") + 1 : items.findIndex((i) => i.id === from) + 1;
+  // If the boundary itself disappeared, there is no reliable turn to attach these counters to.
+  if (typeof from === "string" && start === 0) return items;
   for (let n = items.length - 1; n >= start; n--) {
     const i = items[n];
     if (i.kind !== "assistant" && i.kind !== "error") continue;

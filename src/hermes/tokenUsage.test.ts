@@ -79,6 +79,27 @@ describe("Usage per reply", () => {
     expect(hermes.getSnapshot().chats.find((c) => c.id === id)!.items.filter((i) => i.kind === "user" && i.text === "Try again")).toHaveLength(1);
   });
 
+  it("keeps the running reply's usage when an older failed message is dismissed", async () => {
+    const { server, hermes, id, rt } = await newChat();
+    await hermes.send(id, "First");
+    turn(server, rt, "First reply", counters(100, 400, 10, 1));
+    server.rejectPrompt = { code: 4009, message: "session busy" };
+    await hermes.send(id, "Rejected");
+    const failed = hermes.getSnapshot().chats.find((c) => c.id === id)!.items.at(-1)!;
+    server.rejectPrompt = undefined;
+    await hermes.send(id, "Next");
+    server.event(rt, "message.start");
+    server.event(rt, "message.delta", { text: "Next reply" });
+    // Edit uses the same dismissal before putting the failed text in the draft.
+    hermes.dismiss(id, failed.id);
+    server.event(rt, "message.complete", { text: "Next reply", status: "complete", usage: counters(150, 600, 30, 2) });
+    await hermes.idle();
+    expect(replies(hermes, id)).toEqual([
+      ["First reply", { prompt: 500, input: 100, cache: 400, output: 10, reasoning: 0, calls: 1, model: "z-ai/glm-5.3-flash" }],
+      ["Next reply", { prompt: 250, input: 50, cache: 200, output: 20, reasoning: 0, calls: 1, model: "z-ai/glm-5.3-flash" }],
+    ]);
+  });
+
   it("isn't counted again when Hermes repeats the end of a turn", async () => {
     const { server, hermes, id, rt } = await newChat();
     await hermes.send(id, "Hi");
