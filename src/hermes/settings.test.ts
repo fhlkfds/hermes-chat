@@ -4,7 +4,7 @@ import { localChatCache } from "./chatCache";
 import { FakeHermes, row } from "./fakeHermes";
 import { memoryCache } from "./memoryCache";
 import type { SignInDetails } from "./tauriPipe";
-import { connect } from "./transport";
+import { connect, readSaved } from "./transport";
 
 const details: SignInDetails = { mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam", password: "hunter2" };
 
@@ -29,6 +29,7 @@ function account(keyring = memoryKeyring()) {
       if (d.password !== "hunter2") throw new Error("Wrong username or password.");
       return connect(server.openPipe, "default");
     },
+    readSaved: (_d, reason) => readSaved(server.openPipe, reason, memoryCache()),
   };
   return { server, keyring, account: a, saved: () => saved };
 }
@@ -152,9 +153,9 @@ describe("Clear local cache", () => {
       });
       // localStorage keeps text as UTF-16: two bytes a character, key and value.
       const listBytes = 2 * ("hermes-chat.chats.default[]".length + 'hermes-chat.chats.work[{"id":"w"}]'.length);
-      expect(localChatCache.bytes()).toBe(listBytes);
-      localChatCache.clear();
-      expect(localChatCache.bytes()).toBe(0);
+      expect(localChatCache({ mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" }).bytes()).toBe(listBytes);
+      localChatCache({ mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" }).clear();
+      expect(localChatCache({ mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" }).bytes()).toBe(0);
       expect([...store.keys()]).toEqual(["hermes-chat.sign-in", "hermes-chat.profile", "other-app"]);
     });
   });

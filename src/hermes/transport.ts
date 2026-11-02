@@ -11,7 +11,11 @@
 // them all.
 // While the window is out of focus, a reply finishing or an Approval arriving shows a desktop notification, and the chat
 // on screen isn't marked read.
-import { isWaiting, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ConnectionStatus, type Found, type Item, type Source } from "./model";
+// Each chat opened lately keeps a Saved copy of its transcript on this computer, shown while Hermes can't be reached
+// or the history is on the way; when the first connection at launch fails, the saved list and copies still open.
+// Unread chats in the other profiles are polled over dashboard REST (otherProfiles.ts).
+import { isWaiting, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ConnectionStatus, type Found, type Item, type OtherProfiles, type Source } from "./model";
+import { noOthers, OtherProfilesCheck } from "./otherProfiles";
 import type { OpenPipe, Pipe, PipeEvent, Route } from "./pipe";
 import { isUnsecure } from "./unsecure";
 
@@ -30,6 +34,8 @@ const LIST_WINDOW_MS = 30 * 86_400_000;
 /** Dashboard REST caps `GET /api/sessions` pages at 100. */
 const PAGE_SIZE = 100;
 const MAX_PAGES = 20;
+/** Checking another profile for Unread chats reads one page of its most recent ones. */
+const OTHER_PAGE_SIZE = 50;
 /** The most chats one search lists; dashboard REST caps it at 100. */
 const SEARCH_LIMIT = 50;
 
@@ -44,13 +50,21 @@ const IMAGE_ONLY_PROMPT = "What do you see in this image?";
 /** Stands in for a file's base64 in a frame; the pipe swaps the bytes in. JSON can't hold a raw NUL. */
 const FILE_MARK = "\u0000file\u0000";
 
+/** A chat's Saved copy: its transcript when this computer last saved it, and when that was. */
+export type SavedTranscript = { items: Item[]; savedAt: number };
+
 /**
- * Where each profile's last synced chat list, the profile shown last, and the profiles whose older history was pulled
- * are kept between launches. `bytes`: the storage the chat lists take; `clear` deletes them, and only them.
+ * Where each profile's last synced chat list, the Saved copies of the chats opened lately, the profile shown last, and
+ * the profiles whose older history was pulled are kept between launches. `saveTranscript` lets go of the least
+ * recently saved copies past the cache's storage limit. `bytes`: the storage the chat lists and Saved copies take;
+ * `clear` deletes them, and only them.
  */
 export type ChatCache = {
   load(profile: string): Chat[];
   save(profile: string, chats: Chat[]): void;
+  loadTranscript(profile: string, chatId: string): SavedTranscript | undefined;
+  saveTranscript(profile: string, chatId: string, items: Item[]): void;
+  deleteTranscript(profile: string, chatId: string): void;
   lastProfile(): string | undefined;
   rememberProfile(profile: string): void;
   bytes(): number;
@@ -69,6 +83,9 @@ export const NOTICES = {
 const noCache: ChatCache = {
   load: () => [],
   save: () => {},
+  loadTranscript: () => undefined,
+  saveTranscript: () => {},
+  deleteTranscript: () => {},
   lastProfile: () => undefined,
   rememberProfile: () => {},
   bytes: () => 0,
@@ -148,6 +165,19 @@ export class ProtocolMismatchError extends Error {
   }
 }
 
+/**
+ * The connection dropped after a request went out and before Hermes answered it, so whether Hermes got it can't be
+ * known. A JSON-RPC id means nothing on the next connection, so asking again there isn't safe.
+ */
+export class ConnectionLostError extends Error {}
+
+/**
+ * What became of a message `send` sent. `accepted`: Hermes answered that it took it. `unsent`: it never went out, or
+ * Hermes answered that it didn't take it. `unknown`: it went out and the connection dropped before Hermes answered,
+ * so Hermes may be running it, tools and all.
+ */
+export type Delivery = { delivery: "accepted" } | { delivery: "unsent" | "unknown"; reason: string };
+
 export class RpcError extends Error {
   constructor(
     readonly code: number,
@@ -161,6 +191,7 @@ export class RpcError extends Error {
  * `profile`: the profile whose chats are shown. `route`: how the latest connection reached the dashboard. `unsecure`:
  * its traffic isn't encrypted (unsecure.ts). `closedReason`: why the connection dropped, or why the last try to
  * reconnect failed. `olderPulled`: the list holds the profile's chats older than a month too (`pullOlderHistory`).
+ * `others`: Unread chats in the profiles not shown, as last checked (`checkOtherProfiles`).
  */
 export type Snapshot = {
   profile: string;
@@ -171,6 +202,7 @@ export type Snapshot = {
   unsecure: boolean;
   closedReason?: string;
   syncError?: string;
+  others: OtherProfiles;
 };
 
 /**
@@ -181,6 +213,15 @@ export async function connect(openPipe: OpenPipe, profile?: string, cache: ChatC
   const hermes = new Hermes(openPipe, profile ?? cache.lastProfile() ?? "default", cache, notify);
   await hermes.dial();
   return hermes;
+}
+
+/**
+ * At launch, when the first connection has failed for `reason`: a Hermes showing what this computer saved for the
+ * profile shown last, its chat list and the Saved copies of the chats opened lately, which keeps trying to connect as
+ * after a drop. Undefined when no chat list is saved, so there is nothing to read.
+ */
+export function readSaved(openPipe: OpenPipe, reason: string, cache: ChatCache, notify?: Notify): Hermes | undefined {
+  return Hermes.readSaved(openPipe, reason, cache, notify);
 }
 
 export class Hermes {
@@ -249,6 +290,14 @@ export class Hermes {
   private syncing?: Promise<Error | undefined>;
   private syncAgain = false;
   private background = new Set<Promise<unknown>>();
+  /** When the shown profile's list last synced on this connection. */
+  private listedAt?: number;
+  private others = new OtherProfilesCheck({
+    scope: () => (this.pipe && this.snapshot.status === "connected" && !this.closing ? { connection: this.generation, profile: this.profile } : undefined),
+    profiles: () => this.profiles(),
+    unreadIn: (profile) => this.unreadIn(profile),
+    publish: (others) => this.update({ others }),
+  });
 
   constructor(
     private openPipe: OpenPipe,
@@ -256,7 +305,15 @@ export class Hermes {
     private cache: ChatCache = noCache,
     private notify: Notify = () => Promise.resolve(),
   ) {
-    this.snapshot = { profile, chats: cache.load(profile), olderPulled: cache.olderPulled(profile), status: "offline", unsecure: false };
+    this.snapshot = { profile, chats: cache.load(profile), olderPulled: cache.olderPulled(profile), status: "offline", unsecure: false, others: noOthers };
+  }
+
+  /** See `readSaved`. */
+  static readSaved(openPipe: OpenPipe, reason: string, cache: ChatCache, notify?: Notify): Hermes | undefined {
+    const hermes = new Hermes(openPipe, cache.lastProfile() ?? "default", cache, notify);
+    if (!hermes.snapshot.chats.length) return undefined;
+    hermes.dropped(reason);
+    return hermes;
   }
 
   /** The profile whose chats are shown. */
@@ -332,6 +389,9 @@ export class Hermes {
    */
   async switchProfile(name: string): Promise<void> {
     if (name === this.profile) return;
+    const unread = this.snapshot.chats.filter((c) => c.unread).length;
+    this.others.switched(this.profile, name, this.listedAt === undefined ? undefined : { unread, listedAt: this.listedAt });
+    this.listedAt = undefined;
     this.viewing = undefined;
     this.staleItems.clear();
     this.resumeOnReconnect.clear();
@@ -344,6 +404,15 @@ export class Hermes {
     if (this.pipe && this.pipeProfile === name) return void this.sync();
     if (this.pipe) this.detach(`Switching to the ${name} profile.`);
     await this.reconnect();
+  }
+
+  /**
+   * Checks the profiles not shown for Unread chats, over dashboard REST and without switching the socket. Only reads:
+   * nothing is marked read. Runs at most every 15 seconds; the app calls it every `CHECK_EVERY_MS`. Results land in
+   * the snapshot's `others`.
+   */
+  checkOtherProfiles(): Promise<void> {
+    return this.others.check();
   }
 
   /**
@@ -438,14 +507,17 @@ export class Hermes {
   }
 
   /**
-   * Opens a chat: one this connection hasn't resumed yet is resumed now and shows its stored history. If that
-   * fails the chat shows why, and the next open tries again. The chat is on screen until `leave`: it is marked read
-   * on the server, and stays read while the owner is in it. Hermes counts a chat no client has marked as read, and
-   * only marking it lets later activity show the dot. Out of focus, marking it waits until the window is back.
+   * Opens a chat: one this connection hasn't resumed yet is resumed now and shows its stored history, and its Saved
+   * copy meanwhile. If that fails the chat shows why, and the next open tries again. The chat is on screen until
+   * `leave`: it is marked read on the server, and stays read while the owner is in it. Hermes counts a chat no client
+   * has marked as read, and only marking it lets later activity show the dot. Out of focus, marking it waits until the
+   * window is back. While not connected, the chat shows its Saved copy only; the app opens it again once connected.
    */
   async open(chatId: string): Promise<void> {
     if (!this.snapshot.chats.some((c) => c.id === chatId)) return;
     this.viewing = chatId;
+    this.showSaved(chatId);
+    if (this.snapshot.status !== "connected") return;
     this.seen(chatId);
     try {
       await this.resume(chatId);
@@ -486,11 +558,12 @@ export class Hermes {
 
   /**
    * Sends a message and its attachments. A chat not yet open on this connection is resumed first; a Settled one
-   * becomes Active.
+   * becomes Active. Resolves to what became of the message (`Delivery`); if Hermes didn't take it, or may not have,
+   * the chat says why. Nothing here ever sends it again.
    */
-  async send(chatId: string, text: string, attachments: Attachment[] = []): Promise<void> {
+  async send(chatId: string, text: string, attachments: Attachment[] = []): Promise<Delivery> {
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
-    if (!chat) return;
+    if (!chat) return { delivery: "unsent", reason: "This chat isn't in the list." };
     const profile = this.profile;
     const activating = chat.settled;
     const wantedBefore = this.pinWanted.get(chatId);
@@ -517,7 +590,10 @@ export class Hermes {
       // Pin now if Hermes has stored the session; a new chat may not have its row yet, so the end of the turn
       // tries again.
       if (this.pinWanted.get(chatId)) this.track(this.writePin(chatId, profile));
+      return { delivery: "accepted" };
     } catch (e) {
+      const reason = (e as Error).message;
+      const unknown = e instanceof PromptUnconfirmedError;
       if (activating) {
         if (wantedBefore === undefined) this.pinWanted.delete(chatId);
         else this.pinWanted.set(chatId, wantedBefore);
@@ -526,8 +602,9 @@ export class Hermes {
         ...c,
         running: false,
         settled: activating || c.settled,
-        items: [...c.items, errorItem(c, (e as Error).message)],
+        items: [...c.items, errorItem(c, unknown ? `Hermes may already have it: the connection dropped before Hermes confirmed it (${reason}).` : reason)],
       }));
+      return { delivery: unknown ? "unknown" : "unsent", reason };
     }
   }
 
@@ -559,6 +636,8 @@ export class Hermes {
     if (this.viewing === chatId) this.viewing = undefined;
     this.update({ chats: this.snapshot.chats.filter((c) => c.id !== chatId) });
     this.saveList(profile, this.snapshot.chats);
+    // Deleted for good, so no copy of it stays on this computer either, even if Hermes refuses: it reloads when opened.
+    this.cache.deleteTranscript(profile, chatId);
     try {
       // A pin write still under way would otherwise land on a deleted session and report a failure.
       await this.pinWrites.get(chatId);
@@ -665,14 +744,14 @@ export class Hermes {
     return this.snapshot.chats.filter((c) => !before.has(c.id) && c.updatedAt < cutoff);
   }
 
-  /** The storage the chat lists saved on this computer take, in bytes. */
+  /** The storage the chat lists and Saved copies kept on this computer take, in bytes. */
   cacheBytes(): number {
     return this.cache.bytes();
   }
 
   /**
-   * Deletes the chat lists saved on this computer. Nothing is sent to Hermes. The list on screen stays, and the next
-   * refresh saves it again.
+   * Deletes the chat lists and Saved copies kept on this computer. Nothing is sent to Hermes. What is on screen
+   * stays; the next refresh saves the list again, and opening a chat saves its copy again.
    */
   clearCache() {
     this.cache.clear();
@@ -753,6 +832,30 @@ export class Hermes {
     if (type === "message.complete" && chat.id === this.viewing) this.seen(chat.id);
     // A turn ends once; a repeated end finds the chat no longer running.
     if ((type === "message.complete" || type === "error") && chat.running) this.alert(NOTICES.finished);
+    if (type === "message.complete") this.saveTranscript(chat.id);
+  }
+
+  /**
+   * Shows the chat's Saved copy, if it has one and nothing else is on screen for it: it stands in until the next
+   * resume replaces it with the stored history.
+   */
+  private showSaved(chatId: string) {
+    const chat = this.snapshot.chats.find((c) => c.id === chatId);
+    if (!chat || chat.runtimeId || chat.items.length) return;
+    const saved = this.cache.loadTranscript(this.profile, chatId);
+    if (!saved?.items.length) return;
+    this.staleItems.set(chatId, saved.items.length);
+    this.patchChat(chatId, (c) => ({ ...c, items: saved.items, savedAt: saved.savedAt }));
+  }
+
+  /**
+   * Saves the chat's transcript as its Saved copy. Only what Hermes stores goes in: messages, thinking and tool calls,
+   * not Approvals or errors, which belong to this connection.
+   */
+  private saveTranscript(chatId: string) {
+    const chat = this.snapshot.chats.find((c) => c.id === chatId);
+    const items = chat?.items.filter((i) => i.kind === "user" || i.kind === "assistant" || i.kind === "thinking" || i.kind === "tool") ?? [];
+    if (items.length) this.cache.saveTranscript(this.profile, chatId, items);
   }
 
   /**
@@ -831,7 +934,7 @@ export class Hermes {
     clearInterval(this.heartbeat);
     // Lets the Rust side end the tunnel.
     if (pipe) this.droppedClosing = pipe.close().catch(() => {}).finally(() => (this.droppedClosing = undefined));
-    for (const p of this.pending.values()) p.reject(new Error(`Connection closed: ${reason}`));
+    for (const p of this.pending.values()) p.reject(new ConnectionLostError(`Connection closed: ${reason}`));
     this.pending.clear();
     this.earlyRequests.clear();
     for (const c of this.snapshot.chats) {
@@ -906,7 +1009,9 @@ export class Hermes {
         }
       }
       const prompt = [refs.join("\n"), text].filter(Boolean).join("\n\n") || (queued.length ? IMAGE_ONLY_PROMPT : "");
-      return await this.request("prompt.submit", { session_id: runtimeId, profile: this.profile, text: prompt });
+      return await this.request("prompt.submit", { session_id: runtimeId, profile: this.profile, text: prompt }).catch((e) => {
+        throw e instanceof ConnectionLostError ? new PromptUnconfirmedError(e.message) : e;
+      });
     } catch (e) {
       for (const path of queued) this.track(this.request("image.detach", { session_id: runtimeId, path }));
       throw e;
@@ -940,12 +1045,15 @@ export class Hermes {
         // History has no cards. A card that was waiting when the connection dropped either comes back below, or
         // Hermes let go of the session meanwhile and the card stays, closed.
         const lost = (items: Item[]) => endWaitingApprovals(items.filter((i) => isWaiting(i) && !asking.some((r) => r.id === i.id)), "lost");
+        // The Saved copy, if shown, is among the stale items.
         this.patchChat(chatId, (c) => ({
           ...c,
           runtimeId: res.session_id,
           running: c.running || !!res.running,
+          savedAt: undefined,
           items: [...history, ...lost(c.items.slice(0, stale)), ...withoutLoadError(c.items.slice(stale))],
         }));
+        this.saveTranscript(chatId);
         this.showApprovals(chatId, asking);
         return res.session_id;
       } finally {
@@ -1078,10 +1186,25 @@ export class Hermes {
     const listedIds = new Set(listed.map((c) => c.id));
     const onThisConnection = this.snapshot.chats.filter((c) => (c.runtimeId || this.revealed.has(c.id)) && !listedIds.has(c.id));
     const chats = [...onThisConnection, ...listed];
+    this.listedAt = Date.now();
     this.update({ chats, syncError: undefined });
     if (readOnScreen) this.seen(this.viewing!);
     this.saveList(profile, chats);
     return undefined;
+  }
+
+  /**
+   * How many chats in another profile's list are Unread, counted as the list would show them, from one page of its
+   * most recent chats. `more`: the list reaches past that page, so there may be more.
+   */
+  private async unreadIn(profile: string): Promise<{ unread: number; more: boolean }> {
+    const cutoff = this.cache.olderPulled(profile) ? -Infinity : Date.now() - LIST_WINDOW_MS;
+    const query = new URLSearchParams({ profile, order: "recent", limit: String(OTHER_PAGE_SIZE), offset: "0", exclude_sources: "cron" });
+    const res = (await this.rest("GET", `api/sessions?${query}`)) as SessionPage;
+    const unread = res.sessions.filter((r) => r.unread && !r.archived && !this.deleted.has(r.id) && lastActive(r) >= cutoff).length;
+    // As in syncOnce: the page also carries every pinned row, and the unpinned ones follow recency.
+    const passedCutoff = res.sessions.some((r) => !r.pinned && lastActive(r) < cutoff);
+    return { unread, more: !passedCutoff && res.sessions.length > 0 && OTHER_PAGE_SIZE < res.total };
   }
 
   /** Keeps the profile's list for the next start, without the chats' transcripts. */
@@ -1153,6 +1276,9 @@ export class Hermes {
     for (const fn of this.listeners) fn();
   }
 }
+
+/** `prompt.submit` went out and the connection dropped before Hermes answered it. */
+class PromptUnconfirmedError extends Error {}
 
 function lastActive(r: Pick<SessionRow, "last_active" | "started_at">): number {
   return (r.last_active ?? r.started_at ?? 0) * 1000;
