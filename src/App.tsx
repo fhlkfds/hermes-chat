@@ -6,12 +6,14 @@ import { localChatCache } from "./hermes/chatCache";
 import { draftKey, drafts } from "./hermes/drafts";
 import { exportChat } from "./hermes/exportChat";
 import { systemKeyring } from "./hermes/tauriKeyring";
+import { desktopNotify } from "./hermes/tauriNotify";
 import { tauriPipe, type SignInDetails } from "./hermes/tauriPipe";
 import type { Attachment, Chat, Found } from "./hermes/model";
 import { ChatList, Rail } from "./ui/Sidebar";
 import { ChatPane } from "./ui/ChatPane";
 import { SearchPalette } from "./ui/Search";
 import { SettingsScreen } from "./ui/Settings";
+import { composing } from "./ui/bits";
 import { SignIn } from "./ui/SignIn";
 
 const SAVED = "hermes-chat.sign-in"; // Everything but the password, which is in the system keyring.
@@ -36,8 +38,8 @@ function loadSignIn(): SavedSignIn {
 const account: Account = {
   keyring: systemKeyring,
   store: { load: loadSignIn, save: (d) => localStorage.setItem(SAVED, JSON.stringify(d)) },
-  connect: (d) => connect(tauriPipe(d), undefined, localChatCache(d)),
-  readSaved: (d, reason) => readSaved(tauriPipe(d), reason, localChatCache(d)),
+  connect: (d) => connect(tauriPipe(d), undefined, localChatCache(d), desktopNotify),
+  readSaved: (d, reason) => readSaved(tauriPipe(d), reason, localChatCache(d), desktopNotify),
 };
 
 const savedDrafts = drafts(localStorage);
@@ -126,7 +128,7 @@ export default function App() {
   );
 }
 
-function Main({
+export function Main({
   hermes,
   connection,
   notSaved,
@@ -137,7 +139,7 @@ function Main({
   notSaved?: string;
   onSignOut: () => Promise<void>;
 }) {
-  const { profile, chats, olderPulled, status, route, unsecure, closedReason, syncError, others } = useSyncExternalStore(
+  const { profile, chats, olderPulled, archivedListed, status, route, unsecure, closedReason, syncError, others } = useSyncExternalStore(
     hermes.subscribe,
     hermes.getSnapshot,
   );
@@ -252,11 +254,34 @@ function Main({
       .finally(() => (exporting.current = false));
   };
 
+  // Archiving hides the chat in every Hermes client and keeps its history; the toast shows once Hermes confirms it. The
+  // chat on screen gives way to a fresh draft, as it leaves the list. A write that didn't go in says why in the list.
+  const setArchived = (id: string, archived: boolean) => {
+    const title = chats.find((c) => c.id === id)?.title ?? "";
+    if (archived && id === selectedId && !archivedListed) newChat();
+    const done = (ok: boolean) =>
+      ok && setToast({ text: `${archived ? "Archived" : "Restored"}: ${title}`, undo: archived ? () => setArchived(id, false) : undefined, at: Date.now() });
+    void (archived ? hermes.archive(id) : hermes.restore(id)).then(done);
+  };
+
   useEffect(() => {
     if (!toast) return;
     const timer = setTimeout(() => setToast(null), TOAST_MS);
     return () => clearTimeout(timer);
   }, [toast]);
+
+  // Out of focus, Hermes notifies instead of marking the chat on screen read (transport.ts `setFocused`).
+  useEffect(() => {
+    hermes.setFocused(document.hasFocus());
+    const onFocus = () => hermes.setFocused(true);
+    const onBlur = () => hermes.setFocused(false);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, [hermes]);
 
   // An opened chat shows its stored history and is marked read; a chat already open on this connection is left as it
   // is. Until connected it shows its Saved copy, and after a reconnect it loads again. Settings covers the chat, so it
@@ -288,8 +313,10 @@ function Main({
   }, [hermes]);
 
   useEffect(() => {
+    // Only Ctrl/Cmd chords, and never mid-composition. No bare key does anything app-wide, so nothing typed
+    // with focus outside an input can answer an Approval or stop a reply.
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey)) return;
+      if (!(e.ctrlKey || e.metaKey) || composing(e)) return;
       const k = e.key.toLowerCase();
       if (k === "k") {
         e.preventDefault();
@@ -324,11 +351,15 @@ function Main({
           profile={profile}
           others={others}
           chats={chats}
+          archivedListed={archivedListed}
           syncError={syncError}
           selectedId={settingsOpen ? null : selectedId}
           onOpen={openChat}
           onSettle={setSettled}
+          onArchive={setArchived}
+          onListArchived={(on) => void hermes.listArchived(on)}
           onDelete={deleteChat}
+          onRename={(id, title, from) => hermes.rename(id, title, from)}
           onListProfiles={() => hermes.profiles()}
           onCheckOthers={() => void hermes.checkOtherProfiles()}
           onSwitchProfile={switchProfile}
@@ -369,10 +400,11 @@ function Main({
             onAnswer={(approvalId, choice) => void hermes.answerApproval(selected.id, approvalId, choice)}
             onSettle={selected === draft ? undefined : (s) => setSettled(selected.id, s)}
             onExport={selected === draft ? undefined : () => exportSelected(selected)}
+            onArchive={selected === draft ? undefined : (a) => setArchived(selected.id, a)}
           />
         )}
       </main>
-      {searchOpen && <SearchPalette onSearch={(q) => hermes.search(q)} onPick={pick} onClose={() => setSearchOpen(false)} />}
+      {searchOpen && <SearchPalette onSearch={(q, archived) => hermes.search(q, { archived })} onPick={pick} onClose={() => setSearchOpen(false)} />}
       {toast && (
         <div className="toast" key={toast.at} role="status">
           <span>{toast.text}</span>
