@@ -74,6 +74,17 @@ export function relTime(ts: number) {
   return `${Math.floor(s / (86400 * 7))}w`;
 }
 
+/** A stored message time (Unix ms) as a date and time in the owner's time zone, the same way everywhere. */
+export const storedTime = (at: number) => new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+
+/** When Hermes stored a message; nothing when that isn't known. */
+export const StoredTime = ({ at }: { at?: number }) =>
+  at === undefined ? null : (
+    <time className="msg-time" dateTime={new Date(at).toISOString()}>
+      {storedTime(at)}
+    </time>
+  );
+
 export const STATUS_LABEL: Record<ConnectionStatus, string> = { connected: "Connected", reconnecting: "Reconnecting…", offline: "Offline" };
 
 /** Where the connection goes, as the owner typed it. */

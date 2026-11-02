@@ -6,7 +6,7 @@ import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import type { ApprovalChoice, ApprovalItem, AttachCheck, Attachment, Chat, ConnectionStatus, Item, Source } from "../hermes/model";
 import { SOURCE_LABEL, isWaiting } from "../hermes/model";
 import { Markdown } from "./Markdown";
-import { SettleButton, SourceIcon, Spinner, fmtSize, highlight } from "./bits";
+import { SettleButton, SourceIcon, Spinner, StoredTime, fmtSize, highlight } from "./bits";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type ThinkingItem = Extract<Item, { kind: "thinking" }>;
@@ -233,6 +233,7 @@ export function ChatPane({
                     </div>
                   )}
                   {b.text && <div className="bubble-text">{highlight(b.text, q)}</div>}
+                  <StoredTime at={b.at} />
                 </div>
               );
             if (b.kind === "assistant")
@@ -241,6 +242,7 @@ export function ChatPane({
                   <Markdown text={b.text} query={q} />
                   {chat.running && b === last && <span className="cursor" />}
                   {b.interrupted && <div className="stopped">Stopped</div>}
+                  <StoredTime at={b.at} />
                 </div>
               );
             if (b.kind === "error")
