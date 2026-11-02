@@ -56,7 +56,8 @@ A chat whose source is anything other than this app. Imported chats start Settle
 
 **Profile**:
 A separate Hermes agent setup on the server, with its own chats. The app shows one profile's chats at a time. The profile switcher shows which other profiles have Unread chats, checked every two minutes, so it can lag behind.
-_Avoid_: account, workspace, agent (as a name for a profile)
+Switching profile happens in place, with the same sign-in: the list shows what this computer saved for the profile, says it is connecting and loading, and is remembered for the next launch only once its chats load. If they can't, it says why and offers to try again or go back. Each profile keeps its own drafts, Saved copies and Model pick, and nothing that arrives for the profile left shows in the new one. If a reply is running or an Approval waiting, the switcher asks first. Hermes keeps the reply going, and the Approval waits until Hermes stops waiting; switching back brings both back.
+_Avoid_: account, workspace, agent (as a name for a profile), connection (the sign-in, which covers every profile)
 
 **Attachment**:
 A local file the owner sends with a message: an image Hermes looks at, or any other file Hermes can read. Hermes takes images up to 25 MB and other files up to 256 MB.
@@ -97,6 +98,10 @@ _Avoid_: thinking level
 **Favorite model**:
 A model the owner starred in the model picker. Favorites are listed first, and are kept on this computer even when Hermes no longer offers the model.
 _Avoid_: pinned model (pinning is how Hermes stores Active, ADR 0002)
+
+**Extra request header**:
+A header name and value the owner adds to a URL connection, for a gateway in front of the dashboard such as Cloudflare Access. Hermes Chat sends it with every request to that dashboard and never to another site. Its value is kept in the system keyring and never shown in Settings (ADR 0006).
+_Avoid_: custom header, gateway token
 
 **Unsecure**:
 The warning on a connection whose traffic between this app and the server isn't encrypted.

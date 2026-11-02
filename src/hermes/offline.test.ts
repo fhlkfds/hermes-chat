@@ -155,6 +155,7 @@ describe("Signing in at launch", () => {
   function account(server: FakeHermes, cache: ChatCache, refuse: string): Account {
     return {
       keyring: { load: async () => "hunter2", save: async () => {}, delete: async () => {} },
+      headerKeyring: { load: async () => undefined, save: async () => {}, delete: async () => {} },
       store: { load: () => details, save: () => {} },
       connect: () => Promise.reject(new Error(refuse)),
       readSaved: (_d, reason) => readSaved(server.openPipe, reason, cache),
