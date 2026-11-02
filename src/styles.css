@@ -271,6 +271,8 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .composer textarea {
   width: 100%; background: none; border: 0; outline: none; resize: none; font-size: 14.5px; line-height: 1.5;
   padding: 4px 0; max-height: 240px;
+  /* The text wraps, but zoomed to 150% WebKitGTK reports a wider scrollWidth and draws a scrollbar line under it. */
+  overflow-x: hidden;
 }
 .composer textarea::placeholder { color: var(--faint); }
 .composer-bar { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
