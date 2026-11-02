@@ -10,7 +10,7 @@ use tauri::ipc::Channel;
 use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Mutex;
-use transport::{Dashboard, LocalFile, Pipe, PipeEvent, SignIn};
+use transport::{Dashboard, ExtraHeader, LocalFile, Pipe, PipeEvent, SignIn};
 use tunnel::Tunnel;
 
 /// The owner's `hermes dashboard` port on the server's loopback (research doc, "SSH tunnel, Host header
@@ -28,7 +28,13 @@ struct Connection {
 #[serde(tag = "kind", rename_all = "camelCase")]
 enum Target {
     Ssh { target: String },
-    Url { url: String },
+    /// `headers`: extra request headers for a gateway in front of the dashboard, such as Cloudflare Access (ADR 0006).
+    /// Only a direct connection sends them; the SSH tunnel goes straight to the dashboard.
+    Url {
+        url: String,
+        #[serde(default)]
+        headers: Vec<ExtraHeader>,
+    },
 }
 
 /// How the connection reached the dashboard, for the webview to show and to decide whether it is Unsecure.
@@ -53,19 +59,20 @@ async fn hermes_connect(
 ) -> Result<Route, String> {
     let mut slot = state.0.lock().await;
     *slot = None;
-    let (base, tunnel, route) = match target {
+    let (base, tunnel, route, headers) = match target {
         Target::Ssh { target } => {
             let tunnel = tunnel::open(&target, DASHBOARD_PORT).await.map_err(|e| e.to_string())?;
             let base = url::Url::parse(&format!("http://127.0.0.1:{}/", tunnel.local_port)).expect("valid URL");
-            (base, Some(tunnel), Route::Ssh { target: target.trim().to_owned() })
+            (base, Some(tunnel), Route::Ssh { target: target.trim().to_owned() }, Default::default())
         }
-        Target::Url { url } => {
+        Target::Url { url, headers } => {
+            let headers = transport::extra_headers(&headers).map_err(|e| e.to_string())?;
             let direct = transport::resolve_direct(&url).await.map_err(|e| e.to_string())?;
             let addresses = direct.addresses.iter().map(ToString::to_string).collect();
-            (direct.base, None, Route::Url { url: url.trim().to_owned(), addresses })
+            (direct.base, None, Route::Url { url: url.trim().to_owned(), addresses }, headers)
         }
     };
-    let dashboard = Dashboard::sign_in(&base, &SignIn { username, password }).await.map_err(|e| e.to_string())?;
+    let dashboard = Dashboard::sign_in(&base, &SignIn { username, password, headers }).await.map_err(|e| e.to_string())?;
     let pipe = dashboard
         .open_pipe(&profile, move |e| {
             let _ = on_event.send(e);
@@ -148,17 +155,33 @@ async fn hermes_disconnect(state: State<'_, AppState>) -> Result<(), String> {
 
 #[tauri::command]
 async fn password_load() -> Result<Option<String>, String> {
-    saved_password::load().await
+    saved_password::load(saved_password::PASSWORD).await
 }
 
 #[tauri::command]
 async fn password_save(password: String) -> Result<(), String> {
-    saved_password::save(password).await
+    saved_password::save(saved_password::PASSWORD, password).await
 }
 
 #[tauri::command]
 async fn password_delete() -> Result<(), String> {
-    saved_password::delete().await
+    saved_password::delete(saved_password::PASSWORD).await
+}
+
+/// The extra request headers, names and values, as JSON the webview reads and writes.
+#[tauri::command]
+async fn headers_load() -> Result<Option<String>, String> {
+    saved_password::load(saved_password::HEADERS).await
+}
+
+#[tauri::command]
+async fn headers_save(headers: String) -> Result<(), String> {
+    saved_password::save(saved_password::HEADERS, headers).await
+}
+
+#[tauri::command]
+async fn headers_delete() -> Result<(), String> {
+    saved_password::delete(saved_password::HEADERS).await
 }
 
 /// Saves an exported chat (src/hermes/exportChat.ts) where the owner picks in the native Save dialog, which asks
@@ -211,6 +234,9 @@ pub fn run() {
             password_load,
             password_save,
             password_delete,
+            headers_load,
+            headers_save,
+            headers_delete,
             chat_export,
             notify_desktop,
             system_fonts
