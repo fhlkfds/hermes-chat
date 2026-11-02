@@ -26,6 +26,21 @@ export type SessionRow = {
   last_read_at: number | null;
   /** Bumped by every session edit; an edit must name the current one. Missing means 0. */
   runtime_revision?: number;
+  /**
+   * Hermes's stored usage for every model call in the session (`sessions` columns at the deployed `bf0203a`; both list
+   * and detail rows carry them). Hermes's helper tasks are kept apart and aren't counted here.
+   */
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
+  reasoning_tokens?: number;
+  api_call_count?: number;
+  estimated_cost_usd?: number | null;
+  actual_cost_usd?: number | null;
+  cost_status?: string | null;
+  cost_source?: string | null;
+  pricing_version?: string | null;
 };
 
 /**

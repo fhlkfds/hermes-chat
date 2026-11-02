@@ -770,6 +770,7 @@ export function Main({
                 onArchive={selected === draft ? undefined : (a) => setArchived(selected.id, a)}
                 screenshots={desk}
                 screenshotKeys={screenshotShortcut ? shortcutLabel(screenshotShortcut) : undefined}
+                onUsage={selected === draft ? undefined : () => void hermes.refreshUsage(selected.id)}
                 projects={selected === draft ? (shownProject ? [shownProject.name] : undefined) : projectNames(selected.id)}
                 headActions={
                   <button
