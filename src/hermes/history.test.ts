@@ -130,7 +130,7 @@ describe("Opening a listed chat", () => {
     expect(chat().items).toEqual([{ kind: "user", id: "h-0", text: "Hi" }]);
   });
 
-  it("shows one error when a reply is sent while the history fails to load", async () => {
+  it("shows the failure once, on the message, when it is sent while the history fails to load", async () => {
     const server = new FakeHermes();
     const answer = holdResume(server);
     const { hermes, chat } = await listed([], server);
@@ -140,6 +140,6 @@ describe("Opening a listed chat", () => {
     const sending = hermes.send("tg", "Hi");
     answer();
     await Promise.all([opening, sending]);
-    expect(chat().items.filter((i) => i.kind === "error")).toEqual([{ kind: "error", id: "e-1", text: "session not found: tg" }]);
+    expect(chat().items).toEqual([{ kind: "user", id: "u-0", text: "Hi", outgoing: { state: "failed", reason: "session not found: tg" } }]);
   });
 });

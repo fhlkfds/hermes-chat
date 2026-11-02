@@ -118,6 +118,20 @@ async fn hermes_read_preview(path: String) -> Result<tauri::ipc::Response, Strin
     transport::read_preview(&path).await.map(tauri::ipc::Response::new).map_err(|e| e.to_string())
 }
 
+/// Saves a file pasted into the composer to a temp file and returns its path. Its bytes come as the raw body, not
+/// JSON, so a big screenshot isn't sent as a list of numbers; its name comes URI-encoded in the `x-name` header.
+#[tauri::command]
+async fn stage_clipboard_file(request: tauri::ipc::Request<'_>) -> Result<String, String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("The pasted file didn't arrive as bytes.".into());
+    };
+    let header = request.headers().get("x-name").and_then(|v| v.to_str().ok()).unwrap_or_default();
+    // encodeURIComponent never writes `+`, `&` or `=` bare, so one form-decoded key is exactly the name.
+    let name = url::form_urlencoded::parse(header.as_bytes()).next().map(|(k, _)| k.into_owned()).unwrap_or_default();
+    let path = transport::stage_clipboard_file(&name, bytes).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
 #[tauri::command]
 async fn hermes_request(
     state: State<'_, AppState>,
@@ -214,6 +228,7 @@ pub fn run() {
             hermes_send_file,
             hermes_stat_files,
             hermes_read_preview,
+            stage_clipboard_file,
             hermes_request,
             hermes_disconnect,
             password_load,

@@ -9,7 +9,7 @@ import { exportChat } from "./hermes/exportChat";
 import { systemHeaderKeyring, systemKeyring } from "./hermes/tauriKeyring";
 import { desktopNotify } from "./hermes/tauriNotify";
 import { tauriPipe, type SignInDetails } from "./hermes/tauriPipe";
-import type { Attachment, Chat, Found } from "./hermes/model";
+import { type Attachment, type Chat, type Found, isOutgoing } from "./hermes/model";
 import type { ModelPick } from "./hermes/models";
 import { ChatList, Rail } from "./ui/Sidebar";
 import { ChatPane } from "./ui/ChatPane";
@@ -17,6 +17,7 @@ import { SearchPalette } from "./ui/Search";
 import { SettingsScreen } from "./ui/Settings";
 import { composing } from "./ui/bits";
 import { appearanceStore } from "./ui/appearance";
+import { StatusBar } from "./ui/StatusBar";
 import { systemFonts } from "./ui/tauriFonts";
 import { SignIn } from "./ui/SignIn";
 import { ModelControls } from "./ui/ModelPicker";
@@ -203,7 +204,6 @@ export function Main({
   const draftOf = (chatId: string | null) => draftKey(connection, profile, chatId);
   const shownDraft = draftOf(selectedId);
   const composerText = useSyncExternalStore(savedDrafts.subscribe, () => savedDrafts.get(shownDraft));
-  const undelivered = useSyncExternalStore(savedDrafts.subscribe, () => savedDrafts.undelivered(shownDraft));
 
   // The model pick is sticky: new chats start on it, in this profile, until the owner picks another. It is kept on this
   // computer only and never becomes the profile's default. Picked in another profile, it gives way to this profile's
@@ -262,21 +262,26 @@ export function Main({
     }
   };
 
-  // The composer empties as the message goes. If Hermes doesn't take it, the text comes back, in the new chat if one
-  // was started; if Hermes may have it, it is held beside the composer until the owner sends it again or dismisses it.
+  // The composer empties as the message goes. In a chat, the message shows there from the start, and if Hermes doesn't
+  // take it, or may not have, it stays there marked so, with Retry. If a new chat can't be started, there is no chat to
+  // show it in, so its text comes back into the composer.
   const send = async (text: string, attachments: Attachment[]) => {
     const typed = savedDrafts.take(shownDraft);
     const to = await chatToSendIn();
-    if ("delivery" in to) return savedDrafts.afterSend(draftOf(null), typed, to.delivery);
-    savedDrafts.afterSend(draftOf(to.id), typed, await hermes.send(to.id, text, attachments));
+    if ("delivery" in to) return savedDrafts.putBack(draftOf(null), typed);
+    await hermes.send(to.id, text, attachments);
   };
 
-  // Only the owner sends a held message again; reconnecting never does.
-  const retry = (heldId: string) =>
-    void savedDrafts.retry(shownDraft, heldId, async (text) => {
-      const to = await chatToSendIn();
-      return "delivery" in to ? to.delivery : hermes.send(to.id, text.trim());
-    });
+  // Only the owner sends a failed message again; reconnecting never does. Editing one takes its words back into the
+  // composer, to go as a new message.
+  const retry = (itemId: string) => void hermes.retry(selected.id, itemId);
+  const edit = (itemId: string) => {
+    const row = selected.items.find((i) => i.id === itemId);
+    if (row?.kind !== "user") return;
+    const typed = savedDrafts.get(shownDraft);
+    savedDrafts.set(shownDraft, typed ? `${typed}\n\n${row.text}` : row.text);
+    hermes.dismiss(selected.id, itemId);
+  };
 
   // The other profile's chats replace the list, so the pane starts a fresh draft. The profile left keeps its last open
   // chat for the next launch.
@@ -466,6 +471,7 @@ export function Main({
             cacheBytes={() => hermes.cacheBytes()}
             appearance={appearance}
             listFonts={systemFonts}
+            modelSettings={hermes.modelSettings}
             onClearCache={() => hermes.clearCache()}
             onPullOlder={() => hermes.pullOlderHistory()}
             onSignOut={onSignOut}
@@ -475,15 +481,15 @@ export function Main({
           <ChatPane
             key={selected.id}
             chat={selected}
-            notLoaded={selected !== draft && status !== "connected" && !selected.runtimeId && !selected.items.length}
+            notLoaded={selected !== draft && status !== "connected" && !selected.runtimeId && selected.items.every(isOutgoing)}
             findTarget={findTarget}
             status={status}
             alsoPostsIn={hermes.alsoPostsIn(selected.id)}
             draft={composerText}
             onDraft={(text) => savedDrafts.set(shownDraft, text)}
-            undelivered={undelivered}
             onRetry={retry}
-            onDismiss={(heldId) => savedDrafts.dismiss(shownDraft, heldId)}
+            onEdit={edit}
+            onDismiss={(itemId) => hermes.dismiss(selected.id, itemId)}
             onAttach={(paths) => hermes.checkAttachments(paths)}
             onSend={send}
             onStop={() => void hermes.stop(selected.id)}
@@ -499,6 +505,14 @@ export function Main({
                 favorites={modelFavorites}
                 onPick={pickModel}
                 onToggleFavorite={toggleModelFavorite}
+              />
+            }
+            footer={
+              <StatusBar
+                chat={selected}
+                status={status}
+                onYolo={(on) => hermes.setYolo(selected.id, on)}
+                onBreakdown={() => hermes.contextBreakdown(selected.id)}
               />
             }
           />
