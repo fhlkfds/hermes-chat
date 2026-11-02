@@ -25,6 +25,10 @@ npm run app
 
 To sign in, enter an SSH target whose key works without a prompt (for example `liam@hermes`, or an alias from `~/.ssh/config`), plus the Hermes dashboard username and password. Or switch to URL and enter the dashboard's address, for example `http://hermes:9119`. If a gateway such as Cloudflare Access sits in front of it, add the headers it needs under **Extra request headers**, for example `CF-Access-Client-Id` and `CF-Access-Client-Secret` (ADR 0006).
 
+## Voice
+
+The composer's microphone button starts Dictation: speak, press Done, and the text appears in the composer to edit before sending. Read aloud, under each reply, has Hermes speak it. Hermes does the transcribing and the speaking on the server, with the profile's speech-to-text and text-to-speech providers (set them with `hermes tools` on the server). Settings → General → Voice shows which providers the profile uses and what each one needs. The app needs a working microphone and a PipeWire or PulseAudio sound server.
+
 ## Install
 
 `packaging/aur/PKGBUILD` builds `hermes-chat-git` from `main` on GitHub. It installs the `hermes-chat` binary, its icons, and a launcher that sets `WEBKIT_DISABLE_DMABUF_RENDERER=1`. To build and install it:
@@ -53,6 +57,8 @@ pending attachments belong to each view. Closing a pane keeps the draft and any 
 in that view are discarded. Settings preserves the views. Switching profile returns to one New chat pane; drafts
 remain scoped to their connection and profile. Split layout and scroll positions last for the current app run.
 The existing Preview Pane is available from either header and uses the same connection/profile as the chats.
+Leaving a pane cancels its Dictation and stops its Read aloud audio, so a hidden or unfocused pane cannot keep the
+microphone or audio running or take composer focus when a late transcript arrives.
 ## Screenshots
 
 Ctrl+Shift+S (or the camera button in the composer) takes a screenshot of a region or window and attaches it to the message you're writing, for you to review before sending. Change or turn off the shortcut in Settings → General → Screenshots.
@@ -68,8 +74,7 @@ Captures wait in `$XDG_CACHE_HOME/hermes-chat/captures/` (usually `~/.cache/herm
 
 ```sh
 npm test                                  # frontend transport against a fake Hermes
-cd src-tauri && cargo test --test transport   # Rust transport against a stub server
-cd src-tauri && cargo test --test screenshot  # screenshot capture planning and the private captures folder
+cd src-tauri && cargo test --lib --test transport --test media --test screenshot  # Rust transport, microphone origins, screenshot storage and requests
 ```
 
 `node bench/run.mjs` renders the chat pane with synthetic long chats (50, 200 and 800 turns) in headless Chromium and

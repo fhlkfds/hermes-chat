@@ -1,4 +1,5 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
+// Dictation and Read aloud come from Voice.tsx.
 import { memo, type ReactNode, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import { ArrowUp, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, FileDown, Globe, HardDrive, Paperclip, RotateCcw, Search, Server, Square, Wrench, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
@@ -11,6 +12,10 @@ import { ApprovalCard } from "./ApprovalCard";
 import { Markdown } from "./Markdown";
 import { ArchiveButton, SettleButton, SourceIcon, Spinner, StoredTime, composing, highlight } from "./bits";
 import { AttachmentChip, Previews, readPreview } from "./previews";
+import { Speaker } from "./speaker";
+import { DictationNoteView, DictationStrip, ListenButton, MicButton, type VoiceApi, listenBlocked, micBlocked, useDictation, useVoiceSetup } from "./Voice";
+import { withTranscript } from "../hermes/voice";
+import type { VoiceSetup } from "../hermes/pipe";
 import { ChatUsageButton, ReplyUsageLine } from "./Usage";
 import { useOpenPreview } from "./previewContext";
 import { previewName, toolTargets } from "../hermes/preview";
@@ -89,6 +94,7 @@ const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateS
  * contains the model picker; `footer` contains the status bar. Only the active pane answers Ctrl+F and takes focus as
  * it opens. Native drops attach to the pane under the pointer. `paneControls` follows the chat's own buttons.
  * `screenshots` attaches captures; `screenshotKeys` names the shortcut.
+ * `voice` supplies Dictation and Read aloud.
  */
 export function ChatPane({
   chat,
@@ -113,6 +119,7 @@ export function ChatPane({
   visible = true,
   split = false,
   paneControls,
+  voice,
   screenshots,
   screenshotKeys,
   projects,
@@ -142,6 +149,7 @@ export function ChatPane({
   visible?: boolean;
   split?: boolean;
   paneControls?: ReactNode;
+  voice?: VoiceApi;
   screenshots?: ScreenshotDesk;
   screenshotKeys?: string;
   /** The names of the projects the chat is in, or a new chat will be put in. */
@@ -154,6 +162,19 @@ export function ChatPane({
   const scrollRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef(active);
   activeRef.current = active;
+  const voiceSetup = useVoiceSetup(voice, status === "connected");
+  // One reply reads aloud at a time; closing the chat stops it and lets go of its audio.
+  const voiceRef = useRef(voice);
+  voiceRef.current = voice;
+  const [speaker, setSpeaker] = useState<Speaker>();
+  useEffect(() => {
+    if (!voice) return;
+    const s = new Speaker((text) => voiceRef.current!.speak(text));
+    setSpeaker(s);
+    return () => s.dispose();
+  }, [!voice]);
+  const listen = speaker && { speaker, blocked: listenBlocked(status, voiceSetup) };
+  useEffect(() => { if (!active) speaker?.stop(); }, [active, speaker]);
   // The blocks are memoized, so they get one answer handler for the life of the pane.
   const onAnswerRef = useRef(onAnswer);
   onAnswerRef.current = onAnswer;
@@ -389,6 +410,7 @@ export function ChatPane({
               offline={status !== "connected" || !!chat.loading}
               movedAt={b.kind === "approval" ? movedAt : 0}
               onAnswer={answer}
+              listen={b.kind === "assistant" ? listen : undefined}
               canRetry={b.kind === "user" && !!b.outgoing && canRetry}
               onOutgoing={onOutgoing}
             />
@@ -427,6 +449,9 @@ export function ChatPane({
           const r = rootRef.current?.getBoundingClientRect();
           return !!r && x >= r.left && x < r.right && y >= r.top && y < r.bottom;
         }}
+        voice={voice}
+        voiceSetup={voiceSetup}
+        status={status}
         screenshots={screenshots}
         screenshotKeys={screenshotKeys}
       />
@@ -435,6 +460,8 @@ export function ChatPane({
   );
 }
 
+/** Read aloud for a reply: the chat's speaker, and why it can't be used now. */
+type Listen = { speaker: Speaker; blocked?: string };
 type OutgoingAction = "retry" | "edit" | "dismiss";
 
 /**
@@ -451,6 +478,7 @@ const BlockView = memo(
     offline,
     movedAt,
     onAnswer,
+    listen,
     canRetry,
     onOutgoing,
   }: {
@@ -460,6 +488,7 @@ const BlockView = memo(
     offline: boolean;
     movedAt: number;
     onAnswer: (approvalId: string, choice: ApprovalChoice, confirmed?: boolean) => void;
+    listen?: Listen;
     canRetry: boolean;
     onOutgoing: (itemId: string, action: OutgoingAction) => void;
   }) {
@@ -489,6 +518,7 @@ const BlockView = memo(
           <Markdown text={block.text} query={query} />
           {live && <span className="cursor" />}
           {block.interrupted && <div className="stopped">Stopped</div>}
+          {listen && !live && block.text.trim() && <ListenButton speaker={listen.speaker} itemId={block.id} text={block.text} blocked={listen.blocked} />}
           <StoredTime at={block.at} />
           {block.usage && !live && <ReplyUsageLine usage={block.usage} />}
         </div>
@@ -512,6 +542,8 @@ const BlockView = memo(
     a.offline === b.offline &&
     a.movedAt === b.movedAt &&
     a.onAnswer === b.onAnswer &&
+    a.listen?.speaker === b.listen?.speaker &&
+    a.listen?.blocked === b.listen?.blocked &&
     a.canRetry === b.canRetry &&
     a.onOutgoing === b.onOutgoing,
 );
@@ -681,6 +713,9 @@ function Composer({
   modelControls,
   autoFocus = true,
   dropHere,
+  voice,
+  voiceSetup,
+  status,
   screenshots,
   screenshotKeys,
 }: {
@@ -700,11 +735,32 @@ function Composer({
   autoFocus?: boolean;
   /** Whether a drop at this point of the window, in CSS pixels, is for this composer. Left out, every drop is. */
   dropHere?: (x: number, y: number) => boolean;
+  voice?: VoiceApi;
+  voiceSetup?: VoiceSetup;
+  status: ConnectionStatus;
   /** Screenshots come from here, and staged ones go back to it to be deleted once sent, removed or left behind. */
   screenshots?: ScreenshotDesk;
   screenshotKeys?: string;
 }) {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const focused = useRef(autoFocus);
+  focused.current = autoFocus;
+  // The transcript joins the text as it is when it arrives, typed meanwhile included.
+  const textRef = useRef(text);
+  textRef.current = text;
+  // Focus goes back to the text once a recording is done with, whichever way, since the controls it was on are gone.
+  const wasDictating = useRef(false);
+  const dictation = useDictation(voice?.transcribe, (heard) => {
+    if (!focused.current) return;
+    const next = withTranscript(textRef.current, heard);
+    onText(next);
+    const ta = taRef.current;
+    if (ta) {
+      ta.focus();
+      // After React has put the new text in.
+      requestAnimationFrame(() => ta.setSelectionRange(next.length, next.length));
+    }
+  });
   const [refused, setRefused] = useState<string[]>([]);
   const [dragging, setDragging] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -718,6 +774,12 @@ function Composer({
     return () => p.dispose();
   }, []);
   useEffect(() => previews.current?.sync(attachments), [attachments]);
+  useEffect(() => {
+    if (wasDictating.current && !dictation.active && autoFocus) taRef.current?.focus();
+    wasDictating.current = dictation.active;
+  }, [dictation.active]);
+  // Leaving a pane (including Settings or the narrow switcher) releases its microphone and drops late transcripts.
+  useEffect(() => { if (!autoFocus) dictation.cancel(); }, [autoFocus]);
 
   // Files still being read, saved or checked: sending waits for them, so none misses the message it was added for.
   const [attaching, setAttaching] = useState(0);
@@ -832,7 +894,15 @@ function Composer({
   };
 
   return (
-    <div className="composer-wrap">
+    <div
+      className="composer-wrap"
+      onKeyDown={(e) => {
+        if (e.key === "Escape" && dictation.active && !composing(e)) {
+          e.preventDefault();
+          dictation.cancel();
+        }
+      }}
+    >
       {note && <div className="offline-note">{note}</div>}
       {!note && hint && <div className="composer-hint">{hint}</div>}
       {alsoPostsIn && (
@@ -840,6 +910,7 @@ function Composer({
           <SourceIcon source={alsoPostsIn} /> Hermes also posts its replies in this {SOURCE_LABEL[alsoPostsIn]} chat.
         </div>
       )}
+      <DictationNoteView dictation={dictation} />
       {shot.capturing && (
         <div className="capture-note" role="status">
           Taking a screenshot: select a region or window, or press Esc to cancel.
@@ -894,6 +965,7 @@ function Composer({
           <button className="icon-btn" title="Attach files" onClick={() => void pick()}>
             <Paperclip size={16} />
           </button>
+          {voice && !dictation.active && <MicButton dictation={dictation} blocked={micBlocked(status, voiceSetup)} />}
           {screenshots && (
             <button
               className="icon-btn"
@@ -906,7 +978,7 @@ function Composer({
             </button>
           )}
           {modelControls}
-          <span className="composer-keys">Enter to send · Shift+Enter for a new line</span>
+          {!dictation.active && <span className="composer-keys">Enter to send · Shift+Enter for a new line</span>}
           {running ? (
             <button className="send stop" title={stopping ? "Stopping" : "Stop"} disabled={offline || stopping} onClick={onStop}>
               <Square size={12} fill="currentColor" />
@@ -917,6 +989,7 @@ function Composer({
             </button>
           )}
         </div>
+        {dictation.active && <DictationStrip dictation={dictation} />}
       </div>
     </div>
   );

@@ -283,6 +283,15 @@ describe("the project screen", () => {
     expect(within(folder).getByText("Main folder")).toBeTruthy();
   });
 
+  it("returns to the focused composer after opening Settings from Project settings", async () => {
+    const { user } = await openScreen();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: "Back to chat" }));
+    expect(document.querySelector(".panes.covered")).toBeNull();
+    expect(document.activeElement).toBe(screen.getByPlaceholderText("Message Hermes"));
+    expect(screen.queryByRole("heading", { name: /Budget Tracker/ })).toBeNull();
+  });
+
   it("adds a folder only once the server has it, and says why it refused one", async () => {
     const { s, user } = await openScreen();
     const input = screen.getByRole("textbox", { name: "Add a folder on the server" });

@@ -89,6 +89,76 @@ async fn busy() -> Response {
     (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"detail": "Session store is busy"}))).into_response()
 }
 
+/// The audio routes and config as `hermes_cli/web_routers/audio.py` and `config_env.py` answer them at the deployed
+/// `bf0203a`. Profile `old` stands for a server without them (FastAPI's own 404); profile `nobody` doesn't exist.
+fn audio_gate(headers: &HeaderMap, q: &HashMap<String, String>) -> Option<Response> {
+    if !cookie(headers).split("; ").any(|c| c == "hermes_session_at=AT") {
+        return Some((StatusCode::UNAUTHORIZED, Json(json!({"error": "session_expired"}))).into_response());
+    }
+    match q.get("profile").map(String::as_str) {
+        Some("old") => Some((StatusCode::NOT_FOUND, Json(json!({"detail": "Not Found"}))).into_response()),
+        // The deployed dashboard's catch-all GET route makes a POST to a path it lacks a 405 (checked live).
+        Some("older") => Some((StatusCode::METHOD_NOT_ALLOWED, Json(json!({"detail": "Method Not Allowed"}))).into_response()),
+        Some("nobody") => Some((StatusCode::NOT_FOUND, Json(json!({"detail": "Profile 'nobody' not found"}))).into_response()),
+        _ => None,
+    }
+}
+
+/// What the deployed `bf0203a` answers when the profile has no working transcriber (checked live, 2026-11-02).
+const NO_STT: &str = "No STT provider available. Install faster-whisper for free local transcription, configure HERMES_LOCAL_STT_COMMAND or install a local whisper CLI, set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral Voxtral Transcribe, configure xAI OAuth or set XAI_API_KEY for xAI Grok STT, set ELEVENLABS_API_KEY for ElevenLabs Scribe, or set VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY for the OpenAI Whisper API.";
+
+async fn transcribe(headers: HeaderMap, Query(q): Query<HashMap<String, String>>, Json(body): Json<Value>) -> Response {
+    if let Some(r) = audio_gate(&headers, &q) {
+        return r;
+    }
+    let data_url = body["data_url"].as_str().unwrap_or("");
+    let Some((head, encoded)) = data_url.strip_prefix("data:").and_then(|u| u.split_once(',')) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({"detail": "Invalid audio payload"}))).into_response();
+    };
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).unwrap();
+    if bytes == b"quiet" {
+        return Json(json!({"ok": true, "transcript": "", "provider": "local"})).into_response();
+    }
+    if bytes == b"no-stt" {
+        return (StatusCode::BAD_REQUEST, Json(json!({"detail": NO_STT}))).into_response();
+    }
+    if bytes == b"broken" {
+        return (StatusCode::BAD_REQUEST, Json(json!({"detail": "No STT provider available. Install faster-whisper"}))).into_response();
+    }
+    let said = format!("  {} bytes of {head} as {} for {}  ", bytes.len(), body["mime_type"], q["profile"]);
+    Json(json!({"ok": true, "transcript": said, "provider": "local"})).into_response()
+}
+
+async fn speak(headers: HeaderMap, Query(q): Query<HashMap<String, String>>, Json(body): Json<Value>) -> Response {
+    if let Some(r) = audio_gate(&headers, &q) {
+        return r;
+    }
+    use base64::Engine;
+    match body["text"].as_str().unwrap_or("").trim() {
+        "" => (StatusCode::BAD_REQUEST, Json(json!({"detail": "Text is required"}))).into_response(),
+        "fail" => (StatusCode::BAD_REQUEST, Json(json!({"detail": "edge-tts is not installed"}))).into_response(),
+        "html" => Json(json!({"ok": true, "data_url": "data:text/html;base64,PGI+", "mime_type": "text/html"})).into_response(),
+        text => {
+            let audio = base64::engine::general_purpose::STANDARD.encode(format!("ID3:{text}"));
+            Json(json!({"ok": true, "data_url": format!("data:audio/mpeg;base64,{audio}"), "mime_type": "audio/mpeg", "provider": "edge"})).into_response()
+        }
+    }
+}
+
+/// `GET /api/config` answers the whole config, unredacted: provider sections can hold API keys.
+async fn config(headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
+    if let Some(r) = audio_gate(&headers, &q) {
+        return r;
+    }
+    Json(json!({
+        "model": {"default": "glm-5.3-flash", "api_key": "sk-model-SECRET"},
+        "stt": {"enabled": false, "provider": "groq", "groq": {"api_key": "gsk-SECRET"}},
+        "tts": {"provider": "openai", "openai": {"api_key": "sk-tts-SECRET", "voice": "alloy"}},
+    }))
+    .into_response()
+}
+
 async fn api_ws(ws: WebSocketUpgrade, Query(q): Query<HashMap<String, String>>) -> Response {
     if q.get("ticket").map(String::as_str) != Some("TICKET-1") {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -139,11 +209,13 @@ fn stub_routes() -> Router {
         .route("/api/sessions", get(list_sessions))
         .route("/api/sessions/{id}", patch(patch_session).delete(delete_session))
         .route("/api/model/set", post(echo_write))
-        .route("/api/config", put(echo_write))
+        .route("/api/config", put(echo_write).get(config))
         .route("/api/model/moa", put(echo_write).post(echo_write))
         .route("/api/rotate", get(rotate))
         .route("/api/expire", get(expire))
         .route("/api/busy", get(busy))
+        .route("/api/audio/transcribe", post(transcribe))
+        .route("/api/audio/speak", post(speak))
 }
 
 async fn serve(app: Router) -> Url {
@@ -537,6 +609,91 @@ async fn refuses_to_preview_a_missing_or_oversized_image() {
 }
 
 #[tokio::test]
+async fn transcribes_a_recording_as_a_data_url_for_the_profile() {
+    let dashboard = signed_in().await;
+    let got = dashboard.transcribe("work email", "audio/wav; codecs=1", b"RIFF....WAVE").await.unwrap();
+    assert_eq!(got.text, r#"12 bytes of audio/wav;base64 as "audio/wav" for work email"#);
+    assert_eq!(got.provider.as_deref(), Some("local"));
+}
+
+#[tokio::test]
+async fn hearing_no_speech_is_an_empty_transcript() {
+    let got = signed_in().await.transcribe("default", "audio/wav", b"quiet").await.unwrap();
+    assert_eq!(got, transport::Transcript { text: String::new(), provider: Some("local".into()) });
+}
+
+#[tokio::test]
+async fn refuses_a_recording_that_is_not_audio_empty_or_too_long_without_sending_it() {
+    let dashboard = signed_in().await;
+    for (mime, len) in [("text/plain", 10), ("audio/", 10), ("audio/wav\r\nx: y", 10), ("audio/wav", 0), ("audio/wav", 25 * 1024 * 1024 + 1)] {
+        let err = dashboard.transcribe("old", mime, &vec![0u8; len]).await.err().unwrap();
+        // Profile `old` would answer 404; these never reach it.
+        assert!(matches!(err, TransportError::Voice(_)), "{mime} {len}: {err:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_server_without_the_audio_routes_says_so() {
+    let dashboard = signed_in().await;
+    let err = dashboard.transcribe("old", "audio/wav", b"RIFF").await.err().unwrap();
+    assert_eq!(err.to_string(), "This Hermes server can't transcribe recordings: it has no /api/audio/transcribe route. Updating Hermes adds it.");
+    let err = dashboard.speak("old", "Hello").await.err().unwrap();
+    assert!(matches!(err, TransportError::NoVoiceRoute("read replies aloud", _)), "{err:?}");
+}
+
+#[tokio::test]
+async fn a_refusal_carries_hermess_reason() {
+    let dashboard = signed_in().await;
+    let err = dashboard.transcribe("default", "audio/wav", b"broken").await.err().unwrap();
+    assert_eq!(err.to_string(), "Hermes couldn't transcribe the recording: No STT provider available. Install faster-whisper");
+    let err = dashboard.transcribe("nobody", "audio/wav", b"RIFF").await.err().unwrap();
+    assert_eq!(err.to_string(), "Hermes couldn't transcribe the recording: Profile 'nobody' not found");
+    let err = dashboard.speak("default", "fail").await.err().unwrap();
+    assert_eq!(err.to_string(), "Hermes couldn't read it aloud: edge-tts is not installed");
+}
+
+#[tokio::test]
+async fn reads_a_reply_aloud_as_audio_bytes() {
+    let speech = signed_in().await.speak("default", "Hello there").await.unwrap();
+    assert_eq!(speech, transport::Speech { mime: "audio/mpeg".into(), audio: b"ID3:Hello there".to_vec(), provider: Some("edge".into()) });
+}
+
+#[tokio::test]
+async fn refuses_speech_that_is_not_audio_or_has_no_text() {
+    let dashboard = signed_in().await;
+    assert!(matches!(dashboard.speak("default", "html").await, Err(TransportError::Voice(_))));
+    assert!(matches!(dashboard.speak("old", "  ").await, Err(TransportError::Voice(_))));
+}
+
+#[tokio::test]
+async fn an_expired_sign_in_is_signed_out_for_voice_too() {
+    let dashboard = signed_in().await;
+    get_json(&dashboard, "api/expire").await;
+    assert!(matches!(dashboard.transcribe("default", "audio/wav", b"RIFF").await, Err(TransportError::SignedOut)));
+    assert!(matches!(dashboard.voice_setup("default").await, Err(TransportError::SignedOut)));
+}
+
+#[tokio::test]
+async fn reads_the_voice_setup_without_passing_on_any_key() {
+    let setup = signed_in().await.voice_setup("default").await.unwrap();
+    assert_eq!(
+        setup,
+        transport::VoiceSetup { transcribe: true, speak: true, stt_enabled: Some(false), stt_provider: Some("groq".into()), tts_provider: Some("openai".into()) }
+    );
+    let json = serde_json::to_string(&setup).unwrap();
+    assert!(!json.contains("SECRET"), "{json}");
+    assert_eq!(json, r#"{"transcribe":true,"speak":true,"sttEnabled":false,"sttProvider":"groq","ttsProvider":"openai"}"#);
+}
+
+#[tokio::test]
+async fn a_server_without_voice_has_neither_route() {
+    for profile in ["old", "older"] {
+        let setup = signed_in().await.voice_setup(profile).await.unwrap();
+        assert_eq!(setup, transport::VoiceSetup { transcribe: false, speak: false, stt_enabled: None, stt_provider: None, tts_provider: None }, "{profile}");
+    }
+}
+
+#[tokio::test]
 async fn reads_the_start_of_a_local_file_for_the_preview() {
     let dir = scratch("local-text");
     let notes = dir.join("notes.md");
@@ -619,6 +776,46 @@ async fn local_preview_refuses_fifos_and_devices_without_waiting_for_a_writer() 
         assert_eq!(read.err().unwrap().to_string(), "it isn't a regular file");
         assert!(transport::PickedFiles::default().allow(&path).is_err());
     }
+}
+
+#[tokio::test]
+async fn passes_on_hermess_whole_reason_for_having_no_transcriber() {
+    let err = signed_in().await.transcribe("default", "audio/wav", b"no-stt").await.err().unwrap();
+    assert_eq!(err.to_string(), format!("Hermes couldn't transcribe the recording: {NO_STT}"));
+}
+
+#[tokio::test]
+async fn voice_requests_carry_the_gate_headers_too() {
+    let (elsewhere, _) = other_site().await;
+    let (base, seen) = gated_stub(&elsewhere).await;
+    let dashboard = Dashboard::sign_in(&base, &access_sign_in()).await.unwrap();
+    dashboard.transcribe("default", "audio/wav", b"RIFF").await.unwrap();
+    dashboard.speak("default", "Hello").await.unwrap();
+    assert!(dashboard.voice_setup("default").await.unwrap().speak);
+    let seen = seen.lock().unwrap();
+    let paths: Vec<&str> = seen.iter().map(|(path, _)| path.as_str()).collect();
+    assert_eq!(paths, ["/auth/password-login", "/api/audio/transcribe", "/api/audio/speak", "/api/audio/transcribe", "/api/audio/speak", "/api/config"]);
+    assert!(seen.iter().all(|(_, secret)| secret.as_deref() == Some("s3cret")));
+}
+
+#[tokio::test]
+async fn voice_redirects_to_another_origin_stop_without_sending_credentials_or_audio() {
+    let (elsewhere, other_seen) = other_site().await;
+    let away = elsewhere.join("steal").unwrap().to_string();
+    let speak_away = away.clone();
+    let app = Router::new()
+        .route("/auth/password-login", post(login))
+        .route("/api/audio/transcribe", post(move || async move { Redirect::temporary(&away) }))
+        .route("/api/audio/speak", post(move || async move { Redirect::temporary(&speak_away) }));
+    let dashboard = Dashboard::sign_in(&serve(app).await, &access_sign_in()).await.unwrap();
+    for err in [
+        dashboard.transcribe("default", "audio/wav", b"private audio").await.err().unwrap(),
+        dashboard.speak("default", "private reply").await.err().unwrap(),
+    ] {
+        assert!(matches!(&err, TransportError::Redirected(to) if *to == elsewhere.origin().ascii_serialization()), "{err:?}");
+        assert!(!err.to_string().contains("s3cret"));
+    }
+    assert!(other_seen.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

@@ -226,7 +226,10 @@ describe("Interrupting by keyboard", () => {
   it("stops the reply with Enter on the focused Stop button", async () => {
     const s = await replying();
     await s.user.tab(); // Attach files
-    await s.user.tab(); // Attach a screenshot
+    await s.user.tab();
+    expect(focused()).toBe(button("Dictate"));
+    await s.user.tab();
+    expect(focused()).toBe(button("Attach a screenshot"));
     await s.user.tab();
     expect(focused()).toBe(button(/^Model:/));
     await s.user.tab();

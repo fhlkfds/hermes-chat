@@ -312,6 +312,17 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 @keyframes blink { 50% { opacity: 0; } }
 .stopped { font-size: calc(12rem / 14); color: var(--faint); margin-top: 4px; }
 .msg-time { display: block; font-size: calc(11.5rem / 14); color: var(--faint); margin-top: 4px; }
+/* Read aloud under a reply (Voice.tsx): faint until the reply is hovered or focused, and while it loads, plays or failed. */
+.msg-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 6px; opacity: 0; transition: opacity 0.15s; }
+.msg.assistant:hover .msg-actions, .msg-actions:focus-within, .msg-actions.active { opacity: 1; }
+.msg-action {
+  display: inline-flex; align-items: center; gap: 5px; padding: 2px 7px 2px 5px; border-radius: 6px;
+  font-size: calc(12rem / 14); color: var(--muted);
+}
+.msg-action:hover:not([aria-disabled="true"]) { background: var(--raised-2); color: var(--text); }
+.msg-action[aria-pressed="true"] { color: var(--text); background: var(--raised-2); }
+.msg-action[aria-disabled="true"] { opacity: 0.5; cursor: default; }
+.msg-action-error { font-size: calc(12rem / 14); color: var(--bad); }
 .thinking { display: flex; gap: 5px; padding: 6px 0; }
 .thinking span { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); animation: bounce 1.2s infinite; }
 .thinking span:nth-child(2) { animation-delay: 0.15s; }
@@ -417,6 +428,27 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .send:disabled { background: var(--raised-2); color: var(--faint); cursor: default; }
 .send.stop { background: var(--raised-2); color: var(--text); border: 1px solid var(--line-2); }
 .send.stop:hover { background: var(--raised-3); }
+
+/* Dictation (Voice.tsx): its own row so the controls fit beside the preview pane, and the note above the composer. */
+.dictation {
+  min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; margin-top: 8px;
+  font-size: calc(12.5rem / 14); color: var(--muted);
+}
+.dictation > .icon-btn, .dictation-stop { flex: none; }
+.dictation.recording { color: var(--text); }
+.dictation-fill { flex: 1; }
+.dictation-clock { font-variant-numeric: tabular-nums; color: var(--muted); }
+.rec-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--bad); flex: none; animation: pulse 1.2s ease-in-out infinite; }
+.level { width: 60px; height: 4px; border-radius: 2px; background: var(--raised-3); overflow: hidden; flex: none; }
+.level > span { display: block; height: 100%; background: var(--ok); transition: width 0.15s; }
+.dictation-stop { padding: 4px 10px; }
+.voice-note {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; font-size: calc(12rem / 14); color: var(--warn); padding: 0 6px 8px;
+}
+.link-btn { display: inline-flex; align-items: center; gap: 4px; color: var(--text-2); text-decoration: underline; text-underline-offset: 2px; }
+.link-btn:hover { color: var(--text-strong); }
+.icon-btn[aria-disabled="true"] { opacity: 0.45; cursor: default; }
+.icon-btn[aria-disabled="true"]:hover { background: none; color: var(--muted); }
 
 /* model picker and reasoning pill (ModelPicker.tsx), bottom left of the composer */
 .model-controls { display: flex; align-items: center; gap: 4px; min-width: 0; }
@@ -622,6 +654,9 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 .settings-status { display: flex; align-items: center; gap: 12px; margin: 8px 0 18px; }
 .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
 .settings-row svg { vertical-align: -2px; }
+.voice-row { padding: 8px 0; border-top: 1px solid var(--line); }
+.voice-row:first-of-type { border-top: 0; }
+.voice-row-head { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
 .big-num { font-size: calc(20rem / 14); font-weight: 600; font-variant-numeric: tabular-nums; }
 .select {
   height: 32px; padding: 0 8px; border-radius: 8px; background: var(--raised-2); border: 1px solid var(--line); color: var(--text);

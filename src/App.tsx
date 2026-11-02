@@ -22,6 +22,7 @@ import type { ModelCatalog, ModelPick } from "./hermes/models";
 import { ChatList, Rail } from "./ui/Sidebar";
 import { ChatPane } from "./ui/ChatPane";
 import { PANE_NAMES, Split, usePaneVisible, type PaneSlot } from "./ui/Split";
+import type { VoiceApi } from "./ui/Voice";
 import { SearchPalette } from "./ui/Search";
 import { SettingsScreen } from "./ui/Settings";
 import { composing, routeLabel } from "./ui/bits";
@@ -272,6 +273,11 @@ export function Main({
     hermes.getSnapshot,
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const voice = useMemo<VoiceApi>(
+    () => ({ setup: () => hermes.voiceSetup(), transcribe: (audio, mime) => hermes.transcribe(audio, mime), speak: (text) => hermes.speak(text) }),
+    [hermes],
+  );
+  // The project screen covers the chat pane, as Settings does.
   const [projectOpen, setProjectOpen] = useState(false);
   // The chat to reopen at launch, until Hermes's list shows it is there or gone, or the owner goes somewhere first.
   const [reopening, setReopening] = useState(() => (reopenLast ? chatToReopen(profile) : undefined));
@@ -667,6 +673,7 @@ export function Main({
           screenshots={desk}
           screenshotWiring={screenshots}
           screenshotKeys={screenshotShortcut ? shortcutLabel(screenshotShortcut) : undefined}
+          voice={voice}
           catalog={catalog}
           sticky={sticky}
           favorites={modelFavorites}
@@ -722,7 +729,7 @@ export function Main({
         onToggleList={() => setListOpen((o) => !o)}
         onNew={() => newChat()}
         onSearch={() => setSearchOpen(true)}
-        onSettings={() => setSettingsOpen(true)}
+        onSettings={() => { setProjectOpen(false); setSettingsOpen(true); }}
       />
       {listOpen && (
         <ChatList
@@ -827,6 +834,7 @@ export function Main({
             listFonts={systemFonts}
             modelSettings={hermes.modelSettings}
             checkScreenshots={screenshots.support}
+            voiceSetup={voice.setup}
             onClearCache={() => hermes.clearCache()}
             onPullOlder={() => hermes.pullOlderHistory()}
             onSignOut={onSignOut}
@@ -912,6 +920,7 @@ function ChatView({
   screenshots,
   screenshotWiring,
   screenshotKeys,
+  voice,
 }: {
   hermes: Hermes;
   connection: SavedSignIn;
@@ -940,6 +949,7 @@ function ChatView({
   screenshots?: ScreenshotDesk;
   screenshotWiring: Screenshots;
   screenshotKeys?: string;
+  voice: VoiceApi;
 }) {
   // What the owner has typed and not sent, kept for each chat on this connection and profile. Two panes on one chat
   // share its draft.
@@ -1043,6 +1053,7 @@ function ChatView({
       split={split}
       screenshots={screenshots}
       screenshotKeys={screenshotKeys}
+      voice={voice}
       paneControls={paneControls}
       headActions={previewControls}
       footer={<StatusBar chat={chat} status={status} onYolo={(on) => hermes.setYolo(chat.id, on)} onBreakdown={() => hermes.contextBreakdown(chat.id)} />}
