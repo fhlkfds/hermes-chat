@@ -185,6 +185,43 @@ describe("Server files", () => {
     expect(names()).toEqual(["Cargo.toml", "main.rs"]);
   });
 
+  it("drops a preview's late answer once the preview is closed, the folder changes, or its file is gone", async () => {
+    const s = server();
+    const { user } = await launch(s);
+    await openFiles(user);
+    const read = s.rest["GET /api/files/read"];
+    const held: (() => void)[] = [];
+    s.rest["GET /api/files/read"] = (req) => new Promise((r) => held.push(() => r(Promise.resolve().then(() => read(req)))));
+    const pane = () => screen.queryByRole("complementary", { name: /Preview of/ });
+    const releaseAll = () => act(async () => void held.splice(0).forEach((release) => release()));
+
+    // Closed while the read is on its way.
+    await user.click(row_("notes.md"));
+    await waitFor(() => expect(held).toHaveLength(1));
+    await user.click(screen.getByRole("button", { name: "Close preview" }));
+    await releaseAll();
+    expect(pane()).toBeNull();
+
+    // Left for another folder.
+    await user.click(row_("notes.md"));
+    await waitFor(() => expect(held).toHaveLength(1));
+    await user.click(row_("projects"));
+    await waitFor(() => expect(names()).toEqual(["app"]));
+    await releaseAll();
+    expect(pane()).toBeNull();
+
+    // Deleted, and refreshed away.
+    await user.click(screen.getByRole("button", { name: "Up one folder" }));
+    await waitFor(() => expect(names()).toContain("notes.md"));
+    await user.click(row_("notes.md"));
+    await waitFor(() => expect(held).toHaveLength(1));
+    delete s.serverFiles.nodes["/home/liam/notes.md"];
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(names()).not.toContain("notes.md"));
+    await releaseAll();
+    expect(pane()).toBeNull();
+  });
+
   it("starts at a locked root and says so", async () => {
     const s = server();
     s.managedFiles.root = "/home/liam/projects";

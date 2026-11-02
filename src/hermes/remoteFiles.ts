@@ -150,16 +150,26 @@ export function previewSupport(entry: RemoteEntry): PreviewSupport {
   if (entry.kind === "broken-link") return { kind: "none", why: "It's a symbolic link to something that isn't there." };
   const mime = (entry.mime ?? "").toLowerCase();
   if (IMAGE_TYPES.has(mime)) return { kind: "image", max: IMAGE_PREVIEW_MAX_BYTES };
-  const ext = extensionOf(entry.name);
+  // A link's type is its target's (the server resolves it), so its target's name counts as much as its own.
+  const target = entry.linkTarget?.slice(entry.linkTarget.lastIndexOf("/") + 1);
+  const ext = extensionOf(target ?? entry.name);
   if (mime.startsWith("text/") || TEXT_TYPES.has(mime) || mime.endsWith("+json") || mime.endsWith("+xml")) return { kind: "text", max: TEXT_PREVIEW_MAX_BYTES };
-  // Checked before the type, since `mimetypes` calls a `.ts` file video/mp2t. A dotfile with no other dot, such as
-  // `.bashrc`, is a config file. What turns out to be binary after all shows as binary (`looksBinary`).
-  const dotfile = entry.name.startsWith(".") && entry.name.indexOf(".", 1) < 0;
-  if (TEXT_EXTENSIONS.has(ext) || (!ext && TEXT_NAMES.has(entry.name.toLowerCase())) || dotfile) return { kind: "text", max: TEXT_PREVIEW_MAX_BYTES };
+  // Checked before the type, since `mimetypes` calls a `.ts` file video/mp2t.
+  if ([entry.name, target].some((name) => name && nameSaysText(name))) return { kind: "text", max: TEXT_PREVIEW_MAX_BYTES };
   if (BINARY_FAMILIES.some((f) => mime.startsWith(f)) || mime.startsWith("image/"))
     return { kind: "none", why: `There's no preview for ${mime} files.` };
   if (!mime || mime === "application/octet-stream" || !ext) return { kind: "maybe-text", max: TEXT_PREVIEW_MAX_BYTES };
   return { kind: "none", why: `There's no preview for ${mime} files.` };
+}
+
+/**
+ * A file name that marks a text file whatever its type says: a text extension, a well-known name such as `Makefile`,
+ * or a dotfile with no other dot, such as `.bashrc`. What turns out to be binary after all shows as binary
+ * (`looksBinary`).
+ */
+function nameSaysText(name: string): boolean {
+  const ext = extensionOf(name);
+  return TEXT_EXTENSIONS.has(ext) || (!ext && TEXT_NAMES.has(name.toLowerCase())) || (name.startsWith(".") && name.indexOf(".", 1) < 0);
 }
 
 /** Runs one request, turning the transport's errors into ones the browser can show. */

@@ -73,6 +73,12 @@ export function FileBrowser({
   const previewSeq = useRef(0);
   const listRef = useRef<HTMLDivElement>(null);
 
+  // Closing the preview also drops the read it's waiting on, so a late answer can't open it again.
+  const dropPreview = () => {
+    previewSeq.current++;
+    setPreview(undefined);
+  };
+
   const load = (to?: string, keepPreview = false) => {
     const seq = ++listSeq.current;
     setLoading(true);
@@ -90,8 +96,13 @@ export function FileBrowser({
           listRef.current?.scrollTo?.({ top: 0 });
         }
         // A refresh keeps the preview open only while its file is still listed.
-        if (!(same && keepPreview)) setPreview(undefined);
-        else setPreview((p) => (p && l.entries.some((e) => e.path === p.entry.path) ? p : undefined));
+        if (!(same && keepPreview)) dropPreview();
+        else
+          setPreview((p) => {
+            if (p && l.entries.some((e) => e.path === p.entry.path)) return p;
+            previewSeq.current++;
+            return undefined;
+          });
       },
       (e) => {
         if (seq !== listSeq.current) return;
@@ -324,7 +335,7 @@ export function FileBrowser({
           )}
         </div>
 
-        {preview && <PreviewPane preview={preview} connected={connected} onOpenAsText={() => open(preview.entry, true)} onClose={() => setPreview(undefined)} />}
+        {preview && <PreviewPane preview={preview} connected={connected} onOpenAsText={() => open(preview.entry, true)} onClose={dropPreview} />}
       </div>
     </div>
   );

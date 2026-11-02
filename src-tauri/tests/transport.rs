@@ -99,6 +99,16 @@ async fn read_file(headers: HeaderMap, Query(q): Query<HashMap<String, String>>)
     }
 }
 
+/// A 500 whose body never ends (`?endless`) or is 50 MB with a Content-Length.
+async fn flood(Query(q): Query<HashMap<String, String>>) -> Response {
+    let body = if q.contains_key("endless") {
+        axum::body::Body::from_stream(futures_util::stream::repeat_with(|| Ok::<_, std::io::Error>("x".repeat(64 * 1024))))
+    } else {
+        axum::body::Body::from("x".repeat(50 * 1024 * 1024))
+    };
+    (StatusCode::INTERNAL_SERVER_ERROR, body).into_response()
+}
+
 async fn busy() -> Response {
     (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"detail": "Session store is busy"}))).into_response()
 }
@@ -231,6 +241,7 @@ fn stub_routes() -> Router {
         .route("/api/audio/transcribe", post(transcribe))
         .route("/api/audio/speak", post(speak))
         .route("/api/files/read", get(read_file))
+        .route("/api/flood", get(flood))
 }
 
 async fn serve(app: Router) -> Url {
@@ -512,9 +523,44 @@ async fn a_limited_get_stays_under_api() {
 #[tokio::test]
 async fn never_relays_a_change_to_the_servers_files() {
     let dashboard = signed_in().await;
-    for (method, path) in [("DELETE", "api/files"), ("DELETE", "api/files/"), ("PATCH", "api/files/mkdir"), ("DELETE", "api/fs/write-text"), ("PATCH", "api/fs")] {
+    for (method, path) in [
+        ("DELETE", "api/files"),
+        ("DELETE", "api/files/"),
+        ("PATCH", "api/files/mkdir"),
+        ("DELETE", "api/fs/write-text"),
+        ("PATCH", "api/fs"),
+        // Spelled so the server still routes them to the file routes.
+        ("DELETE", "api/./files?path=/tmp/x"),
+        ("DELETE", "api/%2e/files"),
+        ("DELETE", "api/%66iles"),
+        ("DELETE", "api%2Ffiles"),
+        ("DELETE", "api//files"),
+        ("PATCH", "api/f%73/write-text"),
+        ("DELETE", "api/sessions/%2E%2E/files"),
+    ] {
         let err = dashboard.request(method, path, Some("{}".into())).await.err().unwrap();
         assert!(matches!(err, TransportError::NotRelayed(_)), "{method} {path}: {err:?}");
+    }
+    // A chat id is still percent-encoded into its path.
+    dashboard.request("DELETE", "api/sessions/a%20b", None).await.unwrap();
+}
+
+#[tokio::test]
+async fn reads_only_the_start_of_a_huge_error_answer() {
+    let dashboard = signed_in().await;
+    for path in ["api/flood", "api/flood?endless"] {
+        let call = async {
+            let rest = dashboard.request("GET", path, None).await.err().unwrap();
+            let limited = dashboard.get_limited(path, 1024).await.err().unwrap();
+            (rest, limited)
+        };
+        let (rest, limited) = tokio::time::timeout(std::time::Duration::from_secs(10), call).await.expect(path);
+        for err in [rest, limited] {
+            match err {
+                TransportError::Unexpected { status: 500, body } => assert_eq!(body.len(), 300, "{path}"),
+                other => panic!("{path}: {other:?}"),
+            }
+        }
     }
 }
 

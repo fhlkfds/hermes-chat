@@ -662,15 +662,12 @@ impl Dashboard {
             ("POST" | "PUT", _) => return Err(TransportError::NotRelayed(format!("{method} {path}"))),
             (other, _) => return Err(TransportError::NotRelayed(format!("{other} requests"))),
         };
-        if !path.starts_with("api/") || path.split('/').any(|seg| seg == "..") {
-            return Err(TransportError::NotRelayed(path.to_owned()));
-        }
-        // Server files are read-only (ADR 0006): nothing but GET goes to the server's file routes.
-        if method != Method::GET && is_file_route(path) {
+        let (url, routed) = relay_url(&self.base, path, query)?;
+        // Server files are read-only (ADR 0007): nothing but GET goes to the server's file routes, checked on the
+        // path as the server will route it, so `api/./files` or `api/%66iles` can't slip past.
+        if method != Method::GET && is_file_route(&routed) {
             return Err(TransportError::NotRelayed(format!("{method} {path}")));
         }
-        let mut url = endpoint(&self.base, path);
-        url.set_query(Some(query).filter(|q| !q.is_empty()));
         let mut req = self.http.request(method, url).header(header::COOKIE, self.cookie_header());
         if let Some(body) = body {
             req = req.header(header::CONTENT_TYPE, "application/json").body(body);
@@ -796,11 +793,7 @@ impl Dashboard {
     /// since it was listed can't fill memory. Returns the response body on 2xx.
     pub async fn get_limited(&self, path_and_query: &str, max_bytes: u64) -> Result<String, TransportError> {
         let (path, query) = path_and_query.split_once('?').unwrap_or((path_and_query, ""));
-        if !path.starts_with("api/") || path.split('/').any(|seg| seg == "..") {
-            return Err(TransportError::NotRelayed(path.to_owned()));
-        }
-        let mut url = endpoint(&self.base, path);
-        url.set_query(Some(query).filter(|q| !q.is_empty()));
+        let (url, _) = relay_url(&self.base, path, query)?;
         let mut resp = self
             .http
             .get(url)
@@ -850,11 +843,28 @@ impl Dashboard {
     }
 }
 
+/// Where a relayed REST call goes, and its path as the dashboard will route it: with `.` segments resolved and
+/// percent-escapes decoded (the server decodes them before routing, so `%2F` is a `/` to it). Both the path asked
+/// for and the routed one must stay under `api/` without `.` or `..` segments.
+fn relay_url(base: &Url, path: &str, query: &str) -> Result<(Url, String), TransportError> {
+    let refused = || TransportError::NotRelayed(path.to_owned());
+    let under_api = |p: &str| p.starts_with("api/") && !p.split('/').any(|seg| seg == ".." || seg == ".");
+    if !under_api(path) {
+        return Err(refused());
+    }
+    let mut url = endpoint(base, path);
+    url.set_query(Some(query).filter(|q| !q.is_empty()));
+    let prefix = format!("{}/", base.path().trim_end_matches('/'));
+    let decoded = percent_encoding::percent_decode_str(url.path()).decode_utf8().map_err(|_| refused())?;
+    let routed = decoded.strip_prefix(&prefix).filter(|p| under_api(p)).ok_or_else(refused)?.to_owned();
+    Ok((url, routed))
+}
+
 /// The dashboard's routes that write or delete files on the server: managed files (`api/files...`) and the agent's
-/// workspace (`api/fs/...`).
+/// workspace (`api/fs/...`). Empty segments are skipped, as a lenient router might.
 fn is_file_route(path: &str) -> bool {
-    let path = path.trim_end_matches('/');
-    path == "api/files" || path.starts_with("api/files/") || path == "api/fs" || path.starts_with("api/fs/")
+    let mut segs = path.split('/').filter(|seg| !seg.is_empty());
+    segs.next() == Some("api") && matches!(segs.next(), Some("files" | "fs"))
 }
 
 fn endpoint(base: &Url, path: &str) -> Url {
@@ -864,7 +874,10 @@ fn endpoint(base: &Url, path: &str) -> Url {
     url
 }
 
-async fn unexpected(resp: reqwest::Response) -> TransportError {
+/// An answer the call didn't expect, with the start of its body. Reads only the first few KB, so a huge or endless
+/// error body can't fill memory.
+async fn unexpected(mut resp: reqwest::Response) -> TransportError {
+    const KEEP: usize = 4096;
     // A redirect that came back unfollowed: `same_origin_redirects` stopped it at another site.
     if resp.status().is_redirection() {
         let to = resp.headers().get(header::LOCATION).and_then(|l| resp.url().join(l.to_str().ok()?).ok());
@@ -873,6 +886,14 @@ async fn unexpected(resp: reqwest::Response) -> TransportError {
         }
     }
     let status = resp.status().as_u16();
-    let body = resp.text().await.unwrap_or_default().chars().take(300).collect();
+    let mut head = Vec::new();
+    while head.len() < KEEP {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => head.extend_from_slice(&chunk),
+            _ => break,
+        }
+    }
+    head.truncate(KEEP);
+    let body = String::from_utf8_lossy(&head).chars().take(300).collect();
     TransportError::Unexpected { status, body }
 }

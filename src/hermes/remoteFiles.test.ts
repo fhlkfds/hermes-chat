@@ -201,6 +201,10 @@ describe("what can be previewed", () => {
     expect(previewSupport(file("a.mp4", { mime: "video/mp4" }))).toEqual({ kind: "none", why: "There's no preview for video/mp4 files." });
     expect(previewSupport(file("a.zip", { mime: "application/zip" })).kind).toBe("none");
     expect(previewSupport(file("a.tiff", { mime: "image/tiff" })).kind).toBe("none");
+    // A link's type comes from its target, so its target's name counts too.
+    expect(previewSupport(file("current", { path: "/srv/app.ts", linkTarget: "/srv/app.ts", mime: "video/mp2t" })).kind).toBe("text");
+    expect(previewSupport(file("Dockerfile", { path: "/srv/build/blob", linkTarget: "/srv/build/blob", mime: "application/octet-stream" })).kind).toBe("text");
+    expect(previewSupport(file("clip", { path: "/srv/a.mp4", linkTarget: "/srv/a.mp4", mime: "video/mp4" })).kind).toBe("none");
     expect(previewSupport({ name: "d", path: "/d", kind: "dir" }).kind).toBe("none");
     expect(previewSupport({ name: "l", path: "/l", kind: "broken-link" })).toEqual({ kind: "none", why: "It's a symbolic link to something that isn't there." });
   });
