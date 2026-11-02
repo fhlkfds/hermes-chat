@@ -111,6 +111,7 @@ export function ChatPane({
   modelControls,
   screenshots,
   screenshotKeys,
+  projects,
   footer,
   headActions,
 }: {
@@ -134,6 +135,8 @@ export function ChatPane({
   modelControls?: ReactNode;
   screenshots?: ScreenshotDesk;
   screenshotKeys?: string;
+  /** The names of the projects the chat is in, or a new chat will be put in. */
+  projects?: string[];
   footer?: ReactNode;
   headActions?: ReactNode;
 }) {
@@ -243,6 +246,11 @@ export function ChatPane({
           <span>{chat.title}</span>
           {chat.settled && <span className="badge">Settled</span>}
           {chat.archived && <span className="badge">Archived</span>}
+          {projects?.map((name) => (
+            <span key={name} className="badge project-badge" title={`In the project ${name}`}>
+              {name}
+            </span>
+          ))}
         </div>
         <div className="chat-head-actions">
           {headActions}

@@ -798,6 +798,51 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 .shortcut-examples { margin: 6px 0 8px; padding-left: 18px; line-height: 1.7; }
 .screenshot-settings code { font-family: var(--mono); font-size: calc(11.5rem / 14); background: var(--raised-2); padding: 1px 5px; border-radius: 4px; }
 .warn-note { color: var(--warn); }
+/* projects (Projects.tsx, ADR 0007): the switcher under the profile's name, and the project screen */
+.sb-project { display: flex; padding: 0 12px 6px 14px; margin-top: -4px; }
+.project-switch { position: relative; min-width: 0; flex: 1; display: flex; align-items: center; gap: 2px; }
+.project-btn {
+  display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 200px; padding: 3px 6px; border-radius: 7px;
+  font-size: calc(12.5rem / 14); color: var(--muted);
+}
+.project-btn:hover, .project-btn[aria-expanded="true"] { background: var(--raised-2); color: var(--text); }
+.project-btn .dot { flex: none; width: 6px; height: 6px; }
+.project-icon { flex: none; }
+.project-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-manage { width: 24px; height: 24px; }
+.project-menu { left: 0; }
+.project-new { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.project-new .profile-filter { flex: 1; min-width: 0; }
+.project-create { color: var(--muted); }
+.project-create:disabled { opacity: 0.5; cursor: default; }
+.project-create svg { color: inherit; vertical-align: -2px; margin-right: 4px; }
+.menu-group { display: flex; flex-direction: column; border-top: 1px solid var(--line); margin-top: 4px; padding-top: 4px; max-height: 45vh; overflow-y: auto; }
+.menu-heading { font-size: calc(11rem / 14); color: var(--faint); padding: 4px 8px 2px; font-weight: 500; }
+.menu-label { overflow: hidden; text-overflow: ellipsis; }
+.project-badge { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-title { display: flex; align-items: center; gap: 10px; }
+.project-title > svg { color: var(--muted); flex: none; }
+.project-rename { display: flex; align-items: center; gap: 10px; margin: 14px 0 22px; }
+.project-rename .row-rename { flex: 1; height: 34px; font-size: calc(16rem / 14); }
+.project-screen h3 { font-size: calc(13rem / 14); font-weight: 600; margin: 22px 0 4px; }
+.folder-list { list-style: none; margin: 0 0 14px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.folder-row {
+  display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--raised);
+}
+.folder-icon { color: var(--muted); flex: none; }
+.folder-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.folder-name { display: flex; align-items: center; gap: 8px; font-weight: 500; font-size: calc(13rem / 14); }
+.folder-where { display: flex; flex-wrap: wrap; gap: 4px 10px; color: var(--muted); }
+.folder-conn { color: var(--faint); }
+.folder-path { overflow-wrap: anywhere; color: var(--text-2); }
+.folder-note { font-size: calc(12rem / 14); color: var(--muted); display: flex; align-items: center; gap: 5px; }
+.folder-note.err { color: var(--warn); }
+.folder-add { display: flex; align-items: flex-end; gap: 10px; }
+.folder-add .field { flex: 1; }
+.folder-add .field input { font-family: var(--mono); font-size: calc(12.5rem / 14); }
+.project-screen .settings-row > .btn { flex: none; white-space: nowrap; }
+.project-screen .settings-row > p { margin: 0; }
+
 /* ---------- preview pane (PreviewPane.tsx, ADR 0007) ---------- */
 .preview {
   flex: none; display: flex; flex-direction: column; min-width: 0; background: var(--sidebar); border-left: 1px solid var(--line);

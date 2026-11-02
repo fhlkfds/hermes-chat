@@ -25,6 +25,8 @@
 import { APPROVAL_CHOICES, isBroadGrant, isOutgoing, isWaiting, offeredChoices, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ConnectionStatus, type ContextPart, type ContextUse, type Found, type Item, type OtherProfiles, type Outgoing, type OutgoingItem, type SessionLive, type Source } from "./model";
 import { catalogFromServer, fallbackCatalog, isEffort, modelKey, pickFromInfo, type ModelCatalog, type ModelPick } from "./models";
 import { noOthers, OtherProfilesCheck } from "./otherProfiles";
+// Projects are Hermes's own, read and written with legacy `projects.*` (projects.ts, research doc "Projects").
+import { projectsApi, type ProjectsApi } from "./projects";
 import { ModelSettingsApi } from "./modelSettings";
 import type { OpenPipe, Pipe, PipeEvent, RestMethod, Route } from "./pipe";
 import { isUnsecure } from "./unsecure";
@@ -383,6 +385,11 @@ export class Hermes {
   private modelsLoading?: { profile: string; done: Promise<void> };
   /** A chat and model Hermes asked to confirm as expensive: picking it again for that chat confirms it. */
   private confirmModel?: string;
+  /** Hermes's projects, each call naming its profile (projects.ts). Folders are read, never created. */
+  readonly projects: ProjectsApi = projectsApi({
+    rpc: (method, params) => this.request(method, params),
+    get: (pathAndQuery) => this.rest("GET", pathAndQuery),
+  });
   private others = new OtherProfilesCheck({
     scope: () => (this.pipe && this.snapshot.status === "connected" && !this.closing ? { connection: this.generation, profile: this.profile } : undefined),
     profiles: () => this.profiles(),

@@ -2,9 +2,13 @@
 // menu uses too. Escape or a click elsewhere closes one, and focus goes back to what had it. The arrow keys move
 // between a menu's items.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { Pencil, Sparkles } from "lucide-react";
+import { Check, Pencil, Sparkles } from "lucide-react";
 import type { Chat } from "../hermes/model";
+import type { Project } from "../hermes/projects";
 import { useReturnFocus } from "./bits";
+
+/** The profile's projects, for the chat menu: which ones the chat is in, and putting it in one or taking it out. */
+export type ChatProjects = { list: Project[]; of: Set<string>; onToggle: (projectId: string, inProject: boolean) => void };
 
 /**
  * The right-click menu for one chat, at the pointer, kept inside the window. `onRename` and `onRegenTitle` hand back
@@ -16,6 +20,7 @@ export function ChatMenu({
   y,
   onRename,
   onRegenTitle,
+  projects,
   onClose,
 }: {
   chat: Chat;
@@ -23,6 +28,7 @@ export function ChatMenu({
   y: number;
   onRename: () => void;
   onRegenTitle: () => void;
+  projects?: ChatProjects;
   onClose: () => void;
 }) {
   return (
@@ -54,6 +60,32 @@ export function ChatMenu({
         </span>
         <span className="menu-label">Regenerate title</span>
       </button>
+      {!!projects?.list.length && (
+        <div role="group" aria-label="Projects" className="menu-group">
+          <div className="menu-heading" aria-hidden>
+            Projects
+          </div>
+          {projects.list.map((p) => {
+            const on = projects.of.has(p.id);
+            return (
+              <button
+                key={p.id}
+                role="menuitemcheckbox"
+                aria-checked={on}
+                className="menu-item"
+                title={on ? `Take this chat out of ${p.name}` : `Put this chat in ${p.name}`}
+                onClick={() => {
+                  onClose();
+                  projects.onToggle(p.id, !on);
+                }}
+              >
+                <span className="menu-icon">{on && <Check size={15} />}</span>
+                <span className="menu-label">{p.name}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </Menu>
   );
 }
