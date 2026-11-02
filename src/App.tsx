@@ -25,6 +25,7 @@ import { PANE_NAMES, Split, usePaneVisible, type PaneSlot } from "./ui/Split";
 import type { VoiceApi } from "./ui/Voice";
 import { SearchPalette } from "./ui/Search";
 import { SettingsScreen } from "./ui/Settings";
+import { FileBrowser } from "./ui/FileBrowser";
 import { composing, routeLabel } from "./ui/bits";
 import { ProjectScreen, ProjectSwitcher, type ProjectUnread } from "./ui/Projects";
 import { appearanceStore } from "./ui/appearance";
@@ -283,6 +284,9 @@ export function Main({
   );
   // The project screen covers the chat pane, as Settings does.
   const [projectOpen, setProjectOpen] = useState(false);
+  // Server files covers the chat panes too. The folder open last stays for this sign-in.
+  const [filesOpen, setFilesOpen] = useState(false);
+  const [filesPath, setFilesPath] = useState<string>();
   // The chat to reopen at launch, until Hermes's list shows it is there or gone, or the owner goes somewhere first.
   const [reopening, setReopening] = useState(() => (reopenLast ? chatToReopen(profile) : undefined));
   // One pane, or two side by side. The chat to reopen opens at once when the list saved on this computer has it, so the
@@ -381,6 +385,7 @@ export function Main({
     setReopening(undefined);
     setSettingsOpen(false);
     setProjectOpen(false);
+    setFilesOpen(false);
     if (remember) rememberOpenChat(profile, id);
   };
 
@@ -395,6 +400,7 @@ export function Main({
     setSearchOpen(false);
     setSettingsOpen(false);
     setProjectOpen(false);
+    setFilesOpen(false);
   };
 
   // A second pane opens to the right and becomes the active one. Both panes may show the same chat: they are two views
@@ -409,6 +415,7 @@ export function Main({
     setReopening(undefined);
     setSettingsOpen(false);
     setProjectOpen(false);
+    setFilesOpen(false);
     rememberOpenChat(profile, chatId);
   };
 
@@ -428,12 +435,14 @@ export function Main({
     setDesk(d);
     return () => d.dispose();
   }, []);
-  // Reveal the composer when Search, Settings, Projects or a narrow preview covers it, so the capture can be reviewed.
+  // Reveal the composer when Search, Settings, Projects, Server files or a narrow preview covers it, so the capture can
+  // be reviewed.
   const takeScreenshot = (remote = false) => {
     if (!desk) return;
     flushSync(() => {
       setSettingsOpen(false);
       setProjectOpen(false);
+      setFilesOpen(false);
       setSearchOpen(false);
       if (!previewFits) setPreviewHidden(true);
     });
@@ -635,7 +644,7 @@ export function Main({
       } else if (e.code === "Backslash" || k === "\\") {
         e.preventDefault();
         toggleSplit();
-      } else if ((k === "1" || k === "2") && !e.shiftKey && !e.altKey && split && !settingsOpen) {
+      } else if ((k === "1" || k === "2") && !e.shiftKey && !e.altKey && split && !settingsOpen && !filesOpen) {
         e.preventDefault();
         focusPane(panes[Number(k) - 1].key);
       }
@@ -649,8 +658,9 @@ export function Main({
   const previewFits = !mainWidth || mainWidth >= CHAT_MIN_WIDTH + PANE_MIN_WIDTH;
   const paneMax = mainWidth ? mainWidth - CHAT_MIN_WIDTH : 1200;
   const paneWidth = Math.min(Math.max(dragWidth ?? previewWidth ?? PREVIEW_DEFAULT_WIDTH, PANE_MIN_WIDTH), Math.max(PANE_MIN_WIDTH, paneMax));
-  // Settings covers the chat, and the pane with it.
-  const previewShown = !!preview && !settingsOpen && !projectScreenOpen && (previewFits || !previewHidden);
+  // Settings covers the chat, and the pane with it; so do the project screen and Server files.
+  const covering = settingsOpen || projectScreenOpen || filesOpen;
+  const previewShown = !!preview && !covering && (previewFits || !previewHidden);
   const previewCovers = previewShown && !previewFits;
 
 
@@ -672,7 +682,7 @@ export function Main({
           chat={chat}
           started={!!listed}
           picked={p.picked}
-          active={!settingsOpen && !projectScreenOpen && !previewCovers && (!split || isActive)}
+          active={!covering && !previewCovers && (!split || isActive)}
           split={split}
           screenshots={desk}
           screenshotWiring={screenshots}
@@ -733,7 +743,13 @@ export function Main({
         onToggleList={() => setListOpen((o) => !o)}
         onNew={() => newChat()}
         onSearch={() => setSearchOpen(true)}
-        onSettings={() => { setProjectOpen(false); setShowTextGeneration(undefined); setSettingsOpen(true); }}
+        onFiles={() => {
+          setSettingsOpen(false);
+          setProjectOpen(false);
+          setFilesOpen((o) => !o);
+        }}
+        filesOpen={filesOpen && !settingsOpen && !projectScreenOpen}
+        onSettings={() => { setProjectOpen(false); setFilesOpen(false); setShowTextGeneration(undefined); setSettingsOpen(true); }}
       />
       {listOpen && (
         <ChatList
@@ -754,10 +770,12 @@ export function Main({
                 onCreate={async (name) => {
                   await projects.create(name);
                   setSettingsOpen(false);
+                  setFilesOpen(false);
                   setProjectOpen(true);
                 }}
                 onManage={() => {
                   setSettingsOpen(false);
+                  setFilesOpen(false);
                   setProjectOpen(true);
                 }}
               />
@@ -773,8 +791,8 @@ export function Main({
           chats={listed}
           archivedListed={archivedListed}
           syncError={syncError}
-          selectedId={settingsOpen || projectScreenOpen ? null : active.chatId}
-          alsoShownId={settingsOpen || projectScreenOpen ? null : (other?.chatId ?? null)}
+          selectedId={covering ? null : active.chatId}
+          alsoShownId={covering ? null : (other?.chatId ?? null)}
           split={split}
           onOpen={(id) => openChat(id)}
           onOpenIn={openIn}
@@ -786,6 +804,7 @@ export function Main({
           onRegenTitle={(id) => hermes.regenerateTitle(id)}
           onTextGenerationSettings={() => {
             setProjectOpen(false);
+            setFilesOpen(false);
             setShowTextGeneration({});
             setSettingsOpen(true);
           }}
@@ -853,8 +872,20 @@ export function Main({
               focusPane(active.key);
             }}
           />
+        ) : filesOpen ? (
+          <FileBrowser
+            files={hermes.files}
+            status={status}
+            route={route}
+            path={filesPath}
+            onPath={setFilesPath}
+            onClose={() => {
+              flushSync(() => setFilesOpen(false));
+              focusPane(active.key);
+            }}
+          />
         ) : null}
-        <Split panes={slots} activeKey={active.key} onActivate={activate} covered={settingsOpen || projectScreenOpen || previewCovers} />
+        <Split panes={slots} activeKey={active.key} onActivate={activate} covered={covering || previewCovers} />
         </div>
           {preview && previewShown && (
             <PreviewPane

@@ -31,6 +31,7 @@ import { noOthers, OtherProfilesCheck } from "./otherProfiles";
 import { projectsApi, type ProjectsApi } from "./projects";
 import { ModelSettingsApi } from "./modelSettings";
 import type { OpenPipe, Pipe, PipeEvent, RestMethod, Route, Speech, Transcript, VoiceSetup } from "./pipe";
+import { remoteFiles, type RemoteFiles } from "./remoteFiles";
 import { isUnsecure } from "./unsecure";
 import { readServerFile, type FileView } from "./preview";
 import { chatUsageOf, countersOf, newerChatUsage, replyUsage, ZERO_COUNTERS, type ReplyUsage, type UsageCounters } from "./usage";
@@ -459,6 +460,12 @@ export class Hermes {
     unreadIn: (profile) => this.unreadIn(profile),
     publish: (others) => this.update({ others }),
   });
+
+  /**
+   * The files on the machine the dashboard runs on, read-only (remoteFiles.ts). They are the same for every profile,
+   * and can only be read while connected.
+   */
+  readonly files: RemoteFiles = remoteFiles((pathAndQuery, maxBytes) => this.restGet(pathAndQuery, maxBytes));
 
   constructor(
     private openPipe: OpenPipe,
@@ -2131,6 +2138,13 @@ export class Hermes {
   private async rest(method: RestMethod, pathAndQuery: string, body?: unknown): Promise<unknown> {
     if (!this.pipe) throw new Error("Not connected to Hermes.");
     return JSON.parse(await this.pipe.request(method, pathAndQuery, body === undefined ? undefined : JSON.stringify(body)));
+  }
+
+  /** A REST GET's raw answer, refused past `maxBytes` when that is given. Only while connected. */
+  private restGet(pathAndQuery: string, maxBytes?: number): Promise<string> {
+    const pipe = this.pipe;
+    if (!pipe || this.snapshot.status !== "connected") return Promise.reject(new Error("Not connected to Hermes."));
+    return maxBytes === undefined ? pipe.request("GET", pathAndQuery) : pipe.getLimited(pathAndQuery, maxBytes);
   }
 
   private track(p: Promise<unknown>) {

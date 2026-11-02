@@ -665,6 +665,10 @@ impl Dashboard {
         if !path.starts_with("api/") || path.split('/').any(|seg| seg == "..") {
             return Err(TransportError::NotRelayed(path.to_owned()));
         }
+        // Server files are read-only (ADR 0006): nothing but GET goes to the server's file routes.
+        if method != Method::GET && is_file_route(path) {
+            return Err(TransportError::NotRelayed(format!("{method} {path}")));
+        }
         let mut url = endpoint(&self.base, path);
         url.set_query(Some(query).filter(|q| !q.is_empty()));
         let mut req = self.http.request(method, url).header(header::COOKIE, self.cookie_header());
@@ -787,6 +791,43 @@ impl Dashboard {
         Ok(if no_route { AudioAnswer::NoRoute } else { AudioAnswer::Refused(reason) })
     }
 
+    /// A dashboard REST `GET` under `api/` whose answer may be big, such as a server file's contents from
+    /// `api/files/read`. It stops reading, and refuses the answer, once it passes `max_bytes`, so a file that grew
+    /// since it was listed can't fill memory. Returns the response body on 2xx.
+    pub async fn get_limited(&self, path_and_query: &str, max_bytes: u64) -> Result<String, TransportError> {
+        let (path, query) = path_and_query.split_once('?').unwrap_or((path_and_query, ""));
+        if !path.starts_with("api/") || path.split('/').any(|seg| seg == "..") {
+            return Err(TransportError::NotRelayed(path.to_owned()));
+        }
+        let mut url = endpoint(&self.base, path);
+        url.set_query(Some(query).filter(|q| !q.is_empty()));
+        let mut resp = self
+            .http
+            .get(url)
+            .header(header::COOKIE, self.cookie_header())
+            .send()
+            .await
+            .map_err(|e| TransportError::Unreachable(e.to_string()))?;
+        self.keep_cookies(&resp);
+        match resp.status() {
+            s if s.is_success() => {}
+            StatusCode::UNAUTHORIZED => return Err(TransportError::SignedOut),
+            _ => return Err(unexpected(resp).await),
+        }
+        let too_large = |size| TransportError::FileTooLarge { size, max: max_bytes };
+        if let Some(size) = resp.content_length().filter(|&n| n > max_bytes) {
+            return Err(too_large(size));
+        }
+        let mut body = Vec::new();
+        while let Some(chunk) = resp.chunk().await.map_err(|e| TransportError::Unreachable(e.to_string()))? {
+            body.extend_from_slice(&chunk);
+            if body.len() as u64 > max_bytes {
+                return Err(too_large(body.len() as u64));
+            }
+        }
+        String::from_utf8(body).map_err(|_| TransportError::Unexpected { status: 200, body: "the answer isn't UTF-8 text".into() })
+    }
+
     /// Take in every Set-Cookie: a new value replaces the old one, an empty one deletes it. Only
     /// `name=value` is kept; the dashboard is the only site this jar talks to.
     fn keep_cookies(&self, resp: &reqwest::Response) {
@@ -807,6 +848,13 @@ impl Dashboard {
         let jar = self.cookies.lock().unwrap();
         jar.iter().map(|(n, v)| format!("{n}={v}")).collect::<Vec<_>>().join("; ")
     }
+}
+
+/// The dashboard's routes that write or delete files on the server: managed files (`api/files...`) and the agent's
+/// workspace (`api/fs/...`).
+fn is_file_route(path: &str) -> bool {
+    let path = path.trim_end_matches('/');
+    path == "api/files" || path.starts_with("api/files/") || path == "api/fs" || path.starts_with("api/fs/")
 }
 
 fn endpoint(base: &Url, path: &str) -> Url {

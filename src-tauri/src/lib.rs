@@ -272,6 +272,14 @@ async fn hermes_voice_setup(state: State<'_, AppState>, profile: String) -> Resu
     dashboard.voice_setup(&profile).await.map_err(|e| e.to_string())
 }
 
+/// A read-only dashboard GET whose answer may be big, e.g. a server file for the Server files screen's preview: refused
+/// once it passes `max_bytes`.
+#[tauri::command]
+async fn hermes_get_limited(state: State<'_, AppState>, path: String, max_bytes: u64) -> Result<String, String> {
+    let dashboard = dashboard(&state).await?;
+    dashboard.get_limited(&path, max_bytes).await.map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn hermes_disconnect(state: State<'_, AppState>) -> Result<(), String> {
     *state.0.lock().await = None;
@@ -458,6 +466,7 @@ pub fn run(screenshot: bool) {
             hermes_transcribe,
             hermes_speak,
             hermes_voice_setup,
+            hermes_get_limited,
             hermes_disconnect,
             password_load,
             password_save,

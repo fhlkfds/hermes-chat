@@ -85,6 +85,20 @@ async fn expire() -> Response {
     (AppendHeaders([(header::SET_COOKIE, "hermes_session_at=; Max-Age=0; Path=/")]), Json(json!({}))).into_response()
 }
 
+/// `GET /api/files/read` as a stand-in for a big answer: `n` bytes of JSON, sent with a Content-Length, or in
+/// chunks without one when `chunked` is set. Echoes the query and cookie in the first bytes.
+async fn read_file(headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
+    let n: usize = q.get("n").and_then(|n| n.parse().ok()).unwrap_or(0);
+    let head = json!({"path": q.get("path"), "cookie": cookie(&headers)}).to_string();
+    let body = format!("{}{}", &head[..head.len() - 1], format!(r#","pad":"{}"}}"#, "x".repeat(n.saturating_sub(head.len() + 9))));
+    if q.contains_key("chunked") {
+        let chunks: Vec<Result<String, std::io::Error>> = body.as_bytes().chunks(1024).map(|c| Ok(String::from_utf8(c.to_vec()).unwrap())).collect();
+        axum::body::Body::from_stream(futures_util::stream::iter(chunks)).into_response()
+    } else {
+        body.into_response()
+    }
+}
+
 async fn busy() -> Response {
     (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"detail": "Session store is busy"}))).into_response()
 }
@@ -216,6 +230,7 @@ fn stub_routes() -> Router {
         .route("/api/busy", get(busy))
         .route("/api/audio/transcribe", post(transcribe))
         .route("/api/audio/speak", post(speak))
+        .route("/api/files/read", get(read_file))
 }
 
 async fn serve(app: Router) -> Url {
@@ -449,6 +464,56 @@ async fn relays_only_get_patch_and_delete_under_api_and_the_two_model_writes() {
         ("OPTIONS", "api/config"),
     ] {
         let err = dashboard.request(method, path, None).await.err().unwrap();
+        assert!(matches!(err, TransportError::NotRelayed(_)), "{method} {path}: {err:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_limited_get_relays_an_answer_within_the_limit_with_the_sign_in_cookies() {
+    let dashboard = signed_in().await;
+    for chunked in ["", "&chunked=1"] {
+        let got = dashboard.get_limited(&format!("api/files/read?path=%2Fsrv%2Fa.txt&n=5000{chunked}"), 5000).await.expect("within the limit");
+        assert_eq!(got.len(), 5000, "{chunked}");
+        let got: Value = serde_json::from_str(&got).unwrap();
+        assert_eq!(got["path"], "/srv/a.txt");
+        assert_eq!(got["cookie"], "hermes_session_at=AT; hermes_session_rt=RT");
+    }
+}
+
+#[tokio::test]
+async fn a_limited_get_refuses_an_answer_over_the_limit() {
+    let dashboard = signed_in().await;
+    // With a Content-Length it is refused before reading; without one, as soon as the bytes read pass the limit.
+    for chunked in ["", "&chunked=1"] {
+        let err = dashboard.get_limited(&format!("api/files/read?path=%2Fa&n=5001{chunked}"), 5000).await.err().unwrap();
+        assert!(matches!(err, TransportError::FileTooLarge { max: 5000, size } if size > 5000), "{chunked}: {err:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_limited_get_reports_errors_like_any_rest_call() {
+    let dashboard = signed_in().await;
+    let err = dashboard.get_limited("api/busy", 1000).await.err().unwrap();
+    assert!(matches!(&err, TransportError::Unexpected { status: 503, body } if body.contains("busy")), "{err:?}");
+    get_json(&dashboard, "api/expire").await;
+    let err = dashboard.get_limited("api/sessions", 1000).await.err().unwrap();
+    assert!(matches!(err, TransportError::SignedOut), "{err:?}");
+}
+
+#[tokio::test]
+async fn a_limited_get_stays_under_api() {
+    let dashboard = signed_in().await;
+    for path in ["auth/logout", "api/../auth/logout", "/api/files/read"] {
+        let err = dashboard.get_limited(path, 1000).await.err().unwrap();
+        assert!(matches!(err, TransportError::NotRelayed(_)), "{path}: {err:?}");
+    }
+}
+
+#[tokio::test]
+async fn never_relays_a_change_to_the_servers_files() {
+    let dashboard = signed_in().await;
+    for (method, path) in [("DELETE", "api/files"), ("DELETE", "api/files/"), ("PATCH", "api/files/mkdir"), ("DELETE", "api/fs/write-text"), ("PATCH", "api/fs")] {
+        let err = dashboard.request(method, path, Some("{}".into())).await.err().unwrap();
         assert!(matches!(err, TransportError::NotRelayed(_)), "{method} {path}: {err:?}");
     }
 }
