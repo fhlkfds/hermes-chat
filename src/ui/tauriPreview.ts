@@ -1,10 +1,8 @@
 // The preview pane's Local files, through Rust: the Open dialog runs there, and only a file picked in it can be read
-// again (src-tauri/src/lib.rs `preview_pick_local`, `preview_read_local`). Images are read like the composer's
-// thumbnails, with `hermes_read_preview`.
+// again (src-tauri/src/lib.rs `preview_pick_local`, `preview_read_local`, `preview_read_local_image`).
 import { invoke } from "@tauri-apps/api/core";
 import { asError } from "../hermes/tauriPipe";
 import { readLocalFile, type FileView, type LocalText } from "../hermes/preview";
-import { readPreview } from "./previews";
 
 export type LocalFiles = {
   /** Opens the Open dialog; null when the owner cancels. */
@@ -18,6 +16,9 @@ export const tauriLocalFiles: LocalFiles = {
   read: (file) =>
     readLocalFile(file, {
       readText: (path) => invoke<LocalText>("preview_read_local", { path }).catch(asError),
-      readImage: async (path) => URL.createObjectURL(await readPreview(path)),
+      readImage: async (path) => {
+        const bytes = await invoke<ArrayBuffer>("preview_read_local_image", { path }).catch(asError);
+        return URL.createObjectURL(new Blob([bytes]));
+      },
     }),
 };

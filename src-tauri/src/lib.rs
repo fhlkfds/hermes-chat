@@ -192,16 +192,20 @@ async fn preview_pick_local(app: tauri::AppHandle, picked: State<'_, PickedFiles
     let Some(path) = rx.await.map_err(|e| e.to_string())? else { return Ok(None) };
     let path = path.into_path().map_err(|e| e.to_string())?;
     let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
-    let path = path.display().to_string();
-    picked.allow(&path);
+    let path = picked.allow(&path.display().to_string()).map_err(|e| e.to_string())?;
     Ok(Some(PickedFile { path, name }))
 }
 
-/// The start of a local file picked in `preview_pick_local`, as text. Images are read with `hermes_read_preview`.
+/// The start of a local file picked in `preview_pick_local`, as text.
 #[tauri::command]
 async fn preview_read_local(picked: State<'_, PickedFiles>, path: String) -> Result<LocalText, String> {
-    picked.check(&path).map_err(|e| e.to_string())?;
-    transport::read_local_text(&path).await.map_err(|e| e.to_string())
+    picked.read(&path).await.map_err(|e| e.to_string())
+}
+
+/// Image bytes from the same retained handle as text previews, never from a newly resolved path.
+#[tauri::command]
+async fn preview_read_local_image(picked: State<'_, PickedFiles>, path: String) -> Result<tauri::ipc::Response, String> {
+    picked.read_image(&path).await.map(tauri::ipc::Response::new).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -234,6 +238,7 @@ pub fn run() {
             chat_export,
             preview_pick_local,
             preview_read_local,
+            preview_read_local_image,
             notify_desktop,
             system_fonts
         ])

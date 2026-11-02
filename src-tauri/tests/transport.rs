@@ -479,11 +479,68 @@ async fn refuses_a_folder_a_missing_file_or_a_relative_path_for_the_preview() {
     assert_eq!(err("notes.txt".into()).await, "it isn't a full path");
 }
 
-#[test]
-fn only_files_picked_in_the_open_dialog_can_be_read_for_the_preview() {
+#[tokio::test]
+async fn only_files_picked_in_the_open_dialog_can_be_read_for_the_preview() {
     let picked = transport::PickedFiles::default();
-    assert_eq!(picked.check("/home/liam/.ssh/id_ed25519").err().unwrap().to_string(), "it wasn't picked in the Open dialog");
-    picked.allow("/home/liam/notes.md");
-    assert!(picked.check("/home/liam/notes.md").is_ok());
-    assert!(picked.check("/home/liam/notes.md/../.ssh/id_ed25519").is_err());
+    assert_eq!(picked.read("/home/liam/.ssh/id_ed25519").await.err().unwrap().to_string(), "it wasn't picked in the Open dialog");
+    let dir = scratch("picked-files");
+    let notes = dir.join("notes.md");
+    std::fs::write(&notes, "notes").unwrap();
+    let path = picked.allow(&path_of(&notes)).unwrap();
+    assert_eq!(picked.read(&path).await.unwrap().text, "notes");
+    assert!(picked.read(&format!("{path}/../secret")).await.is_err());
+}
+
+#[tokio::test]
+async fn reload_uses_the_picked_file_even_after_path_or_symlink_replacement() {
+    use std::os::unix::fs::symlink;
+    let dir = scratch("picked-replaced");
+    let notes = dir.join("notes.md");
+    let secret = dir.join("secret");
+    std::fs::write(&notes, "picked").unwrap();
+    std::fs::write(&secret, "not picked").unwrap();
+    let picked = transport::PickedFiles::default();
+    let path = picked.allow(&path_of(&notes)).unwrap();
+    std::fs::rename(&notes, dir.join("original")).unwrap();
+    symlink(&secret, &notes).unwrap();
+    assert_eq!(picked.read(&path).await.unwrap().text, "picked");
+    std::fs::remove_file(&notes).unwrap();
+    std::fs::write(&notes, "replacement").unwrap();
+    assert_eq!(picked.read(&path).await.unwrap().text, "picked");
+    // In-place changes to the actual picked file still appear on Reload, even with simultaneous reads.
+    std::fs::write(dir.join("original"), "updated").unwrap();
+    let (a, b) = tokio::join!(picked.read(&path), picked.read(&path));
+    assert_eq!(a.unwrap().text, "updated");
+    assert_eq!(b.unwrap().text, "updated");
+}
+
+#[tokio::test]
+async fn local_preview_refuses_fifos_and_devices_without_waiting_for_a_writer() {
+    let dir = scratch("picked-fifo");
+    let fifo = dir.join("pipe");
+    let cpath = std::ffi::CString::new(path_of(&fifo)).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o600) }, 0);
+    for path in [path_of(&fifo), "/dev/zero".into()] {
+        let read = tokio::time::timeout(Duration::from_secs(2), transport::read_local_text(&path)).await.unwrap();
+        assert_eq!(read.err().unwrap().to_string(), "it isn't a regular file");
+        assert!(transport::PickedFiles::default().allow(&path).is_err());
+    }
+}
+
+#[tokio::test]
+async fn local_image_preview_keeps_the_picked_handle_and_checks_its_content_and_size() {
+    let dir = scratch("picked-image");
+    let image = dir.join("image.png");
+    std::fs::write(&image, b"\x89PNG\r\n\x1a\noriginal").unwrap();
+    let picked = transport::PickedFiles::default();
+    assert!(picked.read_image(&path_of(&image)).await.is_err());
+    let path = picked.allow(&path_of(&image)).unwrap();
+    std::fs::rename(&image, dir.join("original.png")).unwrap();
+    std::fs::write(&image, b"\x89PNG\r\n\x1a\nreplacement").unwrap();
+    assert_eq!(picked.read_image(&path).await.unwrap(), b"\x89PNG\r\n\x1a\noriginal");
+    std::fs::write(dir.join("original.png"), "secret text").unwrap();
+    assert_eq!(picked.read_image(&path).await.err().unwrap().to_string(), "it isn't an image");
+    let f = std::fs::OpenOptions::new().write(true).open(dir.join("original.png")).unwrap();
+    f.set_len(transport::PREVIEW_MAX_BYTES + 1).unwrap();
+    assert!(matches!(picked.read_image(&path).await, Err(TransportError::FileTooLarge { .. })));
 }

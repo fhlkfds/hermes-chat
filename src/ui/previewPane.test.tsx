@@ -55,7 +55,7 @@ function localDisk(files: Record<string, FileView | Error>) {
  */
 async function signedIn({ local = localDisk({}) } = {}) {
   const server = new FakeHermes();
-  server.sessions = [row("fix", 1, { pinned: true, title: "Fix the app" })];
+  server.sessions = [row("fix", 1, { pinned: true, title: "Fix the app" }), row("other", 2, { pinned: true, title: "Another chat" })];
   server.transcripts = {
     fix: [
       { role: "user", text: "Why does the app crash?" },
@@ -93,7 +93,7 @@ async function openTool(user: ReturnType<typeof userEvent.setup>, name: string) 
 
 describe("Opening the preview pane", () => {
   it("opens a link from a reply in the pane, in a frame that can't reach the app, and leaves the chat as it was", async () => {
-    const { user } = await signedIn();
+    const { user, server, hermes } = await signedIn();
     const link = screen.getByRole("link", { name: "the docs" });
     // A plain click would have replaced the app's own window with the page.
     expect(fireEvent.click(link)).toBe(false);
@@ -108,6 +108,9 @@ describe("Opening the preview pane", () => {
 
     // The chat is still there and still sends.
     await user.type(screen.getByPlaceholderText("Message Hermes"), "Thanks{Enter}");
+    await settle(hermes);
+    expect(server.requests.filter((r) => r.method === "prompt.submit").map((r) => r.params.text)).toEqual(["Thanks"]);
+    expect((screen.getByPlaceholderText("Message Hermes") as HTMLTextAreaElement).value).toBe("");
     expect(screen.getByText(/It reads a missing file/)).toBeTruthy();
   });
 
@@ -296,7 +299,7 @@ describe("Closing and resizing", () => {
   });
 
   it("covers the chat in a window too narrow for both, and goes back to the chat without closing", async () => {
-    // The main area is 600 px wide: less than the chat's 380 beside the pane's 300.
+    // The main area is 600 px wide: less than the chat's 440 beside the pane's 300.
     vi.stubGlobal(
       "ResizeObserver",
       class {
@@ -315,7 +318,7 @@ describe("Closing and resizing", () => {
     // The chat underneath can't be reached while the pane covers it.
     expect(document.querySelector(".main-chat")!.hasAttribute("inert")).toBe(true);
 
-    await user.click(within(pane()).getByRole("button", { name: "Back to the chat (Esc)" }));
+    await user.click(within(pane()).getByRole("button", { name: "Back to the chat" }));
     expect(paneOpen()).toBe(false);
     expect(document.querySelector(".main-chat")!.hasAttribute("inert")).toBe(false);
     await user.type(screen.getByPlaceholderText("Message Hermes"), "still here");
@@ -325,6 +328,38 @@ describe("Closing and resizing", () => {
     await user.keyboard("{Escape}");
     expect(paneOpen()).toBe(false);
     expect(screen.getByRole("button", { name: "Show the preview" })).toBeTruthy();
+  });
+
+  it.each(["chat", "new", "search"])("shows the destination after %s navigation while the preview covers the chat", async (destination) => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(private cb: ResizeObserverCallback) {}
+        observe() {
+          this.cb([{ contentRect: { width: 700 } } as ResizeObserverEntry], this as unknown as ResizeObserver);
+        }
+        disconnect() {}
+      },
+    );
+    const { user, hermes } = await signedIn();
+    await user.click(screen.getByRole("link", { name: "the docs" }));
+    expect(pane().className).toContain("overlay");
+    if (destination === "new") {
+      await user.click(screen.getByRole("button", { name: "New chat (Ctrl+N)" }));
+    } else if (destination === "chat") {
+      await user.click(screen.getByRole("button", { name: /Another chat/ }));
+    } else {
+      await user.click(screen.getByRole("button", { name: "Search all chats (Ctrl+K)" }));
+      await user.type(screen.getByPlaceholderText("Search all chats, including Settled"), "Another");
+      await user.click(await within(screen.getByRole("dialog", { name: "Search chats" })).findByRole("button", { name: /Another chat/ }));
+    }
+    await settle(hermes);
+    expect(paneOpen()).toBe(false);
+    expect(document.querySelector(".main-chat")!.hasAttribute("inert")).toBe(false);
+    expect(screen.getByPlaceholderText("Message Hermes")).toBeTruthy();
+    if (destination !== "new") expect(document.querySelector(".chat-head")!.textContent).toContain("Another chat");
+    await user.click(screen.getByRole("button", { name: "Show the preview" }));
+    expect(within(pane()).getByTitle("Web page: https://docs.example.com/crash")).toBeTruthy();
   });
 
   it("closes when the owner switches profile, and a Server file is then read for the new profile", async () => {

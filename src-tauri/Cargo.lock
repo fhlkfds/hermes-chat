@@ -1607,6 +1607,7 @@ dependencies = [
  "futures-util",
  "gtk",
  "keyring",
+ "libc",
  "reqwest",
  "serde",
  "serde_json",

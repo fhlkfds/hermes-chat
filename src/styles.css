@@ -348,7 +348,7 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .btn.danger:hover:not(:disabled) { background: rgba(248, 113, 113, 0.22); }
 
 /* composer */
-.composer-wrap { padding: 0 28px 22px; max-width: calc(var(--chat-width) + 56px); width: 100%; margin: 0 auto; }
+.composer-wrap { padding: 0 28px 22px; max-width: calc(var(--chat-width) + 56px); width: 100%; margin: 0 auto; container-type: inline-size; }
 .composer {
   background: var(--raised); border: 1px solid var(--line-2); border-radius: 16px; padding: 10px 10px 8px 14px;
   position: relative; transition: border-color 0.15s;
@@ -367,6 +367,7 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 }
 .composer textarea::placeholder { color: var(--faint); }
 .composer-bar { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.composer-bar > .icon-btn, .composer-bar > .send { flex: none; }
 .composer-keys { flex: 1; font-size: calc(11.5rem / 14); color: var(--faint); opacity: 0; transition: opacity 0.2s; }
 .composer:focus-within .composer-keys { opacity: 1; }
 .send {
@@ -379,14 +380,20 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 /* model picker and reasoning pill (ModelPicker.tsx), bottom left of the composer */
 .model-controls { display: flex; align-items: center; gap: 4px; min-width: 0; }
 .model-picker, .pill-wrap { position: relative; }
+.model-picker { min-width: 0; }
+.pill-wrap { flex: none; }
 .model-trigger, .reasoning-pill {
   display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 8px; border-radius: 8px;
-  font-size: calc(12.5rem / 14); color: var(--muted); max-width: 240px;
+  font-size: calc(12.5rem / 14); color: var(--muted); max-width: min(240px, 100%);
 }
 .model-trigger:hover, .model-trigger.on, .reasoning-pill:hover, .reasoning-pill.on { background: var(--raised-2); color: var(--text); }
 .model-trigger-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-fast-mark { color: var(--warn); flex: none; }
 .reasoning-pill { height: 22px; padding: 0 8px; border-radius: 999px; border: 1px solid var(--line-2); font-size: calc(11.5rem / 14); font-weight: 500; }
+@container (max-width: 600px) {
+  .composer-keys { display: none; }
+  .model-controls { flex: 1; }
+}
 /* `.menu` is fixed to the window; this one sits above its pill. */
 .menu.pill-menu { position: absolute; left: 0; top: auto; bottom: calc(100% + 8px); min-width: 150px; }
 .model-popover {

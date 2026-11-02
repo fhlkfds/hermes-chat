@@ -103,7 +103,7 @@ export function PreviewPane({
       {!overlay && <ResizeHandle width={width} maxWidth={maxWidth} onResize={onResize} onDragging={setDragging} />}
       <header className="preview-head">
         {overlay && (
-          <button className="icon-btn" title="Back to the chat (Esc)" onClick={onHide}>
+          <button className="icon-btn" title="Back to the chat" onClick={onHide}>
             <ArrowLeft size={16} />
           </button>
         )}

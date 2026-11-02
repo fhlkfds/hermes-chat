@@ -41,7 +41,7 @@ const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const withoutProfile = ({ profile: _profile, ...pick }: StickyModelPick): ModelPick => pick;
 
 /** The narrowest the chat gets beside the preview pane; narrower than this and the pane covers the chat instead. */
-const CHAT_MIN_WIDTH = 380;
+const CHAT_MIN_WIDTH = 440;
 const PREVIEW_DEFAULT_WIDTH = 480;
 
 /** How the preview pane names the Hermes server: the SSH target, or the dashboard's host. */
@@ -258,6 +258,7 @@ export function Main({
   // Every move between chats is kept as the profile's last open chat, so it reopens at the next launch whether or not
   // the app closes cleanly. Going somewhere also ends the wait to reopen the last one.
   const openChat = (id: string | null, remember = true) => {
+    setPreviewHidden(true);
     setSelectedId(id);
     setReopening(undefined);
     setPicked(null);
@@ -271,6 +272,7 @@ export function Main({
   };
 
   const pick = (found: Found) => {
+    setPreviewHidden(true);
     hermes.reveal(found);
     setSelectedId(found.chatId);
     setReopening(undefined);
