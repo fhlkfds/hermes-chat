@@ -45,7 +45,8 @@ export const DEFAULT_APPEARANCE: Appearance = {
   wordWrap: false,
 };
 export const CHAT_WIDTHS = [600, 680, 740, 820, 900, 1000, 1100, 1200, 0];
-const MAX_CUSTOM_THEMES = 50;
+/** More than anyone needs; the editor stops offering new themes here. */
+export const MAX_CUSTOM_THEMES = 50;
 export const UI_SIZES = [12, 13, 14, 15, 16, 17, 18, 20];
 export const MONO_SIZES = [10, 11, 12, 13, 14, 15, 16, 18, 20];
 

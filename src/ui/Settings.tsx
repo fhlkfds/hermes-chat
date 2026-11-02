@@ -6,7 +6,7 @@ import { ArrowLeft, Download, KeyRound, Lock, LogOut, Palette, Settings2, Trash2
 import type { Chat, ConnectionStatus } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
 import { TRANSCRIPT_LIMIT_BYTES } from "../hermes/chatCache";
-import { STATUS_LABEL, fmtSize, routeLabel } from "./bits";
+import { STATUS_LABEL, arrowSelect, fmtSize, routeLabel } from "./bits";
 import type { AppearanceStore, Fonts } from "./appearance";
 import { AppearanceSettings } from "./AppearanceSettings";
 
@@ -89,7 +89,12 @@ export function SettingsScreen({
           <ArrowLeft size={15} /> Back to chat
         </button>
         <h1>Settings</h1>
-        <div className="settings-tabs" role="tablist" aria-label="Settings">
+        <div
+          className="settings-tabs"
+          role="tablist"
+          aria-label="Settings"
+          onKeyDown={(e) => arrowSelect(e, TABS.map((t) => t.id), tab, setTab)}
+        >
           {TABS.map(({ id, label, Icon }) => (
             <button
               key={id}
@@ -97,6 +102,7 @@ export function SettingsScreen({
               className={`settings-tab ${tab === id ? "on" : ""}`}
               role="tab"
               aria-selected={tab === id}
+              tabIndex={tab === id ? 0 : -1}
               aria-controls={`settings-panel-${id}`}
               onClick={() => setTab(id)}
             >

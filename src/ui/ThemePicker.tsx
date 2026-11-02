@@ -1,8 +1,9 @@
 // Settings, Appearance: the color scheme, the themes (built-in and the owner's own), contrast, and chat width. A theme
 // is four colors per mode (themes.ts); the editor shows a small copy of the app in both modes as the colors change.
-import { useState, useSyncExternalStore, type CSSProperties } from "react";
+import { useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import { Check, Copy, Moon, Paintbrush, Pencil, Plus, RotateCcw, Sun, Trash2 } from "lucide-react";
-import { CHAT_WIDTHS, DEFAULT_APPEARANCE, themeOf, type Appearance, type AppearanceStore } from "./appearance";
+import { CHAT_WIDTHS, DEFAULT_APPEARANCE, MAX_CUSTOM_THEMES, themeOf, type Appearance, type AppearanceStore } from "./appearance";
+import { arrowSelect } from "./bits";
 import {
   BUILTIN_THEMES,
   PALETTE_KEYS,
@@ -58,9 +59,21 @@ const SCHEMES: { id: Scheme; label: string }[] = [
 function SchemePicker({ a, set }: { a: Appearance; set: (c: Partial<Appearance>) => void }) {
   const theme = themeOf(a);
   return (
-    <div className="scheme-grid" role="radiogroup" aria-label="Color scheme">
+    <div
+      className="scheme-grid"
+      role="radiogroup"
+      aria-label="Color scheme"
+      onKeyDown={(e) => arrowSelect(e, SCHEMES.map((s) => s.id), a.scheme, (scheme) => set({ scheme }))}
+    >
       {SCHEMES.map(({ id, label }) => (
-        <button key={id} className={`scheme-card ${a.scheme === id ? "on" : ""}`} role="radio" aria-checked={a.scheme === id} onClick={() => set({ scheme: id })}>
+        <button
+          key={id}
+          className={`scheme-card ${a.scheme === id ? "on" : ""}`}
+          role="radio"
+          aria-checked={a.scheme === id}
+          tabIndex={a.scheme === id ? 0 : -1}
+          onClick={() => set({ scheme: id })}
+        >
           {id === "system" ? (
             <div className="mini-split">
               <MiniApp palette={theme.light} mode="light" contrast={a.contrast} />
@@ -76,8 +89,11 @@ function SchemePicker({ a, set }: { a: Appearance; set: (c: Partial<Appearance>)
   );
 }
 
-/** A theme being made or changed. `id` is the custom theme it replaces; a new one has none. */
-type Draft = { id?: string; name: string; light: Palette; dark: Palette };
+/**
+ * A theme being made or changed. `id` is the custom theme it replaces; a new one has none. `session` tells one opening
+ * of the editor from the next, so starting another draft starts afresh.
+ */
+type Draft = { id?: string; session: number; name: string; light: Palette; dark: Palette };
 
 function ColorField({ label, value, onChange }: { label: string; value: string; onChange: (hex: string) => void }) {
   const [text, setText] = useState(value);
@@ -231,6 +247,7 @@ function ThemeCard({
   selected,
   mode,
   custom,
+  canDuplicate,
   onPick,
   onDuplicate,
   onEdit,
@@ -241,6 +258,8 @@ function ThemeCard({
   /** The mode showing, ringed on the selected theme. */
   mode: Mode;
   custom: boolean;
+  /** False once the owner has as many themes as are kept. */
+  canDuplicate: boolean;
   onPick: (mode?: Mode) => void;
   onDuplicate: () => void;
   onEdit: () => void;
@@ -288,7 +307,13 @@ function ThemeCard({
                 </button>
               </>
             )}
-            <button className="icon-btn small-icon" aria-label={`Duplicate ${theme.name}`} title="Duplicate and edit" onClick={onDuplicate}>
+            <button
+              className="icon-btn small-icon"
+              aria-label={`Duplicate ${theme.name}`}
+              title={canDuplicate ? "Duplicate and edit" : `You have ${MAX_CUSTOM_THEMES} themes of your own`}
+              disabled={!canDuplicate}
+              onClick={onDuplicate}
+            >
               <Copy size={13} />
             </button>
           </>
@@ -300,13 +325,21 @@ function ThemeCard({
 
 function Themes({ a, mode, set }: { a: Appearance; mode: Mode; set: (c: Partial<Appearance>) => void }) {
   const [editing, setEditing] = useState<Draft | "import">();
+  const sessions = useRef(0);
   const all = [...BUILTIN_THEMES, ...a.customThemes];
   const names = (except?: string) => all.filter((t) => t.id !== except).map((t) => t.name);
-  const startFrom = (t: Theme, name: string) => setEditing({ name: freeName(name, names()), light: { ...t.light }, dark: { ...t.dark } });
+  // Past the limit, loading drops the extra themes, so none is offered.
+  const full = a.customThemes.length >= MAX_CUSTOM_THEMES;
+  const fullNote = full ? `You have ${MAX_CUSTOM_THEMES} themes of your own. Delete one to add another.` : undefined;
+  const edit = (d: Omit<Draft, "session">) => setEditing({ ...d, session: ++sessions.current });
+  const startFrom = (t: Theme, name: string) => edit({ name: freeName(name, names()), light: { ...t.light }, dark: { ...t.dark } });
 
-  const save = (d: Draft) => {
-    const theme: Theme = { id: d.id ?? newThemeId(), name: d.name, light: d.light, dark: d.dark };
-    const customThemes = d.id ? a.customThemes.map((t) => (t.id === d.id ? theme : t)) : [...a.customThemes, theme];
+  const save = (d: Omit<Draft, "session">) => {
+    // A theme deleted while it was being edited comes back as a new one.
+    const replaces = d.id && a.customThemes.some((t) => t.id === d.id) ? d.id : undefined;
+    if (!replaces && full) return;
+    const theme: Theme = { id: replaces ?? newThemeId(), name: d.name, light: d.light, dark: d.dark };
+    const customThemes = replaces ? a.customThemes.map((t) => (t.id === replaces ? theme : t)) : [...a.customThemes, theme];
     set({ customThemes, themeId: theme.id });
     setEditing(undefined);
   };
@@ -317,10 +350,10 @@ function Themes({ a, mode, set }: { a: Appearance; mode: Mode; set: (c: Partial<
       <div className="appearance-head">
         <h3>Themes</h3>
         <div className="appearance-pickers">
-          <button className="btn" onClick={() => startFrom(themeOf(a), "My theme")}>
+          <button className="btn" disabled={full} title={fullNote} onClick={() => startFrom(themeOf(a), "My theme")}>
             <Paintbrush size={14} /> Create theme
           </button>
-          <button className="btn" onClick={() => setEditing("import")}>
+          <button className="btn" disabled={full} title={fullNote} onClick={() => setEditing("import")}>
             <Plus size={14} /> Add theme
           </button>
         </div>
@@ -332,7 +365,7 @@ function Themes({ a, mode, set }: { a: Appearance; mode: Mode; set: (c: Partial<
         />
       ) : editing ? (
         <ThemeEditor
-          key={editing.id ?? "new"}
+          key={editing.session}
           draft={editing}
           contrast={a.contrast}
           taken={names(editing.id)}
@@ -351,14 +384,16 @@ function Themes({ a, mode, set }: { a: Appearance; mode: Mode; set: (c: Partial<
               mode={mode}
               custom={custom}
               onPick={(m) => pick(t, m)}
+              canDuplicate={!full}
               onDuplicate={() => startFrom(t, `${t.name} copy`)}
-              onEdit={() => setEditing({ id: t.id, name: t.name, light: { ...t.light }, dark: { ...t.dark } })}
-              onDelete={() =>
+              onEdit={() => edit({ id: t.id, name: t.name, light: { ...t.light }, dark: { ...t.dark } })}
+              onDelete={() => {
+                if (editing !== "import" && editing?.id === t.id) setEditing(undefined);
                 set({
                   customThemes: a.customThemes.filter((o) => o.id !== t.id),
                   ...(a.themeId === t.id ? { themeId: DEFAULT_APPEARANCE.themeId } : {}),
-                })
-              }
+                });
+              }}
             />
           );
         })}

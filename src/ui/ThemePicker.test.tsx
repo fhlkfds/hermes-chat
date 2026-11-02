@@ -74,6 +74,21 @@ describe("Settings tabs", () => {
     expect(screen.queryByRole("heading", { name: "Color scheme" })).toBeNull();
   });
 
+  it("move with the arrow keys, Home and End, with only the selected tab in the Tab order", async () => {
+    settings();
+    const [general, appearance] = screen.getAllByRole("tab");
+    expect([general.tabIndex, appearance.tabIndex]).toEqual([0, -1]);
+    general.focus();
+    await userEvent.keyboard("{ArrowRight}");
+    expect(appearance.getAttribute("aria-selected")).toBe("true");
+    expect(document.activeElement).toBe(appearance);
+    expect([general.tabIndex, appearance.tabIndex]).toEqual([-1, 0]);
+    await userEvent.keyboard("{ArrowRight}");
+    expect(document.activeElement).toBe(general);
+    await userEvent.keyboard("{End}");
+    expect(appearance.getAttribute("aria-selected")).toBe("true");
+  });
+
   it("show the appearance settings, and only them, on Appearance", async () => {
     settings();
     await userEvent.click(screen.getByRole("tab", { name: "Appearance" }));
@@ -93,6 +108,18 @@ describe("Color scheme", () => {
     expect(root.dataset.mode).toBe("light");
     expect(root.style.getPropertyValue("--bg")).toBe(BUILTIN_THEMES[0].light.background);
     expect(kept(storage).scheme).toBe("light");
+  });
+
+  it("moves with the arrow keys like a radio group", async () => {
+    const { root } = shown();
+    const dark = screen.getByRole("radio", { name: "Dark" });
+    expect(screen.getAllByRole("radio").map((r) => r.tabIndex)).toEqual([-1, -1, 0]);
+    dark.focus();
+    await userEvent.keyboard("{ArrowLeft}");
+    expect(root.dataset.mode).toBe("light");
+    expect(document.activeElement).toBe(screen.getByRole("radio", { name: "Light" }));
+    await userEvent.keyboard("{Home}");
+    expect(screen.getByRole("radio", { name: "System" }).getAttribute("aria-checked")).toBe("true");
   });
 
   it("follows the desktop while System is picked", async () => {
@@ -138,6 +165,35 @@ describe("Themes", () => {
     expect(customThemes).toHaveLength(1);
     expect(customThemes[0]).toMatchObject({ name: "Midnight", light: BUILTIN_THEMES[0].light, dark: { ...BUILTIN_THEMES[0].dark, accent: "#22aaff" } });
     expect(themeId).toBe(customThemes[0].id);
+  });
+
+  it("start afresh when another draft is started before the first is saved", async () => {
+    shown();
+    await userEvent.click(screen.getByRole("button", { name: "Duplicate Ocean" }));
+    await userEvent.click(screen.getByRole("button", { name: "Duplicate Grove" }));
+    const editor = screen.getByRole("group", { name: "New theme" });
+    expect((within(editor).getByRole("textbox", { name: "Theme name" }) as HTMLInputElement).value).toBe("Grove copy");
+    expect((within(editor).getAllByRole("textbox", { name: "Accent hex" })[1] as HTMLInputElement).value).toBe(BUILTIN_THEMES[2].dark.accent);
+  });
+
+  it("stop being offered once the owner has as many as are kept", async () => {
+    const many = Array.from({ length: 50 }, (_, i) => ({ id: `custom-t${i}`, name: `T${i}`, light: BUILTIN_THEMES[0].light, dark: BUILTIN_THEMES[0].dark }));
+    shown({ customThemes: many });
+    for (const name of ["Create theme", "Add theme", "Duplicate Ocean"])
+      expect((screen.getByRole("button", { name }) as HTMLButtonElement).disabled, name).toBe(true);
+    await userEvent.click(screen.getByRole("button", { name: "Delete T0" }));
+    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+    expect((screen.getByRole("button", { name: "Create theme" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("close the editor when the theme being edited is deleted", async () => {
+    const mine = { id: "custom-mine", name: "Mine", light: BUILTIN_THEMES[3].light, dark: BUILTIN_THEMES[3].dark };
+    const { storage } = shown({ themeId: "custom-mine", customThemes: [mine] });
+    await userEvent.click(screen.getByRole("button", { name: "Edit Mine" }));
+    await userEvent.click(screen.getByRole("button", { name: "Delete Mine" }));
+    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+    expect(screen.queryByRole("group", { name: "Edit Mine" })).toBeNull();
+    expect(kept(storage)).toMatchObject({ customThemes: [], themeId: "hermes" });
   });
 
   it("won't take a name another theme has", async () => {
