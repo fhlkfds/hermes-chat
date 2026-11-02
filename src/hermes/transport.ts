@@ -214,6 +214,8 @@ export class Hermes {
   private resuming = new Map<string, Promise<string>>();
   /** Chats the owner picked from a search though the list doesn't hold them; they stay in it until the profile changes. */
   private revealed = new Set<string>();
+  /** Chats the owner deleted here, or is deleting. A list read before the delete can't bring one back. */
+  private deleted = new Set<string>();
   /** Chats that had a turn running, or an Approval waiting, when the connection dropped. Reconnecting resumes them,
    * which brings back what Hermes is still waiting on. */
   private resumeOnReconnect = new Set<string>();
@@ -335,7 +337,7 @@ export class Hermes {
     const res = (await this.rest("GET", `api/sessions/search?${query}`)) as { results: SearchRow[] };
     const listed = new Map(this.snapshot.chats.map((c) => [c.id, c]));
     return res.results
-      .filter((r) => !r.archived)
+      .filter((r) => !r.archived && !this.deleted.has(r.id))
       .map((r): Found => {
         const c = listed.get(r.id);
         const snippet = snippetParts(r.snippet ?? "");
@@ -504,6 +506,39 @@ export class Hermes {
   /** Moves a chat to Active here at once, and pins it on the server. `settle` undoes it. */
   unsettle(chatId: string): Promise<void> {
     return this.setSettled(chatId, false);
+  }
+
+  /**
+   * Deletes a chat from Hermes for good, in every Hermes client (`DELETE /api/sessions/{id}`). It leaves the list here
+   * at once; if Hermes refuses, it comes back and the list says why. A chat with a reply running isn't deleted: stop
+   * the reply first. `profile` is the chat's, which the owner may switch away from while the delete is under way.
+   * Resolves to whether Hermes deleted it.
+   */
+  async delete(chatId: string): Promise<boolean> {
+    const chat = this.snapshot.chats.find((c) => c.id === chatId);
+    if (!chat || chat.running) return false;
+    const profile = this.profile;
+    this.deleted.add(chatId);
+    this.pinWanted.delete(chatId);
+    this.revealed.delete(chatId);
+    this.staleItems.delete(chatId);
+    this.resumeOnReconnect.delete(chatId);
+    if (this.viewing === chatId) this.viewing = undefined;
+    this.update({ chats: this.snapshot.chats.filter((c) => c.id !== chatId) });
+    this.saveList(profile, this.snapshot.chats);
+    try {
+      // A pin write still under way would otherwise land on a deleted session and report a failure.
+      await this.pinWrites.get(chatId);
+      await this.rest("DELETE", `api/sessions/${encodeURIComponent(chatId)}?${new URLSearchParams({ profile })}`);
+      return true;
+    } catch (e) {
+      this.deleted.delete(chatId);
+      if (this.profile !== profile) return false;
+      const chats = this.snapshot.chats.some((c) => c.id === chatId) ? this.snapshot.chats : [...this.snapshot.chats, chat];
+      this.update({ chats, syncError: `Couldn't delete "${chat.title}": ${(e as Error).message}` });
+      this.saveList(profile, chats);
+      return false;
+    }
   }
 
   /**
@@ -963,7 +998,7 @@ export class Hermes {
     const known = new Map(this.snapshot.chats.map((c) => [c.id, c]));
     let readOnScreen = false;
     const listed = [...rows.values()]
-      .filter((r) => !r.archived && lastActive(r) >= cutoff)
+      .filter((r) => !r.archived && !this.deleted.has(r.id) && lastActive(r) >= cutoff)
       .map((r): Chat => {
         const c = known.get(r.id);
         // A row read before this app's latest write is stale; the chat stays where the owner put it until the next sync.
@@ -995,14 +1030,19 @@ export class Hermes {
     const chats = [...onThisConnection, ...listed];
     this.update({ chats, syncError: undefined });
     if (readOnScreen) this.markRead(this.viewing!);
+    this.saveList(profile, chats);
+    return undefined;
+  }
+
+  /** Keeps the profile's list for the next start, without the chats' transcripts. */
+  private saveList(profile: string, chats: Chat[]) {
     this.cache.save(
       profile,
       chats.map(({ id, title, source, settled, updatedAt, unread }) => ({ id, title, source, settled, updatedAt, unread, items: [] })),
     );
-    return undefined;
   }
 
-  private async rest(method: "GET" | "PATCH", pathAndQuery: string, body?: unknown): Promise<unknown> {
+  private async rest(method: "GET" | "PATCH" | "DELETE", pathAndQuery: string, body?: unknown): Promise<unknown> {
     if (!this.pipe) throw new Error("Not connected to Hermes.");
     return JSON.parse(await this.pipe.request(method, pathAndQuery, body === undefined ? undefined : JSON.stringify(body)));
   }

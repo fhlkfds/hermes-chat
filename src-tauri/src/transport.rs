@@ -280,12 +280,13 @@ impl Dashboard {
         Ok(Pipe { outgoing, task })
     }
 
-    /// One dashboard REST call for the webview: `GET` or `PATCH` on a path under `api/`, with a JSON
-    /// body. Returns the response body on 2xx.
+    /// One dashboard REST call for the webview: `GET`, `PATCH` or `DELETE` on a path under `api/`, with a
+    /// JSON body. Returns the response body on 2xx.
     pub async fn request(&self, method: &str, path_and_query: &str, body: Option<String>) -> Result<String, TransportError> {
         let method = match method {
             "GET" => Method::GET,
             "PATCH" => Method::PATCH,
+            "DELETE" => Method::DELETE,
             other => return Err(TransportError::NotRelayed(format!("{other} requests"))),
         };
         let (path, query) = path_and_query.split_once('?').unwrap_or((path_and_query, ""));
