@@ -1,4 +1,5 @@
-// The Settings screen, ported from the prototype: the connection and Sign out, the local cache, and older history.
+// The Settings screen, ported from the prototype: the connection and Sign out, appearance, the local cache, and older
+// history.
 // Profiles are switched in the list's header, not here (ADR 0001).
 import { useState } from "react";
 import { ArrowLeft, Download, KeyRound, Lock, LogOut, Trash2 } from "lucide-react";
@@ -6,6 +7,8 @@ import type { Chat, ConnectionStatus } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
 import { TRANSCRIPT_LIMIT_BYTES } from "../hermes/chatCache";
 import { STATUS_LABEL, fmtSize, routeLabel } from "./bits";
+import type { AppearanceStore, Fonts } from "./appearance";
+import { AppearanceSettings } from "./AppearanceSettings";
 
 /** What a pull added: the older chats in Settled, and any pinned in another Hermes client, which are Active. */
 function pulledText(added: Chat[]): string {
@@ -27,6 +30,8 @@ export function SettingsScreen({
   profile,
   olderPulled,
   cacheBytes,
+  appearance,
+  listFonts,
   onClearCache,
   onPullOlder,
   onSignOut,
@@ -42,6 +47,9 @@ export function SettingsScreen({
   olderPulled: boolean;
   /** The storage the saved chat lists and Saved copies take now. */
   cacheBytes: () => number;
+  appearance: AppearanceStore;
+  /** The installed font families, for the font pickers. */
+  listFonts: () => Promise<Fonts>;
   onClearCache: () => void;
   /** Resolves to the older chats added. */
   onPullOlder: () => Promise<Chat[]>;
@@ -101,6 +109,8 @@ export function SettingsScreen({
           </div>
           <p className="muted small settings-note">Signing out deletes the saved password from the keyring. You type it again at the next sign-in.</p>
         </section>
+
+        <AppearanceSettings store={appearance} listFonts={listFonts} />
 
         <section>
           <h2>Local cache</h2>

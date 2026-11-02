@@ -61,6 +61,10 @@ async fn patch_session(Path(id): Path<String>, headers: HeaderMap, body: String)
     Json(json!({"id": id, "content_type": content_type, "body": serde_json::from_str::<Value>(&body).unwrap()})).into_response()
 }
 
+async fn delete_session(Path(id): Path<String>, RawQuery(query): RawQuery) -> Response {
+    Json(json!({"deleted": id, "query": query})).into_response()
+}
+
 /// The dashboard rotating an expired access token through the refresh cookie (dashboard_auth middleware).
 async fn rotate() -> Response {
     (AppendHeaders([(header::SET_COOKIE, "hermes_session_at=AT2; Path=/; HttpOnly")]), Json(json!({}))).into_response()
@@ -119,7 +123,7 @@ async fn stub() -> Url {
         .route("/api/auth/ws-ticket", post(ws_ticket))
         .route("/api/ws", get(api_ws))
         .route("/api/sessions", get(list_sessions))
-        .route("/api/sessions/{id}", patch(patch_session))
+        .route("/api/sessions/{id}", patch(patch_session).delete(delete_session))
         .route("/api/rotate", get(rotate))
         .route("/api/expire", get(expire))
         .route("/api/busy", get(busy));
@@ -246,6 +250,13 @@ async fn relays_a_rest_patch_with_a_json_body() {
 }
 
 #[tokio::test]
+async fn relays_a_rest_delete() {
+    let dashboard = signed_in().await;
+    let got: Value = serde_json::from_str(&dashboard.request("DELETE", "api/sessions/20261031_120000_abc?profile=default", None).await.unwrap()).unwrap();
+    assert_eq!(got, json!({"deleted": "20261031_120000_abc", "query": "profile=default"}));
+}
+
+#[tokio::test]
 async fn keeps_cookies_the_dashboard_rotates() {
     let dashboard = signed_in().await;
     get_json(&dashboard, "api/rotate").await;
@@ -268,9 +279,9 @@ async fn a_failed_rest_call_reports_status_and_body() {
 }
 
 #[tokio::test]
-async fn relays_only_get_and_patch_under_api() {
+async fn relays_only_get_patch_and_delete_under_api() {
     let dashboard = signed_in().await;
-    for (method, path) in [("GET", "auth/logout"), ("GET", "api/../auth/logout"), ("DELETE", "api/sessions/x"), ("POST", "api/sessions")] {
+    for (method, path) in [("GET", "auth/logout"), ("GET", "api/../auth/logout"), ("DELETE", "auth/logout"), ("PUT", "api/sessions/x"), ("POST", "api/sessions")] {
         let err = dashboard.request(method, path, None).await.err().unwrap();
         assert!(matches!(err, TransportError::NotRelayed(_)), "{method} {path}: {err:?}");
     }

@@ -14,6 +14,8 @@ import { ChatPane } from "./ui/ChatPane";
 import { SearchPalette } from "./ui/Search";
 import { SettingsScreen } from "./ui/Settings";
 import { composing } from "./ui/bits";
+import { appearanceStore } from "./ui/appearance";
+import { systemFonts } from "./ui/tauriFonts";
 import { SignIn } from "./ui/SignIn";
 
 const SAVED = "hermes-chat.sign-in"; // Everything but the password, which is in the system keyring.
@@ -43,6 +45,8 @@ const account: Account = {
 };
 
 const savedDrafts = drafts(localStorage);
+// Applied as the app loads, so the chosen fonts show from the first screen.
+const appearance = appearanceStore(localStorage, document.documentElement);
 
 /** What launch ends in: signed in with the saved password, or the sign-in screen and why. */
 type Launch = { hermes: Hermes } | { initial: SignInDetails; error?: string };
@@ -377,6 +381,8 @@ export function Main({
             profile={profile}
             olderPulled={olderPulled}
             cacheBytes={() => hermes.cacheBytes()}
+            appearance={appearance}
+            listFonts={systemFonts}
             onClearCache={() => hermes.clearCache()}
             onPullOlder={() => hermes.pullOlderHistory()}
             onSignOut={onSignOut}
