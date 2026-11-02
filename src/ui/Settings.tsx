@@ -2,7 +2,7 @@
 // launch, voice, screenshots, the local cache, and older history. Appearance: how the app looks on this computer (AppearanceSettings.tsx).
 // Model: the profile's models on Hermes (ModelSettings.tsx).
 // Profiles are switched in the list's header, not here (ADR 0001).
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ArrowLeft, Cpu, Download, KeyRound, Lock, LogOut, Palette, Settings2, ShieldCheck, Trash2 } from "lucide-react";
 import type { Chat, ConnectionStatus } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
@@ -56,6 +56,7 @@ export function SettingsScreen({
   onSignOut,
   onClose,
   voiceSetup,
+  showTextGeneration,
 }: {
   status: ConnectionStatus;
   route?: Route;
@@ -85,6 +86,8 @@ export function SettingsScreen({
   onClose: () => void;
   /** The shown profile's voice set-up, for the Voice section. */
   voiceSetup?: () => Promise<VoiceSetup>;
+  /** Set, each time anew, to show the Model tab at the Text generation model: from a title that couldn't be regenerated. */
+  showTextGeneration?: object;
 }) {
   const [bytes, setBytes] = useState(cacheBytes);
   const [confirmClear, setConfirmClear] = useState(false);
@@ -92,7 +95,10 @@ export function SettingsScreen({
   const [pulled, setPulled] = useState<string>();
   const [pullError, setPullError] = useState<string>();
   const [signingOut, setSigningOut] = useState(false);
-  const [tab, setTab] = useState<Tab>("general");
+  const [tab, setTab] = useState<Tab>(showTextGeneration ? "model" : "general");
+  useEffect(() => {
+    if (showTextGeneration) setTab("model");
+  }, [showTextGeneration]);
 
   const pull = async () => {
     setPulling(true);
@@ -142,7 +148,7 @@ export function SettingsScreen({
         ) : tab === "model" ? (
           <div id="settings-panel-model" role="tabpanel" aria-labelledby="settings-tab-model">
             {/* A draft lives only while this tab is open, and for one profile. */}
-            <ModelSettings key={profile} api={modelSettings} profile={profile} connected={status === "connected"} />
+            <ModelSettings key={profile} api={modelSettings} profile={profile} connected={status === "connected"} showTextGeneration={showTextGeneration} />
           </div>
         ) : (
           <div id="settings-panel-general" role="tabpanel" aria-labelledby="settings-tab-general">

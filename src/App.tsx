@@ -273,6 +273,8 @@ export function Main({
     hermes.getSnapshot,
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // A new object each time a row asks Settings to show the Text generation model; the rail's button opens it plainly.
+  const [showTextGeneration, setShowTextGeneration] = useState<object>();
   const voice = useMemo<VoiceApi>(
     () => ({ setup: () => hermes.voiceSetup(), transcribe: (audio, mime) => hermes.transcribe(audio, mime), speak: (text) => hermes.speak(text) }),
     [hermes],
@@ -729,7 +731,7 @@ export function Main({
         onToggleList={() => setListOpen((o) => !o)}
         onNew={() => newChat()}
         onSearch={() => setSearchOpen(true)}
-        onSettings={() => { setProjectOpen(false); setSettingsOpen(true); }}
+        onSettings={() => { setProjectOpen(false); setShowTextGeneration(undefined); setSettingsOpen(true); }}
       />
       {listOpen && (
         <ChatList
@@ -780,6 +782,11 @@ export function Main({
           onDelete={deleteChat}
           onRename={(id, title, from) => hermes.rename(id, title, from)}
           onRegenTitle={(id) => hermes.regenerateTitle(id)}
+          onTextGenerationSettings={() => {
+            setProjectOpen(false);
+            setShowTextGeneration({});
+            setSettingsOpen(true);
+          }}
           onListProfiles={() => hermes.profiles()}
           onCheckOthers={() => void hermes.checkOtherProfiles()}
           onSwitchProfile={switchProfile}
@@ -835,6 +842,7 @@ export function Main({
             modelSettings={hermes.modelSettings}
             checkScreenshots={screenshots.support}
             voiceSetup={voice.setup}
+            showTextGeneration={showTextGeneration}
             onClearCache={() => hermes.clearCache()}
             onPullOlder={() => hermes.pullOlderHistory()}
             onSignOut={onSignOut}

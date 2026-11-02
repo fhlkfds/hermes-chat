@@ -186,6 +186,7 @@ code, pre, kbd { font-family: var(--mono); }
 .row.retitle-failed { flex-wrap: wrap; height: auto; min-height: 32px; }
 .row.retitle-failed .row-open { height: 32px; }
 .row.retitle-failed .row-rename-error { padding-left: 10px; }
+.row-rename-error .row-error-action { display: flex; margin-top: 3px; font-size: inherit; }
 
 .conn { display: flex; align-items: center; gap: 7px; font-size: calc(12.5rem / 14); color: var(--muted); min-width: 0; }
 .conn-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
@@ -647,6 +648,7 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 .settings h1 { font-size: calc(22rem / 14); font-weight: 600; margin: 14px 0 22px; letter-spacing: -0.01em; }
 .settings section { padding: 22px 0 26px; border-top: 1px solid var(--line); }
 .settings h2 { font-size: calc(14rem / 14); font-weight: 600; margin: 0 0 6px; }
+.settings h2[tabindex="-1"]:focus { outline: none; }
 .settings p { margin: 0 0 16px; font-size: calc(13rem / 14); line-height: 1.55; }
 .settings p.settings-note { margin: 12px 0 0; font-size: calc(12rem / 14); }
 .settings-headers { margin-top: 12px; line-height: 1.5; }
