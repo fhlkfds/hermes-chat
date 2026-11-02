@@ -6,7 +6,11 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{AppendHeaders, IntoResponse, Response};
 use axum::routing::{get, patch, post, put};
 use axum::{Json, Router};
-use hermes_chat::transport::{self, Dashboard, LocalFile, PipeEvent, SignIn, TransportError};
+use axum::extract::{Request, State};
+use axum::middleware::{self, Next};
+use axum::response::Redirect;
+use hermes_chat::transport::{self, Dashboard, ExtraHeader, LocalFile, PipeEvent, SignIn, TransportError};
+use std::sync::{Arc, Mutex};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -124,7 +128,11 @@ async fn session(mut ws: WebSocket, profile: Option<String>) {
 }
 
 async fn stub() -> Url {
-    let app = Router::new()
+    serve(stub_routes()).await
+}
+
+fn stub_routes() -> Router {
+    Router::new()
         .route("/auth/password-login", post(login))
         .route("/api/auth/ws-ticket", post(ws_ticket))
         .route("/api/ws", get(api_ws))
@@ -135,7 +143,10 @@ async fn stub() -> Url {
         .route("/api/model/moa", put(echo_write).post(echo_write))
         .route("/api/rotate", get(rotate))
         .route("/api/expire", get(expire))
-        .route("/api/busy", get(busy));
+        .route("/api/busy", get(busy))
+}
+
+async fn serve(app: Router) -> Url {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -143,7 +154,58 @@ async fn stub() -> Url {
 }
 
 fn sign_in(password: &str) -> SignIn {
-    SignIn { username: "liam".into(), password: password.into() }
+    SignIn { username: "liam".into(), password: password.into(), headers: Default::default() }
+}
+
+fn header(name: &str, value: &str) -> ExtraHeader {
+    ExtraHeader { name: name.into(), value: value.into() }
+}
+
+/// Every request a stub got: its path, and the value of `cf-access-client-secret` it carried.
+type Seen = Arc<Mutex<Vec<(String, Option<String>)>>>;
+
+/// Notes every request in `seen`, then refuses any without the Cloudflare Access service token, as Access would.
+async fn access_gate(State(seen): State<Seen>, req: Request, next: Next) -> Response {
+    let (id, secret) = (header_of(&req, "cf-access-client-id"), header_of(&req, "cf-access-client-secret"));
+    seen.lock().unwrap().push((req.uri().path().to_owned(), secret.clone()));
+    if id.as_deref() == Some("id.access") && secret.as_deref() == Some("s3cret") {
+        next.run(req).await
+    } else {
+        (StatusCode::FORBIDDEN, "Forbidden. You don't have permission to view this.").into_response()
+    }
+}
+
+/// A server on another origin that notes every request it gets.
+async fn other_site() -> (Url, Seen) {
+    let seen = Seen::default();
+    let app = Router::new().fallback(|| async { "elsewhere" }).layer(middleware::from_fn_with_state(seen.clone(), note));
+    (serve(app).await, seen)
+}
+
+async fn note(State(seen): State<Seen>, req: Request, next: Next) -> Response {
+    let secret = header_of(&req, "cf-access-client-secret");
+    seen.lock().unwrap().push((req.uri().path().to_owned(), secret));
+    next.run(req).await
+}
+
+fn header_of(req: &Request, name: &str) -> Option<String> {
+    req.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_owned)
+}
+
+/// The stub behind an Access-style gate, with one redirect within the dashboard and one to `elsewhere`.
+async fn gated_stub(elsewhere: &Url) -> (Url, Seen) {
+    let seen = Seen::default();
+    let away = elsewhere.join("steal").unwrap().to_string();
+    let app = stub_routes()
+        .route("/api/moved", get(|| async { Redirect::temporary("/api/sessions?moved=1") }))
+        .route("/api/away", get(move || async move { Redirect::temporary(&away) }))
+        .layer(middleware::from_fn_with_state(seen.clone(), access_gate));
+    (serve(app).await, seen)
+}
+
+fn access_sign_in() -> SignIn {
+    let headers = transport::extra_headers(&[header("CF-Access-Client-Id", "id.access"), header("CF-Access-Client-Secret", "s3cret")]).unwrap();
+    SignIn { headers, ..sign_in("hunter2") }
 }
 
 async fn next(rx: &mut mpsc::UnboundedReceiver<PipeEvent>) -> PipeEvent {
@@ -472,6 +534,97 @@ async fn refuses_to_preview_a_missing_or_oversized_image() {
     f.set_len(transport::PREVIEW_MAX_BYTES + 1).unwrap();
     let err = transport::read_preview(&path_of(&big)).await.err().unwrap();
     assert_eq!(err.to_string(), "it's 25.0 MB now, over the 25 MB limit");
+}
+
+#[tokio::test]
+async fn extra_headers_go_with_the_sign_in_rest_calls_and_the_socket() {
+    let (elsewhere, _) = other_site().await;
+    let (base, seen) = gated_stub(&elsewhere).await;
+    let dashboard = Dashboard::sign_in(&base, &access_sign_in()).await.expect("signed in through the gate");
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let _pipe = dashboard.open_pipe("default", move |e| drop(tx.send(e))).await.expect("socket opened through the gate");
+    assert_eq!(frame(next(&mut rx).await)["params"]["type"], "gateway.ready");
+    assert_eq!(get_json(&dashboard, "api/sessions?order=recent").await["query"], "order=recent");
+
+    let seen = seen.lock().unwrap().clone();
+    let paths: Vec<&str> = seen.iter().map(|(p, _)| p.as_str()).collect();
+    assert_eq!(paths, ["/auth/password-login", "/api/auth/ws-ticket", "/api/ws", "/api/sessions"]);
+    assert!(seen.iter().all(|(_, secret)| secret.as_deref() == Some("s3cret")), "{seen:?}");
+}
+
+#[tokio::test]
+async fn without_the_extra_headers_the_gate_refuses() {
+    let (elsewhere, _) = other_site().await;
+    let (base, _) = gated_stub(&elsewhere).await;
+    let err = Dashboard::sign_in(&base, &sign_in("hunter2")).await.err().unwrap();
+    assert!(matches!(err, TransportError::Unexpected { status: 403, .. }), "{err:?}");
+}
+
+#[tokio::test]
+async fn extra_headers_follow_a_redirect_within_the_dashboard_only() {
+    let (elsewhere, other_seen) = other_site().await;
+    let (base, _) = gated_stub(&elsewhere).await;
+    let dashboard = Dashboard::sign_in(&base, &access_sign_in()).await.expect("signed in");
+    assert_eq!(get_json(&dashboard, "api/moved").await["query"], "moved=1");
+
+    let err = dashboard.request("GET", "api/away", None).await.err().unwrap();
+    let origin = elsewhere.origin().ascii_serialization();
+    assert!(matches!(&err, TransportError::Redirected(to) if *to == origin), "{err:?}");
+    assert!(!err.to_string().contains("s3cret"));
+    assert!(other_seen.lock().unwrap().is_empty(), "the other site was asked: {:?}", other_seen.lock().unwrap());
+}
+
+#[tokio::test]
+async fn a_sign_in_redirected_to_another_site_stops_there() {
+    // Cloudflare Access sends a request without a valid token to its login page, on another origin.
+    let (elsewhere, other_seen) = other_site().await;
+    let login = elsewhere.join("cdn-cgi/access/login").unwrap().to_string();
+    let base = serve(Router::new().route("/auth/password-login", post(move || async move { Redirect::to(&login) }))).await;
+    let err = Dashboard::sign_in(&base, &access_sign_in()).await.err().unwrap();
+    assert!(matches!(err, TransportError::Redirected(_)), "{err:?}");
+    assert!(other_seen.lock().unwrap().is_empty());
+}
+
+#[test]
+fn builds_extra_headers_and_marks_their_values_sensitive() {
+    let map = transport::extra_headers(&[header(" CF-Access-Client-Id ", " id.access\t"), header("Authorization", "Bearer abc")]).unwrap();
+    assert_eq!(map.len(), 2);
+    let id = map.get("cf-access-client-id").unwrap();
+    assert_eq!(id.to_str().unwrap(), "id.access");
+    assert!(id.is_sensitive());
+    assert!(!format!("{map:?}").contains("Bearer abc"), "{map:?}");
+    assert!(transport::extra_headers(&[]).unwrap().is_empty());
+}
+
+#[test]
+fn refuses_extra_headers_that_are_malformed_reserved_or_set_twice() {
+    let cases = [
+        (vec![header("", "v")], "Extra request header 1: enter its name."),
+        (vec![header("X-Ok", "v"), header("Bad Header", "v")], "Extra request header 2: \"Bad Header\" isn't a header name."),
+        (vec![header("X-A\r\nX-Evil", "v")], "Extra request header 1: \"X-A\\r\\nX-Evil\" isn't a header name."),
+        (vec![header("X-A", "ok\r\nX-Evil: 1")], "Extra request header 1: the value of X-A can only hold"),
+        (vec![header("X-A", "ok\nmore")], "Extra request header 1: the value of X-A can only hold"),
+        (vec![header("X-A", "caf\u{e9}")], "Extra request header 1: the value of X-A can only hold"),
+        (vec![header("X-A", "  ")], "Extra request header 1: enter a value for X-A."),
+        (vec![header("X-A", &"a".repeat(8 * 1024 + 1))], "Extra request header 1: the value of X-A is over 8 KB."),
+        (vec![header("X-A", "1"), header("x-a", "2")], "Extra request header 2: x-a is set twice."),
+        (vec![header("Host", "evil")], "Extra request header 1: Hermes Chat sets Host itself."),
+        (vec![header("Cookie", "a=b")], "Extra request header 1: Hermes Chat sets Cookie itself."),
+        (vec![header("content-length", "0")], "Extra request header 1: Hermes Chat sets content-length itself."),
+        (vec![header("Sec-WebSocket-Key", "x")], "Extra request header 1: Hermes Chat sets Sec-WebSocket-Key itself."),
+        (vec![header("Proxy-Authorization", "x")], "Extra request header 1: Hermes Chat sets Proxy-Authorization itself."),
+        ((0..33).map(|i| header(&format!("X-{i}"), "v")).collect(), "Hermes Chat sends at most 32 extra request headers."),
+    ];
+    for (headers, want) in cases {
+        let err = transport::extra_headers(&headers).err().unwrap_or_else(|| panic!("accepted {:?}", headers.iter().map(|h| (&h.name, &h.value)).collect::<Vec<_>>())).to_string();
+        assert!(err.starts_with(want), "got {err:?}, want {want:?}");
+        // An error names the header, never its value.
+        for h in &headers {
+            if h.value.trim().len() > 1 && !h.name.is_empty() {
+                assert!(!err.contains(h.value.trim()), "{err:?} shows the value of {}", h.name);
+            }
+        }
+    }
 }
 
 #[test]
