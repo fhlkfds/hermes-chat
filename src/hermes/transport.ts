@@ -247,6 +247,8 @@ export type Snapshot = {
   others: OtherProfiles;
   /** The models the shown profile can switch to (`loadModels`); none until read. */
   models?: ModelCatalog;
+  /** The switch to `profile` from `from`, until the new profile's list has been read. `error`: why it hasn't yet. */
+  switching?: { from: string; error?: string };
 };
 
 /**
@@ -318,6 +320,9 @@ export class Hermes {
   private readSinceListRead = new Set<string>();
   /** Resumes in flight, so opening a chat and replying in it share one. */
   private resuming = new Map<string, Promise<string>>();
+  /** Chats that had a reply running or an Approval waiting when the owner switched away from their profile, by
+   * profile. Switching back resumes them once the list is read, which brings back what Hermes is still waiting on. */
+  private busyIn = new Map<string, string[]>();
   /** Chats the owner picked from a search though the list doesn't hold them; they stay in it until the profile changes. */
   private revealed = new Set<string>();
   /** Chats archived or restored here whose flag Hermes hasn't confirmed yet: the `archived` flag each should have.
@@ -447,20 +452,37 @@ export class Hermes {
 
   /**
    * Shows another profile's chats: its last synced list at once, then a fresh one once the connection is open again
-   * for that profile. The profile is remembered for the next sign-in. Settling or marking read that the owner did in
-   * the old profile still goes to it.
+   * for that profile. `switching` says so until that list is read, or why it can't be; only then is the profile
+   * remembered for the next sign-in. Nothing the old profile's socket sends after the switch shows; requests on it
+   * fail as in a drop. Hermes keeps running the old profile's replies, and switching back resumes
+   * them with any Approval still waiting. Settling or marking read that the owner did in the old profile still goes
+   * to it.
    */
   async switchProfile(name: string): Promise<void> {
     if (name === this.profile) return;
+    const from = this.profile;
+    const busy = this.snapshot.chats.filter((c) => c.running || c.items.some(isWaiting)).map((c) => c.id);
+    if (busy.length) this.busyIn.set(from, busy);
+    else this.busyIn.delete(from);
+    // Nothing the old profile's socket still sends shows in the new one. It is let go below, once writes already
+    // started for the old profile have gone out.
+    if (this.pipe && this.pipeProfile !== name) this.generation++;
     const unread = this.snapshot.chats.filter((c) => c.unread).length;
-    this.others.switched(this.profile, name, this.listedAt === undefined ? undefined : { unread, listedAt: this.listedAt });
+    this.others.switched(from, name, this.listedAt === undefined ? undefined : { unread, listedAt: this.listedAt });
     this.listedAt = undefined;
     this.viewing = undefined;
     this.staleItems.clear();
     this.resumeOnReconnect.clear();
     this.revealed.clear();
-    this.cache.rememberProfile(name);
-    this.update({ profile: name, chats: this.cache.load(name), olderPulled: this.cache.olderPulled(name), archivedListed: false, syncError: undefined, models: undefined });
+    this.update({
+      profile: name,
+      chats: this.cache.load(name),
+      olderPulled: this.cache.olderPulled(name),
+      archivedListed: false,
+      syncError: undefined,
+      models: undefined,
+      switching: { from },
+    });
     // A reconnect under way may be opening the old profile's socket.
     await this.redialing;
     if (this.profile !== name || this.closing) return;
@@ -485,8 +507,10 @@ export class Hermes {
   async search(text: string, { archived = false } = {}): Promise<Found[]> {
     const q = text.trim();
     if (!q) return [];
-    const query = new URLSearchParams({ q, profile: this.profile, limit: String(SEARCH_LIMIT), exclude_sources: "cron" });
+    const profile = this.profile;
+    const query = new URLSearchParams({ q, profile, limit: String(SEARCH_LIMIT), exclude_sources: "cron" });
     const res = (await this.rest("GET", `api/sessions/search?${query}`)) as { results: SearchRow[] };
+    if (this.profile !== profile) throw new Error(`Switched to the ${this.profile} profile before the results came.`);
     const listed = new Map(this.snapshot.chats.map((c) => [c.id, c]));
     return res.results
       .filter((r) => (archived || !this.isArchived(r)) && !this.deleted.has(r.id))
@@ -1249,6 +1273,12 @@ export class Hermes {
     });
   }
 
+  /** A switch under way, with why it hasn't finished. */
+  private switchFailed(e: Error): Pick<Snapshot, "switching"> {
+    const switching = this.snapshot.switching;
+    return switching ? { switching: { from: switching.from, error: e.message } } : {};
+  }
+
   private retryLater() {
     const wait = RETRY_DELAYS_MS[this.failedTries];
     if (wait === undefined) return this.update({ status: "offline" });
@@ -1259,7 +1289,8 @@ export class Hermes {
     if (this.closing || this.snapshot.status === "connected") return Promise.resolve();
     this.redialing ??= (async () => {
       clearTimeout(this.retryTimer);
-      this.update({ status: "reconnecting" });
+      const switching = this.snapshot.switching;
+      this.update({ status: "reconnecting", ...(switching && { switching: { from: switching.from } }) });
       try {
         await this.dial();
         this.failedTries = 0;
@@ -1268,7 +1299,7 @@ export class Hermes {
       } catch (e) {
         if (this.closing) return;
         this.failedTries++;
-        this.update({ closedReason: (e as Error).message });
+        this.update({ closedReason: (e as Error).message, ...this.switchFailed(e as Error) });
         // A server that changed protocol won't change back on its own.
         if (e instanceof ProtocolMismatchError) this.update({ status: "offline" });
         else this.retryLater();
@@ -1561,7 +1592,7 @@ export class Hermes {
       // Every page also carries the pinned chats that aren't archived; the list has them already.
       if (archivedListed) for (const r of await this.readList(profile, "only", -Infinity)) if (r.archived) rows.set(r.id, r);
     } catch (e) {
-      if (this.profile === profile) this.update({ syncError: `Couldn't refresh the chat list: ${(e as Error).message}` });
+      if (this.profile === profile) this.update({ syncError: `Couldn't refresh the chat list: ${(e as Error).message}`, ...this.switchFailed(e as Error) });
       return e as Error;
     }
     // The owner switched profile meanwhile; the switch syncs the new one.
@@ -1606,9 +1637,15 @@ export class Hermes {
     );
     const chats = [...onThisConnection, ...listed];
     this.listedAt = Date.now();
-    this.update({ chats, syncError: undefined });
+    const switched = !!this.snapshot.switching;
+    this.update({ chats, syncError: undefined, switching: undefined });
     if (readOnScreen) this.seen(this.viewing!);
     this.saveList(profile, chats);
+    if (switched) this.cache.rememberProfile(profile);
+    const busy = this.busyIn.get(profile);
+    this.busyIn.delete(profile);
+    for (const id of busy ?? []) this.resumeOnReconnect.add(id);
+    if (busy) this.resumeBusyChats();
     await this.checkUnsureArchives(profile);
     return undefined;
   }

@@ -156,7 +156,7 @@ export function Main({
   reopenLast?: boolean;
   onSignOut: () => Promise<void>;
 }) {
-  const { profile, chats, olderPulled, archivedListed, status, route, unsecure, closedReason, syncError, others, models } = useSyncExternalStore(
+  const { profile, chats, olderPulled, archivedListed, status, route, unsecure, closedReason, syncError, others, models, switching } = useSyncExternalStore(
     hermes.subscribe,
     hermes.getSnapshot,
   );
@@ -184,6 +184,8 @@ export function Main({
   const selected = chats.find((c) => c.id === selectedId) ?? draft;
   // What the owner has typed and not sent, kept for each chat on this connection and profile.
   const draftOf = (chatId: string | null) => draftKey(connection, profile, chatId);
+  // An answer that comes after the owner switched profile belongs to the profile left, so it isn't shown.
+  const stillIn = (p: string) => hermes.profile === p;
   const shownDraft = draftOf(selectedId);
   const composerText = useSyncExternalStore(savedDrafts.subscribe, () => savedDrafts.get(shownDraft));
   const undelivered = useSyncExternalStore(savedDrafts.subscribe, () => savedDrafts.undelivered(shownDraft));
@@ -199,7 +201,7 @@ export function Main({
     setUIPrefs({ modelPicker: { ...pick, profile } });
     if (selected === draft) return;
     const id = selected.id;
-    hermes.setModel(id, pick).catch((e) => setToast({ text: `Couldn't switch this chat's model: ${messageOf(e)}`, at: Date.now() }));
+    hermes.setModel(id, pick).catch((e) => stillIn(profile) && setToast({ text: `Couldn't switch this chat's model: ${messageOf(e)}`, at: Date.now() }));
   };
 
   // Every move between chats is kept as the profile's last open chat, so it reopens at the next launch whether or not
@@ -240,7 +242,7 @@ export function Main({
       return { id };
     } catch (e) {
       const reason = `Couldn't start a chat: ${e instanceof Error ? e.message : String(e)}`;
-      setDraftError(reason);
+      if (stillIn(profile)) setDraftError(reason);
       return { delivery: { delivery: "unsent", reason } };
     }
   };
@@ -262,7 +264,7 @@ export function Main({
     });
 
   // The other profile's chats replace the list, so the pane starts a fresh draft. The profile left keeps its last open
-  // chat for the next launch.
+  // chat for the next launch, and each chat's draft. The list asks first if a reply is running or an Approval waiting.
   const switchProfile = (name: string) => {
     newChat(false);
     setToast(null);
@@ -282,7 +284,7 @@ export function Main({
   const deleteChat = (id: string) => {
     const title = chats.find((c) => c.id === id)?.title ?? "";
     if (id === selectedId) newChat();
-    void hermes.delete(id).then((deleted) => deleted && setToast({ text: `Deleted: ${title}`, at: Date.now() }));
+    void hermes.delete(id).then((deleted) => deleted && stillIn(profile) && setToast({ text: `Deleted: ${title}`, at: Date.now() }));
   };
 
   // One Save dialog at a time: a second click while it is open does nothing.
@@ -301,7 +303,9 @@ export function Main({
     const title = chats.find((c) => c.id === id)?.title ?? "";
     if (archived && id === selectedId && !archivedListed) newChat();
     const done = (ok: boolean) =>
-      ok && setToast({ text: `${archived ? "Archived" : "Restored"}: ${title}`, undo: archived ? () => setArchived(id, false) : undefined, at: Date.now() });
+      ok &&
+      stillIn(profile) &&
+      setToast({ text: `${archived ? "Archived" : "Restored"}: ${title}`, undo: archived ? () => setArchived(id, false) : undefined, at: Date.now() });
     void (archived ? hermes.archive(id) : hermes.restore(id)).then(done);
   };
 
@@ -417,6 +421,8 @@ export function Main({
       {listOpen && (
         <ChatList
           profile={profile}
+          switching={switching}
+          status={status}
           others={others}
           chats={chats}
           archivedListed={archivedListed}
@@ -432,6 +438,7 @@ export function Main({
           onListProfiles={() => hermes.profiles()}
           onCheckOthers={() => void hermes.checkOtherProfiles()}
           onSwitchProfile={switchProfile}
+          onRetrySwitch={() => void (status === "connected" ? hermes.sync() : hermes.reconnect())}
         />
       )}
       <main className="main">
@@ -454,7 +461,8 @@ export function Main({
           />
         ) : (
           <ChatPane
-            key={selected.id}
+            // Per profile too, so attachments picked in one profile's New chat pane don't carry over to another's.
+            key={`${profile}/${selected.id}`}
             chat={selected}
             notLoaded={selected !== draft && status !== "connected" && !selected.runtimeId && !selected.items.length}
             findTarget={findTarget}
