@@ -280,6 +280,8 @@ export function Main({
   const memoryDirty = useRef(false);
   const [memoryUnsaved, setMemoryUnsaved] = useState(false);
   const [leaveAsk, setLeaveAsk] = useState<{ go: () => void; stay?: () => void }>();
+  // Bumped when the owner discards the edit, so Settings → Memory drops it even if what follows doesn't close it.
+  const [memoryDiscards, setMemoryDiscards] = useState(0);
   const onMemoryDirty = (dirty: boolean) => {
     memoryDirty.current = dirty;
     setMemoryUnsaved(dirty);
@@ -649,7 +651,8 @@ export function Main({
         setListOpen((o) => !o);
       } else if (e.code === "Backslash" || k === "\\") {
         e.preventDefault();
-        guard(toggleSplit);
+        // Splitting or closing a pane leaves Settings open, so it doesn't ask.
+        toggleSplit();
       } else if ((k === "1" || k === "2") && !e.shiftKey && !e.altKey && split && !settingsOpen) {
         e.preventDefault();
         focusPane(panes[Number(k) - 1].key);
@@ -856,6 +859,7 @@ export function Main({
             modelSettings={hermes.modelSettings}
             memory={hermes.memory}
             onMemoryDirty={onMemoryDirty}
+            memoryDiscards={memoryDiscards}
             guard={(go) => guard(go)}
             checkScreenshots={screenshots.support}
             voiceSetup={voice.setup}
@@ -911,6 +915,7 @@ export function Main({
           }}
           onDiscard={() => {
             onMemoryDirty(false);
+            setMemoryDiscards((n) => n + 1);
             setLeaveAsk(undefined);
             leaveAsk.go();
           }}

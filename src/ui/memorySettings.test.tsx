@@ -181,6 +181,61 @@ describe("Settings → Memory", () => {
     expect(screen.queryByRole("textbox", { name: "Your kept edit" })).toBeNull();
   });
 
+  it("keeps typing done after a save whose answer was lost, when Reload shows Hermes has the save", async () => {
+    const { s, hermes, user } = await shown();
+    await user.click(entry(SHORT));
+    await user.clear(editor());
+    await user.type(editor(), "First version");
+    s.dropOnLearning = "applied";
+    await user.click(button("Save"));
+    expect((await screen.findByRole("alert")).textContent).toMatch(/may or may not have saved/);
+    await user.type(editor(), " and more");
+    await act(async () => void (await hermes.reconnect()));
+    await user.click(button(/Reload/));
+    expect((await screen.findByRole("status")).textContent).toMatch(/Hermes has the edit you saved.*What you typed since is still here/);
+    expect(s.memory.default.memory[1]).toBe("First version");
+    expect(editor().value).toBe("First version and more");
+    expect(screen.getByText("Unsaved")).toBeTruthy();
+  });
+
+  it("keeps every edit a conflict leaves, not only the latest", async () => {
+    const { s, user } = await shown();
+    await user.click(entry(SHORT));
+    await user.clear(editor());
+    await user.type(editor(), "Edit A");
+    s.memory.default.memory[1] = "Agent changed B";
+    await user.click(button("Save"));
+    await screen.findByRole("textbox", { name: "Your kept edit" });
+    await user.click(entry(FALCON));
+    await user.clear(editor());
+    await user.type(editor(), "Edit C");
+    s.memory.default.memory[0] = "Agent changed D";
+    await user.click(button("Save"));
+    expect((await screen.findByRole<HTMLTextAreaElement>("textbox", { name: "Your kept edit 1" })).value).toBe("Edit A");
+    expect(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Your kept edit 2" }).value).toBe("Edit C");
+    expect(s.memory.default.memory).toEqual(["Agent changed D", "Agent changed B"]);
+  });
+
+  it("holds the open entry and file still while a save is under way", async () => {
+    const s = server();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const edit = s.handlers["learning.edit"];
+    s.handlers["learning.edit"] = (r) => void gate.then(() => edit(r));
+    const { user } = await shown({ s });
+    await user.click(entry(SHORT));
+    await user.type(editor(), " Saved later.");
+    await user.click(button("Save"));
+    await waitFor(() => expect(s.requests.some((r) => r.method === "learning.edit")).toBe(true));
+    expect(screen.getByRole("tab", { name: /User profile/ })).toHaveProperty("disabled", true);
+    expect(entry(FALCON)).toHaveProperty("disabled", true);
+    release();
+    await screen.findByText(/Saved, and read back/);
+    expect(screen.getByRole("tab", { name: /Agent notes/ }).getAttribute("aria-selected")).toBe("true");
+    expect(editor().value).toBe(`${SHORT} Saved later.`);
+    expect(screen.getByRole("tab", { name: /User profile/ })).toHaveProperty("disabled", false);
+  });
+
   it("keeps the edit when Hermes refuses the save, with Hermes's reason", async () => {
     const { s, user } = await shown();
     await user.click(entry(SHORT));
@@ -345,6 +400,27 @@ describe("An unsaved memory edit in the app", () => {
     expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(screen.getByRole("heading", { name: "Settings" })).toBeTruthy();
     expect(editor().value).toBe(`${SHORT} Unsaved words.`);
+  });
+
+  it("doesn't ask on Ctrl+\\, which leaves Settings open, and still asks on leaving after it", async () => {
+    const { user } = await launchApp({ openChat: true });
+    await user.keyboard("{Control>}\\{/Control}");
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(editor().value).toBe(`${SHORT} Unsaved words.`);
+    await user.type(editor(), " More.");
+    await user.click(button(/Back to chat/));
+    expect(leaveDialog()).toBeTruthy();
+  });
+
+  it("drops the edit on Discard even when Settings stays open", async () => {
+    const { user } = await launchApp();
+    await user.click(screen.getByRole("tab", { name: /General/ }));
+    await user.click(within(leaveDialog()).getByRole("button", { name: "Discard edit" }));
+    await user.click(screen.getByRole("tab", { name: /Memory/ }));
+    await screen.findByRole("list", { name: "Agent notes entries" });
+    expect(screen.queryByRole("textbox", { name: /Entry in/ })).toBeNull();
+    await user.click(button(/Back to chat/));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
   });
 
   it("closes Settings as before when there's no unsaved edit", async () => {

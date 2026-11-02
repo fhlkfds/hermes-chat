@@ -56,6 +56,7 @@ export function SettingsScreen({
   modelSettings,
   memory,
   onMemoryDirty = () => {},
+  memoryDiscards = 0,
   guard = (go) => go(),
   onClearCache,
   onPullOlder,
@@ -88,6 +89,8 @@ export function SettingsScreen({
   memory?: MemoryApi;
   /** Called with whether the Memory tab has an unsaved edit. */
   onMemoryDirty?: (dirty: boolean) => void;
+  /** Changes each time the owner discards the unsaved memory edit from App's question. */
+  memoryDiscards?: number;
   /** Runs `go` at once, or once the owner agrees to drop an unsaved memory edit. */
   guard?: (go: () => void) => void;
   onClearCache: () => void;
@@ -152,7 +155,7 @@ export function SettingsScreen({
         {tab === "memory" && memory ? (
           <div id="settings-panel-memory" role="tabpanel" aria-labelledby="settings-tab-memory">
             {/* An edit lives only while this tab is open, and for one profile; leaving with one asks first. */}
-            <MemorySettings key={profile} api={memory} profile={profile} status={status} server={routeLabel(route) ?? "not known until connected"} onDirtyChange={onMemoryDirty} />
+            <MemorySettings key={profile} api={memory} profile={profile} status={status} server={routeLabel(route) ?? "not known until connected"} onDirtyChange={onMemoryDirty} discardSignal={memoryDiscards} />
           </div>
         ) : tab === "appearance" ? (
           <div id="settings-panel-appearance" role="tabpanel" aria-labelledby="settings-tab-appearance">

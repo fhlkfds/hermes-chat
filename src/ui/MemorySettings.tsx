@@ -24,10 +24,10 @@ import {
 } from "../hermes/memory";
 
 /**
- * The entry open in the editor: as last read from Hermes, and the owner's text for it. `fromKept`: the owner put their
- * kept edit in it, so saving it settles the kept edit.
+ * The entry open in the editor: as last read from Hermes, and the owner's text for it. `fromKept`: the kept edit the
+ * owner put in it, which saving it settles.
  */
-type Editing = { entry: MemoryEntry; draft: string; fromKept?: boolean };
+type Editing = { entry: MemoryEntry; draft: string; fromKept?: string };
 type Notice = { kind: "ok" | "error" | "conflict" | "unsure"; text: string };
 /** Why memory couldn't be read: the server or the profile is unsupported here, a permission refusal, or another failure. */
 type LoadProblem = { kind: "server" | "profile" | "permission" | "error"; text: string };
@@ -38,8 +38,8 @@ const entriesText = (n: number) => `${n} ${n === 1 ? "entry" : "entries"}`;
 const firstLine = (text: string) => text.split("\n").find((l) => l.trim()) ?? text;
 
 /** Whether there's an unsaved edit Settings → Memory would lose by closing. */
-export const memoryDirty = (editing: Editing | undefined, recovered: string | undefined) =>
-  recovered !== undefined || (!!editing && editing.draft !== editing.entry.text);
+export const memoryDirty = (editing: Editing | undefined, kept: readonly string[]) =>
+  kept.length > 0 || (!!editing && editing.draft !== editing.entry.text);
 
 export function MemorySettings({
   api,
@@ -47,6 +47,7 @@ export function MemorySettings({
   status,
   server,
   onDirtyChange,
+  discardSignal = 0,
 }: {
   api: MemoryApi;
   profile: string;
@@ -55,6 +56,8 @@ export function MemorySettings({
   server: string;
   /** Called with whether an unsaved edit is open, and with false once this goes. */
   onDirtyChange: (dirty: boolean) => void;
+  /** Changes when the owner chose to discard the unsaved edit from outside (App's question), which drops it here too. */
+  discardSignal?: number;
 }) {
   const connected = status === "connected";
   const [view, setView] = useState<MemoryView>();
@@ -64,9 +67,10 @@ export function MemorySettings({
   const [editing, setEditing] = useState<Editing>();
   const [busy, setBusy] = useState<"save" | "delete" | "reload">();
   const [notice, setNotice] = useState<Notice>();
-  // The owner's text that Hermes didn't take (a conflict, or a save that read back differently), kept to copy or to
-  // put in an entry, until they discard it.
-  const [recovered, setRecovered] = useState<string>();
+  // The owner's texts that Hermes didn't take (a conflict, or a save that read back differently), each kept to copy or
+  // to put in an entry until they discard it. A later one never replaces an earlier one.
+  const [kept, setKept] = useState<string[]>([]);
+  const keep = (text: string) => setKept((k) => (k.includes(text) ? k : [...k, text]));
   // The text of a save whose outcome is unknown, until a read shows whether Hermes has it.
   const [unsure, setUnsure] = useState<string>();
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -76,8 +80,19 @@ export function MemorySettings({
   const alive = useRef(true);
   const reads = useRef(0);
 
-  const dirty = memoryDirty(editing, recovered);
+  const dirty = memoryDirty(editing, kept);
   useEffect(() => onDirtyChange(dirty), [dirty]);
+  const discards = useRef(discardSignal);
+  useEffect(() => {
+    if (discardSignal === discards.current) return;
+    discards.current = discardSignal;
+    setEditing(undefined);
+    setKept([]);
+    setUnsure(undefined);
+    setLeaving(undefined);
+    setConfirmDelete(false);
+    setNotice(undefined);
+  }, [discardSignal]);
   useEffect(() => {
     alive.current = true;
     return () => {
@@ -96,7 +111,7 @@ export function MemorySettings({
     if (still) return setEditing({ entry: still, draft: open.draft });
     // The entry changed or went: an edit in it is kept, never dropped.
     if (open.draft !== open.entry.text) {
-      setRecovered(open.draft);
+      keep(open.draft);
       setNotice({ kind: "conflict", text: "The entry you were editing changed on the server, or was removed. Your edit is kept below; nothing was saved." });
     }
     setEditing(undefined);
@@ -125,8 +140,15 @@ export function MemorySettings({
           setView(next);
           setProblem(undefined);
           setSource(saved.source);
-          setEditing({ entry: saved, draft: saved.text });
-          setNotice({ kind: "ok", text: "Hermes has your edit: reading memory back shows it." });
+          // Typing since the save stays, as an edit of the entry Hermes now has.
+          const typedSince = editing && pyStrip(editing.draft) !== unsure ? editing.draft : undefined;
+          setEditing({ entry: saved, draft: typedSince ?? saved.text });
+          setNotice({
+            kind: "ok",
+            text: typedSince
+              ? "Hermes has the edit you saved: reading memory back shows it. What you typed since is still here, not saved."
+              : "Hermes has your edit: reading memory back shows it.",
+          });
           return;
         }
         setNotice({ kind: "unsure", text: "Hermes doesn't have your edit: reading memory back doesn't show it. Your edit is still here to save again." });
@@ -135,7 +157,7 @@ export function MemorySettings({
     } catch (e) {
       if (!alive.current || n !== reads.current) return;
       if (editing && editing.draft !== editing.entry.text && e instanceof MemoryUnsupportedError) {
-        setRecovered(editing.draft);
+        keep(editing.draft);
         setEditing(undefined);
       }
       failLoad(e);
@@ -164,12 +186,13 @@ export function MemorySettings({
     else run();
   };
 
+  // While a save, removal or read is under way, the open entry and file stay put, so its answer lands where it belongs.
   const open = (entry: MemoryEntry) => {
-    if (editing?.entry.id !== entry.id) leaveEntry(() => setEditing({ entry, draft: entry.text }));
+    if (!busy && editing?.entry.id !== entry.id) leaveEntry(() => setEditing({ entry, draft: entry.text }));
   };
 
   const pickSource = (s: MemorySource) => {
-    if (s !== source)
+    if (!busy && s !== source)
       leaveEntry(() => {
         setSource(s);
         setEditing(undefined);
@@ -186,13 +209,13 @@ export function MemorySettings({
       if (!alive.current) return;
       setView(next);
       setEditing({ entry, draft: entry.text });
-      if (recovered !== undefined && (at.fromKept || pyStrip(recovered) === entry.text)) setRecovered(undefined);
+      setKept((k) => k.filter((t) => t !== at.fromKept && pyStrip(t) !== entry.text));
       setNotice({ kind: "ok", text: `Saved, and read back from Hermes. New chats on ${profile} start with it.` });
     } catch (e) {
       if (!alive.current) return;
       if (e instanceof MemoryConflictError || e instanceof MemoryUnverifiedError) {
         setView(e.view);
-        setRecovered(at.draft);
+        keep(at.draft);
         setEditing(undefined);
         setNotice({
           kind: "conflict",
@@ -202,7 +225,7 @@ export function MemorySettings({
         setUnsure(pyStrip(at.draft));
         setNotice({ kind: "unsure", text: e.message });
       } else if (e instanceof MemoryUnsupportedError) {
-        setRecovered(at.draft);
+        keep(at.draft);
         setEditing(undefined);
         failLoad(e);
       } else setNotice({ kind: "error", text: `${messageOf(e)} Your edit is still here.` });
@@ -227,7 +250,7 @@ export function MemorySettings({
       if (!alive.current) return;
       if (e instanceof MemoryConflictError || e instanceof MemoryUnverifiedError) {
         setView(e.view);
-        if (at.draft !== at.entry.text) setRecovered(at.draft);
+        if (at.draft !== at.entry.text) keep(at.draft);
         setEditing(undefined);
         setNotice({ kind: "conflict", text: e instanceof MemoryConflictError ? "This entry changed on the server, or was removed, since you opened it. Nothing was removed." : e.message });
       } else if (e instanceof MemoryUnsureError) setNotice({ kind: "unsure", text: e.message });
@@ -319,6 +342,7 @@ export function MemorySettings({
                     aria-selected={source === r.source}
                     aria-controls="memory-panel"
                     className={`memory-resource ${source === r.source ? "on" : ""}`}
+                    disabled={!!busy && source !== r.source}
                     onClick={() => pickSource(r.source)}
                   >
                     <span className="memory-resource-name">{r.name}</span>
@@ -351,7 +375,10 @@ export function MemorySettings({
                 <ul className="memory-entries" aria-label={`${meta.name} entries`}>
                   {resource?.entries.map((e) => (
                     <li key={e.id}>
-                      <button className={`memory-entry ${editing?.entry.id === e.id ? "on" : ""}`} aria-current={editing?.entry.id === e.id || undefined} onClick={() => open(e)}>
+                      <button className={`memory-entry ${editing?.entry.id === e.id ? "on" : ""}`} aria-current={editing?.entry.id === e.id || undefined}
+                        disabled={!!busy && editing?.entry.id !== e.id}
+                        onClick={() => open(e)}
+                      >
                         <span className="memory-entry-text">{firstLine(e.text)}</span>
                         <span className="muted small">{charCount(e.text).toLocaleString()} characters</span>
                       </button>
@@ -393,10 +420,13 @@ export function MemorySettings({
                       {draftProblem ?? `${charCount(pyStrip(editing.draft)).toLocaleString()} characters. Hermes refuses an edit that takes the file past its limit.`}
                     </span>
                   </label>
-                  {recovered !== undefined && editing.draft !== recovered && (
-                    <button className="btn small-btn" disabled={!!busy} onClick={() => setEditing({ ...editing, draft: recovered, fromKept: true })}>
-                      <Undo2 size={14} /> Put your kept edit in this entry
-                    </button>
+                  {kept.map(
+                    (text, i) =>
+                      editing.draft !== text && (
+                        <button key={i} className="btn small-btn" disabled={!!busy} onClick={() => setEditing({ ...editing, draft: text, fromKept: text })}>
+                          <Undo2 size={14} /> {kept.length === 1 ? "Put your kept edit in this entry" : `Put kept edit ${i + 1} in this entry`}
+                        </button>
+                      ),
                   )}
                   {confirmDelete ? (
                     <div className="confirm" role="alertdialog" aria-label="Remove this entry?">
@@ -451,23 +481,26 @@ export function MemorySettings({
           </>
         )}
 
-        {recovered !== undefined && (
-          <div className="memory-recovered" role="group" aria-label="Your kept edit">
-            <div className="field-label">
-              Your kept edit <span className="muted small">(not saved anywhere; it goes when you leave this screen)</span>
+        {kept.map((text, i) => {
+          const name = kept.length === 1 ? "Your kept edit" : `Your kept edit ${i + 1}`;
+          return (
+            <div key={i} className="memory-recovered" role="group" aria-label={name}>
+              <div className="field-label">
+                {name} <span className="muted small">(not saved anywhere; leaving this screen asks before it goes)</span>
+              </div>
+              <textarea className="memory-text" readOnly value={text} rows={Math.min(8, Math.max(3, text.split("\n").length + 1))} aria-label={name} />
+              <div className="confirm-actions">
+                <button className="btn" onClick={() => void navigator.clipboard?.writeText(text).catch(() => {})}>
+                  <Copy size={14} /> Copy
+                </button>
+                <button className="btn" aria-label={`Discard ${name.toLowerCase()}`} onClick={() => setKept((k) => k.filter((t) => t !== text))}>
+                  Discard it
+                </button>
+              </div>
+              <p className="muted small">Open an entry and put this edit in it to save it there, after checking what Hermes has now.</p>
             </div>
-            <textarea className="memory-text" readOnly value={recovered} rows={Math.min(8, Math.max(3, recovered.split("\n").length + 1))} aria-label="Your kept edit" />
-            <div className="confirm-actions">
-              <button className="btn" onClick={() => void navigator.clipboard?.writeText(recovered).catch(() => {})}>
-                <Copy size={14} /> Copy
-              </button>
-              <button className="btn" onClick={() => setRecovered(undefined)}>
-                Discard it
-              </button>
-            </div>
-            <p className="muted small">Open an entry and press "Put your kept edit in this entry" to save it there, after checking what Hermes has now.</p>
-          </div>
-        )}
+          );
+        })}
       </section>
 
       <section>
