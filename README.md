@@ -42,3 +42,7 @@ To run it from a terminal, set the variable yourself: `WEBKIT_DISABLE_DMABUF_REN
 npm test                                  # frontend transport against a fake Hermes
 cd src-tauri && cargo test --test transport   # Rust transport against a stub server
 ```
+
+`node bench/run.mjs` renders the chat pane with synthetic long chats (50, 200 and 800 turns) in headless Chromium and
+times opening, streaming, find-in-chat and scrolling, with memory after each open. It uses Playwright's cached headless
+Chromium, or the browser in `$CHROME`; `THROTTLE=4` slows the CPU four times.

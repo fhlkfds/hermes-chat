@@ -1,5 +1,5 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
+import { memo, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { ArrowUp, Brain, ChevronDown, ChevronRight, ChevronUp, CloudOff, FileDown, HardDrive, Paperclip, Search, Square, Wrench, X } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
@@ -27,6 +27,10 @@ function toBlocks(items: Item[]): Block[] {
   }
   return out;
 }
+
+// A group is rebuilt on every render, so it counts as unchanged when it holds the same tool calls.
+const sameBlock = (a: Block, b: Block) =>
+  a === b || (a.kind === "tools" && b.kind === "tools" && a.tools.length === b.tools.length && a.tools.every((t, i) => t === b.tools[i]));
 
 /**
  * Where the find bar opens when a chat is opened from a search: on `query`, at the first match in the message
@@ -87,6 +91,13 @@ export function ChatPane({
   onExport?: () => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  // The blocks are memoized, so they get one answer handler for the life of the pane.
+  const onAnswerRef = useRef(onAnswer);
+  onAnswerRef.current = onAnswer;
+  const answer = useCallback(
+    (approvalId: string, choice: ApprovalChoice, confirmed?: boolean) => onAnswerRef.current(approvalId, choice, confirmed),
+    [],
+  );
   const findRef = useRef<HTMLInputElement>(null);
   const stickToBottom = useRef(true);
   const [findOpen, setFindOpen] = useState(false);
@@ -123,10 +134,13 @@ export function ChatPane({
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const q = findOpen ? query : "";
+  // The transcript catches up with the find bar in the background, so re-marking a long chat doesn't hold up typing.
+  const typed = findOpen ? query : "";
+  const q = useDeferredValue(typed);
 
-  // After every render, count the marks and point at the current one.
+  // After every render, count the marks and point at the current one. Marks still for an earlier query don't count.
   useLayoutEffect(() => {
+    if (q !== typed) return;
     const marks = Array.from(scrollRef.current?.querySelectorAll<HTMLElement>("mark.hit") ?? []);
     setCount(marks.length);
     let idx = Math.min(matchIndex, marks.length - 1);
@@ -270,52 +284,17 @@ export function ChatPane({
             </div>
           )}
           {!chat.loading && !notLoaded && blocks.length === 0 && <div className="empty-chat">What should Hermes work on?</div>}
-          {blocks.map((b) => {
-            if (b.kind === "user")
-              return (
-                <div key={b.id} className="msg user" data-item={b.id}>
-                  {b.attachments && (
-                    <div className="msg-files">
-                      {b.attachments.map((name, i) => (
-                        <span key={i} className="chip">
-                          <Paperclip size={12} />
-                          <span className="chip-name">{name}</span>
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  {b.text && <div className="bubble-text">{highlight(b.text, q)}</div>}
-                  <StoredTime at={b.at} />
-                </div>
-              );
-            if (b.kind === "assistant")
-              return (
-                <div key={b.id} className="msg assistant" data-item={b.id}>
-                  <Markdown text={b.text} query={q} />
-                  {chat.running && b === last && <span className="cursor" />}
-                  {b.interrupted && <div className="stopped">Stopped</div>}
-                  <StoredTime at={b.at} />
-                </div>
-              );
-            if (b.kind === "error")
-              return (
-                <div key={b.id} className="msg error" role="alert">
-                  {b.text}
-                </div>
-              );
-            if (b.kind === "thinking") return <Thought key={b.id} item={b} live={!!chat.running && b === last} query={q} />;
-            if (b.kind === "approval")
-              return (
-                <ApprovalCard
-                  key={b.id}
-                  item={b}
-                  offline={status !== "connected" || !!chat.loading}
-                  movedAt={movedAt}
-                  onAnswer={(c, confirmed) => onAnswer(b.id, c, confirmed)}
-                />
-              );
-            return <ToolGroup key={b.id} tools={b.tools} />;
-          })}
+          {blocks.map((b) => (
+            <BlockView
+              key={b.id}
+              block={b}
+              live={!!chat.running && b === last}
+              query={q}
+              offline={status !== "connected" || !!chat.loading}
+              movedAt={b.kind === "approval" ? movedAt : 0}
+              onAnswer={answer}
+            />
+          ))}
           {/* A reply waiting on the owner isn't thinking, and streamed thinking shows its own row. */}
           {chat.running && last?.kind !== "assistant" && last?.kind !== "thinking" && !(last && isWaiting(last)) && (
             <div className="msg assistant thinking">
@@ -349,6 +328,68 @@ export function ChatPane({
     </div>
   );
 }
+
+/**
+ * One block of the transcript. Memoized, so a streamed delta re-renders only the block it changes. `live`: the reply
+ * or thinking is still streaming. `offline` and `movedAt` are for an Approval card; other blocks get `movedAt` 0, so
+ * the transcript changing doesn't re-render them.
+ */
+const BlockView = memo(
+  function BlockView({
+    block,
+    live,
+    query,
+    offline,
+    movedAt,
+    onAnswer,
+  }: {
+    block: Block;
+    live: boolean;
+    query: string;
+    offline: boolean;
+    movedAt: number;
+    onAnswer: (approvalId: string, choice: ApprovalChoice, confirmed?: boolean) => void;
+  }) {
+    if (block.kind === "user")
+      return (
+        <div className="msg user" data-item={block.id}>
+          {block.attachments && (
+            <div className="msg-files">
+              {block.attachments.map((name, i) => (
+                <span key={i} className="chip">
+                  <Paperclip size={12} />
+                  <span className="chip-name">{name}</span>
+                </span>
+              ))}
+            </div>
+          )}
+          {block.text && <div className="bubble-text">{highlight(block.text, query)}</div>}
+          <StoredTime at={block.at} />
+        </div>
+      );
+    if (block.kind === "assistant")
+      return (
+        <div className="msg assistant" data-item={block.id}>
+          <Markdown text={block.text} query={query} />
+          {live && <span className="cursor" />}
+          {block.interrupted && <div className="stopped">Stopped</div>}
+          <StoredTime at={block.at} />
+        </div>
+      );
+    if (block.kind === "error")
+      return (
+        <div className="msg error" role="alert">
+          {block.text}
+        </div>
+      );
+    if (block.kind === "thinking") return <Thought item={block} live={live} query={query} />;
+    if (block.kind === "approval")
+      return <ApprovalCard item={block} offline={offline} movedAt={movedAt} onAnswer={(c, confirmed) => onAnswer(block.id, c, confirmed)} />;
+    return <ToolGroup tools={block.tools} />;
+  },
+  (a, b) =>
+    sameBlock(a.block, b.block) && a.live === b.live && a.query === b.query && a.offline === b.offline && a.movedAt === b.movedAt && a.onAnswer === b.onAnswer,
+);
 
 /**
  * The model's reasoning, folded to one line. `live`: it is still streaming, so the line shows its latest words.

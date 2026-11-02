@@ -69,12 +69,16 @@ function CodeBlock({ children }: { children?: ReactNode }) {
   );
 }
 
+// The highlighter is made once: rehype-highlight builds a fresh highlight.js instance, with every grammar to compile
+// again, each time the plugin is attached, and ReactMarkdown attaches its plugins on every render.
+const highlightCode = rehypeHighlight({ detect: true });
+
 /** `query`: the find-in-chat text to mark. */
 export const Markdown = memo(function Markdown({ text, query = "" }: { text: string; query?: string }) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm, remarkBreaks]}
-      rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }], rehypeFind(query)]}
+      rehypePlugins={[() => highlightCode, rehypeFind(query)]}
       components={{ pre: ({ children }) => <CodeBlock>{children}</CodeBlock> }}
     >
       {text}
