@@ -103,6 +103,12 @@ async fn hermes_stat_files(paths: Vec<String>) -> Vec<LocalFile> {
     transport::stat_files(&paths).await
 }
 
+/// A staged image's bytes for its composer thumbnail, raw rather than as JSON.
+#[tauri::command]
+async fn hermes_read_preview(path: String) -> Result<tauri::ipc::Response, String> {
+    transport::read_preview(&path).await.map(tauri::ipc::Response::new).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn hermes_request(
     state: State<'_, AppState>,
@@ -153,6 +159,7 @@ pub fn run() {
             hermes_send,
             hermes_send_file,
             hermes_stat_files,
+            hermes_read_preview,
             hermes_request,
             hermes_disconnect,
             password_load,
