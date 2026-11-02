@@ -24,7 +24,7 @@ describe("Kept appearance", () => {
   });
 
   it("keeps the owner's choices and puts anything not on offer back to its default", () => {
-    const kept = { uiFont: "Noto Sans", uiSize: 16, monoFont: "Fira Code", monoSize: 15, wordWrap: true };
+    const kept = { ...DEFAULT_APPEARANCE, uiFont: "Noto Sans", uiSize: 16, monoFont: "Fira Code", monoSize: 15, wordWrap: true };
     expect(loadAppearance(memoryStorage(kept))).toEqual(kept);
     expect(loadAppearance(memoryStorage({ uiFont: 3, uiSize: 99, monoFont: "a\nb", monoSize: "13", wordWrap: "yes" }))).toEqual(DEFAULT_APPEARANCE);
   });
