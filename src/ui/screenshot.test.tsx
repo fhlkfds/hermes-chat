@@ -291,6 +291,26 @@ describe("Taking a screenshot for the composer", () => {
     expect(document.querySelector(".main-chat")!.hasAttribute("inert")).toBe(false);
   });
 
+  it.each(["desktop", "app"])("closes Search for the %s screenshot shortcut so review and errors stay visible", async (shortcut) => {
+    const { rust, user } = await signedIn();
+    const capture = async () => {
+      if (shortcut === "desktop") rust.pressDesktopShortcut();
+      else await user.keyboard("{Control>}{Shift>}s{/Shift}{/Control}");
+    };
+    await user.keyboard("{Control>}k{/Control}");
+    expect(screen.getByRole("dialog", { name: "Search chats" })).toBeTruthy();
+    await capture();
+    expect(screen.queryByRole("dialog", { name: "Search chats" })).toBeNull();
+    await rust.land();
+    await waitFor(() => expect(chips()).toHaveLength(1));
+
+    await user.keyboard("{Control>}k{/Control}");
+    await capture();
+    await rust.fail({ kind: "denied", message: "Screenshot permission denied" });
+    expect(screen.queryByRole("dialog", { name: "Search chats" })).toBeNull();
+    expect((await screen.findByRole("alert")).textContent).toContain("Screenshot permission denied");
+  });
+
   it("reveals the composer for a desktop screenshot while project settings are open", async () => {
     const { server, rust, user } = await signedIn();
     await user.click(document.querySelector<HTMLElement>(".project-btn")!);

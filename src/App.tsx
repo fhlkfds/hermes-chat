@@ -400,11 +400,12 @@ export function Main({
     setDesk(d);
     return () => d.dispose();
   }, []);
-  // Reveal the composer when Settings, Projects or a narrow preview covers it, so the capture can be reviewed.
+  // Reveal the composer when Search, Settings, Projects or a narrow preview covers it, so the capture can be reviewed.
   const takeScreenshot = (remote = false) => {
     if (!desk) return;
     setSettingsOpen(false);
     setProjectOpen(false);
+    setSearchOpen(false);
     if (!previewFits) setPreviewHidden(true);
     void desk.capture({ remote });
   };
