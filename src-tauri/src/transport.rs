@@ -854,9 +854,13 @@ fn relay_url(base: &Url, path: &str, query: &str) -> Result<(Url, String), Trans
     }
     let mut url = endpoint(base, path);
     url.set_query(Some(query).filter(|q| !q.is_empty()));
+    // The dashboard's own path, such as `/team%20one/`, is matched as it's spelled; only what follows is decoded.
     let prefix = format!("{}/", base.path().trim_end_matches('/'));
-    let decoded = percent_encoding::percent_decode_str(url.path()).decode_utf8().map_err(|_| refused())?;
-    let routed = decoded.strip_prefix(&prefix).filter(|p| under_api(p)).ok_or_else(refused)?.to_owned();
+    let rest = url.path().strip_prefix(&prefix).ok_or_else(refused)?;
+    let routed = percent_encoding::percent_decode_str(rest).decode_utf8().map_err(|_| refused())?.into_owned();
+    if !under_api(&routed) {
+        return Err(refused());
+    }
     Ok((url, routed))
 }
 

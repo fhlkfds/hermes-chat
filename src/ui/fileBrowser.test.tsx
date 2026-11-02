@@ -191,7 +191,11 @@ describe("Server files", () => {
     await openFiles(user);
     const read = s.rest["GET /api/files/read"];
     const held: (() => void)[] = [];
-    s.rest["GET /api/files/read"] = (req) => new Promise((r) => held.push(() => r(Promise.resolve().then(() => read(req)))));
+    // The answer is read when asked for, and held back until released.
+    s.rest["GET /api/files/read"] = (req) => {
+      const answer = Promise.resolve().then(() => read(req));
+      return new Promise((r) => held.push(() => r(answer)));
+    };
     const pane = () => screen.queryByRole("complementary", { name: /Preview of/ });
     const releaseAll = () => act(async () => void held.splice(0).forEach((release) => release()));
 
@@ -219,6 +223,24 @@ describe("Server files", () => {
     await user.click(screen.getByRole("button", { name: "Refresh" }));
     await waitFor(() => expect(names()).not.toContain("notes.md"));
     await releaseAll();
+    expect(pane()).toBeNull();
+
+    // Deleted, and the refresh and the late read land together.
+    await user.click(row_("run"));
+    await user.click(await screen.findByRole("button", { name: "Open as text" }));
+    await waitFor(() => expect(held).toHaveLength(1));
+    const list = s.rest["GET /api/files"];
+    s.rest["GET /api/files"] = (req) => new Promise((r) => held.push(() => r(Promise.resolve().then(() => list(req)))));
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(held).toHaveLength(2));
+    // The read was answered before the file went; only the listing sees it gone.
+    const [readRun, listAgain] = held.splice(0);
+    delete s.serverFiles.nodes["/home/liam/run"];
+    await act(async () => {
+      listAgain();
+      readRun();
+    });
+    await waitFor(() => expect(names()).not.toContain("run"));
     expect(pane()).toBeNull();
   });
 

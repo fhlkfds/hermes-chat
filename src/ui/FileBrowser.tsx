@@ -71,11 +71,14 @@ export function FileBrowser({
   // Only the latest listing and preview asked for land; an older answer arriving late is dropped.
   const listSeq = useRef(0);
   const previewSeq = useRef(0);
+  // The path of the file in the preview pane, kept in step with `preview` without waiting for a render.
+  const previewPath = useRef<string | undefined>(undefined);
   const listRef = useRef<HTMLDivElement>(null);
 
   // Closing the preview also drops the read it's waiting on, so a late answer can't open it again.
   const dropPreview = () => {
     previewSeq.current++;
+    previewPath.current = undefined;
     setPreview(undefined);
   };
 
@@ -96,13 +99,7 @@ export function FileBrowser({
           listRef.current?.scrollTo?.({ top: 0 });
         }
         // A refresh keeps the preview open only while its file is still listed.
-        if (!(same && keepPreview)) dropPreview();
-        else
-          setPreview((p) => {
-            if (p && l.entries.some((e) => e.path === p.entry.path)) return p;
-            previewSeq.current++;
-            return undefined;
-          });
+        if (!(same && keepPreview && l.entries.some((e) => e.path === previewPath.current))) dropPreview();
       },
       (e) => {
         if (seq !== listSeq.current) return;
@@ -115,6 +112,7 @@ export function FileBrowser({
   const open = (entry: RemoteEntry, asText = false) => {
     if (entry.kind === "dir") return load(entry.path);
     const seq = ++previewSeq.current;
+    previewPath.current = entry.path;
     const support = previewSupport(entry);
     if (support.kind === "none") return setPreview({ entry, state: "failed", error: support.why });
     if (support.kind === "maybe-text" && !asText) return setPreview({ entry, state: "ask" });

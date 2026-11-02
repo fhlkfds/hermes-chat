@@ -225,6 +225,12 @@ async fn stub() -> Url {
     serve(stub_routes()).await
 }
 
+/// The stub dashboard served under a path prefix, such as `team%20one`, as a reverse proxy might.
+async fn stub_under(prefix: &str) -> Url {
+    let base = serve(Router::new().nest(&format!("/{prefix}"), stub_routes())).await;
+    base.join(&format!("{prefix}/")).unwrap()
+}
+
 fn stub_routes() -> Router {
     Router::new()
         .route("/auth/password-login", post(login))
@@ -543,6 +549,21 @@ async fn never_relays_a_change_to_the_servers_files() {
     }
     // A chat id is still percent-encoded into its path.
     dashboard.request("DELETE", "api/sessions/a%20b", None).await.unwrap();
+}
+
+#[tokio::test]
+async fn relays_under_a_dashboard_whose_path_is_percent_encoded() {
+    for prefix in ["team%20one", "caf%C3%A9"] {
+        let base = stub_under(prefix).await;
+        let dashboard = Dashboard::sign_in(&base, &sign_in("hunter2")).await.expect(prefix);
+        assert_eq!(get_json(&dashboard, "api/sessions?profile=default").await["query"], "profile=default", "{prefix}");
+        dashboard.request("DELETE", "api/sessions/a%20b", None).await.expect(prefix);
+        assert!(dashboard.get_limited("api/files/read?path=/srv/a&n=10", 1024).await.is_ok(), "{prefix}");
+        for path in ["api/./files", "api/%66iles", "api/%2e%2e/%2e%2e/files"] {
+            let err = dashboard.request("DELETE", path, None).await.err().unwrap();
+            assert!(matches!(err, TransportError::NotRelayed(_)), "{prefix} {path}: {err:?}");
+        }
+    }
 }
 
 #[tokio::test]
