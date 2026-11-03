@@ -647,6 +647,26 @@ async fn files_save_text(
     transfers.run(id, epoch, work).await
 }
 
+/// Writes an artifact's whole new text to `path` where `profile`'s tools run (`POST api/fs/write-text`, ADR 0025). Like
+/// `files_save_text`, the webview checks the revision first and reads it back after, and the write is a transfer, so
+/// `files_cancel` stops it and a closed or replaced connection never sends it.
+#[tauri::command]
+async fn fs_save_text(
+    app: tauri::AppHandle,
+    transfers: State<'_, Transfers>,
+    id: u64,
+    profile: String,
+    path: String,
+    text: String,
+) -> Result<String, String> {
+    let epoch = transfers.epoch();
+    let work = async move {
+        let dashboard = dashboard_since(&app, epoch).await?;
+        dashboard.write_agent_text(&profile, &path, &text).await.map_err(|e| e.to_string())
+    };
+    transfers.run(id, epoch, work).await
+}
+
 /// Stops transfer `id`, if it is still running. A download's part file is removed; `dest` is left as it was.
 #[tauri::command]
 fn files_cancel(transfers: State<'_, Transfers>, id: u64) {
@@ -888,6 +908,7 @@ pub fn run(screenshot: bool) {
             files_upload,
             files_discard_pick,
             files_save_text,
+            fs_save_text,
             files_cancel,
             hermes_connect_cancel,
             hermes_probe,

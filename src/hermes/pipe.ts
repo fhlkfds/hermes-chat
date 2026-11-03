@@ -86,6 +86,11 @@ export interface Pipe {
   upload(id: number, token: number, path: string, overwrite: boolean, onProgress: (p: TransferProgress) => void): Promise<string>;
   /** Writes an edit's text to the server path `path` (src-tauri `files_save_text`, ADR 0024). Resolves to Hermes's answer. */
   saveText(id: number, path: string, text: string, overwrite: boolean): Promise<string>;
+  /**
+   * Writes an artifact's text to `path` where `profile`'s tools run (src-tauri `fs_save_text`, `POST api/fs/write-text`,
+   * ADR 0025). Resolves to Hermes's answer; `cancelTransfer(id)` stops it.
+   */
+  fsSaveText(id: number, profile: string, path: string, text: string): Promise<string>;
   cancelTransfer(id: number): Promise<void>;
   close(): Promise<void>;
 }

@@ -296,6 +296,16 @@ export class FakeHermes {
    * file's text (or bytes, one char per byte); `{ dir: true }` is a folder.
    */
   serverFiles: Record<string, string | { dir: true }> = {};
+  /** Every `POST /api/fs/write-text` that reached the server, in order (artifact saves, ADR 0025). */
+  readonly fsWrites: { profile: string; path: string; text: string }[] = [];
+  /** While set, an artifact save waits for it before Hermes writes. */
+  fsWriteGate?: Promise<void>;
+  /** Hermes's answer to the next artifact saves instead of writing: the Rust side's error text. */
+  fsWriteFailure?: string;
+  /** Set: a read of that path through the agent fs routes fails with this error, as Rust reports it. */
+  fsReadFailure?: (path: string) => string | undefined;
+  /** Runs right after an artifact save is written, before Hermes answers: to change the file meanwhile, say. */
+  afterFsWrite?: (path: string) => void;
   /** The server's own disk, for the Server files screen (managed files: `GET /api/files`, `GET /api/files/read`). */
   readonly managedFiles = new FakeServerFiles();
   /** Whether this connection sent `client.capabilities {server_requests: true}`. */
@@ -932,6 +942,7 @@ export class FakeHermes {
       discardUpload: async (token) => void this.managedFiles.discardPick(token),
       upload: (id, token, path, overwrite, onProgress) => this.managedFiles.upload(id, token, path, overwrite, onProgress),
       saveText: (id, path, text, overwrite) => this.managedFiles.saveText(path, text, overwrite),
+      fsSaveText: (_id, profile, path, text) => this.fsWriteText(profile, path, text),
       cancelTransfer: async (id) => this.managedFiles.cancel(id),
       // Mirrors `Dashboard::toolset_guards`: only these two facts of the config.
       toolsetGuards: async (profile): Promise<ToolsetGuards> => {
@@ -1175,11 +1186,34 @@ export class FakeHermes {
   }
 
   /** A Server file for `/api/fs/*`, failing the way `_fs_regular_file` and `_is_sensitive_path` do at `bf0203a`. */
-  private serverFile(query: URLSearchParams): { path: string; data: string } {
+/**
+   * `fs_write_text` at `bf0203a` for a host-local profile: the parent must be a folder, only a regular file is replaced,
+   * the text is stored as UTF-8 (one char per byte here, as `serverFiles` holds bytes). The Rust side refuses
+   * credential paths before anything is sent (`write_agent_text`).
+   */
+  private async fsWriteText(profile: string, path: string, text: string): Promise<string> {
+    if (/(^|\/)(\.env(\..*)?|auth\.json|config\.yaml)$/i.test(path)) throw new Error(`Hermes Chat doesn't relay writes to ${path}, a credential file Hermes keeps out of reach`);
+    await this.fsWriteGate;
+    if (this.fsWriteFailure !== undefined) throw new Error(this.fsWriteFailure);
+    const parent = path.slice(0, path.lastIndexOf("/")) || "/";
+    const all = [...this.serverDirs, ...Object.keys(this.serverFiles)];
+    const parentIsDir = this.serverDirs.has(parent) || typeof this.serverFiles[parent] === "object" || all.some((p) => p.startsWith(`${parent}/`));
+    if (typeof this.serverFiles[path] === "object") throw new Error(`The dashboard answered 400: {"detail":"Path points to a directory"}`);
+    if (!parentIsDir) throw new Error(`The dashboard answered 400: {"detail":"Parent directory does not exist"}`);
+    const bytes = new TextEncoder().encode(text);
+    this.serverFiles[path] = Array.from(bytes, (b) => String.fromCharCode(b)).join("");
+    this.fsWrites.push({ profile, path, text });
+    this.afterFsWrite?.(path);
+    return JSON.stringify({ ok: true, path, byteSize: bytes.length });
+  }
+
+    private serverFile(query: URLSearchParams): { path: string; data: string } {
     const profile = query.get("profile");
     if (profile && profile !== "default" && !(profile in this.otherProfiles))
       throw new Error(`The dashboard answered 404: {"detail":"Profile '${profile}' does not exist."}`);
     const path = query.get("path") ?? "";
+    const failure = this.fsReadFailure?.(path);
+    if (failure) throw new Error(failure);
     const name = path.split("/").pop() ?? "";
     if (/^\.env(\..*)?$|^auth\.json$|^config\.yaml$/i.test(name))
       throw new Error(`The dashboard answered 403: {"detail":"Access to sensitive files is not allowed"}`);

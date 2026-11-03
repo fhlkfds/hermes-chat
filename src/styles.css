@@ -1745,3 +1745,32 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .terminal-foot { flex: none; margin: 0; padding: 8px 22px 12px; font-size: calc(12rem / 14); }
 .terminal-btn { position: relative; }
 .terminal-dot { position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; background: var(--ok); }
+
+/* Artifact editor in the preview pane (ArtifactEditor.tsx, ADR 0025). */
+.artifact { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.artifact-pad { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.artifact-id { flex: none; display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 10px; padding: 8px 12px 6px; border-bottom: 1px solid var(--line); }
+.artifact-title { font-weight: 600; }
+.artifact-bar { gap: 6px 8px; }
+.artifact-ask-btn { display: inline-flex; align-items: center; gap: 6px; }
+.artifact-ask { flex: none; display: flex; flex-direction: column; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--raised); }
+.artifact-ask p { margin: 0; }
+.artifact-ask-row { display: flex; gap: 6px; }
+.artifact-ask-row input, .artifact-compare select { background: var(--raised-2, var(--raised)); border: 1px solid var(--line); border-radius: 8px; padding: 5px 9px; outline: none; font-size: calc(12.5rem / 14); }
+.artifact-ask-row input { flex: 1; min-width: 0; }
+.artifact-ask-row input:focus, .artifact-compare select:focus { border-color: var(--line-3); }
+.artifact-line { margin: 0; padding: 6px 12px; }
+.artifact-text { flex: 1; min-height: 0; margin: 8px 12px; resize: none; white-space: pre-wrap; overflow-wrap: anywhere; }
+.artifact-doc { flex: 1; min-height: 0; }
+.artifact-panel { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 8px; padding: 8px 12px; }
+.artifact-panel > p { margin: 0; line-height: 1.5; }
+.artifact-panel .files-diff { flex: 1 0 auto; min-height: 120px; }
+.artifact-panel svg { vertical-align: -2px; }
+.artifact-versions { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.artifact-versions li { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding: 4px 0; border-bottom: 1px dashed var(--line); }
+.artifact-compare { display: flex; flex-wrap: wrap; gap: 8px 14px; }
+.artifact-compare select { max-width: 260px; }
+.artifact-foot { flex: none; display: flex; flex-direction: column; gap: 6px; padding: 8px 12px 10px; border-top: 1px solid var(--line); }
+.artifact-foot p { margin: 0; }
+.artifact-foot .btn, .artifact-panel .btn { display: inline-flex; align-items: center; gap: 6px; }
+.artifact-foot .confirm-actions { flex-wrap: wrap; }
