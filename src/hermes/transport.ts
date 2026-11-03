@@ -44,6 +44,7 @@ import { providerKeys, readyProviders, type ProviderSetup, type SavedKey } from 
 import { restartHold } from "./unsaved";
 import { hostFileView, readServerFile, type FileView } from "./preview";
 import { splitPath, type OutputsIo, type StoredRow as StoredOutputRow } from "./outputs";
+import type { UsageIo } from "./usageAnalytics";
 import { compactResultOf, compactionsOf, readingOf, type CompactResult, type CompactionHistory, type CompactionRow, type ContextReading } from "./contextInspect";
 import { chatUsageOf, countersOf, newerChatUsage, replyUsage, ZERO_COUNTERS, type ReplyUsage, type UsageCounters } from "./usage";
 
@@ -2784,6 +2785,24 @@ export class Hermes {
     };
   }
 
+  /**
+   * How Usage analytics reads Hermes (usageAnalytics.ts, ADR 0026): the stored session rows, every source and archived
+   * ones too, newest started first; one stored session by id; and Hermes's own sums for a rolling period. Every request
+   * names its profile, and reads only while connected.
+   */
+  usageIo(): UsageIo {
+    const get = async (pathAndQuery: string) => JSON.parse(await this.restGet(pathAndQuery)) as unknown;
+    return {
+      page: async (profile, offset, limit) => {
+        const query = new URLSearchParams({ profile, order: "created", archived: "include", limit: String(limit), offset: String(offset) });
+        const res = (await get(`api/sessions?${query}`)) as { sessions?: unknown; total?: unknown };
+        return { rows: Array.isArray(res.sessions) ? res.sessions : [], total: typeof res.total === "number" ? res.total : 0 };
+      },
+      session: (profile, id) => get(`${sessionPath(id)}?${new URLSearchParams({ profile })}`),
+      hermesTotals: (profile, days) => get(`api/analytics/usage?${new URLSearchParams({ days: String(days), profile })}`),
+    };
+  }
+
   private async rest(method: RestMethod, pathAndQuery: string, body?: unknown): Promise<unknown> {
     // Once closed (signed out), nothing more goes out: the Rust side relays through whichever sign-in is current, which
     // may be another server's by then.
@@ -2996,7 +3015,7 @@ function findTerm(q: string, snippet: Found["snippet"]): string {
 }
 
 /** A chat's Source from the session's `source` field. This app's own chats, `gui` ones, show no icon. */
-function toSource(source = ""): Source {
+export function toSource(source = ""): Source {
   switch (source) {
     case APP_SOURCE:
     case OLD_APP_SOURCE:

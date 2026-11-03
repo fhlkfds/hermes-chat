@@ -40,7 +40,7 @@ export type UIPrefs = {
   screenshotShortcut: string | null;
   /** How wide the owner made the preview pane, in px; null until they resize it. */
   previewWidth: number | null;
-  /** The owner's message templates (templates.ts, ADR 0026). */
+  /** The owner's message templates (templates.ts, ADR 0027). */
   templates: Template[];
 };
 

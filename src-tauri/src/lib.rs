@@ -716,6 +716,12 @@ async fn templates_export(app: tauri::AppHandle, json: String) -> Result<Option<
     save_with_dialog(&app, "Export templates", "hermes-chat-templates.json".into(), ("JSON", &["json"]), json).await
 }
 
+/// Saves Usage analytics' CSV where the owner picks in the native Save dialog (ADR 0026). `None`: cancelled.
+#[tauri::command]
+async fn usage_export(app: tauri::AppHandle, csv: String, file_name: String) -> Result<Option<String>, String> {
+    save_with_dialog(&app, "Export usage — chat titles are in the file", file_name, ("CSV", &["csv"]), csv).await
+}
+
 /// A local file the owner picked for the preview pane.
 #[derive(Serialize)]
 struct PickedFile {
@@ -908,6 +914,7 @@ pub fn run(screenshot: bool) {
             headers_delete,
             chat_export,
             templates_export,
+            usage_export,
             preview_pick_local,
             preview_read_local,
             preview_read_local_image,
