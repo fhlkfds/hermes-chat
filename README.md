@@ -359,6 +359,7 @@ Webview local storage is in `$XDG_DATA_HOME/net.l0cky12.hermes-chat/localstorage
 | Screenshots do nothing on Hyprland or Sway | Install `slurp` and `grim`. |
 | Dictation can't record | Check the microphone and the PipeWire or PulseAudio sound server. Settings → General → Voice shows which providers the profile uses. |
 | No desktop notifications | Install and run a notification daemon. Notifications appear only while the window isn't focused. |
+| Settings → Toolsets shows Web Search & Scraping as Needs setup | The provider it uses has no API key on the server. Brave Search and Firecrawl need one. Exa's free tier needs no key and does both search and page extraction. On the server, run `hermes config set web.search_backend exa`, `hermes config set web.extract_backend exa`, and `hermes config set web.provider_tier.exa free`. Add `-p <profile>` after `hermes` for another profile. Then press Refresh. |
 
 ## Known limitations
 
