@@ -155,7 +155,7 @@ fn client_kept_to_origin(headers: &HeaderMap, always: bool) -> Result<reqwest::C
     if always || !headers.is_empty() {
         http = http.redirect(redirect::Policy::custom(same_origin_redirects));
     }
-    http.build().map_err(|e| TransportError::Unreachable(e.to_string()))
+    http.build().map_err(unreachable)
 }
 
 /// With extra headers set, a redirect is followed only within the dashboard's origin (scheme, host and port), so
@@ -226,12 +226,15 @@ fn audio_mime(raw: &str) -> Option<String> {
 
 /// The reason in a refusal's body: FastAPI's `detail`, an `error`, or else the status alone (a proxy's HTML page says
 /// nothing useful). Long enough for Hermes's "No STT provider available", which lists what each provider needs.
-fn refusal_reason(status: StatusCode, body: &str) -> String {
+fn refusal_reason(status: StatusCode, body: &str, headers: &HeaderMap) -> String {
     let json: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
     let text = json["detail"].as_str().or(json["error"].as_str()).map(str::trim).filter(|s| !s.is_empty());
+    // As `shown_body`: with extra request headers, a refusal may be a gateway's, repeating them. Checked on the whole
+    // reason, before it is shortened.
+    let refused = matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::PROXY_AUTHENTICATION_REQUIRED);
     match text {
-        Some(t) => t.chars().take(800).collect(),
-        None => format!("the server answered {status}"),
+        Some(t) if !(refused && !headers.is_empty()) && !repeats_header(t, headers) => t.chars().take(800).collect(),
+        _ => format!("the server answered {status}"),
     }
 }
 
@@ -583,7 +586,7 @@ impl Dashboard {
             }))
             .send()
             .await
-            .map_err(|e| TransportError::Unreachable(e.to_string()))?;
+            .map_err(unreachable)?;
         match login.status() {
             s if s.is_success() => {}
             StatusCode::UNAUTHORIZED => return Err(TransportError::BadCredentials),
@@ -603,7 +606,7 @@ impl Dashboard {
             .header(header::COOKIE, self.cookie_header())
             .send()
             .await
-            .map_err(|e| TransportError::Unreachable(e.to_string()))?;
+            .map_err(unreachable)?;
         self.keep_cookies(&ticket);
         if !ticket.status().is_success() {
             return Err(unexpected(ticket, &self.headers).await);
@@ -611,7 +614,7 @@ impl Dashboard {
         let ticket: serde_json::Value = ticket
             .json()
             .await
-            .map_err(|e| TransportError::Unreachable(e.to_string()))?;
+            .map_err(unreachable)?;
         let ticket = ticket["ticket"].as_str().ok_or_else(|| TransportError::Unexpected {
             status: 200,
             body: "ws-ticket response has no ticket".into(),
@@ -631,6 +634,7 @@ impl Dashboard {
             .map_err(|e| TransportError::WebSocket(e.to_string()))?;
 
         let (outgoing, mut to_server) = mpsc::unbounded_channel::<String>();
+        let headers = self.headers.clone();
         let task = tokio::spawn(async move {
             let (mut sink, mut stream) = ws.split();
             let reason = loop {
@@ -654,7 +658,11 @@ impl Dashboard {
                             }
                         }
                         Some(Ok(Message::Close(frame))) => {
-                            break frame.map_or("closed by the server".into(), |f| format!("closed by the server ({} {})", f.code, f.reason));
+                            break frame.map_or("closed by the server".into(), |f| {
+                                // A gateway in front of the dashboard may close with the header values it turned down.
+                                let why = if repeats_header(&f.reason, &headers) { HIDDEN_FOR_HEADERS } else { f.reason.as_str() };
+                                format!("closed by the server ({} {why})", f.code)
+                            });
                         }
                         Some(Ok(_)) => {}
                         Some(Err(e)) => break e.to_string(),
@@ -694,10 +702,10 @@ impl Dashboard {
         if let Some(body) = body {
             req = req.header(header::CONTENT_TYPE, "application/json").body(body);
         }
-        let resp = req.send().await.map_err(|e| TransportError::Unreachable(e.to_string()))?;
+        let resp = req.send().await.map_err(unreachable)?;
         self.keep_cookies(&resp);
         match resp.status() {
-            s if s.is_success() => resp.text().await.map_err(|e| TransportError::Unreachable(e.to_string())),
+            s if s.is_success() => resp.text().await.map_err(unreachable),
             StatusCode::UNAUTHORIZED => Err(TransportError::SignedOut),
             _ => Err(unexpected(resp, &self.headers).await),
         }
@@ -784,7 +792,7 @@ impl Dashboard {
             .json(body)
             .send()
             .await
-            .map_err(|e| TransportError::Unreachable(e.to_string()))?;
+            .map_err(unreachable)?;
         self.keep_cookies(&resp);
         let status = resp.status();
         if status == StatusCode::UNAUTHORIZED {
@@ -793,14 +801,13 @@ impl Dashboard {
         if status.is_redirection() {
             return Err(unexpected(resp, &self.headers).await);
         }
-        let text = resp.text().await.map_err(|e| TransportError::Unreachable(e.to_string()))?;
+        let text = resp.text().await.map_err(unreachable)?;
         if status.is_success() {
             return serde_json::from_str(&text)
                 .map(AudioAnswer::Done)
                 .map_err(|_| TransportError::Unexpected { status: status.as_u16(), body: shown_body(status, &text, &self.headers) });
         }
-        let reason = refusal_reason(status, &text);
-        let reason = if repeats_header(&reason, &self.headers) { format!("the server answered {status}") } else { reason };
+        let reason = refusal_reason(status, &text, &self.headers);
         // FastAPI's own "no such route" (and the headless backend's catch-all) differ from a refusal by the route
         // itself, such as an unknown profile, which also answers 404 but with its own reason.
         let no_route = match status {
@@ -823,7 +830,7 @@ impl Dashboard {
             .header(header::COOKIE, self.cookie_header())
             .send()
             .await
-            .map_err(|e| TransportError::Unreachable(e.to_string()))?;
+            .map_err(unreachable)?;
         self.keep_cookies(&resp);
         match resp.status() {
             s if s.is_success() => {}
@@ -835,7 +842,7 @@ impl Dashboard {
             return Err(too_large(size));
         }
         let mut body = Vec::new();
-        while let Some(chunk) = resp.chunk().await.map_err(|e| TransportError::Unreachable(e.to_string()))? {
+        while let Some(chunk) = resp.chunk().await.map_err(unreachable)? {
             body.extend_from_slice(&chunk);
             if body.len() as u64 > max_bytes {
                 return Err(too_large(body.len() as u64));
@@ -915,15 +922,20 @@ fn endpoint(base: &Url, path: &str) -> Url {
     url
 }
 
-/// An answer the call didn't expect, with the start of its body. Reads only the first few KB, so a huge or endless
-/// error body can't fill memory.
 /// Said in place of an error body that can't be shown.
 const HIDDEN_FOR_HEADERS: &str = "(not shown, as it may repeat your extra request headers)";
 
+/// How much of a header value `repeats_header` counts as repeating it.
+const HEADER_PIECE: usize = 8;
+
 /// Whether `text` repeats one of the owner's extra request header values, as a gateway such as Cloudflare Access can
-/// in the page it turns a request away with.
+/// in the page it turns a request away with. Any `HEADER_PIECE` bytes of a value count, so a value cut short, as in
+/// a WebSocket close reason, still does. Header values `to_str` accepts are ASCII.
 fn repeats_header(text: &str, headers: &HeaderMap) -> bool {
-    headers.values().filter_map(|v| v.to_str().ok()).any(|v| !v.is_empty() && text.contains(v))
+    headers.values().filter_map(|v| v.to_str().ok()).filter(|v| !v.is_empty()).any(|v| {
+        let piece = v.len().min(HEADER_PIECE);
+        (0..=v.len() - piece).any(|i| text.contains(&v[i..i + piece]))
+    })
 }
 
 /// Every string in `v`, keys included, one per line, so `repeats_header` sees them unescaped.
@@ -963,7 +975,8 @@ fn shown_body(status: StatusCode, text: &str, headers: &HeaderMap) -> String {
     json!({ "detail": detail }).to_string().chars().take(300).collect()
 }
 
-/// A failed answer as an error. `headers`: the extra request headers the request carried (`shown_body`).
+/// A failed answer as an error, with the start of its body. Reads only the first few KB, so a huge or endless error
+/// body can't fill memory. `headers`: the extra request headers the request carried (`shown_body`).
 async fn unexpected(mut resp: reqwest::Response, headers: &HeaderMap) -> TransportError {
     const KEEP: usize = 4096;
     // A redirect that came back unfollowed: `same_origin_redirects` stopped it at another site.
@@ -1039,7 +1052,7 @@ pub async fn probe_with(base: &Url, sign_in: &SignIn, profile: &str, step: Durat
     let http = client(&sign_in.headers).map_err(|e| ProbeFailure::new(Stage::Address, e.to_string()))?;
     // The body is read inside the limit too: a server can send its headers and then stall.
     let read_status = async {
-        let resp = http.get(endpoint(base, "api/status")).send().await.map_err(|e| TransportError::Unreachable(describe(&e)))?;
+        let resp = http.get(endpoint(base, "api/status")).send().await.map_err(unreachable)?;
         if resp.status().is_redirection() {
             // Stopped at another site (`same_origin_redirects`), such as a gateway's login page.
             return match unexpected(resp, &sign_in.headers).await {
@@ -1055,7 +1068,7 @@ pub async fn probe_with(base: &Url, sign_in: &SignIn, profile: &str, step: Durat
         if !resp.status().is_success() {
             return Ok(None);
         }
-        resp.text().await.map(Some).map_err(|e| TransportError::Unreachable(describe(&e)))
+        resp.text().await.map(Some).map_err(unreachable)
     };
     let status = match tokio::time::timeout(step, read_status).await {
         Err(_) => return Err(ProbeFailure::new(Stage::Reach, timed_out("The dashboard"))),
@@ -1096,6 +1109,12 @@ pub async fn probe_with(base: &Url, sign_in: &SignIn, profile: &str, step: Durat
 
 /// A request error with its causes, which say what actually went wrong ("Connection refused", "dns error", a
 /// certificate problem); reqwest's own message only names the URL.
+/// A request that got no answer, as an error. The URL is left out: a redirect can put a header value, or a provider
+/// key the dashboard was sent, into the URL it gives up on.
+fn unreachable(e: reqwest::Error) -> TransportError {
+    TransportError::Unreachable(describe(&e.without_url()))
+}
+
 fn describe(e: &reqwest::Error) -> String {
     let mut parts = vec![e.to_string()];
     let mut source = std::error::Error::source(e);
@@ -1211,10 +1230,10 @@ impl Dashboard {
         if let Some(body) = body {
             req = req.header(header::CONTENT_TYPE, "application/json").body(body);
         }
-        let resp = req.send().await.map_err(|e| TransportError::Unreachable(e.to_string()))?;
+        let resp = req.send().await.map_err(unreachable)?;
         self.keep_cookies(&resp);
         match resp.status() {
-            s if s.is_success() => resp.text().await.map_err(|e| TransportError::Unreachable(e.to_string())),
+            s if s.is_success() => resp.text().await.map_err(unreachable),
             StatusCode::UNAUTHORIZED => Err(TransportError::SignedOut),
             _ if show_failure => Err(unexpected(resp, &self.headers).await),
             s => Err(TransportError::Unexpected { status: s.as_u16(), body: "(not shown, as it may hold the key)".into() }),

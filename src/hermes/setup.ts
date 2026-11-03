@@ -138,9 +138,11 @@ export function explain(f: ProbeFailure, d: SignInDetails): TestOutcome & { ok: 
         : "If a gateway such as Cloudflare Access is in front of the dashboard, add the headers it needs under Extra request headers, on the Server step. A service token needs CF-Access-Client-Id and CF-Access-Client-Secret.",
       "Or connect over SSH, which goes straight to the dashboard.",
     ]);
-  // With extra request headers, Rust hides a refusal's body, as a gateway may repeat them in it. Past the first
-  // request such a refusal is most likely the gateway's too, so the stage's own hints wouldn't help.
-  if (!ssh && d.headers?.length && has(/answered (401|403|407): \(not shown, as it may repeat your extra request headers\)/))
+  // With extra request headers, Rust hides a refusal's body, or a close reason, that may repeat them, as a gateway's
+  // can. Past the first request such a refusal is most likely the gateway's too, so the stage's own hints wouldn't
+  // help.
+  const hidden = "\\(not shown, as it may repeat your extra request headers\\)";
+  if (!ssh && d.headers?.length && has(new RegExp(`answered (401|403|407): ${hidden}|closed by the server \\(\\d+ ${hidden}\\)`)))
     return turnedAway();
 
   switch (f.stage) {

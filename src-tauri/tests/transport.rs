@@ -1412,3 +1412,80 @@ async fn a_provider_key_check_that_never_answers_gives_up() {
     assert!(matches!(err, TransportError::KeyTimedOut(_)), "{err:?}");
     assert!(started.elapsed() < Duration::from_secs(3));
 }
+
+/// Gateway sign-in headers whose secret is long, as a real service token's is.
+const LONG_SECRET: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+fn long_secret_sign_in() -> SignIn {
+    let headers = transport::extra_headers(&[header("CF-Access-Client-Id", "id.access"), header("CF-Access-Client-Secret", LONG_SECRET)]).unwrap();
+    SignIn { headers, ..sign_in("hunter2") }
+}
+
+/// Whether `text` holds any 8 characters of `LONG_SECRET`.
+fn shows_part_of_secret(text: &str) -> bool {
+    (0..=LONG_SECRET.len() - 8).any(|i| text.contains(&LONG_SECRET[i..i + 8]))
+}
+
+#[tokio::test]
+async fn a_redirect_loop_never_shows_the_key_or_a_header_value_it_put_in_the_url() {
+    // The dashboard's own origin, so the redirects are followed until reqwest gives up on them.
+    let lap = |RawQuery(q): RawQuery| async move { Redirect::temporary(&format!("/loop?{}", q.unwrap_or_default())) };
+    let app = Router::new()
+        .route("/auth/password-login", post(login))
+        .route("/api/env", get(env_rows))
+        .route("/api/providers/validate", post(|Json(body): Json<Value>| async move {
+            Redirect::temporary(&format!("/loop?k={}", body["value"].as_str().unwrap_or("none")))
+        }))
+        .route("/api/status", get(|headers: HeaderMap| async move {
+            let secret = headers.get("cf-access-client-secret").and_then(|v| v.to_str().ok()).unwrap_or_default().to_owned();
+            Redirect::temporary(&format!("/loop?s={secret}"))
+        }))
+        .route("/loop", get(lap).post(lap));
+    let base = serve(app).await;
+    let dashboard = Dashboard::sign_in(&base, &sign_in("hunter2")).await.unwrap();
+    let err = dashboard.save_provider_key("default", "OPENROUTER_API_KEY", "sk-good-and-long").await.unwrap_err().to_string();
+    assert!(err.contains("redirect") && !err.contains("sk-good"), "{err}");
+    let failed = transport::probe(&base, &long_secret_sign_in(), "default").await.unwrap_err();
+    assert_eq!(failed.stage, Stage::Reach);
+    assert!(failed.message.contains("redirect") && !shows_part_of_secret(&failed.message), "{}", failed.message);
+}
+
+#[tokio::test]
+async fn a_voice_refusal_never_shows_a_header_value_even_cut_short() {
+    let refuse = |status: StatusCode| {
+        move |headers: HeaderMap| async move {
+            let secret = headers.get("cf-access-client-secret").and_then(|v| v.to_str().ok()).unwrap_or_default().to_owned();
+            // Cut short, as a gateway might, and well past the 800 characters a reason keeps.
+            (status, Json(json!({"detail": format!("{}{}", "x".repeat(790), &secret[..40])}))).into_response()
+        }
+    };
+    let app = Router::new()
+        .route("/auth/password-login", post(login))
+        .route("/api/audio/transcribe", post(refuse(StatusCode::FORBIDDEN)))
+        .route("/api/audio/speak", post(refuse(StatusCode::BAD_REQUEST)));
+    let dashboard = Dashboard::sign_in(&serve(app).await, &long_secret_sign_in()).await.unwrap();
+    let heard = dashboard.transcribe("default", "audio/wav", b"RIFF").await.err().unwrap().to_string();
+    assert!(heard.ends_with("the server answered 403 Forbidden") && !shows_part_of_secret(&heard), "{heard}");
+    let spoken = dashboard.speak("default", "Hello").await.err().unwrap().to_string();
+    assert!(spoken.ends_with("the server answered 400 Bad Request") && !shows_part_of_secret(&spoken), "{spoken}");
+}
+
+#[tokio::test]
+async fn a_chat_connection_closed_with_a_header_value_never_shows_it() {
+    let close = |ws: WebSocketUpgrade, headers: HeaderMap| async move {
+        let secret = headers.get("cf-access-client-secret").and_then(|v| v.to_str().ok()).unwrap_or_default().to_owned();
+        ws.on_upgrade(move |mut ws| async move {
+            // A close reason is at most 123 bytes, so a long value arrives cut short.
+            let reason = format!("Gateway rejected {}", &secret[..40]);
+            let _ = ws.send(Message::Close(Some(axum::extract::ws::CloseFrame { code: 1008, reason: reason.into() }))).await;
+        })
+    };
+    let app = Router::new()
+        .route("/api/status", get(status))
+        .route("/auth/password-login", post(login))
+        .route("/api/auth/ws-ticket", post(ws_ticket))
+        .route("/api/ws", get(close));
+    let failed = transport::probe(&serve(app).await, &long_secret_sign_in(), "default").await.unwrap_err();
+    assert_eq!(failed.stage, Stage::Chat);
+    assert!(failed.message.contains("1008") && !shows_part_of_secret(&failed.message), "{}", failed.message);
+}

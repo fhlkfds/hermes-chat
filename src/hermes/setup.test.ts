@@ -123,8 +123,9 @@ describe("Explaining a failed test", () => {
     expect(why({ stage: "reach", message: away }, withHeaders).problem).toBe("The dashboard's address sent Hermes Chat on to another site.");
     // Past the first request, a refusal whose body Rust hid for the headers' sake still points at them.
     const hidden = "The dashboard answered 403: (not shown, as it may repeat your extra request headers)";
-    for (const stage of ["sign-in", "chat"] as const) {
-      expect(why({ stage, message: hidden, status: STATUS }, withHeaders)).toMatchObject({
+    const closed = "The chat connection closed before Hermes was ready: closed by the server (1008 (not shown, as it may repeat your extra request headers))";
+    for (const [stage, message] of [["sign-in", hidden], ["chat", hidden], ["chat", closed]] as const) {
+      expect(why({ stage, message, status: STATUS }, withHeaders)).toMatchObject({
         problem: "Something in front of the dashboard at hermes.example.com:9119 turned Hermes Chat away.",
         fixes: [expect.stringMatching(/^Check the extra request headers' names and values/), "Or connect over SSH, which goes straight to the dashboard."],
       });
