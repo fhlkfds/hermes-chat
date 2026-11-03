@@ -603,6 +603,53 @@ describe("a project's defaults for new chats", () => {
     expect(creates(s)[0].messages).toBeUndefined();
   });
 
+  it("starts nothing when the project shown changes while the folder is being checked", async () => {
+    const s = server();
+    await seed("p_budget", { folder: "/srv/budget", instructions: "Budget only" });
+    const list = s.rest["GET /api/fs/list"];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    s.rest["GET /api/fs/list"] = async (req) => {
+      await gate;
+      return list(req);
+    };
+    const { user, hermes } = await launch(s);
+    await pick(user, "Budget Tracker");
+    await send(user, "Plan the budget");
+    await waitFor(() => expect(s.restRequests.some((r) => r.path === "/api/fs/list")).toBe(true));
+    // Another window picks All chats meanwhile.
+    await act(async () => {
+      projectLinks(localStorage).select(projectScope({ mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" }, "default"), undefined);
+      window.dispatchEvent(new StorageEvent("storage", { key: PROJECTS_KEY }));
+    });
+    await act(async () => release());
+    await screen.findByText(/Couldn't start a chat: The project shown changed before the chat started/);
+    await act(async () => void (await hermes.idle()));
+    expect(creates(s)).toEqual([]);
+    expect((screen.getByPlaceholderText("Message Hermes") as HTMLTextAreaElement).value).toBe("Plan the budget");
+  });
+
+  it("starts nothing when the project's defaults can't be read, rather than using older ones", async () => {
+    const s = server();
+    await seed("p_budget", { instructions: "OLD instructions" });
+    const { user } = await launch(s);
+    await pick(user, "Budget Tracker");
+    await waitFor(() => expect(screen.getByRole("region", { name: "What this chat starts with" }).textContent).toContain("OLD instructions"));
+    await seed("p_budget", { instructions: "NEW instructions" }, 1);
+    const getItem = Storage.prototype.getItem;
+    const spy = vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (this: Storage, key: string) {
+      if (key === "hermes-chat.project-defaults") throw new Error("disk unreadable");
+      return getItem.call(this, key);
+    });
+    try {
+      await send(user, "Plan the budget");
+      await screen.findByText(/Couldn't start a chat: Couldn't read the project's defaults on this computer: disk unreadable/);
+      expect(creates(s)).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("puts focus back on its button when Apply closes", async () => {
     const s = server();
     await seed("p_budget", { folder: "/srv/budget" });

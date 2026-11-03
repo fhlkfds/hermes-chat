@@ -1110,18 +1110,19 @@ function ChatView({
     if (chatId) return { id: chatId };
     // The project and its defaults as they are now, not as they were when the pane drew.
     projects.reread();
-    await projects.readDefaults();
-    const snap = projects.getSnapshot();
-    const into = snap.selectedId;
-    const shown = snap.projects.find((p) => p.id === into);
-    const s = settingsFor(shown && { name: shown.name, defaults: snap.defaults[shown.id] });
+    const into = projects.getSnapshot().selectedId;
     try {
+      const shown = projects.getSnapshot().projects.find((p) => p.id === into);
+      const defaults = shown && (await projects.freshDefaults().catch((e) => Promise.reject(new Error(`Couldn't read the project's defaults on this computer: ${messageOf(e)}`))));
+      const s = settingsFor(shown && { name: shown.name, defaults: defaults?.[shown.id] });
       const problem = modelProblem(s, catalog);
       if (problem) throw new Error(problem);
       // Hermes would run a chat in a folder it can't list, or quietly in its own; check it is there and allowed first.
       if (s.folder.value) await hermes.projects.checkFolder(profile, s.folder.value);
-      // The owner may have switched profile meanwhile: these are this profile's project's, not the new one's.
+      // The owner may have switched profile, or another window the project shown, meanwhile: these were that one's.
       if (!stillIn()) throw new Error(`The profile changed to ${hermes.profile} before the chat started. Nothing was sent.`);
+      projects.reread();
+      if (projects.getSnapshot().selectedId !== into) throw new Error("The project shown changed before the chat started. Nothing was sent.");
       const instructions = s.instructions.value && instructionsMessage(s.project ?? "", s.instructions.value);
       const id = await hermes.newChat(s.model.value, { folder: s.folder.value, instructions });
       if (into && projects.getSnapshot().projects.some((p) => p.id === into)) projects.setChat(into, id, true);

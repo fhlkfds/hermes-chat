@@ -242,6 +242,26 @@ describe("keeping the defaults", () => {
     }
   });
 
+  it("answers a chat about to start with its own read, even while a later read is under way", async () => {
+    const f = sharedFile();
+    const read = f.file.read;
+    let gate: Promise<void> | undefined;
+    f.file = { ...f.file, read: async () => (await gate, read()) };
+    await defaultsDoc(f.file).save(SCOPE, "p_1", 0, { instructions: "OLD" });
+    const store = new ProjectsStore({} as never, projectLinks(memoryStorage()), SCOPE, "default", defaultsDoc(f.file));
+    await store.readDefaults();
+    await defaultsDoc(f.file).save(SCOPE, "p_1", 1, { instructions: "NEW" });
+    // The chat's read starts, then a background read (the window coming to the front) that hasn't finished.
+    const fresh = store.freshDefaults();
+    let release!: () => void;
+    gate = new Promise<void>((r) => (release = r));
+    const later = store.readDefaults();
+    // The chat's read was overtaken, so it isn't shown, but it still answers what the file holds now.
+    expect((await fresh).p_1.instructions).toBe("NEW");
+    release();
+    await later;
+  });
+
   it("forgets a project's defaults once it is deleted here", async () => {
     const f = sharedFile();
     const s = new FakeHermes();

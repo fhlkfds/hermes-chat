@@ -330,17 +330,26 @@ export class ProjectsStore {
    * Reads the projects' defaults again, as another window or instance may have saved them. Resolves once the
    * snapshot has them; a failed read keeps the ones shown.
    */
-  async readDefaults(): Promise<void> {
+  readDefaults(): Promise<void> {
+    return this.freshDefaults().then(
+      () => {},
+      () => {}, // Kept as they were.
+    );
+  }
+
+  /**
+   * The projects' defaults as the file holds them now, for a chat about to start: this read's own answer, whatever other
+   * reads are under way. Rejects if the file can't be read, rather than answering what was read before.
+   */
+  async freshDefaults(): Promise<Readonly<Record<string, ProjectDefaults>>> {
     const n = ++this.defaultsReads;
-    try {
-      const stored = await this.defaults.read(this.scope);
-      // An older read finishing late doesn't replace a newer one.
-      if (n !== this.defaultsReads) return;
+    const stored = await this.defaults.read(this.scope);
+    // Shown only if no newer read was asked for meanwhile; the caller gets this read's answer either way.
+    if (n === this.defaultsReads) {
       this.stored = stored;
       this.set(this.fromLinks());
-    } catch {
-      // Kept as they were.
     }
+    return stored;
   }
 
   /** Reads this computer's copies again, after another window changed them. */

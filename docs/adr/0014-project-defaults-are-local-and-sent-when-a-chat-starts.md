@@ -12,7 +12,7 @@ Hermes keeps projects (ADR 0007) but has nowhere to keep these. `projects.update
 - A document written by a newer Hermes Chat is read for what this version knows, and this version never writes it, in whatever shape the newer version left it.
 - The form can't be edited while a save is under way. Instructions over 20,000 characters are refused beside the field, and Save waits until they're shorter. A save the file system refuses fails and says so.
 - The file is read again when the app opens a project's screen, after a save, when the window comes back to the front, and before each chat starts. Removing every default keeps the revision, so the project inherits from the profile and an editor opened earlier still meets a conflict.
-- A chat starts with the defaults of the project shown, and the profile, at the moment it starts: if the owner, or another window, stops showing the project, or the owner switches profile while the folder is checked, its defaults aren't used.
+- A chat starts with the defaults of the project shown, and the profile, at the moment it starts. The file is read again first, and that read's own answer is used; if it can't be read, the chat doesn't start, rather than starting on older defaults. If the owner, or another window, changes the project shown, or the owner switches profile, while the folder is checked, nothing starts and the message goes back in the composer.
 - They don't sync between computers and other Hermes clients don't use them. Clear local cache keeps them.
 
 ## How a chat starts with them
