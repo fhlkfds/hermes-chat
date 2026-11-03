@@ -126,6 +126,20 @@ describe("toolset discovery", () => {
     expect((await api.guards("default"))?.disabledEverywhere).toEqual(["debugging"]);
   });
 
+  it("says it couldn't check agent.disabled_toolsets when Rust can't read that list for certain", async () => {
+    const { server, api } = await connected();
+    server.toolsetDisabledUnclear.default = true;
+    const list = await api.list("default");
+    const image = list.toolsets.find((x) => x.name === "image_gen")!;
+    const check = [{ kind: "unchecked", what: expect.stringContaining("can't read for certain") }];
+    expect(await api.cautions("default", image, true)).toEqual(check);
+    expect(await api.cautions("default", list.toolsets.find((x) => x.name === "web")!, false)).toEqual([]);
+    expect(await api.set("default", "image_gen", true, false)).toMatchObject({ kind: "confirm", cautions: check });
+    expect(server.toolsetWrites).toEqual([]);
+    const [asked] = (await api.cautions("default", image, true)) as { kind: "unchecked"; what: string }[];
+    expect(await api.set("default", "image_gen", true, false, [asked])).toMatchObject({ kind: "saved" });
+  });
+
   it("says it couldn't check agent.disabled_toolsets when the config can't be read, before turning one on", async () => {
     const { server, api } = await connected();
     const web = (await api.list("default")).toolsets.find((x) => x.name === "web")!;

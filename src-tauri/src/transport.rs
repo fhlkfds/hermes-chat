@@ -873,6 +873,9 @@ pub struct ToolsetGuards {
     /// platform that lists it, not only here. A composite name here turns off the toolsets inside it, which a switch
     /// can't undo. Toolset names only; the config's values stay in Rust.
     pub disabled_everywhere: Vec<String>,
+    /// `agent.disabled_toolsets` is a string this can't read for certain the way Hermes does (`ast.literal_eval`, with
+    /// its escapes and literal forms), so any toolset may be on it.
+    pub disabled_unclear: bool,
 }
 
 /// `ToolsetGuards` from a profile's config as `GET /api/config` answers it.
@@ -892,34 +895,67 @@ pub fn toolset_guards(config: &serde_json::Value) -> ToolsetGuards {
         serde_json::Value::String(s) => s.trim().to_ascii_lowercase(),
         _ => String::new(),
     };
+    let disabled = config_string_list(&config["agent"]["disabled_toolsets"]);
     ToolsetGuards {
         no_mcp,
         coding_focus: matches!(mode.as_str(), "focus" | "strict" | "lean"),
-        disabled_everywhere: config_string_list(&config["agent"]["disabled_toolsets"]),
+        disabled_everywhere: disabled.names,
+        disabled_unclear: disabled.unclear,
     }
 }
 
+/// A config list's names, and whether they may be incomplete.
+struct ConfigList {
+    names: Vec<String>,
+    unclear: bool,
+}
+
 /// A config list as Hermes's `parse_config_string_list` reads it: a list, a list literal saved as a string
-/// (`"['memory', 'web']"`, as `hermes config set` stores it), or one name. Trimmed, empty names dropped.
-fn config_string_list(value: &serde_json::Value) -> Vec<String> {
-    let names: Vec<String> = match value {
-        serde_json::Value::Array(items) => items
-            .iter()
-            .map(|i| match i {
-                serde_json::Value::String(s) => s.clone(),
-                other => other.to_string(),
-            })
-            .collect(),
-        serde_json::Value::String(s) => match s.trim().strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
-            Some(inner) => inner
-                .split(',')
-                .map(|n| n.trim().trim_matches(|c| c == '\'' || c == '"').to_owned())
-                .collect(),
-            None => vec![s.clone()],
+/// (`"['memory', 'web']"`, as `hermes config set` stores it), or one name. Trimmed, empty names dropped. A literal is
+/// read only when each item is a plainly quoted name; anything else (escapes, other literal forms) is `unclear`,
+/// since Python may read it as names this can't see.
+fn config_string_list(value: &serde_json::Value) -> ConfigList {
+    let clean = |names: Vec<String>| names.into_iter().map(|n| n.trim().to_owned()).filter(|n| !n.is_empty()).collect();
+    match value {
+        serde_json::Value::Array(items) => ConfigList {
+            names: clean(
+                items
+                    .iter()
+                    .map(|i| match i {
+                        serde_json::Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    })
+                    .collect(),
+            ),
+            unclear: false,
         },
-        _ => Vec::new(),
-    };
-    names.into_iter().map(|n| n.trim().to_owned()).filter(|n| !n.is_empty()).collect()
+        serde_json::Value::String(s) if s.trim().starts_with('[') => {
+            let inner = s.trim().strip_prefix('[').and_then(|r| r.strip_suffix(']'));
+            let quoted = |item: &str| {
+                let item = item.trim();
+                ['\'', '"'].into_iter().find_map(|q| {
+                    let name = item.strip_prefix(q)?.strip_suffix(q)?;
+                    let plain = !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || "_.- ".contains(c));
+                    plain.then(|| name.to_owned())
+                })
+            };
+            let items: Option<Vec<String>> = inner.map(|inner| {
+                let mut parts: Vec<&str> = inner.split(',').collect();
+                // `['a',]` is a list of one; `[]` of none.
+                if parts.last().is_some_and(|p| p.trim().is_empty()) {
+                    parts.pop();
+                }
+                parts
+            })
+            .and_then(|parts| parts.into_iter().map(quoted).collect());
+            match items {
+                Some(names) => ConfigList { names: clean(names), unclear: false },
+                None => ConfigList { names: Vec::new(), unclear: true },
+            }
+        }
+        serde_json::Value::String(s) => ConfigList { names: clean(vec![s.clone()]), unclear: false },
+        _ => ConfigList { names: Vec::new(), unclear: false },
+    }
 }
 
 /// The scheduled-job writes the Scheduled jobs view makes (`hermes_cli/web_routers/cron.py`): `POST api/cron/jobs`

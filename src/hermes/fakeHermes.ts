@@ -643,6 +643,8 @@ export class FakeHermes {
   codingFocus: Record<string, boolean> = {};
   /** `agent.disabled_toolsets`, per profile: off on every platform. Turning one of these on removes it, as Hermes does. */
   toolsetDisabledEverywhere: Record<string, string[]> = {};
+  /** `agent.disabled_toolsets` saved in a form Rust can't read for certain, per profile. */
+  toolsetDisabledUnclear: Record<string, boolean> = {};
   /** While set, reading the config for the toolset guards fails with this. */
   toolsetGuardsFailure?: string;
   /**
@@ -738,6 +740,7 @@ export class FakeHermes {
           noMcp: [...(this.toolsetNoMcp[profile] ?? [])].sort(),
           codingFocus: !!this.codingFocus[profile],
           disabledEverywhere: [...(this.toolsetDisabledEverywhere[profile] ?? [])],
+          disabledUnclear: !!this.toolsetDisabledUnclear[profile],
         };
       },
       request: async (method, pathAndQuery, body) => {

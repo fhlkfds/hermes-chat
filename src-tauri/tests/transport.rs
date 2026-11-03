@@ -469,26 +469,39 @@ fn toolset_guards_keep_only_no_mcp_platforms_coding_focus_and_disabled_names() {
         "web": {"api_key": "sk-secret"},
     });
     let guards = transport::toolset_guards(&config);
-    let none = || transport::ToolsetGuards { no_mcp: vec![], coding_focus: false, disabled_everywhere: vec![] };
+    let none = || transport::ToolsetGuards { no_mcp: vec![], coding_focus: false, disabled_everywhere: vec![], disabled_unclear: false };
     assert_eq!(
         guards,
         transport::ToolsetGuards {
             no_mcp: vec!["cli".into(), "telegram".into()],
             coding_focus: true,
             disabled_everywhere: vec!["web".into(), "debugging".into()],
+            disabled_unclear: false,
         }
     );
     let out = serde_json::to_value(&guards).unwrap();
-    assert_eq!(out, json!({"noMcp": ["cli", "telegram"], "codingFocus": true, "disabledEverywhere": ["web", "debugging"]}));
+    assert_eq!(
+        out,
+        json!({"noMcp": ["cli", "telegram"], "codingFocus": true, "disabledEverywhere": ["web", "debugging"], "disabledUnclear": false})
+    );
     assert!(!out.to_string().contains("sk-secret"));
     assert_eq!(transport::toolset_guards(&json!({})), none());
     assert!(!transport::toolset_guards(&json!({"agent": {"coding_context": "auto"}})).coding_focus);
     // As `hermes config set` stores a list, and a single name, both as Hermes's parse_config_string_list reads them.
-    let listed = |v: serde_json::Value| transport::toolset_guards(&json!({"agent": {"disabled_toolsets": v}})).disabled_everywhere;
-    assert_eq!(listed(json!("['memory', \"web\"]")), vec!["memory".to_owned(), "web".to_owned()]);
-    assert_eq!(listed(json!("memory")), vec!["memory".to_owned()]);
-    assert_eq!(listed(json!("[]")), Vec::<String>::new());
-    assert_eq!(listed(json!(null)), Vec::<String>::new());
+    let listed = |v: serde_json::Value| {
+        let g = transport::toolset_guards(&json!({"agent": {"disabled_toolsets": v}}));
+        (g.disabled_everywhere, g.disabled_unclear)
+    };
+    let clear = |names: &[&str]| (names.iter().map(|n| n.to_string()).collect::<Vec<_>>(), false);
+    assert_eq!(listed(json!("['memory', \"web\"]")), clear(&["memory", "web"]));
+    assert_eq!(listed(json!("['memory',]")), clear(&["memory"]));
+    assert_eq!(listed(json!("memory")), clear(&["memory"]));
+    assert_eq!(listed(json!("[]")), clear(&[]));
+    assert_eq!(listed(json!(null)), clear(&[]));
+    // Python reads these as names this can't be sure of (`"\u0077eb"` is `web`), so any toolset may be listed.
+    for unsure in [r#"["\u0077eb"]"#, "['we' 'b']", "[web, debugging]", "['a,b']", "['web'"] {
+        assert_eq!(listed(json!(unsure)), (vec![], true), "{unsure}");
+    }
 }
 
 #[tokio::test]
