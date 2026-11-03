@@ -76,7 +76,8 @@ export function inboxEntries({ profile, chats, connected, others, live, seen }: 
   // The shown profile, as this connection sees it.
   for (const c of chats) {
     const base = { profile, chatId: c.id, title: c.title, stale: !connected };
-    if (c.running) add({ ...base, key: `running ${profile} ${c.id}`, kind: "running", at: c.updatedAt, summary: "Hermes is working on a reply.", stale: false });
+    // A reply held up by an Approval is listed as waiting, as a live session in another profile is.
+    if (c.running && !c.items.some(isWaiting)) add({ ...base, key: `running ${profile} ${c.id}`, kind: "running", at: c.updatedAt, summary: "Hermes is working on a reply.", stale: false });
     for (const i of c.items) {
       if (i.kind === "approval" && !i.answer && (i.ended || isWaiting(i))) {
         const ended = !isWaiting(i);

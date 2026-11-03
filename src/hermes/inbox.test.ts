@@ -75,7 +75,8 @@ describe("The inbox", () => {
     const second = server.askApproval(runtime, { request_id: "apr-two", command: "shutdown now" });
 
     expect(inbox(hermes).entries.filter((e) => e.kind === "approval").map((e) => e.itemId)).toEqual([first.id, second.id]);
-    expect(inbox(hermes).entries.find((e) => e.kind === "running")).toMatchObject({ chatId: id });
+    // A reply held up by an Approval is listed as waiting, not also as running.
+    expect(inbox(hermes).entries.filter((e) => e.kind === "running" || e.chatId !== id)).toEqual([]);
 
     server.cancelRequest(first.id!, "timeout");
     const approvals = inbox(hermes).entries.filter((e) => e.kind === "approval");
@@ -121,7 +122,7 @@ describe("The inbox", () => {
     const acks = inboxAcks(storage(), "server");
     const shown = () => inbox(hermes).entries.filter((e) => !acks.isDismissed(e));
     for (const e of shown().filter((e) => e.kind !== "running")) acks.dismiss(e);
-    expect(shown().map(brief)).toEqual([expect.stringMatching(/^running default\//)]);
+    expect(shown()).toEqual([]);
 
     server.drop();
     await vi.advanceTimersByTimeAsync(1_000);
