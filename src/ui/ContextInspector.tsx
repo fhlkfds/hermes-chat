@@ -2,7 +2,7 @@
 // as Hermes measures it, the compactions Hermes stored for the chat, and Compact now where Hermes can. Every figure is
 // Hermes's, labelled exact, estimated or unavailable; nothing is worked out from the meter's percentage, and nothing is
 // kept on this computer. Summaries and paths show as plain text, never as Markdown or HTML.
-import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { FileText, RefreshCw } from "lucide-react";
 import type { Chat, ConnectionStatus } from "../hermes/model";
 import {
@@ -78,7 +78,9 @@ export function ContextInspector({ chat, status, api }: { chat: Chat; status: Co
   const [compacted, setCompacted] = useState(0);
   // Hermes compacting the chat, here or on its own during a reply, changes what fills it: read both again.
   const again = `${chat.live?.compactions ?? "-"}/${compacted}`;
-  const [reading, reread] = useLoad(api.inspect, again);
+  // Hermes measures only a chat it has loaded on this connection; its stored compactions can be read without that.
+  const loaded = !!chat.runtimeId && status === "connected";
+  const [reading, reread] = useLoad(api.inspect, again, loaded);
   // The stored history is read once its tab is first opened, then kept up to date like the window.
   const [wantHistory, setWantHistory] = useState(false);
   useEffect(() => void (tab === "compactions" && setWantHistory(true)), [tab]);
@@ -102,7 +104,7 @@ export function ContextInspector({ chat, status, api }: { chat: Chat; status: Co
           title="Ask Hermes again"
           aria-label="Ask Hermes again"
           onClick={() => {
-            reread();
+            if (loaded) reread();
             if (wantHistory) rehistory();
           }}
         >
@@ -127,7 +129,7 @@ export function ContextInspector({ chat, status, api }: { chat: Chat; status: Co
       </div>
       <div className="inspector-body" role="tabpanel" id={`${id}-${tab}-panel`} aria-labelledby={`${id}-${tab}`}>
         {tab === "window" ? (
-          <WindowView chat={chat} reading={reading} api={api} onCompactions={() => setTab("compactions")} />
+          <WindowView chat={chat} status={status} loaded={loaded} reading={reading} api={api} onCompactions={() => setTab("compactions")} />
         ) : (
           <CompactionsView chat={chat} status={status} history={history} api={api} onCompacted={() => setCompacted((c) => c + 1)} />
         )}
@@ -136,7 +138,36 @@ export function ContextInspector({ chat, status, api }: { chat: Chat; status: Co
   );
 }
 
-function WindowView({ chat, reading, api, onCompactions }: { chat: Chat; reading?: Load<ContextReading>; api: ContextApi; onCompactions: () => void }) {
+function WindowView({
+  chat,
+  status,
+  loaded,
+  reading,
+  api,
+  onCompactions,
+}: {
+  chat: Chat;
+  status: ConnectionStatus;
+  loaded: boolean;
+  reading?: Load<ContextReading>;
+  api: ContextApi;
+  onCompactions: () => void;
+}) {
+  if (!loaded)
+    return (
+      <>
+        <div className="inspector-note">
+          <Badge certainty="unavailable" />{" "}
+          {status === "connected"
+            ? "Hermes hasn't loaded this chat on the server yet, so it has measured nothing for it. It does once the chat's next message goes."
+            : "Connect to Hermes to see what fills this chat's window."}{" "}
+          <button className="link-btn" onClick={onCompactions}>
+            See compactions
+          </button>
+        </div>
+        <CacheView chat={chat} />
+      </>
+    );
   if (!reading || reading.state === "loading") return <Waiting>Asking Hermes what fills the window…</Waiting>;
   if (reading.state === "failed")
     return (
@@ -427,6 +458,20 @@ function CompactAction({ chat, status, api, onCompacted }: { chat: Chat; status:
   const [step, setStep] = useState<"idle" | "confirm" | "running">("idle");
   const [result, setResult] = useState<{ ok: CompactResult } | { error: string }>();
   const blocked = compactBlocked(chat, status, api);
+  const section = useRef<HTMLElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
+  // The focused button goes when the step changes (Cancel, Compact, then the result). Focus moves to Compact now, or to
+  // the section while that is disabled, so it stays in the popover and Escape still closes it. Focus the owner put
+  // elsewhere meanwhile is left there.
+  const was = useRef(step);
+  useLayoutEffect(() => {
+    const from = was.current;
+    was.current = step;
+    if (from === step || step === "confirm") return;
+    const at = document.activeElement;
+    if (at && at !== document.body && !section.current?.contains(at)) return;
+    (button.current && !button.current.disabled ? button.current : section.current)?.focus();
+  }, [step]);
   const run = () => {
     setStep("running");
     setResult(undefined);
@@ -443,7 +488,7 @@ function CompactAction({ chat, status, api, onCompacted }: { chat: Chat; status:
     );
   };
   return (
-    <section className="inspector-section" aria-label="Compact">
+    <section className="inspector-section" aria-label="Compact" ref={section} tabIndex={-1}>
       {step === "confirm" ? (
         <div className="inspector-confirm" role="group" aria-label="Compact this chat?">
           <div className="popover-title">Compact this chat now?</div>
@@ -463,7 +508,7 @@ function CompactAction({ chat, status, api, onCompacted }: { chat: Chat; status:
         </div>
       ) : (
         <div className="compact-row">
-          <button className="btn" disabled={!!blocked || step === "running"} title={blocked} aria-description={blocked} onClick={() => setStep("confirm")}>
+          <button ref={button} className="btn" disabled={!!blocked || step === "running"} title={blocked} aria-description={blocked} onClick={() => setStep("confirm")}>
             {step === "running" ? (
               <>
                 <Spinner /> Compacting…

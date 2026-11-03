@@ -1,7 +1,7 @@
 // The status bar along the bottom of the chat pane: how full the chat's context window is, its YOLO switch, its model,
 // and the connection. Right-click picks what it shows, or hides it; Settings, Appearance shows it again. The choice is
 // kept in the display preferences (uiPrefs.ts `statusBar`). Nothing is shown that Hermes didn't report.
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Check, Zap } from "lucide-react";
 import type { Chat, ConnectionStatus } from "../hermes/model";
 import { ContextInspector, type ContextApi } from "./ContextInspector";
@@ -39,10 +39,41 @@ export function StatusBarSetting() {
 
 const n = (tokens: number) => tokens.toLocaleString();
 
-/** A small panel above the bar. Escape or a click outside closes it, and focus goes back. */
+/** The widest a wide popover gets, and how far it keeps from the edges of the pane it opens in. */
+const WIDE = 420;
+const EDGE = 8;
+
+/**
+ * A small panel above the bar. Escape or a click outside closes it, and focus goes back. A `wide` one is kept inside
+ * the pane whose bar it opens from: in a narrow right-hand pane it is narrowed and moved left, so none of it is cut off.
+ */
 function Popover({ label, onClose, children, wide }: { label: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
   const box = useRef<HTMLDivElement>(null);
   useReturnFocus();
+  useLayoutEffect(() => {
+    const el = box.current;
+    const bar = el?.closest<HTMLElement>(".status-bar");
+    if (!wide || !el || !bar) return;
+    const place = () => {
+      const pane = bar.getBoundingClientRect();
+      const anchor = el.parentElement!.getBoundingClientRect();
+      // A pane jsdom doesn't lay out has no width; the stylesheet's own limit then holds.
+      if (pane.width <= 0) return;
+      const width = Math.max(0, Math.min(WIDE, pane.width - 2 * EDGE));
+      const left = Math.max(pane.left + EDGE, Math.min(anchor.left, pane.right - EDGE - width));
+      el.style.width = `${width}px`;
+      el.style.left = `${left - anchor.left}px`;
+    };
+    place();
+    window.addEventListener("resize", place);
+    // The split between two panes moves without the window resizing.
+    const watch = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(place);
+    watch?.observe(bar);
+    return () => {
+      window.removeEventListener("resize", place);
+      watch?.disconnect();
+    };
+  }, [wide]);
   useEffect(() => {
     // Inside, so Escape reaches it; a button with autoFocus already has it.
     if (!box.current?.contains(document.activeElement)) box.current?.focus();
@@ -70,26 +101,32 @@ function Popover({ label, onClose, children, wide }: { label: string; onClose: (
 }
 
 /**
- * How full the context window is, as Hermes last measured it. Clicking opens the context inspector: what fills it, the
- * compactions Hermes stored, and Compact now where Hermes can (ContextInspector.tsx).
+ * How full the context window is, as Hermes last measured it, or "not measured" until it has: a chat reopened since
+ * its agent was last built has no measure until its next model call. Either way, clicking opens the context
+ * inspector: what fills it, the compactions Hermes stored, and Compact now where Hermes can (ContextInspector.tsx).
  */
 function ContextMeter({ chat, status, api }: { chat: Chat; status: ConnectionStatus; api: ContextApi }) {
   const [open, setOpen] = useState(false);
-  const { used, max, percent, estimated } = chat.live!.context!;
-  const level = percent >= 90 ? "full" : percent >= 70 ? "high" : "";
+  const context = chat.live?.context;
+  const percent = context?.percent ?? 0;
+  const level = !context ? "unmeasured" : percent >= 90 ? "full" : percent >= 70 ? "high" : "";
   return (
     <span className="status-anchor">
       <button
         className={`status-item status-meter ${level}`}
         aria-expanded={open}
         aria-haspopup="dialog"
-        title={`Context: ${n(used)} of ${n(max)} tokens${estimated ? " (partly estimated)" : ""}. Click to see what fills it.`}
+        title={
+          context
+            ? `Context: ${n(context.used)} of ${n(context.max)} tokens${context.estimated ? " (partly estimated)" : ""}. Click to see what fills it.`
+            : "Context: Hermes hasn't measured this chat's window yet. Click to see what it does report."
+        }
         onClick={() => setOpen((o) => !o)}
       >
         <span className="meter" aria-hidden>
           <span style={{ width: `${percent}%` }} />
         </span>
-        {percent}% full
+        {context ? `${percent}% full` : "Context not measured"}
       </button>
       {open && (
         <Popover label="Context window" onClose={() => setOpen(false)} wide>
@@ -182,7 +219,6 @@ export function StatusBar({
   // Nothing to show is the same as hidden: unticking the last item hides the bar.
   if (!items.length) return null;
   const has = (i: StatusItem) => items.includes(i);
-  const live = chat.live;
   return (
     <footer
       className="status-bar"
@@ -193,7 +229,7 @@ export function StatusBar({
       }}
     >
       {/* Keyed by the chat's session: a new one starts the inspector afresh, and an answer for the old one is dropped. */}
-      {has("context") && live?.context && <ContextMeter key={`${chat.id}/${chat.runtimeId}`} chat={chat} status={status} api={context} />}
+      {has("context") && <ContextMeter key={`${chat.id}/${chat.runtimeId}`} chat={chat} status={status} api={context} />}
       {has("yolo") && <YoloToggle chat={chat} status={status} onYolo={onYolo} />}
       <span className="status-gap" />
       {has("model") && chat.model && (

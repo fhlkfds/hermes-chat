@@ -1,6 +1,6 @@
 # The context inspector shows Hermes's own accounting, labelled, and compacts only on Hermes's call
 
-The status bar's context meter opens a **context inspector** (issue #97). It has two tabs.
+The status bar's context meter opens a **context inspector** (issue #97). Before Hermes has measured the chat, the meter reads "Context not measured" and still opens it: the Window tab then says nothing is measured and asks Hermes nothing, and the Compactions tab reads the stored rows as usual. The inspector is kept inside the pane it opens in, narrowed and moved left in a narrow right-hand pane. It has two tabs.
 
 **Window** shows what Hermes's `session.context_breakdown` returns for the chat's runtime session (`agent/context_breakdown.py`, `tui_gateway/methods_session.py` at the deployed `bf0203a`):
 
@@ -17,7 +17,7 @@ The status bar's context meter opens a **context inspector** (issue #97). It has
 - The summary itself, between Hermes's own markers, shown as plain text.
 - How many earlier messages it took out of what the model reads.
 
-A message counts as taken out when its row is marked `compacted` and no active row holds the same `message_uid`. Hermes keeps copies of the messages at the head and tail of a compaction, so a compacted row with an active copy is still read. Each taken-out message is counted against the first summary stored after it. A summary row is one Hermes flagged (`_compressed_summary`), or, as Hermes itself tells them apart, one that starts with its compaction marker. The live server's chats from August 2026 have no flag on their summary rows, and are found by the marker. Compacted rows with no summary row after them are reported as a compaction whose summary can't be shown. Their text isn't repeated here; they stay in the transcript. Hermes's live `usage.compressions` count (since the agent was built on the server) is shown too. A change in it, from a compaction here or from Hermes's own automatic one during a reply, makes both tabs read again.
+A message counts as taken out when its row is marked `compacted` and no active row holds the same `message_uid`. Hermes keeps copies of the messages at the head and tail of a compaction, so a compacted row with an active copy is still read. A message is counted once, at its last stored copy, against the first summary stored after that copy. So a copy one compaction kept and a later one took out counts for the later one only. A summary row is one Hermes flagged (`_compressed_summary`), or, as Hermes itself tells them apart, one that starts with its compaction marker. The live server's chats from August 2026 have no flag on their summary rows, and are found by the marker. Compacted rows with no summary row after them are reported as a compaction whose summary can't be shown. Their text isn't repeated here; they stay in the transcript. Hermes's live `usage.compressions` count (since the agent was built on the server) is shown too. A change in it, from a compaction here or from Hermes's own automatic one during a reply, makes both tabs read again.
 
 **Compact now** calls `session.compress` with the chat's runtime session. It is offered only when all of these hold:
 

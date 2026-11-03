@@ -139,7 +139,7 @@ Edits reach chats that start afterwards, and a running chat once Hermes compress
 
 ### Context inspector
 
-Click the status bar's context meter to see what fills the chat's context window. Every figure comes from Hermes, labelled Exact, Estimated or Unavailable. Nothing is worked out from the meter's percentage, and nothing is kept on this computer.
+Click the status bar's context meter to see what fills the chat's context window. Until Hermes has measured the chat (a chat reopened from the list has no measure until its next reply), the meter reads **Context not measured** and still opens the inspector; its compactions can be read without a live session. Every figure comes from Hermes, labelled Exact, Estimated or Unavailable. Nothing is worked out from the meter's percentage, and nothing is kept on this computer.
 
 - **Window**: Hermes's total, with how it counted it and when it answered. Below it, Hermes's estimate for each category, the instruction files it considered (open one in the preview pane), and a link to Settings → Memory. Tool output shows as Unavailable, since Hermes counts it inside the conversation. The provider's prompt cache is shown as billing over every call, apart from the window's size.
 - **Compactions**: each compaction Hermes stored for the chat: when, how many earlier messages it took out of what the model reads, and the summary it kept, as plain text. **Show where it happened** scrolls the chat there. **Compact now…** asks first, then has Hermes compact the chat. It is offered only between replies, and only when Hermes reports that it can compact. Hermes has no call to rebuild a chat's context, so there is none here.

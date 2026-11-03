@@ -183,12 +183,15 @@ const ms = (s: number | null | undefined) => (typeof s === "number" && s > 0 ? M
 /**
  * The compactions in a chat's stored rows (`include_compacted=true`), oldest row first. A message counts as taken out
  * when Hermes marked its row compacted and no row the model still reads has the same message (`message_uid`): Hermes
- * keeps copies of the messages at the head and tail of a compaction. Each is put down to the first summary stored
- * after it.
+ * keeps copies of the messages at the head and tail of a compaction. A message is counted once, at its last stored
+ * copy: a copy one compaction kept and a later one took out is put down to the later one only. Each is put down to the
+ * first summary stored after it.
  */
 export function compactionsOf(rows: CompactionRow[], truncated: boolean, readAt: number): CompactionHistory {
   const sorted = [...rows].sort((a, b) => a.id - b.id);
   const live = new Set(sorted.filter((r) => flag(r.active) && r.message_uid).map((r) => r.message_uid));
+  const lastCopy = new Map<string, number>();
+  for (const r of sorted) if (r.message_uid) lastCopy.set(r.message_uid, r.id);
   const events: Compaction[] = [];
   let pending = new Set<string>();
   let anonymous = 0;
@@ -201,7 +204,7 @@ export function compactionsOf(rows: CompactionRow[], truncated: boolean, readAt:
       newest = undefined;
       continue;
     }
-    if (!flag(r.compacted) || (r.message_uid && live.has(r.message_uid))) continue;
+    if (!flag(r.compacted) || (r.message_uid && (live.has(r.message_uid) || lastCopy.get(r.message_uid) !== r.id))) continue;
     if (r.message_uid) pending.add(r.message_uid);
     else anonymous++;
     newest = ms(r.timestamp) ?? newest;

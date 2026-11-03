@@ -99,8 +99,9 @@ describe("What the status bar shows", () => {
 describe("Context meter", () => {
   it("shows how full the context is once Hermes measures it, and the model", async () => {
     const { server, runtime, chat } = await barFor();
-    // Before the first API call Hermes has no measure, and the bar makes none up.
+    // Before the first API call Hermes has no measure, and the bar makes none up: it says so, and still opens the inspector.
     expect(screen.queryByText(/% full/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Context not measured" })).toBeTruthy();
 
     act(() => server.event(runtime, "session.usage", USAGE_TICK));
     expect(chat().live?.context).toEqual({ used: 46_000, max: 200_000, percent: 23, estimated: false });

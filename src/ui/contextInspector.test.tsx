@@ -172,6 +172,50 @@ describe("The window", () => {
   });
 });
 
+describe("A chat Hermes hasn't measured", () => {
+  it("still opens the inspector from the meter, says the window is unavailable, and reads the stored compactions", async () => {
+    const server = new FakeHermes();
+    server.contextBreakdown = BREAKDOWN;
+    // Reopened from the list, with no live session on this connection: no measure, no runtime id.
+    const { hermes } = await inspectorFor(server, (c) => ({ ...c, runtimeId: undefined, live: undefined }));
+    const meter = screen.getByRole("button", { name: "Context not measured" });
+    expect(meter.title).toBe("Context: Hermes hasn't measured this chat's window yet. Click to see what it does report.");
+    // Nothing is made up: no percentage.
+    expect(screen.queryByText(/% full/)).toBeNull();
+
+    await userEvent.click(meter);
+    await settle(hermes);
+    expect(dialog().textContent).toContain("Hermes hasn't loaded this chat on the server yet, so it has measured nothing for it.");
+    // It doesn't ask for a breakdown of a session it has no id for.
+    expect(server.last("session.context_breakdown")).toBeUndefined();
+
+    await userEvent.click(within(dialog()).getByRole("button", { name: "See compactions" }));
+    await settle(hermes);
+    expect(within(dialog()).getByRole("list", { name: "Compactions, newest first" }).textContent).toContain("Took 3 earlier messages out of what the model reads");
+    expect((screen.getByRole("button", { name: "Compact now…" }) as HTMLButtonElement).title).toBe("Open the chat on Hermes to compact it.");
+  });
+});
+
+describe("The inspector's place", () => {
+  it("stays inside a narrow right-hand pane, narrowed and moved left of the meter", async () => {
+    const server = new FakeHermes();
+    const { hermes, runtime } = await inspectorFor(server);
+    // The right pane of two in a 760px window: its bar runs from x=400 to x=760, and the meter sits at its left.
+    const bar = screen.getByRole("contentinfo", { name: "Status bar" });
+    const rect = (left: number, width: number) => ({ left, right: left + width, width, top: 0, bottom: 20, height: 20, x: left, y: 0, toJSON: () => ({}) }) as DOMRect;
+    bar.getBoundingClientRect = () => rect(400, 360);
+    act(() => server.event(runtime, "session.usage", usage()));
+    const meter = screen.getByRole("button", { name: /% full/ });
+    meter.parentElement!.getBoundingClientRect = () => rect(560, 90);
+    await userEvent.click(meter);
+    await settle(hermes);
+    const box = dialog();
+    // 360 less 8 each side, and its left edge at the pane's x=408: 152px left of the meter.
+    expect(box.style.width).toBe("344px");
+    expect(box.style.left).toBe("-152px");
+  });
+});
+
 describe("Compactions", () => {
   it("lists the compactions Hermes stored, shows the summary it kept as plain text, and goes to where it happened", async () => {
     const { server, hermes, runtime, showInChat } = await inspectorFor();
@@ -249,6 +293,8 @@ describe("Compact now", () => {
     expect(document.activeElement?.textContent).toBe("Cancel");
     await userEvent.keyboard("{Enter}");
     expect(server.last("session.compress")).toBeUndefined();
+    // Focus goes back to Compact now, inside the popover, so Escape still reaches it.
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Compact now…" }));
 
     const breakdowns = server.requests.filter((r) => r.method === "session.context_breakdown").length;
     await userEvent.click(screen.getByRole("button", { name: "Compact now…" }));
@@ -258,6 +304,10 @@ describe("Compact now", () => {
     expect(screen.getByRole("status").textContent).toBe("Compacted. 40 messages became 9, about 52,000 → 11,000 tokens by Hermes's estimate.Hermes: Compressed: 40 → 9 messages");
     // What fills the window is read again.
     expect(server.requests.filter((r) => r.method === "session.context_breakdown").length).toBe(breakdowns + 1);
+    // Focus never fell out of the popover: it is on Compact now again, and Escape closes the inspector.
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Compact now…" }));
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("isn't offered when Hermes reports no compactor, or while a reply runs", async () => {
@@ -303,7 +353,7 @@ describe("Another session's answer", () => {
     const late = hermes.inspectContext("nas").catch((e: Error) => e);
     act(() => server.drop());
     act(() => answer());
-    // The meter, and the inspector with it, go with the connection's live session.
+    // The inspector is keyed to the live session, which goes with the connection: it closes, and starts afresh.
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(((await late) as Error).message).toMatch(/Connection closed/);
     // Asked again with no live session, it refuses rather than ask another one.

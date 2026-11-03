@@ -101,6 +101,22 @@ describe("A chat's compactions", () => {
     expect(h.events[1].summary).toBe("[CONTEXT SUMMARY]: old style");
   });
 
+  it("counts a message one compaction kept a copy of and a later one took out once, against the later one", () => {
+    // Compaction A keeps "head" as a copy (row 7); compaction B then takes that copy out too.
+    const more: CompactionRow[] = [
+      ...rows().map((r) => (r.id === 6 || r.id === 7 || r.id === 8 ? { ...r, active: 0, compacted: 1 } : r)),
+      { id: 9, role: "user", content: "[CONTEXT SUMMARY]: B", timestamp: 400, active: 1, compacted: 0, message_uid: "s2" },
+    ];
+    const h = compactionsOf(more, false, 0);
+    // A: m3, m4, m5. B: the head copy and u8 (A's summary going out shows as A no longer in context). "head" is not
+    // counted against A as well.
+    expect(h.events.map((e) => [e.rowId, e.removed, e.inContext])).toEqual([
+      [6, 3, false],
+      [9, 2, true],
+    ]);
+    expect(h.events.reduce((t, e) => t + e.removed, 0)).toBe(5);
+  });
+
   it("reports compacted rows with no summary row as a compaction it can't show the summary of", () => {
     // As the live server's August chats: 943 rows compacted, no summary row stored.
     const legacy: CompactionRow[] = [

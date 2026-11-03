@@ -1121,6 +1121,7 @@ button.status-item:disabled { opacity: 0.5; cursor: default; }
 .meter > span { display: block; height: 100%; background: var(--muted); }
 .status-meter.high .meter > span { background: var(--warn); }
 .status-meter.full .meter > span { background: var(--bad); }
+.status-meter.unmeasured { color: var(--muted); }
 .status-yolo.on { color: var(--warn); }
 .status-yolo.failed { color: var(--bad); }
 .status-conn .conn-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }
@@ -1186,6 +1187,7 @@ button.status-item:disabled { opacity: 0.5; cursor: default; }
   margin: 0; max-height: 220px; overflow: auto; padding: 8px; border-radius: 6px; background: var(--code-bg); color: var(--text-2);
   font: calc(11.5rem / 14) / 1.5 var(--mono); white-space: pre-wrap; word-break: break-word;
 }
+.inspector-section:focus { outline: none; }
 .compact-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .inspector-confirm { display: flex; flex-direction: column; gap: 8px; padding: 9px; border-radius: 8px; background: var(--raised-2); }
 
