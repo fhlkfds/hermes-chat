@@ -366,7 +366,7 @@ describe("Review findings", () => {
     await q.finish();
     await flush();
     expect(q.sent().map((p) => p.text)).toEqual(["A"]);
-    expect(q.queue()).toMatchObject({ items: [{ text: "B" }], paused: expect.stringContaining("holding") });
+    expect(q.queue()).toMatchObject({ items: [{ text: "B" }], paused: expect.stringContaining("held") });
     q.server.handlers["prompt.submit"] = base;
     // The other client's turn, then A's own, start and end: B still waits for the owner.
     q.stream("other");
@@ -377,6 +377,43 @@ describe("Review findings", () => {
     q.hermes().resumeQueue("c1");
     await flush();
     expect(q.sent().map((p) => p.text)).toEqual(["A", "B"]);
+  });
+
+  it("the held pause outlasts an empty queue: a message queued after the held one waits for Resume too", async () => {
+    const q = await replying();
+    q.hermes().enqueue("c1", "A");
+    const base = q.server.handlers["prompt.submit"];
+    q.server.handlers["prompt.submit"] = (r) => q.server.respond(r.id, { status: "queued" });
+    await q.finish();
+    await flush();
+    expect(q.sent().map((p) => p.text)).toEqual(["A"]);
+    q.server.handlers["prompt.submit"] = base;
+    q.hermes().enqueue("c1", "B");
+    expect(q.queue()).toMatchObject({ items: [{ text: "B" }], paused: expect.stringContaining("held") });
+    q.stream("other");
+    await q.finish();
+    expect(q.sent().map((p) => p.text)).toEqual(["A"]);
+    q.hermes().resumeQueue("c1");
+    await flush();
+    expect(q.sent().map((p) => p.text)).toEqual(["A", "B"]);
+  });
+
+  it("a turn that ends while Hermes's answer for a held message is on its way doesn't send the next", async () => {
+    const q = await replying();
+    q.hermes().enqueue("c1", "A");
+    q.hermes().enqueue("c1", "B");
+    let answer = () => {};
+    q.server.handlers["prompt.submit"] = (r) => void (answer = () => q.server.respond(r.id, { status: "queued" }));
+    await q.finish();
+    await flush();
+    expect(q.sent().map((p) => p.text)).toEqual(["A"]);
+    // Another client's turn ends first, then Hermes answers that it holds A.
+    q.stream("other");
+    await q.finish();
+    answer();
+    await flush();
+    expect(q.sent().map((p) => p.text)).toEqual(["A"]);
+    expect(q.queue()).toMatchObject({ items: [{ text: "B" }], paused: expect.stringContaining("held") });
   });
 
   it("Hermes answers it holds a queued message, then the connection drops: nothing stays running, nothing goes on its own", async () => {

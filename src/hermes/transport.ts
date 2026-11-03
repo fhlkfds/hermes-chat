@@ -1026,17 +1026,21 @@ export class Hermes {
     };
   }
 
-  /** Pauses a queue that has messages, unless it is paused already, saying `why`. */
-  private pauseQueueFor(chatId: string, why: string) {
-    const q = this.snapshot.queues[chatId];
-    if (q?.items.length && q.paused === undefined) this.setQueue(chatId, { ...q, paused: why });
+  /**
+   * Pauses a queue that has messages, unless it is paused already, saying `why`. `evenEmpty`: an empty one too, so the
+   * messages queued next wait for the owner's Resume.
+   */
+  private pauseQueueFor(chatId: string, why: string, evenEmpty = false) {
+    const q = this.snapshot.queues[chatId] ?? { items: [] };
+    if ((q.items.length || evenEmpty) && q.paused === undefined) this.setQueue(chatId, { ...q, paused: why });
   }
 
   /** The one way a queue of the shown profile changes: in the snapshot, and kept on this computer. */
   private setQueue(chatId: string, next: ChatQueue): boolean {
     const kept = this.cache.saveQueue(this.profile, chatId, next);
     const queues = { ...this.snapshot.queues };
-    if (next.items.length) queues[chatId] = { items: next.items, ...(next.paused !== undefined && { paused: next.paused }), ...(!kept && { unsaved: true }) };
+    // An empty queue is kept only while paused (`pauseQueueFor`), and only here: a restart forgets it.
+    if (next.items.length || next.paused !== undefined) queues[chatId] = { items: next.items, ...(next.paused !== undefined && { paused: next.paused }), ...(!kept && { unsaved: true }) };
     else delete queues[chatId];
     this.update({ queues });
     return kept;
@@ -1074,7 +1078,12 @@ export class Hermes {
       // It enters the outbox and leaves the queue in one step, before anything goes. The outbox is written first, and
       // must be kept on this computer: if storage refuses it, nothing is sent and the queue, untouched, keeps it.
       let kept = true;
-      const going = this.deliver(chatId, next.text, next.attachments ?? [], { kept: (ok) => (kept = ok) });
+      const going = this.deliver(chatId, next.text, next.attachments ?? [], {
+        kept: (ok) => (kept = ok),
+        // Hermes holds it behind a turn this app didn't start, whose end can't be told from its own: the owner says
+        // when. Paused before anything else can look at the queue, and even with nothing left in it.
+        held: () => this.profile === profile && this.pauseQueueFor(chatId, PAUSED.held, true),
+      });
       if (!kept) {
         this.pauseQueueFor(chatId, PAUSED.unsaved);
         continue;
@@ -1083,11 +1092,8 @@ export class Hermes {
       // outbox; the queue shows it unsaved, and a crash before a later write lands brings it back paused. Tag outbox rows
       // with the queued id and reconcile on load if that ever matters.
       this.setQueue(chatId, { ...q, items: rest });
-      void going.then(({ delivery, held }) => {
-        if (this.profile !== profile) return;
-        if (delivery.delivery !== "accepted") this.pauseQueueFor(chatId, PAUSED.notSent);
-        // Hermes holds it behind a turn this app didn't start, whose end can't be told from its own: the owner says when.
-        else if (held) this.pauseQueueFor(chatId, PAUSED.held);
+      void going.then(({ delivery }) => {
+        if (this.profile === profile && delivery.delivery !== "accepted") this.pauseQueueFor(chatId, PAUSED.notSent);
       });
     }
   }
@@ -1101,8 +1107,8 @@ export class Hermes {
     chatId: string,
     text: string,
     attachments: Attachment[],
-    queued?: { kept: (ok: boolean) => void },
-  ): Promise<{ delivery: Delivery; itemId?: string; held?: boolean }> {
+    queued?: { kept: (ok: boolean) => void; held: () => void },
+  ): Promise<{ delivery: Delivery; itemId?: string }> {
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
     if (!chat) return { delivery: { delivery: "unsent", reason: "This chat isn't in the list." } };
     const profile = this.profile;
@@ -1151,6 +1157,7 @@ export class Hermes {
       let res: Submitted;
       try {
         res = await submitting;
+        if (res.status === "queued") queued?.held();
       } finally {
         if (this.submitting.get(chatId) === submitting) this.submitting.delete(chatId);
       }
@@ -1159,7 +1166,7 @@ export class Hermes {
       // Pin now if Hermes has stored the session; a new chat may not have its row yet, so the end of the turn
       // tries again.
       if (this.pinWanted.get(chatId)) this.track(this.writePin(chatId, profile));
-      return { delivery: { delivery: "accepted" }, itemId: user.id, held: res.status === "queued" };
+      return { delivery: { delivery: "accepted" }, itemId: user.id };
     } catch (e) {
       const unknown = e instanceof PromptUnconfirmedError;
       const reason = unknown ? `The connection dropped before Hermes confirmed it (${(e as Error).message}).` : (e as Error).message;
@@ -2585,7 +2592,7 @@ const PAUSED = {
   restored: "Hermes Chat closed, or showed another profile, since these were queued. Check the chat, then resume.",
   dropped: "The connection dropped, so the last reply wasn't watched to its end. Check the chat, then resume.",
   notSent: "A queued message didn't go, or may not have. Deal with it above, then resume.",
-  held: "Hermes is holding the last queued message until another reply in this chat ends. Check the chat, then resume.",
+  held: "Hermes held the last queued message until another reply in this chat ended, so this app can't tell when it went. Check the chat, then resume.",
   unsaved: "This computer's storage is full, so the next message couldn't be kept safe while it went, and wasn't sent. Free some space (Settings → General → Clear local cache), then resume.",
 };
 
