@@ -47,6 +47,13 @@ const HTML_NAME = /\.x?html?$/i;
 /** `data:` URLs the pane shows as images. SVG in an `<img>` runs no scripts. */
 const IMAGE_DATA_URL = /^data:image\/(png|jpeg|gif|webp|bmp|svg\+xml|x-icon|vnd\.microsoft\.icon);base64,[A-Za-z0-9+/=]*$/;
 
+/**
+ * Text from a tool, with its bidi embedding, override and isolate controls made visible as `\uFFFD`: they can make a
+ * file name read backwards (`invoice\u202Efdp.exe` shows as `invoiceexe.pdf`). Text in a right-to-left language
+ * doesn't need them, and the marks and joiners it does use are kept.
+ */
+export const withoutBidi = (text: string) => text.replace(/[\u202a-\u202e\u2066-\u2069]/g, "\uFFFD");
+
 /** The last part of a path or URL, for the pane's title. */
 export function previewName(t: PreviewTarget): string {
   switch (t.kind) {

@@ -3,7 +3,7 @@
 // app, HTML files render with scripts and network off, and Markdown renders without raw HTML, as replies do.
 import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { AlertTriangle, ArrowLeft, Check, Copy, ExternalLink, FileQuestion, Globe, Laptop, Plus, RotateCw, Server, Wrench, X } from "lucide-react";
-import { fenced, parseAddress, previewName, sandboxedHtml, type FileView, type Framing, type PreviewTarget } from "../hermes/preview";
+import { fenced, parseAddress, previewName, sandboxedHtml, withoutBidi, type FileView, type Framing, type PreviewTarget } from "../hermes/preview";
 import { Markdown } from "./Markdown";
 import { Spinner, fmtSize } from "./bits";
 import type { LocalFiles, WebPages } from "./tauriPreview";
@@ -120,11 +120,11 @@ export function PreviewPane({
         <div className="preview-title">
           <div className="preview-name">
             <Where target={target} serverLabel={serverLabel} />
-            <span id={titleId}>{previewName(target)}</span>
+            <span id={titleId}>{withoutBidi(previewName(target))}</span>
           </div>
           {address && (
             <div className="preview-address" title={address}>
-              <bdi>{address}</bdi>
+              <bdi>{withoutBidi(address)}</bdi>
             </div>
           )}
         </div>

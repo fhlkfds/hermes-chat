@@ -18,7 +18,7 @@ import { withTranscript } from "../hermes/voice";
 import type { VoiceSetup } from "../hermes/pipe";
 import { ChatUsageButton, ReplyUsageLine } from "./Usage";
 import { useOpenPreview } from "./previewContext";
-import { previewName, toolTargets } from "../hermes/preview";
+import { previewName, toolTargets, withoutBidi } from "../hermes/preview";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type ThinkingItem = Extract<Item, { kind: "thinking" }>;
@@ -654,19 +654,19 @@ function ToolRow({ t }: { t: ToolItem }) {
       <button className="tool-line" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
         {t.status === "running" ? <Spinner /> : <ChevronRight size={13} className={`chev ${open ? "open" : ""}`} />}
         <span className="tool-name">{t.name}</span>
-        <span className="tool-preview">{t.preview}</span>
+        <span className="tool-preview">{t.preview && withoutBidi(t.preview)}</span>
         {summary && <span className="tool-summary">{summary}</span>}
         {t.durationS != null && <span className="tool-dur">{t.durationS}s</span>}
       </button>
       {open && (
         <div className="tool-body">
           <div className="tool-label">Arguments</div>
-          <pre>{JSON.stringify(t.args ?? {}, null, 2)}</pre>
+          <pre>{withoutBidi(JSON.stringify(t.args ?? {}, null, 2))}</pre>
           {/* Stored history keeps no result for most tools. */}
           {(t.status === "running" || t.result !== undefined) && (
             <>
               <div className="tool-label">Result</div>
-              <pre>{t.status === "running" ? "…" : t.result || "(empty)"}</pre>
+              <pre>{t.status === "running" ? "…" : t.result ? withoutBidi(t.result) : "(empty)"}</pre>
             </>
           )}
           <ToolPreviews t={t} />
@@ -697,7 +697,7 @@ function ToolPreviews({ t }: { t: ToolItem }) {
           onClick={() => open(x)}
         >
           {x.kind === "server" ? <Server size={12} /> : <Globe size={12} />}
-          <span>{previewName(x)}</span>
+          <span>{withoutBidi(previewName(x))}</span>
         </button>
       ))}
       {output && (
@@ -729,7 +729,7 @@ function ToolGroup({ tools }: { tools: ToolItem[] }) {
       <button className="tool-line group" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
         {running ? <Spinner /> : <Wrench size={13} />}
         <span className="tool-name">{tools.length} tool calls</span>
-        <span className="tool-preview">{running ? `${running.name} · ${running.preview ?? ""}` : names}</span>
+        <span className="tool-preview">{running ? withoutBidi(`${running.name} · ${running.preview ?? ""}`) : names}</span>
         <ChevronRight size={13} className={`chev ${open ? "open" : ""}`} />
       </button>
       {open && (

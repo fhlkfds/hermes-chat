@@ -233,4 +233,19 @@ describe("Outputs", () => {
     await waitFor(() => expect(server.restRequests.some((r) => r.path === "/api/files/read" && r.query.get("path") === "/srv/img/cat.png")).toBe(true));
     expect(server.restRequests.some((r) => r.path.startsWith("/api/fs/read"))).toBe(false);
   });
+
+  it("goes to a tool call whose file name hides a direction override, and shows the override instead of obeying it", async () => {
+    const { user } = await launch();
+    await openChat(user, "Quarterly report");
+    await openOutputs(user);
+    await user.click(screen.getByRole("button", { name: /^Go to the message that made <img/ }));
+    const tool = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>('[data-calls~="w3"], [data-call="w3"]');
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    await waitFor(() => expect(tool.textContent).toContain("gnp.html"));
+    expect(tool.textContent).not.toContain("\u202E");
+    expect(tool.textContent).toContain("\uFFFDgnp.html");
+  });
 });

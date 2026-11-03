@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { FakeHermes } from "./fakeHermes";
 import { connect } from "./transport";
-import { checkWebUrl, fenced, parseAddress, readLocalFile, sandboxedHtml, toolTargets, type LocalText } from "./preview";
+import { checkWebUrl, fenced, parseAddress, readLocalFile, sandboxedHtml, toolTargets, withoutBidi, type LocalText } from "./preview";
 import type { Item } from "./model";
 
 const APP = "tauri://localhost";
@@ -178,5 +178,14 @@ describe("Rendering untrusted file text", () => {
     const doc = sandboxedHtml("<img src=https://tracker.example/p.gif><script>alert(1)</script>");
     expect(doc.startsWith('<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src data:;')).toBe(true);
     expect(doc).toContain("<script>alert(1)</script>");
+  });
+});
+
+describe("withoutBidi", () => {
+  it("shows the controls that reverse a name, and keeps right-to-left text and emoji as they are", () => {
+    expect(withoutBidi("/srv/invoice\u202Efdp.exe")).toBe("/srv/invoice\uFFFDfdp.exe");
+    expect(withoutBidi("a\u2066b\u2069c\u202Ad")).toBe("a\uFFFDb\uFFFDc\uFFFDd");
+    const kept = "\u05E9\u05DC\u05D5\u05DD \u200F report-\u{1F468}\u200D\u{1F4BB}.md";
+    expect(withoutBidi(kept)).toBe(kept);
   });
 });
