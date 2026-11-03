@@ -38,7 +38,7 @@ describe("Times on stored history", () => {
       { kind: "user", id: "h-0", text: "How full is the NAS?", at: T * 1000 },
       { kind: "thinking", id: "h-1-r", text: "Check df" },
       { kind: "assistant", id: "h-1", text: "Let me look.", at: (T + 2) * 1000, rowId: 2 },
-      { kind: "tool", id: "h-2", name: "terminal", preview: "df -h", status: "done" },
+      { kind: "tool", id: "h-2", callId: "c1", name: "terminal", preview: "df -h", status: "done" },
       { kind: "assistant", id: "h-3", text: "82% used.", at: (T + 9) * 1000, rowId: 4 },
     ]);
   });
