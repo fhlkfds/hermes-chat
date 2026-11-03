@@ -14,6 +14,7 @@ import { sending, type Sending } from "./hermes/unsaved";
 import { chatToReopen, forgetOpenChat, rememberOpenChat } from "./hermes/uiPrefs";
 import { exportChat } from "./hermes/exportChat";
 import { PROJECTS_KEY, projectLinks, projectScope } from "./hermes/projectLinks";
+import type { TemplateHere } from "./ui/Templates";
 import { ProjectsStore, type Project } from "./hermes/projects";
 import { instructionsMessage, modelProblem, resolveNewChat, type ProjectDefaults } from "./hermes/projectDefaults";
 import { systemHeaderKeyring, systemKeyring } from "./hermes/tauriKeyring";
@@ -1059,6 +1060,11 @@ export function Main({
           favorites={modelFavorites}
           projects={projects}
           projectNames={listed ? projectNames(chat.id) : shownProject ? [shownProject.name] : undefined}
+          templates={{
+            scope,
+            projects: listable.map(({ id, name }) => ({ id, name })),
+            here: listable.filter((pr) => pr.id === shownProject?.id || (listed && proj.chats[pr.id]?.includes(chat.id))).map((pr) => pr.id),
+          }}
           shownProject={shownProject && { name: shownProject.name, defaults: proj.defaults[shownProject.id], has: !!listed && !!proj.chats[shownProject.id]?.includes(chat.id) }}
           where={where}
           onStarted={(id) => {
@@ -1587,6 +1593,7 @@ function ChatView({
   favorites,
   projects,
   projectNames,
+  templates,
   shownProject,
   where,
   onStarted,
@@ -1625,6 +1632,8 @@ function ChatView({
   favorites: string[];
   projects: ProjectsStore;
   projectNames?: string[];
+  /** The projects the composer's templates can be offered in, and the ones this chat is in or the list shows. */
+  templates: TemplateHere;
   /** The project the list shows, its defaults for new chats, and whether this chat is in it. */
   shownProject?: { name: string; defaults?: ProjectDefaults; has: boolean };
   /** The connection, as a folder on the server is shown beside it. */
@@ -1857,6 +1866,7 @@ function ChatView({
       key={`${profile}/${chat.id}`}
       chat={chat}
       projects={projectNames}
+      templates={templates}
       notice={
         !started && shownProject ? (
           <NewChatSettingsView settings={startSettings} where={where} profile={profile} problem={modelProblem(startSettings, catalog)} />
