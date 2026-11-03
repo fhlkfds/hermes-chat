@@ -15,6 +15,7 @@ The application is built with Tauri 2, React 19, and TypeScript, and it uses Vit
 - [Server requirements](#server-requirements)
 - [Features](#features)
 - [Install on Arch Linux](#install-on-arch-linux)
+- [Updates](#updates)
 - [Development](#development)
 - [Connecting to Hermes](#connecting-to-hermes)
 - [What is stored where](#what-is-stored-where)
@@ -33,6 +34,7 @@ The application is built with Tauri 2, React 19, and TypeScript, and it uses Vit
 - For Projects: a Hermes that has the `projects.*` methods. Without them, the chat list works and the project switcher says that Hermes needs an update.
 - For Toolsets: the dashboard's `GET /api/tools/toolsets` and `PUT /api/tools/toolsets/{name}` routes, which Hermes at `bf0203a` has. Without the first, Settings → Toolsets says that this Hermes doesn't list toolsets; without the second, it shows each toolset's state without switches.
 - For Server files: a dashboard that serves its managed-files routes, `GET /api/files` and `GET /api/files/read`, which the dashboard's own Files tab uses. Hermes at `bf0203a` does. Without them, the Server files screen says that this Hermes needs a dashboard with the Files tab. To limit browsing to one folder, start the dashboard with `HERMES_DASHBOARD_FILES_ROOT=/that/folder`.
+- For Scheduled jobs: a dashboard with the cron routes under `/api/cron/` (Hermes at `bf0203a` has them), and the profile's gateway running on the server, since its scheduler runs the jobs. Set the profile's time zone with `timezone:` in its `config.yaml`; without it Hermes uses the server's own zone, which the app can't name. Without the routes, the screen says that this Hermes has no scheduled jobs.
 
 ## Features
 
@@ -48,6 +50,7 @@ These features are on the `main` branch.
 - **Two panes.** Ctrl+\\ opens a second chat beside the first.
 - **Preview pane.** A resizable pane shows web links from replies, files on the Hermes server, local files you choose, and tool output. Web pages and HTML files load in sandboxed frames.
 - **Server files.** The folder button on the rail opens a read-only browser for the disk of the machine the dashboard runs on. It shows folders with a path trail, sizes, modified times, types, and symbolic links, and previews text files up to 1 MiB and images up to 10 MiB. It shows what the dashboard's OS user can read, starting in that user's home folder, and Hermes never lists credential files such as `.env` or `auth.json`.
+- **Scheduled jobs.** The calendar button on the rail lists the profile's Hermes cron jobs, and creates, edits, pauses, resumes, runs, and deletes them. Hermes keeps and runs them on the server, so they run while Hermes Chat is closed. See [Scheduled jobs](#scheduled-jobs).
 - **Projects.** Projects are Hermes's own named groups of chats and server folders. Hermes stores the projects and their folders. This computer stores which chats are in each project.
 - **Models.** The composer has a model picker with reasoning effort, fast mode, and starred models. Settings → Model sets the profile's main model, subagent models, auxiliary models (including the Text generation model used for titles), and guardrails.
 - **Toolsets.** Settings → Toolsets lists the toolsets Hermes can offer the model in the profile shown, each one's state as Hermes reads it, and a switch for each one that the server lets this app change. The setting belongs to the profile on the server, so the CLI, the TUI, and the official desktop app see the same choice. A change applies to chats that Hermes starts afterwards. A chat that Hermes already has open, and any reply running in it, keeps its tools. A server started with `HERMES_TUI_TOOLSETS`, or a profile in coding focus mode, can give new chats a different list. The app shows a change as saved only after Hermes reads it back that way, and asks first when a change would start an install, turn MCP servers back on, or take a toolset off the profile's `agent.disabled_toolsets`, which turns it back on for Hermes's other platforms as well. Toolsets don't change Approvals or YOLO.
@@ -76,6 +79,14 @@ These features are on the `main` branch.
 Click the split button in the chat header, or press Ctrl+\\, to open a second pane. Right-click a chat to open it in the left or right pane. The pane you click or tab into becomes active, marked by an accent line. The chat list, Search, New chat, and Find act on the active pane. Drag the divider to resize the panes, or double-click it to make them equal. When fewer than 646 pixels remain for the chats, a Left/Right switcher shows one pane at a time.
 
 Different chats keep their own drafts, replies, and unread state. The same chat in both panes shares its draft and reply. Scroll position, Find, and unsent attachments belong to each pane. Closing a pane keeps the draft and any running reply, but discards unsent attachments in that pane. Switching profile returns to one pane. The split layout lasts only for the current run.
+
+### Scheduled jobs
+
+![The Scheduled jobs list, with each job's schedule, time zone, next run, and last result](docs/screenshots/scheduled-jobs/1-job-list.png)
+
+Each job shows its schedule in words, the profile's time zone, Hermes's next run, its last result, and where it delivers. New job and Edit take a schedule the way Hermes does: `every day at 9am`, `weekdays at 8:30am`, `every 2h`, a cron expression such as `0 9 * * 1-5`, `in 30m`, or a time such as `2026-11-05T15:00`. The editor explains it and previews the next runs, daylight-saving changes included, and the job screen says what Hermes does with a run its scheduler missed. Delivery offers only the places the profile's gateway has set up. Pause and Resume act at once; Delete and **Run now** ask first, since Run now is a real run with the job's real delivery, and Hermes also resumes a paused job it runs.
+
+Every change shows only once Hermes, read back, has it. A second press of Create can't make a second job, and a create whose answer was lost is looked for before anything is sent again. An edit sends only the fields you changed, and stops if another Hermes client changed the job since you opened it. The screen warns when Hermes's scheduler hasn't checked the profile's jobs lately, and when another profile holds a copy of a job (Hermes copies jobs into a profile made from another). See [ADR 0013](docs/adr/0013-scheduled-jobs-are-hermess-cron-jobs-confirmed-by-read-back.md).
 
 ### Screenshots
 
@@ -123,6 +134,36 @@ To start the app from a terminal, set the WebKit variable yourself:
 WEBKIT_DISABLE_DMABUF_RENDERER=1 hermes-chat
 ```
 
+## Updates
+
+Settings → General → **Updates** shows the installed version, what's newer, and what changed. It checks once at launch unless you turn that off. Nothing installs or restarts without you. A restart keeps your drafts and unsent messages: they're written to disk first, and the app doesn't restart if that fails. If the app's storage is too full to put them all back, it clears its cached chat lists and Saved copies to make room; failing that, it keeps them in a file and Settings says where. How an update installs depends on how the app was installed:
+
+- **The `hermes-chat-git` package** (pacman owns `/usr/bin/hermes-chat`): the app compares the package's commit with `main` on GitHub and lists the pull requests merged since. It never replaces the package's files. You run the update yourself, from your checkout: `git pull && cd packaging/aur && makepkg -si`. Back in the app, it sees the new version and offers **Restart now**.
+- **A standalone AppImage built with an update key**: Tauri's updater downloads the new AppImage, checks its signature against the public key built into the app, and replaces the AppImage. Then you restart.
+- **Anything else** (for example `npm run app`, or a binary you copied): the app says it isn't updated from here.
+
+The repo ships no AppImage, update server or signing key yet, so standalone updates are off. To turn them on for your own builds, generate a key once. Keep the private key and its password out of the repo:
+
+```sh
+npx tauri signer generate -w ~/.tauri/hermes-chat.key
+```
+
+Bump `version` in `src-tauri/tauri.conf.json` for each release; the updater compares semver. Then build with the signing key in the environment and the updater turned on:
+
+```sh
+TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/hermes-chat.key)" TAURI_SIGNING_PRIVATE_KEY_PASSWORD=… \
+npx tauri build --bundles appimage --config '{
+  "bundle": { "active": true, "createUpdaterArtifacts": true },
+  "plugins": { "updater": {
+    "pubkey": "<contents of ~/.tauri/hermes-chat.key.pub>",
+    "endpoints": ["https://github.com/l0cky12/hermes-chat/releases/latest/download/latest.json"],
+    "requireSignedVersion": true
+  } }
+}'
+```
+
+Publish the `.AppImage`, its `.sig`, and a `latest.json` in Tauri's [static JSON format](https://v2.tauri.app/plugin/updater/#static-json-file) at that endpoint. A build without `plugins.updater` (the PKGBUILD's, for one) doesn't load the updater at all.
+
 ## Development
 
 Install the Tauri 2 prerequisites, Node.js, and npm:
@@ -151,6 +192,8 @@ npm run app     # run the desktop app in development mode
 | `npm test` | Runs the frontend tests (Vitest and jsdom) against a fake Hermes. |
 | `npm run tauri -- build --no-bundle` | Builds the release binary `src-tauri/target/release/hermes-chat`. No installer bundles are configured. |
 | `cd src-tauri && cargo test --lib --test transport --test media --test screenshot` | Runs the Rust tests. The `dist/` folder must exist first, so run `npm run build` or `mkdir -p dist`. |
+| `HERMES_HOME=$(mktemp -d) ~/.hermes/hermes-agent/venv/bin/python tools/cron-golden.py ~/.hermes/hermes-agent` | Regenerates `src/hermes/cronGolden.json`, what Hermes's own scheduler code makes of a set of schedules, which `schedule.test.ts` checks the schedule preview against. |
+| `HERMES_LIVE_DASHBOARD=… npx vitest run src/hermes/cronJobs.live.test.ts` | Runs the Scheduled jobs calls against a real dashboard. It refuses one whose profiles don't all live under `/tmp`; see the file's header. Skipped by `npm test`. |
 | `node bench/run.mjs` | Benchmarks long chats (50, 200, and 800 turns) in headless Chromium. See below. |
 
 The benchmark times opening, streaming, find-in-chat, scrolling, two simultaneous streams, and divider dragging. It needs `$CHROME` or Playwright's cached headless shell (`npx playwright install chromium-headless-shell`). Set `THROTTLE=4` to slow the CPU four times.
@@ -198,7 +241,7 @@ Each Hermes profile has its own chats. The chat list header is the profile switc
 
 ### On the Hermes server
 
-Hermes stores the chats and their history, titles, Archived state, and Unread state. It also stores projects and their folders, the profile's model settings and toolsets, and usage and cost totals. Active or Settled is stored as Hermes's `pinned` flag, so it syncs between computers. Hermes refuses that edit for chats it has no route for, such as chats started in this app or the official desktop app. For those chats, Active or Settled is kept on this computer only. Messages, attachments, and Dictation recordings are sent to Hermes. Rename, Archive, Delete, and project changes appear in every Hermes client.
+Hermes stores the chats and their history, titles, Archived state, and Unread state. It also stores projects and their folders, the profile's model settings and toolsets, and usage and cost totals. Active or Settled is stored as Hermes's `pinned` flag, so it syncs between computers. Hermes refuses that edit for chats it has no route for, such as chats started in this app or the official desktop app. For those chats, Active or Settled is kept on this computer only. Messages, attachments, and Dictation recordings are sent to Hermes. Rename, Archive, Delete, and project changes appear in every Hermes client. Scheduled jobs live in the profile's `cron/jobs.json` on the server, with their run history, and every Hermes client sees the same ones; this computer stores nothing about them.
 
 ### On this computer
 
@@ -212,6 +255,7 @@ Hermes stores the chats and their history, titles, Archived state, and Unread st
 | Drafts and **Failed messages** | Webview local storage, per connection, profile, and chat | Sending, Retry, or Dismiss. Clear local cache keeps them. |
 | Which chats are in each project | Webview local storage (`hermes-chat.projects`) | Deleting the project. Clear local cache keeps it. |
 | Display preferences, model pick, starred models, and reopen-last-chat | Webview local storage | Not removed by Clear local cache |
+| Drafts and Failed messages saved for an update's restart | `$XDG_DATA_HOME/net.l0cky12.hermes-chat/restart-drafts.json`, readable only by you | Putting them back at the next launch. A copy that couldn't be put back is renamed `restart-drafts-<time>.json` and stays until you move or delete it; Settings says where. |
 | Screenshots waiting to send | `$XDG_CACHE_HOME/hermes-chat/captures/`, readable only by you | Confirmed delivery, removing them from the composer, or leaving the composer without sending. A Failed message keeps its screenshots until delivery is confirmed, history reconciles it, or you Dismiss it. Startup cleanup removes only leftovers that no message needs. |
 | Pasted files | A private folder under `$TMPDIR/hermes-chat/` (usually `/tmp/hermes-chat/`) | Not removed by the app |
 | Exported chats | The file you chose in the Save dialog | You |
@@ -243,15 +287,17 @@ Webview local storage is in `$XDG_DATA_HOME/net.l0cky12.hermes-chat/localstorage
 - Per-reply usage appears only for replies that the app watched from start to finish. Chat totals come from Hermes and cover every call. Costs count only the calls Hermes could price.
 - Server files is read-only: it can't upload, rename, delete, or download. A preview reads the whole file, so bigger files aren't previewed at all, and the server sends a folder in one answer, however many items it has.
 - Toolsets are the profile's, not a chat's, and reach only chats Hermes starts afterwards. Hermes keeps no revision for the toolset list, so a change made in another client to the same toolset in the moment between the app's check and its write can be overwritten; the read afterwards then shows what Hermes has.
+- Scheduled jobs: Hermes's per-job routes act on another profile's copy of a job if this profile's job was deleted elsewhere just before, and Hermes offers no revision to stop an edit landing between the app's conflict check and its write. Only prompt jobs can be created here, run history goes back 100 runs, and the app can't see a `HERMES_TIMEZONE` set in the server's environment.
 - Framed web pages in the preview pane get no cookies, so sites that need a sign-in don't stay signed in. HTML files show as static documents.
 - Long transcripts render in full. Very long chats, especially two at once, can be slow while streaming or resizing.
 - On the legacy protocol, a reply to a Telegram or Discord chat should stay in Hermes clients and not be posted back to Telegram or Discord. This comes from reading Hermes's source and hasn't been tested live.
+- The app doesn't install pacman updates itself: you run the PKGBUILD, and it offers the restart. In-app installation works only for an AppImage you build and sign yourself, since the repo publishes no releases or update server. Checking a package build asks GitHub without signing in, which allows 60 checks an hour.
 - The automated tests use a fake Hermes. Native Wayland screenshot pickers and real audio devices aren't covered.
 
 ## Project documents
 
 - [`GLOSSARY.md`](GLOSSARY.md) defines the app's terms, such as Active, Settled, Saved copy, and Approval.
-- [`docs/adr/`](docs/adr/) records the design decisions, for example the [SSH sign-in](docs/adr/0003-sign-in-through-ssh-tunnel-to-the-dashboard.md), the [Unsecure label](docs/adr/0004-direct-url-sign-in-and-what-counts-as-unsecure.md), [extra request headers](docs/adr/0006-extra-request-headers-for-a-gateway-in-front-of-the-dashboard.md), the [preview pane sandbox](docs/adr/0007-preview-pane-shows-untrusted-content-in-sandboxed-frames.md), and [usage and cost](docs/adr/0008-usage-and-cost-come-from-hermes.md), and [Server files](docs/adr/0012-server-files-are-the-dashboards-managed-files-read-only.md).
+- [`docs/adr/`](docs/adr/) records the design decisions, for example the [SSH sign-in](docs/adr/0003-sign-in-through-ssh-tunnel-to-the-dashboard.md), the [Unsecure label](docs/adr/0004-direct-url-sign-in-and-what-counts-as-unsecure.md), [extra request headers](docs/adr/0006-extra-request-headers-for-a-gateway-in-front-of-the-dashboard.md), the [preview pane sandbox](docs/adr/0007-preview-pane-shows-untrusted-content-in-sandboxed-frames.md), and [usage and cost](docs/adr/0008-usage-and-cost-come-from-hermes.md), [Server files](docs/adr/0012-server-files-are-the-dashboards-managed-files-read-only.md), and [Scheduled jobs](docs/adr/0013-scheduled-jobs-are-hermess-cron-jobs-confirmed-by-read-back.md).
 - [`docs/research/hermes-gateway-api.md`](docs/research/hermes-gateway-api.md) describes the Hermes API that the app relies on.
 
 ## License

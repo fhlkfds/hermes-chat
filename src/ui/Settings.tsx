@@ -1,7 +1,7 @@
 // The Settings screen, in four tabs. General, ported from the prototype: the connection and Sign out, what shows on
-// launch, voice, screenshots, the local cache, and older history. Appearance: how the app looks on this computer (AppearanceSettings.tsx).
-// Model: the profile's models on Hermes (ModelSettings.tsx). Toolsets: which tools Hermes offers the model in the
-// profile (ToolsetSettings.tsx).
+// launch, voice, screenshots, updates, the local cache, and older history. Appearance: how the app looks on this
+// computer (AppearanceSettings.tsx). Model: the profile's models on Hermes (ModelSettings.tsx). Toolsets: which tools
+// Hermes offers the model in the profile (ToolsetSettings.tsx).
 // Profiles are switched in the list's header, not here (ADR 0001).
 import { useEffect, useState } from "react";
 import { ArrowLeft, Cpu, Download, KeyRound, Lock, LogOut, Palette, Settings2, ShieldCheck, Trash2, Wrench } from "lucide-react";
@@ -20,6 +20,7 @@ import { VoiceSettings } from "./Voice";
 import type { VoiceSetup } from "../hermes/pipe";
 import { ScreenshotSettings } from "./ScreenshotSettings";
 import type { ScreenshotSupport } from "../hermes/tauriScreenshot";
+import { UpdateSettings } from "./UpdateSettings";
 
 type Tab = "general" | "appearance" | "model" | "toolsets";
 const ALL_TABS = [
@@ -217,6 +218,7 @@ export function SettingsScreen({
 
             <VoiceSettings status={status} profile={profile} setup={voiceSetup} />
             <ScreenshotSettings checkSupport={checkScreenshots} />
+            <UpdateSettings />
 
             <section>
               <h2>Local cache</h2>

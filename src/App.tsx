@@ -1,16 +1,19 @@
 import { type ReactNode, type RefObject, useCallback, useLayoutEffect, useMemo, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { flushSync } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import { Columns2, PanelRight, X } from "lucide-react";
 import { connect, readSaved, type Delivery, type Hermes } from "./hermes/transport";
 import { CHECK_EVERY_MS } from "./hermes/otherProfiles";
 import { type Account, type Kept, type SavedSignIn, launchSignIn, savedSignIn, signIn, signInForm, signOutToSignIn } from "./hermes/account";
 import { localChatCache } from "./hermes/chatCache";
 import { draftKey, drafts } from "./hermes/drafts";
+import { sending, type Sending } from "./hermes/unsaved";
 import { chatToReopen, forgetOpenChat, rememberOpenChat } from "./hermes/uiPrefs";
 import { exportChat } from "./hermes/exportChat";
 import { projectLinks, projectScope } from "./hermes/projectLinks";
 import { ProjectsStore, type Project } from "./hermes/projects";
 import { systemHeaderKeyring, systemKeyring } from "./hermes/tauriKeyring";
+import { appUpdates } from "./hermes/tauriUpdates";
+import { needsAttention, type Updater } from "./hermes/updates";
 import { desktopNotify } from "./hermes/tauriNotify";
 import { ScreenshotDesk, type ScreenshotApi } from "./hermes/screenshots";
 import { onDesktopScreenshot, screenshotSupport, showWindow, syncScreenshotOutbox, tauriScreenshots, type ScreenshotSupport } from "./hermes/tauriScreenshot";
@@ -28,6 +31,7 @@ import { SettingsScreen } from "./ui/Settings";
 import { FileBrowser } from "./ui/FileBrowser";
 import { composing, routeLabel } from "./ui/bits";
 import { ProjectScreen, ProjectSwitcher, type ProjectUnread } from "./ui/Projects";
+import { ScheduledJobs } from "./ui/ScheduledJobs";
 import { appearanceStore } from "./ui/appearance";
 import { StatusBar } from "./ui/StatusBar";
 import { systemFonts } from "./ui/tauriFonts";
@@ -151,6 +155,15 @@ export default function App() {
     });
   }, []);
 
+  // Updates: checked once as the app starts, if the owner wants that. Back in the window, a package update waiting to be
+  // installed looks again for pacman having installed it, which the owner does in a terminal.
+  useEffect(() => {
+    if (getUIPrefs().checkUpdatesOnLaunch && appUpdates.getSnapshot().state === "idle") void appUpdates.check();
+    const onFocus = () => void appUpdates.check({ installedOnly: true });
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
+
   if (hermes)
     return (
       <Main
@@ -256,6 +269,7 @@ export function Main({
   webPages = tauriWebPages,
   screenshots = tauriScreenshotWiring,
   onSignOut,
+  updates = appUpdates,
 }: {
   hermes: Hermes;
   connection: SavedSignIn;
@@ -270,6 +284,7 @@ export function Main({
   webPages?: WebPages;
   screenshots?: Screenshots;
   onSignOut: () => Promise<void>;
+  updates?: Updater;
 }) {
   const { profile, chats, olderPulled, archivedListed, status, route, unsecure, closedReason, syncError, others, models, switching } = useSyncExternalStore(
     hermes.subscribe,
@@ -284,9 +299,15 @@ export function Main({
   );
   // The project screen covers the chat pane, as Settings does.
   const [projectOpen, setProjectOpen] = useState(false);
+  /** The Scheduled jobs screen covers the chat, as Settings does. */
+  const [jobsOpen, setJobsOpen] = useState(false);
   // Server files covers the chat panes too. The folder open last stays for this sign-in.
   const [filesOpen, setFilesOpen] = useState(false);
   const [filesPath, setFilesPath] = useState<string>();
+  const update = useSyncExternalStore(updates.subscribe, updates.getSnapshot);
+  const updateWaiting = needsAttention(update);
+  // Drafts were saved for the restart; nothing typed after that would survive it.
+  const restarting = update.state === "restarting";
   // The chat to reopen at launch, until Hermes's list shows it is there or gone, or the owner goes somewhere first.
   const [reopening, setReopening] = useState(() => (reopenLast ? chatToReopen(profile) : undefined));
   // One pane, or two side by side. The chat to reopen opens at once when the list saved on this computer has it, so the
@@ -386,6 +407,7 @@ export function Main({
     setSettingsOpen(false);
     setProjectOpen(false);
     setFilesOpen(false);
+    setJobsOpen(false);
     if (remember) rememberOpenChat(profile, id);
   };
 
@@ -401,6 +423,7 @@ export function Main({
     setSettingsOpen(false);
     setProjectOpen(false);
     setFilesOpen(false);
+    setJobsOpen(false);
   };
 
   // A second pane opens to the right and becomes the active one. Both panes may show the same chat: they are two views
@@ -416,6 +439,7 @@ export function Main({
     setSettingsOpen(false);
     setProjectOpen(false);
     setFilesOpen(false);
+    setJobsOpen(false);
     rememberOpenChat(profile, chatId);
   };
 
@@ -443,6 +467,7 @@ export function Main({
       setSettingsOpen(false);
       setProjectOpen(false);
       setFilesOpen(false);
+      setJobsOpen(false);
       setSearchOpen(false);
       if (!previewFits) setPreviewHidden(true);
     });
@@ -644,7 +669,7 @@ export function Main({
       } else if (e.code === "Backslash" || k === "\\") {
         e.preventDefault();
         toggleSplit();
-      } else if ((k === "1" || k === "2") && !e.shiftKey && !e.altKey && split && !settingsOpen && !filesOpen) {
+      } else if ((k === "1" || k === "2") && !e.shiftKey && !e.altKey && split && !settingsOpen && !filesOpen && !jobsOpen) {
         e.preventDefault();
         focusPane(panes[Number(k) - 1].key);
       }
@@ -658,8 +683,8 @@ export function Main({
   const previewFits = !mainWidth || mainWidth >= CHAT_MIN_WIDTH + PANE_MIN_WIDTH;
   const paneMax = mainWidth ? mainWidth - CHAT_MIN_WIDTH : 1200;
   const paneWidth = Math.min(Math.max(dragWidth ?? previewWidth ?? PREVIEW_DEFAULT_WIDTH, PANE_MIN_WIDTH), Math.max(PANE_MIN_WIDTH, paneMax));
-  // Settings covers the chat, and the pane with it; so do the project screen and Server files.
-  const covering = settingsOpen || projectScreenOpen || filesOpen;
+  // Settings covers the chat, and the pane with it; so do the project screen, Server files and Scheduled jobs.
+  const covering = settingsOpen || projectScreenOpen || filesOpen || jobsOpen;
   const previewShown = !!preview && !covering && (previewFits || !previewHidden);
   const previewCovers = previewShown && !previewFits;
 
@@ -733,7 +758,7 @@ export function Main({
 
   return (
     <PreviewContext.Provider value={openPreview}>
-    <div className="app">
+    <div className="app" inert={restarting}>
       <Rail
         status={status}
         route={route}
@@ -746,10 +771,14 @@ export function Main({
         onFiles={() => {
           setSettingsOpen(false);
           setProjectOpen(false);
+          setJobsOpen(false);
           setFilesOpen((o) => !o);
         }}
         filesOpen={filesOpen && !settingsOpen && !projectScreenOpen}
-        onSettings={() => { setProjectOpen(false); setFilesOpen(false); setShowTextGeneration(undefined); setSettingsOpen(true); }}
+        onSettings={() => { setProjectOpen(false); setFilesOpen(false); setJobsOpen(false); setShowTextGeneration(undefined); setSettingsOpen(true); }}
+        onJobs={() => { setProjectOpen(false); setSettingsOpen(false); setFilesOpen(false); setJobsOpen(true); }}
+        jobsOpen={jobsOpen && !settingsOpen}
+        updateWaiting={updateWaiting}
       />
       {listOpen && (
         <ChatList
@@ -771,11 +800,13 @@ export function Main({
                   await projects.create(name);
                   setSettingsOpen(false);
                   setFilesOpen(false);
+                  setJobsOpen(false);
                   setProjectOpen(true);
                 }}
                 onManage={() => {
                   setSettingsOpen(false);
                   setFilesOpen(false);
+                  setJobsOpen(false);
                   setProjectOpen(true);
                 }}
               />
@@ -805,6 +836,7 @@ export function Main({
           onTextGenerationSettings={() => {
             setProjectOpen(false);
             setFilesOpen(false);
+            setJobsOpen(false);
             setShowTextGeneration({});
             setSettingsOpen(true);
           }}
@@ -816,7 +848,15 @@ export function Main({
       )}
       <main className="main" ref={mainRef}>
         <div className="main-chat" inert={previewCovers || undefined}>
-            {projectScreenOpen && shownProject && !settingsOpen ? (
+            {jobsOpen && !settingsOpen ? (
+              <ScheduledJobs
+                key={profile}
+                api={hermes.cron}
+                profile={profile}
+                connected={status === "connected"}
+                onClose={() => { flushSync(() => setJobsOpen(false)); focusPane(active.key); }}
+              />
+            ) : projectScreenOpen && shownProject && !settingsOpen ? (
               <ProjectScreen
                 key={shownProject.id}
                 project={shownProject}
@@ -926,6 +966,14 @@ export function Main({
           )}
         </div>
       )}
+      {restarting &&
+        // Outside the inert app, so it is announced.
+        createPortal(
+          <div className="restarting-overlay" role="status">
+            Restarting into {update.to}…
+          </div>,
+          document.body,
+        )}
     </div>
     </PreviewContext.Provider>
   );
@@ -1033,7 +1081,17 @@ function ChatView({
     const paths = attachments.map((a) => a.path);
     screenshots?.hold(paths);
     const typed = savedDrafts.take(shownDraft);
-    const to = await chatToSendIn();
+    // In no outbox until its chat exists: an update's restart meanwhile keeps it as the draft (unsaved.ts).
+    const held: Sending = { key: shownDraft, text: typed };
+    sending.add(held);
+    const to = await chatToSendIn().finally(() => sending.delete(held));
+    if (held.captured) {
+      // Saved as a draft for the restart, so it doesn't go. Should the restart fail, it is back in the composer.
+      const now = savedDrafts.get(held.key);
+      savedDrafts.set(held.key, now ? `${now}\n\n${typed}` : typed);
+      screenshots?.sent(attachments, false);
+      return;
+    }
     if ("delivery" in to) {
       savedDrafts.putBack(draftOf(null), typed);
       screenshots?.sent(attachments, false);
