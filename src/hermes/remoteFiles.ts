@@ -2,9 +2,11 @@
 // (the official web dashboard's Files tab uses the same ones): `GET /api/files` and `GET /api/files/read` to browse
 // and preview (ADR 0012), and `GET /api/files/download` to download one to a place the owner picks on this computer
 // (ADR 0023), and `POST /api/files/upload-stream` to upload a file the owner picks into the folder on screen, read back
-// from the folder's listing afterwards. The server decides what may be read: it lists and reads as its own OS user, can lock browsing to one
+// from the folder's listing afterwards. A text file can be edited and saved back through the same upload route, after
+// checking its revision and with a read-back (ADR 0024). The server decides what may be read: it lists and reads as its own OS user, can lock browsing to one
 // folder, and never lists, reads or sends credential files such as `.env` or `auth.json`. Wire details:
 // docs/research/hermes-gateway-api.md, "Server files".
+import { EDIT_MAX_BYTES, decodeForEdit, encodeEdit, revisionOf, type EditableText } from "./textEdit";
 
 /** A directory entry as `GET /api/files` lists it (`_managed_file_entry`, `hermes_cli/web_server_files.py` at `bf0203a`). */
 type WireEntry = {
@@ -90,6 +92,8 @@ export type TransferPipe = {
   pickUpload(): Promise<PickedUpload | undefined>;
   /** Lets go of a pick that won't be sent. */
   discardUpload(token: number): Promise<void>;
+  /** Writes `text` (as UTF-8) to the server path `path` through the upload route (src-tauri `files_save_text`). */
+  saveText(id: number, path: string, text: string, overwrite: boolean): Promise<string>;
   /**
    * Uploads the picked file to the server path `path`. `overwrite` false: Hermes refuses (409) when a file is there.
    * Resolves to Hermes's answer. Rejects with `TRANSFER_STOPPED` when stopped, like `download`.
@@ -139,6 +143,20 @@ export type UploadPlan = { dest: string; taken?: RemoteEntry; keepBothName: stri
 /** The most Hermes sends of one file (`_MANAGED_FILE_MAX_BYTES` at `bf0203a`). */
 export const SERVER_FILE_MAX_BYTES = 100 * 1024 * 1024;
 
+/**
+ * A text file opened for editing: its bytes as read, their revision (SHA-256), and the text as the editor holds it.
+ */
+export type EditBase = EditableText & { path: string; name: string; bytes: Uint8Array; revision: string };
+
+/**
+ * What a save found. `saved`: Hermes has exactly the edit, read back; `base` is the file now. `conflict`: the file on
+ * the server isn't the one the edit started from, so nothing was written (`after` false), or it changed again
+ * while the save ran (`after` true). `theirs` is what the server has now, or why it can't be shown.
+ */
+export type SaveOutcome =
+  | { kind: "saved"; base: EditBase }
+  | { kind: "conflict"; after: boolean; theirs: EditBase | { gone: true } | { why: string; revision: string } };
+
 export type RemoteFiles = {
   /** Lists a folder by its absolute path on the server, or the server's starting folder when `path` is left out. */
   list(path?: string): Promise<RemoteListing>;
@@ -161,6 +179,16 @@ export type RemoteFiles = {
    * listed again, and it counts as uploaded only when the listing has the file with the picked size.
    */
   upload(listing: RemoteListing, picked: PickedUpload, collision: Collision): Promise<void>;
+  /** Reads a text file to edit, or rejects with why it can't be edited. */
+  openForEdit(entry: RemoteEntry): Promise<EditBase>;
+  /**
+   * Saves `text` over the file `base` was read from: only if the server still has `base`'s revision, and it counts as
+   * saved only once Hermes, read back, has exactly what was sent. Rejects when Hermes refused the write (nothing was
+   * written) or the outcome can't be told.
+   */
+  saveEdit(base: EditBase, text: string): Promise<SaveOutcome>;
+  /** Saves `text` as a new file beside `base`'s, under a free name, never over another file. Resolves to its path. */
+  saveCopy(base: EditBase, text: string): Promise<string>;
   /** Takes a finished, failed or stopped transfer off the list. */
   dismiss(id: number): void;
   /** The transfers, oldest first; a new array after each change. */
@@ -179,6 +207,53 @@ export function remoteFiles(get: RemoteGet, pipe: TransferPipe): RemoteFiles {
     transfers = patch ? transfers.map((t) => (t.id === id ? { ...t, ...patch } : t)) : transfers.filter((t) => t.id !== id);
     for (const l of listeners) l();
   };
+  /** A file's bytes through `GET /api/files/read`, refused past what the editor opens. */
+  const readBytes = async (path: string) => {
+    const body = await call(() => deadline(get(`api/files/read?${new URLSearchParams({ path })}`, Math.ceil(EDIT_MAX_BYTES / 3) * 4 + 64 * 1024), EDIT_DEADLINES.readMs), "read", EDIT_MAX_BYTES);
+    let wire: { data_url?: unknown; path?: unknown };
+    try {
+      wire = JSON.parse(body);
+    } catch {
+      throw new RemoteFilesError("The server's answer isn't a file.");
+    }
+    const dataUrl = str(wire?.data_url);
+    const m = dataUrl && /^data:[^,]*;base64,/.exec(dataUrl);
+    if (!dataUrl || !m) throw new RemoteFilesError("The server's answer isn't a file.");
+    return { path: str(wire.path) ?? path, bytes: Uint8Array.from(atob(dataUrl.slice(m[0].length)), (c) => c.charCodeAt(0)) };
+  };
+  /** The file `base` came from as the server has it now: its revision, and its text when that can be edited. */
+  const current = async (base: EditBase): Promise<{ revision: string; theirs: EditBase | { gone: true } | { why: string; revision: string } }> => {
+    let read: { path: string; bytes: Uint8Array };
+    try {
+      read = await readBytes(base.path);
+    } catch (e) {
+      if (e instanceof RemoteFilesError && e.status === 404) return { revision: "", theirs: { gone: true } };
+      // Now a folder, too big for the editor, or unreadable: another version, which can't be shown.
+      if (e instanceof RemoteFilesError && (e.status === 400 || e.status === 403 || e.status === 413)) return { revision: "", theirs: { why: e.message, revision: "" } };
+      throw e;
+    }
+    const revision = await revisionOf(read.bytes);
+    const text = decodeForEdit(read.bytes);
+    return { revision, theirs: "why" in text ? { why: text.why, revision } : { ...text, path: base.path, name: base.name, bytes: read.bytes, revision } };
+  };
+  /**
+   * Writes an edit's text. Resolves when Hermes said it wrote it; rejects with a `RemoteFilesError` when Hermes refused
+   * (the file is as it was), or with `{ lost }` when the outcome isn't known: no answer within the deadline (the write
+   * is stopped then, but may already have landed), a dropped connection, or a gateway's 502/503/504.
+   */
+  const writeText = async (path: string, text: string, overwrite: boolean) => {
+    const id = nextTransferId++;
+    try {
+      await deadline(pipe.saveText(id, path, text, overwrite), EDIT_DEADLINES.writeMs);
+    } catch (e) {
+      if (e instanceof TimedOut) void pipe.cancel(id).catch(() => {});
+      const message = errorText(e);
+      if (refusedBeforeWriting(message)) throw explainSave(message);
+      throw { lost: e instanceof TimedOut ? `Hermes didn't answer within ${EDIT_DEADLINES.writeMs / 1000} s.` : explainSave(message).message };
+    }
+  };
+  /** Copies whose outcome isn't known yet, by the file and text they copy, so a retry checks them first. */
+  const unsettledCopies = new Map<string, string>();
   const list = async (path?: string) => {
     const query = path === undefined ? "" : `?${new URLSearchParams({ path })}`;
     const body = await call(() => get(`api/files${query}`), "list");
@@ -227,6 +302,73 @@ export function remoteFiles(get: RemoteGet, pipe: TransferPipe): RemoteFiles {
       } catch (e) {
         failed(id, e, "download");
       }
+    },
+    async openForEdit(entry) {
+      if (entry.kind !== "file") throw new RemoteFilesError("Only files can be edited.");
+      if (entry.size !== undefined && entry.size > EDIT_MAX_BYTES) throw new RemoteFilesError(`It's ${mb(entry.size)}. The editor opens files up to ${mb(EDIT_MAX_BYTES)}.`);
+      if (protectedPath(entry.path)) throw new RemoteFilesError("Hermes Chat doesn't edit credential files.");
+      const read = await readBytes(entry.path);
+      const text = decodeForEdit(read.bytes);
+      if ("why" in text) throw new RemoteFilesError(text.why);
+      return { ...text, path: read.path, name: entry.name, bytes: read.bytes, revision: await revisionOf(read.bytes) };
+    },
+    async saveEdit(base, text) {
+      const outgoing = encodeEdit(text, base.eol, base.bom);
+      const sent = sizeChecked(outgoing);
+      const sentRevision = await revisionOf(sent);
+      // Before: the server must still have the file the edit started from.
+      const now = await current(base);
+      if (now.revision !== base.revision) return { kind: "conflict", after: false, theirs: now.theirs };
+      let lost: string | undefined;
+      try {
+        await writeText(base.path, outgoing, true);
+      } catch (e) {
+        if (!isLost(e)) throw e;
+        lost = e.lost;
+      }
+      // After: read back. A lost answer is settled the same way.
+      const back = await current(base).catch((e) => {
+        throw new RemoteFilesError(`${lost ? "The save's answer was lost" : "Hermes saved it"}, but the file couldn't be read back to check: ${errorText(e)}`);
+      });
+      if (back.revision === sentRevision && "bytes" in back.theirs) return { kind: "saved", base: back.theirs };
+      if (lost && back.revision === base.revision) throw new RemoteFilesError(`It wasn't saved: ${lost} The server still has the file you started from.`);
+      return { kind: "conflict", after: true, theirs: back.theirs };
+    },
+    async saveCopy(base, text) {
+      const outgoing = encodeEdit(text, base.eol, base.bom);
+      const sentRevision = await revisionOf(sizeChecked(outgoing));
+      const folder = base.path.slice(0, base.path.lastIndexOf("/")) || "/";
+      // A copy of this same text whose outcome wasn't known: settle that one first, rather than make another.
+      const key = `${base.path}\n${sentRevision}`;
+      const unsettled = unsettledCopies.get(key);
+      if (unsettled) {
+        // null: it isn't there, so it never landed; undefined: still can't tell.
+        // A file reached through a link isn't the copy, whatever it holds: Hermes names the path it resolved.
+        const there = await readBytes(unsettled).then(
+          (b) => (b.path === unsettled ? revisionOf(b.bytes) : null),
+          (e) => (e instanceof RemoteFilesError && e.status === 404 ? null : undefined),
+        );
+        if (there === undefined) throw new RemoteFilesError(`An earlier copy, ${unsettled}, may have been saved, and still can't be read to check. Try again once it can.`);
+        unsettledCopies.delete(key);
+        if (there === sentRevision) return unsettled;
+      }
+      const listing = await deadline(list(folder), EDIT_DEADLINES.readMs);
+      const path = joinPath(listing.path, freeName(base.name, new Set(listing.entries.map((e) => e.name))));
+      let lost: string | undefined;
+      try {
+        await writeText(path, outgoing, false);
+      } catch (e) {
+        if (!isLost(e)) throw e;
+        lost = e.lost;
+      }
+      // Read back, which also settles a lost answer: retrying then would make a second copy.
+      const back = await readBytes(path).catch((e) => {
+        unsettledCopies.set(key, path);
+        throw new RemoteFilesError(`${lost ? `The copy's answer was lost (${lost})` : `Hermes saved ${path}`}, but it couldn't be read back to check: ${errorText(e)}`);
+      });
+      if (back.path !== path || (await revisionOf(back.bytes)) !== sentRevision)
+        throw new RemoteFilesError(`${path} on the server isn't your edit${lost ? ` (the save's answer was lost: ${lost})` : ""}. Something else may have written it.`);
+      return path;
     },
     pickUpload: () => pipe.pickUpload(),
     discardUpload: (picked) => void pipe.discardUpload(picked.token).catch(() => {}),
@@ -374,6 +516,63 @@ function explainTransfer(message: string, what: "download" | "upload"): string {
   if (/^it's .* MB now, over the .* MB limit/.test(message)) return `It's grown: ${message}.`;
   if (/^Hermes Chat doesn't relay/.test(message)) return message;
   return `The ${what} broke off: ${message}.`;
+}
+
+/** How long a read for the editor, and a save, may take before the app stops waiting (as Persona does). */
+export const EDIT_DEADLINES = { readMs: 30_000, writeMs: 60_000 };
+
+class TimedOut extends Error {}
+
+function deadline<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const late = new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new TimedOut(`Hermes didn't answer within ${ms / 1000} s.`)), ms)));
+  return Promise.race([work, late]).finally(() => clearTimeout(timer));
+}
+
+const isLost = (e: unknown): e is { lost: string } => typeof e === "object" && e !== null && "lost" in e;
+
+/** The edit's bytes, refused past what the editor saves (and could read back). */
+function sizeChecked(text: string): Uint8Array {
+  const bytes = new TextEncoder().encode(text);
+  if (bytes.length > EDIT_MAX_BYTES) throw new RemoteFilesError(`The edit is ${mb(bytes.length)}. The editor saves files up to ${mb(EDIT_MAX_BYTES)}.`);
+  return bytes;
+}
+
+/**
+ * Answers Hermes gives before it writes anything (`_managed_write_target`, `stream_upload_to_path`), or that never
+ * reached it. Anything else, a 500 from the entry Hermes describes after writing or a gateway's 5xx included, may come
+ * after the write landed, so it is settled by reading the file back.
+ */
+function refusedBeforeWriting(message: string): boolean {
+  if (/^Hermes Chat doesn't relay|^Not connected|^The dashboard sign-in/.test(message)) return true;
+  const m = /^The dashboard answered (\d{3}): ([\s\S]*)$/.exec(message);
+  if (!m) return false;
+  const status = Number(m[1]);
+  // FastAPI checks the form before the route runs.
+  if (status === 422) return true;
+  let detail: unknown;
+  try {
+    detail = (JSON.parse(m[2]) as { detail?: unknown }).detail;
+  } catch {
+    // Cut short or not Hermes's own JSON: not known to be a refusal.
+    return false;
+  }
+  if (typeof detail !== "string") return false;
+  const before: Record<number, (d: string) => boolean> = {
+    409: (d) => d === "File already exists" || d === "A directory already exists at that path",
+    413: (d) => d === "File is too large",
+    403: (d) => d === "File is not writable",
+    500: (d) => d.startsWith("Could not write file:") || d.startsWith("Could not create parent directory"),
+  };
+  return before[status]?.(detail) ?? false;
+}
+
+/** Why Hermes refused a save, in the owner's words. Its write is atomic, so a refused save changed nothing. */
+function explainSave(message: string): RemoteFilesError {
+  if (/^The dashboard answered 403: .*File is not writable/.test(message)) return new RemoteFilesError("The Hermes server's user isn't allowed to write this file.", 403);
+  if (/^The dashboard answered 409: .*File already exists/.test(message)) return new RemoteFilesError("A file with that name is on the server now. Nothing was replaced.", 409);
+  if (/^Hermes Chat doesn't relay/.test(message)) return new RemoteFilesError(message);
+  return explain(message, "write");
 }
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));

@@ -171,7 +171,7 @@ A header name and value the owner adds to a URL connection, for a gateway in fro
 _Avoid_: custom header, gateway token
 
 **Server files screen**:
-The rail's browser for the Server files on the machine the Hermes dashboard runs on. It lists folders through the dashboard's managed files, as the server's own user can open them, the same for every profile, and never shows credential files such as `.env`. The server may limit it to one folder. Nothing on this computer is shown there. A file can be downloaded from it, and a file the owner picks can be uploaded into the folder on screen; nothing else on the server can be changed from it (ADR 0012, ADR 0023).
+The rail's browser for the Server files on the machine the Hermes dashboard runs on. It lists folders through the dashboard's managed files, as the server's own user can open them, the same for every profile, and never shows credential files such as `.env`. The server may limit it to one folder. Nothing on this computer is shown there. A file can be downloaded from it, a file the owner picks can be uploaded into the folder on screen, and a text file can be edited; nothing else on the server can be changed from it (ADR 0012, ADR 0023, ADR 0024).
 _Avoid_: remote files, file manager, workspace (Hermes's word for a session's working folder)
 
 **Download** (of a Server file):
@@ -181,6 +181,10 @@ _Avoid_: export (that is a chat saved as Markdown), save
 **Upload** (to the server):
 Sending one file the owner picked on this computer into the folder the Server files screen shows. Before anything is sent, it shows where the file goes. If the name is taken, the owner chooses to keep both or replace. Hermes is asked not to replace a file unless the owner chose that; it checks just before writing, not at the same moment. It counts as uploaded once the folder, listed again, has the file at the size sent. Credential files such as `.env` are never uploaded over (ADR 0023).
 _Avoid_: attach, attachment (that is a file sent with a message), sync
+
+**Edit** (of a Server file):
+Changing a text file on the server from the Server files screen, and saving it back. Save shows the changes first, and writes only if the server still has the version the edit started from. It counts as saved once Hermes, read back, has the edit. If the file changed on the server, nothing is written, and both versions stay: the owner merges them, takes the server's, or saves theirs as a copy (ADR 0024).
+_Avoid_: patch, sync, overwrite
 
 **Terminal**:
 The rail's screen with a shell on the Hermes server, through the owner's own ssh to the sign-in's SSH target, or one typed for it. ssh asks there for anything it needs, such as a passphrase or a new host key. Going back to a chat leaves the session running, and the rail shows it; signing out ends it. It is the owner's shell, not Hermes's: nothing typed there reaches a chat, an Approval or the agent (ADR 0022).

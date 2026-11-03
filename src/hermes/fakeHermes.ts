@@ -931,6 +931,7 @@ export class FakeHermes {
       pickUpload: async () => this.managedFiles.pickUpload(),
       discardUpload: async (token) => void this.managedFiles.discardPick(token),
       upload: (id, token, path, overwrite, onProgress) => this.managedFiles.upload(id, token, path, overwrite, onProgress),
+      saveText: (id, path, text, overwrite) => this.managedFiles.saveText(path, text, overwrite),
       cancelTransfer: async (id) => this.managedFiles.cancel(id),
       // Mirrors `Dashboard::toolset_guards`: only these two facts of the config.
       toolsetGuards: async (profile): Promise<ToolsetGuards> => {

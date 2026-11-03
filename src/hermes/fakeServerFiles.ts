@@ -243,6 +243,34 @@ export class FakeServerFiles {
     }
   }
 
+  /** Set: a save's answer is lost this way, after (`landed`) or before Hermes wrote it. */
+  saveLost?: { message: string; landed: boolean };
+  /** Set: a save waits here before Hermes takes it, as one that gets no answer would. */
+  saveGate?: Promise<void>;
+  /** Set: before a save writes, the file changes as another client would change it. */
+  beforeWrite?: (path: string) => void;
+  /** Every text saved, in order: its path, text and `overwrite`. */
+  readonly saves: { path: string; text: string; overwrite: boolean }[] = [];
+
+  /** src-tauri `files_save_text`: the edit's text, as UTF-8, through the same upload route. */
+  async saveText(path: string, text: string, overwrite: boolean): Promise<string> {
+    if (isSensitive(path)) throw new Error(`Hermes Chat doesn't relay uploads to ${path}, a credential file Hermes keeps out of reach.`);
+    if (this.saveGate) await this.saveGate;
+    this.beforeWrite?.(path);
+    const lost = this.saveLost;
+    if (lost && !lost.landed) throw new Error(lost.message);
+    const at = this.target(dirname(path)) === dirname(path) ? path : join(this.target(dirname(path)), basename(path));
+    if (this.nodes[at] && !overwrite) fail(409, "File already exists");
+    const node = this.nodes[at];
+    if (node && "unreadable" in node && node.unreadable) fail(403, "File is not writable");
+    this.saves.push({ path: at, text, overwrite });
+    const bytes = Array.from(new TextEncoder().encode(text), (b) => String.fromCharCode(b)).join("");
+    this.nodes[at] = { bytes, mime: node && "mime" in node ? node.mime : undefined, mtime: 1_793_200_000 };
+    this.afterWrite?.(at);
+    if (lost) throw new Error(lost.message);
+    return JSON.stringify({ ok: true, path: at });
+  }
+
   /** Called after each write lands, so a test can change the file as something else on the server would. */
   afterWrite?: (path: string) => void;
 
@@ -255,8 +283,12 @@ export class FakeServerFiles {
     for (const stop of this.running.values()) stop(new Error(STOPPED));
   }
 
+  /** Set: every `GET /api/files/read` fails this way, as during an outage. */
+  readError?: string;
+
   /** `GET /api/files/read?path=`: the whole file as a base64 data URL. */
   read(query: URLSearchParams) {
+    if (this.readError) throw new Error(this.readError);
     const raw = query.get("path");
     if (!raw) fail(422, "Field required");
     // A path that isn't there is "Path not found" here too: `_resolve_managed_path` resolves it strictly first.

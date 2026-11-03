@@ -84,6 +84,8 @@ export interface Pipe {
   discardUpload(token: number): Promise<void>;
   /** Uploads the picked file to the server path `path` (src-tauri `files_upload`, ADR 0023). Resolves to Hermes's answer. */
   upload(id: number, token: number, path: string, overwrite: boolean, onProgress: (p: TransferProgress) => void): Promise<string>;
+  /** Writes an edit's text to the server path `path` (src-tauri `files_save_text`, ADR 0024). Resolves to Hermes's answer. */
+  saveText(id: number, path: string, text: string, overwrite: boolean): Promise<string>;
   cancelTransfer(id: number): Promise<void>;
   close(): Promise<void>;
 }

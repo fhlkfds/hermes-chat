@@ -915,7 +915,7 @@ impl Dashboard {
         Ok(written)
     }
 
-    /// Uploads the local file at `local` to `server_path` through the managed-files route `POST
+    /// Uploads `source` (a local file, or the text of an edit) to `server_path` through the managed-files route `POST
     /// api/files/upload-stream` (ADR 0023), streamed one chunk at a time. Hermes writes it to a temp file beside the
     /// target and renames it into place, so a cancelled or broken upload never leaves part of a file there. With
     /// `overwrite` false, Hermes refuses with 409 when a file is already there. Hermes doesn't keep credential files
@@ -924,7 +924,7 @@ impl Dashboard {
     pub async fn upload(
         &self,
         server_path: &str,
-        local: &std::path::Path,
+        source: UploadSource,
         overwrite: bool,
         progress: impl Fn(u64, Option<u64>) + Send + Sync + 'static,
     ) -> Result<String, TransportError> {
@@ -936,36 +936,48 @@ impl Dashboard {
         let Some(name) = name.map(str::to_owned) else {
             return Err(TransportError::NotRelayed(format!("uploads to {server_path}")));
         };
-        let io = |e: std::io::Error| TransportError::File(format!("couldn't read it on this computer: {e}"));
-        let file = tokio::fs::File::open(local).await.map_err(io)?;
-        let size = file.metadata().await.map_err(io)?.len();
-        if size > MANAGED_FILE_MAX_BYTES {
-            return Err(TransportError::FileTooLarge { size, max: MANAGED_FILE_MAX_BYTES });
-        }
-        // The file as it was measured: no more than `size` bytes go, and a file that shrank meanwhile fails the upload
-        // rather than leaving a short file on the server.
-        let mut told = std::time::Instant::now();
-        progress(0, Some(size));
-        let chunks = futures_util::stream::try_unfold((file, 0u64), move |(mut file, sent)| {
-            let more = (size - sent).min(UPLOAD_CHUNK_BYTES as u64) as usize;
-            let elapsed = told.elapsed();
-            if elapsed >= Duration::from_millis(100) || sent == size {
-                progress(sent, Some(size));
-                told = std::time::Instant::now();
-            }
-            async move {
-                if more == 0 {
-                    return Ok(None);
+        let part = match source {
+            UploadSource::Bytes(bytes) => {
+                let size = bytes.len() as u64;
+                if size > MANAGED_FILE_MAX_BYTES {
+                    return Err(TransportError::FileTooLarge { size, max: MANAGED_FILE_MAX_BYTES });
                 }
-                let mut buf = vec![0u8; more];
-                file.read_exact(&mut buf).await.map_err(|e| std::io::Error::new(e.kind(), format!("couldn't read it on this computer: {e}")))?;
-                Ok::<_, std::io::Error>(Some((buf, (file, sent + more as u64))))
+                progress(0, Some(size));
+                let part = reqwest::multipart::Part::bytes(bytes);
+                progress(size, Some(size));
+                part
             }
-        });
-        let part = reqwest::multipart::Part::stream_with_length(reqwest::Body::wrap_stream(chunks), size)
-            .file_name(name)
-            .mime_str("application/octet-stream")
-            .expect("a valid MIME type");
+            UploadSource::File(local) => {
+                let io = |e: std::io::Error| TransportError::File(format!("couldn't read it on this computer: {e}"));
+                let file = tokio::fs::File::open(local).await.map_err(io)?;
+                let size = file.metadata().await.map_err(io)?.len();
+                if size > MANAGED_FILE_MAX_BYTES {
+                    return Err(TransportError::FileTooLarge { size, max: MANAGED_FILE_MAX_BYTES });
+                }
+                // The file as it was measured: no more than `size` bytes go, and a file that shrank meanwhile fails the upload
+                // rather than leaving a short file on the server.
+                let mut told = std::time::Instant::now();
+                progress(0, Some(size));
+                let chunks = futures_util::stream::try_unfold((file, 0u64), move |(mut file, sent)| {
+                    let more = (size - sent).min(UPLOAD_CHUNK_BYTES as u64) as usize;
+                    let elapsed = told.elapsed();
+                    if elapsed >= Duration::from_millis(100) || sent == size {
+                        progress(sent, Some(size));
+                        told = std::time::Instant::now();
+                    }
+                    async move {
+                        if more == 0 {
+                            return Ok(None);
+                        }
+                        let mut buf = vec![0u8; more];
+                        file.read_exact(&mut buf).await.map_err(|e| std::io::Error::new(e.kind(), format!("couldn't read it on this computer: {e}")))?;
+                        Ok::<_, std::io::Error>(Some((buf, (file, sent + more as u64))))
+                    }
+                });
+                reqwest::multipart::Part::stream_with_length(reqwest::Body::wrap_stream(chunks), size)
+            }
+        };
+        let part = part.file_name(name).mime_str("application/octet-stream").expect("a valid MIME type");
         let form = reqwest::multipart::Form::new()
             .text("path", server_path.to_owned())
             .text("overwrite", if overwrite { "true" } else { "false" })
@@ -1009,6 +1021,12 @@ fn blocking<T>(work: impl FnOnce() -> T) -> T {
         Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(work),
         _ => work(),
     }
+}
+
+/// What an upload sends: a local file the owner picked, read as it goes, or an edit's text, already in memory.
+pub enum UploadSource {
+    File(std::path::PathBuf),
+    Bytes(Vec<u8>),
 }
 
 /// The most Hermes takes or sends of one managed file (`_MANAGED_FILE_MAX_BYTES` at `bf0203a`).

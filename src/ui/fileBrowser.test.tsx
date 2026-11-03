@@ -495,3 +495,128 @@ describe("Server files: Upload", () => {
     expect(s.managedFiles.nodes["/home/liam/big.bin"]).toBeUndefined();
   });
 });
+
+describe("Server files: editing text", () => {
+  const editor = () => within(screen.getByRole("dialog", { name: /^Edit / }));
+  const serverText = (s: FakeHermes, p: string) => {
+    const n = s.managedFiles.nodes[p] as { text?: string; bytes?: string };
+    return n.text ?? new TextDecoder().decode(Uint8Array.from(n.bytes!, (c) => c.charCodeAt(0)));
+  };
+
+  async function openEditor(user: ReturnType<typeof userEvent.setup>, name = "notes.md") {
+    await openFiles(user);
+    await user.click(row_(name));
+    await user.click(await screen.findByRole("button", { name: "Edit" }));
+    return (await screen.findByRole("textbox", { name: `Text of ${name}` })) as HTMLTextAreaElement;
+  }
+
+  it("edits, reviews the diff, saves, and says so only once read back", async () => {
+    const s = server();
+    const { user } = await launch(s);
+    const area = await openEditor(user);
+    expect(area.value).toBe("# Notes\nbuy milk\n");
+    expect((editor().getByRole("button", { name: "Review changes…" }) as HTMLButtonElement).disabled).toBe(true);
+    await user.clear(area);
+    await user.type(area, "# Notes\nbuy oat milk\n");
+    await user.click(editor().getByRole("button", { name: "Review changes…" }));
+    const diff = within(editor().getByRole("region", { name: "Your changes" }));
+    expect(diff.getByText("1 added")).toBeTruthy();
+    expect(diff.getByText("buy milk").closest(".files-diff-line")?.className).toContain("del");
+    expect(diff.getByText("buy oat milk").closest(".files-diff-line")?.className).toContain("add");
+    expect(s.managedFiles.saves).toEqual([]);
+    await user.click(editor().getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toMatch(/^Saved notes\.md\. Hermes has your edit, read back/));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(serverText(s, "/home/liam/notes.md")).toBe("# Notes\nbuy oat milk\n");
+    await waitFor(() => expect(screen.getByText(/buy oat milk/, { selector: ".files-text" })).toBeTruthy());
+  });
+
+  it("writes nothing over a remote change, shows it, and merges the two", async () => {
+    const s = server();
+    s.managedFiles.nodes["/home/liam/notes.md"] = { text: "one\ntwo\nthree\nfour\nfive\n" };
+    const { user } = await launch(s);
+    const area = await openEditor(user);
+    await user.clear(area);
+    await user.type(area, "one\nTWO\nthree\nfour\nfive\n");
+    // Another client edits the last line meanwhile.
+    s.managedFiles.nodes["/home/liam/notes.md"] = { text: "one\ntwo\nthree\nfour\nFIVE (theirs)\n" };
+    await user.click(editor().getByRole("button", { name: "Review changes…" }));
+    await user.click(editor().getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(editor().getByRole("alert").textContent).toMatch(/changed on the server since you opened it, so nothing was written\. Your edit is kept here\./));
+    expect(s.managedFiles.saves).toEqual([]);
+    const theirs = within(editor().getByRole("region", { name: "Changes on the server since you opened it" }));
+    expect(theirs.getByText("FIVE (theirs)")).toBeTruthy();
+    await user.click(editor().getByRole("button", { name: "Merge" }));
+    expect((editor().getByRole("textbox") as HTMLTextAreaElement).value).toBe("one\nTWO\nthree\nfour\nFIVE (theirs)\n");
+    await user.click(editor().getByRole("button", { name: "Review changes…" }));
+    await user.click(editor().getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(serverText(s, "/home/liam/notes.md")).toBe("one\nTWO\nthree\nfour\nFIVE (theirs)\n");
+  });
+
+  it("marks where both changed the same line, and can reload theirs or keep both as a copy", async () => {
+    const s = server();
+    const { user } = await launch(s);
+    const area = await openEditor(user);
+    await user.clear(area);
+    await user.type(area, "# Notes\nbuy bread\n");
+    s.managedFiles.nodes["/home/liam/notes.md"] = { text: "# Notes\nbuy eggs\n" };
+    await user.click(editor().getByRole("button", { name: "Review changes…" }));
+    await user.click(editor().getByRole("button", { name: "Save" }));
+    await editor().findByRole("button", { name: "Merge" });
+    await user.click(editor().getByRole("button", { name: "Merge" }));
+    expect((editor().getByRole("textbox") as HTMLTextAreaElement).value).toContain("<<<<<<< your edit\nbuy bread\n=======\nbuy eggs\n>>>>>>> on the server now");
+    expect(editor().getByRole("status").textContent).toMatch(/1 place both changed is marked/);
+    // Back to a conflict to try the other two ways out.
+    s.managedFiles.nodes["/home/liam/notes.md"] = { text: "# Notes\nbuy jam\n" };
+    await user.click(editor().getByRole("button", { name: "Review changes…" }));
+    await user.click(editor().getByRole("button", { name: "Save" }));
+    await user.click(await editor().findByRole("button", { name: "Save mine as a copy" }));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toMatch(/saved as a copy, \/home\/liam\/notes \(2\)\.md/));
+    expect(serverText(s, "/home/liam/notes.md")).toBe("# Notes\nbuy jam\n");
+    expect(serverText(s, "/home/liam/notes (2).md")).toContain("buy bread");
+    await user.click(await screen.findByRole("button", { name: "Edit" }));
+    await user.type(await screen.findByRole("textbox", { name: "Text of notes.md" }), "more\n");
+    s.managedFiles.nodes["/home/liam/notes.md"] = { text: "server wins\n" };
+    await user.click(editor().getByRole("button", { name: "Review changes…" }));
+    await user.click(editor().getByRole("button", { name: "Save" }));
+    await user.click(await editor().findByRole("button", { name: "Reload theirs" }));
+    expect((editor().getByRole("textbox") as HTMLTextAreaElement).value).toBe("server wins\n");
+  });
+
+  it("keeps the app's shortcuts and the keyboard inside the editor, so nothing drops the edit unasked", async () => {
+    const s = server();
+    const { user } = await launch(s);
+    const area = await openEditor(user);
+    await user.type(area, "draft");
+    await user.keyboard("{Control>}n{/Control}");
+    await user.keyboard("{Control>}k{/Control}");
+    expect(screen.getByRole("dialog", { name: /^Edit / })).toBeTruthy();
+    expect(document.querySelector(".files")).not.toBeNull();
+    const box = screen.getByRole("dialog", { name: /^Edit / });
+    for (let i = 0; i < 5; i++) {
+      await user.tab();
+      expect(box.contains(document.activeElement)).toBe(true);
+    }
+    expect((editor().getByRole("textbox") as HTMLTextAreaElement).value).toContain("draft");
+  });
+
+  it("asks before dropping an unsaved edit, and won't edit what it can't round-trip", async () => {
+    const s = server();
+    s.managedFiles.nodes["/home/liam/latin1.txt"] = { bytes: "caf\xe9\n" };
+    const { user } = await launch(s);
+    const area = await openEditor(user);
+    await user.type(area, "x");
+    await user.click(editor().getByRole("button", { name: "Cancel" }));
+    expect(editor().getByRole("alert").textContent).toMatch(/Discard your changes to notes\.md\?/);
+    await user.click(editor().getByRole("button", { name: "Keep editing" }));
+    expect((editor().getByRole("textbox") as HTMLTextAreaElement).value).toBe("# Notes\nbuy milk\nx");
+    await user.click(editor().getByRole("button", { name: "Cancel" }));
+    await user.click(editor().getByRole("button", { name: "Discard changes" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(serverText(s, "/home/liam/notes.md")).toBe("# Notes\nbuy milk\n");
+    await user.click(row_("latin1.txt"));
+    await user.click(await screen.findByRole("button", { name: "Edit" }));
+    expect((await editor().findByRole("alert")).textContent).toMatch(/isn't UTF-8 text/);
+  });
+});

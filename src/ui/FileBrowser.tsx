@@ -1,10 +1,11 @@
 // Server files: a browser for the files on the machine the Hermes dashboard runs on (remoteFiles.ts). It opens from the
 // rail and takes the chat pane's place, as Settings does. Folders open in place, with the path above them as a trail
 // of folders; a file opens in the preview beside the list, where it can be downloaded to this computer. Upload… sends
-// a file the owner picks into the folder on screen, after showing where it goes and what is in the way (ADR 0023).
-// Nothing else on the server can be changed from here.
+// a file the owner picks into the folder on screen, after showing where it goes and what is in the way (ADR 0023). A
+// text file in the preview can be edited and saved back, checked against what the server has (ADR 0024). Nothing else
+// on the server can be changed from here.
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type RefObject } from "react";
-import { ArrowLeft, ArrowUp, Check, CircleAlert, Download, File, FileImage, FileText, Folder, House, Link2, Link2Off, RefreshCw, Server, Upload, WifiOff, X } from "lucide-react";
+import { ArrowLeft, ArrowUp, Check, CircleAlert, Download, FilePen, File, FileImage, FileText, Folder, House, Link2, Link2Off, RefreshCw, Server, Upload, WifiOff, X } from "lucide-react";
 import type { ConnectionStatus } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
 import {
@@ -22,6 +23,8 @@ import {
 } from "../hermes/remoteFiles";
 import { STATUS_LABEL, Spinner, composing, fmtSize, routeLabel, storedTime } from "./bits";
 import { useModal } from "./modal";
+import { FileEditor } from "./FileEditor";
+import { EDIT_MAX_BYTES } from "../hermes/textEdit";
 
 type Preview =
   | { entry: RemoteEntry; state: "loading" }
@@ -77,6 +80,9 @@ export function FileBrowser({
   // A file picked to upload, and the folder it was picked for, until the owner sends it or cancels.
   const [uploading, setUploading] = useState<{ picked: PickedUpload; listing: RemoteListing }>();
   const [pickError, setPickError] = useState<string>();
+  // The file open in the editor, and what the last save said.
+  const [editing, setEditing] = useState<RemoteEntry>();
+  const [saved, setSaved] = useState<string>();
   const shownPath = useRef<string | undefined>(undefined);
   const uploadButton = useRef<HTMLButtonElement>(null);
   shownPath.current = listing?.path;
@@ -85,6 +91,8 @@ export function FileBrowser({
   const previewSeq = useRef(0);
   // The path of the file in the preview pane, kept in step with `preview` without waiting for a render.
   const previewPath = useRef<string | undefined>(undefined);
+  // A file to open in the preview again once the next listing lands, with what that listing says of it (after a save).
+  const reopen = useRef<string | undefined>(undefined);
   const listRef = useRef<HTMLDivElement>(null);
 
   // Closing the preview also drops the read it's waiting on, so a late answer can't open it again.
@@ -112,6 +120,9 @@ export function FileBrowser({
         }
         // A refresh keeps the preview open only while its file is still listed.
         if (!(same && keepPreview && l.entries.some((e) => e.path === previewPath.current))) dropPreview();
+        const again = reopen.current && l.entries.find((e) => e.path === reopen.current);
+        reopen.current = undefined;
+        if (again) open(again);
       },
       (e) => {
         if (seq !== listSeq.current) return;
@@ -266,6 +277,15 @@ export function FileBrowser({
           </span>
         </div>
       )}
+      {saved && (
+        <div className="files-banner ok" role="status">
+          <Check size={14} aria-hidden />
+          <span>{saved}</span>
+          <button className="icon-btn" aria-label="Dismiss" onClick={() => setSaved(undefined)}>
+            <X size={14} />
+          </button>
+        </div>
+      )}
       {pickError && (
         <div className="files-banner err" role="alert">
           <CircleAlert size={14} aria-hidden />
@@ -374,9 +394,36 @@ export function FileBrowser({
           )}
         </div>
 
-        {preview && <PreviewPane preview={preview} files={files} connected={connected} onOpenAsText={() => open(preview.entry, true)} onClose={dropPreview} />}
+        {preview && (
+          <PreviewPane
+            preview={preview}
+            files={files}
+            connected={connected}
+            onOpenAsText={() => open(preview.entry, true)}
+            onEdit={() => {
+              setSaved(undefined);
+              setEditing(preview.entry);
+            }}
+            onClose={dropPreview}
+          />
+        )}
       </div>
       <Transfers files={files} />
+      {editing && (
+        <FileEditor
+          files={files}
+          entry={editing}
+          connected={connected}
+          onClose={() => setEditing(undefined)}
+          onSaved={(note) => {
+            const entry = editing;
+            setEditing(undefined);
+            setSaved(note);
+            reopen.current = entry.path;
+            if (listing) load(listing.path, true);
+          }}
+        />
+      )}
       {uploading && (
         <UploadDialog
           files={files}
@@ -595,7 +642,21 @@ function Transfers({ files }: { files: RemoteFiles }) {
   );
 }
 
-function PreviewPane({ preview, files, connected, onOpenAsText, onClose }: { preview: Preview; files: RemoteFiles; connected: boolean; onOpenAsText: () => void; onClose: () => void }) {
+function PreviewPane({
+  preview,
+  files,
+  connected,
+  onOpenAsText,
+  onEdit,
+  onClose,
+}: {
+  preview: Preview;
+  files: RemoteFiles;
+  connected: boolean;
+  onOpenAsText: () => void;
+  onEdit: () => void;
+  onClose: () => void;
+}) {
   const { entry } = preview;
   const result = preview.state === "ready" ? preview.result : undefined;
   const why = files.cantDownload(entry);
@@ -605,6 +666,11 @@ function PreviewPane({ preview, files, connected, onOpenAsText, onClose }: { pre
       <div className="files-preview-head">
         <h2 title={entry.name}>{entry.name}</h2>
         <div className="files-preview-actions">
+          {result?.kind === "text" && result.size <= EDIT_MAX_BYTES && (
+            <button className="btn" disabled={!connected} title="Edit this text file and save it back to the server" onClick={onEdit}>
+              <FilePen size={14} aria-hidden /> Edit
+            </button>
+          )}
           {entry.kind === "file" && (
             <button className="btn" disabled={!!cantDownload} title={cantDownload ?? "Save a copy on this computer. You pick where."} onClick={() => void files.download(entry)}>
               <Download size={14} aria-hidden /> Download…
