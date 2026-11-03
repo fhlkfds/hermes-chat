@@ -3,7 +3,7 @@
 // app, HTML files render with scripts and network off, and Markdown renders without raw HTML, as replies do.
 import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { AlertTriangle, ArrowLeft, Check, Copy, ExternalLink, FileQuestion, Globe, Laptop, Plus, RotateCw, Server, Wrench, X } from "lucide-react";
-import { fenced, parseAddress, previewName, sandboxedHtml, type FileView, type Framing, type PreviewTarget } from "../hermes/preview";
+import { fenced, parseAddress, previewName, sandboxedHtml, withoutBidi, type FileView, type Framing, type PreviewTarget } from "../hermes/preview";
 import { Markdown } from "./Markdown";
 import { Spinner, fmtSize } from "./bits";
 import type { LocalFiles, WebPages } from "./tauriPreview";
@@ -64,7 +64,8 @@ export function PreviewPane({
 }: {
   target: PreviewTarget;
   serverLabel: string;
-  readServer: (path: string) => Promise<FileView>;
+  /** `host`: the file is on the dashboard's own machine (preview.ts `PreviewTarget`). */
+  readServer: (path: string, host?: boolean) => Promise<FileView>;
   local: LocalFiles;
   web: WebPages;
   overlay: boolean;
@@ -119,11 +120,11 @@ export function PreviewPane({
         <div className="preview-title">
           <div className="preview-name">
             <Where target={target} serverLabel={serverLabel} />
-            <span id={titleId}>{previewName(target)}</span>
+            <span id={titleId}>{withoutBidi(previewName(target))}</span>
           </div>
           {address && (
-            <div className="preview-address" title={address}>
-              <bdi>{address}</bdi>
+            <div className="preview-address" title={withoutBidi(address)}>
+              <bdi>{withoutBidi(address)}</bdi>
             </div>
           )}
         </div>
@@ -174,7 +175,7 @@ export function PreviewPane({
         ) : target.kind === "tool" ? (
           <pre className="preview-pre">{target.text || "(empty)"}</pre>
         ) : target.kind === "server" ? (
-          <FileBody key={reloads} name={target.path} load={() => readServer(target.path)} />
+          <FileBody key={reloads} name={target.path} load={() => readServer(target.path, target.host)} />
         ) : (
           <FileBody key={reloads} name={target.name} load={() => local.read(target)} />
         )}

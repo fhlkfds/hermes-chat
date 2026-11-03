@@ -25,18 +25,22 @@
 // Each chat's context fullness and YOLO come from its session's `info` and `usage`: research doc "Status bar".
 // Token usage and cost (usage.ts, ADR 0008): each reply's usage is how far its session's live counters moved during
 // its turn; each chat's totals and cost are Hermes's stored ones, read with the chat list and after each turn.
-import { APPROVAL_CHOICES, isBroadGrant, isOutgoing, isWaiting, offeredChoices, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ConnectionStatus, type ContextPart, type ContextUse, type Found, type Item, type OtherProfiles, type Outgoing, type OutgoingItem, type SessionLive, type Source } from "./model";
+import { PersonaApi } from "./persona";
+import { APPROVAL_CHOICES, isBroadGrant, isOutgoing, isWaiting, offeredChoices, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type ContextPart, type ContextUse, type Found, type Item, type OtherProfiles, type Outgoing, type OutgoingItem, type Queued, type SessionLive, type Source, QUEUE_LIMIT } from "./model";
 import { catalogFromServer, fallbackCatalog, isEffort, modelKey, pickFromInfo, type ModelCatalog, type ModelPick } from "./models";
 import { noOthers, OtherProfilesCheck } from "./otherProfiles";
 // Projects are Hermes's own, read and written with legacy `projects.*` (projects.ts, research doc "Projects").
 import { projectsApi, type ProjectsApi } from "./projects";
+import { listServerCommands, runServerCommand, type CommandDef, type CommandResult, type ServerCommandList } from "./commands";
 import { CronApi } from "./cronJobs";
 import { ModelSettingsApi } from "./modelSettings";
 import { memoryApi, type MemoryApi } from "./memory";
 import type { OpenPipe, Pipe, PipeEvent, RestMethod, Route, Speech, Transcript, VoiceSetup } from "./pipe";
-import { remoteFiles, type RemoteFiles } from "./remoteFiles";
+import { RemoteFilesError, previewSupport, remoteFiles, type RemoteFiles } from "./remoteFiles";
 import { isUnsecure } from "./unsecure";
-import { readServerFile, type FileView } from "./preview";
+import { restartHold } from "./unsaved";
+import { hostFileView, readServerFile, type FileView } from "./preview";
+import { splitPath, type OutputsIo, type StoredRow as StoredOutputRow } from "./outputs";
 import { chatUsageOf, countersOf, newerChatUsage, replyUsage, ZERO_COUNTERS, type ReplyUsage, type UsageCounters } from "./usage";
 
 /**
@@ -103,7 +107,12 @@ export type ChatCache = {
   /** The profile's outbox, by chat. */
   loadOutbox(profile: string): Record<string, OutgoingItem[]>;
   /** Keeps a chat's outbox; none deletes it. */
-  saveOutbox(profile: string, chatId: string, items: OutgoingItem[]): void;
+  /** False: storage refused it, so it lasts until the app closes. */
+  saveOutbox(profile: string, chatId: string, items: OutgoingItem[]): boolean | void;
+  /** Each chat's queue (ADR 0018), by chat id; chats with an empty queue are left out. */
+  loadQueues(profile: string): Record<string, ChatQueue>;
+  /** Keeps the chat's queue; none, or an empty one, deletes it. False: storage refused it, so it lasts until the app closes. */
+  saveQueue(profile: string, chatId: string, queue: ChatQueue | undefined): boolean;
 };
 /** Shows a desktop notification; rejects if it can't. */
 export type Notify = (n: { title: string; body: string }) => Promise<void>;
@@ -127,6 +136,8 @@ const noCache: ChatCache = {
   rememberOlderPulled: () => {},
   loadOutbox: () => ({}),
   saveOutbox: () => {},
+  loadQueues: () => ({}),
+  saveQueue: () => true,
 };
 
 /** A row of dashboard REST `GET /api/sessions`; times are Unix seconds. */
@@ -173,6 +184,8 @@ type TranscriptMessage = {
   name?: string | null;
   context?: string | null;
   args?: Record<string, unknown> | null;
+  /** A tool row's call (`tool_call_id`). */
+  tool_call_id?: string | null;
   timestamp?: number | null;
   /** The stored row (`messages.id`); a live session's not-yet-stored tail has none. */
   row_id?: number | null;
@@ -180,7 +193,8 @@ type TranscriptMessage = {
 
 /** Legacy `prompt.submit` result. `user_row_id`: the stored row of the message, when its turn started at once
  * (`tui_gateway/methods_prompt.py` at `bf0203a`). */
-type Submitted = { user_row_id?: number | null };
+/** `status` `queued`: Hermes holds the message until a turn it is running ends (research doc). */
+type Submitted = { status?: string; user_row_id?: number | null };
 
 /** `message.complete` `persisted_turn`: the stored rows of the turn that ended (`agent/persisted_turn_receipt.py` at
  * `bf0203a`). `final_assistant_row_id` is there only for a turn that completed with a stored final reply. */
@@ -321,6 +335,8 @@ export type Snapshot = {
   closedReason?: string;
   syncError?: string;
   others: OtherProfiles;
+  /** The shown profile's queues of messages waiting to go after a reply, by chat id (ADR 0018). */
+  queues: Record<string, ChatQueue>;
   /** The models the shown profile can switch to (`loadModels`); none until read. */
   models?: ModelCatalog;
   /** The switch to `profile` from `from`, until the new profile's list has been read. `error`: why it hasn't yet. */
@@ -446,12 +462,19 @@ export class Hermes {
   private background = new Set<Promise<unknown>>();
   /** When the shown profile's list last synced on this connection. */
   private listedAt?: number;
+  /** The server commands listed for a connection and profile (`serverCommands`). */
+  private commandsRead?: { key: string; done: Promise<ServerCommandList> };
   /** The voice set-up read for a connection and profile (`voiceSetup`). */
   private voiceRead?: { key: string; done: Promise<VoiceSetup> };
   /** The model list being read, and for which profile. */
   private modelsLoading?: { profile: string; done: Promise<void> };
   /** A chat and model Hermes asked to confirm as expensive: picking it again for that chat confirms it. */
   private confirmModel?: string;
+  /** How many queued messages of each chat the owner is editing: none of the chat's queue goes meanwhile. */
+  private queueHolds = new Map<string, number>();
+  /** A look at the queues is due once the current change is done (`pumpSoon`). */
+  private pumpDue = false;
+
   /** Hermes's projects, each call naming its profile (projects.ts). Folders are read, never created. */
   readonly projects: ProjectsApi = projectsApi({
     rpc: (method, params) => this.request(method, params),
@@ -476,7 +499,16 @@ export class Hermes {
     private cache: ChatCache = noCache,
     private notify: Notify = () => Promise.resolve(),
   ) {
-    this.snapshot = { profile, chats: withOutbox(cache.load(profile), loadOutbox(cache, profile)), olderPulled: cache.olderPulled(profile), archivedListed: false, status: "offline", unsecure: false, others: noOthers };
+    this.snapshot = {
+      profile,
+      chats: withOutbox(cache.load(profile), loadOutbox(cache, profile)),
+      olderPulled: cache.olderPulled(profile),
+      archivedListed: false,
+      status: "offline",
+      unsecure: false,
+      others: noOthers,
+      queues: loadQueues(cache, profile),
+    };
   }
 
   /** See `readSaved`. */
@@ -501,6 +533,8 @@ export class Hermes {
     rpc: (method, params) => this.request(method, params),
     get: (pathAndQuery) => this.rest("GET", pathAndQuery),
   });
+  /** Settings → Persona's reads and writes of a profile's SOUL.md (persona.ts). Each call names its profile. */
+  readonly persona = new PersonaApi((method, pathAndQuery, body) => this.rest(method, pathAndQuery, body));
 
   /** The profile whose chats are shown. */
   get profile(): string {
@@ -586,6 +620,30 @@ export class Hermes {
     return this.voiceRead.done;
   }
 
+  /**
+   * The registry's server commands this Hermes lists for the shown profile (commands.ts). Read once per connection and
+   * profile; a failed read is tried again on the next call.
+   */
+  serverCommands(): Promise<ServerCommandList> {
+    if (!this.connectedPipe()) return Promise.reject(new Error("Not connected to Hermes."));
+    const key = `${this.generation}/${this.profile}`;
+    if (this.commandsRead?.key !== key) {
+      const done = listServerCommands((method, params) => this.request(method, params), this.profile);
+      this.commandsRead = { key, done };
+      done.catch(() => {
+        if (this.commandsRead?.done === done) this.commandsRead = undefined;
+      });
+    }
+    return this.commandsRead.done;
+  }
+
+  /** Runs a server command in the chat's live session (commands.ts). Rejects if the chat isn't open on Hermes. */
+  runCommand(chatId: string, def: CommandDef, arg: string): Promise<CommandResult> {
+    const runtimeId = this.snapshot.chats.find((c) => c.id === chatId)?.runtimeId;
+    if (!runtimeId) return Promise.reject(new Error("This chat isn't open on Hermes."));
+    return runServerCommand((method, params) => this.request(method, params), runtimeId, def, arg);
+  }
+
   /** Has Hermes transcribe a Dictation recording with the shown profile's speech-to-text provider. */
   transcribe(audio: Uint8Array, mime: string): Promise<Transcript> {
     const pipe = this.connectedPipe();
@@ -643,6 +701,7 @@ export class Hermes {
       syncError: undefined,
       models: undefined,
       switching: { from },
+      queues: loadQueues(this.cache, name),
     });
     // A reconnect under way may be opening the old profile's socket.
     await this.redialing;
@@ -745,12 +804,20 @@ export class Hermes {
 
   /**
    * Starts a Chat in this app. It is Active from the start, and pinned once Hermes has stored it (ADR 0002). `model`:
-   * what it runs on, for this chat only; left out, it runs on the profile's model.
+   * what it runs on, for this chat only; left out, it runs on the profile's model. `folder`: the server folder it
+   * works in (its session `cwd`), checked by the caller first; Hermes quietly runs a chat in its own folder when it
+   * can't use the one asked for, so the chat is refused unless Hermes says it took it. `instructions`: one hidden
+   * message seeded before the owner's first, which the model reads and no Hermes client shows (ADR 0017).
    */
-  async newChat(model?: ModelPick): Promise<string> {
+  async newChat(model?: ModelPick, start: { folder?: string; instructions?: string } = {}): Promise<string> {
+    const { folder, instructions } = start;
+    const profile = this.profile;
     const res = (await this.request("session.create", {
-      profile: this.profile,
+      profile,
       source: APP_SOURCE,
+      // `cwd_explicit`: a deliberate pick, which beats a profile's configured `terminal.cwd` (`_completion_cwd`).
+      ...(folder && { cwd: folder, cwd_explicit: true }),
+      ...(instructions && { messages: [{ role: "user", content: instructions, display_kind: "hidden" }] }),
       // `SessionCreateParams`: each is this session's own override. `fast` left out keeps the profile's.
       ...(model && {
         model: model.model,
@@ -763,6 +830,14 @@ export class Hermes {
       stored_session_id: string;
       info?: unknown;
     };
+    const cwd = (res.info as { cwd?: unknown } | undefined)?.cwd;
+    if (folder && cwd !== folder) {
+      // Not this chat: drop the session, and the hidden message Hermes stored with it, so nothing is left behind.
+      void this.request("session.close", { session_id: res.session_id }).catch(() => {});
+      if (instructions)
+        void this.rest("DELETE", `api/sessions/${encodeURIComponent(res.stored_session_id)}?${new URLSearchParams({ profile })}`).catch(() => {});
+      throw new Error(`Hermes didn't start it in ${folder}${typeof cwd === "string" && cwd ? `: it would have worked in ${cwd}` : ""}. Nothing was sent.`);
+    }
     const chat: Chat = {
       model: pickFromInfo(res.info) ?? model,
       id: res.stored_session_id,
@@ -867,6 +942,19 @@ export class Hermes {
   }
 
   /**
+   * Moves a chat's work to `folder` on the server (`session.cwd.set`), for that chat only. Hermes changes it only
+   * while no reply is running, and only to a folder it can find; it says it worked only once Hermes answers with it.
+   */
+  async setFolder(chatId: string, folder: string): Promise<void> {
+    const chat = this.snapshot.chats.find((c) => c.id === chatId);
+    if (!chat) throw new Error("This chat isn't in the list.");
+    if (chat.running) throw new Error("Wait for the reply to finish: Hermes changes the folder only between replies.");
+    const sid = await this.resume(chatId);
+    const res = (await this.request("session.cwd.set", { session_id: sid, profile: this.profile, cwd: folder })) as { cwd?: unknown } | undefined;
+    if (res?.cwd !== folder) throw new Error(`Hermes didn't move it to ${folder}${typeof res?.cwd === "string" ? `: it works in ${res.cwd}` : ""}.`);
+  }
+
+  /**
    * Reads the chat's tokens and cost from Hermes's stored session into its `usage`; on failure `usageError` says why. A
    * chat Hermes hasn't stored yet (one started here, before its first message) has none, and that isn't a failure.
    */
@@ -941,8 +1029,156 @@ export class Hermes {
     this.setOutgoing(this.profile, chatId, itemId, (r) => (r.outgoing.state === "sending" ? r : null));
   }
 
-  /** `send`, also giving the id of the message in the chat. */
-  private async deliver(chatId: string, text: string, attachments: Attachment[]): Promise<{ delivery: Delivery; itemId?: string }> {
+  /**
+   * Adds a message to the end of the chat's queue (ADR 0018). This app sends it, the next in line, once the chat's
+   * reply has ended and nothing in the chat waits on the owner: no Approval, and no message Hermes didn't take or may
+   * have. It goes only while this app runs, is connected, and shows the chat's profile. Returns why it wasn't queued.
+   */
+  enqueue(chatId: string, text: string, attachments: Attachment[] = []): string | undefined {
+    if (!this.snapshot.chats.some((c) => c.id === chatId)) return "This chat isn't in the list.";
+    if (!text.trim() && !attachments.length) return "There's nothing to queue.";
+    const q = this.snapshot.queues[chatId] ?? { items: [] };
+    if (q.items.length >= QUEUE_LIMIT) return `A chat can queue up to ${QUEUE_LIMIT} messages. Remove one, or wait for one to go.`;
+    const item: Queued = { id: crypto.randomUUID(), text, ...(attachments.length && { attachments }) };
+    this.setQueue(chatId, { ...q, items: [...q.items, item] });
+    return undefined;
+  }
+
+  /** Changes a queued message's words. False: it isn't queued any more, having gone or been removed. */
+  editQueued(chatId: string, id: string, text: string): boolean {
+    const q = this.snapshot.queues[chatId];
+    const item = q?.items.find((i) => i.id === id);
+    if (!q || !item || (!text.trim() && !item.attachments?.length)) return false;
+    this.setQueue(chatId, { ...q, items: q.items.map((i) => (i.id === id ? { ...i, text } : i)) });
+    return true;
+  }
+
+  /** Takes a message out of the queue; its files go with it. */
+  removeQueued(chatId: string, id: string) {
+    const q = this.snapshot.queues[chatId];
+    if (q?.items.some((i) => i.id === id)) this.setQueue(chatId, { ...q, items: q.items.filter((i) => i.id !== id) });
+  }
+
+  /** Moves a queued message `by` places, earlier when negative. */
+  moveQueued(chatId: string, id: string, by: number) {
+    const q = this.snapshot.queues[chatId];
+    const from = q?.items.findIndex((i) => i.id === id) ?? -1;
+    if (!q || from < 0) return;
+    const to = Math.max(0, Math.min(q.items.length - 1, from + by));
+    if (to === from) return;
+    const items = [...q.items];
+    items.splice(to, 0, ...items.splice(from, 1));
+    this.setQueue(chatId, { ...q, items });
+  }
+
+  /** Pauses the chat's queue: nothing in it goes until `resumeQueue`. */
+  pauseQueue(chatId: string) {
+    this.pauseQueueFor(chatId, PAUSED.owner);
+  }
+
+  /** Lets the chat's queue go again, the next message once the chat is ready for it. */
+  resumeQueue(chatId: string) {
+    const q = this.snapshot.queues[chatId];
+    if (q?.paused !== undefined) this.setQueue(chatId, { items: q.items });
+  }
+
+  /** The owner is editing a queued message: none of the chat's queue goes until the returned function is called. */
+  holdQueue(chatId: string): () => void {
+    this.queueHolds.set(chatId, (this.queueHolds.get(chatId) ?? 0) + 1);
+    let held = true;
+    return () => {
+      if (!held) return;
+      held = false;
+      const n = (this.queueHolds.get(chatId) ?? 1) - 1;
+      if (n > 0) this.queueHolds.set(chatId, n);
+      else this.queueHolds.delete(chatId);
+      this.pumpSoon();
+    };
+  }
+
+  /**
+   * Pauses a queue that has messages, unless it is paused already, saying `why`. `evenEmpty`: an empty one too, so the
+   * messages queued next wait for the owner's Resume.
+   */
+  private pauseQueueFor(chatId: string, why: string, evenEmpty = false) {
+    const q = this.snapshot.queues[chatId] ?? { items: [] };
+    if ((q.items.length || evenEmpty) && q.paused === undefined) this.setQueue(chatId, { ...q, paused: why });
+  }
+
+  /** The one way a queue of the shown profile changes: in the snapshot, and kept on this computer. */
+  private setQueue(chatId: string, next: ChatQueue): boolean {
+    const kept = this.cache.saveQueue(this.profile, chatId, next);
+    const queues = { ...this.snapshot.queues };
+    // An empty queue is kept only while paused (`pauseQueueFor`), and only here: a restart forgets it.
+    if (next.items.length || next.paused !== undefined) queues[chatId] = { items: next.items, ...(next.paused !== undefined && { paused: next.paused }), ...(!kept && { unsaved: true }) };
+    else delete queues[chatId];
+    this.update({ queues });
+    return kept;
+  }
+
+  /** Looks at the queues once the change under way is done, so a send never starts inside another change. */
+  private pumpSoon() {
+    if (this.pumpDue) return;
+    this.pumpDue = true;
+    queueMicrotask(() => {
+      this.pumpDue = false;
+      this.pump();
+    });
+  }
+
+  /**
+   * Sends the next queued message of each chat that is ready for it: connected, its queue not paused or being edited,
+   * no reply running, nothing loading or sending, no Approval waiting, and no message Hermes didn't take or may have.
+   * One Hermes may have is settled first by reading the chat's history back (ADR 0006), which loading the chat does.
+   */
+  private pump() {
+    if (this.closing || this.snapshot.status !== "connected" || restartHold.on) return;
+    for (const [chatId, q] of Object.entries(this.snapshot.queues)) {
+      if (!q.items.length || q.paused !== undefined || this.queueHolds.has(chatId)) continue;
+      const chat = this.snapshot.chats.find((c) => c.id === chatId);
+      if (!chat || chat.running || chat.loading || this.resuming.has(chatId) || this.submitting.has(chatId)) continue;
+      if (chat.items.some((i) => isOutgoing(i) || isWaiting(i))) continue;
+      const profile = this.profile;
+      if (!chat.runtimeId) {
+        // Loaded first: that reads whether a reply is running, and settles any message Hermes may have.
+        this.resume(chatId).catch((e) => this.profile === profile && this.pauseQueueFor(chatId, `Couldn't load the chat: ${withoutStop((e as Error).message)}.`));
+        continue;
+      }
+      const [next, ...rest] = q.items;
+      // It enters the outbox and leaves the queue in one step, before anything goes. The outbox is written first, and
+      // must be kept on this computer: if storage refuses it, nothing is sent and the queue, untouched, keeps it.
+      let kept = true;
+      const going = this.deliver(chatId, next.text, next.attachments ?? [], {
+        kept: (ok) => (kept = ok),
+        // Hermes holds it behind a turn this app didn't start, whose end can't be told from its own: the owner says
+        // when. Paused before anything else can look at the queue, and even with nothing left in it.
+        held: () => this.profile === profile && this.pauseQueueFor(chatId, PAUSED.held, true),
+      });
+      if (!kept) {
+        this.pauseQueueFor(chatId, PAUSED.unsaved);
+        continue;
+      }
+      // ponytail: a full store refusing even this smaller write leaves the message in both the stored queue and the
+      // outbox; the queue shows it unsaved, and a crash before a later write lands brings it back paused. Tag outbox rows
+      // with the queued id and reconcile on load if that ever matters.
+      this.setQueue(chatId, { ...q, items: rest });
+      void going.then(({ delivery }) => {
+        if (this.profile === profile && delivery.delivery !== "accepted") this.pauseQueueFor(chatId, PAUSED.notSent);
+      });
+    }
+  }
+
+  /**
+   * `send`, also giving the id of the message in the chat. The message is in the chat's outbox before this returns its
+   * promise. `queued`: it comes from the chat's queue, so Hermes is asked to hold it should a turn still be running
+   * there, rather than redirect or interrupt that turn (`prompt.submit {queued}`, research doc).
+   */
+  private async deliver(
+    chatId: string,
+    text: string,
+    attachments: Attachment[],
+    queued?: { kept: (ok: boolean) => void; held: () => void },
+  ): Promise<{ delivery: Delivery; itemId?: string }> {
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
     if (!chat) return { delivery: { delivery: "unsent", reason: "This chat isn't in the list." } };
     const profile = this.profile;
@@ -965,12 +1201,23 @@ export class Hermes {
       items: [...c.items, user],
     }));
     // Kept from the start, so a message on its way when the app closes isn't lost.
-    this.saveOutbox(chatId);
+    const kept = this.saveOutbox(chatId);
+    queued?.kept(kept);
+    if (queued && !kept) {
+      // Not sent: its queue keeps it instead.
+      if (activating) {
+        if (wantedBefore === undefined) this.pinWanted.delete(chatId);
+        else this.pinWanted.set(chatId, wantedBefore);
+      }
+      this.patchChat(chatId, (c) => ({ ...c, running: false, settled: activating || c.settled, items: c.items.filter((i) => i.id !== user.id) }));
+      this.saveOutbox(chatId);
+      return { delivery: { delivery: "unsent", reason: PAUSED.unsaved } };
+    }
     try {
       // From here Hermes may have it: what went out, and the newest row the chat had, find it in the history later.
       const goingOut = (prompt: string) =>
         this.setOutgoing(profile, chatId, user.id, (r) => withOutgoing(r, { sent: { prompt, ...(this.knownRow.has(chatId) && { after: this.knownRow.get(chatId) }) } }));
-      const submitting = this.resume(chatId).then((runtimeId) => this.submit(runtimeId, text, attachments, goingOut));
+      const submitting = this.resume(chatId).then((runtimeId) => this.submit(runtimeId, text, attachments, goingOut, !!queued));
       this.submitting.set(chatId, submitting);
       const rowId = submitting.then(
         (r) => (typeof r.user_row_id === "number" ? r.user_row_id : undefined),
@@ -980,6 +1227,7 @@ export class Hermes {
       let res: Submitted;
       try {
         res = await submitting;
+        if (res.status === "queued") queued?.held();
       } finally {
         if (this.submitting.get(chatId) === submitting) this.submitting.delete(chatId);
       }
@@ -1062,6 +1310,9 @@ export class Hermes {
       if (writes.length) await Promise.all(writes);
       await this.rest("DELETE", `api/sessions/${encodeURIComponent(chatId)}?${new URLSearchParams({ profile })}`);
       this.cache.saveOutbox(profile, chatId, []);
+      // Its queue had nowhere left to go.
+      if (this.profile === profile && this.snapshot.queues[chatId]) this.setQueue(chatId, { items: [] });
+      else this.cache.saveQueue(profile, chatId, undefined);
       return true;
     } catch (e) {
       this.deleted.delete(chatId);
@@ -1397,6 +1648,10 @@ export class Hermes {
     // A turn ends once; a repeated end finds the chat no longer running.
     if ((type === "message.complete" || type === "error") && chat.running) this.alert(NOTICES.finished);
     if (type === "message.complete") this.saveTranscript(chat.id);
+    if (type === "message.complete" || type === "error") {
+      const why = pauseAfter(type, payload, this.snapshot.chats.find((c) => c.id === chat.id)?.items ?? []);
+      if (why) this.pauseQueueFor(chat.id, why);
+    }
   }
 
   /**
@@ -1585,6 +1840,8 @@ export class Hermes {
       if (c.runtimeId) this.staleItems.set(c.id, c.items.length);
       if (c.running || c.items.some(isWaiting)) this.resumeOnReconnect.add(c.id);
     }
+    // Whatever the turns did meanwhile goes unseen, so the queues wait for the owner to look.
+    for (const id of Object.keys(this.snapshot.queues)) this.pauseQueueFor(id, PAUSED.dropped);
     this.update({
       status: "reconnecting",
       closedReason: reason,
@@ -1639,9 +1896,10 @@ export class Hermes {
    * Stages the attachments for the session's next turn, then submits the message. Images are queued server-side;
    * other files are staged in the session's workspace and their `@file:` refs go before the text, as the official
    * desktop app does. If anything fails the message isn't sent, and images already queued are taken back so they
-   * don't ride along with the next one. `goingOut` hears the prompt just before it goes.
+   * don't ride along with the next one. `goingOut` hears the prompt just before it goes. `hold`: should a turn still be
+   * running there, Hermes holds the message until it ends, instead of redirecting or interrupting it (research doc).
    */
-  private async submit(runtimeId: string, text: string, attachments: Attachment[], goingOut: (prompt: string) => void) {
+  private async submit(runtimeId: string, text: string, attachments: Attachment[], goingOut: (prompt: string) => void, hold = false) {
     const queued: string[] = [];
     const refs: string[] = [];
     try {
@@ -1661,7 +1919,7 @@ export class Hermes {
       }
       const prompt = [refs.join("\n"), text].filter(Boolean).join("\n\n") || (queued.length ? IMAGE_ONLY_PROMPT : "");
       goingOut(prompt);
-      return (await this.request("prompt.submit", { session_id: runtimeId, profile: this.profile, text: prompt }).catch((e) => {
+      return (await this.request("prompt.submit", { session_id: runtimeId, profile: this.profile, text: prompt, ...(hold && { queued: true }) }).catch((e) => {
         throw e instanceof ConnectionLostError ? new PromptUnconfirmedError(e.message) : e;
       })) as Submitted;
     } catch (e) {
@@ -2147,8 +2405,61 @@ export class Hermes {
     return readServerFile((q) => this.rest("GET", q), path, this.snapshot.profile);
   }
 
+  /**
+   * A file on the dashboard's own machine, for the preview pane: found in its folder's listing and read through the
+   * managed files routes, as the Server files screen reads it (ADR 0012), within that screen's preview limits. For
+   * the audio and images Hermes saves itself, which aren't where a profile with an SSH terminal runs its tools.
+   */
+  async readHostFile(path: string): Promise<FileView> {
+    const { dir, name } = splitPath(path);
+    const entry = (await this.files.list(dir)).entries.find((e) => e.name === name);
+    if (!entry || entry.kind !== "file") throw new Error("There's no file at this path on the dashboard's machine.");
+    const support = previewSupport(entry);
+    if (support.kind === "none") return { kind: "unsupported", reason: support.why, size: entry.size };
+    return hostFileView(await this.files.preview(entry, support.kind === "maybe-text"));
+  }
+
+  /**
+   * How Outputs reads Hermes for `profile` (outputs.ts): a chat's stored rows through dashboard REST, each page refused
+   * past its size limit, and a folder's listing through `GET /api/fs/list`, where the profile's tools run. Every
+   * request names the profile, so a run for a profile left behind still reads only that profile.
+   */
+  outputsIo(profile: string): OutputsIo {
+    return {
+      rows: async (chatId, offset, limit, maxBytes) => {
+        const query = new URLSearchParams({ profile, order: "latest", limit: String(limit), offset: String(offset), inline_images: "false" });
+        const body = await this.restGet(`${sessionPath(chatId)}/messages?${query}`, maxBytes);
+        const res = JSON.parse(body) as { messages?: unknown };
+        // UTF-8 bytes, as Rust counted them against the limit.
+        return { rows: Array.isArray(res.messages) ? (res.messages as StoredOutputRow[]) : [], bytes: new TextEncoder().encode(body).byteLength };
+      },
+      listDir: async (path, host) => {
+        // The dashboard's own machine, through the managed files routes Server files lists with (ADR 0012).
+        if (host)
+          return this.files.list(path).then(
+            (l) => ({ entries: l.entries.map((e) => ({ name: e.name, isDirectory: e.kind === "dir" })) }),
+            (e: unknown) => {
+              const status = e instanceof RemoteFilesError ? e.status : undefined;
+              const message = e instanceof Error ? e.message : String(e);
+              if (status === 404 && /isn't on the server/.test(message)) return { entries: [], error: "ENOENT" };
+              if (status === 400 && /not a folder/.test(message)) return { entries: [], error: "ENOTDIR" };
+              if (status === 403) return { entries: [], error: "EACCES" };
+              throw new Error(message);
+            },
+          );
+        const res = JSON.parse(await this.restGet(`api/fs/list?${new URLSearchParams({ path, profile })}`, LIST_MAX_BYTES)) as { entries?: unknown; error?: unknown };
+        const entries = (Array.isArray(res.entries) ? res.entries : []).flatMap((e: { name?: unknown; isDirectory?: unknown }) =>
+          typeof e?.name === "string" ? [{ name: e.name, isDirectory: e.isDirectory === true }] : [],
+        );
+        return { entries, ...(typeof res.error === "string" && { error: res.error }) };
+      },
+    };
+  }
+
   private async rest(method: RestMethod, pathAndQuery: string, body?: unknown): Promise<unknown> {
-    if (!this.pipe) throw new Error("Not connected to Hermes.");
+    // Once closed (signed out), nothing more goes out: the Rust side relays through whichever sign-in is current, which
+    // may be another server's by then.
+    if (!this.pipe || this.closing) throw new Error("Not connected to Hermes.");
     return JSON.parse(await this.pipe.request(method, pathAndQuery, body === undefined ? undefined : JSON.stringify(body)));
   }
 
@@ -2197,9 +2508,10 @@ export class Hermes {
   }
 
   /** Keeps the chat's messages sent from here that Hermes hasn't confirmed, so they outlive a restart. */
-  private saveOutbox(chatId: string) {
+  /** False: storage refused it. */
+  private saveOutbox(chatId: string): boolean {
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
-    if (chat) this.cache.saveOutbox(this.profile, chatId, chat.items.filter(isOutgoing));
+    return !chat || this.cache.saveOutbox(this.profile, chatId, chat.items.filter(isOutgoing)) !== false;
   }
 
   /** Notes stored row ids seen in a chat, for `knownRow`. */
@@ -2241,6 +2553,7 @@ export class Hermes {
   private update(patch: Partial<Snapshot>) {
     this.snapshot = { ...this.snapshot, ...patch };
     for (const fn of this.listeners) fn();
+    this.pumpSoon();
   }
 }
 
@@ -2266,7 +2579,7 @@ const TITLE_INSTRUCTIONS = [
 ].join(" ");
 
 /** A row of dashboard REST `GET /api/sessions/{id}/messages`, as far as titling reads it. */
-type StoredMessage = { role?: string; content?: unknown };
+type StoredMessage = { role?: string; content?: unknown; display_kind?: unknown };
 
 /** The text of a stored message: its `content`, or the text parts of a multimodal one. */
 function storedText(content: unknown): string {
@@ -2278,7 +2591,8 @@ function storedText(content: unknown): string {
 /** The user and assistant messages with text among stored rows, oldest first. */
 const saidIn = (rows: StoredMessage[]) =>
   rows
-    .filter((r) => r.role === "user" || r.role === "assistant")
+    // Hidden rows, such as a project's instructions (ADR 0017), are for the model; the owner never wrote or saw them.
+    .filter((r) => (r.role === "user" || r.role === "assistant") && r.display_kind !== "hidden")
     .map((r) => ({ who: r.role === "user" ? "USER" : "ASSISTANT", text: storedText(r.content).trim() }))
     .filter((m) => m.text);
 
@@ -2313,6 +2627,9 @@ function timeLimit<T>(p: Promise<T>, ms: number): Promise<T> {
   const late = new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error("Hermes didn't answer in time.")), ms)));
   return Promise.race([p, late]).finally(() => clearTimeout(timer));
 }
+
+/** The most a folder listing for Outputs may be: a folder of tens of thousands of entries. */
+const LIST_MAX_BYTES = 8 * 1024 * 1024;
 
 const sessionPath = (chatId: string) => `api/sessions/${encodeURIComponent(chatId)}`;
 
@@ -2396,6 +2713,34 @@ function loadOutbox(cache: ChatCache, profile: string): Record<string, OutgoingI
   return Object.fromEntries(Object.entries(cache.loadOutbox(profile)).map(([chatId, rows]) => [chatId, rows.map(loaded)]));
 }
 
+/** Why a queue waits for the owner's Resume (ADR 0018). */
+const PAUSED = {
+  owner: "You paused it.",
+  restored: "Hermes Chat closed, or showed another profile, since these were queued. Check the chat, then resume.",
+  dropped: "The connection dropped, so the last reply wasn't watched to its end. Check the chat, then resume.",
+  notSent: "A queued message didn't go, or may not have. Deal with it above, then resume.",
+  held: "Hermes held the last queued message until another reply in this chat ended, so this app can't tell when it went. Check the chat, then resume.",
+  unsaved: "This computer's storage is full, so the next message couldn't be kept safe while it went, and wasn't sent. Free some space (Settings → General → Clear local cache), then resume.",
+};
+
+/** The profile's queues as kept. One with messages comes back paused: what its chat did meanwhile went unseen. */
+function loadQueues(cache: ChatCache, profile: string): Record<string, ChatQueue> {
+  return Object.fromEntries(Object.entries(cache.loadQueues(profile)).map(([id, q]) => [id, { ...q, paused: q.paused ?? PAUSED.restored }]));
+}
+
+/**
+ * Why a chat's queue waits once a turn ends this way, or nothing: a reply stopped or failed, or one Hermes asked an
+ * Approval in, is for the owner to look at before the next message goes.
+ */
+function pauseAfter(type: string, p: Record<string, unknown>, items: Item[]): string | undefined {
+  if (type === "error") return "The last reply ended with an error. Check the chat, then resume.";
+  if (p.status === "interrupted") return "The last reply was stopped. Resume to send the next message.";
+  if (p.error || p.status === "error") return "The last reply failed. Check the chat, then resume.";
+  const turn = items.slice(items.map((i) => i.kind).lastIndexOf("user") + 1);
+  if (turn.some((i) => i.kind === "approval")) return "Hermes asked for an Approval in the last reply. Check the chat, then resume.";
+  return undefined;
+}
+
 /** Each listed chat with its outbox. */
 const withOutbox = (chats: Chat[], outbox: Record<string, OutgoingItem[]>) =>
   chats.map((c) => (outbox[c.id]?.length ? { ...c, items: withRows(c.items, outbox[c.id]) } : c));
@@ -2448,6 +2793,7 @@ function historyItems(messages: TranscriptMessage[]): Item[] {
         {
           kind: "tool",
           id,
+          ...(m.tool_call_id && { callId: m.tool_call_id }),
           name: m.name || "tool",
           args: m.args ?? undefined,
           preview: m.context || undefined,
@@ -2584,6 +2930,7 @@ function applyEvent(c: Chat, type: string, p: Record<string, unknown>): Chat {
       items.push({
         kind: "tool",
         id: String(p.tool_id),
+        callId: String(p.tool_id),
         name: String(p.name ?? "tool"),
         args: p.args as Record<string, unknown> | undefined,
         preview: p.preview as string | undefined,

@@ -160,7 +160,7 @@ fn drafts_file(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("restart-drafts.json"))
 }
 
-/// Restarts the app. `drafts` (every draft and outbox, from localStorage; updates.ts `DRAFT_PREFIXES`) is written to disk first, and nothing
+/// Restarts the app. `drafts` (every draft, outbox and queue, from localStorage; updates.ts `DRAFT_PREFIXES`) is written to disk first, and nothing
 /// restarts if that fails; the next launch puts them back (`restart_drafts_read`), in case the webview hadn't saved
 /// the last keystrokes when the process ended.
 #[tauri::command]

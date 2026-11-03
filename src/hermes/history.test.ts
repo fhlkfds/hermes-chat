@@ -49,8 +49,8 @@ describe("Opening a listed chat", () => {
 
     expect(chat().items.map((i) => i.kind)).toEqual(["user", "assistant", "tool", "tool", "tool", "assistant"]);
     expect(chat().items.slice(2, 4)).toEqual([
-      { kind: "tool", id: "h-2", name: "read_file", args: { path: "README.md" }, preview: "README.md", status: "done" },
-      { kind: "tool", id: "h-3", name: "patch", args: { path: "README.md" }, preview: "README.md", status: "done", result: '{"success": true}' },
+      { kind: "tool", id: "h-2", callId: "c1", name: "read_file", args: { path: "README.md" }, preview: "README.md", status: "done" },
+      { kind: "tool", id: "h-3", callId: "c2", name: "patch", args: { path: "README.md" }, preview: "README.md", status: "done", result: '{"success": true}' },
     ]);
   });
 

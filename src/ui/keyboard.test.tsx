@@ -139,7 +139,9 @@ describe("Approval card by keyboard", () => {
     const s = await waiting();
     await s.user.type(composer(), "1y{Enter}");
     await untouched(s);
-    expect(composer().value).toBe("1y");
+    // The reply is still running, so Enter queues the words for after it (ADR 0018) and sends nothing now.
+    expect(composer().value).toBe("");
+    expect(s.hermes.getSnapshot().queues[s.hermes.getSnapshot().chats[0].id]?.items.map((i) => i.text)).toEqual(["1y"]);
     expect(prompts(s.server)).toHaveLength(1);
   });
 

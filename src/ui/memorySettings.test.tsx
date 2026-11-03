@@ -606,14 +606,16 @@ describe("An unsaved memory edit in the app", () => {
     expect(editor().value).toBe(`${SHORT} Unsaved words.`);
   });
 
-  it("doesn't ask on Ctrl+\\, which leaves Settings open, and still asks on leaving after it", async () => {
+  it("asks on Ctrl+\\, which closes Settings to show the split, as Settings → Persona does", async () => {
     const { user } = await launchApp({ openChat: true });
     await user.keyboard("{Control>}\\{/Control}");
-    expect(screen.queryByRole("alertdialog")).toBeNull();
+    await user.click(within(leaveDialog()).getByRole("button", { name: "Keep editing" }));
     expect(editor().value).toBe(`${SHORT} Unsaved words.`);
-    await user.type(editor(), " More.");
-    await user.click(button(/Back to chat/));
-    expect(leaveDialog()).toBeTruthy();
+    expect(document.querySelectorAll("[data-pane]").length).toBe(1);
+    await user.keyboard("{Control>}\\{/Control}");
+    await user.click(within(leaveDialog()).getByRole("button", { name: "Discard edit" }));
+    expect(screen.queryByRole("heading", { name: "Settings" })).toBeNull();
+    expect(document.querySelectorAll("[data-pane]").length).toBe(2);
   });
 
   it("drops the edit on Discard even when Settings stays open", async () => {
