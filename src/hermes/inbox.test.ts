@@ -317,6 +317,37 @@ describe("The inbox", () => {
     expect(acks.isDismissed(card())).toBe(false);
   });
 
+  it("keeps the Approval a dismissed waiting session showed on resume dismissed when the connection then drops", async () => {
+    vi.useFakeTimers();
+    const { server, hermes } = await signedIn();
+    server.liveSessions = [{ id: "rt-a", session_key: "work-asks", status: "waiting", last_active: nowS() - 60 }];
+    server.openRequests.set("srq-a", {
+      sid: "rt-a",
+      stored: "work-asks",
+      method: "approval",
+      params: { request_id: "apr-a", command: "x", description: "y", choices: ["once", "deny"] },
+    });
+    await hermes.checkOtherProfiles();
+    const acks = inboxAcks(storage(), "server");
+    acks.dismiss(inbox(hermes).entries.find((e) => e.key === "waiting work work-asks")!);
+    await hermes.switchProfile("work");
+    await hermes.idle();
+    await hermes.open("work-asks");
+    await hermes.idle();
+    await vi.advanceTimersByTimeAsync(20_000);
+    await hermes.checkOtherProfiles();
+    // What the app does each time it works the inbox out.
+    acks.keepCovered(inbox(hermes).entries);
+
+    server.refuse = "Connection refused";
+    server.drop();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(hermes.getSnapshot().status).not.toBe("connected");
+    const card = inbox(hermes).entries.find((e) => e.kind === "approval" && e.chatId === "work-asks")!;
+    expect(card).toMatchObject({ key: "approval work work-asks apr-a", aliasAt: undefined });
+    expect(acks.isDismissed(card)).toBe(true);
+  });
+
   it("doesn't bring back an Approval that timed out when the connection then drops", async () => {
     const { server, hermes } = await signedIn();
     const { id, runtime } = await replying(server, hermes);

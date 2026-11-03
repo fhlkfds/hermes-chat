@@ -397,6 +397,8 @@ export function Main({
   const where = routeLabel(route) ?? (connection.mode === "ssh" ? `ssh://${connection.sshTarget}` : connection.url) ?? undefined;
   const inbox = inboxEntries({ profile, chats, connected: status === "connected", others, live, seen });
   const inboxShown = inbox.entries.filter((e) => !acks.isDismissed(e, dismissed));
+  // Writes only when a resumed chat shows cards a dismissed waiting session covered.
+  useEffect(() => acks.keepCovered(inbox.entries));
   const inboxCount = inboxShown.filter(needsOwner).length;
 
   const stillIn = (p: string) => hermes.profile === p;

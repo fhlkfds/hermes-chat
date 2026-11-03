@@ -225,6 +225,11 @@ export type InboxAcks = {
    * chat is still waiting and not dismissed, since the alias stands for them all.
    */
   dismiss(e: InboxEntry, entries?: InboxEntry[]): void;
+  /**
+   * Dismisses by their own keys the cards in `entries` that a dismissed waiting session covers, so they stay dismissed
+   * once Hermes no longer reports the session, as while the connection is down.
+   */
+  keepCovered(entries: InboxEntry[]): void;
   /** Puts back an entry dismissed by mistake. */
   restore(e: InboxEntry): void;
   subscribe(fn: () => void): () => void;
@@ -262,10 +267,13 @@ export function inboxAcks(storage: AckStorage, scope: string, now = () => Date.n
     }
     listeners.forEach((fn) => fn());
   };
+  const before = (s: Dismissed, key: string, at: number) => kept(s[key]) && s[key][0] >= at;
+  const covered = (e: InboxEntry, s: Dismissed) => !!e.alias && e.aliasAt !== undefined && before(s, `resumed ${e.alias}`, e.aliasAt);
   return {
-    isDismissed: (e, s = state) => {
-      const before = (key: string, at: number) => kept(s[key]) && s[key][0] >= at;
-      return before(e.key, e.at) || (!!e.alias && e.aliasAt !== undefined && before(`resumed ${e.alias}`, e.aliasAt));
+    isDismissed: (e, s = state) => before(s, e.key, e.at) || covered(e, s),
+    keepCovered: (entries) => {
+      const adopt = entries.filter((e) => !before(state, e.key, e.at) && covered(e, state));
+      if (adopt.length) save({ ...state, ...Object.fromEntries(adopt.map((e) => [e.key, [e.at, now()]])) });
     },
     dismiss: (e, entries = []) => {
       const next: Dismissed = { ...state, [e.key]: [e.at, now()] };
