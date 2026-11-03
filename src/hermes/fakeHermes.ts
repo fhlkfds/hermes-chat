@@ -26,6 +26,10 @@ export type SessionRow = {
   message_count: number;
   pinned: boolean;
   archived: boolean;
+  /** The model the session last ran on (`sessions.model`). */
+  model?: string | null;
+  /** The surface that started a `source: "local"` session (`sessions.created_source`); list rows carry it, search rows don't. */
+  created_source?: string | null;
   /** The read watermark: unread when activity postdates it. `null` = never tracked = read; 0 = marked unread. */
   last_read_at: number | null;
   /** Bumped by every session edit; an edit must name the current one. Missing means 0. */
@@ -47,8 +51,7 @@ export type SessionRow = {
   cost_status?: string | null;
   cost_source?: string | null;
   pricing_version?: string | null;
-  /** The model the session used last, and who billed it. */
-  model?: string | null;
+  /** Who billed the model the session used last. */
   billing_provider?: string | null;
   /**
    * A compressed chat's list row: its first segment's counts under its last segment's id, with every segment's id
@@ -755,7 +758,10 @@ export class FakeHermes {
       // order=recent, archived=exclude|only|include, then every pinned row not already on the page, archived or not
       // (list_sessions_rich).
       const excluded = (query.get("exclude_sources") ?? "").split(",").filter(Boolean);
-      const visible = this.storeOrFail(query.get("profile")).filter((s) => !excluded.includes(s.source) && !s.unlisted);
+      const only = (query.get("sources") ?? "").split(",").filter(Boolean);
+      const visible = this.storeOrFail(query.get("profile")).filter(
+        (s) => !excluded.includes(s.source) && !s.unlisted && (!only.length || only.includes(s.source)),
+      );
       const archived = query.get("archived") ?? "exclude";
       // order=created (the default): newest started first; order=recent: latest activity first.
       const at = (s: SessionRow) => (query.get("order") === "recent" ? (s.last_active ?? s.started_at) : s.started_at);
@@ -799,12 +805,13 @@ export class FakeHermes {
       if (!words.length) return { results: [] };
       const limit = Math.min(Number(query.get("limit") ?? 20), 100);
       const excluded = (query.get("exclude_sources") ?? "").split(",").filter(Boolean);
-      const store = this.storeOrFail(query.get("profile")).filter((s) => !excluded.includes(s.source));
+      const only = (query.get("sources") ?? "").split(",").filter(Boolean);
+      const store = this.storeOrFail(query.get("profile")).filter((s) => !excluded.includes(s.source) && (!only.length || only.includes(s.source)));
       const hits = (token: string) => words.some((w) => token.toLowerCase().startsWith(w));
       const results = new Map<string, Record<string, unknown>>();
       const add = (s: SessionRow, snippet: string, role: string | null) =>
         results.size < limit && !results.has(s.id) && results.set(s.id, {
-          snippet, role, source: s.source, model: null, session_started: s.started_at, session_id: s.id, lineage_root: s.id,
+          snippet, role, source: s.source, model: s.model ?? null, session_started: s.started_at, session_id: s.id, lineage_root: s.id,
           profile: query.get("profile") ?? "default", id: s.id, title: s.title, started_at: s.started_at,
           last_active: s.last_active ?? s.started_at, message_count: s.message_count, preview: s.preview, archived: s.archived,
         });

@@ -1021,6 +1021,8 @@ pub fn run(screenshot: bool) {
             update::restart_drafts_clear,
             defaults_file::project_defaults_read,
             defaults_file::project_defaults_swap,
+            defaults_file::tags_read,
+            defaults_file::tags_swap,
             update::restart_drafts_set_aside
         ])
         .build(context)

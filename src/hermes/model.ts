@@ -237,4 +237,8 @@ export type Found = Pick<Chat, "title" | "source" | "settled" | "archived" | "up
   find?: string;
   /** The kind of message that matched. */
   role?: "user" | "assistant";
+  /** The model Hermes last recorded for the chat, when it says. */
+  model?: string;
+  /** Hermes stored it as a local chat without saying which app started it, so it can't be matched by source. */
+  sourceUnknown?: boolean;
 };
