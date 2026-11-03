@@ -1,4 +1,4 @@
-# Artifact editor screenshots (issue #80, ADR 0025)
+# Artifact editor screenshots (issue #80, ADR 0027)
 
 Captured on 2026-11-03 from the running Tauri debug build of this branch (`tauri build --debug --no-bundle`, WebKitGTK)
 on an Xvfb display, 1280 × 820, driven with xdotool. Nothing was composited or retouched.

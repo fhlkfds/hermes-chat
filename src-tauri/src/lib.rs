@@ -647,7 +647,7 @@ async fn files_save_text(
     transfers.run(id, epoch, work).await
 }
 
-/// Writes an artifact's whole new text to `path` where `profile`'s tools run (`POST api/fs/write-text`, ADR 0025). Like
+/// Writes an artifact's whole new text to `path` where `profile`'s tools run (`POST api/fs/write-text`, ADR 0027). Like
 /// `files_save_text`, the webview checks the revision first and reads it back after, and the write is a transfer, so
 /// `files_cancel` stops it and a closed or replaced connection never sends it.
 #[tauri::command]
@@ -726,6 +726,28 @@ async fn chat_export(app: tauri::AppHandle, markdown: String, file_name: String)
     let Some(path) = rx.await.map_err(|e| e.to_string())? else { return Ok(None) };
     let path = path.into_path().map_err(|e| e.to_string())?;
     std::fs::write(&path, markdown).map_err(|e| e.to_string())?;
+    Ok(Some(path.display().to_string()))
+}
+
+/// Saves Usage analytics' CSV where the owner picks in the native Save dialog (ADR 0026). `None`: cancelled.
+#[tauri::command]
+async fn usage_export(app: tauri::AppHandle, csv: String, file_name: String) -> Result<Option<String>, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_title("Export usage — chat titles are in the file")
+        .set_file_name(file_name)
+        .add_filter("CSV", &["csv"]);
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.set_parent(&window);
+    }
+    dialog.save_file(move |path| {
+        let _ = tx.send(path);
+    });
+    let Some(path) = rx.await.map_err(|e| e.to_string())? else { return Ok(None) };
+    let path = path.into_path().map_err(|e| e.to_string())?;
+    std::fs::write(&path, csv).map_err(|e| e.to_string())?;
     Ok(Some(path.display().to_string()))
 }
 
@@ -921,6 +943,7 @@ pub fn run(screenshot: bool) {
             headers_save,
             headers_delete,
             chat_export,
+            usage_export,
             preview_pick_local,
             preview_read_local,
             preview_read_local_image,

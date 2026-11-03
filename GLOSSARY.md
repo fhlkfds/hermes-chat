@@ -154,6 +154,18 @@ _Avoid_: tokens (alone, for the whole breakdown), stats
 What a chat's usage cost, only as Hermes recorded it: reported by the provider, estimated, at least an estimate, included in a subscription, or unknown. It counts only the calls Hermes could price. The app keeps no prices of its own, and shows no cost per reply.
 _Avoid_: price, spend, bill (except for a cost the provider reported)
 
+**Usage analytics**:
+The rail's Usage screen: the Usage and Cost Hermes stored for each chat started in a period, added up across chats, models, where chats started, projects, profiles and days. A chat counts in the period it started in, with all its usage so far, and a compressed chat counts once. The total cost says how much of the usage Hermes priced and is never a bill. Hermes's own sums sit beside it for a period ending now, with its helper tasks and subagent runs, which no chat carries. Nothing is kept on this computer; Export CSV saves the chats counted where the owner picks (ADR 0026).
+_Avoid_: dashboard, stats, report, billing
+
+**Context window**:
+What the model reads on each call in a chat: Hermes's instructions, the tool descriptions, instruction files, memory, and the conversation, up to the model's limit. The status bar's meter shows how full it is, and its **context inspector** shows what fills it, as Hermes measures and estimates it. Hermes's total is labelled Exact (the provider's count), Partly estimated, or Estimated; its split by category is always its estimate (ADR 0025).
+_Avoid_: context (alone, for memory), prompt, tokens (for the window)
+
+**Compaction**:
+Hermes swapping a chat's older messages for one summary that the model reads in their place, when the window fills or when the owner asks with **Compact now**. Every message stays in the chat and in Hermes, but the model no longer reads the ones taken out word for word. The context inspector lists the compactions Hermes stored, with the summary it kept. Compact now asks first, and is offered only between replies on a Hermes that can compact.
+_Avoid_: compression (Hermes's word, fine in server-side talk), summary (that is what a compaction leaves), truncation
+
 **Preview pane**:
 The resizable pane beside the chat that shows a web page, a Server file, a Local file or a tool call's output. It opens from a link in a reply, from an opened tool call, or from the chat's header. In a window too narrow for both, it covers the chat until the owner goes back to it. What it shows can't reach the app, the sign-in or this computer's other files (ADR 0007). A web page whose site refuses to be shown inside other apps gets a note and Open in your browser instead (ADR 0011).
 _Avoid_: viewer, side panel, artifact (the official desktop app's word)
@@ -175,11 +187,11 @@ The rail's browser for the Server files on the machine the Hermes dashboard runs
 _Avoid_: remote files, file manager, workspace (Hermes's word for a session's working folder)
 
 **Download** (of a Server file):
-Saving a copy of one Server file on this computer, where the owner picks in the Save dialog, which asks before replacing a file. It shows the server path, where it goes, and how far it got, and Cancel stops it. Until every byte has arrived, nothing takes the place of the file already there. It stops if the connection closes or changes (ADR 0023).
+Saving a copy of one Server file on this computer, where the owner picks in the Save dialog, which asks before replacing a file. It shows the server path, where it goes, and how far it got, and Cancel stops it. Until every byte has arrived, nothing takes the place of the file already there. It stops if the connection closes or changes (ADR 0025).
 _Avoid_: export (that is a chat saved as Markdown), save
 
 **Upload** (to the server):
-Sending one file the owner picked on this computer into the folder the Server files screen shows. Before anything is sent, it shows where the file goes. If the name is taken, the owner chooses to keep both or replace. Hermes is asked not to replace a file unless the owner chose that; it checks just before writing, not at the same moment. It counts as uploaded once the folder, listed again, has the file at the size sent. Credential files such as `.env` are never uploaded over (ADR 0023).
+Sending one file the owner picked on this computer into the folder the Server files screen shows. Before anything is sent, it shows where the file goes. If the name is taken, the owner chooses to keep both or replace. Hermes is asked not to replace a file unless the owner chose that; it checks just before writing, not at the same moment. It counts as uploaded once the folder, listed again, has the file at the size sent. Credential files such as `.env` are never uploaded over (ADR 0025).
 _Avoid_: attach, attachment (that is a file sent with a message), sync
 
 **Edit** (of a Server file):
@@ -195,7 +207,7 @@ A Server file that one of Hermes's tools reported writing in a chat: `write_file
 _Avoid_: artifact for an Output in general (the official desktop app's word, which also counts mentioned paths and links; here an **Artifact** is an Output open to edit), attachment, generated file (in the app's text)
 
 **Artifact**:
-An Output that is a text file, open to edit in the preview pane beside the chat. It is one path on one machine (where the profile's tools run, or the dashboard's own), opened in one connection and profile. Its draft stays in this app's memory, apart from the file, until Save. Save writes only if the server still has the version the edit started from, and counts as saved once Hermes, read back, has it. "Ask Hermes to edit" gets a **proposal**: Hermes's new text for the selection, made against the editor's exact text, which the owner reviews and applies to the editor, never straight to the file. The versions a save replaced stay recoverable until the app quits or the owner signs out (ADR 0025).
+An Output that is a text file, open to edit in the preview pane beside the chat. It is one path on one machine (where the profile's tools run, or the dashboard's own), opened in one connection and profile. Its draft stays in this app's memory, apart from the file, until Save. Save writes only if the server still has the version the edit started from, and counts as saved once Hermes, read back, has it. "Ask Hermes to edit" gets a **proposal**: Hermes's new text for the selection, made against the editor's exact text, which the owner reviews and applies to the editor, never straight to the file. The versions a save replaced stay recoverable until the app quits or the owner signs out (ADR 0027).
 _Avoid_: document (any file), canvas, patch (for the proposal before it's applied)
 
 **Unsecure**:
@@ -244,6 +256,7 @@ _Avoid_: upgrade (pacman's word, for the package step only)
 - **Dictation** and **Read aloud** vs Hermes's voice mode: Hermes's `/voice` mode (`voice.record`, `voice.tts` over the socket) records with the server's own microphone and speaks through the server's speakers. This app never uses it. Dictation records on this computer, and both use the server only to transcribe and to make the audio.
 - **Scheduled job** vs its runs: each run of an agent job is a Hermes session with source `cron`. The chat list leaves those out; the job's runs show on the Scheduled jobs screen.
 - **Source** vs the `source` field on a Hermes session: the app derives a chat's Source from that field, but the field has more values than the app shows. `gui` (what this app stamps on chats it starts) and `hermes-chat` (what it stamped before; Hermes won't edit those) count as this app, and `cli` and `tui` as the command line. `cron` chats aren't listed, and any other value (for example `api_server`, `webhook`) shows as "another Hermes platform".
+- **Context window** vs **Usage**: the window is what the model reads on one call, now. Usage, cache reads included, adds up over every call in the chat, so a chat's cache reads can far exceed its window. The context inspector shows the cache as billing, apart from the window's size.
 - **Memory** vs a **Saved copy** and the local cache: memory is the agent's, on the server, and changes what Hermes knows. Saved copies and drafts are this computer's copies of chats and change nothing in Hermes. Memory vs a memory *provider*: a profile may also use an external provider (such as Honcho) whose memories live with that provider; Settings → Memory names it but doesn't show or edit what it stores.
 - The project the list shows vs Hermes's *active* project: Hermes keeps one active project per profile for its own CLI and the official desktop app (`projects.set_active`). Picking a project in this app's list never changes it; the pick is kept on this computer.
 - **Persona** vs Hermes's personalities: `/personality` and `agent.personalities` in Hermes's config are named presets laid over a chat's prompt. Settings → Persona edits only the profile's `SOUL.md`. It never sets or changes a personality.

@@ -1,4 +1,4 @@
-// An artifact open to edit in the preview pane beside the chat (artifacts.ts, ADR 0025). The editor shows which file
+// An artifact open to edit in the preview pane beside the chat (artifacts.ts, ADR 0027). The editor shows which file
 // it is and which version it is based on, and keeps the draft apart from the file: nothing reaches the server until
 // Review changes → Save, which checks the revision first and reads the file back. "Ask Hermes to edit" proposes an edit
 // to the selection, shown as a diff against the exact text it was made for, and applied to the editor only if that

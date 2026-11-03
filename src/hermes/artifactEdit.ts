@@ -1,4 +1,4 @@
-// The editing model behind an artifact editor (GLOSSARY.md "Artifact", ADR 0025), with no I/O: undo and redo, the
+// The editing model behind an artifact editor (GLOSSARY.md "Artifact", ADR 0027), with no I/O: undo and redo, the
 // edit Hermes proposes for a selection and when it may be applied, and the prior versions kept after each save.
 // Positions are UTF-16 offsets into the text as the editor holds it (LF line ends, no byte order mark), which is
 // what a textarea's selection gives.

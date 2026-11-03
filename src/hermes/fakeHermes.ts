@@ -44,6 +44,19 @@ export type SessionRow = {
   cost_status?: string | null;
   cost_source?: string | null;
   pricing_version?: string | null;
+  /** The model the session used last, and who billed it. */
+  model?: string | null;
+  billing_provider?: string | null;
+  /**
+   * A compressed chat's list row: its first segment's counts under its last segment's id, with every segment's id
+   * (`_project_compression_tips` at the deployed `bf0203a`). The other segments are rows with `unlisted` set.
+   */
+  _lineage_root_id?: string;
+  _lineage_ids?: string[];
+  /** Not this fake's to send: a stored session no chat list shows (a later compression segment, a subagent run). */
+  unlisted?: boolean;
+  /** Not this fake's to send: what the list shows instead for a compression root (its last segment's id, model, ...). */
+  listedAs?: Partial<SessionRow>;
 };
 
 /**
@@ -66,6 +79,14 @@ export type TranscriptMessage = {
   result?: string;
   /** An assistant row's tool calls as stored: `[{id, type, function: {name, arguments}}]`, `arguments` JSON text. */
   tool_calls?: unknown;
+  /**
+   * Compaction, as stored rows carry it: a row compaction took out of what the model reads (`compacted`, and then not
+   * `active`), a compaction's summary row (`_compressed_summary`), and the message a row holds (`message_uid`), which
+   * the copies compaction keeps share. Only `include_compacted=true` reads compacted rows.
+   */
+  compacted?: boolean;
+  summary?: boolean;
+  message_uid?: string;
 };
 
 /** A file on the owner's disk: its bytes as a string, a size alone for a file too big to make, or a folder. */
@@ -274,6 +295,25 @@ export class FakeHermes {
   /** A `/steer` is queued for the running turn; false answers as Hermes does with no turn running. */
   steerable = true;
   contextOutput = "Context window: 12,400 / 200,000 tokens (6%)\n  System prompt  3,100\n  Messages       9,300";
+  /**
+   * What `session.context_breakdown` answers (`SessionContextBreakdownResult` at the deployed `bf0203a`). Undefined
+   * answers JSON-RPC "method not found", as a Hermes without the method would.
+   */
+  contextBreakdown?: Record<string, unknown> = {
+    categories: [],
+    context_max: 0,
+    context_percent: 0,
+    context_used: 0,
+    estimated_total: 0,
+    context_estimated: false,
+    context_source: "provider_usage",
+    model: "",
+    context_files: [],
+  };
+  /** What `session.compress` answers; undefined answers "method not found". */
+  compressResult?: Record<string, unknown> = { status: "compressed", removed: 0, before_messages: 0, after_messages: 0, before_tokens: 0, after_tokens: 0, summary: { noop: true, headline: "Nothing to compress" } };
+  /** Set to make `GET /api/sessions/{id}/messages` fail with this. */
+  messagesFailure?: string;
   oneshotFailure?: string;
   /** The owner's local disk, by path, for attachments. */
   files: Record<string, FakeFile> = {};
@@ -296,7 +336,7 @@ export class FakeHermes {
    * file's text (or bytes, one char per byte); `{ dir: true }` is a folder.
    */
   serverFiles: Record<string, string | { dir: true }> = {};
-  /** Every `POST /api/fs/write-text` that reached the server, in order (artifact saves, ADR 0025). */
+  /** Every `POST /api/fs/write-text` that reached the server, in order (artifact saves, ADR 0027). */
   readonly fsWrites: { profile: string; path: string; text: string }[] = [];
   /** While set, an artifact save waits for it before Hermes writes. */
   fsWriteGate?: Promise<void>;
@@ -506,6 +546,9 @@ export class FakeHermes {
     },
     // Legacy `session.interrupt` (tui_gateway/methods_session_interrupt.py). The turn then ends with a
     // `message.complete` whose status is "interrupted"; tests send that themselves.
+    "session.context_breakdown": (r) =>
+      this.contextBreakdown ? this.respond(r.id, structuredClone(this.contextBreakdown)) : this.fail(r.id, -32601, "method not found: session.context_breakdown"),
+    "session.compress": (r) => (this.compressResult ? this.respond(r.id, structuredClone(this.compressResult)) : this.fail(r.id, -32601, "method not found: session.compress")),
     "session.interrupt": (r) => {
       const sid = String(r.params.session_id);
       if (!this.runtime.has(sid)) return this.fail(r.id, 4001, "session not found");
@@ -669,14 +712,39 @@ export class FakeHermes {
       // order=recent, archived=exclude|only|include, then every pinned row not already on the page, archived or not
       // (list_sessions_rich).
       const excluded = (query.get("exclude_sources") ?? "").split(",").filter(Boolean);
-      const visible = this.storeOrFail(query.get("profile")).filter((s) => !excluded.includes(s.source));
+      const visible = this.storeOrFail(query.get("profile")).filter((s) => !excluded.includes(s.source) && !s.unlisted);
       const archived = query.get("archived") ?? "exclude";
-      const recent = visible.filter((s) => archived === "include" || s.archived === (archived === "only")).sort((a, b) => (b.last_active ?? b.started_at) - (a.last_active ?? a.started_at));
+      // order=created (the default): newest started first; order=recent: latest activity first.
+      const at = (s: SessionRow) => (query.get("order") === "recent" ? (s.last_active ?? s.started_at) : s.started_at);
+      const recent = visible.filter((s) => archived === "include" || s.archived === (archived === "only")).sort((a, b) => at(b) - at(a));
       const offset = Number(query.get("offset") ?? 0);
       const limit = Number(query.get("limit") ?? 20);
       const page = recent.slice(offset, offset + limit);
       const pinned = visible.filter((s) => s.pinned && !page.includes(s));
-      return { sessions: [...page, ...pinned].map((s) => ({ ...s, unread: unread(s) })), total: recent.length, limit, offset, storage: {} };
+      // A compression root lists as its last segment, with its own counts and every segment's id.
+      const listed = (s: SessionRow) => {
+        const { listedAs, ...stored } = s;
+        return listedAs ? { ...stored, ...listedAs, _lineage_root_id: s.id } : stored;
+      };
+      return { sessions: [...page, ...pinned].map((s) => ({ ...listed(s), unread: unread(s) })), total: recent.length, limit, offset, storage: {} };
+    },
+    // `_get_usage_analytics` (`hermes_cli/web_routers/analytics.py` at the deployed `bf0203a`): sums over every stored
+    // session started in the last `days` days, unlisted ones too, and the helper tasks' usage, which no session carries.
+    "GET /api/analytics/usage": ({ query }) => {
+      if (this.analyticsRefused) throw new Error(`The dashboard answered ${this.analyticsRefused.status}: ${JSON.stringify({ detail: this.analyticsRefused.detail })}`);
+      const days = Number(query.get("days") ?? 30);
+      const cutoff = now() - days * DAY;
+      const rows = this.storeOrFail(query.get("profile")).filter((s) => s.started_at > cutoff);
+      const sum = (k: keyof SessionRow) => rows.reduce((n, s) => n + (Number(s[k]) || 0), 0);
+      return {
+        totals: {
+          total_input: sum("input_tokens"), total_output: sum("output_tokens"), total_cache_read: sum("cache_read_tokens"),
+          total_reasoning: sum("reasoning_tokens"), total_estimated_cost: sum("estimated_cost_usd"), total_actual_cost: sum("actual_cost_usd"),
+          total_sessions: rows.length, total_api_calls: sum("api_call_count"),
+        },
+        by_task: this.helperUsage[query.get("profile") ?? "default"] ?? [],
+        daily: [], by_model: [], period_days: days, skills: [], tools: [],
+      };
     },
     // `search_sessions` in `hermes_cli/web_routers/sessions.py` at the deployed `bf0203a`: one row per chat, archived
     // ones too. Message hits come first, then title matches. FTS5 matches a message holding every word of the query,
@@ -878,6 +946,10 @@ export class FakeHermes {
   dropOnToolsetWrite?: "stored" | "lost";
   /** Every toggle the route took, after validation: profile, name and value. */
   readonly toolsetWrites: { profile: string; name: string; enabled: boolean }[] = [];
+  /** `GET /api/analytics/usage` `by_task`, by profile: Hermes's helper tasks' usage. */
+  helperUsage: Record<string, Record<string, unknown>[]> = {};
+  /** While set, `GET /api/analytics/usage` answers with this status, as a Hermes without the route answers 404. */
+  analyticsRefused?: { status: number; detail: unknown };
 
   private onEvent?: (e: PipeEvent) => void;
   private imagesStaged = 0;
@@ -1350,8 +1422,9 @@ export class FakeHermes {
    * with a stored id are there: a live session's unstored tail isn't.
    */
   private storedMessages(id: string, query: URLSearchParams) {
+    if (this.messagesFailure) throw new Error(this.messagesFailure);
     const rows = (this.transcripts[id] ?? [])
-      .filter((m) => m.row_id !== undefined)
+      .filter((m) => m.row_id !== undefined && (!m.compacted || query.get("include_compacted") === "true"))
       .map((m) => ({
         id: m.row_id!,
         session_id: id,
@@ -1361,6 +1434,10 @@ export class FakeHermes {
         tool_call_id: m.tool_call_id ?? null,
         tool_calls: m.tool_calls === undefined ? null : JSON.stringify(m.tool_calls),
         timestamp: m.timestamp ?? null,
+        active: m.compacted ? 0 : 1,
+        compacted: m.compacted ? 1 : 0,
+        _compressed_summary: m.summary ? 1 : null,
+        message_uid: m.message_uid ?? `uid-${m.row_id}`,
       }));
     if (query.get("order") === "latest") rows.reverse();
     const offset = Number(query.get("offset") ?? 0);

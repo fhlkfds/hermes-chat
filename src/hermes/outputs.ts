@@ -262,7 +262,7 @@ export function previewable(o: Output): { ok: true } | { ok: false; why: string 
 const EDIT_MAX = 1024 * 1024;
 
 /**
- * Whether the file can be opened in the artifact editor beside the chat (ADR 0025), and why not: a text file, such as
+ * Whether the file can be opened in the artifact editor beside the chat (ADR 0027), and why not: a text file, such as
  * Markdown, plain text or code, that a tool wrote or the owner added, up to 1 MB. The editor itself checks the bytes
  * (UTF-8, one kind of line end) once it reads them.
  */

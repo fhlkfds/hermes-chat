@@ -88,7 +88,7 @@ export function OutputsScreen({
   onAdd: (path: string) => Promise<unknown>;
   onRemove: (key: string) => void;
   onPreview: (o: Output) => void;
-  /** Opens the file to edit beside the chat (ADR 0025). */
+  /** Opens the file to edit beside the chat (ADR 0027). */
   onEdit?: (o: Output) => void;
   /** Whether the file has an edit open that isn't saved to Hermes. */
   unsavedEdit?: (o: Output) => boolean;

@@ -17,7 +17,7 @@ export type PreviewTarget =
   | { kind: "web"; url: string }
   /** `host`: on the dashboard's own machine, read through the managed files routes (ADR 0012), not where tools run. */
   | { kind: "server"; path: string; host?: boolean }
-  /** An Output open to edit (artifacts.ts, ADR 0025): read and saved on the machine `ref` names. */
+  /** An Output open to edit (artifacts.ts, ADR 0027): read and saved on the machine `ref` names. */
   | { kind: "artifact"; ref: ArtifactRef }
   | { kind: "local"; path: string; name: string }
   | { kind: "tool"; name: string; text: string };

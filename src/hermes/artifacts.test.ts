@@ -1,5 +1,5 @@
 // Artifacts against a fake Hermes whose `/api/fs/read-data-url`, `POST /api/fs/write-text`, managed files and
-// `llm.oneshot` answer as the deployed `bf0203a` does (ADR 0025): editing, checked saves, conflicts, kept versions and
+// `llm.oneshot` answer as the deployed `bf0203a` does (ADR 0027): editing, checked saves, conflicts, kept versions and
 // Hermes's proposed edits, through the real transport.
 import { afterEach, describe, expect, it } from "vitest";
 import { FakeHermes, row } from "./fakeHermes";

@@ -26,7 +26,7 @@
 // Token usage and cost (usage.ts, ADR 0008): each reply's usage is how far its session's live counters moved during
 // its turn; each chat's totals and cost are Hermes's stored ones, read with the chat list and after each turn.
 import { PersonaApi } from "./persona";
-import { APPROVAL_CHOICES, isBroadGrant, isOutgoing, isWaiting, offeredChoices, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type ContextPart, type ContextUse, type Found, type Item, type ListedChat, type LiveSession, type LiveSessions, type OtherProfiles, type Outgoing, type OutgoingItem, type Queued, type SavedSend, type SeenFailure, type SessionLive, type Source, QUEUE_LIMIT } from "./model";
+import { APPROVAL_CHOICES, isBroadGrant, isOutgoing, isWaiting, offeredChoices, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type ContextUse, type Found, type Item, type ListedChat, type LiveSession, type LiveSessions, type OtherProfiles, type Outgoing, type OutgoingItem, type Queued, type SavedSend, type SeenFailure, type SessionLive, type Source, QUEUE_LIMIT } from "./model";
 import { catalogFromServer, fallbackCatalog, isEffort, modelKey, pickFromInfo, type ModelCatalog, type ModelPick } from "./models";
 import { noOthers, OtherProfilesCheck } from "./otherProfiles";
 import { failureMark } from "./inbox";
@@ -45,6 +45,8 @@ import { restartHold } from "./unsaved";
 import { hostFileView, readServerFile, type FileView } from "./preview";
 import { agentFsEditIo } from "./artifacts";
 import { splitPath, type OutputsIo, type StoredRow as StoredOutputRow } from "./outputs";
+import type { UsageIo } from "./usageAnalytics";
+import { compactResultOf, compactionsOf, readingOf, type CompactResult, type CompactionHistory, type CompactionRow, type ContextReading } from "./contextInspect";
 import { chatUsageOf, countersOf, newerChatUsage, replyUsage, ZERO_COUNTERS, type ReplyUsage, type UsageCounters } from "./usage";
 
 /**
@@ -228,6 +230,10 @@ type ServerRequest = { id: string; method: string; params: Record<string, unknow
 /** JSON-RPC "method not found": what Hermes expects from a client that can't handle a request. */
 const NO_SUCH_METHOD = -32601;
 
+/** Dashboard REST caps a page of stored messages at 500. The compaction history reads at most `COMPACTION_ROWS`. */
+const COMPACTION_PAGE = 500;
+const COMPACTION_ROWS = 10_000;
+
 type RpcFrame = {
   jsonrpc: "2.0";
   id?: number | string | null;
@@ -379,6 +385,8 @@ export class Hermes {
   private pipeProfile?: string;
   /** Counts pipes opened; events from an older pipe than the current one are ignored. */
   private generation = 0;
+  /** The connections (by generation) whose Hermes answered that it has no `session.compress`. */
+  private noCompact = new Set<number>();
   /** The pipe being opened is waiting for `gateway.ready`. */
   private onReady?: (payload: Record<string, unknown>) => void;
   /** Ends the dial under way with this error. */
@@ -542,7 +550,7 @@ export class Hermes {
 
   /**
    * How an artifact on the machine where `profile`'s tools run is read and saved (artifacts.ts `agentFsEditIo`, ADR
-   * 0025). A save starts only while connected, and Rust stops it when the connection closes or is replaced.
+   * 0027). A save starts only while connected, and Rust stops it when the connection closes or is replaced.
    */
   artifactFs(profile: string): EditIo {
     return agentFsEditIo((pathAndQuery, maxBytes) => this.restGet(pathAndQuery, maxBytes), {
@@ -1716,17 +1724,98 @@ export class Hermes {
     });
   }
 
-  /** What fills the chat's context window, by category, as Hermes estimates it now; empty when Hermes gives none. */
-  async contextBreakdown(chatId: string): Promise<ContextPart[]> {
-    const runtimeId = this.snapshot.chats.find((c) => c.id === chatId)?.runtimeId;
-    if (!runtimeId) return [];
-    const res = (await this.request("session.context_breakdown", { session_id: runtimeId })) as { categories?: unknown };
-    return (Array.isArray(res?.categories) ? res.categories : []).flatMap((v): ContextPart[] => {
-      const p = obj(v);
-      return p && typeof p.id === "string" && typeof p.label === "string" && typeof p.tokens === "number"
-        ? [{ id: p.id, label: p.label, tokens: p.tokens, ...(typeof p.color === "string" && { color: p.color }) }]
-        : [];
+  /**
+   * What fills the chat's context window now, as Hermes measures it (`session.context_breakdown`, ADR 0025): its total
+   * with how Hermes counted it, its estimate by category, and the instruction files it considered. Rejects when the
+   * chat isn't open on Hermes on this connection, when this Hermes has no breakdown (saying so), or when the
+   * connection, profile or chat's session changed before Hermes answered: an answer for another session is never shown.
+   */
+  async inspectContext(chatId: string): Promise<ContextReading> {
+    const { runtimeId, still } = this.liveScope(chatId);
+    const res = await this.request("session.context_breakdown", { session_id: runtimeId }).catch((e: unknown) => {
+      throw e instanceof RpcError && e.code === NO_SUCH_METHOD ? new Error("This Hermes doesn't report what fills the context window.") : e;
     });
+    still();
+    return readingOf(res, Date.now());
+  }
+
+  /**
+   * The compactions Hermes stored for the chat (ADR 0025), from its stored rows with the compacted ones
+   * (`GET /api/sessions/{id}/messages?include_compacted=true`), read a page at a time, oldest first, up to
+   * `COMPACTION_ROWS`. Only reads. Rejects if a page can't be read, or the profile or connection changed meanwhile. A
+   * chat Hermes hasn't stored yet has none.
+   */
+  async compactionHistory(chatId: string): Promise<CompactionHistory> {
+    const profile = this.profile;
+    const gen = this.generation;
+    if (this.snapshot.status !== "connected") throw new Error("Connect to Hermes to read this chat's compactions.");
+    const rows: CompactionRow[] = [];
+    let truncated = false;
+    for (let offset = 0; ; offset += COMPACTION_PAGE) {
+      const query = new URLSearchParams({ profile, include_compacted: "true", order: "oldest", limit: String(COMPACTION_PAGE), offset: String(offset), inline_images: "false" });
+      let page: CompactionRow[];
+      try {
+        const res = (await this.rest("GET", `${sessionPath(chatId)}/messages?${query}`)) as { messages?: unknown };
+        page = Array.isArray(res?.messages) ? (res.messages as CompactionRow[]).filter((r) => typeof r?.id === "number") : [];
+      } catch (e) {
+        if (offset === 0 && (e as Error).message.includes("answered 404")) {
+          page = [];
+        } else throw e;
+      }
+      if (this.profile !== profile || this.generation !== gen) throw new Error("The profile or connection changed before Hermes answered.");
+      rows.push(...page);
+      if (page.length < COMPACTION_PAGE) break;
+      if (rows.length >= COMPACTION_ROWS) {
+        truncated = true;
+        break;
+      }
+    }
+    return compactionsOf(rows, truncated, Date.now());
+  }
+
+  /**
+   * Has Hermes compact the chat now (`session.compress`, Hermes's `/compress`): it summarizes the older messages into
+   * one summary the model reads in their place. Hermes refuses while a reply runs. The chat's usage is read again
+   * afterwards. Rejects when the chat isn't open on Hermes here, when Hermes refuses, or when this Hermes can't
+   * compact (and then the chat isn't offered it again on this connection).
+   */
+  async compact(chatId: string): Promise<CompactResult> {
+    const { runtimeId, still } = this.liveScope(chatId);
+    if (this.snapshot.chats.find((c) => c.id === chatId)?.running) throw new Error("Wait for the reply to finish: Hermes compacts only between replies.");
+    const res = await this.request("session.compress", { session_id: runtimeId }).catch((e: unknown) => {
+      if (e instanceof RpcError && e.code === NO_SUCH_METHOD) {
+        this.noCompact.add(this.generation);
+        this.update({});
+        throw new Error("This Hermes can't compact a chat from here.");
+      }
+      throw e;
+    });
+    still();
+    this.track(this.refreshUsage(chatId));
+    return compactResultOf(res);
+  }
+
+  /** Whether this connection's Hermes answered that it can't compact a chat (`compact`). */
+  cannotCompact(): boolean {
+    return this.noCompact.has(this.generation);
+  }
+
+  /**
+   * The chat's runtime session on this connection, and a check that throws if, by the time Hermes answers, the
+   * connection, profile or the chat's session is another.
+   */
+  private liveScope(chatId: string): { runtimeId: string; still: () => void } {
+    const runtimeId = this.snapshot.chats.find((c) => c.id === chatId)?.runtimeId;
+    if (!runtimeId || this.snapshot.status !== "connected") throw new Error("This chat isn't open on Hermes.");
+    const profile = this.profile;
+    const gen = this.generation;
+    return {
+      runtimeId,
+      still: () => {
+        if (this.profile !== profile || this.generation !== gen || this.snapshot.chats.find((c) => c.id === chatId)?.runtimeId !== runtimeId)
+          throw new Error("The chat's session changed before Hermes answered.");
+      },
+    };
   }
 
   /**
@@ -2728,6 +2817,24 @@ export class Hermes {
     };
   }
 
+  /**
+   * How Usage analytics reads Hermes (usageAnalytics.ts, ADR 0026): the stored session rows, every source and archived
+   * ones too, newest started first; one stored session by id; and Hermes's own sums for a rolling period. Every request
+   * names its profile, and reads only while connected.
+   */
+  usageIo(): UsageIo {
+    const get = async (pathAndQuery: string) => JSON.parse(await this.restGet(pathAndQuery)) as unknown;
+    return {
+      page: async (profile, offset, limit) => {
+        const query = new URLSearchParams({ profile, order: "created", archived: "include", limit: String(limit), offset: String(offset) });
+        const res = (await get(`api/sessions?${query}`)) as { sessions?: unknown; total?: unknown };
+        return { rows: Array.isArray(res.sessions) ? res.sessions : [], total: typeof res.total === "number" ? res.total : 0 };
+      },
+      session: (profile, id) => get(`${sessionPath(id)}?${new URLSearchParams({ profile })}`),
+      hermesTotals: (profile, days) => get(`api/analytics/usage?${new URLSearchParams({ days: String(days), profile })}`),
+    };
+  }
+
   private async rest(method: RestMethod, pathAndQuery: string, body?: unknown): Promise<unknown> {
     // Once closed (signed out), nothing more goes out: the Rust side relays through whichever sign-in is current, which
     // may be another server's by then.
@@ -2940,7 +3047,7 @@ function findTerm(q: string, snippet: Found["snippet"]): string {
 }
 
 /** A chat's Source from the session's `source` field. This app's own chats, `gui` ones, show no icon. */
-function toSource(source = ""): Source {
+export function toSource(source = ""): Source {
   switch (source) {
     case APP_SOURCE:
     case OLD_APP_SOURCE:
@@ -3122,7 +3229,10 @@ function withLive(prev: SessionLive | undefined, info?: unknown, usage?: unknown
   if (!i && !u) return prev;
   const live: SessionLive = { ...prev };
   if (typeof i?.yolo === "boolean") Object.assign(live, { yolo: i.yolo, yoloEverywhere: i.approval_mode === "off" });
-  if (u) live.context = contextUse(u);
+  if (u) {
+    live.context = contextUse(u);
+    live.compactions = typeof u.compressions === "number" && u.compressions >= 0 ? u.compressions : undefined;
+  }
   return live;
 }
 

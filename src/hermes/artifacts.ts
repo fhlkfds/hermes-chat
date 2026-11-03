@@ -1,4 +1,4 @@
-// Artifacts: Outputs opened to edit beside the chat (GLOSSARY.md "Artifact", ADR 0025). An artifact is one file on
+// Artifacts: Outputs opened to edit beside the chat (GLOSSARY.md "Artifact", ADR 0027). An artifact is one file on
 // one machine: a `host` Output is on the dashboard's own machine and is read and saved through the managed-files
 // routes, exactly as Server files edits a file (ADR 0024); any other Output is where its profile's tools run, read with
 // `GET /api/fs/read-data-url` and saved with `POST /api/fs/write-text`, the routes that follow the profile's SSH
@@ -128,7 +128,7 @@ function explainFs(message: string, what: "read" | "write"): RemoteFilesError {
 
 /**
  * The editing calls for a file where `profile`'s tools run: exact bytes from `GET /api/fs/read-data-url`, saves
- * through `POST /api/fs/write-text` (ADR 0025), a copy's free name from `GET /api/fs/list`. Every request names the
+ * through `POST /api/fs/write-text` (ADR 0027), a copy's free name from `GET /api/fs/list`. Every request names the
  * profile.
  */
 export function agentFsEditIo(get: RemoteGet, pipe: AgentFsPipe, profile: string): EditIo {
@@ -154,7 +154,7 @@ export function agentFsEditIo(get: RemoteGet, pipe: AgentFsPipe, profile: string
       return { path, bytes: Uint8Array.from(atob(dataUrl.slice(m[0].length)), (c) => c.charCodeAt(0)) };
     },
     async writeText(path, text) {
-      // `write-text` has no "don't replace": a copy relies on the name it picked being free when listed (ADR 0025).
+      // `write-text` has no "don't replace": a copy relies on the name it picked being free when listed (ADR 0027).
       const id = newTransferId();
       try {
         await deadline(pipe.saveText(id, profile, path, text), EDIT_DEADLINES.writeMs);
