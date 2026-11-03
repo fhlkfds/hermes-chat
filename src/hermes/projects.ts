@@ -385,7 +385,7 @@ export class ProjectsStore {
   /**
    * Forgets project `id`'s defaults, once Hermes has said it is gone: deleted here, or answering that it no longer
    * exists. A list that merely leaves it out could be older than a save, so it never decides this. Best effort: defaults
-   * left behind are never shown or used. Templates offered only in it are kept, offered in every chat (ADR 0027).
+   * left behind are never shown or used. Templates offered only in it are kept, offered in every chat (ADR 0028).
    */
   private forgetDefaults(id: string) {
     setUIPrefs({ templates: unscope(getUIPrefs().templates, this.scope, id) });

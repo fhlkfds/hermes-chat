@@ -1,9 +1,10 @@
 // An in-memory ChatCache for tests: `saved` holds each profile's list, `transcripts` the Saved copies by
 // `profile/chatId`, `profile` the one shown last, `pulled` the profiles whose older history the owner pulled, and
-// `outbox` each chat's messages Hermes hasn't confirmed and `queues` each chat's queue, by `profile/chatId`, which
-// `clear` keeps. Values are copied through JSON, as localStorage would, so nothing kept shares objects with the app.
+// `outbox` each chat's messages Hermes hasn't confirmed and `queues` each chat's queue, by `profile/chatId`, and
+// `branches` each profile's branches, which `clear` keeps. Values are copied through JSON, as localStorage would, so nothing kept shares objects with the app.
 // It has no storage limit.
 import type { Chat, ChatQueue, OutgoingItem } from "./model";
+import { NO_BRANCHES, type BranchStore } from "./branch";
 import type { ChatCache, SavedTranscript } from "./transport";
 
 export type MemoryCache = ChatCache & {
@@ -13,6 +14,7 @@ export type MemoryCache = ChatCache & {
   pulled: Set<string>;
   outbox: Record<string, OutgoingItem[]>;
   queues: Record<string, ChatQueue>;
+  branches: Record<string, BranchStore>;
 };
 
 export function memoryCache({
@@ -27,6 +29,7 @@ export function memoryCache({
     pulled: new Set(),
     outbox: {},
     queues: {},
+    branches: {},
     load: (p) => cache.saved[p] ?? [],
     save: (p, chats) => void (cache.saved[p] = chats),
     loadTranscript: (p, id) => cache.transcripts[`${p}/${id}`],
@@ -57,6 +60,11 @@ export function memoryCache({
     saveQueue: (p, id, q) => {
       if (q?.items.length) cache.queues[`${p}/${id}`] = JSON.parse(JSON.stringify({ items: q.items, paused: q.paused })) as ChatQueue;
       else delete cache.queues[`${p}/${id}`];
+      return true;
+    },
+    loadBranches: (p) => (cache.branches[p] ? (JSON.parse(JSON.stringify(cache.branches[p])) as BranchStore) : NO_BRANCHES),
+    saveBranches: (p, store) => {
+      cache.branches[p] = JSON.parse(JSON.stringify(store)) as BranchStore;
       return true;
     },
   };

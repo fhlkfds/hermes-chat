@@ -35,7 +35,7 @@ describe("Times on stored history", () => {
     await hermes.open("a");
 
     expect(items()).toEqual([
-      { kind: "user", id: "h-0", text: "How full is the NAS?", at: T * 1000 },
+      { kind: "user", id: "h-0", text: "How full is the NAS?", at: T * 1000, rowId: 1 },
       { kind: "thinking", id: "h-1-r", text: "Check df" },
       { kind: "assistant", id: "h-1", text: "Let me look.", at: (T + 2) * 1000, rowId: 2 },
       { kind: "tool", id: "h-2", callId: "c1", name: "terminal", preview: "df -h", status: "done" },
@@ -107,7 +107,7 @@ describe("Times on a turn sent from here", () => {
     await hermes.idle();
 
     expect(items()).toEqual([
-      { kind: "user", id: "u-0", text: "Disk usage?", at: T * 1000 },
+      { kind: "user", id: "u-0", rowId: 41, text: "Disk usage?", at: T * 1000 },
       { kind: "assistant", id: "a-1", text: "Let me look." },
       expect.objectContaining({ kind: "tool", id: "c1" }),
       { kind: "assistant", id: "a-3", text: "82% used.", at: (T + 9) * 1000, rowId: 44 },
@@ -134,7 +134,7 @@ describe("Times on a turn sent from here", () => {
     await hermes.idle();
 
     expect(cache.loadTranscript("default", "a")?.items).toEqual([
-      { kind: "user", id: "u-0", text: "Disk usage?", at: T * 1000 },
+      { kind: "user", id: "u-0", rowId: 41, text: "Disk usage?", at: T * 1000 },
       { kind: "assistant", id: "a-1", text: "82% used.", at: (T + 9) * 1000, rowId: 42 },
     ]);
   });
@@ -153,7 +153,7 @@ describe("Times on a turn sent from here", () => {
     await hermes.idle();
 
     expect(items()).toEqual([
-      { kind: "user", id: "u-0", text: "Hi" },
+      { kind: "user", id: "u-0", rowId: 41, text: "Hi" },
       { kind: "assistant", id: "a-1", text: "Hello!", rowId: 42 },
     ]);
   });
@@ -173,7 +173,7 @@ describe("Times on a turn sent from here", () => {
     await hermes.idle();
 
     expect(items()).toEqual([
-      { kind: "user", id: "u-0", text: "Hi", at: T * 1000 },
+      { kind: "user", id: "u-0", rowId: 41, text: "Hi", at: T * 1000 },
       { kind: "assistant", id: "a-1", text: "Hello!" },
     ]);
   });
@@ -192,7 +192,7 @@ describe("Times on a turn sent from here", () => {
     await hermes.idle();
 
     expect(items()).toEqual([
-      { kind: "user", id: "u-0", text: "Write an essay", at: T * 1000 },
+      { kind: "user", id: "u-0", rowId: 41, text: "Write an essay", at: T * 1000 },
       { kind: "assistant", id: "a-1", text: "Once", interrupted: true },
     ]);
   });
@@ -220,7 +220,7 @@ describe("Times on a turn sent from here", () => {
     await hermes.idle();
 
     expect(items()).toEqual([
-      { kind: "user", id: "u-0", text: "Hi" },
+      { kind: "user", id: "u-0", rowId: 41, text: "Hi" },
       { kind: "assistant", id: "a-1", text: "Hello!", rowId: 42 },
     ]);
   });
@@ -236,7 +236,7 @@ describe("Times on a turn sent from here", () => {
     await hermes.idle();
 
     expect(items()).toEqual([
-      { kind: "user", id: "u-0", text: "Hi" },
+      { kind: "user", id: "u-0", rowId: 41, text: "Hi" },
       { kind: "assistant", id: "a-1", text: "Hello!", rowId: 42 },
     ]);
     expect(hermes.getSnapshot().syncError).toBeUndefined();
@@ -260,7 +260,7 @@ describe("Times on a turn sent from here", () => {
     await hermes.idle();
 
     expect(items()).toEqual([
-      { kind: "user", id: "u-0", text: "Hi", at: T * 1000 },
+      { kind: "user", id: "u-0", rowId: 41, text: "Hi", at: T * 1000 },
       { kind: "assistant", id: "a-1", text: "Hello!", at: (T + 1) * 1000, rowId: 42 },
     ]);
   });
@@ -286,7 +286,7 @@ describe("Times on a turn sent from here", () => {
     await hermes.open("a");
 
     expect(items()).toEqual([
-      { kind: "user", id: "h-0", text: "Hi", at: T * 1000 },
+      { kind: "user", id: "h-0", rowId: 41, text: "Hi", at: T * 1000 },
       { kind: "assistant", id: "h-1", text: "Hello!", at: (T + 1) * 1000, rowId: 42 },
     ]);
   });

@@ -1,4 +1,4 @@
-// Templates (GLOSSARY.md "Template", ADR 0027): messages the owner reuses, with blanks filled in each time. They are
+// Templates (GLOSSARY.md "Template", ADR 0028): messages the owner reuses, with blanks filled in each time. They are
 // data, kept in this computer's UI prefs (uiPrefs.ts `templates`), and reach Hermes only as text the owner sends from
 // the composer. Nothing here is evaluated: a placeholder is replaced by the value typed for it, verbatim, once.
 //

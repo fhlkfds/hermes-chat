@@ -33,6 +33,8 @@ import { ChatList, Rail, leavingNote } from "./ui/Sidebar";
 import { Inbox } from "./ui/Inbox";
 import { inboxAcks, inboxEntries, inboxScope, needsOwner, type InboxEntry } from "./hermes/inbox";
 import { ChatPane, type JumpTarget } from "./ui/ChatPane";
+import { BranchDialog, BranchedFrom } from "./ui/Branch";
+import { branchBlocked, type BranchLink } from "./hermes/branch";
 import type { QueueApi } from "./ui/Queue";
 import { PANE_NAMES, Split, usePaneVisible, type PaneSlot } from "./ui/Split";
 import type { VoiceApi } from "./ui/Voice";
@@ -411,7 +413,7 @@ export function Main({
   onSignOut: () => Promise<void>;
   updates?: Updater;
 }) {
-  const { profile, chats, olderPulled, archivedListed, status, route, unsecure, closedReason, syncError, others, live, models, switching } = useSyncExternalStore(
+  const { profile, chats, olderPulled, archivedListed, status, route, unsecure, closedReason, syncError, others, live, models, switching, branchNews } = useSyncExternalStore(
     hermes.subscribe,
     hermes.getSnapshot,
   );
@@ -510,6 +512,10 @@ export function Main({
   const split = panes.length > 1;
   const [listOpen, setListOpen] = useState(true);
   const [toast, setToast] = useState<Toast | null>(notSaved ? { text: notSaved, at: Date.now() } : null);
+  // What became of a branch whose answer was lost, once the chat list settled it (ADR 0027).
+  useEffect(() => {
+    if (branchNews) setToast({ text: branchNews.text, at: branchNews.at });
+  }, [branchNews?.at]);
   const [searchOpen, setSearchOpen] = useState(false);
 
   // The inbox: what needs the owner, or finished, across the profiles (hermes/inbox.ts). Dismissals are kept on this
@@ -1094,6 +1100,16 @@ export function Main({
           onArchive={(a) => setArchived(chat.id, a)}
           onNew={() => newChat()}
           onDelete={() => deleteChat(chat.id)}
+          onOpenChat={(id) => openChat(id, { pane: p.key })}
+          onShowAt={(link) => {
+            if (!chats.some((c) => c.id === link.parentId)) return setToast({ text: "That chat isn't in the chat list now.", at: Date.now() });
+            // Opened at the message's stored row, the one the branch ends with, whatever its words.
+            guard(() => {
+              // Already guarded here; Settings can't be open over a pane the owner clicks in.
+              openChat(link.parentId, { pane: p.key, keepSettings: true });
+              if (link.point.rowId !== undefined) patchPane(p.key, { jump: { rowId: link.point.rowId, at: Date.now() } });
+            });
+          }}
           previewControls={
             <button className={`icon-btn ${previewShown ? "on" : ""}`} title={!preview ? "Open the preview" : previewShown ? "Close the preview" : "Show the preview"} aria-pressed={previewShown}
               onClick={() => (!preview ? openPreview({ kind: "start" }) : previewShown ? setPreview(null) : setPreviewHidden(false))}>
@@ -1589,6 +1605,8 @@ function ChatView({
   onArchive,
   onNew,
   onDelete,
+  onOpenChat,
+  onShowAt,
   paneControls,
   previewControls,
   screenshots,
@@ -1631,6 +1649,10 @@ function ChatView({
   onNew: () => void;
   /** Deletes the chat once the owner has confirmed it; resolves with whether Hermes deleted it. */
   onDelete: () => Promise<boolean>;
+  /** Opens another chat in this pane: a branch just made. */
+  onOpenChat: (id: string) => void;
+  /** Opens the chat a branch came from, at the message it was branched after. */
+  onShowAt: (link: BranchLink) => void;
   paneControls: ReactNode;
   previewControls: ReactNode;
   screenshots?: ScreenshotDesk;
@@ -1759,6 +1781,12 @@ function ChatView({
 
   const visible = usePaneVisible();
 
+  // Branch from here (ADR 0027): the message the preview is open for, if any.
+  const [branchFrom, setBranchFrom] = useState<string>();
+  useEffect(() => setBranchFrom(undefined), [chatId, profile]);
+  const link = useSyncExternalStore(hermes.subscribe, () => hermes.getSnapshot().branches.links[chat.id]);
+  const parentListed = useSyncExternalStore(hermes.subscribe, () => !!link && hermes.getSnapshot().chats.some((c) => c.id === link.parentId));
+
   // Slash commands (commands.ts). Each empties the Draft it was typed in only once it has run, only if the owner hasn't
   // changed it meanwhile, and only while the composer it was typed in is still on the chat (`still`). An answer after
   // that does nothing: its Draft stays as typed. One command at a time per Draft, so two panes on one chat can't run it
@@ -1833,6 +1861,7 @@ function ChatView({
   }, [hermes, chatId, status, paneKey, visible, profile]);
 
   return (
+    <>
     <ChatPane
       key={`${profile}/${chat.id}`}
       chat={chat}
@@ -1866,7 +1895,9 @@ function ChatView({
       notLoaded={started && status !== "connected" && !chat.runtimeId && chat.items.every(isOutgoing)}
       findTarget={findTarget}
       jumpTo={jump}
-      onJumpMissed={() => onToast("Couldn't find the tool call that made this file in the chat's history.")}
+      onJumpMissed={() =>
+        onToast(jump?.rowId !== undefined ? "Couldn't find the message this branch was made from in the chat's history." : "Couldn't find the tool call that made this file in the chat's history.")
+      }
       status={status}
       alsoPostsIn={hermes.alsoPostsIn(chat.id)}
       draft={composerText}
@@ -1901,6 +1932,8 @@ function ChatView({
       }
       queue={queue}
       queueApi={queueApi}
+      branch={started ? { blocked: branchBlocked(chat, status === "connected"), onBranch: setBranchFrom } : undefined}
+      branchedFrom={link && <BranchedFrom link={link} parentListed={parentListed} onOpen={() => onShowAt(link)} />}
       footer={
         <StatusBar
           chat={chat}
@@ -1926,6 +1959,21 @@ function ChatView({
         />
       }
     />
+    {branchFrom && (
+      <BranchDialog
+        key={`${chat.id}/${branchFrom}`}
+        api={{ preview: () => hermes.previewBranch(chat.id, branchFrom), make: (p, title) => hermes.branch(p, title) }}
+        onClose={() => setBranchFrom(undefined)}
+        done={(id, warnings) => {
+          setBranchFrom(undefined);
+          if (!stillIn()) return;
+          // The branch opens here; this chat, and its Draft, stay as they were.
+          onOpenChat(id);
+          if (warnings.length) onToast(`Branch made. ${warnings.join(" ")}`);
+        }}
+      />
+    )}
+    </>
   );
 }
 

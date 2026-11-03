@@ -1,4 +1,4 @@
-// The template library, opened from the composer (GLOSSARY.md "Template", ADR 0027): pick one by search and the
+// The template library, opened from the composer (GLOSSARY.md "Template", ADR 0028): pick one by search and the
 // keyboard, fill in its blanks while the whole message shows as it will go, and Insert it into the composer. Insert
 // never sends. With a draft already there, the owner chooses to replace it or add after it; Cancel leaves it alone.
 import { invoke } from "@tauri-apps/api/core";
@@ -113,7 +113,7 @@ export function Templates({
               const stored = now.find((o) => o.id === edited.id);
               const exists = !!stored;
               // A project left as it was keeps what happened to it meanwhile, such as losing its scope when the
-              // project was deleted (ADR 0027); only a project the owner picked here is written.
+              // project was deleted (ADR 0028); only a project the owner picked here is written.
               const unchanged = edited.project?.scope === view.base?.project?.scope && edited.project?.id === view.base?.project?.id;
               const { project: _, ...rest } = edited;
               const t: Template = unchanged && stored ? { ...rest, ...(stored.project && { project: stored.project }) } : edited;
