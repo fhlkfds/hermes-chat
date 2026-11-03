@@ -30,6 +30,8 @@ export type SessionRow = {
   last_read_at: number | null;
   /** Bumped by every session edit; an edit must name the current one. Missing means 0. */
   runtime_revision?: number;
+  /** The session a branch was made from (`session.branch` stores it). */
+  parent_session_id?: string | null;
   /**
    * Hermes's stored usage for every model call in the session (`sessions` columns at the deployed `bf0203a`; both list
    * and detail rows carry them). Hermes's helper tasks are kept apart and aren't counted here.
@@ -45,6 +47,19 @@ export type SessionRow = {
   cost_status?: string | null;
   cost_source?: string | null;
   pricing_version?: string | null;
+  /** The model the session used last, and who billed it. */
+  model?: string | null;
+  billing_provider?: string | null;
+  /**
+   * A compressed chat's list row: its first segment's counts under its last segment's id, with every segment's id
+   * (`_project_compression_tips` at the deployed `bf0203a`). The other segments are rows with `unlisted` set.
+   */
+  _lineage_root_id?: string;
+  _lineage_ids?: string[];
+  /** Not this fake's to send: a stored session no chat list shows (a later compression segment, a subagent run). */
+  unlisted?: boolean;
+  /** Not this fake's to send: what the list shows instead for a compression root (its last segment's id, model, ...). */
+  listedAs?: Partial<SessionRow>;
 };
 
 /**
@@ -67,6 +82,14 @@ export type TranscriptMessage = {
   result?: string;
   /** An assistant row's tool calls as stored: `[{id, type, function: {name, arguments}}]`, `arguments` JSON text. */
   tool_calls?: unknown;
+  /**
+   * Compaction, as stored rows carry it: a row compaction took out of what the model reads (`compacted`, and then not
+   * `active`), a compaction's summary row (`_compressed_summary`), and the message a row holds (`message_uid`), which
+   * the copies compaction keeps share. Only `include_compacted=true` reads compacted rows.
+   */
+  compacted?: boolean;
+  summary?: boolean;
+  message_uid?: string;
 };
 
 /** A file on the owner's disk: its bytes as a string, a size alone for a file too big to make, or a folder. */
@@ -191,6 +214,9 @@ function setPrimary(p: FakeProject, path: string) {
  */
 const EDITABLE_SOURCES = new Set(["cli", "tui", "gui", "desktop", "oneshot", "tool", "acp", "import", "telegram", "discord", "slack", "whatsapp", "signal", "matrix"]);
 
+/** A history as `session.resume` shows it: hidden rows, such as a project's instructions, aren't shown (`_history_to_messages`). */
+const shownHistory = (messages: TranscriptMessage[]) => messages.filter((m) => m.display_kind !== "hidden");
+
 /** A stored session `daysAgo` days old, unpinned and from this app unless overridden. */
 export function row(id: string, daysAgo: number, over: Partial<SessionRow> = {}): SessionRow {
   const at = now() - daysAgo * DAY;
@@ -275,6 +301,25 @@ export class FakeHermes {
   /** A `/steer` is queued for the running turn; false answers as Hermes does with no turn running. */
   steerable = true;
   contextOutput = "Context window: 12,400 / 200,000 tokens (6%)\n  System prompt  3,100\n  Messages       9,300";
+  /**
+   * What `session.context_breakdown` answers (`SessionContextBreakdownResult` at the deployed `bf0203a`). Undefined
+   * answers JSON-RPC "method not found", as a Hermes without the method would.
+   */
+  contextBreakdown?: Record<string, unknown> = {
+    categories: [],
+    context_max: 0,
+    context_percent: 0,
+    context_used: 0,
+    estimated_total: 0,
+    context_estimated: false,
+    context_source: "provider_usage",
+    model: "",
+    context_files: [],
+  };
+  /** What `session.compress` answers; undefined answers "method not found". */
+  compressResult?: Record<string, unknown> = { status: "compressed", removed: 0, before_messages: 0, after_messages: 0, before_tokens: 0, after_tokens: 0, summary: { noop: true, headline: "Nothing to compress" } };
+  /** Set to make `GET /api/sessions/{id}/messages` fail with this. */
+  messagesFailure?: string;
   oneshotFailure?: string;
   /** The owner's local disk, by path, for attachments. */
   files: Record<string, FakeFile> = {};
@@ -297,6 +342,16 @@ export class FakeHermes {
    * file's text (or bytes, one char per byte); `{ dir: true }` is a folder.
    */
   serverFiles: Record<string, string | { dir: true }> = {};
+  /** Every `POST /api/fs/write-text` that reached the server, in order (artifact saves, ADR 0029). */
+  readonly fsWrites: { profile: string; path: string; text: string }[] = [];
+  /** While set, an artifact save waits for it before Hermes writes. */
+  fsWriteGate?: Promise<void>;
+  /** Hermes's answer to the next artifact saves instead of writing: the Rust side's error text. */
+  fsWriteFailure?: string;
+  /** Set: a read of that path through the agent fs routes fails with this error, as Rust reports it. */
+  fsReadFailure?: (path: string) => string | undefined;
+  /** Runs right after an artifact save is written, before Hermes answers: to change the file meanwhile, say. */
+  afterFsWrite?: (path: string) => void;
   /** The server's own disk, for the Server files screen (managed files: `GET /api/files`, `GET /api/files/read`). */
   readonly managedFiles = new FakeServerFiles();
   /** The profiles' skills, as Settings → Skills reads and writes them (fakeSkills.ts). */
@@ -430,9 +485,44 @@ export class FakeHermes {
       }
       const runtimeId = `rt-r${++this.resumed}`;
       this.runtime.set(runtimeId, stored);
-      const messages = this.transcripts[stored] ?? [];
+      const messages = shownHistory(this.transcripts[stored] ?? []);
       const info = { ...this.sessionInfo, ...this.sessionModel.get(stored) };
       this.respond(r.id, { session_id: runtimeId, stored_session_id: stored, message_count: messages.length, messages, info, running: false });
+    },
+    // `tui_gateway/methods_session_branch.py` `_branch_live` at the deployed `bf0203a`, as probed live on 2026-11-03: the
+    // first `count` rows of the parent's spine (user and assistant rows with text, hidden ones too) are copied to a new
+    // stored session whose `parent_session_id` is the parent and whose source is the live record's (`tui` after a
+    // sourceless resume). Tool rows and tool calls aren't copied. The title is the parent's next in its lineage.
+    "session.branch": (r) => {
+      if (!this.branchMethod) return this.fail(r.id, -32601, "Method not found: session.branch");
+      const drop = this.dropOnBranch;
+      this.dropOnBranch = undefined;
+      if (drop === "lost") return this.drop();
+      const parent = this.runtime.get(String(r.params.session_id ?? ""));
+      if (!parent) return this.fail(r.id, 4001, "session not found");
+      const key = typeof r.params.idempotency_key === "string" ? r.params.idempotency_key : undefined;
+      const known = key && this.branchKeys.get(key);
+      if (known) return this.respond(r.id, this.branchAnswer(known.stored, known.runtimeId, parent));
+      this.beforeBranch?.();
+      const spine = (this.transcripts[parent] ?? []).filter((m) => (m.role === "user" || m.role === "assistant") && (m.text ?? "").trim());
+      if (!spine.length) return this.fail(r.id, 4008, "nothing to branch — send a message first");
+      const count = typeof r.params.count === "number" && r.params.count > 0 ? r.params.count : spine.length;
+      const store = [this.sessions, ...Object.values(this.otherProfiles)].find((s) => s.some((x) => x.id === parent))!;
+      const base = store.find((x) => x.id === parent)!.title ?? "branch";
+      const n = ++this.branched;
+      const titles = new Set(store.map((x) => x.title));
+      let k = 2;
+      while (titles.has(`${base} #${k}`)) k++;
+      const stored = `${parent}-b${n}`;
+      const runtimeId = `rt-b${n}`;
+      const kept = spine.slice(0, count);
+      store.push(row(stored, 0, { source: "tui", title: typeof r.params.name === "string" && r.params.name ? r.params.name : `${base} #${k}`, parent_session_id: parent, message_count: kept.length, preview: kept.find((m) => m.display_kind !== "hidden")?.text ?? "" }));
+      for (const m of kept) this.storeMessage(stored, { role: m.role, text: m.text, ...(m.display_kind && { display_kind: m.display_kind }), ...(m.reasoning && { reasoning: m.reasoning }) });
+      this.runtime.set(runtimeId, stored);
+      if (key) this.branchKeys.set(key, { stored, runtimeId });
+      if (drop === "stored") return this.drop();
+      if (this.branchError) return this.fail(r.id, this.branchError.code, this.branchError.message);
+      this.respond(r.id, this.branchAnswer(stored, runtimeId, parent));
     },
     // The message is stored as its turn starts (`user_row_id` is the staged row), so the history read back has it.
     "prompt.submit": (r) => {
@@ -499,6 +589,9 @@ export class FakeHermes {
     },
     // Legacy `session.interrupt` (tui_gateway/methods_session_interrupt.py). The turn then ends with a
     // `message.complete` whose status is "interrupted"; tests send that themselves.
+    "session.context_breakdown": (r) =>
+      this.contextBreakdown ? this.respond(r.id, structuredClone(this.contextBreakdown)) : this.fail(r.id, -32601, "method not found: session.context_breakdown"),
+    "session.compress": (r) => (this.compressResult ? this.respond(r.id, structuredClone(this.compressResult)) : this.fail(r.id, -32601, "method not found: session.compress")),
     "session.interrupt": (r) => {
       const sid = String(r.params.session_id);
       if (!this.runtime.has(sid)) return this.fail(r.id, 4001, "session not found");
@@ -662,14 +755,39 @@ export class FakeHermes {
       // order=recent, archived=exclude|only|include, then every pinned row not already on the page, archived or not
       // (list_sessions_rich).
       const excluded = (query.get("exclude_sources") ?? "").split(",").filter(Boolean);
-      const visible = this.storeOrFail(query.get("profile")).filter((s) => !excluded.includes(s.source));
+      const visible = this.storeOrFail(query.get("profile")).filter((s) => !excluded.includes(s.source) && !s.unlisted);
       const archived = query.get("archived") ?? "exclude";
-      const recent = visible.filter((s) => archived === "include" || s.archived === (archived === "only")).sort((a, b) => (b.last_active ?? b.started_at) - (a.last_active ?? a.started_at));
+      // order=created (the default): newest started first; order=recent: latest activity first.
+      const at = (s: SessionRow) => (query.get("order") === "recent" ? (s.last_active ?? s.started_at) : s.started_at);
+      const recent = visible.filter((s) => archived === "include" || s.archived === (archived === "only")).sort((a, b) => at(b) - at(a));
       const offset = Number(query.get("offset") ?? 0);
       const limit = Number(query.get("limit") ?? 20);
       const page = recent.slice(offset, offset + limit);
       const pinned = visible.filter((s) => s.pinned && !page.includes(s));
-      return { sessions: [...page, ...pinned].map((s) => ({ ...s, unread: unread(s) })), total: recent.length, limit, offset, storage: {} };
+      // A compression root lists as its last segment, with its own counts and every segment's id.
+      const listed = (s: SessionRow) => {
+        const { listedAs, ...stored } = s;
+        return listedAs ? { ...stored, ...listedAs, _lineage_root_id: s.id } : stored;
+      };
+      return { sessions: [...page, ...pinned].map((s) => ({ ...listed(s), unread: unread(s) })), total: recent.length, limit, offset, storage: {} };
+    },
+    // `_get_usage_analytics` (`hermes_cli/web_routers/analytics.py` at the deployed `bf0203a`): sums over every stored
+    // session started in the last `days` days, unlisted ones too, and the helper tasks' usage, which no session carries.
+    "GET /api/analytics/usage": ({ query }) => {
+      if (this.analyticsRefused) throw new Error(`The dashboard answered ${this.analyticsRefused.status}: ${JSON.stringify({ detail: this.analyticsRefused.detail })}`);
+      const days = Number(query.get("days") ?? 30);
+      const cutoff = now() - days * DAY;
+      const rows = this.storeOrFail(query.get("profile")).filter((s) => s.started_at > cutoff);
+      const sum = (k: keyof SessionRow) => rows.reduce((n, s) => n + (Number(s[k]) || 0), 0);
+      return {
+        totals: {
+          total_input: sum("input_tokens"), total_output: sum("output_tokens"), total_cache_read: sum("cache_read_tokens"),
+          total_reasoning: sum("reasoning_tokens"), total_estimated_cost: sum("estimated_cost_usd"), total_actual_cost: sum("actual_cost_usd"),
+          total_sessions: rows.length, total_api_calls: sum("api_call_count"),
+        },
+        by_task: this.helperUsage[query.get("profile") ?? "default"] ?? [],
+        daily: [], by_model: [], period_days: days, skills: [], tools: [],
+      };
     },
     // `search_sessions` in `hermes_cli/web_routers/sessions.py` at the deployed `bf0203a`: one row per chat, archived
     // ones too. Message hits come first, then title matches. FTS5 matches a message holding every word of the query,
@@ -872,10 +990,25 @@ export class FakeHermes {
   dropOnToolsetWrite?: "stored" | "lost";
   /** Every toggle the route took, after validation: profile, name and value. */
   readonly toolsetWrites: { profile: string; name: string; enabled: boolean }[] = [];
+  /** `GET /api/analytics/usage` `by_task`, by profile: Hermes's helper tasks' usage. */
+  helperUsage: Record<string, Record<string, unknown>[]> = {};
+  /** While set, `GET /api/analytics/usage` answers with this status, as a Hermes without the route answers 404. */
+  analyticsRefused?: { status: number; detail: unknown };
 
   private onEvent?: (e: PipeEvent) => void;
   private imagesStaged = 0;
   private resumed = 0;
+  /** False: a server older than `session.branch`, which answers it "method not found". */
+  branchMethod = true;
+  /** The next `session.branch` drops the connection before Hermes answers: `stored` made the branch first, `lost` never arrived. */
+  dropOnBranch?: "stored" | "lost";
+  /** While set, `session.branch` fails with this error. `stored`: Hermes stored the branch first, as when its agent can't be built. */
+  branchError?: { code: number; message: string; stored?: boolean };
+  /** Runs as a `session.branch` arrives, before Hermes copies anything: another client adding to the parent meanwhile. */
+  beforeBranch?: () => void;
+  /** Each branch Hermes made, by its idempotency key (`_idempotency_keys`): a retry with the key answers the same branch. */
+  private branchKeys = new Map<string, { stored: string; runtimeId: string }>();
+  private branched = 0;
   private asked = 0;
   closed = false;
 
@@ -936,6 +1069,7 @@ export class FakeHermes {
       discardUpload: async (token) => void this.managedFiles.discardPick(token),
       upload: (id, token, path, overwrite, onProgress) => this.managedFiles.upload(id, token, path, overwrite, onProgress),
       saveText: (id, path, text, overwrite) => this.managedFiles.saveText(path, text, overwrite),
+      fsSaveText: (_id, profile, path, text) => this.fsWriteText(profile, path, text),
       cancelTransfer: async (id) => this.managedFiles.cancel(id),
       // Mirrors `Dashboard::toolset_guards`: only these two facts of the config.
       toolsetGuards: async (profile): Promise<ToolsetGuards> => {
@@ -1180,11 +1314,34 @@ export class FakeHermes {
   }
 
   /** A Server file for `/api/fs/*`, failing the way `_fs_regular_file` and `_is_sensitive_path` do at `bf0203a`. */
-  private serverFile(query: URLSearchParams): { path: string; data: string } {
+/**
+   * `fs_write_text` at `bf0203a` for a host-local profile: the parent must be a folder, only a regular file is replaced,
+   * the text is stored as UTF-8 (one char per byte here, as `serverFiles` holds bytes). The Rust side refuses
+   * credential paths before anything is sent (`write_agent_text`).
+   */
+  private async fsWriteText(profile: string, path: string, text: string): Promise<string> {
+    if (/(^|\/)(\.env(\..*)?|auth\.json|config\.yaml)$/i.test(path)) throw new Error(`Hermes Chat doesn't relay writes to ${path}, a credential file Hermes keeps out of reach`);
+    await this.fsWriteGate;
+    if (this.fsWriteFailure !== undefined) throw new Error(this.fsWriteFailure);
+    const parent = path.slice(0, path.lastIndexOf("/")) || "/";
+    const all = [...this.serverDirs, ...Object.keys(this.serverFiles)];
+    const parentIsDir = this.serverDirs.has(parent) || typeof this.serverFiles[parent] === "object" || all.some((p) => p.startsWith(`${parent}/`));
+    if (typeof this.serverFiles[path] === "object") throw new Error(`The dashboard answered 400: {"detail":"Path points to a directory"}`);
+    if (!parentIsDir) throw new Error(`The dashboard answered 400: {"detail":"Parent directory does not exist"}`);
+    const bytes = new TextEncoder().encode(text);
+    this.serverFiles[path] = Array.from(bytes, (b) => String.fromCharCode(b)).join("");
+    this.fsWrites.push({ profile, path, text });
+    this.afterFsWrite?.(path);
+    return JSON.stringify({ ok: true, path, byteSize: bytes.length });
+  }
+
+    private serverFile(query: URLSearchParams): { path: string; data: string } {
     const profile = query.get("profile");
     if (profile && profile !== "default" && !(profile in this.otherProfiles))
       throw new Error(`The dashboard answered 404: {"detail":"Profile '${profile}' does not exist."}`);
     const path = query.get("path") ?? "";
+    const failure = this.fsReadFailure?.(path);
+    if (failure) throw new Error(failure);
     const name = path.split("/").pop() ?? "";
     if (/^\.env(\..*)?$|^auth\.json$|^config\.yaml$/i.test(name))
       throw new Error(`The dashboard answered 403: {"detail":"Access to sensitive files is not allowed"}`);
@@ -1256,6 +1413,13 @@ export class FakeHermes {
   }
 
   /** A profile's model, effort and fast mode as its config has them: Sonnet at medium effort unless a test set one. */
+  /** What `session.branch` answers for a branch it made: on the profile's model, whatever the parent ran on. */
+  private branchAnswer(stored: string, runtimeId: string, parent: string) {
+    const history = this.transcripts[stored] ?? [];
+    const title = [this.sessions, ...Object.values(this.otherProfiles)].flat().find((s) => s.id === stored)?.title ?? "";
+    return { session_id: runtimeId, stored_session_id: stored, title, parent, message_count: history.length, messages: shownHistory(history), info: { ...this.sessionInfo, ...this.defaultModel() } };
+  }
+
   defaultModel(profile?: string | null): ModelInfo {
     return this.profileModel[profile || "default"] ?? { model: "claude-sonnet-4-5", provider: "anthropic", reasoning_effort: "medium", fast: false };
   }
@@ -1321,8 +1485,9 @@ export class FakeHermes {
    * with a stored id are there: a live session's unstored tail isn't.
    */
   private storedMessages(id: string, query: URLSearchParams) {
+    if (this.messagesFailure) throw new Error(this.messagesFailure);
     const rows = (this.transcripts[id] ?? [])
-      .filter((m) => m.row_id !== undefined)
+      .filter((m) => m.row_id !== undefined && (!m.compacted || query.get("include_compacted") === "true"))
       .map((m) => ({
         id: m.row_id!,
         session_id: id,
@@ -1332,6 +1497,11 @@ export class FakeHermes {
         tool_call_id: m.tool_call_id ?? null,
         tool_calls: m.tool_calls === undefined ? null : JSON.stringify(m.tool_calls),
         timestamp: m.timestamp ?? null,
+        display_kind: m.display_kind ?? null,
+        active: m.compacted ? 0 : 1,
+        compacted: m.compacted ? 1 : 0,
+        _compressed_summary: m.summary ? 1 : null,
+        message_uid: m.message_uid ?? `uid-${m.row_id}`,
       }));
     if (query.get("order") === "latest") rows.reverse();
     const offset = Number(query.get("offset") ?? 0);

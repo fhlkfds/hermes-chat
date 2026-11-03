@@ -1,5 +1,5 @@
 // Settings → Skills: the skills Hermes offers the model in a profile, listed, turned on or off, and their SKILL.md
-// edited, through the dashboard's own routes (GLOSSARY.md "Skill", ADR 0025). At the deployed `bf0203a`,
+// edited, through the dashboard's own routes (GLOSSARY.md "Skill", ADR 0030). At the deployed `bf0203a`,
 // `hermes_cli/web_routers/skills.py`:
 // - `GET /api/skills?profile=` → `[{name, description, category, enabled, usage, provenance}]`: every loadable skill in
 //   the profile's skills folder, `skills.create_dir` and `skills.external_dirs` (`find_all_skills`). `enabled` is the

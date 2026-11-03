@@ -2,11 +2,12 @@
 // the profile (outputs.ts, ADR 0016). It opens from the rail and takes the chat pane's place, as Server files does; a
 // file opens in the preview pane beside it. Paths a reply only mentions aren't listed.
 import { useMemo, useState } from "react";
-import { ArrowLeft, CircleAlert, File, FileArchive, FileAudio, FileImage, FileText, FolderOpen, LocateFixed, Eye, Plus, RefreshCw, Trash2, WifiOff, X } from "lucide-react";
+import { ArrowLeft, CircleAlert, File, FileArchive, FileAudio, FileImage, FilePen, FileText, FolderOpen, LocateFixed, Eye, Plus, RefreshCw, Trash2, WifiOff, X } from "lucide-react";
 import type { ConnectionStatus } from "../hermes/model";
 import {
   HOW_LABEL,
   TYPE_LABEL,
+  editable,
   previewable,
   shownName,
   shownPath,
@@ -61,6 +62,8 @@ export function OutputsScreen({
   onAdd,
   onRemove,
   onPreview,
+  onEdit,
+  unsavedEdit,
   onJump,
   onShowFolder,
   onClose,
@@ -85,6 +88,10 @@ export function OutputsScreen({
   onAdd: (path: string) => Promise<unknown>;
   onRemove: (key: string) => void;
   onPreview: (o: Output) => void;
+  /** Opens the file to edit beside the chat (ADR 0029). */
+  onEdit?: (o: Output) => void;
+  /** Whether the file has an edit open that isn't saved to Hermes. */
+  unsavedEdit?: (o: Output) => boolean;
   onJump: (o: Output) => void;
   onShowFolder: (o: Output) => void;
   onClose: () => void;
@@ -291,6 +298,8 @@ export function OutputsScreen({
                   const name = shownName(o.path);
                   const v = versionOf.get(o.key);
                   const can = previewable(o);
+                  const canEdit = editable(o);
+                  const unsaved = unsavedEdit?.(o) ?? false;
                   const title = o.chatId ? (chatTitle(o.chatId) ?? "A chat not in the list") : undefined;
                   return (
                     <tr key={o.key}>
@@ -300,6 +309,11 @@ export function OutputsScreen({
                           <span className="files-label" title={shownPath(o.path)}>
                             {name}
                           </span>
+                          {unsaved && (
+                            <span className="badge warn" title="You have an edit of this file open that isn't saved to Hermes">
+                              Unsaved edit
+                            </span>
+                          )}
                           {v && (
                             <span className="badge" title={v.latest ? "The newest version: what the path holds now" : "An older version: the path now holds a later one"}>
                               Version {v.n} of {v.of}
@@ -333,6 +347,18 @@ export function OutputsScreen({
                         >
                           <Eye size={15} />
                         </button>
+                        {onEdit && (
+                          <button
+                            className="icon-btn"
+                            aria-label={`Edit ${name}`}
+                            title={unsaved ? "Go back to your unsaved edit" : canEdit.ok ? "Edit beside the chat" : canEdit.why}
+                            // An unsaved edit always opens again, whatever the server now has: it is the only copy.
+                            disabled={!unsaved && (!canEdit.ok || !connected)}
+                            onClick={() => onEdit(o)}
+                          >
+                            <FilePen size={15} />
+                          </button>
+                        )}
                         {o.callId && o.chatId && (
                           <button className="icon-btn" aria-label={`Go to the message that made ${name}`} title="Go to the message that made it" onClick={() => onJump(o)}>
                             <LocateFixed size={15} />

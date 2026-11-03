@@ -91,6 +91,7 @@ export function SettingsScreen({
   onPersonaDirty = () => {},
   guard = allow,
   showTextGeneration,
+  showMemory,
 }: {
   status: ConnectionStatus;
   route?: Route;
@@ -146,6 +147,8 @@ export function SettingsScreen({
   guard?: (go: () => void) => void;
   /** Set, each time anew, to show the Model tab at the Text generation model: from a title that couldn't be regenerated. */
   showTextGeneration?: object;
+  /** Set (to a new object each time) to show the Memory tab. */
+  showMemory?: object;
 }) {
   const [bytes, setBytes] = useState(cacheBytes);
   const [confirmClear, setConfirmClear] = useState(false);
@@ -153,7 +156,7 @@ export function SettingsScreen({
   const [pulled, setPulled] = useState<string>();
   const [pullError, setPullError] = useState<string>();
   const [signingOut, setSigningOut] = useState(false);
-  const [tab, setTabNow] = useState<Tab>(showTextGeneration ? "model" : "general");
+  const [tab, setTabNow] = useState<Tab>(showTextGeneration ? "model" : showMemory && memory ? "memory" : "general");
   const tabs = TABS.filter(
     (t) => (t.id !== "toolsets" || toolsets) && (t.id !== "persona" || persona) && (t.id !== "memory" || memory) && (t.id !== "skills" || skills),
   );
@@ -162,6 +165,9 @@ export function SettingsScreen({
   useEffect(() => {
     if (showTextGeneration) setTab("model");
   }, [showTextGeneration]);
+  useEffect(() => {
+    if (showMemory && memory) setTab("memory");
+  }, [showMemory]);
 
   const pull = async () => {
     setPulling(true);

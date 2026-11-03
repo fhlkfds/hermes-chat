@@ -1,5 +1,5 @@
 // Settings → Skills: the skills Hermes offers the model in the profile shown, listed with where each comes from and
-// whether it's on, switched on or off, and their SKILL.md edited (skills.ts, GLOSSARY.md "Skill", ADR 0025). Nothing is
+// whether it's on, switched on or off, and their SKILL.md edited (skills.ts, GLOSSARY.md "Skill", ADR 0030). Nothing is
 // written until the owner presses Save, every save is checked against the file as opened and read back, and an edit
 // Hermes didn't take stays on screen. Skill text is instructions for the agent, shown as plain text only, never run or
 // rendered. Installing skills from elsewhere isn't done here.
