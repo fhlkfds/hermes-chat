@@ -95,7 +95,7 @@ export type OutgoingItem = Extract<Item, { kind: "user" }> & { outgoing: Outgoin
 export const isOutgoing = (i: Item): i is OutgoingItem => i.kind === "user" && i.outgoing !== undefined;
 
 /**
- * A Queued message: words and files the owner lined up to send after the chat's reply (ADR 0014). `id` is stable for
+ * A Queued message: words and files the owner lined up to send after the chat's reply (ADR 0018). `id` is stable for
  * its life in the queue. Once it goes it leaves the queue and is an outgoing message (`Outgoing`) like any other.
  */
 export type Queued = { id: string; text: string; attachments?: Attachment[] };

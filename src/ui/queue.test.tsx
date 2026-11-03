@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Queueing the next messages while Hermes replies (ADR 0014), driven the way the owner would, against a fake Hermes.
+// Queueing the next messages while Hermes replies (ADR 0018), driven the way the owner would, against a fake Hermes.
 // Each test checks what is on screen and what reached Hermes.
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";

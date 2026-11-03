@@ -1,4 +1,4 @@
-// Queued messages (ADR 0014): lined up while a reply runs, sent by this app one at a time once each reply has ended,
+// Queued messages (ADR 0018): lined up while a reply runs, sent by this app one at a time once each reply has ended,
 // kept on this computer per connection, profile and chat. These run the real transport against FakeHermes, and the
 // real chat cache over a localStorage that outlives a restart, the way App wires them together.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

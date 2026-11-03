@@ -1,4 +1,4 @@
-// The chat's queue of messages waiting to go after its reply (ADR 0014), above the composer. Both panes of a chat show
+// The chat's queue of messages waiting to go after its reply (ADR 0018), above the composer. Both panes of a chat show
 // the same queue. Each message can be edited, moved and removed; the queue can be paused and resumed.
 import { useEffect, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, ListOrdered, Paperclip, Pause, Pencil, Play, Trash2 } from "lucide-react";

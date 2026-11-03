@@ -311,7 +311,7 @@ describe("updater", () => {
     await u.restart();
     expect(invoke).toHaveBeenCalledWith("app_restart", { drafts: JSON.stringify({ "hermes-chat.draft.a": "half a thought", "hermes-chat.outbox.a": "[]" }) });
     expect(u.getSnapshot()).toMatchObject({ state: "error", message: expect.stringContaining("disk full"), restart: { from: "r1.ef433a2-1", to: "r2.4444444-1" } });
-    // Queued messages may go again, since the app didn't restart (ADR 0014).
+    // Queued messages may go again, since the app didn't restart (ADR 0018).
     expect(restartHold.on).toBe(false);
     answers.app_restart = undefined;
     await u.restart();
