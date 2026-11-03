@@ -1,7 +1,8 @@
 import { type ReactNode, type RefObject, Suspense, lazy, useCallback, useLayoutEffect, useMemo, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { Columns2, FolderCog, PanelRight, X } from "lucide-react";
-import { RenameConflict, connect, readSaved, type Delivery, type Hermes } from "./hermes/transport";
+import { RenameConflict, connect, readSaved, toSource, type Delivery, type Hermes } from "./hermes/transport";
+import { invoke } from "@tauri-apps/api/core";
 import type { CommandHost } from "./ui/SlashCommands";
 import type { ServerCommandList } from "./hermes/commands";
 import { CHECK_EVERY_MS } from "./hermes/otherProfiles";
@@ -41,6 +42,7 @@ import { LeaveMemoryEdit, useCloseGuard } from "./ui/LeaveMemoryEdit";
 import { tauriCloseGuard, type CloseGuard } from "./ui/tauriWindow";
 import { FileBrowser } from "./ui/FileBrowser";
 import { OutputsScreen, type OutputsScope } from "./ui/Outputs";
+import { UsageAnalytics } from "./ui/UsageAnalytics";
 import { OutputsIndex, outputsIn, splitPath, type Output } from "./hermes/outputs";
 import { composing, routeLabel } from "./ui/bits";
 import { ProjectScreen, ProjectSwitcher, type ProjectUnread } from "./ui/Projects";
@@ -478,6 +480,10 @@ export function Main({
   // Outputs covers the chat panes too, but not the preview pane, where its files open.
   const [outputsOpen, setOutputsOpen] = useState(false);
   const [outputsScope, setOutputsScope] = useState<OutputsScope>("chat");
+  // Usage analytics covers the chat panes too (ADR 0023). It reads Hermes afresh each time it opens.
+  const [usageOpen, setUsageOpen] = useState(false);
+  const usageIo = useMemo(() => hermes.usageIo(), [hermes]);
+  const listProfiles = useCallback(() => hermes.profiles(), [hermes]);
   const update = useSyncExternalStore(updates.subscribe, updates.getSnapshot);
   const updateWaiting = needsAttention(update);
   // Drafts were saved for the restart; nothing typed after that would survive it.
@@ -657,6 +663,7 @@ export function Main({
       setJobsOpen(false);
       setTerminalOpen(false);
       setOutputsOpen(false);
+      setUsageOpen(false);
       if (remember) rememberOpenChat(profile, id);
     };
     if (keepSettings) go();
@@ -678,6 +685,7 @@ export function Main({
     setJobsOpen(false);
     setTerminalOpen(false);
     setOutputsOpen(false);
+    setUsageOpen(false);
   });
 
   // A second pane opens to the right and becomes the active one. Both panes may show the same chat: they are two views
@@ -696,6 +704,7 @@ export function Main({
     setJobsOpen(false);
     setTerminalOpen(false);
     setOutputsOpen(false);
+    setUsageOpen(false);
     rememberOpenChat(profile, chatId);
   });
 
@@ -726,6 +735,7 @@ export function Main({
       setJobsOpen(false);
       setTerminalOpen(false);
       setOutputsOpen(false);
+      setUsageOpen(false);
       setSearchOpen(false);
       if (!previewFits) setPreviewHidden(true);
     });
@@ -1005,7 +1015,7 @@ export function Main({
   // Settings covers the chat, and the pane with it; so do the project screen, Server files, Scheduled jobs and the
   // Terminal.
   // Outputs covers the chat panes but keeps the preview pane beside it, since its files open there.
-  const screenCovering = settingsOpen || projectScreenOpen || filesOpen || jobsOpen || terminalOpen;
+  const screenCovering = settingsOpen || projectScreenOpen || filesOpen || jobsOpen || terminalOpen || usageOpen;
   const covering = screenCovering || outputsOpen;
   const previewShown = !!preview && !screenCovering && (previewFits || !previewHidden);
   const previewCovers = previewShown && !previewFits;
@@ -1102,6 +1112,7 @@ export function Main({
             setJobsOpen(false);
             setTerminalOpen(false);
             setOutputsOpen(false);
+            setUsageOpen(false);
             setFilesOpen((o) => !o);
           })
         }
@@ -1112,6 +1123,7 @@ export function Main({
             setFilesOpen(false);
             setJobsOpen(false);
             setTerminalOpen(false);
+            setUsageOpen(false);
             setOutputsOpen((o) => !o);
           })
         }
@@ -1120,13 +1132,14 @@ export function Main({
         onInbox={() => setInboxOpen((o) => !o)}
         inboxOpen={inboxOpen}
         inboxCount={inboxCount}
-        onSettings={() => { setProjectOpen(false); setFilesOpen(false); setJobsOpen(false); setTerminalOpen(false); setOutputsOpen(false); setShowTextGeneration(undefined); setSettingsOpen(true); }}
+        onSettings={() => { setProjectOpen(false); setFilesOpen(false); setJobsOpen(false); setTerminalOpen(false); setOutputsOpen(false); setUsageOpen(false); setShowTextGeneration(undefined); setSettingsOpen(true); }}
         onJobs={() =>
           guard(() => {
             setProjectOpen(false);
             setSettingsOpen(false);
             setFilesOpen(false);
             setOutputsOpen(false);
+            setUsageOpen(false);
             setTerminalOpen(false);
             setJobsOpen(true);
           })
@@ -1139,10 +1152,23 @@ export function Main({
             setFilesOpen(false);
             setJobsOpen(false);
             setOutputsOpen(false);
+            setUsageOpen(false);
             setTerminalMounted(true);
             setTerminalOpen((o) => !o);
           })
         }
+        onUsage={() =>
+          guard(() => {
+            setProjectOpen(false);
+            setSettingsOpen(false);
+            setFilesOpen(false);
+            setJobsOpen(false);
+            setTerminalOpen(false);
+            setOutputsOpen(false);
+            setUsageOpen((o) => !o);
+          })
+        }
+        usageOpen={usageOpen && !settingsOpen && !projectScreenOpen && !filesOpen && !jobsOpen}
         terminalOpen={terminalOpen && !settingsOpen}
         terminalRunning={terminalRunning}
         updateWaiting={updateWaiting}
@@ -1171,6 +1197,7 @@ export function Main({
                     setJobsOpen(false);
                     setTerminalOpen(false);
                     setOutputsOpen(false);
+                    setUsageOpen(false);
                     setProjectOpen(true);
                   });
                 }}
@@ -1181,6 +1208,7 @@ export function Main({
                     setJobsOpen(false);
                     setTerminalOpen(false);
                     setOutputsOpen(false);
+                    setUsageOpen(false);
                     setProjectOpen(true);
                     void projects.readDefaults();
                   })
@@ -1215,6 +1243,7 @@ export function Main({
             setJobsOpen(false);
             setTerminalOpen(false);
             setOutputsOpen(false);
+            setUsageOpen(false);
             setShowTextGeneration({});
             setSettingsOpen(true);
           }}
@@ -1342,6 +1371,24 @@ export function Main({
               focusPane(active.key);
             }}
           />
+        ) : usageOpen ? (
+          <UsageAnalytics
+            key={profile}
+            io={usageIo}
+            profile={profile}
+            listProfiles={listProfiles}
+            projects={proj.projects}
+            projectChats={proj.chats}
+            connected={status === "connected"}
+            onOpenChat={(c) =>
+              pick({ chatId: c.id, title: c.title, source: toSource(c.source), settled: !c.pinned, archived: c.archived || undefined, updatedAt: c.startedAt, snippet: [] })
+            }
+            saveCsv={(csv, fileName) => invoke<string | null>("usage_export", { csv, fileName })}
+            onClose={() => {
+              flushSync(() => setUsageOpen(false));
+              focusPane(active.key);
+            }}
+          />
         ) : outputsOpen ? (
           <OutputsScreen
             snapshot={outSnap}
@@ -1374,6 +1421,7 @@ export function Main({
             onShowFolder={(o) => {
               setFilesPath(splitPath(o.path).dir);
               setOutputsOpen(false);
+              setUsageOpen(false);
               setFilesOpen(true);
             }}
             onClose={() => {

@@ -154,6 +154,10 @@ _Avoid_: tokens (alone, for the whole breakdown), stats
 What a chat's usage cost, only as Hermes recorded it: reported by the provider, estimated, at least an estimate, included in a subscription, or unknown. It counts only the calls Hermes could price. The app keeps no prices of its own, and shows no cost per reply.
 _Avoid_: price, spend, bill (except for a cost the provider reported)
 
+**Usage analytics**:
+The rail's Usage screen: the Usage and Cost Hermes stored for each chat started in a period, added up across chats, models, where chats started, projects, profiles and days. A chat counts in the period it started in, with all its usage so far, and a compressed chat counts once. The total cost says how much of the usage Hermes priced and is never a bill. Hermes's own sums sit beside it for a period ending now, with its helper tasks and subagent runs, which no chat carries. Nothing is kept on this computer; Export CSV saves the chats counted where the owner picks (ADR 0023).
+_Avoid_: dashboard, stats, report, billing
+
 **Preview pane**:
 The resizable pane beside the chat that shows a web page, a Server file, a Local file or a tool call's output. It opens from a link in a reply, from an opened tool call, or from the chat's header. In a window too narrow for both, it covers the chat until the owner goes back to it. What it shows can't reach the app, the sign-in or this computer's other files (ADR 0007). A web page whose site refuses to be shown inside other apps gets a note and Open in your browser instead (ADR 0011).
 _Avoid_: viewer, side panel, artifact (the official desktop app's word)
