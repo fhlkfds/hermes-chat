@@ -6,7 +6,8 @@ composited or retouched.
 
 Images 4 and 5 were captured from a build of `134755a`, after the independent review's fixes; the others from a build
 of `ef8f7ed`. The review's later changes don't alter what those other images show (they concern kept edits, lost
-answers and navigation while a save runs).
+answers, navigation while a save runs, and a removal overlapping a Reload). All nine predate merging `main` (`5d0748f`),
+so the rail in them lacks main's Server files and Scheduled jobs buttons; the Memory screen itself is unchanged.
 
 The app was signed in by URL (`http://127.0.0.1:19331`, an SSH port-forward) to a **throwaway Hermes dashboard** run from
 the deployed `bf0203a` checkout on the Hermes server, with its own `HOME` under `/tmp`, a synthetic password, and only
