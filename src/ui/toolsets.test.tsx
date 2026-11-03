@@ -238,6 +238,30 @@ describe("Settings → Toolsets", () => {
     expect(server.toolsetWrites).toEqual([]);
   });
 
+  it("checks against a refresh that lands in the same render as the check", async () => {
+    const server = new FakeHermes();
+    const { user } = await shown(server);
+    let releaseCheck!: () => void;
+    server.toolsetConfigGate.computer_use = new Promise((r) => (releaseCheck = r));
+    await user.click(toggle("Computer Use"));
+    await screen.findByText(/Checking what turning Computer Use .* on does/);
+    server.enabledToolsets("default").add("computer_use"); // Turned on in another client meanwhile.
+    let releaseRead!: () => void;
+    server.toolsetListGateOnce = new Promise((r) => (releaseRead = r));
+    act(() => void window.dispatchEvent(new Event("focus")));
+    // The refresh's answer, then the check's, with no render between them.
+    await act(async () => {
+      releaseRead();
+      await new Promise((r) => setTimeout(r, 20));
+      releaseCheck();
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(toggle("Computer Use").getAttribute("aria-checked")).toBe("true");
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(await screen.findByText(/Not changed: Computer Use .* was turned on elsewhere while this was being checked/)).toBeTruthy();
+    expect(server.toolsetWrites).toEqual([]);
+  });
+
   it("closes an open confirmation when a refresh shows its toolset changed", async () => {
     const server = new FakeHermes();
     const { user } = await shown(server);

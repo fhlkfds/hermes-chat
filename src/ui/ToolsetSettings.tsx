@@ -217,8 +217,15 @@ export function ToolsetSettings({
   const stamp = useRef(0);
   /** Bumped by each provider-readiness read: only the latest one's answer is shown. */
   const readinessRead = useRef(0);
+  /**
+   * The list as last accepted, set together with the state: a change being checked compares against it, and a read can
+   * land after a check started but before React renders it.
+   */
   const shownList = useRef<ToolsetList | undefined>(undefined);
-  shownList.current = list;
+  const show = (l: ToolsetList) => {
+    shownList.current = l;
+    setList(l);
+  };
   useEffect(() => {
     live.current = true;
     return () => void (live.current = false);
@@ -261,7 +268,7 @@ export function ToolsetSettings({
             }),
           ),
         );
-        setList(fresh);
+        show(fresh);
         // A confirmation open for a toolset that has since changed, or gone, no longer asks the right question.
         setAsk((a) => {
           if (!a) return a;
@@ -330,7 +337,7 @@ export function ToolsetSettings({
       if (!live.current) return;
       stamp.current++;
       // Every outcome but a lost answer carries the list as Hermes has it after the attempt.
-      if (r.list) setList(r.list);
+      if (r.list) show(r.list);
       if (r.kind === "confirm") {
         const fresh = r.list.toolsets.find((x) => x.name === t.name) ?? t;
         setAsk({ t: fresh, enabled, cautions: r.cautions, again: true });
