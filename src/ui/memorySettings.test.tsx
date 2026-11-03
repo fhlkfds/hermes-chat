@@ -447,6 +447,29 @@ describe("Settings → Memory", () => {
     expect(s.memory.default.profile).toEqual([]);
   });
 
+  it("drops the question about removing an entry once a Reload starts, so a late removal can't close a newer edit", async () => {
+    const s = server();
+    const { user } = await shown({ s });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const frames = s.handlers["learning.frames"];
+    s.handlers["learning.frames"] = (r) => void gate.then(() => frames(r));
+    await user.click(screen.getByRole("tab", { name: /User profile/ }));
+    await user.click(entry(SAM));
+    await user.click(button("Delete"));
+    expect(screen.getByRole("alertdialog", { name: "Remove this entry?" })).toBeTruthy();
+    await user.click(button(/Reload/));
+    expect(screen.queryByRole("alertdialog", { name: "Remove this entry?" })).toBeNull();
+    s.handlers["learning.frames"] = frames;
+    release();
+    await waitFor(() => expect(button(/Reload/).textContent?.trim()).toBe("Reload"));
+    await user.click(screen.getByRole("tab", { name: /Agent notes/ }));
+    await user.click(entry(SHORT));
+    await user.type(editor(), " Newer words.");
+    expect(editor().value).toBe(`${SHORT} Newer words.`);
+    expect(s.memory.default.profile).toEqual([SAM]);
+  });
+
   it("shows memory text as plain text, never as markup", async () => {
     const s = server();
     s.memory.default.memory = ['<img src=x onerror="alert(1)"> **not bold** [link](javascript:alert(1))'];

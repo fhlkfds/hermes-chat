@@ -128,7 +128,9 @@ export function MemorySettings({
     const n = ++reads.current;
     if (why === "reload") {
       setBusy("reload");
+      // Questions lapse: what they'd act on could change under the read.
       setLeaving(undefined);
+      setConfirmDelete(false);
     }
     setLoading(true);
     try {
@@ -228,7 +230,7 @@ export function MemorySettings({
   };
 
   const save = async () => {
-    if (!editing) return;
+    if (!editing || busy) return;
     const at = editing;
     setBusy("save");
     // A question about opening something else lapses: what it would open could change under the save.
@@ -265,7 +267,7 @@ export function MemorySettings({
   };
 
   const remove = async () => {
-    if (!editing) return;
+    if (!editing || busy) return;
     const at = editing;
     setBusy("delete");
     setLeaving(undefined);
@@ -275,7 +277,8 @@ export function MemorySettings({
       const next = await api.remove(profile, at.entry);
       if (!alive.current) return;
       setView(next);
-      setEditing(undefined);
+      // Only the entry removed closes; anything opened meanwhile stays as it is.
+      setEditing((cur) => (cur?.entry.id === at.entry.id ? undefined : cur));
       setNotice({ kind: "ok", text: "Removed, and read back from Hermes: the entry is gone." });
     } catch (e) {
       if (!alive.current) return;
@@ -473,7 +476,7 @@ export function MemorySettings({
                         <button className="btn" autoFocus onClick={() => setConfirmDelete(false)}>
                           Keep it
                         </button>
-                        <button className="btn danger" onClick={() => void remove()}>
+                        <button className="btn danger" disabled={!connected || !!busy} onClick={() => void remove()}>
                           Remove entry
                         </button>
                       </div>
