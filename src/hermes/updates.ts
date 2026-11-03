@@ -6,7 +6,7 @@
 // notes. Only the package manager installs it; the app then asks to restart. A standalone AppImage built with an
 // update key uses Tauri's updater, which verifies the download's signature. Drafts survive the restart (`restart`).
 
-import { sending, unsaved } from "./unsaved";
+import { restartHold, sending, unsaved } from "./unsaved";
 
 export const REPO = "l0cky12/hermes-chat";
 
@@ -184,14 +184,16 @@ export type Updater = {
 
 /**
  * What a restart must not lose, as a snapshot to put back after it: every draft (drafts.ts), every chat's outbox of
- * messages Hermes hasn't confirmed, and held messages from before the outbox, not yet moved into it (chatCache.ts).
+ * messages Hermes hasn't confirmed and queue of messages waiting to go, and held messages from before the outbox, not
+ * yet moved into it (chatCache.ts).
  */
-export const DRAFT_PREFIXES = ["hermes-chat.draft.", "hermes-chat.outbox.", "hermes-chat.undelivered."];
+export const DRAFT_PREFIXES = ["hermes-chat.draft.", "hermes-chat.outbox.", "hermes-chat.queue.", "hermes-chat.undelivered."];
 const isDraftKey = (k: string) => DRAFT_PREFIXES.some((p) => k.startsWith(p));
 
 /** The drafts and outboxes in `storage`, with the latest of any its stores couldn't write there (unsaved.ts). */
-/** Also marks every message in `sending` captured. */
+/** Also marks every message in `sending` captured, and holds every queue (`restartHold`). */
 export function snapshotDrafts(storage: UpdateDeps["storage"], pending: ReadonlyMap<string, string | null> = unsaved): string {
+  restartHold.on = true;
   const out: Record<string, string> = {};
   for (let i = 0; i < storage.length; i++) {
     const k = storage.key(i);
@@ -318,6 +320,8 @@ export function updater(deps: UpdateDeps): Updater {
     try {
       await deps.invoke("app_restart", { drafts: snapshotDrafts(deps.storage) });
     } catch (e) {
+      // ponytail: queues go again at the transport's next change, not at once; add a wake-up if that's ever too late.
+      restartHold.on = false;
       set({ state: "error", message: messageOf(e), restart: { from, to, found } });
     }
   };

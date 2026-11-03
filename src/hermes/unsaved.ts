@@ -11,6 +11,12 @@ export const unsaved = new Map<string, string | null>();
 export type Sending = { key: string; text: string; captured?: boolean };
 export const sending = new Set<Sending>();
 
+/**
+ * Set while an update's restart is under way, from the moment it takes its snapshot: no queued message goes
+ * meanwhile, since the restarted app puts back the queue as the snapshot had it (ADR 0018). Cleared if the restart fails.
+ */
+export const restartHold = { on: false };
+
 /** Writes `value` under `key` (null deletes it), and notes it here if the write fails or there's no storage. False: it failed. */
 export function persist(storage: () => Pick<Storage, "setItem" | "removeItem">, key: string, value: string | null): boolean {
   try {

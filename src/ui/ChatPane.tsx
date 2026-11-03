@@ -1,14 +1,15 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
 // Dictation and Read aloud come from Voice.tsx.
 import { createContext, memo, type ReactNode, useCallback, useContext, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
-import { ArrowUp, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, FileDown, Globe, HardDrive, Paperclip, RotateCcw, Search, Server, Square, Wrench, X } from "lucide-react";
+import { ArrowUp, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, FileDown, Globe, HardDrive, ListPlus, Paperclip, RotateCcw, Search, Server, Square, Wrench, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import type { ApprovalChoice, AttachCheck, Attachment, Chat, ConnectionStatus, Item, OutgoingItem, Source } from "../hermes/model";
+import type { ApprovalChoice, AttachCheck, Attachment, Chat, ChatQueue, ConnectionStatus, Item, OutgoingItem, Source } from "../hermes/model";
 import { SOURCE_LABEL, isOutgoing, isWaiting } from "../hermes/model";
 import type { DeskState, ScreenshotDesk } from "../hermes/screenshots";
 import { ApprovalCard } from "./ApprovalCard";
+import { QueuePanel, type QueueApi } from "./Queue";
 import { Markdown } from "./Markdown";
 import { ArchiveButton, SettleButton, SourceIcon, Spinner, StoredTime, composing, highlight } from "./bits";
 import { AttachmentChip, Previews, readPreview } from "./previews";
@@ -100,7 +101,9 @@ const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateS
  * contains the model picker; `footer` contains the status bar. Only the active pane answers Ctrl+F and takes focus as
  * it opens. Native drops attach to the pane under the pointer. `paneControls` follows the chat's own buttons.
  * `screenshots` attaches captures; `screenshotKeys` names the shortcut.
- * `voice` supplies Dictation and Read aloud. `commands` runs the slash commands typed in the composer.
+ * `voice` supplies Dictation and Read aloud. `commands` runs the slash commands typed in the composer. `queue` is the
+ * chat's queue of messages waiting to go after its reply, and `queueApi` changes it; it is left out for a chat not
+ * started yet, which can't queue.
  */
 export function ChatPane({
   chat,
@@ -136,6 +139,8 @@ export function ChatPane({
   footer,
   onUsage,
   headActions,
+  queue,
+  queueApi,
   commands,
 }: {
   chat: Chat;
@@ -176,6 +181,8 @@ export function ChatPane({
   footer?: ReactNode;
   onUsage?: () => void;
   headActions?: ReactNode;
+  queue?: ChatQueue;
+  queueApi?: QueueApi;
   commands?: CommandHost;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -331,6 +338,9 @@ export function ChatPane({
   const movedAt = useMemo(() => performance.now(), [chat.items]);
   const last = chat.items[chat.items.length - 1];
   const waiting = chat.items.some(isWaiting);
+  // Enter queues while a reply runs, while Hermes isn't connected, and while messages are queued already, so a new one
+  // never jumps the queue. The composer's hint says which Enter does.
+  const queueing = !!queueApi && (!!chat.running || status !== "connected" || !!queue?.items.length);
 
   return (
     <div className="chat" ref={rootRef}>
@@ -474,8 +484,11 @@ export function ChatPane({
         </JumpContext.Provider>
       </div>
 
+      {queueApi && <QueuePanel chat={chat} queue={queue} status={status} api={queueApi} />}
       <Composer
         offline={status !== "connected"}
+        queueing={queueing}
+        onQueue={queueApi?.add}
         running={!!chat.running}
         stopping={!!chat.stopping}
         note={STATUS_NOTE[status]}
@@ -757,6 +770,8 @@ function ToolGroup({ tools }: { tools: ToolItem[] }) {
 
 function Composer({
   offline,
+  queueing = false,
+  onQueue,
   running,
   stopping,
   note,
@@ -778,6 +793,9 @@ function Composer({
   commands,
 }: {
   offline: boolean;
+  /** Enter, and the Queue button, add the message to the chat's queue (`onQueue`, which says why it couldn't). */
+  queueing?: boolean;
+  onQueue?: (text: string, attachments: Attachment[]) => string | undefined;
   running: boolean;
   stopping: boolean;
   note?: string;
@@ -948,8 +966,14 @@ function Composer({
   const slash = useSlashCommands(commands, text, onText, taRef);
   const send = () => {
     if (slash.run()) return;
-    if (offline || running || !sendable) return;
-    onSend(text.trim(), attachments);
+    if (!sendable) return;
+    if (queueing && onQueue) {
+      const why = onQueue(text.trim(), attachments);
+      if (why) return setRefused([why]);
+    } else {
+      if (offline || running) return;
+      onSend(text.trim(), attachments);
+    }
     setAttachments([]);
     setRefused([]);
   };
@@ -1021,7 +1045,8 @@ function Composer({
             if (slash.onKeyDown(e)) return;
             if (e.key === "Enter" && !e.shiftKey && !composing(e)) {
               e.preventDefault();
-              send();
+              // Enter queues only while the hint below says so; Dictation hides it.
+              if (!(queueing && dictation.active)) send();
             }
           }}
         />
@@ -1042,15 +1067,22 @@ function Composer({
             </button>
           )}
           {modelControls}
-          {!dictation.active && <span className="composer-keys">Enter to send · Shift+Enter for a new line</span>}
+          {!dictation.active && <span className="composer-keys">{queueing ? "Enter to queue" : "Enter to send"} · Shift+Enter for a new line</span>}
+          {queueing && onQueue && (
+            <button className="send queue-btn" title="Queue: send after the reply (Enter)" aria-label="Queue" disabled={!sendable} onClick={send}>
+              <ListPlus size={16} />
+            </button>
+          )}
           {running ? (
             <button className="send stop" title={stopping ? "Stopping" : "Stop"} disabled={offline || stopping} onClick={onStop}>
               <Square size={12} fill="currentColor" />
             </button>
           ) : (
-            <button className="send" title="Send" disabled={offline || !sendable} onClick={send}>
-              <ArrowUp size={16} />
-            </button>
+            !(queueing && onQueue) && (
+              <button className="send" title="Send" disabled={offline || !sendable} onClick={send}>
+                <ArrowUp size={16} />
+              </button>
+            )
           )}
         </div>
         {dictation.active && <DictationStrip dictation={dictation} />}
