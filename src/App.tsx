@@ -980,7 +980,7 @@ export function Main({
     void hermes.switchProfile(name);
   }, "profile");
 
-  // Another saved connection (ADR 0023). Whatever is running or waiting here is named first, from the inbox's entries,
+  // Another saved connection (ADR 0025). Whatever is running or waiting here is named first, from the inbox's entries,
   // which cover every profile on this server; an unsaved persona or memory edit asks first too. Nothing is stopped:
   // Hermes keeps a running reply going after this connection closes, as it does when the profile switches.
   const [connectionAsk, setConnectionAsk] = useState<{ to: SavedConnection; notes: string[]; go: () => void; stay?: () => void }>();

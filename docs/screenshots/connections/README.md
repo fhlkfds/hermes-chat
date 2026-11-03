@@ -55,3 +55,26 @@ The final transport run includes `a_password_never_follows_a_cross_origin_307_or
 `cargo build --features tauri/custom-protocol` also passed. There is no configured lint command.
 
 A separate Codex reviewer used exactly **gpt-6.1-sol / High reasoning** in three review rounds. Nine actionable findings were fixed: sign-in transport races, failed-write/screenshot retention, legacy Failed messages, model pick isolation, Setup leave guards, persona cleanup suffixes and memory, Setup chat restoration, failed-removal recovery, and sign-in during pending removal. The final busy-removal regression and the full suite above passed after the fixes.
+
+## Integration with current main
+
+Main merged Server files download/upload/edit while this PR was being prepared. Its transfer cancellation and commands were retained, and this feature's ADR was renumbered to 0025. After resolving the mechanical Rust insertion conflict, checks were rerun:
+
+```text
+npm run build: passed (2604 modules, existing chunk warning)
+npm test -- --maxWorkers=2
+Test Files  95 passed | 1 skipped (96)
+Tests       2213 passed | 5 skipped (2218)
+Duration    65.37s
+
+cargo test --lib --test transport --test media --test screenshot
+lib:        23 passed; 0 failed
+media:       4 passed; 0 failed
+screenshot: 19 passed; 0 failed
+transport: 100 passed; 0 failed
+cargo build --features tauri/custom-protocol: passed
+```
+
+Review rounds were 1/3 (five findings), 2/3 (three), and 3/3 (one). All nine were addressed with regression checks before main's updated AGENTS.md arrived. No fourth review was started under its three-round limit. The subsequent mechanical integration was inspected locally and tested as above; a Claude integration task was attempted under the new workflow but its API was rate limited. There is no independent review verdict for that integration.
+
+The final merged binary was then launched with embedded assets (`tauri://localhost`) in the isolated native session. From its fresh production origin, Setup tested Alpha, Save and connect succeeded, and the main screen showed Connected. This was a production-binary smoke check; the two-connection restoration/removal exercise above used the development origin.

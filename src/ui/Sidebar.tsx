@@ -106,7 +106,7 @@ export function Rail({
           </button>
         )}
         {onFiles && (
-          <button className={`icon-btn ${filesOpen ? "on" : ""}`} title="Server files (read-only)" aria-pressed={filesOpen} onClick={onFiles}>
+          <button className={`icon-btn ${filesOpen ? "on" : ""}`} title="Server files" aria-pressed={filesOpen} onClick={onFiles}>
             <FolderOpen size={18} />
           </button>
         )}

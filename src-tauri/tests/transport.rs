@@ -142,6 +142,54 @@ async fn read_file(headers: HeaderMap, Query(q): Query<HashMap<String, String>>)
     }
 }
 
+/// `GET /api/files/download`, as `hermes_cli/web_routers/files.py` answers it at `bf0203a`, for a few made-up files:
+/// `/srv/data.bin` (300,000 bytes, with a Content-Length), `/srv/.env` (refused as a credential file), `/srv/cut`
+/// (breaks off after 64 KiB) and `/srv/slow` (a chunk every 50 ms, without end).
+async fn download_file(headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
+    if !cookie(&headers).split("; ").any(|c| c == "hermes_session_at=AT") {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"detail": "Unauthorized"}))).into_response();
+    }
+    match q.get("path").map(String::as_str) {
+        Some("/srv/data.bin") => (0..300_000u32).map(|i| (i % 251) as u8).collect::<Vec<u8>>().into_response(),
+        Some("/srv/.env") => (StatusCode::FORBIDDEN, Json(json!({"detail": "Access to sensitive files is not allowed"}))).into_response(),
+        Some("/srv/cut") => {
+            let chunks = futures_util::stream::iter([Ok(vec![7u8; 64 * 1024]), Err(std::io::Error::other("connection reset"))]);
+            axum::body::Body::from_stream(chunks).into_response()
+        }
+        Some("/srv/slow") => {
+            let chunks = futures_util::stream::unfold((), |_| async {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                Some((Ok::<_, std::io::Error>(vec![1u8; 4096]), ()))
+            });
+            axum::body::Body::from_stream(chunks).into_response()
+        }
+        _ => (StatusCode::NOT_FOUND, Json(json!({"detail": "File not found"}))).into_response(),
+    }
+}
+
+/// `POST /api/files/upload-stream`, as `hermes_cli/web_routers/files.py` takes it at `bf0203a`: a multipart form with
+/// `file`, `path` and `overwrite`. `/srv/taken.txt` is already there. It answers with what it got, and counts uploads.
+async fn upload_stream(State(uploads): State<Arc<Mutex<Vec<String>>>>, headers: HeaderMap, mut form: axum::extract::Multipart) -> Response {
+    let (mut path, mut overwrite, mut bytes, mut file_name) = (String::new(), String::new(), Vec::new(), String::new());
+    while let Some(field) = form.next_field().await.unwrap() {
+        match field.name().unwrap_or_default() {
+            "path" => path = field.text().await.unwrap(),
+            "overwrite" => overwrite = field.text().await.unwrap(),
+            "file" => {
+                file_name = field.file_name().unwrap_or_default().to_owned();
+                bytes = field.bytes().await.unwrap().to_vec();
+            }
+            _ => {}
+        }
+    }
+    uploads.lock().unwrap().push(path.clone());
+    if path == "/srv/taken.txt" && overwrite == "false" {
+        return (StatusCode::CONFLICT, Json(json!({"detail": "File already exists"}))).into_response();
+    }
+    let sum: u64 = bytes.iter().map(|&b| b as u64).sum();
+    Json(json!({"path": path, "overwrite": overwrite, "size": bytes.len(), "sum": sum, "file_name": file_name, "cookie": cookie(&headers)})).into_response()
+}
+
 /// A 500 whose body never ends (`?endless`) or is 50 MB with a Content-Length.
 async fn flood(Query(q): Query<HashMap<String, String>>) -> Response {
     let body = if q.contains_key("endless") {
@@ -300,6 +348,7 @@ fn stub_routes() -> Router {
         .route("/api/audio/transcribe", post(transcribe))
         .route("/api/audio/speak", post(speak))
         .route("/api/files/read", get(read_file))
+        .route("/api/files/download", get(download_file))
         .route("/api/flood", get(flood))
 }
 
@@ -1662,4 +1711,174 @@ async fn a_redirect_to_an_address_that_repeats_a_header_value_never_shows_it() {
     let dashboard = Dashboard::sign_in(&base, &sign_in).await.unwrap();
     let err = dashboard.request("GET", "api/sessions", None).await.unwrap_err();
     assert!(matches!(err, TransportError::RedirectedHidden), "{err:?}");
+}
+
+/// The files in `dir`, hidden part files included.
+fn names_in(dir: &PathBuf) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    names.sort();
+    names
+}
+
+#[tokio::test]
+async fn downloads_a_server_file_in_place_of_the_destination_and_reports_progress() {
+    let dashboard = signed_in().await;
+    let dir = scratch("download-ok");
+    let dest = dir.join("data.bin");
+    std::fs::write(&dest, "the owner's older copy").unwrap();
+    let seen = Mutex::new(Vec::new());
+    let n = dashboard.download("/srv/data.bin", &dest, |done, total| seen.lock().unwrap().push((done, total))).await.expect("downloaded");
+    assert_eq!(n, 300_000);
+    let got = std::fs::read(&dest).unwrap();
+    assert_eq!(got, (0..300_000u32).map(|i| (i % 251) as u8).collect::<Vec<u8>>());
+    let seen = seen.into_inner().unwrap();
+    assert_eq!(seen.first(), Some(&(0, Some(300_000))));
+    assert_eq!(seen.last(), Some(&(300_000, Some(300_000))));
+    assert_eq!(names_in(&dir), ["data.bin"], "no part file is left");
+}
+
+#[tokio::test]
+async fn a_refused_or_broken_download_leaves_the_destination_as_it_was() {
+    let dashboard = signed_in().await;
+    let dir = scratch("download-fail");
+    let dest = dir.join("keep.txt");
+    std::fs::write(&dest, "kept").unwrap();
+    let err = dashboard.download("/srv/.env", &dest, |_, _| {}).await.err().unwrap();
+    assert!(matches!(&err, TransportError::Unexpected { status: 403, body } if body.contains("sensitive")), "{err:?}");
+    let err = dashboard.download("/srv/cut", &dest, |_, _| {}).await.err().unwrap();
+    assert!(matches!(err, TransportError::Unreachable(_)), "{err:?}");
+    assert_eq!(std::fs::read_to_string(&dest).unwrap(), "kept");
+    assert_eq!(names_in(&dir), ["keep.txt"], "the part file was removed");
+    // A folder this user can't write to: nothing is read past the answer's start, and nothing is left.
+    let locked = dir.join("locked");
+    std::fs::create_dir(&locked).unwrap();
+    std::fs::set_permissions(&locked, std::os::unix::fs::PermissionsExt::from_mode(0o500)).unwrap();
+    let err = dashboard.download("/srv/data.bin", &locked.join("x.bin"), |_, _| {}).await.err().unwrap();
+    std::fs::set_permissions(&locked, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    assert!(matches!(&err, TransportError::File(m) if m.contains("ermission denied")), "{err:?}");
+    assert!(names_in(&locked).is_empty());
+}
+
+// On the app's kind of runtime, where the file work runs through `block_in_place`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelling_a_download_removes_its_part_file() {
+    let dashboard = Arc::new(signed_in().await);
+    let dir = scratch("download-cancel");
+    let dest = dir.join("slow.bin");
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let d = dashboard.clone();
+    let task = tokio::spawn({
+        let dest = dest.clone();
+        async move { d.download("/srv/slow", &dest, move |done, _| { let _ = tx.send(done); }).await }
+    });
+    // Wait until bytes have been written, so the part file exists.
+    while rx.recv().await.unwrap() < 8192 {}
+    assert_eq!(names_in(&dir).len(), 1, "a part file while it runs");
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    assert!(names_in(&dir).is_empty(), "nothing left: {:?}", names_in(&dir));
+}
+
+#[tokio::test]
+async fn a_download_names_its_path_as_a_query_and_stays_on_the_file_route() {
+    let dashboard = signed_in().await;
+    let dir = scratch("download-path");
+    // A path that would read as more query, or another route, if it weren't encoded.
+    let err = dashboard.download("/srv/data.bin&path=/srv/.env", &dir.join("x"), |_, _| {}).await.err().unwrap();
+    assert!(matches!(&err, TransportError::Unexpected { status: 404, .. }), "{err:?}");
+}
+
+#[tokio::test]
+async fn a_download_never_takes_over_a_file_already_named_like_its_part_file() {
+    let dashboard = signed_in().await;
+    let dir = scratch("download-collide");
+    let dest = dir.join("data.bin");
+    // Every part name the next downloads could pick in this process is taken by someone else's file.
+    let pid = std::process::id();
+    for n in 0..64 {
+        std::fs::write(dir.join(format!(".data.bin.{pid}-{n}.part")), "not ours").unwrap();
+    }
+    dashboard.download("/srv/data.bin", &dest, |_, _| {}).await.expect("a free name was found");
+    assert_eq!(std::fs::metadata(&dest).unwrap().len(), 300_000);
+    for n in 0..64 {
+        assert_eq!(std::fs::read_to_string(dir.join(format!(".data.bin.{pid}-{n}.part"))).unwrap(), "not ours", "{n}");
+    }
+}
+
+/// A stub dashboard with only sign-in and the upload route, and the server paths it was sent.
+async fn upload_stub() -> (Dashboard, Arc<Mutex<Vec<String>>>) {
+    let uploads = Arc::new(Mutex::new(Vec::new()));
+    let app = Router::new()
+        .route("/auth/password-login", post(login))
+        .route("/api/files/upload-stream", post(upload_stream))
+        .with_state(uploads.clone());
+    let dashboard = Dashboard::sign_in(&serve(app).await, &sign_in("hunter2")).await.unwrap();
+    (dashboard, uploads)
+}
+
+#[tokio::test]
+async fn uploads_a_local_file_as_hermes_takes_it_and_reports_progress() {
+    let (dashboard, _) = upload_stub().await;
+    let dir = scratch("upload-ok");
+    let local = dir.join("report.pdf");
+    let bytes: Vec<u8> = (0..700_000u32).map(|i| (i % 253) as u8).collect();
+    std::fs::write(&local, &bytes).unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let s = seen.clone();
+    let got = dashboard.upload("/srv/in/report.pdf", transport::UploadSource::File(local.clone()), false, move |done, total| s.lock().unwrap().push((done, total))).await.expect("uploaded");
+    let got: Value = serde_json::from_str(&got).unwrap();
+    assert_eq!(got["path"], "/srv/in/report.pdf");
+    assert_eq!(got["overwrite"], "false");
+    assert_eq!(got["file_name"], "report.pdf");
+    assert_eq!(got["size"], 700_000);
+    assert_eq!(got["sum"], bytes.iter().map(|&b| b as u64).sum::<u64>());
+    assert_eq!(got["cookie"], "hermes_session_at=AT; hermes_session_rt=RT");
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.first(), Some(&(0, Some(700_000))));
+    assert_eq!(seen.last(), Some(&(700_000, Some(700_000))));
+}
+
+#[tokio::test]
+async fn an_upload_that_would_replace_a_file_is_refused_unless_asked() {
+    let (dashboard, _) = upload_stub().await;
+    let local = scratch("upload-taken").join("taken.txt");
+    std::fs::write(&local, "new").unwrap();
+    let err = dashboard.upload("/srv/taken.txt", transport::UploadSource::File(local.clone()), false, |_, _| {}).await.err().unwrap();
+    assert!(matches!(&err, TransportError::Unexpected { status: 409, body } if body.contains("already exists")), "{err:?}");
+    let got: Value = serde_json::from_str(&dashboard.upload("/srv/taken.txt", transport::UploadSource::File(local.clone()), true, |_, _| {}).await.unwrap()).unwrap();
+    assert_eq!(got["overwrite"], "true");
+}
+
+#[tokio::test]
+async fn never_uploads_to_a_credential_file_or_more_than_hermes_takes() {
+    let (dashboard, uploads) = upload_stub().await;
+    let dir = scratch("upload-refused");
+    let local = dir.join("x");
+    std::fs::write(&local, "SECRET=1").unwrap();
+    for path in ["/srv/.env", "/srv/.ENV", "/srv/.env.local", "/srv/.envrc", "/srv/Auth.JSON", "/home/u/.hermes/config.yaml", "/srv/mcp-tokens/a.json", "/srv/Pairing/x", "/srv/.git-credentials", "/srv/", "/srv/.."] {
+        let err = dashboard.upload(path, transport::UploadSource::File(local.clone()), true, |_, _| {}).await.err().unwrap();
+        assert!(matches!(err, TransportError::NotRelayed(_)), "{path}: {err:?}");
+    }
+    let big = dir.join("big");
+    std::fs::File::create(&big).unwrap().set_len(transport::MANAGED_FILE_MAX_BYTES + 1).unwrap();
+    let err = dashboard.upload("/srv/big", transport::UploadSource::File(big.clone()), true, |_, _| {}).await.err().unwrap();
+    assert!(matches!(err, TransportError::FileTooLarge { .. }), "{err:?}");
+    assert!(uploads.lock().unwrap().is_empty(), "nothing was sent");
+    // Names that only look alike go.
+    for path in ["/srv/env", "/srv/my.env", "/srv/config.yml", "/srv/pairings/x"] {
+        dashboard.upload(path, transport::UploadSource::File(local.clone()), true, |_, _| {}).await.expect(path);
+    }
+}
+
+#[tokio::test]
+async fn saves_an_edits_text_through_the_upload_route() {
+    let (dashboard, uploads) = upload_stub().await;
+    let text = "caf\u{e9}\r\nline two\r\n".as_bytes().to_vec();
+    let got: Value = serde_json::from_str(&dashboard.upload("/srv/notes.md", transport::UploadSource::Bytes(text.clone()), true, |_, _| {}).await.unwrap()).unwrap();
+    assert_eq!(got["size"], text.len());
+    assert_eq!(got["sum"], text.iter().map(|&b| b as u64).sum::<u64>());
+    assert_eq!(got["overwrite"], "true");
+    let err = dashboard.upload("/srv/.env", transport::UploadSource::Bytes(b"X=1".to_vec()), true, |_, _| {}).await.err().unwrap();
+    assert!(matches!(err, TransportError::NotRelayed(_)), "{err:?}");
+    assert_eq!(uploads.lock().unwrap().as_slice(), ["/srv/notes.md"]);
 }

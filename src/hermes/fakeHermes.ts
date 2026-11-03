@@ -927,6 +927,12 @@ export class FakeHermes {
         return this.speech;
       },
       voiceSetup: async () => ({ ...this.voice }),
+      download: (id, path, name, onProgress) => this.managedFiles.download(id, path, name, onProgress),
+      pickUpload: async () => this.managedFiles.pickUpload(),
+      discardUpload: async (token) => void this.managedFiles.discardPick(token),
+      upload: (id, token, path, overwrite, onProgress) => this.managedFiles.upload(id, token, path, overwrite, onProgress),
+      saveText: (id, path, text, overwrite) => this.managedFiles.saveText(path, text, overwrite),
+      cancelTransfer: async (id) => this.managedFiles.cancel(id),
       // Mirrors `Dashboard::toolset_guards`: only these two facts of the config.
       toolsetGuards: async (profile): Promise<ToolsetGuards> => {
         if (this.toolsetGuardsFailure) throw new Error(this.toolsetGuardsFailure);
@@ -978,6 +984,7 @@ export class FakeHermes {
       },
       close: async () => {
         this.closed = true;
+        this.managedFiles.stopAll();
       },
     };
   };

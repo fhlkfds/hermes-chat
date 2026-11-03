@@ -1,6 +1,7 @@
 // The pipe under the frontend Hermes transport: JSON-RPC text frames in and out of `/api/ws`, plus
 // signed-in dashboard REST calls, the local files the owner attaches, and the dashboard's audio routes for Dictation
 // and Read aloud. In the app it is the Rust side (tauriPipe.ts); in tests it is FakeHermes.
+import type { Downloaded, PickedUpload, TransferProgress } from "./remoteFiles";
 import type { SavedKey } from "./setup";
 
 /** A local file as `statFiles` finds it: its size, or why it can't be attached (e.g. "it's a folder"). */
@@ -71,6 +72,21 @@ export interface Pipe {
   speak(profile: string, text: string): Promise<Speech>;
   voiceSetup(profile: string): Promise<VoiceSetup>;
   toolsetGuards(profile: string): Promise<ToolsetGuards>;
+  /**
+   * Downloads a Server file to where the owner picks in the native Save dialog (src-tauri `files_download`, ADR 0023).
+   * Resolves to the local path, or undefined when the owner closed the dialog. Rejects with `TRANSFER_STOPPED` once
+   * `cancelTransfer(id)` stops it, or the connection closes.
+   */
+  download(id: number, path: string, name: string, onProgress: (p: TransferProgress) => void): Promise<Downloaded | undefined>;
+  /** The native Open dialog for a file to upload (src-tauri `files_pick_upload`). Undefined when the owner closed it. */
+  pickUpload(): Promise<PickedUpload | undefined>;
+  /** Lets go of a pick that won't be sent (src-tauri `files_discard_pick`). */
+  discardUpload(token: number): Promise<void>;
+  /** Uploads the picked file to the server path `path` (src-tauri `files_upload`, ADR 0023). Resolves to Hermes's answer. */
+  upload(id: number, token: number, path: string, overwrite: boolean, onProgress: (p: TransferProgress) => void): Promise<string>;
+  /** Writes an edit's text to the server path `path` (src-tauri `files_save_text`, ADR 0024). Resolves to Hermes's answer. */
+  saveText(id: number, path: string, text: string, overwrite: boolean): Promise<string>;
+  cancelTransfer(id: number): Promise<void>;
   close(): Promise<void>;
 }
 

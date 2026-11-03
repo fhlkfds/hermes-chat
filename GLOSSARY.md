@@ -60,7 +60,7 @@ Switching profile happens in place, with the same sign-in: the list shows what t
 _Avoid_: account, workspace, agent (as a name for a profile), connection (the server signed in to, which covers every profile)
 
 **Connection**:
-A Hermes server this computer can sign in to, saved with a name, how it is reached (SSH or a URL), its address and dashboard username, and when it was last used. Each keeps its own password and Extra request headers in the system keyring, and its own Drafts, Queued messages, Failed messages, Saved copies, profile shown, Model pick and chat to reopen on this computer, so the same profile name on two servers never shares them. One is in use at a time. Switching to another asks first when a reply is running or an Approval waiting; Hermes keeps the reply going, and switching back brings both back. Removing one deletes only what this computer keeps for it, after saying what that is; its chats stay on the server. Nothing picks a connection by its name, or on its own: launch signs in to the one in use, and when that one is removed, the sign-in screen offers the others and waits (ADR 0023).
+A Hermes server this computer can sign in to, saved with a name, how it is reached (SSH or a URL), its address and dashboard username, and when it was last used. Each keeps its own password and Extra request headers in the system keyring, and its own Drafts, Queued messages, Failed messages, Saved copies, profile shown, Model pick and chat to reopen on this computer, so the same profile name on two servers never shares them. One is in use at a time. Switching to another asks first when a reply is running or an Approval waiting; Hermes keeps the reply going, and switching back brings both back. Removing one deletes only what this computer keeps for it, after saying what that is; its chats stay on the server. Nothing picks a connection by its name, or on its own: launch signs in to the one in use, and when that one is removed, the sign-in screen offers the others and waits (ADR 0025).
 _Avoid_: server (the machine itself), account, sign-in (the act of signing in), profile (an agent setup on the server)
 
 **Project**:
@@ -175,8 +175,20 @@ A header name and value the owner adds to a URL Connection, for a gateway in fro
 _Avoid_: custom header, gateway token
 
 **Server files screen**:
-The rail's read-only browser for the Server files on the machine the Hermes dashboard runs on. It lists folders through the dashboard's managed files, as the server's own user can open them, the same for every profile, and never shows credential files such as `.env`. The server may limit it to one folder. Nothing on this computer is shown there, and nothing on the server can be changed from it (ADR 0012).
+The rail's browser for the Server files on the machine the Hermes dashboard runs on. It lists folders through the dashboard's managed files, as the server's own user can open them, the same for every profile, and never shows credential files such as `.env`. The server may limit it to one folder. Nothing on this computer is shown there. A file can be downloaded from it, a file the owner picks can be uploaded into the folder on screen, and a text file can be edited; nothing else on the server can be changed from it (ADR 0012, ADR 0023, ADR 0024).
 _Avoid_: remote files, file manager, workspace (Hermes's word for a session's working folder)
+
+**Download** (of a Server file):
+Saving a copy of one Server file on this computer, where the owner picks in the Save dialog, which asks before replacing a file. It shows the server path, where it goes, and how far it got, and Cancel stops it. Until every byte has arrived, nothing takes the place of the file already there. It stops if the connection closes or changes (ADR 0023).
+_Avoid_: export (that is a chat saved as Markdown), save
+
+**Upload** (to the server):
+Sending one file the owner picked on this computer into the folder the Server files screen shows. Before anything is sent, it shows where the file goes. If the name is taken, the owner chooses to keep both or replace. Hermes is asked not to replace a file unless the owner chose that; it checks just before writing, not at the same moment. It counts as uploaded once the folder, listed again, has the file at the size sent. Credential files such as `.env` are never uploaded over (ADR 0023).
+_Avoid_: attach, attachment (that is a file sent with a message), sync
+
+**Edit** (of a Server file):
+Changing a text file on the server from the Server files screen, and saving it back. Save shows the changes first, and writes only if the server still has the version the edit started from. It counts as saved once Hermes, read back, has the edit. If the file changed on the server, nothing is written, and both versions stay: the owner merges them, takes the server's, or saves theirs as a copy (ADR 0024).
+_Avoid_: patch, sync, overwrite
 
 **Terminal**:
 The rail's screen with a shell on the Hermes server, through the owner's own ssh to the sign-in's SSH target, or one typed for it. ssh asks there for anything it needs, such as a passphrase or a new host key. Going back to a chat leaves the session running, and the rail shows it; signing out ends it. It is the owner's shell, not Hermes's: nothing typed there reaches a chat, an Approval or the agent (ADR 0022).

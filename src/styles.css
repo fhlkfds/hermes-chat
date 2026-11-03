@@ -1446,6 +1446,69 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .files-preview-msg p { margin: 0 0 10px; }
 .files-text { margin: 0; padding: 12px 16px; font-size: var(--mono-size); line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-2); tab-size: 4; }
 .files-image { display: block; max-width: calc(100% - 32px); margin: 14px 16px; border-radius: 6px; background: repeating-conic-gradient(var(--raised-2) 0 25%, var(--raised) 0 50%) 0 0 / 16px 16px; }
+.files-upload { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; font-size: calc(12.5rem / 14); margin-right: 6px; flex: none; }
+.files-upload-dialog { max-width: 520px; width: calc(100% - 40px); display: flex; flex-direction: column; gap: 12px; }
+.files-upload-dialog h2 { font-size: calc(14rem / 14); margin: 0; display: flex; align-items: center; gap: 8px; }
+.files-upload-dialog .files-meta { margin: 0; }
+.files-collision { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 0; display: flex; flex-direction: column; gap: 8px; font-size: calc(13rem / 14); }
+.files-collision-note { color: var(--warn); line-height: 1.5; }
+.files-collision-note svg { vertical-align: -2px; margin-right: 4px; }
+.files-collision label { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; cursor: pointer; }
+.files-collision input { accent-color: var(--accent); margin: 0; }
+.files-collision p, .files-upload-dialog > p { margin: 0; line-height: 1.5; }
+.files-banner.ok { background: rgba(74, 222, 128, 0.1); color: var(--ok); }
+.files-editor-overlay { padding: 24px; }
+.leave-overlay .leave-dialog.files-editor { max-width: min(1100px, 100%); width: 100%; height: min(760px, 100%); display: flex; flex-direction: column; gap: 10px; }
+.files-editor-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.files-editor-head h2 { font-size: calc(15rem / 14); margin: 0; display: flex; align-items: center; gap: 8px; }
+.files-editor-head .mono { overflow-wrap: anywhere; }
+.files-editor-text {
+  flex: 1; min-height: 160px; resize: none; background: var(--raised); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+  padding: 10px 12px; font-size: var(--mono-size); line-height: 1.5; tab-size: 4; outline: none; white-space: pre; overflow: auto;
+}
+.files-editor-text:focus { border-color: var(--line-3); }
+.files-editor-note { margin: 0; color: var(--warn); display: flex; align-items: flex-start; gap: 6px; line-height: 1.5; }
+.files-editor-warn { margin: 0; color: var(--warn); line-height: 1.5; }
+.files-editor-warn svg { vertical-align: -2px; }
+.files-editor-conflict { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+.files-editor-foot { display: flex; flex-direction: column; gap: 8px; }
+.files-editor-foot p { margin: 0; }
+.files-editor-foot .confirm-actions { flex-wrap: wrap; }
+.files-editor-foot .btn { display: inline-flex; align-items: center; gap: 6px; }
+.files-diff { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); font-size: var(--mono-size); }
+.files-diff-sum { margin: 0; padding: 6px 10px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--raised); }
+.files-diff-sum .add { color: var(--ok); }
+.files-diff-sum .del { color: var(--bad); }
+.files-diff-empty { margin: 0; }
+.files-diff-hunk + .files-diff-hunk { border-top: 1px dashed var(--line-3); }
+.files-diff-at { color: var(--faint); padding: 4px 10px; font-size: calc(11.5rem / 14); }
+.files-diff-line { display: flex; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.files-diff-line.add { background: rgba(74, 222, 128, 0.1); }
+.files-diff-line.del { background: rgba(248, 113, 113, 0.1); }
+.files-diff-no { flex: none; width: 48px; text-align: right; padding-right: 8px; color: var(--faint); user-select: none; }
+.files-diff-sign { flex: none; width: 16px; color: var(--muted); user-select: none; }
+.files-diff-line.add .files-diff-sign { color: var(--ok); }
+.files-diff-line.del .files-diff-sign { color: var(--bad); }
+.files-diff-text { flex: 1; min-width: 0; padding-right: 10px; }
+.files-preview-actions { display: flex; align-items: center; gap: 6px; flex: none; }
+.files-preview-actions .btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; font-size: calc(12.5rem / 14); }
+.files-preview-note { margin: 0 16px 6px; }
+.files-transfers { flex: none; border-top: 1px solid var(--line); max-height: 30%; overflow: auto; background: var(--sidebar); }
+.files-transfers ul { list-style: none; margin: 0; padding: 4px 0; }
+.files-transfer { display: flex; align-items: center; gap: 12px; padding: 8px 16px 8px 18px; }
+.files-transfer + .files-transfer { border-top: 1px solid var(--line); }
+.files-transfer-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.files-transfer-title { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: calc(13rem / 14); }
+.files-transfer-title svg { flex: none; color: var(--muted); }
+.files-transfer-title svg.ok { color: var(--ok); }
+.files-transfer-title svg.bad { color: var(--bad); }
+.files-transfer-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.files-transfer-title .small { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.files-transfer-where { display: flex; flex-wrap: wrap; gap: 2px 16px; }
+.files-transfer-where .mono { overflow-wrap: anywhere; }
+.files-progress { width: 100%; height: 6px; accent-color: var(--accent); }
+.files-transfer-error { margin: 0; color: var(--bad); font-size: calc(12.5rem / 14); }
+.files-transfer .btn { flex: none; height: 28px; padding: 0 12px; font-size: calc(12.5rem / 14); }
 /* With the preview open, the list gives up the columns the preview shows for the file picked. */
 .files-body.with-preview .files-table th:nth-child(4), .files-body.with-preview .files-table td:nth-child(4) { display: none; }
 @media (max-width: 1240px) {
@@ -1683,7 +1746,7 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .terminal-btn { position: relative; }
 .terminal-dot { position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; background: var(--ok); }
 
-/* ---------- saved connections (Connections.tsx, ADR 0023) ---------- */
+/* ---------- saved connections (Connections.tsx, ADR 0025) ---------- */
 .rail-conns { position: relative; }
 .conn-menu {
   position: absolute; left: calc(100% + 10px); bottom: -6px; width: 340px; z-index: 30; background: var(--raised); border: 1px solid var(--line-2);

@@ -514,10 +514,30 @@ export class Hermes {
   });
 
   /**
-   * The files on the machine the dashboard runs on, read-only (remoteFiles.ts). They are the same for every profile,
-   * and can only be read while connected.
+   * The files on the machine the dashboard runs on (remoteFiles.ts). They are the same for every profile, and can only
+   * be read while connected. A transfer starts only while connected, and Rust stops it when the connection closes or
+   * is replaced, so it never reaches another sign-in's server (ADR 0023).
    */
-  readonly files: RemoteFiles = remoteFiles((pathAndQuery, maxBytes) => this.restGet(pathAndQuery, maxBytes));
+  readonly files: RemoteFiles = remoteFiles((pathAndQuery, maxBytes) => this.restGet(pathAndQuery, maxBytes), {
+    download: (id, path, name, onProgress) => {
+      const pipe = this.pipe;
+      if (!pipe || this.closing || this.snapshot.status !== "connected") return Promise.reject(new Error("Not connected to Hermes."));
+      return pipe.download(id, path, name, onProgress);
+    },
+    pickUpload: () => this.pipe?.pickUpload() ?? Promise.reject(new Error("Not connected to Hermes.")),
+    discardUpload: (token) => this.pipe?.discardUpload(token) ?? Promise.resolve(),
+    upload: (id, token, path, overwrite, onProgress) => {
+      const pipe = this.pipe;
+      if (!pipe || this.closing || this.snapshot.status !== "connected") return Promise.reject(new Error("Not connected to Hermes."));
+      return pipe.upload(id, token, path, overwrite, onProgress);
+    },
+    saveText: (id, path, text, overwrite) => {
+      const pipe = this.pipe;
+      if (!pipe || this.closing || this.snapshot.status !== "connected") return Promise.reject(new Error("Not connected to Hermes."));
+      return pipe.saveText(id, path, text, overwrite);
+    },
+    cancel: (id) => this.pipe?.cancelTransfer(id) ?? Promise.resolve(),
+  });
 
   constructor(
     private openPipe: OpenPipe,

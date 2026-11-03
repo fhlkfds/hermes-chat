@@ -58,7 +58,7 @@ const trail = () => [...document.querySelectorAll(".files-crumbs li")].map((li) 
 const row_ = (name: string) => screen.getByRole("button", { name: new RegExp(`^${name}`) });
 
 async function openFiles(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(screen.getByRole("button", { name: "Server files (read-only)" }));
+  await user.click(screen.getByRole("button", { name: "Server files" }));
   await waitFor(() => expect(document.querySelector(".files-table")).not.toBeNull());
 }
 
@@ -69,7 +69,7 @@ describe("Server files", () => {
     await openFiles(user);
     expect(screen.getByRole("heading", { name: "Server files" })).toBeTruthy();
     expect(document.querySelector(".files-server")?.textContent).toContain("ssh://liam@hermes");
-    expect(screen.getByText("Read-only")).toBeTruthy();
+    expect(screen.queryByText("Read-only")).toBeNull();
     expect(trail()).toEqual(["/", "home", "/liam"]);
     expect(within(screen.getByRole("navigation", { name: "Current folder" })).getByText("liam").getAttribute("aria-current")).toBe("page");
     expect(names()).toEqual(["latest", "private", "projects", "dangling", "huge.log", "notes.md", "photo.png", "run"]);
@@ -259,7 +259,7 @@ describe("Server files", () => {
     await user.click(screen.getByRole("button", { name: /Nightly backup/ }));
     await waitFor(() => expect(document.querySelector("[aria-current='true']")).not.toBeNull());
     await openFiles(user);
-    const filesButton = screen.getByRole("button", { name: "Server files (read-only)" });
+    const filesButton = screen.getByRole("button", { name: "Server files" });
     expect(filesButton.getAttribute("aria-pressed")).toBe("true");
     expect(document.querySelector("[aria-current='true']")).toBeNull();
     await user.click(screen.getByRole("button", { name: "Settings" }));
@@ -282,5 +282,341 @@ describe("Server files", () => {
     expect(trail()).toEqual(["/", "home", "/liam", "/projects"]);
     await user.click(screen.getByRole("button", { name: "Back to chat" }));
     expect(document.querySelector(".files")).toBeNull();
+  });
+});
+
+describe("Server files: Download", () => {
+  const transfer = () => within(screen.getByRole("region", { name: "Transfers" }));
+
+  it("downloads a file too big to preview to where the owner picks, showing both paths, progress and Cancel", async () => {
+    const s = server();
+    let release!: () => void;
+    s.managedFiles.transferGate = new Promise((r) => (release = r));
+    const { user } = await launch(s);
+    await openFiles(user);
+    await user.click(row_("huge.log"));
+    await screen.findByText(/Previews go up to/);
+    await user.click(screen.getByRole("button", { name: /Download/ }));
+    const progress = await screen.findByRole("progressbar", { name: "Downloading huge.log" });
+    expect(progress.getAttribute("value")).toBe("50");
+    expect(transfer().getByText("/home/liam/huge.log")).toBeTruthy();
+    expect(transfer().getByText("/home/me/Downloads/huge.log")).toBeTruthy();
+    expect(transfer().getByText("1.5 MB of 3.0 MB (50%)")).toBeTruthy();
+    release();
+    await waitFor(() => expect(transfer().getByText("Downloaded, 3.0 MB")).toBeTruthy());
+    expect(s.managedFiles.local["/home/me/Downloads/huge.log"]).toHaveLength(3 * MiB);
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+    await user.click(transfer().getByRole("button", { name: "Dismiss huge.log" }));
+    expect(screen.queryByRole("region", { name: "Transfers" })).toBeNull();
+  });
+
+  it("stops a download on Cancel and leaves this computer's file as it was", async () => {
+    const s = server();
+    s.managedFiles.transferGate = new Promise(() => {});
+    s.managedFiles.local["/home/me/Downloads/notes.md"] = new TextEncoder().encode("mine");
+    const { user } = await launch(s);
+    await openFiles(user);
+    await user.click(row_("notes.md"));
+    await user.click(await screen.findByRole("button", { name: /Download/ }));
+    await screen.findByRole("progressbar");
+    await user.click(transfer().getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(transfer().getByText(/^Stopped\. Nothing was saved/)).toBeTruthy());
+    expect(new TextDecoder().decode(s.managedFiles.local["/home/me/Downloads/notes.md"])).toBe("mine");
+  });
+
+  it("does nothing when the owner closes the Save dialog", async () => {
+    const s = server();
+    s.managedFiles.saveDialog = () => undefined;
+    const { user } = await launch(s);
+    await openFiles(user);
+    await user.click(row_("notes.md"));
+    await user.click(await screen.findByRole("button", { name: /Download/ }));
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Transfers" })).toBeNull());
+    expect(s.managedFiles.local).toEqual({});
+  });
+
+  it("offers no download of a file over Hermes's 100 MB, or of a folder", async () => {
+    const s = server();
+    s.managedFiles.nodes["/home/liam/disk.img"] = { size: 101 * MiB };
+    const { user } = await launch(s);
+    await openFiles(user);
+    await user.click(row_("disk.img"));
+    const button = (await screen.findByRole("button", { name: /Download/ })) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(screen.getByText("It's 101 MB. Hermes sends files up to 100 MB.")).toBeTruthy();
+  });
+
+  it("says why the server refused, and stops a download when the connection closes", async () => {
+    const s = server();
+    const { hermes, user } = await launch(s);
+    await openFiles(user);
+    await user.click(row_("notes.md"));
+    await screen.findByText(/buy milk/);
+    // Made unreadable after it was listed: the server's 403 shows as the browser words it.
+    s.managedFiles.nodes["/home/liam/notes.md"] = { text: "x", unreadable: true };
+    await user.click(screen.getByRole("button", { name: /Download/ }));
+    await waitFor(() => expect(transfer().getByRole("alert").textContent).toBe("The Hermes server's user isn't allowed to read this file."));
+    s.managedFiles.nodes["/home/liam/notes.md"] = { text: "# Notes\n" };
+    s.managedFiles.transferGate = new Promise(() => {});
+    await user.click(screen.getByRole("button", { name: /Download/ }));
+    await screen.findByRole("progressbar");
+    await act(async () => void (await hermes.close()));
+    await waitFor(() => expect(transfer().getAllByText(/^Stopped\./)).toHaveLength(1));
+    expect(s.managedFiles.local).toEqual({});
+  });
+});
+
+describe("Server files: Upload", () => {
+  const transfer = () => within(screen.getByRole("region", { name: "Transfers" }));
+  const dialog = () => within(screen.getByRole("dialog", { name: "Upload to the server" }));
+
+  it("shows where a picked file goes before sending it, then reads it back from the folder", async () => {
+    const s = server();
+    s.managedFiles.openDialog = () => ({ name: "report.pdf", bytes: "%PDF-1.7 synthetic" });
+    const { user } = await launch(s);
+    await openFiles(user);
+    await user.click(screen.getByRole("button", { name: /Upload/ }));
+    expect(dialog().getByText("/home/liam/report.pdf")).toBeTruthy();
+    expect(dialog().queryByRole("radio")).toBeNull();
+    expect(s.managedFiles.uploads).toEqual([]);
+    await user.click(dialog().getByRole("button", { name: "Upload" }));
+    await waitFor(() => expect(transfer().getByText(/^Uploaded, and the server lists it at 18 B/)).toBeTruthy());
+    expect(s.managedFiles.uploads).toEqual([{ path: "/home/liam/report.pdf", overwrite: false }]);
+    expect(transfer().getByText("report.pdf", { selector: ".mono" })).toBeTruthy();
+    await waitFor(() => expect(names()).toContain("report.pdf"));
+  });
+
+  it("keeps both by default when the name is taken, and replaces only when asked", async () => {
+    const s = server();
+    s.managedFiles.openDialog = () => ({ name: "notes.md", bytes: "# Mine\n" });
+    const { user } = await launch(s);
+    await openFiles(user);
+    await user.click(screen.getByRole("button", { name: /Upload/ }));
+    expect(dialog().getByText(/There's already a/)).toBeTruthy();
+    expect((dialog().getByRole("radio", { name: /Keep both/ }) as HTMLInputElement).checked).toBe(true);
+    expect(dialog().getByText("/home/liam/notes (2).md")).toBeTruthy();
+    await user.click(dialog().getByRole("button", { name: "Upload" }));
+    await waitFor(() => expect(transfer().getByText(/^Uploaded/)).toBeTruthy());
+    expect(s.managedFiles.nodes["/home/liam/notes.md"]).toEqual({ text: "# Notes\nbuy milk\n" });
+    expect(s.managedFiles.uploads.at(-1)).toEqual({ path: "/home/liam/notes (2).md", overwrite: false });
+    await user.click(screen.getByRole("button", { name: /Upload/ }));
+    await user.click(dialog().getByRole("radio", { name: /Replace the server's/ }));
+    expect(dialog().getByText(/permissions aren't kept/)).toBeTruthy();
+    expect(dialog().getByText("/home/liam/notes.md")).toBeTruthy();
+    await user.click(dialog().getByRole("button", { name: "Replace" }));
+    await waitFor(() => expect(transfer().getAllByText(/^Uploaded/)).toHaveLength(2));
+    expect(s.managedFiles.uploads.at(-1)).toEqual({ path: "/home/liam/notes.md", overwrite: true });
+  });
+
+  it("cancels in the dialog without sending, and says when the name was taken meanwhile", async () => {
+    const s = server();
+    s.managedFiles.openDialog = () => ({ name: "new.txt", bytes: "x" });
+    const { user } = await launch(s);
+    await openFiles(user);
+    await user.click(screen.getByRole("button", { name: /Upload/ }));
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(s.managedFiles.uploads).toEqual([]);
+    await user.click(screen.getByRole("button", { name: /Upload/ }));
+    // Someone else writes new.txt after the folder was listed: Hermes refuses, and nothing is replaced.
+    s.managedFiles.nodes["/home/liam/new.txt"] = { text: "theirs" };
+    await user.click(dialog().getByRole("button", { name: "Upload" }));
+    await waitFor(() => expect(transfer().getByRole("alert").textContent).toBe("A file with that name is on the server now. Nothing was replaced."));
+    expect(s.managedFiles.nodes["/home/liam/new.txt"]).toEqual({ text: "theirs" });
+  });
+
+  it("refuses a credential file's name and a file over 100 MB up front", async () => {
+    const s = server();
+    let pick = { name: ".env", bytes: "SECRET=1" };
+    s.managedFiles.openDialog = () => pick;
+    const { user } = await launch(s);
+    await openFiles(user);
+    await user.click(screen.getByRole("button", { name: /Upload/ }));
+    expect(dialog().getByRole("alert").textContent).toMatch(/credential files such as \.env/);
+    expect(dialog().queryByRole("button", { name: "Upload" })).toBeNull();
+    await user.click(dialog().getByRole("button", { name: "Close" }));
+    pick = { name: "disk.img", bytes: "" };
+    s.managedFiles.openDialog = () => ({ ...pick, bytes: { length: 101 * MiB } as unknown as string });
+    await user.click(screen.getByRole("button", { name: /Upload/ }));
+    expect(dialog().getByRole("alert").textContent).toBe("It's 101 MB. Hermes takes files up to 100 MB.");
+    expect(s.managedFiles.uploads).toEqual([]);
+  });
+
+  it("refuses to replace a link to a credential file, which Hermes would write through", async () => {
+    const s = server();
+    s.managedFiles.nodes["/home/liam/report.txt"] = { link: "/home/liam/.env" };
+    s.managedFiles.nodes["/home/liam/.env"] = { text: "SECRET=1\n" };
+    s.managedFiles.openDialog = () => ({ name: "report.txt", bytes: "x" });
+    const { user } = await launch(s);
+    await openFiles(user);
+    await user.click(screen.getByRole("button", { name: /Upload/ }));
+    expect(dialog().getByRole("alert").textContent).toBe("report.txt here is a link to a credential file (/home/liam/.env), so Hermes Chat doesn't upload over it.");
+    expect(dialog().queryByRole("button", { name: /Upload|Replace/ })).toBeNull();
+  });
+
+  it("keeps the keyboard in the dialog and gives focus back to Upload… when it closes", async () => {
+    const s = server();
+    s.managedFiles.openDialog = () => ({ name: "notes.md", bytes: "x" });
+    const { user } = await launch(s);
+    await openFiles(user);
+    const upload = screen.getByRole("button", { name: /Upload/ });
+    await user.click(upload);
+    const box = screen.getByRole("dialog", { name: "Upload to the server" });
+    for (let i = 0; i < 6; i++) {
+      await user.tab();
+      expect(box.contains(document.activeElement)).toBe(true);
+    }
+    await user.tab({ shift: true });
+    expect(box.contains(document.activeElement)).toBe(true);
+    // With Replace chosen, Keep both is no tab stop: Shift+Tab from the first stop goes round to the last.
+    await user.click(within(box).getByRole("radio", { name: /Replace the server's/ }));
+    for (let i = 0; i < 8; i++) {
+      await user.tab({ shift: true });
+      expect(box.contains(document.activeElement)).toBe(true);
+    }
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(upload);
+    // The pick wasn't sent, and is let go.
+    expect(s.managedFiles.openPicks).toBe(0);
+  });
+
+  it("stops an upload on Cancel, leaving the server's folder as it was", async () => {
+    const s = server();
+    s.managedFiles.transferGate = new Promise(() => {});
+    s.managedFiles.openDialog = () => ({ name: "big.bin", bytes: "0123456789" });
+    const { user } = await launch(s);
+    await openFiles(user);
+    await user.click(screen.getByRole("button", { name: /Upload/ }));
+    await user.click(dialog().getByRole("button", { name: "Upload" }));
+    expect((await screen.findByRole("progressbar", { name: "Uploading big.bin" })).getAttribute("value")).toBe("50");
+    await user.click(transfer().getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(transfer().getByText(/^Stopped\. Hermes never keeps part/)).toBeTruthy());
+    expect(s.managedFiles.nodes["/home/liam/big.bin"]).toBeUndefined();
+  });
+});
+
+describe("Server files: editing text", () => {
+  const editor = () => within(screen.getByRole("dialog", { name: /^Edit / }));
+  const serverText = (s: FakeHermes, p: string) => {
+    const n = s.managedFiles.nodes[p] as { text?: string; bytes?: string };
+    return n.text ?? new TextDecoder().decode(Uint8Array.from(n.bytes!, (c) => c.charCodeAt(0)));
+  };
+
+  async function openEditor(user: ReturnType<typeof userEvent.setup>, name = "notes.md") {
+    await openFiles(user);
+    await user.click(row_(name));
+    await user.click(await screen.findByRole("button", { name: "Edit" }));
+    return (await screen.findByRole("textbox", { name: `Text of ${name}` })) as HTMLTextAreaElement;
+  }
+
+  it("edits, reviews the diff, saves, and says so only once read back", async () => {
+    const s = server();
+    const { user } = await launch(s);
+    const area = await openEditor(user);
+    expect(area.value).toBe("# Notes\nbuy milk\n");
+    expect((editor().getByRole("button", { name: "Review changes…" }) as HTMLButtonElement).disabled).toBe(true);
+    await user.clear(area);
+    await user.type(area, "# Notes\nbuy oat milk\n");
+    await user.click(editor().getByRole("button", { name: "Review changes…" }));
+    const diff = within(editor().getByRole("region", { name: "Your changes" }));
+    expect(diff.getByText("1 added")).toBeTruthy();
+    expect(diff.getByText("buy milk").closest(".files-diff-line")?.className).toContain("del");
+    expect(diff.getByText("buy oat milk").closest(".files-diff-line")?.className).toContain("add");
+    expect(s.managedFiles.saves).toEqual([]);
+    await user.click(editor().getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toMatch(/^Saved notes\.md\. Hermes has your edit, read back/));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(serverText(s, "/home/liam/notes.md")).toBe("# Notes\nbuy oat milk\n");
+    await waitFor(() => expect(screen.getByText(/buy oat milk/, { selector: ".files-text" })).toBeTruthy());
+  });
+
+  it("writes nothing over a remote change, shows it, and merges the two", async () => {
+    const s = server();
+    s.managedFiles.nodes["/home/liam/notes.md"] = { text: "one\ntwo\nthree\nfour\nfive\n" };
+    const { user } = await launch(s);
+    const area = await openEditor(user);
+    await user.clear(area);
+    await user.type(area, "one\nTWO\nthree\nfour\nfive\n");
+    // Another client edits the last line meanwhile.
+    s.managedFiles.nodes["/home/liam/notes.md"] = { text: "one\ntwo\nthree\nfour\nFIVE (theirs)\n" };
+    await user.click(editor().getByRole("button", { name: "Review changes…" }));
+    await user.click(editor().getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(editor().getByRole("alert").textContent).toMatch(/changed on the server since you opened it, so nothing was written\. Your edit is kept here\./));
+    expect(s.managedFiles.saves).toEqual([]);
+    const theirs = within(editor().getByRole("region", { name: "Changes on the server since you opened it" }));
+    expect(theirs.getByText("FIVE (theirs)")).toBeTruthy();
+    await user.click(editor().getByRole("button", { name: "Merge" }));
+    expect((editor().getByRole("textbox") as HTMLTextAreaElement).value).toBe("one\nTWO\nthree\nfour\nFIVE (theirs)\n");
+    await user.click(editor().getByRole("button", { name: "Review changes…" }));
+    await user.click(editor().getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(serverText(s, "/home/liam/notes.md")).toBe("one\nTWO\nthree\nfour\nFIVE (theirs)\n");
+  });
+
+  it("marks where both changed the same line, and can reload theirs or keep both as a copy", async () => {
+    const s = server();
+    const { user } = await launch(s);
+    const area = await openEditor(user);
+    await user.clear(area);
+    await user.type(area, "# Notes\nbuy bread\n");
+    s.managedFiles.nodes["/home/liam/notes.md"] = { text: "# Notes\nbuy eggs\n" };
+    await user.click(editor().getByRole("button", { name: "Review changes…" }));
+    await user.click(editor().getByRole("button", { name: "Save" }));
+    await editor().findByRole("button", { name: "Merge" });
+    await user.click(editor().getByRole("button", { name: "Merge" }));
+    expect((editor().getByRole("textbox") as HTMLTextAreaElement).value).toContain("<<<<<<< your edit\nbuy bread\n=======\nbuy eggs\n>>>>>>> on the server now");
+    expect(editor().getByRole("status").textContent).toMatch(/1 place both changed is marked/);
+    // Back to a conflict to try the other two ways out.
+    s.managedFiles.nodes["/home/liam/notes.md"] = { text: "# Notes\nbuy jam\n" };
+    await user.click(editor().getByRole("button", { name: "Review changes…" }));
+    await user.click(editor().getByRole("button", { name: "Save" }));
+    await user.click(await editor().findByRole("button", { name: "Save mine as a copy" }));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toMatch(/saved as a copy, \/home\/liam\/notes \(2\)\.md/));
+    expect(serverText(s, "/home/liam/notes.md")).toBe("# Notes\nbuy jam\n");
+    expect(serverText(s, "/home/liam/notes (2).md")).toContain("buy bread");
+    await user.click(await screen.findByRole("button", { name: "Edit" }));
+    await user.type(await screen.findByRole("textbox", { name: "Text of notes.md" }), "more\n");
+    s.managedFiles.nodes["/home/liam/notes.md"] = { text: "server wins\n" };
+    await user.click(editor().getByRole("button", { name: "Review changes…" }));
+    await user.click(editor().getByRole("button", { name: "Save" }));
+    await user.click(await editor().findByRole("button", { name: "Reload theirs" }));
+    expect((editor().getByRole("textbox") as HTMLTextAreaElement).value).toBe("server wins\n");
+  });
+
+  it("keeps the app's shortcuts and the keyboard inside the editor, so nothing drops the edit unasked", async () => {
+    const s = server();
+    const { user } = await launch(s);
+    const area = await openEditor(user);
+    await user.type(area, "draft");
+    await user.keyboard("{Control>}n{/Control}");
+    await user.keyboard("{Control>}k{/Control}");
+    expect(screen.getByRole("dialog", { name: /^Edit / })).toBeTruthy();
+    expect(document.querySelector(".files")).not.toBeNull();
+    const box = screen.getByRole("dialog", { name: /^Edit / });
+    for (let i = 0; i < 5; i++) {
+      await user.tab();
+      expect(box.contains(document.activeElement)).toBe(true);
+    }
+    expect((editor().getByRole("textbox") as HTMLTextAreaElement).value).toContain("draft");
+  });
+
+  it("asks before dropping an unsaved edit, and won't edit what it can't round-trip", async () => {
+    const s = server();
+    s.managedFiles.nodes["/home/liam/latin1.txt"] = { bytes: "caf\xe9\n" };
+    const { user } = await launch(s);
+    const area = await openEditor(user);
+    await user.type(area, "x");
+    await user.click(editor().getByRole("button", { name: "Cancel" }));
+    expect(editor().getByRole("alert").textContent).toMatch(/Discard your changes to notes\.md\?/);
+    await user.click(editor().getByRole("button", { name: "Keep editing" }));
+    expect((editor().getByRole("textbox") as HTMLTextAreaElement).value).toBe("# Notes\nbuy milk\nx");
+    await user.click(editor().getByRole("button", { name: "Cancel" }));
+    await user.click(editor().getByRole("button", { name: "Discard changes" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(serverText(s, "/home/liam/notes.md")).toBe("# Notes\nbuy milk\n");
+    await user.click(row_("latin1.txt"));
+    await user.click(await screen.findByRole("button", { name: "Edit" }));
+    expect((await editor().findByRole("alert")).textContent).toMatch(/isn't UTF-8 text/);
   });
 });

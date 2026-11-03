@@ -866,6 +866,132 @@ impl Dashboard {
         String::from_utf8(body).map_err(|_| TransportError::Unexpected { status: 200, body: "the answer isn't UTF-8 text".into() })
     }
 
+    /// Downloads the Server file at `server_path` through the managed-files route `GET api/files/download` (ADR 0023)
+    /// into `dest` on this computer. The bytes go to a hidden `.part` file beside `dest`, which replaces `dest` only
+    /// once every byte the server announced has arrived; on any failure, or when the task is aborted (Cancel), the
+    /// part file is removed and `dest` is left as it was. `progress` gets the bytes written so far and the size the
+    /// server announced. Memory stays bounded: one network chunk at a time.
+    ///
+    /// The file work is synchronous on purpose. An aborted task stops only at an `.await`, and every `.await` here is
+    /// on the network, so an abort can't leave a file operation running on its own: a part file is never left behind,
+    /// and once the rename into place has happened, nothing can stop the download from returning that it did. It runs
+    /// through `blocking`, so a slow disk holds up only this transfer, not the runtime's other work.
+    pub async fn download(&self, server_path: &str, dest: &std::path::Path, progress: impl Fn(u64, Option<u64>)) -> Result<u64, TransportError> {
+        use std::io::Write;
+        let query = url::form_urlencoded::Serializer::new(String::new()).append_pair("path", server_path).finish();
+        let (url, _) = relay_url(&self.base, "api/files/download", &query)?;
+        let mut resp = self.http.get(url).header(header::COOKIE, self.cookie_header()).send().await.map_err(unreachable)?;
+        self.keep_cookies(&resp);
+        match resp.status() {
+            s if s.is_success() => {}
+            StatusCode::UNAUTHORIZED => return Err(TransportError::SignedOut),
+            _ => return Err(unexpected(resp, &self.headers).await),
+        }
+        let total = resp.content_length();
+        let io = |e: std::io::Error| TransportError::File(format!("couldn't write it on this computer: {e}"));
+        let (part, mut out) = blocking(|| PartFile::create(dest)).map_err(io)?;
+        let mut written = 0u64;
+        let mut told = std::time::Instant::now();
+        progress(0, total);
+        while let Some(chunk) = resp.chunk().await.map_err(unreachable)? {
+            blocking(|| out.write_all(&chunk)).map_err(io)?;
+            written += chunk.len() as u64;
+            if total.is_some_and(|t| written > t) {
+                return Err(TransportError::File("the server sent more than it said the file holds".into()));
+            }
+            if told.elapsed() >= Duration::from_millis(100) {
+                progress(written, total);
+                told = std::time::Instant::now();
+            }
+        }
+        if let Some(total) = total.filter(|&t| written != t) {
+            return Err(TransportError::File(format!("the download ended early, after {written} of {total} bytes")));
+        }
+        blocking(|| out.sync_all()).map_err(io)?;
+        drop(out);
+        blocking(|| std::fs::rename(&part.0, dest)).map_err(io)?;
+        part.keep();
+        progress(written, total);
+        Ok(written)
+    }
+
+    /// Uploads `source` (a local file, or the text of an edit) to `server_path` through the managed-files route `POST
+    /// api/files/upload-stream` (ADR 0023), streamed one chunk at a time. Hermes writes it to a temp file beside the
+    /// target and renames it into place, so a cancelled or broken upload never leaves part of a file there. With
+    /// `overwrite` false, Hermes refuses with 409 when a file is already there. Hermes doesn't keep credential files
+    /// out of its write routes, so a path it would never list or read (`protected_server_path`) is refused here,
+    /// before anything is sent. Returns Hermes's answer: the written entry as JSON.
+    pub async fn upload(
+        &self,
+        server_path: &str,
+        source: UploadSource,
+        overwrite: bool,
+        progress: impl Fn(u64, Option<u64>) + Send + Sync + 'static,
+    ) -> Result<String, TransportError> {
+        use tokio::io::AsyncReadExt;
+        if protected_server_path(server_path) {
+            return Err(TransportError::NotRelayed(format!("uploads to {server_path}, a credential file Hermes keeps out of reach")));
+        }
+        let name = server_path.rsplit('/').next().filter(|n| !n.is_empty() && *n != "." && *n != "..");
+        let Some(name) = name.map(str::to_owned) else {
+            return Err(TransportError::NotRelayed(format!("uploads to {server_path}")));
+        };
+        let part = match source {
+            UploadSource::Bytes(bytes) => {
+                let size = bytes.len() as u64;
+                if size > MANAGED_FILE_MAX_BYTES {
+                    return Err(TransportError::FileTooLarge { size, max: MANAGED_FILE_MAX_BYTES });
+                }
+                progress(0, Some(size));
+                let part = reqwest::multipart::Part::bytes(bytes);
+                progress(size, Some(size));
+                part
+            }
+            UploadSource::File(local) => {
+                let io = |e: std::io::Error| TransportError::File(format!("couldn't read it on this computer: {e}"));
+                let file = tokio::fs::File::open(local).await.map_err(io)?;
+                let size = file.metadata().await.map_err(io)?.len();
+                if size > MANAGED_FILE_MAX_BYTES {
+                    return Err(TransportError::FileTooLarge { size, max: MANAGED_FILE_MAX_BYTES });
+                }
+                // The file as it was measured: no more than `size` bytes go, and a file that shrank meanwhile fails the upload
+                // rather than leaving a short file on the server.
+                let mut told = std::time::Instant::now();
+                progress(0, Some(size));
+                let chunks = futures_util::stream::try_unfold((file, 0u64), move |(mut file, sent)| {
+                    let more = (size - sent).min(UPLOAD_CHUNK_BYTES as u64) as usize;
+                    let elapsed = told.elapsed();
+                    if elapsed >= Duration::from_millis(100) || sent == size {
+                        progress(sent, Some(size));
+                        told = std::time::Instant::now();
+                    }
+                    async move {
+                        if more == 0 {
+                            return Ok(None);
+                        }
+                        let mut buf = vec![0u8; more];
+                        file.read_exact(&mut buf).await.map_err(|e| std::io::Error::new(e.kind(), format!("couldn't read it on this computer: {e}")))?;
+                        Ok::<_, std::io::Error>(Some((buf, (file, sent + more as u64))))
+                    }
+                });
+                reqwest::multipart::Part::stream_with_length(reqwest::Body::wrap_stream(chunks), size)
+            }
+        };
+        let part = part.file_name(name).mime_str("application/octet-stream").expect("a valid MIME type");
+        let form = reqwest::multipart::Form::new()
+            .text("path", server_path.to_owned())
+            .text("overwrite", if overwrite { "true" } else { "false" })
+            .part("file", part);
+        let (url, _) = relay_url(&self.base, "api/files/upload-stream", "")?;
+        let resp = self.http.post(url).header(header::COOKIE, self.cookie_header()).multipart(form).send().await.map_err(unreachable)?;
+        self.keep_cookies(&resp);
+        match resp.status() {
+            s if s.is_success() => resp.text().await.map_err(unreachable),
+            StatusCode::UNAUTHORIZED => Err(TransportError::SignedOut),
+            _ => Err(unexpected(resp, &self.headers).await),
+        }
+    }
+
     /// Take in every Set-Cookie: a new value replaces the old one, an empty one deletes it. Only
     /// `name=value` is kept; the dashboard is the only site this jar talks to.
     fn keep_cookies(&self, resp: &reqwest::Response) {
@@ -885,6 +1011,75 @@ impl Dashboard {
     fn cookie_header(&self) -> String {
         let jar = self.cookies.lock().unwrap();
         jar.iter().map(|(n, v)| format!("{n}={v}")).collect::<Vec<_>>().join("; ")
+    }
+}
+
+/// Runs blocking file work in place, telling a multi-threaded runtime (the app's) to move its other work elsewhere
+/// meanwhile. Unlike `spawn_blocking`, nothing is left running if the task is aborted: there is no `.await` inside.
+fn blocking<T>(work: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current().map(|h| h.runtime_flavor()) {
+        Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(work),
+        _ => work(),
+    }
+}
+
+/// What an upload sends: a local file the owner picked, read as it goes, or an edit's text, already in memory.
+pub enum UploadSource {
+    File(std::path::PathBuf),
+    Bytes(Vec<u8>),
+}
+
+/// The most Hermes takes or sends of one managed file (`_MANAGED_FILE_MAX_BYTES` at `bf0203a`).
+pub const MANAGED_FILE_MAX_BYTES: u64 = 100 * MIB;
+const UPLOAD_CHUNK_BYTES: usize = 256 * 1024;
+
+/// A server path Hermes never lists, reads or sends (`_is_sensitive_path` in `hermes_cli/web_routers/files.py` at
+/// `bf0203a`): `.env`, `.env.*`, `.envrc`, the credential stores, and anything under `mcp-tokens/` or `pairing/`, in
+/// any case. Hermes's write routes don't check these (it calls them "a separate threat class"), so the app refuses to
+/// write them, to keep the credential files the browser can't show from being overwritten unseen.
+pub fn protected_server_path(path: &str) -> bool {
+    const NAMES: [&str; 12] = [
+        "auth.json", "auth.lock", "credentials", "config.yaml", ".anthropic_oauth.json", "google_token.json",
+        "google_oauth_pending.json", "google_oauth.json", "webhook_subscriptions.json", "bws_cache.json",
+        "bws_cache.enc.json", ".git-credentials",
+    ];
+    let name = path.rsplit('/').next().unwrap_or_default().to_lowercase();
+    name == ".env" || name.starts_with(".env.") || name == ".envrc" || NAMES.contains(&name.as_str())
+        || path.split('/').any(|part| matches!(part.to_lowercase().as_str(), "mcp-tokens" | "pairing"))
+}
+
+/// A download's hidden part file beside its destination, removed when dropped unless `keep` was called: a failed,
+/// cancelled (the task aborted) or interrupted download leaves nothing behind. It owns only a file it created itself.
+struct PartFile(std::path::PathBuf);
+
+impl PartFile {
+    /// Creates a new part file beside `dest`, never opening or taking over one that is already there.
+    fn create(dest: &std::path::Path) -> std::io::Result<(PartFile, std::fs::File)> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let name = dest.file_name().ok_or_else(|| std::io::Error::other("the destination has no file name"))?;
+        let dir = dest.parent().ok_or_else(|| std::io::Error::other("the destination has no folder"))?;
+        let mut tries = 0;
+        loop {
+            let part = dir.join(format!(".{}.{}-{}.part", name.to_string_lossy(), std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+            match std::fs::OpenOptions::new().write(true).create_new(true).open(&part) {
+                Ok(file) => return Ok((PartFile(part), file)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && tries < 100 => tries += 1,
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    fn keep(mut self) {
+        self.0 = std::path::PathBuf::new();
+    }
+}
+
+impl Drop for PartFile {
+    fn drop(&mut self) {
+        if !self.0.as_os_str().is_empty() {
+            let _ = std::fs::remove_file(&self.0);
+        }
     }
 }
 

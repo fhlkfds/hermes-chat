@@ -1,5 +1,5 @@
-// The files on a fake Hermes server, for tests of the file browser: `GET /api/files` and `GET /api/files/read` as the
-// deployed `bf0203a` answers them (`hermes_cli/web_routers/files.py`, `hermes_cli/web_server_files.py`). Listings
+// The files on a fake Hermes server, for tests of the file browser: `GET /api/files`, `GET /api/files/read` and
+// `GET /api/files/download` as the deployed `bf0203a` answers them (`hermes_cli/web_routers/files.py`, `hermes_cli/web_server_files.py`). Listings
 // resolve symbolic links, skip credential files and sort folders first; refusals are FastAPI `{"detail"}` bodies,
 // worded as the Rust side reports them.
 
@@ -49,7 +49,21 @@ const isSensitive = (p: string) => {
   return name === ".env" || name.startsWith(".env.") || name === ".envrc" || SENSITIVE.has(name) || p.split("/").some((s) => SENSITIVE_DIRS.has(s.toLowerCase()));
 };
 
+const STOPPED = "The transfer was stopped.";
+
 export class FakeServerFiles {
+  /** This computer's disk: what downloads wrote, by local path. */
+  readonly local: Record<string, Uint8Array> = {};
+  /** The native Save dialog: the local path the owner picks for a suggested name, or undefined when they close it. */
+  saveDialog: (name: string) => string | undefined = (name) => `/home/me/Downloads/${name}`;
+  /** Set: each download reports progress once more after it has ended, as a late Channel message would. */
+  lateProgress = false;
+  /** Set: a download fails this way halfway, as the Rust side words it (a full disk, a dropped connection). */
+  transferError?: string;
+  /** Set: a download holds here after reporting its first bytes, until the promise settles. */
+  transferGate?: Promise<void>;
+  /** Transfers running now, by id, with how to stop each (src-tauri `Transfers`). */
+  private running = new Map<number, (e: Error) => void>();
   /** The server's disk, by absolute path. Folders above a node needn't be listed: they exist. */
   nodes: Record<string, ServerNode> = {};
   /** `Path.home()` for the server's OS user: where a listing with no path starts. */
@@ -134,8 +148,147 @@ export class FakeServerFiles {
     return { path: dir, parent, entries, root: this.root ?? null, locked_root: this.root ?? null, can_change_path: !this.root };
   }
 
+  /** `_managed_readable_file` and `_managed_file_size`: the bytes `GET /api/files/download` sends for `raw`. */
+  private readable(raw: string): { at: string; bytes: Uint8Array } {
+    const at = this.target(raw);
+    if (this.isDir(at)) fail(400, "Path is not a file");
+    if (isSensitive(at)) fail(403, "Access to sensitive files is not allowed");
+    const node = this.nodes[at] as Exclude<ServerNode, { dir: true } | { link: string }>;
+    if ("unreadable" in node && node.unreadable) fail(403, "File is not readable");
+    const size = "text" in node ? new TextEncoder().encode(node.text).length : "bytes" in node ? node.bytes.length : node.size;
+    if (size > READ_MAX_BYTES) fail(413, "File is too large");
+    const bytes = "text" in node ? new TextEncoder().encode(node.text) : "bytes" in node ? Uint8Array.from(node.bytes, (c) => c.charCodeAt(0)) : new Uint8Array(size);
+    return { at, bytes };
+  }
+
+  /**
+   * src-tauri `files_download`: the Save dialog, then `GET /api/files/download` into a part file that takes the
+   * destination's place only once complete. Stopped (`cancel`, or the connection closing), it leaves `local` as it was.
+   */
+  async download(id: number, path: string, name: string, onProgress: (p: { done: number; total: number; dest: string }) => void): Promise<{ dest: string; bytes: number } | undefined> {
+    const dest = this.saveDialog(name);
+    if (dest === undefined) return undefined;
+    const stopped = new Promise<never>((_, reject) => this.running.set(id, reject));
+    try {
+      const { bytes } = this.readable(path);
+      onProgress({ done: 0, total: bytes.length, dest });
+      const half = Math.floor(bytes.length / 2);
+      onProgress({ done: half, total: bytes.length, dest });
+      if (this.transferGate) await Promise.race([this.transferGate, stopped]);
+      if (this.transferError) throw new Error(this.transferError);
+      onProgress({ done: bytes.length, total: bytes.length, dest });
+      this.local[dest] = bytes;
+      return { dest, bytes: bytes.length };
+    } finally {
+      this.running.delete(id);
+      // A Channel message can reach the webview after the command's answer.
+      if (this.lateProgress) setTimeout(() => onProgress({ done: 1, total: 2, dest }), 0);
+    }
+  }
+
+  /** The native Open dialog's pick, as a name and its bytes (one char per byte), or undefined when closed. */
+  openDialog: () => { name: string; bytes: string } | undefined = () => undefined;
+  /** What each upload token stands for. */
+  private picked = new Map<number, { name: string; bytes: string }>();
+  private picks = 0;
+  /** Every upload Hermes was sent: its path and `overwrite`. */
+  readonly uploads: { path: string; overwrite: boolean }[] = [];
+
+  /** src-tauri `files_discard_pick`. */
+  discardPick(token: number) {
+    this.picked.delete(token);
+  }
+
+  /** Picks not sent or let go yet. */
+  get openPicks() {
+    return this.picked.size;
+  }
+
+  /** src-tauri `files_pick_upload`. */
+  pickUpload() {
+    const file = this.openDialog();
+    if (!file) return undefined;
+    const token = ++this.picks;
+    this.picked.set(token, file);
+    return { token, name: file.name, size: file.bytes.length };
+  }
+
+  /**
+   * src-tauri `files_upload` and `POST /api/files/upload-stream` at `bf0203a`: refused before sending for a credential
+   * path (as Rust does); 409 for a file that's there without `overwrite`; written whole by a rename once all of it came.
+   */
+  async upload(id: number, token: number, path: string, overwrite: boolean, onProgress: (p: { done: number; total: number; dest: string }) => void): Promise<string> {
+    const file = this.picked.get(token);
+    if (!file) throw new Error("That file wasn't picked in the Open dialog, or was already sent.");
+    this.picked.delete(token);
+    if (isSensitive(path)) throw new Error(`Hermes Chat doesn't relay uploads to ${path}, a credential file Hermes keeps out of reach.`);
+    const stopped = new Promise<never>((_, reject) => this.running.set(id, reject));
+    try {
+      onProgress({ done: 0, total: file.bytes.length, dest: path });
+      onProgress({ done: Math.floor(file.bytes.length / 2), total: file.bytes.length, dest: path });
+      if (this.transferGate) await Promise.race([this.transferGate, stopped]);
+      if (this.transferError) throw new Error(this.transferError);
+      this.uploads.push({ path, overwrite });
+      const dir = this.target(dirname(path));
+      if (this.root && dir !== this.root && !dir.startsWith(`${this.root}/`)) fail(403, "Path outside managed files root");
+      const at = join(dir, basename(path));
+      if (this.isDir(at)) fail(409, "A directory already exists at that path");
+      if (this.nodes[at] && !overwrite) fail(409, "File already exists");
+      if (this.nodes[dir] && "unreadable" in this.nodes[dir] && this.nodes[dir].unreadable) fail(403, "File is not writable");
+      this.nodes[at] = { bytes: file.bytes, mtime: 1_793_100_000 };
+      this.afterWrite?.(at);
+      return JSON.stringify({ ok: true, path: at, entry: { name: basename(at), path: at, is_directory: false, size: file.bytes.length } });
+    } finally {
+      this.running.delete(id);
+    }
+  }
+
+  /** Set: a save's answer is lost this way, after (`landed`) or before Hermes wrote it. */
+  saveLost?: { message: string; landed: boolean };
+  /** Set: a save waits here before Hermes takes it, as one that gets no answer would. */
+  saveGate?: Promise<void>;
+  /** Set: before a save writes, the file changes as another client would change it. */
+  beforeWrite?: (path: string) => void;
+  /** Every text saved, in order: its path, text and `overwrite`. */
+  readonly saves: { path: string; text: string; overwrite: boolean }[] = [];
+
+  /** src-tauri `files_save_text`: the edit's text, as UTF-8, through the same upload route. */
+  async saveText(path: string, text: string, overwrite: boolean): Promise<string> {
+    if (isSensitive(path)) throw new Error(`Hermes Chat doesn't relay uploads to ${path}, a credential file Hermes keeps out of reach.`);
+    if (this.saveGate) await this.saveGate;
+    this.beforeWrite?.(path);
+    const lost = this.saveLost;
+    if (lost && !lost.landed) throw new Error(lost.message);
+    const at = this.target(dirname(path)) === dirname(path) ? path : join(this.target(dirname(path)), basename(path));
+    if (this.nodes[at] && !overwrite) fail(409, "File already exists");
+    const node = this.nodes[at];
+    if (node && "unreadable" in node && node.unreadable) fail(403, "File is not writable");
+    this.saves.push({ path: at, text, overwrite });
+    const bytes = Array.from(new TextEncoder().encode(text), (b) => String.fromCharCode(b)).join("");
+    this.nodes[at] = { bytes, mime: node && "mime" in node ? node.mime : undefined, mtime: 1_793_200_000 };
+    this.afterWrite?.(at);
+    if (lost) throw new Error(lost.message);
+    return JSON.stringify({ ok: true, path: at });
+  }
+
+  /** Called after each write lands, so a test can change the file as something else on the server would. */
+  afterWrite?: (path: string) => void;
+
+  cancel(id: number) {
+    this.running.get(id)?.(new Error(STOPPED));
+  }
+
+  /** The connection closed or changed: every transfer stops (src-tauri `Transfers::stop_all`). */
+  stopAll() {
+    for (const stop of this.running.values()) stop(new Error(STOPPED));
+  }
+
+  /** Set: every `GET /api/files/read` fails this way, as during an outage. */
+  readError?: string;
+
   /** `GET /api/files/read?path=`: the whole file as a base64 data URL. */
   read(query: URLSearchParams) {
+    if (this.readError) throw new Error(this.readError);
     const raw = query.get("path");
     if (!raw) fail(422, "Field required");
     // A path that isn't there is "Path not found" here too: `_resolve_managed_path` resolves it strictly first.
