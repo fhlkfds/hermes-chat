@@ -32,6 +32,13 @@ export const isEffort = (v: unknown): v is Effort => typeof v === "string" && (E
  */
 export type ModelPick = { provider: string; model: string; effort?: Effort; fast?: boolean };
 
+/** A kept ModelPick rebuilt from its fields, or undefined if it isn't one. */
+export function pickOf(v: unknown): ModelPick | undefined {
+  const p = v as Record<string, unknown> | null;
+  if (!p || typeof p !== "object" || typeof p.provider !== "string" || typeof p.model !== "string" || !p.model) return undefined;
+  return { provider: p.provider, model: p.model, ...(isEffort(p.effort) && { effort: p.effort }), ...(typeof p.fast === "boolean" && { fast: p.fast }) };
+}
+
 /** One model the picker lists. `available`: false when Hermes lists it but says it can't be used now. */
 export type ModelOption = {
   provider: string;
