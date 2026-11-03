@@ -23,7 +23,7 @@ const pkg: Found = {
   more: 3,
   via: "pacman",
   allUrl: "https://github.com/l0cky12/hermes-chat/compare/ef433a2...main",
-  command: "git pull && cd packaging/aur && makepkg -si",
+  command: "git pull && packaging/aur/build.sh -si",
 };
 
 describe("UpdateSettings", () => {

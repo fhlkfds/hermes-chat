@@ -97,9 +97,9 @@ async function refusal(res: Response, commit: string, now: number): Promise<stri
   return `GitHub answered ${res.status} to the update check${body ? `: ${body.slice(0, 200)}` : "."}`;
 }
 
-/** How the owner installs a newer build of `pkg`, run from their hermes-chat checkout. makepkg fetches main itself. */
+/** How the owner installs a newer build of `pkg`, run from their hermes-chat checkout. makepkg fetches main itself; build.sh runs it on a copy of the PKGBUILD, so the checkout stays clean for the next pull. */
 export function packageCommand(pkg: string): string | undefined {
-  return pkg === "hermes-chat-git" ? "git pull && cd packaging/aur && makepkg -si" : undefined;
+  return pkg === "hermes-chat-git" ? "git pull && packaging/aur/build.sh -si" : undefined;
 }
 
 /** A pacman install compared with `main` on GitHub. */
