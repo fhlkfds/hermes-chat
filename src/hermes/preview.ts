@@ -4,6 +4,7 @@
 // the native Open dialog; Rust reads it (src-tauri/src/transport.rs `read_local_text`). Web pages load in a sandboxed
 // frame (ADR 0007). Everything shown is untrusted: nothing here turns it into HTML the app itself renders.
 import type { Item } from "./model";
+import type { RemotePreview } from "./remoteFiles";
 
 /**
  * What the pane shows. `start`: the pane is open with nothing in it yet. `server`: a path on the Hermes server.
@@ -13,7 +14,8 @@ import type { Item } from "./model";
 export type PreviewTarget =
   | { kind: "start" }
   | { kind: "web"; url: string }
-  | { kind: "server"; path: string }
+  /** `host`: on the dashboard's own machine, read through the managed files routes (ADR 0012), not where tools run. */
+  | { kind: "server"; path: string; host?: boolean }
   | { kind: "local"; path: string; name: string }
   | { kind: "tool"; name: string; text: string };
 
@@ -44,6 +46,13 @@ const MARKDOWN_NAME = /\.(md|markdown|mdx)$/i;
 const HTML_NAME = /\.x?html?$/i;
 /** `data:` URLs the pane shows as images. SVG in an `<img>` runs no scripts. */
 const IMAGE_DATA_URL = /^data:image\/(png|jpeg|gif|webp|bmp|svg\+xml|x-icon|vnd\.microsoft\.icon);base64,[A-Za-z0-9+/=]*$/;
+
+/**
+ * Text from a tool, with its bidi embedding, override and isolate controls made visible as `\uFFFD`: they can make a
+ * file name read backwards (`invoice\u202Efdp.exe` shows as `invoiceexe.pdf`). Text in a right-to-left language
+ * doesn't need them, and the marks and joiners it does use are kept.
+ */
+export const withoutBidi = (text: string) => text.replace(/[\u202a-\u202e\u2066-\u2069]/g, "\uFFFD");
 
 /** The last part of a path or URL, for the pane's title. */
 export function previewName(t: PreviewTarget): string {
@@ -251,6 +260,13 @@ export async function readServerFile(get: (pathAndQuery: string) => Promise<unkn
     size: size ?? text.length,
     truncated: !!res.truncated,
   };
+}
+
+/** A file the managed files routes read (remoteFiles.ts `preview`), as the pane shows it. */
+export function hostFileView(p: RemotePreview): FileView {
+  if (p.kind === "image") return { kind: "image", src: p.dataUrl, size: p.size };
+  if (p.kind === "binary") return unsupported(p.name, p.mime, p.size);
+  return { kind: "text", text: p.text, language: languageOf(p.name), format: formatOf(p.name), size: p.size, truncated: false };
 }
 
 /** A Local file's text as Rust reads it: its first 512 KB, and whether it looks binary. */

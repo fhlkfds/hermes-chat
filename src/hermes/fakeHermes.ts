@@ -62,6 +62,10 @@ export type TranscriptMessage = {
   display_kind?: string;
   reasoning?: string;
   row_id?: number;
+  /** A tool row's whole result as Hermes stores it, which `session.resume` leaves out (`content` is only for edit tools). */
+  result?: string;
+  /** An assistant row's tool calls as stored: `[{id, type, function: {name, arguments}}]`, `arguments` JSON text. */
+  tool_calls?: unknown;
 };
 
 /** A file on the owner's disk: its bytes as a string, a size alone for a file too big to make, or a folder. */
@@ -151,6 +155,21 @@ const DAY = 86_400;
 const MiB = 1024 * 1024;
 const now = () => Date.now() / 1000;
 
+/**
+ * A memory entry's fingerprint in its node id. Hermes's is the first 12 hex digits of the SHA-256 of the text
+ * (`agent/learning_graph.memory_fingerprint`); the client never computes one, so the fake uses a stand-in digest.
+ */
+export function fingerprint(text: string): string {
+  let a = 0x811c9dc5;
+  let b = 0x01000193;
+  for (const ch of text) {
+    const c = ch.codePointAt(0)!;
+    a = Math.imul(a ^ c, 0x01000193) >>> 0;
+    b = Math.imul(b ^ c, 0x5bd1e995) >>> 0;
+  }
+  return (a.toString(16).padStart(8, "0") + b.toString(16).padStart(8, "0")).slice(0, 12);
+}
+
 /** `_normalize_path`: absolute (a relative path is read from the server's home folder), no trailing slash. */
 const serverPath = (path: string) => {
   const p = path.trim().startsWith("/") ? path.trim() : `/home/liam/${path.trim()}`;
@@ -209,6 +228,25 @@ export class FakeHermes {
   /** Every other profile's stored sessions, by profile name. Each profile has its own store (research doc §5). */
   otherProfiles: Record<string, SessionRow[]> = {};
   /**
+   * Each profile's SOUL.md as the file holds it, by profile name; a profile left out has none. Read and written as
+   * `GET`/`PUT /api/profiles/{name}/soul` do at the deployed `bf0203a` (persona.ts).
+   */
+  souls: Record<string, string> = {};
+  /** False: the server is older than the persona routes, and answers them as `bf0203a` answers a path it hasn't. */
+  soulRoutes = true;
+  /** While set, `GET …/soul` fails with this message (e.g. a 500 for a file Hermes may not read). */
+  soulReadError?: string;
+  /** While set, `PUT …/soul` fails with this message and writes nothing. */
+  soulWriteError?: string;
+  /** While set, `PUT …/soul` writes the file, then fails with this message, as a connection lost before the answer. */
+  soulWriteLost?: string;
+  /** Runs as a `PUT …/soul` arrives, before it writes: another client's write in the middle of a Save. */
+  beforeSoulWrite?: () => void;
+  /** Runs after a `PUT …/soul` wrote: another client writing again before the read-back. */
+  afterSoulWrite?: () => void;
+  /** Profile distributions, by profile name, as `GET /api/profiles` lists them (`distribution_name`). */
+  distributions: Record<string, string> = {};
+  /**
    * Scheduled jobs by profile, as `cron/jobs.json` holds them, and how the cron routes behave
    * (`hermes_cli/web_routers/cron.py` at the deployed `bf0203a`, as probed with a throwaway HERMES_HOME).
    */
@@ -229,6 +267,13 @@ export class FakeHermes {
   dropOnPrompt?: "stored" | "lost";
   /** What the model answers every `llm.oneshot` call with, unless `oneshotFailure` says why it failed. */
   oneshotAnswer = "A new title";
+  /** The server commands `commands.catalog` lists; undefined for a Hermes without the method. */
+  commandCatalog: string[] | undefined = ["steer", "context", "compress", "help"];
+  /** The profile's quick commands (`quick_commands` in config.yaml), by name, with their description. */
+  quickCommands: Record<string, string> = {};
+  /** A `/steer` is queued for the running turn; false answers as Hermes does with no turn running. */
+  steerable = true;
+  contextOutput = "Context window: 12,400 / 200,000 tokens (6%)\n  System prompt  3,100\n  Messages       9,300";
   oneshotFailure?: string;
   /** The owner's local disk, by path, for attachments. */
   files: Record<string, FakeFile> = {};
@@ -307,9 +352,46 @@ export class FakeHermes {
   /** The `info` session.create and session.resume answer with (`server._session_info`); empty, as from a server
    * that reports none of it, unless a test sets it. */
   sessionInfo: Record<string, unknown> = {};
+  /**
+   * Each runtime session's working folder. As live at the deployed `bf0203a` (probed 2026-11-02 against a throwaway
+   * HERMES_HOME): `session.create` takes a `cwd` that is a folder on the server, and quietly runs in Hermes's own
+   * folder (`hermesHome`) when it isn't one.
+   */
+  readonly sessionCwd = new Map<string, string>();
+  hermesHome = "/home/hermes";
+
+  /**
+   * Each profile's built-in memory, by profile name: `memory` is MEMORY.md's entries and `profile` USER.md's, as
+   * `MemoryStore._parse_entries` reads them (stripped, none empty). A profile not here has none.
+   */
+  memory: Record<string, { memory: string[]; profile: string[] }> = {};
+  /** The profile the dashboard process runs as (`GET /api/profiles/active` → `current`), whose memory `learning.*` reach. */
+  servedProfile = "default";
+  /** Each memory file's limit in characters (`memory_char_limit`, `user_char_limit` defaults at `bf0203a`). */
+  memoryLimit: Record<"memory" | "profile", number> = { memory: 2200, profile: 1375 };
+  /** False: a server older than the `learning.*` methods, which answers them "method not found". */
+  learningMethods = true;
+  /** An external memory provider the profile uses (`GET /api/memory` → `active`); none when empty. */
+  memoryProvider = "";
+  /** Runs before each `learning.*` request is answered, e.g. to change memory as the agent would meanwhile. */
+  beforeLearning?: (method: string, params: Record<string, unknown>) => void;
+  /** Answers the next `learning.edit` or `learning.delete` with this JSON-RPC error instead of writing. Applies once. */
+  learningError?: { code: number; message: string };
+  /**
+   * The next `learning.edit` or `learning.delete` drops the connection before Hermes answers. `applied`: Hermes wrote
+   * it first. `lost`: the frame never reached Hermes. Applies once.
+   */
+  dropOnLearning?: "applied" | "lost";
+  /**
+   * What `session.active_list` lists: the sessions live in the dashboard's process, in every profile, as
+   * `_session_live_item` renders them at the deployed `bf0203a` (`tui_gateway/session_registry.py`). Rows carry no
+   * profile; `status` is `waiting` while a server→client request is open, else `starting`, `working` or `idle`.
+   */
+  liveSessions: { id: string; session_key: string; status: string; last_active: number; started_at?: number; title?: string; preview?: string }[] = [];
 
   /** Per-method behaviour; tests override entries. Unhandled methods get no answer. */
   readonly handlers: Record<string, Handler> = {
+    "session.active_list": (r) => this.respond(r.id, { sessions: this.liveSessions.map((l) => ({ current: false, message_count: 0, model: "", preview: "", title: "", started_at: l.last_active, ...l })) }),
     "session.create": (r) => {
       const n = this.requests.filter((q) => q.method === "session.create").length;
       const runtimeId = `rt-${n}`;
@@ -326,7 +408,9 @@ export class FakeHermes {
         fast: typeof p.fast === "boolean" ? p.fast : base.fast,
       };
       this.sessionModel.set(stored, info);
-      this.respond(r.id, { session_id: runtimeId, stored_session_id: stored, message_count: 0, messages: [], info: { ...this.sessionInfo, ...info } });
+      const cwd = typeof p.cwd === "string" && this.serverDirs.has(p.cwd) ? p.cwd : this.hermesHome;
+      this.sessionCwd.set(runtimeId, cwd);
+      this.respond(r.id, { session_id: runtimeId, stored_session_id: stored, message_count: 0, messages: [], info: { ...this.sessionInfo, ...info, cwd } });
     },
     "session.resume": (r) => {
       const stored = String(r.params.session_id);
@@ -382,6 +466,33 @@ export class FakeHermes {
     "image.detach": (r) => {
       this.imagesStaged--;
       this.respond(r.id, { detached: true, count: this.imagesStaged });
+    },
+    // `commands.catalog` (tui_gateway/methods_tools.py, `command_discovery.command_catalog`) at the deployed `bf0203a`:
+    // `canon` maps every listed name and alias to the command's own name. Older servers have no such method.
+    "commands.catalog": (r) => {
+      if (!this.commandCatalog) return this.fail(r.id, -32601, "unknown method: commands.catalog");
+      const canon = Object.fromEntries(this.commandCatalog.flatMap((n) => [[`/${n}`, `/${n}`], ...(n === "steer" ? [["/s", "/steer"]] : [])]));
+      const user = Object.keys(this.quickCommands).map((n) => [`/${n}`, this.quickCommands[n]]);
+      this.respond(r.id, {
+        pairs: [...this.commandCatalog.map((n) => [`/${n}`, n]), ...user], canon, commands: {},
+        categories: [{ name: "Session", pairs: this.commandCatalog.map((n) => [`/${n}`, n]) }, ...(user.length ? [{ name: "User commands", pairs: user }] : [])],
+        skills: {}, skill_count: 0, warning: "", plugin_discovery_error: "", plugin_commands: {},
+      });
+    },
+    // `command.dispatch` `_cmd_steer`: queued for a running turn; with none, Hermes asks for it to be sent as a message.
+    "command.dispatch": (r) => {
+      const sid = String(r.params.session_id);
+      if (!this.runtime.has(sid)) return this.fail(r.id, 4001, "session not found");
+      if (r.params.name !== "steer") return this.fail(r.id, 4018, `not a quick/plugin/bundle/skill command: ${r.params.name}`);
+      const arg = String(r.params.arg ?? "");
+      if (!arg) return this.fail(r.id, 4004, "usage: /steer <prompt>");
+      if (!this.steerable) return this.respond(r.id, { type: "send", message: arg, notice: `No agent running; sent as next turn: ${arg}` });
+      this.respond(r.id, { type: "exec", output: `⏩ Steer queued — arrives after the next tool call: ${arg}` });
+    },
+    // `slash.exec` for `/context`, answered from the live session.
+    "slash.exec": (r) => {
+      if (!this.runtime.has(String(r.params.session_id))) return this.fail(r.id, 4001, "session not found");
+      this.respond(r.id, { output: this.contextOutput });
     },
     // Legacy `session.interrupt` (tui_gateway/methods_session_interrupt.py). The turn then ends with a
     // `message.complete` whose status is "interrupted"; tests send that themselves.
@@ -502,6 +613,27 @@ export class FakeHermes {
       }),
     // Keepalive, answered by the WS layer in either protocol generation (research doc §1).
     "gateway.ping": (r) => this.respond(r.id, { ok: true }),
+    // Memory (`tui_gateway/methods_tools.py` and `agent/learning_mutations.py` at the deployed `bf0203a`). The calls take
+    // no profile and act on the served profile's memory; their contracts refuse any extra param.
+    "learning.frames": (r) => this.learning(r, ["cols", "rows", "frames"], () => this.memoryFrames()),
+    "learning.detail": (r) =>
+      this.learning(r, ["id"], () => {
+        const found = this.memoryEntry(String(r.params.id ?? ""));
+        if (typeof found === "string") return { ok: false, message: found };
+        return { ok: true, kind: "memory", id: r.params.id, label: found.text.split("\n")[0].slice(0, 80), content: found.text };
+      }),
+    "learning.edit": (r) => this.learning(r, ["id", "content"], () => this.memoryWrite(r, String(r.params.content ?? ""))),
+    "learning.delete": (r) => this.learning(r, ["id"], () => this.memoryWrite(r, null)),
+    // `session.cwd.set` (`tui_gateway/methods_session.py` at `bf0203a`): only an idle session, only a folder that's there.
+    "session.cwd.set": (r) => {
+      const sid = String(r.params.session_id);
+      if (!this.runtime.has(sid)) return this.fail(r.id, 4001, "session not found");
+      const cwd = String(r.params.cwd ?? "");
+      if (!this.serverDirs.has(cwd)) return this.fail(r.id, 4017, `working directory does not exist: ${cwd}`);
+      this.sessionCwd.set(sid, cwd);
+      this.respond(r.id, { ...this.sessionInfo, cwd });
+    },
+    "session.close": (r) => this.respond(r.id, { closed: true }),
   };
 
   /** Per-route REST behaviour, keyed `METHOD /path`. A handler throws to fail the request. */
@@ -509,10 +641,11 @@ export class FakeHermes {
     // `fs_list` (`hermes_cli/web_routers/files.py` at the deployed `bf0203a`): a folder's entries, or none and why.
     "GET /api/fs/list": ({ query }) => {
       const path = query.get("path") ?? "";
-      const isDir = (p: string) => this.serverDirs.has(p) || typeof this.serverFiles[p] === "object";
+      const all = new Set([...this.serverDirs, ...Object.keys(this.serverFiles)]);
+      // A folder holding a file or folder is there too, as on a real disk.
+      const isDir = (p: string) => this.serverDirs.has(p) || typeof this.serverFiles[p] === "object" || [...all].some((q) => q.startsWith(`${p}/`));
       if (typeof this.serverFiles[path] === "string") return { entries: [], error: "ENOTDIR" };
       if (!isDir(path)) return { entries: [], error: "ENOENT" };
-      const all = new Set([...this.serverDirs, ...Object.keys(this.serverFiles)]);
       const inside = [...all].filter((p) => p.startsWith(`${path}/`) && !p.slice(path.length + 1).includes("/"));
       return { entries: inside.map((p) => ({ name: p.split("/").pop(), path: p, isDirectory: isDir(p) })) };
     },
@@ -600,6 +733,17 @@ export class FakeHermes {
       if (!this.env) throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
       return this.env;
     },
+    // `get_active_profile_endpoint`: the sticky profile, and the one this dashboard process runs as.
+    "GET /api/profiles/active": () => ({ active: "default", current: this.servedProfile }),
+    // `get_memory_status` (`hermes_cli/web_routers/ops.py`): the provider and the built-in files' sizes in bytes.
+    "GET /api/memory": ({ query }) => {
+      const profile = query.get("profile") || this.servedProfile;
+      if (profile !== "default" && !(profile in this.otherProfiles) && !(profile in this.memory))
+        throw new Error(`The dashboard answered 404: {"detail":"Profile '${profile}' does not exist."}`);
+      const m = this.memory[profile] ?? { memory: [], profile: [] };
+      const bytes = (entries: string[]) => new TextEncoder().encode(entries.join("\n§\n")).length;
+      return { active: this.memoryProvider, providers: [], builtin_files: { memory: bytes(m.memory), user: bytes(m.profile) } };
+    },
     "GET /api/files": ({ query }) => this.managedFiles.list(query),
     "GET /api/files/read": ({ query }) => this.managedFiles.read(query),
     // `hermes_cli/web_routers/profiles.py` `_profile_to_dict` at the deployed `bf0203a`, trimmed to what matters here.
@@ -612,6 +756,7 @@ export class FakeHermes {
         provider: this.profileModel[name]?.provider ?? null,
         description: "",
         display_name: "",
+        distribution_name: this.distributions[name] ?? null,
       })),
     }),
     // Settings → Model (hermes_cli/web_routers/models.py, config_env.py, delegation.py at the deployed `bf0203a`).
@@ -732,6 +877,7 @@ export class FakeHermes {
         const patch = /^\/api\/sessions\/([^/]+)$/.exec(req.path);
         const snapshot = /^\/api\/sessions\/([^/]+)\/mutation-snapshot$/.exec(req.path);
         const messages = /^\/api\/sessions\/([^/]+)\/messages$/.exec(req.path);
+        const soul = /^\/api\/profiles\/([^/]+)\/soul$/.exec(req.path);
         const handler =
           this.rest[`${method} ${req.path}`] ??
           (method === "PATCH" && patch ? () => this.patchSession(patch[1], req.body!) : undefined) ??
@@ -739,7 +885,10 @@ export class FakeHermes {
           (method === "DELETE" && patch ? () => this.deleteSession(decodeURIComponent(patch[1]), req.query.get("profile")) : undefined) ??
           (method === "GET" && snapshot ? () => this.mutationSnapshot(snapshot[1], req.query.get("profile")) : undefined) ??
           (method === "GET" && messages ? () => this.storedMessages(decodeURIComponent(messages[1]), req.query) : undefined) ??
+          (soul && this.soulRoutes && (method === "GET" || method === "PUT") ? () => this.soul(method, decodeURIComponent(soul[1]), req.body) : undefined) ??
           this.cron.route(req);
+        if (soul && this.soulRoutes && method !== "GET" && method !== "PUT") throw new Error(`The dashboard answered 405: {"detail":"Method Not Allowed"}`);
+        if (soul && !this.soulRoutes) throw new Error(`The dashboard answered 404: {"detail":"No such API endpoint: ${req.path}"}`);
         if (!handler) throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
         return JSON.stringify(await handler(req));
       },
@@ -750,7 +899,8 @@ export class FakeHermes {
         const url = new URL(pathAndQuery, "http://dashboard/");
         const req: RestRequest = { method: "GET", path: url.pathname, query: url.searchParams };
         this.restRequests.push(req);
-        const handler = this.rest[`GET ${req.path}`];
+        const messages = /^\/api\/sessions\/([^/]+)\/messages$/.exec(req.path);
+        const handler = this.rest[`GET ${req.path}`] ?? (messages ? () => this.storedMessages(decodeURIComponent(messages[1]), req.query) : undefined);
         if (!handler) throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
         const body = JSON.stringify(await handler(req));
         if (body.length > maxBytes) throw new Error(`it's ${(body.length / MiB).toFixed(1)} MB now, over the ${Math.floor(maxBytes / MiB)} MB limit`);
@@ -774,6 +924,102 @@ export class FakeHermes {
     this.savedKeys.push({ profile, envVar, key: value });
     this.env![envVar] = { ...row, is_set: true, redacted_value: `${value.slice(0, 3)}…${value.slice(-2)}` };
     return { verified: checked.ok && checked.reachable };
+  }
+
+  /**
+   * One `learning.*` request: "method not found" on a server without them, 4000 for a param the contract doesn't
+   * have (pydantic `extra="forbid"`), else `answer`'s result.
+   */
+  private learning(r: Request, allowed: string[], answer: () => unknown) {
+    if (!this.learningMethods) return this.fail(r.id, -32601, `unknown method: ${r.method}`);
+    const extra = Object.keys(r.params ?? {}).find((k) => !allowed.includes(k));
+    if (extra) return this.fail(r.id, 4000, `invalid params for ${r.method}: ${extra}: Extra inputs are not permitted`);
+    this.beforeLearning?.(r.method, r.params);
+    const result = answer();
+    if (result !== undefined) this.respond(r.id, result);
+  }
+
+  /** The served profile's memory cards, MEMORY.md's first (`agent/learning_graph._memory_cards`). */
+  private memoryCards(): { source: "memory" | "profile"; text: string; id: string }[] {
+    const m = this.memory[this.servedProfile] ?? { memory: [], profile: [] };
+    const cards = [...m.memory.map((text) => ({ source: "memory" as const, text })), ...m.profile.map((text) => ({ source: "profile" as const, text }))];
+    return cards.map((c, i) => ({ ...c, id: `memory:${c.source}:${i}:${fingerprint(c.text)}` }));
+  }
+
+  /** `learning.frames`, trimmed to the parts that carry nodes: every card in one day's bucket. */
+  private memoryFrames() {
+    const cards = this.memoryCards();
+    const nodes = cards.map((c) => ({ id: c.id, glyph: "◆", label: c.text.slice(0, 40), fullLabel: c.text.split("\n")[0], meta: "memory", body: c.text.slice(0, 1200), style: "memory" }));
+    return {
+      frames: [],
+      legend: [],
+      categories: [],
+      buckets: cards.length ? [{ index: 0, label: "2 Nov", date: "2 Nov 2026", skills: 0, memories: cards.length, total: cards.length, nodes }] : [],
+      summary: [],
+      axis: { start: "", end: "" },
+      count: cards.length,
+      cols: 20,
+      rows: 10,
+    };
+  }
+
+  /** The entry a memory node id names, found by its fingerprint as `_locate_memory` does, or why it can't be. */
+  private memoryEntry(id: string): { source: "memory" | "profile"; text: string } | string {
+    const parts = id.split(":");
+    if (parts.length !== 4 || parts[0] !== "memory" || (parts[1] !== "memory" && parts[1] !== "profile")) return `bad memory node id: '${id}'`;
+    const found = this.memoryCards().find((c) => c.source === parts[1] && fingerprint(c.text) === parts[3]);
+    return found ?? "memory node id is stale — refresh the graph";
+  }
+
+  /** `learning.edit` (`content`) or `learning.delete` (null), under the same refusals as `_mutate_memory`. */
+  private memoryWrite(r: Request, content: string | null): unknown {
+    if (this.learningError) {
+      const { code, message } = this.learningError;
+      this.learningError = undefined;
+      return this.fail(r.id, code, message);
+    }
+    const found = this.memoryEntry(String(r.params.id ?? ""));
+    const body = content?.trim();
+    if (content !== null && !body) return { ok: false, message: "empty memory — use delete to remove it" };
+    if (typeof found === "string") return { ok: false, message: found };
+    const m = (this.memory[this.servedProfile] ??= { memory: [], profile: [] });
+    const entries = m[found.source];
+    const next = entries.flatMap((e) => (e === found.text ? (body === undefined ? [] : [body]) : [e]));
+    const total = [...next.join("\n§\n")].length;
+    const limit = this.memoryLimit[found.source];
+    if (body !== undefined && total > limit)
+      return { ok: false, message: `Replacement would put memory at ${total.toLocaleString("en-US")}/${limit.toLocaleString("en-US")} chars. Shorten the new content.` };
+    const drop = this.dropOnLearning;
+    this.dropOnLearning = undefined;
+    if (drop !== "lost") m[found.source] = [...new Set(next)];
+    if (drop) {
+      this.drop();
+      return undefined;
+    }
+    const name = found.source === "memory" ? "MEMORY.md" : "USER.md";
+    return { ok: true, message: body === undefined ? `deleted memory from ${name}` : `updated memory in ${name}` };
+  }
+
+  /**
+   * `GET`/`PUT /api/profiles/{name}/soul` at `bf0203a`: `_resolve_profile_dir` (400 bad name, 404 no profile), then a
+   * read with `encoding="utf-8-sig"` and universal newlines, or an unconditional whole-file write that creates it.
+   */
+  private soul(method: string, name: string, body?: Record<string, unknown>): unknown {
+    if (name !== "default" && !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(name)) throw new Error(`The dashboard answered 400: {"detail":"Invalid profile name '${name}'"}`);
+    if (name !== "default" && !(name in this.otherProfiles)) throw new Error(`The dashboard answered 404: {"detail":"Profile '${name}' does not exist."}`);
+    if (method === "GET") {
+      if (this.soulReadError) throw new Error(this.soulReadError);
+      const file = this.souls[name];
+      return file === undefined ? { content: "", exists: false } : { content: file.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n"), exists: true };
+    }
+    if (typeof body?.content !== "string")
+      throw new Error(`The dashboard answered 422: {"detail":[{"type":"missing","loc":["body","content"],"msg":"Field required"}]}`);
+    this.beforeSoulWrite?.();
+    if (this.soulWriteError) throw new Error(this.soulWriteError);
+    this.souls[name] = body.content;
+    this.afterSoulWrite?.();
+    if (this.soulWriteLost) throw new Error(this.soulWriteLost);
+    return { ok: true };
   }
 
   /** A Server file for `/api/fs/*`, failing the way `_fs_regular_file` and `_is_sensitive_path` do at `bf0203a`. */
@@ -920,7 +1166,16 @@ export class FakeHermes {
   private storedMessages(id: string, query: URLSearchParams) {
     const rows = (this.transcripts[id] ?? [])
       .filter((m) => m.row_id !== undefined)
-      .map((m) => ({ id: m.row_id!, session_id: id, role: m.role, content: m.text ?? m.content ?? null, timestamp: m.timestamp ?? null }));
+      .map((m) => ({
+        id: m.row_id!,
+        session_id: id,
+        role: m.role,
+        content: m.role === "tool" ? (m.result ?? m.content ?? null) : (m.text ?? m.content ?? null),
+        tool_name: m.role === "tool" ? (m.name ?? null) : null,
+        tool_call_id: m.tool_call_id ?? null,
+        tool_calls: m.tool_calls === undefined ? null : JSON.stringify(m.tool_calls),
+        timestamp: m.timestamp ?? null,
+      }));
     if (query.get("order") === "latest") rows.reverse();
     const offset = Number(query.get("offset") ?? 0);
     const limit = Number(query.get("limit") ?? 100);

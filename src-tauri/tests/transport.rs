@@ -284,6 +284,7 @@ fn stub_routes() -> Router {
         .route("/api/model/set", post(echo_write))
         .route("/api/config", put(echo_write).get(config))
         .route("/api/model/moa", put(echo_write).post(echo_write))
+        .route("/api/profiles/{name}/soul", put(echo_write).post(echo_write))
         .route("/api/cron/jobs", post(echo_write))
         .route("/api/cron/jobs/{id}", put(echo_write))
         .route("/api/cron/jobs/{id}/{action}", post(echo_write))
@@ -492,6 +493,14 @@ async fn relays_the_model_settings_writes() {
 }
 
 #[tokio::test]
+async fn relays_the_persona_write_for_a_profile() {
+    let dashboard = signed_in().await;
+    let body = json!({"content": "# Persona\n"}).to_string();
+    let got: Value = serde_json::from_str(&dashboard.request("PUT", "api/profiles/work-2/soul", Some(body)).await.unwrap()).unwrap();
+    assert_eq!(got, json!({"uri": "/api/profiles/work-2/soul", "content_type": "application/json", "body": {"content": "# Persona\n"}}));
+}
+
+#[tokio::test]
 async fn relays_the_scheduled_job_writes() {
     let dashboard = signed_in().await;
     let body = json!({"schedule": "0 9 * * *", "prompt": "p"}).to_string();
@@ -529,7 +538,7 @@ async fn a_failed_rest_call_reports_status_and_body() {
 }
 
 #[tokio::test]
-async fn relays_only_get_patch_and_delete_under_api_the_two_model_writes_and_the_job_writes() {
+async fn relays_only_get_patch_and_delete_under_api_and_the_model_job_and_persona_writes() {
     let dashboard = signed_in().await;
     for (method, path) in [
         ("GET", "auth/logout"),
@@ -543,6 +552,16 @@ async fn relays_only_get_patch_and_delete_under_api_the_two_model_writes_and_the
         ("POST", "api/config"),
         ("POST", "api/model/set/../../auth/logout"),
         ("OPTIONS", "api/config"),
+        ("POST", "api/profiles/default/soul"),
+        ("PUT", "api/profiles/soul"),
+        ("PUT", "api/profiles//soul"),
+        ("PUT", "api/profiles/../soul"),
+        ("PUT", "api/profiles/Work/soul"),
+        ("PUT", "api/profiles/-work/soul"),
+        ("PUT", "api/profiles/a/b/soul"),
+        ("PUT", "api/profiles/work%2F..%2Fx/soul"),
+        ("PUT", "api/profiles/default/soul/../../../auth/logout"),
+        ("PUT", "api/profiles/default"),
         ("PUT", "api/cron/jobs"),
         ("POST", "api/cron/jobs/x"),
         ("POST", "api/cron/jobs/x/run"),

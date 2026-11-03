@@ -67,6 +67,10 @@ _Avoid_: workspace, group, folder (for the project itself)
 A path on the server that a project refers to, shown with the connection it is on. Hermes Chat adds only a folder that is already there, and never creates, moves or deletes one. A folder in a git repository shows its branch, and the repository's other worktrees that already exist can be added as folders too; Hermes Chat never creates a worktree.
 _Avoid_: directory, workspace, repo (unless it is one)
 
+**Project defaults**:
+What a project gives the chats started while the list shows it: instructions, a model with its reasoning effort, and a working folder on the server. A new chat takes each from what the owner chose for it, then the project's default, then the profile's own, and its New chat pane says which. They are kept on this computer only, for each connection and profile; Hermes has nowhere to keep them. Saving them changes only chats started afterwards. A chat starts only in a folder that is on the server and that Hermes says it took; the instructions go in once, as a hidden message the model reads and no Hermes client shows. Apply the project's defaults asks first, and can change a started chat's model and folder, never its instructions (ADR 0017).
+_Avoid_: project settings (the project screen also renames and deletes), workspace, system prompt (the instructions aren't one)
+
 **Attachment**:
 A local file the owner sends with a message: an image Hermes looks at, or any other file Hermes can read. Hermes takes images up to 25 MB and other files up to 256 MB.
 _Avoid_: upload, file (when the attachment is meant)
@@ -76,8 +80,16 @@ An image of a region or window of the owner's screen, taken from the composer by
 _Avoid_: screen capture, snapshot
 
 **Draft**:
-The text the owner has typed in a chat's composer and not sent. Each chat keeps its own draft, and so does the New chat pane, separately for each connection and profile. A draft is still there after switching chats or restarting the app. Sending empties it. A message Hermes doesn't take becomes a Failed message, not a draft again. Only when a new chat can't be started does the text come back into the composer. Attachments aren't kept in a draft.
+The text the owner has typed in a chat's composer and not sent. Each chat keeps its own draft, and so does the New chat pane, separately for each connection and profile. A draft is still there after switching chats or restarting the app. Sending or queuing it empties it. A message Hermes doesn't take becomes a Failed message, not a draft again. Only when a new chat can't be started does the text come back into the composer. Attachments aren't kept in a draft.
 _Avoid_: unsent message, saved message
+
+**Queued message**:
+A message the owner lined up while Hermes replied, to go after the reply. Each chat has its own queue, and both panes of a chat show it. The owner can edit, reorder and remove queued messages, and pause and resume the queue. Hermes Chat sends them one at a time, each once the previous reply has ended and nothing in the chat waits on the owner. It sends them only while it is open, connected and showing their profile. The queue pauses on its own after a reply that was stopped, failed, or asked for an Approval. It also pauses when a queued message doesn't go, when the connection drops, and when the queue is loaded again after a restart or a profile switch. A queued message that goes becomes an outgoing message, and if Hermes doesn't take it, a Failed message. Queued messages and their attachments are kept on this computer, for each connection, profile and chat, never on the server (ADR 0018).
+_Avoid_: pending message, scheduled message, Hermes's queue (Hermes's own queue holds messages sent while a turn runs; this app doesn't use it as the queue)
+
+**Slash command**:
+A command the owner types at the start of the composer, after a "/", picked from the menu that opens there or typed in full. Each is either an action of this app or a command Hermes runs for the chat, and says which. Only the commands in the app's list run; any other text starting with "/" is sent as an ordinary message. Picking from the menu only fills the command in; Enter then runs it. A command that can't run says why and keeps the text. Deleting asks first, as it does in the chat list (ADR 0015).
+_Avoid_: quick command (Hermes's word for commands defined in its config), shortcut, macro
 
 **Dictation**:
 Speaking a message instead of typing it. The microphone is open only between the owner starting a recording and pressing Done or cancelling. Hermes turns the recording into text with the profile's speech-to-text provider, and the text goes into the composer after anything already typed, for the owner to edit and send. Nothing reaches the chat until the owner sends it. Cancelling, or opening another chat, drops the recording. A recording Hermes couldn't transcribe is held in memory until the owner tries again or discards it. Recordings are never saved on this computer.
@@ -99,6 +111,10 @@ _Avoid_: cancelled, failed
 Hermes asking the owner before it runs a command it counts as dangerous. It shows as a card in the chat, and the reply waits until the owner approves or denies it, Hermes stops waiting, or the reply is stopped. The card offers only the answers Hermes offers: once, for the rest of the chat, always, or deny. The two broader grants ask the owner to confirm first.
 _Avoid_: permission, confirmation, prompt
 
+**Inbox**:
+The list, opened from the rail, of what needs the owner or has finished in any profile on the server: a reply running, an Approval waiting, a failure or Failed message, or a chat with something new. Each entry names its profile and chat, says when, and opens the chat in its profile. Nothing is answered, retried or sent from it. Dismissing an entry takes it out of the inbox only, on this computer: the chat stays Unread, Active or Settled, and Archived or not, as it was. An entry shows again only for something newer. Running work in other profiles shows only for chats the dashboard itself runs (ADR 0019).
+_Avoid_: notifications, activity, feed
+
 **Saved copy**:
 The transcript of a chat the owner opened lately, kept on this computer so it can be read while Hermes can't be reached, even after a restart. It shows with a note saying when it was saved, until the chat loads from Hermes again. Each connection and profile keeps its own, without the password. A copy never holds Approvals, errors or Failed messages. The least recently saved copies are deleted first once they pass the storage limit, deleting a chat deletes its copy, and Clear local cache deletes them all.
 _Avoid_: cache (for one chat's copy), offline mode
@@ -106,6 +122,10 @@ _Avoid_: cache (for one chat's copy), offline mode
 **Model pick**:
 The model, reasoning effort and fast mode the composer starts new chats on. It is sticky: it stays after starting a chat, switching chats or restarting the app, and is kept on this computer only. It never changes the profile's default model in Hermes. Picking with a chat on screen switches that chat alone, and becomes the pick for new chats. Switching profile starts again from that profile's own model.
 _Avoid_: default model (that is the profile's, in Hermes), current model
+
+**Memory**:
+What Hermes remembers about the owner and their work between chats, for one profile. Hermes keeps it on the server in two files: its own notes, and what it knows about the owner. Each is a list of entries. The agent adds, changes and removes entries during chats; the owner can change or remove one in Settings → Memory, which saves to the server and reads it back. Hermes reads memory into a chat when the chat starts, so an edit reaches chats started after it. Only the profile the Hermes dashboard runs as can be edited from this app.
+_Avoid_: notes, knowledge, context (for memory), cache (a Saved copy is not memory)
 
 **Reasoning effort**:
 How hard the model thinks before it answers: Off, Low, Medium, High, Extra high or Max. The pill beside the model picker shows it and changes it, and is hidden for a model without reasoning.
@@ -150,9 +170,17 @@ _Avoid_: custom header, gateway token
 The rail's read-only browser for the Server files on the machine the Hermes dashboard runs on. It lists folders through the dashboard's managed files, as the server's own user can open them, the same for every profile, and never shows credential files such as `.env`. The server may limit it to one folder. Nothing on this computer is shown there, and nothing on the server can be changed from it (ADR 0012).
 _Avoid_: remote files, file manager, workspace (Hermes's word for a session's working folder)
 
+**Output**:
+A Server file that one of Hermes's tools reported writing in a chat: `write_file`, a file `patch` created, `text_to_speech` audio or an `image_generate` image. It is known by its path, the tool call that made it, and that call's chat. A path a reply or another tool only mentions isn't an Output. The same path written twice is two Outputs, two versions, and only the newest is what the path holds now. The owner can also add a Server file to Outputs by its path. Outputs shows them for the open chat, the project the list shows, or every chat in the profile, and says when a file was last found at its path. This computer keeps only their paths and where they came from (ADR 0016).
+_Avoid_: artifact (the official desktop app's word, which also counts mentioned paths and links), attachment, generated file (in the app's text)
+
 **Unsecure**:
 The warning on a connection whose traffic between this app and the server isn't encrypted.
 _Avoid_: insecure (the app's label is "Unsecure"), unsafe
+
+**Persona**:
+A profile's SOUL.md on the Hermes server: who Hermes is and how it speaks in that profile's chats. Settings → Persona edits the shown profile's file as plain text. A Save writes only if Hermes still has what the edit started from, and the app says it saved only once Hermes, read back, has it. If the file changed elsewhere, nothing is written until the owner chooses. Chats started afterwards use the new persona; a chat under way keeps the one it started with. Hermes needs no restart, and the app never restarts it. An edit not saved stays on this computer, per connection and profile, and the last five versions that saves from here replaced are kept to put back.
+_Avoid_: soul, personality (Hermes's `/personality` presets are another thing), system prompt
 
 **Scheduled job**:
 A Hermes cron job in one profile: a prompt Hermes runs at the times its schedule sets, delivering the reply where the job says. Hermes keeps the job on the server and its gateway runs it there, so it runs while Hermes Chat is closed. The Scheduled jobs screen lists the profile's jobs with their schedule, time zone, next run and last result, and creates, edits, pauses, resumes, runs and deletes them through Hermes. A change shows only once Hermes, read back, has it. Deleting a job, or running it now, asks first (ADR 0013).
@@ -165,7 +193,8 @@ _Avoid_: trigger, test run
 **Pane**:
 One view of a chat, its transcript and composer. The app can show two side by side. The focused pane is the one the
 chat list, Search and keyboard shortcuts target. This focus does not change whether a chat is Active or Settled.
-Two panes of one chat share its Draft and running reply; each has its own scroll, Find and pending Attachments.
+Two panes of one chat share its Draft, Queued messages and running reply; each has its own scroll, Find and pending
+Attachments.
 
 **Update**:
 A newer version of Hermes Chat itself. For the packaged app, the owner installs it with pacman, and the app never replaces pacman's files. For a standalone build made with an update key, the app installs it, after checking its signature. Either way the new version runs only after the owner restarts the app, and drafts and unsent messages are kept across the restart.
@@ -181,11 +210,15 @@ _Avoid_: upgrade (pacman's word, for the package step only)
 
 ## Flagged ambiguities
 
+- **Output** vs a path in a reply: Outputs counts only what a tool's own result says it wrote. A reply that says "saved to /srv/x.pdf", or a `terminal` command that creates a file, makes no Output, though the owner can add that file by its path.
 - **Settled** vs **Archived**: they are different things. Archiving sets Hermes's own "archived" flag and hides a chat in every Hermes client; settling is this app's view of the owner's attention, stored as the "pinned" flag. Neither touches the other (ADR 0005).
+- **Queued message** vs **Draft** vs **Failed message**: a Draft hasn't been sent or queued; a Queued message waits in the chat's queue to be sent by this app; a Failed message was sent, and Hermes didn't take it or may not have. A queued message that goes leaves the queue, and becomes a Failed message only if Hermes doesn't take it.
 - **Imported chat** vs pulling older history: the list holds the past month's chats until the owner pulls older history in Settings, after which it holds all of the profile's chats. Pulled chats come in Settled unless pinned, but they are Imported chats only if their Source isn't this app.
 - **Draft** vs the New chat pane: the code also calls the pane for a chat not started yet "the draft". In this glossary a Draft is only the composer's unsent text.
 - **Dictation** and **Read aloud** vs Hermes's voice mode: Hermes's `/voice` mode (`voice.record`, `voice.tts` over the socket) records with the server's own microphone and speaks through the server's speakers. This app never uses it. Dictation records on this computer, and both use the server only to transcribe and to make the audio.
 - **Scheduled job** vs its runs: each run of an agent job is a Hermes session with source `cron`. The chat list leaves those out; the job's runs show on the Scheduled jobs screen.
 - **Source** vs the `source` field on a Hermes session: the app derives a chat's Source from that field, but the field has more values than the app shows. `gui` (what this app stamps on chats it starts) and `hermes-chat` (what it stamped before; Hermes won't edit those) count as this app, and `cli` and `tui` as the command line. `cron` chats aren't listed, and any other value (for example `api_server`, `webhook`) shows as "another Hermes platform".
+- **Memory** vs a **Saved copy** and the local cache: memory is the agent's, on the server, and changes what Hermes knows. Saved copies and drafts are this computer's copies of chats and change nothing in Hermes. Memory vs a memory *provider*: a profile may also use an external provider (such as Honcho) whose memories live with that provider; Settings → Memory names it but doesn't show or edit what it stores.
 - The project the list shows vs Hermes's *active* project: Hermes keeps one active project per profile for its own CLI and the official desktop app (`projects.set_active`). Picking a project in this app's list never changes it; the pick is kept on this computer.
-- **Project** vs a chat's working folder: Hermes also groups chats by the folder each one runs in (`cwd`). This app doesn't: a chat is in a project only when the owner put it there, or started it while the list showed the project. Putting a chat in a project doesn't change the folder it runs in.
+- **Persona** vs Hermes's personalities: `/personality` and `agent.personalities` in Hermes's config are named presets laid over a chat's prompt. Settings → Persona edits only the profile's `SOUL.md`. It never sets or changes a personality.
+- **Project** vs a chat's working folder: Hermes also groups chats by the folder each one runs in (`cwd`). This app doesn't: a chat is in a project only when the owner put it there, or started it while the list showed the project. Putting a chat in a project doesn't change the folder it runs in. Only a project's default folder, or Apply the project's defaults, sets the folder a chat runs in, so other clients may then group that chat by it.

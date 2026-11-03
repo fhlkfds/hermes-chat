@@ -3,7 +3,7 @@
 // dashboard REST instead, without touching the chat socket. A check only reads lists: it never moves a chat's read
 // watermark. Each check belongs to the connection and profile shown when it started; once either changes, what it
 // finds is dropped and it asks nothing more.
-import type { OtherProfile, OtherProfiles } from "./model";
+import type { ListedChat, OtherProfile, OtherProfiles, SavedSend, SeenFailure } from "./model";
 
 /** How often the app checks the other profiles. What it shows can be this far behind. */
 export const CHECK_EVERY_MS = 120_000;
@@ -21,7 +21,9 @@ export type Scope = { connection: number; profile: string };
 export type OtherProfilesPort = {
   scope(): Scope | undefined;
   profiles(): Promise<string[]>;
-  unreadIn(profile: string): Promise<{ unread: number; more: boolean }>;
+  unreadIn(profile: string): Promise<{ unread: number; more: boolean; chats: ListedChat[] }>;
+  /** The profile's Failed messages, as this computer keeps them; read even when the server can't be. */
+  sendsIn(profile: string): SavedSend[];
   publish(others: OtherProfiles): void;
 };
 
@@ -55,9 +57,11 @@ export class OtherProfilesCheck {
    * The owner switched from `from` to `to`. `to` is shown now, so it leaves these results. `from` gets what its list
    * showed, read at `listedAt`, if it was listed on this connection.
    */
-  switched(from: string, to: string, fromList?: { unread: number; listedAt: number }) {
+  switched(from: string, to: string, fromList?: { unread: number; listedAt: number; chats: ListedChat[] }, failures: SeenFailure[] = []) {
     const { [to]: _shown, ...byName } = this.state.byName;
-    if (fromList) byName[from] = { unread: fromList.unread, more: false, checkedAt: fromList.listedAt };
+    if (fromList) byName[from] = { unread: fromList.unread, more: false, checkedAt: fromList.listedAt, chats: fromList.chats, sends: this.port.sendsIn(from) };
+    // Failures seen there stay until the owner is back in the profile, whatever later checks find.
+    if (failures.length) byName[from] = { ...byName[from], failures };
     this.publish({ ...this.state, byName });
   }
 
@@ -80,10 +84,11 @@ export class OtherProfilesCheck {
       if (!current()) return;
       let found: OtherProfile;
       try {
-        found = { ...(await this.port.unreadIn(name)), checkedAt: Date.now() };
+        const failures = this.state.byName[name]?.failures;
+        found = { ...(await this.port.unreadIn(name)), sends: this.port.sendsIn(name), checkedAt: Date.now(), ...(failures && { failures }) };
       } catch (e) {
         // An earlier answer stays, with the time it was read.
-        found = { ...this.state.byName[name], error: (e as Error).message };
+        found = { ...this.state.byName[name], sends: this.port.sendsIn(name), error: (e as Error).message };
       }
       if (current()) this.publish({ ...this.state, byName: { ...this.state.byName, [name]: found } });
     });

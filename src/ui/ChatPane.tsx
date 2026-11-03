@@ -1,14 +1,15 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
 // Dictation and Read aloud come from Voice.tsx.
-import { memo, type ReactNode, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
-import { ArrowUp, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, FileDown, Globe, HardDrive, Paperclip, RotateCcw, Search, Server, Square, Wrench, X } from "lucide-react";
+import { createContext, memo, type ReactNode, useCallback, useContext, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
+import { ArrowUp, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, FileDown, Globe, HardDrive, ListPlus, Paperclip, RotateCcw, Search, Server, Square, Wrench, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import type { ApprovalChoice, AttachCheck, Attachment, Chat, ConnectionStatus, Item, OutgoingItem, Source } from "../hermes/model";
+import type { ApprovalChoice, AttachCheck, Attachment, Chat, ChatQueue, ConnectionStatus, Item, OutgoingItem, Source } from "../hermes/model";
 import { SOURCE_LABEL, isOutgoing, isWaiting } from "../hermes/model";
 import type { DeskState, ScreenshotDesk } from "../hermes/screenshots";
 import { ApprovalCard } from "./ApprovalCard";
+import { QueuePanel, type QueueApi } from "./Queue";
 import { Markdown } from "./Markdown";
 import { ArchiveButton, SettleButton, SourceIcon, Spinner, StoredTime, composing, highlight } from "./bits";
 import { AttachmentChip, Previews, readPreview } from "./previews";
@@ -18,7 +19,8 @@ import { withTranscript } from "../hermes/voice";
 import type { VoiceSetup } from "../hermes/pipe";
 import { ChatUsageButton, ReplyUsageLine } from "./Usage";
 import { useOpenPreview } from "./previewContext";
-import { previewName, toolTargets } from "../hermes/preview";
+import { previewName, toolTargets, withoutBidi } from "../hermes/preview";
+import { type CommandHost, useSlashCommands } from "./SlashCommands";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type ThinkingItem = Extract<Item, { kind: "thinking" }>;
@@ -46,6 +48,11 @@ const sameBlock = (a: Block, b: Block) =>
  * `itemId`, or at the first match anywhere when the matched message isn't known. `at` tells one pick from the next.
  */
 export type FindTarget = { query: string; itemId?: string; at: number };
+
+/** A tool call to go to and open, by its call id (`Item.callId`); `at` tells one request from the next. */
+export type JumpTarget = { callId: string; at: number };
+/** The tool call being gone to, for the tool rows and groups that hold it to open themselves. */
+const JumpContext = createContext<JumpTarget | undefined>(undefined);
 
 const STATUS_NOTE: Record<ConnectionStatus, string | undefined> = {
   connected: undefined,
@@ -94,12 +101,16 @@ const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateS
  * contains the model picker; `footer` contains the status bar. Only the active pane answers Ctrl+F and takes focus as
  * it opens. Native drops attach to the pane under the pointer. `paneControls` follows the chat's own buttons.
  * `screenshots` attaches captures; `screenshotKeys` names the shortcut.
- * `voice` supplies Dictation and Read aloud.
+ * `voice` supplies Dictation and Read aloud. `commands` runs the slash commands typed in the composer. `queue` is the
+ * chat's queue of messages waiting to go after its reply, and `queueApi` changes it; it is left out for a chat not
+ * started yet, which can't queue.
  */
 export function ChatPane({
   chat,
   notLoaded,
   findTarget,
+  jumpTo,
+  onJumpMissed,
   status,
   alsoPostsIn,
   draft,
@@ -123,13 +134,22 @@ export function ChatPane({
   screenshots,
   screenshotKeys,
   projects,
+  notice,
+  banner,
   footer,
   onUsage,
   headActions,
+  queue,
+  queueApi,
+  commands,
 }: {
   chat: Chat;
   notLoaded?: boolean;
   findTarget?: FindTarget;
+  /** Scroll to this tool call and open it, once the history holding it has loaded (Outputs, "Go to the message"). */
+  jumpTo?: JumpTarget;
+  /** The history loaded without the tool call `jumpTo` names. */
+  onJumpMissed?: () => void;
   status: ConnectionStatus;
   alsoPostsIn?: Source;
   draft: string;
@@ -154,9 +174,16 @@ export function ChatPane({
   screenshotKeys?: string;
   /** The names of the projects the chat is in, or a new chat will be put in. */
   projects?: string[];
+  /** Shown at the top of the transcript: what a new chat starts with. */
+  notice?: ReactNode;
+  /** Shown under the header, outside the transcript's scroll: a question about this chat. */
+  banner?: ReactNode;
   footer?: ReactNode;
   onUsage?: () => void;
   headActions?: ReactNode;
+  queue?: ChatQueue;
+  queueApi?: QueueApi;
+  commands?: CommandHost;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -249,6 +276,30 @@ export function ChatPane({
     }
   });
 
+  // Going to a tool call: once its row is on screen, scroll it to the middle, mark it and move focus to it. A history
+  // that loaded without it says so; one still loading, or a Saved copy while offline without it, waits.
+  const [jumping, setJumping] = useState<JumpTarget>();
+  useEffect(() => {
+    if (!jumpTo) return;
+    stickToBottom.current = false;
+    setJumping(jumpTo);
+  }, [jumpTo?.at]);
+  useLayoutEffect(() => {
+    if (!jumping) return;
+    const id = CSS.escape(jumping.callId);
+    const el = scrollRef.current?.querySelector<HTMLElement>(`[data-call="${id}"]`) ?? scrollRef.current?.querySelector<HTMLElement>(`[data-calls~="${id}"]`);
+    if (el) {
+      setJumping(undefined);
+      el.scrollIntoView?.({ block: "center" });
+      el.classList.add("jumped");
+      el.focus({ preventScroll: true });
+      setTimeout(() => el.classList.remove("jumped"), 2500);
+    } else if (!chat.loading && chat.runtimeId) {
+      setJumping(undefined);
+      onJumpMissed?.();
+    }
+  });
+
   // Follow the stream while the user is at the bottom.
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -287,6 +338,9 @@ export function ChatPane({
   const movedAt = useMemo(() => performance.now(), [chat.items]);
   const last = chat.items[chat.items.length - 1];
   const waiting = chat.items.some(isWaiting);
+  // Enter queues while a reply runs, while Hermes isn't connected, and while messages are queued already, so a new one
+  // never jumps the queue. The composer's hint says which Enter does.
+  const queueing = !!queueApi && (!!chat.running || status !== "connected" || !!queue?.items.length);
 
   return (
     <div className="chat" ref={rootRef}>
@@ -361,6 +415,7 @@ export function ChatPane({
           </div>
         )}
       </header>
+      {banner && <div className="chat-banner">{banner}</div>}
 
       <div
         className="transcript"
@@ -370,6 +425,7 @@ export function ChatPane({
           stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
         }}
       >
+        <JumpContext.Provider value={jumpTo}>
         <div className="transcript-inner">
           {chat.source !== "app" && (
             <div className="imported-note">
@@ -400,6 +456,7 @@ export function ChatPane({
               <CloudOff size={14} /> This chat isn't saved on this computer. It loads once Hermes is connected.
             </div>
           )}
+          {notice}
           {!chat.loading && !notLoaded && blocks.length === 0 && <div className="empty-chat">What should Hermes work on?</div>}
           {blocks.map((b) => (
             <BlockView
@@ -424,10 +481,14 @@ export function ChatPane({
             </div>
           )}
         </div>
+        </JumpContext.Provider>
       </div>
 
+      {queueApi && <QueuePanel chat={chat} queue={queue} status={status} api={queueApi} />}
       <Composer
         offline={status !== "connected"}
+        queueing={queueing}
+        onQueue={queueApi?.add}
         running={!!chat.running}
         stopping={!!chat.stopping}
         note={STATUS_NOTE[status]}
@@ -454,6 +515,7 @@ export function ChatPane({
         status={status}
         screenshots={screenshots}
         screenshotKeys={screenshotKeys}
+        commands={commands}
       />
       {footer}
     </div>
@@ -525,7 +587,7 @@ const BlockView = memo(
       );
     if (block.kind === "error")
       return (
-        <div className="msg error" role="alert">
+        <div className="msg error" role="alert" data-item={block.id}>
           {block.text}
           {block.usage && <ReplyUsageLine usage={block.usage} />}
         </div>
@@ -607,25 +669,29 @@ function Thought({ item, live, query }: { item: ThinkingItem; live: boolean; que
 
 function ToolRow({ t }: { t: ToolItem }) {
   const [open, setOpen] = useState(false);
+  const jump = useContext(JumpContext);
+  useEffect(() => {
+    if (jump && t.callId === jump.callId) setOpen(true);
+  }, [jump?.at]);
   const summary = t.status === "stopped" ? "stopped" : t.summary;
   return (
-    <div className={`tool ${open ? "open" : ""}`}>
+    <div className={`tool ${open ? "open" : ""}`} data-call={t.callId} tabIndex={t.callId ? -1 : undefined}>
       <button className="tool-line" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
         {t.status === "running" ? <Spinner /> : <ChevronRight size={13} className={`chev ${open ? "open" : ""}`} />}
         <span className="tool-name">{t.name}</span>
-        <span className="tool-preview">{t.preview}</span>
+        <span className="tool-preview">{t.preview && withoutBidi(t.preview)}</span>
         {summary && <span className="tool-summary">{summary}</span>}
         {t.durationS != null && <span className="tool-dur">{t.durationS}s</span>}
       </button>
       {open && (
         <div className="tool-body">
           <div className="tool-label">Arguments</div>
-          <pre>{JSON.stringify(t.args ?? {}, null, 2)}</pre>
+          <pre>{withoutBidi(JSON.stringify(t.args ?? {}, null, 2))}</pre>
           {/* Stored history keeps no result for most tools. */}
           {(t.status === "running" || t.result !== undefined) && (
             <>
               <div className="tool-label">Result</div>
-              <pre>{t.status === "running" ? "…" : t.result || "(empty)"}</pre>
+              <pre>{t.status === "running" ? "…" : t.result ? withoutBidi(t.result) : "(empty)"}</pre>
             </>
           )}
           <ToolPreviews t={t} />
@@ -652,11 +718,11 @@ function ToolPreviews({ t }: { t: ToolItem }) {
         <button
           key={x.kind === "server" ? `s:${x.path}` : x.kind === "web" ? `w:${x.url}` : x.kind}
           className="preview-chip"
-          title={x.kind === "server" ? `${x.path}\nOn the Hermes server` : x.kind === "web" ? x.url : undefined}
+          title={x.kind === "server" ? `${withoutBidi(x.path)}\nOn the Hermes server` : x.kind === "web" ? x.url : undefined}
           onClick={() => open(x)}
         >
           {x.kind === "server" ? <Server size={12} /> : <Globe size={12} />}
-          <span>{previewName(x)}</span>
+          <span>{withoutBidi(previewName(x))}</span>
         </button>
       ))}
       {output && (
@@ -671,6 +737,10 @@ function ToolPreviews({ t }: { t: ToolItem }) {
 
 function ToolGroup({ tools }: { tools: ToolItem[] }) {
   const [open, setOpen] = useState(false);
+  const jump = useContext(JumpContext);
+  useEffect(() => {
+    if (jump && tools.some((t) => t.callId === jump.callId)) setOpen(true);
+  }, [jump?.at]);
   if (tools.length === 1)
     return (
       <div className="tools">
@@ -680,11 +750,11 @@ function ToolGroup({ tools }: { tools: ToolItem[] }) {
   const running = tools.find((t) => t.status === "running");
   const names = [...new Set(tools.map((t) => t.name))].join(", ");
   return (
-    <div className="tools">
+    <div className="tools" data-calls={tools.flatMap((t) => t.callId ?? []).join(" ") || undefined} tabIndex={-1}>
       <button className="tool-line group" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
         {running ? <Spinner /> : <Wrench size={13} />}
         <span className="tool-name">{tools.length} tool calls</span>
-        <span className="tool-preview">{running ? `${running.name} · ${running.preview ?? ""}` : names}</span>
+        <span className="tool-preview">{running ? withoutBidi(`${running.name} · ${running.preview ?? ""}`) : names}</span>
         <ChevronRight size={13} className={`chev ${open ? "open" : ""}`} />
       </button>
       {open && (
@@ -700,6 +770,8 @@ function ToolGroup({ tools }: { tools: ToolItem[] }) {
 
 function Composer({
   offline,
+  queueing = false,
+  onQueue,
   running,
   stopping,
   note,
@@ -718,8 +790,12 @@ function Composer({
   status,
   screenshots,
   screenshotKeys,
+  commands,
 }: {
   offline: boolean;
+  /** Enter, and the Queue button, add the message to the chat's queue (`onQueue`, which says why it couldn't). */
+  queueing?: boolean;
+  onQueue?: (text: string, attachments: Attachment[]) => string | undefined;
   running: boolean;
   stopping: boolean;
   note?: string;
@@ -741,6 +817,7 @@ function Composer({
   /** Screenshots come from here, and staged ones go back to it to be deleted once sent, removed or left behind. */
   screenshots?: ScreenshotDesk;
   screenshotKeys?: string;
+  commands?: CommandHost;
 }) {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const focused = useRef(autoFocus);
@@ -886,9 +963,17 @@ function Composer({
   }, [text]);
 
   const sendable = attaching === 0 && (!!text.trim() || attachments.length > 0);
+  const slash = useSlashCommands(commands, text, onText, taRef);
   const send = () => {
-    if (offline || running || !sendable) return;
-    onSend(text.trim(), attachments);
+    if (slash.run()) return;
+    if (!sendable) return;
+    if (queueing && onQueue) {
+      const why = onQueue(text.trim(), attachments);
+      if (why) return setRefused([why]);
+    } else {
+      if (offline || running) return;
+      onSend(text.trim(), attachments);
+    }
     setAttachments([]);
     setRefused([]);
   };
@@ -921,6 +1006,7 @@ function Composer({
           {r}
         </div>
       ))}
+      {slash.view}
       <div className={`composer ${dragging ? "dragging" : ""}`}>
         {dragging && <div className="drop-overlay">Drop files to attach</div>}
         {attachments.length > 0 && (
@@ -944,6 +1030,7 @@ function Composer({
           autoFocus={autoFocus}
           placeholder="Message Hermes"
           value={text}
+          {...slash.inputProps}
           onChange={(e) => onText(e.target.value)}
           onPaste={(e) => {
             // Only files are taken over; text pastes as it always has.
@@ -955,9 +1042,11 @@ function Composer({
             } else if (!e.clipboardData.getData("text/plain")) void paste(clipboardImages());
           }}
           onKeyDown={(e) => {
+            if (slash.onKeyDown(e)) return;
             if (e.key === "Enter" && !e.shiftKey && !composing(e)) {
               e.preventDefault();
-              send();
+              // Enter queues only while the hint below says so; Dictation hides it.
+              if (!(queueing && dictation.active)) send();
             }
           }}
         />
@@ -978,15 +1067,22 @@ function Composer({
             </button>
           )}
           {modelControls}
-          {!dictation.active && <span className="composer-keys">Enter to send · Shift+Enter for a new line</span>}
+          {!dictation.active && <span className="composer-keys">{queueing ? "Enter to queue" : "Enter to send"} · Shift+Enter for a new line</span>}
+          {queueing && onQueue && (
+            <button className="send queue-btn" title="Queue: send after the reply (Enter)" aria-label="Queue" disabled={!sendable} onClick={send}>
+              <ListPlus size={16} />
+            </button>
+          )}
           {running ? (
             <button className="send stop" title={stopping ? "Stopping" : "Stop"} disabled={offline || stopping} onClick={onStop}>
               <Square size={12} fill="currentColor" />
             </button>
           ) : (
-            <button className="send" title="Send" disabled={offline || !sendable} onClick={send}>
-              <ArrowUp size={16} />
-            </button>
+            !(queueing && onQueue) && (
+              <button className="send" title="Send" disabled={offline || !sendable} onClick={send}>
+                <ArrowUp size={16} />
+              </button>
+            )
           )}
         </div>
         {dictation.active && <DictationStrip dictation={dictation} />}
