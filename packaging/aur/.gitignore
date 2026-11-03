@@ -1,4 +1,8 @@
-src/
-pkg/
-hermes-chat/
-*.pkg.tar.zst
+# build.sh builds here.
+/build/
+# What makepkg leaves behind when it runs in this directory instead.
+/src/
+/pkg/
+/hermes-chat/
+*.pkg.tar*
+*.log

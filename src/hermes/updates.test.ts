@@ -71,7 +71,7 @@ describe("checkPackage", () => {
         via: "pacman",
         allUrl: "https://github.com/l0cky12/hermes-chat/compare/ef433a2...main",
         warning: undefined,
-        command: "git pull && cd packaging/aur && makepkg -si",
+        command: "git pull && packaging/aur/build.sh -si",
       },
     });
   });

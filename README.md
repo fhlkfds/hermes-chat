@@ -167,9 +167,11 @@ The inbox says when it last checked, and which profiles, or which of Hermes's an
 
 ```sh
 git clone https://github.com/l0cky12/hermes-chat.git
-cd hermes-chat/packaging/aur
-makepkg -si
+cd hermes-chat
+packaging/aur/build.sh -si
 ```
+
+`build.sh` runs `makepkg` on a copy of the PKGBUILD in `packaging/aur/build/`, and passes its arguments on. Don't run `makepkg` in `packaging/aur` itself: makepkg writes the new `pkgver` into the PKGBUILD, and the modified file stops the next `git pull`. If that has already happened, run `git checkout packaging/aur/PKGBUILD` before you pull.
 
 The package installs:
 
@@ -196,7 +198,7 @@ WEBKIT_DISABLE_DMABUF_RENDERER=1 hermes-chat
 
 Settings → General → **Updates** shows the installed version, what's newer, and what changed. It checks once at launch unless you turn that off. Nothing installs or restarts without you. A restart keeps your drafts and unsent messages: they're written to disk first, and the app doesn't restart if that fails. If the app's storage is too full to put them all back, it clears its cached chat lists and Saved copies to make room; failing that, it keeps them in a file and Settings says where. How an update installs depends on how the app was installed:
 
-- **The `hermes-chat-git` package** (pacman owns `/usr/bin/hermes-chat`): the app compares the package's commit with `main` on GitHub and lists the pull requests merged since. It never replaces the package's files. You run the update yourself, from your checkout: `git pull && cd packaging/aur && makepkg -si`. Back in the app, it sees the new version and offers **Restart now**.
+- **The `hermes-chat-git` package** (pacman owns `/usr/bin/hermes-chat`): the app compares the package's commit with `main` on GitHub and lists the pull requests merged since. It never replaces the package's files. You run the update yourself, from your checkout: `git pull && packaging/aur/build.sh -si`. Back in the app, it sees the new version and offers **Restart now**.
 - **A standalone AppImage built with an update key**: Tauri's updater downloads the new AppImage, checks its signature against the public key built into the app, and replaces the AppImage. Then you restart.
 - **Anything else** (for example `npm run app`, or a binary you copied): the app says it isn't updated from here.
 
