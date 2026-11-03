@@ -1,6 +1,6 @@
 // Tags and Saved filters on screen (tags.ts, ADR 0026): the dialog that creates, renames and deletes the profile's
 // tags, and the list's Saved filters, each of which opens the search palette with its filter.
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type RefObject } from "react";
 import { ListFilter, Pencil, Tag as TagIcon, Trash2 } from "lucide-react";
 import type { SavedFilter, TagsStore } from "../hermes/tags";
 import { composing } from "./bits";
@@ -8,8 +8,21 @@ import { useModal } from "./modal";
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-/** The profile's tags: create, rename and delete. Deleting asks first and says how many chats lose the tag. */
-export function TagManager({ store, profile, onClose }: { store: TagsStore; profile: string; onClose: () => void }) {
+/**
+ * The profile's tags: create, rename and delete. Deleting asks first and says how many chats lose the tag. Closing it
+ * puts focus on `returnTo` when that is still there (the chat row whose menu opened it), or back where it was.
+ */
+export function TagManager({
+  store,
+  profile,
+  returnTo,
+  onClose,
+}: {
+  store: TagsStore;
+  profile: string;
+  returnTo?: RefObject<HTMLElement | null>;
+  onClose: () => void;
+}) {
   const snap = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const [name, setName] = useState("");
   const [error, setError] = useState<string>();
@@ -17,7 +30,8 @@ export function TagManager({ store, profile, onClose }: { store: TagsStore; prof
   const [deleting, setDeleting] = useState<string>();
   const box = useRef<HTMLDivElement>(null);
   const newBox = useRef<HTMLInputElement>(null);
-  const keys = useModal(box);
+  const keys = useModal(box, returnTo);
+  const [saving, setSaving] = useState(false);
   // Where focus goes once a row is back from renaming or deleting: that tag's Rename button, or "" for the new tag box.
   const [refocus, setRefocus] = useState<string>();
   useEffect(() => {
@@ -32,14 +46,19 @@ export function TagManager({ store, profile, onClose }: { store: TagsStore; prof
     setRefocus(tagId);
   };
   const count = (id: string) => Object.values(snap.chats).filter((of) => of.includes(id)).length;
-  const run = (fn: () => void) => {
+  // One change at a time; each says whether it was kept.
+  const run = async (fn: () => Promise<unknown>) => {
+    if (saving) return false;
+    setSaving(true);
     try {
-      fn();
+      await fn();
       setError(undefined);
       return true;
     } catch (e) {
       setError(errorText(e));
       return false;
+    } finally {
+      setSaving(false);
     }
   };
   return (
@@ -66,7 +85,7 @@ export function TagManager({ store, profile, onClose }: { store: TagsStore; prof
           className="tag-new"
           onSubmit={(e) => {
             e.preventDefault();
-            if (run(() => store.createTag(name))) setName("");
+            void run(() => store.createTag(name)).then((ok) => ok && setName(""));
           }}
         >
           <input ref={newBox} autoFocus aria-label="New tag name" placeholder="New tag" value={name} onChange={(e) => setName(e.target.value)} />
@@ -93,7 +112,7 @@ export function TagManager({ store, profile, onClose }: { store: TagsStore; prof
                       className="tag-row"
                       onSubmit={(e) => {
                         e.preventDefault();
-                        if (run(() => store.renameTag(t.id, renaming.name))) back(t.id);
+                        void run(() => store.renameTag(t.id, renaming.name)).then((ok) => ok && back(t.id));
                       }}
                     >
                       <input autoFocus aria-label={`New name for ${t.name}`} value={renaming.name} onChange={(e) => setRenaming({ id: t.id, name: e.target.value })} />
@@ -112,7 +131,7 @@ export function TagManager({ store, profile, onClose }: { store: TagsStore; prof
                     <span className="tag-confirm">
                       Delete "{t.name}"? It comes off {chats}. Saved filters that use it will say it was deleted.
                     </span>
-                    <button className="btn danger" onClick={() => run(() => store.deleteTag(t.id)) && back()}>
+                    <button className="btn danger" onClick={() => void run(() => store.deleteTag(t.id)).then((ok) => ok && back())}>
                       Delete
                     </button>
                     <button className="btn" autoFocus onClick={() => back(t.id)}>
@@ -152,7 +171,7 @@ export function TagManager({ store, profile, onClose }: { store: TagsStore; prof
  * The list's Saved filters: each opens the search palette with its filter, run again. A Saved filter is a search, not
  * a group: it puts no chat anywhere, unlike a project. Deleting one asks first, in its row.
  */
-export function SavedFilters({ filters, onOpen, onDelete }: { filters: SavedFilter[]; onOpen: (f: SavedFilter) => void; onDelete: (id: string) => void }) {
+export function SavedFilters({ filters, onOpen, onDelete }: { filters: SavedFilter[]; onOpen: (f: SavedFilter) => void; onDelete: (id: string) => unknown }) {
   const [deleting, setDeleting] = useState<string>();
   if (!filters.length) return null;
   return (

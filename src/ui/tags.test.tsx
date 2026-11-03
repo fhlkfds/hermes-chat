@@ -90,11 +90,27 @@ describe("The tag editor", () => {
     expect(screen.queryByRole("dialog", { name: "Tags in default" })).toBeNull();
   });
 
+  it("gives focus back to the chat row or the palette button it was opened from", async () => {
+    const { user } = await launch();
+    await user.click(within(await menuOf(user, "NAS disks")).getByRole("menuitem", { name: "Add a tag…" }));
+    await user.keyboard("{Escape}");
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: /NAS disks/ }));
+
+    await user.keyboard("{Control>}k{/Control}");
+    await user.click(screen.getByRole("button", { name: "Filters" }));
+    const manage = screen.getByRole("button", { name: "Manage tags…" });
+    await user.click(manage);
+    expect(screen.getByRole("dialog", { name: "Tags in default" })).toBeTruthy();
+    await user.keyboard("{Escape}");
+    expect(screen.getByRole("dialog", { name: "Search chats" })).toBeTruthy();
+    expect(document.activeElement).toBe(manage);
+  });
+
   it("tags a chat from its menu, and shows which tags it has", async () => {
     const { user } = await launch();
     await makeTag(user, "Infra");
     await user.click(within(await menuOf(user, "NAS disks")).getByRole("menuitemcheckbox", { name: "Infra" }));
-    expect(chatsTagged()).toEqual({ nas: [expect.any(String)] });
+    await waitFor(() => expect(chatsTagged()).toEqual({ nas: [expect.any(String)] }));
     expect(within(await menuOf(user, "NAS disks")).getByRole("menuitemcheckbox", { name: "Infra" }).getAttribute("aria-checked")).toBe("true");
   });
 });
@@ -177,6 +193,62 @@ describe("Filtering in the search palette", () => {
     await user.click(screen.getByRole("button", { name: "Add to 1 chat" }));
     expect(within(palette()).getByRole("status").textContent).toBe('Added "Infra" to 1 chat.');
     expect(Object.keys(chatsTagged()).sort()).toEqual(["deps", "old"]);
+  });
+
+  it("starts afresh in a new profile: the old profile's results can't be opened or tagged there", async () => {
+    const { user, s, hermes } = await launch();
+    s.otherProfiles = { work: [row("w1", 1, { pinned: true, title: "Work chat" })] };
+    await user.keyboard("{Control>}k{/Control}");
+    await user.click(screen.getByRole("button", { name: "Filters" }));
+    await user.selectOptions(screen.getByRole("combobox", { name: /^Source/ }), "Telegram");
+    await waitFor(() => expect(hits()).toEqual(["NAS disks"]));
+    await act(async () => void (await hermes.switchProfile("work")));
+    expect(hits()).toEqual([]);
+    expect(screen.queryByRole("button", { name: /Tag \d+ result/ })).toBeNull();
+    expect(screen.getByRole("textbox", { name: "Words to search for" })).toHaveProperty("value", "");
+  });
+
+  it("won't open or tag results for an earlier filter while the new one is searched, and hides them if it fails", async () => {
+    const { user, s } = await launch();
+    await user.keyboard("{Control>}k{/Control}");
+    await user.keyboard("nas");
+    await waitFor(() => expect(hits()).toEqual(["NAS disks"]));
+    const search = s.rest["GET /api/sessions/search"];
+    let release!: () => void;
+    s.rest["GET /api/sessions/search"] = async (req) => (await new Promise<void>((r) => (release = r)), search(req));
+    await user.keyboard(" disks");
+    await waitFor(() => expect(release).toBeTypeOf("function"));
+    const stale = within(palette()).getByRole("button", { name: /NAS disks/ });
+    expect(stale.getAttribute("aria-disabled")).toBe("true");
+    expect(screen.getByRole("button", { name: /Tag 1 result/ })).toHaveProperty("disabled", true);
+    await user.keyboard("{Enter}");
+    expect(s.requests.filter((r) => r.method === "session.resume")).toEqual([]);
+    await act(async () => release());
+    await waitFor(() => expect(within(palette()).getByRole("button", { name: /NAS disks/ }).getAttribute("aria-disabled")).toBeNull());
+
+    s.rest["GET /api/sessions/search"] = () => {
+      throw new Error('The dashboard answered 500: {"detail":"Search failed"}');
+    };
+    await user.keyboard("!");
+    await waitFor(() => expect(within(palette()).getByRole("alert").textContent).toContain("Search failed"));
+    expect(hits()).toEqual([]);
+  });
+
+  it("keeps Tab and the app's other shortcuts inside the palette", async () => {
+    const { user } = await launch();
+    await user.keyboard("{Control>}k{/Control}");
+    const input = screen.getByRole("textbox", { name: "Words to search for" });
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Filters" }));
+    await user.tab();
+    expect(document.activeElement).toBe(input);
+    await user.tab({ shift: true });
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Filters" }));
+    // Ctrl+B would hide the chat list behind it; Ctrl+K still closes it.
+    await user.keyboard("{Control>}b{/Control}");
+    expect(document.querySelector(".sidebar")).not.toBeNull();
+    await user.keyboard("{Control>}k{/Control}");
+    expect(screen.queryByRole("dialog", { name: "Search chats" })).toBeNull();
   });
 
   it("keeps each profile's tags and Saved filters apart", async () => {

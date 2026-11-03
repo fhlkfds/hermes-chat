@@ -163,6 +163,11 @@ type SessionRow = {
   unread?: boolean;
   /** The model the session last ran on, as Hermes stored it; list and search rows both carry it. */
   model?: string | null;
+  /**
+   * The surface that started a chat Hermes stores with `source: "local"` (its canonical CLI, TUI and desktop chats).
+   * List rows carry it; search rows don't.
+   */
+  created_source?: string | null;
 };
 type SessionPage = { sessions: SessionRow[]; total: number };
 /** Dashboard REST `GET /api/sessions/{id}`, as far as this app reads it. Flags come as stored, 0 or 1. */
@@ -174,7 +179,7 @@ type MutationSnapshot = { exists: boolean; runtime_revision: number };
  * too. `snippet` is FTS5's, with each matched word `>>>marked<<<`; `role` is the matched message's, and null when the
  * chat's id or title matched instead.
  */
-type SearchRow = Pick<SessionRow, "id" | "source" | "title" | "preview" | "started_at" | "last_active" | "archived" | "model"> & {
+type SearchRow = Pick<SessionRow, "id" | "source" | "title" | "preview" | "started_at" | "last_active" | "archived" | "model" | "created_source"> & {
   snippet?: string;
   role?: string | null;
 };
@@ -944,15 +949,27 @@ export class Hermes {
     const res = (await this.rest("GET", `api/sessions/search?${query}`)) as { results: SearchRow[] };
     if (this.profile !== profile) throw new Error(`Switched to the ${this.profile} profile before the results came.`);
     const listed = new Map(this.snapshot.chats.map((c) => [c.id, c]));
+    // Search rows don't say whether a chat is pinned, and the list leaves out pinned chats older than its month.
+    const pinned = res.results.some((r) => !listed.has(r.id)) ? await this.pinnedIds(profile) : new Set<string>();
     const found = res.results
       .filter((r) => (archived || !this.isArchived(r)) && !this.deleted.has(r.id))
       .map((r): Found => {
         const snippet = snippetParts(r.snippet ?? "");
         const role = r.role === "user" || r.role === "assistant" ? r.role : undefined;
-        // Every pinned chat is listed, so one that isn't is Settled.
-        return { ...this.toFound(r, listed.get(r.id), true), snippet, ...(role && { role, find: findTerm(q, snippet) }) };
+        return { ...this.toFound(r, listed.get(r.id), !pinned.has(r.id)), snippet, ...(role && { role, find: findTerm(q, snippet) }) };
       });
     return { found, capped: res.results.length >= limit };
+  }
+
+  /**
+   * Every pinned (Active) chat in the profile, archived or not, however old: each `GET /api/sessions` page carries all
+   * of them (`include_pinned`), so one page of one row is enough.
+   */
+  private async pinnedIds(profile: string): Promise<Set<string>> {
+    const query = new URLSearchParams({ profile, order: "recent", limit: "1", offset: "0", archived: "include", exclude_sources: "cron" });
+    const res = (await this.rest("GET", `api/sessions?${query}`)) as SessionPage;
+    if (this.profile !== profile) throw new Error(`Switched to the ${this.profile} profile before the results came.`);
+    return new Set(res.sessions.filter((r) => r.pinned).map((r) => r.id));
   }
 
   /**
@@ -982,7 +999,9 @@ export class Hermes {
       chatId: r.id,
       // The list's title, so a chat is called the same in both while the search index catches up with a rename.
       title: c?.title ?? listTitle(r),
-      source: toSource(r.source),
+      source: toSource(r.source, r.created_source),
+      // A canonical local chat whose starting surface the row doesn't name can't be placed by source.
+      ...(r.source === "local" && !localSurface(r.created_source) && { sourceUnknown: true }),
       settled: c?.settled ?? settled,
       ...(this.isArchived(r) && { archived: true }),
       updatedAt: Math.max(c?.updatedAt ?? 0, lastActive(r)),
@@ -2487,7 +2506,7 @@ export class Hermes {
           id: r.id,
           // A row read before this app's latest rename is stale too.
           title: c && this.retitledSinceListRead.has(r.id) ? c.title : listTitle(r, c?.title),
-          source: toSource(r.source),
+          source: toSource(r.source, r.created_source),
           settled: !(wanted ?? r.pinned),
           archived: this.isArchived(r) || undefined,
           updatedAt: Math.max(c?.updatedAt ?? 0, lastActive(r)),
@@ -2956,13 +2975,22 @@ const RAW_SOURCES: Record<Exclude<Source, "other">, string[]> = {
   cli: ["cli", "tui"],
 };
 
-/** `sources` as dashboard REST's `sources=` takes them; undefined when they can't be asked for that way. */
+/**
+ * `sources` as dashboard REST's `sources=` takes them; undefined when they can't be asked for that way. Hermes stores
+ * its canonical CLI, TUI and desktop chats as `local` (naming the surface in `created_source`, which `sources=` doesn't
+ * look at), so `local` is asked for too and those chats are told apart here.
+ */
 function rawSources(sources?: Source[]): string | undefined {
   if (!sources?.length || sources.includes("other")) return undefined;
-  return sources.flatMap((s) => RAW_SOURCES[s as Exclude<Source, "other">]).join(",");
+  const raw = sources.flatMap((s) => RAW_SOURCES[s as Exclude<Source, "other">]);
+  return [...raw, ...(sources.some((s) => s === "app" || s === "cli" || s === "desktop") ? ["local"] : [])].join(",");
 }
 
-function toSource(source = ""): Source {
+/** The surface a `local` chat was started on, when Hermes has stamped one (`_UNSET_CREATED_SOURCES` at `bf0203a`). */
+const localSurface = (created?: string | null) => (created && created !== "unknown" && created !== "local" ? created : undefined);
+
+function toSource(stored = "", created?: string | null): Source {
+  const source = stored === "local" ? (localSurface(created) ?? stored) : stored;
   switch (source) {
     case APP_SOURCE:
     case OLD_APP_SOURCE:

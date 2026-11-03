@@ -1,12 +1,16 @@
 // Tags and Saved filters (GLOSSARY.md, ADR 0026). Hermes has nowhere to keep either: a session edit takes only its
-// title and flags. So both are kept on this computer, in one versioned localStorage document, separately for each
-// connection and profile (the scope projectLinks.ts `projectScope` gives), and never sent to Hermes.
+// title and flags. So both are kept on this computer, in one versioned JSON document in the app's data folder that
+// every running Hermes Chat shares (`tags.json`, swapped under a lock like project defaults: defaults_file.rs),
+// separately for each connection and profile (the scope projectLinks.ts `projectScope` gives), and never sent to Hermes.
 //
 // A tag is known by its id, so renaming it keeps the chats it is on, and a Saved filter names tags by id too. Names
-// are compared without case, after Unicode normalisation, so "Work" and "work" can't both exist. Every change is one
-// write of the whole document: it is kept whole or, when the write fails, not at all, and this computer's copy stays
-// as it was.
+// are compared without case, after Unicode normalisation, so "Work" and "work" can't both exist. Every change reads
+// the document, checks the change against it, and swaps the whole document in only if no other instance wrote
+// meanwhile (trying again from what it wrote if one did). So a change is kept whole or not at all, and never undoes
+// another instance's.
+import { invoke } from "@tauri-apps/api/core";
 import { toFilter, tidyFilter, type ChatFilter } from "./chatFilter";
+import { storageDefaultsFile, type DefaultsFile } from "./projectDefaults";
 import { migrateUIPrefs as migrateDoc, type UIPrefsDoc, type UIPrefsMigrations } from "./uiPrefs";
 
 export const TAGS_KEY = "hermes-chat.tags";
@@ -25,7 +29,20 @@ export type SavedFilter = { id: string; name: string; filter: ChatFilter };
 /** One connection and profile's tags: the tags, each chat's tag ids, and the Saved filters. */
 export type ScopeTags = { tags: Tag[]; chats: Readonly<Record<string, string[]>>; filters: SavedFilter[] };
 
-export type TagsStorage = Pick<Storage, "getItem" | "setItem">;
+/** Where the document is kept: a file swapped under a lock in the app, one webview's storage in tests and a browser. */
+export type TagsFile = DefaultsFile;
+
+export const tauriTagsFile: TagsFile = {
+  read: () => invoke<string | null>("tags_read"),
+  swap: (expected, next) => invoke("tags_swap", { expected, next }),
+};
+
+/** The app's file, or this webview's storage outside the app. */
+export const savedTagsFile: TagsFile =
+  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window ? tauriTagsFile : storageDefaultsFile(() => globalThis.localStorage, TAGS_KEY);
+
+/** How many times a change is tried again when another instance writes between reading and swapping. */
+const SWAP_TRIES = 5;
 
 const EMPTY: ScopeTags = Object.freeze({ tags: [], chats: Object.freeze({}), filters: [] }) as ScopeTags;
 const isDoc = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -135,20 +152,22 @@ export function previewBulk(s: ScopeTags, chatIds: readonly string[], tagId: str
 }
 
 /**
- * One connection and profile's tags and Saved filters. Each change reads the stored document afresh, so a change
- * another window made meanwhile is kept, and writes it back whole. If it can't be written, it throws and nothing
- * changes.
+ * One connection and profile's tags and Saved filters, as the shared document has them. It starts empty and reads the
+ * document at once (`reread`). Each change reads the document afresh, so a change another window or instance made
+ * meanwhile is kept, and swaps it in whole. If it can't be written, it rejects and nothing changes.
  */
 export class TagsStore {
-  private snap: ScopeTags;
+  private snap: ScopeTags = EMPTY;
   private listeners = new Set<() => void>();
+  /** Bumped by every change shown, so a read that started earlier doesn't put back what was there before. */
+  private shown = 0;
 
   constructor(
-    private storage: TagsStorage,
+    private file: TagsFile,
     readonly scope: string,
     private newId: () => string = () => crypto.randomUUID(),
   ) {
-    this.snap = this.read().scopes[scope] ?? EMPTY;
+    void this.reread();
   }
 
   subscribe = (fn: () => void) => {
@@ -158,83 +177,104 @@ export class TagsStore {
 
   getSnapshot = () => this.snap;
 
-  /** Reads this computer's copy again, after another window changed it. */
-  reread() {
-    this.set(this.read().scopes[this.scope] ?? EMPTY);
+  /** Reads the document again, after another window or instance may have changed it. A failed read keeps what is shown. */
+  async reread(): Promise<void> {
+    const at = this.shown;
+    let raw: string | null;
+    try {
+      raw = await this.file.read();
+    } catch {
+      return;
+    }
+    if (at === this.shown) this.set(readTags(parse(raw))[this.scope] ?? EMPTY);
   }
 
   tagsOf = (chatId: string): readonly string[] => this.snap.chats[chatId] ?? [];
   exists = (tagId: string) => this.snap.tags.some((t) => t.id === tagId);
 
-  createTag(name: string): Tag {
+  async createTag(name: string): Promise<Tag> {
     const tagId = this.newId();
-    this.change((s) => edit.createTag(s, name, tagId));
+    await this.change((s) => edit.createTag(s, name, tagId));
     return this.snap.tags.find((t) => t.id === tagId)!;
   }
   renameTag(tagId: string, name: string) {
-    this.change((s) => edit.renameTag(s, tagId, name));
+    return this.change((s) => edit.renameTag(s, tagId, name));
   }
   deleteTag(tagId: string) {
-    this.change((s) => edit.deleteTag(s, tagId));
+    return this.change((s) => edit.deleteTag(s, tagId));
   }
   setTag(chatIds: readonly string[], tagId: string, on: boolean) {
-    this.change((s) => edit.setTag(s, chatIds, tagId, on));
+    return this.change((s) => edit.setTag(s, chatIds, tagId, on));
   }
   /**
-   * Applies a bulk edit the owner confirmed, as previewed: only the chats it would change, in one write, so it is kept
-   * whole or not at all. Throws if the tag was deleted meanwhile.
+   * Applies a bulk edit the owner confirmed, as previewed: only the chats it would change, in one swap, so it is kept
+   * whole or not at all. Rejects if the tag was deleted meanwhile.
    */
   applyBulk(p: BulkPreview) {
-    this.change((s) => edit.setTag(s, p.change, p.tag.id, p.add));
+    return this.change((s) => edit.setTag(s, p.change, p.tag.id, p.add));
   }
-  forgetChat(chatId: string) {
-    if (this.snap.chats[chatId]) this.change((s) => edit.forgetChat(s, chatId));
+  async forgetChat(chatId: string) {
+    if (this.snap.chats[chatId]) await this.change((s) => edit.forgetChat(s, chatId));
   }
-  saveFilter(name: string, filter: ChatFilter): SavedFilter {
+  async saveFilter(name: string, filter: ChatFilter): Promise<SavedFilter> {
     const filterId = this.newId();
-    this.change((s) => edit.saveFilter(s, name, filter, filterId));
+    await this.change((s) => edit.saveFilter(s, name, filter, filterId));
     return this.snap.filters.find((f) => f.id === filterId)!;
   }
   deleteFilter(filterId: string) {
-    this.change((s) => edit.deleteFilter(s, filterId));
+    return this.change((s) => edit.deleteFilter(s, filterId));
   }
 
-  private read(): { doc: UIPrefsDoc; scopes: Record<string, ScopeTags> } {
-    let parsed: unknown;
+  /** Reads, checks `fn` against what was read, and swaps the result in; reads and checks again if another wrote first. */
+  private async change(fn: (s: ScopeTags) => ScopeTags): Promise<void> {
+    const failed = (e: unknown) => new Error(`Couldn't save on this computer, so nothing changed: ${e instanceof Error ? e.message : String(e)}`);
+    let raw: string | null;
     try {
-      const raw = this.storage.getItem(TAGS_KEY);
-      parsed = raw === null ? undefined : JSON.parse(raw);
-    } catch {
-      // Unreadable: start empty.
-    }
-    return { doc: migrateDoc(parsed, TAGS_MIGRATIONS, TAGS_VERSION), scopes: readTags(parsed) };
-  }
-
-  private change(fn: (s: ScopeTags) => ScopeTags) {
-    const { doc } = this.read();
-    const scopes = isDoc(doc.scopes) ? doc.scopes : {};
-    const before = toScope(scopes[this.scope]) ?? EMPTY;
-    let after: ScopeTags;
-    try {
-      after = fn(before);
+      raw = await this.file.read();
     } catch (e) {
-      // Refused, perhaps because another window changed the tags: show them as they are now.
-      this.set(before);
-      throw e;
+      throw failed(e);
     }
-    // Fields a newer version of the app keeps here are kept; other scopes are written back as they were.
-    const prior = isDoc(scopes[this.scope]) ? (scopes[this.scope] as Record<string, unknown>) : {};
-    const next = { ...doc, v: Math.max(TAGS_VERSION, Number(doc.v) || 0), scopes: { ...scopes, [this.scope]: { ...prior, ...after } } };
-    try {
-      this.storage.setItem(TAGS_KEY, JSON.stringify(next));
-    } catch (e) {
-      throw new Error(`Couldn't save on this computer, so nothing changed: ${e instanceof Error ? e.message : String(e)}`);
+    for (let i = 0; i < SWAP_TRIES; i++) {
+      const doc = parse(raw);
+      const scopes = isDoc(doc.scopes) ? doc.scopes : {};
+      const before = toScope(scopes[this.scope]) ?? EMPTY;
+      let after: ScopeTags;
+      try {
+        after = fn(before);
+      } catch (e) {
+        // Refused, perhaps because another window changed the tags: show them as they are now.
+        this.set(before);
+        throw e;
+      }
+      // Fields a newer version of the app keeps here are kept; other scopes are written back as they were.
+      const prior = isDoc(scopes[this.scope]) ? (scopes[this.scope] as Record<string, unknown>) : {};
+      const next = JSON.stringify({ ...doc, v: Math.max(TAGS_VERSION, Number(doc.v) || 0), scopes: { ...scopes, [this.scope]: { ...prior, ...after } } });
+      let res: { swapped: boolean; current: string | null };
+      try {
+        res = await this.file.swap(raw, next);
+      } catch (e) {
+        throw failed(e);
+      }
+      if (res.swapped) return this.set(after);
+      raw = res.current;
     }
-    this.set(after);
+    throw new Error("Another Hermes Chat kept changing the tags, so nothing changed. Try again.");
   }
 
   private set(s: ScopeTags) {
+    this.shown++;
     this.snap = s;
     for (const fn of [...this.listeners]) fn();
   }
+}
+
+/** The stored document, brought up to this version; anything unreadable is an empty one. */
+function parse(raw: string | null): UIPrefsDoc {
+  let parsed: unknown;
+  try {
+    parsed = raw === null ? undefined : JSON.parse(raw);
+  } catch {
+    // Unreadable: start empty.
+  }
+  return migrateDoc(parsed, TAGS_MIGRATIONS, TAGS_VERSION);
 }

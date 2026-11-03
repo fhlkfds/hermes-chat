@@ -27,6 +27,8 @@ export type SessionRow = {
   archived: boolean;
   /** The model the session last ran on (`sessions.model`). */
   model?: string | null;
+  /** The surface that started a `source: "local"` session (`sessions.created_source`); list rows carry it, search rows don't. */
+  created_source?: string | null;
   /** The read watermark: unread when activity postdates it. `null` = never tracked = read; 0 = marked unread. */
   last_read_at: number | null;
   /** Bumped by every session edit; an edit must name the current one. Missing means 0. */

@@ -77,7 +77,8 @@ describe("Running a chat filter", () => {
     await runFilter({ text: "backup" }, hermes, tags);
     const searches = server.restRequests.filter((r) => r.path === "/api/sessions/search").map((r) => [r.query.get("sources"), r.query.get("limit")]);
     expect(searches).toEqual([
-      ["gui,hermes-chat", "100"],
+      // Hermes's canonical local chats are asked for too, and told apart here (see below).
+      ["gui,hermes-chat,local", "100"],
       // "Other platforms" is everything Hermes Chat doesn't name, so it is checked here.
       [null, "100"],
       [null, "50"],
@@ -104,9 +105,42 @@ describe("Running a chat filter", () => {
   it("matches nothing, and asks Hermes nothing, when a tag it names was deleted", async () => {
     const { server, hermes } = await signedIn();
     const before = server.restRequests.length;
-    expect(await runFilter({ tags: ["infra", "deleted"] }, hermes, tags)).toEqual({ found: [], noModel: 0, missingTags: ["deleted"] });
-    expect(await runFilter({ text: "  " }, hermes, tags)).toEqual({ found: [], noModel: 0, missingTags: [] });
+    expect(await runFilter({ tags: ["infra", "deleted"] }, hermes, tags)).toEqual({ found: [], noModel: 0, noSource: 0, missingTags: ["deleted"] });
+    expect(await runFilter({ text: "  " }, hermes, tags)).toEqual({ found: [], noModel: 0, noSource: 0, missingTags: [] });
     expect(server.restRequests.length).toBe(before);
+  });
+
+  it("tells an Active chat older than the list from a Settled one, with words or without", async () => {
+    const { server, hermes } = await signedIn();
+    server.sessions.push(row("pinnedOld", 90, { pinned: true, title: "Old pinned backup" }), row("pinnedGone", 90, { pinned: true, archived: true, title: "Archived pinned backup" }));
+    server.transcripts.pinnedOld = [{ role: "user", text: "A backup from long ago." }];
+    server.transcripts.pinnedGone = [{ role: "user", text: "An archived backup from long ago." }];
+    // The list holds the past month, so it doesn't have either.
+    await hermes.sync();
+    expect(hermes.getSnapshot().chats.map((c) => c.id)).not.toContain("pinnedOld");
+    expect(await ids(hermes, { text: "backup", state: "active" })).toEqual(["backup", "pinnedOld"]);
+    expect(await ids(hermes, { text: "backup", state: "settled" })).toEqual(["nas", "old"]);
+    expect(await ids(hermes, { state: "active", from: day(100), to: day(80) })).toEqual(["pinnedOld"]);
+    const found = (await runFilter({ text: "archived backup", state: "all" }, hermes, tags)).found;
+    expect(found.find((c) => c.chatId === "pinnedGone")).toMatchObject({ archived: true, settled: false });
+  });
+
+  it("matches Hermes's canonical local chats by the app that started them, and says when a search can't tell", async () => {
+    const { server, hermes } = await signedIn();
+    server.sessions.push(
+      row("tui", 1, { source: "local", created_source: "tui", title: "Terminal backup check" }),
+      row("unstamped", 1, { source: "local", created_source: "unknown", title: "Unstamped backup" }),
+    );
+    server.transcripts.tui = [{ role: "user", text: "Check the backup from the terminal." }];
+    // List rows name the starting app, so a filter without words places them.
+    expect(await ids(hermes, { sources: ["cli"] })).toEqual(["tui"]);
+    // An unstamped local chat isn't counted as some other platform either.
+    expect(await ids(hermes, { sources: ["other"] })).toEqual([]);
+    const listed = await runFilter({ sources: ["cli"] }, hermes, tags);
+    expect(listed.noSource).toBe(1);
+    // Search rows don't, so a local match can't be placed and is counted instead.
+    const searched = await runFilter({ text: "terminal", sources: ["cli"] }, hermes, tags);
+    expect(searched).toMatchObject({ found: [], noSource: 1 });
   });
 
   it("only reads: no chat is marked read, settled, archived or added to the list", async () => {

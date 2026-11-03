@@ -1784,6 +1784,7 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .bulk-actions { display: flex; gap: 8px; }
 .palette-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--line); }
 .palette-foot .btn { display: inline-flex; align-items: center; gap: 5px; font-size: calc(12.5rem / 14); }
+.hit-row.stale { opacity: 0.55; cursor: default; }
 .hit-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 4px; }
 .tag-label {
   display: inline-flex; align-items: center; gap: 4px; font-size: calc(11.5rem / 14); color: var(--text-2); background: var(--raised-3);

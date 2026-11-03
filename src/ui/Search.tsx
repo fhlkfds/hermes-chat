@@ -1,12 +1,13 @@
 // Search across every chat in the profile from the Ctrl+K palette, with filters for Tag, Source, model, last activity
 // and state (chatFilter.ts, ADR 0026). Words go to Hermes's own search; filters without words list the profile's chats
 // from Hermes. A filter can be saved by name, and its results tagged in bulk once the owner has seen what would change.
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { ListFilter, Search, Tag as TagIcon, X } from "lucide-react";
 import { STATE_LABEL, isEmptyFilter, tidyFilter, type ChatFilter, type ChatState, type FilterOutcome } from "../hermes/chatFilter";
 import { SOURCE_LABEL, type Found, type Source } from "../hermes/model";
 import { previewBulk, type BulkPreview, type ScopeTags } from "../hermes/tags";
 import { SourceIcon, Spinner, composing, highlight, relTime, useReturnFocus } from "./bits";
+import { trapTab } from "./modal";
 
 /** Typing this long without a pause sends the search. */
 const PAUSE_MS = 200;
@@ -36,6 +37,8 @@ function outcomeNotes(o: FilterOutcome, f: ChatFilter): string[] {
     o.capped === "list" && "Only the 2,000 most recent chats were checked. Older ones may match too.",
     o.noModel > 0 &&
       `Hermes didn't record a model for ${o.noModel} chat${o.noModel === 1 ? "" : "s"} that matched everything else, so the model filter left ${o.noModel === 1 ? "it" : "them"} out.`,
+    o.noSource > 0 &&
+      `Hermes stored ${o.noSource} chat${o.noSource === 1 ? "" : "s"} that matched everything else as local, without saying which app started ${o.noSource === 1 ? "it" : "them"}, so the source filter left ${o.noSource === 1 ? "it" : "them"} out.`,
   ].filter((n): n is string => !!n);
 }
 
@@ -50,6 +53,7 @@ export function SearchPalette({
   onSave,
   onBulk,
   onManageTags,
+  passKey = () => false,
 }: {
   profile: string;
   tags: ScopeTags;
@@ -59,11 +63,13 @@ export function SearchPalette({
   onRun: (f: ChatFilter) => Promise<FilterOutcome>;
   onPick: (found: Found) => void;
   onClose: () => void;
-  /** Saves the filter by name; throws saying why it couldn't. */
-  onSave: (name: string, f: ChatFilter) => void;
-  /** Applies a bulk tag edit the owner confirmed; throws, changing nothing, if it couldn't. */
-  onBulk: (p: BulkPreview) => void;
+  /** Saves the filter by name; rejects saying why it couldn't. */
+  onSave: (name: string, f: ChatFilter) => Promise<unknown>;
+  /** Applies a bulk tag edit the owner confirmed; rejects, changing nothing, if it couldn't. */
+  onBulk: (p: BulkPreview) => Promise<unknown>;
   onManageTags: () => void;
+  /** The app's shortcuts that still work over the palette, such as Ctrl+K, which closes it. */
+  passKey?: (e: KeyboardEvent) => boolean;
 }) {
   const [filter, setFilter] = useState<ChatFilter>(initial ?? {});
   const [filtersOpen, setFiltersOpen] = useState(!!initial && Object.keys(tidyFilter({ ...initial, text: undefined })).length > 0);
@@ -77,6 +83,7 @@ export function SearchPalette({
   const [note, setNote] = useState<string>();
   const filtersId = useId();
   const input = useRef<HTMLInputElement>(null);
+  const box = useRef<HTMLDivElement>(null);
   useReturnFocus();
   // A panel's buttons go when it closes, so focus goes back to the words.
   const closePanel = () => {
@@ -104,11 +111,15 @@ export function SearchPalette({
       clearTimeout(timer);
     };
   }, [key, tagDep]);
+  // A bulk edit is for the results it previewed: a new filter ends it, applying nothing.
+  useEffect(() => setPanel((p) => (p === "bulk" ? undefined : p)), [key]);
 
   const empty = isEmptyFilter(tidy);
   const outcome = results.key === key ? results.outcome : undefined;
-  const shownOutcome = results.outcome;
+  const shownOutcome = error ? undefined : results.outcome;
   const found = shownOutcome?.found ?? [];
+  // Results for an earlier filter stay on screen until the new ones come, but can't be opened or tagged.
+  const stale = !outcome;
   const searching = !empty && !outcome && !error;
   const parts = filterParts(tidy, tags);
   const set = (patch: Partial<ChatFilter>) => {
@@ -122,13 +133,16 @@ export function SearchPalette({
         className="palette"
         role="dialog"
         aria-label="Search chats"
+        ref={box}
         onMouseDown={(e) => e.stopPropagation()}
-        // Escape closes an open panel first, applying nothing, then the palette.
+        // The app's shortcuts don't reach past the palette, except the ones `passKey` lets through. Tab stays inside
+        // it. Escape closes an open panel first, applying nothing, then the palette.
         onKeyDown={(e) => {
+          if (!passKey(e)) e.stopPropagation();
+          trapTab(e, box.current);
           if (e.key !== "Escape" || composing(e)) return;
-          if (!panel) return onClose();
-          e.stopPropagation();
-          closePanel();
+          if (panel) closePanel();
+          else onClose();
         }}
       >
         <div className="palette-input">
@@ -148,7 +162,7 @@ export function SearchPalette({
               } else if (e.key === "ArrowUp") {
                 e.preventDefault();
                 setSel((s) => Math.max(s - 1, 0));
-              } else if (e.key === "Enter" && found[sel]) onPick(found[sel]);
+              } else if (e.key === "Enter" && !stale && found[sel]) onPick(found[sel]);
             }}
           />
           <button
@@ -183,8 +197,8 @@ export function SearchPalette({
         )}
         {panel === "save" && (
           <SaveFilter
-            onSave={(name) => {
-              onSave(name, tidy);
+            onSave={async (name) => {
+              await onSave(name, tidy);
               closePanel();
               setNote(`Saved as "${name.trim()}". It's in the list's Saved filters.`);
             }}
@@ -196,8 +210,8 @@ export function SearchPalette({
             tags={tags}
             chatIds={found.map((f) => f.chatId)}
             titles={new Map(found.map((f) => [f.chatId, f.title]))}
-            onApply={(p) => {
-              onBulk(p);
+            onApply={async (p) => {
+              await onBulk(p);
               closePanel();
               setNote(`${p.add ? "Added" : "Removed"} "${p.tag.name}" ${p.add ? "to" : "from"} ${p.change.length} chat${p.change.length === 1 ? "" : "s"}.`);
             }}
@@ -228,10 +242,11 @@ export function SearchPalette({
           {found.map((f, i) => (
             <button
               key={f.chatId}
-              className={`hit-row ${i === sel ? "sel" : ""}`}
+              className={`hit-row ${i === sel ? "sel" : ""} ${stale ? "stale" : ""}`}
+              aria-disabled={stale || undefined}
               ref={(el) => void (i === sel && el?.scrollIntoView?.({ block: "nearest" }))}
               onMouseEnter={() => setSel(i)}
-              onClick={() => onPick(f)}
+              onClick={() => !stale && onPick(f)}
             >
               <div className="hit-title">
                 <SourceIcon source={f.source} />
@@ -261,7 +276,7 @@ export function SearchPalette({
             <button className="btn" onClick={() => (setNote(undefined), setPanel("save"))}>
               Save filter…
             </button>
-            <button className="btn" disabled={!found.length || !!error} onClick={() => (setNote(undefined), setPanel("bulk"))}>
+            <button className="btn" disabled={!found.length || stale} onClick={() => (setNote(undefined), setPanel("bulk"))}>
               <TagIcon size={13} aria-hidden /> Tag {found.length} result{found.length === 1 ? "" : "s"}…
             </button>
           </div>
@@ -357,27 +372,26 @@ function FilterBar({
   );
 }
 
-function SaveFilter({ onSave, onCancel }: { onSave: (name: string) => void; onCancel: () => void }) {
+function SaveFilter({ onSave, onCancel }: { onSave: (name: string) => Promise<void>; onCancel: () => void }) {
   const [name, setName] = useState("");
   const [error, setError] = useState<string>();
+  const [saving, setSaving] = useState(false);
   return (
     <form
       className="palette-panel"
       aria-label="Save filter"
       onSubmit={(e) => {
         e.preventDefault();
-        try {
-          onSave(name);
-        } catch (err) {
-          setError(errorText(err));
-        }
+        if (saving) return;
+        setSaving(true);
+        onSave(name).catch((err) => (setError(errorText(err)), setSaving(false)));
       }}
     >
       <label className="filter-field grow">
         <span>Name this filter</span>
         <input autoFocus value={name} aria-invalid={!!error} onChange={(e) => (setName(e.target.value), setError(undefined))} />
       </label>
-      <button className="btn primary" type="submit">
+      <button className="btn primary" type="submit" disabled={saving}>
         Save
       </button>
       <button className="btn" type="button" onClick={onCancel}>
@@ -408,10 +422,11 @@ function BulkTag({
   tags: ScopeTags;
   chatIds: string[];
   titles: Map<string, string>;
-  onApply: (p: BulkPreview) => void;
+  onApply: (p: BulkPreview) => Promise<void>;
   onCancel: () => void;
   onManageTags: () => void;
 }) {
+  const [applying, setApplying] = useState(false);
   const [tagId, setTagId] = useState(tags.tags[0]?.id ?? "");
   const [add, setAdd] = useState(true);
   const [preview, setPreview] = useState<BulkPreview>();
@@ -455,14 +470,11 @@ function BulkTag({
         <div className="bulk-actions">
           <button
             className="btn primary"
-            disabled={n === 0}
+            disabled={n === 0 || applying}
             aria-describedby={summaryId}
             onClick={() => {
-              try {
-                onApply(preview);
-              } catch (e) {
-                setError(errorText(e));
-              }
+              setApplying(true);
+              onApply(preview).catch((e) => (setError(errorText(e)), setApplying(false)));
             }}
           >
             {add ? "Add to" : "Remove from"} {n} chat{n === 1 ? "" : "s"}

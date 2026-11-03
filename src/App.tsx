@@ -36,7 +36,7 @@ import { PANE_NAMES, Split, usePaneVisible, type PaneSlot } from "./ui/Split";
 import type { VoiceApi } from "./ui/Voice";
 import { SearchPalette } from "./ui/Search";
 import { SavedFilters, TagManager } from "./ui/Tags";
-import { TAGS_KEY, TagsStore, type SavedFilter } from "./hermes/tags";
+import { TagsStore, savedTagsFile, type SavedFilter } from "./hermes/tags";
 import { runFilter } from "./hermes/chatFilter";
 import { SettingsScreen, type PersonaWiring } from "./ui/Settings";
 import { LeavePersona, type LeaveWhat } from "./ui/LeavePersona";
@@ -508,6 +508,12 @@ export function Main({
   // The Saved filter the search palette opened with, if any; and the tag editor.
   const [searchStart, setSearchStart] = useState<SavedFilter>();
   const [tagsOpen, setTagsOpen] = useState(false);
+  /** Where focus goes when the tag editor closes: the chat row whose menu opened it. */
+  const tagsReturn = useRef<HTMLElement | null>(null);
+  const openTags = (returnTo: HTMLElement | null = null) => {
+    tagsReturn.current = returnTo;
+    setTagsOpen(true);
+  };
 
   // The inbox: what needs the owner, or finished, across the profiles (hermes/inbox.ts). Dismissals are kept on this
   // computer for the connection, and change nothing else. `goTo`: an entry's chat to open once its profile's list
@@ -571,21 +577,16 @@ export function Main({
     };
   }, [projects]);
   // Tags and Saved filters: kept on this computer for each connection and profile, never sent to Hermes (tags.ts,
-  // ADR 0026). Another Hermes Chat window's changes show here too.
-  const tagsStore = useMemo(() => new TagsStore(localStorage, scope), [scope]);
+  // ADR 0026). Another Hermes Chat's changes show once this window is back in front.
+  const tagsStore = useMemo(() => new TagsStore(savedTagsFile, scope), [scope]);
   const tagSnap = useSyncExternalStore(tagsStore.subscribe, tagsStore.getSnapshot);
   useEffect(() => {
-    const changed = (e: StorageEvent) => e.key === TAGS_KEY && tagsStore.reread();
-    window.addEventListener("storage", changed);
-    return () => window.removeEventListener("storage", changed);
+    const back = () => void tagsStore.reread();
+    window.addEventListener("focus", back);
+    return () => window.removeEventListener("focus", back);
   }, [tagsStore]);
-  const tagChange = (fn: () => void) => {
-    try {
-      fn();
-    } catch (e) {
-      setToast({ text: (e as Error).message, at: Date.now() });
-    }
-  };
+  const tagChange = (fn: () => Promise<unknown>) =>
+    fn().catch((e) => setToast({ text: (e as Error).message, at: Date.now() }));
   const openSearch = (start?: SavedFilter) => {
     setSearchStart(start);
     setSearchOpen(true);
@@ -1222,7 +1223,7 @@ export function Main({
               list: tagSnap.tags,
               of: tagSnap.chats[chatId] ?? [],
               onToggle: (id, on) => tagChange(() => tagsStore.setTag([chatId], id, on)),
-              onManage: () => setTagsOpen(true),
+              onManage: () => openTags(document.querySelector<HTMLElement>(`.row-open[data-chat="${CSS.escape(chatId)}"]`)),
             })}
             projectsOf={(chatId) => {
               if (!listable.length) return undefined;
@@ -1459,7 +1460,8 @@ export function Main({
       </main>
       {searchOpen && (
         <SearchPalette
-          key={searchStart?.id ?? "search"}
+          // A new profile gets a new palette: nothing found, previewed or picked in the old one carries over.
+          key={`${scope}\n${searchStart?.id ?? "search"}`}
           profile={profile}
           tags={tagSnap}
           initial={searchStart?.filter}
@@ -1467,12 +1469,16 @@ export function Main({
           onRun={(f) => runFilter(f, hermes, { exists: tagsStore.exists, of: tagsStore.tagsOf })}
           onPick={pick}
           onClose={() => setSearchOpen(false)}
-          onSave={(name, f) => void tagsStore.saveFilter(name, f)}
+          onSave={(name, f) => tagsStore.saveFilter(name, f)}
           onBulk={(p) => tagsStore.applyBulk(p)}
-          onManageTags={() => setTagsOpen(true)}
+          onManageTags={() => openTags()}
+          // Ctrl+K closes the palette, and the screenshot shortcut closes it to take one.
+          passKey={(e) =>
+            ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") || (!!screenshotShortcut && shortcutOf(e.nativeEvent) === screenshotShortcut)
+          }
         />
       )}
-      {tagsOpen && <TagManager store={tagsStore} profile={profile} onClose={() => setTagsOpen(false)} />}
+      {tagsOpen && <TagManager key={scope} store={tagsStore} profile={profile} returnTo={tagsReturn} onClose={() => setTagsOpen(false)} />}
       {toast && (
         <div className="toast" key={toast.at} role="status">
           <span>{toast.text}</span>

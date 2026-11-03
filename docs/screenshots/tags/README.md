@@ -26,3 +26,8 @@ restarted on the same data folder, and the tags and the Saved filter were still 
 - `7-bulk-applied.png`: an earlier bulk edit adding "Backups & restores", confirmed after one was cancelled. The
   cancelled one changed nothing, and this one tagged exactly the two chats it previewed. Settled still says 4: running
   filters put no chat in the list.
+
+The screenshots predate the round-1 review fixes. Those moved storage from the webview's localStorage to `tags.json`
+in the app's data folder, and changed no screen shown here, apart from results dimming while a new filter is searched.
+After them, the final build was run again on a fresh data folder. A tag created in the editor and put on a chat from
+its menu was in `tags.json` (mode 0600, beside `tags.lock`).

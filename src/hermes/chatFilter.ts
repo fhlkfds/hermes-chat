@@ -86,10 +86,11 @@ export type TagLookup = { exists(tagId: string): boolean; of(chatId: string): re
 /**
  * What a filter found. `capped`: Hermes answered as many chats as it would, its best `limit` for words ("search") or
  * its most recent pages ("list"), so more chats may match. `noModel`: chats that matched everything else, but whose
- * model Hermes didn't record, so a model filter can't tell. `missingTags`: tags the filter names that were deleted, so
+ * model Hermes didn't record, so a model filter can't tell. `noSource`: the same for a source filter, for chats Hermes
+ * stored as local without saying which app started them. `missingTags`: tags the filter names that were deleted, so
  * no chat can match.
  */
-export type FilterOutcome = { found: Found[]; capped?: "search" | "list"; noModel: number; missingTags: string[] };
+export type FilterOutcome = { found: Found[]; capped?: "search" | "list"; noModel: number; noSource: number; missingTags: string[] };
 
 /** How many chats a search with filters asks Hermes for: the most it gives. */
 export const FILTER_SEARCH_LIMIT = 100;
@@ -100,7 +101,7 @@ export const WORDS_SEARCH_LIMIT = 50;
 export async function runFilter(filter: ChatFilter, io: FilterIo, tags: TagLookup): Promise<FilterOutcome> {
   const f = tidyFilter(filter);
   const missingTags = (f.tags ?? []).filter((t) => !tags.exists(t));
-  if (isEmptyFilter(f) || missingTags.length) return { found: [], noModel: 0, missingTags };
+  if (isEmptyFilter(f) || missingTags.length) return { found: [], noModel: 0, noSource: 0, missingTags };
   const archivedWanted = f.state === "archived" || f.state === "all";
   const onlyWords = Object.keys(f).every((k) => k === "text");
   const page = f.text
@@ -110,19 +111,17 @@ export async function runFilter(filter: ChatFilter, io: FilterIo, tags: TagLooku
   const to = f.to ? startOf(f.to, 1) : Infinity;
   const model = f.model?.toLocaleLowerCase();
   let noModel = 0;
+  let noSource = 0;
   const found = page.found.filter((c) => {
     const inState =
       f.state === "all" ? true : f.state === "archived" ? !!c.archived : !c.archived && (f.state === undefined || (f.state === "settled") === c.settled);
     const of = f.tags?.length ? tags.of(c.chatId) : [];
-    const others =
-      inState &&
-      (!f.sources || f.sources.includes(c.source)) &&
-      (f.tags ?? []).every((t) => of.includes(t)) &&
-      c.updatedAt >= from &&
-      c.updatedAt < to;
-    if (!others || !model) return others;
-    if (!c.model) noModel++;
-    return !!c.model?.toLocaleLowerCase().includes(model);
+    const others = inState && (f.tags ?? []).every((t) => of.includes(t)) && c.updatedAt >= from && c.updatedAt < to;
+    const modelOk = !model || !!c.model?.toLocaleLowerCase().includes(model);
+    if (others && f.sources && c.sourceUnknown && modelOk) noSource++;
+    const sourceOk = !f.sources || (!c.sourceUnknown && f.sources.includes(c.source));
+    if (others && sourceOk && model && !c.model) noModel++;
+    return others && sourceOk && modelOk;
   });
-  return { found, ...(page.capped && { capped: f.text ? "search" : "list" }), noModel, missingTags };
+  return { found, ...(page.capped && { capped: f.text ? "search" : "list" }), noModel, noSource, missingTags };
 }

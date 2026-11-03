@@ -308,6 +308,7 @@ function ChatRow({
       <button
         ref={openButton}
         className="row-open"
+        data-chat={chat.id}
         aria-current={selected || undefined}
         title={`${retitling ? "Writing a new title…" : chat.source !== "app" ? `${chat.title} (from ${SOURCE_LABEL[chat.source]})` : chat.title}${alsoShown ? " (in the other pane)" : ""}`}
         onClick={() => {
