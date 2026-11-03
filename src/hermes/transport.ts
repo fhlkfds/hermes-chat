@@ -24,11 +24,13 @@
 // Each chat's context fullness and YOLO come from its session's `info` and `usage`: research doc "Status bar".
 // Token usage and cost (usage.ts, ADR 0008): each reply's usage is how far its session's live counters moved during
 // its turn; each chat's totals and cost are Hermes's stored ones, read with the chat list and after each turn.
+import { PersonaApi } from "./persona";
 import { APPROVAL_CHOICES, isBroadGrant, isOutgoing, isWaiting, offeredChoices, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ConnectionStatus, type ContextPart, type ContextUse, type Found, type Item, type OtherProfiles, type Outgoing, type OutgoingItem, type SessionLive, type Source } from "./model";
 import { catalogFromServer, fallbackCatalog, isEffort, modelKey, pickFromInfo, type ModelCatalog, type ModelPick } from "./models";
 import { noOthers, OtherProfilesCheck } from "./otherProfiles";
 // Projects are Hermes's own, read and written with legacy `projects.*` (projects.ts, research doc "Projects").
 import { projectsApi, type ProjectsApi } from "./projects";
+import { listServerCommands, runServerCommand, type CommandDef, type CommandResult, type ServerCommandList } from "./commands";
 import { CronApi } from "./cronJobs";
 import { ModelSettingsApi } from "./modelSettings";
 import type { OpenPipe, Pipe, PipeEvent, RestMethod, Route, Speech, Transcript, VoiceSetup } from "./pipe";
@@ -447,6 +449,8 @@ export class Hermes {
   private background = new Set<Promise<unknown>>();
   /** When the shown profile's list last synced on this connection. */
   private listedAt?: number;
+  /** The server commands listed for a connection and profile (`serverCommands`). */
+  private commandsRead?: { key: string; done: Promise<ServerCommandList> };
   /** The voice set-up read for a connection and profile (`voiceSetup`). */
   private voiceRead?: { key: string; done: Promise<VoiceSetup> };
   /** The model list being read, and for which profile. */
@@ -496,6 +500,9 @@ export class Hermes {
     (method, pathAndQuery, body) => this.rest(method, pathAndQuery, body),
     () => this.profile,
   );
+
+  /** Settings → Persona's reads and writes of a profile's SOUL.md (persona.ts). Each call names its profile. */
+  readonly persona = new PersonaApi((method, pathAndQuery, body) => this.rest(method, pathAndQuery, body));
 
   /** The profile whose chats are shown. */
   get profile(): string {
@@ -579,6 +586,30 @@ export class Hermes {
       });
     }
     return this.voiceRead.done;
+  }
+
+  /**
+   * The registry's server commands this Hermes lists for the shown profile (commands.ts). Read once per connection and
+   * profile; a failed read is tried again on the next call.
+   */
+  serverCommands(): Promise<ServerCommandList> {
+    if (!this.connectedPipe()) return Promise.reject(new Error("Not connected to Hermes."));
+    const key = `${this.generation}/${this.profile}`;
+    if (this.commandsRead?.key !== key) {
+      const done = listServerCommands((method, params) => this.request(method, params), this.profile);
+      this.commandsRead = { key, done };
+      done.catch(() => {
+        if (this.commandsRead?.done === done) this.commandsRead = undefined;
+      });
+    }
+    return this.commandsRead.done;
+  }
+
+  /** Runs a server command in the chat's live session (commands.ts). Rejects if the chat isn't open on Hermes. */
+  runCommand(chatId: string, def: CommandDef, arg: string): Promise<CommandResult> {
+    const runtimeId = this.snapshot.chats.find((c) => c.id === chatId)?.runtimeId;
+    if (!runtimeId) return Promise.reject(new Error("This chat isn't open on Hermes."));
+    return runServerCommand((method, params) => this.request(method, params), runtimeId, def, arg);
   }
 
   /** Has Hermes transcribe a Dictation recording with the shown profile's speech-to-text provider. */
@@ -2194,7 +2225,9 @@ export class Hermes {
   }
 
   private async rest(method: RestMethod, pathAndQuery: string, body?: unknown): Promise<unknown> {
-    if (!this.pipe) throw new Error("Not connected to Hermes.");
+    // Once closed (signed out), nothing more goes out: the Rust side relays through whichever sign-in is current, which
+    // may be another server's by then.
+    if (!this.pipe || this.closing) throw new Error("Not connected to Hermes.");
     return JSON.parse(await this.pipe.request(method, pathAndQuery, body === undefined ? undefined : JSON.stringify(body)));
   }
 

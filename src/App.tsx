@@ -1,11 +1,14 @@
 import { type ReactNode, type RefObject, useCallback, useLayoutEffect, useMemo, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { Columns2, PanelRight, X } from "lucide-react";
-import { connect, readSaved, type Delivery, type Hermes } from "./hermes/transport";
+import { RenameConflict, connect, readSaved, type Delivery, type Hermes } from "./hermes/transport";
+import type { CommandHost } from "./ui/SlashCommands";
+import type { ServerCommandList } from "./hermes/commands";
 import { CHECK_EVERY_MS } from "./hermes/otherProfiles";
 import { type Account, type Kept, type SavedSignIn, launchSignIn, savedSignIn, signIn, signInForm, signOutToSignIn } from "./hermes/account";
 import { localChatCache } from "./hermes/chatCache";
 import { draftKey, drafts } from "./hermes/drafts";
+import { PersonaStore, personaKey } from "./hermes/personaStore";
 import { sending, type Sending } from "./hermes/unsaved";
 import { chatToReopen, forgetOpenChat, rememberOpenChat } from "./hermes/uiPrefs";
 import { exportChat } from "./hermes/exportChat";
@@ -27,7 +30,9 @@ import { ChatPane, type JumpTarget } from "./ui/ChatPane";
 import { PANE_NAMES, Split, usePaneVisible, type PaneSlot } from "./ui/Split";
 import type { VoiceApi } from "./ui/Voice";
 import { SearchPalette } from "./ui/Search";
-import { SettingsScreen } from "./ui/Settings";
+import { SettingsScreen, type PersonaWiring } from "./ui/Settings";
+import { LeavePersona, type LeaveWhat } from "./ui/LeavePersona";
+import { tauriCloseGuard, type CloseGuard } from "./ui/tauriWindow";
 import { FileBrowser } from "./ui/FileBrowser";
 import { OutputsScreen, type OutputsScope } from "./ui/Outputs";
 import { OutputsIndex, outputsIn, splitPath, type Output } from "./hermes/outputs";
@@ -106,6 +111,7 @@ const account: Account = {
 
 const savedDrafts = drafts(localStorage);
 const savedProjects = projectLinks(localStorage);
+const savedPersona = new PersonaStore(localStorage);
 // Applied as the app loads, so the chosen fonts show from the first screen.
 const appearance = appearanceStore(localStorage, document.documentElement);
 
@@ -270,6 +276,8 @@ export function Main({
   localFiles = tauriLocalFiles,
   webPages = tauriWebPages,
   screenshots = tauriScreenshotWiring,
+  personaStore = savedPersona,
+  guardClose = tauriCloseGuard,
   onSignOut,
   updates = appUpdates,
 }: {
@@ -285,6 +293,10 @@ export function Main({
   localFiles?: LocalFiles;
   webPages?: WebPages;
   screenshots?: Screenshots;
+  /** Where Settings → Persona keeps unsaved edits and replaced versions on this computer. */
+  personaStore?: PersonaStore;
+  /** Asks before the window closes; registered only while Settings → Persona holds an unsaved edit. */
+  guardClose?: CloseGuard;
   onSignOut: () => Promise<void>;
   updates?: Updater;
 }) {
@@ -293,6 +305,39 @@ export function Main({
     hermes.getSnapshot,
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Settings → Persona holds an edit Hermes doesn't have, or a save under way: leaving it asks first.
+  const personaDirty = useRef(false);
+  const [personaUnsaved, setPersonaUnsaved] = useState(false);
+  // This computer could keep the unsaved edit, so leaving doesn't lose it.
+  const [personaKept, setPersonaKept] = useState(true);
+  const onPersonaDirty = useCallback((dirty: boolean, kept: boolean) => {
+    personaDirty.current = dirty;
+    setPersonaUnsaved(dirty);
+    setPersonaKept(kept);
+  }, []);
+  const [leaving, setLeaving] = useState<{ what: LeaveWhat; go: () => void; stay?: () => void }>();
+  /** Runs `go` now, or once the owner agrees to leave an unsaved persona edit behind. `stay` runs if they don't. */
+  const guard = (go: () => void, what: LeaveWhat = "leave", stay?: () => void) => {
+    if (!personaDirty.current) return go();
+    setLeaving({ what, go, stay });
+  };
+  const guardRef = useRef(guard);
+  guardRef.current = guard;
+  // Closing the window asks too, only while there is something to lose.
+  const guardCloseRef = useRef(guardClose);
+  useEffect(() => {
+    if (!personaUnsaved) return;
+    let stop: (() => void) | undefined;
+    let gone = false;
+    guardCloseRef.current((close) => guardRef.current(close, "close")).then(
+      (off) => (gone ? off() : (stop = off)),
+      () => {},
+    );
+    return () => {
+      gone = true;
+      stop?.();
+    };
+  }, [personaUnsaved]);
   // A new object each time a row asks Settings to show the Text generation model; the rail's button opens it plainly.
   const [showTextGeneration, setShowTextGeneration] = useState<object>();
   const voice = useMemo<VoiceApi>(
@@ -385,7 +430,7 @@ export function Main({
   };
   const projectNames = (chatId: string) => listable.filter((p) => proj.chats[p.id]?.includes(chatId)).map((p) => p.name);
 
-  // Outputs: one index for each connection and profile, like projects (outputs.ts, ADR 0014). Leaving a profile, or
+  // Outputs: one index for each connection and profile, like projects (outputs.ts, ADR 0016). Leaving a profile, or
   // signing out, stops its run and drops whatever it reads afterwards.
   const outputsIndex = useMemo(() => new OutputsIndex(hermes.outputsIo(profile), localStorage, scope), [hermes, scope]);
   useEffect(() => {
@@ -421,6 +466,13 @@ export function Main({
     void outputsIndex.index(outputsRefs(), false, shownOutputsScope === "chat");
   }, [outputsOpen, status, outputsIndex, shownOutputsScope, outputsChatKey]);
   const where = routeLabel(route) ?? (connection.mode === "ssh" ? `ssh://${connection.sshTarget}` : connection.url) ?? undefined;
+  // Settings → Persona edits this connection and profile's SOUL.md; its edits are kept apart per connection and profile.
+  const persona: PersonaWiring = {
+    api: hermes.persona,
+    store: personaStore,
+    storeKey: personaKey(connection, profile),
+    where: { server: route ? serverLabel(route) : connection.mode === "ssh" ? connection.sshTarget : serverLabel({ kind: "url", url: connection.url, addresses: [] }), route: where, profile },
+  };
 
   const stillIn = (p: string) => hermes.profile === p;
 
@@ -439,23 +491,28 @@ export function Main({
   // Every move between chats is kept as the profile's last open chat, so it reopens at the next launch whether or not
   // the app closes cleanly. Going somewhere also ends the wait to reopen the last one. A chat opens in the active pane
   // unless another is named, and the pane it opens in becomes the active one.
-  const openChat = (id: string | null, { pane = active.key, remember = true, fresh = false } = {}) => {
-    setPreviewHidden(true);
-    patchPane(pane, { chatId: id, picked: undefined, jump: undefined, ...(fresh && { draftError: undefined }) });
-    activeKeyRef.current = pane;
-    setActiveKey(pane);
-    setReopening(undefined);
-    setSettingsOpen(false);
-    setProjectOpen(false);
-    setFilesOpen(false);
-    setJobsOpen(false);
-    setOutputsOpen(false);
-    if (remember) rememberOpenChat(profile, id);
+  // `keepSettings`: the move isn't the owner's, so Settings stays on screen.
+  const openChat = (id: string | null, { pane = active.key, remember = true, fresh = false, keepSettings = false } = {}) => {
+    const go = () => {
+      setPreviewHidden(true);
+      patchPane(pane, { chatId: id, picked: undefined, jump: undefined, ...(fresh && { draftError: undefined }) });
+      activeKeyRef.current = pane;
+      setActiveKey(pane);
+      setReopening(undefined);
+      if (!keepSettings) setSettingsOpen(false);
+      setProjectOpen(false);
+      setFilesOpen(false);
+      setJobsOpen(false);
+      setOutputsOpen(false);
+      if (remember) rememberOpenChat(profile, id);
+    };
+    if (keepSettings) go();
+    else guard(go);
   };
 
   const newChat = (remember = true) => openChat(null, { remember, fresh: true });
 
-  const pick = (found: Found) => {
+  const pick = (found: Found) => guard(() => {
     setPreviewHidden(true);
     hermes.reveal(found);
     patchPane(active.key, { chatId: found.chatId, picked: { found, at: Date.now() }, jump: undefined });
@@ -467,11 +524,11 @@ export function Main({
     setFilesOpen(false);
     setJobsOpen(false);
     setOutputsOpen(false);
-  };
+  });
 
   // A second pane opens to the right and becomes the active one. Both panes may show the same chat: they are two views
   // of it, with one transcript, one draft and one reply, each scrolled and searched on its own.
-  const splitWith = (chatId: string | null) => {
+  const splitWith = (chatId: string | null) => guard(() => {
     if (split) return;
     setPreviewHidden(true);
     const key = newPaneKey();
@@ -485,7 +542,7 @@ export function Main({
     setJobsOpen(false);
     setOutputsOpen(false);
     rememberOpenChat(profile, chatId);
-  };
+  });
 
   /** Opens a chat in the left (0) or right (1) pane, opening the right one if there's one pane. */
   const openIn = (id: string, side: number) => {
@@ -505,7 +562,7 @@ export function Main({
   }, []);
   // Reveal the composer when Search, Settings, Projects, Server files or a narrow preview covers it, so the capture can
   // be reviewed.
-  const takeScreenshot = (remote = false) => {
+  const takeScreenshot = (remote = false) => guard(() => {
     if (!desk) return;
     flushSync(() => {
       setSettingsOpen(false);
@@ -518,7 +575,7 @@ export function Main({
     });
     focusPane(active.key);
     void desk.capture({ remote });
-  };
+  });
   const takeScreenshotRef = useRef(takeScreenshot);
   takeScreenshotRef.current = takeScreenshot;
   useEffect(() => (desk ? screenshotsRef.current.onDesktopShortcut(() => takeScreenshotRef.current(true)) : undefined), [desk]);
@@ -540,13 +597,13 @@ export function Main({
   // The panes showing a chat that leaves the list give way to the New chat pane. The active one does as New chat does.
   const clearChat = (id: string) => {
     if (!panes.some((p) => p.chatId === id)) return;
-    if (active.chatId === id) newChat();
+    if (active.chatId === id) openChat(null, { fresh: true, keepSettings: true });
     setPanes((ps) => ps.map((p) => (p.chatId === id ? { ...p, chatId: null, picked: undefined, draftError: undefined } : p)));
   };
 
   // The other profile's chats replace the list, so one pane stays, on a fresh draft. The profile left keeps its last
   // open chat for the next launch.
-  const switchProfile = (name: string) => {
+  const switchProfile = (name: string) => guard(() => {
     const keep = active.key;
     setPanes([{ key: keep, chatId: null }]);
     activeKeyRef.current = keep;
@@ -557,7 +614,7 @@ export function Main({
     setToast(null);
     setPreview(null);
     void hermes.switchProfile(name);
-  };
+  }, "profile");
 
   // Undo sends the opposite change, not a stored copy, so it also works once the list has refreshed.
   const setSettled = (id: string, settled: boolean) => {
@@ -583,10 +640,12 @@ export function Main({
   const deleteChat = (id: string) => {
     const title = chats.find((c) => c.id === id)?.title ?? "";
     clearChat(id);
-    void hermes.delete(id).then((deleted) => {
-      if (!deleted) return;
-      projects.forgetChat(id);
-      if (stillIn(profile)) setToast({ text: `Deleted: ${title}`, at: Date.now() });
+    return hermes.delete(id).then((deleted) => {
+      if (deleted) {
+        projects.forgetChat(id);
+        if (stillIn(profile)) setToast({ text: `Deleted: ${title}`, at: Date.now() });
+      }
+      return deleted;
     });
   };
 
@@ -782,6 +841,8 @@ export function Main({
           onSettle={(s) => setSettled(chat.id, s)}
           onExport={() => exportChatOnScreen(chat)}
           onArchive={(a) => setArchived(chat.id, a)}
+          onNew={() => newChat()}
+          onDelete={() => deleteChat(chat.id)}
           previewControls={
             <button className={`icon-btn ${previewShown ? "on" : ""}`} title={!preview ? "Open the preview" : previewShown ? "Close the preview" : "Show the preview"} aria-pressed={previewShown}
               onClick={() => (!preview ? openPreview({ kind: "start" }) : previewShown ? setPreview(null) : setPreviewHidden(false))}>
@@ -816,24 +877,36 @@ export function Main({
         onToggleList={() => setListOpen((o) => !o)}
         onNew={() => newChat()}
         onSearch={() => setSearchOpen(true)}
-        onFiles={() => {
-          setSettingsOpen(false);
-          setProjectOpen(false);
-          setJobsOpen(false);
-          setOutputsOpen(false);
-          setFilesOpen((o) => !o);
-        }}
-        onOutputs={() => {
-          setSettingsOpen(false);
-          setProjectOpen(false);
-          setFilesOpen(false);
-          setJobsOpen(false);
-          setOutputsOpen((o) => !o);
-        }}
+        onFiles={() =>
+          guard(() => {
+            setSettingsOpen(false);
+            setProjectOpen(false);
+            setJobsOpen(false);
+            setOutputsOpen(false);
+            setFilesOpen((o) => !o);
+          })
+        }
+        onOutputs={() =>
+          guard(() => {
+            setSettingsOpen(false);
+            setProjectOpen(false);
+            setFilesOpen(false);
+            setJobsOpen(false);
+            setOutputsOpen((o) => !o);
+          })
+        }
         outputsOpen={outputsOpen && !settingsOpen && !projectScreenOpen && !filesOpen}
         filesOpen={filesOpen && !settingsOpen && !projectScreenOpen}
         onSettings={() => { setProjectOpen(false); setFilesOpen(false); setJobsOpen(false); setOutputsOpen(false); setShowTextGeneration(undefined); setSettingsOpen(true); }}
-        onJobs={() => { setProjectOpen(false); setSettingsOpen(false); setFilesOpen(false); setOutputsOpen(false); setJobsOpen(true); }}
+        onJobs={() =>
+          guard(() => {
+            setProjectOpen(false);
+            setSettingsOpen(false);
+            setFilesOpen(false);
+            setOutputsOpen(false);
+            setJobsOpen(true);
+          })
+        }
         jobsOpen={jobsOpen && !settingsOpen}
         updateWaiting={updateWaiting}
       />
@@ -855,19 +928,23 @@ export function Main({
                 }}
                 onCreate={async (name) => {
                   await projects.create(name);
-                  setSettingsOpen(false);
-                  setFilesOpen(false);
-                  setJobsOpen(false);
-                  setOutputsOpen(false);
-                  setProjectOpen(true);
+                  guard(() => {
+                    setSettingsOpen(false);
+                    setFilesOpen(false);
+                    setJobsOpen(false);
+                    setOutputsOpen(false);
+                    setProjectOpen(true);
+                  });
                 }}
-                onManage={() => {
-                  setSettingsOpen(false);
-                  setFilesOpen(false);
-                  setJobsOpen(false);
-                  setOutputsOpen(false);
-                  setProjectOpen(true);
-                }}
+                onManage={() =>
+                  guard(() => {
+                    setSettingsOpen(false);
+                    setFilesOpen(false);
+                    setJobsOpen(false);
+                    setOutputsOpen(false);
+                    setProjectOpen(true);
+                  })
+                }
               />
             }
             projectsOf={(chatId) => {
@@ -966,11 +1043,16 @@ export function Main({
             showTextGeneration={showTextGeneration}
             onClearCache={() => hermes.clearCache()}
             onPullOlder={() => hermes.pullOlderHistory()}
-            onSignOut={onSignOut}
-            onClose={() => {
-              flushSync(() => setSettingsOpen(false));
-              focusPane(active.key);
-            }}
+            onSignOut={() => new Promise<void>((done) => guard(() => void onSignOut().finally(done), "signout", done))}
+            onClose={() =>
+              guard(() => {
+                flushSync(() => setSettingsOpen(false));
+                focusPane(active.key);
+              })
+            }
+            persona={persona}
+            onPersonaDirty={onPersonaDirty}
+            guard={guard}
           />
         ) : filesOpen ? (
           <FileBrowser
@@ -1063,6 +1145,22 @@ export function Main({
           )}
         </div>
       )}
+      {leaving && (
+        <LeavePersona
+          what={leaving.what}
+          profile={profile}
+          kept={personaKept}
+          onStay={() => {
+            leaving.stay?.();
+            setLeaving(undefined);
+          }}
+          onGo={() => {
+            setLeaving(undefined);
+            personaDirty.current = false;
+            leaving.go();
+          }}
+        />
+      )}
       {restarting &&
         // Outside the inert app, so it is announced.
         createPortal(
@@ -1105,6 +1203,8 @@ function ChatView({
   onSettle,
   onExport,
   onArchive,
+  onNew,
+  onDelete,
   paneControls,
   previewControls,
   screenshots,
@@ -1136,6 +1236,9 @@ function ChatView({
   onSettle: (settled: boolean) => void;
   onExport: () => void;
   onArchive: (archived: boolean) => void;
+  onNew: () => void;
+  /** Deletes the chat once the owner has confirmed it; resolves with whether Hermes deleted it. */
+  onDelete: () => Promise<boolean>;
   paneControls: ReactNode;
   previewControls: ReactNode;
   screenshots?: ScreenshotDesk;
@@ -1219,6 +1322,70 @@ function ChatView({
 
   const visible = usePaneVisible();
 
+  // Slash commands (commands.ts). Each empties the Draft it was typed in only once it has run, only if the owner hasn't
+  // changed it meanwhile, and only while the composer it was typed in is still on the chat (`still`). An answer after
+  // that does nothing: its Draft stays as typed. One command at a time per Draft, so two panes on one chat can't run it
+  // twice.
+  const serverCommands = useServerCommands(hermes, status === "connected", profile);
+  const commands: CommandHost = {
+    why: (def) => {
+      if (def.name === "help" || def.name === "new") return undefined;
+      if (!started) return "This chat hasn't started yet. Send a message first.";
+      if (status !== "connected") return "Not connected to Hermes.";
+      if (def.name === "delete" && chat.running) return "A chat with a reply running can't be deleted.";
+      if (def.scope === "local") return undefined;
+      if (serverCommands.state === "loading") return "Checking whether this Hermes has it…";
+      if (serverCommands.state === "failed") return `Couldn't check whether this Hermes has it: ${serverCommands.reason}`;
+      if (serverCommands.list.replaced.has(def.name))
+        return `This Hermes has a quick or plugin command called /${def.name}, which it would run instead, so Hermes Chat doesn't run it.`;
+      if (serverCommands.list.unsure.has(def.name))
+        return `Hermes couldn't list its quick and plugin commands, so it can't tell whether one would run instead of /${def.name}.`;
+      if (!serverCommands.list.listed.has(def.name)) return "This Hermes doesn't list it, so it may not have it. Updating Hermes may add it.";
+      if (!chat.runtimeId) return "This chat is still loading from Hermes.";
+      if (def.name === "steer" && !chat.running) return "No reply is running to steer. Send it as a message instead.";
+      return undefined;
+    },
+    run: async (def, arg, still) => {
+      const key = shownDraft;
+      if (commandsRunning.has(key)) throw new Error("A command typed in this chat is still running.");
+      commandsRunning.add(key);
+      const typed = savedDrafts.get(key);
+      const done = () => savedDrafts.get(key) === typed && savedDrafts.set(key, "");
+      const here = () => still() && stillIn();
+      try {
+        if (def.name === "new") {
+          done();
+          onNew();
+          return undefined;
+        }
+        // The pane gives way at once; the Draft goes only once Hermes has deleted the chat, so a refusal keeps it.
+        if (def.name === "delete") {
+          if (await onDelete()) done();
+          return undefined;
+        }
+        if (def.name === "rename") {
+          try {
+            await hermes.rename(chat.id, arg.replace(/\s+/g, " "), chat.title);
+          } catch (e) {
+            throw e instanceof RenameConflict ? new Error(`This chat was renamed in another Hermes client meanwhile, to "${e.title}". Rename again to replace it.`) : e;
+          }
+          if (here()) done();
+          return undefined;
+        }
+        const res = await hermes.runCommand(chat.id, def, arg);
+        if (!here()) return undefined;
+        done();
+        if (res.kind === "output") return res.text;
+        // Hermes wants the words sent as the chat's next message instead, as for a /steer after the reply ended. It goes
+        // straight to the chat, so whatever the owner has typed since stays in the composer; a failure is a Failed message.
+        await hermes.send(chat.id, res.message);
+        return res.notice;
+      } finally {
+        commandsRunning.delete(key);
+      }
+    },
+  };
+
   // An opened chat shows its stored history and is marked read; a chat already open on this connection is left as it
   // is. Until connected it shows its Saved copy, and after a reconnect it loads again. Settings covers the panes, so
   // the chats aren't on screen meanwhile.
@@ -1258,6 +1425,7 @@ function ChatView({
       screenshots={screenshots}
       screenshotKeys={screenshotKeys}
       voice={voice}
+      commands={commands}
       paneControls={paneControls}
       headActions={previewControls}
       footer={<StatusBar chat={chat} status={status} onYolo={(on) => hermes.setYolo(chat.id, on)} onBreakdown={() => hermes.contextBreakdown(chat.id)} />}
@@ -1273,4 +1441,24 @@ function ChatView({
       }
     />
   );
+}
+
+/** The Drafts whose slash command is running, by draft key, across both panes. */
+const commandsRunning = new Set<string>();
+
+type ServerCommands = { state: "loading" } | { state: "ready"; list: ServerCommandList } | { state: "failed"; reason: string };
+
+/** Which of the registry's server commands Hermes lists for `profile`, read once connected (`Hermes.serverCommands`). */
+function useServerCommands(hermes: Hermes, connected: boolean, profile: string): ServerCommands {
+  const [read, setRead] = useState<{ profile: string; value: ServerCommands }>();
+  useEffect(() => {
+    if (!connected) return;
+    let live = true;
+    hermes.serverCommands().then(
+      (list) => live && setRead({ profile, value: { state: "ready", list } }),
+      (e) => live && setRead({ profile, value: { state: "failed", reason: messageOf(e) } }),
+    );
+    return () => void (live = false);
+  }, [hermes, connected, profile]);
+  return read?.profile === profile ? read.value : { state: "loading" };
 }
