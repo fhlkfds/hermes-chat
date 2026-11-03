@@ -3,7 +3,7 @@
 // webview.
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type { LocalFile, OpenPipe, PipeEvent, Route, ToolsetGuards, Transcript, VoiceSetup } from "./pipe";
-import type { Downloaded, TransferProgress } from "./remoteFiles";
+import type { Downloaded, PickedUpload, TransferProgress } from "./remoteFiles";
 import type { Probe, Probed, ProbeFailure, SavedKey } from "./setup";
 
 // A failed command rejects with the Rust error's text, not an Error.
@@ -74,6 +74,12 @@ export function tauriPipe(d: SignInDetails): OpenPipe {
         const channel = new Channel<TransferProgress>();
         channel.onmessage = onProgress;
         return invoke<Downloaded | null>("files_download", { id, path, name, onProgress: channel }).then((got) => got ?? undefined, asError);
+      },
+      pickUpload: () => invoke<PickedUpload | null>("files_pick_upload").then((p) => p ?? undefined, asError),
+      upload: (id, token, path, overwrite, onProgress) => {
+        const channel = new Channel<TransferProgress>();
+        channel.onmessage = onProgress;
+        return invoke<string>("files_upload", { id, token, path, overwrite, onProgress: channel }).catch(asError);
       },
       cancelTransfer: (id) => invoke("files_cancel", { id }),
       close: () => invoke("hermes_disconnect"),

@@ -928,6 +928,8 @@ export class FakeHermes {
       },
       voiceSetup: async () => ({ ...this.voice }),
       download: (id, path, name, onProgress) => this.managedFiles.download(id, path, name, onProgress),
+      pickUpload: async () => this.managedFiles.pickUpload(),
+      upload: (id, token, path, overwrite, onProgress) => this.managedFiles.upload(id, token, path, overwrite, onProgress),
       cancelTransfer: async (id) => this.managedFiles.cancel(id),
       // Mirrors `Dashboard::toolset_guards`: only these two facts of the config.
       toolsetGuards: async (profile): Promise<ToolsetGuards> => {

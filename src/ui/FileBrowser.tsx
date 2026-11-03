@@ -1,9 +1,10 @@
 // Server files: a browser for the files on the machine the Hermes dashboard runs on (remoteFiles.ts). It opens from the
 // rail and takes the chat pane's place, as Settings does. Folders open in place, with the path above them as a trail
-// of folders; a file opens in the preview beside the list, where it can be downloaded to this computer (ADR 0023).
-// Nothing on the server can be changed from here.
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
-import { ArrowLeft, ArrowUp, Check, CircleAlert, Download, File, FileImage, FileText, Folder, House, Link2, Link2Off, RefreshCw, Server, WifiOff, X } from "lucide-react";
+// of folders; a file opens in the preview beside the list, where it can be downloaded to this computer. Upload… sends
+// a file the owner picks into the folder on screen, after showing where it goes and what is in the way (ADR 0023).
+// Nothing else on the server can be changed from here.
+import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
+import { ArrowLeft, ArrowUp, Check, CircleAlert, Download, File, FileImage, FileText, Folder, House, Link2, Link2Off, RefreshCw, Server, Upload, WifiOff, X } from "lucide-react";
 import type { ConnectionStatus } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
 import {
@@ -14,6 +15,8 @@ import {
   type RemoteEntry,
   type RemoteFiles,
   type RemoteListing,
+  type Collision,
+  type PickedUpload,
   type RemotePreview,
   type Transfer,
 } from "../hermes/remoteFiles";
@@ -70,6 +73,11 @@ export function FileBrowser({
   const [showHidden, setShowHidden] = useState(false);
   const [shown, setShown] = useState(ENTRY_PAGE);
   const [goTo, setGoTo] = useState("");
+  // A file picked to upload, and the folder it was picked for, until the owner sends it or cancels.
+  const [uploading, setUploading] = useState<{ picked: PickedUpload; listing: RemoteListing }>();
+  const [pickError, setPickError] = useState<string>();
+  const shownPath = useRef<string | undefined>(undefined);
+  shownPath.current = listing?.path;
   // Only the latest listing and preview asked for land; an older answer arriving late is dropped.
   const listSeq = useRef(0);
   const previewSeq = useRef(0);
@@ -145,6 +153,24 @@ export function FileBrowser({
   const trail = listing ? crumbs(listing.path, listing.root) : [];
   const where = routeLabel(route) ?? "the Hermes server";
 
+  const pickUpload = () => {
+    const at = listing;
+    if (!at) return;
+    setPickError(undefined);
+    files.pickUpload().then(
+      (picked) => picked && setUploading({ picked, listing: at }),
+      (e) => setPickError(errorOf(e).message),
+    );
+  };
+
+  const sendUpload = (collision: Collision) => {
+    if (!uploading) return;
+    const { picked, listing: at } = uploading;
+    setUploading(undefined);
+    // The folder is listed again once Hermes answers, when it is still the one on screen.
+    void files.upload(at, picked, collision).catch((e) => setPickError(errorOf(e).message)).finally(() => shownPath.current === at.path && load(at.path, true));
+  };
+
   const onListKey = (e: KeyboardEvent) => {
     if (composing(e)) return;
     if (e.altKey && e.key === "ArrowUp" && listing?.parent && connected) {
@@ -164,7 +190,6 @@ export function FileBrowser({
           <span className="files-server" title="The machine the Hermes dashboard runs on">
             <Server size={13} aria-hidden /> <span className="mono">{where}</span>
           </span>
-          <span className="badge">Read-only</span>
           {listing?.root && (
             <span className="badge" title="The server only lets you browse inside this folder">
               Limited to {listing.root}
@@ -214,6 +239,9 @@ export function FileBrowser({
             <span className="muted small">{loading ? "Listing…" : ""}</span>
           )}
         </nav>
+        <button className="btn files-upload" disabled={!connected || !listing} title="Pick a file on this computer to upload into this folder" onClick={pickUpload}>
+          <Upload size={14} aria-hidden /> Upload…
+        </button>
         <form
           className="files-goto"
           onSubmit={(e) => {
@@ -234,6 +262,15 @@ export function FileBrowser({
             {STATUS_LABEL[status]} Server files can't be read until Hermes is connected again
             {listing ? `. This list is from ${storedTime(listing.listedAt)}, and refreshes once connected.` : "."}
           </span>
+        </div>
+      )}
+      {pickError && (
+        <div className="files-banner err" role="alert">
+          <CircleAlert size={14} aria-hidden />
+          <span>{pickError}</span>
+          <button className="icon-btn" aria-label="Dismiss" onClick={() => setPickError(undefined)}>
+            <X size={14} />
+          </button>
         </div>
       )}
       {error && (
@@ -338,6 +375,100 @@ export function FileBrowser({
         {preview && <PreviewPane preview={preview} files={files} connected={connected} onOpenAsText={() => open(preview.entry, true)} onClose={dropPreview} />}
       </div>
       <Transfers files={files} />
+      {uploading && <UploadDialog files={files} {...uploading} connected={connected} onSend={sendUpload} onCancel={() => setUploading(undefined)} />}
+    </div>
+  );
+}
+
+/**
+ * Where a picked file goes, before anything is sent: its name and size, the server path, and, when the name is taken,
+ * the choice of keeping both (the default) or replacing the server's file. Nothing is sent until Upload.
+ */
+function UploadDialog({
+  files,
+  picked,
+  listing,
+  connected,
+  onSend,
+  onCancel,
+}: {
+  files: RemoteFiles;
+  picked: PickedUpload;
+  listing: RemoteListing;
+  connected: boolean;
+  onSend: (collision: Collision) => void;
+  onCancel: () => void;
+}) {
+  const plan = files.planUpload(listing, picked);
+  const [collision, setCollision] = useState<Collision>("keep-both");
+  const titleId = useId();
+  const replace = !!plan.taken && collision === "replace";
+  const dest = plan.taken && !replace ? `${listing.path.replace(/\/$/, "")}/${plan.keepBothName}` : plan.dest;
+  return (
+    <div className="leave-overlay" onMouseDown={(e) => e.target === e.currentTarget && onCancel()}>
+      <div
+        className="leave-dialog files-upload-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            e.preventDefault();
+            onCancel();
+          }
+        }}
+      >
+        <h2 id={titleId} className="leave-title">
+          <Upload size={14} aria-hidden /> Upload to the server
+        </h2>
+        <dl className="files-meta">
+          <dt>From this computer</dt>
+          <dd>
+            <span className="mono">{picked.name}</span>, {fmtSize(picked.size)}
+          </dd>
+          <dt>To the server</dt>
+          <dd className="mono">{dest}</dd>
+        </dl>
+        {plan.refused ? (
+          <p role="alert" className="files-transfer-error">
+            {plan.refused}
+          </p>
+        ) : (
+          plan.taken && (
+            <fieldset className="files-collision">
+              <legend>
+                <CircleAlert size={13} aria-hidden /> There's already a <span className="mono">{picked.name}</span> in this folder
+                {plan.taken.size !== undefined && `, ${fmtSize(plan.taken.size)}`}
+                {plan.taken.modified !== undefined && `, modified ${storedTime(plan.taken.modified)}`}.
+              </legend>
+              <label>
+                <input type="radio" name="collision" checked={collision === "keep-both"} onChange={() => setCollision("keep-both")} /> Keep both: upload this one as{" "}
+                <span className="mono">{plan.keepBothName}</span>
+              </label>
+              <label>
+                <input type="radio" name="collision" checked={collision === "replace"} onChange={() => setCollision("replace")} /> Replace the server's{" "}
+                <span className="mono">{picked.name}</span>
+              </label>
+              {replace && (
+                <p className="muted small">
+                  Hermes writes it as a new file, readable and writable only by the server's user; the old file's permissions aren't kept. It can't be undone.
+                </p>
+              )}
+            </fieldset>
+          )
+        )}
+        {!plan.refused && <p className="muted small">Nothing is sent until you press {replace ? "Replace" : "Upload"}. The server's own permissions still apply.</p>}
+        <div className="confirm-actions">
+          <button className="btn" autoFocus={!!plan.refused} onClick={onCancel}>
+            {plan.refused ? "Close" : "Cancel"}
+          </button>
+          {!plan.refused && (
+            <button className={`btn ${replace ? "danger" : "primary"}`} autoFocus disabled={!connected} onClick={() => onSend(collision)}>
+              {replace ? "Replace" : "Upload"}
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -354,11 +485,20 @@ function Transfers({ files }: { files: RemoteFiles }) {
         {transfers.map((t) => {
           const pct = percent(t);
           const running = t.state === "picking" || t.state === "running";
+          const up = t.kind === "upload";
           return (
             <li key={t.id} className={`files-transfer ${t.state}`}>
               <div className="files-transfer-main">
                 <div className="files-transfer-title">
-                  {t.state === "done" ? <Check size={14} aria-hidden className="ok" /> : t.state === "failed" ? <CircleAlert size={14} aria-hidden className="bad" /> : <Download size={14} aria-hidden />}
+                  {t.state === "done" ? (
+                    <Check size={14} aria-hidden className="ok" />
+                  ) : t.state === "failed" ? (
+                    <CircleAlert size={14} aria-hidden className="bad" />
+                  ) : up ? (
+                    <Upload size={14} aria-hidden />
+                  ) : (
+                    <Download size={14} aria-hidden />
+                  )}
                   <span className="files-transfer-name">{t.name}</span>
                   <span className="muted small">
                     {t.state === "picking"
@@ -367,25 +507,46 @@ function Transfers({ files }: { files: RemoteFiles }) {
                         ? pct !== undefined
                           ? `${fmtSize(t.done)} of ${fmtSize(t.total!)} (${pct}%)`
                           : `${fmtSize(t.done)} so far`
-                        : t.state === "done"
-                          ? `Downloaded, ${fmtSize(t.done)}`
-                          : t.state === "stopped"
-                            ? "Stopped. Nothing was saved, and any file already there is as it was."
-                            : "Failed. Nothing was saved, and any file already there is as it was."}
+                        : t.state === "checking"
+                          ? "Sent. Checking the server has it…"
+                          : t.state === "done"
+                            ? up
+                              ? `Uploaded, and the server lists it at ${fmtSize(t.done)}`
+                              : `Downloaded, ${fmtSize(t.done)}`
+                            : up
+                              ? t.state === "stopped"
+                                ? "Stopped. Hermes never keeps part of an upload."
+                                : "Failed."
+                              : t.state === "stopped"
+                                ? "Stopped. Nothing was saved, and any file already there is as it was."
+                                : "Failed. Nothing was saved, and any file already there is as it was."}
                   </span>
                 </div>
                 <div className="files-transfer-where muted small">
-                  <span>
-                    From the server: <span className="mono">{t.serverPath}</span>
-                  </span>
-                  {t.dest && (
-                    <span>
-                      To this computer: <span className="mono">{t.dest}</span>
-                    </span>
+                  {up ? (
+                    <>
+                      <span>
+                        From this computer: <span className="mono">{t.localName}</span>
+                      </span>
+                      <span>
+                        To the server: <span className="mono">{t.serverPath}</span>
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span>
+                        From the server: <span className="mono">{t.serverPath}</span>
+                      </span>
+                      {t.dest && (
+                        <span>
+                          To this computer: <span className="mono">{t.dest}</span>
+                        </span>
+                      )}
+                    </>
                   )}
                 </div>
                 {t.state === "running" && (
-                  <progress className="files-progress" max={100} value={pct} aria-label={`Downloading ${t.name}`} aria-valuetext={pct !== undefined ? `${pct}%` : `${fmtSize(t.done)}`} />
+                  <progress className="files-progress" max={100} value={pct} aria-label={`${up ? "Uploading" : "Downloading"} ${t.name}`} aria-valuetext={pct !== undefined ? `${pct}%` : `${fmtSize(t.done)}`} />
                 )}
                 {t.error && (
                   <p className="files-transfer-error" role="alert">

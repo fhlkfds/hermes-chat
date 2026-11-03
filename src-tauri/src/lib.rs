@@ -549,6 +549,72 @@ async fn files_download(
     transfers.run(id, epoch, work).await
 }
 
+/// Local files the owner picked to upload, by the token the webview gets for each, so it never names a local path.
+#[derive(Default)]
+struct UploadPicks(std::sync::Mutex<(u64, std::collections::HashMap<u64, std::path::PathBuf>)>);
+
+/// A local file picked to upload: its token, name and size.
+#[derive(Serialize)]
+struct PickedUpload {
+    token: u64,
+    name: String,
+    size: u64,
+}
+
+/// Opens the native Open dialog for a file to upload to the server. Nothing is sent yet: the webview shows where it
+/// would go first. `None`: the owner cancelled.
+#[tauri::command]
+async fn files_pick_upload(app: tauri::AppHandle, picks: State<'_, UploadPicks>) -> Result<Option<PickedUpload>, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut dialog = app.dialog().file().set_title("Upload to the Hermes server");
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.set_parent(&window);
+    }
+    dialog.pick_file(move |path| {
+        let _ = tx.send(path);
+    });
+    let Some(path) = rx.await.map_err(|e| e.to_string())? else { return Ok(None) };
+    let path = path.into_path().map_err(|e| e.to_string())?;
+    let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Err("That isn't a file.".into());
+    }
+    let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+    let mut picks = picks.0.lock().unwrap();
+    picks.0 += 1;
+    let token = picks.0;
+    picks.1.insert(token, path);
+    Ok(Some(PickedUpload { token, name, size: meta.len() }))
+}
+
+/// Uploads the file picked as `token` to the server path `path` (`Dashboard::upload`, ADR 0023). `overwrite` false:
+/// Hermes refuses when a file is already there. Resolves to Hermes's answer, the written entry as JSON.
+#[tauri::command]
+async fn files_upload(
+    app: tauri::AppHandle,
+    transfers: State<'_, Transfers>,
+    picks: State<'_, UploadPicks>,
+    id: u64,
+    token: u64,
+    path: String,
+    overwrite: bool,
+    on_progress: Channel<TransferProgress>,
+) -> Result<String, String> {
+    let local = picks.0.lock().unwrap().1.get(&token).cloned().ok_or("That file wasn't picked in the Open dialog.")?;
+    let epoch = transfers.epoch();
+    let dest = path.clone();
+    // Registered before it waits for the connection, so a stop meanwhile reaches it; and only the connection that was
+    // current when it was asked for is used.
+    let work = async move {
+        let dashboard = dashboard_since(&app, epoch).await?;
+        let report = move |done, total| {
+            let _ = on_progress.send(TransferProgress { done, total, dest: dest.clone() });
+        };
+        dashboard.upload(&path, &local, overwrite, report).await.map_err(|e| e.to_string())
+    };
+    transfers.run(id, epoch, work).await
+}
+
 /// Stops transfer `id`, if it is still running. A download's part file is removed; `dest` is left as it was.
 #[tauri::command]
 fn files_cancel(transfers: State<'_, Transfers>, id: u64) {
@@ -769,6 +835,7 @@ pub fn run(screenshot: bool) {
         })
         .manage(PickedFiles::default())
         .manage(Transfers::default())
+        .manage(UploadPicks::default())
         .manage(terminal::Terminals::default())
         .invoke_handler(tauri::generate_handler![
             hermes_connect,
@@ -785,6 +852,8 @@ pub fn run(screenshot: bool) {
             hermes_get_limited,
             hermes_disconnect,
             files_download,
+            files_pick_upload,
+            files_upload,
             files_cancel,
             hermes_connect_cancel,
             hermes_probe,

@@ -11,7 +11,7 @@ The Server files screen lists and reads the machine the Hermes dashboard runs on
 
 ## Consequences
 
-- Read-only for now; downloading a file to this computer came later, through its own Rust command (ADR 0023). The write routes (upload, mkdir, delete) exist on the server, but the Rust relay refuses anything but GET to `api/files` and `api/fs`. It checks the path as the server will route it, after `.` segments and percent-escapes, so `api/./files` or `api/%66iles` count too.
+- Read-only for now; downloading a file to this computer, and uploading one the owner picks, came later, through their own Rust commands (ADR 0023). The write routes (upload, mkdir, delete) exist on the server, but the Rust relay refuses anything but GET to `api/files` and `api/fs`. It checks the path as the server will route it, after `.` segments and percent-escapes, so `api/./files` or `api/%66iles` count too.
 - A preview reads the whole file, so text over 1 MiB and images over 10 MiB aren't previewed. The size from the listing decides before reading, and `hermes_get_limited` refuses an answer that grew past it.
 - Folders aren't paged by the server, so a big folder comes whole; the browser shows 500 entries at a time and filters by name.
 - Links are shown as the server lists them: by their target. Opening a linked folder opens its target, and the trail shows the target's path.

@@ -186,6 +186,54 @@ export class FakeServerFiles {
     }
   }
 
+  /** The native Open dialog's pick, as a name and its bytes (one char per byte), or undefined when closed. */
+  openDialog: () => { name: string; bytes: string } | undefined = () => undefined;
+  /** What each upload token stands for. */
+  private picked = new Map<number, { name: string; bytes: string }>();
+  /** Every upload Hermes was sent: its path and `overwrite`. */
+  readonly uploads: { path: string; overwrite: boolean }[] = [];
+
+  /** src-tauri `files_pick_upload`. */
+  pickUpload() {
+    const file = this.openDialog();
+    if (!file) return undefined;
+    const token = this.picked.size + 1;
+    this.picked.set(token, file);
+    return { token, name: file.name, size: file.bytes.length };
+  }
+
+  /**
+   * src-tauri `files_upload` and `POST /api/files/upload-stream` at `bf0203a`: refused before sending for a credential
+   * path (as Rust does); 409 for a file that's there without `overwrite`; written whole by a rename once all of it came.
+   */
+  async upload(id: number, token: number, path: string, overwrite: boolean, onProgress: (p: { done: number; total: number; dest: string }) => void): Promise<string> {
+    const file = this.picked.get(token);
+    if (!file) throw new Error("That file wasn't picked in the Open dialog.");
+    if (isSensitive(path)) throw new Error(`Hermes Chat doesn't relay uploads to ${path}, a credential file Hermes keeps out of reach.`);
+    const stopped = new Promise<never>((_, reject) => this.running.set(id, reject));
+    try {
+      onProgress({ done: 0, total: file.bytes.length, dest: path });
+      onProgress({ done: Math.floor(file.bytes.length / 2), total: file.bytes.length, dest: path });
+      if (this.transferGate) await Promise.race([this.transferGate, stopped]);
+      if (this.transferError) throw new Error(this.transferError);
+      this.uploads.push({ path, overwrite });
+      const dir = this.target(dirname(path));
+      if (this.root && dir !== this.root && !dir.startsWith(`${this.root}/`)) fail(403, "Path outside managed files root");
+      const at = join(dir, basename(path));
+      if (this.isDir(at)) fail(409, "A directory already exists at that path");
+      if (this.nodes[at] && !overwrite) fail(409, "File already exists");
+      if (this.nodes[dir] && "unreadable" in this.nodes[dir] && this.nodes[dir].unreadable) fail(403, "File is not writable");
+      this.nodes[at] = { bytes: file.bytes, mtime: 1_793_100_000 };
+      this.afterWrite?.(at);
+      return JSON.stringify({ ok: true, path: at, entry: { name: basename(at), path: at, is_directory: false, size: file.bytes.length } });
+    } finally {
+      this.running.delete(id);
+    }
+  }
+
+  /** Called after each write lands, so a test can change the file as something else on the server would. */
+  afterWrite?: (path: string) => void;
+
   cancel(id: number) {
     this.running.get(id)?.(new Error(STOPPED));
   }

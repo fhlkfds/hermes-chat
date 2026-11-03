@@ -8,6 +8,8 @@ import {
   TEXT_PREVIEW_MAX_BYTES,
   crumbs,
   explain,
+  freeName,
+  protectedPath,
   looksBinary,
   parseListing,
   previewSupport,
@@ -323,5 +325,43 @@ describe("downloads", () => {
     ])
       await expect(hermes.files.download(entry)).rejects.toThrow();
     expect(hermes.files.transfers()).toEqual([]);
+  });
+});
+
+describe("uploads", () => {
+  it("finds a free name for keeping both", () => {
+    expect(freeName("notes.md", new Set(["notes.md"]))).toBe("notes (2).md");
+    expect(freeName("notes.md", new Set(["notes.md", "notes (2).md"]))).toBe("notes (3).md");
+    expect(freeName(".bashrc", new Set([".bashrc"]))).toBe(".bashrc (2)");
+    expect(freeName("archive.tar.gz", new Set())).toBe("archive.tar (2).gz");
+  });
+
+  it("knows the credential paths Hermes hides, as the Rust side refuses them", () => {
+    for (const p of ["/a/.env", "/a/.ENV", "/a/.env.prod", "/a/.envrc", "/a/Auth.json", "/h/.hermes/config.yaml", "/a/mcp-tokens/x.json", "/a/Pairing/y", "/a/.git-credentials"]) expect(protectedPath(p), p).toBe(true);
+    for (const p of ["/a/env", "/a/my.env", "/a/config.yml", "/a/pairings/y", "/a/notes.md"]) expect(protectedPath(p), p).toBe(false);
+  });
+
+  it("counts an upload done only when the folder lists it at the size sent", async () => {
+    const { server, hermes } = await signedIn(homeDisk);
+    server.managedFiles.openDialog = () => ({ name: "a.txt", bytes: "hello" });
+    const picked = (await hermes.files.pickUpload())!;
+    const listing = await hermes.files.list("/home/liam");
+    // Something else on the server rewrites it as soon as Hermes has written it.
+    server.managedFiles.afterWrite = (at) => (server.managedFiles.nodes[at] = { text: "something else" });
+    await hermes.files.upload(listing, picked, "keep-both");
+    expect(hermes.files.transfers()[0]).toMatchObject({
+      state: "failed",
+      error: "Hermes said it saved it, but the folder lists a.txt at 14 bytes, not 5 bytes. Something else may have changed it since.",
+    });
+  });
+
+  it("says when the server's user may not write there", async () => {
+    const { server, hermes } = await signedIn(homeDisk);
+    server.managedFiles.nodes["/home/liam/locked"] = { dir: true, unreadable: true };
+    server.managedFiles.nodes["/home/liam/locked/x"] = { text: "x" };
+    server.managedFiles.openDialog = () => ({ name: "a.txt", bytes: "hello" });
+    const picked = (await hermes.files.pickUpload())!;
+    await hermes.files.upload({ path: "/home/liam/locked", entries: [], listedAt: 0 }, picked, "keep-both");
+    expect(hermes.files.transfers()[0]).toMatchObject({ state: "failed", error: "The Hermes server's user isn't allowed to write there." });
   });
 });

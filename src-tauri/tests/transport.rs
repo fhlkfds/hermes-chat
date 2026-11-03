@@ -167,6 +167,29 @@ async fn download_file(headers: HeaderMap, Query(q): Query<HashMap<String, Strin
     }
 }
 
+/// `POST /api/files/upload-stream`, as `hermes_cli/web_routers/files.py` takes it at `bf0203a`: a multipart form with
+/// `file`, `path` and `overwrite`. `/srv/taken.txt` is already there. It answers with what it got, and counts uploads.
+async fn upload_stream(State(uploads): State<Arc<Mutex<Vec<String>>>>, headers: HeaderMap, mut form: axum::extract::Multipart) -> Response {
+    let (mut path, mut overwrite, mut bytes, mut file_name) = (String::new(), String::new(), Vec::new(), String::new());
+    while let Some(field) = form.next_field().await.unwrap() {
+        match field.name().unwrap_or_default() {
+            "path" => path = field.text().await.unwrap(),
+            "overwrite" => overwrite = field.text().await.unwrap(),
+            "file" => {
+                file_name = field.file_name().unwrap_or_default().to_owned();
+                bytes = field.bytes().await.unwrap().to_vec();
+            }
+            _ => {}
+        }
+    }
+    uploads.lock().unwrap().push(path.clone());
+    if path == "/srv/taken.txt" && overwrite == "false" {
+        return (StatusCode::CONFLICT, Json(json!({"detail": "File already exists"}))).into_response();
+    }
+    let sum: u64 = bytes.iter().map(|&b| b as u64).sum();
+    Json(json!({"path": path, "overwrite": overwrite, "size": bytes.len(), "sum": sum, "file_name": file_name, "cookie": cookie(&headers)})).into_response()
+}
+
 /// A 500 whose body never ends (`?endless`) or is 50 MB with a Content-Length.
 async fn flood(Query(q): Query<HashMap<String, String>>) -> Response {
     let body = if q.contains_key("endless") {
@@ -1762,5 +1785,67 @@ async fn a_download_never_takes_over_a_file_already_named_like_its_part_file() {
     assert_eq!(std::fs::metadata(&dest).unwrap().len(), 300_000);
     for n in 0..64 {
         assert_eq!(std::fs::read_to_string(dir.join(format!(".data.bin.{pid}-{n}.part"))).unwrap(), "not ours", "{n}");
+/// A stub dashboard with only sign-in and the upload route, and the server paths it was sent.
+async fn upload_stub() -> (Dashboard, Arc<Mutex<Vec<String>>>) {
+    let uploads = Arc::new(Mutex::new(Vec::new()));
+    let app = Router::new()
+        .route("/auth/password-login", post(login))
+        .route("/api/files/upload-stream", post(upload_stream))
+        .with_state(uploads.clone());
+    let dashboard = Dashboard::sign_in(&serve(app).await, &sign_in("hunter2")).await.unwrap();
+    (dashboard, uploads)
+}
+
+#[tokio::test]
+async fn uploads_a_local_file_as_hermes_takes_it_and_reports_progress() {
+    let (dashboard, _) = upload_stub().await;
+    let dir = scratch("upload-ok");
+    let local = dir.join("report.pdf");
+    let bytes: Vec<u8> = (0..700_000u32).map(|i| (i % 253) as u8).collect();
+    std::fs::write(&local, &bytes).unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let s = seen.clone();
+    let got = dashboard.upload("/srv/in/report.pdf", &local, false, move |done, total| s.lock().unwrap().push((done, total))).await.expect("uploaded");
+    let got: Value = serde_json::from_str(&got).unwrap();
+    assert_eq!(got["path"], "/srv/in/report.pdf");
+    assert_eq!(got["overwrite"], "false");
+    assert_eq!(got["file_name"], "report.pdf");
+    assert_eq!(got["size"], 700_000);
+    assert_eq!(got["sum"], bytes.iter().map(|&b| b as u64).sum::<u64>());
+    assert_eq!(got["cookie"], "hermes_session_at=AT; hermes_session_rt=RT");
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.first(), Some(&(0, Some(700_000))));
+    assert_eq!(seen.last(), Some(&(700_000, Some(700_000))));
+}
+
+#[tokio::test]
+async fn an_upload_that_would_replace_a_file_is_refused_unless_asked() {
+    let (dashboard, _) = upload_stub().await;
+    let local = scratch("upload-taken").join("taken.txt");
+    std::fs::write(&local, "new").unwrap();
+    let err = dashboard.upload("/srv/taken.txt", &local, false, |_, _| {}).await.err().unwrap();
+    assert!(matches!(&err, TransportError::Unexpected { status: 409, body } if body.contains("already exists")), "{err:?}");
+    let got: Value = serde_json::from_str(&dashboard.upload("/srv/taken.txt", &local, true, |_, _| {}).await.unwrap()).unwrap();
+    assert_eq!(got["overwrite"], "true");
+}
+
+#[tokio::test]
+async fn never_uploads_to_a_credential_file_or_more_than_hermes_takes() {
+    let (dashboard, uploads) = upload_stub().await;
+    let dir = scratch("upload-refused");
+    let local = dir.join("x");
+    std::fs::write(&local, "SECRET=1").unwrap();
+    for path in ["/srv/.env", "/srv/.ENV", "/srv/.env.local", "/srv/.envrc", "/srv/Auth.JSON", "/home/u/.hermes/config.yaml", "/srv/mcp-tokens/a.json", "/srv/Pairing/x", "/srv/.git-credentials", "/srv/", "/srv/.."] {
+        let err = dashboard.upload(path, &local, true, |_, _| {}).await.err().unwrap();
+        assert!(matches!(err, TransportError::NotRelayed(_)), "{path}: {err:?}");
+    }
+    let big = dir.join("big");
+    std::fs::File::create(&big).unwrap().set_len(transport::MANAGED_FILE_MAX_BYTES + 1).unwrap();
+    let err = dashboard.upload("/srv/big", &big, true, |_, _| {}).await.err().unwrap();
+    assert!(matches!(err, TransportError::FileTooLarge { .. }), "{err:?}");
+    assert!(uploads.lock().unwrap().is_empty(), "nothing was sent");
+    // Names that only look alike go.
+    for path in ["/srv/env", "/srv/my.env", "/srv/config.yml", "/srv/pairings/x"] {
+        dashboard.upload(path, &local, true, |_, _| {}).await.expect(path);
     }
 }

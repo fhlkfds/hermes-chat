@@ -58,7 +58,7 @@ const trail = () => [...document.querySelectorAll(".files-crumbs li")].map((li) 
 const row_ = (name: string) => screen.getByRole("button", { name: new RegExp(`^${name}`) });
 
 async function openFiles(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(screen.getByRole("button", { name: "Server files (read-only)" }));
+  await user.click(screen.getByRole("button", { name: "Server files" }));
   await waitFor(() => expect(document.querySelector(".files-table")).not.toBeNull());
 }
 
@@ -69,7 +69,7 @@ describe("Server files", () => {
     await openFiles(user);
     expect(screen.getByRole("heading", { name: "Server files" })).toBeTruthy();
     expect(document.querySelector(".files-server")?.textContent).toContain("ssh://liam@hermes");
-    expect(screen.getByText("Read-only")).toBeTruthy();
+    expect(screen.queryByText("Read-only")).toBeNull();
     expect(trail()).toEqual(["/", "home", "/liam"]);
     expect(within(screen.getByRole("navigation", { name: "Current folder" })).getByText("liam").getAttribute("aria-current")).toBe("page");
     expect(names()).toEqual(["latest", "private", "projects", "dangling", "huge.log", "notes.md", "photo.png", "run"]);
@@ -259,7 +259,7 @@ describe("Server files", () => {
     await user.click(screen.getByRole("button", { name: /Nightly backup/ }));
     await waitFor(() => expect(document.querySelector("[aria-current='true']")).not.toBeNull());
     await openFiles(user);
-    const filesButton = screen.getByRole("button", { name: "Server files (read-only)" });
+    const filesButton = screen.getByRole("button", { name: "Server files" });
     expect(filesButton.getAttribute("aria-pressed")).toBe("true");
     expect(document.querySelector("[aria-current='true']")).toBeNull();
     await user.click(screen.getByRole("button", { name: "Settings" }));
@@ -363,5 +363,96 @@ describe("Server files: Download", () => {
     await act(async () => void (await hermes.close()));
     await waitFor(() => expect(transfer().getAllByText(/^Stopped\./)).toHaveLength(1));
     expect(s.managedFiles.local).toEqual({});
+  });
+});
+
+describe("Server files: Upload", () => {
+  const transfer = () => within(screen.getByRole("region", { name: "Transfers" }));
+  const dialog = () => within(screen.getByRole("dialog", { name: "Upload to the server" }));
+
+  it("shows where a picked file goes before sending it, then reads it back from the folder", async () => {
+    const s = server();
+    s.managedFiles.openDialog = () => ({ name: "report.pdf", bytes: "%PDF-1.7 synthetic" });
+    const { user } = await launch(s);
+    await openFiles(user);
+    await user.click(screen.getByRole("button", { name: /Upload/ }));
+    expect(dialog().getByText("/home/liam/report.pdf")).toBeTruthy();
+    expect(dialog().queryByRole("radio")).toBeNull();
+    expect(s.managedFiles.uploads).toEqual([]);
+    await user.click(dialog().getByRole("button", { name: "Upload" }));
+    await waitFor(() => expect(transfer().getByText(/^Uploaded, and the server lists it at 18 B/)).toBeTruthy());
+    expect(s.managedFiles.uploads).toEqual([{ path: "/home/liam/report.pdf", overwrite: false }]);
+    expect(transfer().getByText("report.pdf", { selector: ".mono" })).toBeTruthy();
+    await waitFor(() => expect(names()).toContain("report.pdf"));
+  });
+
+  it("keeps both by default when the name is taken, and replaces only when asked", async () => {
+    const s = server();
+    s.managedFiles.openDialog = () => ({ name: "notes.md", bytes: "# Mine\n" });
+    const { user } = await launch(s);
+    await openFiles(user);
+    await user.click(screen.getByRole("button", { name: /Upload/ }));
+    expect(dialog().getByText(/There's already a/)).toBeTruthy();
+    expect((dialog().getByRole("radio", { name: /Keep both/ }) as HTMLInputElement).checked).toBe(true);
+    expect(dialog().getByText("/home/liam/notes (2).md")).toBeTruthy();
+    await user.click(dialog().getByRole("button", { name: "Upload" }));
+    await waitFor(() => expect(transfer().getByText(/^Uploaded/)).toBeTruthy());
+    expect(s.managedFiles.nodes["/home/liam/notes.md"]).toEqual({ text: "# Notes\nbuy milk\n" });
+    expect(s.managedFiles.uploads.at(-1)).toEqual({ path: "/home/liam/notes (2).md", overwrite: false });
+    await user.click(screen.getByRole("button", { name: /Upload/ }));
+    await user.click(dialog().getByRole("radio", { name: /Replace the server's/ }));
+    expect(dialog().getByText(/permissions aren't kept/)).toBeTruthy();
+    expect(dialog().getByText("/home/liam/notes.md")).toBeTruthy();
+    await user.click(dialog().getByRole("button", { name: "Replace" }));
+    await waitFor(() => expect(transfer().getAllByText(/^Uploaded/)).toHaveLength(2));
+    expect(s.managedFiles.uploads.at(-1)).toEqual({ path: "/home/liam/notes.md", overwrite: true });
+  });
+
+  it("cancels in the dialog without sending, and says when the name was taken meanwhile", async () => {
+    const s = server();
+    s.managedFiles.openDialog = () => ({ name: "new.txt", bytes: "x" });
+    const { user } = await launch(s);
+    await openFiles(user);
+    await user.click(screen.getByRole("button", { name: /Upload/ }));
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(s.managedFiles.uploads).toEqual([]);
+    await user.click(screen.getByRole("button", { name: /Upload/ }));
+    // Someone else writes new.txt after the folder was listed: Hermes refuses, and nothing is replaced.
+    s.managedFiles.nodes["/home/liam/new.txt"] = { text: "theirs" };
+    await user.click(dialog().getByRole("button", { name: "Upload" }));
+    await waitFor(() => expect(transfer().getByRole("alert").textContent).toBe("A file with that name is on the server now. Nothing was replaced."));
+    expect(s.managedFiles.nodes["/home/liam/new.txt"]).toEqual({ text: "theirs" });
+  });
+
+  it("refuses a credential file's name and a file over 100 MB up front", async () => {
+    const s = server();
+    let pick = { name: ".env", bytes: "SECRET=1" };
+    s.managedFiles.openDialog = () => pick;
+    const { user } = await launch(s);
+    await openFiles(user);
+    await user.click(screen.getByRole("button", { name: /Upload/ }));
+    expect(dialog().getByRole("alert").textContent).toMatch(/credential files such as \.env/);
+    expect(dialog().queryByRole("button", { name: "Upload" })).toBeNull();
+    await user.click(dialog().getByRole("button", { name: "Close" }));
+    pick = { name: "disk.img", bytes: "" };
+    s.managedFiles.openDialog = () => ({ ...pick, bytes: { length: 101 * MiB } as unknown as string });
+    await user.click(screen.getByRole("button", { name: /Upload/ }));
+    expect(dialog().getByRole("alert").textContent).toBe("It's 101 MB. Hermes takes files up to 100 MB.");
+    expect(s.managedFiles.uploads).toEqual([]);
+  });
+
+  it("stops an upload on Cancel, leaving the server's folder as it was", async () => {
+    const s = server();
+    s.managedFiles.transferGate = new Promise(() => {});
+    s.managedFiles.openDialog = () => ({ name: "big.bin", bytes: "0123456789" });
+    const { user } = await launch(s);
+    await openFiles(user);
+    await user.click(screen.getByRole("button", { name: /Upload/ }));
+    await user.click(dialog().getByRole("button", { name: "Upload" }));
+    expect((await screen.findByRole("progressbar", { name: "Uploading big.bin" })).getAttribute("value")).toBe("50");
+    await user.click(transfer().getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(transfer().getByText(/^Stopped\. Hermes never keeps part/)).toBeTruthy());
+    expect(s.managedFiles.nodes["/home/liam/big.bin"]).toBeUndefined();
   });
 });

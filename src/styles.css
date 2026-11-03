@@ -1446,6 +1446,15 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .files-preview-msg p { margin: 0 0 10px; }
 .files-text { margin: 0; padding: 12px 16px; font-size: var(--mono-size); line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-2); tab-size: 4; }
 .files-image { display: block; max-width: calc(100% - 32px); margin: 14px 16px; border-radius: 6px; background: repeating-conic-gradient(var(--raised-2) 0 25%, var(--raised) 0 50%) 0 0 / 16px 16px; }
+.files-upload { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; font-size: calc(12.5rem / 14); margin-right: 6px; flex: none; }
+.files-upload-dialog { max-width: 520px; width: calc(100% - 40px); display: flex; flex-direction: column; gap: 12px; }
+.files-upload-dialog h2 { font-size: calc(14rem / 14); margin: 0; display: flex; align-items: center; gap: 8px; }
+.files-upload-dialog .files-meta { margin: 0; }
+.files-collision { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 0; display: flex; flex-direction: column; gap: 8px; font-size: calc(13rem / 14); }
+.files-collision legend { padding: 0 4px; color: var(--warn); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.files-collision label { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; cursor: pointer; }
+.files-collision input { accent-color: var(--accent); margin: 0; }
+.files-collision p, .files-upload-dialog > p { margin: 0; line-height: 1.5; }
 .files-preview-actions { display: flex; align-items: center; gap: 6px; flex: none; }
 .files-preview-actions .btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; font-size: calc(12.5rem / 14); }
 .files-preview-note { margin: 0 16px 6px; }
