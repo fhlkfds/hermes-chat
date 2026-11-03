@@ -38,8 +38,11 @@ export type Outgoing = {
 };
 
 export type Item =
-  /** `attachments`: names sent with the message. `outgoing`: sent from here and not confirmed yet. */
-  | { kind: "user"; id: string; text: string; attachments?: string[]; at?: number; outgoing?: Outgoing }
+  /**
+   * `attachments`: names sent with the message. `outgoing`: sent from here and not confirmed yet. `rowId`: its stored
+   * row, once known.
+   */
+  | { kind: "user"; id: string; text: string; attachments?: string[]; at?: number; outgoing?: Outgoing; rowId?: number }
   /**
    * `interrupted`: the owner, or another Hermes client, stopped this reply before it finished. `rowId`: its stored row,
    * once known. `usage`: the tokens its turn took, only for a reply this app watched finish (`usage.ts`).

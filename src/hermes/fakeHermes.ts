@@ -29,6 +29,8 @@ export type SessionRow = {
   last_read_at: number | null;
   /** Bumped by every session edit; an edit must name the current one. Missing means 0. */
   runtime_revision?: number;
+  /** The session a branch was made from (`session.branch` stores it). */
+  parent_session_id?: string | null;
   /**
    * Hermes's stored usage for every model call in the session (`sessions` columns at the deployed `bf0203a`; both list
    * and detail rows carry them). Hermes's helper tasks are kept apart and aren't counted here.
@@ -189,6 +191,9 @@ function setPrimary(p: FakeProject, path: string) {
  * exists (`restore_api_session`).
  */
 const EDITABLE_SOURCES = new Set(["cli", "tui", "gui", "desktop", "oneshot", "tool", "acp", "import", "telegram", "discord", "slack", "whatsapp", "signal", "matrix"]);
+
+/** A history as `session.resume` shows it: hidden rows, such as a project's instructions, aren't shown (`_history_to_messages`). */
+const shownHistory = (messages: TranscriptMessage[]) => messages.filter((m) => m.display_kind !== "hidden");
 
 /** A stored session `daysAgo` days old, unpinned and from this app unless overridden. */
 export function row(id: string, daysAgo: number, over: Partial<SessionRow> = {}): SessionRow {
@@ -427,9 +432,44 @@ export class FakeHermes {
       }
       const runtimeId = `rt-r${++this.resumed}`;
       this.runtime.set(runtimeId, stored);
-      const messages = this.transcripts[stored] ?? [];
+      const messages = shownHistory(this.transcripts[stored] ?? []);
       const info = { ...this.sessionInfo, ...this.sessionModel.get(stored) };
       this.respond(r.id, { session_id: runtimeId, stored_session_id: stored, message_count: messages.length, messages, info, running: false });
+    },
+    // `tui_gateway/methods_session_branch.py` `_branch_live` at the deployed `bf0203a`, as probed live on 2026-11-03: the
+    // first `count` rows of the parent's spine (user and assistant rows with text, hidden ones too) are copied to a new
+    // stored session whose `parent_session_id` is the parent and whose source is the live record's (`tui` after a
+    // sourceless resume). Tool rows and tool calls aren't copied. The title is the parent's next in its lineage.
+    "session.branch": (r) => {
+      if (!this.branchMethod) return this.fail(r.id, -32601, "Method not found: session.branch");
+      const drop = this.dropOnBranch;
+      this.dropOnBranch = undefined;
+      if (drop === "lost") return this.drop();
+      const parent = this.runtime.get(String(r.params.session_id ?? ""));
+      if (!parent) return this.fail(r.id, 4001, "session not found");
+      const key = typeof r.params.idempotency_key === "string" ? r.params.idempotency_key : undefined;
+      const known = key && this.branchKeys.get(key);
+      if (known) return this.respond(r.id, this.branchAnswer(known.stored, known.runtimeId, parent));
+      this.beforeBranch?.();
+      const spine = (this.transcripts[parent] ?? []).filter((m) => (m.role === "user" || m.role === "assistant") && (m.text ?? "").trim());
+      if (!spine.length) return this.fail(r.id, 4008, "nothing to branch — send a message first");
+      const count = typeof r.params.count === "number" && r.params.count > 0 ? r.params.count : spine.length;
+      const store = [this.sessions, ...Object.values(this.otherProfiles)].find((s) => s.some((x) => x.id === parent))!;
+      const base = store.find((x) => x.id === parent)!.title ?? "branch";
+      const n = ++this.branched;
+      const titles = new Set(store.map((x) => x.title));
+      let k = 2;
+      while (titles.has(`${base} #${k}`)) k++;
+      const stored = `${parent}-b${n}`;
+      const runtimeId = `rt-b${n}`;
+      const kept = spine.slice(0, count);
+      store.push(row(stored, 0, { source: "tui", title: typeof r.params.name === "string" && r.params.name ? r.params.name : `${base} #${k}`, parent_session_id: parent, message_count: kept.length, preview: kept.find((m) => m.display_kind !== "hidden")?.text ?? "" }));
+      for (const m of kept) this.storeMessage(stored, { role: m.role, text: m.text, ...(m.display_kind && { display_kind: m.display_kind }), ...(m.reasoning && { reasoning: m.reasoning }) });
+      this.runtime.set(runtimeId, stored);
+      if (key) this.branchKeys.set(key, { stored, runtimeId });
+      if (drop === "stored") return this.drop();
+      if (this.branchError) return this.fail(r.id, this.branchError.code, this.branchError.message);
+      this.respond(r.id, this.branchAnswer(stored, runtimeId, parent));
     },
     // The message is stored as its turn starts (`user_row_id` is the staged row), so the history read back has it.
     "prompt.submit": (r) => {
@@ -872,6 +912,17 @@ export class FakeHermes {
   private onEvent?: (e: PipeEvent) => void;
   private imagesStaged = 0;
   private resumed = 0;
+  /** False: a server older than `session.branch`, which answers it "method not found". */
+  branchMethod = true;
+  /** The next `session.branch` drops the connection before Hermes answers: `stored` made the branch first, `lost` never arrived. */
+  dropOnBranch?: "stored" | "lost";
+  /** While set, `session.branch` fails with this error. `stored`: Hermes stored the branch first, as when its agent can't be built. */
+  branchError?: { code: number; message: string; stored?: boolean };
+  /** Runs as a `session.branch` arrives, before Hermes copies anything: another client adding to the parent meanwhile. */
+  beforeBranch?: () => void;
+  /** Each branch Hermes made, by its idempotency key (`_idempotency_keys`): a retry with the key answers the same branch. */
+  private branchKeys = new Map<string, { stored: string; runtimeId: string }>();
+  private branched = 0;
   private asked = 0;
   closed = false;
 
@@ -1251,6 +1302,13 @@ export class FakeHermes {
   }
 
   /** A profile's model, effort and fast mode as its config has them: Sonnet at medium effort unless a test set one. */
+  /** What `session.branch` answers for a branch it made: on the profile's model, whatever the parent ran on. */
+  private branchAnswer(stored: string, runtimeId: string, parent: string) {
+    const history = this.transcripts[stored] ?? [];
+    const title = [this.sessions, ...Object.values(this.otherProfiles)].flat().find((s) => s.id === stored)?.title ?? "";
+    return { session_id: runtimeId, stored_session_id: stored, title, parent, message_count: history.length, messages: shownHistory(history), info: { ...this.sessionInfo, ...this.defaultModel() } };
+  }
+
   defaultModel(profile?: string | null): ModelInfo {
     return this.profileModel[profile || "default"] ?? { model: "claude-sonnet-4-5", provider: "anthropic", reasoning_effort: "medium", fast: false };
   }
@@ -1327,6 +1385,7 @@ export class FakeHermes {
         tool_call_id: m.tool_call_id ?? null,
         tool_calls: m.tool_calls === undefined ? null : JSON.stringify(m.tool_calls),
         timestamp: m.timestamp ?? null,
+        display_kind: m.display_kind ?? null,
       }));
     if (query.get("order") === "latest") rows.reverse();
     const offset = Number(query.get("offset") ?? 0);
