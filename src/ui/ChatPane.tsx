@@ -19,6 +19,7 @@ import { withTranscript } from "../hermes/voice";
 import type { VoiceSetup } from "../hermes/pipe";
 import { ChatUsageButton, ReplyUsageLine } from "./Usage";
 import { useOpenPreview } from "./previewContext";
+import { ShowInChatContext, type ShowInChat } from "./showInChat";
 import { previewName, toolTargets, withoutBidi } from "../hermes/preview";
 import { type CommandHost, useSlashCommands } from "./SlashCommands";
 import { BranchButton } from "./Branch";
@@ -230,6 +231,17 @@ export function ChatPane({
   const canRetry = status === "connected" && !chat.loading && !chat.running;
   const findRef = useRef<HTMLInputElement>(null);
   const stickToBottom = useRef(true);
+  // For the status bar's context inspector: a stored time to the message there, marked as a jump to a tool call is.
+  const showInChat = useCallback<ShowInChat>((at) => {
+    const msgs = Array.from(scrollRef.current?.querySelectorAll<HTMLElement>(".msg[data-item]") ?? []);
+    const el = at === undefined ? msgs[0] : msgs.find((m) => m.dataset.at !== undefined && Number(m.dataset.at) >= at);
+    if (!el) return false;
+    stickToBottom.current = false;
+    el.scrollIntoView?.({ block: "start" });
+    el.classList.add("jumped");
+    setTimeout(() => el.classList.remove("jumped"), 2500);
+    return true;
+  }, []);
   const [findOpen, setFindOpen] = useState(false);
   const [query, setQuery] = useState("");
   // Which match is the current one, counting from the top of the chat.
@@ -543,7 +555,7 @@ export function ChatPane({
         screenshotKeys={screenshotKeys}
         commands={commands}
       />
-      {footer}
+      <ShowInChatContext.Provider value={showInChat}>{footer}</ShowInChatContext.Provider>
     </div>
   );
 }
@@ -586,7 +598,7 @@ const BlockView = memo(
   }) {
     if (block.kind === "user")
       return (
-        <div className={`msg user${block.outgoing ? ` outgoing ${block.outgoing.state}` : ""}`} data-item={block.id}>
+        <div className={`msg user${block.outgoing ? ` outgoing ${block.outgoing.state}` : ""}`} data-item={block.id} data-at={block.at}>
           {block.attachments && (
             <div className="msg-files">
               {block.attachments.map((name, i) => (
@@ -611,7 +623,7 @@ const BlockView = memo(
       );
     if (block.kind === "assistant")
       return (
-        <div className="msg assistant" data-item={block.id}>
+        <div className="msg assistant" data-item={block.id} data-at={block.at}>
           <Markdown text={block.text} query={query} />
           {live && <span className="cursor" />}
           {block.interrupted && <div className="stopped">Stopped</div>}
