@@ -4,7 +4,7 @@
 // Hermes offers the model in the profile (ToolsetSettings.tsx). Persona: the profile's SOUL.md on Hermes
 // (PersonaSettings.tsx). Memory: what Hermes remembers for the profile (MemorySettings.tsx).
 // Profiles are switched in the list's header, not here (ADR 0001).
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { ArrowLeft, Brain, Cpu, Download, KeyRound, Lock, LogOut, Palette, PlugZap, Settings2, ShieldCheck, Sparkles, Trash2, Wrench } from "lucide-react";
 import type { Chat, ConnectionStatus } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
@@ -84,6 +84,7 @@ export function SettingsScreen({
   onPersonaDirty = () => {},
   guard = allow,
   showTextGeneration,
+  connectionManager,
 }: {
   status: ConnectionStatus;
   route?: Route;
@@ -133,6 +134,8 @@ export function SettingsScreen({
   guard?: (go: () => void) => void;
   /** Set, each time anew, to show the Model tab at the Text generation model: from a title that couldn't be regenerated. */
   showTextGeneration?: object;
+  /** The saved connections (Connections.tsx `ConnectionManager`), shown first in General. */
+  connectionManager?: ReactNode;
 }) {
   const [bytes, setBytes] = useState(cacheBytes);
   const [confirmClear, setConfirmClear] = useState(false);
@@ -225,8 +228,9 @@ export function SettingsScreen({
           </div>
         ) : (
           <div id="settings-panel-general" role="tabpanel" aria-labelledby="settings-tab-general">
+            {connectionManager}
             <section>
-              <h2>Connection</h2>
+              <h2>Connection in use</h2>
               <div className="settings-status">
                 <span className={`conn-dot ${status} ${unsecure ? "unsecure" : ""}`} />
                 <span>{STATUS_LABEL[status]}</span>
@@ -272,8 +276,8 @@ export function SettingsScreen({
               {onSetUp && (
                 <div className="settings-row settings-setup">
                   <div className="muted small">
-                    Connect to another server, or give Hermes a model provider's API key. The connection in use stays until a new one is tested and
-                    saved.
+                    Change this connection's address or sign-in, or give Hermes a model provider's API key. The connection stays as it is until the
+                    change is tested and saved. To keep it and use another server too, add a connection above.
                   </div>
                   <button className="btn" onClick={onSetUp}>
                     <PlugZap size={14} /> Run setup again

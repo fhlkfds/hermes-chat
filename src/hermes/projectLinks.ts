@@ -5,7 +5,7 @@
 // All of it lives in one versioned JSON document under one localStorage key, kept apart for each connection and
 // profile, the way drafts are. "Clear local cache" doesn't touch it (chatCache.ts clears only chat lists and Saved
 // copies): which chats are in a project is the owner's own grouping, not a copy of anything on the server.
-import type { SavedSignIn } from "./account";
+import { type ScopeSource, connectionScope } from "./connections";
 import { toProject, type Project } from "./projects";
 import { migrateUIPrefs as migrateDoc, type UIPrefsDoc, type UIPrefsMigrations } from "./uiPrefs";
 
@@ -29,9 +29,8 @@ export type ScopeLinks = { selected?: string; chats: Record<string, string[]>; k
 export type LinksStorage = Pick<Storage, "getItem" | "setItem">;
 
 /** Where a connection and profile's projects are kept: the same parts as a draft's key (drafts.ts). */
-export function projectScope(connection: SavedSignIn, profile: string): string {
-  const target = connection.mode === "ssh" ? connection.sshTarget : connection.url;
-  return JSON.stringify([connection.mode, target, connection.username, profile]);
+export function projectScope(connection: ScopeSource, profile: string): string {
+  return connectionScope(connection, profile);
 }
 
 export type ProjectLinks = {

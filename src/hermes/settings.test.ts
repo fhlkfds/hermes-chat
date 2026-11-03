@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type Account, type Keyring, savedSignIn, signIn, signInForm, signOut, signOutToSignIn } from "./account";
+import { type Account, type Keyring, removeConnection, savedSignIn, signIn, signInForm, signOut, signOutToSignIn } from "./account";
 import { localChatCache } from "./chatCache";
+import { type SavedConnection, Connections, addressKey, addressOf } from "./connections";
 import { FakeHermes, row } from "./fakeHermes";
 import { memoryCache } from "./memoryCache";
 import type { SignInDetails } from "./tauriPipe";
@@ -18,62 +19,103 @@ function memoryKeyring(password?: string): Keyring & { password?: string; broken
   return k;
 }
 
-/** An account against a fake dashboard whose password is `hunter2`. */
+/** A Storage kept in memory. */
+export function memoryStorage(): Storage {
+  const m = new Map<string, string>();
+  return {
+    get length() {
+      return m.size;
+    },
+    key: (i) => [...m.keys()][i] ?? null,
+    getItem: (k) => m.get(k) ?? null,
+    setItem: (k, v) => void m.set(k, String(v)),
+    removeItem: (k) => void m.delete(k),
+    clear: () => m.clear(),
+  };
+}
+
+/** What the keyring keeps for a password saved for `d`'s address. */
+const entry = (d: SignInDetails, password = d.password) => JSON.stringify({ v: 1, for: addressKey(d), password });
+
+/** An account against a fake dashboard whose password is `hunter2`, with one connection `c` not saved yet. */
 function account(keyring = memoryKeyring(), headerKeyring = memoryKeyring()) {
   const server = new FakeHermes();
-  let saved: Omit<SignInDetails, "password"> = { mode: "ssh", sshTarget: "", url: "", username: "" };
+  const connections = new Connections(memoryStorage());
+  const sent: SignInDetails[] = [];
   const a: Account = {
-    keyring,
-    headerKeyring,
-    store: { load: () => saved, save: (d) => void (saved = d) },
-    connect: async (d) => {
+    connections,
+    secrets: () => ({ password: keyring, headers: headerKeyring }),
+    connect: async (_c, d) => {
+      sent.push(d);
       if (d.password !== "hunter2") throw new Error("Wrong username or password.");
       return connect(server.openPipe, "default");
     },
-    readSaved: (_d, reason) => readSaved(server.openPipe, reason, memoryCache()),
+    readSaved: (_c, _d, reason) => readSaved(server.openPipe, reason, memoryCache()),
   };
-  return { server, keyring, headerKeyring, account: a, saved: () => saved };
+  const c = connections.draft(details);
+  return { server, keyring, headerKeyring, account: a, c, sent, saved: () => connections.get(c.id)! };
 }
 
 describe("Saved password", () => {
-  it("is saved in the system keyring once Hermes has signed in, and the rest of the sign-in beside it", async () => {
-    const { account: a, keyring, saved } = account();
-    await signIn(details, a);
-    expect(keyring.password).toBe("hunter2");
-    expect(saved()).toEqual({ mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" });
+  it("is saved in the system keyring once Hermes has signed in, with the address it is for, and the rest of the sign-in beside it", async () => {
+    const { account: a, c, keyring, saved } = account();
+    await signIn(c, details, a);
+    expect(JSON.parse(keyring.password!)).toEqual({ v: 1, for: addressKey(details), password: "hunter2" });
+    expect(addressOf(saved())).toEqual({ mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" });
+    expect(a.connections.current()?.id).toBe(c.id);
   });
 
-  it("isn't saved when the sign-in fails", async () => {
-    const { account: a, keyring } = account();
-    await expect(signIn({ ...details, password: "wrong" }, a)).rejects.toThrow("Wrong username or password.");
+  it("isn't saved when the sign-in fails, and nor is a new connection", async () => {
+    const { account: a, c, keyring } = account();
+    await expect(signIn(c, { ...details, password: "wrong" }, a)).rejects.toThrow("Wrong username or password.");
     expect(keyring.password).toBeUndefined();
+    expect(a.connections.recent()).toEqual([]);
   });
 
   it("signs in at the next launch without asking", async () => {
     const first = account();
-    await signIn(details, first.account);
-    const { account: a, server } = account(first.keyring);
-    a.store = first.account.store;
-    const saved = await savedSignIn(a);
+    await signIn(first.c, details, first.account);
+    const saved = await savedSignIn(first.saved(), first.account);
     expect(saved).toEqual({ ...details, headers: [] });
-    expect((await a.connect(saved!)).getSnapshot().status).toBe("connected");
-    expect(server.opened).toBe(1);
+    expect((await first.account.connect(first.saved(), saved!)).getSnapshot().status).toBe("connected");
+    expect(first.server.opened).toBe(2);
   });
 
   it("asks at launch when no password is saved, or the keyring can't be read", async () => {
-    expect(await savedSignIn(account().account)).toBeUndefined();
-    const broken = memoryKeyring("hunter2");
+    const { account: a, c } = account();
+    expect(await savedSignIn(c, a)).toBeUndefined();
+    const broken = memoryKeyring(entry(details));
     broken.broken = "no Secret Service running";
-    expect(await savedSignIn(account(broken).account)).toBeUndefined();
+    const other = account(broken);
+    expect(await savedSignIn(other.c, other.account)).toBeUndefined();
+  });
+
+  it("asks when the keyring entry isn't one this app saved for the address", async () => {
+    for (const stored of ["hunter2", "{}", '{"v":1,"password":"hunter2"}', entry({ ...details, sshTarget: "liam@elsewhere" }), "null", "42"]) {
+      const { account: a, c } = account(memoryKeyring(stored));
+      expect(await savedSignIn(c, a), stored).toBeUndefined();
+    }
   });
 
   it("still signs in when the keyring can't save, and says the password wasn't kept", async () => {
     const keyring = memoryKeyring();
     keyring.broken = "no Secret Service running";
-    const { account: a } = account(keyring);
-    const { hermes, notSaved } = await signIn(details, a);
+    const { account: a, c } = account(keyring);
+    const { hermes, notSaved } = await signIn(c, details, a);
     expect(hermes.getSnapshot().status).toBe("connected");
     expect(notSaved).toBe("Couldn't save the password in the system keyring: no Secret Service running");
+  });
+
+  it("is never sent to an edited address, even when the keyring couldn't save the new one", async () => {
+    const { account: a, c, keyring, saved } = account();
+    const { hermes } = await signIn(c, details, a);
+    await hermes.close();
+    keyring.broken = "the keyring is locked";
+    await signIn(saved(), { ...details, sshTarget: "liam@new-host" }, a);
+    keyring.broken = undefined;
+    // The keyring still holds the old address's password, but the connection is at the new address now.
+    expect(JSON.parse(keyring.password!).for).toBe(addressKey(details));
+    expect(await savedSignIn(saved(), a)).toBeUndefined();
   });
 });
 
@@ -90,25 +132,25 @@ describe("Extra request headers", () => {
 
   it("are saved in the system keyring, never beside the rest of the sign-in, and come back at launch", async () => {
     const first = account();
-    await signIn(access, first.account);
+    await signIn(first.c, access, first.account);
     expect(JSON.parse(first.headerKeyring.password!)).toEqual({ url: "https://hermes.example.com", headers: access.headers });
-    expect(first.saved()).toEqual({ mode: "url", sshTarget: "liam@hermes", url: "https://hermes.example.com", username: "liam" });
+    expect(addressOf(first.saved())).toEqual({ mode: "url", sshTarget: "liam@hermes", url: "https://hermes.example.com", username: "liam" });
     expect(JSON.stringify(first.saved())).not.toContain("s3cret");
-    expect(await savedSignIn(first.account)).toEqual(access);
+    expect(await savedSignIn(first.saved(), first.account)).toEqual(access);
   });
 
   it("stay after Sign out, so the sign-in screen still has them", async () => {
-    const { account: a } = account();
-    const { hermes } = await signIn(access, a);
-    await signOut(hermes, a);
-    expect(await savedSignIn(a)).toBeUndefined();
-    expect(await signInForm(a)).toEqual({ ...access, password: "" });
+    const { account: a, c, saved } = account();
+    const { hermes } = await signIn(c, access, a);
+    await signOut(hermes, saved(), a);
+    expect(await savedSignIn(saved(), a)).toBeUndefined();
+    expect(await signInForm(saved(), a)).toEqual({ ...access, password: "" });
   });
 
   it("are deleted from the keyring when the owner signs in with none", async () => {
-    const { account: a, headerKeyring } = account();
-    await signIn(access, a);
-    await signIn({ ...access, headers: [] }, a);
+    const { account: a, c, headerKeyring, saved } = account();
+    await signIn(c, access, a);
+    await signIn(saved(), { ...access, headers: [] }, a);
     expect(headerKeyring.password).toBeUndefined();
   });
 
@@ -120,42 +162,42 @@ describe("Extra request headers", () => {
       [`{${url},"headers":{"name":"X"}}`, []],
       [`{${url},"headers":[{"name":"X"},{"name":"Y","value":"1"},null]}`, [{ name: "Y", value: "1" }]],
     ] as const) {
-      const { account: a } = account(memoryKeyring("hunter2"), memoryKeyring(stored));
-      expect((await savedSignIn(a))?.headers, stored).toEqual(want);
+      const { account: a, c } = account(memoryKeyring(entry(details)), memoryKeyring(stored));
+      expect((await savedSignIn(c, a))?.headers, stored).toEqual(want);
     }
   });
 
   it("still sign in when the keyring can't save them, and say so without the values", async () => {
     const headerKeyring = memoryKeyring();
     headerKeyring.broken = "the keyring is locked";
-    const { account: a } = account(memoryKeyring(), headerKeyring);
-    const { notSaved, kept } = await signIn(access, a);
+    const { account: a, c } = account(memoryKeyring(), headerKeyring);
+    const { notSaved, kept } = await signIn(c, access, a);
     expect(notSaved).toBe("Couldn't save the extra request headers in the system keyring: the keyring is locked");
     expect(kept).toEqual({ password: true, headers: false });
   });
 
   it("never go to another URL, even when the keyring couldn't save the new URL's headers", async () => {
-    const { account: a, headerKeyring } = account();
-    const { hermes } = await signIn(access, a);
-    await signOut(hermes, a);
+    const { account: a, c, headerKeyring, saved } = account();
+    const { hermes } = await signIn(c, access, a);
+    await signOut(hermes, saved(), a);
     headerKeyring.broken = "the keyring is locked";
     const elsewhere: SignInDetails = { ...access, url: "https://other.example.com", headers: [{ name: "CF-Access-Client-Secret", value: "other" }] };
-    await signIn(elsewhere, a);
+    await signIn(saved(), elsewhere, a);
     headerKeyring.broken = undefined;
-    // The keyring still holds the first URL's headers, but the saved sign-in is now the other URL.
+    // The keyring still holds the first URL's headers, but the connection is now at the other URL.
     expect(JSON.parse(headerKeyring.password!).url).toBe("https://hermes.example.com");
-    expect((await savedSignIn(a))?.headers).toEqual([]);
-    expect((await signInForm(a)).headers).toEqual([]);
+    expect((await savedSignIn(saved(), a))?.headers).toEqual([]);
+    expect((await signInForm(saved(), a)).headers).toEqual([]);
   });
 
   it("are back on the sign-in screen only once Sign out has read them", async () => {
-    const { account: a, headerKeyring } = account();
-    const { hermes } = await signIn(access, a);
+    const { account: a, c, headerKeyring, saved } = account();
+    const { hermes } = await signIn(c, access, a);
     let release!: () => void;
     const load = headerKeyring.load;
     headerKeyring.load = () => new Promise((r) => (release = () => r(load())));
     let done = false;
-    const out = signOutToSignIn(hermes, a).then((r) => ((done = true), r));
+    const out = signOutToSignIn(hermes, saved(), a).then((r) => ((done = true), r));
     await vi.waitFor(() => expect(release).toBeTypeOf("function"));
     expect(done).toBe(false);
     release();
@@ -165,32 +207,119 @@ describe("Extra request headers", () => {
 
 describe("Sign out", () => {
   it("closes the connection and deletes the saved password from the keyring", async () => {
-    const { account: a, keyring, server, saved } = account();
-    const { hermes } = await signIn(details, a);
-    await signOut(hermes, a);
+    const { account: a, c, keyring, server, saved } = account();
+    const { hermes } = await signIn(c, details, a);
+    await signOut(hermes, saved(), a);
     expect(server.closed).toBe(true);
     expect(keyring.password).toBeUndefined();
     // The next sign-in screen still has everything but the password.
     expect(saved().username).toBe("liam");
-    expect(await savedSignIn(a)).toBeUndefined();
+    expect(await savedSignIn(saved(), a)).toBeUndefined();
   });
 
   it("deletes the password even when closing the connection fails", async () => {
-    const { account: a, keyring } = account();
-    const { hermes } = await signIn(details, a);
+    const { account: a, c, keyring, saved } = account();
+    const { hermes } = await signIn(c, details, a);
     hermes.close = () => Promise.reject(new Error("the Rust side is gone"));
-    await signOut(hermes, a);
+    await signOut(hermes, saved(), a);
     expect(keyring.password).toBeUndefined();
   });
 
   it("signs out even when the keyring can't delete the password, and says so", async () => {
-    const { account: a, keyring, server } = account();
-    const { hermes } = await signIn(details, a);
+    const { account: a, c, keyring, server, saved } = account();
+    const { hermes } = await signIn(c, details, a);
     keyring.broken = "the keyring is locked";
-    await expect(signOut(hermes, a)).rejects.toThrow(
+    await expect(signOut(hermes, saved(), a)).rejects.toThrow(
       "Signed out, but couldn't delete the saved password from the system keyring: the keyring is locked",
     );
     expect(server.closed).toBe(true);
+  });
+});
+
+describe("Saved connections", () => {
+  /** Two servers, each with its own password, and a keyring with an entry per connection id. */
+  function twoServers() {
+    const servers = { "https://alpha.example.com": new FakeHermes(), "https://bravo.example.com": new FakeHermes() };
+    const passwords = { "https://alpha.example.com": "alpha-pass", "https://bravo.example.com": "bravo-pass" };
+    const keyring = new Map<string, string>();
+    const k = (name: string): Keyring => ({
+      load: async () => keyring.get(name),
+      save: async (v) => void keyring.set(name, v),
+      delete: async () => void keyring.delete(name),
+    });
+    const sent: { to: string; password: string }[] = [];
+    const a: Account = {
+      connections: new Connections(memoryStorage()),
+      secrets: (c) => ({ password: k(`password/${c.id}`), headers: k(`headers/${c.id}`) }),
+      connect: async (_c, d) => {
+        sent.push({ to: d.url, password: d.password });
+        if (passwords[d.url as keyof typeof passwords] !== d.password) throw new Error("Wrong username or password.");
+        return connect(servers[d.url as keyof typeof servers].openPipe, "default");
+      },
+      readSaved: () => undefined,
+    };
+    const at = (url: string, password: string): SignInDetails => ({ mode: "url", sshTarget: "", url, username: "owner", password, headers: [] });
+    return { servers, keyring, sent, a, at };
+  }
+
+  it("keep each connection's password apart, and sign each in with its own", async () => {
+    const { a, at, sent } = twoServers();
+    const one = a.connections.draft(at("https://alpha.example.com", ""), "Home");
+    const two = a.connections.draft(at("https://bravo.example.com", ""), "Home");
+    await (await signIn(one, at("https://alpha.example.com", "alpha-pass"), a)).hermes.close();
+    await (await signIn(two, at("https://bravo.example.com", "bravo-pass"), a)).hermes.close();
+    expect(a.connections.recent().map((c) => c.name)).toEqual(["Home", "Home"]);
+    expect(await savedSignIn(a.connections.get(one.id)!, a)).toMatchObject({ url: "https://alpha.example.com", password: "alpha-pass" });
+    expect(await savedSignIn(a.connections.get(two.id)!, a)).toMatchObject({ url: "https://bravo.example.com", password: "bravo-pass" });
+    // Neither password ever went to the other server.
+    expect(sent).toEqual([
+      { to: "https://alpha.example.com", password: "alpha-pass" },
+      { to: "https://bravo.example.com", password: "bravo-pass" },
+    ]);
+  });
+
+  it("removing one deletes its keyring entries and local data, leaves the other's, and sends nothing to Hermes", async () => {
+    const { a, at, keyring, servers } = twoServers();
+    const one = a.connections.draft(at("https://alpha.example.com", ""), "Alpha");
+    const two = a.connections.draft(at("https://bravo.example.com", ""), "Bravo");
+    await (await signIn(one, at("https://alpha.example.com", "alpha-pass"), a)).hermes.close();
+    await (await signIn(two, at("https://bravo.example.com", "bravo-pass"), a)).hermes.close();
+    const requests = servers["https://alpha.example.com"].requests.length;
+    const forgot: string[] = [];
+    await removeConnection(a.connections.get(one.id)!, a, async (c) => void forgot.push(c.id));
+    expect(forgot).toEqual([one.id]);
+    expect([...keyring.keys()]).toEqual([`password/${two.id}`]);
+    expect(a.connections.recent().map((c) => c.id)).toEqual([two.id]);
+    expect(servers["https://alpha.example.com"].requests.length).toBe(requests);
+  });
+
+  it("removing the one in use leaves none in use, rather than picking another", async () => {
+    const { a, at } = twoServers();
+    const one = a.connections.draft(at("https://alpha.example.com", ""), "Alpha");
+    const two = a.connections.draft(at("https://bravo.example.com", ""), "Alpha");
+    await (await signIn(one, at("https://alpha.example.com", "alpha-pass"), a)).hermes.close();
+    await (await signIn(two, at("https://bravo.example.com", "bravo-pass"), a)).hermes.close();
+    await removeConnection(a.connections.get(two.id)!, a, async () => {});
+    expect(a.connections.current()).toBeUndefined();
+  });
+
+  it("removing keeps the connection when the keyring can't delete its secrets", async () => {
+    const { a, at } = twoServers();
+    const one = a.connections.draft(at("https://alpha.example.com", ""), "Alpha");
+    await (await signIn(one, at("https://alpha.example.com", "alpha-pass"), a)).hermes.close();
+    const locked: Keyring = { load: async () => undefined, save: async () => {}, delete: () => Promise.reject(new Error("the keyring is locked")) };
+    const forget = vi.fn(async () => {});
+    const stuck = { ...a, secrets: () => ({ password: locked, headers: locked }) };
+    await expect(removeConnection(a.connections.get(one.id)!, stuck, forget)).rejects.toThrow("The connection is still saved");
+    expect(forget).not.toHaveBeenCalled();
+    expect(a.connections.recent()).toHaveLength(1);
+  });
+
+  it("a removed connection's details are named in no other connection's sign-in", async () => {
+    const { a, at } = twoServers();
+    const one: SavedConnection = a.connections.draft(at("https://alpha.example.com", ""), "Alpha");
+    await (await signIn(one, at("https://alpha.example.com", "alpha-pass"), a)).hermes.close();
+    expect(await signInForm(a.connections.draft(at("https://bravo.example.com", "")), a)).toMatchObject({ password: "", headers: [] });
   });
 });
 

@@ -36,6 +36,7 @@ export function Rail({
   terminalOpen = false,
   terminalRunning = false,
   updateWaiting = false,
+  connectionsMenu,
 }: {
   status: ConnectionStatus;
   route?: Route;
@@ -66,6 +67,8 @@ export function Rail({
   terminalRunning?: boolean;
   /** An update is ready to install or restart into (Settings → Updates). */
   updateWaiting?: boolean;
+  /** The recent-connection picker (Connections.tsx `RailConnections`), above the connection's status. */
+  connectionsMenu?: ReactNode;
 }) {
   const where = routeLabel(route);
   // The full wording lives only in the tooltip (ADR 0001).
@@ -131,6 +134,7 @@ export function Rail({
         )}
       </div>
       <div className="rail-bottom">
+        {connectionsMenu}
         <button className="conn-btn" title={tip} aria-label={tip} onClick={() => status !== "connected" && onReconnect()}>
           <span className={`conn-dot ${status} ${unsecure ? "unsecure" : ""}`} />
           {unsecure && <LockOpen className="conn-lock" size={9} strokeWidth={2.8} />}

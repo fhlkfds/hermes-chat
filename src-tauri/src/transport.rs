@@ -144,10 +144,10 @@ pub fn extra_headers(headers: &[ExtraHeader]) -> Result<HeaderMap, TransportErro
     Ok(map)
 }
 
-/// The HTTP client for one dashboard: the owner's extra request headers on every request and, with any set, redirects
-/// kept to the dashboard's origin.
+/// The HTTP client for one dashboard: all redirects stay on its origin. Even without extra headers, a 307/308
+/// redirect can forward a password body or a manually supplied cookie to another server.
 fn client(headers: &HeaderMap) -> Result<reqwest::Client, TransportError> {
-    client_kept_to_origin(headers, false)
+    client_kept_to_origin(headers, true)
 }
 
 /// `client`, with redirects kept to the dashboard's origin even without extra headers when `always` is set, as for a

@@ -7,13 +7,15 @@
 // queue of messages waiting to go after its reply (ADR 0018).
 // Clearing the cache deletes every connection's chat lists and Saved copies, and nothing else: never the sign-in,
 // drafts, outboxes, appearance or display preferences (uiPrefs.ts).
-import type { SavedSignIn } from "./account";
+import { type ScopeSource, connectionScope, inScope } from "./connections";
 import type { Attachment, Chat, ChatQueue, Item, Outgoing, OutgoingItem, Queued, Source } from "./model";
 import type { ChatCache, SavedTranscript } from "./transport";
 import { UI_PREFS_KEY } from "./uiPrefs";
 import { replyUsageOf } from "./usage";
 import { persist } from "./unsaved";
 
+/** Every key prefix this module keeps a connection's data under, each followed by its scope (connections.ts). */
+export const CACHE_PREFIXES = () => [LIST_PREFIX, TRANSCRIPT_PREFIX, PROFILE_PREFIX, PULLED_PREFIX, OUTBOX_PREFIX, QUEUE_PREFIX, HELD_PREFIX];
 const LIST_PREFIX = "hermes-chat.chats.";
 const TRANSCRIPT_PREFIX = "hermes-chat.transcript.";
 const PROFILE_PREFIX = "hermes-chat.profile.";
@@ -30,6 +32,13 @@ const liveQueues = new Map<string, ChatQueue>();
 export function subscribeOutbox(fn: () => void): () => void {
   outboxListeners.add(fn);
   return () => void outboxListeners.delete(fn);
+}
+
+/** Drop failed-write outboxes/queues when a connection is removed, before screenshot retention is synchronized. */
+export function forgetLiveChatData(parts: string[]) {
+  for (const [prefix, rows] of [[OUTBOX_PREFIX, liveOutboxes], [QUEUE_PREFIX, liveQueues]] as const) {
+    for (const key of rows.keys()) if (inScope(parts, key.slice(prefix.length))) rows.delete(key);
+  }
 }
 
 /** Attachment paths in every connection/profile's outbox and queue, for local screenshot lifetime management. */
@@ -212,9 +221,8 @@ function fromHeld(v: unknown): OutgoingItem | undefined {
 }
 
 /** The cache for one connection. `connection` may carry a password; it never goes into a key or value. */
-export function localChatCache(connection: SavedSignIn): ChatCache {
-  const target = connection.mode === "ssh" ? connection.sshTarget : connection.url;
-  const scope = (...rest: string[]) => JSON.stringify([connection.mode, target, connection.username, ...rest]);
+export function localChatCache(connection: ScopeSource): ChatCache {
+  const scope = (...rest: string[]) => connectionScope(connection, ...rest);
   const listKey = (profile: string) => LIST_PREFIX + scope(profile);
   const transcriptKey = (profile: string, chatId: string) => TRANSCRIPT_PREFIX + scope(profile, chatId);
   const profileKey = PROFILE_PREFIX + scope();

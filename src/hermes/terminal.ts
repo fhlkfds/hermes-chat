@@ -24,6 +24,12 @@ export type TerminalState =
 /** Where the terminal goes: the target typed for it last, else the sign-in's own SSH target. */
 export const TERMINAL_TARGET_KEY = "hermes-chat.terminal-target";
 
+/**
+ * Where a connection keeps the target typed for its terminal, so one typed for one server is never used for another.
+ * The connection migrated from the single sign-in kept before keeps the key it had.
+ */
+export const terminalTargetKey = (c: { id?: string; legacy?: unknown }) => (c.legacy || !c.id ? TERMINAL_TARGET_KEY : `${TERMINAL_TARGET_KEY}.${c.id}`);
+
 export function terminalTarget(signIn: { mode: "ssh" | "url"; sshTarget: string }, saved: string | null): string {
   if (saved?.trim()) return saved.trim();
   return signIn.mode === "ssh" ? signIn.sshTarget.trim() : "";

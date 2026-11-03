@@ -2,7 +2,7 @@
 
 # Hermes Chat
 
-Hermes Chat (`hermes-chat`) is a personal desktop chat client for one remote [Hermes Agent](https://github.com/NousResearch/hermes-agent) server, built for Arch Linux. It signs in to the Hermes web dashboard, either through an SSH tunnel or at a dashboard URL. Through the dashboard, it lists, searches, and continues the chats of each Hermes profile.
+Hermes Chat (`hermes-chat`) is a personal desktop chat client for your own remote [Hermes Agent](https://github.com/NousResearch/hermes-agent) servers, built for Arch Linux. It signs in to the Hermes web dashboard, either through an SSH tunnel or at a dashboard URL. It can keep several saved connections and uses one at a time. Through the dashboard, it lists, searches, and continues the chats of each Hermes profile.
 
 Created in [T3 Code](https://t3.codes).
 
@@ -72,6 +72,7 @@ These features are on the `main` branch.
 - **Desktop notifications.** While the window isn't focused, the app posts a notification when a reply finishes or an Approval is waiting. This needs a freedesktop notification service, such as mako, dunst, swaync, GNOME, or KDE.
 - **Slash commands.** Type `/` at the start of a message for a menu of commands, each marked App or Hermes: `/help`, `/new`, `/rename <title>`, `/delete` (asks first), `/steer <message>` for a running reply, and `/context`. Any other text starting with `/` is sent as a message. See [Slash commands](#slash-commands).
 - **Drafts and reopening.** Drafts are kept for each chat, profile, and connection, and they survive restarts. The app can reopen the last chat at launch.
+- **Saved connections.** Keep several Hermes servers and switch between them from the rail's server button or Settings → General → Connections. Each has its own password, extra headers, drafts, queues and profile. See [Saved connections](#saved-connections).
 
 ### Keyboard shortcuts
 
@@ -281,7 +282,7 @@ These rely on Hermes's legacy `session.create` taking `cwd`, `cwd_explicit`, `mo
 
 On a computer with nothing saved, the app opens **Setup** instead of the sign-in screen (ADR 0009). It asks for the server, then the dashboard username and password, and tests the connection before saving anything. The test opens the tunnel or resolves the URL, reads `/api/status`, signs in, and opens the chat connection. If a step fails, Setup says which one and what to fix. **Save and connect** then signs in for real, as below. Setup can also give Hermes a model provider's API key: the provider checks it first, and Hermes keeps it in the profile's `.env` on the server. The app never stores it. Account providers, such as Nous Portal, are set up on the server.
 
-To open Setup again, use **Settings → General → Run setup again**, or **Set up a different server…** on the sign-in screen. The connection in use carries on until a new one is tested and saved. A computer that already has a saved sign-in never sees Setup on its own.
+Setup also adds a connection: **Add connection** in the rail's connection menu or in Settings → General → Connections, or **Set up a new connection…** on the sign-in screen. **Edit** on a saved connection, and **Settings → General → Run setup again** for the one in use, change one through the same steps. The connection in use carries on until the new or changed one is tested and saved. A computer that already has a saved connection never sees Setup on its own.
 
 ### SSH
 
@@ -302,7 +303,7 @@ For HTTPS, the app uses the system OpenSSL and trust store. `HTTP_PROXY` and `HT
 
 A gateway in front of the dashboard, such as Cloudflare Access, may need headers. Add them under **Extra request headers** on the sign-in screen, for example `CF-Access-Client-Id` and `CF-Access-Client-Secret`. Rust sends them with every request to that dashboard, including sign-in, REST calls, and the WebSocket handshake. It never sends them anywhere else:
 
-- With headers set, the app follows a redirect only within the dashboard's origin.
+- The app follows a redirect only within the dashboard's origin, including sign-in requests without extra headers.
 - If saved headers were restored from the keyring, the first change to the URL clears every header value and keeps the names. Otherwise, changing the URL keeps the values you entered, so check them before connecting to a different server.
 - SSH connections don't send the headers.
 
@@ -310,11 +311,26 @@ Settings shows the header names but never their values. The app reserves a few n
 
 ### Signing in and out
 
-After a successful sign-in, the password is saved in the system keyring, and the app signs in with it at each launch. **Settings → General → Sign out** deletes the saved password. It keeps the target, URL, username, and extra headers, so the sign-in screen asks only for the password. If the keyring can't save, the sign-in still works, and the app says the password wasn't kept.
+After a successful sign-in, the password is saved in the system keyring for that connection, and the app signs in with it at each launch. **Settings → General → Sign out** deletes the saved password. It keeps the target, URL, username, and extra headers, so the sign-in screen asks only for the password. If the keyring can't save, the sign-in still works, and the app says the password wasn't kept. A saved password is used only for the address it was saved with: after you change a connection's SSH target, URL, or username, you type the password again.
+
+### Saved connections
+
+<img src="docs/screenshots/connections/manager.png" width="560" alt="Settings → General → Connections, listing two saved connections with their mode, address, username and when they were last used">
+
+Hermes Chat keeps a list of saved connections, each with a name, SSH or URL mode, its address and dashboard username, and when you last used it. One is in use at a time.
+
+- **Switch** from the server button on the rail, which lists the connections you used most recently, or with **Connect** in Settings → General → Connections. If a reply is running or an Approval is waiting on the connection you're leaving, the app asks first. Hermes keeps the reply running on its server, and an Approval waits until Hermes stops waiting. Switching back brings back that connection's profile, drafts, queued messages, model pick and open chat. Queued messages wait, paused, until you're back.
+- **Add**, **Edit** and **Test** go through Setup's checks. Test uses the saved password and keeps the connection in use running.
+- **Remove** says what it deletes from this computer: the connection's keyring entries, drafts, Failed and queued messages, chat list copies and Saved copies, project membership and project defaults, persona edits, the Outputs index, inbox dismissals, and its display preferences. It never deletes anything on the server.
+- **Names** needn't be unique: the address always shows beside the name. Nothing picks a connection by its name. Launch signs in to the connection in use. If you remove that one, the sign-in screen lists the others and waits for you to pick one.
+- A connection's password and extra headers are kept in the keyring under its own id, and are never sent to another connection's address.
+- The sign-in set up before saved connections existed becomes the first saved connection. It keeps its keyring entries and local data where they were. See [ADR 0023](docs/adr/0023-saved-connections-have-stable-ids-and-one-is-in-use.md).
+
+The manager uses the same dashboard contracts as sign-in; it adds no server endpoint. Canonical-only servers remain unsupported. The warning sees running work only as described under [Server requirements](#server-requirements). See the [connection verification record](docs/screenshots/connections/README.md) for real-dashboard checks and their limits.
 
 ### Profiles
 
-Each Hermes profile has its own chats. The chat list header is the profile switcher. It also marks other profiles that have Unread chats, checking every two minutes. Switching happens in place, with the same sign-in. If a reply is running or an Approval is waiting, the app asks first. Hermes keeps the reply running and brings both back when you return. Drafts and Saved copies are kept per profile. Switching profile resets the composer's model pick to that profile's own default model. The last profile you used opens at the next launch.
+Each Hermes profile has its own chats. The chat list header is the profile switcher. It also marks other profiles that have Unread chats, checking every two minutes. Switching happens in place, with the same sign-in. If a reply is running or an Approval is waiting, the app asks first. Hermes keeps the reply running and brings both back when you return. Drafts and Saved copies are kept per profile. Switching profile restores that profile's own model pick, or its default model until one is chosen. The last profile you used opens at the next launch.
 
 ## What is stored where
 
@@ -326,9 +342,9 @@ Hermes stores the chats and their history, titles, Archived state, and Unread st
 
 | What | Where | Removed by |
 | --- | --- | --- |
-| Dashboard password | System keyring, service `hermes-chat`, account `dashboard-password` | Sign out |
-| Extra request headers (names, values, and their URL) | System keyring, account `extra-request-headers` | Signing in to the URL with no headers |
-| Sign-in mode, SSH target, URL, and username | Webview local storage (`hermes-chat.sign-in`) | Not removed by the app |
+| Each connection's dashboard password, with the address it is for | System keyring, service `hermes-chat`, account `dashboard-password/<connection id>` (`dashboard-password` for the connection migrated from before saved connections) | Sign out, or removing the connection |
+| Each connection's extra request headers (names, values, and their URL) | System keyring, account `extra-request-headers/<connection id>` (`extra-request-headers` for the migrated one) | Signing in to the URL with no headers, or removing the connection |
+| Saved connections: id, name, mode, SSH target or URL, username, when added and last used, and which is in use | Webview local storage (`hermes-chat.connections`) | Removing the connection. The sign-in kept before (`hermes-chat.sign-in`) is read once, to migrate it, and deleted when that connection is removed. |
 | Chat list copy for each profile | Webview local storage | Clear local cache |
 | **Saved copies** of recently opened chats (up to 2 MB in total) | Webview local storage | Clear local cache, deleting the chat, or the oldest copy going first when the 2 MB limit is reached |
 | Drafts and **Failed messages** | Webview local storage, per connection, profile, and chat | Sending, Retry, or Dismiss. Clear local cache keeps them. |
@@ -338,13 +354,13 @@ Hermes stores the chats and their history, titles, Archived state, and Unread st
 | Each project's defaults for new chats | `$XDG_DATA_HOME/net.l0cky12.hermes-chat/project-defaults.json`, readable only by you | Deleting the project in Hermes Chat. Clear local cache keeps them. |
 | The Outputs index: each Output's path, tool, call, stored time, reported size and last availability check, per connection and profile. No file contents or chat text. | Webview local storage (`hermes-chat.outputs`), at most 1,000 Outputs per chat, 3,000 per profile, 200 added files per profile, and 8 profiles | The oldest-read chats when over the limit. Clear local cache keeps it; Refresh rebuilds it. |
 | Unsaved persona edits, and the last five versions of `SOUL.md` that saves from this app replaced | Webview local storage, per connection and profile | Saving or discarding the edit; a newer save pushes out the oldest version. Clear local cache keeps them. |
-| Display preferences, model pick, starred models, and reopen-last-chat | Webview local storage | Not removed by Clear local cache |
+| Display preferences, model pick, starred models, and reopen-last-chat (the pick and the chat to reopen are per connection and profile) | Webview local storage | Not removed by Clear local cache. Removing a connection removes its pick and chat to reopen. |
 | Drafts, Failed messages and Queued messages saved for an update's restart | `$XDG_DATA_HOME/net.l0cky12.hermes-chat/restart-drafts.json`, readable only by you | Putting them back at the next launch. A copy that couldn't be put back is renamed `restart-drafts-<time>.json` and stays until you move or delete it; Settings says where. |
 | Screenshots waiting to send | `$XDG_CACHE_HOME/hermes-chat/captures/`, readable only by you | Confirmed delivery, removing them from the composer, or leaving the composer without sending. A queued message keeps its screenshots until it goes or you remove it. A Failed message keeps its screenshots until delivery is confirmed, history reconciles it, or you Dismiss it. Startup cleanup removes only leftovers that no message needs. |
 | Pasted files | A private folder under `$TMPDIR/hermes-chat/` (usually `/tmp/hermes-chat/`) | Not removed by the app |
 | Exported chats | The file you chose in the Save dialog | You |
 
-Webview local storage is in `$XDG_DATA_HOME/net.l0cky12.hermes-chat/localstorage/` (usually `~/.local/share/...`). It isn't encrypted. Saved copies, drafts, queued messages, and Failed messages hold chat text in plain form, so anyone who can read your home folder can read them. Saved copies never hold Approvals, errors, or Failed messages. To remove chat text from this computer, use **Settings → General → Clear local cache**. This deletes the chat list copy and the Saved copies. Drafts, Failed messages, and project membership remain. Sign out doesn't clear the cache. Dictation recordings and Read aloud audio are never saved on disk. An exported Markdown file names its attachments but doesn't include them.
+Everything kept per connection in local storage, and in `project-defaults.json`, is keyed by the connection's id, so it stays with the connection when you change its address. Removing a connection deletes all of it, and its two keyring entries. Webview local storage is in `$XDG_DATA_HOME/net.l0cky12.hermes-chat/localstorage/` (usually `~/.local/share/...`). It isn't encrypted. Saved copies, drafts, queued messages, and Failed messages hold chat text in plain form, so anyone who can read your home folder can read them. Saved copies never hold Approvals, errors, or Failed messages. To remove chat text from this computer, use **Settings → General → Clear local cache**. This deletes the chat list copy and the Saved copies. Drafts, Failed messages, and project membership remain. Sign out doesn't clear the cache. Dictation recordings and Read aloud audio are never saved on disk. An exported Markdown file names its attachments but doesn't include them.
 
 ## Troubleshooting
 
@@ -355,7 +371,8 @@ Webview local storage is in `$XDG_DATA_HOME/net.l0cky12.hermes-chat/localstorage
 | "Wrong username or password" | Use the dashboard's own username and password, not the SSH account. |
 | "This Hermes server speaks the canonical session protocol" | That Hermes version isn't supported yet. |
 | "The dashboard sent Hermes Chat on to …, another site" | A gateway redirected the request, usually to its login page. Check the extra request headers that the gateway needs. |
-| The password isn't remembered | Start a Secret Service provider, such as GNOME Keyring or KWallet, and sign in again. Settings shows whether the password was saved. |
+| The password isn't remembered | Start a Secret Service provider, such as GNOME Keyring or KWallet, and sign in again. Settings shows whether the password was saved. A password is also asked for again after you change a connection's address or username. |
+| A saved connection can't be reached or turns down the password | The sign-in screen says what to fix. Settings → General → Connections → **Test** checks a connection without leaving the one in use. Pick another saved connection on the sign-in screen, or **Edit** this one. |
 | The connection is labelled Unsecure | Use `https://`, SSH, or a Tailscale address. Plain `http://` to a public or LAN address isn't encrypted. |
 | A page in the preview pane stays blank | The site forbids framing (`X-Frame-Options` or `frame-ancestors`), or it is on the server's loopback address, which this computer can't reach. Open it in a browser instead. |
 | Screenshots do nothing on Hyprland or Sway | Install `slurp` and `grim`. |
@@ -365,7 +382,8 @@ Webview local storage is in `$XDG_DATA_HOME/net.l0cky12.hermes-chat/localstorage
 
 ## Known limitations
 
-- The app supports one Hermes server connection at a time, and only the legacy session protocol with username and password sign-in.
+- The app keeps several saved connections but uses one at a time: only the connection in use has a socket, so other servers' replies and Approvals show only after switching to them. Saved connections stay on this computer and don't sync. The app supports only the legacy session protocol with username and password sign-in.
+- Before switching connection, the app names running replies and waiting Approvals only as the inbox sees them, so it doesn't name work running in the CLI, a messaging gateway or cron on that server. Hermes keeps that work going anyway.
 - The app targets Linux on Arch with WebKitGTK; CI runs on Ubuntu. No other packages or installers exist.
 - Active and Settled don't sync between computers for chats that Hermes won't pin, such as chats started in this app.
 - Project membership and project defaults are stored on this computer only. Other computers and Hermes clients don't see them.

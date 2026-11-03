@@ -167,6 +167,8 @@ export type DefaultsDoc = {
   save(scope: string, id: string, base: number, draft: DefaultsDraft): Promise<ProjectDefaults>;
   /** Forgets one project's defaults, after this app deleted the project. Leaves a newer app's document alone. */
   forget(scope: string, id: string): Promise<void>;
+  /** Forgets every scope `match` picks, after the owner removed their connection. Leaves a newer app's document alone. */
+  forgetScopes(match: (scope: string) => boolean): Promise<void>;
 };
 
 type Parsed = { v: number; scopes: Record<string, unknown>; rest: Record<string, unknown> };
@@ -243,6 +245,13 @@ export function defaultsDoc(file: DefaultsFile): DefaultsDoc {
         if (doc.v > DEFAULTS_VERSION || !(id in entries)) return { result: undefined };
         const { [id]: _gone, ...left } = entries;
         return { next: withScope(doc, scope, left), result: undefined };
+      }),
+    forgetScopes: (match) =>
+      update((doc) => {
+        const gone = Object.keys(doc.scopes).filter(match);
+        if (doc.v > DEFAULTS_VERSION || !gone.length) return { result: undefined };
+        const scopes = Object.fromEntries(Object.entries(doc.scopes).filter(([s]) => !gone.includes(s)));
+        return { next: JSON.stringify({ ...doc.rest, v: Math.max(doc.v, DEFAULTS_VERSION), scopes }), result: undefined };
       }),
   };
 }

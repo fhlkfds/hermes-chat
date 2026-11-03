@@ -5,7 +5,10 @@ import { RenameConflict, connect, readSaved, type Delivery, type Hermes } from "
 import type { CommandHost } from "./ui/SlashCommands";
 import type { ServerCommandList } from "./hermes/commands";
 import { CHECK_EVERY_MS } from "./hermes/otherProfiles";
-import { type Account, type Kept, type SavedSignIn, launchSignIn, savedSignIn, signIn, signInForm, signOutToSignIn } from "./hermes/account";
+import { type Account, type Kept, type SavedSignIn, launchSignIn, removeConnection, savedSignIn, signIn, signInForm, signOutToSignIn } from "./hermes/account";
+import { CONNECTIONS_KEY, Connections, type SavedConnection, addressLabel, defaultName, prefScope } from "./hermes/connections";
+import { forgetConnectionData } from "./hermes/forgetConnection";
+import { serial as makeSerial } from "./hermes/serial";
 import { localChatCache } from "./hermes/chatCache";
 import { draftKey, drafts } from "./hermes/drafts";
 import { PersonaStore, personaKey } from "./hermes/personaStore";
@@ -14,17 +17,18 @@ import { chatToReopen, forgetOpenChat, rememberOpenChat } from "./hermes/uiPrefs
 import { exportChat } from "./hermes/exportChat";
 import { PROJECTS_KEY, projectLinks, projectScope } from "./hermes/projectLinks";
 import { ProjectsStore, type Project } from "./hermes/projects";
-import { instructionsMessage, modelProblem, resolveNewChat, type ProjectDefaults } from "./hermes/projectDefaults";
-import { systemHeaderKeyring, systemKeyring } from "./hermes/tauriKeyring";
+import { instructionsMessage, modelProblem, resolveNewChat, savedDefaults, type ProjectDefaults } from "./hermes/projectDefaults";
+import { systemSecrets } from "./hermes/tauriKeyring";
 import { appUpdates } from "./hermes/tauriUpdates";
 import { needsAttention, type Updater } from "./hermes/updates";
 import { desktopNotify } from "./hermes/tauriNotify";
 import { ScreenshotDesk, type ScreenshotApi } from "./hermes/screenshots";
 import { onDesktopScreenshot, screenshotSupport, showWindow, syncScreenshotOutbox, tauriScreenshots, type ScreenshotSupport } from "./hermes/tauriScreenshot";
+import { ConnectionManager, RailConnections, RemoveConnection, SwitchConnection } from "./ui/Connections";
 import { checkShortcut, shortcutLabel, shortcutOf } from "./ui/shortcut";
 
 import { tauriPipe, tauriProbe, type SignInDetails } from "./hermes/tauriPipe";
-import { isSetUp } from "./hermes/setup";
+import { testConnection, type TestOutcome } from "./hermes/setup";
 import { isOutgoing, type Attachment, type Chat, type ConnectionStatus, type Found } from "./hermes/model";
 import type { ModelCatalog, ModelPick } from "./hermes/models";
 import { ChatList, Rail, leavingNote } from "./ui/Sidebar";
@@ -46,7 +50,7 @@ import { composing, routeLabel } from "./ui/bits";
 import { ProjectScreen, ProjectSwitcher, type ProjectUnread } from "./ui/Projects";
 import { ScheduledJobs } from "./ui/ScheduledJobs";
 import { tauriTerminal } from "./ui/tauriTerminal";
-import { TERMINAL_TARGET_KEY, terminalTarget } from "./hermes/terminal";
+import { terminalTarget, terminalTargetKey } from "./hermes/terminal";
 import { ApplyDefaults, NewChatSettingsView } from "./ui/ProjectDefaultsNotes";
 import { appearanceStore } from "./ui/appearance";
 import { StatusBar } from "./ui/StatusBar";
@@ -64,7 +68,6 @@ import { getUIPrefs, setUIPrefs, subscribe as subscribeUIPrefs, toggleModelFavor
 // xterm.js is loaded only once the Terminal is first opened.
 const TerminalScreen = lazy(() => import("./ui/Terminal").then((m) => ({ default: m.TerminalScreen })));
 
-const SAVED = "hermes-chat.sign-in"; // Everything but the password and extra headers, which are in the system keyring.
 // Hermes also announces store changes over the socket; the poll catches anything it misses.
 const SYNC_EVERY_MS = 60_000;
 // While the inbox is open it asks for fresh checks this often; they run at most every 15 seconds (transport.ts).
@@ -107,22 +110,21 @@ function useWidth(ref: RefObject<HTMLElement | null>): number {
   return width;
 }
 
-function loadSignIn(): SavedSignIn {
-  const blank = { mode: "ssh" as const, sshTarget: "", url: "", username: "" };
-  try {
-    return { ...blank, ...JSON.parse(localStorage.getItem(SAVED) ?? "{}") };
-  } catch {
-    return blank;
-  }
-}
+let connectionStore: Connections | undefined;
+/** The saved connections, read (and the old single sign-in migrated) the first time they're needed. */
+const savedConnections = () => (connectionStore ??= new Connections(localStorage));
 
 const account: Account = {
-  keyring: systemKeyring,
-  headerKeyring: systemHeaderKeyring,
-  store: { load: loadSignIn, save: (d) => localStorage.setItem(SAVED, JSON.stringify(d)) },
-  connect: (d) => connect(tauriPipe(d), undefined, localChatCache(d), desktopNotify),
-  readSaved: (d, reason) => readSaved(tauriPipe(d), reason, localChatCache(d), desktopNotify),
+  get connections() {
+    return savedConnections();
+  },
+  secrets: systemSecrets,
+  connect: (c, d) => connect(tauriPipe(d), undefined, localChatCache(c), desktopNotify),
+  readSaved: (c, d, reason) => readSaved(tauriPipe(d), reason, localChatCache(c), desktopNotify),
 };
+
+/** Deletes what this computer keeps for a removed connection (forgetConnection.ts). */
+const forgetLocal = (c: SavedConnection) => forgetConnectionData(c, { defaults: savedDefaults, persona: savedPersona, afterwards: syncScreenshotOutbox });
 
 const savedDrafts = drafts(localStorage);
 const savedProjects = projectLinks(localStorage);
@@ -133,60 +135,94 @@ const appearance = appearanceStore(localStorage, document.documentElement);
 /** The names of the extra request headers a sign-in sends; only a URL sends them. */
 const headerNames = (d: SignInDetails) => (d.mode === "url" ? (d.headers ?? []).map((h) => h.name.trim()) : []);
 
-/**
- * What launch ends in: signed in with the saved password, or the sign-in screen and why. `firstRun`: nothing is set up
- * on this computer, so setup opens instead of the sign-in screen.
- */
-type Launch = { hermes: Hermes; details: SignInDetails } | { initial: SignInDetails; error?: string; firstRun?: boolean };
+const BLANK: SignInDetails = { mode: "ssh", sshTarget: "", url: "", username: "", password: "", headers: [] };
 
-/** Setup, open over whatever else shows, and where it was opened from. */
-type Setup = { mode: SetupMode; initial: SignInDetails };
+/**
+ * What launch ends in: signed in to the connection in use with its saved password, or the sign-in screen and why.
+ * `connection` absent there: none is in use (none saved, or the one in use was removed), so the owner picks one.
+ * `firstRun`: nothing is saved on this computer, so setup opens instead of the sign-in screen.
+ */
+type Launch =
+  | { hermes: Hermes; connection: SavedConnection; details: SignInDetails }
+  | { connection?: SavedConnection; initial: SignInDetails; error?: string; firstRun?: boolean };
+
+/**
+ * Setup, open over whatever else shows: where it was opened from, the connection it saves (`target`, a new one not
+ * saved yet when adding), and its name.
+ */
+type Setup = { mode: SetupMode; initial: SignInDetails; target: SavedConnection; name?: string };
 let launching: Promise<Launch> | undefined;
 
 /**
- * Signs in with the saved password, if there is one; if Hermes can't be reached, what this computer saved opens to
- * read. If that fails the sign-in screen has it filled in, so Connect tries again. With no password saved, the
- * sign-in screen asks for it, unless nothing at all is set up yet: then it's the first run, and setup opens. Runs
- * once, though StrictMode runs effects twice.
+ * Signs in to the connection in use with its saved password, if there is one; if Hermes can't be reached, what this
+ * computer saved for it opens to read. If that fails the sign-in screen has it filled in, so Connect tries again.
+ * With no password saved, the sign-in screen asks for it. With no connection in use, the sign-in screen offers the
+ * saved ones and picks none, unless nothing is saved at all: then it's the first run, and setup opens. Runs once,
+ * though StrictMode runs effects twice.
  */
 function launch(): Promise<Launch> {
   return (launching ??= (async () => {
-    const saved = await savedSignIn(account);
-    if (!saved) {
-      const initial = await signInForm(account);
-      return { initial, firstRun: !isSetUp(initial) };
-    }
+    const c = account.connections.current();
+    if (!c) return { initial: BLANK, firstRun: !account.connections.recent().length };
+    const saved = await savedSignIn(c, account);
+    if (!saved) return { connection: c, initial: await signInForm(c, account) };
     try {
-      return { hermes: await launchSignIn(saved, account), details: saved };
+      return { hermes: await launchSignIn(c, saved, account), connection: c, details: saved };
     } catch (e) {
-      return { initial: saved, error: messageOf(e) };
+      return { connection: c, initial: saved, error: messageOf(e) };
     }
   })());
 }
 
 export default function App() {
   const [hermes, setHermes] = useState<Hermes | null>(null);
+  // The connection in use, or the one the sign-in screen is for; none when the owner hasn't picked one.
+  const [connection, setConnection] = useState<SavedConnection>();
   // The sign-in screen's details; none while launch is signing in with the saved password.
   const [initial, setInitial] = useState<SignInDetails>();
   const [error, setError] = useState<string>();
   // Why the keyring couldn't save the password at sign-in, shown once signed in.
   const [notSaved, setNotSaved] = useState<string>();
   const [kept, setKept] = useState<Kept>({ password: true, headers: true });
-  // Only the first sign-in after the app starts reopens the last chat; signing in again after Sign out starts fresh.
+  // Whether the main screen reopens the profile's last open chat: at launch, and on switching to a connection.
   const [coldStart, setColdStart] = useState(true);
   const [setup, setSetup] = useState<Setup>();
+  const [confirmingSetup, setConfirmingSetup] = useState(false);
+  const connectionGuard = useRef<((to: SavedConnection) => Promise<boolean>) | undefined>(undefined);
+  // A connection being switched to, for the screen shown meanwhile.
+  const [switchingTo, setSwitchingTo] = useState<SavedConnection>();
+  // Asked from the sign-in screen: remove this connection?
+  const [removing, setRemoving] = useState<SavedConnection>();
+  const [removingActive, setRemovingActive] = useState<SavedConnection>();
   // Counts connections, so the main screen starts afresh for each one.
   const [connections, setConnections] = useState(0);
   const current = useRef<Hermes | null>(null);
   current.current = hermes;
+  const connectionRef = useRef(connection);
+  connectionRef.current = connection;
   // The sign-in the connection in use was made with, password and all, so setup can put it back if a new one fails,
   // even when the keyring couldn't keep the password. The transport holds it anyway, to reconnect.
   const signedInWith = useRef<SignInDetails>(undefined);
   // The names of the extra request headers the connection sends, for Settings.
   const [headers, setHeaders] = useState<string[]>([]);
+  const store = account.connections;
+  useSyncExternalStore(store.subscribe, store.getSnapshot);
+  const recent = store.recent();
+  // Another window added, renamed or removed one.
+  useEffect(() => {
+    const changed = (e: StorageEvent) => (e.key === null || e.key === CONNECTIONS_KEY) && store.reread();
+    window.addEventListener("storage", changed);
+    return () => window.removeEventListener("storage", changed);
+  }, [store]);
+
+  // Rust holds one connection, so anything that opens or closes one runs after the one before has finished: a later
+  // switch can never be overtaken by an earlier one, and the one left behind is closed before the next one opens.
+  // `stale()`: a newer change was asked for meanwhile, so this one stops at its next step.
+  const [serial] = useState(makeSerial);
 
   useEffect(() => {
     void launch().then((l) => {
+      setConnection(l.connection);
       if ("hermes" in l) {
         signedInWith.current = l.details;
         setHeaders(headerNames(l.details));
@@ -194,61 +230,171 @@ export default function App() {
       }
       setInitial(l.initial);
       setError(l.error);
-      if (l.firstRun) setSetup({ mode: "first-run", initial: l.initial });
+      if (l.firstRun) setSetup({ mode: "first-run", initial: BLANK, target: store.draft(BLANK) });
     });
   }, []);
 
   const use = (h: Hermes | null) => {
+    current.current = h;
     setHermes(h);
     setConnections((n) => n + 1);
   };
 
-  /**
-   * Setup's Save and connect. Rust holds one connection, so the one in use closes first, or its reconnects would take
-   * the connection back. If the new one fails after all, the one in use before is put back, as at launch: Offline
-   * with what this computer saved if it can't connect either.
-   */
-  const connectWith = async (d: SignInDetails) => {
-    const before = current.current;
-    if (before) await before.close().catch(() => {});
-    try {
-      const { hermes: h, notSaved, kept } = await signIn(d, account);
-      setNotSaved(notSaved);
-      setKept(kept);
-      setHeaders(headerNames(d));
-      setError(undefined);
-      // The last chat open was on the other connection.
-      if (before) setColdStart(false);
-      signedInWith.current = d;
-      use(h);
-      return { notSaved, kept };
-    } catch (e) {
-      if (before) {
-        const previous = signedInWith.current ?? (await savedSignIn(account));
-        const back = previous ? await launchSignIn(previous, account).catch(() => null) : null;
-        if (back && previous) setHeaders(headerNames(previous));
-        if (!back) {
-          signedInWith.current = undefined;
-          setInitial(await signInForm(account));
-        }
-        use(back);
-      }
-      throw e;
-    }
+  /** The sign-in screen, for `c` with `d` filled in, or with none picked. */
+  const showSignIn = (c: SavedConnection | undefined, d: SignInDetails = BLANK, why?: string) => {
+    signedInWith.current = undefined;
+    current.current = null;
+    setHermes(null);
+    setConnection(c);
+    setNotSaved(undefined);
+    setKept({ password: true, headers: true });
+    setInitial(d);
+    setError(why);
   };
 
+  /**
+   * Leaves the connection in use for `target`, which signs in with its saved password, or Offline with what this
+   * computer saved for it. Without a saved password, or if signing in fails, the sign-in screen asks for `target`.
+   * The connection left behind is closed first; Hermes keeps its running replies going on the server.
+   */
+  const switchTo = (target: SavedConnection) =>
+    serial(async (stale) => {
+      if (stale()) return;
+      setSwitchingTo(target);
+      try {
+        await current.current?.close().catch(() => {});
+        setHermes(null);
+        const d = await savedSignIn(target, account);
+        if (stale()) return;
+        if (!d) return showSignIn(target, await signInForm(target, account));
+        try {
+          const h = await launchSignIn(target, d, account);
+          if (stale()) return void (await h.close().catch(() => {}));
+          store.use(target.id);
+          signedInWith.current = d;
+          setConnection(store.get(target.id) ?? target);
+          setHeaders(headerNames(d));
+          setNotSaved(undefined);
+          setKept({ password: true, headers: true });
+          setError(undefined);
+          // The connection's own last open chat, in the profile it showed last.
+          setColdStart(true);
+          use(h);
+        } catch (e) {
+          if (!stale()) showSignIn(target, d, messageOf(e));
+        }
+      } finally {
+        if (!stale()) setSwitchingTo(undefined);
+      }
+    });
+
+  /**
+   * Setup's Save and connect, and the sign-in screen's Connect: signs in to `target` with `d`, and keeps it. The
+   * connection in use closes first, or its reconnects would take Rust's one connection back. If the new one fails
+   * after all, the one in use before is put back, as at launch: Offline with what this computer saved if it can't
+   * connect either.
+   */
+  const connectWith = async (target: SavedConnection, d: SignInDetails, name?: string) => {
+    // Setup can spend minutes testing while more work or approvals arrive. Ask at the actual switch, using Main's
+    // latest state, and keep Setup mounted but hidden so cancelling the question keeps its tested details.
+    if (setup && current.current && connectionGuard.current) {
+      setConfirmingSetup(true);
+      try {
+        if (!(await connectionGuard.current({ ...target, name: name?.trim() || target.name })))
+          throw new Error("Connection unchanged. You can continue setup when you are ready.");
+      } finally {
+        setConfirmingSetup(false);
+      }
+    }
+    return serial(async (stale) => {
+      if (stale()) throw new Error("A newer connection was selected.");
+      const before = current.current;
+      const beforeConnection = connectionRef.current;
+      const beforeDetails = signedInWith.current;
+      if (before) await before.close().catch(() => {});
+      try {
+        const { hermes: h, connection: c, notSaved, kept } = await signIn(target, d, account, name);
+        if (stale()) {
+          await h.close().catch(() => {});
+          use(null);
+          throw new Error("A newer connection was selected.");
+        }
+        setNotSaved(notSaved);
+        setKept(kept);
+        setHeaders(headerNames(d));
+        setError(undefined);
+        // The last chat open was on the connection before, or this one as it was before the change.
+        setColdStart(!before || beforeConnection?.id !== c.id);
+        signedInWith.current = d;
+        setConnection(c);
+        use(h);
+        return { notSaved, kept };
+      } catch (e) {
+        if (!stale() && before && beforeConnection) {
+          const previous = beforeDetails ?? (await savedSignIn(beforeConnection, account));
+          const back = previous ? await launchSignIn(beforeConnection, previous, account).catch(() => null) : null;
+          if (back && previous) setHeaders(headerNames(previous));
+          if (!back) {
+            signedInWith.current = undefined;
+            setInitial(await signInForm(beforeConnection, account));
+          }
+          use(back);
+        }
+        throw e;
+      }
+    });
+  };
+
+  /**
+   * Removes a saved connection (account.ts `removeConnection`). The one in use is signed out of first; then the
+   * sign-in screen offers the others and picks none, or setup opens when none is left.
+   */
+  const removeSaved = (c: SavedConnection) =>
+    serial(async () => {
+      const inUse = connectionRef.current?.id === c.id;
+      let closed = false;
+      try {
+        await removeConnection(c, account, forgetLocal, inUse ? async () => {
+          await current.current?.close().catch(() => {});
+          closed = true;
+          setRemovingActive(c);
+          setInitial(undefined);
+          use(null);
+        } : undefined);
+      } catch (e) {
+        if (closed) showSignIn(c, await signInForm(c, account), `Couldn't finish removing this connection: ${messageOf(e)}. Its remaining local data is still saved. Try removing it again, or sign in.`);
+        throw e;
+      } finally {
+        setRemovingActive(undefined);
+      }
+      if (!inUse) return;
+      showSignIn(undefined);
+      setColdStart(false);
+      if (!store.recent().length) setSetup({ mode: "first-run", initial: BLANK, target: store.draft(BLANK) });
+    });
+
   const setupLayer = setup && (
-    <Onboarding
-      key={setup.mode}
-      mode={setup.mode}
-      initial={setup.initial}
-      probe={tauriProbe}
-      hermes={hermes ?? undefined}
-      onConnect={connectWith}
-      onCancel={setup.mode === "first-run" ? undefined : () => setSetup(undefined)}
-      onDone={() => setSetup(undefined)}
-    />
+    <div hidden={confirmingSetup} inert={confirmingSetup}>
+      <Onboarding
+        key={`${setup.mode}:${setup.target.id}`}
+        mode={setup.mode}
+        initial={setup.initial}
+        initialName={setup.name}
+        probe={tauriProbe}
+        hermes={hermes ?? undefined}
+        onConnect={(d, name) => connectWith(setup.target, d, name)}
+        onCancel={setup.mode === "first-run" ? undefined : () => setSetup(undefined)}
+        onDone={() => setSetup(undefined)}
+      />
+    </div>
   );
+
+  /** Setup to change `c`: from the sign-in it is using, if it's the one in use, header values and all but the password. */
+  const editConnection = async (c: SavedConnection) => {
+    const now = c.id === connectionRef.current?.id && signedInWith.current ? { ...signedInWith.current, password: "" } : await signInForm(c, account);
+    // ServerFields clears the header values if the URL changes, so they never go to another server.
+    setSetup({ mode: c.id === connectionRef.current?.id && current.current ? "reconfigure" : "edit", initial: now, target: c, name: c.name });
+  };
 
   // Updates: checked once as the app starts, if the owner wants that. Back in the window, a package update waiting to be
   // installed looks again for pacman having installed it, which the owner does in a terminal.
@@ -259,68 +405,99 @@ export default function App() {
     return () => window.removeEventListener("focus", onFocus);
   }, []);
 
-  if (hermes)
+  if (hermes && connection)
     return (
       <>
         <Main
           key={connections}
           hermes={hermes}
-          connection={account.store.load()}
+          connection={connection}
+          saved={recent}
+          savedUnsaved={store.unsaved}
           headers={headers}
           notSaved={notSaved}
           kept={kept}
           reopenLast={coldStart}
-          covered={!!setup}
-          onSetUp={async () => {
-            // The connection in use, header values and all but the password; ServerFields clears the header values
-            // if the URL changes, so they never go to another server.
-            const now = signedInWith.current ? { ...signedInWith.current, password: "" } : await signInForm(account);
-            setSetup({ mode: "reconfigure", initial: now });
+          covered={!!setup && !confirmingSetup}
+          connectionGuard={connectionGuard}
+          onSetUp={() => void editConnection(connection)}
+          onSwitchConnection={(c) => void switchTo(c)}
+          onAddConnection={() => setSetup({ mode: "add", initial: BLANK, target: store.draft(BLANK) })}
+          onEditConnection={(c) => void editConnection(c)}
+          onRenameConnection={(c, name) => {
+            store.rename(c.id, name);
+            if (c.id === connection.id) setConnection(store.get(c.id));
           }}
-          onSignOut={async () => {
-          // Everything is read first, then shown at once: the sign-in screen keeps the details it mounts with.
-          const { initial, error } = await signOutToSignIn(hermes, account);
-          setHermes(null);
-          signedInWith.current = undefined;
-          setColdStart(false);
-          setNotSaved(undefined);
-          setKept({ password: true, headers: true });
-          setInitial(initial);
-          setError(error);
-        }}
+          onRemoveConnection={removeSaved}
+          onTestConnection={async (c) => {
+            const d = c.id === connection.id && signedInWith.current ? signedInWith.current : await savedSignIn(c, account);
+            if (!d) throw new Error("No password is saved for this connection, so it can't be tested. Edit it to sign in again.");
+            return testConnection(tauriProbe, d);
+          }}
+          onSignOut={() =>
+            serial(async () => {
+              // Everything is read first, then shown at once: the sign-in screen keeps the details it mounts with.
+              const { initial, error } = await signOutToSignIn(hermes, connection, account);
+              setColdStart(false);
+              showSignIn(connection, initial, error);
+            })
+          }
         />
         {setupLayer}
       </>
     );
-  if (setupLayer) return setupLayer;
-  if (!initial)
+  if (setupLayer) return <>{null}{setupLayer}</>;
+  if (!initial || switchingTo || removingActive)
     return (
       <div className="first-run">
         <div className="first-run-card">
           <div className="rail-brand big">H</div>
-          <p className="muted">Signing in…</p>
+          <p className="muted" role="status">
+            {removingActive ? `Removing ${removingActive.name}…` : switchingTo ? `Connecting to ${switchingTo.name}…` : "Signing in…"}
+          </p>
         </div>
       </div>
     );
   return (
-    <SignIn
-      initial={initial}
-      error={error}
-      onSetUp={() => setSetup({ mode: "sign-in", initial: { ...initial, password: "" } })}
-      onSignIn={async (d) => {
-        setError(undefined);
-        try {
-          const { hermes: h, notSaved, kept } = await signIn(d, account);
-          signedInWith.current = d;
-          setNotSaved(notSaved);
-          setKept(kept);
-          setHeaders(headerNames(d));
-          setHermes(h);
-        } catch (e) {
-          setError(messageOf(e));
+    <>
+      <SignIn
+        key={connection?.id ?? "none"}
+        initial={initial}
+        error={error}
+        connection={connection}
+        connections={recent}
+        onSetUp={() => setSetup({ mode: "sign-in", initial: BLANK, target: store.draft(BLANK) })}
+        onPick={(c) =>
+          void serial(async (stale) => {
+            const d = (await savedSignIn(c, account)) ?? (await signInForm(c, account));
+            if (!stale()) showSignIn(c, d);
+          })
         }
-      }}
-    />
+        onRemove={setRemoving}
+        onSignIn={async (d) => {
+          if (!connection) return;
+          setError(undefined);
+          try {
+            await connectWith(connection, d);
+          } catch (e) {
+            setError(messageOf(e));
+          }
+        }}
+      />
+      {removing && (
+        <RemoveConnection
+          c={removing}
+          inUse={false}
+          onCancel={() => setRemoving(undefined)}
+          onRemove={async () => {
+            await removeSaved(removing);
+            setRemoving(undefined);
+            if (removing.id === connectionRef.current?.id) showSignIn(undefined);
+            if (!store.recent().length) setSetup({ mode: "first-run", initial: BLANK, target: store.draft(BLANK) });
+          }}
+        />
+      )}
+    </>
   );
 }
 
@@ -370,13 +547,22 @@ const tauriScreenshotWiring: Screenshots = {
 
 export function Main({
   hermes,
-  connection,
+  connection: given,
   headers = [],
   notSaved,
   kept = { password: true, headers: true },
   reopenLast = false,
   covered = false,
   onSetUp,
+  saved = [],
+  savedUnsaved = false,
+  onSwitchConnection,
+  onAddConnection,
+  onEditConnection,
+  onRenameConnection,
+  onRemoveConnection,
+  onTestConnection,
+  connectionGuard,
   localFiles = tauriLocalFiles,
   webPages = tauriWebPages,
   screenshots = tauriScreenshotWiring,
@@ -386,7 +572,24 @@ export function Main({
   updates = appUpdates,
 }: {
   hermes: Hermes;
-  connection: SavedSignIn;
+  /** The saved connection in use (connections.ts); a bare sign-in (in tests) is keyed by its address, as before. */
+  connection: SavedConnection | SavedSignIn;
+  /** Every saved connection, most recently used first, for the recent-connection picker and the manager. */
+  saved?: SavedConnection[];
+  /** The connection list's last change couldn't be stored. */
+  savedUnsaved?: boolean;
+  /** Leaves this connection for another, once the owner has agreed to leave whatever is running here. */
+  onSwitchConnection?: (c: SavedConnection) => void;
+  onAddConnection?: () => void;
+  /** Opens setup for `c`; for another connection than this one, once the owner has agreed to leave. */
+  onEditConnection?: (c: SavedConnection) => void;
+  onRenameConnection?: (c: SavedConnection, name: string) => void;
+  /** Removes `c`; signs out first when it's this one. Rejects with why it couldn't. */
+  onRemoveConnection?: (c: SavedConnection) => Promise<void>;
+  /** Tests `c` with its saved sign-in; rejects when it has none. */
+  onTestConnection?: (c: SavedConnection) => Promise<TestOutcome>;
+  /** Setup asks the current screen immediately before replacing its connection. */
+  connectionGuard?: RefObject<((to: SavedConnection) => Promise<boolean>) | undefined>;
   /** The names of the extra request headers the connection sends. */
   headers?: string[];
   notSaved?: string;
@@ -408,6 +611,7 @@ export function Main({
   onSignOut: () => Promise<void>;
   updates?: Updater;
 }) {
+  const connection: SavedConnection = "id" in given ? given : { ...given, id: "", name: defaultName(given), addedAt: 0 };
   const { profile, chats, olderPulled, archivedListed, status, route, unsecure, closedReason, syncError, others, live, models, switching } = useSyncExternalStore(
     hermes.subscribe,
     hermes.getSnapshot,
@@ -483,7 +687,9 @@ export function Main({
   // Drafts were saved for the restart; nothing typed after that would survive it.
   const restarting = update.state === "restarting";
   // The chat to reopen at launch, until Hermes's list shows it is there or gone, or the owner goes somewhere first.
-  const [reopening, setReopening] = useState(() => (reopenLast ? chatToReopen(profile) : undefined));
+  // Kept per connection and profile, so the same profile name on another server keeps its own (connections.ts).
+  const pref = prefScope(connection, profile);
+  const [reopening, setReopening] = useState(() => (reopenLast ? chatToReopen(pref) : undefined));
   // One pane, or two side by side. The chat to reopen opens at once when the list saved on this computer has it, so the
   // New chat pane doesn't show first.
   const [panes, setPanes] = useState<Pane[]>(() => [
@@ -517,9 +723,9 @@ export function Main({
   // The model pick is sticky: new chats start on it, in this profile, until the owner picks another. It is kept on this
   // computer only and never becomes the profile's default. Picked in another profile, it gives way to this profile's
   // own model. A chat on screen shows the model it runs on, and a pick there switches that chat alone.
-  const { modelPicker, modelFavorites, previewWidth, screenshotShortcut } = useSyncExternalStore(subscribeUIPrefs, getUIPrefs);
+  const { modelPicker, modelPicks, modelFavorites, previewWidth, screenshotShortcut } = useSyncExternalStore(subscribeUIPrefs, getUIPrefs);
   const catalog = models?.profile === profile ? models : undefined;
-  const sticky: ModelPick | undefined = modelPicker?.profile === profile ? withoutProfile(modelPicker) : catalog?.defaultPick;
+  const sticky: ModelPick | undefined = modelPicks[pref] ?? (modelPicker?.profile === pref ? withoutProfile(modelPicker) : catalog?.defaultPick);
 
   // What the preview pane beside the chat shows; null when it is closed. `previewHidden`: in a window too narrow for
   // both, the pane covers the chat, and the owner has gone back to the chat without closing it.
@@ -612,7 +818,7 @@ export function Main({
     // A chat opened on its own reads again the Outputs dropped to stay within the limit.
     void outputsIndex.index(outputsRefs(), false, shownOutputsScope === "chat");
   }, [outputsOpen, status, outputsIndex, shownOutputsScope, outputsChatKey]);
-  const where = routeLabel(route) ?? (connection.mode === "ssh" ? `ssh://${connection.sshTarget}` : connection.url) ?? undefined;
+  const where = routeLabel(route) ?? addressLabel(connection);
   const inbox = inboxEntries({ profile, chats, connected: status === "connected", others, live, seen });
   const inboxShown = inbox.entries.filter((e) => !acks.isDismissed(e, dismissed));
   // Writes only when a resumed chat shows cards a dismissed waiting session covered.
@@ -637,7 +843,7 @@ export function Main({
     if (!pane) return;
     activeKeyRef.current = key;
     setActiveKey(key);
-    rememberOpenChat(profile, pane.chatId);
+    rememberOpenChat(pref, pane.chatId);
   };
 
   // Every move between chats is kept as the profile's last open chat, so it reopens at the next launch whether or not
@@ -657,7 +863,7 @@ export function Main({
       setJobsOpen(false);
       setTerminalOpen(false);
       setOutputsOpen(false);
-      if (remember) rememberOpenChat(profile, id);
+      if (remember) rememberOpenChat(pref, id);
     };
     if (keepSettings) go();
     else guard(go);
@@ -670,7 +876,7 @@ export function Main({
     hermes.reveal(found);
     patchPane(active.key, { chatId: found.chatId, picked: { found, at: Date.now() }, jump: undefined });
     setReopening(undefined);
-    rememberOpenChat(profile, found.chatId);
+    rememberOpenChat(pref, found.chatId);
     setSearchOpen(false);
     setSettingsOpen(false);
     setProjectOpen(false);
@@ -696,7 +902,7 @@ export function Main({
     setJobsOpen(false);
     setTerminalOpen(false);
     setOutputsOpen(false);
-    rememberOpenChat(profile, chatId);
+    rememberOpenChat(pref, chatId);
   });
 
   /** Opens a chat in the left (0) or right (1) pane, opening the right one if there's one pane. */
@@ -743,7 +949,7 @@ export function Main({
     setPanes(rest);
     activeKeyRef.current = rest[0].key;
     setActiveKey(rest[0].key);
-    rememberOpenChat(profile, rest[0].chatId);
+    rememberOpenChat(pref, rest[0].chatId);
     requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(`[data-pane="${CSS.escape(rest[0].key)}"] .composer textarea`)?.focus());
   };
 
@@ -773,6 +979,54 @@ export function Main({
     setPreview(null);
     void hermes.switchProfile(name);
   }, "profile");
+
+  // Another saved connection (ADR 0023). Whatever is running or waiting here is named first, from the inbox's entries,
+  // which cover every profile on this server; an unsaved persona or memory edit asks first too. Nothing is stopped:
+  // Hermes keeps a running reply going after this connection closes, as it does when the profile switches.
+  const [connectionAsk, setConnectionAsk] = useState<{ to: SavedConnection; notes: string[]; go: () => void; stay?: () => void }>();
+  const [removeAsk, setRemoveAsk] = useState<SavedConnection>();
+  const leavingConnection = (): string[] => {
+    const named = (es: InboxEntry[]) =>
+      es.slice(0, 3).map((e) => `“${e.title}” in ${e.profile}`).join(", ") + (es.length > 3 ? `, and ${es.length - 3} more` : "");
+    const waiting = inbox.entries.filter((e) => e.kind === "approval" && !e.ended);
+    const running = inbox.entries.filter((e) => e.kind === "running");
+    const notes: string[] = [];
+    if (waiting.length) notes.push(`${waiting.length === 1 ? "An Approval is" : `${waiting.length} Approvals are`} waiting for you: ${named(waiting)}.`);
+    if (running.length) notes.push(`${running.length === 1 ? "A reply is" : `${running.length} replies are`} running: ${named(running)}.`);
+    const here = leavingNote(profile, chats);
+    if (!notes.length && here) notes.push(here);
+    return notes;
+  };
+  const leaveConnection = (to: SavedConnection, go: () => void, stay?: () => void) =>
+    guard(() => {
+      const notes = leavingConnection();
+      if (notes.length) setConnectionAsk({ to, notes, go, stay });
+      else go();
+    }, "connection", stay);
+  if (connectionGuard) connectionGuard.current = (to) => new Promise((resolve) => leaveConnection(to, () => resolve(true), () => resolve(false)));
+  const openConnections = () =>
+    guard(() => {
+      setProjectOpen(false);
+      setFilesOpen(false);
+      setJobsOpen(false);
+      setTerminalOpen(false);
+      setOutputsOpen(false);
+      setShowTextGeneration(undefined);
+      setSettingsOpen(true);
+    });
+  const connectionManager = onSwitchConnection && (
+    <ConnectionManager
+      connections={saved}
+      currentId={connection.id}
+      unsaved={savedUnsaved}
+      onTest={(c) => (onTestConnection ? onTestConnection(c) : Promise.reject(new Error("Testing isn't available here.")))}
+      onConnect={(c) => leaveConnection(c, () => onSwitchConnection(c))}
+      onEdit={(c) => (c.id === connection.id ? guard(() => onEditConnection?.(c)) : leaveConnection(c, () => onEditConnection?.(c)))}
+      onRemove={(c) => (c.id === connection.id ? guard(() => setRemoveAsk(c), "signout") : setRemoveAsk(c))}
+      onRename={(c, name) => onRenameConnection?.(c, name)}
+      onAdd={() => onAddConnection?.()}
+    />
+  );
 
   // An inbox entry opens its chat, in its own profile, in the pane already showing it or else the active one. Another
   // profile is switched to first, the way the switcher does, and the chat opens once that profile's list has it.
@@ -891,10 +1145,10 @@ export function Main({
       if (!listed) return;
     } else if (listed) {
       patchPane(firstPane.current, { chatId: null });
-      forgetOpenChat(profile, reopening);
+      forgetOpenChat(pref, reopening);
     } else return;
     setReopening(undefined);
-  }, [hermes, reopening, chats, profile]);
+  }, [hermes, reopening, chats, pref]);
 
   useEffect(() => {
     if (!toast) return;
@@ -937,11 +1191,11 @@ export function Main({
     if (status === "connected") void hermes.loadModels();
   }, [hermes, status, profile]);
 
-  // Switching profile reseeds the pick to that profile's own model, once its list is read.
+  // Switching profile restores its own pick, or seeds its default once the model list is read.
   useEffect(() => {
     const pick = getUIPrefs().modelPicker;
-    if (catalog?.defaultPick && pick?.profile !== profile) setUIPrefs({ modelPicker: { ...catalog.defaultPick, profile } });
-  }, [catalog, profile]);
+    if (catalog?.defaultPick && pick?.profile !== pref) setUIPrefs({ modelPicker: { ...(getUIPrefs().modelPicks[pref] ?? catalog.defaultPick), profile: pref } });
+  }, [catalog, pref]);
 
   // The inbox asks for fresh checks as it opens, and keeps asking while it is open.
   useEffect(() => {
@@ -1050,7 +1304,7 @@ export function Main({
             const stillActive = activeKeyRef.current === p.key;
             patchPane(p.key, { chatId: id, picked: undefined });
             setReopening(undefined);
-            if (stillActive) rememberOpenChat(profile, id);
+            if (stillActive) rememberOpenChat(pref, id);
           }}
           onDraftError={(reason) => {
             if (panesRef.current.find((now) => now.key === p.key) === p) patchPane(p.key, { draftError: reason });
@@ -1146,6 +1400,17 @@ export function Main({
         terminalOpen={terminalOpen && !settingsOpen}
         terminalRunning={terminalRunning}
         updateWaiting={updateWaiting}
+        connectionsMenu={
+          onSwitchConnection && (
+            <RailConnections
+              connections={saved}
+              currentId={connection.id}
+              onSwitch={(c) => leaveConnection(c, () => onSwitchConnection(c))}
+              onAdd={() => onAddConnection?.()}
+              onManage={openConnections}
+            />
+          )
+        }
       />
       {listOpen && (
         <ChatList
@@ -1320,6 +1585,7 @@ export function Main({
             onPullOlder={() => hermes.pullOlderHistory()}
             onSignOut={() => new Promise<void>((done) => guard(() => void onSignOut().finally(done), "signout", done))}
             onSetUp={onSetUp && (() => guard(onSetUp))}
+            connectionManager={connectionManager}
             onClose={() =>
               guard(() => {
                 flushSync(() => setSettingsOpen(false));
@@ -1386,9 +1652,9 @@ export function Main({
           <Suspense fallback={null}>
           <TerminalScreen
             api={tauriTerminal}
-            initialTarget={terminalTarget(connection, localStorage.getItem(TERMINAL_TARGET_KEY))}
+            initialTarget={terminalTarget(connection, localStorage.getItem(terminalTargetKey(connection)))}
             shown={terminalOpen && !settingsOpen}
-            onTarget={(t) => localStorage.setItem(TERMINAL_TARGET_KEY, t)}
+            onTarget={(t) => localStorage.setItem(terminalTargetKey(connection), t)}
             onRunning={setTerminalRunning}
             onClose={() => {
               flushSync(() => setTerminalOpen(false));
@@ -1467,6 +1733,31 @@ export function Main({
           }}
         />
       )}
+      {connectionAsk && (
+        <SwitchConnection
+          from={connection}
+          to={connectionAsk.to}
+          notes={connectionAsk.notes}
+          onStay={() => { connectionAsk.stay?.(); setConnectionAsk(undefined); }}
+          onGo={() => {
+            const { go } = connectionAsk;
+            setConnectionAsk(undefined);
+            go();
+          }}
+        />
+      )}
+      {removeAsk && onRemoveConnection && (
+        <RemoveConnection
+          c={removeAsk}
+          inUse={removeAsk.id === connection.id}
+          notes={removeAsk.id === connection.id ? leavingConnection() : []}
+          onCancel={() => setRemoveAsk(undefined)}
+          onRemove={async () => {
+            await onRemoveConnection(removeAsk);
+            setRemoveAsk(undefined);
+          }}
+        />
+      )}
       {restarting &&
         // Outside the inert app, so it is announced.
         createPortal(
@@ -1521,7 +1812,7 @@ function ChatView({
   voice,
 }: {
   hermes: Hermes;
-  connection: SavedSignIn;
+  connection: SavedConnection;
   profile: string;
   status: ConnectionStatus;
   paneKey: string;
@@ -1578,7 +1869,7 @@ function ChatView({
 
   const shownModel = (started && chat.model) || startSettings.model.value;
   const pickModel = (pick: ModelPick) => {
-    setUIPrefs({ modelPicker: { ...pick, profile } });
+    setUIPrefs({ modelPicker: { ...pick, profile: prefScope(connection, profile) } });
     if (!started) return setChosen(pick);
     hermes.setModel(chat.id, pick).catch((e) => stillIn() && onToast(`Couldn't switch this chat's model: ${messageOf(e)}`));
   };
