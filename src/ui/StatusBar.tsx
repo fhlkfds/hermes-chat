@@ -3,7 +3,8 @@
 // kept in the display preferences (uiPrefs.ts `statusBar`). Nothing is shown that Hermes didn't report.
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Check, Zap } from "lucide-react";
-import type { Chat, ConnectionStatus, ContextPart } from "../hermes/model";
+import type { Chat, ConnectionStatus } from "../hermes/model";
+import { ContextInspector, type ContextApi } from "./ContextInspector";
 import { STATUS_BAR_ITEMS, getUIPrefs, setUIPrefs, subscribe } from "../hermes/uiPrefs";
 import { Menu } from "./ChatMenu";
 import { STATUS_LABEL, useReturnFocus } from "./bits";
@@ -39,7 +40,7 @@ export function StatusBarSetting() {
 const n = (tokens: number) => tokens.toLocaleString();
 
 /** A small panel above the bar. Escape or a click outside closes it, and focus goes back. */
-function Popover({ label, onClose, children }: { label: string; onClose: () => void; children: ReactNode }) {
+function Popover({ label, onClose, children, wide }: { label: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
   const box = useRef<HTMLDivElement>(null);
   useReturnFocus();
   useEffect(() => {
@@ -52,7 +53,7 @@ function Popover({ label, onClose, children }: { label: string; onClose: () => v
   return (
     <div
       ref={box}
-      className="status-popover"
+      className={`status-popover${wide ? " wide" : ""}`}
       role="dialog"
       aria-label={label}
       tabIndex={-1}
@@ -68,28 +69,21 @@ function Popover({ label, onClose, children }: { label: string; onClose: () => v
   );
 }
 
-/** How full the context window is; clicking shows the numbers, and the breakdown by category if Hermes gives one. */
-function ContextMeter({ context, onBreakdown }: { context: NonNullable<NonNullable<Chat["live"]>["context"]>; onBreakdown: () => Promise<ContextPart[]> }) {
+/**
+ * How full the context window is, as Hermes last measured it. Clicking opens the context inspector: what fills it, the
+ * compactions Hermes stored, and Compact now where Hermes can (ContextInspector.tsx).
+ */
+function ContextMeter({ chat, status, api }: { chat: Chat; status: ConnectionStatus; api: ContextApi }) {
   const [open, setOpen] = useState(false);
-  const [parts, setParts] = useState<ContextPart[] | "loading" | { error: string }>("loading");
-  useEffect(() => {
-    if (!open) return;
-    let live = true;
-    setParts("loading");
-    onBreakdown().then(
-      (p) => live && setParts(p),
-      (e: unknown) => live && setParts({ error: e instanceof Error ? e.message : String(e) }),
-    );
-    return () => void (live = false);
-  }, [open]);
-  const { used, max, percent, estimated } = context;
+  const { used, max, percent, estimated } = chat.live!.context!;
   const level = percent >= 90 ? "full" : percent >= 70 ? "high" : "";
   return (
     <span className="status-anchor">
       <button
         className={`status-item status-meter ${level}`}
         aria-expanded={open}
-        title={`Context: ${n(used)} of ${n(max)} tokens${estimated ? " (partly estimated)" : ""}`}
+        aria-haspopup="dialog"
+        title={`Context: ${n(used)} of ${n(max)} tokens${estimated ? " (partly estimated)" : ""}. Click to see what fills it.`}
         onClick={() => setOpen((o) => !o)}
       >
         <span className="meter" aria-hidden>
@@ -98,28 +92,8 @@ function ContextMeter({ context, onBreakdown }: { context: NonNullable<NonNullab
         {percent}% full
       </button>
       {open && (
-        <Popover label="Context window" onClose={() => setOpen(false)}>
-          <div className="popover-title">Context window</div>
-          <div className="popover-sum">
-            {n(used)} of {n(max)} tokens · {percent}%{estimated && <span className="muted"> · partly estimated</span>}
-          </div>
-          {parts === "loading" ? (
-            <div className="muted small">Asking Hermes for the breakdown…</div>
-          ) : "error" in parts ? (
-            <div className="muted small">Couldn't get the breakdown: {parts.error}</div>
-          ) : !parts.length ? (
-            <div className="muted small">Hermes gave no breakdown for this chat.</div>
-          ) : (
-            <ul className="context-parts" aria-label="Breakdown by category">
-              {parts.map((p) => (
-                <li key={p.id}>
-                  <span className="swatch" style={p.color ? { background: p.color } : undefined} aria-hidden />
-                  <span className="part-label">{p.label}</span>
-                  <span className="part-tokens">{n(p.tokens)}</span>
-                </li>
-              ))}
-            </ul>
-          )}
+        <Popover label="Context window" onClose={() => setOpen(false)} wide>
+          <ContextInspector chat={chat} status={status} api={api} />
         </Popover>
       )}
     </span>
@@ -196,12 +170,12 @@ export function StatusBar({
   chat,
   status,
   onYolo,
-  onBreakdown,
+  context,
 }: {
   chat: Chat;
   status: ConnectionStatus;
   onYolo: (on: boolean) => Promise<void>;
-  onBreakdown: () => Promise<ContextPart[]>;
+  context: ContextApi;
 }) {
   const items = useShown();
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
@@ -218,7 +192,8 @@ export function StatusBar({
         setMenu({ x: e.clientX, y: e.clientY });
       }}
     >
-      {has("context") && live?.context && <ContextMeter context={live.context} onBreakdown={onBreakdown} />}
+      {/* Keyed by the chat's session: a new one starts the inspector afresh, and an answer for the old one is dropped. */}
+      {has("context") && live?.context && <ContextMeter key={`${chat.id}/${chat.runtimeId}`} chat={chat} status={status} api={context} />}
       {has("yolo") && <YoloToggle chat={chat} status={status} onYolo={onYolo} />}
       <span className="status-gap" />
       {has("model") && chat.model && (

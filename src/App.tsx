@@ -459,6 +459,8 @@ export function Main({
   }, [personaUnsaved]);
   // A new object each time a row asks Settings to show the Text generation model; the rail's button opens it plainly.
   const [showTextGeneration, setShowTextGeneration] = useState<object>();
+  /** Set to open Settings on its Memory tab, from the context inspector. */
+  const [showMemory, setShowMemory] = useState<object>();
   const voice = useMemo<VoiceApi>(
     () => ({ setup: () => hermes.voiceSetup(), transcribe: (audio, mime) => hermes.transcribe(audio, mime), speak: (text) => hermes.speak(text) }),
     [hermes],
@@ -1056,6 +1058,20 @@ export function Main({
             if (panesRef.current.find((now) => now.key === p.key) === p) patchPane(p.key, { draftError: reason });
           }}
           onToast={(text) => setToast({ text, at: Date.now() })}
+          onMemorySettings={
+            hermes.memory
+              ? () => {
+                  setProjectOpen(false);
+                  setFilesOpen(false);
+                  setJobsOpen(false);
+                  setTerminalOpen(false);
+                  setOutputsOpen(false);
+                  setShowTextGeneration(undefined);
+                  setShowMemory({});
+                  setSettingsOpen(true);
+                }
+              : undefined
+          }
           onSettle={(s) => setSettled(chat.id, s)}
           onExport={() => exportChatOnScreen(chat)}
           onArchive={(a) => setArchived(chat.id, a)}
@@ -1316,6 +1332,7 @@ export function Main({
             checkScreenshots={screenshots.support}
             voiceSetup={voice.setup}
             showTextGeneration={showTextGeneration}
+            showMemory={showMemory}
             onClearCache={() => hermes.clearCache()}
             onPullOlder={() => hermes.pullOlderHistory()}
             onSignOut={() => new Promise<void>((done) => guard(() => void onSignOut().finally(done), "signout", done))}
@@ -1508,6 +1525,7 @@ function ChatView({
   onStarted,
   onDraftError,
   onToast,
+  onMemorySettings,
   onSettle,
   onExport,
   onArchive,
@@ -1545,6 +1563,8 @@ function ChatView({
   onStarted: (id: string) => void;
   onDraftError: (reason: string) => void;
   onToast: (text: string) => void;
+  /** Opens Settings → Memory, when this Hermes can edit memory from here. */
+  onMemorySettings?: () => void;
   onSettle: (settled: boolean) => void;
   onExport: () => void;
   onArchive: (archived: boolean) => void;
@@ -1820,7 +1840,20 @@ function ChatView({
       }
       queue={queue}
       queueApi={queueApi}
-      footer={<StatusBar chat={chat} status={status} onYolo={(on) => hermes.setYolo(chat.id, on)} onBreakdown={() => hermes.contextBreakdown(chat.id)} />}
+      footer={
+        <StatusBar
+          chat={chat}
+          status={status}
+          onYolo={(on) => hermes.setYolo(chat.id, on)}
+          context={{
+            inspect: () => hermes.inspectContext(chat.id),
+            history: () => hermes.compactionHistory(chat.id),
+            compact: () => hermes.compact(chat.id),
+            cannotCompact: () => hermes.cannotCompact(),
+            openMemory: onMemorySettings,
+          }}
+        />
+      }
       modelControls={
         <ModelControls
           catalog={catalog}

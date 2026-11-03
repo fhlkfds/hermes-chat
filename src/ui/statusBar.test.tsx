@@ -43,7 +43,7 @@ async function barFor(server = new FakeHermes()) {
       chat={chat()}
       status={hermes.getSnapshot().status}
       onYolo={(on) => hermes.setYolo(id, on)}
-      onBreakdown={() => hermes.contextBreakdown(id)}
+      context={{ inspect: () => hermes.inspectContext(id), history: () => hermes.compactionHistory(id), compact: () => hermes.compact(id), cannotCompact: () => hermes.cannotCompact() }}
     />
   );
   const view = render(bar());
@@ -118,39 +118,15 @@ describe("Context meter", () => {
     expect(screen.queryByText(/% full/)).toBeNull();
   });
 
-  it("opens the breakdown by category that Hermes gives", async () => {
+  it("opens the context inspector, which asks Hermes for the breakdown (contextInspector.test.tsx)", async () => {
     const { server, hermes, runtime } = await barFor();
-    server.handlers["session.context_breakdown"] = (r) =>
-      server.respond(r.id, {
-        categories: [
-          { id: "system_prompt", label: "System prompt", tokens: 6_000, color: "#7c3aed" },
-          { id: "conversation", label: "Conversation", tokens: 40_000, color: "#0ea5e9" },
-          { id: "junk", tokens: "lots" },
-        ],
-        context_max: 200_000,
-        context_used: 46_000,
-      });
     act(() => server.event(runtime, "session.usage", USAGE_TICK));
-
     await userEvent.click(screen.getByText("23% full"));
     await settle(hermes);
-    const dialog = screen.getByRole("dialog", { name: "Context window" });
-    expect(dialog.textContent).toContain("46,000 of 200,000 tokens");
-    const parts = screen.getByRole("list", { name: "Breakdown by category" });
-    expect([...parts.querySelectorAll("li")].map((li) => li.textContent)).toEqual(["System prompt6,000", "Conversation40,000"]);
+    expect(screen.getByRole("dialog", { name: "Context window" })).toBeTruthy();
     expect(server.last("session.context_breakdown")!.params).toEqual({ session_id: runtime });
-
     await userEvent.keyboard("{Escape}");
     expect(screen.queryByRole("dialog")).toBeNull();
-  });
-
-  it("says so when Hermes gives no breakdown", async () => {
-    const { server, hermes, runtime } = await barFor();
-    server.handlers["session.context_breakdown"] = (r) => server.respond(r.id, { categories: [], context_max: 200_000 });
-    act(() => server.event(runtime, "session.usage", USAGE_TICK));
-    await userEvent.click(screen.getByText("23% full"));
-    await settle(hermes);
-    expect(screen.getByRole("dialog").textContent).toContain("Hermes gave no breakdown for this chat.");
   });
 });
 
