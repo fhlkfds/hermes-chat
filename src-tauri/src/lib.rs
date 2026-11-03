@@ -709,7 +709,7 @@ async fn chat_export(app: tauri::AppHandle, markdown: String, file_name: String)
     Ok(Some(path.display().to_string()))
 }
 
-/// Saves Usage analytics' CSV where the owner picks in the native Save dialog (ADR 0025). `None`: cancelled.
+/// Saves Usage analytics' CSV where the owner picks in the native Save dialog (ADR 0026). `None`: cancelled.
 #[tauri::command]
 async fn usage_export(app: tauri::AppHandle, csv: String, file_name: String) -> Result<Option<String>, String> {
     let (tx, rx) = tokio::sync::oneshot::channel();

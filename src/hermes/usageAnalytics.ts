@@ -1,4 +1,4 @@
-// Usage analytics (GLOSSARY.md "Usage analytics", ADR 0025): the usage and cost Hermes stored for each chat, added up
+// Usage analytics (GLOSSARY.md "Usage analytics", ADR 0026): the usage and cost Hermes stored for each chat, added up
 // across chats, models, projects and profiles, for chats started in a period.
 //
 // The figures are the same stored session totals a chat's own usage shows (usage.ts, ADR 0008), read from dashboard

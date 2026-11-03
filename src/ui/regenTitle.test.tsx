@@ -116,6 +116,25 @@ describe("Regenerate title when Hermes isn't signed in to the Text generation mo
     expect(screen.getByRole("tab", { name: /General/ }).getAttribute("aria-selected")).toBe("true");
   });
 
+  it("opens on the Model tab after the context inspector opened Settings → Memory earlier", async () => {
+    const { s, hermes, user } = await launch();
+    await user.click(screen.getByRole("button", { name: /Backup job/ }));
+    await act(async () => void (await hermes.idle()));
+    s.contextBreakdown = { categories: [{ id: "memory", label: "Memory", tokens: 512 }], context_max: 200_000, context_used: 40_000, context_percent: 20, context_source: "provider_usage" };
+    act(() => s.event(s.runtimeIdOf("b")!, "session.usage", { usage: { model: "m", calls: 1, context_used: 40_000, context_max: 200_000, context_percent: 20 } }));
+    await user.click(screen.getByRole("button", { name: "20% full" }));
+    await user.click(await screen.findByRole("button", { name: "Open Settings → Memory" }));
+    expect(screen.getByRole("tab", { name: /Memory/ }).getAttribute("aria-selected")).toBe("true");
+    await user.click(screen.getByRole("button", { name: /Back to chat/ }));
+
+    const alert = await regenerate(user, "Lisbon trip");
+    await user.click(within(alert).getByRole("button", { name: "Text generation settings" }));
+
+    // The earlier Memory shortcut doesn't take Settings away from where this one asked for.
+    await act(async () => void (await hermes.idle()));
+    expect(screen.getByRole("tab", { name: /Model/ }).getAttribute("aria-selected")).toBe("true");
+  });
+
   it("offers no settings button for a failure the setting can't fix", async () => {
     const { s, user } = await launch();
     s.oneshotFailure = "Request timed out.";

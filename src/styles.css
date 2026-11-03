@@ -1121,6 +1121,7 @@ button.status-item:disabled { opacity: 0.5; cursor: default; }
 .meter > span { display: block; height: 100%; background: var(--muted); }
 .status-meter.high .meter > span { background: var(--warn); }
 .status-meter.full .meter > span { background: var(--bad); }
+.status-meter.unmeasured { color: var(--muted); }
 .status-yolo.on { color: var(--warn); }
 .status-yolo.failed { color: var(--bad); }
 .status-conn .conn-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }
@@ -1140,6 +1141,56 @@ button.status-item:disabled { opacity: 0.5; cursor: default; }
 .context-parts .part-label { flex: 1; color: var(--text-2); }
 .context-parts .part-tokens { color: var(--muted); font-variant-numeric: tabular-nums; }
 .menu-sep { height: 1px; margin: 4px 2px; background: var(--line-2); }
+/* context inspector (ContextInspector.tsx): Hermes names its categories' colours as these variables. */
+:root {
+  --context-usage-system: #a78bfa; --context-usage-tools: #60a5fa; --context-usage-rules: #f59e0b; --context-usage-skills: #34d399;
+  --context-usage-mcp: #f472b6; --context-usage-subagents: #22d3ee; --context-usage-memory: #fb923c; --context-usage-conversation: #94a3b8;
+}
+.status-popover.wide { width: min(420px, calc(100vw - 24px)); max-height: min(72vh, 600px); padding: 0; gap: 0; overflow: hidden; }
+.inspector { display: flex; flex-direction: column; min-height: 0; }
+.inspector-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px 6px; }
+.inspector-head .icon-btn { width: 24px; height: 24px; }
+.inspector-tabs { display: flex; gap: 2px; padding: 0 10px; border-bottom: 1px solid var(--line-2); }
+.inspector-tab { padding: 6px 10px; font-size: calc(12rem / 14); color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.inspector-tab:hover { color: var(--text); }
+.inspector-tab.on { color: var(--text); border-bottom-color: var(--accent); }
+.inspector-body { overflow: auto; padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 12px; min-height: 0; font-size: calc(12rem / 14); }
+.inspector-body p { margin: 0; line-height: 1.5; }
+.inspector-section { display: flex; flex-direction: column; gap: 6px; }
+.inspector-subhead { display: flex; align-items: center; gap: 8px; font-weight: 600; color: var(--text-2); }
+.inspector-total { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: calc(13rem / 14); font-weight: 600; font-variant-numeric: tabular-nums; }
+.meter.wide { width: 100%; height: 6px; }
+.inspector-note { padding: 7px 9px; border-radius: 7px; background: var(--raised-2); line-height: 1.5; }
+.inspector-waiting { display: flex; align-items: center; gap: 6px; }
+.certainty { display: inline-flex; align-items: center; padding: 1px 6px; border-radius: 5px; font-size: calc(10.5rem / 14); font-weight: 500; white-space: nowrap; }
+.certainty.exact { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
+.certainty.estimated { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+.certainty.unavailable { background: var(--raised-3); color: var(--muted); }
+.context-parts li { align-items: flex-start; }
+.context-parts .swatch { margin-top: 4px; }
+.context-parts .part-main, .context-files .part-main { flex: 1; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.part-hint { color: var(--muted); font-size: calc(11rem / 14); }
+.context-parts .link-btn, .context-files .link-btn { align-self: flex-start; font-size: calc(11rem / 14); }
+.context-parts.unavailable .part-label { color: var(--muted); }
+.context-files { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.context-files li { display: flex; align-items: flex-start; gap: 8px; }
+.context-files li > svg { margin-top: 2px; color: var(--muted); flex: none; }
+.context-files .file-link { font-size: inherit; color: var(--text-2); word-break: break-all; }
+.context-files li.not-loaded .file-link { color: var(--muted); }
+.context-files .part-tokens { color: var(--muted); font-variant-numeric: tabular-nums; }
+.compactions { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.compaction { display: flex; flex-direction: column; gap: 4px; padding: 8px 9px; border: 1px solid var(--line-2); border-radius: 8px; }
+.compaction-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-weight: 600; color: var(--text-2); }
+.compaction-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.compaction-actions .link-btn { font-size: calc(11.5rem / 14); }
+.compaction-summary {
+  margin: 0; max-height: 220px; overflow: auto; padding: 8px; border-radius: 6px; background: var(--code-bg); color: var(--text-2);
+  font: calc(11.5rem / 14) / 1.5 var(--mono); white-space: pre-wrap; word-break: break-word;
+}
+.inspector-section:focus { outline: none; }
+.compact-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.inspector-confirm { display: flex; flex-direction: column; gap: 8px; padding: 9px; border-radius: 8px; background: var(--raised-2); }
+
 
 /* Settings covers mounted panes so their scroll, find and attachment state survives. */
 .main { position: relative; }
@@ -1746,7 +1797,7 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .terminal-btn { position: relative; }
 .terminal-dot { position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; background: var(--ok); }
 
-/* Usage analytics (UsageAnalytics.tsx, ADR 0025): filters in one row, token tiles, the recorded cost and what it
+/* Usage analytics (UsageAnalytics.tsx, ADR 0026): filters in one row, token tiles, the recorded cost and what it
    covers, and sortable breakdown tables that scroll sideways in a narrow pane. Cost-kind colours are the dataviz
    reference palette's first four categorical slots, validated for both modes; "Unknown" is neutral grey. */
 .usage-screen { --cost-actual: #3987e5; --cost-estimated: #d95926; --cost-partial: #199e70; --cost-included: #c98500; --cost-unknown: #6b6b74; }

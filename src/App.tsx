@@ -461,6 +461,8 @@ export function Main({
   }, [personaUnsaved]);
   // A new object each time a row asks Settings to show the Text generation model; the rail's button opens it plainly.
   const [showTextGeneration, setShowTextGeneration] = useState<object>();
+  /** Set to open Settings on its Memory tab, from the context inspector. */
+  const [showMemory, setShowMemory] = useState<object>();
   const voice = useMemo<VoiceApi>(
     () => ({ setup: () => hermes.voiceSetup(), transcribe: (audio, mime) => hermes.transcribe(audio, mime), speak: (text) => hermes.speak(text) }),
     [hermes],
@@ -480,7 +482,7 @@ export function Main({
   // Outputs covers the chat panes too, but not the preview pane, where its files open.
   const [outputsOpen, setOutputsOpen] = useState(false);
   const [outputsScope, setOutputsScope] = useState<OutputsScope>("chat");
-  // Usage analytics covers the chat panes too (ADR 0025). It reads Hermes afresh each time it opens.
+  // Usage analytics covers the chat panes too (ADR 0026). It reads Hermes afresh each time it opens.
   const [usageOpen, setUsageOpen] = useState(false);
   const usageIo = useMemo(() => hermes.usageIo(), [hermes]);
   const listProfiles = useCallback(() => hermes.profiles(), [hermes]);
@@ -1066,6 +1068,21 @@ export function Main({
             if (panesRef.current.find((now) => now.key === p.key) === p) patchPane(p.key, { draftError: reason });
           }}
           onToast={(text) => setToast({ text, at: Date.now() })}
+          onMemorySettings={
+            hermes.memory
+              ? () => {
+                  setProjectOpen(false);
+                  setFilesOpen(false);
+                  setJobsOpen(false);
+                  setTerminalOpen(false);
+                  setOutputsOpen(false);
+                  setUsageOpen(false);
+                  setShowTextGeneration(undefined);
+                  setShowMemory({});
+                  setSettingsOpen(true);
+                }
+              : undefined
+          }
           onSettle={(s) => setSettled(chat.id, s)}
           onExport={() => exportChatOnScreen(chat)}
           onArchive={(a) => setArchived(chat.id, a)}
@@ -1132,7 +1149,7 @@ export function Main({
         onInbox={() => setInboxOpen((o) => !o)}
         inboxOpen={inboxOpen}
         inboxCount={inboxCount}
-        onSettings={() => { setProjectOpen(false); setFilesOpen(false); setJobsOpen(false); setTerminalOpen(false); setOutputsOpen(false); setUsageOpen(false); setShowTextGeneration(undefined); setSettingsOpen(true); }}
+        onSettings={() => { setProjectOpen(false); setFilesOpen(false); setJobsOpen(false); setTerminalOpen(false); setOutputsOpen(false); setUsageOpen(false); setShowTextGeneration(undefined); setShowMemory(undefined); setSettingsOpen(true); }}
         onJobs={() =>
           guard(() => {
             setProjectOpen(false);
@@ -1244,6 +1261,8 @@ export function Main({
             setTerminalOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
+            // One destination at a time: an earlier Memory shortcut mustn't switch Settings away from this one.
+            setShowMemory(undefined);
             setShowTextGeneration({});
             setSettingsOpen(true);
           }}
@@ -1345,6 +1364,7 @@ export function Main({
             checkScreenshots={screenshots.support}
             voiceSetup={voice.setup}
             showTextGeneration={showTextGeneration}
+            showMemory={showMemory}
             onClearCache={() => hermes.clearCache()}
             onPullOlder={() => hermes.pullOlderHistory()}
             onSignOut={() => new Promise<void>((done) => guard(() => void onSignOut().finally(done), "signout", done))}
@@ -1556,6 +1576,7 @@ function ChatView({
   onStarted,
   onDraftError,
   onToast,
+  onMemorySettings,
   onSettle,
   onExport,
   onArchive,
@@ -1593,6 +1614,8 @@ function ChatView({
   onStarted: (id: string) => void;
   onDraftError: (reason: string) => void;
   onToast: (text: string) => void;
+  /** Opens Settings → Memory, when this Hermes can edit memory from here. */
+  onMemorySettings?: () => void;
   onSettle: (settled: boolean) => void;
   onExport: () => void;
   onArchive: (archived: boolean) => void;
@@ -1868,7 +1891,20 @@ function ChatView({
       }
       queue={queue}
       queueApi={queueApi}
-      footer={<StatusBar chat={chat} status={status} onYolo={(on) => hermes.setYolo(chat.id, on)} onBreakdown={() => hermes.contextBreakdown(chat.id)} />}
+      footer={
+        <StatusBar
+          chat={chat}
+          status={status}
+          onYolo={(on) => hermes.setYolo(chat.id, on)}
+          context={{
+            inspect: () => hermes.inspectContext(chat.id),
+            history: () => hermes.compactionHistory(chat.id),
+            compact: () => hermes.compact(chat.id),
+            cannotCompact: () => hermes.cannotCompact(),
+            openMemory: onMemorySettings,
+          }}
+        />
+      }
       modelControls={
         <ModelControls
           catalog={catalog}
