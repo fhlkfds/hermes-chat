@@ -142,6 +142,31 @@ async fn read_file(headers: HeaderMap, Query(q): Query<HashMap<String, String>>)
     }
 }
 
+/// `GET /api/files/download`, as `hermes_cli/web_routers/files.py` answers it at `bf0203a`, for a few made-up files:
+/// `/srv/data.bin` (300,000 bytes, with a Content-Length), `/srv/.env` (refused as a credential file), `/srv/cut`
+/// (breaks off after 64 KiB) and `/srv/slow` (a chunk every 50 ms, without end).
+async fn download_file(headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
+    if !cookie(&headers).split("; ").any(|c| c == "hermes_session_at=AT") {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"detail": "Unauthorized"}))).into_response();
+    }
+    match q.get("path").map(String::as_str) {
+        Some("/srv/data.bin") => (0..300_000u32).map(|i| (i % 251) as u8).collect::<Vec<u8>>().into_response(),
+        Some("/srv/.env") => (StatusCode::FORBIDDEN, Json(json!({"detail": "Access to sensitive files is not allowed"}))).into_response(),
+        Some("/srv/cut") => {
+            let chunks = futures_util::stream::iter([Ok(vec![7u8; 64 * 1024]), Err(std::io::Error::other("connection reset"))]);
+            axum::body::Body::from_stream(chunks).into_response()
+        }
+        Some("/srv/slow") => {
+            let chunks = futures_util::stream::unfold((), |_| async {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                Some((Ok::<_, std::io::Error>(vec![1u8; 4096]), ()))
+            });
+            axum::body::Body::from_stream(chunks).into_response()
+        }
+        _ => (StatusCode::NOT_FOUND, Json(json!({"detail": "File not found"}))).into_response(),
+    }
+}
+
 /// A 500 whose body never ends (`?endless`) or is 50 MB with a Content-Length.
 async fn flood(Query(q): Query<HashMap<String, String>>) -> Response {
     let body = if q.contains_key("endless") {
@@ -300,6 +325,7 @@ fn stub_routes() -> Router {
         .route("/api/audio/transcribe", post(transcribe))
         .route("/api/audio/speak", post(speak))
         .route("/api/files/read", get(read_file))
+        .route("/api/files/download", get(download_file))
         .route("/api/flood", get(flood))
 }
 
@@ -1645,4 +1671,78 @@ async fn a_redirect_to_an_address_that_repeats_a_header_value_never_shows_it() {
     let dashboard = Dashboard::sign_in(&base, &sign_in).await.unwrap();
     let err = dashboard.request("GET", "api/sessions", None).await.unwrap_err();
     assert!(matches!(err, TransportError::RedirectedHidden), "{err:?}");
+}
+
+/// The files in `dir`, hidden part files included.
+fn names_in(dir: &PathBuf) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    names.sort();
+    names
+}
+
+#[tokio::test]
+async fn downloads_a_server_file_in_place_of_the_destination_and_reports_progress() {
+    let dashboard = signed_in().await;
+    let dir = scratch("download-ok");
+    let dest = dir.join("data.bin");
+    std::fs::write(&dest, "the owner's older copy").unwrap();
+    let seen = Mutex::new(Vec::new());
+    let n = dashboard.download("/srv/data.bin", &dest, |done, total| seen.lock().unwrap().push((done, total))).await.expect("downloaded");
+    assert_eq!(n, 300_000);
+    let got = std::fs::read(&dest).unwrap();
+    assert_eq!(got, (0..300_000u32).map(|i| (i % 251) as u8).collect::<Vec<u8>>());
+    let seen = seen.into_inner().unwrap();
+    assert_eq!(seen.first(), Some(&(0, Some(300_000))));
+    assert_eq!(seen.last(), Some(&(300_000, Some(300_000))));
+    assert_eq!(names_in(&dir), ["data.bin"], "no part file is left");
+}
+
+#[tokio::test]
+async fn a_refused_or_broken_download_leaves_the_destination_as_it_was() {
+    let dashboard = signed_in().await;
+    let dir = scratch("download-fail");
+    let dest = dir.join("keep.txt");
+    std::fs::write(&dest, "kept").unwrap();
+    let err = dashboard.download("/srv/.env", &dest, |_, _| {}).await.err().unwrap();
+    assert!(matches!(&err, TransportError::Unexpected { status: 403, body } if body.contains("sensitive")), "{err:?}");
+    let err = dashboard.download("/srv/cut", &dest, |_, _| {}).await.err().unwrap();
+    assert!(matches!(err, TransportError::Unreachable(_)), "{err:?}");
+    assert_eq!(std::fs::read_to_string(&dest).unwrap(), "kept");
+    assert_eq!(names_in(&dir), ["keep.txt"], "the part file was removed");
+    // A folder this user can't write to: nothing is read past the answer's start, and nothing is left.
+    let locked = dir.join("locked");
+    std::fs::create_dir(&locked).unwrap();
+    std::fs::set_permissions(&locked, std::os::unix::fs::PermissionsExt::from_mode(0o500)).unwrap();
+    let err = dashboard.download("/srv/data.bin", &locked.join("x.bin"), |_, _| {}).await.err().unwrap();
+    std::fs::set_permissions(&locked, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    assert!(matches!(&err, TransportError::File(m) if m.contains("ermission denied")), "{err:?}");
+    assert!(names_in(&locked).is_empty());
+}
+
+#[tokio::test]
+async fn cancelling_a_download_removes_its_part_file() {
+    let dashboard = Arc::new(signed_in().await);
+    let dir = scratch("download-cancel");
+    let dest = dir.join("slow.bin");
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let d = dashboard.clone();
+    let task = tokio::spawn({
+        let dest = dest.clone();
+        async move { d.download("/srv/slow", &dest, move |done, _| { let _ = tx.send(done); }).await }
+    });
+    // Wait until bytes have been written, so the part file exists.
+    while rx.recv().await.unwrap() < 8192 {}
+    assert_eq!(names_in(&dir).len(), 1, "a part file while it runs");
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    assert!(names_in(&dir).is_empty(), "nothing left: {:?}", names_in(&dir));
+}
+
+#[tokio::test]
+async fn a_download_names_its_path_as_a_query_and_stays_on_the_file_route() {
+    let dashboard = signed_in().await;
+    let dir = scratch("download-path");
+    // A path that would read as more query, or another route, if it weren't encoded.
+    let err = dashboard.download("/srv/data.bin&path=/srv/.env", &dir.join("x"), |_, _| {}).await.err().unwrap();
+    assert!(matches!(&err, TransportError::Unexpected { status: 404, .. }), "{err:?}");
 }

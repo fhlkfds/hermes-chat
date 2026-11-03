@@ -171,8 +171,12 @@ A header name and value the owner adds to a URL connection, for a gateway in fro
 _Avoid_: custom header, gateway token
 
 **Server files screen**:
-The rail's read-only browser for the Server files on the machine the Hermes dashboard runs on. It lists folders through the dashboard's managed files, as the server's own user can open them, the same for every profile, and never shows credential files such as `.env`. The server may limit it to one folder. Nothing on this computer is shown there, and nothing on the server can be changed from it (ADR 0012).
+The rail's browser for the Server files on the machine the Hermes dashboard runs on. It lists folders through the dashboard's managed files, as the server's own user can open them, the same for every profile, and never shows credential files such as `.env`. The server may limit it to one folder. Nothing on this computer is shown there, and nothing on the server can be changed from it (ADR 0012). A file can be downloaded from it.
 _Avoid_: remote files, file manager, workspace (Hermes's word for a session's working folder)
+
+**Download** (of a Server file):
+Saving a copy of one Server file on this computer, where the owner picks in the Save dialog, which asks before replacing a file. It shows the server path, where it goes, and how far it got, and Cancel stops it. Until every byte has arrived, nothing takes the place of the file already there. It stops if the connection closes or changes (ADR 0023).
+_Avoid_: export (that is a chat saved as Markdown), save
 
 **Terminal**:
 The rail's screen with a shell on the Hermes server, through the owner's own ssh to the sign-in's SSH target, or one typed for it. ssh asks there for anything it needs, such as a passphrase or a new host key. Going back to a chat leaves the session running, and the rail shows it; signing out ends it. It is the owner's shell, not Hermes's: nothing typed there reaches a chat, an Approval or the agent (ADR 0022).

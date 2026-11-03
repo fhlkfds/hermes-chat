@@ -111,6 +111,7 @@ impl Screenshots {
 #[tauri::command]
 async fn hermes_connect(
     state: State<'_, AppState>,
+    transfers: State<'_, Transfers>,
     target: Target,
     username: String,
     password: String,
@@ -120,6 +121,7 @@ async fn hermes_connect(
 ) -> Result<Route, String> {
     let mut slot = state.0.lock().await;
     *slot = None;
+    transfers.stop_all();
     let attempt = attempt.unwrap_or_default();
     // Run apart, so `hermes_connect_cancel` can stop it; stopping it drops what it opened, SSH tunnel included.
     let task = {
@@ -416,9 +418,93 @@ async fn hermes_toolset_guards(state: State<'_, AppState>, profile: String) -> R
 }
 
 #[tauri::command]
-async fn hermes_disconnect(state: State<'_, AppState>) -> Result<(), String> {
+async fn hermes_disconnect(state: State<'_, AppState>, transfers: State<'_, Transfers>) -> Result<(), String> {
     *state.0.lock().await = None;
+    transfers.stop_all();
     Ok(())
+}
+
+/// Server file transfers running now, by the webview's id for each, so Cancel can stop one. Every one is stopped when
+/// the connection is replaced or closed, so a transfer never outlives the sign-in it started on (ADR 0023).
+#[derive(Default)]
+struct Transfers(std::sync::Mutex<std::collections::HashMap<u64, tokio::task::AbortHandle>>);
+
+impl Transfers {
+    fn stop_all(&self) {
+        for (_, task) in self.0.lock().unwrap().drain() {
+            task.abort();
+        }
+    }
+
+    /// Runs `work` as transfer `id` until it ends or `files_cancel` stops it.
+    async fn run<T: Send + 'static>(&self, id: u64, work: impl std::future::Future<Output = Result<T, String>> + Send + 'static) -> Result<T, String> {
+        let task = tokio::spawn(work);
+        if let Some(old) = self.0.lock().unwrap().insert(id, task.abort_handle()) {
+            old.abort();
+        }
+        let ended = task.await;
+        self.0.lock().unwrap().remove(&id);
+        match ended {
+            Ok(result) => result,
+            Err(e) if e.is_cancelled() => Err(TRANSFER_STOPPED.into()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+}
+
+/// What a stopped transfer rejects with; the webview tells it from a failure by this text.
+const TRANSFER_STOPPED: &str = "The transfer was stopped.";
+
+/// A transfer's progress: bytes so far, the size the server announced, and where on this computer the file goes.
+#[derive(Clone, Serialize)]
+struct TransferProgress {
+    done: u64,
+    total: Option<u64>,
+    dest: String,
+}
+
+/// Downloads the Server file at `path` (ADR 0023). The owner picks where in the native Save dialog, which asks before
+/// replacing a file there; the webview never names the local path. `None`: the owner cancelled the dialog, and
+/// nothing was read or written. `name` only suggests the file name.
+#[tauri::command]
+async fn files_download(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    transfers: State<'_, Transfers>,
+    id: u64,
+    path: String,
+    name: String,
+    on_progress: Channel<TransferProgress>,
+) -> Result<Option<String>, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut dialog = app.dialog().file().set_title("Download from the Hermes server").set_file_name(name);
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.set_parent(&window);
+    }
+    dialog.save_file(move |dest| {
+        let _ = tx.send(dest);
+    });
+    let Some(dest) = rx.await.map_err(|e| e.to_string())? else { return Ok(None) };
+    let dest = dest.into_path().map_err(|e| e.to_string())?;
+    // Taken once the destination is picked: the download reads from the sign-in that is current then, and only it.
+    let dashboard = dashboard(&state).await?;
+    let shown = dest.display().to_string();
+    let work = async move {
+        let report = |done, total| {
+            let _ = on_progress.send(TransferProgress { done, total, dest: shown.clone() });
+        };
+        dashboard.download(&path, &dest, report).await.map_err(|e| e.to_string())?;
+        Ok(dest.display().to_string())
+    };
+    transfers.run(id, work).await.map(Some)
+}
+
+/// Stops transfer `id`, if it is still running. A download's part file is removed; `dest` is left as it was.
+#[tauri::command]
+fn files_cancel(transfers: State<'_, Transfers>, id: u64) {
+    if let Some(task) = transfers.0.lock().unwrap().remove(&id) {
+        task.abort();
+    }
 }
 
 #[tauri::command]
@@ -632,6 +718,7 @@ pub fn run(screenshot: bool) {
             Ok(())
         })
         .manage(PickedFiles::default())
+        .manage(Transfers::default())
         .manage(terminal::Terminals::default())
         .invoke_handler(tauri::generate_handler![
             hermes_connect,
@@ -647,6 +734,8 @@ pub fn run(screenshot: bool) {
             hermes_toolset_guards,
             hermes_get_limited,
             hermes_disconnect,
+            files_download,
+            files_cancel,
             hermes_connect_cancel,
             hermes_probe,
             hermes_probe_cancel,

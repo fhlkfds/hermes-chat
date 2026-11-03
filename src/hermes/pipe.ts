@@ -1,6 +1,7 @@
 // The pipe under the frontend Hermes transport: JSON-RPC text frames in and out of `/api/ws`, plus
 // signed-in dashboard REST calls, the local files the owner attaches, and the dashboard's audio routes for Dictation
 // and Read aloud. In the app it is the Rust side (tauriPipe.ts); in tests it is FakeHermes.
+import type { TransferProgress } from "./remoteFiles";
 import type { SavedKey } from "./setup";
 
 /** A local file as `statFiles` finds it: its size, or why it can't be attached (e.g. "it's a folder"). */
@@ -71,6 +72,13 @@ export interface Pipe {
   speak(profile: string, text: string): Promise<Speech>;
   voiceSetup(profile: string): Promise<VoiceSetup>;
   toolsetGuards(profile: string): Promise<ToolsetGuards>;
+  /**
+   * Downloads a Server file to where the owner picks in the native Save dialog (src-tauri `files_download`, ADR 0023).
+   * Resolves to the local path, or undefined when the owner closed the dialog. Rejects with `TRANSFER_STOPPED` once
+   * `cancelTransfer(id)` stops it, or the connection closes.
+   */
+  download(id: number, path: string, name: string, onProgress: (p: TransferProgress) => void): Promise<string | undefined>;
+  cancelTransfer(id: number): Promise<void>;
   close(): Promise<void>;
 }
 

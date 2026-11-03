@@ -1,8 +1,9 @@
-// Server files: a read-only view of the files on the machine the Hermes dashboard runs on, through the dashboard's own
-// file-browser routes, `GET /api/files` and `GET /api/files/read` (the official web dashboard's Files tab uses the
-// same two). The server decides what may be read: it lists and reads as its own OS user, can lock browsing to one
-// folder, and never lists or reads credential files such as `.env` or `auth.json`. Nothing here touches the files on
-// this computer. Wire details: docs/research/hermes-gateway-api.md, "Server files".
+// Server files: the files on the machine the Hermes dashboard runs on, through the dashboard's own managed-files routes
+// (the official web dashboard's Files tab uses the same ones): `GET /api/files` and `GET /api/files/read` to browse
+// and preview (ADR 0012), and `GET /api/files/download` to download one to a place the owner picks on this computer
+// (ADR 0023). The server decides what may be read: it lists and reads as its own OS user, can lock browsing to one
+// folder, and never lists, reads or sends credential files such as `.env` or `auth.json`. Wire details:
+// docs/research/hermes-gateway-api.md, "Server files".
 
 /** A directory entry as `GET /api/files` lists it (`_managed_file_entry`, `hermes_cli/web_server_files.py` at `bf0203a`). */
 type WireEntry = {
@@ -76,15 +77,100 @@ export const ENTRY_PAGE = 500;
 /** A read-only dashboard GET, with the answer refused once it passes `maxBytes` when that is given. */
 export type RemoteGet = (pathAndQuery: string, maxBytes?: number) => Promise<string>;
 
+/** A transfer's progress as the Rust side reports it: bytes so far, the size the server announced, the local path. */
+export type TransferProgress = { done: number; total?: number | null; dest: string };
+
+/** What the Rust side does for transfers (src-tauri `files_download`, `files_cancel`). */
+export type TransferPipe = {
+  /**
+   * Downloads the Server file at `path`. The owner picks where in the native Save dialog, which asks before replacing a
+   * file; `name` only suggests the file name. Resolves to the local path, or undefined when the owner closed the dialog.
+   * Rejects with `TRANSFER_STOPPED` when stopped by `cancel` or by the connection closing.
+   */
+  download(id: number, path: string, name: string, onProgress: (p: TransferProgress) => void): Promise<string | undefined>;
+  cancel(id: number): Promise<void>;
+};
+
+/** What a stopped transfer rejects with (src-tauri `TRANSFER_STOPPED`). */
+export const TRANSFER_STOPPED = "The transfer was stopped.";
+
+/**
+ * A download, from the click until the owner dismisses it. `dest` is the local path, once picked. `total` is the size
+ * the server announced. `stopped`: by Cancel, or because the connection closed or changed.
+ */
+export type Transfer = {
+  id: number;
+  kind: "download";
+  name: string;
+  serverPath: string;
+  dest?: string;
+  done: number;
+  total?: number;
+  state: "picking" | "running" | "done" | "failed" | "stopped";
+  error?: string;
+};
+
+/** The most Hermes sends of one file (`_MANAGED_FILE_MAX_BYTES` at `bf0203a`). */
+export const SERVER_FILE_MAX_BYTES = 100 * 1024 * 1024;
+
 export type RemoteFiles = {
   /** Lists a folder by its absolute path on the server, or the server's starting folder when `path` is left out. */
   list(path?: string): Promise<RemoteListing>;
   /** Reads `entry` for its preview. `asText` reads an unknown type as text. */
   preview(entry: RemoteEntry, asText?: boolean): Promise<RemotePreview>;
+  /** Why `entry` can't be downloaded, judged from its listing, or undefined when it can. */
+  cantDownload(entry: RemoteEntry): string | undefined;
+  /** Downloads `entry` to where the owner picks. Its progress and outcome show in `transfers()`. */
+  download(entry: RemoteEntry): Promise<void>;
+  cancel(id: number): void;
+  /** Takes a finished, failed or stopped transfer off the list. */
+  dismiss(id: number): void;
+  /** The transfers, oldest first; a new array after each change. */
+  transfers(): Transfer[];
+  subscribe(listener: () => void): () => void;
 };
 
-export function remoteFiles(get: RemoteGet): RemoteFiles {
+export function remoteFiles(get: RemoteGet, pipe: TransferPipe): RemoteFiles {
+  let transfers: Transfer[] = [];
+  let nextId = 1;
+  const listeners = new Set<() => void>();
+  const change = (id: number, patch: Partial<Transfer> | undefined) => {
+    transfers = patch ? transfers.map((t) => (t.id === id ? { ...t, ...patch } : t)) : transfers.filter((t) => t.id !== id);
+    for (const l of listeners) l();
+  };
+  const cantDownload = (entry: RemoteEntry) => {
+    if (entry.kind !== "file") return entry.kind === "dir" ? "Folders can't be downloaded, only files." : "It's a symbolic link to something that isn't there.";
+    if (entry.size !== undefined && entry.size > SERVER_FILE_MAX_BYTES) return `It's ${mb(entry.size)}. Hermes sends files up to 100 MB.`;
+  };
   return {
+    cantDownload,
+    async download(entry) {
+      const why = cantDownload(entry);
+      if (why) throw new RemoteFilesError(why);
+      const id = nextId++;
+      transfers = [...transfers, { id, kind: "download", name: entry.name, serverPath: entry.path, done: 0, total: entry.size, state: "picking" }];
+      change(id, {});
+      try {
+        const dest = await pipe.download(id, entry.path, entry.name, (p) =>
+          change(id, { state: "running", dest: p.dest, done: p.done, ...(typeof p.total === "number" && { total: p.total }) }),
+        );
+        // The owner closed the Save dialog: nothing was read or written.
+        if (dest === undefined) return change(id, undefined);
+        const t = transfers.find((t) => t.id === id);
+        change(id, { state: "done", dest, total: t?.done ?? t?.total });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        if (message === TRANSFER_STOPPED) return change(id, { state: "stopped" });
+        change(id, { state: "failed", error: explainTransfer(message) });
+      }
+    },
+    cancel: (id) => void pipe.cancel(id).catch(() => {}),
+    dismiss: (id) => change(id, undefined),
+    transfers: () => transfers,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
     async list(path) {
       const query = path === undefined ? "" : `?${new URLSearchParams({ path })}`;
       const body = await call(() => get(`api/files${query}`), "list");
@@ -179,6 +265,13 @@ async function call(run: () => Promise<string>, what: "list" | "read", previewMa
   } catch (e) {
     throw explain(e instanceof Error ? e.message : String(e), what, previewMax);
   }
+}
+
+/** Why a transfer failed, in the owner's words: the server's refusals as `explain` words them, the rest as they come. */
+function explainTransfer(message: string): string {
+  if (/^The dashboard answered \d{3}:|^Not connected|^The chat connection is closed|^The dashboard sign-in/.test(message)) return explain(message, "read").message;
+  if (/^couldn't write it on this computer/.test(message)) return message[0].toUpperCase() + message.slice(1) + ".";
+  return `The download broke off: ${message}.`;
 }
 
 const OFFLINE = [/^Not connected to Hermes/, /^The chat connection is closed/, /^Can't reach the Hermes dashboard/];

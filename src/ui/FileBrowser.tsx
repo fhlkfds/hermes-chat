@@ -1,8 +1,9 @@
-// Server files: a read-only browser for the files on the machine the Hermes dashboard runs on (remoteFiles.ts). It
-// opens from the rail and takes the chat pane's place, as Settings does. Folders open in place, with the path above
-// them as a trail of folders; a file opens in the preview beside the list. Nothing can be changed from here.
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { ArrowLeft, ArrowUp, CircleAlert, File, FileImage, FileText, Folder, House, Link2, Link2Off, RefreshCw, Server, WifiOff, X } from "lucide-react";
+// Server files: a browser for the files on the machine the Hermes dashboard runs on (remoteFiles.ts). It opens from the
+// rail and takes the chat pane's place, as Settings does. Folders open in place, with the path above them as a trail
+// of folders; a file opens in the preview beside the list, where it can be downloaded to this computer (ADR 0023).
+// Nothing on the server can be changed from here.
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
+import { ArrowLeft, ArrowUp, Check, CircleAlert, Download, File, FileImage, FileText, Folder, House, Link2, Link2Off, RefreshCw, Server, WifiOff, X } from "lucide-react";
 import type { ConnectionStatus } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
 import {
@@ -14,6 +15,7 @@ import {
   type RemoteFiles,
   type RemoteListing,
   type RemotePreview,
+  type Transfer,
 } from "../hermes/remoteFiles";
 import { STATUS_LABEL, Spinner, composing, fmtSize, routeLabel, storedTime } from "./bits";
 
@@ -333,23 +335,102 @@ export function FileBrowser({
           )}
         </div>
 
-        {preview && <PreviewPane preview={preview} connected={connected} onOpenAsText={() => open(preview.entry, true)} onClose={dropPreview} />}
+        {preview && <PreviewPane preview={preview} files={files} connected={connected} onOpenAsText={() => open(preview.entry, true)} onClose={dropPreview} />}
       </div>
+      <Transfers files={files} />
     </div>
   );
 }
 
-function PreviewPane({ preview, connected, onOpenAsText, onClose }: { preview: Preview; connected: boolean; onOpenAsText: () => void; onClose: () => void }) {
+const percent = (t: Transfer) => (t.total ? Math.min(100, Math.floor((t.done / t.total) * 100)) : undefined);
+
+/** The downloads started from this screen, with where each goes, how far it got, and Cancel while it runs. */
+function Transfers({ files }: { files: RemoteFiles }) {
+  const transfers = useSyncExternalStore(files.subscribe, files.transfers);
+  if (!transfers.length) return null;
+  return (
+    <section className="files-transfers" aria-label="Transfers">
+      <ul>
+        {transfers.map((t) => {
+          const pct = percent(t);
+          const running = t.state === "picking" || t.state === "running";
+          return (
+            <li key={t.id} className={`files-transfer ${t.state}`}>
+              <div className="files-transfer-main">
+                <div className="files-transfer-title">
+                  {t.state === "done" ? <Check size={14} aria-hidden className="ok" /> : t.state === "failed" ? <CircleAlert size={14} aria-hidden className="bad" /> : <Download size={14} aria-hidden />}
+                  <span className="files-transfer-name">{t.name}</span>
+                  <span className="muted small">
+                    {t.state === "picking"
+                      ? "Choosing where to save it…"
+                      : t.state === "running"
+                        ? pct !== undefined
+                          ? `${fmtSize(t.done)} of ${fmtSize(t.total!)} (${pct}%)`
+                          : `${fmtSize(t.done)} so far`
+                        : t.state === "done"
+                          ? `Downloaded, ${fmtSize(t.done)}`
+                          : t.state === "stopped"
+                            ? "Stopped. Nothing was saved, and any file already there is as it was."
+                            : "Failed. Nothing was saved, and any file already there is as it was."}
+                  </span>
+                </div>
+                <div className="files-transfer-where muted small">
+                  <span>
+                    From the server: <span className="mono">{t.serverPath}</span>
+                  </span>
+                  {t.dest && (
+                    <span>
+                      To this computer: <span className="mono">{t.dest}</span>
+                    </span>
+                  )}
+                </div>
+                {t.state === "running" && (
+                  <progress className="files-progress" max={100} value={pct} aria-label={`Downloading ${t.name}`} aria-valuetext={pct !== undefined ? `${pct}%` : `${fmtSize(t.done)}`} />
+                )}
+                {t.error && (
+                  <p className="files-transfer-error" role="alert">
+                    {t.error}
+                  </p>
+                )}
+              </div>
+              {running ? (
+                <button className="btn" onClick={() => files.cancel(t.id)} disabled={t.state === "picking"}>
+                  Cancel
+                </button>
+              ) : (
+                <button className="icon-btn" aria-label={`Dismiss ${t.name}`} title="Dismiss" onClick={() => files.dismiss(t.id)}>
+                  <X size={14} />
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+function PreviewPane({ preview, files, connected, onOpenAsText, onClose }: { preview: Preview; files: RemoteFiles; connected: boolean; onOpenAsText: () => void; onClose: () => void }) {
   const { entry } = preview;
   const result = preview.state === "ready" ? preview.result : undefined;
+  const why = files.cantDownload(entry);
+  const cantDownload = why ?? (connected ? undefined : "Hermes isn't connected.");
   return (
     <aside className="files-preview" aria-label={`Preview of ${entry.name}`}>
       <div className="files-preview-head">
         <h2 title={entry.name}>{entry.name}</h2>
-        <button className="icon-btn" aria-label="Close preview" title="Close preview" onClick={onClose}>
-          <X size={15} />
-        </button>
+        <div className="files-preview-actions">
+          {entry.kind === "file" && (
+            <button className="btn" disabled={!!cantDownload} title={cantDownload ?? "Save a copy on this computer. You pick where."} onClick={() => void files.download(entry)}>
+              <Download size={14} aria-hidden /> Download…
+            </button>
+          )}
+          <button className="icon-btn" aria-label="Close preview" title="Close preview" onClick={onClose}>
+            <X size={15} />
+          </button>
+        </div>
       </div>
+      {entry.kind === "file" && why && <p className="files-preview-note muted small">{why}</p>}
       <dl className="files-meta">
         <dt>Path</dt>
         <dd className="mono">{result?.path ?? entry.path}</dd>

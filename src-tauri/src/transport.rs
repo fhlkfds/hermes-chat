@@ -866,6 +866,51 @@ impl Dashboard {
         String::from_utf8(body).map_err(|_| TransportError::Unexpected { status: 200, body: "the answer isn't UTF-8 text".into() })
     }
 
+    /// Downloads the Server file at `server_path` through the managed-files route `GET api/files/download` (ADR 0023)
+    /// into `dest` on this computer. The bytes go to a hidden `.part` file beside `dest`, which replaces `dest` only
+    /// once every byte the server announced has arrived; on any failure, or when the task is aborted (Cancel), the
+    /// part file is removed and `dest` is left as it was. `progress` gets the bytes written so far and the size the
+    /// server announced. Memory stays bounded: one network chunk at a time.
+    pub async fn download(&self, server_path: &str, dest: &std::path::Path, progress: impl Fn(u64, Option<u64>)) -> Result<u64, TransportError> {
+        use tokio::io::AsyncWriteExt;
+        let query = url::form_urlencoded::Serializer::new(String::new()).append_pair("path", server_path).finish();
+        let (url, _) = relay_url(&self.base, "api/files/download", &query)?;
+        let mut resp = self.http.get(url).header(header::COOKIE, self.cookie_header()).send().await.map_err(unreachable)?;
+        self.keep_cookies(&resp);
+        match resp.status() {
+            s if s.is_success() => {}
+            StatusCode::UNAUTHORIZED => return Err(TransportError::SignedOut),
+            _ => return Err(unexpected(resp, &self.headers).await),
+        }
+        let total = resp.content_length();
+        let io = |e: std::io::Error| TransportError::File(format!("couldn't write it on this computer: {e}"));
+        let part = PartFile::beside(dest).map_err(io)?;
+        let mut out = tokio::fs::OpenOptions::new().write(true).create_new(true).open(&part.0).await.map_err(io)?;
+        let mut written = 0u64;
+        let mut told = std::time::Instant::now();
+        progress(0, total);
+        while let Some(chunk) = resp.chunk().await.map_err(unreachable)? {
+            out.write_all(&chunk).await.map_err(io)?;
+            written += chunk.len() as u64;
+            if total.is_some_and(|t| written > t) {
+                return Err(TransportError::File("the server sent more than it said the file holds".into()));
+            }
+            if told.elapsed() >= Duration::from_millis(100) {
+                progress(written, total);
+                told = std::time::Instant::now();
+            }
+        }
+        if let Some(total) = total.filter(|&t| written != t) {
+            return Err(TransportError::File(format!("the download ended early, after {written} of {total} bytes")));
+        }
+        out.sync_all().await.map_err(io)?;
+        drop(out);
+        tokio::fs::rename(&part.0, dest).await.map_err(io)?;
+        part.keep();
+        progress(written, total);
+        Ok(written)
+    }
+
     /// Take in every Set-Cookie: a new value replaces the old one, an empty one deletes it. Only
     /// `name=value` is kept; the dashboard is the only site this jar talks to.
     fn keep_cookies(&self, resp: &reqwest::Response) {
@@ -885,6 +930,33 @@ impl Dashboard {
     fn cookie_header(&self) -> String {
         let jar = self.cookies.lock().unwrap();
         jar.iter().map(|(n, v)| format!("{n}={v}")).collect::<Vec<_>>().join("; ")
+    }
+}
+
+/// A download's hidden part file beside its destination, removed when dropped unless `keep` was called: a failed,
+/// cancelled (the task aborted) or interrupted download leaves nothing behind.
+struct PartFile(std::path::PathBuf);
+
+impl PartFile {
+    fn beside(dest: &std::path::Path) -> std::io::Result<PartFile> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let name = dest.file_name().ok_or_else(|| std::io::Error::other("the destination has no file name"))?;
+        let dir = dest.parent().ok_or_else(|| std::io::Error::other("the destination has no folder"))?;
+        let part = format!(".{}.{}-{}.part", name.to_string_lossy(), std::process::id(), N.fetch_add(1, Ordering::Relaxed));
+        Ok(PartFile(dir.join(part)))
+    }
+
+    fn keep(mut self) {
+        self.0 = std::path::PathBuf::new();
+    }
+}
+
+impl Drop for PartFile {
+    fn drop(&mut self) {
+        if !self.0.as_os_str().is_empty() {
+            let _ = std::fs::remove_file(&self.0);
+        }
     }
 }
 
