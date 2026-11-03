@@ -277,6 +277,60 @@ describe("Compactions", () => {
   });
 });
 
+describe("Compactions read after a reply", () => {
+  it("are read again when the reply ends, since Hermes counts a compaction before it stores the rows", async () => {
+    const server = new FakeHermes();
+    server.contextBreakdown = BREAKDOWN;
+    const { hermes, runtime } = await inspectorFor(server);
+    await open(hermes, server, runtime);
+    await tab("Compactions");
+    await settle(hermes);
+    const listed = () => within(dialog()).getByRole("list", { name: "Compactions, newest first" }).querySelectorAll("li").length;
+    expect(listed()).toBe(1);
+
+    act(() => server.event(runtime, "message.start"));
+    // The count moves first; the summary and compacted rows aren't stored yet, so this read still finds one.
+    act(() => server.event(runtime, "session.usage", usage({ compressions: 1 })));
+    await settle(hermes);
+    expect(listed()).toBe(1);
+
+    server.storeMessage("nas", { role: "user", text: "And now the disk?", row_id: 6, timestamp: 1_790_000_300, compacted: true });
+    server.storeMessage("nas", { role: "assistant", text: "[CONTEXT COMPACTION — REFERENCE ONLY] Second.", row_id: 7, timestamp: 1_790_000_400, summary: true });
+    act(() => server.event(runtime, "message.complete", { text: "Done", usage: usage({ compressions: 1 }).usage }));
+    await settle(hermes);
+    // The reply's end read the stored rows again, with the second compaction in them.
+    expect(listed()).toBe(2);
+  });
+});
+
+describe("A long chat's history", () => {
+  it("says it is incomplete and claims no absence or counts the unread rows could change", async () => {
+    const server = new FakeHermes();
+    const { hermes, runtime } = await inspectorFor(server);
+    const truncated = vi.spyOn(hermes, "compactionHistory");
+    // Cut at the limit with no summary in the rows read, and compacted rows a summary past the cut may explain.
+    truncated.mockResolvedValueOnce({ events: [], unmarked: { removed: 40 }, inContext: 12, truncated: true, readAt: 0 });
+    await open(hermes, server, runtime);
+    await tab("Compactions");
+    await settle(hermes);
+    let d = dialog().textContent!;
+    expect(d).toContain("Incomplete This chat is long: only its first 10,000 stored rows were read.");
+    expect(d).toContain("No compaction is stored in the rows read.");
+    expect(d).not.toContain("Hermes has stored no compactions");
+    expect(d).not.toContain("No summary stored");
+
+    // With a compaction in the rows read: listed with its summary, but with no count of what it took out.
+    truncated.mockResolvedValueOnce({ events: [{ rowId: 4, at: 1_790_000_100_000, summary: "[CONTEXT SUMMARY]: s", removed: 3, inContext: true }], inContext: 12, truncated: true, readAt: 0 });
+    await userEvent.click(screen.getByRole("button", { name: "Ask Hermes again" }));
+    await settle(hermes);
+    d = dialog().textContent!;
+    expect(d).toContain("Put in a summary of 20 characters.");
+    expect(d).not.toContain("earlier messages out");
+    expect(d).not.toContain("stored messages now");
+    expect(d).toContain("Incomplete");
+  });
+});
+
 describe("Compact now", () => {
   it("runs only after the owner confirms, and reports what Hermes did", async () => {
     const server = new FakeHermes();

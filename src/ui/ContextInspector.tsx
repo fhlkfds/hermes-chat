@@ -76,8 +76,16 @@ const TABS: { id: Tab; label: string }[] = [
 export function ContextInspector({ chat, status, api }: { chat: Chat; status: ConnectionStatus; api: ContextApi }) {
   const [tab, setTab] = useState<Tab>("window");
   const [compacted, setCompacted] = useState(0);
+  // Each reply that finishes. Hermes counts an automatic compaction before it stores the summary and the compacted
+  // rows, so a read the count set off can come too early; the reply's end reads both again with the rows in place.
+  const [replies, setReplies] = useState(0);
+  const wasRunning = useRef(!!chat.running);
+  useEffect(() => {
+    if (wasRunning.current && !chat.running) setReplies((r) => r + 1);
+    wasRunning.current = !!chat.running;
+  }, [chat.running]);
   // Hermes compacting the chat, here or on its own during a reply, changes what fills it: read both again.
-  const again = `${chat.live?.compactions ?? "-"}/${compacted}`;
+  const again = `${chat.live?.compactions ?? "-"}/${compacted}/${replies}`;
   // Hermes measures only a chat it has loaded on this connection; its stored compactions can be read without that.
   const loaded = !!chat.runtimeId && status === "connected";
   const [reading, reread] = useLoad(api.inspect, again, loaded);
@@ -371,23 +379,41 @@ function CompactionsView({
   );
 }
 
+/**
+ * The compactions Hermes stored. A history cut short at `COMPACTION_ROWS` says so first and claims nothing the unread
+ * rows could change: no absence, no count of messages taken out or read now (a kept copy or a summary may be past the
+ * cut), and no compaction without a summary (its summary may be past the cut too).
+ */
 function HistoryList({ history }: { history: CompactionHistory }) {
-  const { events, unmarked } = history;
+  const { events, truncated } = history;
+  const unmarked = truncated ? undefined : history.unmarked;
+  const cut = truncated && (
+    <div className="inspector-note" role="note">
+      <Badge certainty="unavailable">Incomplete</Badge> This chat is long: only its first 10,000 stored rows were read. Compactions after them aren't
+      listed, and how many messages each took out can't be counted, since what was kept may be in the rows not read.
+    </div>
+  );
   if (!events.length && !unmarked)
-    return (
+    return truncated ? (
+      <>
+        {cut}
+        <p className="muted small">No compaction is stored in the rows read. Read {clock(history.readAt)}.</p>
+      </>
+    ) : (
       <p className="inspector-note">
         Hermes has stored no compactions for this chat. The model reads its {n(history.inContext)} stored messages as they are.
       </p>
     );
   return (
     <>
+      {cut}
       <p className="muted small">
         A compaction swaps older messages for a summary the model reads instead. They stay in the chat and in Hermes; only the model stops reading them word
         for word. Only the summary Hermes kept shows here.
       </p>
       <ol className="compactions" aria-label="Compactions, newest first">
         {[...events].reverse().map((e) => (
-          <CompactionRow key={e.rowId} event={e} />
+          <CompactionRow key={e.rowId} event={e} counted={!truncated} />
         ))}
         {unmarked && (
           <li className="compaction">
@@ -403,14 +429,14 @@ function HistoryList({ history }: { history: CompactionHistory }) {
         )}
       </ol>
       <p className="muted small">
-        The model reads {n(history.inContext)} stored messages now, besides the summaries. Read {clock(history.readAt)}.
-        {history.truncated && " This chat is long: only its first 10,000 stored rows were read, so later compactions may be missing."}
+        {!truncated && <>The model reads {n(history.inContext)} stored messages now, besides the summaries. </>}Read {clock(history.readAt)}.
       </p>
     </>
   );
 }
 
-function CompactionRow({ event }: { event: Compaction }) {
+/** `counted`: the history is whole, so the messages it took out can be counted. */
+function CompactionRow({ event, counted }: { event: Compaction; counted: boolean }) {
   const [open, setOpen] = useState(false);
   const [missed, setMissed] = useState(false);
   const show = useShowInChat();
@@ -422,8 +448,8 @@ function CompactionRow({ event }: { event: Compaction }) {
         {!event.inContext && <span className="muted small">Itself compacted later</span>}
       </div>
       <div className="small">
-        Took {event.removed === 1 ? "1 earlier message" : `${n(event.removed)} earlier messages`} out of what the model reads, and put in a summary of{" "}
-        {event.summary.length.toLocaleString()} characters.
+        {counted ? <>Took {event.removed === 1 ? "1 earlier message" : `${n(event.removed)} earlier messages`} out of what the model reads, and put in</> : "Put in"}{" "}
+        a summary of {event.summary.length.toLocaleString()} characters.
       </div>
       <div className="compaction-actions">
         <button className="link-btn" aria-expanded={open} aria-controls={id} onClick={() => setOpen((o) => !o)}>
