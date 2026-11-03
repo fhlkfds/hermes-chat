@@ -77,6 +77,8 @@ pub enum TransportError {
     BadHeader(String),
     #[error("The dashboard sent Hermes Chat on to {0}, another site. Hermes Chat doesn't follow it there, so your extra request headers aren't sent to it. If a gateway such as Cloudflare Access is in front of the dashboard, check the headers it needs.")]
     Redirected(String),
+    #[error("The dashboard sent Hermes Chat on to another site, whose address isn't shown, as it may repeat your extra request headers. Hermes Chat doesn't follow it there, so your headers aren't sent to it. If a gateway such as Cloudflare Access is in front of the dashboard, check the headers it needs.")]
+    RedirectedHidden,
 }
 
 /// An extra request header as the owner typed it in the sign-in screen.
@@ -932,7 +934,17 @@ const HEADER_PIECE: usize = 8;
 /// in the page it turns a request away with. Any `HEADER_PIECE` bytes of a value count, so a value cut short, as in
 /// a WebSocket close reason, still does. Header values `to_str` accepts are ASCII.
 fn repeats_header(text: &str, headers: &HeaderMap) -> bool {
-    headers.values().filter_map(|v| v.to_str().ok()).filter(|v| !v.is_empty()).any(|v| {
+    repeats_any(text, headers.values().filter_map(|v| v.to_str().ok()))
+}
+
+/// `repeats_header` for an address, whose host the URL parser lowercased.
+fn address_repeats_header(address: &str, headers: &HeaderMap) -> bool {
+    let values: Vec<String> = headers.values().filter_map(|v| v.to_str().ok()).map(str::to_ascii_lowercase).collect();
+    repeats_any(&address.to_ascii_lowercase(), values.iter().map(String::as_str))
+}
+
+fn repeats_any<'a>(text: &str, values: impl Iterator<Item = &'a str>) -> bool {
+    values.filter(|v| !v.is_empty()).any(|v| {
         let piece = v.len().min(HEADER_PIECE);
         (0..=v.len() - piece).any(|i| text.contains(&v[i..i + piece]))
     })
@@ -983,7 +995,9 @@ async fn unexpected(mut resp: reqwest::Response, headers: &HeaderMap) -> Transpo
     if resp.status().is_redirection() {
         let to = resp.headers().get(header::LOCATION).and_then(|l| resp.url().join(l.to_str().ok()?).ok());
         if let Some(to) = to.filter(|to| to.origin() != resp.url().origin()) {
-            return TransportError::Redirected(to.origin().ascii_serialization());
+            // A gateway can put a header value it turned down into the address, even the host name.
+            let to = to.origin().ascii_serialization();
+            return if address_repeats_header(&to, headers) { TransportError::RedirectedHidden } else { TransportError::Redirected(to) };
         }
     }
     let status = resp.status().as_u16();
@@ -1056,7 +1070,7 @@ pub async fn probe_with(base: &Url, sign_in: &SignIn, profile: &str, step: Durat
         if resp.status().is_redirection() {
             // Stopped at another site (`same_origin_redirects`), such as a gateway's login page.
             return match unexpected(resp, &sign_in.headers).await {
-                e @ TransportError::Redirected(_) => Err(e),
+                e @ (TransportError::Redirected(_) | TransportError::RedirectedHidden) => Err(e),
                 _ => Ok(None),
             };
         }

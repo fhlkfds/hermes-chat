@@ -121,6 +121,8 @@ describe("Explaining a failed test", () => {
     expect(why(refused, withHeaders).fixes[0]).toMatch(/^Check the extra request headers' names and values/);
     const away = "The dashboard sent Hermes Chat on to https://team.cloudflareaccess.com, another site. Hermes Chat doesn't follow it there.";
     expect(why({ stage: "reach", message: away }, withHeaders).problem).toBe("The dashboard's address sent Hermes Chat on to another site.");
+    const awayHidden = "The dashboard sent Hermes Chat on to another site, whose address isn't shown, as it may repeat your extra request headers. Hermes Chat doesn't follow it there, so your headers aren't sent to it.";
+    expect(why({ stage: "reach", message: awayHidden }, withHeaders).problem).toBe("The dashboard's address sent Hermes Chat on to another site.");
     // Past the first request, a refusal whose body Rust hid for the headers' sake still points at them.
     const hidden = "The dashboard answered 403: (not shown, as it may repeat your extra request headers)";
     const closed = "The chat connection closed before Hermes was ready: closed by the server (1008 (not shown, as it may repeat your extra request headers))";

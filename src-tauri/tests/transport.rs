@@ -1489,3 +1489,25 @@ async fn a_chat_connection_closed_with_a_header_value_never_shows_it() {
     assert_eq!(failed.stage, Stage::Chat);
     assert!(failed.message.contains("1008") && !shows_part_of_secret(&failed.message), "{}", failed.message);
 }
+
+#[tokio::test]
+async fn a_redirect_to_an_address_that_repeats_a_header_value_never_shows_it() {
+    // The host name the URL parser lowercases, so the value is found whatever its case.
+    let away = |headers: HeaderMap| async move {
+        let secret = headers.get("cf-access-client-secret").and_then(|v| v.to_str().ok()).unwrap_or_default().to_owned();
+        Redirect::temporary(&format!("https://{secret}.gateway.invalid/login"))
+    };
+    let app = Router::new()
+        .route("/api/status", get(away))
+        .route("/auth/password-login", post(login))
+        .route("/api/sessions", get(away));
+    let base = serve(app).await;
+    let headers = transport::extra_headers(&[header("CF-Access-Client-Secret", "Round6PrivateHeader")]).unwrap();
+    let sign_in = SignIn { headers, ..sign_in("hunter2") };
+    let failed = transport::probe(&base, &sign_in, "default").await.unwrap_err();
+    assert_eq!(failed.stage, Stage::Reach);
+    assert!(failed.message.contains("another site") && !failed.message.to_lowercase().contains("privateh"), "{}", failed.message);
+    let dashboard = Dashboard::sign_in(&base, &sign_in).await.unwrap();
+    let err = dashboard.request("GET", "api/sessions", None).await.unwrap_err();
+    assert!(matches!(err, TransportError::RedirectedHidden), "{err:?}");
+}
