@@ -471,9 +471,28 @@ describe("editing", () => {
 
   it("reads back after a 500 Hermes sends once it has written, instead of saying nothing was saved", async () => {
     const { server, hermes } = await signedIn(homeDisk);
+    let base = await hermes.files.openForEdit(notes);
+    // Even when the post-write error names a file that reads like a pre-write refusal.
+    for (const detail of ["Could not stat path: [Errno 2]", "Could not stat path: [Errno 2] '/x/Could not write file: y'"]) {
+      server.managedFiles.saveLost = { message: `The dashboard answered 500: ${JSON.stringify({ detail })}`, landed: true };
+      const got = await hermes.files.saveEdit(base, `landed ${detail.length}\n`);
+      expect(got.kind).toBe("saved");
+      base = (got as { base: typeof base }).base;
+    }
+  });
+
+  it("never takes a link to the original for a copy whose outcome wasn't known", async () => {
+    const { server, hermes } = await signedIn(homeDisk);
     const base = await hermes.files.openForEdit(notes);
-    server.managedFiles.saveLost = { message: `The dashboard answered 500: {"detail":"Could not stat path: [Errno 2]"}`, landed: true };
-    expect((await hermes.files.saveEdit(base, "landed\n")).kind).toBe("saved");
+    server.managedFiles.saveLost = { message: "Can't reach the Hermes dashboard: connection reset", landed: false };
+    server.managedFiles.readError = "Can't reach the Hermes dashboard: connection reset";
+    await expect(hermes.files.saveCopy(base, "# Notes\n\nCafé ☕\n")).rejects.toThrow(/couldn't be read back/);
+    server.managedFiles.saveLost = undefined;
+    server.managedFiles.readError = undefined;
+    // Meanwhile the copy's name became a link to the original, which holds the same text.
+    server.managedFiles.nodes["/home/liam/notes (2).md"] = { link: "/home/liam/notes.md" };
+    expect(await hermes.files.saveCopy(base, "# Notes\n\nCafé ☕\n")).toBe("/home/liam/notes (3).md");
+    expect(server.managedFiles.saves).toMatchObject([{ path: "/home/liam/notes (3).md" }]);
   });
 
   it("checks a copy whose outcome wasn't known before making another", async () => {

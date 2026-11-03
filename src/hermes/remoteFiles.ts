@@ -343,8 +343,9 @@ export function remoteFiles(get: RemoteGet, pipe: TransferPipe): RemoteFiles {
       const unsettled = unsettledCopies.get(key);
       if (unsettled) {
         // null: it isn't there, so it never landed; undefined: still can't tell.
+        // A file reached through a link isn't the copy, whatever it holds: Hermes names the path it resolved.
         const there = await readBytes(unsettled).then(
-          (b) => revisionOf(b.bytes),
+          (b) => (b.path === unsettled ? revisionOf(b.bytes) : null),
           (e) => (e instanceof RemoteFilesError && e.status === 404 ? null : undefined),
         );
         if (there === undefined) throw new RemoteFilesError(`An earlier copy, ${unsettled}, may have been saved, and still can't be read to check. Try again once it can.`);
@@ -365,7 +366,7 @@ export function remoteFiles(get: RemoteGet, pipe: TransferPipe): RemoteFiles {
         unsettledCopies.set(key, path);
         throw new RemoteFilesError(`${lost ? `The copy's answer was lost (${lost})` : `Hermes saved ${path}`}, but it couldn't be read back to check: ${errorText(e)}`);
       });
-      if ((await revisionOf(back.bytes)) !== sentRevision)
+      if (back.path !== path || (await revisionOf(back.bytes)) !== sentRevision)
         throw new RemoteFilesError(`${path} on the server isn't your edit${lost ? ` (the save's answer was lost: ${lost})` : ""}. Something else may have written it.`);
       return path;
     },
@@ -543,12 +544,27 @@ function sizeChecked(text: string): Uint8Array {
  * after the write landed, so it is settled by reading the file back.
  */
 function refusedBeforeWriting(message: string): boolean {
-  return (
-    /^Hermes Chat doesn't relay|^Not connected|^The dashboard sign-in/.test(message) ||
-    /^The dashboard answered (409|413|422):/.test(message) ||
-    /^The dashboard answered 403: .*File is not writable/.test(message) ||
-    /^The dashboard answered 500: .*Could not (write file|create parent directory)/.test(message)
-  );
+  if (/^Hermes Chat doesn't relay|^Not connected|^The dashboard sign-in/.test(message)) return true;
+  const m = /^The dashboard answered (\d{3}): ([\s\S]*)$/.exec(message);
+  if (!m) return false;
+  const status = Number(m[1]);
+  // FastAPI checks the form before the route runs.
+  if (status === 422) return true;
+  let detail: unknown;
+  try {
+    detail = (JSON.parse(m[2]) as { detail?: unknown }).detail;
+  } catch {
+    // Cut short or not Hermes's own JSON: not known to be a refusal.
+    return false;
+  }
+  if (typeof detail !== "string") return false;
+  const before: Record<number, (d: string) => boolean> = {
+    409: (d) => d === "File already exists" || d === "A directory already exists at that path",
+    413: (d) => d === "File is too large",
+    403: (d) => d === "File is not writable",
+    500: (d) => d.startsWith("Could not write file:") || d.startsWith("Could not create parent directory"),
+  };
+  return before[status]?.(detail) ?? false;
 }
 
 /** Why Hermes refused a save, in the owner's words. Its write is atomic, so a refused save changed nothing. */
