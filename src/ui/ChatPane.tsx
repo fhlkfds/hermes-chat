@@ -1,7 +1,7 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
 // Dictation and Read aloud come from Voice.tsx.
 import { createContext, memo, type ReactNode, useCallback, useContext, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
-import { ArrowUp, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, FileDown, Globe, HardDrive, ListPlus, Paperclip, RotateCcw, Search, Server, Square, Wrench, X } from "lucide-react";
+import { ArrowUp, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, FileDown, FileText, Globe, HardDrive, ListPlus, Paperclip, RotateCcw, Search, Server, Square, Wrench, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
@@ -21,6 +21,7 @@ import { ChatUsageButton, ReplyUsageLine } from "./Usage";
 import { useOpenPreview } from "./previewContext";
 import { previewName, toolTargets, withoutBidi } from "../hermes/preview";
 import { type CommandHost, useSlashCommands } from "./SlashCommands";
+import { Templates, type TemplateHere } from "./Templates";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type ThinkingItem = Extract<Item, { kind: "thinking" }>;
@@ -142,6 +143,7 @@ export function ChatPane({
   queue,
   queueApi,
   commands,
+  templates,
 }: {
   chat: Chat;
   notLoaded?: boolean;
@@ -184,6 +186,8 @@ export function ChatPane({
   queue?: ChatQueue;
   queueApi?: QueueApi;
   commands?: CommandHost;
+  /** Where the composer's Templates are picked from (Templates.tsx). */
+  templates?: TemplateHere;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -519,6 +523,7 @@ export function ChatPane({
         screenshots={screenshots}
         screenshotKeys={screenshotKeys}
         commands={commands}
+        templates={templates}
       />
       {footer}
     </div>
@@ -794,6 +799,7 @@ function Composer({
   screenshots,
   screenshotKeys,
   commands,
+  templates = NO_PROJECTS,
 }: {
   offline: boolean;
   /** Enter, and the Queue button, add the message to the chat's queue (`onQueue`, which says why it couldn't). */
@@ -821,6 +827,7 @@ function Composer({
   screenshots?: ScreenshotDesk;
   screenshotKeys?: string;
   commands?: CommandHost;
+  templates?: TemplateHere;
 }) {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const focused = useRef(autoFocus);
@@ -965,6 +972,9 @@ function Composer({
     ta.style.height = Math.min(ta.scrollHeight, 240) + "px";
   }, [text]);
 
+  // The template library; Insert puts its message in the draft, never sends it.
+  const [picking, setPicking] = useState(false);
+
   const sendable = attaching === 0 && (!!text.trim() || attachments.length > 0);
   const slash = useSlashCommands(commands, text, onText, taRef);
   const send = () => {
@@ -1069,6 +1079,9 @@ function Composer({
               <Camera size={16} />
             </button>
           )}
+          <button className="icon-btn" title="Templates" aria-label="Templates" aria-haspopup="dialog" onClick={() => setPicking(true)}>
+            <FileText size={16} />
+          </button>
           {modelControls}
           {!dictation.active && <span className="composer-keys">{queueing ? "Enter to queue" : "Enter to send"} · Shift+Enter for a new line</span>}
           {queueing && onQueue && (
@@ -1090,6 +1103,21 @@ function Composer({
         </div>
         {dictation.active && <DictationStrip dictation={dictation} />}
       </div>
+      {picking && (
+        <Templates
+          here={templates}
+          draft={text}
+          returnTo={taRef}
+          onClose={() => setPicking(false)}
+          onInsert={(next) => {
+            onText(next);
+            // After React has put the new text in.
+            requestAnimationFrame(() => taRef.current?.setSelectionRange(next.length, next.length));
+          }}
+        />
+      )}
     </div>
   );
 }
+
+const NO_PROJECTS: TemplateHere = { scope: "", projects: [], here: [] };

@@ -8,6 +8,8 @@
 // read with `git worktree list` (dashboard REST `GET /api/git/worktrees`), never added.
 import { savedDefaults, type DefaultsDoc, type DefaultsDraft, type ProjectDefaults } from "./projectDefaults";
 import type { ProjectLinks } from "./projectLinks";
+import { unscope } from "./templates";
+import { getUIPrefs, setUIPrefs } from "./uiPrefs";
 
 /** One of a project's folders: a path on the server. `primary`: the folder Hermes names the project's main one. */
 export type ProjectFolder = { path: string; primary: boolean };
@@ -383,9 +385,10 @@ export class ProjectsStore {
   /**
    * Forgets project `id`'s defaults, once Hermes has said it is gone: deleted here, or answering that it no longer
    * exists. A list that merely leaves it out could be older than a save, so it never decides this. Best effort: defaults
-   * left behind are never shown or used.
+   * left behind are never shown or used. Templates offered only in it are kept, offered in every chat (ADR 0026).
    */
   private forgetDefaults(id: string) {
+    setUIPrefs({ templates: unscope(getUIPrefs().templates, this.scope, id) });
     void this.defaults.forget(this.scope, id).then(() => this.readDefaults(), () => {});
   }
 

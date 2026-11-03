@@ -91,6 +91,10 @@ _Avoid_: pending message, scheduled message, Hermes's queue (Hermes's own queue 
 A command the owner types at the start of the composer, after a "/", picked from the menu that opens there or typed in full. Each is either an action of this app or a command Hermes runs for the chat, and says which. Only the commands in the app's list run; any other text starting with "/" is sent as an ordinary message. Picking from the menu only fills the command in; Enter then runs it. A command that can't run says why and keeps the text. Deleting asks first, as it does in the chat list (ADR 0015).
 _Avoid_: quick command (Hermes's word for commands defined in its config), shortcut, macro
 
+**Template**:
+A message the owner reuses, kept in a library on this computer: a name, an optional description, the message with blanks to fill in (`{host}`, `{port=22}`, `{notes...?}`), and optionally the one project it is offered in. Filling one in shows the whole message as it will be; Insert puts it in the composer and never sends. With a draft already there, the owner chooses to replace it or add after it, and Cancel leaves it alone. Templates are data: nothing in one runs (ADR 0026).
+_Avoid_: snippet, macro, prompt (for the template itself), quick command (Hermes's own)
+
 **Dictation**:
 Speaking a message instead of typing it. The microphone is open only between the owner starting a recording and pressing Done or cancelling. Hermes turns the recording into text with the profile's speech-to-text provider, and the text goes into the composer after anything already typed, for the owner to edit and send. Nothing reaches the chat until the owner sends it. Cancelling, or opening another chat, drops the recording. A recording Hermes couldn't transcribe is held in memory until the owner tries again or discards it. Recordings are never saved on this computer.
 _Avoid_: voice message, voice mode (Hermes's own hands-free voice chat), speech input
