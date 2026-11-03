@@ -1322,6 +1322,21 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .memory-notice.unsure { color: var(--warn); }
 .memory-recovered { margin-top: 16px; padding: 12px 14px; border: 1px solid rgba(245, 184, 74, 0.35); border-radius: var(--radius); display: flex; flex-direction: column; gap: 8px; }
 .settings .memory-recovered p { margin: 0; }
+/* Settings → Skills (SkillSettings.tsx): the list reuses the toolset rows, the editor Memory's. */
+.skills-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.skills-search { flex: 1; min-width: 180px; display: flex; align-items: center; gap: 6px; color: var(--muted); }
+.skills-search input { flex: 1; min-width: 0; }
+.skills-row-actions { display: flex; align-items: center; gap: 10px; flex: none; }
+.skills-list { list-style: none; }
+.skills-list .toolset-head { flex-wrap: wrap; }
+.skills-editor > .back { align-self: flex-start; }
+.skills-name { margin: 2px 0 0; font-size: calc(15rem / 14); font-weight: 500; overflow-wrap: anywhere; }
+.skills-text { min-height: 240px; }
+.settings p.skills-note { margin: 0; line-height: 1.5; }
+.skills-note svg { vertical-align: -2px; margin-right: 4px; }
+.skills-problems { padding: 10px 12px; border: 1px solid var(--line-2); border-left: 3px solid var(--bad); border-radius: var(--radius); font-size: calc(12.5rem / 14); line-height: 1.5; }
+.skills-problems ul { margin: 4px 0 8px; padding-left: 18px; }
+.settings .skills-problems p { margin: 4px 0 8px; }
 .leave-overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); z-index: 50; display: flex; align-items: center; justify-content: center; }
 /* The memory question shares the persona one's box (below), wider than a plain .confirm. */
 .leave-overlay .leave-dialog { max-width: 420px; }

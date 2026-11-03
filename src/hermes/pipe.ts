@@ -38,7 +38,7 @@ export type PipeEvent = { kind: "frame"; text: string } | { kind: "closed"; reas
  */
 export type Route = { kind: "ssh"; target: string } | { kind: "url"; url: string; addresses: string[] };
 
-/** The dashboard REST verbs the Rust side relays. POST and PUT reach only Settings → Model's two write routes, the scheduled-job writes, and Settings → Toolsets' switch. */
+/** The dashboard REST verbs the Rust side relays. POST and PUT reach only Settings → Model's two write routes, the scheduled-job writes, Settings → Toolsets' switch, Settings → Persona's save, and Settings → Skills' switch and save. */
 export type RestMethod = "GET" | "PATCH" | "DELETE" | "POST" | "PUT";
 
 export interface Pipe {

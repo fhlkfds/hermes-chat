@@ -67,7 +67,7 @@ export const asReadBack = (text: string) => text.replace(/^﻿/, "").replace(/\r
 export const sameSoul = (a: Soul, b: Soul) => a.exists === b.exists && asReadBack(a.content) === asReadBack(b.content);
 
 /** `The dashboard answered 404: {"detail":"…"}` (src-tauri/src/transport.rs `TransportError::Unexpected`). */
-function answered(message: string): { status: number; detail: string } | undefined {
+export function answered(message: string): { status: number; detail: string } | undefined {
   const m = /^The dashboard answered (\d{3}): ?([\s\S]*)$/.exec(message);
   if (!m) return undefined;
   let detail = m[2];
@@ -122,7 +122,7 @@ const certainlyUnwritten = (e: PersonaError) =>
 export const PERSONA_TIMEOUTS = { readMs: 30_000, writeMs: 60_000 };
 
 /** `p`, or a rejection once `ms` pass without an answer. The request itself may still be answered later. */
-function deadline<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+export function deadline<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error(`Hermes didn't answer ${what} within ${Math.round(ms / 1000)} seconds.`)), ms);

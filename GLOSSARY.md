@@ -131,6 +131,10 @@ _Avoid_: default model (that is the profile's, in Hermes), current model
 What Hermes remembers about the owner and their work between chats, for one profile. Hermes keeps it on the server in two files: its own notes, and what it knows about the owner. Each is a list of entries. The agent adds, changes and removes entries during chats; the owner can change or remove one in Settings → Memory, which saves to the server and reads it back. Hermes reads memory into a chat when the chat starts, so an edit reaches chats started after it. Only the profile the Hermes dashboard runs as can be edited from this app.
 _Avoid_: notes, knowledge, context (for memory), cache (a Saved copy is not memory)
 
+**Skill**:
+Instructions Hermes can load for a kind of task: a folder on the server holding a SKILL.md, whose front matter gives the skill's name and description, and sometimes other files the skill names. The agent sees each skill's name and description in every chat, and loads the rest when it needs it. A skill is the profile's own, in its skills folder, or shared, in a folder the profile's config names that other profiles may use too. Settings → Skills turns one on or off for the profile and edits its SKILL.md, saying either worked only once Hermes, read back, has it so (ADR 0025). An edit reaches the agent's next load of the skill in any chat; turning one off keeps it out of new chats and refused in all of them.
+_Avoid_: plugin, tool, toolset (a toolset is a group of tools, not instructions), command (a skill can also be run as a slash command in other Hermes clients, but isn't one here)
+
 **Reasoning effort**:
 How hard the model thinks before it answers: Off, Low, Medium, High, Extra high or Max. The pill beside the model picker shows it and changes it, and is hidden for a model without reasoning.
 _Avoid_: thinking level

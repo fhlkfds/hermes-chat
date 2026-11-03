@@ -432,17 +432,26 @@ export function Main({
     memoryDirty.current = dirty;
     setMemoryUnsaved(dirty);
   }, []);
-  const [leaving, setLeaving] = useState<{ edit: "persona" | "memory"; what: LeaveWhat; go: () => void; stay?: () => void }>();
-  /** Runs `go` now, or once the owner agrees to leave an unsaved persona or memory edit behind. `stay` runs if they don't. */
+  // An unsaved edit in Settings → Skills (SkillSettings.tsx) lives only on screen too, and is guarded the same way.
+  const skillDirty = useRef(false);
+  const [skillUnsaved, setSkillUnsaved] = useState(false);
+  const [skillDiscards, setSkillDiscards] = useState(0);
+  const onSkillDirty = useCallback((dirty: boolean) => {
+    skillDirty.current = dirty;
+    setSkillUnsaved(dirty);
+  }, []);
+  const [leaving, setLeaving] = useState<{ edit: "persona" | "memory" | "skill"; what: LeaveWhat; go: () => void; stay?: () => void }>();
+  /** Runs `go` now, or once the owner agrees to leave an unsaved persona, memory or skill edit behind. `stay` runs if they don't. */
   const guard = (go: () => void, what: LeaveWhat = "leave", stay?: () => void) => {
     if (memoryDirty.current) return setLeaving({ edit: "memory", what, go, stay });
+    if (skillDirty.current) return setLeaving({ edit: "skill", what, go, stay });
     if (personaDirty.current) return setLeaving({ edit: "persona", what, go, stay });
     go();
   };
   const guardRef = useRef(guard);
   guardRef.current = guard;
   // Closing the window asks too, only while there is something to lose. A memory edit also holds a page reload.
-  useCloseGuard(memoryUnsaved, (close) => guardRef.current(close, "close"));
+  useCloseGuard(memoryUnsaved || skillUnsaved, (close) => guardRef.current(close, "close"));
   const guardCloseRef = useRef(guardClose);
   useEffect(() => {
     if (!personaUnsaved) return;
@@ -1313,6 +1322,9 @@ export function Main({
             memory={hermes.memory}
             onMemoryDirty={onMemoryDirty}
             memoryDiscards={memoryDiscards}
+            skills={hermes.skills}
+            onSkillDirty={onSkillDirty}
+            skillDiscards={skillDiscards}
             checkScreenshots={screenshots.support}
             voiceSetup={voice.setup}
             showTextGeneration={showTextGeneration}
@@ -1436,8 +1448,9 @@ export function Main({
           )}
         </div>
       )}
-      {leaving?.edit === "memory" && (
+      {(leaving?.edit === "memory" || leaving?.edit === "skill") && (
         <LeaveMemoryEdit
+          subject={leaving.edit}
           profile={profile}
           onStay={() => {
             leaving.stay?.();
@@ -1445,8 +1458,13 @@ export function Main({
           }}
           onDiscard={() => {
             setLeaving(undefined);
-            onMemoryDirty(false);
-            setMemoryDiscards((n) => n + 1);
+            if (leaving.edit === "memory") {
+              onMemoryDirty(false);
+              setMemoryDiscards((n) => n + 1);
+            } else {
+              onSkillDirty(false);
+              setSkillDiscards((n) => n + 1);
+            }
             leaving.go();
           }}
         />

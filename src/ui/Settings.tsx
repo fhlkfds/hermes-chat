@@ -2,10 +2,11 @@
 // launch, voice, screenshots, updates, the local cache, and older history. Appearance: how the app looks on this
 // computer (AppearanceSettings.tsx). Model: the profile's models on Hermes (ModelSettings.tsx). Toolsets: which tools
 // Hermes offers the model in the profile (ToolsetSettings.tsx). Persona: the profile's SOUL.md on Hermes
-// (PersonaSettings.tsx). Memory: what Hermes remembers for the profile (MemorySettings.tsx).
+// (PersonaSettings.tsx). Memory: what Hermes remembers for the profile (MemorySettings.tsx). Skills: the profile's
+// skills, switched and edited on Hermes (SkillSettings.tsx).
 // Profiles are switched in the list's header, not here (ADR 0001).
 import { useEffect, useState } from "react";
-import { ArrowLeft, Brain, Cpu, Download, KeyRound, Lock, LogOut, Palette, PlugZap, Settings2, ShieldCheck, Sparkles, Trash2, Wrench } from "lucide-react";
+import { ArrowLeft, Brain, Cpu, Download, KeyRound, Lock, LogOut, Palette, PlugZap, Puzzle, Settings2, ShieldCheck, Sparkles, Trash2, Wrench } from "lucide-react";
 import type { Chat, ConnectionStatus } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
 import { TRANSCRIPT_LIMIT_BYTES } from "../hermes/chatCache";
@@ -18,6 +19,8 @@ import type { ToolsetsApi } from "../hermes/toolsets";
 import { ToolsetSettings } from "./ToolsetSettings";
 import type { MemoryApi } from "../hermes/memory";
 import { MemorySettings } from "./MemorySettings";
+import type { SkillsApi } from "../hermes/skills";
+import { SkillSettings } from "./SkillSettings";
 import { PersonaSettings, type PersonaWhere } from "./PersonaSettings";
 import type { PersonaApi } from "../hermes/persona";
 import type { PersonaStore } from "../hermes/personaStore";
@@ -28,7 +31,7 @@ import { ScreenshotSettings } from "./ScreenshotSettings";
 import type { ScreenshotSupport } from "../hermes/tauriScreenshot";
 import { UpdateSettings } from "./UpdateSettings";
 
-type Tab = "general" | "appearance" | "model" | "toolsets" | "persona" | "memory";
+type Tab = "general" | "appearance" | "model" | "toolsets" | "persona" | "memory" | "skills";
 const TABS = [
   { id: "general", label: "General", Icon: Settings2 },
   { id: "appearance", label: "Appearance", Icon: Palette },
@@ -36,6 +39,7 @@ const TABS = [
   { id: "toolsets", label: "Toolsets", Icon: Wrench },
   { id: "persona", label: "Persona", Icon: Sparkles },
   { id: "memory", label: "Memory", Icon: Brain },
+  { id: "skills", label: "Skills", Icon: Puzzle },
 ] as const;
 
 /** Settings → Persona's wiring: the API, where its edits are kept on this computer, and what it edits. */
@@ -74,6 +78,9 @@ export function SettingsScreen({
   memory,
   onMemoryDirty = () => {},
   memoryDiscards = 0,
+  skills,
+  onSkillDirty = () => {},
+  skillDiscards = 0,
   onClearCache,
   onPullOlder,
   onSignOut,
@@ -116,6 +123,12 @@ export function SettingsScreen({
   onMemoryDirty?: (dirty: boolean) => void;
   /** Changes each time the owner discards the unsaved memory edit from App's question. */
   memoryDiscards?: number;
+  /** The profile's skills on Hermes; the Skills tab shows only with it. */
+  skills?: SkillsApi;
+  /** Called with whether the Skills tab has an unsaved edit. */
+  onSkillDirty?: (dirty: boolean) => void;
+  /** Changes each time the owner discards the unsaved skill edit from App's question. */
+  skillDiscards?: number;
   onClearCache: () => void;
   /** Resolves to the older chats added. */
   onPullOlder: () => Promise<Chat[]>;
@@ -129,7 +142,7 @@ export function SettingsScreen({
   persona?: PersonaWiring;
   /** Says whether the Persona tab holds an edit Hermes doesn't have yet. */
   onPersonaDirty?: (dirty: boolean, kept: boolean) => void;
-  /** Runs `go`, once the owner agrees to leave an unsaved persona or memory edit behind, if there is one. */
+  /** Runs `go`, once the owner agrees to leave an unsaved persona, memory or skill edit behind, if there is one. */
   guard?: (go: () => void) => void;
   /** Set, each time anew, to show the Model tab at the Text generation model: from a title that couldn't be regenerated. */
   showTextGeneration?: object;
@@ -142,9 +155,9 @@ export function SettingsScreen({
   const [signingOut, setSigningOut] = useState(false);
   const [tab, setTabNow] = useState<Tab>(showTextGeneration ? "model" : "general");
   const tabs = TABS.filter(
-    (t) => (t.id !== "toolsets" || toolsets) && (t.id !== "persona" || persona) && (t.id !== "memory" || memory),
+    (t) => (t.id !== "toolsets" || toolsets) && (t.id !== "persona" || persona) && (t.id !== "memory" || memory) && (t.id !== "skills" || skills),
   );
-  // Leaving the Persona or Memory tab asks first while it holds an unsaved edit.
+  // Leaving the Persona, Memory or Skills tab asks first while it holds an unsaved edit.
   const setTab = (t: Tab) => t !== tab && guard(() => setTabNow(t));
   useEffect(() => {
     if (showTextGeneration) setTab("model");
@@ -208,6 +221,11 @@ export function SettingsScreen({
           <div id="settings-panel-memory" role="tabpanel" aria-labelledby="settings-tab-memory">
             {/* An edit lives only while this tab is open, and for one profile; leaving with one asks first. */}
             <MemorySettings key={profile} api={memory} profile={profile} status={status} server={routeLabel(route) ?? "not known until connected"} onDirtyChange={onMemoryDirty} discardSignal={memoryDiscards} />
+          </div>
+        ) : tab === "skills" && skills ? (
+          <div id="settings-panel-skills" role="tabpanel" aria-labelledby="settings-tab-skills">
+            {/* An edit lives only while this tab is open, and for one profile; leaving with one asks first. */}
+            <SkillSettings key={profile} api={skills} profile={profile} status={status} server={routeLabel(route) ?? "not known until connected"} onDirtyChange={onSkillDirty} discardSignal={skillDiscards} />
           </div>
         ) : tab === "appearance" ? (
           <div id="settings-panel-appearance" role="tabpanel" aria-labelledby="settings-tab-appearance">
