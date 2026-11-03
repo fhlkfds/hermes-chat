@@ -143,6 +143,56 @@ describe("Two instances changing tags at once", () => {
   });
 });
 
+describe("What one window shows", () => {
+  it("shows the latest change, even when an earlier change's answer arrives late", async () => {
+    const file = sharedFile();
+    const s = await store(file);
+    const swap = file.swap;
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    let reads = 0;
+    const read = file.read;
+    file.read = async () => (reads++, read());
+    // The first change is written, but its answer waits.
+    file.swap = async (expected, next) => {
+      const res = await swap(expected, next);
+      file.swap = swap;
+      await held;
+      return res;
+    };
+    const one = s.createTag("One");
+    const two = s.createTag("Two");
+    await new Promise((r) => setTimeout(r, 5));
+    // The second hasn't read yet: it waits for the first to be shown.
+    expect(reads).toBe(1);
+    release();
+    await Promise.all([one, two]);
+    expect(s.getSnapshot().tags.map((t) => t.name)).toEqual(["One", "Two"]);
+  });
+
+  it("shows the newest of two reads, whichever answers first", async () => {
+    const file = sharedFile();
+    const s = await store(file);
+    file.text = JSON.stringify({ v: 1, scopes: { [DEFAULT]: { tags: [{ id: "o", name: "Old" }] } } });
+    const read = file.read;
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    // The first read takes the file as it is now, and answers last.
+    file.read = async () => {
+      file.read = read;
+      const text = file.text;
+      await held;
+      return text;
+    };
+    const first = s.reread();
+    file.text = JSON.stringify({ v: 1, scopes: { [DEFAULT]: { tags: [{ id: "o", name: "Old" }, { id: "n", name: "New" }] } } });
+    const second = s.reread();
+    release();
+    await Promise.all([first, second]);
+    expect(s.getSnapshot().tags.map((t) => t.name)).toEqual(["Old", "New"]);
+  });
+});
+
 describe("A bulk tag edit", () => {
   it("previews which chats change, and applies only those, in one write", async () => {
     const file = sharedFile();

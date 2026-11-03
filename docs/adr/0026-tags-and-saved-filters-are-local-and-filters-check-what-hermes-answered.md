@@ -31,7 +31,7 @@ The results say when they may be incomplete:
 
 The palette belongs to the profile it was opened in. Switching profile starts it afresh, so nothing found, previewed or picked in one profile can be opened or tagged in another. Results for an earlier filter stay on screen, dimmed, until the new ones come, but they can't be opened or tagged. A failed search shows why, and no results.
 
-Running a filter only reads. It marks no chat read, changes no chat's state, and puts nothing in the list or in a project. Opening a result does what opening a search result always did: the chat goes in the list, Settled, and the transcript goes to the message that matched.
+Running a filter only reads. It marks no chat read, changes no chat's state, and puts nothing in the list or in a project. Opening a result does what opening a search result always did: the chat goes in the list, Active or Settled as the result said, and the transcript goes to the message that matched.
 
 ## Saved filters and bulk edits
 

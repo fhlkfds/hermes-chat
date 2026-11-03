@@ -159,8 +159,17 @@ export function previewBulk(s: ScopeTags, chatIds: readonly string[], tagId: str
 export class TagsStore {
   private snap: ScopeTags = EMPTY;
   private listeners = new Set<() => void>();
-  /** Bumped by every change shown, so a read that started earlier doesn't put back what was there before. */
-  private shown = 0;
+  /**
+   * Reads and changes run one at a time, each shown before the next starts, so what is shown is always the latest
+   * read or change, never an older answer that arrived late.
+   */
+  private queue: Promise<unknown> = Promise.resolve();
+
+  private enqueue<T>(run: () => Promise<T>): Promise<T> {
+    const result = this.queue.then(run);
+    this.queue = result.catch(() => {});
+    return result;
+  }
 
   constructor(
     private file: TagsFile,
@@ -178,15 +187,16 @@ export class TagsStore {
   getSnapshot = () => this.snap;
 
   /** Reads the document again, after another window or instance may have changed it. A failed read keeps what is shown. */
-  async reread(): Promise<void> {
-    const at = this.shown;
-    let raw: string | null;
-    try {
-      raw = await this.file.read();
-    } catch {
-      return;
-    }
-    if (at === this.shown) this.set(readTags(parse(raw))[this.scope] ?? EMPTY);
+  reread(): Promise<void> {
+    return this.enqueue(async () => {
+      let raw: string | null;
+      try {
+        raw = await this.file.read();
+      } catch {
+        return;
+      }
+      this.set(readTags(parse(raw))[this.scope] ?? EMPTY);
+    });
   }
 
   tagsOf = (chatId: string): readonly string[] => this.snap.chats[chatId] ?? [];
@@ -226,7 +236,11 @@ export class TagsStore {
   }
 
   /** Reads, checks `fn` against what was read, and swaps the result in; reads and checks again if another wrote first. */
-  private async change(fn: (s: ScopeTags) => ScopeTags): Promise<void> {
+  private change(fn: (s: ScopeTags) => ScopeTags): Promise<void> {
+    return this.enqueue(() => this.swapIn(fn));
+  }
+
+  private async swapIn(fn: (s: ScopeTags) => ScopeTags): Promise<void> {
     const failed = (e: unknown) => new Error(`Couldn't save on this computer, so nothing changed: ${e instanceof Error ? e.message : String(e)}`);
     let raw: string | null;
     try {
@@ -262,7 +276,6 @@ export class TagsStore {
   }
 
   private set(s: ScopeTags) {
-    this.shown++;
     this.snap = s;
     for (const fn of [...this.listeners]) fn();
   }

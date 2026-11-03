@@ -76,7 +76,8 @@ export function SearchPalette({
   const tidy = tidyFilter(filter);
   const key = JSON.stringify(tidy);
   // The results and the filter they answer, so a slow answer to an older one is never shown.
-  const [results, setResults] = useState<{ key: string; text?: string; outcome?: FilterOutcome }>({ key: "{}" });
+  // The results, and the filter and tags they answer, so an answer to an older search is never acted on.
+  const [results, setResults] = useState<{ key: string; tags?: ScopeTags | null; text?: string; outcome?: FilterOutcome }>({ key: "{}" });
   const [error, setError] = useState<string>();
   const [sel, setSel] = useState(0);
   const [panel, setPanel] = useState<"save" | "bulk">();
@@ -102,7 +103,7 @@ export function SearchPalette({
     let current = true;
     const timer = setTimeout(() => {
       onRun(tidy).then(
-        (outcome) => current && (setResults({ key, text: tidy.text, outcome }), setSel(0)),
+        (outcome) => current && (setResults({ key, tags: tagDep, text: tidy.text, outcome }), setSel(0)),
         (e) => current && setError(`Couldn't search: ${errorText(e)}`),
       );
     }, PAUSE_MS);
@@ -111,11 +112,12 @@ export function SearchPalette({
       clearTimeout(timer);
     };
   }, [key, tagDep]);
-  // A bulk edit is for the results it previewed: a new filter ends it, applying nothing.
-  useEffect(() => setPanel((p) => (p === "bulk" ? undefined : p)), [key]);
+  // A bulk edit is for the results it previewed: a new filter, or a change to the tags it filters by, ends it,
+  // applying nothing. Either searches again, so a failed search has ended it too.
+  useEffect(() => setPanel((p) => (p === "bulk" ? undefined : p)), [key, tagDep]);
 
   const empty = isEmptyFilter(tidy);
-  const outcome = results.key === key ? results.outcome : undefined;
+  const outcome = results.key === key && results.tags === tagDep ? results.outcome : undefined;
   const shownOutcome = error ? undefined : results.outcome;
   const found = shownOutcome?.found ?? [];
   // Results for an earlier filter stay on screen until the new ones come, but can't be opened or tagged.

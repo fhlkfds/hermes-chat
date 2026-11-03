@@ -234,6 +234,57 @@ describe("Filtering in the search palette", () => {
     expect(hits()).toEqual([]);
   });
 
+  it("won't act on results, or a bulk preview, from before another window changed the tags they filter by", async () => {
+    const { user, s } = await launch();
+    await makeTag(user, "Infra");
+    await user.click(within(await menuOf(user, "NAS disks")).getByRole("menuitemcheckbox", { name: "Infra" }));
+    await waitFor(() => expect(chatsTagged()).toEqual({ nas: [expect.any(String)] }));
+    await user.keyboard("{Control>}k{/Control}");
+    await user.click(screen.getByRole("button", { name: "Filters" }));
+    await user.selectOptions(screen.getByRole("combobox", { name: /^Tag/ }), "Infra");
+    await waitFor(() => expect(hits()).toEqual(["NAS disks"]));
+    await user.click(screen.getByRole("button", { name: /Tag 1 result/ }));
+    await user.click(screen.getByRole("button", { name: "Preview" }));
+    expect(within(palette()).getByRole("group", { name: "Confirm tag change" })).toBeTruthy();
+
+    // Another window tags Nightly backup too, and this window reads it on coming back to the front. The search
+    // that follows waits.
+    const list = s.rest["GET /api/sessions"];
+    let release!: () => void;
+    s.rest["GET /api/sessions"] = async (req) => (await new Promise<void>((r) => (release = r)), list(req));
+    const doc = stored();
+    const [scope] = Object.keys(doc.scopes);
+    const tagId = doc.scopes[scope].tags[0].id;
+    doc.scopes[scope].chats.backup = [tagId];
+    localStorage.setItem(TAGS_KEY, JSON.stringify(doc));
+    await act(async () => void window.dispatchEvent(new Event("focus")));
+    await waitFor(() => expect(within(palette()).getByRole("button", { name: /NAS disks/ }).getAttribute("aria-disabled")).toBe("true"));
+    expect(within(palette()).queryByRole("group", { name: "Confirm tag change" })).toBeNull();
+    await waitFor(() => expect(release).toBeTypeOf("function"));
+    s.rest["GET /api/sessions"] = list;
+    await act(async () => release());
+    await waitFor(() => expect(hits()).toEqual(["Nightly backup", "NAS disks"]));
+  });
+
+  it("ends a bulk preview when the search fails, applying nothing", async () => {
+    const { user, s } = await launch();
+    await makeTag(user, "Infra");
+    await user.keyboard("{Control>}k{/Control}");
+    await user.keyboard("nas");
+    await waitFor(() => expect(hits()).toEqual(["NAS disks"]));
+    await user.click(screen.getByRole("button", { name: /Tag 1 result/ }));
+    await user.click(screen.getByRole("button", { name: "Preview" }));
+    const before = localStorage.getItem(TAGS_KEY);
+    s.rest["GET /api/sessions/search"] = () => {
+      throw new Error('The dashboard answered 500: {"detail":"Search failed"}');
+    };
+    await user.click(screen.getByRole("textbox", { name: "Words to search for" }));
+    await user.keyboard(" disks");
+    await waitFor(() => expect(within(palette()).getByRole("alert").textContent).toContain("Search failed"));
+    expect(within(palette()).queryByRole("group", { name: "Confirm tag change" })).toBeNull();
+    expect(localStorage.getItem(TAGS_KEY)).toBe(before);
+  });
+
   it("keeps Tab and the app's other shortcuts inside the palette", async () => {
     const { user } = await launch();
     await user.keyboard("{Control>}k{/Control}");
