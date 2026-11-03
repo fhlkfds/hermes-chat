@@ -1785,6 +1785,9 @@ async fn a_download_never_takes_over_a_file_already_named_like_its_part_file() {
     assert_eq!(std::fs::metadata(&dest).unwrap().len(), 300_000);
     for n in 0..64 {
         assert_eq!(std::fs::read_to_string(dir.join(format!(".data.bin.{pid}-{n}.part"))).unwrap(), "not ours", "{n}");
+    }
+}
+
 /// A stub dashboard with only sign-in and the upload route, and the server paths it was sent.
 async fn upload_stub() -> (Dashboard, Arc<Mutex<Vec<String>>>) {
     let uploads = Arc::new(Mutex::new(Vec::new()));
