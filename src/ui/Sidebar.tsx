@@ -7,7 +7,7 @@ import { SOURCE_LABEL, isWaiting } from "../hermes/model";
 import { CHECK_EVERY_MS, totalUnread } from "../hermes/otherProfiles";
 import type { Route } from "../hermes/pipe";
 import { RenameConflict, TitleModelUnavailable, type Snapshot } from "../hermes/transport";
-import { ChatMenu, type ChatProjects } from "./ChatMenu";
+import { ChatMenu, type ChatProjects, type ChatTags } from "./ChatMenu";
 import { ArchiveButton, STATUS_LABEL, SettleButton, SourceIcon, Spinner, composing, relTime, routeLabel, useReturnFocus } from "./bits";
 
 const byRecent = (a: Chat, b: Chat) => b.updatedAt - a.updatedAt;
@@ -236,6 +236,7 @@ function ChatRow({
   onRegenTitle,
   onTextGenerationSettings,
   projects,
+  tags,
 }: {
   chat: Chat;
   selected: boolean;
@@ -253,6 +254,7 @@ function ChatRow({
   /** Opens Settings → Model at the Text generation model. */
   onTextGenerationSettings?: () => void;
   projects?: ChatProjects;
+  tags?: ChatTags;
 }) {
   const [confirming, setConfirming] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -316,6 +318,7 @@ function ChatRow({
       <button
         ref={openButton}
         className="row-open"
+        data-chat={chat.id}
         aria-current={selected || undefined}
         title={`${retitling ? "Writing a new title…" : chat.source !== "app" ? `${chat.title} (from ${SOURCE_LABEL[chat.source]})` : chat.title}${alsoShown ? " (in the other pane)" : ""}`}
         onClick={() => {
@@ -356,6 +359,7 @@ function ChatRow({
         <ChatMenu
           chat={chat}
           projects={projects}
+          tags={tags}
           x={menu.x}
           y={menu.y}
           split={split}
@@ -673,7 +677,9 @@ function moveBetweenChats(e: KeyboardEvent<HTMLElement>) {
 export function ChatList({
   profile,
   projectSwitcher,
+  savedFilters,
   projectsOf,
+  tagsOf,
   switching,
   status,
   others,
@@ -699,7 +705,10 @@ export function ChatList({
 }: {
   profile: string;
   projectSwitcher?: ReactNode;
+  /** The profile's Saved filters (Tags.tsx), under the project switcher. */
+  savedFilters?: ReactNode;
   projectsOf?: (chatId: string) => ChatProjects | undefined;
+  tagsOf?: (chatId: string) => ChatTags | undefined;
   switching?: Snapshot["switching"];
   status: ConnectionStatus;
   others: OtherProfiles;
@@ -753,6 +762,7 @@ export function ChatList({
       onRegenTitle={() => onRegenTitle(c.id)}
       onTextGenerationSettings={onTextGenerationSettings}
       projects={projectsOf?.(c.id)}
+      tags={tagsOf?.(c.id)}
     />
   );
   return (
@@ -780,6 +790,7 @@ export function ChatList({
         {switching && (
           <SwitchStatus profile={profile} switching={switching} status={status} onRetry={onRetrySwitch} onBack={() => onSwitchProfile(switching.from)} />
         )}
+        {savedFilters}
         {syncError && !switching?.error && (
           <div className="sync-error" role="status">
             {syncError}
