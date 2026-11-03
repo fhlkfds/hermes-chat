@@ -147,6 +147,10 @@ _Avoid_: remote files, file manager, workspace (Hermes's word for a session's wo
 The warning on a connection whose traffic between this app and the server isn't encrypted.
 _Avoid_: insecure (the app's label is "Unsecure"), unsafe
 
+**Persona**:
+A profile's SOUL.md on the Hermes server: who Hermes is and how it speaks in that profile's chats. Settings → Persona edits the shown profile's file as plain text. A Save writes only if Hermes still has what the edit started from, and the app says it saved only once Hermes, read back, has it. If the file changed elsewhere, nothing is written until the owner chooses. Chats started afterwards use the new persona; a chat under way keeps the one it started with. Hermes needs no restart, and the app never restarts it. An edit not saved stays on this computer, per connection and profile, and the last five versions that saves from here replaced are kept to put back.
+_Avoid_: soul, personality (Hermes's `/personality` presets are another thing), system prompt
+
 **Scheduled job**:
 A Hermes cron job in one profile: a prompt Hermes runs at the times its schedule sets, delivering the reply where the job says. Hermes keeps the job on the server and its gateway runs it there, so it runs while Hermes Chat is closed. The Scheduled jobs screen lists the profile's jobs with their schedule, time zone, next run and last result, and creates, edits, pauses, resumes, runs and deletes them through Hermes. A change shows only once Hermes, read back, has it. Deleting a job, or running it now, asks first (ADR 0013).
 _Avoid_: cron (Hermes's name, fine in server-side talk), task, automation, reminder
@@ -181,4 +185,5 @@ _Avoid_: upgrade (pacman's word, for the package step only)
 - **Scheduled job** vs its runs: each run of an agent job is a Hermes session with source `cron`. The chat list leaves those out; the job's runs show on the Scheduled jobs screen.
 - **Source** vs the `source` field on a Hermes session: the app derives a chat's Source from that field, but the field has more values than the app shows. `gui` (what this app stamps on chats it starts) and `hermes-chat` (what it stamped before; Hermes won't edit those) count as this app, and `cli` and `tui` as the command line. `cron` chats aren't listed, and any other value (for example `api_server`, `webhook`) shows as "another Hermes platform".
 - The project the list shows vs Hermes's *active* project: Hermes keeps one active project per profile for its own CLI and the official desktop app (`projects.set_active`). Picking a project in this app's list never changes it; the pick is kept on this computer.
+- **Persona** vs Hermes's personalities: `/personality` and `agent.personalities` in Hermes's config are named presets laid over a chat's prompt. Settings → Persona edits only the profile's `SOUL.md`. It never sets or changes a personality.
 - **Project** vs a chat's working folder: Hermes also groups chats by the folder each one runs in (`cwd`). This app doesn't: a chat is in a project only when the owner put it there, or started it while the list showed the project. Putting a chat in a project doesn't change the folder it runs in.
