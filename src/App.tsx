@@ -921,7 +921,7 @@ export function Main({
           live={live}
           leaving={leavingNote(profile, chats)}
           onOpen={openEntry}
-          onDismiss={(e) => acks.dismiss(e)}
+          onDismiss={(e) => acks.dismiss(e, inbox.entries)}
           onRefresh={() => void hermes.checkOtherProfiles()}
           onClose={() => setInboxOpen(false)}
         />

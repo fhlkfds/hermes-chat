@@ -113,29 +113,23 @@ export function inboxEntries({ profile, chats, connected, others, live, seen }: 
     }
   }
 
-  // Sessions working or waiting in the dashboard's process, in any profile. Rows don't say their profile. A session
-  // this app started or resumed is known by its runtime id. Any other is put with the one chat that has its id
-  // among the chats read, and only once every profile has been read: a stored id can repeat in a copied profile, and
-  // the copy could be in a profile that couldn't be read.
+  // Sessions working or waiting in the dashboard's process, in any profile. Rows don't say their profile: the
+  // transport knows it for sessions this app started or resumed, and looks the others up by id in every profile (a
+  // copied profile can repeat ids). One whose profile isn't known isn't listed, and is counted.
   let unmatched = 0;
   if (live) {
-    const owners = new Map<string, { profile: string; title: string; source?: Source }[]>();
-    const own = (id: string, o: { profile: string; title: string; source?: Source }) => owners.set(id, [...(owners.get(id) ?? []), o]);
-    for (const c of chats) own(c.id, { profile, title: c.title, source: c.source });
-    for (const [name, p] of Object.entries(others.byName)) for (const c of p.chats ?? []) own(c.id, { profile: name, title: c.title, source: c.source });
-    const everyProfileRead = others.checkedAt !== undefined && !others.error && Object.values(others.byName).every((p) => p.checkedAt !== undefined && !p.error);
     const stale = !!live.error || !connected;
     for (const s of live.sessions) {
-      const found = owners.get(s.chatId) ?? [];
-      const owner = s.profile ? (found.find((o) => o.profile === s.profile) ?? { profile: s.profile, title: "Untitled chat" }) : everyProfileRead && found.length === 1 ? found[0] : undefined;
-      if (!owner) {
+      if (!s.profile) {
         unmatched++;
         continue;
       }
-      // A chat this connection has resumed says itself, more surely and more lately, whether it runs or waits; so does
-      // one whose card from before a drop is still on screen.
-      const here = owner.profile === profile ? chats.find((c) => c.id === s.chatId) : undefined;
-      if (here && (here.runtimeId || here.items.some(isWaiting))) continue;
+      // The shown profile's own chats say more surely whether they run or wait, once resumed or holding a waiting card.
+      // While the connection is down, a check is older than what they last showed.
+      const here = s.profile === profile ? chats.find((c) => c.id === s.chatId) : undefined;
+      if (here && (!connected || here.runtimeId || here.items.some(isWaiting))) continue;
+      const listed = s.profile === profile ? here : others.byName[s.profile]?.chats?.find((c) => c.id === s.chatId);
+      const owner = { profile: s.profile, title: listed?.title ?? s.title ?? "Untitled chat", source: listed?.source ?? s.source };
       const base = { profile: owner.profile, chatId: s.chatId, title: owner.title, source: owner.source, at: s.at, stale };
       if (s.status === "working") add({ ...base, key: `running ${owner.profile} ${s.chatId}`, kind: "running", summary: "Hermes is working on a reply." });
       else add({ ...base, key: `waiting ${owner.profile} ${s.chatId}`, kind: "approval", summary: "Hermes is waiting for your answer. Open the chat to see what it asks." });
@@ -216,7 +210,11 @@ type Dismissed = Record<string, [at: number, dismissedAt: number]>;
 export type InboxAcks = {
   /** Dismissed, and nothing has happened since: an entry whose time is later than the dismissal's shows again. */
   isDismissed(e: InboxEntry, state?: Dismissed): boolean;
-  dismiss(e: InboxEntry): void;
+  /**
+   * `entries`: the inbox's entries now. An Approval card's `alias` is dismissed with it only when no other card in its
+   * chat is still waiting and not dismissed, since the alias stands for them all.
+   */
+  dismiss(e: InboxEntry, entries?: InboxEntry[]): void;
   /** Puts back an entry dismissed by mistake. */
   restore(e: InboxEntry): void;
   subscribe(fn: () => void): () => void;
@@ -256,7 +254,12 @@ export function inboxAcks(storage: AckStorage, scope: string, now = () => Date.n
   };
   return {
     isDismissed: (e, s = state) => kept(s[e.key]) && s[e.key][0] >= e.at,
-    dismiss: (e) => save({ ...state, [e.key]: [e.at, now()], ...(e.alias && { [e.alias]: [now(), now()] }) }),
+    dismiss: (e, entries = []) => {
+      const next: Dismissed = { ...state, [e.key]: [e.at, now()] };
+      const others = entries.filter((o) => o.key !== e.key && o.alias === e.alias && !o.ended && !(kept(next[o.key]) && next[o.key][0] >= o.at));
+      if (e.alias && !others.length) next[e.alias] = [now(), now()];
+      save(next);
+    },
     restore: (e) => {
       const { [e.key]: _gone, ...rest } = state;
       if (e.alias) delete rest[e.alias];

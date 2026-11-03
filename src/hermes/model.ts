@@ -198,11 +198,12 @@ export type OtherProfiles = { byName: Record<string, OtherProfile>; checkedAt?: 
 /**
  * The sessions live in the dashboard's own process, in every profile, as `session.active_list` last reported them:
  * the ones working on a turn, or waiting for the owner's answer. `chatId`: the stored session id. `at`: its last
- * activity (Unix ms). `profile`: the profile it is in, known only for a session this app started or resumed on the
- * connection. `error`: why the latest check failed; `sessions` are then from the one before. `unsupported`:
+ * activity (Unix ms). `profile`: the profile it is in, when known: for a session this app started or resumed, or
+ * once looking its id up in every profile found it in exactly one; `title` and `source` then come from that profile's
+ * row. `error`: why the latest check failed; `sessions` are then from the one before. `unsupported`:
  * this Hermes has no `session.active_list`.
  */
-export type LiveSession = { chatId: string; status: "working" | "waiting"; at: number; profile?: string };
+export type LiveSession = { chatId: string; status: "working" | "waiting"; at: number; profile?: string; title?: string; source?: Source };
 export type LiveSessions = { sessions: LiveSession[]; checkedAt?: number; error?: string; unsupported?: boolean };
 
 /**

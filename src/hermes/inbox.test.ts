@@ -194,31 +194,96 @@ describe("The inbox", () => {
     expect(inbox(hermes).entries.map(brief)).toEqual(["completed work/work-done", "running work/work-busy stale"]);
   });
 
-  it("marks what it last saw from a profile it couldn't check, and puts no live session with a chat meanwhile", async () => {
+  it("marks what it last saw from a profile it couldn't check", async () => {
     const { server, hermes } = await signedIn();
-    server.liveSessions = [{ id: "rt-x", session_key: "work-busy", status: "working", last_active: nowS() }];
     await hermes.checkOtherProfiles();
     const list = server.rest["GET /api/sessions"];
     server.rest["GET /api/sessions"] = (req) => {
-      if (req.query.get("profile") === "ops") throw new Error("The dashboard answered 503: busy");
+      if (req.query.get("profile") === "work") throw new Error("The dashboard answered 503: busy");
       return list(req);
     };
     vi.useFakeTimers({ now: Date.now() + 20_000 });
     await hermes.checkOtherProfiles();
 
-    expect(hermes.getSnapshot().others.byName.ops.error).toContain("503");
-    // ops might hold a copy of the same session id, so the running session isn't put with work's chat on a guess.
-    const { entries, unmatched } = inbox(hermes);
-    expect(entries.map(brief)).toEqual(["completed work/work-done"]);
-    expect(unmatched).toBe(1);
-
-    server.rest["GET /api/sessions"] = (req) => {
-      if (req.query.get("profile") === "work") throw new Error("The dashboard answered 503: busy");
-      return list(req);
-    };
-    vi.setSystemTime(Date.now() + 20_000);
-    await hermes.checkOtherProfiles();
+    expect(hermes.getSnapshot().others.byName.work.error).toContain("503");
     expect(inbox(hermes).entries.map(brief)).toEqual(["completed work/work-done stale"]);
+  });
+
+  it("finds the profile of a live session by its id, even one past the chats a check reads", async () => {
+    const { server, hermes } = await signedIn();
+    for (let i = 0; i < 60; i++) server.otherProfiles.work.push(row(`filler-${i}`, 0));
+    server.otherProfiles.work.push(row("old-job", 20, { title: "Old job", last_read_at: nowS() }));
+    server.liveSessions = [{ id: "rt-o", session_key: "old-job", status: "waiting", last_active: nowS() }];
+    await hermes.checkOtherProfiles();
+
+    expect(hermes.getSnapshot().others.byName.work.chats?.some((c) => c.id === "old-job")).toBe(false);
+    expect(inbox(hermes).entries.find((e) => e.chatId === "old-job")).toMatchObject({ kind: "approval", profile: "work", title: "Old job" });
+    const lookups = server.restRequests.filter((r) => r.path === "/api/sessions/old-job").map((r) => r.query.get("profile"));
+    expect(lookups.sort()).toEqual(["default", "ops", "work"]);
+  });
+
+  it("lists a live session no more when a copied profile has the same id, or a profile couldn't be asked", async () => {
+    vi.useFakeTimers();
+    const { server, hermes } = await signedIn();
+    // An idle copy of work's chat, in a profile whose list never shows it.
+    for (let i = 0; i < 60; i++) server.otherProfiles.ops.push(row(`filler-${i}`, 0));
+    server.otherProfiles.ops.push(row("work-asks", 25, { title: "A copy" }));
+    server.liveSessions = [{ id: "rt-y", session_key: "work-asks", status: "waiting", last_active: nowS() }];
+    await hermes.checkOtherProfiles();
+    expect(inbox(hermes)).toMatchObject({ entries: expect.not.arrayContaining([expect.objectContaining({ chatId: "work-asks", kind: "approval" })]), unmatched: 1 });
+
+    // A profile that answers with an error says nothing about where the session is, so it is asked again later.
+    server.otherProfiles.ops = server.otherProfiles.ops.filter((r) => r.id !== "work-asks");
+    server.liveSessions = [{ id: "rt-z", session_key: "work-busy", status: "working", last_active: nowS() }];
+    server.rest["GET /api/sessions/work-busy"] = (req) => {
+      const profile = req.query.get("profile");
+      if (profile === "ops") throw new Error("The dashboard answered 503: busy");
+      if (profile === "work") return server.otherProfiles.work.find((r) => r.id === "work-busy");
+      throw new Error(`The dashboard answered 404: {"detail":"Session not found"}`);
+    };
+    await vi.advanceTimersByTimeAsync(20_000);
+    await hermes.checkOtherProfiles();
+    expect(inbox(hermes).unmatched).toBe(1);
+
+    delete server.rest["GET /api/sessions/work-busy"];
+    await vi.advanceTimersByTimeAsync(20_000);
+    await hermes.checkOtherProfiles();
+    expect(inbox(hermes).entries.map(brief)).toContain("running work/work-busy");
+  });
+
+  it("doesn't bring back an Approval that timed out when the connection then drops", async () => {
+    const { server, hermes } = await signedIn();
+    const { id, runtime } = await replying(server, hermes);
+    const asked = server.askApproval(runtime);
+    server.liveSessions = [{ id: runtime, session_key: id, status: "waiting", last_active: nowS() }];
+    await hermes.checkOtherProfiles();
+    server.cancelRequest(asked.id!, "timeout");
+    server.refuse = "Connection refused";
+    server.drop();
+
+    expect(inbox(hermes).entries.filter((e) => e.chatId === id && needsOwner(e))).toEqual([]);
+  });
+
+  it("keeps another Approval in the same chat after one is dismissed and the owner switches away", async () => {
+    vi.useFakeTimers();
+    const { server, hermes } = await signedIn();
+    const { id, runtime } = await replying(server, hermes);
+    const a = server.askApproval(runtime);
+    const b = server.askApproval(runtime, { request_id: "apr-b" });
+    const acks = inboxAcks(storage(), "server");
+    const card = (itemId?: string) => inbox(hermes).entries.find((e) => e.itemId === itemId)!;
+    acks.dismiss(card(a.id), inbox(hermes).entries);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    await hermes.switchProfile("work");
+    await hermes.idle();
+    server.liveSessions = [{ id: runtime, session_key: id, status: "waiting", last_active: nowS() - 1 }];
+    await vi.advanceTimersByTimeAsync(20_000);
+    await hermes.checkOtherProfiles();
+    const waiting = () => inbox(hermes).entries.find((e) => e.key === `waiting default ${id}`)!;
+    // B still waits and wasn't dismissed.
+    expect(acks.isDismissed(waiting())).toBe(false);
+    expect(b.id).toBeDefined();
   });
 
   it("puts a session this app started with its own profile by its runtime id, though a copied profile lists the same id", async () => {

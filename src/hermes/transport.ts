@@ -64,6 +64,9 @@ const MODELS_TIMEOUT_MS = 30_000;
 const OTHER_PAGE_SIZE = 50;
 /** A `session.active_list` check asked for sooner than this after the last one, on the same connection, is skipped. */
 const LIVE_MIN_GAP_MS = 15_000;
+/** The most live sessions of unknown profile one check looks up, and the profiles it asks at once for each. */
+const LOOKUPS_PER_CHECK = 3;
+const LOOKUP_AT_ONCE = 4;
 /** The most chats one search lists; dashboard REST caps it at 100. */
 const SEARCH_LIMIT = 50;
 
@@ -461,6 +464,12 @@ export class Hermes {
   });
   /** The titles chats had when the owner switched away from their profile, by `profile chatId`, for the inbox. */
   private titlesSeen = new Map<string, string>();
+  /**
+   * The profile each stored session id seen live is in, from looking it up in every profile: the one profile that has
+   * it, or null when more than one does (a copied profile keeps the ids). A session doesn't change profile, so an
+   * answer is kept for as long as the app runs.
+   */
+  private sessionOwners = new Map<string, { profile: string; title: string; source: Source } | null>();
   /** The profile and chat of each runtime session this app started or resumed, for as long as it runs. */
   private runtimeOwners = new Map<string, { profile: string; chatId: string }>();
   /** The latest `session.active_list` read: its connection, when it started, and the read while under way. */
@@ -690,7 +699,19 @@ export class Hermes {
           const at = typeof row?.last_active === "number" ? row.last_active * 1000 : 0;
           return status && chatId ? [{ chatId, status, at, ...(mine?.chatId === chatId && { profile: mine.profile }) }] : [];
         });
-        this.update({ live: { sessions, checkedAt: Date.now() } });
+        // Rows don't say their profile. Each other session is looked up by its id in every profile, a few per check.
+        const unknown = sessions.filter((s) => !s.profile && !this.sessionOwners.has(s.chatId)).slice(0, LOOKUPS_PER_CHECK);
+        const profiles = unknown.length ? await this.profiles().catch(() => undefined) : undefined;
+        for (const s of profiles ? unknown : []) {
+          const owner = await this.ownerOf(s.chatId, profiles!);
+          if (owner !== undefined) this.sessionOwners.set(s.chatId, owner);
+        }
+        if (gen !== this.generation) return;
+        const placed = sessions.map((s): LiveSession => {
+          const owner = s.profile ? undefined : this.sessionOwners.get(s.chatId);
+          return owner ? { ...s, ...owner } : s;
+        });
+        this.update({ live: { sessions: placed, checkedAt: Date.now() } });
       } catch (e) {
         if (gen !== this.generation) return;
         if (e instanceof RpcError && e.code === NO_SUCH_METHOD) this.update({ live: { sessions: [], unsupported: true } });
@@ -701,6 +722,29 @@ export class Hermes {
     })();
     this.liveCheck = { gen, at: Date.now(), done };
     return done;
+  }
+
+  /**
+   * The one profile that has a stored session, by asking each for it (`GET /api/sessions/{id}?profile=`): its row's
+   * title and source with it, null when more than one profile has it, and undefined when none does yet (a new chat is
+   * stored with its first message) or a profile couldn't be asked, so it is looked up again later.
+   */
+  private async ownerOf(chatId: string, profiles: string[]): Promise<{ profile: string; title: string; source: Source } | null | undefined> {
+    const found: { profile: string; title: string; source: Source }[] = [];
+    let unsure = false;
+    for (let i = 0; i < profiles.length; i += LOOKUP_AT_ONCE)
+      await Promise.all(
+        profiles.slice(i, i + LOOKUP_AT_ONCE).map(async (profile) => {
+          try {
+            const row = (await this.rest("GET", `${sessionPath(chatId)}?${new URLSearchParams({ profile })}`)) as SessionRow;
+            found.push({ profile, title: listTitle(row), source: toSource(row.source) });
+          } catch (e) {
+            if (!(e as Error).message.includes("answered 404")) unsure = true;
+          }
+        }),
+      );
+    if (found.length > 1) return null;
+    return unsure || !found.length ? undefined : found[0];
   }
 
   /**
@@ -1628,7 +1672,11 @@ export class Hermes {
       if (c.runtimeId) this.staleItems.set(c.id, c.items.length);
       if (c.running || c.items.some(isWaiting)) this.resumeOnReconnect.add(c.id);
     }
+    // What the dropped connection last heard about the shown profile's sessions is older than its chats' own state,
+    // which the reconnect resumes; the next check, once connected, reads it again.
+    const live = this.snapshot.live && { ...this.snapshot.live, sessions: this.snapshot.live.sessions.filter((s) => s.profile !== this.profile) };
     this.update({
+      live,
       status: "reconnecting",
       closedReason: reason,
       chats: this.snapshot.chats.map((c) => (c.runtimeId || c.running ? { ...c, runtimeId: undefined, live: undefined, running: false, stopping: false } : c)),
