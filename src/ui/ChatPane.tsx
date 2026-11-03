@@ -349,6 +349,9 @@ export function ChatPane({
           {chat.source !== "app" && <SourceIcon source={chat.source} size={13} />}
           <span>{chat.title}</span>
           {chat.settled && <span className="badge">Settled</span>}
+          {chat.settled && onSettle && !chat.archived && (
+            <SettleButton settled size={12} className="unsettle-btn" labeled onSettle={onSettle} />
+          )}
           {chat.archived && <span className="badge">Archived</span>}
           {projects?.map((name) => (
             <span key={name} className="badge project-badge" title={`In the project ${name}`}>

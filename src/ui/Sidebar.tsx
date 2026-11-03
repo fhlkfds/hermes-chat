@@ -319,7 +319,15 @@ function ChatRow({
           {chat.running || retitling ? <Spinner /> : chat.unread ? <span className="dot" title="Unread" /> : relTime(chat.updatedAt)}
         </span>
       </button>
-      {!chat.archived && <SettleButton settled={chat.settled} size={14} className="row-action" onSettle={onSettle} />}
+      {!chat.archived && (
+        <SettleButton
+          settled={chat.settled}
+          size={14}
+          className={chat.settled ? "row-action row-unsettle" : "row-action"}
+          labeled
+          onSettle={onSettle}
+        />
+      )}
       {!chat.running && <ArchiveButton archived={!!chat.archived} size={14} className="row-action" onArchive={onArchive} />}
       {!chat.running && (
         <button
