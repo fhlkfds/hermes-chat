@@ -2,13 +2,17 @@
 // menu uses too. Escape or a click elsewhere closes one, and focus goes back to what had it. The arrow keys move
 // between a menu's items.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { Check, Columns2, PanelLeft, PanelRight, Pencil, Sparkles } from "lucide-react";
+import { Check, Columns2, PanelLeft, PanelRight, Pencil, Sparkles, Tag as TagIcon } from "lucide-react";
 import type { Chat } from "../hermes/model";
 import type { Project } from "../hermes/projects";
+import type { Tag } from "../hermes/tags";
 import { useReturnFocus } from "./bits";
 
 /** The profile's projects, for the chat menu: which ones the chat is in, and putting it in one or taking it out. */
 export type ChatProjects = { list: Project[]; of: Set<string>; onToggle: (projectId: string, inProject: boolean) => void };
+
+/** The profile's tags, for the chat menu: which ones the chat has, putting one on or taking it off, and the tag editor. */
+export type ChatTags = { list: Tag[]; of: readonly string[]; onToggle: (tagId: string, on: boolean) => void; onManage: () => void };
 
 /**
  * The right-click menu for one chat, at the pointer, kept inside the window. `onRename` and `onRegenTitle` hand back
@@ -24,6 +28,7 @@ export function ChatMenu({
   onRename,
   onRegenTitle,
   projects,
+  tags,
   onClose,
 }: {
   chat: Chat;
@@ -34,6 +39,7 @@ export function ChatMenu({
   onRename: () => void;
   onRegenTitle: () => void;
   projects?: ChatProjects;
+  tags?: ChatTags;
   onClose: () => void;
 }) {
   return (
@@ -110,6 +116,45 @@ export function ChatMenu({
               </button>
             );
           })}
+        </div>
+      )}
+      {tags && (
+        <div role="group" aria-label="Tags" className="menu-group">
+          <div className="menu-heading" aria-hidden>
+            Tags
+          </div>
+          {tags.list.map((t) => {
+            const on = tags.of.includes(t.id);
+            return (
+              <button
+                key={t.id}
+                role="menuitemcheckbox"
+                aria-checked={on}
+                className="menu-item"
+                title={on ? `Take the tag ${t.name} off this chat` : `Tag this chat ${t.name}`}
+                onClick={() => {
+                  onClose();
+                  tags.onToggle(t.id, !on);
+                }}
+              >
+                <span className="menu-icon">{on && <Check size={15} />}</span>
+                <span className="menu-label">{t.name}</span>
+              </button>
+            );
+          })}
+          <button
+            role="menuitem"
+            className="menu-item"
+            onClick={() => {
+              onClose();
+              tags.onManage();
+            }}
+          >
+            <span className="menu-icon">
+              <TagIcon size={15} />
+            </span>
+            <span className="menu-label">{tags.list.length ? "Edit tags…" : "Add a tag…"}</span>
+          </button>
         </div>
       )}
     </Menu>

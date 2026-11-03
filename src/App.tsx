@@ -35,6 +35,9 @@ import type { QueueApi } from "./ui/Queue";
 import { PANE_NAMES, Split, usePaneVisible, type PaneSlot } from "./ui/Split";
 import type { VoiceApi } from "./ui/Voice";
 import { SearchPalette } from "./ui/Search";
+import { SavedFilters, TagManager } from "./ui/Tags";
+import { TAGS_KEY, TagsStore, type SavedFilter } from "./hermes/tags";
+import { runFilter } from "./hermes/chatFilter";
 import { SettingsScreen, type PersonaWiring } from "./ui/Settings";
 import { LeavePersona, type LeaveWhat } from "./ui/LeavePersona";
 import { LeaveMemoryEdit, useCloseGuard } from "./ui/LeaveMemoryEdit";
@@ -502,6 +505,9 @@ export function Main({
   const [listOpen, setListOpen] = useState(true);
   const [toast, setToast] = useState<Toast | null>(notSaved ? { text: notSaved, at: Date.now() } : null);
   const [searchOpen, setSearchOpen] = useState(false);
+  // The Saved filter the search palette opened with, if any; and the tag editor.
+  const [searchStart, setSearchStart] = useState<SavedFilter>();
+  const [tagsOpen, setTagsOpen] = useState(false);
 
   // The inbox: what needs the owner, or finished, across the profiles (hermes/inbox.ts). Dismissals are kept on this
   // computer for the connection, and change nothing else. `goTo`: an entry's chat to open once its profile's list
@@ -564,6 +570,26 @@ export function Main({
       window.removeEventListener("focus", back);
     };
   }, [projects]);
+  // Tags and Saved filters: kept on this computer for each connection and profile, never sent to Hermes (tags.ts,
+  // ADR 0026). Another Hermes Chat window's changes show here too.
+  const tagsStore = useMemo(() => new TagsStore(localStorage, scope), [scope]);
+  const tagSnap = useSyncExternalStore(tagsStore.subscribe, tagsStore.getSnapshot);
+  useEffect(() => {
+    const changed = (e: StorageEvent) => e.key === TAGS_KEY && tagsStore.reread();
+    window.addEventListener("storage", changed);
+    return () => window.removeEventListener("storage", changed);
+  }, [tagsStore]);
+  const tagChange = (fn: () => void) => {
+    try {
+      fn();
+    } catch (e) {
+      setToast({ text: (e as Error).message, at: Date.now() });
+    }
+  };
+  const openSearch = (start?: SavedFilter) => {
+    setSearchStart(start);
+    setSearchOpen(true);
+  };
   const listable = proj.projects.filter((p) => !p.archived);
   const shownProject = listable.find((p) => p.id === proj.selectedId);
   const projectScreenOpen = projectOpen && !!shownProject;
@@ -850,6 +876,7 @@ export function Main({
     return hermes.delete(id).then((deleted) => {
       if (deleted) {
         projects.forgetChat(id);
+        tagChange(() => tagsStore.forgetChat(id));
         if (stillIn(profile)) setToast({ text: `Deleted: ${title}`, at: Date.now() });
       }
       return deleted;
@@ -978,6 +1005,7 @@ export function Main({
       const k = e.key.toLowerCase();
       if (k === "k") {
         e.preventDefault();
+        setSearchStart(undefined);
         setSearchOpen((o) => !o);
       } else if (k === "n") {
         e.preventDefault();
@@ -1094,7 +1122,7 @@ export function Main({
         onReconnect={() => void hermes.reconnect()}
         onToggleList={() => setListOpen((o) => !o)}
         onNew={() => newChat()}
-        onSearch={() => setSearchOpen(true)}
+        onSearch={() => openSearch()}
         onFiles={() =>
           guard(() => {
             setSettingsOpen(false);
@@ -1187,6 +1215,15 @@ export function Main({
                 }
               />
             }
+            savedFilters={
+              <SavedFilters filters={tagSnap.filters} onOpen={(f) => openSearch(f)} onDelete={(id) => tagChange(() => tagsStore.deleteFilter(id))} />
+            }
+            tagsOf={(chatId) => ({
+              list: tagSnap.tags,
+              of: tagSnap.chats[chatId] ?? [],
+              onToggle: (id, on) => tagChange(() => tagsStore.setTag([chatId], id, on)),
+              onManage: () => setTagsOpen(true),
+            })}
             projectsOf={(chatId) => {
               if (!listable.length) return undefined;
               const of = projects.projectsOf(chatId);
@@ -1420,7 +1457,22 @@ export function Main({
             />
           )}
       </main>
-      {searchOpen && <SearchPalette onSearch={(q, archived) => hermes.search(q, { archived })} onPick={pick} onClose={() => setSearchOpen(false)} />}
+      {searchOpen && (
+        <SearchPalette
+          key={searchStart?.id ?? "search"}
+          profile={profile}
+          tags={tagSnap}
+          initial={searchStart?.filter}
+          initialName={searchStart?.name}
+          onRun={(f) => runFilter(f, hermes, { exists: tagsStore.exists, of: tagsStore.tagsOf })}
+          onPick={pick}
+          onClose={() => setSearchOpen(false)}
+          onSave={(name, f) => void tagsStore.saveFilter(name, f)}
+          onBulk={(p) => tagsStore.applyBulk(p)}
+          onManageTags={() => setTagsOpen(true)}
+        />
+      )}
+      {tagsOpen && <TagManager store={tagsStore} profile={profile} onClose={() => setTagsOpen(false)} />}
       {toast && (
         <div className="toast" key={toast.at} role="status">
           <span>{toast.text}</span>

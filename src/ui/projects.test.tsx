@@ -171,7 +171,7 @@ describe("a chat's menu", () => {
     s.projects.default = [];
     const { user } = await launch(s);
     await user.pointer({ keys: "[MouseRight]", target: screen.getByRole("button", { name: /NAS disks/ }) });
-    expect(screen.getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["Rename…", "Regenerate title", "Open in a second pane"]);
+    expect(screen.getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["Rename…", "Regenerate title", "Open in a second pane", "Add a tag…"]);
     expect(screen.queryByRole("menuitemcheckbox")).toBeNull();
   });
 });

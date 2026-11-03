@@ -63,6 +63,18 @@ _Avoid_: account, workspace, agent (as a name for a profile), connection (the si
 A named group of chats and of folders on the server, in one profile. Hermes keeps the project, its name and its folders, so other Hermes clients show it too. Which chats are in it is kept on this computer only. Picking a project in the list shows only its chats; a chat started meanwhile goes in it. A chat can be in several projects, or none. Deleting a project keeps its chats in Hermes and its folders on the server.
 _Avoid_: workspace, group, folder (for the project itself)
 
+**Tag**:
+A label the owner puts on chats, in one profile. A chat can have several tags, or none. The owner creates, renames and deletes tags; a renamed tag stays on its chats. No two tags in a profile share a name, whatever its case. Tags are kept on this computer only, for each connection and profile; Hermes and other Hermes clients don't see them (ADR 0026).
+_Avoid_: label (in the app), category, folder, project
+
+**Chat filter**:
+What the search palette narrows the profile's chats by: words, Tags, Source, model, when the chat was last active, and whether it is Active, Settled or Archived. A chat must match every part. Hermes searches the words and lists the chats; the rest is checked on what Hermes answered, and the results say when more chats may match. Applying a filter changes no chat (ADR 0026).
+_Avoid_: query, view
+
+**Saved filter**:
+A Chat filter the owner named, listed in its own section of the chat list and opened again from there. It is a search, not a group: unlike a Project, it puts no chat anywhere. Kept on this computer only, for each connection and profile (ADR 0026).
+_Avoid_: smart folder, saved search (fine in conversation), view
+
 **Folder** (of a project):
 A path on the server that a project refers to, shown with the connection it is on. Hermes Chat adds only a folder that is already there, and never creates, moves or deletes one. A folder in a git repository shows its branch, and the repository's other worktrees that already exist can be added as folders too; Hermes Chat never creates a worktree.
 _Avoid_: directory, workspace, repo (unless it is one)

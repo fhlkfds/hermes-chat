@@ -78,6 +78,7 @@ const LOOKUPS_PER_CHECK = 3;
 const LOOKUP_AT_ONCE = 4;
 /** The most chats one search lists; dashboard REST caps it at 100. */
 const SEARCH_LIMIT = 50;
+export const SEARCH_MAX = 100;
 
 const MiB = 1024 * 1024;
 /** The most legacy `image.attach_bytes` and `file.attach` take (research doc §7). PDFs go as files: `pdf.attach`
@@ -160,6 +161,8 @@ type SessionRow = {
   archived?: boolean;
   /** Activity postdates the session's shared read watermark (`SessionDB.session_unread`). */
   unread?: boolean;
+  /** The model the session last ran on, as Hermes stored it; list and search rows both carry it. */
+  model?: string | null;
 };
 type SessionPage = { sessions: SessionRow[]; total: number };
 /** Dashboard REST `GET /api/sessions/{id}`, as far as this app reads it. Flags come as stored, 0 or 1. */
@@ -171,7 +174,7 @@ type MutationSnapshot = { exists: boolean; runtime_revision: number };
  * too. `snippet` is FTS5's, with each matched word `>>>marked<<<`; `role` is the matched message's, and null when the
  * chat's id or title matched instead.
  */
-type SearchRow = Pick<SessionRow, "id" | "source" | "title" | "preview" | "started_at" | "last_active" | "archived"> & {
+type SearchRow = Pick<SessionRow, "id" | "source" | "title" | "preview" | "started_at" | "last_active" | "archived" | "model"> & {
   snippet?: string;
   role?: string | null;
 };
@@ -924,33 +927,67 @@ export class Hermes {
    * Searches the words and titles of every chat in the profile, Active and Settled, however old. Archived chats are
    * left out, as they are from the list, unless `archived` asks for them too.
    */
-  async search(text: string, { archived = false } = {}): Promise<Found[]> {
+  async search(text: string, opts: { archived?: boolean } = {}): Promise<Found[]> {
+    return (await this.searchPage(text, opts)).found;
+  }
+
+  /**
+   * `search`, for chat filters (chatFilter.ts): `sources` narrows it on the server, and `limit` is how many chats
+   * Hermes is asked for. `capped`: Hermes answered as many as asked, so more chats may match.
+   */
+  async searchPage(text: string, { archived = false, sources, limit = SEARCH_LIMIT }: { archived?: boolean; sources?: Source[]; limit?: number } = {}): Promise<{ found: Found[]; capped: boolean }> {
     const q = text.trim();
-    if (!q) return [];
+    if (!q) return { found: [], capped: false };
     const profile = this.profile;
-    const query = new URLSearchParams({ q, profile, limit: String(SEARCH_LIMIT), exclude_sources: "cron" });
+    const raw = rawSources(sources);
+    const query = new URLSearchParams({ q, profile, limit: String(limit), exclude_sources: "cron", ...(raw && { sources: raw }) });
     const res = (await this.rest("GET", `api/sessions/search?${query}`)) as { results: SearchRow[] };
     if (this.profile !== profile) throw new Error(`Switched to the ${this.profile} profile before the results came.`);
     const listed = new Map(this.snapshot.chats.map((c) => [c.id, c]));
-    return res.results
+    const found = res.results
       .filter((r) => (archived || !this.isArchived(r)) && !this.deleted.has(r.id))
       .map((r): Found => {
-        const c = listed.get(r.id);
         const snippet = snippetParts(r.snippet ?? "");
         const role = r.role === "user" || r.role === "assistant" ? r.role : undefined;
-        return {
-          chatId: r.id,
-          // The list's title, so a chat is called the same in both while the search index catches up with a rename.
-          title: c?.title ?? listTitle(r),
-          source: toSource(r.source),
-          // Every pinned chat is listed, so one that isn't is Settled.
-          settled: c?.settled ?? true,
-          ...(this.isArchived(r) && { archived: true }),
-          updatedAt: Math.max(c?.updatedAt ?? 0, lastActive(r)),
-          snippet,
-          ...(role && { role, find: findTerm(q, snippet) }),
-        };
+        // Every pinned chat is listed, so one that isn't is Settled.
+        return { ...this.toFound(r, listed.get(r.id), true), snippet, ...(role && { role, find: findTerm(q, snippet) }) };
       });
+    return { found, capped: res.results.length >= limit };
+  }
+
+  /**
+   * Every chat in the profile, however old, as dashboard REST lists them, most recent first, for a chat filter with
+   * no words to search (chatFilter.ts). `capped`: the profile has more than the most pages read.
+   */
+  async browse({ archived, sources }: { archived: "exclude" | "only" | "include"; sources?: Source[] }): Promise<{ found: Found[]; capped: boolean }> {
+    const profile = this.profile;
+    const { rows, more } = await this.readList(profile, archived, -Infinity, rawSources(sources));
+    if (this.profile !== profile) throw new Error(`Switched to the ${this.profile} profile before the chats came.`);
+    const listed = new Map(this.snapshot.chats.map((c) => [c.id, c]));
+    const seen = new Set<string>();
+    const found = rows.flatMap((r): Found[] => {
+      // Every page carries the pinned rows too, archived or not.
+      if (seen.has(r.id) || this.deleted.has(r.id)) return [];
+      seen.add(r.id);
+      const archivedNow = this.isArchived(r);
+      if (archived === "exclude" ? archivedNow : archived === "only" ? !archivedNow : false) return [];
+      return [{ ...this.toFound(r, listed.get(r.id), !r.pinned), snippet: [] }];
+    });
+    return { found, capped: more };
+  }
+
+  /** A row of a search or a list as a found chat; the list's own copy, when it has the chat, says what it is called and whether it is Settled. */
+  private toFound(r: SearchRow, c: Chat | undefined, settled: boolean): Omit<Found, "snippet"> {
+    return {
+      chatId: r.id,
+      // The list's title, so a chat is called the same in both while the search index catches up with a rename.
+      title: c?.title ?? listTitle(r),
+      source: toSource(r.source),
+      settled: c?.settled ?? settled,
+      ...(this.isArchived(r) && { archived: true }),
+      updatedAt: Math.max(c?.updatedAt ?? 0, lastActive(r)),
+      ...(r.model && { model: r.model }),
+    };
   }
 
   /** Puts a found chat in the list, if it isn't there yet, so it can be opened (`open`). */
@@ -2413,9 +2450,9 @@ export class Hermes {
     const archivedListed = this.snapshot.archivedListed;
     const rows = new Map<string, SessionRow>();
     try {
-      for (const r of await this.readList(profile, "exclude", cutoff)) rows.set(r.id, r);
+      for (const r of (await this.readList(profile, "exclude", cutoff)).rows) rows.set(r.id, r);
       // Every page also carries the pinned chats that aren't archived; the list has them already.
-      if (archivedListed) for (const r of await this.readList(profile, "only", -Infinity)) if (r.archived) rows.set(r.id, r);
+      if (archivedListed) for (const r of (await this.readList(profile, "only", -Infinity)).rows) if (r.archived) rows.set(r.id, r);
     } catch (e) {
       if (this.profile === profile) this.update({ syncError: `Couldn't refresh the chat list: ${(e as Error).message}`, ...this.switchFailed(e as Error) });
       return e as Error;
@@ -2484,9 +2521,10 @@ export class Hermes {
   /**
    * Reads the profile's chats from dashboard REST, most recent first, `archived` ones excluded or only those, until
    * the list passes `cutoff`. Every page also carries all pinned rows, archived or not, out of order; the unpinned
-   * ones follow recency.
+   * ones follow recency. `sources`: only chats from these, as Hermes stores them. `more`: the list goes on past the
+   * most pages read.
    */
-  private async readList(profile: string, archived: "exclude" | "only", cutoff: number): Promise<SessionRow[]> {
+  private async readList(profile: string, archived: "exclude" | "only" | "include", cutoff: number, sources?: string): Promise<{ rows: SessionRow[]; more: boolean }> {
     const rows: SessionRow[] = [];
     for (let page = 0; page < MAX_PAGES; page++) {
       const offset = page * PAGE_SIZE;
@@ -2496,14 +2534,15 @@ export class Hermes {
         limit: String(PAGE_SIZE),
         offset: String(offset),
         exclude_sources: "cron",
-        ...(archived === "only" && { archived }),
+        ...(archived !== "exclude" && { archived }),
+        ...(sources && { sources }),
       });
       const res = (await this.rest("GET", `api/sessions?${query}`)) as SessionPage;
       rows.push(...res.sessions);
       const passedCutoff = res.sessions.some((r) => !r.pinned && lastActive(r) < cutoff);
-      if (passedCutoff || res.sessions.length === 0 || offset + PAGE_SIZE >= res.total) break;
+      if (passedCutoff || res.sessions.length === 0 || offset + PAGE_SIZE >= res.total) return { rows, more: false };
     }
-    return rows;
+    return { rows, more: true };
   }
 
   /**
@@ -2908,6 +2947,21 @@ function findTerm(q: string, snippet: Found["snippet"]): string {
 }
 
 /** A chat's Source from the session's `source` field. This app's own chats, `gui` ones, show no icon. */
+/** How Hermes stores each source this app tells apart; `other` is everything else, so it can't be asked for. */
+const RAW_SOURCES: Record<Exclude<Source, "other">, string[]> = {
+  app: [APP_SOURCE, OLD_APP_SOURCE],
+  telegram: ["telegram"],
+  discord: ["discord"],
+  desktop: ["desktop"],
+  cli: ["cli", "tui"],
+};
+
+/** `sources` as dashboard REST's `sources=` takes them; undefined when they can't be asked for that way. */
+function rawSources(sources?: Source[]): string | undefined {
+  if (!sources?.length || sources.includes("other")) return undefined;
+  return sources.flatMap((s) => RAW_SOURCES[s as Exclude<Source, "other">]).join(",");
+}
+
 function toSource(source = ""): Source {
   switch (source) {
     case APP_SOURCE:

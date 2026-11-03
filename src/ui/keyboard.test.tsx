@@ -291,7 +291,7 @@ describe("Search palette by keyboard", () => {
     await s.user.keyboard("backup");
     const hit = await screen.findByRole("button", { name: /Nightly backup.*Why did the backup fail/ });
     await s.user.tab();
-    expect(focused()).toBe(screen.getByRole("checkbox", { name: "Include archived" }));
+    expect(focused()).toBe(screen.getByRole("button", { name: "Filters" }));
     await s.user.tab();
     expect(focused()).toBe(hit);
     await s.user.keyboard("{Escape}");
