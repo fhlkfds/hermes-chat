@@ -131,6 +131,17 @@ export function explain(f: ProbeFailure, d: SignInDetails): TestOutcome & { ok: 
     fixes,
   });
   const checkSsh = `Check it from a terminal: ssh -o BatchMode=yes ${d.sshTarget.trim() || "<target>"} true`;
+  const turnedAway = () =>
+    out(`Something in front of the dashboard at ${hostOf(d.url)} turned Hermes Chat away.`, [
+      d.headers?.length
+        ? "Check the extra request headers' names and values, on the Server step. A Cloudflare Access service token needs CF-Access-Client-Id and CF-Access-Client-Secret."
+        : "If a gateway such as Cloudflare Access is in front of the dashboard, add the headers it needs under Extra request headers, on the Server step. A service token needs CF-Access-Client-Id and CF-Access-Client-Secret.",
+      "Or connect over SSH, which goes straight to the dashboard.",
+    ]);
+  // With extra request headers, Rust hides a refusal's body, as a gateway may repeat them in it. Past the first
+  // request such a refusal is most likely the gateway's too, so the stage's own hints wouldn't help.
+  if (!ssh && d.headers?.length && has(/answered (401|403|407): \(not shown, as it may repeat your extra request headers\)/))
+    return turnedAway();
 
   switch (f.stage) {
     case "cancelled":
@@ -189,13 +200,7 @@ export function explain(f: ProbeFailure, d: SignInDetails): TestOutcome & { ok: 
           "If a gateway such as Cloudflare Access is in front of the dashboard, add the headers it needs under Extra request headers, on the Server step.",
           "Or connect over SSH, which goes straight to the dashboard.",
         ]);
-      if (!ssh && has(/answered (401|403)/))
-        return out(`Something in front of the dashboard at ${hostOf(d.url)} turned Hermes Chat away.`, [
-          d.headers?.length
-            ? "Check the extra request headers' names and values, on the Server step. A Cloudflare Access service token needs CF-Access-Client-Id and CF-Access-Client-Secret."
-            : "If a gateway such as Cloudflare Access is in front of the dashboard, add the headers it needs under Extra request headers, on the Server step. A service token needs CF-Access-Client-Id and CF-Access-Client-Secret.",
-          "Or connect over SSH, which goes straight to the dashboard.",
-        ]);
+      if (!ssh && has(/answered (401|403)/)) return turnedAway();
       if (ssh)
         return out("The tunnel opened, but nothing answered on the server's port 9119.", [
           "Start the dashboard on the server: hermes dashboard",

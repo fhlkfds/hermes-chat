@@ -572,15 +572,23 @@ export class Hermes {
   async providerSetup(): Promise<ProviderSetup> {
     const profile = this.profile;
     const query = new URLSearchParams({ profile });
+    // Each read is bounded, so setup never waits on a Hermes that stopped answering.
     const options = await timeLimit(this.request("model.options", { profile }), MODELS_TIMEOUT_MS)
-      .catch(() => this.rest("GET", `api/model/options?${query}`))
+      .catch(() => timeLimit(this.rest("GET", `api/model/options?${query}`), MODELS_TIMEOUT_MS))
       .catch(() => undefined);
     const ready = readyProviders(options);
+    let answered = false;
+    const env = this.rest("GET", `api/env?${query}`).finally(() => (answered = true));
+    env.catch(() => {});
+    let rows: unknown;
     try {
-      return { keys: providerKeys(await this.rest("GET", `api/env?${query}`)), ready };
+      rows = await timeLimit(env, PROVIDERS_TIMEOUT_MS);
     } catch (e) {
+      // No answer in time is worth trying again; an answer saying no means this server can't take keys from here.
+      if (!answered) throw e;
       return { keys: [], ready, unsupported: (e as Error).message };
     }
+    return { keys: providerKeys(rows), ready };
   }
 
   /**
@@ -2358,6 +2366,9 @@ export function cleanTitle(answer: string): string {
       .replace(/[\uD800-\uDBFF]$/, "");
   return title.trim();
 }
+
+/** How long setup waits for Hermes's list of provider keys. */
+const PROVIDERS_TIMEOUT_MS = 20_000;
 
 /** `p`, or a rejection once `ms` have passed without an answer. */
 function timeLimit<T>(p: Promise<T>, ms: number): Promise<T> {

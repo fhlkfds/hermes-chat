@@ -1362,3 +1362,53 @@ async fn a_gateways_refusal_never_shows_the_header_values_it_turned_down() {
     let failed = transport::probe(&base, &sign_in("hunter2"), "default").await.unwrap_err();
     assert!(failed.message.contains("Forbidden: bad service token"), "{}", failed.message);
 }
+
+/// A gateway that lets `/api/status` through, then turns `refuse` away with a page that repeats the secret it got.
+async fn echoing_gateway(refuse: &'static str) -> Url {
+    let echo = |headers: HeaderMap| async move {
+        let secret = headers.get("cf-access-client-secret").and_then(|v| v.to_str().ok()).unwrap_or_default().to_owned();
+        (StatusCode::FORBIDDEN, format!("Forbidden: bad service token {secret}")).into_response()
+    };
+    let mut app = Router::new().route("/api/status", get(status));
+    app = if refuse == "/auth/password-login" {
+        app.route(refuse, post(echo))
+    } else {
+        app.route("/auth/password-login", post(login)).route(refuse, post(echo))
+    };
+    serve(app).await
+}
+
+#[tokio::test]
+async fn a_connection_test_never_shows_a_header_value_a_gateway_repeats_at_sign_in_or_the_ticket() {
+    for (refuse, stage) in [("/auth/password-login", Stage::SignIn), ("/api/auth/ws-ticket", Stage::Chat)] {
+        let failed = transport::probe(&echoing_gateway(refuse).await, &access_sign_in(), "default").await.unwrap_err();
+        assert_eq!(failed.stage, stage, "{refuse}");
+        assert!(failed.message.contains("403") && !failed.message.contains("s3cret"), "{refuse}: {}", failed.message);
+    }
+}
+
+#[tokio::test]
+async fn with_extra_headers_the_dashboards_own_detail_is_still_shown_unless_it_repeats_one() {
+    let app = Router::new()
+        .route("/auth/password-login", post(login))
+        .route("/api/plain", get(|| async { (StatusCode::NOT_FOUND, Json(json!({"detail": "Profile 'x' does not exist."}))) }))
+        .route("/api/repeats", get(|| async { (StatusCode::BAD_REQUEST, Json(json!({"detail": [{"input": "s3cret"}]}))) }));
+    let dashboard = Dashboard::sign_in(&serve(app).await, &access_sign_in()).await.unwrap();
+    let plain = dashboard.request("GET", "api/plain", None).await.unwrap_err().to_string();
+    assert!(plain.contains("Profile 'x' does not exist."), "{plain}");
+    let repeats = dashboard.request("GET", "api/repeats", None).await.unwrap_err().to_string();
+    assert!(repeats.contains("400") && !repeats.contains("s3cret"), "{repeats}");
+}
+
+#[tokio::test]
+async fn a_provider_key_check_that_never_answers_gives_up() {
+    let app = Router::new()
+        .route("/auth/password-login", post(login))
+        .route("/api/env", get(env_rows))
+        .route("/api/providers/validate", post(std::future::pending::<Response>));
+    let dashboard = Dashboard::sign_in(&serve(app).await, &sign_in("hunter2")).await.unwrap();
+    let started = std::time::Instant::now();
+    let err = dashboard.save_provider_key_within("default", "OPENROUTER_API_KEY", "sk-good", Duration::from_millis(300)).await.unwrap_err();
+    assert!(matches!(err, TransportError::KeyTimedOut(_)), "{err:?}");
+    assert!(started.elapsed() < Duration::from_secs(3));
+}

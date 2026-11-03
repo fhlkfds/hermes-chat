@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { FakeHermes, fakeEnv } from "./fakeHermes";
 import { connect } from "./transport";
 import { explain, isSetUp, missing, providerKeys, readStatus, readyProviders, testConnection, type Probe, type ProbeFailure, type Probed } from "./setup";
@@ -121,6 +121,14 @@ describe("Explaining a failed test", () => {
     expect(why(refused, withHeaders).fixes[0]).toMatch(/^Check the extra request headers' names and values/);
     const away = "The dashboard sent Hermes Chat on to https://team.cloudflareaccess.com, another site. Hermes Chat doesn't follow it there.";
     expect(why({ stage: "reach", message: away }, withHeaders).problem).toBe("The dashboard's address sent Hermes Chat on to another site.");
+    // Past the first request, a refusal whose body Rust hid for the headers' sake still points at them.
+    const hidden = "The dashboard answered 403: (not shown, as it may repeat your extra request headers)";
+    for (const stage of ["sign-in", "chat"] as const) {
+      expect(why({ stage, message: hidden, status: STATUS }, withHeaders)).toMatchObject({
+        problem: "Something in front of the dashboard at hermes.example.com:9119 turned Hermes Chat away.",
+        fixes: [expect.stringMatching(/^Check the extra request headers' names and values/), "Or connect over SSH, which goes straight to the dashboard."],
+      });
+    }
   });
 
   it("explains sign-in failures from the dashboard's own status", () => {
@@ -188,6 +196,22 @@ describe("Model provider keys", () => {
     expect(setup.ready).toEqual(["Anthropic", "OpenAI"]);
     expect(setup.keys.map((k) => k.provider)).toEqual(["openrouter", "anthropic", "deepseek", "alibaba", "alibaba-cn"]);
     expect(server.restRequests.find((r) => r.path === "/api/env")?.query.get("profile")).toBe("default");
+    await hermes.close();
+  });
+
+  it("gives up on a list Hermes never sends, so it can be asked again", async () => {
+    const server = new FakeHermes();
+    const hermes = await connect(server.openPipe);
+    server.rest["GET /api/env"] = () => new Promise(() => {});
+    vi.useFakeTimers();
+    try {
+      const asked = hermes.providerSetup();
+      const outcome = expect(asked).rejects.toThrow("Hermes didn't answer in time.");
+      await vi.advanceTimersByTimeAsync(20_000);
+      await outcome;
+    } finally {
+      vi.useRealTimers();
+    }
     await hermes.close();
   });
 

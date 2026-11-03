@@ -431,6 +431,12 @@ describe("Setup from Settings", () => {
       (await screen.findByText("Saved, but Hermes couldn't check the key with DeepSeek. If it's wrong, DeepSeek will turn down Hermes's first request.")).getAttribute("role"),
     ).toBe("status");
     expect(home.savedKeys).toEqual([{ profile: "default", envVar: "DEEPSEEK_API_KEY", key: "sk-offline" }]);
+    // Done never waits on Hermes: here it stops answering after the save.
+    home.rest["GET /api/env"] = () => new Promise(() => {});
+    await user.type(screen.getByLabelText("API key"), "sk-good-2");
+    await user.click(screen.getByRole("button", { name: "Check and save key" }));
+    await screen.findByText(/Saved\. DeepSeek accepted the key\./);
+    expect((screen.getByRole("button", { name: "Done" }) as HTMLButtonElement).disabled).toBe(false);
     await user.click(screen.getByRole("button", { name: "Done" }));
     expect(dialog()).toBeNull();
     expect([home.opened, home.closed]).toEqual([1, false]);

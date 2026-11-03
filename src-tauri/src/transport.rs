@@ -67,6 +67,8 @@ pub enum TransportError {
     /// The provider turned down an API key the owner typed (`POST /api/providers/validate`).
     #[error("{0}")]
     KeyRejected(String),
+    #[error("Hermes didn't finish checking and saving the key within {0} s. It may have saved it anyway: the list of providers shows what Hermes has.")]
+    KeyTimedOut(u64),
     #[error("This Hermes server can't {0}: it has no {1} route. Updating Hermes adds it.")]
     NoVoiceRoute(&'static str, &'static str),
     #[error("{0}")]
@@ -586,7 +588,7 @@ impl Dashboard {
             s if s.is_success() => {}
             StatusCode::UNAUTHORIZED => return Err(TransportError::BadCredentials),
             StatusCode::TOO_MANY_REQUESTS => return Err(TransportError::RateLimited),
-            _ => return Err(unexpected(login).await),
+            _ => return Err(unexpected(login, &sign_in.headers).await),
         }
         dashboard.keep_cookies(&login);
         Ok(dashboard)
@@ -604,7 +606,7 @@ impl Dashboard {
             .map_err(|e| TransportError::Unreachable(e.to_string()))?;
         self.keep_cookies(&ticket);
         if !ticket.status().is_success() {
-            return Err(unexpected(ticket).await);
+            return Err(unexpected(ticket, &self.headers).await);
         }
         let ticket: serde_json::Value = ticket
             .json()
@@ -697,7 +699,7 @@ impl Dashboard {
         match resp.status() {
             s if s.is_success() => resp.text().await.map_err(|e| TransportError::Unreachable(e.to_string())),
             StatusCode::UNAUTHORIZED => Err(TransportError::SignedOut),
-            _ => Err(unexpected(resp).await),
+            _ => Err(unexpected(resp, &self.headers).await),
         }
     }
 
@@ -789,15 +791,16 @@ impl Dashboard {
             return Err(TransportError::SignedOut);
         }
         if status.is_redirection() {
-            return Err(unexpected(resp).await);
+            return Err(unexpected(resp, &self.headers).await);
         }
         let text = resp.text().await.map_err(|e| TransportError::Unreachable(e.to_string()))?;
         if status.is_success() {
             return serde_json::from_str(&text)
                 .map(AudioAnswer::Done)
-                .map_err(|_| TransportError::Unexpected { status: status.as_u16(), body: text.chars().take(300).collect() });
+                .map_err(|_| TransportError::Unexpected { status: status.as_u16(), body: shown_body(status, &text, &self.headers) });
         }
         let reason = refusal_reason(status, &text);
+        let reason = if repeats_header(&reason, &self.headers) { format!("the server answered {status}") } else { reason };
         // FastAPI's own "no such route" (and the headless backend's catch-all) differ from a refusal by the route
         // itself, such as an unknown profile, which also answers 404 but with its own reason.
         let no_route = match status {
@@ -825,7 +828,7 @@ impl Dashboard {
         match resp.status() {
             s if s.is_success() => {}
             StatusCode::UNAUTHORIZED => return Err(TransportError::SignedOut),
-            _ => return Err(unexpected(resp).await),
+            _ => return Err(unexpected(resp, &self.headers).await),
         }
         let too_large = |size| TransportError::FileTooLarge { size, max: max_bytes };
         if let Some(size) = resp.content_length().filter(|&n| n > max_bytes) {
@@ -914,7 +917,54 @@ fn endpoint(base: &Url, path: &str) -> Url {
 
 /// An answer the call didn't expect, with the start of its body. Reads only the first few KB, so a huge or endless
 /// error body can't fill memory.
-async fn unexpected(mut resp: reqwest::Response) -> TransportError {
+/// Said in place of an error body that can't be shown.
+const HIDDEN_FOR_HEADERS: &str = "(not shown, as it may repeat your extra request headers)";
+
+/// Whether `text` repeats one of the owner's extra request header values, as a gateway such as Cloudflare Access can
+/// in the page it turns a request away with.
+fn repeats_header(text: &str, headers: &HeaderMap) -> bool {
+    headers.values().filter_map(|v| v.to_str().ok()).any(|v| !v.is_empty() && text.contains(v))
+}
+
+/// Every string in `v`, keys included, one per line, so `repeats_header` sees them unescaped.
+fn strings_in(v: &serde_json::Value, out: &mut String) {
+    match v {
+        serde_json::Value::String(s) => {
+            out.push_str(s);
+            out.push('\n');
+        }
+        serde_json::Value::Array(a) => a.iter().for_each(|x| strings_in(x, out)),
+        serde_json::Value::Object(o) => o.iter().for_each(|(k, x)| {
+            out.push_str(k);
+            out.push('\n');
+            strings_in(x, out);
+        }),
+        _ => {}
+    }
+}
+
+/// An error body as it may be shown, for a request that carried `headers`. With none, its start as sent. With extra
+/// request headers, only the dashboard's own JSON `detail`, whole and repeating none of their values: a refusal (401,
+/// 403, 407) or any other page could come from a gateway in front, which can echo a value it turned down.
+fn shown_body(status: StatusCode, text: &str, headers: &HeaderMap) -> String {
+    if headers.is_empty() {
+        return text.chars().take(300).collect();
+    }
+    if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::PROXY_AUTHENTICATION_REQUIRED) {
+        return HIDDEN_FOR_HEADERS.into();
+    }
+    let detail = serde_json::from_str::<serde_json::Value>(text).ok().and_then(|v| v.get("detail").cloned());
+    let Some(detail) = detail else { return HIDDEN_FOR_HEADERS.into() };
+    let mut said = String::new();
+    strings_in(&detail, &mut said);
+    if repeats_header(text, headers) || repeats_header(&said, headers) {
+        return HIDDEN_FOR_HEADERS.into();
+    }
+    json!({ "detail": detail }).to_string().chars().take(300).collect()
+}
+
+/// A failed answer as an error. `headers`: the extra request headers the request carried (`shown_body`).
+async fn unexpected(mut resp: reqwest::Response, headers: &HeaderMap) -> TransportError {
     const KEEP: usize = 4096;
     // A redirect that came back unfollowed: `same_origin_redirects` stopped it at another site.
     if resp.status().is_redirection() {
@@ -932,7 +982,7 @@ async fn unexpected(mut resp: reqwest::Response) -> TransportError {
         }
     }
     head.truncate(KEEP);
-    let body = String::from_utf8_lossy(&head).chars().take(300).collect();
+    let body = shown_body(resp.status(), &String::from_utf8_lossy(&head), headers);
     TransportError::Unexpected { status, body }
 }
 
@@ -992,23 +1042,15 @@ pub async fn probe_with(base: &Url, sign_in: &SignIn, profile: &str, step: Durat
         let resp = http.get(endpoint(base, "api/status")).send().await.map_err(|e| TransportError::Unreachable(describe(&e)))?;
         if resp.status().is_redirection() {
             // Stopped at another site (`same_origin_redirects`), such as a gateway's login page.
-            return match unexpected(resp).await {
+            return match unexpected(resp, &sign_in.headers).await {
                 e @ TransportError::Redirected(_) => Err(e),
                 _ => Ok(None),
             };
         }
         // The route is public on a Hermes dashboard, so a refusal here is from something in front of it, such as
-        // Cloudflare Access without its headers. Its answer is shown only when the request carried no extra headers:
-        // a gateway can echo the values it turned down.
+        // Cloudflare Access without its headers. Its page isn't shown if the request carried any (`shown_body`).
         if matches!(resp.status(), StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
-            return Err(if sign_in.headers.is_empty() {
-                unexpected(resp).await
-            } else {
-                TransportError::Unexpected {
-                    status: resp.status().as_u16(),
-                    body: "(not shown, as it may repeat your extra request headers)".into(),
-                }
-            });
+            return Err(unexpected(resp, &sign_in.headers).await);
         }
         if !resp.status().is_success() {
             return Ok(None);
@@ -1075,6 +1117,9 @@ pub struct SavedKey {
     pub verified: bool,
 }
 
+/// How long checking and saving a provider key may take, all requests together.
+const KEY_SAVE_LIMIT: Duration = Duration::from_secs(30);
+
 /// Said when the provider turns a key down, in place of its own message, which can quote part of the key.
 pub const KEY_TURNED_DOWN: &str = "The provider turned the key down. Check that you copied all of it, and that it's for this provider.";
 
@@ -1106,6 +1151,18 @@ impl Dashboard {
     /// The key never comes back in an error: a failed answer to a request that carried it isn't shown at all, since
     /// it may echo the key (FastAPI's 422 does), and cutting it short could leave part of the key behind.
     pub async fn save_provider_key(&self, profile: &str, key: &str, value: &str) -> Result<SavedKey, TransportError> {
+        self.save_provider_key_within(profile, key, value, KEY_SAVE_LIMIT).await
+    }
+
+    /// `save_provider_key`, giving up after `limit`, every request and answer included, so setup never waits on a
+    /// Hermes or provider that stopped answering.
+    pub async fn save_provider_key_within(&self, profile: &str, key: &str, value: &str, limit: Duration) -> Result<SavedKey, TransportError> {
+        tokio::time::timeout(limit, self.check_and_save_key(profile, key, value))
+            .await
+            .unwrap_or(Err(TransportError::KeyTimedOut(limit.as_secs())))
+    }
+
+    async fn check_and_save_key(&self, profile: &str, key: &str, value: &str) -> Result<SavedKey, TransportError> {
         let value = value.trim();
         if !provider_key_name(key) {
             return Err(TransportError::NotRelayed(format!("{key}: not a model provider's key")));
@@ -1159,7 +1216,7 @@ impl Dashboard {
         match resp.status() {
             s if s.is_success() => resp.text().await.map_err(|e| TransportError::Unreachable(e.to_string())),
             StatusCode::UNAUTHORIZED => Err(TransportError::SignedOut),
-            _ if show_failure => Err(unexpected(resp).await),
+            _ if show_failure => Err(unexpected(resp, &self.headers).await),
             s => Err(TransportError::Unexpected { status: s.as_u16(), body: "(not shown, as it may hold the key)".into() }),
         }
     }

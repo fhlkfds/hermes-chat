@@ -603,12 +603,14 @@ function ProviderKeys({
           ? `Saved. ${pick.label} accepted the key.`
           : `Saved, but Hermes couldn't check the key with ${pick.label}. If it's wrong, ${pick.label} will turn down Hermes's first request.`,
       });
-      await load();
     } catch (e) {
       setResult({ ok: false, text: `Not saved: ${messageOf(e)}` });
+      return;
     } finally {
       setSaving(false);
     }
+    // Read again to show the key as saved; Finish doesn't wait for it.
+    void load();
   };
 
   let body: ReactNode;
