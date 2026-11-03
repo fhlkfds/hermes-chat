@@ -17,7 +17,7 @@ export function useModal(box: RefObject<HTMLElement | null>, returnTo?: RefObjec
     e.stopPropagation();
     const root = box.current;
     if (e.key !== "Tab" || !root) return;
-    const items = [...root.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => !(el as HTMLButtonElement).disabled && el.tabIndex >= 0);
+    const items = [...root.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => !(el as HTMLButtonElement).disabled && el.tabIndex >= 0 && isTabStop(el, root));
     if (!items.length) return e.preventDefault();
     const active = document.activeElement;
     const outside = !root.contains(active);
@@ -29,4 +29,11 @@ export function useModal(box: RefObject<HTMLElement | null>, returnTo?: RefObjec
       items[0].focus();
     }
   };
+}
+
+/** Of a named group of radios, only the checked one is a tab stop, or the first when none is. */
+function isTabStop(el: HTMLElement, root: HTMLElement): boolean {
+  if (!(el instanceof HTMLInputElement) || el.type !== "radio" || !el.name) return true;
+  const group = [...root.querySelectorAll<HTMLInputElement>(`input[type="radio"][name="${CSS.escape(el.name)}"]`)];
+  return el === (group.find((r) => r.checked) ?? group[0]);
 }

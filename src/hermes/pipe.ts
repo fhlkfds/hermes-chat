@@ -80,6 +80,8 @@ export interface Pipe {
   download(id: number, path: string, name: string, onProgress: (p: TransferProgress) => void): Promise<Downloaded | undefined>;
   /** The native Open dialog for a file to upload (src-tauri `files_pick_upload`). Undefined when the owner closed it. */
   pickUpload(): Promise<PickedUpload | undefined>;
+  /** Lets go of a pick that won't be sent (src-tauri `files_discard_pick`). */
+  discardUpload(token: number): Promise<void>;
   /** Uploads the picked file to the server path `path` (src-tauri `files_upload`, ADR 0023). Resolves to Hermes's answer. */
   upload(id: number, token: number, path: string, overwrite: boolean, onProgress: (p: TransferProgress) => void): Promise<string>;
   cancelTransfer(id: number): Promise<void>;

@@ -88,6 +88,8 @@ export type PickedUpload = { token: number; name: string; size: number };
 export type TransferPipe = {
   /** The native Open dialog. Nothing is sent. Undefined when the owner closed it. */
   pickUpload(): Promise<PickedUpload | undefined>;
+  /** Lets go of a pick that won't be sent. */
+  discardUpload(token: number): Promise<void>;
   /**
    * Uploads the picked file to the server path `path`. `overwrite` false: Hermes refuses (409) when a file is there.
    * Resolves to Hermes's answer. Rejects with `TRANSFER_STOPPED` when stopped, like `download`.
@@ -149,6 +151,8 @@ export type RemoteFiles = {
   cancel(id: number): void;
   /** The native Open dialog, for a file to upload. Sends nothing. */
   pickUpload(): Promise<PickedUpload | undefined>;
+  /** Lets go of a pick the owner decided not to send, so its token can't be used. */
+  discardUpload(picked: PickedUpload): void;
   /** Where `picked` would go in `listing`'s folder, and what is in the way, judged from the listing. */
   planUpload(listing: RemoteListing, picked: PickedUpload): UploadPlan;
   /**
@@ -225,6 +229,7 @@ export function remoteFiles(get: RemoteGet, pipe: TransferPipe): RemoteFiles {
       }
     },
     pickUpload: () => pipe.pickUpload(),
+    discardUpload: (picked) => void pipe.discardUpload(picked.token).catch(() => {}),
     planUpload,
     async upload(listing, picked, collision) {
       const plan = planUpload(listing, picked);

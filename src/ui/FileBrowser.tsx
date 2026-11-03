@@ -377,7 +377,19 @@ export function FileBrowser({
         {preview && <PreviewPane preview={preview} files={files} connected={connected} onOpenAsText={() => open(preview.entry, true)} onClose={dropPreview} />}
       </div>
       <Transfers files={files} />
-      {uploading && <UploadDialog files={files} {...uploading} connected={connected} returnTo={uploadButton} onSend={sendUpload} onCancel={() => setUploading(undefined)} />}
+      {uploading && (
+        <UploadDialog
+          files={files}
+          {...uploading}
+          connected={connected}
+          returnTo={uploadButton}
+          onSend={sendUpload}
+          onCancel={() => {
+            files.discardUpload(uploading.picked);
+            setUploading(undefined);
+          }}
+        />
+      )}
     </div>
   );
 }

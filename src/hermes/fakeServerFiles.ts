@@ -194,6 +194,16 @@ export class FakeServerFiles {
   /** Every upload Hermes was sent: its path and `overwrite`. */
   readonly uploads: { path: string; overwrite: boolean }[] = [];
 
+  /** src-tauri `files_discard_pick`. */
+  discardPick(token: number) {
+    this.picked.delete(token);
+  }
+
+  /** Picks not sent or let go yet. */
+  get openPicks() {
+    return this.picked.size;
+  }
+
   /** src-tauri `files_pick_upload`. */
   pickUpload() {
     const file = this.openDialog();

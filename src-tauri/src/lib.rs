@@ -593,6 +593,12 @@ async fn files_pick_upload(app: tauri::AppHandle, picks: State<'_, UploadPicks>,
     Ok(Some(PickedUpload { token, name, size: meta.len() }))
 }
 
+/// Lets go of a pick that won't be sent: the owner cancelled the upload dialog. A token already taken or let go is fine.
+#[tauri::command]
+fn files_discard_pick(picks: State<'_, UploadPicks>, token: u64) {
+    picks.0.lock().unwrap().1.remove(&token);
+}
+
 /// Uploads the file picked as `token` to the server path `path` (`Dashboard::upload`, ADR 0023). `overwrite` false:
 /// Hermes refuses when a file is already there. Resolves to Hermes's answer, the written entry as JSON.
 #[tauri::command]
@@ -860,6 +866,7 @@ pub fn run(screenshot: bool) {
             files_download,
             files_pick_upload,
             files_upload,
+            files_discard_pick,
             files_cancel,
             hermes_connect_cancel,
             hermes_probe,

@@ -76,6 +76,7 @@ export function tauriPipe(d: SignInDetails): OpenPipe {
         return invoke<Downloaded | null>("files_download", { id, path, name, onProgress: channel }).then((got) => got ?? undefined, asError);
       },
       pickUpload: () => invoke<PickedUpload | null>("files_pick_upload").then((p) => p ?? undefined, asError),
+      discardUpload: (token) => invoke<void>("files_discard_pick", { token }),
       upload: (id, token, path, overwrite, onProgress) => {
         const channel = new Channel<TransferProgress>();
         channel.onmessage = onProgress;

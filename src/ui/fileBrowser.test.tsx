@@ -468,9 +468,17 @@ describe("Server files: Upload", () => {
     }
     await user.tab({ shift: true });
     expect(box.contains(document.activeElement)).toBe(true);
+    // With Replace chosen, Keep both is no tab stop: Shift+Tab from the first stop goes round to the last.
+    await user.click(within(box).getByRole("radio", { name: /Replace the server's/ }));
+    for (let i = 0; i < 8; i++) {
+      await user.tab({ shift: true });
+      expect(box.contains(document.activeElement)).toBe(true);
+    }
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(document.activeElement).toBe(upload);
+    // The pick wasn't sent, and is let go.
+    expect(s.managedFiles.openPicks).toBe(0);
   });
 
   it("stops an upload on Cancel, leaving the server's folder as it was", async () => {

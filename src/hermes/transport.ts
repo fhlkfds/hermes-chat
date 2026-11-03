@@ -525,6 +525,7 @@ export class Hermes {
       return pipe.download(id, path, name, onProgress);
     },
     pickUpload: () => this.pipe?.pickUpload() ?? Promise.reject(new Error("Not connected to Hermes.")),
+    discardUpload: (token) => this.pipe?.discardUpload(token) ?? Promise.resolve(),
     upload: (id, token, path, overwrite, onProgress) => {
       const pipe = this.pipe;
       if (!pipe || this.closing || this.snapshot.status !== "connected") return Promise.reject(new Error("Not connected to Hermes."));
