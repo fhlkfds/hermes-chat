@@ -1,4 +1,4 @@
-// The composer's slash commands (commands.ts, ADR 0014): the menu that opens as a "/" starts the message, the command
+// The composer's slash commands (commands.ts, ADR 0015): the menu that opens as a "/" starts the message, the command
 // help, the question before a destructive command, and what a command answers.
 import { type KeyboardEvent, type ReactNode, type RefObject, useEffect, useId, useRef, useState } from "react";
 import { X } from "lucide-react";
