@@ -1,0 +1,335 @@
+// Editing a Server file's text (ADR 0024). It covers the window until the owner saves or cancels, so nothing else can
+// take the edit away. Save goes through a review of the changes; the save itself checks that the server still has the
+// file the edit started from, and reads it back after. When the file changed on the server, nothing is written: the
+// owner sees what changed there and merges, reloads, or saves the edit as a copy. The edit is kept until they choose.
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { AlertTriangle, Check, FilePen, GitMerge } from "lucide-react";
+import type { EditBase, RemoteEntry, RemoteFiles, SaveOutcome } from "../hermes/remoteFiles";
+import { MINE_MARK, diffLines, hunks, merge3 } from "../hermes/textEdit";
+import { useCloseGuard } from "./LeaveMemoryEdit";
+import { Spinner, fmtSize } from "./bits";
+
+type Conflict = Extract<SaveOutcome, { kind: "conflict" }>;
+
+type Mode =
+  | { kind: "loading" }
+  | { kind: "refused"; why: string }
+  | { kind: "edit" }
+  | { kind: "review" }
+  | { kind: "saving" }
+  | { kind: "conflict"; conflict: Conflict }
+  | { kind: "discard"; then: () => void };
+
+const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const eolLabel = (b: EditBase) => `UTF-8${b.bom ? " with BOM" : ""}, ${b.eol === "\r\n" ? "CRLF (Windows)" : "LF"} line ends`;
+
+/** The changes from `from` to `to`, as unified hunks with line numbers. */
+export function DiffView({ from, to, label }: { from: string; to: string; label: string }) {
+  const parts = useMemo(() => {
+    const ops = diffLines(from.split("\n"), to.split("\n"));
+    return { hunks: hunks(ops), added: ops.filter((o) => o.op === "add").length, removed: ops.filter((o) => o.op === "del").length };
+  }, [from, to]);
+  if (!parts.hunks.length) return <p className="muted small files-diff-empty">No changes.</p>;
+  return (
+    <section className="files-diff" aria-label={label}>
+      <p className="files-diff-sum small">
+        <span className="add">{parts.added} added</span>, <span className="del">{parts.removed} removed</span>
+      </p>
+      {parts.hunks.map((h) => {
+        let oldLine = h.oldStart;
+        let newLine = h.newStart;
+        return (
+          <div className="files-diff-hunk" key={`${h.oldStart}-${h.newStart}`}>
+            <div className="files-diff-at mono">
+              Line {h.oldStart} → {h.newStart}
+            </div>
+            {h.lines.map((l, i) => {
+              const at = l.op === "add" ? newLine++ : l.op === "del" ? oldLine++ : (newLine++, oldLine++);
+              return (
+                <div key={i} className={`files-diff-line mono ${l.op}`}>
+                  <span className="files-diff-no" aria-hidden>
+                    {at}
+                  </span>
+                  <span className="files-diff-sign" aria-label={l.op === "add" ? "added" : l.op === "del" ? "removed" : undefined}>
+                    {l.op === "add" ? "+" : l.op === "del" ? "−" : " "}
+                  </span>
+                  <span className="files-diff-text">{l.text || " "}</span>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })}
+    </section>
+  );
+}
+
+export function FileEditor({
+  files,
+  entry,
+  connected,
+  onClose,
+  onSaved,
+}: {
+  files: RemoteFiles;
+  entry: RemoteEntry;
+  connected: boolean;
+  onClose: () => void;
+  /** Hermes has the edit, read back; or a copy was saved at `copy`. */
+  onSaved: (note: string) => void;
+}) {
+  const [mode, setMode] = useState<Mode>({ kind: "loading" });
+  const [base, setBase] = useState<EditBase>();
+  const [draft, setDraft] = useState("");
+  const [note, setNote] = useState<string>();
+  const [error, setError] = useState<string>();
+  const titleId = useId();
+  const area = useRef<HTMLTextAreaElement>(null);
+  // Only the latest open or save lands; one closed meanwhile lands nowhere.
+  const live = useRef(true);
+  useEffect(() => {
+    live.current = true;
+    files.openForEdit(entry).then(
+      (b) => {
+        if (!live.current) return;
+        setBase(b);
+        setDraft(b.text);
+        setMode({ kind: "edit" });
+      },
+      (e) => live.current && setMode({ kind: "refused", why: message(e) }),
+    );
+    return () => void (live.current = false);
+  }, [entry.path]);
+
+  const dirty = !!base && draft !== base.text;
+  useCloseGuard(dirty, (close) => setMode({ kind: "discard", then: close }));
+  useEffect(() => {
+    if (mode.kind === "edit") area.current?.focus();
+  }, [mode.kind]);
+
+  const leave = () => (dirty ? setMode({ kind: "discard", then: onClose }) : onClose());
+
+  const save = async () => {
+    if (!base) return;
+    setError(undefined);
+    setMode({ kind: "saving" });
+    try {
+      const got = await files.saveEdit(base, draft);
+      if (!live.current) return;
+      if (got.kind === "saved") return onSaved(`Saved ${entry.name}. Hermes has your edit, read back from the server.`);
+      setMode({ kind: "conflict", conflict: got });
+    } catch (e) {
+      if (!live.current) return;
+      setError(message(e));
+      setMode({ kind: "review" });
+    }
+  };
+
+  const saveCopy = async () => {
+    if (!base) return;
+    setError(undefined);
+    setMode({ kind: "saving" });
+    try {
+      const path = await files.saveCopy(base, draft);
+      if (live.current) onSaved(`Your edit was saved as a copy, ${path}. ${entry.name} on the server is as Hermes has it.`);
+    } catch (e) {
+      if (!live.current) return;
+      setError(message(e));
+      setMode((m) => (m.kind === "saving" ? { kind: "edit" } : m));
+    }
+  };
+
+  const theirs = mode.kind === "conflict" ? mode.conflict.theirs : undefined;
+  const theirsBase = theirs && "bytes" in theirs ? theirs : undefined;
+
+  const merge = () => {
+    if (!base || !theirsBase) return;
+    const merged = merge3(base.text, draft, theirsBase.text);
+    setBase(theirsBase);
+    setDraft(merged.text);
+    setNote(
+      merged.conflicts
+        ? `Merged with the server's version. ${merged.conflicts} ${merged.conflicts === 1 ? "place" : "places"} both changed ${merged.conflicts === 1 ? "is" : "are"} marked with “${MINE_MARK}”: keep what you want there, remove the markers, then save.`
+        : "Merged with the server's version: your changes are on top of it. Review, then save.",
+    );
+    setMode({ kind: "edit" });
+  };
+
+  const reload = () => {
+    if (!theirsBase) return;
+    setBase(theirsBase);
+    setDraft(theirsBase.text);
+    setNote("Reloaded the server's version. Your edit was dropped.");
+    setMode({ kind: "edit" });
+  };
+
+  const busy = mode.kind === "saving";
+  return (
+    <div className="leave-overlay files-editor-overlay">
+      <div
+        className="leave-dialog files-editor"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        onKeyDown={(e) => {
+          if (e.key === "Escape" && mode.kind !== "saving") {
+            e.preventDefault();
+            if (mode.kind === "discard" || mode.kind === "review") setMode({ kind: "edit" });
+            else leave();
+          }
+        }}
+      >
+        <div className="files-editor-head">
+          <h2 id={titleId}>
+            <FilePen size={15} aria-hidden /> Edit {entry.name}
+          </h2>
+          <span className="mono muted small" title="On the Hermes server">
+            {entry.path}
+          </span>
+          {base && (
+            <span className="muted small">
+              {eolLabel(base)}, {fmtSize(new TextEncoder().encode(draft).length)}
+            </span>
+          )}
+        </div>
+
+        {mode.kind === "loading" && (
+          <p className="muted small">
+            <Spinner /> Reading it from the server…
+          </p>
+        )}
+        {mode.kind === "refused" && (
+          <p role="alert" className="files-transfer-error">
+            It can't be edited here: {mode.why}
+          </p>
+        )}
+        {note && (mode.kind === "edit" || mode.kind === "review") && (
+          <p className="files-editor-note small" role="status">
+            {note}
+          </p>
+        )}
+        {error && (
+          <p role="alert" className="files-transfer-error">
+            {error}
+          </p>
+        )}
+
+        {base && (mode.kind === "edit" || mode.kind === "discard") && (
+          <textarea
+            ref={area}
+            className="files-editor-text mono"
+            aria-label={`Text of ${entry.name}`}
+            spellCheck={false}
+            value={draft}
+            readOnly={mode.kind !== "edit"}
+            onChange={(e) => {
+              setDraft(e.target.value);
+              setError(undefined);
+            }}
+          />
+        )}
+        {base && (mode.kind === "review" || mode.kind === "saving") && (
+          <>
+            <p className="small">Your changes to the file as you opened it. Save writes them, if the server still has that version.</p>
+            <DiffView from={base.text} to={draft} label="Your changes" />
+            {draft.includes(MINE_MARK) && (
+              <p className="files-editor-note small">
+                <AlertTriangle size={13} aria-hidden /> The text still has merge markers.
+              </p>
+            )}
+          </>
+        )}
+        {mode.kind === "conflict" && base && (
+          <div className="files-editor-conflict">
+            <p role="alert" className="files-editor-warn">
+              <AlertTriangle size={14} aria-hidden />{" "}
+              {mode.conflict.after
+                ? "Something else changed the file on the server while it saved, so it now has another version than yours."
+                : "The file changed on the server since you opened it, so nothing was written."}{" "}
+              Your edit is kept here.
+            </p>
+            {"gone" in mode.conflict.theirs ? (
+              <p className="small">It isn't on the server any more. Save your edit as a copy to keep it.</p>
+            ) : "why" in mode.conflict.theirs ? (
+              <p className="small">What the server has now can't be shown here: {mode.conflict.theirs.why}</p>
+            ) : (
+              <DiffView from={base.text} to={mode.conflict.theirs.text} label="Changes on the server since you opened it" />
+            )}
+          </div>
+        )}
+        {mode.kind === "discard" && (
+          <p role="alert" className="files-editor-warn">
+            <AlertTriangle size={14} aria-hidden /> Discard your changes to {entry.name}? They aren't saved on the server.
+          </p>
+        )}
+
+        <div className="files-editor-foot">
+          {base && mode.kind !== "conflict" && mode.kind !== "discard" && (
+            <p className="muted small">Saving replaces the file. Hermes writes it as a new file readable only by the server's user, so its permissions aren't kept.</p>
+          )}
+          <div className="confirm-actions">
+            {mode.kind === "discard" ? (
+              <>
+                <button className="btn" autoFocus onClick={() => setMode({ kind: "edit" })}>
+                  Keep editing
+                </button>
+                <button className="btn danger" onClick={mode.then}>
+                  Discard changes
+                </button>
+              </>
+            ) : mode.kind === "review" || mode.kind === "saving" ? (
+              <>
+                <button className="btn" disabled={busy} onClick={() => setMode({ kind: "edit" })}>
+                  Back to editing
+                </button>
+                <button className="btn primary" autoFocus disabled={busy || !connected} onClick={() => void save()}>
+                  {busy ? (
+                    <>
+                      <Spinner /> Saving…
+                    </>
+                  ) : (
+                    <>
+                      <Check size={14} aria-hidden /> Save
+                    </>
+                  )}
+                </button>
+              </>
+            ) : mode.kind === "conflict" ? (
+              <>
+                <button className="btn" onClick={leave}>
+                  Close
+                </button>
+                <button className="btn" disabled={!connected} onClick={() => void saveCopy()}>
+                  Save mine as a copy
+                </button>
+                {theirsBase && (
+                  <button className="btn" onClick={reload} title="Drop your edit and edit the server's version">
+                    Reload theirs
+                  </button>
+                )}
+                {theirsBase && (
+                  <button className="btn primary" autoFocus onClick={merge}>
+                    <GitMerge size={14} aria-hidden /> Merge
+                  </button>
+                )}
+              </>
+            ) : (
+              <>
+                <button className="btn" onClick={leave}>
+                  {mode.kind === "edit" ? "Cancel" : "Close"}
+                </button>
+                {mode.kind === "edit" && (
+                  <button className="btn primary" disabled={!dirty} onClick={() => setMode({ kind: "review" })}>
+                    Review changes…
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+          {!connected && base && <p className="muted small">Hermes isn't connected. Your edit stays here until it is.</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
+

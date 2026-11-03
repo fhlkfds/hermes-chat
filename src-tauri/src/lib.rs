@@ -622,7 +622,27 @@ async fn files_upload(
         let report = move |done, total| {
             let _ = on_progress.send(TransferProgress { done, total, dest: dest.clone() });
         };
-        dashboard.upload(&path, &local, overwrite, report).await.map_err(|e| e.to_string())
+        dashboard.upload(&path, transport::UploadSource::File(local), overwrite, report).await.map_err(|e| e.to_string())
+    };
+    transfers.run(id, epoch, work).await
+}
+
+/// Writes an edited text file's whole new text to the server path `path` (Server files editing, ADR 0024): the same
+/// upload route, with `overwrite` true for a save over the file the edit started from, false for a copy. The webview
+/// checks the file's revision first and reads it back after; this only writes.
+#[tauri::command]
+async fn files_save_text(
+    app: tauri::AppHandle,
+    transfers: State<'_, Transfers>,
+    id: u64,
+    path: String,
+    text: String,
+    overwrite: bool,
+) -> Result<String, String> {
+    let epoch = transfers.epoch();
+    let work = async move {
+        let dashboard = dashboard_since(&app, epoch).await?;
+        dashboard.upload(&path, transport::UploadSource::Bytes(text.into_bytes()), overwrite, |_, _| {}).await.map_err(|e| e.to_string())
     };
     transfers.run(id, epoch, work).await
 }
@@ -867,6 +887,7 @@ pub fn run(screenshot: bool) {
             files_pick_upload,
             files_upload,
             files_discard_pick,
+            files_save_text,
             files_cancel,
             hermes_connect_cancel,
             hermes_probe,

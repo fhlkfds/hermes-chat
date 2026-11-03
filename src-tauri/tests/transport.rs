@@ -1808,7 +1808,7 @@ async fn uploads_a_local_file_as_hermes_takes_it_and_reports_progress() {
     std::fs::write(&local, &bytes).unwrap();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let s = seen.clone();
-    let got = dashboard.upload("/srv/in/report.pdf", &local, false, move |done, total| s.lock().unwrap().push((done, total))).await.expect("uploaded");
+    let got = dashboard.upload("/srv/in/report.pdf", transport::UploadSource::File(local.clone()), false, move |done, total| s.lock().unwrap().push((done, total))).await.expect("uploaded");
     let got: Value = serde_json::from_str(&got).unwrap();
     assert_eq!(got["path"], "/srv/in/report.pdf");
     assert_eq!(got["overwrite"], "false");
@@ -1826,9 +1826,9 @@ async fn an_upload_that_would_replace_a_file_is_refused_unless_asked() {
     let (dashboard, _) = upload_stub().await;
     let local = scratch("upload-taken").join("taken.txt");
     std::fs::write(&local, "new").unwrap();
-    let err = dashboard.upload("/srv/taken.txt", &local, false, |_, _| {}).await.err().unwrap();
+    let err = dashboard.upload("/srv/taken.txt", transport::UploadSource::File(local.clone()), false, |_, _| {}).await.err().unwrap();
     assert!(matches!(&err, TransportError::Unexpected { status: 409, body } if body.contains("already exists")), "{err:?}");
-    let got: Value = serde_json::from_str(&dashboard.upload("/srv/taken.txt", &local, true, |_, _| {}).await.unwrap()).unwrap();
+    let got: Value = serde_json::from_str(&dashboard.upload("/srv/taken.txt", transport::UploadSource::File(local.clone()), true, |_, _| {}).await.unwrap()).unwrap();
     assert_eq!(got["overwrite"], "true");
 }
 
@@ -1839,16 +1839,29 @@ async fn never_uploads_to_a_credential_file_or_more_than_hermes_takes() {
     let local = dir.join("x");
     std::fs::write(&local, "SECRET=1").unwrap();
     for path in ["/srv/.env", "/srv/.ENV", "/srv/.env.local", "/srv/.envrc", "/srv/Auth.JSON", "/home/u/.hermes/config.yaml", "/srv/mcp-tokens/a.json", "/srv/Pairing/x", "/srv/.git-credentials", "/srv/", "/srv/.."] {
-        let err = dashboard.upload(path, &local, true, |_, _| {}).await.err().unwrap();
+        let err = dashboard.upload(path, transport::UploadSource::File(local.clone()), true, |_, _| {}).await.err().unwrap();
         assert!(matches!(err, TransportError::NotRelayed(_)), "{path}: {err:?}");
     }
     let big = dir.join("big");
     std::fs::File::create(&big).unwrap().set_len(transport::MANAGED_FILE_MAX_BYTES + 1).unwrap();
-    let err = dashboard.upload("/srv/big", &big, true, |_, _| {}).await.err().unwrap();
+    let err = dashboard.upload("/srv/big", transport::UploadSource::File(big.clone()), true, |_, _| {}).await.err().unwrap();
     assert!(matches!(err, TransportError::FileTooLarge { .. }), "{err:?}");
     assert!(uploads.lock().unwrap().is_empty(), "nothing was sent");
     // Names that only look alike go.
     for path in ["/srv/env", "/srv/my.env", "/srv/config.yml", "/srv/pairings/x"] {
-        dashboard.upload(path, &local, true, |_, _| {}).await.expect(path);
+        dashboard.upload(path, transport::UploadSource::File(local.clone()), true, |_, _| {}).await.expect(path);
     }
+}
+
+#[tokio::test]
+async fn saves_an_edits_text_through_the_upload_route() {
+    let (dashboard, uploads) = upload_stub().await;
+    let text = "caf\u{e9}\r\nline two\r\n".as_bytes().to_vec();
+    let got: Value = serde_json::from_str(&dashboard.upload("/srv/notes.md", transport::UploadSource::Bytes(text.clone()), true, |_, _| {}).await.unwrap()).unwrap();
+    assert_eq!(got["size"], text.len());
+    assert_eq!(got["sum"], text.iter().map(|&b| b as u64).sum::<u64>());
+    assert_eq!(got["overwrite"], "true");
+    let err = dashboard.upload("/srv/.env", transport::UploadSource::Bytes(b"X=1".to_vec()), true, |_, _| {}).await.err().unwrap();
+    assert!(matches!(err, TransportError::NotRelayed(_)), "{err:?}");
+    assert_eq!(uploads.lock().unwrap().as_slice(), ["/srv/notes.md"]);
 }

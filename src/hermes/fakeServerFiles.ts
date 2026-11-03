@@ -243,6 +243,31 @@ export class FakeServerFiles {
     }
   }
 
+  /** Set: a save's answer is lost this way, after (`landed`) or before Hermes wrote it. */
+  saveLost?: { message: string; landed: boolean };
+  /** Set: before a save writes, the file changes as another client would change it. */
+  beforeWrite?: (path: string) => void;
+  /** Every text saved, in order: its path, text and `overwrite`. */
+  readonly saves: { path: string; text: string; overwrite: boolean }[] = [];
+
+  /** src-tauri `files_save_text`: the edit's text, as UTF-8, through the same upload route. */
+  async saveText(path: string, text: string, overwrite: boolean): Promise<string> {
+    if (isSensitive(path)) throw new Error(`Hermes Chat doesn't relay uploads to ${path}, a credential file Hermes keeps out of reach.`);
+    this.beforeWrite?.(path);
+    const lost = this.saveLost;
+    if (lost && !lost.landed) throw new Error(lost.message);
+    const at = this.target(dirname(path)) === dirname(path) ? path : join(this.target(dirname(path)), basename(path));
+    if (this.nodes[at] && !overwrite) fail(409, "File already exists");
+    const node = this.nodes[at];
+    if (node && "unreadable" in node && node.unreadable) fail(403, "File is not writable");
+    this.saves.push({ path: at, text, overwrite });
+    const bytes = Array.from(new TextEncoder().encode(text), (b) => String.fromCharCode(b)).join("");
+    this.nodes[at] = { bytes, mime: node && "mime" in node ? node.mime : undefined, mtime: 1_793_200_000 };
+    this.afterWrite?.(at);
+    if (lost) throw new Error(lost.message);
+    return JSON.stringify({ ok: true, path: at });
+  }
+
   /** Called after each write lands, so a test can change the file as something else on the server would. */
   afterWrite?: (path: string) => void;
 

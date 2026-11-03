@@ -379,3 +379,91 @@ describe("uploads", () => {
     expect(hermes.files.transfers()[0]).toMatchObject({ state: "failed", error: "The Hermes server's user isn't allowed to write there." });
   });
 });
+
+describe("editing", () => {
+  const notes: RemoteEntry = { name: "notes.md", path: "/home/liam/notes.md", kind: "file", size: 20 };
+  const text = (s: FakeHermes, p: string) => {
+    const n = s.managedFiles.nodes[p] as { text?: string; bytes?: string };
+    return n.text ?? new TextDecoder("utf-8", { ignoreBOM: true }).decode(Uint8Array.from(n.bytes!, (c) => c.charCodeAt(0)));
+  };
+
+  it("saves only over the revision it started from, and says saved once read back", async () => {
+    const { server, hermes } = await signedIn(homeDisk);
+    const base = await hermes.files.openForEdit(notes);
+    expect(base.text).toBe("# Notes\n\nCafé ☕\n");
+    const got = await hermes.files.saveEdit(base, "# Notes\n\nCafé ☕ and tea\n");
+    expect(got.kind).toBe("saved");
+    expect(text(server, "/home/liam/notes.md")).toBe("# Notes\n\nCafé ☕ and tea\n");
+    expect(server.managedFiles.saves).toMatchObject([{ path: "/home/liam/notes.md", overwrite: true }]);
+    // The saved file is the new base: saving again from it works.
+    const again = await hermes.files.saveEdit((got as { base: typeof base }).base, "x\n");
+    expect(again.kind).toBe("saved");
+  });
+
+  it("writes nothing when the file changed on the server since it was opened, and shows what it has now", async () => {
+    const { server, hermes } = await signedIn(homeDisk);
+    const base = await hermes.files.openForEdit(notes);
+    server.managedFiles.nodes["/home/liam/notes.md"] = { text: "# Notes\n\nedited elsewhere\n" };
+    const got = await hermes.files.saveEdit(base, "mine\n");
+    expect(got).toMatchObject({ kind: "conflict", after: false, theirs: { text: "# Notes\n\nedited elsewhere\n" } });
+    expect(server.managedFiles.saves).toEqual([]);
+    expect(text(server, "/home/liam/notes.md")).toBe("# Notes\n\nedited elsewhere\n");
+    server.managedFiles.nodes["/home/liam/notes.md"] = { dir: true };
+    delete server.managedFiles.nodes["/home/liam/notes.md"];
+    expect(await hermes.files.saveEdit(base, "mine\n")).toMatchObject({ kind: "conflict", theirs: { gone: true } });
+  });
+
+  it("reports a change that landed while the save ran, instead of saying saved", async () => {
+    const { server, hermes } = await signedIn(homeDisk);
+    const base = await hermes.files.openForEdit(notes);
+    server.managedFiles.afterWrite = (at) => (server.managedFiles.nodes[at] = { text: "someone else, just after\n" });
+    expect(await hermes.files.saveEdit(base, "mine\n")).toMatchObject({ kind: "conflict", after: true, theirs: { text: "someone else, just after\n" } });
+  });
+
+  it("settles a lost answer by reading the file back", async () => {
+    const { server, hermes } = await signedIn(homeDisk);
+    let base = await hermes.files.openForEdit(notes);
+    server.managedFiles.saveLost = { message: "Can't reach the Hermes dashboard: connection reset", landed: true };
+    const got = await hermes.files.saveEdit(base, "landed\n");
+    expect(got.kind).toBe("saved");
+    base = (got as { base: typeof base }).base;
+    server.managedFiles.saveLost = { message: "Can't reach the Hermes dashboard: connection reset", landed: false };
+    await expect(hermes.files.saveEdit(base, "lost\n")).rejects.toThrow(/^It wasn't saved: .* The server still has the file you started from\.$/);
+    expect(text(server, "/home/liam/notes.md")).toBe("landed\n");
+  });
+
+  it("keeps a file's CRLF line ends and byte order mark", async () => {
+    const { server, hermes } = await signedIn((s) => {
+      homeDisk(s);
+      s.managedFiles.nodes["/home/liam/win.txt"] = { text: "﻿one\r\ntwo\r\n" };
+    });
+    const base = await hermes.files.openForEdit({ ...notes, name: "win.txt", path: "/home/liam/win.txt" });
+    expect(base).toMatchObject({ text: "one\ntwo\n", eol: "\r\n", bom: true });
+    await hermes.files.saveEdit(base, "one\ntwo\nthree\n");
+    expect(text(server, "/home/liam/win.txt")).toBe("﻿one\r\ntwo\r\nthree\r\n");
+  });
+
+  it("refuses what it can't edit, and says why Hermes refused a save", async () => {
+    const { server, hermes } = await signedIn((s) => {
+      homeDisk(s);
+      s.managedFiles.nodes["/home/liam/latin1.txt"] = { bytes: "caf\xe9\n" };
+    });
+    await expect(hermes.files.openForEdit({ ...notes, name: "latin1.txt", path: "/home/liam/latin1.txt" })).rejects.toThrow(/isn't UTF-8/);
+    await expect(hermes.files.openForEdit({ ...notes, size: 2 * MiB })).rejects.toThrow(/up to 1.0 MB/);
+    const base = await hermes.files.openForEdit(notes);
+    await expect(hermes.files.saveEdit(base, "x".repeat(MiB + 1))).rejects.toThrow(/saves files up to 1.0 MB/);
+    server.managedFiles.beforeWrite = () => {
+      throw new Error(`The dashboard answered 403: {"detail":"File is not writable"}`);
+    };
+    await expect(hermes.files.saveEdit(base, "x\n")).rejects.toThrow("The Hermes server's user isn't allowed to write this file.");
+    expect(server.managedFiles.saves).toEqual([]);
+  });
+
+  it("saves an edit as a copy beside the file, never over another", async () => {
+    const { server, hermes } = await signedIn(homeDisk);
+    const base = await hermes.files.openForEdit(notes);
+    expect(await hermes.files.saveCopy(base, "my copy\n")).toBe("/home/liam/notes (2).md");
+    expect(server.managedFiles.saves.at(-1)).toMatchObject({ path: "/home/liam/notes (2).md", overwrite: false });
+    expect(text(server, "/home/liam/notes.md")).toBe("# Notes\n\nCafé ☕\n");
+  });
+});
