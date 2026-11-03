@@ -1198,6 +1198,60 @@ button.status-item:disabled { opacity: 0.5; cursor: default; }
 .text-gen .model-options::before { right: auto; left: 100%; }
 .model-status { margin-top: 10px; }
 
+/* settings → memory */
+.memory-identity { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 0 0 16px; font-size: calc(12.5rem / 14); }
+.memory-identity div { display: flex; gap: 6px; align-items: baseline; min-width: 0; }
+.memory-identity dt { color: var(--faint); }
+.memory-identity dd { margin: 0; overflow-wrap: anywhere; }
+.memory-state { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: 14px; line-height: 1.5; }
+.memory-state > svg { flex: none; margin-top: 2px; color: var(--muted); }
+.memory-state > div { flex: 1; min-width: 0; }
+.memory-state .btn { flex: none; }
+.memory-state.permission > svg, .memory-state.error > svg { color: var(--bad); }
+.memory-state.warn > svg { color: var(--warn); }
+.memory-state-title { font-weight: 500; margin-bottom: 2px; }
+.memory-resources { display: flex; align-items: stretch; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+.memory-resource {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line);
+  min-width: 150px; text-align: left;
+}
+.memory-resource:hover { background: var(--hover); }
+.memory-resource.on { background: var(--raised-2); border-color: var(--line-2); }
+.memory-resource:focus-visible { outline: 2px solid var(--line-2); outline-offset: 1px; }
+.memory-resource-name { font-weight: 500; font-size: calc(13rem / 14); }
+.memory-reload { margin-left: auto; align-self: center; }
+.settings p.memory-about { margin: 0 0 10px; }
+.memory-empty { padding: 14px; border: 1px dashed var(--line-2); border-radius: var(--radius); }
+.memory-entries { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.memory-entries li + li { border-top: 1px solid var(--line); }
+.memory-entry { display: flex; align-items: center; gap: 12px; width: 100%; padding: 9px 12px; text-align: left; font-size: calc(13rem / 14); }
+.memory-entry:hover { background: var(--hover); }
+.memory-entry.on { background: var(--raised-2); }
+.memory-entry:focus-visible { outline: 2px solid var(--line-2); outline-offset: -2px; }
+.memory-entry-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.memory-entry .small { flex: none; }
+.memory-editor { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; }
+.memory-editor .field-label .badge { margin-left: 2px; }
+.memory-text {
+  width: 100%; resize: vertical; padding: 9px 11px; border-radius: 8px; background: var(--raised); border: 1px solid var(--line-2);
+  font-family: var(--mono); font-size: calc(12.5rem / 14); line-height: 1.55; outline: none; white-space: pre-wrap;
+}
+.memory-text:focus { border-color: var(--line-3); }
+.memory-text[readonly] { color: var(--muted); }
+.memory-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.memory-editor > .btn { align-self: flex-start; }
+.memory-leave { max-width: none; margin-top: 12px; padding: 10px 12px; border: 1px solid var(--line-2); border-radius: var(--radius); }
+.memory-editor .confirm { max-width: none; }
+.memory-notice { display: flex; align-items: flex-start; gap: 8px; margin-top: 12px; font-size: calc(12.5rem / 14); line-height: 1.5; }
+.memory-notice svg { flex: none; margin-top: 2px; }
+.memory-notice.ok { color: var(--ok); }
+.memory-notice.error, .memory-notice.conflict { color: var(--bad); }
+.memory-notice.unsure { color: var(--warn); }
+.memory-recovered { margin-top: 16px; padding: 12px 14px; border: 1px solid rgba(245, 184, 74, 0.35); border-radius: var(--radius); display: flex; flex-direction: column; gap: 8px; }
+.settings .memory-recovered p { margin: 0; }
+.leave-overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); z-index: 50; display: flex; align-items: center; justify-content: center; }
+/* The memory question shares the persona one's box (below), wider than a plain .confirm. */
+.leave-overlay .leave-dialog { max-width: 420px; }
 /* Settings → Persona (PersonaSettings.tsx) and the question before leaving an unsaved edit (LeavePersona.tsx) */
 .persona-where { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 4px 0 14px; font-size: calc(13rem / 14); }
 .persona-where dt { color: var(--muted); }

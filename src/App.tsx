@@ -36,6 +36,7 @@ import type { VoiceApi } from "./ui/Voice";
 import { SearchPalette } from "./ui/Search";
 import { SettingsScreen, type PersonaWiring } from "./ui/Settings";
 import { LeavePersona, type LeaveWhat } from "./ui/LeavePersona";
+import { LeaveMemoryEdit, useCloseGuard } from "./ui/LeaveMemoryEdit";
 import { tauriCloseGuard, type CloseGuard } from "./ui/tauriWindow";
 import { FileBrowser } from "./ui/FileBrowser";
 import { OutputsScreen, type OutputsScope } from "./ui/Outputs";
@@ -322,15 +323,26 @@ export function Main({
     setPersonaUnsaved(dirty);
     setPersonaKept(kept);
   }, []);
-  const [leaving, setLeaving] = useState<{ what: LeaveWhat; go: () => void; stay?: () => void }>();
-  /** Runs `go` now, or once the owner agrees to leave an unsaved persona edit behind. `stay` runs if they don't. */
+  // An unsaved edit in Settings → Memory (MemorySettings.tsx) lives only on screen: leaving it asks first too.
+  const memoryDirty = useRef(false);
+  const [memoryUnsaved, setMemoryUnsaved] = useState(false);
+  // Bumped when the owner discards the edit, so Settings → Memory drops it even if what follows doesn't close it.
+  const [memoryDiscards, setMemoryDiscards] = useState(0);
+  const onMemoryDirty = useCallback((dirty: boolean) => {
+    memoryDirty.current = dirty;
+    setMemoryUnsaved(dirty);
+  }, []);
+  const [leaving, setLeaving] = useState<{ edit: "persona" | "memory"; what: LeaveWhat; go: () => void; stay?: () => void }>();
+  /** Runs `go` now, or once the owner agrees to leave an unsaved persona or memory edit behind. `stay` runs if they don't. */
   const guard = (go: () => void, what: LeaveWhat = "leave", stay?: () => void) => {
-    if (!personaDirty.current) return go();
-    setLeaving({ what, go, stay });
+    if (memoryDirty.current) return setLeaving({ edit: "memory", what, go, stay });
+    if (personaDirty.current) return setLeaving({ edit: "persona", what, go, stay });
+    go();
   };
   const guardRef = useRef(guard);
   guardRef.current = guard;
-  // Closing the window asks too, only while there is something to lose.
+  // Closing the window asks too, only while there is something to lose. A memory edit also holds a page reload.
+  useCloseGuard(memoryUnsaved, (close) => guardRef.current(close, "close"));
   const guardCloseRef = useRef(guardClose);
   useEffect(() => {
     if (!personaUnsaved) return;
@@ -655,7 +667,7 @@ export function Main({
 
   // An inbox entry opens its chat, in its own profile, in the pane already showing it or else the active one. Another
   // profile is switched to first, the way the switcher does, and the chat opens once that profile's list has it.
-  // An unsaved persona edit asks first, as any other way of leaving Settings does.
+  // An unsaved persona or memory edit asks first, as any other way of leaving Settings does.
   const openEntry = (e: InboxEntry) => {
     setInboxOpen(false);
     guard(() => {
@@ -1167,6 +1179,9 @@ export function Main({
             appearance={appearance}
             listFonts={systemFonts}
             modelSettings={hermes.modelSettings}
+            memory={hermes.memory}
+            onMemoryDirty={onMemoryDirty}
+            memoryDiscards={memoryDiscards}
             checkScreenshots={screenshots.support}
             voiceSetup={voice.setup}
             showTextGeneration={showTextGeneration}
@@ -1274,7 +1289,22 @@ export function Main({
           )}
         </div>
       )}
-      {leaving && (
+      {leaving?.edit === "memory" && (
+        <LeaveMemoryEdit
+          profile={profile}
+          onStay={() => {
+            leaving.stay?.();
+            setLeaving(undefined);
+          }}
+          onDiscard={() => {
+            setLeaving(undefined);
+            onMemoryDirty(false);
+            setMemoryDiscards((n) => n + 1);
+            leaving.go();
+          }}
+        />
+      )}
+      {leaving?.edit === "persona" && (
         <LeavePersona
           what={leaving.what}
           profile={profile}

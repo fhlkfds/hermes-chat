@@ -1,10 +1,10 @@
 // The Settings screen, in three tabs. General, ported from the prototype: the connection and Sign out, what shows on
 // launch, voice, screenshots, updates, the local cache, and older history. Appearance: how the app looks on this
 // computer (AppearanceSettings.tsx). Model: the profile's models on Hermes (ModelSettings.tsx). Persona: the profile's
-// SOUL.md on Hermes (PersonaSettings.tsx).
+// SOUL.md on Hermes (PersonaSettings.tsx). Memory: what Hermes remembers for the profile (MemorySettings.tsx).
 // Profiles are switched in the list's header, not here (ADR 0001).
 import { useEffect, useState } from "react";
-import { ArrowLeft, Cpu, Download, KeyRound, Lock, LogOut, Palette, Settings2, ShieldCheck, Sparkles, Trash2 } from "lucide-react";
+import { ArrowLeft, Brain, Cpu, Download, KeyRound, Lock, LogOut, Palette, Settings2, ShieldCheck, Sparkles, Trash2 } from "lucide-react";
 import type { Chat, ConnectionStatus } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
 import { TRANSCRIPT_LIMIT_BYTES } from "../hermes/chatCache";
@@ -13,6 +13,8 @@ import type { AppearanceStore, Fonts } from "./appearance";
 import { AppearanceSettings } from "./AppearanceSettings";
 import type { ModelSettingsApi } from "../hermes/modelSettings";
 import { ModelSettings } from "./ModelSettings";
+import type { MemoryApi } from "../hermes/memory";
+import { MemorySettings } from "./MemorySettings";
 import { PersonaSettings, type PersonaWhere } from "./PersonaSettings";
 import type { PersonaApi } from "../hermes/persona";
 import type { PersonaStore } from "../hermes/personaStore";
@@ -23,12 +25,13 @@ import { ScreenshotSettings } from "./ScreenshotSettings";
 import type { ScreenshotSupport } from "../hermes/tauriScreenshot";
 import { UpdateSettings } from "./UpdateSettings";
 
-type Tab = "general" | "appearance" | "model" | "persona";
+type Tab = "general" | "appearance" | "model" | "persona" | "memory";
 const TABS = [
   { id: "general", label: "General", Icon: Settings2 },
   { id: "appearance", label: "Appearance", Icon: Palette },
   { id: "model", label: "Model", Icon: Cpu },
   { id: "persona", label: "Persona", Icon: Sparkles },
+  { id: "memory", label: "Memory", Icon: Brain },
 ] as const;
 
 /** Settings → Persona's wiring: the API, where its edits are kept on this computer, and what it edits. */
@@ -62,6 +65,9 @@ export function SettingsScreen({
   listFonts,
   checkScreenshots,
   modelSettings,
+  memory,
+  onMemoryDirty = () => {},
+  memoryDiscards = 0,
   onClearCache,
   onPullOlder,
   onSignOut,
@@ -93,6 +99,12 @@ export function SettingsScreen({
   checkScreenshots?: () => Promise<ScreenshotSupport>;
   /** The profile's model setup on Hermes. */
   modelSettings: ModelSettingsApi;
+  /** The profile's memory on Hermes; the Memory tab shows only with it. */
+  memory?: MemoryApi;
+  /** Called with whether the Memory tab has an unsaved edit. */
+  onMemoryDirty?: (dirty: boolean) => void;
+  /** Changes each time the owner discards the unsaved memory edit from App's question. */
+  memoryDiscards?: number;
   onClearCache: () => void;
   /** Resolves to the older chats added. */
   onPullOlder: () => Promise<Chat[]>;
@@ -104,7 +116,7 @@ export function SettingsScreen({
   persona?: PersonaWiring;
   /** Says whether the Persona tab holds an edit Hermes doesn't have yet. */
   onPersonaDirty?: (dirty: boolean, kept: boolean) => void;
-  /** Runs `go`, once the owner agrees to leave an unsaved persona edit behind, if there is one. */
+  /** Runs `go`, once the owner agrees to leave an unsaved persona or memory edit behind, if there is one. */
   guard?: (go: () => void) => void;
   /** Set, each time anew, to show the Model tab at the Text generation model: from a title that couldn't be regenerated. */
   showTextGeneration?: object;
@@ -116,8 +128,8 @@ export function SettingsScreen({
   const [pullError, setPullError] = useState<string>();
   const [signingOut, setSigningOut] = useState(false);
   const [tab, setTabNow] = useState<Tab>(showTextGeneration ? "model" : "general");
-  const tabs = TABS.filter((t) => t.id !== "persona" || persona);
-  // Leaving the Persona tab asks first while it holds an unsaved edit.
+  const tabs = TABS.filter((t) => (t.id !== "persona" || persona) && (t.id !== "memory" || memory));
+  // Leaving the Persona or Memory tab asks first while it holds an unsaved edit.
   const setTab = (t: Tab) => t !== tab && guard(() => setTabNow(t));
   useEffect(() => {
     if (showTextGeneration) setTab("model");
@@ -176,6 +188,11 @@ export function SettingsScreen({
               connected={status === "connected"}
               onDirty={onPersonaDirty}
             />
+          </div>
+        ) : tab === "memory" && memory ? (
+          <div id="settings-panel-memory" role="tabpanel" aria-labelledby="settings-tab-memory">
+            {/* An edit lives only while this tab is open, and for one profile; leaving with one asks first. */}
+            <MemorySettings key={profile} api={memory} profile={profile} status={status} server={routeLabel(route) ?? "not known until connected"} onDirtyChange={onMemoryDirty} discardSignal={memoryDiscards} />
           </div>
         ) : tab === "appearance" ? (
           <div id="settings-panel-appearance" role="tabpanel" aria-labelledby="settings-tab-appearance">

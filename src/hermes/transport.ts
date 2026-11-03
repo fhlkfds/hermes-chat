@@ -15,6 +15,7 @@
 // or the history is on the way; when the first connection at launch fails, the saved list and copies still open.
 // Unread chats in the other profiles are polled over dashboard REST (otherProfiles.ts).
 // Settings → Model reads and writes the profile's models over dashboard REST (modelSettings.ts).
+// Settings → Memory reads and edits the memory of the profile the dashboard runs as, over legacy `learning.*` (memory.ts).
 // The composer's model picker lists what `model.options` offers (models.ts) and switches one chat at a time with
 // The preview pane reads Server files over dashboard REST `GET /api/fs/*` (preview.ts).
 // session-scoped `config.set`; it never writes the profile's default model, reasoning or fast mode (Settings → Model does).
@@ -34,6 +35,7 @@ import { projectsApi, type ProjectsApi } from "./projects";
 import { listServerCommands, runServerCommand, type CommandDef, type CommandResult, type ServerCommandList } from "./commands";
 import { CronApi } from "./cronJobs";
 import { ModelSettingsApi } from "./modelSettings";
+import { memoryApi, type MemoryApi } from "./memory";
 import type { OpenPipe, Pipe, PipeEvent, RestMethod, Route, Speech, Transcript, VoiceSetup } from "./pipe";
 import { RemoteFilesError, previewSupport, remoteFiles, type RemoteFiles } from "./remoteFiles";
 import { isUnsecure } from "./unsecure";
@@ -550,6 +552,11 @@ export class Hermes {
     () => this.profile,
   );
 
+  /** Settings → Memory's reads and writes (memory.ts). Each call names the profile it is for. */
+  readonly memory: MemoryApi = memoryApi({
+    rpc: (method, params) => this.request(method, params),
+    get: (pathAndQuery) => this.rest("GET", pathAndQuery),
+  });
   /** Settings → Persona's reads and writes of a profile's SOUL.md (persona.ts). Each call names its profile. */
   readonly persona = new PersonaApi((method, pathAndQuery, body) => this.rest(method, pathAndQuery, body));
 
