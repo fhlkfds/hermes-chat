@@ -6,6 +6,7 @@
 // profile, the way drafts are. "Clear local cache" doesn't touch it (chatCache.ts clears only chat lists and Saved
 // copies): which chats are in a project is the owner's own grouping, not a copy of anything on the server.
 import type { SavedSignIn } from "./account";
+import { overlay, type MembershipOp, type ServerLinks } from "./membership";
 import { toProject, type Project } from "./projects";
 import { migrateUIPrefs as migrateDoc, type UIPrefsDoc, type UIPrefsMigrations } from "./uiPrefs";
 
@@ -22,8 +23,24 @@ export const PROJECTS_MIGRATIONS: UIPrefsMigrations = {
 const SCOPE_LIMIT = 200;
 const CHATS_PER_PROJECT = 10_000;
 
+/**
+ * Once this computer's membership was copied to Hermes (membership.ts, ADR 0023): Hermes's records as last read, the
+ * changes not yet confirmed by Hermes, and when the copy was made. `chats` then holds what the list shows, Hermes's
+ * records with the waiting changes on top, so it can show them before Hermes is read.
+ */
+export type SyncedLinks = { at: number; links: ServerLinks; pending: MembershipOp[] };
+
+/** This computer's membership as it was just before it was copied to Hermes, kept to put chats back from. */
+export type RecoveryCopy = { at: number; chats: Record<string, string[]> };
+
 /** One connection and profile's part of the document. */
-export type ScopeLinks = { selected?: string; chats: Record<string, string[]>; known: Project[] };
+export type ScopeLinks = {
+  selected?: string;
+  chats: Record<string, string[]>;
+  known: Project[];
+  synced?: SyncedLinks;
+  recovery?: RecoveryCopy;
+};
 
 /** The storage the document is kept in: localStorage in the app. */
 export type LinksStorage = Pick<Storage, "getItem" | "setItem">;
@@ -43,6 +60,11 @@ export type ProjectLinks = {
   forgetProject(scope: string, projectId: string): void;
   /** Hermes's projects as just read. Links to a project it no longer has go; archived ones are kept. */
   remember(scope: string, projects: Project[]): void;
+  /**
+   * Changes the copy of Hermes's membership records and the changes waiting for it; `chats` follows. `recovery`, when
+   * given, is kept as this computer's copy from before (only ever set, never cleared).
+   */
+  setSynced(scope: string, fn: (synced: SyncedLinks | undefined) => SyncedLinks, recovery?: RecoveryCopy): void;
 };
 
 const isDoc = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -71,12 +93,60 @@ function toChats(v: unknown): Record<string, string[]> {
   return out;
 }
 
+const rev = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+/** The most of Hermes's records kept, and the most waiting changes: a hand-edited document can't grow without end. */
+const RECORDS_LIMIT = 100_000;
+const PENDING_LIMIT = 20_000;
+
+function toServerLinks(v: unknown): ServerLinks {
+  const out: ServerLinks = {};
+  if (!isDoc(v)) return out;
+  let n = 0;
+  for (const [project, chats] of Object.entries(v)) {
+    if (!id(project) || !isDoc(chats)) continue;
+    for (const [chat, s] of Object.entries(chats)) {
+      if (!id(chat) || !isDoc(s) || !rev(s.rev) || typeof s.member !== "boolean" || ++n > RECORDS_LIMIT) continue;
+      (out[project] ??= {})[chat] = { member: s.member, rev: s.rev };
+    }
+  }
+  return out;
+}
+
+function toOp(v: unknown): MembershipOp | undefined {
+  if (!isDoc(v)) return undefined;
+  const opId = id(v.id), project = id(v.project), chat = id(v.chat);
+  if (!opId || !project || !chat || typeof v.member !== "boolean" || !rev(v.base)) return undefined;
+  const c = v.conflict;
+  const conflict = isDoc(c) && typeof c.member === "boolean" && rev(c.rev) ? { member: c.member, rev: c.rev } : undefined;
+  return { id: opId, project, chat, member: v.member, base: v.base, at: typeof v.at === "number" ? v.at : 0, ...(conflict && { conflict }) };
+}
+
+function toSynced(v: unknown): SyncedLinks | undefined {
+  if (!isDoc(v)) return undefined;
+  const pending = Array.isArray(v.pending) ? v.pending.slice(0, PENDING_LIMIT).map(toOp).filter((o): o is MembershipOp => !!o) : [];
+  return { at: typeof v.at === "number" ? v.at : 0, links: toServerLinks(v.links), pending };
+}
+
+function toRecovery(v: unknown): RecoveryCopy | undefined {
+  if (!isDoc(v)) return undefined;
+  return { at: typeof v.at === "number" ? v.at : 0, chats: toChats(v.chats) };
+}
+
 /** One scope's links as stored; anything that isn't valid is left out. */
 export function toScope(v: unknown): ScopeLinks | undefined {
   if (!isDoc(v)) return undefined;
   const known = Array.isArray(v.known) ? v.known.map(storedProject).filter((p): p is Project => !!p) : [];
   const selected = id(v.selected);
-  return { ...(selected && { selected }), chats: toChats(v.chats), known };
+  const synced = toSynced(v.synced);
+  const recovery = toRecovery(v.recovery);
+  return {
+    ...(selected && { selected }),
+    // Once synced, what the list shows follows from Hermes's records and the waiting changes, whatever `chats` says.
+    chats: synced ? overlay(synced.links, synced.pending) : toChats(v.chats),
+    known,
+    ...(synced && { synced }),
+    ...(recovery && { recovery }),
+  };
 }
 
 /** Every scope a document holds, checked; a document from a newer app is read for the fields this one knows. */
@@ -91,7 +161,21 @@ export function readLinks(raw: unknown): Record<string, ScopeLinks> {
   return out;
 }
 
-const isEmpty = (s: ScopeLinks) => !s.selected && !Object.keys(s.chats).length && !s.known.length;
+const isEmpty = (s: ScopeLinks) => !s.selected && !Object.keys(s.chats).length && !s.known.length && !s.synced && !s.recovery;
+
+/** `synced` with only the projects `keep` passes: a project Hermes no longer has takes its records and changes with it. */
+function onlyProjects(synced: SyncedLinks, keep: (project: string) => boolean): SyncedLinks {
+  return {
+    ...synced,
+    links: Object.fromEntries(Object.entries(synced.links).filter(([p]) => keep(p))),
+    pending: synced.pending.filter((o) => keep(o.project)),
+  };
+}
+
+/** The scope's `chats` and `synced` together: once synced, `chats` is what Hermes's records and the changes make. */
+function withSynced(chats: Record<string, string[]>, synced: SyncedLinks | undefined): Pick<ScopeLinks, "chats" | "synced"> {
+  return synced ? { chats: overlay(synced.links, synced.pending), synced } : { chats };
+}
 
 /**
  * The links kept in `storage`. They're read again only when the stored document changes, so a change that couldn't be
@@ -133,7 +217,7 @@ export function projectLinks(storage: LinksStorage): ProjectLinks {
     // including scopes this version couldn't parse. Explicitly drop selected when the owner picks All chats.
     const storedScopes = isDoc(doc.scopes) ? { ...doc.scopes } : {};
     const prior = isDoc(storedScopes[scope]) ? storedScopes[scope] : {};
-    const { selected: _selected, chats: _chats, known: _known, ...extra } = prior;
+    const { selected: _selected, chats: _chats, known: _known, synced: _synced, recovery: _recovery, ...extra } = prior;
     if (isEmpty(after) && !Object.keys(extra).length) delete storedScopes[scope];
     else storedScopes[scope] = { ...extra, ...after };
     doc = { ...doc, v: Math.max(PROJECTS_VERSION, Number(doc.v) || 0), scopes: storedScopes };
@@ -156,25 +240,34 @@ export function projectLinks(storage: LinksStorage): ProjectLinks {
     read: (scope) => current()[scope] ?? EMPTY,
     select: (scope, projectId) =>
       change(scope, ({ selected: _, ...s }) => (projectId ? { ...s, selected: projectId } : s)),
+    // Once synced, membership changes only through Hermes's records and the waiting changes (`setSynced`).
     setChat: (scope, projectId, chatId, inProject) =>
       change(scope, (s) => {
+        if (s.synced) return s;
         const ids = (s.chats[projectId] ?? []).filter((c) => c !== chatId);
         const next = inProject ? [chatId, ...ids].slice(0, CHATS_PER_PROJECT) : ids;
         const chats = { ...s.chats, [projectId]: next };
         if (!next.length) delete chats[projectId];
         return { ...s, chats };
       }),
-    forgetChat: (scope, chatId) => change(scope, (s) => ({ ...s, chats: withoutChat(s.chats, chatId) })),
+    forgetChat: (scope, chatId) => change(scope, (s) => (s.synced ? s : { ...s, chats: withoutChat(s.chats, chatId) })),
     forgetProject: (scope, projectId) =>
       change(scope, ({ selected, ...s }) => {
         const { [projectId]: _, ...chats } = s.chats;
-        return { ...s, ...(selected && selected !== projectId && { selected }), chats, known: s.known.filter((p) => p.id !== projectId) };
+        const synced = s.synced && onlyProjects(s.synced, (p) => p !== projectId);
+        return { ...s, ...(selected && selected !== projectId && { selected }), ...withSynced(chats, synced), known: s.known.filter((p) => p.id !== projectId) };
       }),
     remember: (scope, projects) =>
       change(scope, ({ selected, ...s }) => {
         const ids = new Set(projects.map((p) => p.id));
         const chats = Object.fromEntries(Object.entries(s.chats).filter(([p]) => ids.has(p)));
-        return { ...s, ...(selected && ids.has(selected) && { selected }), chats, known: projects };
+        const synced = s.synced && onlyProjects(s.synced, (p) => ids.has(p));
+        return { ...s, ...(selected && ids.has(selected) && { selected }), ...withSynced(chats, synced), known: projects };
+      }),
+    setSynced: (scope, fn, recovery) =>
+      change(scope, (s) => {
+        const synced = fn(s.synced);
+        return { ...s, ...withSynced(s.chats, synced), ...((s.recovery ?? recovery) && { recovery: s.recovery ?? recovery }) };
       }),
   };
 }

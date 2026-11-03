@@ -8,7 +8,13 @@ import type { Project } from "../hermes/projects";
 import { useReturnFocus } from "./bits";
 
 /** The profile's projects, for the chat menu: which ones the chat is in, and putting it in one or taking it out. */
-export type ChatProjects = { list: Project[]; of: Set<string>; onToggle: (projectId: string, inProject: boolean) => void };
+export type ChatProjects = {
+  list: Project[];
+  of: Set<string>;
+  onToggle: (projectId: string, inProject: boolean) => void;
+  /** The projects whose change for this chat Hermes hasn't confirmed: waiting to sync, or waiting for the owner. */
+  pending?: Map<string, "pending" | "conflict">;
+};
 
 /**
  * The right-click menu for one chat, at the pointer, kept inside the window. `onRename` and `onRegenTitle` hand back
@@ -93,13 +99,16 @@ export function ChatMenu({
           </div>
           {projects.list.map((p) => {
             const on = projects.of.has(p.id);
+            const sync = projects.pending?.get(p.id);
+            const note = sync === "conflict" ? "Changed on another computer: needs your decision" : sync && "Waiting to sync with Hermes";
             return (
               <button
                 key={p.id}
                 role="menuitemcheckbox"
                 aria-checked={on}
+                aria-description={note || undefined}
                 className="menu-item"
-                title={on ? `Take this chat out of ${p.name}` : `Put this chat in ${p.name}`}
+                title={[on ? `Take this chat out of ${p.name}` : `Put this chat in ${p.name}`, note].filter(Boolean).join("\n")}
                 onClick={() => {
                   onClose();
                   projects.onToggle(p.id, !on);
@@ -107,6 +116,7 @@ export function ChatMenu({
               >
                 <span className="menu-icon">{on && <Check size={15} />}</span>
                 <span className="menu-label">{p.name}</span>
+                {sync && <span className={`menu-sync ${sync === "conflict" ? "warn" : ""}`}>{sync === "conflict" ? "Conflict" : "Waiting"}</span>}
               </button>
             );
           })}

@@ -1,13 +1,33 @@
 // Projects: named groups of chats and of folders on the server (GLOSSARY.md "Project", ADR 0007). The project itself,
 // its name and its folders, is Hermes's own: the profile's `projects.db`, read and written with the legacy `projects.*`
-// JSON-RPC on `/api/ws`, so the official desktop app and `hermes projects` see the same ones. Hermes doesn't record which
-// chats belong to a project, so that, and which project the list shows, is kept on this computer (projectLinks.ts).
+// JSON-RPC on `/api/ws`, so the official desktop app and `hermes projects` see the same ones. Which chats belong to a
+// project is kept by Hermes when it says it can (membership.ts, ADR 0023); the deployed Hermes can't, so then it is kept
+// on this computer (projectLinks.ts), as is which project the list shows.
 //
 // Folders are only references. Nothing here creates, moves or deletes a folder, a repository or a worktree on the
 // server: a folder is checked with a read-only directory listing before it is added, and a repository's worktrees are
 // read with `git worktree list` (dashboard REST `GET /api/git/worktrees`), never added.
+import {
+  addOps,
+  applyResults,
+  batches,
+  keepMine,
+  keepTheirs,
+  membershipApi,
+  membershipSupport,
+  migrationPlan,
+  opId,
+  queueOp,
+  recoveryPairs,
+  settle,
+  type MembershipApi,
+  type MembershipOp,
+  type MembershipSupport,
+  type MigrationPlan,
+  type ServerLinks,
+} from "./membership";
 import { savedDefaults, type DefaultsDoc, type DefaultsDraft, type ProjectDefaults } from "./projectDefaults";
-import type { ProjectLinks } from "./projectLinks";
+import type { ProjectLinks, RecoveryCopy, SyncedLinks } from "./projectLinks";
 
 /** One of a project's folders: a path on the server. `primary`: the folder Hermes names the project's main one. */
 export type ProjectFolder = { path: string; primary: boolean };
@@ -30,6 +50,10 @@ export type ProjectsIO = {
  */
 export type ProjectsApi = {
   list(profile: string): Promise<Project[]>;
+  /** The projects, and whether Hermes keeps which chats are in them (`chat_membership`, ADR 0023). */
+  listing(profile: string): Promise<{ projects: Project[]; membership?: MembershipSupport }>;
+  /** Hermes's membership records. Call only when `listing` said Hermes keeps them. */
+  membership: MembershipApi;
   create(profile: string, name: string): Promise<Project>;
   rename(profile: string, id: string, name: string): Promise<Project>;
   /** Deletes the project and its folder references, never its chats or the folders themselves. */
@@ -148,6 +172,11 @@ export function projectsApi(io: ProjectsIO): ProjectsApi {
   };
   return {
     list: async (profile) => toProjects(await call("projects.list", { profile })),
+    listing: async (profile) => {
+      const res = await call("projects.list", { profile });
+      return { projects: toProjects(res), membership: membershipSupport(res) };
+    },
+    membership: membershipApi(call),
     create: async (profile, name) => oneProject(await call("projects.create", { profile, name: projectName(name) })),
     rename: async (profile, id, name) => oneProject(await call("projects.update", { profile, id, name: projectName(name) })),
     delete: async (profile, id) => toProjects(await call("projects.delete", { profile, id })),
@@ -182,6 +211,29 @@ export type ProjectsSnapshot = {
   selectedId?: string;
   chats: Readonly<Record<string, readonly string[]>>;
   defaults: Readonly<Record<string, ProjectDefaults>>;
+  membership: MembershipStatus;
+};
+
+/**
+ * Where which chats are in each project is kept (ADR 0023). `local`: on this computer only, because Hermes doesn't keep
+ * it (or the owner chose Not now). `offer`: Hermes can keep it, and this computer's hasn't been copied there yet; `plan`
+ * says what copying would do. `synced`: Hermes keeps it, and `pending` holds the changes it hasn't confirmed yet, those
+ * with `conflict` waiting for the owner.
+ */
+export type MembershipStatus = {
+  mode: "local" | "offer" | "synced";
+  /** Whether Hermes said it keeps membership when the projects were last read; undefined before. */
+  supported?: boolean;
+  plan?: MigrationPlan;
+  pending: readonly MembershipOp[];
+  syncing: boolean;
+  error?: string;
+  /** When Hermes's records were last read, if they have been since this opened. */
+  readAt?: number;
+  /** This computer's membership from before it was copied to Hermes. */
+  recovery?: RecoveryCopy;
+  /** Chats in the recovery copy that Hermes hasn't got in their project, as of the last read. */
+  restorable: number;
 };
 
 /**
@@ -199,6 +251,18 @@ export class ProjectsStore {
   // Project writes return whole snapshots. Keep them in order with list reads so an older reply cannot prune
   // associations created after that request, or restore a project that a later request deleted.
   private pending: Promise<unknown> = Promise.resolve();
+  /** What the last list said about membership; undefined when Hermes doesn't keep it, or before a list. */
+  private support?: MembershipSupport;
+  private listed = false;
+  /** Hermes's records as last read, before this computer's were copied there. */
+  private offered?: ServerLinks;
+  /** The owner chose Not now: membership stays on this computer until the app starts again. */
+  private notNow = false;
+  private syncing = false;
+  private syncError?: string;
+  private readAt?: number;
+  /** A sync waiting its turn in the queue: another asked for meanwhile joins it. */
+  private queuedSync?: Promise<void>;
 
   private enqueue<T>(run: () => Promise<T>): Promise<T> {
     const result = this.pending.then(run);
@@ -236,6 +300,11 @@ export class ProjectsStore {
     return new Set(Object.entries(this.snap.chats).flatMap(([id, chats]) => (chats.includes(chatId) ? [id] : [])));
   }
 
+  /** The projects whose change for `chatId` Hermes hasn't confirmed: waiting to be sent, or waiting for the owner. */
+  pendingOf(chatId: string): Map<string, "pending" | "conflict"> {
+    return new Map(this.snap.membership.pending.filter((o) => o.chat === chatId).map((o) => [o.project, o.conflict ? "conflict" : "pending"]));
+  }
+
   /**
    * Reads the profile's projects from Hermes. A project deleted in another client goes, and with it which chats were
    * in it. A failed read keeps what was shown and says why.
@@ -245,14 +314,84 @@ export class ProjectsStore {
     this.set({ loading: true });
     return this.enqueue(async () => {
       try {
-        const projects = await this.api.list(this.profile);
+        const { projects, membership } = await this.api.listing(this.profile);
         if (n !== this.reads) return;
         this.links.remember(this.scope, projects);
+        this.support = membership;
+        this.listed = true;
         this.set({ loaded: true, loading: false, error: undefined, ...this.fromLinks() });
       } catch (e) {
         if (n !== this.reads) return;
         this.set({ loading: false, error: `Couldn't read the projects: ${(e as Error).message}` });
+        return;
       }
+      await this.runSync();
+    });
+  }
+
+  /**
+   * Reads Hermes's membership records again and sends the changes waiting for it, if Hermes keeps membership. Changes
+   * that can't be sent wait, and say why. Joins a sync already waiting its turn.
+   */
+  sync(): Promise<void> {
+    if (this.queuedSync) return this.queuedSync;
+    const run = this.enqueue(async () => {
+      this.queuedSync = undefined;
+      await this.runSync();
+    });
+    this.queuedSync = run;
+    return run;
+  }
+
+  /**
+   * Copies this computer's membership to Hermes, as `migrationPlan` lays out, read afresh now: pairs Hermes has no record
+   * of are added, nothing else changes. This computer's copy is kept as the recovery copy, and from now on Hermes's
+   * records are what the list shows. If Hermes stops answering partway, the rest waits, shown as waiting, and is sent
+   * at the next sync.
+   */
+  migrate(): Promise<void> {
+    return this.enqueue(async () => {
+      if (!this.support) throw new Error("This Hermes server doesn't keep which chats are in each project.");
+      const { links } = await this.api.membership.list(this.profile);
+      const scope = this.links.read(this.scope);
+      if (!scope.synced) {
+        const now = Date.now();
+        const plan = migrationPlan(scope.chats, links, scope.known);
+        const recovery = { at: now, chats: structuredClone(scope.chats) as Record<string, string[]> };
+        this.links.setSynced(this.scope, () => ({ at: now, links, pending: addOps(links, plan.add, now) }), recovery);
+      }
+      this.offered = undefined;
+      this.set(this.fromLinks());
+      await this.runSync();
+    });
+  }
+
+  /** Keeps membership on this computer until the app starts again; Hermes isn't changed. */
+  notNowMigrate() {
+    this.notNow = true;
+    this.set(this.fromLinks());
+  }
+
+  /** Decides a conflict: send this computer's change again (`mine`), or keep what Hermes has. */
+  resolve(id: string, keep: "mine" | "theirs"): Promise<void> {
+    this.changeSynced((s) => ({ ...s, pending: (keep === "mine" ? keepMine : keepTheirs)(s.pending, id) }));
+    return keep === "mine" ? this.sync() : Promise.resolve();
+  }
+
+  /** Puts back the chats in the recovery copy that Hermes doesn't have in their projects, read afresh now. */
+  restoreRecovery(): Promise<void> {
+    return this.enqueue(async () => {
+      const { recovery, synced, known } = this.links.read(this.scope);
+      if (!recovery || !synced || !this.support) return;
+      const { links } = await this.api.membership.list(this.profile);
+      const now = Date.now();
+      this.changeSynced((s) => {
+        let pending = settle(links, s.pending);
+        for (const { project, chat } of recoveryPairs(recovery.chats, links, known))
+          pending = queueOp(links, pending, { id: opId(), project, chat, member: true, at: now });
+        return { ...s, links, pending };
+      });
+      await this.runSync();
     });
   }
 
@@ -307,10 +446,18 @@ export class ProjectsStore {
     return this.enqueue(() => this.write(id, () => this.api.removeFolder(this.profile, id, path)));
   }
 
-  /** Puts `chatId` in project `id`, or takes it out. Kept on this computer; the chat itself doesn't change. */
+  /**
+   * Puts `chatId` in project `id`, or takes it out; the chat itself doesn't change. Once Hermes keeps membership, the
+   * change waits, shown as waiting, until Hermes confirms it; until then it is kept on this computer.
+   */
   setChat(id: string, chatId: string, inProject: boolean) {
-    this.links.setChat(this.scope, id, chatId, inProject);
-    this.set(this.fromLinks());
+    if (!this.links.read(this.scope).synced) {
+      this.links.setChat(this.scope, id, chatId, inProject);
+      this.set(this.fromLinks());
+      return;
+    }
+    this.changeSynced((s) => ({ ...s, pending: queueOp(s.links, s.pending, { id: opId(), project: id, chat: chatId, member: inProject, at: Date.now() }) }));
+    void this.sync();
   }
 
   /**
@@ -358,10 +505,83 @@ export class ProjectsStore {
     void this.readDefaults();
   }
 
-  /** The chat was deleted, so it is in no project any more. */
+  /** The chat was deleted, so it is in no project any more: once Hermes keeps membership, it is taken out there too. */
   forgetChat(chatId: string) {
-    this.links.forgetChat(this.scope, chatId);
+    if (!this.links.read(this.scope).synced) {
+      this.links.forgetChat(this.scope, chatId);
+      this.set(this.fromLinks());
+      return;
+    }
+    const now = Date.now();
+    this.changeSynced((s) => {
+      let pending = s.pending;
+      for (const project of this.projectsOf(chatId)) pending = queueOp(s.links, pending, { id: opId(), project, chat: chatId, member: false, at: now });
+      return { ...s, pending };
+    });
+    void this.sync();
+  }
+
+  /**
+   * One pass with Hermes's membership records, run in the queue: read them, drop the waiting changes Hermes already
+   * agrees with, send the rest, and read the records back. Before this computer's membership was copied there, it reads
+   * them only to plan the copy; with nothing on this computer to copy, there is nothing to ask, and Hermes's are used.
+   */
+  private async runSync() {
+    if (!this.support) return;
+    this.syncing = true;
     this.set(this.fromLinks());
+    try {
+      const first = await this.api.membership.list(this.profile);
+      const scope = this.links.read(this.scope);
+      if (!scope.synced) {
+        if (Object.keys(scope.chats).length) {
+          this.offered = first.links;
+          return;
+        }
+        this.links.setSynced(this.scope, () => ({ at: Date.now(), links: first.links, pending: [] }));
+      }
+      this.changeSynced((s) => ({ ...s, links: first.links, pending: settle(first.links, s.pending) }));
+      const toSend = this.links.read(this.scope).synced?.pending.filter((o) => !o.conflict) ?? [];
+      for (const batch of batches(toSend)) {
+        const { results } = await this.api.membership.apply(this.profile, batch);
+        this.changeSynced((s) => ({ ...s, ...applyResults(s.links, s.pending, batch, results) }));
+      }
+      if (toSend.length) {
+        // Read back: what Hermes has now, other computers' changes included, is what the list shows.
+        const back = await this.api.membership.list(this.profile);
+        this.changeSynced((s) => ({ ...s, links: back.links, pending: settle(back.links, s.pending) }));
+      }
+      this.readAt = Date.now();
+      this.syncError = undefined;
+    } catch (e) {
+      this.syncError = (e as Error).message;
+    } finally {
+      this.syncing = false;
+      this.set(this.fromLinks());
+    }
+  }
+
+  /** Changes the synced part of this scope, if there is one, and shows it. */
+  private changeSynced(fn: (s: SyncedLinks) => SyncedLinks) {
+    if (!this.links.read(this.scope).synced) return;
+    this.links.setSynced(this.scope, (s) => fn(s!));
+    this.set(this.fromLinks());
+  }
+
+  private membershipStatus(): MembershipStatus {
+    const { synced, recovery, chats, known } = this.links.read(this.scope);
+    const plan = !synced && this.support && this.offered ? migrationPlan(chats, this.offered, known) : undefined;
+    return {
+      mode: synced ? "synced" : plan && !this.notNow ? "offer" : "local",
+      ...(this.listed && { supported: !!this.support }),
+      ...(plan && { plan }),
+      pending: synced?.pending ?? [],
+      syncing: this.syncing,
+      error: this.syncError,
+      ...(this.readAt && { readAt: this.readAt }),
+      ...(recovery && { recovery }),
+      restorable: recovery && synced ? recoveryPairs(recovery.chats, synced.links, known).length : 0,
+    };
   }
 
   /** A write to one project. If it was deleted elsewhere meanwhile, it goes from the list too. */
@@ -396,11 +616,17 @@ export class ProjectsStore {
     this.set(this.fromLinks());
   }
 
-  private fromLinks(): Pick<ProjectsSnapshot, "projects" | "selectedId" | "chats" | "defaults"> {
+  private fromLinks(): Pick<ProjectsSnapshot, "projects" | "selectedId" | "chats" | "defaults" | "membership"> {
     const { known, selected, chats } = this.links.read(this.scope);
     const ids = new Set(known.map((p) => p.id));
     const defaults = Object.fromEntries(Object.entries(this.stored).filter(([id]) => ids.has(id)));
-    return { projects: known, selectedId: known.some((p) => p.id === selected && !p.archived) ? selected : undefined, chats, defaults };
+    return {
+      projects: known,
+      selectedId: known.some((p) => p.id === selected && !p.archived) ? selected : undefined,
+      chats,
+      defaults,
+      membership: this.membershipStatus(),
+    };
   }
 
   private set(patch: Partial<ProjectsSnapshot>) {

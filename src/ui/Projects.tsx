@@ -2,10 +2,10 @@
 // project's chats, and the project screen, where a project is renamed or deleted and its folders added and taken out.
 // The project and its folders are Hermes's; which chats are in it is kept on this computer.
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, Check, ChevronDown, FolderGit2, Folder, FolderKanban, GitBranch, Pencil, Plus, Settings2, Trash2, X } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown, CloudUpload, FolderGit2, Folder, FolderKanban, GitBranch, Pencil, Plus, RefreshCw, Settings2, Trash2, TriangleAlert, X } from "lucide-react";
 import { EFFORT_LABEL, shortName, type Effort, type ModelCatalog, type ModelPick } from "../hermes/models";
 import { DefaultsConflict, NewerDefaultsError, cleanDraft, draftProblem, sameDraft, type DefaultsDraft, type ProjectDefaults } from "../hermes/projectDefaults";
-import type { Project, ProjectFolder, Worktree } from "../hermes/projects";
+import type { MembershipStatus, Project, ProjectFolder, Worktree } from "../hermes/projects";
 import { Spinner, composing, useReturnFocus } from "./bits";
 import { ModelControls } from "./ModelPicker";
 
@@ -32,6 +32,8 @@ export function ProjectSwitcher({
   onSelect,
   onCreate,
   onManage,
+  membership,
+  onSyncScreen,
 }: {
   /** The projects that can be shown: archived ones are left out. */
   projects: Project[];
@@ -44,6 +46,10 @@ export function ProjectSwitcher({
   onSelect: (id: string | undefined) => void;
   onCreate: (name: string) => Promise<unknown>;
   onManage: () => void;
+  /** Where which chats are in each project is kept, and what waits to sync. */
+  membership?: MembershipStatus;
+  /** Opens the screen about which chats are in each project, between computers. */
+  onSyncScreen?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLDivElement>(null);
@@ -70,6 +76,7 @@ export function ProjectSwitcher({
         <FolderKanban size={14} className="project-icon" />
         <span className="project-name">{name}</span>
         {unread.hidden > 0 && <span className="dot" aria-label="Unread chats not shown" />}
+        {membership?.pending.some((o) => o.conflict) && <TriangleAlert size={13} className="warn-text" aria-label="A project change needs your decision" />}
         <ChevronDown size={13} className="profile-chev" />
       </button>
       {selected && (
@@ -94,10 +101,30 @@ export function ProjectSwitcher({
             setOpen(false);
           }}
           onClose={() => setOpen(false)}
+          membership={membership}
+          onSyncScreen={
+            onSyncScreen &&
+            (() => {
+              setOpen(false);
+              onSyncScreen();
+            })
+          }
         />
       )}
     </div>
   );
+}
+
+/** One line under the projects about what waits to sync, if anything does; it opens the sync screen. */
+function syncLine(m: MembershipStatus | undefined): { text: string; warn?: boolean; icon: "conflict" | "offer" | "sync" } | undefined {
+  if (!m) return undefined;
+  const conflicts = m.pending.filter((o) => o.conflict).length;
+  const waiting = m.pending.length - conflicts;
+  if (conflicts) return { text: `${conflicts === 1 ? "A change needs" : `${conflicts} changes need`} your decision`, warn: true, icon: "conflict" };
+  if (m.mode === "offer") return { text: "Hermes can keep these on every computer…", icon: "offer" };
+  if (waiting) return { text: `${waiting} ${waiting === 1 ? "change" : "changes"} waiting to sync`, icon: "sync" };
+  if (m.error && m.mode === "synced") return { text: "Couldn't sync with Hermes", warn: true, icon: "sync" };
+  return undefined;
 }
 
 function UnreadCount({ n }: { n: number }) {
@@ -121,6 +148,8 @@ function ProjectMenu({
   onPick,
   onCreate,
   onClose,
+  membership,
+  onSyncScreen,
 }: {
   projects: Project[];
   selectedId?: string;
@@ -131,6 +160,8 @@ function ProjectMenu({
   onPick: (id: string | undefined) => void;
   onCreate: (name: string) => Promise<void>;
   onClose: () => void;
+  membership?: MembershipStatus;
+  onSyncScreen?: () => void;
 }) {
   const [naming, setNaming] = useState(false);
   const [name, setName] = useState("");
@@ -171,6 +202,16 @@ function ProjectMenu({
       {!projects.length && !loading && !error && <div className="profile-hint">No projects in this profile yet.</div>}
       {loading && !projects.length && <div className="profile-hint">Loading projects…</div>}
       {error && <div className="profile-hint err">{error}</div>}
+      {(() => {
+        const line = syncLine(membership);
+        if (!line || !onSyncScreen) return null;
+        const Icon = line.icon === "conflict" ? TriangleAlert : line.icon === "offer" ? CloudUpload : RefreshCw;
+        return (
+          <button className={`profile-option project-sync ${line.warn ? "warn" : ""}`} onClick={onSyncScreen}>
+            <Icon size={13} /> <span className="row-title">{line.text}</span>
+          </button>
+        );
+      })()}
       {naming ? (
         <div className="project-new">
           <input
@@ -244,7 +285,12 @@ export function ProjectScreen({
   readFolder,
   onClose,
   defaults,
+  membershipMode,
+  onSyncScreen,
 }: {
+  /** Where which chats are in a project is kept (`MembershipStatus.mode`). */
+  membershipMode?: MembershipStatus["mode"];
+  onSyncScreen?: () => void;
   /** The project's defaults for new chats, and how to edit them. */
   defaults: Omit<DefaultsProps, "folders" | "profile" | "connection">;
   project: Project;
@@ -372,7 +418,16 @@ export function ProjectScreen({
         )}
         <p className="muted">
           A project in the <span className="mono">{profile}</span> profile. Hermes keeps the project and its folders, so other Hermes clients
-          show them too. Which chats are in it is kept on this computer.
+          show them too.{" "}
+          {membershipMode === "synced" ? "Hermes keeps which chats are in it too, so every computer shows the same." : "Which chats are in it is kept on this computer."}
+          {onSyncScreen && (
+            <>
+              {" "}
+              <button className="link" onClick={onSyncScreen}>
+                Between computers…
+              </button>
+            </>
+          )}
         </p>
 
         <section>
@@ -477,7 +532,10 @@ export function ProjectScreen({
         <section>
           <h2>Delete project</h2>
           <div className="settings-row">
-            <p className="muted">Deletes the project in every Hermes client. Its chats stay in Hermes, and its folders stay on the server.</p>
+            <p className="muted">
+            Deletes the project in every Hermes client. Its chats stay in Hermes, and its folders stay on the server.
+            {membershipMode === "synced" && " Which chats were in it is forgotten on every computer."}
+          </p>
             {!confirmDelete ? (
               <button className="btn" disabled={!connected} title={offline} onClick={() => setConfirmDelete(true)}>
                 <Trash2 size={14} /> Delete project

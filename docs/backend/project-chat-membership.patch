@@ -1,0 +1,151 @@
+diff --git a/tui_gateway/methods_projects.py b/tui_gateway/methods_projects.py
+index ca073cfe..af602bac 100644
+--- a/tui_gateway/methods_projects.py
++++ b/tui_gateway/methods_projects.py
+@@ -21,7 +21,54 @@ def _projects_payload(conn) -> dict:
+     from hermes_cli import projects_db as pdb
+     return {
+         "projects": [p.to_dict() for p in pdb.list_projects(conn, include_archived=True)],
+-        "active_id": pdb.get_active_id(conn)}
++        "active_id": pdb.get_active_id(conn),
++        # Advertises the project chat membership contract (projects.chats.*): a client that doesn't
++        # find this keeps membership to itself.
++        "chat_membership": {"version": 1, "revision": _membership_revision(conn, ensure=True)}}
++
++
++# --- Project chat membership -------------------------------------------------------------------
++# Which sessions (chats) are in which project, kept per profile beside the projects themselves so
++# every client signed in to the profile shows the same. One row per (project, session), kept when a
++# session is taken out (member = 0) so its revision fences later changes. A project's rows go with
++# it (ON DELETE CASCADE); sessions and folders are never touched.
++_MEMBERSHIP_SQL = """
++CREATE TABLE IF NOT EXISTS project_chats (
++    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
++    session_id TEXT NOT NULL,
++    member INTEGER NOT NULL,
++    rev INTEGER NOT NULL,
++    changed_at REAL NOT NULL,
++    PRIMARY KEY (project_id, session_id));
++CREATE TABLE IF NOT EXISTS project_chat_ops (
++    op_id TEXT PRIMARY KEY,
++    result TEXT NOT NULL,
++    applied_at REAL NOT NULL);
++CREATE TABLE IF NOT EXISTS project_chat_revision (
++    id INTEGER PRIMARY KEY CHECK (id = 1),
++    revision INTEGER NOT NULL);
++INSERT OR IGNORE INTO project_chat_revision (id, revision) VALUES (1, 0);
++"""
++_MEMBERSHIP_OPS_MAX = 500
++
++
++def _membership_revision(conn, ensure: bool = False) -> int:
++    # executescript commits first, so the tables are made only outside a write transaction.
++    if ensure:
++        conn.executescript(_MEMBERSHIP_SQL)
++    return int(conn.execute("SELECT revision FROM project_chat_revision WHERE id = 1").fetchone()[0])
++
++
++def _bump_membership_revision(conn) -> int:
++    conn.execute("UPDATE project_chat_revision SET revision = revision + 1 WHERE id = 1")
++    return _membership_revision(conn)
++
++
++def _session_ref(v) -> str:
++    ref = str(v or "")
++    if not ref or len(ref) > 400:
++        raise ValueError("session_id must be 1 to 400 characters")
++    return ref
+ 
+ 
+ def _projects_method(name: str):
+@@ -110,10 +157,90 @@ def _(rid, params, pdb, conn) -> dict:
+ 
+ @_projects_method("projects.delete")
+ def _(rid, params, pdb, conn) -> dict:
++    _membership_revision(conn, ensure=True)
+     pdb.delete_project(conn, _require_project(pdb, conn, params).id)
++    _bump_membership_revision(conn)  # its project_chats rows went with it (ON DELETE CASCADE)
++    conn.commit()
+     return _ok(rid, _projects_payload(conn))
+ 
+ 
++@_projects_method("projects.chats.list")
++def _(rid, params, pdb, conn) -> dict:
++    """``{revision, links: [{project_id, session_id, member, rev}]}``; taken-out rows only with
++    ``include_removed``. ``project_id`` narrows to one project."""
++    revision = _membership_revision(conn, ensure=True)
++    sql = "SELECT project_id, session_id, member, rev FROM project_chats"
++    where, args = [], []
++    if not params.get("include_removed"):
++        where.append("member = 1")
++    if params.get("project_id"):
++        where.append("project_id = ?")
++        args.append(str(params["project_id"]))
++    if where:
++        sql += " WHERE " + " AND ".join(where)
++    rows = conn.execute(sql + " ORDER BY rev", args).fetchall()
++    return _ok(rid, {"revision": revision, "links": [
++        {"project_id": r[0], "session_id": r[1], "member": bool(r[2]), "rev": r[3]} for r in rows]})
++
++
++@_projects_method("projects.chats.apply")
++def _(rid, params, pdb, conn) -> dict:
++    """Applies ``ops`` in order, in one transaction. Each is ``{op_id, kind: add|remove,
++    project_id, session_id, expected_rev?}`` and answers ``{op_id, status, member, rev}``:
++    ``unchanged`` when the pair is already so, ``conflict`` (not applied) when ``expected_rev`` isn't
++    the pair's revision, ``no_such_project``, else ``applied``. An ``op_id`` seen before answers
++    what it answered then, applying nothing."""
++    import json as _json
++    import time as _time
++    ops = params.get("ops")
++    if not isinstance(ops, list) or len(ops) > _MEMBERSHIP_OPS_MAX:
++        raise ValueError(f"ops must be a list of at most {_MEMBERSHIP_OPS_MAX} operations")
++    _membership_revision(conn, ensure=True)
++    if conn.in_transaction:
++        conn.commit()
++    results = []
++    conn.execute("BEGIN IMMEDIATE")
++    try:
++        for op in ops:
++            if not isinstance(op, dict) or not op.get("op_id") or op.get("kind") not in ("add", "remove"):
++                raise ValueError("each operation needs op_id and kind add or remove")
++            op_id = str(op["op_id"])[:200]
++            seen = conn.execute("SELECT result FROM project_chat_ops WHERE op_id = ?", (op_id,)).fetchone()
++            if seen:
++                results.append(_json.loads(seen[0]))
++                continue
++            project_id, session_id = str(op.get("project_id") or ""), _session_ref(op.get("session_id"))
++            member = op["kind"] == "add"
++            row = conn.execute(
++                "SELECT member, rev FROM project_chats WHERE project_id = ? AND session_id = ?",
++                (project_id, session_id)).fetchone()
++            now_member, now_rev = (bool(row[0]), int(row[1])) if row else (False, 0)
++            expected = op.get("expected_rev")
++            if pdb.get_project(conn, project_id) is None:
++                result = {"op_id": op_id, "status": "no_such_project", "member": False, "rev": 0}
++            elif now_member == member:
++                result = {"op_id": op_id, "status": "unchanged", "member": member, "rev": now_rev}
++            elif isinstance(expected, int) and expected != now_rev:
++                result = {"op_id": op_id, "status": "conflict", "member": now_member, "rev": now_rev}
++            else:
++                rev = _bump_membership_revision(conn)
++                conn.execute(
++                    "INSERT INTO project_chats (project_id, session_id, member, rev, changed_at) VALUES (?, ?, ?, ?, ?) "
++                    "ON CONFLICT (project_id, session_id) DO UPDATE SET member = excluded.member, rev = excluded.rev, "
++                    "changed_at = excluded.changed_at",
++                    (project_id, session_id, int(member), rev, _time.time()))
++                result = {"op_id": op_id, "status": "applied", "member": member, "rev": rev}
++            conn.execute(
++                "INSERT INTO project_chat_ops (op_id, result, applied_at) VALUES (?, ?, ?)",
++                (op_id, _json.dumps(result), _time.time()))
++            results.append(result)
++        conn.execute("COMMIT")
++    except BaseException:
++        conn.execute("ROLLBACK")
++        raise
++    return _ok(rid, {"revision": _membership_revision(conn), "results": results})
++
++
+ @_projects_method("projects.set_active")
+ def _(rid, params, pdb, conn) -> dict:
+     pdb.set_active(conn, _require_project(pdb, conn, params).id if params.get("id") else None)

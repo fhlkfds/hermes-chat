@@ -60,8 +60,12 @@ Switching profile happens in place, with the same sign-in: the list shows what t
 _Avoid_: account, workspace, agent (as a name for a profile), connection (the sign-in, which covers every profile)
 
 **Project**:
-A named group of chats and of folders on the server, in one profile. Hermes keeps the project, its name and its folders, so other Hermes clients show it too. Which chats are in it is kept on this computer only. Picking a project in the list shows only its chats; a chat started meanwhile goes in it. A chat can be in several projects, or none. Deleting a project keeps its chats in Hermes and its folders on the server.
+A named group of chats and of folders on the server, in one profile. Hermes keeps the project, its name and its folders, so other Hermes clients show it too. Which chats are in it is its **Project membership**. Picking a project in the list shows only its chats; a chat started meanwhile goes in it. A chat can be in several projects, or none. Deleting a project keeps its chats in Hermes and its folders on the server.
 _Avoid_: workspace, group, folder (for the project itself)
+
+**Project membership**:
+Which chats are in each project of a profile. Hermes keeps it when it says it can (`chat_membership` in its projects list), so every computer signed in to the profile shows the same; the deployed Hermes can't, so there it is kept on this computer only. The first time Hermes can keep it, Hermes Chat shows what copying this computer's would do, copies only when asked, and keeps this computer's as a **Recovery copy**. Each change is sent as one operation; one Hermes hasn't confirmed yet is **Waiting**, and one another computer contradicted meanwhile is a **Conflict** that waits for the owner to keep it in or out (ADR 0023).
+_Avoid_: tags, labels, sync state (for the membership itself)
 
 **Folder** (of a project):
 A path on the server that a project refers to, shown with the connection it is on. Hermes Chat adds only a folder that is already there, and never creates, moves or deletes one. A folder in a git repository shows its branch, and the repository's other worktrees that already exist can be added as folders too; Hermes Chat never creates a worktree.

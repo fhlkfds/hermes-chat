@@ -1,5 +1,7 @@
 # Projects are Hermes's own, and which chats are in one is kept on this computer
 
+_Membership is superseded by [ADR 0023](0023-project-membership-syncs-through-a-proposed-hermes-contract.md): it syncs through Hermes when Hermes says it can keep it, and stays on this computer otherwise. Projects and folders are as below._
+
 A Project is a named group of chats and of folders on the server. The project itself, its name and its folders, is Hermes's: the profile's `projects.db`, read and written with the legacy `projects.*` JSON-RPC on `/api/ws` (`list`, `create`, `update`, `add_folder`, `remove_folder`, `delete`). The official desktop app and `hermes projects` use the same store, and the owner already had three projects in it. Hermes has no record of which chats belong to a project: the official desktop groups chats by the folder each runs in. So which chats the owner put in each project, and which project the list shows, are kept on this computer, in one versioned document (`hermes-chat.projects`), separately for each connection and profile.
 
 Folders are references. A folder is added only after a read-only `GET /api/fs/list` finds it on the server; `projects.add_folder` itself takes any path, and reads a relative one from Hermes's home folder, so the app sends only absolute paths. A repository's worktrees are read with `GET /api/git/worktrees` (`git worktree list`), and an existing one can be added as a folder. The app never calls `worktree/add`, `fs/mkdir` or any other route that creates something on the server.

@@ -1682,3 +1682,20 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .terminal-foot { flex: none; margin: 0; padding: 8px 22px 12px; font-size: calc(12rem / 14); }
 .terminal-btn { position: relative; }
 .terminal-dot { position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; background: var(--ok); }
+
+/* Chats in projects, between computers (MembershipSync.tsx). */
+.membership-screen h1 { font-size: calc(20rem / 14); margin: 10px 0 8px; }
+.membership-screen h2 svg { vertical-align: -2px; margin-right: 4px; }
+.warn-text { color: var(--warn); }
+.sync-plan { margin: 10px 0; padding-left: 18px; line-height: 1.7; font-size: calc(13rem / 14); }
+.sync-plan ul { margin: 2px 0 4px; padding-left: 18px; color: var(--muted); }
+.sync-actions { justify-content: flex-start; margin-top: 12px; }
+.sync-ops { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.sync-op { display: flex; align-items: center; gap: 10px; font-size: calc(13rem / 14); padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+.sync-op.conflict { border-color: rgba(245, 184, 74, 0.4); flex-wrap: wrap; }
+.sync-op-text { flex: 1 1 260px; min-width: 0; }
+.sync-op-actions { display: flex; gap: 8px; margin-left: auto; }
+.project-sync { display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; }
+.project-sync.warn { color: var(--warn); }
+.menu-sync { margin-left: auto; font-size: calc(11rem / 14); color: var(--faint); }
+.menu-sync.warn { color: var(--warn); }

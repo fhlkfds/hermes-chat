@@ -82,6 +82,17 @@ export type FakeProject = {
   folders: { path: string; label: string | null; is_primary: boolean; added_at: number }[];
 };
 
+/**
+ * One profile's chat membership records, as ADR 0023's proposed contract keeps them: one record per project and chat,
+ * taken-out ones included, each with the revision of its last change; and each operation id's answer, so a repeat is
+ * answered the same without being applied again.
+ */
+export type FakeMembership = {
+  revision: number;
+  links: Map<string, { project: string; chat: string; member: boolean; rev: number }>;
+  ops: Map<string, Record<string, unknown>>;
+};
+
 /** One worktree of a repository on the server, as `GET /api/git/worktrees` lists it (`web_git.worktree_list`). */
 export type FakeWorktree = { path: string; branch?: string; detached?: boolean };
 
@@ -342,6 +353,13 @@ export class FakeHermes {
   /** Each profile's projects (`projects.db`), by profile name; a profile the server has but that isn't here has none. */
   projects: Record<string, FakeProject[]> = {};
   /**
+   * Each profile's chat membership (ADR 0023's proposed `projects.chats.*`), or null for a server without it, as the
+   * deployed `bf0203a` is: then `projects.list` doesn't advertise it and the methods don't exist.
+   */
+  membership: Record<string, FakeMembership> | null = null;
+  /** How many more `projects.chats.apply` calls answer; after that they fail (5061), until reset. Unset: all answer. */
+  membershipApplyLeft?: number;
+  /**
    * More of the server's folders, by absolute path without a trailing slash, for `GET /api/fs/list`. That route lists
    * these and `serverFiles` together; a `{ dir: true }` entry there is a folder too.
    */
@@ -561,7 +579,44 @@ export class FakeHermes {
     // `tui_gateway/methods_projects.py` at the deployed `bf0203a`, checked live against a throwaway HERMES_HOME
     // (research doc "Projects"): 5062 for an id that resolves to nothing, 5063 for an invalid argument, 4064 for a
     // profile the server doesn't have. Writes answer with the refreshed project; delete with every project.
-    "projects.list": (r) => this.projectsOp(r, (list) => ({ projects: list, active_id: null })),
+    "projects.list": (r) => this.projectsOp(r, (list) => ({ projects: list, active_id: null, ...this.membershipAd(r) })),
+    // ADR 0023's proposed contract, only on a server set up with it (`membership`).
+    "projects.chats.list": (r) =>
+      this.membershipOp(r, (m) => ({
+        revision: m.revision,
+        links: [...m.links.values()]
+          .filter((l) => l.member || r.params.include_removed === true)
+          .map((l) => ({ project_id: l.project, session_id: l.chat, member: l.member, rev: l.rev })),
+      })),
+    "projects.chats.apply": (r) =>
+      this.membershipOp(r, (m, list) => {
+        const ops = r.params.ops;
+        if (!Array.isArray(ops) || ops.length > 500) throw [5063, "ops must be a list of at most 500 operations"];
+        if (this.membershipApplyLeft !== undefined && this.membershipApplyLeft-- <= 0) throw [5061, "database is locked"];
+        const results = ops.map((o: Record<string, unknown>) => {
+          const id = String(o.op_id ?? "");
+          if (!id || (o.kind !== "add" && o.kind !== "remove")) throw [5063, "each operation needs op_id and kind add or remove"];
+          const seen = m.ops.get(id);
+          if (seen) return seen;
+          const project = String(o.project_id ?? ""), chat = String(o.session_id ?? "");
+          const key = `${project}\n${chat}`;
+          const now = m.links.get(key);
+          const member = o.kind === "add";
+          let result: Record<string, unknown>;
+          if (!list.some((p) => p.id === project)) result = { op_id: id, status: "no_such_project", member: false, rev: 0 };
+          else if ((now?.member ?? false) === member) result = { op_id: id, status: "unchanged", member, rev: now?.rev ?? 0 };
+          else if (typeof o.expected_rev === "number" && o.expected_rev !== (now?.rev ?? 0))
+            result = { op_id: id, status: "conflict", member: now?.member ?? false, rev: now?.rev ?? 0 };
+          else {
+            const rev = ++m.revision;
+            m.links.set(key, { project, chat, member, rev });
+            result = { op_id: id, status: "applied", member, rev };
+          }
+          m.ops.set(id, result);
+          return result;
+        });
+        return { revision: m.revision, results };
+      }),
     "projects.create": (r) =>
       this.projectsOp(r, (list) => {
         const name = String(r.params.name ?? "").trim();
@@ -609,7 +664,13 @@ export class FakeHermes {
         const at = list.findIndex((p) => p.id === r.params.id);
         if (at < 0) throw [5062, "no such project"];
         list.splice(at, 1);
-        return { projects: list, active_id: null };
+        // The proposed contract: a project's membership records go with it (ON DELETE CASCADE); its chats stay.
+        const m = this.membership?.[(r.params.profile as string | undefined) || "default"];
+        if (m) {
+          for (const [key, l] of m.links) if (l.project === r.params.id) m.links.delete(key);
+          m.revision++;
+        }
+        return { projects: list, active_id: null, ...this.membershipAd(r) };
       }),
     // Keepalive, answered by the WS layer in either protocol generation (research doc §1).
     "gateway.ping": (r) => this.respond(r.id, { ok: true }),
@@ -1272,6 +1333,20 @@ export class FakeHermes {
       if (!Array.isArray(e)) throw e;
       this.fail(r.id, e[0], e[1]);
     }
+  }
+
+  /** `chat_membership` for a `projects.list` answer, on a server that keeps membership. */
+  private membershipAd(r: Request) {
+    if (!this.membership) return {};
+    const profile = (r.params.profile as string | undefined) || "default";
+    return { chat_membership: { version: 1, revision: this.membership[profile]?.revision ?? 0 } };
+  }
+
+  /** A `projects.chats.*` call: "method not found" on a server without them, as the deployed one answers. */
+  private membershipOp(r: Request, fn: (m: FakeMembership, list: FakeProject[]) => unknown) {
+    if (!this.membership) return this.fail(r.id, -32601, `unknown method: ${r.method}`);
+    const all = this.membership;
+    this.projectsOp(r, (list) => fn((all[(r.params.profile as string | undefined) || "default"] ??= { revision: 0, links: new Map(), ops: new Map() }), list));
   }
 
   /** A projects method on the one project `params.id` names, answering with it refreshed. */

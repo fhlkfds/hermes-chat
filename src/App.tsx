@@ -44,6 +44,7 @@ import { OutputsScreen, type OutputsScope } from "./ui/Outputs";
 import { OutputsIndex, outputsIn, splitPath, type Output } from "./hermes/outputs";
 import { composing, routeLabel } from "./ui/bits";
 import { ProjectScreen, ProjectSwitcher, type ProjectUnread } from "./ui/Projects";
+import { MembershipSync } from "./ui/MembershipSync";
 import { ScheduledJobs } from "./ui/ScheduledJobs";
 import { tauriTerminal } from "./ui/tauriTerminal";
 import { TERMINAL_TARGET_KEY, terminalTarget } from "./hermes/terminal";
@@ -464,7 +465,8 @@ export function Main({
     [hermes],
   );
   // The project screen covers the chat pane, as Settings does.
-  const [projectOpen, setProjectOpen] = useState(false);
+  // true: the shown project's screen. "sync": which chats are in each project, between computers.
+  const [projectOpen, setProjectOpen] = useState<boolean | "sync">(false);
   /** The Scheduled jobs screen covers the chat, as Settings does. */
   const [jobsOpen, setJobsOpen] = useState(false);
   // The Terminal screen covers the chat too. Once opened it stays mounted for this sign-in, hidden while the owner is
@@ -556,7 +558,11 @@ export function Main({
   // Defaults are in a file every instance shares, so they are read again whenever the window comes back to the front.
   useEffect(() => {
     const changed = (e: StorageEvent) => e.key === PROJECTS_KEY && projects.reread();
-    const back = () => void projects.readDefaults();
+    // Another computer's changes to which chats are in each project are read too, if Hermes keeps them.
+    const back = () => {
+      void projects.readDefaults();
+      if (projects.getSnapshot().membership.supported) void projects.sync();
+    };
     window.addEventListener("storage", changed);
     window.addEventListener("focus", back);
     return () => {
@@ -566,7 +572,8 @@ export function Main({
   }, [projects]);
   const listable = proj.projects.filter((p) => !p.archived);
   const shownProject = listable.find((p) => p.id === proj.selectedId);
-  const projectScreenOpen = projectOpen && !!shownProject;
+  const syncScreenOpen = projectOpen === "sync";
+  const projectScreenOpen = (projectOpen === true && !!shownProject) || syncScreenOpen;
   const inShown = shownProject && new Set(proj.chats[shownProject.id] ?? []);
   const listed = inShown ? chats.filter((c) => inShown.has(c.id)) : chats;
   const unreadChats = chats.filter((c) => c.unread && !c.archived);
@@ -831,7 +838,20 @@ export function Main({
     setToast({ text: `${settled ? "Settled" : "Moved to Active"}: ${title}`, undo: () => move(!settled), at: Date.now() });
   };
 
-  // Putting a chat in a project, or taking it out, is kept on this computer only; Undo puts it back.
+  // Putting a chat in a project, or taking it out: kept by Hermes when it can (ADR 0023), else on this computer. Undo
+  // puts it back.
+  // Which chats are in each project, between computers: it covers the chat, as the project screen does.
+  const openSyncScreen = () =>
+    guard(() => {
+      setSettingsOpen(false);
+      setFilesOpen(false);
+      setJobsOpen(false);
+      setTerminalOpen(false);
+      setOutputsOpen(false);
+      setProjectOpen("sync");
+      if (status === "connected") void projects.sync();
+    });
+
   const setInProject = (chatId: string, p: Project, inProject: boolean) => {
     const title = chats.find((c) => c.id === chatId)?.title ?? "";
     projects.setChat(p.id, chatId, inProject);
@@ -1161,7 +1181,7 @@ export function Main({
                 onOpen={() => status === "connected" && void projects.load()}
                 onSelect={(id) => {
                   projects.select(id);
-                  if (!id) setProjectOpen(false);
+                  if (!id) setProjectOpen((o) => (o === "sync" ? o : false));
                 }}
                 onCreate={async (name) => {
                   await projects.create(name);
@@ -1185,12 +1205,19 @@ export function Main({
                     void projects.readDefaults();
                   })
                 }
+                membership={proj.membership}
+                onSyncScreen={openSyncScreen}
               />
             }
             projectsOf={(chatId) => {
               if (!listable.length) return undefined;
               const of = projects.projectsOf(chatId);
-              return { list: listable, of, onToggle: (id, on) => setInProject(chatId, listable.find((p) => p.id === id)!, on) };
+              return {
+                list: listable,
+                of,
+                pending: projects.pendingOf(chatId),
+                onToggle: (id, on) => setInProject(chatId, listable.find((p) => p.id === id)!, on),
+              };
             }}
           switching={switching}
           status={status}
@@ -1250,6 +1277,21 @@ export function Main({
                 connected={status === "connected"}
                 onClose={() => { flushSync(() => setJobsOpen(false)); focusPane(active.key); }}
               />
+            ) : syncScreenOpen && !settingsOpen ? (
+              <MembershipSync
+                key={scope}
+                status={proj.membership}
+                projects={proj.projects}
+                profile={profile}
+                connected={status === "connected"}
+                titleOf={(id) => chats.find((c) => c.id === id)?.title}
+                onMigrate={() => projects.migrate()}
+                onNotNow={() => projects.notNowMigrate()}
+                onSync={() => projects.sync()}
+                onResolve={(id, keep) => projects.resolve(id, keep)}
+                onRestore={() => projects.restoreRecovery()}
+                onClose={() => { flushSync(() => setProjectOpen(false)); focusPane(active.key); }}
+              />
             ) : projectScreenOpen && shownProject && !settingsOpen ? (
               <ProjectScreen
                 key={shownProject.id}
@@ -1279,6 +1321,8 @@ export function Main({
                   return { problem, worktrees };
                 }}
                 onClose={() => { flushSync(() => setProjectOpen(false)); focusPane(active.key); }}
+                membershipMode={proj.membership.mode}
+                onSyncScreen={openSyncScreen}
                 defaults={{
                   saved: proj.defaults[shownProject.id],
                   catalog,
