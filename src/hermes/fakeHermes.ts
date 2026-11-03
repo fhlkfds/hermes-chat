@@ -339,9 +339,16 @@ export class FakeHermes {
    * it first. `lost`: the frame never reached Hermes. Applies once.
    */
   dropOnLearning?: "applied" | "lost";
+  /**
+   * What `session.active_list` lists: the sessions live in the dashboard's process, in every profile, as
+   * `_session_live_item` renders them at the deployed `bf0203a` (`tui_gateway/session_registry.py`). Rows carry no
+   * profile; `status` is `waiting` while a server→client request is open, else `starting`, `working` or `idle`.
+   */
+  liveSessions: { id: string; session_key: string; status: string; last_active: number; started_at?: number; title?: string; preview?: string }[] = [];
 
   /** Per-method behaviour; tests override entries. Unhandled methods get no answer. */
   readonly handlers: Record<string, Handler> = {
+    "session.active_list": (r) => this.respond(r.id, { sessions: this.liveSessions.map((l) => ({ current: false, message_count: 0, model: "", preview: "", title: "", started_at: l.last_active, ...l })) }),
     "session.create": (r) => {
       const n = this.requests.filter((q) => q.method === "session.create").length;
       const runtimeId = `rt-${n}`;

@@ -565,7 +565,8 @@ describe("the review's cases", () => {
     // Records go only with the chats themselves.
     index.keepOnly(new Set(chats.slice(0, 100).map((c) => c.id)));
     expect(Object.keys(index.getSnapshot().chats)).toHaveLength(100);
-  });
+    // Indexing 2,030 chats takes 4–7 s on a busy runner, past the 5 s default.
+  }, 30_000);
 
   it("forgets chats no longer in the profile's list, and keeps the files the owner added", async () => {
     const io: OutputsIo = {

@@ -587,7 +587,7 @@ const BlockView = memo(
       );
     if (block.kind === "error")
       return (
-        <div className="msg error" role="alert">
+        <div className="msg error" role="alert" data-item={block.id}>
           {block.text}
           {block.usage && <ReplyUsageLine usage={block.usage} />}
         </div>

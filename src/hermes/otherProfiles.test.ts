@@ -91,7 +91,8 @@ describe("Unread in other profiles", () => {
 
     expect(server.wsProfiles).toEqual(["default"]);
     expect(server.opened).toBe(1);
-    expect(server.requests.length).toBe(before);
+    // The socket is only asked what is live across the server, which neither picks nor changes a profile.
+    expect(server.requests.slice(before).map((r) => [r.method, r.params])).toEqual([["session.active_list", {}]]);
     expect(hermes.getSnapshot()).toMatchObject({ profile: "default", chats });
   });
 
@@ -166,7 +167,7 @@ describe("Unread in other profiles", () => {
       };
       await hermes.checkOtherProfiles();
       expect(others().byName.work).toMatchObject({ unread: 2 });
-      expect(others().byName.aegis).toEqual({ error: "The dashboard answered 500: database is locked" });
+      expect(others().byName.aegis).toEqual({ error: "The dashboard answered 500: database is locked", sends: [] });
       expect(totalUnread(others())).toMatchObject({ unread: 2, failed: ["aegis"] });
     });
 
@@ -297,7 +298,9 @@ describe("Unread in other profiles", () => {
     it("shows the profile switched away from as its list last showed it", async () => {
       const { hermes, others } = await signedIn();
       await hermes.switchProfile("work");
-      expect(others().byName).toEqual({ default: { unread: 1, more: false, checkedAt: expect.any(Number) } });
+      expect(others().byName).toEqual({
+        default: { unread: 1, more: false, checkedAt: expect.any(Number), chats: expect.arrayContaining([expect.objectContaining({ id: "home-1", unread: true })]), sends: [] },
+      });
     });
 
     it("shows nothing for a profile switched away from before its list was read", async () => {

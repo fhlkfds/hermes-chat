@@ -1,5 +1,5 @@
 // Settings → Memory: the built-in memory Hermes keeps for the profile shown, edited one entry at a time on the server
-// (memory.ts, GLOSSARY.md "Memory", ADR 0019). Nothing is written until the owner presses Save, and every write is
+// (memory.ts, GLOSSARY.md "Memory", ADR 0020). Nothing is written until the owner presses Save, and every write is
 // checked against the entry as it was read, then read back. An edit Hermes didn't take is kept on screen to copy or put
 // in another entry; it is never stored on this computer. Memory text is shown as plain text, never rendered.
 import { useEffect, useRef, useState } from "react";
