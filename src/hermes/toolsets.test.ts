@@ -126,6 +126,29 @@ describe("toolset discovery", () => {
     expect((await api.guards("default"))?.disabledEverywhere).toEqual(["debugging"]);
   });
 
+  it("doesn't report no_mcp or agent.disabled_toolsets cleared when the read afterwards can't tell", async () => {
+    const { server, api } = await connected();
+    server.toolsetNoMcp.default = new Set(["cli"]);
+    server.toolsetDisabledEverywhere.default = ["image_gen"];
+    // Another client saves both lists in a form Rust can't read for certain, right as the change lands.
+    let release!: () => void;
+    server.toolsetGate = new Promise((r) => (release = r));
+    const accepted = [
+      { kind: "noMcp", platform: "cli" },
+      { kind: "everywhere", name: "image_gen" },
+    ] as const;
+    const done = api.set("default", "image_gen", true, false, [...accepted]);
+    await new Promise((r) => setTimeout(r, 0));
+    while (!server.toolsetWrites.length) await new Promise((r) => setTimeout(r, 1));
+    server.toolsetNoMcpUnclear.default = ["cli"];
+    server.toolsetDisabledUnclear.default = true;
+    release();
+    const r = await done;
+    expect(r).toMatchObject({ kind: "saved" });
+    expect(r).not.toHaveProperty("mcpBack");
+    expect(r).not.toHaveProperty("everywhereBack");
+  });
+
   it("says it couldn't check no_mcp when Rust can't read the platform's list for certain", async () => {
     const { server, api } = await connected();
     server.toolsetNoMcpUnclear.default = ["cli"];

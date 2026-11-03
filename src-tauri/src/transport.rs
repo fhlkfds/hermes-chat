@@ -888,7 +888,12 @@ pub fn toolset_guards(config: &serde_json::Value) -> ToolsetGuards {
     for (platform, value) in config["platform_toolsets"].as_object().into_iter().flatten() {
         let read = match value {
             serde_json::Value::Array(_) => config_string_list(value),
-            serde_json::Value::String(s) if s.trim().starts_with('[') => config_string_list(value),
+            serde_json::Value::String(s) if py_strip(s).starts_with('[') => config_string_list(value),
+            // Not a list to Hermes, unless this misjudged the string's start: then it can't be sure.
+            serde_json::Value::String(s) if s.contains('[') => {
+                no_mcp_unclear.push(platform.clone());
+                continue;
+            }
             _ => continue,
         };
         if read.unclear {
@@ -913,6 +918,12 @@ pub fn toolset_guards(config: &serde_json::Value) -> ToolsetGuards {
     }
 }
 
+/// `s` without the leading and trailing whitespace Python's `str.strip()` removes: Unicode whitespace, plus the
+/// separators U+001C–U+001F, which Rust's `trim` keeps.
+fn py_strip(s: &str) -> &str {
+    s.trim_matches(|c: char| c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c))
+}
+
 /// A config list's names, and whether they may be incomplete.
 struct ConfigList {
     names: Vec<String>,
@@ -924,7 +935,7 @@ struct ConfigList {
 /// read only when each item is a plainly quoted name; anything else (escapes, other literal forms) is `unclear`,
 /// since Python may read it as names this can't see.
 fn config_string_list(value: &serde_json::Value) -> ConfigList {
-    let clean = |names: Vec<String>| names.into_iter().map(|n| n.trim().to_owned()).filter(|n| !n.is_empty()).collect();
+    let clean = |names: Vec<String>| names.into_iter().map(|n| py_strip(&n).to_owned()).filter(|n| !n.is_empty()).collect();
     match value {
         serde_json::Value::Array(items) => ConfigList {
             names: clean(
@@ -938,10 +949,10 @@ fn config_string_list(value: &serde_json::Value) -> ConfigList {
             ),
             unclear: false,
         },
-        serde_json::Value::String(s) if s.trim().starts_with('[') => {
-            let inner = s.trim().strip_prefix('[').and_then(|r| r.strip_suffix(']'));
+        serde_json::Value::String(s) if py_strip(s).starts_with('[') => {
+            let inner = py_strip(s).strip_prefix('[').and_then(|r| r.strip_suffix(']'));
             let quoted = |item: &str| {
-                let item = item.trim();
+                let item = py_strip(item);
                 ['\'', '"'].into_iter().find_map(|q| {
                     let name = item.strip_prefix(q)?.strip_suffix(q)?;
                     let plain = !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || "_.- ".contains(c));
@@ -951,7 +962,7 @@ fn config_string_list(value: &serde_json::Value) -> ConfigList {
             let items: Option<Vec<String>> = inner.map(|inner| {
                 let mut parts: Vec<&str> = inner.split(',').collect();
                 // `['a',]` is a list of one; `[]` of none.
-                if parts.last().is_some_and(|p| p.trim().is_empty()) {
+                if parts.last().is_some_and(|p| py_strip(p).is_empty()) {
                     parts.pop();
                 }
                 parts
@@ -962,6 +973,8 @@ fn config_string_list(value: &serde_json::Value) -> ConfigList {
                 None => ConfigList { names: Vec::new(), unclear: true },
             }
         }
+        // One name to Hermes; one this misjudged as not starting a list can't be read for certain.
+        serde_json::Value::String(s) if s.contains('[') => ConfigList { names: Vec::new(), unclear: true },
         serde_json::Value::String(s) => ConfigList { names: clean(vec![s.clone()]), unclear: false },
         _ => ConfigList { names: Vec::new(), unclear: false },
     }

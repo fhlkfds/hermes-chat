@@ -402,15 +402,16 @@ export class ToolsetsApi {
 
   /**
    * What else the save cleared, read back: the platform's `no_mcp`, and the toolset's name in `agent.disabled_toolsets`.
-   * Nothing for what it didn't have, or when the config can't be read again.
+   * Nothing for what it didn't have, or when the config can't be read again, or read for certain.
    */
   private async clearedBySave(profile: string, row: Toolset, had: { noMcp: boolean; everywhere: boolean }): Promise<{ mcpBack?: boolean; everywhereBack?: boolean }> {
     if (!had.noMcp && !had.everywhere) return {};
     const now = await this.guards(profile);
     if (!now) return {};
     return {
-      ...(had.noMcp && !now.noMcp.includes(row.platform) ? { mcpBack: true } : {}),
-      ...(had.everywhere && !now.disabledEverywhere.includes(row.name) ? { everywhereBack: true } : {}),
+      // Only a read that can tell: a list it can't read for certain may still name it.
+      ...(had.noMcp && !now.noMcp.includes(row.platform) && !now.noMcpUnclear.includes(row.platform) ? { mcpBack: true } : {}),
+      ...(had.everywhere && !now.disabledEverywhere.includes(row.name) && !now.disabledUnclear ? { everywhereBack: true } : {}),
     };
   }
 }

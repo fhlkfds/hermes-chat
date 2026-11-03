@@ -473,6 +473,9 @@ fn toolset_guards_keep_only_no_mcp_platforms_coding_focus_and_disabled_names() {
             "matrix": "['web', 'no_' 'mcp']",
             // Not a list: Hermes ignores it, `no_mcp` and all.
             "signal": "no_mcp",
+            // Python's strip() removes U+001C, so Hermes reads this one as a list too.
+            "irc": "\u{1c}['web', 'no_mcp']",
+            "line": "x['web', 'no_mcp']",
         },
         "agent": {"coding_context": " Lean ", "disabled_toolsets": ["web", " debugging ", ""]},
         "web": {"api_key": "sk-secret"},
@@ -488,8 +491,8 @@ fn toolset_guards_keep_only_no_mcp_platforms_coding_focus_and_disabled_names() {
     assert_eq!(
         guards,
         transport::ToolsetGuards {
-            no_mcp: vec!["cli".into(), "telegram".into()],
-            no_mcp_unclear: vec!["matrix".into(), "slack".into()],
+            no_mcp: vec!["cli".into(), "irc".into(), "telegram".into()],
+            no_mcp_unclear: vec!["line".into(), "matrix".into(), "slack".into()],
             coding_focus: true,
             disabled_everywhere: vec!["web".into(), "debugging".into()],
             disabled_unclear: false,
@@ -499,8 +502,8 @@ fn toolset_guards_keep_only_no_mcp_platforms_coding_focus_and_disabled_names() {
     assert_eq!(
         out,
         json!({
-            "noMcp": ["cli", "telegram"],
-            "noMcpUnclear": ["matrix", "slack"],
+            "noMcp": ["cli", "irc", "telegram"],
+            "noMcpUnclear": ["line", "matrix", "slack"],
             "codingFocus": true,
             "disabledEverywhere": ["web", "debugging"],
             "disabledUnclear": false
@@ -518,6 +521,8 @@ fn toolset_guards_keep_only_no_mcp_platforms_coding_focus_and_disabled_names() {
     assert_eq!(listed(json!("['memory', \"web\"]")), clear(&["memory", "web"]));
     assert_eq!(listed(json!("['memory',]")), clear(&["memory"]));
     assert_eq!(listed(json!("memory")), clear(&["memory"]));
+    assert_eq!(listed(json!("\u{1c}['web']\u{1f}")), clear(&["web"]));
+    assert_eq!(listed(json!("\u{1c}web")), clear(&["web"]));
     assert_eq!(listed(json!("[]")), clear(&[]));
     assert_eq!(listed(json!(null)), clear(&[]));
     // Python reads these as names this can't be sure of (`"\u0077eb"` is `web`), so any toolset may be listed.
