@@ -245,6 +245,8 @@ export class FakeServerFiles {
 
   /** Set: a save's answer is lost this way, after (`landed`) or before Hermes wrote it. */
   saveLost?: { message: string; landed: boolean };
+  /** Set: a save waits here before Hermes takes it, as one that gets no answer would. */
+  saveGate?: Promise<void>;
   /** Set: before a save writes, the file changes as another client would change it. */
   beforeWrite?: (path: string) => void;
   /** Every text saved, in order: its path, text and `overwrite`. */
@@ -253,6 +255,7 @@ export class FakeServerFiles {
   /** src-tauri `files_save_text`: the edit's text, as UTF-8, through the same upload route. */
   async saveText(path: string, text: string, overwrite: boolean): Promise<string> {
     if (isSensitive(path)) throw new Error(`Hermes Chat doesn't relay uploads to ${path}, a credential file Hermes keeps out of reach.`);
+    if (this.saveGate) await this.saveGate;
     this.beforeWrite?.(path);
     const lost = this.saveLost;
     if (lost && !lost.landed) throw new Error(lost.message);

@@ -6,6 +6,7 @@ import { connect, type Hermes } from "./transport";
 import {
   IMAGE_PREVIEW_MAX_BYTES,
   TEXT_PREVIEW_MAX_BYTES,
+  EDIT_DEADLINES,
   crumbs,
   explain,
   freeName,
@@ -430,6 +431,42 @@ describe("editing", () => {
     server.managedFiles.saveLost = { message: "Can't reach the Hermes dashboard: connection reset", landed: false };
     await expect(hermes.files.saveEdit(base, "lost\n")).rejects.toThrow(/^It wasn't saved: .* The server still has the file you started from\.$/);
     expect(text(server, "/home/liam/notes.md")).toBe("landed\n");
+  });
+
+  it("reads back after a gateway's 502, and stops waiting on a save that gets no answer", async () => {
+    const { server, hermes } = await signedIn(homeDisk);
+    let base = await hermes.files.openForEdit(notes);
+    server.managedFiles.saveLost = { message: `The dashboard answered 502: <html>Bad Gateway</html>`, landed: true };
+    const got = await hermes.files.saveEdit(base, "via a gateway\n");
+    expect(got.kind).toBe("saved");
+    base = (got as { base: typeof base }).base;
+    server.managedFiles.saveLost = undefined;
+    server.managedFiles.saveGate = new Promise(() => {});
+    const was = EDIT_DEADLINES.writeMs;
+    EDIT_DEADLINES.writeMs = 50;
+    try {
+      await expect(hermes.files.saveEdit(base, "never answered\n")).rejects.toThrow("It wasn't saved: Hermes didn't answer within 0.05 s. The server still has the file you started from.");
+    } finally {
+      EDIT_DEADLINES.writeMs = was;
+    }
+  });
+
+  it("offers a copy when the file became a folder, and keeps copies within the editor's limit", async () => {
+    const { server, hermes } = await signedIn(homeDisk);
+    const base = await hermes.files.openForEdit(notes);
+    delete server.managedFiles.nodes["/home/liam/notes.md"];
+    server.managedFiles.nodes["/home/liam/notes.md/inner"] = { text: "x" };
+    expect(await hermes.files.saveEdit(base, "mine\n")).toMatchObject({ kind: "conflict", after: false, theirs: { why: "That isn't a regular file." } });
+    await expect(hermes.files.saveCopy(base, "x".repeat(MiB + 1))).rejects.toThrow(/saves files up to 1.0 MB/);
+    expect(await hermes.files.saveCopy(base, "mine\n")).toBe("/home/liam/notes (2).md");
+  });
+
+  it("settles a copy whose answer was lost by reading it back, so a retry makes no second copy", async () => {
+    const { server, hermes } = await signedIn(homeDisk);
+    const base = await hermes.files.openForEdit(notes);
+    server.managedFiles.saveLost = { message: "Can't reach the Hermes dashboard: connection reset", landed: true };
+    expect(await hermes.files.saveCopy(base, "copy\n")).toBe("/home/liam/notes (2).md");
+    expect(server.managedFiles.saves).toHaveLength(1);
   });
 
   it("keeps a file's CRLF line ends and byte order mark", async () => {

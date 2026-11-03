@@ -584,6 +584,23 @@ describe("Server files: editing text", () => {
     expect((editor().getByRole("textbox") as HTMLTextAreaElement).value).toBe("server wins\n");
   });
 
+  it("keeps the app's shortcuts and the keyboard inside the editor, so nothing drops the edit unasked", async () => {
+    const s = server();
+    const { user } = await launch(s);
+    const area = await openEditor(user);
+    await user.type(area, "draft");
+    await user.keyboard("{Control>}n{/Control}");
+    await user.keyboard("{Control>}k{/Control}");
+    expect(screen.getByRole("dialog", { name: /^Edit / })).toBeTruthy();
+    expect(document.querySelector(".files")).not.toBeNull();
+    const box = screen.getByRole("dialog", { name: /^Edit / });
+    for (let i = 0; i < 5; i++) {
+      await user.tab();
+      expect(box.contains(document.activeElement)).toBe(true);
+    }
+    expect((editor().getByRole("textbox") as HTMLTextAreaElement).value).toContain("draft");
+  });
+
   it("asks before dropping an unsaved edit, and won't edit what it can't round-trip", async () => {
     const s = server();
     s.managedFiles.nodes["/home/liam/latin1.txt"] = { bytes: "caf\xe9\n" };

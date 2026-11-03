@@ -92,4 +92,39 @@ describe("merge", () => {
     expect(got.text).toContain("mine");
     expect(got.text).toContain("theirs");
   });
+
+  it("never takes a deleted line and a blank one, or a lost final newline, as the same change", () => {
+    expect(merge3("a\nb", "a", "a\n").conflicts).toBe(1);
+    expect(merge3("a\nb\nc\n", "a\nc\n", "a\n\nc\n").conflicts).toBe(1);
+    expect(merge3("a\n", "a", "a")).toEqual({ text: "a", conflicts: 0 });
+  });
+
+  it("never drops either side's change, checked across many small edits", () => {
+    const words = ["x", "y", "", "z"];
+    for (let seed = 1; seed < 400; seed++) {
+      const r = (n: number) => (seed * 7919 + n * 104729) % 9973;
+      const base = Array.from({ length: 6 }, (_, i) => words[r(i) % 4]);
+      const edit = (k: number) => base.map((l, i) => (r(i + k) % 5 === 0 ? `${k}:${i}` : l)).filter((_, i) => r(i + k * 3) % 7 !== 0);
+      const mine = edit(11).join("\n");
+      const theirs = edit(23).join("\n");
+      const got = merge3(base.join("\n"), mine, theirs);
+      if (!got.conflicts) {
+        // Each side's own lines are all there.
+        for (const line of [...mine.split("\n"), ...theirs.split("\n")].filter((l) => l.includes(":"))) expect(got.text.split("\n")).toContain(line);
+      }
+      expect(merge3(base.join("\n"), mine, mine)).toEqual({ text: mine, conflicts: 0 });
+    }
+  });
+
+  it("merges a file of 150,000 lines without running out of stack", () => {
+    const base = Array.from({ length: 150_000 }, (_, i) => `l${i}`);
+    const mine = [...base];
+    mine[10] = "mine";
+    const theirs = [...base];
+    theirs[149_000] = "theirs";
+    const got = merge3(base.join("\n"), mine.join("\n"), theirs.join("\n"));
+    expect(got.conflicts).toBe(0);
+    expect(got.text.split("\n")[10]).toBe("mine");
+    expect(got.text.split("\n")[149_000]).toBe("theirs");
+  });
 });

@@ -7,6 +7,7 @@ import { AlertTriangle, Check, FilePen, GitMerge } from "lucide-react";
 import type { EditBase, RemoteEntry, RemoteFiles, SaveOutcome } from "../hermes/remoteFiles";
 import { MINE_MARK, diffLines, hunks, merge3 } from "../hermes/textEdit";
 import { useCloseGuard } from "./LeaveMemoryEdit";
+import { useModal } from "./modal";
 import { Spinner, fmtSize } from "./bits";
 
 type Conflict = Extract<SaveOutcome, { kind: "conflict" }>;
@@ -18,7 +19,8 @@ type Mode =
   | { kind: "review" }
   | { kind: "saving" }
   | { kind: "conflict"; conflict: Conflict }
-  | { kind: "discard"; then: () => void };
+  /** Asking before the edit is dropped; `back` is what it asked over, and goes on showing (a save under way too). */
+  | { kind: "discard"; then: () => void; back: Mode };
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const eolLabel = (b: EditBase) => `UTF-8${b.bom ? " with BOM" : ""}, ${b.eol === "\r\n" ? "CRLF (Windows)" : "LF"} line ends`;
@@ -85,32 +87,49 @@ export function FileEditor({
   const [error, setError] = useState<string>();
   const titleId = useId();
   const area = useRef<HTMLTextAreaElement>(null);
-  // Only the latest open or save lands; one closed meanwhile lands nowhere.
+  const box = useRef<HTMLDivElement>(null);
+  const keys = useModal(box);
+  // A save lands nowhere once the editor is gone, and only one runs at a time.
   const live = useRef(true);
+  const inFlight = useRef(false);
   useEffect(() => {
     live.current = true;
+    return () => void (live.current = false);
+  }, []);
+  // Each open is its own: an older one answering late is dropped.
+  useEffect(() => {
+    let current = true;
+    setMode({ kind: "loading" });
+    setBase(undefined);
+    setDraft("");
+    setNote(undefined);
+    setError(undefined);
     files.openForEdit(entry).then(
       (b) => {
-        if (!live.current) return;
+        if (!current) return;
         setBase(b);
         setDraft(b.text);
         setMode({ kind: "edit" });
       },
-      (e) => live.current && setMode({ kind: "refused", why: message(e) }),
+      (e) => current && setMode({ kind: "refused", why: message(e) }),
     );
-    return () => void (live.current = false);
+    return () => void (current = false);
   }, [entry.path]);
 
   const dirty = !!base && draft !== base.text;
-  useCloseGuard(dirty, (close) => setMode({ kind: "discard", then: close }));
+  const ask = (then: () => void) => setMode((m) => (m.kind === "discard" ? m : { kind: "discard", then, back: m }));
+  useCloseGuard(dirty || inFlight.current, ask);
   useEffect(() => {
     if (mode.kind === "edit") area.current?.focus();
   }, [mode.kind]);
 
-  const leave = () => (dirty ? setMode({ kind: "discard", then: onClose }) : onClose());
+  const leave = () => (dirty ? ask(onClose) : onClose());
+  // Back to what the question asked over, when it is still the latest: a save that ended meanwhile wins.
+  const stay = () => setMode((m) => (m.kind === "discard" ? m.back : m));
 
   const save = async () => {
-    if (!base) return;
+    if (!base || inFlight.current) return;
+    inFlight.current = true;
     setError(undefined);
     setMode({ kind: "saving" });
     try {
@@ -122,11 +141,14 @@ export function FileEditor({
       if (!live.current) return;
       setError(message(e));
       setMode({ kind: "review" });
+    } finally {
+      inFlight.current = false;
     }
   };
 
   const saveCopy = async () => {
-    if (!base) return;
+    if (!base || inFlight.current) return;
+    inFlight.current = true;
     setError(undefined);
     setMode({ kind: "saving" });
     try {
@@ -136,6 +158,8 @@ export function FileEditor({
       if (!live.current) return;
       setError(message(e));
       setMode((m) => (m.kind === "saving" ? { kind: "edit" } : m));
+    } finally {
+      inFlight.current = false;
     }
   };
 
@@ -163,18 +187,23 @@ export function FileEditor({
     setMode({ kind: "edit" });
   };
 
-  const busy = mode.kind === "saving";
+  // What the body shows: under the discard question, what it asked over.
+  const shown = mode.kind === "discard" ? mode.back : mode;
+  const busy = shown.kind === "saving";
   return (
     <div className="leave-overlay files-editor-overlay">
       <div
+        ref={box}
         className="leave-dialog files-editor"
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
         onKeyDown={(e) => {
+          keys(e);
           if (e.key === "Escape" && mode.kind !== "saving") {
             e.preventDefault();
-            if (mode.kind === "discard" || mode.kind === "review") setMode({ kind: "edit" });
+            if (mode.kind === "discard") stay();
+            else if (mode.kind === "review") setMode({ kind: "edit" });
             else leave();
           }
         }}
@@ -193,17 +222,17 @@ export function FileEditor({
           )}
         </div>
 
-        {mode.kind === "loading" && (
+        {shown.kind === "loading" && (
           <p className="muted small">
             <Spinner /> Reading it from the server…
           </p>
         )}
-        {mode.kind === "refused" && (
+        {shown.kind === "refused" && (
           <p role="alert" className="files-transfer-error">
-            It can't be edited here: {mode.why}
+            It can't be edited here: {shown.why}
           </p>
         )}
-        {note && (mode.kind === "edit" || mode.kind === "review") && (
+        {note && (shown.kind === "edit" || shown.kind === "review") && (
           <p className="files-editor-note small" role="status">
             {note}
           </p>
@@ -214,7 +243,7 @@ export function FileEditor({
           </p>
         )}
 
-        {base && (mode.kind === "edit" || mode.kind === "discard") && (
+        {base && shown.kind === "edit" && (
           <textarea
             ref={area}
             className="files-editor-text mono"
@@ -228,7 +257,7 @@ export function FileEditor({
             }}
           />
         )}
-        {base && (mode.kind === "review" || mode.kind === "saving") && (
+        {base && (shown.kind === "review" || shown.kind === "saving") && (
           <>
             <p className="small">Your changes to the file as you opened it. Save writes them, if the server still has that version.</p>
             <DiffView from={base.text} to={draft} label="Your changes" />
@@ -239,27 +268,30 @@ export function FileEditor({
             )}
           </>
         )}
-        {mode.kind === "conflict" && base && (
+        {shown.kind === "conflict" && base && (
           <div className="files-editor-conflict">
             <p role="alert" className="files-editor-warn">
               <AlertTriangle size={14} aria-hidden />{" "}
-              {mode.conflict.after
+              {shown.conflict.after
                 ? "Something else changed the file on the server while it saved, so it now has another version than yours."
                 : "The file changed on the server since you opened it, so nothing was written."}{" "}
               Your edit is kept here.
             </p>
-            {"gone" in mode.conflict.theirs ? (
+            {"gone" in shown.conflict.theirs ? (
               <p className="small">It isn't on the server any more. Save your edit as a copy to keep it.</p>
-            ) : "why" in mode.conflict.theirs ? (
-              <p className="small">What the server has now can't be shown here: {mode.conflict.theirs.why}</p>
+            ) : "why" in shown.conflict.theirs ? (
+              <p className="small">What the server has now can't be shown here: {shown.conflict.theirs.why}</p>
             ) : (
-              <DiffView from={base.text} to={mode.conflict.theirs.text} label="Changes on the server since you opened it" />
+              <DiffView from={base.text} to={shown.conflict.theirs.text} label="Changes on the server since you opened it" />
             )}
           </div>
         )}
         {mode.kind === "discard" && (
           <p role="alert" className="files-editor-warn">
-            <AlertTriangle size={14} aria-hidden /> Discard your changes to {entry.name}? They aren't saved on the server.
+            <AlertTriangle size={14} aria-hidden />{" "}
+            {mode.back.kind === "saving"
+              ? `A save of ${entry.name} is under way. Leave anyway? It may still land on the server; reopen the file to see.`
+              : `Discard your changes to ${entry.name}? They aren't saved on the server.`}
           </p>
         )}
 
@@ -270,8 +302,8 @@ export function FileEditor({
           <div className="confirm-actions">
             {mode.kind === "discard" ? (
               <>
-                <button className="btn" autoFocus onClick={() => setMode({ kind: "edit" })}>
-                  Keep editing
+                <button className="btn" autoFocus onClick={stay}>
+                  {mode.back.kind === "saving" ? "Keep waiting" : "Keep editing"}
                 </button>
                 <button className="btn danger" onClick={mode.then}>
                   Discard changes

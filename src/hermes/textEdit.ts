@@ -158,12 +158,20 @@ function sideText(base: string[], start: number, end: number, own: Change[]): st
   const out: string[] = [];
   let i = start;
   for (const c of own) {
-    out.push(...base.slice(i, c.start), ...c.lines);
+    append(out, base, i, c.start);
+    append(out, c.lines);
     i = c.end;
   }
-  out.push(...base.slice(i, end));
+  append(out, base, i, end);
   return out;
 }
+
+/** Appends `from[start..end)` to `out` one by one: spreading a big array into `push` overflows the call stack. */
+function append(out: string[], from: string[], start = 0, end = from.length) {
+  for (let i = start; i < end; i++) out.push(from[i]);
+}
+
+const sameLines = (a: string[], b: string[]) => a.length === b.length && a.every((line, i) => line === b[i]);
 
 export const MINE_MARK = "<<<<<<< your edit";
 export const SPLIT_MARK = "=======";
@@ -183,29 +191,33 @@ export function merge3(base: string, mine: string, theirs: string): { text: stri
   let i = 0;
   let conflicts = 0;
   for (let n = 0; n < all.length; ) {
-    // A region: changes that overlap or touch, from either side.
-    let start = all[n].start;
+    // A region: changes that overlap or touch, from either side. They are sorted, so the first starts it.
+    const start = all[n].start;
     let end = all[n].end;
     const group = [all[n++]];
     while (n < all.length && all[n].start <= end) {
       end = Math.max(end, all[n].end);
       group.push(all[n++]);
     }
-    start = Math.min(start, ...group.map((c) => c.start));
-    out.push(...b.slice(i, start));
+    append(out, b, i, start);
     const mineHere = group.filter((c) => c.side === "mine");
     const theirsHere = group.filter((c) => c.side === "theirs");
     const m = sideText(b, start, end, mineHere);
     const t = sideText(b, start, end, theirsHere);
-    if (!theirsHere.length) out.push(...m);
-    else if (!mineHere.length) out.push(...t);
-    else if (m.join("\n") === t.join("\n")) out.push(...m);
+    if (!theirsHere.length) append(out, m);
+    else if (!mineHere.length) append(out, t);
+    // Line by line: a deleted line and one made blank both join to "", but aren't the same change.
+    else if (sameLines(m, t)) append(out, m);
     else {
       conflicts++;
-      out.push(MINE_MARK, ...m, SPLIT_MARK, ...t, THEIRS_MARK);
+      out.push(MINE_MARK);
+      append(out, m);
+      out.push(SPLIT_MARK);
+      append(out, t);
+      out.push(THEIRS_MARK);
     }
     i = end;
   }
-  out.push(...b.slice(i));
+  append(out, b, i);
   return { text: out.join("\n"), conflicts };
 }
