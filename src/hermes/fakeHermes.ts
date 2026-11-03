@@ -630,6 +630,8 @@ export class FakeHermes {
   toolsetNoMcp: Record<string, Set<string>> = {};
   /** `agent.coding_context` is focus, per profile. */
   codingFocus: Record<string, boolean> = {};
+  /** `agent.disabled_toolsets`, per profile: off on every platform. Turning one of these on removes it, as Hermes does. */
+  toolsetDisabledEverywhere: Record<string, string[]> = {};
   /** While set, reading the config for the toolset guards fails with this. */
   toolsetGuardsFailure?: string;
   /**
@@ -721,7 +723,11 @@ export class FakeHermes {
       // Mirrors `Dashboard::toolset_guards`: only these two facts of the config.
       toolsetGuards: async (profile): Promise<ToolsetGuards> => {
         if (this.toolsetGuardsFailure) throw new Error(this.toolsetGuardsFailure);
-        return { noMcp: [...(this.toolsetNoMcp[profile] ?? [])].sort(), codingFocus: !!this.codingFocus[profile] };
+        return {
+          noMcp: [...(this.toolsetNoMcp[profile] ?? [])].sort(),
+          codingFocus: !!this.codingFocus[profile],
+          disabledEverywhere: [...(this.toolsetDisabledEverywhere[profile] ?? [])],
+        };
       },
       request: async (method, pathAndQuery, body) => {
         const url = new URL(pathAndQuery, "http://dashboard/");
@@ -783,7 +789,7 @@ export class FakeHermes {
       throw new Error(`The dashboard answered 500: {"detail":"Internal Server Error"}`);
     if (req.method === "GET" && name === undefined)
       return this.toolsetCatalog.map(({ installs: _i, ...t }) => {
-        const enabled = on.has(t.name) && !this.toolsetSuppressed.has(t.name);
+        const enabled = on.has(t.name) && !this.toolsetSuppressed.has(t.name) && !this.toolsetDisabledEverywhere[profile]?.includes(t.name);
         return { ...t, enabled, available: enabled };
       });
     if (req.method === "GET" && name !== undefined && config) {
@@ -819,6 +825,9 @@ export class FakeHermes {
       else on.delete(name);
       // `_save_platform_tools` drops the `no_mcp` sentinel from the platform's list; `stt` writes its own section.
       if (name !== "stt") this.toolsetNoMcp[profile]?.delete(known(name)!.platform);
+      // And clears a toolset just turned on from `agent.disabled_toolsets`, on every platform (#49995).
+      const everywhere = this.toolsetDisabledEverywhere[profile];
+      if (enabled && name !== "stt" && everywhere) this.toolsetDisabledEverywhere[profile] = everywhere.filter((n) => n !== name);
       if (drop === "stored") throw new Error("Can't reach the Hermes dashboard: connection reset");
       if (this.toolsetReadsFailAfterWrite) this.toolsetReadsFailing = true;
       const late = this.failAfterToolsetWrite;

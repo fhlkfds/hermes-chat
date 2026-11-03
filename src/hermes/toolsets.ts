@@ -55,8 +55,9 @@ export type ToolsetChange =
   /**
    * Read back as asked. `installing`: Hermes started a background install for it on the server. `warning`: Hermes
    * answered with this error, yet reads it back as asked. `mcpBack`: the platform's `no_mcp` was cleared by the save.
+   * `everywhereBack`: the save removed it from `agent.disabled_toolsets`, so it's back on every platform that lists it.
    */
-  | { kind: "saved"; list: ToolsetList; installing?: string; warning?: string; mcpBack?: boolean }
+  | { kind: "saved"; list: ToolsetList; installing?: string; warning?: string; mcpBack?: boolean; everywhereBack?: boolean }
   /**
    * Not sent: checked again just before the write, the change now needs the owner to confirm something they weren't
    * asked about (`cautions`, all of them, to ask again).
@@ -79,14 +80,25 @@ export type Pending = { profile: string; name: string; enabled: boolean };
 
 /**
  * What to tell the owner before a change is sent, for them to confirm. `install`: Hermes will start installing these on
- * the server. `noMcp`: the save clears the platform's `no_mcp`, so MCP servers come back. `unchecked`: what couldn't be
- * checked, so either may happen.
+ * the server. `noMcp`: the save clears the platform's `no_mcp`, so MCP servers come back. `everywhere`: the toolset is in
+ * `agent.disabled_toolsets`, and turning it on removes it from that list, so it comes back on every platform that lists
+ * it, not only this app's chats. `unchecked`: what couldn't be checked, so any of these may happen.
  */
-export type Caution = { kind: "install"; keys: string[] } | { kind: "noMcp"; platform: string } | { kind: "unchecked"; what: string };
+export type Caution =
+  | { kind: "install"; keys: string[] }
+  | { kind: "noMcp"; platform: string }
+  | { kind: "everywhere"; name: string }
+  | { kind: "unchecked"; what: string };
 
 /** A caution's identity, to tell whether the owner already confirmed it. */
 const cautionKey = (c: Caution) =>
-  c.kind === "install" ? `install:${[...c.keys].sort().join(",")}` : c.kind === "noMcp" ? `noMcp:${c.platform}` : `unchecked:${c.what}`;
+  c.kind === "install"
+    ? `install:${[...c.keys].sort().join(",")}`
+    : c.kind === "noMcp"
+      ? `noMcp:${c.platform}`
+      : c.kind === "everywhere"
+        ? `everywhere:${c.name}`
+        : `unchecked:${c.what}`;
 
 /** The toolsets whose providers Hermes checks for readiness at `bf0203a` (`TOOL_CATEGORIES`). */
 const PROVIDER_TOOLSETS = ["web", "browser", "image_gen", "video_gen", "x_search", "tts", "stt", "computer_use"];
@@ -214,9 +226,12 @@ export class ToolsetsApi {
     }
   }
 
-  /** The profile's `no_mcp` platforms and coding focus; undefined when the config couldn't be read. */
+  /** The profile's `no_mcp` platforms, coding focus and `agent.disabled_toolsets`; undefined when the config couldn't be read. */
   guards(profile: string): Promise<ToolsetGuards | undefined> {
-    return this.readGuards(profile).catch(() => undefined);
+    return this.readGuards(profile).then(
+      (g) => ({ ...g, disabledEverywhere: g.disabledEverywhere ?? [] }),
+      () => undefined,
+    );
   }
 
   /**
@@ -298,8 +313,17 @@ export class ToolsetsApi {
     ]);
     if (installs === undefined) out.push({ kind: "unchecked", what: `whether turning ${t.label} on starts an install on the server` });
     else if (installs.length) out.push({ kind: "install", keys: installs });
-    if (!guards) out.push({ kind: "unchecked", what: `whether the profile has MCP servers turned off with no_mcp, which any change here clears` });
-    else if (guards.noMcp.includes(t.platform)) out.push({ kind: "noMcp", platform: t.platform });
+    if (!guards)
+      out.push({
+        kind: "unchecked",
+        what: enabled
+          ? `whether the profile has MCP servers turned off with no_mcp, which any change here clears, or ${t.label} turned off on every platform with agent.disabled_toolsets, which turning it on clears`
+          : `whether the profile has MCP servers turned off with no_mcp, which any change here clears`,
+      });
+    else {
+      if (guards.noMcp.includes(t.platform)) out.push({ kind: "noMcp", platform: t.platform });
+      if (enabled && guards.disabledEverywhere.includes(t.name)) out.push({ kind: "everywhere", name: t.name });
+    }
     return { cautions: out, guards };
   }
 
@@ -335,7 +359,10 @@ export class ToolsetsApi {
     const check = await this.cautionsAndGuards(profile, row, enabled);
     const covered = new Set(accepted.map(cautionKey));
     if (check.cautions.some((c) => !covered.has(cautionKey(c)))) return { kind: "confirm", cautions: check.cautions, list: before };
-    const hadNoMcp = !row.configOnly && check.guards?.noMcp.includes(row.platform);
+    const had = {
+      noMcp: !row.configOnly && !!check.guards?.noMcp.includes(row.platform),
+      everywhere: !row.configOnly && enabled && !!check.guards?.disabledEverywhere.includes(row.name),
+    };
 
     let answer: Json;
     try {
@@ -348,7 +375,7 @@ export class ToolsetsApi {
       this.changed(profile, name);
       const list = await this.list(profile).catch(() => undefined);
       const now = list?.toolsets.find((t) => t.name === name)?.enabled;
-      if (now === enabled) return { kind: "saved", list: list!, warning: f.reason, ...(await this.mcpBack(profile, row, hadNoMcp)) };
+      if (now === enabled) return { kind: "saved", list: list!, warning: f.reason, ...(await this.clearedBySave(profile, row, had)) };
       // A 4xx is answered before anything is written (validation, an unknown name, the sign-in). A lost answer or a
       // server error may have written it, even when the read shows otherwise (a composite in agent.disabled_toolsets).
       if (f.status === undefined || f.status >= 500) return { kind: "unknown", reason: f.reason, list };
@@ -360,13 +387,20 @@ export class ToolsetsApi {
     const now = after.toolsets.find((t) => t.name === name);
     if (answer.ok !== true || now?.enabled !== enabled) return { kind: "mismatch", list: after };
     const installing = str(answer.post_setup_started);
-    return { kind: "saved", list: after, ...(installing ? { installing } : {}), ...(await this.mcpBack(profile, row, hadNoMcp)) };
+    return { kind: "saved", list: after, ...(installing ? { installing } : {}), ...(await this.clearedBySave(profile, row, had)) };
   }
 
-  /** Whether a save cleared the platform's `no_mcp`, read back; nothing when it had none or that can't be read. */
-  private async mcpBack(profile: string, row: Toolset, had: boolean | undefined): Promise<{ mcpBack?: boolean }> {
-    if (!had) return {};
+  /**
+   * What else the save cleared, read back: the platform's `no_mcp`, and the toolset's name in `agent.disabled_toolsets`.
+   * Nothing for what it didn't have, or when the config can't be read again.
+   */
+  private async clearedBySave(profile: string, row: Toolset, had: { noMcp: boolean; everywhere: boolean }): Promise<{ mcpBack?: boolean; everywhereBack?: boolean }> {
+    if (!had.noMcp && !had.everywhere) return {};
     const now = await this.guards(profile);
-    return now && !now.noMcp.includes(row.platform) ? { mcpBack: true } : {};
+    if (!now) return {};
+    return {
+      ...(had.noMcp && !now.noMcp.includes(row.platform) ? { mcpBack: true } : {}),
+      ...(had.everywhere && !now.disabledEverywhere.includes(row.name) ? { everywhereBack: true } : {}),
+    };
   }
 }

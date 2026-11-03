@@ -865,6 +865,11 @@ pub struct ToolsetGuards {
     /// `agent.coding_context` is `focus` (or its aliases `strict`, `lean`): in a code workspace Hermes swaps in a coding
     /// toolset selection instead of the profile's list (`agent/coding_context.coding_selection`).
     pub coding_focus: bool,
+    /// `agent.disabled_toolsets`: names Hermes turns off on every platform, after each platform's own list. Turning a
+    /// toolset on removes its own name from this list (`_save_platform_tools` at `bf0203a`), so it comes back on every
+    /// platform that lists it, not only here. A composite name here turns off the toolsets inside it, which a switch
+    /// can't undo. Toolset names only; the config's values stay in Rust.
+    pub disabled_everywhere: Vec<String>,
 }
 
 /// `ToolsetGuards` from a profile's config as `GET /api/config` answers it.
@@ -884,7 +889,34 @@ pub fn toolset_guards(config: &serde_json::Value) -> ToolsetGuards {
         serde_json::Value::String(s) => s.trim().to_ascii_lowercase(),
         _ => String::new(),
     };
-    ToolsetGuards { no_mcp, coding_focus: matches!(mode.as_str(), "focus" | "strict" | "lean") }
+    ToolsetGuards {
+        no_mcp,
+        coding_focus: matches!(mode.as_str(), "focus" | "strict" | "lean"),
+        disabled_everywhere: config_string_list(&config["agent"]["disabled_toolsets"]),
+    }
+}
+
+/// A config list as Hermes's `parse_config_string_list` reads it: a list, a list literal saved as a string
+/// (`"['memory', 'web']"`, as `hermes config set` stores it), or one name. Trimmed, empty names dropped.
+fn config_string_list(value: &serde_json::Value) -> Vec<String> {
+    let names: Vec<String> = match value {
+        serde_json::Value::Array(items) => items
+            .iter()
+            .map(|i| match i {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            })
+            .collect(),
+        serde_json::Value::String(s) => match s.trim().strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
+            Some(inner) => inner
+                .split(',')
+                .map(|n| n.trim().trim_matches(|c| c == '\'' || c == '"').to_owned())
+                .collect(),
+            None => vec![s.clone()],
+        },
+        _ => Vec::new(),
+    };
+    names.into_iter().map(|n| n.trim().to_owned()).filter(|n| !n.is_empty()).collect()
 }
 
 /// Where a relayed REST call goes, and its path as the dashboard will route it: with `.` segments resolved and

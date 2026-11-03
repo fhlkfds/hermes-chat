@@ -181,6 +181,24 @@ describe("Settings → Toolsets", () => {
     expect(await screen.findByText(/Hermes cleared no_mcp, so new chats are offered the profile's MCP servers again/)).toBeTruthy();
   });
 
+  it("shows what agent.disabled_toolsets turns off everywhere, and asks before turning one on", async () => {
+    const server = new FakeHermes();
+    server.toolsetDisabledEverywhere.default = ["image_gen", "debugging"];
+    server.toolsetProviders.image_gen = [{ name: "FAL", status: "ready", is_active: true }];
+    const { user } = await shown(server);
+    expect(await screen.findByText("Off on every platform")).toBeTruthy();
+    expect(screen.getByText(/agent.disabled_toolsets also names debugging, which turns off the tools inside it on every platform/)).toBeTruthy();
+    await user.click(toggle("Image Generation"));
+    const ask = await screen.findByRole("alertdialog");
+    expect(ask.textContent).toMatch(/agent.disabled_toolsets turns Image Generation off on every platform. Turning it on here removes it from that list/);
+    expect(server.toolsetWrites).toEqual([]);
+    await user.click(within(ask).getByRole("button", { name: "Turn on" }));
+    expect(await screen.findByText(/Hermes also removed it from agent.disabled_toolsets, so it's back on every platform that lists it/)).toBeTruthy();
+    expect(screen.queryByText("Off on every platform")).toBeNull();
+    expect(toolsetWrites(server)).toEqual(["default:image_gen=true"]);
+    expect(server.toolsetDisabledEverywhere.default).toEqual(["debugging"]);
+  });
+
   it("marks a toolset whose provider isn't ready, though Hermes counts it configured", async () => {
     const server = new FakeHermes();
     server.toolsetProviders.stt = [{ name: "Local Whisper", status: "needs_setup", is_active: true }];

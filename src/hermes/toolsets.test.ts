@@ -108,6 +108,32 @@ describe("toolset discovery", () => {
     expect((await api.guards("default"))?.noMcp).toEqual([]);
   });
 
+  it("asks before turning on a toolset agent.disabled_toolsets turns off everywhere, and reports it cleared once read back", async () => {
+    const { server, api } = await connected();
+    server.toolsetDisabledEverywhere.default = ["image_gen", "debugging"];
+    // Another profile's list is its own.
+    expect((await api.guards("work"))?.disabledEverywhere).toEqual([]);
+    const list = await api.list("default");
+    const t = (name: string) => list.toolsets.find((x) => x.name === name)!;
+    expect(await api.cautions("default", t("image_gen"), true)).toEqual([{ kind: "everywhere", name: "image_gen" }]);
+    // Turning something off, or on when it isn't listed there, clears nothing from that list.
+    expect(await api.cautions("default", t("web"), false)).toEqual([]);
+    expect(await api.cautions("default", t("discord"), true)).toEqual([]);
+    expect(await api.set("default", "image_gen", true, false)).toMatchObject({ kind: "confirm", cautions: [{ kind: "everywhere", name: "image_gen" }] });
+    expect(server.toolsetWrites).toEqual([]);
+    expect(await api.set("default", "image_gen", true, false, [{ kind: "everywhere", name: "image_gen" }])).toMatchObject({ kind: "saved", everywhereBack: true });
+    // Only the name turned on left the list; the composite stays.
+    expect((await api.guards("default"))?.disabledEverywhere).toEqual(["debugging"]);
+  });
+
+  it("says it couldn't check agent.disabled_toolsets when the config can't be read, before turning one on", async () => {
+    const { server, api } = await connected();
+    const web = (await api.list("default")).toolsets.find((x) => x.name === "web")!;
+    server.toolsetGuardsFailure = "The dashboard answered 500: {}";
+    expect(await api.cautions("default", { ...web, enabled: false }, true)).toEqual([{ kind: "unchecked", what: expect.stringContaining("agent.disabled_toolsets") }]);
+    expect(await api.cautions("default", web, false)).toEqual([{ kind: "unchecked", what: expect.not.stringContaining("agent.disabled_toolsets") }]);
+  });
+
   it("names the provider that keeps a toolset from working, beyond Hermes's key check", async () => {
     const { server, api } = await connected();
     server.toolsetProviders.stt = [{ name: "Local Whisper", status: "needs_setup", is_active: true }];

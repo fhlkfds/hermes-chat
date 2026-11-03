@@ -459,19 +459,33 @@ async fn relays_the_toolset_switch_with_only_enabled_in_the_body() {
 }
 
 #[test]
-fn toolset_guards_keep_only_no_mcp_platforms_and_coding_focus() {
+fn toolset_guards_keep_only_no_mcp_platforms_coding_focus_and_disabled_names() {
     let config = json!({
         "platform_toolsets": {"cli": ["web", "no_mcp"], "telegram": "[web, no_mcp]", "discord": ["discord"]},
-        "agent": {"coding_context": " Lean "},
+        "agent": {"coding_context": " Lean ", "disabled_toolsets": ["web", " debugging ", ""]},
         "web": {"api_key": "sk-secret"},
     });
     let guards = transport::toolset_guards(&config);
-    assert_eq!(guards, transport::ToolsetGuards { no_mcp: vec!["cli".into(), "telegram".into()], coding_focus: true });
+    let none = || transport::ToolsetGuards { no_mcp: vec![], coding_focus: false, disabled_everywhere: vec![] };
+    assert_eq!(
+        guards,
+        transport::ToolsetGuards {
+            no_mcp: vec!["cli".into(), "telegram".into()],
+            coding_focus: true,
+            disabled_everywhere: vec!["web".into(), "debugging".into()],
+        }
+    );
     let out = serde_json::to_value(&guards).unwrap();
-    assert_eq!(out, json!({"noMcp": ["cli", "telegram"], "codingFocus": true}));
+    assert_eq!(out, json!({"noMcp": ["cli", "telegram"], "codingFocus": true, "disabledEverywhere": ["web", "debugging"]}));
     assert!(!out.to_string().contains("sk-secret"));
-    assert_eq!(transport::toolset_guards(&json!({})), transport::ToolsetGuards { no_mcp: vec![], coding_focus: false });
+    assert_eq!(transport::toolset_guards(&json!({})), none());
     assert!(!transport::toolset_guards(&json!({"agent": {"coding_context": "auto"}})).coding_focus);
+    // As `hermes config set` stores a list, and a single name, both as Hermes's parse_config_string_list reads them.
+    let listed = |v: serde_json::Value| transport::toolset_guards(&json!({"agent": {"disabled_toolsets": v}})).disabled_everywhere;
+    assert_eq!(listed(json!("['memory', \"web\"]")), vec!["memory".to_owned(), "web".to_owned()]);
+    assert_eq!(listed(json!("memory")), vec!["memory".to_owned()]);
+    assert_eq!(listed(json!("[]")), Vec::<String>::new());
+    assert_eq!(listed(json!(null)), Vec::<String>::new());
 }
 
 #[tokio::test]

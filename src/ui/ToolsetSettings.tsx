@@ -33,6 +33,8 @@ function cautionText(c: Caution, t: Toolset): string {
   if (c.kind === "install") return `Hermes starts installing ${c.keys.join(", ")} on the server when ${t.label} is turned on, in the background, because it isn't installed there yet.`;
   if (c.kind === "noMcp")
     return `This profile has MCP servers turned off for ${t.platformLabel} with no_mcp. Hermes clears no_mcp whenever it saves a toolset change, so new chats would be offered the profile's MCP servers again.`;
+  if (c.kind === "everywhere")
+    return `This profile's agent.disabled_toolsets turns ${t.label} off on every platform. Turning it on here removes it from that list, so Hermes's other chats that list it, such as Telegram or Discord, get it back too.`;
   return `This app couldn't check ${c.what}.`;
 }
 
@@ -54,7 +56,8 @@ function noteFor(t: Toolset, enabled: boolean, r: ToolsetChange): Note {
           (r.warning ? `Hermes answered with an error (${r.warning}), but reads ${t.label} back as ${onOff(enabled)}.` : `Saved: Hermes reads ${t.label} back as ${onOff(enabled)}.`) +
           " It's the profile's list for new chats." +
           (r.installing ? ` Hermes also started installing ${r.installing} on the server for it, in the background.` : "") +
-          (r.mcpBack ? " Hermes cleared no_mcp, so new chats are offered the profile's MCP servers again." : ""),
+          (r.mcpBack ? " Hermes cleared no_mcp, so new chats are offered the profile's MCP servers again." : "") +
+          (r.everywhereBack ? " Hermes also removed it from agent.disabled_toolsets, so it's back on every platform that lists it." : ""),
       };
     case "confirm":
       return { tone: "warn", text: `Not sent yet: checked again just before sending, turning ${t.label} ${onOff(enabled)} now needs your confirmation above.` };
@@ -93,6 +96,7 @@ function ToolsetRow({
   saving,
   checking,
   problem,
+  offEverywhere,
   note,
   onToggle,
 }: {
@@ -105,6 +109,8 @@ function ToolsetRow({
   checking?: Checking;
   /** What keeps its provider from working, from the provider readiness Hermes reports. */
   problem?: string;
+  /** Named in `agent.disabled_toolsets`, which turns it off on every platform. */
+  offEverywhere?: boolean;
   note?: Note;
   onToggle: (t: Toolset) => void;
 }) {
@@ -120,6 +126,7 @@ function ToolsetRow({
             {t.label}
             {t.platform !== "cli" && <span className="badge">{t.platformLabel} only</span>}
             {(!t.configured || problem) && <span className="badge warn">Needs setup</span>}
+            {offEverywhere && <span className="badge off">Off on every platform</span>}
           </div>
           {/* Plugin toolsets can describe themselves at length: two lines here, all of it on hover. */}
           <div className="muted small toolset-desc" id={`${id}-desc`} title={t.description || undefined}>
@@ -145,6 +152,9 @@ function ToolsetRow({
         )}
       </div>
       {t.platform !== "cli" && <div className="muted small toolset-hint">Changes Hermes's {t.platformLabel} chats, not this app's.</div>}
+      {offEverywhere && (
+        <div className="muted small toolset-hint">The profile's agent.disabled_toolsets turns it off on every platform. Turning it on here takes it off that list.</div>
+      )}
       {t.configOnly && (
         <div className="muted small toolset-hint">A setting with no tools of its own: it turns speech-to-text on or off for the profile, Dictation in this app included.</div>
       )}
@@ -327,6 +337,7 @@ export function ToolsetSettings({
       }
       if (r.kind === "unknown" && !r.list) setReread(true);
       if (r.kind === "saved" && r.mcpBack) setGuards((g) => g && { ...g, noMcp: g.noMcp.filter((p) => p !== t.platform) });
+      if (r.kind === "saved" && r.everywhereBack) setGuards((g) => g && { ...g, disabledEverywhere: g.disabledEverywhere.filter((n) => n !== t.name) });
       note = noteFor(t, enabled, r);
     } catch (e) {
       if (!live.current) return;
@@ -405,6 +416,9 @@ export function ToolsetSettings({
   const locked = !!pending || !!checking;
   const here = list.toolsets.filter((t) => t.platform === "cli");
   const elsewhere = list.toolsets.filter((t) => t.platform !== "cli");
+  // Names in agent.disabled_toolsets that aren't a listed toolset, such as a composite like `debugging`: they turn off
+  // the tools inside them, which no switch here undoes.
+  const unlisted = guards?.disabledEverywhere.filter((n) => !list.toolsets.some((t) => t.name === n)) ?? [];
   const row = (t: Toolset) => (
     <ToolsetRow
       key={t.name}
@@ -415,6 +429,7 @@ export function ToolsetSettings({
       saving={savingHere}
       checking={checking}
       problem={problems[t.name]}
+      offEverywhere={guards?.disabledEverywhere.includes(t.name)}
       note={notes[t.name]}
       onToggle={(x) => void toggle(x)}
     />
@@ -426,6 +441,13 @@ export function ToolsetSettings({
       {guards?.codingFocus && (
         <p className="small warn-note toolset-scope" role="status">
           This profile's agent.coding_context is focus: in a code workspace, Hermes gives new chats its own coding selection of toolsets instead of this list.
+        </p>
+      )}
+      {unlisted.length > 0 && (
+        <p className="small warn-note toolset-scope" role="status">
+          This profile's agent.disabled_toolsets also names {unlisted.join(", ")}, which turns off the tools inside{" "}
+          {unlisted.length === 1 ? "it" : "them"} on every platform. A toolset sharing those tools stays off: turning it on here won't take, and the app
+          says so when it reads it back.
         </p>
       )}
       {runningReplies > 0 && (
