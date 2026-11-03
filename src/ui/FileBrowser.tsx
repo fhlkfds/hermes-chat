@@ -91,6 +91,8 @@ export function FileBrowser({
   const previewSeq = useRef(0);
   // The path of the file in the preview pane, kept in step with `preview` without waiting for a render.
   const previewPath = useRef<string | undefined>(undefined);
+  // A file to open in the preview again once the next listing lands, with what that listing says of it (after a save).
+  const reopen = useRef<string | undefined>(undefined);
   const listRef = useRef<HTMLDivElement>(null);
 
   // Closing the preview also drops the read it's waiting on, so a late answer can't open it again.
@@ -118,6 +120,9 @@ export function FileBrowser({
         }
         // A refresh keeps the preview open only while its file is still listed.
         if (!(same && keepPreview && l.entries.some((e) => e.path === previewPath.current))) dropPreview();
+        const again = reopen.current && l.entries.find((e) => e.path === reopen.current);
+        reopen.current = undefined;
+        if (again) open(again);
       },
       (e) => {
         if (seq !== listSeq.current) return;
@@ -414,8 +419,8 @@ export function FileBrowser({
             const entry = editing;
             setEditing(undefined);
             setSaved(note);
+            reopen.current = entry.path;
             if (listing) load(listing.path, true);
-            open(entry);
           }}
         />
       )}
