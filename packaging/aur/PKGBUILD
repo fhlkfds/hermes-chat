@@ -19,7 +19,10 @@ optdepends=('openssh: sign in through an SSH tunnel'
 provides=("$_pkgname")
 conflicts=("$_pkgname")
 # The -debug package makepkg splits off comes out empty for this build, so skip it.
-options=('!debug')
+# makepkg's lto option adds -flto to CFLAGS, so the C code in the ring crate is
+# compiled to GCC LTO bytecode, which rust-lld (Rust's default linker) cannot read.
+# The link then fails with undefined ring_core_* symbols.
+options=('!debug' '!lto')
 source=("$_pkgname::git+$url.git"
         "$_pkgname.desktop")
 sha256sums=('SKIP'
