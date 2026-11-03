@@ -682,8 +682,10 @@ impl Dashboard {
     /// JSON body. `POST` and `PUT` reach only Settings → Model's two writes (`POST api/model/set`,
     /// `PUT api/config`), the scheduled-job writes (`cron_write`), Settings → Persona's
     /// `PUT api/profiles/{name}/soul`, and Settings → Toolsets' switch, `PUT api/tools/toolsets/<name>` with exactly
-    /// `{"enabled": true|false}` (`toolset_toggle_allowed`), and Import transcripts' `POST api/sessions/import` whose
-    /// every session is marked `source: "import"` (`import_body_allowed`, ADR 0025). Returns the response body on 2xx.
+    /// `{"enabled": true|false}` (`toolset_toggle_allowed`), Settings → Skills' two writes, `PUT api/skills/toggle` and
+    /// `PUT api/skills/content` with exactly their fields (`skill_write_allowed`), and Import transcripts'
+    /// `POST api/sessions/import` whose every session is marked `source: "import"` (`import_body_allowed`, ADR 0025).
+    /// Returns the response body on 2xx.
     pub async fn request(&self, method: &str, path_and_query: &str, body: Option<String>) -> Result<String, TransportError> {
         let (path, query) = path_and_query.split_once('?').unwrap_or((path_and_query, ""));
         let method = match (method, path) {
@@ -695,6 +697,7 @@ impl Dashboard {
             ("POST", _) if cron_write("POST", path) => Method::POST,
             ("PUT", _) if cron_write("PUT", path) => Method::PUT,
             ("PUT", _) if toolset_toggle_allowed(path, body.as_deref()) => Method::PUT,
+            ("PUT", _) if skill_write_allowed(path, body.as_deref()) => Method::PUT,
             ("PUT", p) if is_profile_soul(p) => Method::PUT,
             ("POST", "api/sessions/import") if import_body_allowed(body.as_deref()) => Method::POST,
             ("POST" | "PUT", _) => return Err(TransportError::NotRelayed(format!("{method} {path}"))),
@@ -994,6 +997,38 @@ impl Dashboard {
         }
     }
 
+    /// Writes an artifact's whole new text to `path` where `profile`'s tools run, through the agent fs route `POST
+    /// api/fs/write-text?profile=` (ADR 0029). That is the machine an Output written by `write_file` or `patch` is on:
+    /// the profile's SSH workspace when it has one, else the dashboard's own. Hermes stages the text beside the file and
+    /// renames it into place, and checks nothing else, so the webview checks the file's revision first and reads it
+    /// back after; this only writes. Only a full path is sent, never a credential file (`protected_server_path`: Hermes
+    /// doesn't guard this route), and never more than Hermes takes. Returns Hermes's answer.
+    pub async fn write_agent_text(&self, profile: &str, path: &str, text: &str) -> Result<String, TransportError> {
+        if !(path.starts_with('/') || path.starts_with("~/")) || path.contains('\0') || path.ends_with('/') {
+            return Err(TransportError::NotRelayed(format!("writes to {path}: not a full path to a file")));
+        }
+        if path.split('/').any(|seg| seg == "..") {
+            return Err(TransportError::NotRelayed(format!("writes to {path}: it has '..' in it")));
+        }
+        if protected_server_path(path) {
+            return Err(TransportError::NotRelayed(format!("writes to {path}, a credential file Hermes keeps out of reach")));
+        }
+        let size = text.len() as u64;
+        if size > AGENT_TEXT_MAX_BYTES {
+            return Err(TransportError::FileTooLarge { size, max: AGENT_TEXT_MAX_BYTES });
+        }
+        let query = url::form_urlencoded::Serializer::new(String::new()).append_pair("profile", profile).finish();
+        let (url, _) = relay_url(&self.base, "api/fs/write-text", &query)?;
+        let body = serde_json::json!({ "path": path, "content": text });
+        let resp = self.http.post(url).header(header::COOKIE, self.cookie_header()).json(&body).send().await.map_err(unreachable)?;
+        self.keep_cookies(&resp);
+        match resp.status() {
+            s if s.is_success() => resp.text().await.map_err(unreachable),
+            StatusCode::UNAUTHORIZED => Err(TransportError::SignedOut),
+            _ => Err(unexpected(resp, &self.headers).await),
+        }
+    }
+
     /// Take in every Set-Cookie: a new value replaces the old one, an empty one deletes it. Only
     /// `name=value` is kept; the dashboard is the only site this jar talks to.
     fn keep_cookies(&self, resp: &reqwest::Response) {
@@ -1033,6 +1068,8 @@ pub enum UploadSource {
 
 /// The most Hermes takes or sends of one managed file (`_MANAGED_FILE_MAX_BYTES` at `bf0203a`).
 pub const MANAGED_FILE_MAX_BYTES: u64 = 100 * MIB;
+/// The most `POST api/fs/write-text` takes (`_FS_TEXT_WRITE_MAX_BYTES` at `bf0203a`).
+pub const AGENT_TEXT_MAX_BYTES: u64 = 8 * MIB;
 const UPLOAD_CHUNK_BYTES: usize = 256 * 1024;
 
 /// A server path Hermes never lists, reads or sends (`_is_sensitive_path` in `hermes_cli/web_routers/files.py` at
@@ -1294,6 +1331,39 @@ pub fn toolset_toggle_allowed(path: &str, body: Option<&str>) -> bool {
         (true, Some(serde_json::Value::String(s))) => s == "probe",
         _ => false,
     }
+}
+
+/// Whether a `PUT` is one of Settings → Skills' two writes (`hermes_cli/web_routers/skills.py`): `api/skills/toggle`
+/// with exactly `{"name": <skill>, "enabled": true|false}`, or `api/skills/content` with exactly
+/// `{"name": <skill>, "content": <text>}`. The profile goes in the query, never the body. A skill name is one line of at
+/// most 256 characters with no backslash, no leading `/` and no empty, `.` or `..` segment, so it can't steer Hermes's
+/// lookup out of the skills folders. Nothing else under `api/skills` is relayed: not creating a skill, nor the hub's
+/// install, uninstall or update, which fetch and run code from elsewhere.
+pub fn skill_write_allowed(path: &str, body: Option<&str>) -> bool {
+    let second = match path {
+        "api/skills/toggle" => "enabled",
+        "api/skills/content" => "content",
+        _ => return false,
+    };
+    let Some(fields) = body.and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok()) else {
+        return false;
+    };
+    let Some(fields) = fields.as_object().filter(|o| o.len() == 2) else {
+        return false;
+    };
+    let name_ok = fields.get("name").and_then(|n| n.as_str()).is_some_and(|n| {
+        !n.is_empty()
+            && n.chars().count() <= 256
+            && !n.chars().any(|c| c.is_control() || c == '\\')
+            && !n.starts_with('/')
+            && !n.split('/').any(|seg| seg.is_empty() || seg == "." || seg == "..")
+    });
+    let value_ok = match (second, fields.get(second)) {
+        ("enabled", Some(serde_json::Value::Bool(_))) => true,
+        ("content", Some(serde_json::Value::String(_))) => true,
+        _ => false,
+    };
+    name_ok && value_ok
 }
 
 fn endpoint(base: &Url, path: &str) -> Url {

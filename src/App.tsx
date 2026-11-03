@@ -1,7 +1,8 @@
 import { type ReactNode, type RefObject, Suspense, lazy, useCallback, useLayoutEffect, useMemo, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { Columns2, FolderCog, PanelRight, X } from "lucide-react";
-import { RenameConflict, connect, readSaved, type Delivery, type Hermes } from "./hermes/transport";
+import { RenameConflict, connect, readSaved, toSource, type Delivery, type Hermes } from "./hermes/transport";
+import { invoke } from "@tauri-apps/api/core";
 import type { CommandHost } from "./ui/SlashCommands";
 import type { ServerCommandList } from "./hermes/commands";
 import { CHECK_EVERY_MS } from "./hermes/otherProfiles";
@@ -13,6 +14,7 @@ import { sending, type Sending } from "./hermes/unsaved";
 import { chatToReopen, forgetOpenChat, rememberOpenChat } from "./hermes/uiPrefs";
 import { exportChat } from "./hermes/exportChat";
 import { PROJECTS_KEY, projectLinks, projectScope } from "./hermes/projectLinks";
+import type { TemplateHere } from "./ui/Templates";
 import { ProjectsStore, type Project } from "./hermes/projects";
 import { instructionsMessage, modelProblem, resolveNewChat, type ProjectDefaults } from "./hermes/projectDefaults";
 import { systemHeaderKeyring, systemKeyring } from "./hermes/tauriKeyring";
@@ -31,16 +33,21 @@ import { ChatList, Rail, leavingNote } from "./ui/Sidebar";
 import { Inbox } from "./ui/Inbox";
 import { inboxAcks, inboxEntries, inboxScope, needsOwner, type InboxEntry } from "./hermes/inbox";
 import { ChatPane, type JumpTarget } from "./ui/ChatPane";
+import { BranchDialog, BranchedFrom } from "./ui/Branch";
+import { branchBlocked, type BranchLink } from "./hermes/branch";
 import type { QueueApi } from "./ui/Queue";
 import { PANE_NAMES, Split, usePaneVisible, type PaneSlot } from "./ui/Split";
 import type { VoiceApi } from "./ui/Voice";
 import { SearchPalette } from "./ui/Search";
 import { SettingsScreen, type PersonaWiring } from "./ui/Settings";
 import { LeavePersona, type LeaveWhat } from "./ui/LeavePersona";
+import { LeaveArtifacts } from "./ui/ArtifactEditor";
+import { ArtifactStore, artifactIo, artifactKey, isDirty } from "./hermes/artifacts";
 import { LeaveMemoryEdit, useCloseGuard } from "./ui/LeaveMemoryEdit";
 import { tauriCloseGuard, type CloseGuard } from "./ui/tauriWindow";
 import { FileBrowser } from "./ui/FileBrowser";
 import { OutputsScreen, type OutputsScope } from "./ui/Outputs";
+import { UsageAnalytics } from "./ui/UsageAnalytics";
 import { OutputsIndex, outputsIn, splitPath, type Output } from "./hermes/outputs";
 import { composing, routeLabel } from "./ui/bits";
 import { ProjectScreen, ProjectSwitcher, type ProjectUnread } from "./ui/Projects";
@@ -408,7 +415,7 @@ export function Main({
   onSignOut: () => Promise<void>;
   updates?: Updater;
 }) {
-  const { profile, chats, olderPulled, archivedListed, status, route, unsecure, closedReason, syncError, others, live, models, switching } = useSyncExternalStore(
+  const { profile, chats, olderPulled, archivedListed, status, route, unsecure, closedReason, syncError, others, live, models, switching, branchNews } = useSyncExternalStore(
     hermes.subscribe,
     hermes.getSnapshot,
   );
@@ -432,17 +439,36 @@ export function Main({
     memoryDirty.current = dirty;
     setMemoryUnsaved(dirty);
   }, []);
-  const [leaving, setLeaving] = useState<{ edit: "persona" | "memory"; what: LeaveWhat; go: () => void; stay?: () => void }>();
-  /** Runs `go` now, or once the owner agrees to leave an unsaved persona or memory edit behind. `stay` runs if they don't. */
+  // An unsaved edit in Settings → Skills (SkillSettings.tsx) lives only on screen too, and is guarded the same way.
+  const skillDirty = useRef(false);
+  const [skillUnsaved, setSkillUnsaved] = useState(false);
+  const [skillDiscards, setSkillDiscards] = useState(0);
+  const onSkillDirty = useCallback((dirty: boolean) => {
+    skillDirty.current = dirty;
+    setSkillUnsaved(dirty);
+  }, []);
+  // Artifacts open to edit beside the chat (artifacts.ts, ADR 0029): their drafts live in memory for this sign-in, so
+  // moving around the app keeps them, and only signing out or closing the window would drop one.
+  const artifacts = useMemo(
+    () => new ArtifactStore((ref) => artifactIo({ host: ref.host, files: hermes.files, fs: hermes.artifactFs(ref.profile) }), (o) => hermes.askForEdit(o)),
+    [hermes],
+  );
+  const artSnap = useSyncExternalStore(artifacts.subscribe, artifacts.getSnapshot);
+  const artifactUnsaved = [...artSnap.values()].some(isDirty);
+  const [leaving, setLeaving] = useState<{ edit: "persona" | "memory" | "skill" | "artifact"; what: LeaveWhat; go: () => void; stay?: () => void }>();
+  /** Runs `go` now, or once the owner agrees to leave an unsaved persona, memory, skill or artifact edit behind. `stay` runs if they don't. */
   const guard = (go: () => void, what: LeaveWhat = "leave", stay?: () => void) => {
-    if (memoryDirty.current) return setLeaving({ edit: "memory", what, go, stay });
-    if (personaDirty.current) return setLeaving({ edit: "persona", what, go, stay });
-    go();
+    // Signing out or closing drops artifact edits too: once a settings edit is left, they are asked about in turn.
+    const next = what === "signout" || what === "close" ? () => (artifacts.unsaved().length ? setLeaving({ edit: "artifact", what, go, stay }) : go()) : go;
+    if (memoryDirty.current) return setLeaving({ edit: "memory", what, go: next, stay });
+    if (skillDirty.current) return setLeaving({ edit: "skill", what, go: next, stay });
+    if (personaDirty.current) return setLeaving({ edit: "persona", what, go: next, stay });
+    next();
   };
   const guardRef = useRef(guard);
   guardRef.current = guard;
   // Closing the window asks too, only while there is something to lose. A memory edit also holds a page reload.
-  useCloseGuard(memoryUnsaved, (close) => guardRef.current(close, "close"));
+  useCloseGuard(memoryUnsaved || skillUnsaved || artifactUnsaved, (close) => guardRef.current(close, "close"));
   const guardCloseRef = useRef(guardClose);
   useEffect(() => {
     if (!personaUnsaved) return;
@@ -459,6 +485,8 @@ export function Main({
   }, [personaUnsaved]);
   // A new object each time a row asks Settings to show the Text generation model; the rail's button opens it plainly.
   const [showTextGeneration, setShowTextGeneration] = useState<object>();
+  /** Set to open Settings on its Memory tab, from the context inspector. */
+  const [showMemory, setShowMemory] = useState<object>();
   const voice = useMemo<VoiceApi>(
     () => ({ setup: () => hermes.voiceSetup(), transcribe: (audio, mime) => hermes.transcribe(audio, mime), speak: (text) => hermes.speak(text) }),
     [hermes],
@@ -478,6 +506,10 @@ export function Main({
   // Outputs covers the chat panes too, but not the preview pane, where its files open.
   const [outputsOpen, setOutputsOpen] = useState(false);
   const [outputsScope, setOutputsScope] = useState<OutputsScope>("chat");
+  // Usage analytics covers the chat panes too (ADR 0026). It reads Hermes afresh each time it opens.
+  const [usageOpen, setUsageOpen] = useState(false);
+  const usageIo = useMemo(() => hermes.usageIo(), [hermes]);
+  const listProfiles = useCallback(() => hermes.profiles(), [hermes]);
   const update = useSyncExternalStore(updates.subscribe, updates.getSnapshot);
   const updateWaiting = needsAttention(update);
   // Drafts were saved for the restart; nothing typed after that would survive it.
@@ -501,6 +533,10 @@ export function Main({
   const split = panes.length > 1;
   const [listOpen, setListOpen] = useState(true);
   const [toast, setToast] = useState<Toast | null>(notSaved ? { text: notSaved, at: Date.now() } : null);
+  // What became of a branch whose answer was lost, once the chat list settled it (ADR 0027).
+  useEffect(() => {
+    if (branchNews) setToast({ text: branchNews.text, at: branchNews.at });
+  }, [branchNews?.at]);
   const [searchOpen, setSearchOpen] = useState(false);
 
   // The inbox: what needs the owner, or finished, across the profiles (hermes/inbox.ts). Dismissals are kept on this
@@ -657,6 +693,7 @@ export function Main({
       setJobsOpen(false);
       setTerminalOpen(false);
       setOutputsOpen(false);
+      setUsageOpen(false);
       if (remember) rememberOpenChat(profile, id);
     };
     if (keepSettings) go();
@@ -678,6 +715,7 @@ export function Main({
     setJobsOpen(false);
     setTerminalOpen(false);
     setOutputsOpen(false);
+    setUsageOpen(false);
   });
 
   // A second pane opens to the right and becomes the active one. Both panes may show the same chat: they are two views
@@ -696,6 +734,7 @@ export function Main({
     setJobsOpen(false);
     setTerminalOpen(false);
     setOutputsOpen(false);
+    setUsageOpen(false);
     rememberOpenChat(profile, chatId);
   });
 
@@ -726,6 +765,7 @@ export function Main({
       setJobsOpen(false);
       setTerminalOpen(false);
       setOutputsOpen(false);
+      setUsageOpen(false);
       setSearchOpen(false);
       if (!previewFits) setPreviewHidden(true);
     });
@@ -1005,7 +1045,7 @@ export function Main({
   // Settings covers the chat, and the pane with it; so do the project screen, Server files, Scheduled jobs and the
   // Terminal.
   // Outputs covers the chat panes but keeps the preview pane beside it, since its files open there.
-  const screenCovering = settingsOpen || projectScreenOpen || filesOpen || jobsOpen || terminalOpen;
+  const screenCovering = settingsOpen || projectScreenOpen || filesOpen || jobsOpen || terminalOpen || usageOpen;
   const covering = screenCovering || outputsOpen;
   const previewShown = !!preview && !screenCovering && (previewFits || !previewHidden);
   const previewCovers = previewShown && !previewFits;
@@ -1041,6 +1081,11 @@ export function Main({
           favorites={modelFavorites}
           projects={projects}
           projectNames={listed ? projectNames(chat.id) : shownProject ? [shownProject.name] : undefined}
+          templates={{
+            scope,
+            projects: listable.map(({ id, name }) => ({ id, name })),
+            here: listable.filter((pr) => pr.id === shownProject?.id || (listed && proj.chats[pr.id]?.includes(chat.id))).map((pr) => pr.id),
+          }}
           shownProject={shownProject && { name: shownProject.name, defaults: proj.defaults[shownProject.id], has: !!listed && !!proj.chats[shownProject.id]?.includes(chat.id) }}
           where={where}
           onStarted={(id) => {
@@ -1056,11 +1101,36 @@ export function Main({
             if (panesRef.current.find((now) => now.key === p.key) === p) patchPane(p.key, { draftError: reason });
           }}
           onToast={(text) => setToast({ text, at: Date.now() })}
+          onMemorySettings={
+            hermes.memory
+              ? () => {
+                  setProjectOpen(false);
+                  setFilesOpen(false);
+                  setJobsOpen(false);
+                  setTerminalOpen(false);
+                  setOutputsOpen(false);
+                  setUsageOpen(false);
+                  setShowTextGeneration(undefined);
+                  setShowMemory({});
+                  setSettingsOpen(true);
+                }
+              : undefined
+          }
           onSettle={(s) => setSettled(chat.id, s)}
           onExport={() => exportChatOnScreen(chat)}
           onArchive={(a) => setArchived(chat.id, a)}
           onNew={() => newChat()}
           onDelete={() => deleteChat(chat.id)}
+          onOpenChat={(id) => openChat(id, { pane: p.key })}
+          onShowAt={(link) => {
+            if (!chats.some((c) => c.id === link.parentId)) return setToast({ text: "That chat isn't in the chat list now.", at: Date.now() });
+            // Opened at the message's stored row, the one the branch ends with, whatever its words.
+            guard(() => {
+              // Already guarded here; Settings can't be open over a pane the owner clicks in.
+              openChat(link.parentId, { pane: p.key, keepSettings: true });
+              if (link.point.rowId !== undefined) patchPane(p.key, { jump: { rowId: link.point.rowId, at: Date.now() } });
+            });
+          }}
           previewControls={
             <button className={`icon-btn ${previewShown ? "on" : ""}`} title={!preview ? "Open the preview" : previewShown ? "Close the preview" : "Show the preview"} aria-pressed={previewShown}
               onClick={() => (!preview ? openPreview({ kind: "start" }) : previewShown ? setPreview(null) : setPreviewHidden(false))}>
@@ -1102,6 +1172,7 @@ export function Main({
             setJobsOpen(false);
             setTerminalOpen(false);
             setOutputsOpen(false);
+            setUsageOpen(false);
             setFilesOpen((o) => !o);
           })
         }
@@ -1112,6 +1183,7 @@ export function Main({
             setFilesOpen(false);
             setJobsOpen(false);
             setTerminalOpen(false);
+            setUsageOpen(false);
             setOutputsOpen((o) => !o);
           })
         }
@@ -1120,13 +1192,14 @@ export function Main({
         onInbox={() => setInboxOpen((o) => !o)}
         inboxOpen={inboxOpen}
         inboxCount={inboxCount}
-        onSettings={() => { setProjectOpen(false); setFilesOpen(false); setJobsOpen(false); setTerminalOpen(false); setOutputsOpen(false); setShowTextGeneration(undefined); setSettingsOpen(true); }}
+        onSettings={() => { setProjectOpen(false); setFilesOpen(false); setJobsOpen(false); setTerminalOpen(false); setOutputsOpen(false); setUsageOpen(false); setShowTextGeneration(undefined); setShowMemory(undefined); setSettingsOpen(true); }}
         onJobs={() =>
           guard(() => {
             setProjectOpen(false);
             setSettingsOpen(false);
             setFilesOpen(false);
             setOutputsOpen(false);
+            setUsageOpen(false);
             setTerminalOpen(false);
             setJobsOpen(true);
           })
@@ -1139,10 +1212,23 @@ export function Main({
             setFilesOpen(false);
             setJobsOpen(false);
             setOutputsOpen(false);
+            setUsageOpen(false);
             setTerminalMounted(true);
             setTerminalOpen((o) => !o);
           })
         }
+        onUsage={() =>
+          guard(() => {
+            setProjectOpen(false);
+            setSettingsOpen(false);
+            setFilesOpen(false);
+            setJobsOpen(false);
+            setTerminalOpen(false);
+            setOutputsOpen(false);
+            setUsageOpen((o) => !o);
+          })
+        }
+        usageOpen={usageOpen && !settingsOpen && !projectScreenOpen && !filesOpen && !jobsOpen}
         terminalOpen={terminalOpen && !settingsOpen}
         terminalRunning={terminalRunning}
         updateWaiting={updateWaiting}
@@ -1171,6 +1257,7 @@ export function Main({
                     setJobsOpen(false);
                     setTerminalOpen(false);
                     setOutputsOpen(false);
+                    setUsageOpen(false);
                     setProjectOpen(true);
                   });
                 }}
@@ -1181,6 +1268,7 @@ export function Main({
                     setJobsOpen(false);
                     setTerminalOpen(false);
                     setOutputsOpen(false);
+                    setUsageOpen(false);
                     setProjectOpen(true);
                     void projects.readDefaults();
                   })
@@ -1215,6 +1303,9 @@ export function Main({
             setJobsOpen(false);
             setTerminalOpen(false);
             setOutputsOpen(false);
+            setUsageOpen(false);
+            // One destination at a time: an earlier Memory shortcut mustn't switch Settings away from this one.
+            setShowMemory(undefined);
             setShowTextGeneration({});
             setSettingsOpen(true);
           }}
@@ -1313,9 +1404,13 @@ export function Main({
             memory={hermes.memory}
             onMemoryDirty={onMemoryDirty}
             memoryDiscards={memoryDiscards}
+            skills={hermes.skills}
+            onSkillDirty={onSkillDirty}
+            skillDiscards={skillDiscards}
             checkScreenshots={screenshots.support}
             voiceSetup={voice.setup}
             showTextGeneration={showTextGeneration}
+            showMemory={showMemory}
             onClearCache={() => hermes.clearCache()}
             importer={{
               imports: hermes.imports,
@@ -1331,7 +1426,19 @@ export function Main({
               onOpen: (id) => openChat(id),
             }}
             onPullOlder={() => hermes.pullOlderHistory()}
-            onSignOut={() => new Promise<void>((done) => guard(() => void onSignOut().finally(done), "signout", done))}
+            onSignOut={() =>
+              new Promise<void>((done) =>
+                guard(
+                  () => {
+                    // Nothing an artifact held is kept for another sign-in.
+                    artifacts.clear();
+                    void onSignOut().finally(done);
+                  },
+                  "signout",
+                  done,
+                ),
+              )
+            }
             onSetUp={onSetUp && (() => guard(onSetUp))}
             onClose={() =>
               guard(() => {
@@ -1355,6 +1462,24 @@ export function Main({
               focusPane(active.key);
             }}
           />
+        ) : usageOpen ? (
+          <UsageAnalytics
+            key={profile}
+            io={usageIo}
+            profile={profile}
+            listProfiles={listProfiles}
+            projects={proj.projects}
+            projectChats={proj.chats}
+            connected={status === "connected"}
+            onOpenChat={(c) =>
+              pick({ chatId: c.id, title: c.title, source: toSource(c.source), settled: !c.pinned, archived: c.archived || undefined, updatedAt: c.startedAt, snippet: [] })
+            }
+            saveCsv={(csv, fileName) => invoke<string | null>("usage_export", { csv, fileName })}
+            onClose={() => {
+              flushSync(() => setUsageOpen(false));
+              focusPane(active.key);
+            }}
+          />
         ) : outputsOpen ? (
           <OutputsScreen
             snapshot={outSnap}
@@ -1375,6 +1500,8 @@ export function Main({
             onAdd={(path) => outputsIndex.add(path, shownOutputsScope === "chat" ? (outputsChatId ?? undefined) : undefined)}
             onRemove={(key) => outputsIndex.remove(key)}
             onPreview={(o) => openPreview({ kind: "server", path: o.path, ...(o.host && { host: true }) })}
+            onEdit={(o) => openPreview({ kind: "artifact", ref: { scope, profile, path: o.path, host: !!o.host, ...(o.chatId && { chatId: o.chatId }) } })}
+            unsavedEdit={(o) => isDirty(artSnap.get(artifactKey({ scope, host: !!o.host, path: o.path })))}
             onJump={(o) => {
               if (!o.chatId || !o.callId) return;
               if (!chats.some((c) => c.id === o.chatId)) {
@@ -1387,6 +1514,7 @@ export function Main({
             onShowFolder={(o) => {
               setFilesPath(splitPath(o.path).dir);
               setOutputsOpen(false);
+              setUsageOpen(false);
               setFilesOpen(true);
             }}
             onClose={() => {
@@ -1430,6 +1558,8 @@ export function Main({
               onOpen={openPreview}
               onHide={() => setPreviewHidden(true)}
               onClose={() => setPreview(null)}
+              artifacts={artifacts}
+              connected={status === "connected"}
             />
           )}
       </main>
@@ -1449,8 +1579,9 @@ export function Main({
           )}
         </div>
       )}
-      {leaving?.edit === "memory" && (
+      {(leaving?.edit === "memory" || leaving?.edit === "skill") && (
         <LeaveMemoryEdit
+          subject={leaving.edit}
           profile={profile}
           onStay={() => {
             leaving.stay?.();
@@ -1458,8 +1589,28 @@ export function Main({
           }}
           onDiscard={() => {
             setLeaving(undefined);
-            onMemoryDirty(false);
-            setMemoryDiscards((n) => n + 1);
+            if (leaving.edit === "memory") {
+              onMemoryDirty(false);
+              setMemoryDiscards((n) => n + 1);
+            } else {
+              onSkillDirty(false);
+              setSkillDiscards((n) => n + 1);
+            }
+            leaving.go();
+          }}
+        />
+      )}
+      {leaving?.edit === "artifact" && (leaving.what === "signout" || leaving.what === "close") && (
+        <LeaveArtifacts
+          names={artifacts.unsaved().map((a) => a.name)}
+          what={leaving.what}
+          onStay={() => {
+            leaving.stay?.();
+            setLeaving(undefined);
+          }}
+          onDiscard={() => {
+            setLeaving(undefined);
+            artifacts.clear();
             leaving.go();
           }}
         />
@@ -1516,16 +1667,20 @@ function ChatView({
   favorites,
   projects,
   projectNames,
+  templates,
   shownProject,
   where,
   onStarted,
   onDraftError,
   onToast,
+  onMemorySettings,
   onSettle,
   onExport,
   onArchive,
   onNew,
   onDelete,
+  onOpenChat,
+  onShowAt,
   paneControls,
   previewControls,
   screenshots,
@@ -1551,6 +1706,8 @@ function ChatView({
   favorites: string[];
   projects: ProjectsStore;
   projectNames?: string[];
+  /** The projects the composer's templates can be offered in, and the ones this chat is in or the list shows. */
+  templates: TemplateHere;
   /** The project the list shows, its defaults for new chats, and whether this chat is in it. */
   shownProject?: { name: string; defaults?: ProjectDefaults; has: boolean };
   /** The connection, as a folder on the server is shown beside it. */
@@ -1558,12 +1715,18 @@ function ChatView({
   onStarted: (id: string) => void;
   onDraftError: (reason: string) => void;
   onToast: (text: string) => void;
+  /** Opens Settings → Memory, when this Hermes can edit memory from here. */
+  onMemorySettings?: () => void;
   onSettle: (settled: boolean) => void;
   onExport: () => void;
   onArchive: (archived: boolean) => void;
   onNew: () => void;
   /** Deletes the chat once the owner has confirmed it; resolves with whether Hermes deleted it. */
   onDelete: () => Promise<boolean>;
+  /** Opens another chat in this pane: a branch just made. */
+  onOpenChat: (id: string) => void;
+  /** Opens the chat a branch came from, at the message it was branched after. */
+  onShowAt: (link: BranchLink) => void;
   paneControls: ReactNode;
   previewControls: ReactNode;
   screenshots?: ScreenshotDesk;
@@ -1692,6 +1855,12 @@ function ChatView({
 
   const visible = usePaneVisible();
 
+  // Branch from here (ADR 0027): the message the preview is open for, if any.
+  const [branchFrom, setBranchFrom] = useState<string>();
+  useEffect(() => setBranchFrom(undefined), [chatId, profile]);
+  const link = useSyncExternalStore(hermes.subscribe, () => hermes.getSnapshot().branches.links[chat.id]);
+  const parentListed = useSyncExternalStore(hermes.subscribe, () => !!link && hermes.getSnapshot().chats.some((c) => c.id === link.parentId));
+
   // Slash commands (commands.ts). Each empties the Draft it was typed in only once it has run, only if the owner hasn't
   // changed it meanwhile, and only while the composer it was typed in is still on the chat (`still`). An answer after
   // that does nothing: its Draft stays as typed. One command at a time per Draft, so two panes on one chat can't run it
@@ -1766,10 +1935,12 @@ function ChatView({
   }, [hermes, chatId, status, paneKey, visible, profile]);
 
   return (
+    <>
     <ChatPane
       key={`${profile}/${chat.id}`}
       chat={chat}
       projects={projectNames}
+      templates={templates}
       notice={
         !started && shownProject ? (
           <NewChatSettingsView settings={startSettings} where={where} profile={profile} problem={modelProblem(startSettings, catalog)} />
@@ -1798,7 +1969,9 @@ function ChatView({
       notLoaded={started && status !== "connected" && !chat.runtimeId && chat.items.every(isOutgoing)}
       findTarget={findTarget}
       jumpTo={jump}
-      onJumpMissed={() => onToast("Couldn't find the tool call that made this file in the chat's history.")}
+      onJumpMissed={() =>
+        onToast(jump?.rowId !== undefined ? "Couldn't find the message this branch was made from in the chat's history." : "Couldn't find the tool call that made this file in the chat's history.")
+      }
       status={status}
       alsoPostsIn={hermes.alsoPostsIn(chat.id)}
       draft={composerText}
@@ -1833,7 +2006,22 @@ function ChatView({
       }
       queue={queue}
       queueApi={queueApi}
-      footer={<StatusBar chat={chat} status={status} onYolo={(on) => hermes.setYolo(chat.id, on)} onBreakdown={() => hermes.contextBreakdown(chat.id)} />}
+      branch={started ? { blocked: branchBlocked(chat, status === "connected"), onBranch: setBranchFrom } : undefined}
+      branchedFrom={link && <BranchedFrom link={link} parentListed={parentListed} onOpen={() => onShowAt(link)} />}
+      footer={
+        <StatusBar
+          chat={chat}
+          status={status}
+          onYolo={(on) => hermes.setYolo(chat.id, on)}
+          context={{
+            inspect: () => hermes.inspectContext(chat.id),
+            history: () => hermes.compactionHistory(chat.id),
+            compact: () => hermes.compact(chat.id),
+            cannotCompact: () => hermes.cannotCompact(),
+            openMemory: onMemorySettings,
+          }}
+        />
+      }
       modelControls={
         <ModelControls
           catalog={catalog}
@@ -1845,6 +2033,21 @@ function ChatView({
         />
       }
     />
+    {branchFrom && (
+      <BranchDialog
+        key={`${chat.id}/${branchFrom}`}
+        api={{ preview: () => hermes.previewBranch(chat.id, branchFrom), make: (p, title) => hermes.branch(p, title) }}
+        onClose={() => setBranchFrom(undefined)}
+        done={(id, warnings) => {
+          setBranchFrom(undefined);
+          if (!stillIn()) return;
+          // The branch opens here; this chat, and its Draft, stay as they were.
+          onOpenChat(id);
+          if (warnings.length) onToast(`Branch made. ${warnings.join(" ")}`);
+        }}
+      />
+    )}
+    </>
   );
 }
 

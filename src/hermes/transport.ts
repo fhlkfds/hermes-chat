@@ -26,7 +26,7 @@
 // Token usage and cost (usage.ts, ADR 0008): each reply's usage is how far its session's live counters moved during
 // its turn; each chat's totals and cost are Hermes's stored ones, read with the chat list and after each turn.
 import { PersonaApi } from "./persona";
-import { APPROVAL_CHOICES, isBroadGrant, isOutgoing, isWaiting, offeredChoices, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type ContextPart, type ContextUse, type Found, type Item, type ListedChat, type LiveSession, type LiveSessions, type OtherProfiles, type Outgoing, type OutgoingItem, type Queued, type SavedSend, type SeenFailure, type SessionLive, type Source, QUEUE_LIMIT } from "./model";
+import { APPROVAL_CHOICES, isBroadGrant, isOutgoing, isWaiting, offeredChoices, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type ContextUse, type Found, type Item, type ListedChat, type LiveSession, type LiveSessions, type OtherProfiles, type Outgoing, type OutgoingItem, type Queued, type SavedSend, type SeenFailure, type SessionLive, type Source, QUEUE_LIMIT } from "./model";
 import { catalogFromServer, fallbackCatalog, isEffort, modelKey, pickFromInfo, type ModelCatalog, type ModelPick } from "./models";
 import { noOthers, OtherProfilesCheck } from "./otherProfiles";
 import { failureMark } from "./inbox";
@@ -38,14 +38,33 @@ import { ModelSettingsApi } from "./modelSettings";
 import { ToolsetsApi } from "./toolsets";
 import { readBack, sendImport, type ImportRest, type PlannedChat } from "./importTranscripts";
 import { memoryApi, type MemoryApi } from "./memory";
+import { SkillsApi } from "./skills";
 import type { OpenPipe, Pipe, PipeEvent, RestMethod, Route, Speech, Transcript, VoiceSetup } from "./pipe";
-import { RemoteFilesError, previewSupport, remoteFiles, type RemoteFiles } from "./remoteFiles";
+import { RemoteFilesError, previewSupport, remoteFiles, type EditIo, type RemoteFiles } from "./remoteFiles";
 import { isUnsecure } from "./unsecure";
 import { providerKeys, readyProviders, type ProviderSetup, type SavedKey } from "./setup";
 import { restartHold } from "./unsaved";
 import { hostFileView, readServerFile, type FileView } from "./preview";
+import { agentFsEditIo } from "./artifacts";
 import { splitPath, type OutputsIo, type StoredRow as StoredOutputRow } from "./outputs";
+import type { UsageIo } from "./usageAnalytics";
+import { compactResultOf, compactionsOf, readingOf, type CompactResult, type CompactionHistory, type CompactionRow, type ContextReading } from "./contextInspect";
 import { chatUsageOf, countersOf, newerChatUsage, replyUsage, ZERO_COUNTERS, type ReplyUsage, type UsageCounters } from "./usage";
+import {
+  BRANCH_KEY_TTL_MS,
+  NO_BRANCHES,
+  branchBlocked,
+  locate,
+  previewOf,
+  spineKey,
+  spineOf,
+  type BranchAttempt,
+  type BranchLink,
+  type BranchPreview,
+  type BranchStore,
+  type SpineRow,
+  type StoredBranchRow,
+} from "./branch";
 
 /**
  * The `source` this app stamps on chats it starts. Legacy `session.create` stores any string as-is, but the gateway
@@ -122,6 +141,10 @@ export type ChatCache = {
   loadQueues(profile: string): Record<string, ChatQueue>;
   /** Keeps the chat's queue; none, or an empty one, deletes it. False: storage refused it, so it lasts until the app closes. */
   saveQueue(profile: string, chatId: string, queue: ChatQueue | undefined): boolean;
+  /** The branches this app made in the profile, and those asked for whose answer was lost (ADR 0027). */
+  loadBranches(profile: string): BranchStore;
+  /** False: storage refused it, so it lasts until the app closes. */
+  saveBranches(profile: string, store: BranchStore): boolean;
 };
 /** Shows a desktop notification; rejects if it can't. */
 export type Notify = (n: { title: string; body: string }) => Promise<void>;
@@ -147,6 +170,8 @@ const noCache: ChatCache = {
   saveOutbox: () => {},
   loadQueues: () => ({}),
   saveQueue: () => true,
+  loadBranches: () => NO_BRANCHES,
+  saveBranches: () => true,
 };
 
 /** A row of dashboard REST `GET /api/sessions`; times are Unix seconds. */
@@ -161,6 +186,9 @@ type SessionRow = {
   archived?: boolean;
   /** Activity postdates the session's shared read watermark (`SessionDB.session_unread`). */
   unread?: boolean;
+  /** The session it was branched (or compressed) from. */
+  parent_session_id?: string | null;
+  message_count?: number;
 };
 type SessionPage = { sessions: SessionRow[]; total: number };
 /** Dashboard REST `GET /api/sessions/{id}`, as far as this app reads it. Flags come as stored, 0 or 1. */
@@ -227,6 +255,10 @@ type ServerRequest = { id: string; method: string; params: Record<string, unknow
 
 /** JSON-RPC "method not found": what Hermes expects from a client that can't handle a request. */
 const NO_SUCH_METHOD = -32601;
+
+/** Dashboard REST caps a page of stored messages at 500. The compaction history reads at most `COMPACTION_ROWS`. */
+const COMPACTION_PAGE = 500;
+const COMPACTION_ROWS = 10_000;
 
 type RpcFrame = {
   jsonrpc: "2.0";
@@ -298,6 +330,32 @@ export function titleModelUnavailable(why: string, profile: string): TitleModelU
 }
 
 /**
+ * The connection dropped before Hermes answered a branch, so whether it made one can't be known yet. The chat list
+ * read once connected again settles it (`Hermes.branch`).
+ */
+export class BranchUnconfirmed extends Error {
+  constructor() {
+    super("The connection dropped before Hermes answered, so it isn't known yet whether it made the branch. Hermes Chat checks the chat list once it's connected again.");
+  }
+}
+
+/** Why a branch wasn't asked for after all; nothing went to Hermes. */
+class BranchNotSent extends Error {}
+
+/** Legacy `session.branch` result (`SessionBranchResult` at `bf0203a`): the branch's live and stored ids, its title,
+ * its parent, the rows it copied, and its history as `session.resume` shows it. */
+type BranchAnswer = { session_id: string; stored_session_id: string; title: string; parent?: string; message_count: number; messages?: TranscriptMessage[]; info?: unknown };
+
+/** Stored rows are read for a branch this many at a time (dashboard REST's page cap), up to this many pages. */
+const BRANCH_PAGE_ROWS = 500;
+const BRANCH_MAX_PAGES = 20;
+/** Looking for a branch whose answer was lost reads at most this many pages of the chat list. */
+const BRANCH_LIST_PAGES = 10;
+
+/** A key no other attempt has. */
+const newKey = () => (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`);
+
+/**
  * The connection dropped after a request went out and before Hermes answered it, so whether Hermes got it can't be
  * known. A JSON-RPC id means nothing on the next connection, so asking again there isn't safe.
  */
@@ -352,6 +410,13 @@ export type Snapshot = {
   models?: ModelCatalog;
   /** The switch to `profile` from `from`, until the new profile's list has been read. `error`: why it hasn't yet. */
   switching?: { from: string; error?: string };
+  /** The shown profile's branches made here, and those asked for whose answer was lost (ADR 0027). */
+  branches: BranchStore;
+  /**
+   * What became of a branch whose answer was lost, once the chat list said: made after all (`chatId`), or never made.
+   * `at` tells one from the next.
+   */
+  branchNews?: { text: string; chatId?: string; at: number };
 };
 
 /**
@@ -379,6 +444,8 @@ export class Hermes {
   private pipeProfile?: string;
   /** Counts pipes opened; events from an older pipe than the current one are ignored. */
   private generation = 0;
+  /** The connections (by generation) whose Hermes answered that it has no `session.compress`. */
+  private noCompact = new Set<number>();
   /** The pipe being opened is waiting for `gateway.ready`. */
   private onReady?: (payload: Record<string, unknown>) => void;
   /** Ends the dial under way with this error. */
@@ -540,6 +607,37 @@ export class Hermes {
     cancel: (id) => this.pipe?.cancelTransfer(id) ?? Promise.resolve(),
   });
 
+  /**
+   * How an artifact on the machine where `profile`'s tools run is read and saved (artifacts.ts `agentFsEditIo`, ADR
+   * 0027). A save starts only while connected, and Rust stops it when the connection closes or is replaced.
+   */
+  artifactFs(profile: string): EditIo {
+    return agentFsEditIo((pathAndQuery, maxBytes) => this.restGet(pathAndQuery, maxBytes), {
+      saveText: (id, p, path, text) => {
+        const pipe = this.pipe;
+        if (!pipe || this.closing || this.snapshot.status !== "connected") return Promise.reject(new Error("Not connected to Hermes."));
+        return pipe.fsSaveText(id, p, path, text);
+      },
+      cancel: (id) => this.pipe?.cancelTransfer(id) ?? Promise.resolve(),
+    }, profile);
+  }
+
+  /**
+   * Asks Hermes for an edit of an artifact with legacy `llm.oneshot` (research doc, "Artifacts"): a stateless model call
+   * with no tools, which adds nothing to any chat. When the chat that made the file is live in this app, its runtime
+   * session lends its own model (`lent`); otherwise Hermes uses the profile's Text generation model, as Regenerate
+   * title does. A missing sign-in for that model's provider is a `TitleModelUnavailable`.
+   */
+  async askForEdit(o: { profile: string; chatId?: string; instructions: string; input: string; maxTokens: number }): Promise<{ text: string; lent: boolean }> {
+    const sid = o.chatId && o.profile === this.profile ? this.snapshot.chats.find((c) => c.id === o.chatId)?.runtimeId : undefined;
+    const params = { profile: o.profile, instructions: o.instructions, input: o.input, max_tokens: o.maxTokens, temperature: 0.2, ...(sid && { session_id: sid }) };
+    const { text } = (await this.request("llm.oneshot", params).catch((e) => {
+      throw (e instanceof RpcError && titleModelUnavailable(e.message, o.profile)) || e;
+    })) as { text?: unknown };
+    if (typeof text !== "string") throw new Error("Hermes didn't answer with text.");
+    return { text, lent: !!sid };
+  }
+
   constructor(
     private openPipe: OpenPipe,
     profile: string,
@@ -555,6 +653,7 @@ export class Hermes {
       unsecure: false,
       others: noOthers,
       queues: loadQueues(cache, profile),
+      branches: cache.loadBranches(profile),
     };
   }
 
@@ -627,6 +726,8 @@ export class Hermes {
 
   /** Settings → Persona's reads and writes of a profile's SOUL.md (persona.ts). Each call names its profile. */
   readonly persona = new PersonaApi((method, pathAndQuery, body) => this.rest(method, pathAndQuery, body));
+  /** Settings → Skills' reads and writes of a profile's skills (skills.ts). Each call names its profile. */
+  readonly skills = new SkillsApi((method, pathAndQuery, body) => this.rest(method, pathAndQuery, body));
 
   /** The profile whose chats are shown. */
   get profile(): string {
@@ -848,6 +949,8 @@ export class Hermes {
       models: undefined,
       switching: { from },
       queues: loadQueues(this.cache, name),
+      branches: this.cache.loadBranches(name),
+      branchNews: undefined,
     });
     // A reconnect under way may be opening the old profile's socket.
     await this.redialing;
@@ -1179,6 +1282,325 @@ export class Hermes {
     const sid = await this.resume(chatId);
     const res = (await this.request("session.cwd.set", { session_id: sid, profile: this.profile, cwd: folder })) as { cwd?: unknown } | undefined;
     if (res?.cwd !== folder) throw new Error(`Hermes didn't move it to ${folder}${typeof res?.cwd === "string" ? `: it works in ${res.cwd}` : ""}.`);
+  }
+
+  /**
+   * What a branch from the message `itemId` would hold, read from the chat's stored rows (ADR 0027): the messages it
+   * copies, the tool calls whose results it leaves out, the Server files those messages refer to and whether each is
+   * still there, and the model it will run on. Rejects with why no branch can be made from there now.
+   */
+  async previewBranch(chatId: string, itemId: string): Promise<BranchPreview> {
+    const profile = this.profile;
+    const { chat, rows, spine, index } = await this.branchBoundary(chatId, itemId, profile);
+    const { refs, ...preview } = previewOf(chat, itemId, rows, spine, index);
+    const files = await Promise.all(refs.map(async (path) => ({ path, state: await this.serverFileState(path, profile) })));
+    if (this.profile !== profile) throw new Error("The profile changed before the preview was ready.");
+    return { ...preview, files };
+  }
+
+  /**
+   * Makes the branch `preview` describes: Hermes forks the chat into a new one holding its history up to that message
+   * (`session.branch`), and the chat it branched from stays as it is. Nothing on the server is undone. The branch is
+   * Active, runs on the parent's model, and is called `title` if the owner gave one (a Rename, once it's made), else
+   * what Hermes names it. Resolves to the branch's chat id once Hermes has it and it holds what the preview said, with
+   * what couldn't be set on it. If the connection drops before Hermes answers, it rejects with a
+   * `BranchUnconfirmed`, and the chat list read once connected again settles it, by the idempotency key it went
+   * with; branching from the same message again meanwhile returns the same branch.
+   */
+  async branch(preview: BranchPreview, title?: string): Promise<{ chatId: string; warnings: string[] }> {
+    const profile = this.profile;
+    const { chat, spine, index } = await this.branchBoundary(preview.chatId, preview.itemId, profile);
+    const count = index + 1;
+    // Every row the preview showed, as it showed it: a message changed or removed anywhere before the point counts.
+    if (count !== preview.count || spineKey(spine.slice(0, count)) !== preview.fingerprint)
+      throw new Error("This chat changed since the preview opened. Open it again to see what the branch would hold.");
+    // An earlier branch from this same point whose answer was lost: if Hermes made it, it's the one. Lost attempts
+    // from other messages of the chat are left as they are.
+    const earlier = this.snapshot.branches.attempts.find((a) => a.parentId === chat.id && a.count === count && a.fingerprint === preview.fingerprint);
+    if (earlier) {
+      const { found } = await this.findBranch(earlier, profile);
+      if (found) return { chatId: await this.adoptListed(found, earlier, profile), warnings: ["Hermes had made the branch asked for before the connection dropped, so that one is open now."] };
+    }
+    const sid = await this.resume(chat.id);
+    const generation = this.generation;
+    const before = earlier ? earlier.before : (await this.listedSince(profile)).rows.filter((r) => r.parent_session_id === chat.id).map((r) => r.id);
+    const attempt: BranchAttempt = {
+      // The same key as the lost attempt from this point: Hermes answers it with the branch it made, if it did.
+      key: earlier ? earlier.key : `branch-${newKey()}`,
+      parentId: chat.id,
+      parentTitle: chat.title,
+      point: preview.point,
+      count,
+      fingerprint: preview.fingerprint,
+      before,
+      startedAt: Date.now(),
+      ...(title?.trim() && { title: title.trim() }),
+      ...(chat.model && { model: chat.model }),
+    };
+    // Checked again just as the call goes: a reply may have started, or the connection or profile changed, while the
+    // list was read. A runtime id means nothing on another connection.
+    const now = this.snapshot.chats.find((c) => c.id === chat.id);
+    const blocked =
+      this.profile !== profile
+        ? "The profile changed meanwhile. Nothing was sent."
+        : this.generation !== generation || now?.runtimeId !== sid
+          ? "The connection to Hermes changed meanwhile. Nothing was sent; branch again."
+          : now
+            ? branchBlocked(now, this.snapshot.status === "connected")
+            : "This chat isn't in the list.";
+    if (blocked) throw new Error(blocked);
+    // Kept before it goes, so a restart or a dropped connection can still find what it made.
+    this.updateBranches(profile, (b) => ({ ...b, attempts: [...b.attempts.filter((a) => a.key !== attempt.key), attempt] }));
+    let res: BranchAnswer;
+    try {
+      res = (await this.request("session.branch", { session_id: sid, count, idempotency_key: attempt.key })) as BranchAnswer;
+    } catch (e) {
+      if (e instanceof ConnectionLostError) throw new BranchUnconfirmed();
+      // Refused before Hermes stored anything: no such method, or nothing to branch.
+      if (e instanceof RpcError && (e.code === NO_SUCH_METHOD || e.code === 4008)) {
+        this.dropAttempt(profile, attempt.key);
+        if (e.code === NO_SUCH_METHOD) throw new Error("This Hermes server can't branch chats: it has no session.branch. Updating Hermes may add it.");
+        throw e;
+      }
+      // Other failures can come after Hermes stored the branch, as `agent init failed on branch` does.
+      const why = (e as Error).message;
+      let result: { found?: SessionRow; sure: boolean } = { sure: false };
+      if (this.profile === profile) result = await this.findBranch(attempt, profile).catch(() => ({ sure: false }));
+      if (result.found) return { chatId: await this.adoptListed(result.found, attempt, profile), warnings: [`Hermes made the branch but said: ${why}`] };
+      if (result.sure) {
+        this.dropAttempt(profile, attempt.key);
+        throw e;
+      }
+      // Kept, so the chat list settles it later, and branching from here again asks with the same key.
+      throw new Error(`Hermes said: ${why}. Hermes Chat couldn't tell whether it made the branch anyway; it checks the chat list again, and branching from here again won't make a second one.`);
+    }
+    const generation2 = this.generation;
+    // Read back as stored, the same way the parent was read: the branch must hold exactly the rows the preview showed.
+    let check: SpineRow[] | Error;
+    try {
+      check = spineOf(await this.storedRows(res.stored_session_id, profile));
+    } catch (e) {
+      check = e as Error;
+    }
+    if (this.profile !== profile) {
+      // Kept with its profile; listed as made here once the owner is back.
+      if (!(check instanceof Error) && check.length === count && spineKey(check) === attempt.fingerprint) this.keepElsewhere(res.stored_session_id, attempt, profile);
+      throw new Error("The profile changed before Hermes answered. The branch is in that profile's list.");
+    }
+    if (!(check instanceof Error) && (check.length !== count || spineKey(check) !== attempt.fingerprint)) {
+      // Not the branch the owner looked at: it goes again, so nothing is left that the owner didn't ask for.
+      this.dropAttempt(profile, attempt.key);
+      void this.request("session.close", { session_id: res.session_id }).catch(() => {});
+      const gone = await this.rest("DELETE", `${sessionPath(res.stored_session_id)}?${new URLSearchParams({ profile })}`).then(
+        () => true,
+        () => false,
+      );
+      throw new Error(
+        gone
+          ? "Hermes copied a different part of this chat than the preview showed, so Hermes Chat deleted that branch again. Nothing else changed."
+          : `Hermes copied a different part of this chat than the preview showed, and the branch it made, "${res.title}", couldn't be deleted. Delete it from the list.`,
+      );
+    }
+    // The connection changed while the branch was read back: its runtime id means nothing now, so it opens afresh.
+    const made =
+      this.generation !== generation2 || this.snapshot.status !== "connected"
+        ? { chatId: await this.adoptListed({ id: res.stored_session_id, title: res.title }, attempt, profile), warnings: [] as string[] }
+        : await this.adopt(res, attempt, profile);
+    if (check instanceof Error) made.warnings.unshift(`Hermes Chat couldn't read the branch back to check what it holds (${check.message}).`);
+    return made;
+  }
+
+  /** The chat, its stored rows and branch spine, and where the spine has the message: the branch's boundary now. */
+  private async branchBoundary(chatId: string, itemId: string, profile: string) {
+    const before = this.snapshot.chats.find((c) => c.id === chatId);
+    if (!before) throw new Error("This chat isn't in the list.");
+    const blocked = branchBlocked(before, this.snapshot.status === "connected");
+    if (blocked) throw new Error(blocked);
+    const rows = await this.storedRows(chatId, profile);
+    const chat = this.snapshot.chats.find((c) => c.id === chatId);
+    if (this.profile !== profile || !chat) throw new Error("The profile changed meanwhile.");
+    // A reply may have started meanwhile, in this app or another client.
+    const still = branchBlocked(chat, this.snapshot.status === "connected");
+    if (still) throw new Error(still);
+    const spine = spineOf(rows);
+    const at = locate(chat.items, itemId, spine);
+    if ("error" in at) throw new Error(at.error);
+    return { chat, rows, spine, index: at.index };
+  }
+
+  /** Every stored row of a chat, oldest first, as dashboard REST pages them. */
+  private async storedRows(chatId: string, profile: string): Promise<StoredBranchRow[]> {
+    const rows: StoredBranchRow[] = [];
+    for (let page = 0; page < BRANCH_MAX_PAGES; page++) {
+      const query = new URLSearchParams({ profile, order: "oldest", limit: String(BRANCH_PAGE_ROWS), offset: String(page * BRANCH_PAGE_ROWS), inline_images: "false" });
+      const got = ((await this.rest("GET", `${sessionPath(chatId)}/messages?${query}`)) as { messages?: StoredBranchRow[] }).messages ?? [];
+      rows.push(...got.filter((r) => Number.isSafeInteger(r?.id)));
+      if (got.length < BRANCH_PAGE_ROWS) return rows;
+    }
+    throw new Error(`This chat has more than ${(BRANCH_MAX_PAGES * BRANCH_PAGE_ROWS).toLocaleString("en")} stored rows, too many for Hermes Chat to check where a branch would start.`);
+  }
+
+  /** Whether a Server file a message refers to is still there, by listing its folder. A relative path can't be checked. */
+  private async serverFileState(path: string, profile: string): Promise<"there" | "missing" | "unknown"> {
+    const cut = path.lastIndexOf("/");
+    if (!path.startsWith("/") || cut < 0) return "unknown";
+    try {
+      const res = obj(await this.rest("GET", `api/fs/list?${new URLSearchParams({ path: path.slice(0, cut) || "/", profile })}`));
+      if (res?.error === "ENOENT" || res?.error === "ENOTDIR") return "missing";
+      if (res?.error || !Array.isArray(res?.entries)) return "unknown";
+      return (res.entries as { name?: unknown; isDirectory?: unknown }[]).some((e) => e.name === path.slice(cut + 1) && !e.isDirectory) ? "there" : "missing";
+    } catch {
+      return "unknown";
+    }
+  }
+
+  /**
+   * The profile's sessions, archived ones too, newest made first, back to `since` (Unix ms, this computer's clock, less
+   * an hour for the server's), at most `BRANCH_LIST_PAGES` pages. `complete`: the list reached back that far, or ended.
+   */
+  private async listedSince(profile: string, since = Date.now()): Promise<{ rows: SessionRow[]; complete: boolean }> {
+    const rows: SessionRow[] = [];
+    const cutoff = since / 1000 - 3600;
+    for (let page = 0; page < BRANCH_LIST_PAGES; page++) {
+      const query = new URLSearchParams({ profile, order: "created", archived: "include", limit: String(PAGE_SIZE), offset: String(page * PAGE_SIZE), exclude_sources: "cron" });
+      const res = (await this.rest("GET", `api/sessions?${query}`)) as SessionPage;
+      rows.push(...res.sessions);
+      // Every page ends with the pinned rows, out of order; only the others say how far back the list has reached.
+      if (res.sessions.length < PAGE_SIZE || (page + 1) * PAGE_SIZE >= res.total || res.sessions.some((r) => !r.pinned && (r.started_at ?? Infinity) < cutoff))
+        return { rows, complete: true };
+    }
+    return { rows, complete: false };
+  }
+
+  /**
+   * The branch an attempt made, if Hermes lists one: a branch of the parent it didn't list before whose first `count`
+   * rows are the ones the preview showed. Another client's branch of the same chat from elsewhere doesn't match. `sure`:
+   * the list was read far enough back, and no more than one matched, so none found means none was made.
+   */
+  private async findBranch(a: BranchAttempt, profile: string): Promise<{ found?: SessionRow; sure: boolean }> {
+    const links = this.profile === profile ? this.snapshot.branches.links : this.cache.loadBranches(profile).links;
+    const { rows, complete } = await this.listedSince(profile, a.startedAt);
+    const fresh = [...new Map(rows.map((r) => [r.id, r])).values()].filter(
+      (r) => r.parent_session_id === a.parentId && !a.before.includes(r.id) && !links[r.id] && !this.deleted.has(r.id),
+    );
+    // Exactly the rows asked for, and no more: a longer branch from a later message shares the same first rows.
+    const exact: SessionRow[] = [];
+    let possible = 0;
+    for (const r of fresh) {
+      const spine = spineOf(await this.storedRows(r.id, profile));
+      if (spine.length < a.count || spineKey(spine.slice(0, a.count)) !== a.fingerprint) continue;
+      if (spine.length === a.count) exact.push(r);
+      else possible++;
+    }
+    // Only a search that reached back far enough can say a match is the only one, or that there is none.
+    if (complete && exact.length === 1 && !possible) return { found: exact[0], sure: true };
+    return { sure: complete && !exact.length && !possible };
+  }
+
+  /**
+   * Settles the branches asked for whose answer was lost, from the chat list: the one Hermes lists is the branch, kept
+   * as one made here. Once Hermes has forgotten the key, one not listed was never made; when the list can't say for
+   * sure, the owner is told to look.
+   */
+  private async checkBranchAttempts(profile: string) {
+    for (const a of this.snapshot.branches.attempts) {
+      let result: { found?: SessionRow; sure: boolean };
+      try {
+        result = await this.findBranch(a, profile);
+      } catch {
+        continue;
+      }
+      if (this.profile !== profile) return;
+      if (result.found) {
+        const chatId = await this.adoptListed(result.found, a, profile);
+        this.update({ branchNews: { text: `Hermes made the branch of "${a.parentTitle}" before the connection dropped. It's in the list.`, chatId, at: Date.now() } });
+      } else if (Date.now() - a.startedAt > BRANCH_KEY_TTL_MS) {
+        this.dropAttempt(profile, a.key);
+        this.update({
+          branchNews: {
+            text: result.sure
+              ? `Hermes didn't make the branch of "${a.parentTitle}". Nothing changed; branch again to try.`
+              : `Hermes Chat couldn't tell whether Hermes made the branch of "${a.parentTitle}". Look for it in the list before branching again.`,
+            at: Date.now(),
+          },
+        });
+      }
+    }
+  }
+
+  /** Keeps a branch Hermes answered with, opened on this connection, with the attempt's title and model. */
+  private async adopt(res: BranchAnswer, a: BranchAttempt, profile: string): Promise<{ chatId: string; warnings: string[] }> {
+    const chat: Chat = {
+      id: res.stored_session_id,
+      runtimeId: res.session_id,
+      title: res.title || "Branch",
+      source: "app",
+      settled: false,
+      updatedAt: Date.now(),
+      items: historyItems(Array.isArray(res.messages) ? res.messages : []),
+      model: pickFromInfo(res.info),
+      live: withLive(undefined, res.info),
+    };
+    this.usageFrom.set(res.session_id, countersOf((res.info as { usage?: unknown } | undefined)?.usage) ?? ZERO_COUNTERS);
+    this.runtimeOwners.set(res.session_id, { profile, chatId: chat.id });
+    return { chatId: chat.id, warnings: await this.keepBranch(chat, a, profile) };
+  }
+
+  /** Keeps a branch found in the chat list, made by an attempt whose answer was lost. */
+  private async adoptListed(row: Pick<SessionRow, "id" | "title" | "preview">, a: BranchAttempt, profile: string): Promise<string> {
+    const chat: Chat = { id: row.id, title: listTitle(row), source: "app", settled: false, updatedAt: Date.now(), items: [] };
+    await this.keepBranch(chat, a, profile);
+    return chat.id;
+  }
+
+  /** Lists a branch as made here and Active, then gives it the attempt's model and title. Resolves to what failed. */
+  private async keepBranch(chat: Chat, a: BranchAttempt, profile: string): Promise<string[]> {
+    const link: BranchLink = { parentId: a.parentId, parentTitle: a.parentTitle, point: a.point, at: Date.now() };
+    // The owner switched profile meanwhile: the branch is kept as made here, Active, and listed when they're back.
+    if (this.profile !== profile) {
+      this.keepElsewhere(chat.id, a, profile);
+      return [];
+    }
+    this.updateBranches(profile, (b) => ({ links: { ...b.links, [chat.id]: link }, attempts: b.attempts.filter((x) => x.key !== a.key) }));
+    this.pinWanted.set(chat.id, true);
+    this.revealed.add(chat.id);
+    this.update({ chats: [chat, ...this.snapshot.chats.filter((c) => c.id !== chat.id)] });
+    this.saveList(profile, this.snapshot.chats);
+    // Both are fenced edits of the same session: the rename goes after the pin, or it would name a stale revision.
+    const pinned = this.writePin(chat.id, profile);
+    this.track(pinned);
+    const warnings: string[] = [];
+    // Hermes starts a branch on the profile's model, not the parent's.
+    if (a.model && (a.model.model !== chat.model?.model || a.model.provider !== chat.model?.provider || (a.model.effort && a.model.effort !== chat.model?.effort) || (a.model.fast !== undefined && a.model.fast !== chat.model?.fast)))
+      await this.setModel(chat.id, a.model).catch((e) => warnings.push(`It runs on the profile's model: Hermes didn't switch it to ${a.model!.model} (${(e as Error).message})`));
+    if (a.title && a.title !== chat.title) await pinned;
+    if (a.title && a.title !== chat.title)
+      await this.rename(chat.id, a.title, this.snapshot.chats.find((c) => c.id === chat.id)?.title ?? chat.title).catch((e) =>
+        warnings.push(`It keeps the name Hermes gave it: renaming it failed (${(e as Error).message})`),
+      );
+    return warnings;
+  }
+
+  /** A branch made for a profile no longer shown: kept as made here and Active, listed when the owner is back. */
+  private keepElsewhere(chatId: string, a: BranchAttempt, profile: string) {
+    const link: BranchLink = { parentId: a.parentId, parentTitle: a.parentTitle, point: a.point, at: Date.now() };
+    this.updateBranches(profile, (b) => ({ links: { ...b.links, [chatId]: link }, attempts: b.attempts.filter((x) => x.key !== a.key) }));
+    this.pinWanted.set(chatId, true);
+    this.track(this.writePin(chatId, profile));
+  }
+
+  private dropAttempt(profile: string, key: string) {
+    this.updateBranches(profile, (b) => ({ ...b, attempts: b.attempts.filter((a) => a.key !== key) }));
+  }
+
+  /**
+   * Changes `profile`'s branches: the snapshot's while it is shown, else what this computer keeps for it, since the
+   * owner may have switched profile while a branch was on its way.
+   */
+  private updateBranches(profile: string, change: (b: BranchStore) => BranchStore) {
+    const store = change(this.profile === profile ? this.snapshot.branches : this.cache.loadBranches(profile));
+    this.cache.saveBranches(profile, store);
+    if (this.profile === profile) this.update({ branches: store });
   }
 
   /**
@@ -1521,6 +1943,7 @@ export class Hermes {
     this.deleted.add(chatId);
     this.pinWanted.delete(chatId);
     this.archiveWanted.delete(chatId);
+
     this.archiveUnsure.delete(chatId);
     this.revealed.delete(chatId);
     this.staleItems.delete(chatId);
@@ -1537,6 +1960,12 @@ export class Hermes {
       if (writes.length) await Promise.all(writes);
       await this.rest("DELETE", `api/sessions/${encodeURIComponent(chatId)}?${new URLSearchParams({ profile })}`);
       this.cache.saveOutbox(profile, chatId, []);
+      // A branch's link back goes only once Hermes has deleted it.
+      this.updateBranches(profile, (b) => {
+        if (!b.links[chatId]) return b;
+        const { [chatId]: _gone, ...links } = b.links;
+        return { ...b, links };
+      });
       // Its queue had nowhere left to go.
       if (this.profile === profile && this.snapshot.queues[chatId]) this.setQueue(chatId, { items: [] });
       else this.cache.saveQueue(profile, chatId, undefined);
@@ -1710,17 +2139,98 @@ export class Hermes {
     });
   }
 
-  /** What fills the chat's context window, by category, as Hermes estimates it now; empty when Hermes gives none. */
-  async contextBreakdown(chatId: string): Promise<ContextPart[]> {
-    const runtimeId = this.snapshot.chats.find((c) => c.id === chatId)?.runtimeId;
-    if (!runtimeId) return [];
-    const res = (await this.request("session.context_breakdown", { session_id: runtimeId })) as { categories?: unknown };
-    return (Array.isArray(res?.categories) ? res.categories : []).flatMap((v): ContextPart[] => {
-      const p = obj(v);
-      return p && typeof p.id === "string" && typeof p.label === "string" && typeof p.tokens === "number"
-        ? [{ id: p.id, label: p.label, tokens: p.tokens, ...(typeof p.color === "string" && { color: p.color }) }]
-        : [];
+  /**
+   * What fills the chat's context window now, as Hermes measures it (`session.context_breakdown`, ADR 0025): its total
+   * with how Hermes counted it, its estimate by category, and the instruction files it considered. Rejects when the
+   * chat isn't open on Hermes on this connection, when this Hermes has no breakdown (saying so), or when the
+   * connection, profile or chat's session changed before Hermes answered: an answer for another session is never shown.
+   */
+  async inspectContext(chatId: string): Promise<ContextReading> {
+    const { runtimeId, still } = this.liveScope(chatId);
+    const res = await this.request("session.context_breakdown", { session_id: runtimeId }).catch((e: unknown) => {
+      throw e instanceof RpcError && e.code === NO_SUCH_METHOD ? new Error("This Hermes doesn't report what fills the context window.") : e;
     });
+    still();
+    return readingOf(res, Date.now());
+  }
+
+  /**
+   * The compactions Hermes stored for the chat (ADR 0025), from its stored rows with the compacted ones
+   * (`GET /api/sessions/{id}/messages?include_compacted=true`), read a page at a time, oldest first, up to
+   * `COMPACTION_ROWS`. Only reads. Rejects if a page can't be read, or the profile or connection changed meanwhile. A
+   * chat Hermes hasn't stored yet has none.
+   */
+  async compactionHistory(chatId: string): Promise<CompactionHistory> {
+    const profile = this.profile;
+    const gen = this.generation;
+    if (this.snapshot.status !== "connected") throw new Error("Connect to Hermes to read this chat's compactions.");
+    const rows: CompactionRow[] = [];
+    let truncated = false;
+    for (let offset = 0; ; offset += COMPACTION_PAGE) {
+      const query = new URLSearchParams({ profile, include_compacted: "true", order: "oldest", limit: String(COMPACTION_PAGE), offset: String(offset), inline_images: "false" });
+      let page: CompactionRow[];
+      try {
+        const res = (await this.rest("GET", `${sessionPath(chatId)}/messages?${query}`)) as { messages?: unknown };
+        page = Array.isArray(res?.messages) ? (res.messages as CompactionRow[]).filter((r) => typeof r?.id === "number") : [];
+      } catch (e) {
+        if (offset === 0 && (e as Error).message.includes("answered 404")) {
+          page = [];
+        } else throw e;
+      }
+      if (this.profile !== profile || this.generation !== gen) throw new Error("The profile or connection changed before Hermes answered.");
+      rows.push(...page);
+      if (page.length < COMPACTION_PAGE) break;
+      if (rows.length >= COMPACTION_ROWS) {
+        truncated = true;
+        break;
+      }
+    }
+    return compactionsOf(rows, truncated, Date.now());
+  }
+
+  /**
+   * Has Hermes compact the chat now (`session.compress`, Hermes's `/compress`): it summarizes the older messages into
+   * one summary the model reads in their place. Hermes refuses while a reply runs. The chat's usage is read again
+   * afterwards. Rejects when the chat isn't open on Hermes here, when Hermes refuses, or when this Hermes can't
+   * compact (and then the chat isn't offered it again on this connection).
+   */
+  async compact(chatId: string): Promise<CompactResult> {
+    const { runtimeId, still } = this.liveScope(chatId);
+    if (this.snapshot.chats.find((c) => c.id === chatId)?.running) throw new Error("Wait for the reply to finish: Hermes compacts only between replies.");
+    const res = await this.request("session.compress", { session_id: runtimeId }).catch((e: unknown) => {
+      if (e instanceof RpcError && e.code === NO_SUCH_METHOD) {
+        this.noCompact.add(this.generation);
+        this.update({});
+        throw new Error("This Hermes can't compact a chat from here.");
+      }
+      throw e;
+    });
+    still();
+    this.track(this.refreshUsage(chatId));
+    return compactResultOf(res);
+  }
+
+  /** Whether this connection's Hermes answered that it can't compact a chat (`compact`). */
+  cannotCompact(): boolean {
+    return this.noCompact.has(this.generation);
+  }
+
+  /**
+   * The chat's runtime session on this connection, and a check that throws if, by the time Hermes answers, the
+   * connection, profile or the chat's session is another.
+   */
+  private liveScope(chatId: string): { runtimeId: string; still: () => void } {
+    const runtimeId = this.snapshot.chats.find((c) => c.id === chatId)?.runtimeId;
+    if (!runtimeId || this.snapshot.status !== "connected") throw new Error("This chat isn't open on Hermes.");
+    const profile = this.profile;
+    const gen = this.generation;
+    return {
+      runtimeId,
+      still: () => {
+        if (this.profile !== profile || this.generation !== gen || this.snapshot.chats.find((c) => c.id === chatId)?.runtimeId !== runtimeId)
+          throw new Error("The chat's session changed before Hermes answered.");
+      },
+    };
   }
 
   /**
@@ -1953,6 +2463,8 @@ export class Hermes {
       (async () => {
         const userRow = await turn.rowId;
         if (userRow === undefined) return;
+        // The message keeps its stored row too, which finds it in Hermes's history, as when branching from it.
+        this.patchChat(chatId, (c) => ({ ...c, items: c.items.map((i) => (i.id === turn.userId && i.kind === "user" && !i.outgoing ? { ...i, rowId: userRow } : i)) }));
         const wanted = new Map<number, string>([[userRow, turn.userId]]);
         const replyRow = reply && receipt.user_row_id === userRow && typeof receipt.final_assistant_row_id === "number" ? receipt.final_assistant_row_id : undefined;
         if (reply?.kind === "assistant" && replyRow !== undefined) {
@@ -2476,7 +2988,8 @@ export class Hermes {
           id: r.id,
           // A row read before this app's latest rename is stale too.
           title: c && this.retitledSinceListRead.has(r.id) ? c.title : listTitle(r, c?.title),
-          source: toSource(r.source),
+          // A branch made here is this app's, though Hermes stores it with the source the parent was resumed as.
+          source: this.snapshot.branches.links[r.id] ? "app" : toSource(r.source),
           settled: !(wanted ?? r.pinned),
           archived: this.isArchived(r) || undefined,
           updatedAt: Math.max(c?.updatedAt ?? 0, lastActive(r)),
@@ -2504,6 +3017,7 @@ export class Hermes {
     if (busy) this.resumeBusyChats();
     await this.checkUnsureArchives(profile);
     await this.checkUnknownSends(profile);
+    await this.checkBranchAttempts(profile);
     return undefined;
   }
 
@@ -2722,6 +3236,24 @@ export class Hermes {
     };
   }
 
+  /**
+   * How Usage analytics reads Hermes (usageAnalytics.ts, ADR 0026): the stored session rows, every source and archived
+   * ones too, newest started first; one stored session by id; and Hermes's own sums for a rolling period. Every request
+   * names its profile, and reads only while connected.
+   */
+  usageIo(): UsageIo {
+    const get = async (pathAndQuery: string) => JSON.parse(await this.restGet(pathAndQuery)) as unknown;
+    return {
+      page: async (profile, offset, limit) => {
+        const query = new URLSearchParams({ profile, order: "created", archived: "include", limit: String(limit), offset: String(offset) });
+        const res = (await get(`api/sessions?${query}`)) as { sessions?: unknown; total?: unknown };
+        return { rows: Array.isArray(res.sessions) ? res.sessions : [], total: typeof res.total === "number" ? res.total : 0 };
+      },
+      session: (profile, id) => get(`${sessionPath(id)}?${new URLSearchParams({ profile })}`),
+      hermesTotals: (profile, days) => get(`api/analytics/usage?${new URLSearchParams({ days: String(days), profile })}`),
+    };
+  }
+
   private async rest(method: RestMethod, pathAndQuery: string, body?: unknown): Promise<unknown> {
     // Once closed (signed out), nothing more goes out: the Rust side relays through whichever sign-in is current, which
     // may be another server's by then.
@@ -2934,7 +3466,7 @@ function findTerm(q: string, snippet: Found["snippet"]): string {
 }
 
 /** A chat's Source from the session's `source` field. This app's own chats, `gui` ones, show no icon. */
-function toSource(source = ""): Source {
+export function toSource(source = ""): Source {
   switch (source) {
     case APP_SOURCE:
     case OLD_APP_SOURCE:
@@ -3075,7 +3607,7 @@ function historyItems(messages: TranscriptMessage[]): Item[] {
     // Assistant rows can be reasoning only; system rows are timeline notes this app doesn't show yet.
     if (!m.text?.trim()) return thought;
     const at = storedAt(m.timestamp);
-    const rowId = m.role === "assistant" && Number.isSafeInteger(m.row_id) ? (m.row_id as number) : undefined;
+    const rowId = Number.isSafeInteger(m.row_id) ? (m.row_id as number) : undefined;
     if (m.role === "user" || m.role === "assistant") return [...thought, { kind: m.role, id, text: m.text, ...(at && { at }), ...(rowId !== undefined && { rowId }) }];
     return [];
   });
@@ -3118,7 +3650,10 @@ function withLive(prev: SessionLive | undefined, info?: unknown, usage?: unknown
   if (!i && !u) return prev;
   const live: SessionLive = { ...prev };
   if (typeof i?.yolo === "boolean") Object.assign(live, { yolo: i.yolo, yoloEverywhere: i.approval_mode === "off" });
-  if (u) live.context = contextUse(u);
+  if (u) {
+    live.context = contextUse(u);
+    live.compactions = typeof u.compressions === "number" && u.compressions >= 0 ? u.compressions : undefined;
+  }
   return live;
 }
 

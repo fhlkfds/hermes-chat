@@ -40,8 +40,11 @@ export type Outgoing = {
 };
 
 export type Item =
-  /** `attachments`: names sent with the message. `outgoing`: sent from here and not confirmed yet. */
-  | { kind: "user"; id: string; text: string; attachments?: string[]; at?: number; outgoing?: Outgoing }
+  /**
+   * `attachments`: names sent with the message. `outgoing`: sent from here and not confirmed yet. `rowId`: its stored
+   * row, once known.
+   */
+  | { kind: "user"; id: string; text: string; attachments?: string[]; at?: number; outgoing?: Outgoing; rowId?: number }
   /**
    * `interrupted`: the owner, or another Hermes client, stopped this reply before it finished. `rowId`: its stored row,
    * once known. `usage`: the tokens its turn took, only for a reply this app watched finish (`usage.ts`).
@@ -168,15 +171,13 @@ export type Chat = {
  * `Chat.model`.
  * `context`: how full the context window is, only once Hermes has measured it. `yolo`: Hermes runs commands it counts
  * as dangerous without asking; undefined when Hermes doesn't report it. `yoloEverywhere`: on for every chat by Hermes's
- * own settings, so this chat can't turn it off.
+ * own settings, so this chat can't turn it off. `compactions`: how many times Hermes has compacted the chat since its
+ * agent was built on the server (`usage.compressions`); undefined when Hermes reports no compactor for it.
  */
-export type SessionLive = { context?: ContextUse; yolo?: boolean; yoloEverywhere?: boolean };
+export type SessionLive = { context?: ContextUse; yolo?: boolean; yoloEverywhere?: boolean; compactions?: number };
 
 /** `used` of `max` tokens, `percent` full. `estimated`: Hermes counted part of it itself, not the provider. */
 export type ContextUse = { used: number; max: number; percent: number; estimated: boolean };
-
-/** One part of what fills the context window, as Hermes estimates it (`session.context_breakdown`). */
-export type ContextPart = { id: string; label: string; tokens: number; color?: string };
 
 export type ConnectionStatus = "connected" | "reconnecting" | "offline";
 

@@ -1,7 +1,7 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
 // Dictation and Read aloud come from Voice.tsx.
 import { createContext, memo, type ReactNode, useCallback, useContext, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
-import { ArrowUp, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, FileDown, FileInput, Globe, HardDrive, ListPlus, Paperclip, RotateCcw, Search, Server, Square, Wrench, X } from "lucide-react";
+import { ArrowUp, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, FileDown, FileInput, FileText, Globe, HardDrive, ListPlus, Paperclip, RotateCcw, Search, Server, Square, Wrench, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
@@ -19,8 +19,11 @@ import { withTranscript } from "../hermes/voice";
 import type { VoiceSetup } from "../hermes/pipe";
 import { ChatUsageButton, ReplyUsageLine } from "./Usage";
 import { useOpenPreview } from "./previewContext";
+import { ShowInChatContext, type ShowInChat } from "./showInChat";
 import { previewName, toolTargets, withoutBidi } from "../hermes/preview";
 import { type CommandHost, useSlashCommands } from "./SlashCommands";
+import { Templates, type TemplateHere } from "./Templates";
+import { BranchButton } from "./Branch";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type ThinkingItem = Extract<Item, { kind: "thinking" }>;
@@ -49,8 +52,11 @@ const sameBlock = (a: Block, b: Block) =>
  */
 export type FindTarget = { query: string; itemId?: string; at: number };
 
-/** A tool call to go to and open, by its call id (`Item.callId`); `at` tells one request from the next. */
-export type JumpTarget = { callId: string; at: number };
+/**
+ * What to go to: a tool call, opened, by its call id (`Item.callId`), or a message by its stored row (`rowId`), as a
+ * branch's link back does. `at` tells one request from the next.
+ */
+export type JumpTarget = { callId: string; rowId?: undefined; at: number } | { rowId: number; callId?: undefined; at: number };
 /** The tool call being gone to, for the tool rows and groups that hold it to open themselves. */
 const JumpContext = createContext<JumpTarget | undefined>(undefined);
 
@@ -103,7 +109,8 @@ const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateS
  * `screenshots` attaches captures; `screenshotKeys` names the shortcut.
  * `voice` supplies Dictation and Read aloud. `commands` runs the slash commands typed in the composer. `queue` is the
  * chat's queue of messages waiting to go after its reply, and `queueApi` changes it; it is left out for a chat not
- * started yet, which can't queue.
+ * started yet, which can't queue. `branch` offers Branch from here under each message with text (ADR 0027): `blocked`
+ * says why none can be made now. `branchedFrom` is shown at the top of a branch, where it came from.
  */
 export function ChatPane({
   chat,
@@ -142,6 +149,9 @@ export function ChatPane({
   queue,
   queueApi,
   commands,
+  templates,
+  branch,
+  branchedFrom,
 }: {
   chat: Chat;
   notLoaded?: boolean;
@@ -184,6 +194,10 @@ export function ChatPane({
   queue?: ChatQueue;
   queueApi?: QueueApi;
   commands?: CommandHost;
+  /** Where the composer's Templates are picked from (Templates.tsx). */
+  templates?: TemplateHere;
+  branch?: { blocked?: string; onBranch: (itemId: string) => void };
+  branchedFrom?: ReactNode;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -213,10 +227,25 @@ export function ChatPane({
   const outgoingRef = useRef({ retry: onRetry, edit: onEdit, dismiss: onDismiss });
   outgoingRef.current = { retry: onRetry, edit: onEdit, dismiss: onDismiss };
   const onOutgoing = useCallback((itemId: string, action: OutgoingAction) => outgoingRef.current[action](itemId), []);
+  // And Branch from here, one handler for every message.
+  const branchRef = useRef(branch?.onBranch);
+  branchRef.current = branch?.onBranch;
+  const onBranch = useCallback((itemId: string) => branchRef.current?.(itemId), []);
   // A failed message can be sent again once Hermes is connected and the chat has no reply running.
   const canRetry = status === "connected" && !chat.loading && !chat.running;
   const findRef = useRef<HTMLInputElement>(null);
   const stickToBottom = useRef(true);
+  // For the status bar's context inspector: a stored time to the message there, marked as a jump to a tool call is.
+  const showInChat = useCallback<ShowInChat>((at) => {
+    const msgs = Array.from(scrollRef.current?.querySelectorAll<HTMLElement>(".msg[data-item]") ?? []);
+    const el = at === undefined ? msgs[0] : msgs.find((m) => m.dataset.at !== undefined && Number(m.dataset.at) >= at);
+    if (!el) return false;
+    stickToBottom.current = false;
+    el.scrollIntoView?.({ block: "start" });
+    el.classList.add("jumped");
+    setTimeout(() => el.classList.remove("jumped"), 2500);
+    return true;
+  }, []);
   const [findOpen, setFindOpen] = useState(false);
   const [query, setQuery] = useState("");
   // Which match is the current one, counting from the top of the chat.
@@ -286,8 +315,15 @@ export function ChatPane({
   }, [jumpTo?.at]);
   useLayoutEffect(() => {
     if (!jumping) return;
-    const id = CSS.escape(jumping.callId);
-    const el = scrollRef.current?.querySelector<HTMLElement>(`[data-call="${id}"]`) ?? scrollRef.current?.querySelector<HTMLElement>(`[data-calls~="${id}"]`);
+    let el: HTMLElement | null | undefined;
+    if (jumping.rowId !== undefined) {
+      const rowId = jumping.rowId;
+      const item = chat.items.find((i) => (i.kind === "user" || i.kind === "assistant") && i.rowId === rowId);
+      el = item && scrollRef.current?.querySelector<HTMLElement>(`[data-item="${CSS.escape(item.id)}"]`);
+    } else {
+      const id = CSS.escape(jumping.callId);
+      el = scrollRef.current?.querySelector<HTMLElement>(`[data-call="${id}"]`) ?? scrollRef.current?.querySelector<HTMLElement>(`[data-calls~="${id}"]`);
+    }
     if (el) {
       setJumping(undefined);
       el.scrollIntoView?.({ block: "center" });
@@ -438,6 +474,7 @@ export function ChatPane({
                 : chat.settled && " Replying here moves it to Active."}
             </div>
           )}
+          {branchedFrom}
           {chat.savedAt !== undefined && (
             <div className="saved-note" role="note">
               {status === "connected" ? <HardDrive size={13} /> : <CloudOff size={13} />}
@@ -475,6 +512,8 @@ export function ChatPane({
               listen={b.kind === "assistant" ? listen : undefined}
               canRetry={b.kind === "user" && !!b.outgoing && canRetry}
               onOutgoing={onOutgoing}
+              onBranch={branch && (b.kind === "user" || b.kind === "assistant") ? onBranch : undefined}
+              branchBlocked={branch && (b.kind === "user" || b.kind === "assistant") ? branch.blocked : undefined}
             />
           ))}
           {/* A reply waiting on the owner isn't thinking, and streamed thinking shows its own row. */}
@@ -528,9 +567,10 @@ export function ChatPane({
         screenshots={screenshots}
         screenshotKeys={screenshotKeys}
         commands={commands}
+        templates={templates}
       />
       )}
-      {footer}
+      <ShowInChatContext.Provider value={showInChat}>{footer}</ShowInChatContext.Provider>
     </div>
   );
 }
@@ -556,6 +596,8 @@ const BlockView = memo(
     listen,
     canRetry,
     onOutgoing,
+    onBranch,
+    branchBlocked,
   }: {
     block: Block;
     live: boolean;
@@ -566,10 +608,12 @@ const BlockView = memo(
     listen?: Listen;
     canRetry: boolean;
     onOutgoing: (itemId: string, action: OutgoingAction) => void;
+    onBranch?: (itemId: string) => void;
+    branchBlocked?: string;
   }) {
     if (block.kind === "user")
       return (
-        <div className={`msg user${block.outgoing ? ` outgoing ${block.outgoing.state}` : ""}`} data-item={block.id}>
+        <div className={`msg user${block.outgoing ? ` outgoing ${block.outgoing.state}` : ""}`} data-item={block.id} data-at={block.at}>
           {block.attachments && (
             <div className="msg-files">
               {block.attachments.map((name, i) => (
@@ -585,15 +629,29 @@ const BlockView = memo(
           {isOutgoing(block) && block.outgoing.state !== "sending" && (
             <SendFailed item={block} canRetry={canRetry} act={(action) => onOutgoing(block.id, action)} />
           )}
+          {onBranch && !block.outgoing && block.text.trim() && (
+            <div className="msg-actions">
+              <BranchButton blocked={branchBlocked} onBranch={() => onBranch(block.id)} />
+            </div>
+          )}
         </div>
       );
     if (block.kind === "assistant")
       return (
-        <div className="msg assistant" data-item={block.id}>
+        <div className="msg assistant" data-item={block.id} data-at={block.at}>
           <Markdown text={block.text} query={query} />
           {live && <span className="cursor" />}
           {block.interrupted && <div className="stopped">Stopped</div>}
-          {listen && !live && block.text.trim() && <ListenButton speaker={listen.speaker} itemId={block.id} text={block.text} blocked={listen.blocked} />}
+          {!live && block.text.trim() && (listen || onBranch) && (
+            <div className="msg-actions-row">
+              {listen && <ListenButton speaker={listen.speaker} itemId={block.id} text={block.text} blocked={listen.blocked} />}
+              {onBranch && (
+                <div className="msg-actions">
+                  <BranchButton blocked={branchBlocked} onBranch={() => onBranch(block.id)} />
+                </div>
+              )}
+            </div>
+          )}
           <StoredTime at={block.at} />
           {block.usage && !live && <ReplyUsageLine usage={block.usage} />}
         </div>
@@ -620,7 +678,9 @@ const BlockView = memo(
     a.listen?.speaker === b.listen?.speaker &&
     a.listen?.blocked === b.listen?.blocked &&
     a.canRetry === b.canRetry &&
-    a.onOutgoing === b.onOutgoing,
+    a.onOutgoing === b.onOutgoing &&
+    a.onBranch === b.onBranch &&
+    a.branchBlocked === b.branchBlocked,
 );
 
 /**
@@ -684,7 +744,7 @@ function ToolRow({ t }: { t: ToolItem }) {
   const [open, setOpen] = useState(false);
   const jump = useContext(JumpContext);
   useEffect(() => {
-    if (jump && t.callId === jump.callId) setOpen(true);
+    if (jump?.callId && t.callId === jump.callId) setOpen(true);
   }, [jump?.at]);
   const summary = t.status === "stopped" ? "stopped" : t.summary;
   return (
@@ -752,7 +812,7 @@ function ToolGroup({ tools }: { tools: ToolItem[] }) {
   const [open, setOpen] = useState(false);
   const jump = useContext(JumpContext);
   useEffect(() => {
-    if (jump && tools.some((t) => t.callId === jump.callId)) setOpen(true);
+    if (jump?.callId && tools.some((t) => t.callId === jump.callId)) setOpen(true);
   }, [jump?.at]);
   if (tools.length === 1)
     return (
@@ -804,6 +864,7 @@ function Composer({
   screenshots,
   screenshotKeys,
   commands,
+  templates = NO_PROJECTS,
 }: {
   offline: boolean;
   /** Enter, and the Queue button, add the message to the chat's queue (`onQueue`, which says why it couldn't). */
@@ -831,6 +892,7 @@ function Composer({
   screenshots?: ScreenshotDesk;
   screenshotKeys?: string;
   commands?: CommandHost;
+  templates?: TemplateHere;
 }) {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const focused = useRef(autoFocus);
@@ -975,6 +1037,9 @@ function Composer({
     ta.style.height = Math.min(ta.scrollHeight, 240) + "px";
   }, [text]);
 
+  // The template library; Insert puts its message in the draft, never sends it.
+  const [picking, setPicking] = useState(false);
+
   const sendable = attaching === 0 && (!!text.trim() || attachments.length > 0);
   const slash = useSlashCommands(commands, text, onText, taRef);
   const send = () => {
@@ -1079,6 +1144,9 @@ function Composer({
               <Camera size={16} />
             </button>
           )}
+          <button className="icon-btn" title="Templates" aria-label="Templates" aria-haspopup="dialog" onClick={() => setPicking(true)}>
+            <FileText size={16} />
+          </button>
           {modelControls}
           {!dictation.active && <span className="composer-keys">{queueing ? "Enter to queue" : "Enter to send"} · Shift+Enter for a new line</span>}
           {queueing && onQueue && (
@@ -1100,6 +1168,21 @@ function Composer({
         </div>
         {dictation.active && <DictationStrip dictation={dictation} />}
       </div>
+      {picking && (
+        <Templates
+          here={templates}
+          draft={text}
+          returnTo={taRef}
+          onClose={() => setPicking(false)}
+          onInsert={(next) => {
+            onText(next);
+            // After React has put the new text in.
+            requestAnimationFrame(() => taRef.current?.setSelectionRange(next.length, next.length));
+          }}
+        />
+      )}
     </div>
   );
 }
+
+const NO_PROJECTS: TemplateHere = { scope: "", projects: [], here: [] };
