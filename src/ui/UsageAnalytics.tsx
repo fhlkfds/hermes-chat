@@ -1,4 +1,4 @@
-// Usage analytics (GLOSSARY.md "Usage analytics", ADR 0023): where tokens and recorded cost add up, across chats,
+// Usage analytics (GLOSSARY.md "Usage analytics", ADR 0025): where tokens and recorded cost add up, across chats,
 // models, projects and profiles, from the totals Hermes stored for each chat. Nothing here prices anything: each cost
 // is what Hermes recorded, labelled by how it got it, and every total says how much of the usage it covers.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";

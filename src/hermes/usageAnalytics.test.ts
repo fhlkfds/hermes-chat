@@ -1,4 +1,4 @@
-// Usage analytics (usageAnalytics.ts, ADR 0023): reading every chat started in a period, adding up Hermes's stored
+// Usage analytics (usageAnalytics.ts, ADR 0025): reading every chat started in a period, adding up Hermes's stored
 // totals without counting anything twice, labelling costs by how Hermes got them, and the CSV.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row, type SessionRow } from "./fakeHermes";

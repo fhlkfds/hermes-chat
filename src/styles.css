@@ -1746,7 +1746,7 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .terminal-btn { position: relative; }
 .terminal-dot { position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; background: var(--ok); }
 
-/* Usage analytics (UsageAnalytics.tsx, ADR 0023): filters in one row, token tiles, the recorded cost and what it
+/* Usage analytics (UsageAnalytics.tsx, ADR 0025): filters in one row, token tiles, the recorded cost and what it
    covers, and sortable breakdown tables that scroll sideways in a narrow pane. Cost-kind colours are the dataviz
    reference palette's first four categorical slots, validated for both modes; "Unknown" is neutral grey. */
 .usage-screen { --cost-actual: #3987e5; --cost-estimated: #d95926; --cost-partial: #199e70; --cost-included: #c98500; --cost-unknown: #6b6b74; }

@@ -2698,7 +2698,7 @@ export class Hermes {
   }
 
   /**
-   * How Usage analytics reads Hermes (usageAnalytics.ts, ADR 0023): the stored session rows, every source and archived
+   * How Usage analytics reads Hermes (usageAnalytics.ts, ADR 0025): the stored session rows, every source and archived
    * ones too, newest started first; one stored session by id; and Hermes's own sums for a rolling period. Every request
    * names its profile, and reads only while connected.
    */

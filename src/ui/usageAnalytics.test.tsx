@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// The Usage screen (UsageAnalytics.tsx, ADR 0023) against a fake Hermes whose list and analytics routes answer as the
+// The Usage screen (UsageAnalytics.tsx, ADR 0025) against a fake Hermes whose list and analytics routes answer as the
 // deployed `bf0203a` does. Every chat and figure is a fixture.
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";

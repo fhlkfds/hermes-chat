@@ -480,7 +480,7 @@ export function Main({
   // Outputs covers the chat panes too, but not the preview pane, where its files open.
   const [outputsOpen, setOutputsOpen] = useState(false);
   const [outputsScope, setOutputsScope] = useState<OutputsScope>("chat");
-  // Usage analytics covers the chat panes too (ADR 0023). It reads Hermes afresh each time it opens.
+  // Usage analytics covers the chat panes too (ADR 0025). It reads Hermes afresh each time it opens.
   const [usageOpen, setUsageOpen] = useState(false);
   const usageIo = useMemo(() => hermes.usageIo(), [hermes]);
   const listProfiles = useCallback(() => hermes.profiles(), [hermes]);
