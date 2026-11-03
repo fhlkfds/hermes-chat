@@ -38,11 +38,12 @@ import { ModelSettingsApi } from "./modelSettings";
 import { ToolsetsApi } from "./toolsets";
 import { memoryApi, type MemoryApi } from "./memory";
 import type { OpenPipe, Pipe, PipeEvent, RestMethod, Route, Speech, Transcript, VoiceSetup } from "./pipe";
-import { RemoteFilesError, previewSupport, remoteFiles, type RemoteFiles } from "./remoteFiles";
+import { RemoteFilesError, previewSupport, remoteFiles, type EditIo, type RemoteFiles } from "./remoteFiles";
 import { isUnsecure } from "./unsecure";
 import { providerKeys, readyProviders, type ProviderSetup, type SavedKey } from "./setup";
 import { restartHold } from "./unsaved";
 import { hostFileView, readServerFile, type FileView } from "./preview";
+import { agentFsEditIo } from "./artifacts";
 import { splitPath, type OutputsIo, type StoredRow as StoredOutputRow } from "./outputs";
 import type { UsageIo } from "./usageAnalytics";
 import { compactResultOf, compactionsOf, readingOf, type CompactResult, type CompactionHistory, type CompactionRow, type ContextReading } from "./contextInspect";
@@ -603,6 +604,37 @@ export class Hermes {
     },
     cancel: (id) => this.pipe?.cancelTransfer(id) ?? Promise.resolve(),
   });
+
+  /**
+   * How an artifact on the machine where `profile`'s tools run is read and saved (artifacts.ts `agentFsEditIo`, ADR
+   * 0027). A save starts only while connected, and Rust stops it when the connection closes or is replaced.
+   */
+  artifactFs(profile: string): EditIo {
+    return agentFsEditIo((pathAndQuery, maxBytes) => this.restGet(pathAndQuery, maxBytes), {
+      saveText: (id, p, path, text) => {
+        const pipe = this.pipe;
+        if (!pipe || this.closing || this.snapshot.status !== "connected") return Promise.reject(new Error("Not connected to Hermes."));
+        return pipe.fsSaveText(id, p, path, text);
+      },
+      cancel: (id) => this.pipe?.cancelTransfer(id) ?? Promise.resolve(),
+    }, profile);
+  }
+
+  /**
+   * Asks Hermes for an edit of an artifact with legacy `llm.oneshot` (research doc, "Artifacts"): a stateless model call
+   * with no tools, which adds nothing to any chat. When the chat that made the file is live in this app, its runtime
+   * session lends its own model (`lent`); otherwise Hermes uses the profile's Text generation model, as Regenerate
+   * title does. A missing sign-in for that model's provider is a `TitleModelUnavailable`.
+   */
+  async askForEdit(o: { profile: string; chatId?: string; instructions: string; input: string; maxTokens: number }): Promise<{ text: string; lent: boolean }> {
+    const sid = o.chatId && o.profile === this.profile ? this.snapshot.chats.find((c) => c.id === o.chatId)?.runtimeId : undefined;
+    const params = { profile: o.profile, instructions: o.instructions, input: o.input, max_tokens: o.maxTokens, temperature: 0.2, ...(sid && { session_id: sid }) };
+    const { text } = (await this.request("llm.oneshot", params).catch((e) => {
+      throw (e instanceof RpcError && titleModelUnavailable(e.message, o.profile)) || e;
+    })) as { text?: unknown };
+    if (typeof text !== "string") throw new Error("Hermes didn't answer with text.");
+    return { text, lent: !!sid };
+  }
 
   constructor(
     private openPipe: OpenPipe,

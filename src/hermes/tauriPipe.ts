@@ -83,6 +83,7 @@ export function tauriPipe(d: SignInDetails): OpenPipe {
         return invoke<string>("files_upload", { id, token, path, overwrite, onProgress: channel }).catch(asError);
       },
       saveText: (id, path, text, overwrite) => invoke<string>("files_save_text", { id, path, text, overwrite }).catch(asError),
+      fsSaveText: (id, profile, path, text) => invoke<string>("fs_save_text", { id, profile, path, text }).catch(asError),
       cancelTransfer: (id) => invoke("files_cancel", { id }),
       close: () => invoke("hermes_disconnect"),
     };

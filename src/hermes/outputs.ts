@@ -258,6 +258,24 @@ export function previewable(o: Output): { ok: true } | { ok: false; why: string 
   return { ok: false, why: `The preview can't show ${TYPE_LABEL[type].toLowerCase()} files.` };
 }
 
+/** The most the artifact editor opens (textEdit.ts `EDIT_MAX_BYTES`). */
+const EDIT_MAX = 1024 * 1024;
+
+/**
+ * Whether the file can be opened in the artifact editor beside the chat (ADR 0029), and why not: a text file, such as
+ * Markdown, plain text or code, that a tool wrote or the owner added, up to 1 MB. The editor itself checks the bytes
+ * (UTF-8, one kind of line end) once it reads them.
+ */
+export function editable(o: Output): { ok: true } | { ok: false; why: string } {
+  if (o.how === "speech" || o.how === "image") return { ok: false, why: "Only text files can be edited." };
+  if (o.availability?.state === "missing") return { ok: false, why: "The file isn't at this path any more." };
+  if (o.availability?.state === "folder") return { ok: false, why: "This path is a folder now." };
+  if (o.size !== undefined && o.size > EDIT_MAX) return { ok: false, why: "It's over 1 MB, the most the editor opens." };
+  const type = typeOf(o.path);
+  if (type === "text" || (type === "other" && !extensionOf(o.path))) return { ok: true };
+  return { ok: false, why: "Only text files, such as Markdown or plain text, can be edited." };
+}
+
 /** What made it, in a few words. */
 export const HOW_LABEL: Record<OutputHow, string> = {
   written: "Written by write_file",

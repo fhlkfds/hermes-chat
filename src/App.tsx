@@ -41,6 +41,8 @@ import type { VoiceApi } from "./ui/Voice";
 import { SearchPalette } from "./ui/Search";
 import { SettingsScreen, type PersonaWiring } from "./ui/Settings";
 import { LeavePersona, type LeaveWhat } from "./ui/LeavePersona";
+import { LeaveArtifacts } from "./ui/ArtifactEditor";
+import { ArtifactStore, artifactIo, artifactKey, isDirty } from "./hermes/artifacts";
 import { LeaveMemoryEdit, useCloseGuard } from "./ui/LeaveMemoryEdit";
 import { tauriCloseGuard, type CloseGuard } from "./ui/tauriWindow";
 import { FileBrowser } from "./ui/FileBrowser";
@@ -437,17 +439,27 @@ export function Main({
     memoryDirty.current = dirty;
     setMemoryUnsaved(dirty);
   }, []);
-  const [leaving, setLeaving] = useState<{ edit: "persona" | "memory"; what: LeaveWhat; go: () => void; stay?: () => void }>();
-  /** Runs `go` now, or once the owner agrees to leave an unsaved persona or memory edit behind. `stay` runs if they don't. */
+  // Artifacts open to edit beside the chat (artifacts.ts, ADR 0029): their drafts live in memory for this sign-in, so
+  // moving around the app keeps them, and only signing out or closing the window would drop one.
+  const artifacts = useMemo(
+    () => new ArtifactStore((ref) => artifactIo({ host: ref.host, files: hermes.files, fs: hermes.artifactFs(ref.profile) }), (o) => hermes.askForEdit(o)),
+    [hermes],
+  );
+  const artSnap = useSyncExternalStore(artifacts.subscribe, artifacts.getSnapshot);
+  const artifactUnsaved = [...artSnap.values()].some(isDirty);
+  const [leaving, setLeaving] = useState<{ edit: "persona" | "memory" | "artifact"; what: LeaveWhat; go: () => void; stay?: () => void }>();
+  /** Runs `go` now, or once the owner agrees to leave an unsaved persona, memory or artifact edit behind. `stay` runs if they don't. */
   const guard = (go: () => void, what: LeaveWhat = "leave", stay?: () => void) => {
-    if (memoryDirty.current) return setLeaving({ edit: "memory", what, go, stay });
-    if (personaDirty.current) return setLeaving({ edit: "persona", what, go, stay });
-    go();
+    // Signing out or closing drops artifact edits too: once a settings edit is left, they are asked about in turn.
+    const next = what === "signout" || what === "close" ? () => (artifacts.unsaved().length ? setLeaving({ edit: "artifact", what, go, stay }) : go()) : go;
+    if (memoryDirty.current) return setLeaving({ edit: "memory", what, go: next, stay });
+    if (personaDirty.current) return setLeaving({ edit: "persona", what, go: next, stay });
+    next();
   };
   const guardRef = useRef(guard);
   guardRef.current = guard;
   // Closing the window asks too, only while there is something to lose. A memory edit also holds a page reload.
-  useCloseGuard(memoryUnsaved, (close) => guardRef.current(close, "close"));
+  useCloseGuard(memoryUnsaved || artifactUnsaved, (close) => guardRef.current(close, "close"));
   const guardCloseRef = useRef(guardClose);
   useEffect(() => {
     if (!personaUnsaved) return;
@@ -1389,7 +1401,19 @@ export function Main({
             showMemory={showMemory}
             onClearCache={() => hermes.clearCache()}
             onPullOlder={() => hermes.pullOlderHistory()}
-            onSignOut={() => new Promise<void>((done) => guard(() => void onSignOut().finally(done), "signout", done))}
+            onSignOut={() =>
+              new Promise<void>((done) =>
+                guard(
+                  () => {
+                    // Nothing an artifact held is kept for another sign-in.
+                    artifacts.clear();
+                    void onSignOut().finally(done);
+                  },
+                  "signout",
+                  done,
+                ),
+              )
+            }
             onSetUp={onSetUp && (() => guard(onSetUp))}
             onClose={() =>
               guard(() => {
@@ -1451,6 +1475,8 @@ export function Main({
             onAdd={(path) => outputsIndex.add(path, shownOutputsScope === "chat" ? (outputsChatId ?? undefined) : undefined)}
             onRemove={(key) => outputsIndex.remove(key)}
             onPreview={(o) => openPreview({ kind: "server", path: o.path, ...(o.host && { host: true }) })}
+            onEdit={(o) => openPreview({ kind: "artifact", ref: { scope, profile, path: o.path, host: !!o.host, ...(o.chatId && { chatId: o.chatId }) } })}
+            unsavedEdit={(o) => isDirty(artSnap.get(artifactKey({ scope, host: !!o.host, path: o.path })))}
             onJump={(o) => {
               if (!o.chatId || !o.callId) return;
               if (!chats.some((c) => c.id === o.chatId)) {
@@ -1507,6 +1533,8 @@ export function Main({
               onOpen={openPreview}
               onHide={() => setPreviewHidden(true)}
               onClose={() => setPreview(null)}
+              artifacts={artifacts}
+              connected={status === "connected"}
             />
           )}
       </main>
@@ -1537,6 +1565,21 @@ export function Main({
             setLeaving(undefined);
             onMemoryDirty(false);
             setMemoryDiscards((n) => n + 1);
+            leaving.go();
+          }}
+        />
+      )}
+      {leaving?.edit === "artifact" && (leaving.what === "signout" || leaving.what === "close") && (
+        <LeaveArtifacts
+          names={artifacts.unsaved().map((a) => a.name)}
+          what={leaving.what}
+          onStay={() => {
+            leaving.stay?.();
+            setLeaving(undefined);
+          }}
+          onDiscard={() => {
+            setLeaving(undefined);
+            artifacts.clear();
             leaving.go();
           }}
         />

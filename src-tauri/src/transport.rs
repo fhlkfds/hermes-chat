@@ -992,6 +992,38 @@ impl Dashboard {
         }
     }
 
+    /// Writes an artifact's whole new text to `path` where `profile`'s tools run, through the agent fs route `POST
+    /// api/fs/write-text?profile=` (ADR 0029). That is the machine an Output written by `write_file` or `patch` is on:
+    /// the profile's SSH workspace when it has one, else the dashboard's own. Hermes stages the text beside the file and
+    /// renames it into place, and checks nothing else, so the webview checks the file's revision first and reads it
+    /// back after; this only writes. Only a full path is sent, never a credential file (`protected_server_path`: Hermes
+    /// doesn't guard this route), and never more than Hermes takes. Returns Hermes's answer.
+    pub async fn write_agent_text(&self, profile: &str, path: &str, text: &str) -> Result<String, TransportError> {
+        if !(path.starts_with('/') || path.starts_with("~/")) || path.contains('\0') || path.ends_with('/') {
+            return Err(TransportError::NotRelayed(format!("writes to {path}: not a full path to a file")));
+        }
+        if path.split('/').any(|seg| seg == "..") {
+            return Err(TransportError::NotRelayed(format!("writes to {path}: it has '..' in it")));
+        }
+        if protected_server_path(path) {
+            return Err(TransportError::NotRelayed(format!("writes to {path}, a credential file Hermes keeps out of reach")));
+        }
+        let size = text.len() as u64;
+        if size > AGENT_TEXT_MAX_BYTES {
+            return Err(TransportError::FileTooLarge { size, max: AGENT_TEXT_MAX_BYTES });
+        }
+        let query = url::form_urlencoded::Serializer::new(String::new()).append_pair("profile", profile).finish();
+        let (url, _) = relay_url(&self.base, "api/fs/write-text", &query)?;
+        let body = serde_json::json!({ "path": path, "content": text });
+        let resp = self.http.post(url).header(header::COOKIE, self.cookie_header()).json(&body).send().await.map_err(unreachable)?;
+        self.keep_cookies(&resp);
+        match resp.status() {
+            s if s.is_success() => resp.text().await.map_err(unreachable),
+            StatusCode::UNAUTHORIZED => Err(TransportError::SignedOut),
+            _ => Err(unexpected(resp, &self.headers).await),
+        }
+    }
+
     /// Take in every Set-Cookie: a new value replaces the old one, an empty one deletes it. Only
     /// `name=value` is kept; the dashboard is the only site this jar talks to.
     fn keep_cookies(&self, resp: &reqwest::Response) {
@@ -1031,6 +1063,8 @@ pub enum UploadSource {
 
 /// The most Hermes takes or sends of one managed file (`_MANAGED_FILE_MAX_BYTES` at `bf0203a`).
 pub const MANAGED_FILE_MAX_BYTES: u64 = 100 * MIB;
+/// The most `POST api/fs/write-text` takes (`_FS_TEXT_WRITE_MAX_BYTES` at `bf0203a`).
+pub const AGENT_TEXT_MAX_BYTES: u64 = 8 * MIB;
 const UPLOAD_CHUNK_BYTES: usize = 256 * 1024;
 
 /// A server path Hermes never lists, reads or sends (`_is_sensitive_path` in `hermes_cli/web_routers/files.py` at
