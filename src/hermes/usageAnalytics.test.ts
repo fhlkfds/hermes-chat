@@ -6,6 +6,7 @@ import { connect } from "./transport";
 import {
   CSV_COLUMNS,
   MAX_PAGES,
+  MAX_SEGMENT_READS,
   NO_PROJECT,
   StaleRead,
   chatCost,
@@ -324,6 +325,39 @@ describe("Usage Hermes didn't record", () => {
     const [check] = crossCheck(data);
     expect(check.complete).toBe(false);
     expect(check.hermes.helpers.map((h) => h.task)).toEqual(["title_generation"]);
+  });
+});
+
+describe("Comparing with Hermes's own sums", () => {
+  const lineageRow = (i: number) => ({ id: `t${i}`, started_at: NOW / 1000 - i, _lineage_root_id: `r${i}`, _lineage_ids: [`r${i}`, `t${i}`], input_tokens: 10, output_tokens: 1, cache_read_tokens: 0, api_call_count: 1 });
+  const hermesTotals = async () => ({ totals: { total_sessions: 2, total_input: 20, total_output: 2, total_cache_read: 0, total_api_calls: 2 } });
+
+  it("doesn't compare when a segment couldn't be read, so the gap isn't put down to subagent runs", async () => {
+    const data = await collectUsage({ page: async () => ({ rows: [lineageRow(0)], total: 1 }), session: () => Promise.reject(new Error("The dashboard answered 500: x")), hermesTotals }, ["default"], week());
+    const [check] = crossCheck(data);
+    expect(check).toMatchObject({ complete: false, incomparable: "segments" });
+  });
+
+  it("doesn't compare when the refresh ran out of segment reads", async () => {
+    const rows = Array.from({ length: MAX_SEGMENT_READS + 1 }, (_, i) => lineageRow(i));
+    const session = vi.fn(async (_p: string, id: string) => ({ id, input_tokens: 10, output_tokens: 1, cache_read_tokens: 0, api_call_count: 1 }));
+    const data = await collectUsage({ page: async (_p, offset) => ({ rows: rows.slice(offset, offset + 100), total: rows.length }), session, hermesTotals }, ["default"], week());
+    expect(session).toHaveBeenCalledTimes(MAX_SEGMENT_READS);
+    expect(data.segmentsSkipped).toBe(1);
+    expect(crossCheck(data)[0]).toMatchObject({ complete: false, incomparable: "segments" });
+  });
+
+  it("doesn't compare when a chat didn't report a count that is compared", async () => {
+    const row = { ...lineageRow(0), _lineage_ids: undefined, _lineage_root_id: undefined, cache_read_tokens: undefined };
+    const data = await collectUsage({ page: async () => ({ rows: [row], total: 1 }), session: vi.fn(), hermesTotals }, ["default"], week());
+    expect(crossCheck(data)[0]).toMatchObject({ complete: false, incomparable: "counts" });
+  });
+
+  it("compares when everything was read", async () => {
+    const session = async (_p: string, id: string) => ({ id, input_tokens: 10, output_tokens: 1, cache_read_tokens: 0, api_call_count: 1 });
+    const data = await collectUsage({ page: async () => ({ rows: [lineageRow(0)], total: 1 }), session, hermesTotals }, ["default"], week());
+    expect(crossCheck(data)[0]).toMatchObject({ complete: true, sessions: 2, input: 20 });
+    expect(crossCheck(data)[0].incomparable).toBeUndefined();
   });
 });
 

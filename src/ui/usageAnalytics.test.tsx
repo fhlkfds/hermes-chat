@@ -276,6 +276,26 @@ describe("The Usage screen", () => {
     expect(cells[4].textContent).toBe("30");
   });
 
+  it("marks every count of a chat with an unread segment, and doesn't compare it with Hermes's sums", async () => {
+    const io: UsageIo = {
+      page: async () => ({ rows: [{ ...fixtureRow("tip", 1, 1000), _lineage_root_id: "root", _lineage_ids: ["root", "tip"] }], total: 1 }),
+      session: () => Promise.reject(new Error("The dashboard answered 500: x")),
+      hermesTotals: async () => ({ totals: { total_sessions: 2, total_input: 3000, total_output: 30, total_cache_read: 0, total_api_calls: 4 } }),
+    };
+    const user = userEvent.setup();
+    render(<UsageAnalytics {...props(io)} />);
+    await waitFor(() => expect(tile("Chats")).toBe("1+"));
+    const groupRow = screen.getByRole("region", { name: "Breakdown" }).querySelector("tbody tr")!;
+    // Input, cache read, cache written, output, reasoning, calls: all short of the unread segment.
+    for (const td of [...groupRow.querySelectorAll("td")].slice(1, 7)) expect(td.textContent).toMatch(/\+$/);
+    const hermes = screen.getByRole("region", { name: "Hermes's own totals" });
+    expect(hermes.textContent).toMatch(/Some segments of compressed chats couldn't be read, so they don't compare/);
+    expect(hermes.textContent).not.toMatch(/more sessions/);
+    await user.click(screen.getByRole("button", { name: /^m1: show its 1 chats/ }));
+    const cells = within(screen.getByRole("region", { name: /^Model: m1/ }).querySelector("tbody tr")!).getAllByRole("cell");
+    for (const i of [2, 3, 4, 5, 6]) expect(cells[i].textContent).toMatch(/\+$/);
+  });
+
   it("says why a custom period isn't one, and reads nothing for it", async () => {
     const page = vi.fn(async () => ({ rows: [], total: 0 }));
     const user = userEvent.setup();

@@ -591,7 +591,7 @@ function SortHeader({ col, sort, onSort, children }: { col: SortKey; sort: Sort;
 const cell = (t: Totals, field: CountField, short: boolean) => (
   <>
     {field === "calls" ? full(t.counts.calls) : tokens(t.counts[field])}
-    {t.unreported[field] || short ? <span className="usage-plus">+</span> : null}
+    {t.unreported[field] || t.partialChats || short ? <span className="usage-plus">+</span> : null}
   </>
 );
 
@@ -654,7 +654,7 @@ function GroupTable({
                   {g.totals.totalShort || unreadChats ? <span className="usage-plus">+</span> : null}
                 </td>
                 <td title={cost.detail}>{cost.short}</td>
-                <td>{g.totals.cost.tokens ? `${pct(coverage(g.totals.cost))}${g.totals.cost.incomplete ? " of read" : ""}` : "—"}</td>
+                <td>{g.totals.cost.tokens ? `${pct(coverage(g.totals.cost))}${g.totals.cost.incomplete || unreadChats ? " of read" : ""}` : "—"}</td>
               </tr>
             );
           })}
@@ -729,8 +729,8 @@ function ChatTable({ chats, sort, onSort, zone, shownProfile, onOpen }: { chats:
                     ) : (
                       <>
                         {f === "calls" ? full(c.counts.calls) : tokens(c.counts[f])}
-                        {c.unreported.includes(f) && (
-                          <span className="usage-plus" title="Part of this chat didn't report this count">+</span>
+                        {(c.unreported.includes(f) || c.missing > 0) && (
+                          <span className="usage-plus" title="Part of this chat didn't report this count, or couldn't be read">+</span>
                         )}
                       </>
                     )}
@@ -824,7 +824,11 @@ function HermesTotalsCard({ data, filtered }: { data: UsageDataset; filtered: bo
                     <tr key={`${c.profile}-c`}>
                       <td>Chats here</td>
                       <td colSpan={6} className="usage-incomparable">
-                        Not every chat in this profile could be read, so they don't compare.
+                        {c.incomparable === "chats"
+                          ? "Not every chat in this profile could be read, so they don't compare."
+                          : c.incomparable === "segments"
+                            ? "Some segments of compressed chats couldn't be read, so they don't compare."
+                            : "Some chats didn't report every count compared here, so they don't compare."}
                       </td>
                     </tr>
                   ),

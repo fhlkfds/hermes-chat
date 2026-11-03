@@ -694,8 +694,10 @@ export type CrossCheck = {
   output: number;
   cacheRead: number;
   calls: number;
-  /** Every chat in the period was read, so the chats' figures compare with Hermes's. */
+  /** Every chat in the period was read, every segment of it, with every count compared: the figures compare. */
   complete: boolean;
+  /** Why they don't, when they don't. */
+  incomparable?: "chats" | "segments" | "counts";
 };
 
 /** Hermes's own sums for each profile that gave them, beside its chats' when all of them were read. */
@@ -704,6 +706,10 @@ export function crossCheck(data: UsageDataset): CrossCheck[] {
     if (p.hermes?.state !== "ok") return [];
     const mine = data.chats.filter((c) => c.profile === p.profile);
     const t = totalsOf(mine);
+    // A missing segment or count would show as a difference Hermes's own figures don't have.
+    const compared: CountField[] = ["input", "output", "cacheRead", "calls"];
+    const incomparable =
+      p.state !== "ok" ? ("chats" as const) : mine.some((c) => c.missing) ? ("segments" as const) : mine.some((c) => c.unreported.some((f) => compared.includes(f))) ? ("counts" as const) : undefined;
     return [
       {
         profile: p.profile,
@@ -714,7 +720,8 @@ export function crossCheck(data: UsageDataset): CrossCheck[] {
         output: t.counts.output,
         cacheRead: t.counts.cacheRead,
         calls: t.counts.calls,
-        complete: p.state === "ok",
+        complete: !incomparable,
+        ...(incomparable && { incomparable }),
       },
     ];
   });
