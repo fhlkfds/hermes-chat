@@ -1,0 +1,30 @@
+# Server file edits check the revision first, and read it back after
+
+A text file shown in the Server files preview can be edited and saved back (#94). Hermes's managed-files routes have no edit or revision of their own. So the editor reads the file's exact bytes with `GET /api/files/read`, and saves the whole new text through the upload route ADR 0023 uses, `POST /api/files/upload-stream` with `overwrite=true`. It guards the write itself, as Persona does (ADR 0014).
+
+## Decisions
+
+- **What can be edited.** Only a file the preview shows as text, up to 1 MiB, and only when its bytes round-trip. That means valid UTF-8 (`TextDecoder` with `fatal`), not binary, and with one kind of line end. LF, or CRLF throughout, is fine. Mixed line ends and lone CRs aren't, because the editor's text box would change them. A byte order mark is kept. A CRLF file is edited as LF and written back as CRLF, so a save changes only the lines the owner changed. Credential paths aren't edited (ADR 0023).
+- **Revision.** Hermes has no revision for a file, so the editor makes one: the SHA-256 of the bytes it read.
+- **Save = review, check, write, read back.** Save first shows the diff from the file as opened to the edit (a Myers line diff, three lines of context). Saving then reads the file again. If its revision isn't the one the edit started from, nothing is written. Otherwise it writes, reads the file back, and says "saved" only when the bytes Hermes has hash to exactly what was sent. The saved bytes become the new revision, so the next save is checked against them.
+- **When the file changed on the server, keep both versions.** The owner's edit stays in the editor, and the dialog shows what changed on the server (diffed against the file as opened). There are three ways out, and none overwrites the server's version without the owner seeing it:
+  - **Merge**: a line-based three-way merge of the edit and the server's version, both from the file as opened. Changes in different places combine. Where both sides changed the same or neighbouring lines differently, both are kept between `<<<<<<< your edit` / `=======` / `>>>>>>> on the server now` markers. The merged text goes back into the editor, with the server's version as its new revision. Review and Save follow as usual, and the review warns if markers are left.
+  - **Reload theirs**: drop the edit, and edit the server's version.
+  - **Save mine as a copy**: write the edit beside the file under the first free `name (n).ext`, with `overwrite=false`, within the same 1 MiB limit, then read it back. A lost answer is settled by that read-back. If the read-back fails too, the copy's path is remembered, and trying again checks it first, so a retry never makes a second copy.
+  These are offered too when the file on the server can't be shown: it's gone, it's now a folder, it's grown past what the editor opens, or it can't be read. Then the copy is the way to keep the edit.
+  The same choices follow a change that landed while the save ran: the read-back finds a third version.
+- **A lost answer** (no answer within 60 s, a dropped connection, or a gateway's 502, 503 or 504) is settled by the read-back. On a timeout, the app also stops the write it sent. If Hermes has the edit, it's saved. If it still has the file as opened, the edit wasn't saved and stays in the editor. Anything else is a conflict. Only answers Hermes gives before it writes count as refusals that changed nothing: 409, 413, 422, 403 `File is not writable`, and 500 `Could not write file`, which comes before the rename of a temp file. Hermes describes the written file after the rename, and that can fail too (500 `Could not stat path`). So any other answer is settled by reading the file back. The edit stays in the editor. Reads give up after 30 s, so a save always ends.
+- **The edit can't be lost by accident.** The editor covers the window. Tab stays inside it, and the app's keyboard shortcuts (such as Ctrl+N) don't reach past it. Cancel, Escape and closing the window with unsaved changes ask first. Closing the window during a save asks too, and Keep waiting goes back to the save. Only one save runs at a time, and a file opened after another can't be replaced by the first one's late answer. The edit lives only on screen and isn't kept on this computer. That's unlike Persona: a Server file can be anything, and the app has no business keeping copies of the server's files.
+
+## Considered options
+
+- **`POST /api/fs/write-text`.** It's the official desktop app's spot editor. It keeps the file's mode, but it's an agent fs route (ADR 0012): it follows a profile's SSH workspace and ignores the managed-files root lock, so it may write somewhere other than what the screen lists. Rejected.
+- **Compare size and modified time instead of a hash.** Rejected. Times are seconds-coarse on some filesystems, and an edit that keeps the size would slip through.
+- **Keep unsaved edits on this computer** (as Persona does). Rejected for now, as above.
+
+## Consequences
+
+- **The check-then-write gap.** One round trip separates the revision check from the write, and Hermes has no conditional write. So a change that lands in that gap is overwritten. The read-back then finds our text and reports a save. ADR 0023, "Gaps", has the backend design (`expected_sha256` checked right before `os.replace`) that would close it.
+- **Permissions.** Saving replaces the file with a new one readable only by the server's user (`0600`), because Hermes's upload doesn't keep the old mode (ADR 0023, "Gaps"). The editor says so before every save.
+- A save reads the file twice and writes it once, each at most 1 MiB plus base64.
+- The merge is line-based, and adjacent edits from both sides count as a conflict. That's conservative: it never guesses the order of two insertions at the same place. Two sides' versions of a stretch count as the same only line for line. So a deleted line and a line made blank are different changes, and so is a final newline removed on one side and kept on the other.

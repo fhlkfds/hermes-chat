@@ -524,6 +524,18 @@ export class Hermes {
       if (!pipe || this.closing || this.snapshot.status !== "connected") return Promise.reject(new Error("Not connected to Hermes."));
       return pipe.download(id, path, name, onProgress);
     },
+    pickUpload: () => this.pipe?.pickUpload() ?? Promise.reject(new Error("Not connected to Hermes.")),
+    discardUpload: (token) => this.pipe?.discardUpload(token) ?? Promise.resolve(),
+    upload: (id, token, path, overwrite, onProgress) => {
+      const pipe = this.pipe;
+      if (!pipe || this.closing || this.snapshot.status !== "connected") return Promise.reject(new Error("Not connected to Hermes."));
+      return pipe.upload(id, token, path, overwrite, onProgress);
+    },
+    saveText: (id, path, text, overwrite) => {
+      const pipe = this.pipe;
+      if (!pipe || this.closing || this.snapshot.status !== "connected") return Promise.reject(new Error("Not connected to Hermes."));
+      return pipe.saveText(id, path, text, overwrite);
+    },
     cancel: (id) => this.pipe?.cancelTransfer(id) ?? Promise.resolve(),
   });
 

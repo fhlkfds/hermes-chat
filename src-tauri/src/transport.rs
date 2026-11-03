@@ -915,6 +915,83 @@ impl Dashboard {
         Ok(written)
     }
 
+    /// Uploads `source` (a local file, or the text of an edit) to `server_path` through the managed-files route `POST
+    /// api/files/upload-stream` (ADR 0023), streamed one chunk at a time. Hermes writes it to a temp file beside the
+    /// target and renames it into place, so a cancelled or broken upload never leaves part of a file there. With
+    /// `overwrite` false, Hermes refuses with 409 when a file is already there. Hermes doesn't keep credential files
+    /// out of its write routes, so a path it would never list or read (`protected_server_path`) is refused here,
+    /// before anything is sent. Returns Hermes's answer: the written entry as JSON.
+    pub async fn upload(
+        &self,
+        server_path: &str,
+        source: UploadSource,
+        overwrite: bool,
+        progress: impl Fn(u64, Option<u64>) + Send + Sync + 'static,
+    ) -> Result<String, TransportError> {
+        use tokio::io::AsyncReadExt;
+        if protected_server_path(server_path) {
+            return Err(TransportError::NotRelayed(format!("uploads to {server_path}, a credential file Hermes keeps out of reach")));
+        }
+        let name = server_path.rsplit('/').next().filter(|n| !n.is_empty() && *n != "." && *n != "..");
+        let Some(name) = name.map(str::to_owned) else {
+            return Err(TransportError::NotRelayed(format!("uploads to {server_path}")));
+        };
+        let part = match source {
+            UploadSource::Bytes(bytes) => {
+                let size = bytes.len() as u64;
+                if size > MANAGED_FILE_MAX_BYTES {
+                    return Err(TransportError::FileTooLarge { size, max: MANAGED_FILE_MAX_BYTES });
+                }
+                progress(0, Some(size));
+                let part = reqwest::multipart::Part::bytes(bytes);
+                progress(size, Some(size));
+                part
+            }
+            UploadSource::File(local) => {
+                let io = |e: std::io::Error| TransportError::File(format!("couldn't read it on this computer: {e}"));
+                let file = tokio::fs::File::open(local).await.map_err(io)?;
+                let size = file.metadata().await.map_err(io)?.len();
+                if size > MANAGED_FILE_MAX_BYTES {
+                    return Err(TransportError::FileTooLarge { size, max: MANAGED_FILE_MAX_BYTES });
+                }
+                // The file as it was measured: no more than `size` bytes go, and a file that shrank meanwhile fails the upload
+                // rather than leaving a short file on the server.
+                let mut told = std::time::Instant::now();
+                progress(0, Some(size));
+                let chunks = futures_util::stream::try_unfold((file, 0u64), move |(mut file, sent)| {
+                    let more = (size - sent).min(UPLOAD_CHUNK_BYTES as u64) as usize;
+                    let elapsed = told.elapsed();
+                    if elapsed >= Duration::from_millis(100) || sent == size {
+                        progress(sent, Some(size));
+                        told = std::time::Instant::now();
+                    }
+                    async move {
+                        if more == 0 {
+                            return Ok(None);
+                        }
+                        let mut buf = vec![0u8; more];
+                        file.read_exact(&mut buf).await.map_err(|e| std::io::Error::new(e.kind(), format!("couldn't read it on this computer: {e}")))?;
+                        Ok::<_, std::io::Error>(Some((buf, (file, sent + more as u64))))
+                    }
+                });
+                reqwest::multipart::Part::stream_with_length(reqwest::Body::wrap_stream(chunks), size)
+            }
+        };
+        let part = part.file_name(name).mime_str("application/octet-stream").expect("a valid MIME type");
+        let form = reqwest::multipart::Form::new()
+            .text("path", server_path.to_owned())
+            .text("overwrite", if overwrite { "true" } else { "false" })
+            .part("file", part);
+        let (url, _) = relay_url(&self.base, "api/files/upload-stream", "")?;
+        let resp = self.http.post(url).header(header::COOKIE, self.cookie_header()).multipart(form).send().await.map_err(unreachable)?;
+        self.keep_cookies(&resp);
+        match resp.status() {
+            s if s.is_success() => resp.text().await.map_err(unreachable),
+            StatusCode::UNAUTHORIZED => Err(TransportError::SignedOut),
+            _ => Err(unexpected(resp, &self.headers).await),
+        }
+    }
+
     /// Take in every Set-Cookie: a new value replaces the old one, an empty one deletes it. Only
     /// `name=value` is kept; the dashboard is the only site this jar talks to.
     fn keep_cookies(&self, resp: &reqwest::Response) {
@@ -944,6 +1021,31 @@ fn blocking<T>(work: impl FnOnce() -> T) -> T {
         Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(work),
         _ => work(),
     }
+}
+
+/// What an upload sends: a local file the owner picked, read as it goes, or an edit's text, already in memory.
+pub enum UploadSource {
+    File(std::path::PathBuf),
+    Bytes(Vec<u8>),
+}
+
+/// The most Hermes takes or sends of one managed file (`_MANAGED_FILE_MAX_BYTES` at `bf0203a`).
+pub const MANAGED_FILE_MAX_BYTES: u64 = 100 * MIB;
+const UPLOAD_CHUNK_BYTES: usize = 256 * 1024;
+
+/// A server path Hermes never lists, reads or sends (`_is_sensitive_path` in `hermes_cli/web_routers/files.py` at
+/// `bf0203a`): `.env`, `.env.*`, `.envrc`, the credential stores, and anything under `mcp-tokens/` or `pairing/`, in
+/// any case. Hermes's write routes don't check these (it calls them "a separate threat class"), so the app refuses to
+/// write them, to keep the credential files the browser can't show from being overwritten unseen.
+pub fn protected_server_path(path: &str) -> bool {
+    const NAMES: [&str; 12] = [
+        "auth.json", "auth.lock", "credentials", "config.yaml", ".anthropic_oauth.json", "google_token.json",
+        "google_oauth_pending.json", "google_oauth.json", "webhook_subscriptions.json", "bws_cache.json",
+        "bws_cache.enc.json", ".git-credentials",
+    ];
+    let name = path.rsplit('/').next().unwrap_or_default().to_lowercase();
+    name == ".env" || name.starts_with(".env.") || name == ".envrc" || NAMES.contains(&name.as_str())
+        || path.split('/').any(|part| matches!(part.to_lowercase().as_str(), "mcp-tokens" | "pairing"))
 }
 
 /// A download's hidden part file beside its destination, removed when dropped unless `keep` was called: a failed,

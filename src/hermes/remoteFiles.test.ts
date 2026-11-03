@@ -6,8 +6,11 @@ import { connect, type Hermes } from "./transport";
 import {
   IMAGE_PREVIEW_MAX_BYTES,
   TEXT_PREVIEW_MAX_BYTES,
+  EDIT_DEADLINES,
   crumbs,
   explain,
+  freeName,
+  protectedPath,
   looksBinary,
   parseListing,
   previewSupport,
@@ -323,5 +326,222 @@ describe("downloads", () => {
     ])
       await expect(hermes.files.download(entry)).rejects.toThrow();
     expect(hermes.files.transfers()).toEqual([]);
+  });
+});
+
+describe("uploads", () => {
+  it("finds a free name for keeping both", () => {
+    expect(freeName("notes.md", new Set(["notes.md"]))).toBe("notes (2).md");
+    expect(freeName("notes.md", new Set(["notes.md", "notes (2).md"]))).toBe("notes (3).md");
+    expect(freeName(".bashrc", new Set([".bashrc"]))).toBe(".bashrc (2)");
+    expect(freeName("archive.tar.gz", new Set())).toBe("archive.tar (2).gz");
+  });
+
+  it("knows the credential paths Hermes hides, as the Rust side refuses them", () => {
+    for (const p of ["/a/.env", "/a/.ENV", "/a/.env.prod", "/a/.envrc", "/a/Auth.json", "/h/.hermes/config.yaml", "/a/mcp-tokens/x.json", "/a/Pairing/y", "/a/.git-credentials"]) expect(protectedPath(p), p).toBe(true);
+    for (const p of ["/a/env", "/a/my.env", "/a/config.yml", "/a/pairings/y", "/a/notes.md"]) expect(protectedPath(p), p).toBe(false);
+  });
+
+  it("counts an upload done only when the folder lists it at the size sent", async () => {
+    const { server, hermes } = await signedIn(homeDisk);
+    server.managedFiles.openDialog = () => ({ name: "a.txt", bytes: "hello" });
+    const picked = (await hermes.files.pickUpload())!;
+    const listing = await hermes.files.list("/home/liam");
+    // Something else on the server rewrites it as soon as Hermes has written it.
+    server.managedFiles.afterWrite = (at) => (server.managedFiles.nodes[at] = { text: "something else" });
+    await hermes.files.upload(listing, picked, "keep-both");
+    expect(hermes.files.transfers()[0]).toMatchObject({
+      state: "failed",
+      error: "Hermes said it saved it, but the folder lists a.txt at 14 bytes, not 5 bytes. Something else may have changed it since.",
+    });
+  });
+
+  it("reads back the size Rust sent, when the file grew after it was picked", async () => {
+    const { server, hermes } = await signedIn(homeDisk);
+    const file = { name: "grows.log", bytes: "abc" };
+    server.managedFiles.openDialog = () => file;
+    const picked = (await hermes.files.pickUpload())!;
+    expect(picked.size).toBe(3);
+    file.bytes = "abcdefg";
+    await hermes.files.upload(await hermes.files.list("/home/liam"), picked, "keep-both");
+    expect(hermes.files.transfers()[0]).toMatchObject({ state: "done", total: 7, done: 7 });
+    // A pick is good for one upload.
+    await hermes.files.upload(await hermes.files.list("/home/liam"), picked, "keep-both");
+    expect(hermes.files.transfers()[1]).toMatchObject({ state: "failed" });
+  });
+
+  it("says when the server's user may not write there", async () => {
+    const { server, hermes } = await signedIn(homeDisk);
+    server.managedFiles.nodes["/home/liam/locked"] = { dir: true, unreadable: true };
+    server.managedFiles.nodes["/home/liam/locked/x"] = { text: "x" };
+    server.managedFiles.openDialog = () => ({ name: "a.txt", bytes: "hello" });
+    const picked = (await hermes.files.pickUpload())!;
+    await hermes.files.upload({ path: "/home/liam/locked", entries: [], listedAt: 0 }, picked, "keep-both");
+    expect(hermes.files.transfers()[0]).toMatchObject({ state: "failed", error: "The Hermes server's user isn't allowed to write there." });
+  });
+});
+
+describe("editing", () => {
+  const notes: RemoteEntry = { name: "notes.md", path: "/home/liam/notes.md", kind: "file", size: 20 };
+  const text = (s: FakeHermes, p: string) => {
+    const n = s.managedFiles.nodes[p] as { text?: string; bytes?: string };
+    return n.text ?? new TextDecoder("utf-8", { ignoreBOM: true }).decode(Uint8Array.from(n.bytes!, (c) => c.charCodeAt(0)));
+  };
+
+  it("saves only over the revision it started from, and says saved once read back", async () => {
+    const { server, hermes } = await signedIn(homeDisk);
+    const base = await hermes.files.openForEdit(notes);
+    expect(base.text).toBe("# Notes\n\nCafé ☕\n");
+    const got = await hermes.files.saveEdit(base, "# Notes\n\nCafé ☕ and tea\n");
+    expect(got.kind).toBe("saved");
+    expect(text(server, "/home/liam/notes.md")).toBe("# Notes\n\nCafé ☕ and tea\n");
+    expect(server.managedFiles.saves).toMatchObject([{ path: "/home/liam/notes.md", overwrite: true }]);
+    // The saved file is the new base: saving again from it works.
+    const again = await hermes.files.saveEdit((got as { base: typeof base }).base, "x\n");
+    expect(again.kind).toBe("saved");
+  });
+
+  it("writes nothing when the file changed on the server since it was opened, and shows what it has now", async () => {
+    const { server, hermes } = await signedIn(homeDisk);
+    const base = await hermes.files.openForEdit(notes);
+    server.managedFiles.nodes["/home/liam/notes.md"] = { text: "# Notes\n\nedited elsewhere\n" };
+    const got = await hermes.files.saveEdit(base, "mine\n");
+    expect(got).toMatchObject({ kind: "conflict", after: false, theirs: { text: "# Notes\n\nedited elsewhere\n" } });
+    expect(server.managedFiles.saves).toEqual([]);
+    expect(text(server, "/home/liam/notes.md")).toBe("# Notes\n\nedited elsewhere\n");
+    server.managedFiles.nodes["/home/liam/notes.md"] = { dir: true };
+    delete server.managedFiles.nodes["/home/liam/notes.md"];
+    expect(await hermes.files.saveEdit(base, "mine\n")).toMatchObject({ kind: "conflict", theirs: { gone: true } });
+  });
+
+  it("reports a change that landed while the save ran, instead of saying saved", async () => {
+    const { server, hermes } = await signedIn(homeDisk);
+    const base = await hermes.files.openForEdit(notes);
+    server.managedFiles.afterWrite = (at) => (server.managedFiles.nodes[at] = { text: "someone else, just after\n" });
+    expect(await hermes.files.saveEdit(base, "mine\n")).toMatchObject({ kind: "conflict", after: true, theirs: { text: "someone else, just after\n" } });
+  });
+
+  it("settles a lost answer by reading the file back", async () => {
+    const { server, hermes } = await signedIn(homeDisk);
+    let base = await hermes.files.openForEdit(notes);
+    server.managedFiles.saveLost = { message: "Can't reach the Hermes dashboard: connection reset", landed: true };
+    const got = await hermes.files.saveEdit(base, "landed\n");
+    expect(got.kind).toBe("saved");
+    base = (got as { base: typeof base }).base;
+    server.managedFiles.saveLost = { message: "Can't reach the Hermes dashboard: connection reset", landed: false };
+    await expect(hermes.files.saveEdit(base, "lost\n")).rejects.toThrow(/^It wasn't saved: .* The server still has the file you started from\.$/);
+    expect(text(server, "/home/liam/notes.md")).toBe("landed\n");
+  });
+
+  it("reads back after a gateway's 502, and stops waiting on a save that gets no answer", async () => {
+    const { server, hermes } = await signedIn(homeDisk);
+    let base = await hermes.files.openForEdit(notes);
+    server.managedFiles.saveLost = { message: `The dashboard answered 502: <html>Bad Gateway</html>`, landed: true };
+    const got = await hermes.files.saveEdit(base, "via a gateway\n");
+    expect(got.kind).toBe("saved");
+    base = (got as { base: typeof base }).base;
+    server.managedFiles.saveLost = undefined;
+    server.managedFiles.saveGate = new Promise(() => {});
+    const was = EDIT_DEADLINES.writeMs;
+    EDIT_DEADLINES.writeMs = 50;
+    try {
+      await expect(hermes.files.saveEdit(base, "never answered\n")).rejects.toThrow("It wasn't saved: Hermes didn't answer within 0.05 s. The server still has the file you started from.");
+    } finally {
+      EDIT_DEADLINES.writeMs = was;
+    }
+  });
+
+  it("offers a copy when the file became a folder, and keeps copies within the editor's limit", async () => {
+    const { server, hermes } = await signedIn(homeDisk);
+    const base = await hermes.files.openForEdit(notes);
+    delete server.managedFiles.nodes["/home/liam/notes.md"];
+    server.managedFiles.nodes["/home/liam/notes.md/inner"] = { text: "x" };
+    expect(await hermes.files.saveEdit(base, "mine\n")).toMatchObject({ kind: "conflict", after: false, theirs: { why: "That isn't a regular file." } });
+    await expect(hermes.files.saveCopy(base, "x".repeat(MiB + 1))).rejects.toThrow(/saves files up to 1.0 MB/);
+    expect(await hermes.files.saveCopy(base, "mine\n")).toBe("/home/liam/notes (2).md");
+  });
+
+  it("settles a copy whose answer was lost by reading it back, so a retry makes no second copy", async () => {
+    const { server, hermes } = await signedIn(homeDisk);
+    const base = await hermes.files.openForEdit(notes);
+    server.managedFiles.saveLost = { message: "Can't reach the Hermes dashboard: connection reset", landed: true };
+    expect(await hermes.files.saveCopy(base, "copy\n")).toBe("/home/liam/notes (2).md");
+    expect(server.managedFiles.saves).toHaveLength(1);
+  });
+
+  it("reads back after a 500 Hermes sends once it has written, instead of saying nothing was saved", async () => {
+    const { server, hermes } = await signedIn(homeDisk);
+    let base = await hermes.files.openForEdit(notes);
+    // Even when the post-write error names a file that reads like a pre-write refusal.
+    for (const detail of ["Could not stat path: [Errno 2]", "Could not stat path: [Errno 2] '/x/Could not write file: y'"]) {
+      server.managedFiles.saveLost = { message: `The dashboard answered 500: ${JSON.stringify({ detail })}`, landed: true };
+      const got = await hermes.files.saveEdit(base, `landed ${detail.length}\n`);
+      expect(got.kind).toBe("saved");
+      base = (got as { base: typeof base }).base;
+    }
+  });
+
+  it("never takes a link to the original for a copy whose outcome wasn't known", async () => {
+    const { server, hermes } = await signedIn(homeDisk);
+    const base = await hermes.files.openForEdit(notes);
+    server.managedFiles.saveLost = { message: "Can't reach the Hermes dashboard: connection reset", landed: false };
+    server.managedFiles.readError = "Can't reach the Hermes dashboard: connection reset";
+    await expect(hermes.files.saveCopy(base, "# Notes\n\nCafé ☕\n")).rejects.toThrow(/couldn't be read back/);
+    server.managedFiles.saveLost = undefined;
+    server.managedFiles.readError = undefined;
+    // Meanwhile the copy's name became a link to the original, which holds the same text.
+    server.managedFiles.nodes["/home/liam/notes (2).md"] = { link: "/home/liam/notes.md" };
+    expect(await hermes.files.saveCopy(base, "# Notes\n\nCafé ☕\n")).toBe("/home/liam/notes (3).md");
+    expect(server.managedFiles.saves).toMatchObject([{ path: "/home/liam/notes (3).md" }]);
+  });
+
+  it("checks a copy whose outcome wasn't known before making another", async () => {
+    const { server, hermes } = await signedIn(homeDisk);
+    const base = await hermes.files.openForEdit(notes);
+    server.managedFiles.saveLost = { message: "Can't reach the Hermes dashboard: connection reset", landed: true };
+    server.managedFiles.afterWrite = () => (server.managedFiles.readError = "Can't reach the Hermes dashboard: connection reset");
+    await expect(hermes.files.saveCopy(base, "copy\n")).rejects.toThrow(/couldn't be read back to check/);
+    // Still unreadable: no second copy is made.
+    server.managedFiles.saveLost = undefined;
+    server.managedFiles.afterWrite = undefined;
+    await expect(hermes.files.saveCopy(base, "copy\n")).rejects.toThrow(/may have been saved, and still can't be read/);
+    server.managedFiles.readError = undefined;
+    expect(await hermes.files.saveCopy(base, "copy\n")).toBe("/home/liam/notes (2).md");
+    expect(server.managedFiles.saves).toHaveLength(1);
+  });
+
+  it("keeps a file's CRLF line ends and byte order mark", async () => {
+    const { server, hermes } = await signedIn((s) => {
+      homeDisk(s);
+      s.managedFiles.nodes["/home/liam/win.txt"] = { text: "﻿one\r\ntwo\r\n" };
+    });
+    const base = await hermes.files.openForEdit({ ...notes, name: "win.txt", path: "/home/liam/win.txt" });
+    expect(base).toMatchObject({ text: "one\ntwo\n", eol: "\r\n", bom: true });
+    await hermes.files.saveEdit(base, "one\ntwo\nthree\n");
+    expect(text(server, "/home/liam/win.txt")).toBe("﻿one\r\ntwo\r\nthree\r\n");
+  });
+
+  it("refuses what it can't edit, and says why Hermes refused a save", async () => {
+    const { server, hermes } = await signedIn((s) => {
+      homeDisk(s);
+      s.managedFiles.nodes["/home/liam/latin1.txt"] = { bytes: "caf\xe9\n" };
+    });
+    await expect(hermes.files.openForEdit({ ...notes, name: "latin1.txt", path: "/home/liam/latin1.txt" })).rejects.toThrow(/isn't UTF-8/);
+    await expect(hermes.files.openForEdit({ ...notes, size: 2 * MiB })).rejects.toThrow(/up to 1.0 MB/);
+    const base = await hermes.files.openForEdit(notes);
+    await expect(hermes.files.saveEdit(base, "x".repeat(MiB + 1))).rejects.toThrow(/saves files up to 1.0 MB/);
+    server.managedFiles.beforeWrite = () => {
+      throw new Error(`The dashboard answered 403: {"detail":"File is not writable"}`);
+    };
+    await expect(hermes.files.saveEdit(base, "x\n")).rejects.toThrow("The Hermes server's user isn't allowed to write this file.");
+    expect(server.managedFiles.saves).toEqual([]);
+  });
+
+  it("saves an edit as a copy beside the file, never over another", async () => {
+    const { server, hermes } = await signedIn(homeDisk);
+    const base = await hermes.files.openForEdit(notes);
+    expect(await hermes.files.saveCopy(base, "my copy\n")).toBe("/home/liam/notes (2).md");
+    expect(server.managedFiles.saves.at(-1)).toMatchObject({ path: "/home/liam/notes (2).md", overwrite: false });
+    expect(text(server, "/home/liam/notes.md")).toBe("# Notes\n\nCafé ☕\n");
   });
 });

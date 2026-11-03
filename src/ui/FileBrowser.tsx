@@ -1,9 +1,11 @@
 // Server files: a browser for the files on the machine the Hermes dashboard runs on (remoteFiles.ts). It opens from the
 // rail and takes the chat pane's place, as Settings does. Folders open in place, with the path above them as a trail
-// of folders; a file opens in the preview beside the list, where it can be downloaded to this computer (ADR 0023).
-// Nothing on the server can be changed from here.
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
-import { ArrowLeft, ArrowUp, Check, CircleAlert, Download, File, FileImage, FileText, Folder, House, Link2, Link2Off, RefreshCw, Server, WifiOff, X } from "lucide-react";
+// of folders; a file opens in the preview beside the list, where it can be downloaded to this computer. Upload… sends
+// a file the owner picks into the folder on screen, after showing where it goes and what is in the way (ADR 0023). A
+// text file in the preview can be edited and saved back, checked against what the server has (ADR 0024). Nothing else
+// on the server can be changed from here.
+import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type RefObject } from "react";
+import { ArrowLeft, ArrowUp, Check, CircleAlert, Download, FilePen, File, FileImage, FileText, Folder, House, Link2, Link2Off, RefreshCw, Server, Upload, WifiOff, X } from "lucide-react";
 import type { ConnectionStatus } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
 import {
@@ -14,10 +16,15 @@ import {
   type RemoteEntry,
   type RemoteFiles,
   type RemoteListing,
+  type Collision,
+  type PickedUpload,
   type RemotePreview,
   type Transfer,
 } from "../hermes/remoteFiles";
 import { STATUS_LABEL, Spinner, composing, fmtSize, routeLabel, storedTime } from "./bits";
+import { useModal } from "./modal";
+import { FileEditor } from "./FileEditor";
+import { EDIT_MAX_BYTES } from "../hermes/textEdit";
 
 type Preview =
   | { entry: RemoteEntry; state: "loading" }
@@ -70,11 +77,22 @@ export function FileBrowser({
   const [showHidden, setShowHidden] = useState(false);
   const [shown, setShown] = useState(ENTRY_PAGE);
   const [goTo, setGoTo] = useState("");
+  // A file picked to upload, and the folder it was picked for, until the owner sends it or cancels.
+  const [uploading, setUploading] = useState<{ picked: PickedUpload; listing: RemoteListing }>();
+  const [pickError, setPickError] = useState<string>();
+  // The file open in the editor, and what the last save said.
+  const [editing, setEditing] = useState<RemoteEntry>();
+  const [saved, setSaved] = useState<string>();
+  const shownPath = useRef<string | undefined>(undefined);
+  const uploadButton = useRef<HTMLButtonElement>(null);
+  shownPath.current = listing?.path;
   // Only the latest listing and preview asked for land; an older answer arriving late is dropped.
   const listSeq = useRef(0);
   const previewSeq = useRef(0);
   // The path of the file in the preview pane, kept in step with `preview` without waiting for a render.
   const previewPath = useRef<string | undefined>(undefined);
+  // A file to open in the preview again once the next listing lands, with what that listing says of it (after a save).
+  const reopen = useRef<string | undefined>(undefined);
   const listRef = useRef<HTMLDivElement>(null);
 
   // Closing the preview also drops the read it's waiting on, so a late answer can't open it again.
@@ -102,6 +120,9 @@ export function FileBrowser({
         }
         // A refresh keeps the preview open only while its file is still listed.
         if (!(same && keepPreview && l.entries.some((e) => e.path === previewPath.current))) dropPreview();
+        const again = reopen.current && l.entries.find((e) => e.path === reopen.current);
+        reopen.current = undefined;
+        if (again) open(again);
       },
       (e) => {
         if (seq !== listSeq.current) return;
@@ -145,6 +166,24 @@ export function FileBrowser({
   const trail = listing ? crumbs(listing.path, listing.root) : [];
   const where = routeLabel(route) ?? "the Hermes server";
 
+  const pickUpload = () => {
+    const at = listing;
+    if (!at) return;
+    setPickError(undefined);
+    files.pickUpload().then(
+      (picked) => picked && setUploading({ picked, listing: at }),
+      (e) => setPickError(errorOf(e).message),
+    );
+  };
+
+  const sendUpload = (collision: Collision) => {
+    if (!uploading) return;
+    const { picked, listing: at } = uploading;
+    setUploading(undefined);
+    // The folder is listed again once Hermes answers, when it is still the one on screen.
+    void files.upload(at, picked, collision).catch((e) => setPickError(errorOf(e).message)).finally(() => shownPath.current === at.path && load(at.path, true));
+  };
+
   const onListKey = (e: KeyboardEvent) => {
     if (composing(e)) return;
     if (e.altKey && e.key === "ArrowUp" && listing?.parent && connected) {
@@ -164,7 +203,6 @@ export function FileBrowser({
           <span className="files-server" title="The machine the Hermes dashboard runs on">
             <Server size={13} aria-hidden /> <span className="mono">{where}</span>
           </span>
-          <span className="badge">Read-only</span>
           {listing?.root && (
             <span className="badge" title="The server only lets you browse inside this folder">
               Limited to {listing.root}
@@ -214,6 +252,9 @@ export function FileBrowser({
             <span className="muted small">{loading ? "Listing…" : ""}</span>
           )}
         </nav>
+        <button ref={uploadButton} className="btn files-upload" disabled={!connected || !listing} title="Pick a file on this computer to upload into this folder" onClick={pickUpload}>
+          <Upload size={14} aria-hidden /> Upload…
+        </button>
         <form
           className="files-goto"
           onSubmit={(e) => {
@@ -234,6 +275,24 @@ export function FileBrowser({
             {STATUS_LABEL[status]} Server files can't be read until Hermes is connected again
             {listing ? `. This list is from ${storedTime(listing.listedAt)}, and refreshes once connected.` : "."}
           </span>
+        </div>
+      )}
+      {saved && (
+        <div className="files-banner ok" role="status">
+          <Check size={14} aria-hidden />
+          <span>{saved}</span>
+          <button className="icon-btn" aria-label="Dismiss" onClick={() => setSaved(undefined)}>
+            <X size={14} />
+          </button>
+        </div>
+      )}
+      {pickError && (
+        <div className="files-banner err" role="alert">
+          <CircleAlert size={14} aria-hidden />
+          <span>{pickError}</span>
+          <button className="icon-btn" aria-label="Dismiss" onClick={() => setPickError(undefined)}>
+            <X size={14} />
+          </button>
         </div>
       )}
       {error && (
@@ -335,9 +394,152 @@ export function FileBrowser({
           )}
         </div>
 
-        {preview && <PreviewPane preview={preview} files={files} connected={connected} onOpenAsText={() => open(preview.entry, true)} onClose={dropPreview} />}
+        {preview && (
+          <PreviewPane
+            preview={preview}
+            files={files}
+            connected={connected}
+            onOpenAsText={() => open(preview.entry, true)}
+            onEdit={() => {
+              setSaved(undefined);
+              setEditing(preview.entry);
+            }}
+            onClose={dropPreview}
+          />
+        )}
       </div>
       <Transfers files={files} />
+      {editing && (
+        <FileEditor
+          files={files}
+          entry={editing}
+          connected={connected}
+          onClose={() => setEditing(undefined)}
+          onSaved={(note) => {
+            const entry = editing;
+            setEditing(undefined);
+            setSaved(note);
+            reopen.current = entry.path;
+            if (listing) load(listing.path, true);
+          }}
+        />
+      )}
+      {uploading && (
+        <UploadDialog
+          files={files}
+          {...uploading}
+          connected={connected}
+          returnTo={uploadButton}
+          onSend={sendUpload}
+          onCancel={() => {
+            files.discardUpload(uploading.picked);
+            setUploading(undefined);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Where a picked file goes, before anything is sent: its name and size, the server path, and, when the name is taken,
+ * the choice of keeping both (the default) or replacing the server's file. Nothing is sent until Upload.
+ */
+function UploadDialog({
+  files,
+  picked,
+  listing,
+  connected,
+  returnTo,
+  onSend,
+  onCancel,
+}: {
+  files: RemoteFiles;
+  picked: PickedUpload;
+  listing: RemoteListing;
+  connected: boolean;
+  returnTo: RefObject<HTMLButtonElement | null>;
+  onSend: (collision: Collision) => void;
+  onCancel: () => void;
+}) {
+  const plan = files.planUpload(listing, picked);
+  const [collision, setCollision] = useState<Collision>("keep-both");
+  const titleId = useId();
+  const takenId = useId();
+  const box = useRef<HTMLDivElement>(null);
+  const keys = useModal(box, returnTo);
+  const replace = !!plan.taken && collision === "replace";
+  const dest = plan.taken && !replace ? `${listing.path.replace(/\/$/, "")}/${plan.keepBothName}` : plan.dest;
+  return (
+    <div className="leave-overlay" onMouseDown={(e) => e.target === e.currentTarget && onCancel()}>
+      <div
+        ref={box}
+        className="leave-dialog files-upload-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        onKeyDown={(e) => {
+          keys(e);
+          if (e.key === "Escape") {
+            e.preventDefault();
+            onCancel();
+          }
+        }}
+      >
+        <h2 id={titleId} className="leave-title">
+          <Upload size={14} aria-hidden /> Upload to the server
+        </h2>
+        <dl className="files-meta">
+          <dt>From this computer</dt>
+          <dd>
+            <span className="mono">{picked.name}</span>, {fmtSize(picked.size)}
+          </dd>
+          <dt>To the server</dt>
+          <dd className="mono">{dest}</dd>
+        </dl>
+        {plan.refused ? (
+          <p role="alert" className="files-transfer-error">
+            {plan.refused}
+          </p>
+        ) : (
+          plan.taken && (
+            <div className="files-collision" role="radiogroup" aria-labelledby={takenId}>
+              <p id={takenId} className="files-collision-note">
+                <CircleAlert size={13} aria-hidden /> There's already a <span className="mono">{picked.name}</span> in this folder
+                {plan.taken.size !== undefined && `, ${fmtSize(plan.taken.size)}`}
+                {plan.taken.modified !== undefined && `, modified ${storedTime(plan.taken.modified)}`}.
+              </p>
+              <label>
+                <input type="radio" name="collision" checked={collision === "keep-both"} onChange={() => setCollision("keep-both")} /> Keep both: upload this one as{" "}
+                <span className="mono">{plan.keepBothName}</span>
+              </label>
+              <label>
+                <input type="radio" name="collision" checked={collision === "replace"} onChange={() => setCollision("replace")} /> Replace the server's{" "}
+                <span className="mono">{picked.name}</span>
+              </label>
+              {!replace && (
+                <p className="muted small">Hermes checks the name again before it writes, though not at the very moment it writes; a file made there in that instant would still be replaced.</p>
+              )}
+              {replace && (
+                <p className="muted small">
+                  Hermes writes it as a new file, readable and writable only by the server's user; the old file's permissions aren't kept. It can't be undone.
+                </p>
+              )}
+            </div>
+          )
+        )}
+        {!plan.refused && <p className="muted small">Nothing is sent until you press {replace ? "Replace" : "Upload"}. The server's own permissions still apply.</p>}
+        <div className="confirm-actions">
+          <button className="btn" autoFocus={!!plan.refused} onClick={onCancel}>
+            {plan.refused ? "Close" : "Cancel"}
+          </button>
+          {!plan.refused && (
+            <button className={`btn ${replace ? "danger" : "primary"}`} autoFocus disabled={!connected} onClick={() => onSend(collision)}>
+              {replace ? "Replace" : "Upload"}
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -354,11 +556,20 @@ function Transfers({ files }: { files: RemoteFiles }) {
         {transfers.map((t) => {
           const pct = percent(t);
           const running = t.state === "picking" || t.state === "running";
+          const up = t.kind === "upload";
           return (
             <li key={t.id} className={`files-transfer ${t.state}`}>
               <div className="files-transfer-main">
                 <div className="files-transfer-title">
-                  {t.state === "done" ? <Check size={14} aria-hidden className="ok" /> : t.state === "failed" ? <CircleAlert size={14} aria-hidden className="bad" /> : <Download size={14} aria-hidden />}
+                  {t.state === "done" ? (
+                    <Check size={14} aria-hidden className="ok" />
+                  ) : t.state === "failed" ? (
+                    <CircleAlert size={14} aria-hidden className="bad" />
+                  ) : up ? (
+                    <Upload size={14} aria-hidden />
+                  ) : (
+                    <Download size={14} aria-hidden />
+                  )}
                   <span className="files-transfer-name">{t.name}</span>
                   <span className="muted small">
                     {t.state === "picking"
@@ -367,25 +578,46 @@ function Transfers({ files }: { files: RemoteFiles }) {
                         ? pct !== undefined
                           ? `${fmtSize(t.done)} of ${fmtSize(t.total!)} (${pct}%)`
                           : `${fmtSize(t.done)} so far`
-                        : t.state === "done"
-                          ? `Downloaded, ${fmtSize(t.done)}`
-                          : t.state === "stopped"
-                            ? "Stopped. Nothing was saved, and any file already there is as it was."
-                            : "Failed. Nothing was saved, and any file already there is as it was."}
+                        : t.state === "checking"
+                          ? "Sent. Checking the server has it…"
+                          : t.state === "done"
+                            ? up
+                              ? `Uploaded, and the server lists it at ${fmtSize(t.done)}`
+                              : `Downloaded, ${fmtSize(t.done)}`
+                            : up
+                              ? t.state === "stopped"
+                                ? "Stopped. Hermes never keeps part of a file, but if it had already received all of it, it may still save it: the folder shows what it has."
+                                : "Failed."
+                              : t.state === "stopped"
+                                ? "Stopped. Nothing was saved, and any file already there is as it was."
+                                : "Failed. Nothing was saved, and any file already there is as it was."}
                   </span>
                 </div>
                 <div className="files-transfer-where muted small">
-                  <span>
-                    From the server: <span className="mono">{t.serverPath}</span>
-                  </span>
-                  {t.dest && (
-                    <span>
-                      To this computer: <span className="mono">{t.dest}</span>
-                    </span>
+                  {up ? (
+                    <>
+                      <span>
+                        From this computer: <span className="mono">{t.localName}</span>
+                      </span>
+                      <span>
+                        To the server: <span className="mono">{t.serverPath}</span>
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span>
+                        From the server: <span className="mono">{t.serverPath}</span>
+                      </span>
+                      {t.dest && (
+                        <span>
+                          To this computer: <span className="mono">{t.dest}</span>
+                        </span>
+                      )}
+                    </>
                   )}
                 </div>
                 {t.state === "running" && (
-                  <progress className="files-progress" max={100} value={pct} aria-label={`Downloading ${t.name}`} aria-valuetext={pct !== undefined ? `${pct}%` : `${fmtSize(t.done)}`} />
+                  <progress className="files-progress" max={100} value={pct} aria-label={`${up ? "Uploading" : "Downloading"} ${t.name}`} aria-valuetext={pct !== undefined ? `${pct}%` : `${fmtSize(t.done)}`} />
                 )}
                 {t.error && (
                   <p className="files-transfer-error" role="alert">
@@ -410,7 +642,21 @@ function Transfers({ files }: { files: RemoteFiles }) {
   );
 }
 
-function PreviewPane({ preview, files, connected, onOpenAsText, onClose }: { preview: Preview; files: RemoteFiles; connected: boolean; onOpenAsText: () => void; onClose: () => void }) {
+function PreviewPane({
+  preview,
+  files,
+  connected,
+  onOpenAsText,
+  onEdit,
+  onClose,
+}: {
+  preview: Preview;
+  files: RemoteFiles;
+  connected: boolean;
+  onOpenAsText: () => void;
+  onEdit: () => void;
+  onClose: () => void;
+}) {
   const { entry } = preview;
   const result = preview.state === "ready" ? preview.result : undefined;
   const why = files.cantDownload(entry);
@@ -420,6 +666,11 @@ function PreviewPane({ preview, files, connected, onOpenAsText, onClose }: { pre
       <div className="files-preview-head">
         <h2 title={entry.name}>{entry.name}</h2>
         <div className="files-preview-actions">
+          {result?.kind === "text" && result.size <= EDIT_MAX_BYTES && (
+            <button className="btn" disabled={!connected} title="Edit this text file and save it back to the server" onClick={onEdit}>
+              <FilePen size={14} aria-hidden /> Edit
+            </button>
+          )}
           {entry.kind === "file" && (
             <button className="btn" disabled={!!cantDownload} title={cantDownload ?? "Save a copy on this computer. You pick where."} onClick={() => void files.download(entry)}>
               <Download size={14} aria-hidden /> Download…

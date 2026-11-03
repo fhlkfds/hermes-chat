@@ -186,6 +186,94 @@ export class FakeServerFiles {
     }
   }
 
+  /** The native Open dialog's pick, as a name and its bytes (one char per byte), or undefined when closed. */
+  openDialog: () => { name: string; bytes: string } | undefined = () => undefined;
+  /** What each upload token stands for. */
+  private picked = new Map<number, { name: string; bytes: string }>();
+  private picks = 0;
+  /** Every upload Hermes was sent: its path and `overwrite`. */
+  readonly uploads: { path: string; overwrite: boolean }[] = [];
+
+  /** src-tauri `files_discard_pick`. */
+  discardPick(token: number) {
+    this.picked.delete(token);
+  }
+
+  /** Picks not sent or let go yet. */
+  get openPicks() {
+    return this.picked.size;
+  }
+
+  /** src-tauri `files_pick_upload`. */
+  pickUpload() {
+    const file = this.openDialog();
+    if (!file) return undefined;
+    const token = ++this.picks;
+    this.picked.set(token, file);
+    return { token, name: file.name, size: file.bytes.length };
+  }
+
+  /**
+   * src-tauri `files_upload` and `POST /api/files/upload-stream` at `bf0203a`: refused before sending for a credential
+   * path (as Rust does); 409 for a file that's there without `overwrite`; written whole by a rename once all of it came.
+   */
+  async upload(id: number, token: number, path: string, overwrite: boolean, onProgress: (p: { done: number; total: number; dest: string }) => void): Promise<string> {
+    const file = this.picked.get(token);
+    if (!file) throw new Error("That file wasn't picked in the Open dialog, or was already sent.");
+    this.picked.delete(token);
+    if (isSensitive(path)) throw new Error(`Hermes Chat doesn't relay uploads to ${path}, a credential file Hermes keeps out of reach.`);
+    const stopped = new Promise<never>((_, reject) => this.running.set(id, reject));
+    try {
+      onProgress({ done: 0, total: file.bytes.length, dest: path });
+      onProgress({ done: Math.floor(file.bytes.length / 2), total: file.bytes.length, dest: path });
+      if (this.transferGate) await Promise.race([this.transferGate, stopped]);
+      if (this.transferError) throw new Error(this.transferError);
+      this.uploads.push({ path, overwrite });
+      const dir = this.target(dirname(path));
+      if (this.root && dir !== this.root && !dir.startsWith(`${this.root}/`)) fail(403, "Path outside managed files root");
+      const at = join(dir, basename(path));
+      if (this.isDir(at)) fail(409, "A directory already exists at that path");
+      if (this.nodes[at] && !overwrite) fail(409, "File already exists");
+      if (this.nodes[dir] && "unreadable" in this.nodes[dir] && this.nodes[dir].unreadable) fail(403, "File is not writable");
+      this.nodes[at] = { bytes: file.bytes, mtime: 1_793_100_000 };
+      this.afterWrite?.(at);
+      return JSON.stringify({ ok: true, path: at, entry: { name: basename(at), path: at, is_directory: false, size: file.bytes.length } });
+    } finally {
+      this.running.delete(id);
+    }
+  }
+
+  /** Set: a save's answer is lost this way, after (`landed`) or before Hermes wrote it. */
+  saveLost?: { message: string; landed: boolean };
+  /** Set: a save waits here before Hermes takes it, as one that gets no answer would. */
+  saveGate?: Promise<void>;
+  /** Set: before a save writes, the file changes as another client would change it. */
+  beforeWrite?: (path: string) => void;
+  /** Every text saved, in order: its path, text and `overwrite`. */
+  readonly saves: { path: string; text: string; overwrite: boolean }[] = [];
+
+  /** src-tauri `files_save_text`: the edit's text, as UTF-8, through the same upload route. */
+  async saveText(path: string, text: string, overwrite: boolean): Promise<string> {
+    if (isSensitive(path)) throw new Error(`Hermes Chat doesn't relay uploads to ${path}, a credential file Hermes keeps out of reach.`);
+    if (this.saveGate) await this.saveGate;
+    this.beforeWrite?.(path);
+    const lost = this.saveLost;
+    if (lost && !lost.landed) throw new Error(lost.message);
+    const at = this.target(dirname(path)) === dirname(path) ? path : join(this.target(dirname(path)), basename(path));
+    if (this.nodes[at] && !overwrite) fail(409, "File already exists");
+    const node = this.nodes[at];
+    if (node && "unreadable" in node && node.unreadable) fail(403, "File is not writable");
+    this.saves.push({ path: at, text, overwrite });
+    const bytes = Array.from(new TextEncoder().encode(text), (b) => String.fromCharCode(b)).join("");
+    this.nodes[at] = { bytes, mime: node && "mime" in node ? node.mime : undefined, mtime: 1_793_200_000 };
+    this.afterWrite?.(at);
+    if (lost) throw new Error(lost.message);
+    return JSON.stringify({ ok: true, path: at });
+  }
+
+  /** Called after each write lands, so a test can change the file as something else on the server would. */
+  afterWrite?: (path: string) => void;
+
   cancel(id: number) {
     this.running.get(id)?.(new Error(STOPPED));
   }
@@ -195,8 +283,12 @@ export class FakeServerFiles {
     for (const stop of this.running.values()) stop(new Error(STOPPED));
   }
 
+  /** Set: every `GET /api/files/read` fails this way, as during an outage. */
+  readError?: string;
+
   /** `GET /api/files/read?path=`: the whole file as a base64 data URL. */
   read(query: URLSearchParams) {
+    if (this.readError) throw new Error(this.readError);
     const raw = query.get("path");
     if (!raw) fail(422, "Field required");
     // A path that isn't there is "Path not found" here too: `_resolve_managed_path` resolves it strictly first.
