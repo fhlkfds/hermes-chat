@@ -425,8 +425,6 @@ const OUTPUTS_VERSION = 2;
 /** Most connections and profiles kept, and Outputs kept for one; the least recently indexed chats go first. */
 const SCOPES_KEPT = 8;
 export const OUTPUTS_KEPT = 3000;
-/** Most chats an index keeps a record of, Outputs or not; the records read longest ago, with no Outputs left, go first. */
-export const CHATS_KEPT = 2000;
 
 /** One connection and profile's index. `usedAt`: when it was last read or written, to keep the most recent scopes. */
 export type ScopeIndex = { chats: Record<string, ChatOutputs>; added: Output[]; usedAt: number };
@@ -511,10 +509,14 @@ export function writeScope(storage: OutputsStorage, scope: string, index: ScopeI
  * The index within `OUTPUTS_KEPT` Outputs: the Outputs of the chats indexed longest ago are dropped first. Each such
  * chat keeps its entry, marked `evicted`, so a profile-wide run doesn't read it again and push out another, round and
  * round; opening the chat in Outputs reads it again. Applied to what is shown as well as to what is kept.
+ *
+ * Records themselves aren't capped here: a record is what says a chat was read, and dropping one makes runs read it
+ * again ahead of chats never read. They are bounded instead by the profile's chat list (`OutputsIndex.keepOnly`), which
+ * this computer keeps a copy of anyway; a record with no Outputs is a few dozen bytes.
  */
 function trimmed<T extends Pick<ScopeIndex, "chats" | "added">>(index: T): T {
   let total = index.added.length + Object.values(index.chats).reduce((n, c) => n + c.outputs.length, 0);
-  if (total <= OUTPUTS_KEPT && Object.keys(index.chats).length <= CHATS_KEPT) return index;
+  if (total <= OUTPUTS_KEPT) return index;
   const chats = { ...index.chats };
   for (const [id, c] of Object.entries(chats).sort(([, a], [, b]) => a.indexedAt - b.indexedAt)) {
     if (total <= OUTPUTS_KEPT) break;
@@ -522,9 +524,6 @@ function trimmed<T extends Pick<ScopeIndex, "chats" | "added">>(index: T): T {
     total -= c.outputs.length;
     chats[id] = { ...c, outputs: [], partial: { ...c.partial, evicted: true } };
   }
-  const records = Object.entries(chats);
-  if (records.length > CHATS_KEPT)
-    for (const [id] of records.filter(([, c]) => !c.outputs.length).sort(([, a], [, b]) => a.indexedAt - b.indexedAt).slice(0, records.length - CHATS_KEPT)) delete chats[id];
   return { ...index, chats };
 }
 

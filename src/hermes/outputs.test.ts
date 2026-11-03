@@ -5,7 +5,6 @@ import { FakeHermes, row, type TranscriptMessage } from "./fakeHermes";
 import { connect, type Hermes } from "./transport";
 import {
   ADDED_MAX,
-  CHATS_KEPT,
   CHAT_MAX_BYTES,
   OUTPUTS_PER_CHAT,
   compactRows,
@@ -544,14 +543,28 @@ describe("the review's cases", () => {
     expect(index.getSnapshot().added).toEqual([]);
   });
 
-  it("keeps no more chat records than the cap, dropping empty ones read longest ago first", async () => {
-    const io: OutputsIo = { rows: async () => page([]), listDir: async () => ({ entries: [] }) };
+  it("reads every chat of a long list once, a run at a time, with Outputs or without, and never one twice", async () => {
+    const reads = new Map<string, number>();
+    const io: OutputsIo = {
+      rows: async (chatId, offset) => {
+        if (!offset) reads.set(chatId, (reads.get(chatId) ?? 0) + 1);
+        // Every third chat made a file; the rest made none.
+        const n = Number(chatId.slice(1));
+        return page(offset || n % 3 ? [] : [{ id: 1, role: "tool", tool_name: "write_file", tool_call_id: chatId, content: JSON.stringify(written(`/srv/${chatId}.txt`)) }]);
+      },
+      listDir: async () => ({ entries: [] }),
+    };
     let t = 0;
     const index = new OutputsIndex(io, memory(), "s", () => ++t);
-    // Runs of 25: enough runs to pass the cap.
-    const chats = Array.from({ length: CHATS_KEPT + 30 }, (_, i) => ({ id: `c${i}`, updatedAt: CHATS_KEPT + 30 - i }));
-    for (let run = 0; run < Math.ceil(chats.length / MAX_CHATS_PER_RUN); run++) await index.index(chats);
-    expect(Object.keys(index.getSnapshot().chats).length).toBeLessThanOrEqual(CHATS_KEPT);
+    const chats = Array.from({ length: 2030 }, (_, i) => ({ id: `c${i}`, updatedAt: 2030 - i }));
+    const runs = Math.ceil(chats.length / MAX_CHATS_PER_RUN);
+    for (let run = 0; run < runs + 3; run++) await index.index(chats);
+    expect(reads.size).toBe(chats.length);
+    expect([...reads.values()].every((n) => n === 1)).toBe(true);
+    expect(index.getSnapshot().waiting).toBe(0);
+    // Records go only with the chats themselves.
+    index.keepOnly(new Set(chats.slice(0, 100).map((c) => c.id)));
+    expect(Object.keys(index.getSnapshot().chats)).toHaveLength(100);
   });
 
   it("forgets chats no longer in the profile's list, and keeps the files the owner added", async () => {
