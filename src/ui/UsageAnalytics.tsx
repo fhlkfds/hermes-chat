@@ -14,6 +14,7 @@ import {
   NO_PROJECT,
   StaleRead,
   chatCost,
+  chatTotalShort,
   collectUsage,
   coverage,
   crossCheck,
@@ -114,7 +115,7 @@ export function UsageAnalytics({ io, profile, listProfiles, projects, projectCha
   const [exportNote, setExportNote] = useState<string>();
   const exporting = useRef(false);
   const drillHeading = useRef<HTMLHeadingElement>(null);
-  const drillFrom = useRef<HTMLElement | null>(null);
+  const screenRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!connected) return;
@@ -169,9 +170,14 @@ export function UsageAnalytics({ io, profile, listProfiles, projects, projectCha
     if (drill) drillHeading.current?.focus();
   }, [drill]);
 
+  // Back puts focus on the row it came from, mounted again with the breakdown.
   const closeDrill = () => {
+    const key = drill?.key;
     setDrill(undefined);
-    requestAnimationFrame(() => drillFrom.current?.focus());
+    requestAnimationFrame(() => {
+      const rows = screenRef.current?.querySelectorAll<HTMLButtonElement>("button[data-group]") ?? [];
+      [...rows].find((b) => b.dataset.group === key)?.focus();
+    });
   };
 
   const exportCsv = async () => {
@@ -197,7 +203,7 @@ export function UsageAnalytics({ io, profile, listProfiles, projects, projectCha
   const partial = !!data && (failed.length > 0 || capped.length > 0 || data.missingSegments > 0);
 
   return (
-    <div className="settings usage-screen">
+    <div className="settings usage-screen" ref={screenRef}>
       <div className="settings-inner usage-inner">
         <button className="back" onClick={onClose}>
           <ArrowLeft size={15} /> Back to chat
@@ -390,8 +396,7 @@ export function UsageAnalytics({ io, profile, listProfiles, projects, projectCha
                   sort={sort}
                   onSort={setSort}
                   dim={dim}
-                  onDrill={(g, el) => {
-                    drillFrom.current = el;
+                  onDrill={(g) => {
                     setChatSort({ key: "total", dir: "desc" });
                     setDrill({ dim, key: g.key, label: g.label });
                   }}
@@ -418,15 +423,15 @@ export function UsageAnalytics({ io, profile, listProfiles, projects, projectCha
                 )}
               </section>
             )}
-            {data.period.days !== undefined && <HermesTotalsCard data={data} filtered={filtered} />}
-            {data.period.days === undefined && (
-              <p className="usage-note">
-                Hermes's own sums, and its helper tasks' usage, cover only a period ending now: pick one of the "Last …" periods to see them.
-              </p>
-            )}
-            <Notes />
           </>
         ) : null}
+        {/* Hermes's own sums stand apart from the chats: they show even when no chat matches, as for a period of only
+            subagent runs and helper tasks. */}
+        {data && !data.unsupported && data.period.days !== undefined && <HermesTotalsCard data={data} filtered={filtered} />}
+        {data && !data.unsupported && data.period.days === undefined && (
+          <p className="usage-note">Hermes's own sums, and its helper tasks' usage, cover only a period ending now: pick one of the "Last …" periods to see them.</p>
+        )}
+        {data && !data.unsupported && <Notes />}
       </div>
     </div>
   );
@@ -461,14 +466,14 @@ function Problems({ data }: { data: UsageDataset }) {
 
 function TotalsTiles({ totals, partial }: { totals: Totals; partial: boolean }) {
   const c = totals.counts;
-  const tile = (label: string, value: number, field?: CountField, sub?: string) => {
+  const tile = (label: string, value: number, field?: CountField, sub?: string, short = false) => {
     const missing = field ? totals.unreported[field] : undefined;
     return (
       <div className="usage-tile">
         <dt>{label}</dt>
         <dd>
           {full(value)}
-          {(missing || partial) && <span className="usage-plus" aria-label=" or more">+</span>}
+          {(missing || partial || short) && <span className="usage-plus" aria-label=" or more">+</span>}
         </dd>
         {sub && <dd className="usage-tile-sub">{sub}</dd>}
         {missing ? <dd className="usage-tile-sub">Not reported for {missing.toLocaleString()} {missing === 1 ? "chat" : "chats"}</dd> : null}
@@ -479,7 +484,7 @@ function TotalsTiles({ totals, partial }: { totals: Totals; partial: boolean }) 
     <section className="usage-section" aria-labelledby="usage-tokens">
       <h2 id="usage-tokens">Tokens</h2>
       <dl className="usage-tiles">
-        {tile("Total tokens", totalOf(c), undefined, "input + cache read + cache written + output")}
+        {tile("Total tokens", totalOf(c), undefined, "input + cache read + cache written + output", totals.totalShort > 0)}
         {tile("Input, not cached", c.input, "input")}
         {tile("Cache read", c.cacheRead, "cacheRead")}
         {tile("Cache written", c.cacheWrite, "cacheWrite")}
@@ -507,7 +512,7 @@ function CostCard({ totals }: { totals: Totals }) {
       <div className="usage-cost-head">
         <span className="usage-cost-big">{label.short}</span>
         <span className="usage-cost-cover">
-          {t.tokens ? `covers ${pct(coverage(t))} of the tokens in full` : "no model calls"} · not a bill
+          {t.tokens ? `covers ${pct(coverage(t))} of the tokens${t.incomplete ? " read" : ""} in full` : "no model calls"} · not a bill
         </span>
       </div>
       <p className="usage-note">{label.detail}</p>
@@ -580,7 +585,7 @@ const cell = (t: Totals, field: CountField) => (
   </>
 );
 
-function GroupTable({ groups, total, sort, onSort, dim, onDrill }: { groups: Group[]; total: number; sort: Sort; onSort: (s: Sort) => void; dim: Dimension; onDrill: (g: Group, el: HTMLElement) => void }) {
+function GroupTable({ groups, total, sort, onSort, dim, onDrill }: { groups: Group[]; total: number; sort: Sort; onSort: (s: Sort) => void; dim: Dimension; onDrill: (g: Group) => void }) {
   return (
     <div className="usage-table-wrap">
       <table className="usage-table">
@@ -603,7 +608,7 @@ function GroupTable({ groups, total, sort, onSort, dim, onDrill }: { groups: Gro
             return (
               <tr key={g.key}>
                 <th scope="row">
-                  <button className="usage-drill" onClick={(e) => onDrill(g, e.currentTarget)} aria-label={`${g.label}: show its ${g.totals.chats} chats`}>
+                  <button className="usage-drill" data-group={g.key} onClick={() => onDrill(g)} aria-label={`${g.label}: show its ${g.totals.chats} chats`}>
                     <span className="usage-drill-label">{g.label}</span>
                     <span className="usage-share" aria-hidden>
                       <span style={{ width: total ? `${(sum / total) * 100}%` : 0 }} />
@@ -616,10 +621,10 @@ function GroupTable({ groups, total, sort, onSort, dim, onDrill }: { groups: Gro
                 ))}
                 <td>
                   {tokens(sum)}
-                  {g.totals.partialChats ? <span className="usage-plus">+</span> : null}
+                  {g.totals.totalShort ? <span className="usage-plus">+</span> : null}
                 </td>
                 <td title={cost.detail}>{cost.short}</td>
-                <td>{g.totals.cost.tokens ? pct(coverage(g.totals.cost)) : "—"}</td>
+                <td>{g.totals.cost.tokens ? `${pct(coverage(g.totals.cost))}${g.totals.cost.incomplete ? " of read" : ""}` : "—"}</td>
               </tr>
             );
           })}
@@ -693,7 +698,7 @@ function ChatTable({ chats, sort, onSort, zone, shownProfile, onOpen }: { chats:
                 <td>{full(c.counts.calls)}</td>
                 <td>
                   {tokens(totalOf(c.counts))}
-                  {c.missing ? <span className="usage-plus">+</span> : null}
+                  {chatTotalShort(c) ? <span className="usage-plus">+</span> : null}
                 </td>
                 <td title={cost.detail}>{cost.short}</td>
               </tr>

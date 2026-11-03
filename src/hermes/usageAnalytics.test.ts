@@ -196,6 +196,26 @@ describe("Reading a period", () => {
     expect(pages).toBe(2);
   });
 
+  it("keeps each pinned chat once across pages, and leaves out the old ones every page carries", async () => {
+    const at = (daysAgo: number) => NOW / 1000 - daysAgo * DAY;
+    const r = (id: string, daysAgo: number, pinned = false) => ({ id, started_at: at(daysAgo), pinned, input_tokens: 10, output_tokens: 1 });
+    // Pinned rows come on every page, out of order: one in the period, one long before it.
+    const pinned = [r("pin-new", 2, true), r("pin-old", 60, true)];
+    const pages = [
+      [...Array.from({ length: 100 }, (_, i) => r(`a${i}`, 1 + i / 100)), ...pinned],
+      [r("b0", 3), r("b1", 6), r("past", 8), ...pinned],
+      [r("never", 9)],
+    ];
+    const page = vi.fn(async (_p: string, offset: number) => ({ rows: pages[offset / 100], total: 202 }));
+    const data = await collectUsage({ page, session: vi.fn(), hermesTotals: async () => ({ totals: {} }) }, ["default"], week());
+    expect(page).toHaveBeenCalledTimes(2);
+    const ids = data.chats.map((c) => c.id);
+    expect(ids.filter((id) => id === "pin-new")).toHaveLength(1);
+    expect(ids).not.toContain("pin-old");
+    expect(ids).not.toContain("past");
+    expect(ids).toHaveLength(103);
+  });
+
   it("says when this Hermes's chat list carries no usage at all", async () => {
     const page = async () => ({ rows: [{ id: "a", started_at: NOW / 1000, title: "x" }], total: 1 });
     const data = await collectUsage({ page, session: vi.fn(), hermesTotals: vi.fn(async () => ({})) }, ["default"], week());
@@ -249,6 +269,40 @@ function base(id: string, over: Partial<UsageChat> = {}, row: Partial<SessionRow
   };
 }
 
+describe("Completeness", () => {
+  it("marks a total short when some chat didn't report part of it, or reported nothing", () => {
+    const noCacheWrite = base("a", {}, { ...usage(1000, 100), cache_write_tokens: undefined });
+    const chats = [
+      { ...noCacheWrite, segments: [{ id: "a", usage: { input: 1000, output: 100, cacheRead: 0, reasoning: 0, calls: 1, cost: { kind: "estimated" as const, usd: 0.001 }, readAt: NOW } }], unreported: ["cacheWrite" as const] },
+      { ...base("b"), segments: [{ id: "b" }], counts: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0, calls: 0 }, unreported: ["input", "cacheRead", "cacheWrite", "output", "reasoning", "calls"] as never, noUsage: true },
+      base("c"),
+    ];
+    const t = totalsOf(chats);
+    expect(t.unreported.cacheWrite).toBe(2);
+    expect(t.unreported.input).toBe(1);
+    expect(t.totalShort).toBe(2);
+    expect(t.noUsage).toBe(1);
+  });
+
+  it("reads a list row with no usage at all as reporting none of its counts", async () => {
+    const page = async () => ({ rows: [{ id: "x", started_at: NOW / 1000, input_tokens: 5, output_tokens: 1 }, { id: "y", started_at: NOW / 1000 }], total: 2 });
+    const data = await collectUsage({ page, session: vi.fn(), hermesTotals: async () => ({ totals: {} }) }, ["default"], week());
+    const y = data.chats.find((c) => c.id === "y")!;
+    expect(y.noUsage).toBe(true);
+    expect(y.unreported).toEqual(["input", "cacheRead", "cacheWrite", "output", "reasoning", "calls"]);
+    expect(totalsOf(data.chats).totalShort).toBe(2); // x has no cache counts either
+  });
+
+  it("never claims full coverage when a compressed chat's segment couldn't be read", () => {
+    const root = base("tip", { missing: 1 }, usage(1000, 100, { cost: ["actual", 1, 1] }));
+    const label = tallyLabel(totalsOf([root, base("other", {}, usage(10, 1, { cost: ["actual", 0.5, 0.5] }))]).cost);
+    expect(label.short).toBe("$1.50+");
+    expect(label.detail).toMatch(/1 chat has segments that couldn't be read/);
+    expect(label.detail).toMatch(/of the tokens read/);
+    expect(chatCost(root).short).toBe("$1.00+");
+  });
+});
+
 describe("Costs", () => {
   it("keeps each kind apart and never calls an incomplete total a bill", async () => {
     const data = await collectUsage(await io(fixture()), ["default"], week());
@@ -272,6 +326,10 @@ describe("Costs", () => {
     expect(tallyLabel(totalsOf([base("a", {}, usage(1, 1, { cost: [null, null] }))]).cost).short).toBe("Cost unknown");
     expect(tallyLabel(totalsOf([base("a", {}, usage(1, 1, { cost: ["actual", 0.25, 0.25] }))]).cost).short).toBe("$0.25");
     expect(tallyLabel(totalsOf([]).cost).short).toBe("—");
+  });
+
+  it("keeps an estimate of $0 an estimate", () => {
+    expect(tallyLabel(totalsOf([base("a", {}, usage(10, 1, { cost: ["estimated", 0] })), base("b", {}, usage(10, 1, { cost: ["actual", 0.25, 0.25] }))]).cost).short).toBe("~$0.25");
   });
 
   it("labels a chat in one segment as its own usage does", () => {
@@ -313,6 +371,14 @@ describe("Filters and breakdowns", () => {
       ["No project", 1],
     ]);
     expect(groups.reduce((n, g) => n + g.totals.chats, 0)).toBeGreaterThan(chats.length);
+  });
+
+  it("groups Hermes's two names for the same place together", () => {
+    const groups = groupBy([base("a", { source: "gui" }), base("b", { source: "hermes-chat" }), base("c", { source: "tui" }), base("d", { source: "cli" })], "source", ctx);
+    expect(groups.map((g) => [g.label, g.totals.chats]).sort()).toEqual([
+      ["Command line", 2],
+      ["Hermes Chat", 2],
+    ]);
   });
 
   it("sorts groups and chats by any column, either way", () => {

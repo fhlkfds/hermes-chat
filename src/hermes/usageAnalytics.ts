@@ -151,7 +151,8 @@ function withSegments(c: Omit<UsageChat, "counts" | "unreported" | "noUsage">): 
   for (const s of c.segments) {
     const r = countsOf(s.usage);
     counts = addCounts(counts, r.counts);
-    if (s.usage) r.unreported.forEach((f) => unreported.add(f));
+    // A segment with no usage recorded at all reports none of its counts.
+    (s.usage ? r.unreported : COUNT_FIELDS).forEach((f) => unreported.add(f));
   }
   return { ...c, counts, unreported: [...unreported], noUsage: c.segments.every((s) => !s.usage) };
 }
@@ -414,6 +415,8 @@ export type CostTally = {
   kinds: Record<CostKind, { chats: number; tokens: number; usd: number }>;
   /** Tokens in segments that made model calls. */
   tokens: number;
+  /** Chats with segments that couldn't be read: their cost and tokens are missing from every figure here. */
+  incomplete: number;
 };
 
 const segmentTokens = (u: ChatUsage) => (u.input ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0) + (u.output ?? 0);
@@ -440,7 +443,9 @@ function kindOf(c: Cost): { kind: CostKind; usd: number } {
 export function tallyCost(chats: UsageChat[]): CostTally {
   const kinds = Object.fromEntries(COST_KINDS.map((k) => [k, { chats: 0, tokens: 0, usd: 0 }])) as CostTally["kinds"];
   let tokens = 0;
+  let incomplete = 0;
   for (const chat of chats) {
+    if (chat.missing) incomplete++;
     const counted = new Set<CostKind>();
     for (const s of chat.segments) {
       if (!madeCalls(s.usage)) continue;
@@ -452,7 +457,7 @@ export function tallyCost(chats: UsageChat[]): CostTally {
       if (!counted.has(kind)) kinds[kind].chats++, counted.add(kind);
     }
   }
-  return { kinds, tokens };
+  return { kinds, tokens, incomplete };
 }
 
 export const recordedUsd = (t: CostTally) => t.kinds.actual.usd + t.kinds.estimated.usd + t.kinds.partial.usd;
@@ -469,19 +474,24 @@ export function coverage(t: CostTally): number {
  */
 export function tallyLabel(t: CostTally): { short: string; detail: string; kind: CostKind | "mixed" | "none" } {
   const used = COST_KINDS.filter((k) => t.kinds[k].tokens > 0 || t.kinds[k].chats > 0);
-  if (!used.length) return { short: "—", detail: "No model calls, so nothing to price.", kind: "none" };
-  if (used.length === 1 && used[0] === "included")
+  const unread = t.incomplete
+    ? ` ${t.incomplete.toLocaleString()} ${t.incomplete === 1 ? "chat has" : "chats have"} segments that couldn't be read: their cost isn't here at all, and the share covered is of the usage read.`
+    : "";
+  if (!used.length) return t.incomplete ? { short: "?", detail: `Nothing read made model calls.${unread}`, kind: "none" } : { short: "—", detail: "No model calls, so nothing to price.", kind: "none" };
+  if (used.length === 1 && used[0] === "included" && !t.incomplete)
     return { short: "Included", detail: "Hermes counts all of it as included in a subscription, and recorded no charge.", kind: "included" };
-  if (used.length === 1 && used[0] === "unknown") return { short: "Cost unknown", detail: "Hermes recorded no cost for any of it.", kind: "unknown" };
+  if (used.length === 1 && used[0] === "unknown") return { short: "Cost unknown", detail: `Hermes recorded no cost for any of it.${unread}`, kind: "unknown" };
   const dollars = recordedUsd(t);
-  const approx = t.kinds.estimated.usd + t.kinds.partial.usd > 0 ? "~" : "";
-  const lower = t.kinds.partial.tokens + t.kinds.unknown.tokens > 0;
+  // An estimate is an estimate even when it comes to $0.
+  const approx = t.kinds.estimated.chats + t.kinds.partial.chats > 0 ? "~" : "";
+  const lower = t.kinds.partial.tokens + t.kinds.unknown.tokens > 0 || t.incomplete > 0;
   const pct = Math.round(coverage(t) * 100);
   const detail = [
-    `Recorded by Hermes, not a bill: ${pct}% of the tokens have a cost Hermes recorded in full.`,
+    `Recorded by Hermes, not a bill: ${pct}% of the tokens${t.incomplete ? " read" : ""} have a cost Hermes recorded in full.`,
     approx && "Part of it is Hermes's own estimate, so your provider's bill may differ.",
     lower && "Some usage has no price, or only part of one, so the true cost is higher.",
     "A call Hermes couldn't price leaves no mark when a later one in the same chat could be.",
+    unread.trim(),
   ]
     .filter(Boolean)
     .join(" ");
@@ -495,8 +505,7 @@ export function chatCost(chat: UsageChat): { short: string; detail: string; kind
     const c = used[0].usage!.cost;
     return { ...costLabel(c), kind: kindOf(c).kind };
   }
-  const t = tallyLabel(tallyCost([chat]));
-  return chat.missing ? { ...t, short: t.short === "—" ? "?" : `${t.short.replace(/\+$/, "")}+`, detail: `${t.detail} ${chat.missing} of its segments couldn't be read.` } : t;
+  return tallyLabel(tallyCost([chat]));
 }
 
 // --- Totals and breakdowns ----------------------------------------------------------------------------------------
@@ -509,21 +518,28 @@ export type Totals = {
   noUsage: number;
   /** Chats short of segments that couldn't be read. */
   partialChats: number;
+  /** Chats whose total tokens are short: a segment unread, or input, cache or output not reported. */
+  totalShort: number;
   cost: CostTally;
 };
+
+/** A chat's total tokens are short of the truth: a segment unread, or a part of the total not reported. */
+export const chatTotalShort = (c: UsageChat) => c.missing > 0 || c.unreported.some((f) => f !== "reasoning" && f !== "calls");
 
 export function totalsOf(chats: UsageChat[]): Totals {
   let counts = zero();
   const unreported: Partial<Record<CountField, number>> = {};
   let noUsage = 0;
   let partialChats = 0;
+  let totalShort = 0;
   for (const c of chats) {
+    if (chatTotalShort(c)) totalShort++;
     counts = addCounts(counts, c.counts);
     for (const f of c.unreported) unreported[f] = (unreported[f] ?? 0) + 1;
     if (c.noUsage) noUsage++;
     if (c.missing) partialChats++;
   }
-  return { chats: chats.length, counts, unreported, noUsage, partialChats, cost: tallyCost(chats) };
+  return { chats: chats.length, counts, unreported, noUsage, partialChats, totalShort, cost: tallyCost(chats) };
 }
 
 export type Dimension = "model" | "source" | "profile" | "project" | "day";
@@ -558,7 +574,8 @@ function keysOf(c: UsageChat, dim: Dimension, ctx: GroupContext): { key: string;
     case "model":
       return [{ key: c.model ?? NO_MODEL, label: c.model ?? "No model recorded" }];
     case "source":
-      return [{ key: c.source, label: sourceName(c.source) }];
+      // `gui` and `hermes-chat`, `cli` and `tui`, are the same place.
+      return [{ key: sourceName(c.source), label: sourceName(c.source) }];
     case "profile":
       return [{ key: c.profile, label: c.profile }];
     case "day": {

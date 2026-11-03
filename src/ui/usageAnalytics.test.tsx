@@ -96,7 +96,8 @@ describe("Usage in the app", () => {
     const drill = screen.getByRole("heading", { name: "Where it started: Telegram" });
     expect(document.activeElement).toBe(drill);
     await user.click(screen.getByRole("button", { name: "Back to the breakdown" }));
-    await waitFor(() => expect(document.activeElement?.textContent).toMatch(/Telegram/));
+    // Focus goes back to the row's own button, mounted again with the breakdown.
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: /^Telegram: show its 1 chats/ })));
     await user.click(screen.getByRole("button", { name: /^Hermes Chat: show its/ }));
     await user.click(screen.getByRole("button", { name: "Disk alerts" }));
     await waitFor(() => expect(document.querySelector(".usage-screen")).toBeNull());
@@ -117,6 +118,17 @@ describe("Usage in the app", () => {
     expect(screen.getByRole("alert").textContent).toMatch(/These totals are partial.*Couldn't read the work profile.*503/s);
     // A total that is short says so.
     expect(tile("Chats")).toBe("4+");
+  });
+
+  it("shows Hermes's own sums and helper tasks for a period with no chats, only subagent runs", async () => {
+    const s = new FakeHermes();
+    s.sessions = [row("delegate", 1, { unlisted: true, ...used(9_000, 900, "estimated", 0.001) }), row("old", 60, { title: "Old", ...used(1, 1, "estimated", 0) })];
+    s.helperUsage.default = [{ task: "background_review", input_tokens: 5000, output_tokens: 50, estimated_cost: 0.002, api_calls: 3, models: ["m"] }];
+    await launch(s);
+    expect(screen.getByText("No chats started in this period.")).toBeTruthy();
+    const hermes = screen.getByRole("region", { name: "Hermes's own totals" });
+    expect(within(hermes).getByText((9_000).toLocaleString())).toBeTruthy();
+    expect(within(hermes).getByText("background review")).toBeTruthy();
   });
 
   it("says when Hermes has no sums of its own, and counts the chats all the same", async () => {
