@@ -587,7 +587,7 @@ function SortHeader({ col, sort, onSort, children }: { col: SortKey; sort: Sort;
 
 const cell = (t: Totals, field: CountField) => (
   <>
-    {tokens(t.counts[field])}
+    {field === "calls" ? full(t.counts.calls) : tokens(t.counts[field])}
     {t.unreported[field] ? <span className="usage-plus">+</span> : null}
   </>
 );
@@ -624,7 +624,7 @@ function GroupTable({ groups, total, sort, onSort, dim, onDrill }: { groups: Gro
                 </th>
                 <td>{g.totals.chats.toLocaleString()}</td>
                 {(["input", "cacheRead", "cacheWrite", "output", "reasoning", "calls"] as const).map((f) => (
-                  <td key={f}>{f === "calls" ? full(g.totals.counts.calls) : cell(g.totals, f)}</td>
+                  <td key={f}>{cell(g.totals, f)}</td>
                 ))}
                 <td>
                   {tokens(sum)}
@@ -699,10 +699,9 @@ function ChatTable({ chats, sort, onSort, zone, shownProfile, onOpen }: { chats:
                 </th>
                 <td>{dayIn(zone, c.startedAt)}</td>
                 <td className="mono">{c.model ?? "—"}</td>
-                <td>{tokens(c.counts.input)}</td>
-                <td>{tokens(c.counts.cacheRead)}</td>
-                <td>{tokens(c.counts.output)}</td>
-                <td>{full(c.counts.calls)}</td>
+                {(["input", "cacheRead", "output", "calls"] as const).map((f) => (
+                  <td key={f}>{c.unreported.includes(f) ? <span className="faint" title="Hermes didn't report this count">—</span> : f === "calls" ? full(c.counts.calls) : tokens(c.counts[f])}</td>
+                ))}
                 <td>
                   {tokens(totalOf(c.counts))}
                   {chatTotalShort(c) ? <span className="usage-plus">+</span> : null}
@@ -775,17 +774,26 @@ function HermesTotalsCard({ data, filtered }: { data: UsageDataset; filtered: bo
                     <td>{h.calls !== undefined ? full(h.calls) : "—"}</td>
                     <td>{h.estimatedUsd !== undefined ? `~${usd(h.estimatedUsd)}` : "—"}</td>
                   </tr>,
-                  <tr key={`${c.profile}-c`}>
-                    <td>Chats here</td>
-                    <td>
-                      {c.sessions.toLocaleString()} in {c.chats.toLocaleString()} chats
-                    </td>
-                    <td>{full(c.input)}</td>
-                    <td>{full(c.cacheRead)}</td>
-                    <td>{full(c.output)}</td>
-                    <td>{full(c.calls)}</td>
-                    <td>{tallyLabel(t.cost).short}</td>
-                  </tr>,
+                  c.complete ? (
+                    <tr key={`${c.profile}-c`}>
+                      <td>Chats here</td>
+                      <td>
+                        {c.sessions.toLocaleString()} in {c.chats.toLocaleString()} chats
+                      </td>
+                      <td>{full(c.input)}</td>
+                      <td>{full(c.cacheRead)}</td>
+                      <td>{full(c.output)}</td>
+                      <td>{full(c.calls)}</td>
+                      <td>{tallyLabel(t.cost).short}</td>
+                    </tr>
+                  ) : (
+                    <tr key={`${c.profile}-c`}>
+                      <td>Chats here</td>
+                      <td colSpan={6} className="usage-incomparable">
+                        Not every chat in this profile could be read, so they don't compare.
+                      </td>
+                    </tr>
+                  ),
                 ];
               })}
             </tbody>
@@ -793,7 +801,7 @@ function HermesTotalsCard({ data, filtered }: { data: UsageDataset; filtered: bo
         </div>
       )}
       {checks.map((c) =>
-        c.hermes.sessions !== undefined && c.hermes.sessions > c.sessions ? (
+        c.complete && c.hermes.sessions !== undefined && c.hermes.sessions > c.sessions ? (
           <p key={c.profile} className="usage-note">
             In {c.profile}, Hermes counts {(c.hermes.sessions - c.sessions).toLocaleString()} more sessions ({tokens(Math.max(0, (c.hermes.input ?? 0) - c.input))} more input) than the
             chats here hold: subagent runs, and segments of compressed chats that started earlier.

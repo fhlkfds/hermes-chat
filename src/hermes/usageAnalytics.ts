@@ -415,7 +415,10 @@ export type CostTally = {
   kinds: Record<CostKind, { chats: number; tokens: number; usd: number }>;
   /** Tokens in segments that made model calls. */
   tokens: number;
-  /** Chats with segments that couldn't be read: their cost and tokens are missing from every figure here. */
+  /**
+   * Chats with usage not in any figure here: a segment that couldn't be read, or one with no usage recorded at all,
+   * which can't show that it made no calls.
+   */
   incomplete: number;
 };
 
@@ -445,7 +448,7 @@ export function tallyCost(chats: UsageChat[]): CostTally {
   let tokens = 0;
   let incomplete = 0;
   for (const chat of chats) {
-    if (chat.missing) incomplete++;
+    if (chat.missing || chat.segments.some((s) => !s.usage)) incomplete++;
     const counted = new Set<CostKind>();
     for (const s of chat.segments) {
       if (!madeCalls(s.usage)) continue;
@@ -475,7 +478,7 @@ export function coverage(t: CostTally): number {
 export function tallyLabel(t: CostTally): { short: string; detail: string; kind: CostKind | "mixed" | "none" } {
   const used = COST_KINDS.filter((k) => t.kinds[k].tokens > 0 || t.kinds[k].chats > 0);
   const unread = t.incomplete
-    ? ` ${t.incomplete.toLocaleString()} ${t.incomplete === 1 ? "chat has" : "chats have"} segments that couldn't be read: their cost isn't here at all, and the share covered is of the usage read.`
+    ? ` ${t.incomplete.toLocaleString()} ${t.incomplete === 1 ? "chat has" : "chats have"} usage that couldn't be read or wasn't recorded: its cost isn't here at all, and the share covered is of the usage read.`
     : "";
   if (!used.length) return t.incomplete ? { short: "?", detail: `Nothing read made model calls.${unread}`, kind: "none" } : { short: "—", detail: "No model calls, so nothing to price.", kind: "none" };
   if (used.length === 1 && used[0] === "included" && !t.incomplete)
@@ -675,11 +678,14 @@ export type CrossCheck = {
   output: number;
   cacheRead: number;
   calls: number;
+  /** Every chat in the period was read, so the chats' figures compare with Hermes's. */
+  complete: boolean;
 };
 
+/** Hermes's own sums for each profile that gave them, beside its chats' when all of them were read. */
 export function crossCheck(data: UsageDataset): CrossCheck[] {
   return data.profiles.flatMap((p) => {
-    if (p.hermes?.state !== "ok" || p.state !== "ok") return [];
+    if (p.hermes?.state !== "ok") return [];
     const mine = data.chats.filter((c) => c.profile === p.profile);
     const t = totalsOf(mine);
     return [
@@ -692,6 +698,7 @@ export function crossCheck(data: UsageDataset): CrossCheck[] {
         output: t.counts.output,
         cacheRead: t.counts.cacheRead,
         calls: t.counts.calls,
+        complete: p.state === "ok",
       },
     ];
   });

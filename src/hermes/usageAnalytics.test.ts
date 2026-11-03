@@ -297,9 +297,31 @@ describe("Completeness", () => {
     const root = base("tip", { missing: 1 }, usage(1000, 100, { cost: ["actual", 1, 1] }));
     const label = tallyLabel(totalsOf([root, base("other", {}, usage(10, 1, { cost: ["actual", 0.5, 0.5] }))]).cost);
     expect(label.short).toBe("$1.50+");
-    expect(label.detail).toMatch(/1 chat has segments that couldn't be read/);
+    expect(label.detail).toMatch(/1 chat has usage that couldn't be read or wasn't recorded/);
     expect(label.detail).toMatch(/of the tokens read/);
     expect(chatCost(root).short).toBe("$1.00+");
+  });
+});
+
+describe("Usage Hermes didn't record", () => {
+  it("doesn't let a row with no usage pass for one that made no calls", () => {
+    const none = { ...base("old"), segments: [{ id: "old" }], counts: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0, calls: 0 }, unreported: ["input", "cacheRead", "cacheWrite", "output", "reasoning", "calls"] as never, noUsage: true };
+    const label = tallyLabel(totalsOf([base("a", {}, usage(1000, 100, { cost: ["actual", 1, 1] })), none]).cost);
+    expect(label.short).toBe("$1.00+");
+    expect(label.detail).toMatch(/usage that couldn't be read or wasn't recorded/);
+  });
+
+  it("keeps Hermes's own sums for a profile whose chats couldn't all be read, without comparing them", async () => {
+    const page = vi.fn(async (_p: string, offset: number) => {
+      if (offset) throw new Error("The dashboard answered 503: busy");
+      return { rows: Array.from({ length: 100 }, (_, i) => ({ id: `c${i}`, started_at: NOW / 1000 - i, input_tokens: 1, output_tokens: 1 })), total: 500 };
+    });
+    const hermesTotals = async () => ({ totals: { total_sessions: 500, total_input: 500 }, by_task: [{ task: "title_generation", api_calls: 3 }] });
+    const data = await collectUsage({ page, session: vi.fn(), hermesTotals }, ["default"], week());
+    expect(data.profiles[0].state).toBe("failed");
+    const [check] = crossCheck(data);
+    expect(check.complete).toBe(false);
+    expect(check.hermes.helpers.map((h) => h.task)).toEqual(["title_generation"]);
   });
 });
 

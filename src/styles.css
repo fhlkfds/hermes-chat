@@ -1808,6 +1808,7 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .usage-drill-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; max-width: 320px; }
 .usage-share { display: block; height: 3px; border-radius: 2px; background: var(--line); overflow: hidden; }
 .usage-share > span { display: block; height: 100%; background: var(--muted); border-radius: 2px; }
+.ua-table td.usage-incomparable { text-align: left; color: var(--muted); white-space: normal; }
 .usage-chat-meta { display: block; font-size: calc(11.5rem / 14); font-weight: 400; }
 .usage-notes { margin: 0; padding-left: 18px; color: var(--muted); font-size: calc(12.5rem / 14); line-height: 1.6; }
 .link-btn { color: var(--text); text-decoration: underline; font: inherit; }
