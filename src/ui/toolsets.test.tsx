@@ -199,6 +199,22 @@ describe("Settings → Toolsets", () => {
     expect(server.toolsetDisabledEverywhere.default).toEqual(["debugging"]);
   });
 
+  it("asks under the toolset it's about, with the keyboard on Keep, and hands it back to the switch", async () => {
+    const server = new FakeHermes();
+    server.toolsetDisabledEverywhere.default = ["image_gen"];
+    const { user } = await shown(server);
+    await user.click(toggle("Image Generation"));
+    const ask = await screen.findByRole("alertdialog", { name: "Turn Image Generation on" });
+    // Right after its toolset's row, not above the list.
+    const row = toggle("Image Generation").closest(".toolset-row")!;
+    expect(row.nextElementSibling).toBe(ask);
+    await waitFor(() => expect(document.activeElement).toBe(within(ask).getByRole("button", { name: "Keep it off" })));
+    await user.keyboard("{Enter}");
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(document.activeElement).toBe(toggle("Image Generation"));
+    expect(server.toolsetWrites).toEqual([]);
+  });
+
   it("marks a toolset whose provider isn't ready, though Hermes counts it configured", async () => {
     const server = new FakeHermes();
     server.toolsetProviders.stt = [{ name: "Local Whisper", status: "needs_setup", is_active: true }];

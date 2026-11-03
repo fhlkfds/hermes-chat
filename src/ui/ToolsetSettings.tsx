@@ -1,7 +1,7 @@
 // Settings → Toolsets: which toolsets Hermes offers the model, for the profile shown, as Hermes has them on the server.
 // A switch changes one toolset for the whole profile; it is checked against a fresh read first and shown as saved only
 // once Hermes reads it back that way. Reads and writes: toolsets.ts.
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { RefreshCw, ShieldCheck, TriangleAlert } from "lucide-react";
 import {
   UnsupportedServerError,
@@ -136,6 +136,7 @@ function ToolsetRow({
         {canSwitch ? (
           <button
             className="switch"
+            id={`${id}-switch`}
             role="switch"
             aria-checked={t.enabled}
             aria-labelledby={`${id}-label`}
@@ -385,6 +386,21 @@ export function ToolsetSettings({
     await commit(t, enabled, cautions);
   };
 
+  // A confirmation opens under its toolset, which may be far down the list: brought into view, with the keyboard on
+  // its safe choice. Declining hands the keyboard back to the switch.
+  const askBox = useRef<HTMLDivElement>(null);
+  const asking = ask && `${ask.t.name}:${ask.enabled}:${ask.again ? 1 : 0}`;
+  useEffect(() => {
+    if (!asking) return;
+    askBox.current?.scrollIntoView?.({ block: "nearest" });
+    askBox.current?.querySelector("button")?.focus();
+  }, [asking]);
+  const decline = () => {
+    const name = ask?.t.name;
+    setAsk(undefined);
+    if (name) document.getElementById(`toolset-${name}-switch`)?.focus();
+  };
+
   const intro = (
     <>
       <h2>Toolsets</h2>
@@ -427,19 +443,41 @@ export function ToolsetSettings({
   // the tools inside them, which no switch here undoes.
   const unlisted = guards?.disabledEverywhere.filter((n) => !list.toolsets.some((t) => t.name === n)) ?? [];
   const row = (t: Toolset) => (
-    <ToolsetRow
-      key={t.name}
-      t={t}
-      write={write}
-      connected={connected}
-      locked={locked}
-      saving={savingHere}
-      checking={checking}
-      problem={problems[t.name]}
-      offEverywhere={guards?.disabledEverywhere.includes(t.name)}
-      note={notes[t.name]}
-      onToggle={(x) => void toggle(x)}
-    />
+    <Fragment key={t.name}>
+      <ToolsetRow
+        t={t}
+        write={write}
+        connected={connected}
+        locked={locked}
+        saving={savingHere}
+        checking={checking}
+        problem={problems[t.name]}
+        offEverywhere={guards?.disabledEverywhere.includes(t.name)}
+        note={notes[t.name]}
+        onToggle={(x) => void toggle(x)}
+      />
+      {ask?.t.name === t.name && (
+        <div className="confirm toolset-ask" role="alertdialog" ref={askBox} aria-label={`Turn ${ask.t.label} ${onOff(ask.enabled)}`}>
+          <span className="confirm-msg">
+            <TriangleAlert size={12} /> Turn {ask.t.label} {onOff(ask.enabled)}?
+          </span>
+          {ask.again && <span className="confirm-detail">Checked again just before sending, this changed since you were asked:</span>}
+          {ask.cautions.map((c, i) => (
+            <span className="confirm-detail" key={i}>
+              {cautionText(c, ask.t)}
+            </span>
+          ))}
+          <div className="confirm-actions">
+            <button className="btn" onClick={decline}>
+              Keep it {onOff(ask.t.enabled)}
+            </button>
+            <button className="btn danger" disabled={!connected || !!pending} onClick={() => void confirm()}>
+              Turn {onOff(ask.enabled)}
+            </button>
+          </div>
+        </div>
+      )}
+    </Fragment>
   );
 
   return (
@@ -487,27 +525,6 @@ export function ToolsetSettings({
           <RefreshCw size={14} /> Refresh
         </button>
       </div>
-      {ask && (
-        <div className="confirm toolset-ask" role="alertdialog" aria-label={`Turn ${ask.t.label} ${onOff(ask.enabled)}`}>
-          <span className="confirm-msg">
-            <TriangleAlert size={12} /> Turn {ask.t.label} {onOff(ask.enabled)}?
-          </span>
-          {ask.again && <span className="confirm-detail">Checked again just before sending, this changed since you were asked:</span>}
-          {ask.cautions.map((c, i) => (
-            <span className="confirm-detail" key={i}>
-              {cautionText(c, ask.t)}
-            </span>
-          ))}
-          <div className="confirm-actions">
-            <button className="btn" onClick={() => setAsk(undefined)}>
-              Keep it {onOff(ask.t.enabled)}
-            </button>
-            <button className="btn danger" disabled={!connected || !!pending} onClick={() => void confirm()}>
-              Turn {onOff(ask.enabled)}
-            </button>
-          </div>
-        </div>
-      )}
       <div className="toolset-list" role="group" aria-label="Toolsets for this app's chats">
         {here.map(row)}
       </div>
