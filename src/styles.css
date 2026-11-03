@@ -1634,3 +1634,41 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 /* The tool call an Output came from, once Outputs goes to it. */
 .jumped { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 8px; transition: outline-color 1.5s; }
+
+/* ---------- terminal on the server (Terminal.tsx) ---------- */
+.terminal-screen { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.terminal-screen[hidden] { display: none; }
+.terminal-head { padding: 18px 22px 10px; flex: none; }
+.terminal-title { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 12px; min-height: 30px; }
+.terminal-title h1 { display: inline-flex; align-items: center; gap: 8px; font-size: calc(18rem / 14); font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+.terminal-title h1 svg { color: var(--muted); }
+.terminal-spacer { flex: 1; }
+.terminal-status {
+  display: inline-flex; align-items: center; gap: 6px; font-size: calc(12rem / 14); color: var(--muted);
+  padding: 2px 9px; border-radius: 999px; background: var(--raised-2);
+}
+.terminal-status.open { color: var(--ok); background: rgba(74, 222, 128, 0.12); }
+.terminal-status.failed { color: var(--bad); background: rgba(248, 113, 113, 0.12); }
+.terminal-title .btn { display: inline-flex; align-items: center; gap: 6px; }
+.terminal-connect { padding: 0 22px 12px; flex: none; }
+.terminal-connect p { margin: 0 0 10px; font-size: calc(13rem / 14); line-height: 1.5; }
+.terminal-connect-row { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
+.terminal-connect-row label { display: flex; flex-direction: column; gap: 5px; flex: 1; min-width: 220px; max-width: 420px; }
+.terminal-connect-row label span { font-size: calc(12.5rem / 14); color: var(--muted); }
+.terminal-connect-row input {
+  background: var(--bg); border: 1px solid var(--line-2); border-radius: 7px; padding: 7px 10px; outline: none; color: var(--text);
+}
+.terminal-connect-row input:focus { border-color: var(--line-3); }
+.terminal-connect-row .btn { display: inline-flex; align-items: center; gap: 6px; }
+.terminal-body {
+  flex: 1; min-height: 0; margin: 0 16px; padding: 10px 4px 6px 12px; background: var(--code-bg);
+  border: 1px solid var(--line); border-radius: 10px; display: flex;
+}
+.terminal-host { flex: 1; min-width: 0; min-height: 0; }
+.terminal-host .xterm { height: 100%; }
+.terminal-host .xterm-viewport { background: transparent !important; }
+/* xterm's scrollbar thumb is a `.slider` too; keep the Settings sliders' sizing off it. */
+.terminal-host .xterm-scrollable-element .slider { min-width: 0; flex: none; border-radius: 4px; }
+.terminal-foot { flex: none; margin: 0; padding: 8px 22px 12px; font-size: calc(12rem / 14); }
+.terminal-btn { position: relative; }
+.terminal-dot { position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; background: var(--ok); }

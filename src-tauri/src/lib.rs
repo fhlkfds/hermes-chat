@@ -5,6 +5,7 @@ pub mod notify;
 pub mod remote;
 pub mod saved_password;
 pub mod screenshot;
+pub mod terminal;
 pub mod transport;
 pub mod tunnel;
 pub mod web_page;
@@ -555,6 +556,38 @@ fn permission<R: tauri::Runtime>(webview: &tauri::Webview<R>, kind: PermissionKi
     }
 }
 
+/// Opens a terminal on the server: `ssh` to `target` (the sign-in's SSH target, or one the owner gave the terminal),
+/// `cols` × `rows`, its output and end sent to `on_event` (terminal.rs, ADR 0022).
+#[tauri::command]
+async fn terminal_open(
+    terminals: State<'_, terminal::Terminals>,
+    target: String,
+    cols: u16,
+    rows: u16,
+    on_event: Channel<terminal::TerminalEvent>,
+) -> Result<u64, terminal::TerminalError> {
+    let command = terminal::ssh_command(&target)?;
+    terminals.open(command, cols, rows, move |e| {
+        let _ = on_event.send(e);
+    })
+}
+
+/// Async, so a terminal that isn't reading can't hold up the window.
+#[tauri::command]
+async fn terminal_write(terminals: State<'_, terminal::Terminals>, id: u64, data: String) -> Result<(), terminal::TerminalError> {
+    terminals.write(id, data.as_bytes())
+}
+
+#[tauri::command]
+fn terminal_resize(terminals: State<'_, terminal::Terminals>, id: u64, cols: u16, rows: u16) -> Result<(), terminal::TerminalError> {
+    terminals.resize(id, cols, rows)
+}
+
+#[tauri::command]
+fn terminal_close(terminals: State<'_, terminal::Terminals>, id: u64) {
+    terminals.close(id);
+}
+
 /// Starts the app. `screenshot`: it was started by `hermes-chat --screenshot`, with no other Hermes Chat to take it.
 pub fn run(screenshot: bool) {
     let screenshots = Screenshots::default();
@@ -599,6 +632,7 @@ pub fn run(screenshot: bool) {
             Ok(())
         })
         .manage(PickedFiles::default())
+        .manage(terminal::Terminals::default())
         .invoke_handler(tauri::generate_handler![
             hermes_connect,
             hermes_send,
@@ -638,6 +672,10 @@ pub fn run(screenshot: bool) {
             screenshot_pending_request,
             screenshot_ack_request,
             screenshot_show_window,
+            terminal_open,
+            terminal_write,
+            terminal_resize,
+            terminal_close,
             update::update_install_kind,
             update::update_check,
             update::update_download_and_install,

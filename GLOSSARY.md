@@ -174,6 +174,10 @@ _Avoid_: custom header, gateway token
 The rail's read-only browser for the Server files on the machine the Hermes dashboard runs on. It lists folders through the dashboard's managed files, as the server's own user can open them, the same for every profile, and never shows credential files such as `.env`. The server may limit it to one folder. Nothing on this computer is shown there, and nothing on the server can be changed from it (ADR 0012).
 _Avoid_: remote files, file manager, workspace (Hermes's word for a session's working folder)
 
+**Terminal**:
+The rail's screen with a shell on the Hermes server, through the owner's own ssh to the sign-in's SSH target, or one typed for it. ssh asks there for anything it needs, such as a passphrase or a new host key. Going back to a chat leaves the session running, and the rail shows it; signing out ends it. It is the owner's shell, not Hermes's: nothing typed there reaches a chat, an Approval or the agent (ADR 0022).
+_Avoid_: console, shell (for the screen), Hermes's terminal tool (the agent's, which runs in a chat)
+
 **Output**:
 A Server file that one of Hermes's tools reported writing in a chat: `write_file`, a file `patch` created, `text_to_speech` audio or an `image_generate` image. It is known by its path, the tool call that made it, and that call's chat. A path a reply or another tool only mentions isn't an Output. The same path written twice is two Outputs, two versions, and only the newest is what the path holds now. The owner can also add a Server file to Outputs by its path. Outputs shows them for the open chat, the project the list shows, or every chat in the profile, and says when a file was last found at its path. This computer keeps only their paths and where they came from (ADR 0016).
 _Avoid_: artifact (the official desktop app's word, which also counts mentioned paths and links), attachment, generated file (in the app's text)
