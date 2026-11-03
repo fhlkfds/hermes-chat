@@ -24,18 +24,21 @@
 // Each chat's context fullness and YOLO come from its session's `info` and `usage`: research doc "Status bar".
 // Token usage and cost (usage.ts, ADR 0008): each reply's usage is how far its session's live counters moved during
 // its turn; each chat's totals and cost are Hermes's stored ones, read with the chat list and after each turn.
+import { PersonaApi } from "./persona";
 import { APPROVAL_CHOICES, isBroadGrant, isOutgoing, isWaiting, offeredChoices, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type ContextPart, type ContextUse, type Found, type Item, type OtherProfiles, type Outgoing, type OutgoingItem, type Queued, type SessionLive, type Source, QUEUE_LIMIT } from "./model";
 import { catalogFromServer, fallbackCatalog, isEffort, modelKey, pickFromInfo, type ModelCatalog, type ModelPick } from "./models";
 import { noOthers, OtherProfilesCheck } from "./otherProfiles";
 // Projects are Hermes's own, read and written with legacy `projects.*` (projects.ts, research doc "Projects").
 import { projectsApi, type ProjectsApi } from "./projects";
+import { listServerCommands, runServerCommand, type CommandDef, type CommandResult, type ServerCommandList } from "./commands";
 import { CronApi } from "./cronJobs";
 import { ModelSettingsApi } from "./modelSettings";
 import type { OpenPipe, Pipe, PipeEvent, RestMethod, Route, Speech, Transcript, VoiceSetup } from "./pipe";
-import { remoteFiles, type RemoteFiles } from "./remoteFiles";
+import { RemoteFilesError, previewSupport, remoteFiles, type RemoteFiles } from "./remoteFiles";
 import { isUnsecure } from "./unsecure";
 import { restartHold } from "./unsaved";
-import { readServerFile, type FileView } from "./preview";
+import { hostFileView, readServerFile, type FileView } from "./preview";
+import { splitPath, type OutputsIo, type StoredRow as StoredOutputRow } from "./outputs";
 import { chatUsageOf, countersOf, newerChatUsage, replyUsage, ZERO_COUNTERS, type ReplyUsage, type UsageCounters } from "./usage";
 
 /**
@@ -179,6 +182,8 @@ type TranscriptMessage = {
   name?: string | null;
   context?: string | null;
   args?: Record<string, unknown> | null;
+  /** A tool row's call (`tool_call_id`). */
+  tool_call_id?: string | null;
   timestamp?: number | null;
   /** The stored row (`messages.id`); a live session's not-yet-stored tail has none. */
   row_id?: number | null;
@@ -455,6 +460,8 @@ export class Hermes {
   private background = new Set<Promise<unknown>>();
   /** When the shown profile's list last synced on this connection. */
   private listedAt?: number;
+  /** The server commands listed for a connection and profile (`serverCommands`). */
+  private commandsRead?: { key: string; done: Promise<ServerCommandList> };
   /** The voice set-up read for a connection and profile (`voiceSetup`). */
   private voiceRead?: { key: string; done: Promise<VoiceSetup> };
   /** The model list being read, and for which profile. */
@@ -518,6 +525,9 @@ export class Hermes {
     (method, pathAndQuery, body) => this.rest(method, pathAndQuery, body),
     () => this.profile,
   );
+
+  /** Settings → Persona's reads and writes of a profile's SOUL.md (persona.ts). Each call names its profile. */
+  readonly persona = new PersonaApi((method, pathAndQuery, body) => this.rest(method, pathAndQuery, body));
 
   /** The profile whose chats are shown. */
   get profile(): string {
@@ -601,6 +611,30 @@ export class Hermes {
       });
     }
     return this.voiceRead.done;
+  }
+
+  /**
+   * The registry's server commands this Hermes lists for the shown profile (commands.ts). Read once per connection and
+   * profile; a failed read is tried again on the next call.
+   */
+  serverCommands(): Promise<ServerCommandList> {
+    if (!this.connectedPipe()) return Promise.reject(new Error("Not connected to Hermes."));
+    const key = `${this.generation}/${this.profile}`;
+    if (this.commandsRead?.key !== key) {
+      const done = listServerCommands((method, params) => this.request(method, params), this.profile);
+      this.commandsRead = { key, done };
+      done.catch(() => {
+        if (this.commandsRead?.done === done) this.commandsRead = undefined;
+      });
+    }
+    return this.commandsRead.done;
+  }
+
+  /** Runs a server command in the chat's live session (commands.ts). Rejects if the chat isn't open on Hermes. */
+  runCommand(chatId: string, def: CommandDef, arg: string): Promise<CommandResult> {
+    const runtimeId = this.snapshot.chats.find((c) => c.id === chatId)?.runtimeId;
+    if (!runtimeId) return Promise.reject(new Error("This chat isn't open on Hermes."));
+    return runServerCommand((method, params) => this.request(method, params), runtimeId, def, arg);
   }
 
   /** Has Hermes transcribe a Dictation recording with the shown profile's speech-to-text provider. */
@@ -763,12 +797,20 @@ export class Hermes {
 
   /**
    * Starts a Chat in this app. It is Active from the start, and pinned once Hermes has stored it (ADR 0002). `model`:
-   * what it runs on, for this chat only; left out, it runs on the profile's model.
+   * what it runs on, for this chat only; left out, it runs on the profile's model. `folder`: the server folder it
+   * works in (its session `cwd`), checked by the caller first; Hermes quietly runs a chat in its own folder when it
+   * can't use the one asked for, so the chat is refused unless Hermes says it took it. `instructions`: one hidden
+   * message seeded before the owner's first, which the model reads and no Hermes client shows (ADR 0017).
    */
-  async newChat(model?: ModelPick): Promise<string> {
+  async newChat(model?: ModelPick, start: { folder?: string; instructions?: string } = {}): Promise<string> {
+    const { folder, instructions } = start;
+    const profile = this.profile;
     const res = (await this.request("session.create", {
-      profile: this.profile,
+      profile,
       source: APP_SOURCE,
+      // `cwd_explicit`: a deliberate pick, which beats a profile's configured `terminal.cwd` (`_completion_cwd`).
+      ...(folder && { cwd: folder, cwd_explicit: true }),
+      ...(instructions && { messages: [{ role: "user", content: instructions, display_kind: "hidden" }] }),
       // `SessionCreateParams`: each is this session's own override. `fast` left out keeps the profile's.
       ...(model && {
         model: model.model,
@@ -781,6 +823,14 @@ export class Hermes {
       stored_session_id: string;
       info?: unknown;
     };
+    const cwd = (res.info as { cwd?: unknown } | undefined)?.cwd;
+    if (folder && cwd !== folder) {
+      // Not this chat: drop the session, and the hidden message Hermes stored with it, so nothing is left behind.
+      void this.request("session.close", { session_id: res.session_id }).catch(() => {});
+      if (instructions)
+        void this.rest("DELETE", `api/sessions/${encodeURIComponent(res.stored_session_id)}?${new URLSearchParams({ profile })}`).catch(() => {});
+      throw new Error(`Hermes didn't start it in ${folder}${typeof cwd === "string" && cwd ? `: it would have worked in ${cwd}` : ""}. Nothing was sent.`);
+    }
     const chat: Chat = {
       model: pickFromInfo(res.info) ?? model,
       id: res.stored_session_id,
@@ -882,6 +932,19 @@ export class Hermes {
       this.patchChat(chatId, (c) => (c.model === pick ? { ...c, model: before } : c));
       throw e;
     }
+  }
+
+  /**
+   * Moves a chat's work to `folder` on the server (`session.cwd.set`), for that chat only. Hermes changes it only
+   * while no reply is running, and only to a folder it can find; it says it worked only once Hermes answers with it.
+   */
+  async setFolder(chatId: string, folder: string): Promise<void> {
+    const chat = this.snapshot.chats.find((c) => c.id === chatId);
+    if (!chat) throw new Error("This chat isn't in the list.");
+    if (chat.running) throw new Error("Wait for the reply to finish: Hermes changes the folder only between replies.");
+    const sid = await this.resume(chatId);
+    const res = (await this.request("session.cwd.set", { session_id: sid, profile: this.profile, cwd: folder })) as { cwd?: unknown } | undefined;
+    if (res?.cwd !== folder) throw new Error(`Hermes didn't move it to ${folder}${typeof res?.cwd === "string" ? `: it works in ${res.cwd}` : ""}.`);
   }
 
   /**
@@ -2335,8 +2398,61 @@ export class Hermes {
     return readServerFile((q) => this.rest("GET", q), path, this.snapshot.profile);
   }
 
+  /**
+   * A file on the dashboard's own machine, for the preview pane: found in its folder's listing and read through the
+   * managed files routes, as the Server files screen reads it (ADR 0012), within that screen's preview limits. For
+   * the audio and images Hermes saves itself, which aren't where a profile with an SSH terminal runs its tools.
+   */
+  async readHostFile(path: string): Promise<FileView> {
+    const { dir, name } = splitPath(path);
+    const entry = (await this.files.list(dir)).entries.find((e) => e.name === name);
+    if (!entry || entry.kind !== "file") throw new Error("There's no file at this path on the dashboard's machine.");
+    const support = previewSupport(entry);
+    if (support.kind === "none") return { kind: "unsupported", reason: support.why, size: entry.size };
+    return hostFileView(await this.files.preview(entry, support.kind === "maybe-text"));
+  }
+
+  /**
+   * How Outputs reads Hermes for `profile` (outputs.ts): a chat's stored rows through dashboard REST, each page refused
+   * past its size limit, and a folder's listing through `GET /api/fs/list`, where the profile's tools run. Every
+   * request names the profile, so a run for a profile left behind still reads only that profile.
+   */
+  outputsIo(profile: string): OutputsIo {
+    return {
+      rows: async (chatId, offset, limit, maxBytes) => {
+        const query = new URLSearchParams({ profile, order: "latest", limit: String(limit), offset: String(offset), inline_images: "false" });
+        const body = await this.restGet(`${sessionPath(chatId)}/messages?${query}`, maxBytes);
+        const res = JSON.parse(body) as { messages?: unknown };
+        // UTF-8 bytes, as Rust counted them against the limit.
+        return { rows: Array.isArray(res.messages) ? (res.messages as StoredOutputRow[]) : [], bytes: new TextEncoder().encode(body).byteLength };
+      },
+      listDir: async (path, host) => {
+        // The dashboard's own machine, through the managed files routes Server files lists with (ADR 0012).
+        if (host)
+          return this.files.list(path).then(
+            (l) => ({ entries: l.entries.map((e) => ({ name: e.name, isDirectory: e.kind === "dir" })) }),
+            (e: unknown) => {
+              const status = e instanceof RemoteFilesError ? e.status : undefined;
+              const message = e instanceof Error ? e.message : String(e);
+              if (status === 404 && /isn't on the server/.test(message)) return { entries: [], error: "ENOENT" };
+              if (status === 400 && /not a folder/.test(message)) return { entries: [], error: "ENOTDIR" };
+              if (status === 403) return { entries: [], error: "EACCES" };
+              throw new Error(message);
+            },
+          );
+        const res = JSON.parse(await this.restGet(`api/fs/list?${new URLSearchParams({ path, profile })}`, LIST_MAX_BYTES)) as { entries?: unknown; error?: unknown };
+        const entries = (Array.isArray(res.entries) ? res.entries : []).flatMap((e: { name?: unknown; isDirectory?: unknown }) =>
+          typeof e?.name === "string" ? [{ name: e.name, isDirectory: e.isDirectory === true }] : [],
+        );
+        return { entries, ...(typeof res.error === "string" && { error: res.error }) };
+      },
+    };
+  }
+
   private async rest(method: RestMethod, pathAndQuery: string, body?: unknown): Promise<unknown> {
-    if (!this.pipe) throw new Error("Not connected to Hermes.");
+    // Once closed (signed out), nothing more goes out: the Rust side relays through whichever sign-in is current, which
+    // may be another server's by then.
+    if (!this.pipe || this.closing) throw new Error("Not connected to Hermes.");
     return JSON.parse(await this.pipe.request(method, pathAndQuery, body === undefined ? undefined : JSON.stringify(body)));
   }
 
@@ -2456,7 +2572,7 @@ const TITLE_INSTRUCTIONS = [
 ].join(" ");
 
 /** A row of dashboard REST `GET /api/sessions/{id}/messages`, as far as titling reads it. */
-type StoredMessage = { role?: string; content?: unknown };
+type StoredMessage = { role?: string; content?: unknown; display_kind?: unknown };
 
 /** The text of a stored message: its `content`, or the text parts of a multimodal one. */
 function storedText(content: unknown): string {
@@ -2468,7 +2584,8 @@ function storedText(content: unknown): string {
 /** The user and assistant messages with text among stored rows, oldest first. */
 const saidIn = (rows: StoredMessage[]) =>
   rows
-    .filter((r) => r.role === "user" || r.role === "assistant")
+    // Hidden rows, such as a project's instructions (ADR 0017), are for the model; the owner never wrote or saw them.
+    .filter((r) => (r.role === "user" || r.role === "assistant") && r.display_kind !== "hidden")
     .map((r) => ({ who: r.role === "user" ? "USER" : "ASSISTANT", text: storedText(r.content).trim() }))
     .filter((m) => m.text);
 
@@ -2503,6 +2620,9 @@ function timeLimit<T>(p: Promise<T>, ms: number): Promise<T> {
   const late = new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error("Hermes didn't answer in time.")), ms)));
   return Promise.race([p, late]).finally(() => clearTimeout(timer));
 }
+
+/** The most a folder listing for Outputs may be: a folder of tens of thousands of entries. */
+const LIST_MAX_BYTES = 8 * 1024 * 1024;
 
 const sessionPath = (chatId: string) => `api/sessions/${encodeURIComponent(chatId)}`;
 
@@ -2666,6 +2786,7 @@ function historyItems(messages: TranscriptMessage[]): Item[] {
         {
           kind: "tool",
           id,
+          ...(m.tool_call_id && { callId: m.tool_call_id }),
           name: m.name || "tool",
           args: m.args ?? undefined,
           preview: m.context || undefined,
@@ -2802,6 +2923,7 @@ function applyEvent(c: Chat, type: string, p: Record<string, unknown>): Chat {
       items.push({
         kind: "tool",
         id: String(p.tool_id),
+        callId: String(p.tool_id),
         name: String(p.name ?? "tool"),
         args: p.args as Record<string, unknown> | undefined,
         preview: p.preview as string | undefined,

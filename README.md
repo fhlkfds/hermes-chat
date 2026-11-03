@@ -17,6 +17,7 @@ The application is built with Tauri 2, React 19, and TypeScript, and it uses Vit
 - [Install on Arch Linux](#install-on-arch-linux)
 - [Updates](#updates)
 - [Development](#development)
+- [Project defaults](#project-defaults)
 - [Connecting to Hermes](#connecting-to-hermes)
 - [What is stored where](#what-is-stored-where)
 - [Troubleshooting](#troubleshooting)
@@ -32,6 +33,9 @@ The application is built with Tauri 2, React 19, and TypeScript, and it uses Vit
 - For SSH: the dashboard must listen on port **9119** on the server's loopback address. The tunnel always forwards to `127.0.0.1:9119` on the server.
 - For voice: speech-to-text and text-to-speech providers set up for the profile on the server (`hermes tools`).
 - For Projects: a Hermes that has the `projects.*` methods. Without them, the chat list works and the project switcher says that Hermes needs an update.
+- For Outputs: a dashboard that serves `GET /api/sessions/{id}/messages` with tool rows (`tool_name`, `tool_call_id` and the stored result) and `GET /api/fs/list`, as `bf0203a` does. Files are found only in the stored results of `write_file`, `patch`, `text_to_speech` and `image_generate` with the result fields `bf0203a` writes. Without the routes, Outputs says which one is missing. Older tool results that don't name their file are counted, and the chat is labelled partial.
+- For Persona: the dashboard's `GET` and `PUT /api/profiles/{name}/soul` routes, which Hermes at `bf0203a` has. Without them, Settings → Persona says that this Hermes can't edit personas, and reads or writes nothing.
+- For Hermes's slash commands (`/steer`, `/context`): a Hermes whose `/api/ws` answers `commands.catalog`, `command.dispatch` and `slash.exec`, as `bf0203a` does. Without `commands.catalog`, those commands say that Hermes needs an update; the app's own commands still work.
 - For Server files: a dashboard that serves its managed-files routes, `GET /api/files` and `GET /api/files/read`, which the dashboard's own Files tab uses. Hermes at `bf0203a` does. Without them, the Server files screen says that this Hermes needs a dashboard with the Files tab. To limit browsing to one folder, start the dashboard with `HERMES_DASHBOARD_FILES_ROOT=/that/folder`.
 - For Scheduled jobs: a dashboard with the cron routes under `/api/cron/` (Hermes at `bf0203a` has them), and the profile's gateway running on the server, since its scheduler runs the jobs. Set the profile's time zone with `timezone:` in its `config.yaml`; without it Hermes uses the server's own zone, which the app can't name. Without the routes, the screen says that this Hermes has no scheduled jobs.
 
@@ -51,12 +55,16 @@ These features are on the `main` branch.
 - **Preview pane.** A resizable pane shows web links from replies, files on the Hermes server, local files you choose, and tool output. Web pages and HTML files load in sandboxed frames.
 - **Server files.** The folder button on the rail opens a read-only browser for the disk of the machine the dashboard runs on. It shows folders with a path trail, sizes, modified times, types, and symbolic links, and previews text files up to 1 MiB and images up to 10 MiB. It shows what the dashboard's OS user can read, starting in that user's home folder, and Hermes never lists credential files such as `.env` or `auth.json`.
 - **Scheduled jobs.** The calendar button on the rail lists the profile's Hermes cron jobs, and creates, edits, pauses, resumes, runs, and deletes them. Hermes keeps and runs them on the server, so they run while Hermes Chat is closed. See [Scheduled jobs](#scheduled-jobs).
+- **Outputs.** The rail's Outputs button lists the files Hermes's tools wrote, for the open chat, the project in the list, or every chat in the profile. It shows each file's name, type, size, version, whether it was at its path when last checked, and the chat and tool that made it. You can search, filter by type, open a file in the preview pane, go to the tool call that made it, or open its folder in Server files. Paths a reply only mentions aren't listed, and you can add a server file by its path. See [ADR 0016](docs/adr/0016-outputs-are-what-hermes-tools-say-they-wrote.md).
 - **Projects.** Projects are Hermes's own named groups of chats and server folders. Hermes stores the projects and their folders. This computer stores which chats are in each project.
+- **Project defaults.** A project's screen sets instructions, a model with its reasoning effort, and a working folder on the server for the chats started while the list shows it. The New chat pane lists what the chat will start with and where each value comes from: chosen for this chat, the project's default, or the profile's. See [Project defaults](#project-defaults).
 - **Models.** The composer has a model picker with reasoning effort, fast mode, and starred models. Settings → Model sets the profile's main model, subagent models, auxiliary models (including the Text generation model used for titles), and guardrails.
+- **Persona.** Settings → Persona edits the shown profile's `SOUL.md` on the Hermes server as plain Markdown, and shows the server, profile, and file path. Save writes nothing if the file changed on the server since you started; it says so and lets you choose. After writing, it reads the file back, and says it saved only then. New chats use the new persona; chats already under way keep theirs. Hermes doesn't restart. Leaving, switching profile, signing out, or closing the window with unsaved changes asks first, and the changes stay on this computer to restore. The last five versions a save replaced can be viewed and put back.
 - **Usage and cost.** You see token usage per reply and per chat. Cost appears only as Hermes recorded it, because the app keeps no price list.
 - **Status bar.** The status bar shows how full the context window is, a per-chat YOLO switch, the model, and the connection state. Right-click it to choose the items.
 - **Appearance.** Choose light, dark, or system mode, themes (with a theme editor), contrast, interface and code fonts, sizes, word wrap, and chat width.
 - **Desktop notifications.** While the window isn't focused, the app posts a notification when a reply finishes or an Approval is waiting. This needs a freedesktop notification service, such as mako, dunst, swaync, GNOME, or KDE.
+- **Slash commands.** Type `/` at the start of a message for a menu of commands, each marked App or Hermes: `/help`, `/new`, `/rename <title>`, `/delete` (asks first), `/steer <message>` for a running reply, and `/context`. Any other text starting with `/` is sent as a message. See [Slash commands](#slash-commands).
 - **Drafts and reopening.** Drafts are kept for each chat, profile, and connection, and they survive restarts. The app can reopen the last chat at launch.
 
 ### Keyboard shortcuts
@@ -70,6 +78,23 @@ These features are on the `main` branch.
 | Ctrl+\\ | Open a second pane, or close the inactive one |
 | Ctrl+1, Ctrl+2 | Focus the left or right composer |
 | Ctrl+Shift+S | Take a screenshot (configurable in Settings → General) |
+
+### Slash commands
+
+Type `/` at the very start of the composer to open the command menu. Keep typing to filter it by name or description. ↑ and ↓ choose, Enter or Tab fills the command in, and Escape closes the menu. Filling a command in never sends anything: press Enter again to run it. While an input method is composing, these keys stay with it.
+
+| Command | Runs in | What it does |
+| --- | --- | --- |
+| `/help` | App | Lists every command, its argument, and why it can't run now. Escape closes it. |
+| `/new` | App | Opens the New chat pane. |
+| `/rename <title>` | App | Renames the chat in every Hermes client, as Rename in the chat list does. |
+| `/delete` | App | Asks, as the chat list does, then deletes the chat in every Hermes client. |
+| `/steer <message>` | Hermes | Gives the running reply your words after its next tool call, without stopping it. If the reply ended meanwhile, Hermes has the words sent as your next message. |
+| `/context` | Hermes | Shows what fills the chat's context window, as Hermes counts it. |
+
+Hermes's commands need a Hermes that lists them in `commands.catalog` (Hermes at `bf0203a` does), the chat open on Hermes, and for `/steer` a reply running. If the profile has a quick command or plugin command called `steer`, Hermes would run that instead, so the app says so and doesn't run `/steer`. It also holds back when Hermes couldn't list those. A command that can't run says why under the composer and keeps your text. So does one that fails. The text is cleared only once the command has run. An answer that arrives after you switched profile isn't shown, and the text stays in that chat's draft. Text after `/` that isn't one of these commands, or words after a command that takes none (`/help me read this log`), is sent as an ordinary message. To send a command's own text as a message, start it with a space.
+
+Answers and notes stay in the composer, in memory, until you dismiss them or leave the chat. Nothing new is stored on disk. Commands that make Hermes run tools still ask for Approvals as usual.
 
 ### Two chats side by side
 
@@ -209,6 +234,19 @@ The benchmark times opening, streaming, find-in-chat, scrolling, two simultaneou
 
 GitHub Actions (`.github/workflows/ci.yml`) runs `npm test`, `npm run build`, and the Rust tests on every pull request and on pushes to `main`.
 
+## Project defaults
+
+Open a project's screen (the gear beside the project switcher) and set **Defaults for new chats**. Edits wait for **Save defaults**; **Cancel** puts back what's saved. Anything left empty comes from the profile, and a model picked in the New chat pane beats the project's for that chat. Saving changes only chats started afterwards.
+
+- **Folder.** One of the project's folders. Before each chat starts, the app lists it on the server; a missing folder, a file, or one Hermes's user can't open stops the chat with the reason, and the message goes back in the composer. Hermes runs a chat in its own folder, without an error, when it can't use the one asked for, so the app keeps a chat only when Hermes answers that it runs in that exact folder.
+- **Model and reasoning effort.** If Hermes no longer offers the model, or lists it as unavailable, the chat doesn't start; pick a model for the chat or change the default. The app never picks another model for you.
+- **Instructions.** Sent once, when the chat starts, as a hidden message before your first one. The model reads it as part of the conversation, not as its system prompt, and no Hermes client shows it. They aren't sent again with later messages.
+- **Apply to this chat.** In a started chat of the shown project, the folder-and-gear button asks first and lists what changes. It can switch the chat's model and effort, and move its folder between replies. It can't change the instructions a chat started with.
+
+The defaults are kept on this computer, per connection and profile, because Hermes has no place for them; other computers and Hermes clients don't use them. If another window or running copy of Hermes Chat saved them since you started editing, Save says so and lets you load theirs or save yours over them; every copy shares the one file and changes it under a file lock, so no save silently replaces another. This version won't change defaults that a newer version saved. See [ADR 0017](docs/adr/0017-project-defaults-are-local-and-sent-when-a-chat-starts.md).
+
+These rely on Hermes's legacy `session.create` taking `cwd`, `cwd_explicit`, `model`, `provider`, `reasoning_effort` and seeded `messages`, and on `session.cwd.set`, as Hermes at `bf0203a` does. A server without them may ignore a field rather than refuse it; the folder check after creation catches an ignored folder, but not ignored instructions.
+
 ## Connecting to Hermes
 
 <img src="docs/screenshots/readme/sign-in.png" width="420" alt="The sign-in screen in URL mode, with an extra request header whose value is masked">
@@ -250,7 +288,7 @@ Each Hermes profile has its own chats. The chat list header is the profile switc
 
 ### On the Hermes server
 
-Hermes stores the chats and their history, titles, Archived state, and Unread state. It also stores projects and their folders, the profile's model settings, and usage and cost totals. Active or Settled is stored as Hermes's `pinned` flag, so it syncs between computers. Hermes refuses that edit for chats it has no route for, such as chats started in this app or the official desktop app. For those chats, Active or Settled is kept on this computer only. Messages, attachments, and Dictation recordings are sent to Hermes. Rename, Archive, Delete, and project changes appear in every Hermes client. Scheduled jobs live in the profile's `cron/jobs.json` on the server, with their run history, and every Hermes client sees the same ones; this computer stores nothing about them.
+Hermes stores the chats and their history, titles, Archived state, and Unread state. It also stores projects and their folders, the profile's model settings and persona (`SOUL.md`), and usage and cost totals. Active or Settled is stored as Hermes's `pinned` flag, so it syncs between computers. Hermes refuses that edit for chats it has no route for, such as chats started in this app or the official desktop app. For those chats, Active or Settled is kept on this computer only. Messages, attachments, and Dictation recordings are sent to Hermes. Rename, Archive, Delete, and project changes appear in every Hermes client. Scheduled jobs live in the profile's `cron/jobs.json` on the server, with their run history, and every Hermes client sees the same ones; this computer stores nothing about them.
 
 ### On this computer
 
@@ -264,6 +302,9 @@ Hermes stores the chats and their history, titles, Archived state, and Unread st
 | Drafts and **Failed messages** | Webview local storage, per connection, profile, and chat | Sending, Retry, or Dismiss. Clear local cache keeps them. |
 | **Queued messages**, with the paths of their attachments | Webview local storage (`hermes-chat.queue.…`), per connection, profile, and chat | The message going, removing it, or deleting the chat. Clear local cache keeps them. |
 | Which chats are in each project | Webview local storage (`hermes-chat.projects`) | Deleting the project. Clear local cache keeps it. |
+| Each project's defaults for new chats | `$XDG_DATA_HOME/net.l0cky12.hermes-chat/project-defaults.json`, readable only by you | Deleting the project in Hermes Chat. Clear local cache keeps them. |
+| The Outputs index: each Output's path, tool, call, stored time, reported size and last availability check, per connection and profile. No file contents or chat text. | Webview local storage (`hermes-chat.outputs`), at most 1,000 Outputs per chat, 3,000 per profile, 200 added files per profile, and 8 profiles | The oldest-read chats when over the limit. Clear local cache keeps it; Refresh rebuilds it. |
+| Unsaved persona edits, and the last five versions of `SOUL.md` that saves from this app replaced | Webview local storage, per connection and profile | Saving or discarding the edit; a newer save pushes out the oldest version. Clear local cache keeps them. |
 | Display preferences, model pick, starred models, and reopen-last-chat | Webview local storage | Not removed by Clear local cache |
 | Drafts, Failed messages and Queued messages saved for an update's restart | `$XDG_DATA_HOME/net.l0cky12.hermes-chat/restart-drafts.json`, readable only by you | Putting them back at the next launch. A copy that couldn't be put back is renamed `restart-drafts-<time>.json` and stays until you move or delete it; Settings says where. |
 | Screenshots waiting to send | `$XDG_CACHE_HOME/hermes-chat/captures/`, readable only by you | Confirmed delivery, removing them from the composer, or leaving the composer without sending. A queued message keeps its screenshots until it goes or you remove it. A Failed message keeps its screenshots until delivery is confirmed, history reconciles it, or you Dismiss it. Startup cleanup removes only leftovers that no message needs. |
@@ -293,21 +334,25 @@ Webview local storage is in `$XDG_DATA_HOME/net.l0cky12.hermes-chat/localstorage
 - The app supports one Hermes server connection at a time, and only the legacy session protocol with username and password sign-in.
 - The app targets Linux on Arch with WebKitGTK; CI runs on Ubuntu. No other packages or installers exist.
 - Active and Settled don't sync between computers for chats that Hermes won't pin, such as chats started in this app.
-- Project membership is stored on this computer only. Other computers and Hermes clients don't see it.
+- Project membership and project defaults are stored on this computer only. Other computers and Hermes clients don't see them.
+- A project's instructions reach the model as a hidden message in the conversation, not as part of the system prompt, because Hermes has no per-chat instructions field. They can't be changed in a chat that has started.
 - Queued messages are sent by this app, not by Hermes: they wait while the app is closed, disconnected, or showing another profile, and other computers don't see them. The app sends each queued message once, but without a server receipt it can't promise Hermes runs it exactly once; a send whose outcome is unknown is settled by reading the chat's history back. Queuing was checked against the Hermes source at `bf0203a` and the automated tests' fake Hermes. Other versions, and the canonical protocol, weren't tested.
 - Per-reply usage appears only for replies that the app watched from start to finish. Chat totals come from Hermes and cover every call. Costs count only the calls Hermes could price.
 - Server files is read-only: it can't upload, rename, delete, or download. A preview reads the whole file, so bigger files aren't previewed at all, and the server sends a folder in one answer, however many items it has.
+- Hermes has no conditional write for `SOUL.md`. Persona checks the file just before writing and reads it back after, but a change made elsewhere in the moment between the check and the write is overwritten. Hermes reads the file back with LF line ends and no byte order mark, so saving a file that had CRLF line ends writes LF.
 - Scheduled jobs: Hermes's per-job routes act on another profile's copy of a job if this profile's job was deleted elsewhere just before, and Hermes offers no revision to stop an edit landing between the app's conflict check and its write. Only prompt jobs can be created here, run history goes back 100 runs, and the app can't see a `HERMES_TIMEZONE` set in the server's environment.
+- Outputs finds only files that `write_file`, `patch`, `text_to_speech` and `image_generate` report writing. Files made by `terminal`, `execute_code`, MCP tools or subagents aren't found unless you add them by path. Sizes come from the tool (only `write_file` reports one), because Hermes has no route that reads a file's size on the machine the tools run on. Each chat's newest 2,000 stored rows (at most 64 MiB of them) are read, 25 chats at a time. Audio and images Hermes saves itself are on the dashboard's machine, so they are checked and previewed through the Server files routes and their limits. Availability is checked only on Refresh. Outputs can't download a file; downloads are planned for the Server files screen (#94).
 - Framed web pages in the preview pane get no cookies, so sites that need a sign-in don't stay signed in. HTML files show as static documents.
 - Long transcripts render in full. Very long chats, especially two at once, can be slow while streaming or resizing.
 - On the legacy protocol, a reply to a Telegram or Discord chat should stay in Hermes clients and not be posted back to Telegram or Discord. This comes from reading Hermes's source and hasn't been tested live.
 - The app doesn't install pacman updates itself: you run the PKGBUILD, and it offers the restart. In-app installation works only for an AppImage you build and sign yourself, since the repo publishes no releases or update server. Checking a package build asks GitHub without signing in, which allows 60 checks an hour.
+- Slash commands are a short list. The app doesn't offer Hermes's other commands, skills, or quick commands, and sends any other `/` text as a message. Command answers aren't kept in the chat's history or Saved copy.
 - The automated tests use a fake Hermes. Native Wayland screenshot pickers and real audio devices aren't covered.
 
 ## Project documents
 
 - [`GLOSSARY.md`](GLOSSARY.md) defines the app's terms, such as Active, Settled, Saved copy, and Approval.
-- [`docs/adr/`](docs/adr/) records the design decisions, for example the [SSH sign-in](docs/adr/0003-sign-in-through-ssh-tunnel-to-the-dashboard.md), the [Unsecure label](docs/adr/0004-direct-url-sign-in-and-what-counts-as-unsecure.md), [extra request headers](docs/adr/0006-extra-request-headers-for-a-gateway-in-front-of-the-dashboard.md), the [preview pane sandbox](docs/adr/0007-preview-pane-shows-untrusted-content-in-sandboxed-frames.md), [usage and cost](docs/adr/0008-usage-and-cost-come-from-hermes.md), [Server files](docs/adr/0012-server-files-are-the-dashboards-managed-files-read-only.md), [Scheduled jobs](docs/adr/0013-scheduled-jobs-are-hermess-cron-jobs-confirmed-by-read-back.md), and [Queued messages](docs/adr/0014-queued-messages-are-kept-and-sent-by-this-app.md).
+- [`docs/adr/`](docs/adr/) records the design decisions, for example the [SSH sign-in](docs/adr/0003-sign-in-through-ssh-tunnel-to-the-dashboard.md), the [Unsecure label](docs/adr/0004-direct-url-sign-in-and-what-counts-as-unsecure.md), [extra request headers](docs/adr/0006-extra-request-headers-for-a-gateway-in-front-of-the-dashboard.md), the [preview pane sandbox](docs/adr/0007-preview-pane-shows-untrusted-content-in-sandboxed-frames.md), [usage and cost](docs/adr/0008-usage-and-cost-come-from-hermes.md), [Server files](docs/adr/0012-server-files-are-the-dashboards-managed-files-read-only.md), [Scheduled jobs](docs/adr/0013-scheduled-jobs-are-hermess-cron-jobs-confirmed-by-read-back.md), [persona saves](docs/adr/0014-persona-saves-check-hermes-first-and-read-back.md), [slash commands](docs/adr/0015-slash-commands-are-a-small-verified-registry.md), [Outputs](docs/adr/0016-outputs-are-what-hermes-tools-say-they-wrote.md), [project defaults](docs/adr/0017-project-defaults-are-local-and-sent-when-a-chat-starts.md), and [Queued messages](docs/adr/0014-queued-messages-are-kept-and-sent-by-this-app.md).
 - [`docs/research/hermes-gateway-api.md`](docs/research/hermes-gateway-api.md) describes the Hermes API that the app relies on.
 
 ## License

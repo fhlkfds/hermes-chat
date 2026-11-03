@@ -3,8 +3,11 @@
 // The project and its folders are Hermes's; which chats are in it is kept on this computer.
 import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, Check, ChevronDown, FolderGit2, Folder, FolderKanban, GitBranch, Pencil, Plus, Settings2, Trash2, X } from "lucide-react";
-import type { Project, Worktree } from "../hermes/projects";
+import { EFFORT_LABEL, shortName, type Effort, type ModelCatalog, type ModelPick } from "../hermes/models";
+import { DefaultsConflict, NewerDefaultsError, cleanDraft, draftProblem, sameDraft, type DefaultsDraft, type ProjectDefaults } from "../hermes/projectDefaults";
+import type { Project, ProjectFolder, Worktree } from "../hermes/projects";
 import { Spinner, composing, useReturnFocus } from "./bits";
+import { ModelControls } from "./ModelPicker";
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const baseName = (path: string) => path.split("/").filter(Boolean).pop() ?? path;
@@ -240,7 +243,10 @@ export function ProjectScreen({
   onRemoveFolder,
   readFolder,
   onClose,
+  defaults,
 }: {
+  /** The project's defaults for new chats, and how to edit them. */
+  defaults: Omit<DefaultsProps, "folders" | "profile" | "connection">;
   project: Project;
   profile: string;
   /** The connection the folders are on, as the owner typed it. */
@@ -456,6 +462,8 @@ export function ProjectScreen({
           )}
         </section>
 
+        <DefaultsSection {...defaults} folders={project.folders} profile={profile} connection={connection} />
+
         <section>
           <h2>Chats</h2>
           <p className="muted">
@@ -495,4 +503,215 @@ export function ProjectScreen({
       </div>
     </div>
   );
+}
+
+type DefaultsProps = {
+  /** As kept now; undefined when none were ever saved. */
+  saved?: ProjectDefaults;
+  folders: ProjectFolder[];
+  profile: string;
+  connection?: string;
+  catalog?: ModelCatalog;
+  /** The profile's own model and effort, which a new chat runs on when the project sets none. */
+  profilePick?: ModelPick;
+  profileEffort?: Effort;
+  favorites: string[];
+  onToggleFavorite: (key: string) => void;
+  /** Checks and keeps the defaults over revision `base`; rejects with `DefaultsConflict` if another save landed. */
+  onSave: (base: number, draft: DefaultsDraft) => Promise<ProjectDefaults>;
+};
+
+const blank = (d?: ProjectDefaults): DefaultsDraft => cleanDraft({ instructions: d?.instructions, model: d?.model, folder: d?.folder });
+
+/**
+ * The project's defaults for new chats: instructions, a model and its reasoning effort, and a folder on the server. Each
+ * left empty comes from the profile. Edits wait for Save; Cancel puts back what is kept. Saving over a save made
+ * elsewhere meanwhile is refused, and the owner chooses which to keep.
+ */
+function DefaultsSection({ saved, folders, profile, connection, catalog, profilePick, profileEffort, favorites, onToggleFavorite, onSave }: DefaultsProps) {
+  // `shown`: the kept defaults the form started from, and their revision; `draft`: the owner's edits over them.
+  const [shown, setShown] = useState(() => ({ rev: saved?.rev ?? 0, draft: blank(saved) }));
+  const [draft, setDraft] = useState<DefaultsDraft>(shown.draft);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string>();
+  const [conflict, setConflict] = useState<ProjectDefaults | null>();
+  const [done, setDone] = useState(false);
+  const unsaved = !sameDraft(draft, shown.draft);
+  const tooLong = draftProblem(draft);
+
+  const load = (d?: ProjectDefaults) => {
+    const next = { rev: d?.rev ?? 0, draft: blank(d) };
+    setShown(next);
+    setDraft(next.draft);
+    setConflict(undefined);
+    setError(undefined);
+  };
+  // A save made elsewhere shows at once, unless the owner is editing; then their Save meets it as a conflict.
+  useEffect(() => {
+    if (!unsaved && (saved?.rev ?? 0) !== shown.rev) load(saved);
+  }, [saved?.rev]);
+
+  const edit = (patch: Partial<DefaultsDraft>) => {
+    setDraft((d) => ({ ...d, ...patch }));
+    setDone(false);
+    setError(undefined);
+  };
+  const save = async (over = shown.rev) => {
+    setSaving(true);
+    setError(undefined);
+    try {
+      load(await onSave(over, draft));
+      setDone(true);
+    } catch (e) {
+      if (e instanceof DefaultsConflict) setConflict(e.saved ?? null);
+      else setError(messageOf(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const newer = error === new NewerDefaultsError().message;
+  const model = draft.model;
+  const folderKnown = !draft.folder || folders.some((f) => f.path === draft.folder);
+  const where = (
+    <span className="defaults-where">
+      on <span className="mono">{connection ?? "no connection"}</span>, profile <span className="mono">{profile}</span>
+    </span>
+  );
+
+  return (
+    <section className="project-defaults" aria-labelledby="project-defaults-title">
+      <h2 id="project-defaults-title">Defaults for new chats</h2>
+      <p className="muted">
+        New chats started while the list shows this project use these. Anything left empty comes from the profile, and a model picked for one
+        chat beats the project's. Changing them doesn't change chats that have started. They're kept on this computer only: Hermes has no
+        place for them, so other computers and Hermes clients don't use them.
+      </p>
+
+      <div className="field">
+        <label className="field-label" htmlFor="defaults-instructions">
+          Instructions
+        </label>
+        <textarea
+          id="defaults-instructions"
+          aria-describedby="defaults-instructions-hint"
+          aria-invalid={!!tooLong || undefined}
+          aria-errormessage={tooLong ? "defaults-instructions-error" : undefined}
+          className="defaults-instructions"
+          readOnly={saving}
+          rows={5}
+          value={draft.instructions ?? ""}
+          placeholder="None. Chats follow the profile's own prompt."
+          spellCheck
+          onChange={(e) => edit({ instructions: e.target.value })}
+        />
+        <span className="field-hint block" id="defaults-instructions-hint">
+          Sent once, as a hidden message before your first one, when a chat starts. The model reads it as part of the chat, not as its
+          system prompt, and no Hermes client shows it.
+        </span>
+        {tooLong && (
+          <span className="field-hint err" id="defaults-instructions-error" role="alert">
+            {tooLong}
+          </span>
+        )}
+      </div>
+
+      <div className="field">
+        <span className="field-label" id="defaults-model-label">
+          Model and reasoning effort
+        </span>
+        {/* Edits made while a save is under way would be replaced by what it saved, so nothing changes meanwhile. */}
+        <div className="defaults-model" role="group" aria-labelledby="defaults-model-label" inert={saving || undefined}>
+          <ModelControls
+            catalog={catalog}
+            current={model ?? profilePick}
+            defaultEffort={profileEffort}
+            favorites={favorites}
+            onPick={(pick) => edit({ model: pick })}
+            onToggleFavorite={onToggleFavorite}
+          />
+          {model ? (
+            <button className="btn" onClick={() => edit({ model: undefined })}>
+              Use the profile's
+            </button>
+          ) : (
+            <span className="field-hint">
+              Profile default{profilePick ? `: ${shortName(profilePick.model)}` : ""}
+              {profileEffort ? `, ${EFFORT_LABEL[profileEffort]}` : ""}
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div className="field">
+        <label className="field-label" htmlFor="defaults-folder">
+          Working folder on the server
+        </label>
+        <select id="defaults-folder" disabled={saving} aria-describedby="defaults-folder-hint" className="defaults-folder" value={draft.folder ?? ""} onChange={(e) => edit({ folder: e.target.value || undefined })}>
+          <option value="">The profile's (Hermes's default folder)</option>
+          {folders.map((f) => (
+            <option key={f.path} value={f.path}>
+              {f.path}
+            </option>
+          ))}
+          {!folderKnown && <option value={draft.folder}>{draft.folder} (not in this project any more)</option>}
+        </select>
+        <span className="field-hint block" id="defaults-folder-hint">
+          {draft.folder ? (
+            <>
+              <span className="mono">{draft.folder}</span> {where}. Checked on the server before each chat starts; a chat starts only if Hermes
+              runs it there.
+            </>
+          ) : folders.length ? (
+            <>Chats run in the profile's folder {where}.</>
+          ) : (
+            <>Add a folder above to start this project's chats in it.</>
+          )}
+        </span>
+      </div>
+
+      {conflict !== undefined && (
+        <div className="confirm defaults-conflict" role="alert">
+          <span className="confirm-msg">{new DefaultsConflict(undefined).message} Your edits are still here.</span>
+          <span>
+            Saved there: {conflict ? describe(conflict) : "no defaults"}.
+          </span>
+          <div className="confirm-actions">
+            <button className="btn" onClick={() => load(saved)}>
+              Use the saved ones
+            </button>
+            <button className="btn primary" disabled={saving || !!tooLong} onClick={() => void save(conflict?.rev ?? 0)}>
+              Save mine over them
+            </button>
+          </div>
+        </div>
+      )}
+      {error && (
+        <div className="field-hint err" role="alert">
+          {error}
+        </div>
+      )}
+      <div className="defaults-actions">
+        <span className="field-hint" aria-live="polite">
+          {saving ? "Saving…" : unsaved ? "Unsaved changes" : done ? "Saved. New chats in this project use these." : ""}
+        </span>
+        <button className="btn" disabled={!unsaved || saving} onClick={() => load(saved)}>
+          Cancel
+        </button>
+        <button className="btn primary" disabled={!unsaved || saving || newer || !!tooLong || conflict !== undefined} onClick={() => void save()}>
+          {saving ? "Saving…" : "Save defaults"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+/** Saved defaults in a line. */
+function describe(d: ProjectDefaults): string {
+  const parts = [
+    d.instructions && "instructions",
+    d.model && `${shortName(d.model.model)}${d.model.effort ? ` (${EFFORT_LABEL[d.model.effort]})` : ""}`,
+    d.folder,
+  ].filter(Boolean);
+  return parts.length ? parts.join(", ") : "none, everything from the profile";
 }

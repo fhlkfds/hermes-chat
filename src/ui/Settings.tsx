@@ -1,9 +1,10 @@
 // The Settings screen, in three tabs. General, ported from the prototype: the connection and Sign out, what shows on
 // launch, voice, screenshots, updates, the local cache, and older history. Appearance: how the app looks on this
-// computer (AppearanceSettings.tsx). Model: the profile's models on Hermes (ModelSettings.tsx).
+// computer (AppearanceSettings.tsx). Model: the profile's models on Hermes (ModelSettings.tsx). Persona: the profile's
+// SOUL.md on Hermes (PersonaSettings.tsx).
 // Profiles are switched in the list's header, not here (ADR 0001).
 import { useEffect, useState } from "react";
-import { ArrowLeft, Cpu, Download, KeyRound, Lock, LogOut, Palette, Settings2, ShieldCheck, Trash2 } from "lucide-react";
+import { ArrowLeft, Cpu, Download, KeyRound, Lock, LogOut, Palette, Settings2, ShieldCheck, Sparkles, Trash2 } from "lucide-react";
 import type { Chat, ConnectionStatus } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
 import { TRANSCRIPT_LIMIT_BYTES } from "../hermes/chatCache";
@@ -12,6 +13,9 @@ import type { AppearanceStore, Fonts } from "./appearance";
 import { AppearanceSettings } from "./AppearanceSettings";
 import type { ModelSettingsApi } from "../hermes/modelSettings";
 import { ModelSettings } from "./ModelSettings";
+import { PersonaSettings, type PersonaWhere } from "./PersonaSettings";
+import type { PersonaApi } from "../hermes/persona";
+import type { PersonaStore } from "../hermes/personaStore";
 import { StartupSettings } from "./StartupSettings";
 import { VoiceSettings } from "./Voice";
 import type { VoiceSetup } from "../hermes/pipe";
@@ -19,12 +23,18 @@ import { ScreenshotSettings } from "./ScreenshotSettings";
 import type { ScreenshotSupport } from "../hermes/tauriScreenshot";
 import { UpdateSettings } from "./UpdateSettings";
 
-type Tab = "general" | "appearance" | "model";
+type Tab = "general" | "appearance" | "model" | "persona";
 const TABS = [
   { id: "general", label: "General", Icon: Settings2 },
   { id: "appearance", label: "Appearance", Icon: Palette },
   { id: "model", label: "Model", Icon: Cpu },
+  { id: "persona", label: "Persona", Icon: Sparkles },
 ] as const;
+
+/** Settings → Persona's wiring: the API, where its edits are kept on this computer, and what it edits. */
+export type PersonaWiring = { api: PersonaApi; store: PersonaStore; storeKey: string; where: PersonaWhere };
+
+const allow = (go: () => void) => go();
 
 /** What a pull added: the older chats in Settled, and any pinned in another Hermes client, which are Active. */
 function pulledText(added: Chat[]): string {
@@ -57,6 +67,9 @@ export function SettingsScreen({
   onSignOut,
   onClose,
   voiceSetup,
+  persona,
+  onPersonaDirty = () => {},
+  guard = allow,
   showTextGeneration,
 }: {
   status: ConnectionStatus;
@@ -87,6 +100,12 @@ export function SettingsScreen({
   onClose: () => void;
   /** The shown profile's voice set-up, for the Voice section. */
   voiceSetup?: () => Promise<VoiceSetup>;
+  /** Settings → Persona; the tab is left out without it. */
+  persona?: PersonaWiring;
+  /** Says whether the Persona tab holds an edit Hermes doesn't have yet. */
+  onPersonaDirty?: (dirty: boolean, kept: boolean) => void;
+  /** Runs `go`, once the owner agrees to leave an unsaved persona edit behind, if there is one. */
+  guard?: (go: () => void) => void;
   /** Set, each time anew, to show the Model tab at the Text generation model: from a title that couldn't be regenerated. */
   showTextGeneration?: object;
 }) {
@@ -96,7 +115,10 @@ export function SettingsScreen({
   const [pulled, setPulled] = useState<string>();
   const [pullError, setPullError] = useState<string>();
   const [signingOut, setSigningOut] = useState(false);
-  const [tab, setTab] = useState<Tab>(showTextGeneration ? "model" : "general");
+  const [tab, setTabNow] = useState<Tab>(showTextGeneration ? "model" : "general");
+  const tabs = TABS.filter((t) => t.id !== "persona" || persona);
+  // Leaving the Persona tab asks first while it holds an unsaved edit.
+  const setTab = (t: Tab) => t !== tab && guard(() => setTabNow(t));
   useEffect(() => {
     if (showTextGeneration) setTab("model");
   }, [showTextGeneration]);
@@ -124,9 +146,9 @@ export function SettingsScreen({
           className="settings-tabs"
           role="tablist"
           aria-label="Settings"
-          onKeyDown={(e) => arrowSelect(e, TABS.map((t) => t.id), tab, setTab)}
+          onKeyDown={(e) => arrowSelect(e, tabs.map((t) => t.id), tab, setTab)}
         >
-          {TABS.map(({ id, label, Icon }) => (
+          {tabs.map(({ id, label, Icon }) => (
             <button
               key={id}
               id={`settings-tab-${id}`}
@@ -142,7 +164,20 @@ export function SettingsScreen({
           ))}
         </div>
 
-        {tab === "appearance" ? (
+        {tab === "persona" && persona ? (
+          <div id="settings-panel-persona" role="tabpanel" aria-labelledby="settings-tab-persona">
+            {/* An edit is for one connection and profile: another profile is another editor. */}
+            <PersonaSettings
+              key={`${persona.storeKey}`}
+              api={persona.api}
+              store={persona.store}
+              storeKey={persona.storeKey}
+              where={persona.where}
+              connected={status === "connected"}
+              onDirty={onPersonaDirty}
+            />
+          </div>
+        ) : tab === "appearance" ? (
           <div id="settings-panel-appearance" role="tabpanel" aria-labelledby="settings-tab-appearance">
             <AppearanceSettings store={appearance} listFonts={listFonts} />
           </div>
@@ -171,7 +206,8 @@ export function SettingsScreen({
                   disabled={signingOut}
                   onClick={async () => {
                     setSigningOut(true);
-                    await onSignOut();
+                    // Resolves without signing out when the owner chose to stay with an unsaved persona edit.
+                    await onSignOut().finally(() => setSigningOut(false));
                   }}
                 >
                   <LogOut size={14} /> {signingOut ? "Signing out…" : "Sign out"}
