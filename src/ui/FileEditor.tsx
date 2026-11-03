@@ -126,6 +126,8 @@ export function FileEditor({
   const leave = () => (dirty ? ask(onClose) : onClose());
   // Back to what the question asked over, when it is still the latest: a save that ended meanwhile wins.
   const stay = () => setMode((m) => (m.kind === "discard" ? m.back : m));
+  // Where a save or copy that ended goes: under the discard question when it is up, so Keep waiting lands there.
+  const settle = (next: Mode) => setMode((m) => (m.kind === "discard" ? { ...m, back: next } : next));
 
   const save = async () => {
     if (!base || inFlight.current) return;
@@ -136,11 +138,11 @@ export function FileEditor({
       const got = await files.saveEdit(base, draft);
       if (!live.current) return;
       if (got.kind === "saved") return onSaved(`Saved ${entry.name}. Hermes has your edit, read back from the server.`);
-      setMode({ kind: "conflict", conflict: got });
+      settle({ kind: "conflict", conflict: got });
     } catch (e) {
       if (!live.current) return;
       setError(message(e));
-      setMode({ kind: "review" });
+      settle({ kind: "review" });
     } finally {
       inFlight.current = false;
     }
@@ -157,7 +159,7 @@ export function FileEditor({
     } catch (e) {
       if (!live.current) return;
       setError(message(e));
-      setMode((m) => (m.kind === "saving" ? { kind: "edit" } : m));
+      settle({ kind: "edit" });
     } finally {
       inFlight.current = false;
     }

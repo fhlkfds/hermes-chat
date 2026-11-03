@@ -469,6 +469,28 @@ describe("editing", () => {
     expect(server.managedFiles.saves).toHaveLength(1);
   });
 
+  it("reads back after a 500 Hermes sends once it has written, instead of saying nothing was saved", async () => {
+    const { server, hermes } = await signedIn(homeDisk);
+    const base = await hermes.files.openForEdit(notes);
+    server.managedFiles.saveLost = { message: `The dashboard answered 500: {"detail":"Could not stat path: [Errno 2]"}`, landed: true };
+    expect((await hermes.files.saveEdit(base, "landed\n")).kind).toBe("saved");
+  });
+
+  it("checks a copy whose outcome wasn't known before making another", async () => {
+    const { server, hermes } = await signedIn(homeDisk);
+    const base = await hermes.files.openForEdit(notes);
+    server.managedFiles.saveLost = { message: "Can't reach the Hermes dashboard: connection reset", landed: true };
+    server.managedFiles.afterWrite = () => (server.managedFiles.readError = "Can't reach the Hermes dashboard: connection reset");
+    await expect(hermes.files.saveCopy(base, "copy\n")).rejects.toThrow(/couldn't be read back to check/);
+    // Still unreadable: no second copy is made.
+    server.managedFiles.saveLost = undefined;
+    server.managedFiles.afterWrite = undefined;
+    await expect(hermes.files.saveCopy(base, "copy\n")).rejects.toThrow(/may have been saved, and still can't be read/);
+    server.managedFiles.readError = undefined;
+    expect(await hermes.files.saveCopy(base, "copy\n")).toBe("/home/liam/notes (2).md");
+    expect(server.managedFiles.saves).toHaveLength(1);
+  });
+
   it("keeps a file's CRLF line ends and byte order mark", async () => {
     const { server, hermes } = await signedIn((s) => {
       homeDisk(s);

@@ -248,10 +248,12 @@ export function remoteFiles(get: RemoteGet, pipe: TransferPipe): RemoteFiles {
     } catch (e) {
       if (e instanceof TimedOut) void pipe.cancel(id).catch(() => {});
       const message = errorText(e);
-      if (/^The dashboard answered (4\d\d|500):|^Hermes Chat doesn't relay|^Not connected/.test(message)) throw explainSave(message);
+      if (refusedBeforeWriting(message)) throw explainSave(message);
       throw { lost: e instanceof TimedOut ? `Hermes didn't answer within ${EDIT_DEADLINES.writeMs / 1000} s.` : explainSave(message).message };
     }
   };
+  /** Copies whose outcome isn't known yet, by the file and text they copy, so a retry checks them first. */
+  const unsettledCopies = new Map<string, string>();
   const list = async (path?: string) => {
     const query = path === undefined ? "" : `?${new URLSearchParams({ path })}`;
     const body = await call(() => get(`api/files${query}`), "list");
@@ -336,7 +338,20 @@ export function remoteFiles(get: RemoteGet, pipe: TransferPipe): RemoteFiles {
       const outgoing = encodeEdit(text, base.eol, base.bom);
       const sentRevision = await revisionOf(sizeChecked(outgoing));
       const folder = base.path.slice(0, base.path.lastIndexOf("/")) || "/";
-      const listing = await list(folder);
+      // A copy of this same text whose outcome wasn't known: settle that one first, rather than make another.
+      const key = `${base.path}\n${sentRevision}`;
+      const unsettled = unsettledCopies.get(key);
+      if (unsettled) {
+        // null: it isn't there, so it never landed; undefined: still can't tell.
+        const there = await readBytes(unsettled).then(
+          (b) => revisionOf(b.bytes),
+          (e) => (e instanceof RemoteFilesError && e.status === 404 ? null : undefined),
+        );
+        if (there === undefined) throw new RemoteFilesError(`An earlier copy, ${unsettled}, may have been saved, and still can't be read to check. Try again once it can.`);
+        unsettledCopies.delete(key);
+        if (there === sentRevision) return unsettled;
+      }
+      const listing = await deadline(list(folder), EDIT_DEADLINES.readMs);
       const path = joinPath(listing.path, freeName(base.name, new Set(listing.entries.map((e) => e.name))));
       let lost: string | undefined;
       try {
@@ -347,6 +362,7 @@ export function remoteFiles(get: RemoteGet, pipe: TransferPipe): RemoteFiles {
       }
       // Read back, which also settles a lost answer: retrying then would make a second copy.
       const back = await readBytes(path).catch((e) => {
+        unsettledCopies.set(key, path);
         throw new RemoteFilesError(`${lost ? `The copy's answer was lost (${lost})` : `Hermes saved ${path}`}, but it couldn't be read back to check: ${errorText(e)}`);
       });
       if ((await revisionOf(back.bytes)) !== sentRevision)
@@ -519,6 +535,20 @@ function sizeChecked(text: string): Uint8Array {
   const bytes = new TextEncoder().encode(text);
   if (bytes.length > EDIT_MAX_BYTES) throw new RemoteFilesError(`The edit is ${mb(bytes.length)}. The editor saves files up to ${mb(EDIT_MAX_BYTES)}.`);
   return bytes;
+}
+
+/**
+ * Answers Hermes gives before it writes anything (`_managed_write_target`, `stream_upload_to_path`), or that never
+ * reached it. Anything else, a 500 from the entry Hermes describes after writing or a gateway's 5xx included, may come
+ * after the write landed, so it is settled by reading the file back.
+ */
+function refusedBeforeWriting(message: string): boolean {
+  return (
+    /^Hermes Chat doesn't relay|^Not connected|^The dashboard sign-in/.test(message) ||
+    /^The dashboard answered (409|413|422):/.test(message) ||
+    /^The dashboard answered 403: .*File is not writable/.test(message) ||
+    /^The dashboard answered 500: .*Could not (write file|create parent directory)/.test(message)
+  );
 }
 
 /** Why Hermes refused a save, in the owner's words. Its write is atomic, so a refused save changed nothing. */

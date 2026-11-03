@@ -283,8 +283,12 @@ export class FakeServerFiles {
     for (const stop of this.running.values()) stop(new Error(STOPPED));
   }
 
+  /** Set: every `GET /api/files/read` fails this way, as during an outage. */
+  readError?: string;
+
   /** `GET /api/files/read?path=`: the whole file as a base64 data URL. */
   read(query: URLSearchParams) {
+    if (this.readError) throw new Error(this.readError);
     const raw = query.get("path");
     if (!raw) fail(422, "Field required");
     // A path that isn't there is "Path not found" here too: `_resolve_managed_path` resolves it strictly first.
