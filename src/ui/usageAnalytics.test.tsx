@@ -296,6 +296,40 @@ describe("The Usage screen", () => {
     for (const i of [2, 3, 4, 5, 6]) expect(cells[i].textContent).toMatch(/\+$/);
   });
 
+  it("treats an archived project, a deleted one and none the same way in the breakdown, the filter and the CSV", async () => {
+    const io: UsageIo = { page: async () => ({ rows: [fixtureRow("a", 1, 1000), fixtureRow("b", 1, 2000), fixtureRow("c", 1, 4000)], total: 3 }), session: vi.fn(), hermesTotals: async () => ({ totals: {} }) };
+    const saveCsv = vi.fn(async () => "/tmp/u.csv");
+    const user = userEvent.setup();
+    // "a" is in an archived project; "b" only in one Hermes no longer has; "c" in none.
+    render(<UsageAnalytics {...props(io, { saveCsv, projects: [{ id: "old", name: "Old work", folders: [], archived: true }], projectChats: { old: ["a"], gone: ["b"] } })} />);
+    await waitFor(() => expect(tile("Chats")).toBe("3"));
+    await user.click(screen.getByRole("button", { name: "Project" }));
+    const labels = within(screen.getByRole("region", { name: "Breakdown" }).querySelector("tbody")!)
+      .getAllByRole("rowheader")
+      .map((h) => [h.textContent, h.closest("tr")!.querySelectorAll("td")[0].textContent]);
+    expect(labels.sort()).toEqual([
+      ["No project", "2"],
+      ["Old work (archived)", "1"],
+    ]);
+    await user.selectOptions(screen.getByRole("combobox", { name: "Project" }), "No project");
+    expect(tile("Chats")).toBe("2");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Project" }), "Old work (archived)");
+    expect(tile("Chats")).toBe("1");
+    await user.click(screen.getByRole("button", { name: /Export CSV/ }));
+    const [csv] = saveCsv.mock.calls[0] as unknown as [string];
+    expect(csv.trimEnd().split("\r\n")[1]).toContain(",Old work (archived),");
+  });
+
+  it("counts what a profile gave before its read failed, and says so", async () => {
+    const page = async (_p: string, offset: number) => {
+      if (offset) throw new Error('The dashboard answered 503: {"detail":"busy"}');
+      return { rows: Array.from({ length: 100 }, (_, i) => fixtureRow(`c${i}`, 0.01 * i, 10)), total: 300 };
+    };
+    render(<UsageAnalytics {...props({ page, session: vi.fn(), hermesTotals: async () => ({ totals: {} }) })} />);
+    await waitFor(() => expect(tile("Chats")).toBe("100+"));
+    expect(screen.getByRole("alert").textContent).toMatch(/Couldn't read all of the default profile: .*503.*Only the 100 chats read before that are counted/);
+  });
+
   it("says why a custom period isn't one, and reads nothing for it", async () => {
     const page = vi.fn(async () => ({ rows: [], total: 0 }));
     const user = userEvent.setup();

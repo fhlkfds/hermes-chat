@@ -152,13 +152,19 @@ export function UsageAnalytics({ io, profile, listProfiles, projects, projectCha
   }, [io, connected, invalid, periodKey, profiles.join("\n"), tick]);
 
   const data = read.state === "done" ? read.data : undefined;
-  const listable = projects.filter((p) => !p.archived);
+  // One membership for grouping, filtering and export: the projects Hermes has, archived ones too (labelled). A chat
+  // kept here in a project Hermes no longer has is in no project.
+  const listable = useMemo(() => [...projects].sort((a, b) => Number(a.archived) - Number(b.archived)), [projects]);
   const projectsOf = useMemo(() => {
+    const known = new Set(projects.map((p) => p.id));
     const of = new Map<string, Set<string>>();
-    for (const [id, chats] of Object.entries(projectChats)) for (const c of chats) of.set(c, (of.get(c) ?? new Set()).add(id));
+    for (const [id, chats] of Object.entries(projectChats)) if (known.has(id)) for (const c of chats) of.set(c, (of.get(c) ?? new Set()).add(id));
     return (c: UsageChat) => (c.profile === profile ? (of.get(c.id) ?? new Set<string>()) : undefined);
-  }, [projectChats, profile]);
-  const projectName = (id: string) => listable.find((p) => p.id === id)?.name;
+  }, [projectChats, projects, profile]);
+  const projectName = (id: string) => {
+    const p = projects.find((x) => x.id === id);
+    return p && (p.archived ? `${p.name} (archived)` : p.name);
+  };
   const ctx = { zone, projectsOf, projectName };
 
   const shownChats = useMemo(() => (data ? filterChats(data.chats, { model, project }, projectsOf) : []), [data, model, project, projectsOf]);
@@ -289,7 +295,7 @@ export function UsageAnalytics({ io, profile, listProfiles, projects, projectCha
               <option value={NO_PROJECT}>No project</option>
               {listable.map((p) => (
                 <option key={p.id} value={p.id}>
-                  {p.name}
+                  {projectName(p.id)}
                 </option>
               ))}
             </select>
@@ -446,7 +452,12 @@ export function UsageAnalytics({ io, profile, listProfiles, projects, projectCha
 function Problems({ data }: { data: UsageDataset }) {
   const lines: ReactNode[] = [];
   for (const p of data.profiles) {
-    if (p.state === "failed") lines.push(`Couldn't read the ${p.profile} profile: ${p.error}. Its chats aren't counted.`);
+    if (p.state === "failed")
+      lines.push(
+        p.read
+          ? `Couldn't read all of the ${p.profile} profile: ${p.error}. Only the ${p.read.toLocaleString()} chats read before that are counted, as far as they're in the period.`
+          : `Couldn't read the ${p.profile} profile: ${p.error}. Its chats aren't counted.`,
+      );
     if (p.state === "capped")
       lines.push(`The ${p.profile} profile has more chats in this period than Hermes Chat reads at once (${p.read.toLocaleString()}); the oldest aren't counted. Pick a shorter period.`);
   }
