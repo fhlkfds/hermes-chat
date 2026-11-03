@@ -7,6 +7,8 @@ import { fenced, parseAddress, previewName, sandboxedHtml, withoutBidi, type Fil
 import { Markdown } from "./Markdown";
 import { Spinner, fmtSize } from "./bits";
 import type { LocalFiles, WebPages } from "./tauriPreview";
+import type { ArtifactStore } from "../hermes/artifacts";
+import { ArtifactEditor } from "./ArtifactEditor";
 
 /** The narrowest the pane gets, and the step the arrow keys resize it by. */
 export const PANE_MIN_WIDTH = 300;
@@ -61,6 +63,8 @@ export function PreviewPane({
   onOpen,
   onHide,
   onClose,
+  artifacts,
+  connected = true,
 }: {
   target: PreviewTarget;
   serverLabel: string;
@@ -75,6 +79,9 @@ export function PreviewPane({
   onOpen: (t: PreviewTarget) => void;
   onHide: () => void;
   onClose: () => void;
+  /** Where an artifact's draft lives (artifacts.ts): editing it in the pane, and away from it, share one store. */
+  artifacts?: ArtifactStore;
+  connected?: boolean;
 }) {
   // Reload bumps this; each target starts again from 0 because the pane is keyed by it.
   const [reloads, setReloads] = useState(0);
@@ -87,7 +94,7 @@ export function PreviewPane({
   useEffect(() => {
     if (overlay && !root.current?.contains(document.activeElement)) root.current?.focus();
   }, [overlay]);
-  const address = target.kind === "server" || target.kind === "local" ? target.path : target.kind === "web" ? target.url : undefined;
+  const address = target.kind === "server" || target.kind === "local" ? target.path : target.kind === "artifact" ? target.ref.path : target.kind === "web" ? target.url : undefined;
 
   const openInBrowser = (url: string) => {
     setOpenError(undefined);
@@ -147,7 +154,7 @@ export function PreviewPane({
               <ExternalLink size={15} />
             </button>
           )}
-          {target.kind !== "start" && target.kind !== "tool" && (
+          {target.kind !== "start" && target.kind !== "tool" && target.kind !== "artifact" && (
             <button className="icon-btn" title="Reload" onClick={() => setReloads((n) => n + 1)}>
               <RotateCw size={15} />
             </button>
@@ -174,6 +181,15 @@ export function PreviewPane({
           <WebView key={reloads} url={target.url} check={web.check} onOpenInBrowser={() => openInBrowser(target.url)} />
         ) : target.kind === "tool" ? (
           <pre className="preview-pre">{target.text || "(empty)"}</pre>
+        ) : target.kind === "artifact" ? (
+          artifacts ? (
+            <ArtifactEditor
+              store={artifacts}
+              artifact={target.ref}
+              connected={connected}
+              onDone={() => onOpen({ kind: "server", path: target.ref.path, ...(target.ref.host && { host: true }) })}
+            />
+          ) : null
         ) : target.kind === "server" ? (
           <FileBody key={reloads} name={target.path} load={() => readServer(target.path, target.host)} />
         ) : (
@@ -188,6 +204,7 @@ export function PreviewPane({
 function Where({ target, serverLabel }: { target: PreviewTarget; serverLabel: string }) {
   switch (target.kind) {
     case "server":
+    case "artifact":
       return (
         <span className="where where-server" title={`A file on the Hermes server (${serverLabel}), read through the dashboard`}>
           <Server size={12} /> Server · {serverLabel}

@@ -7,6 +7,7 @@ import { connect, type Hermes } from "./transport";
 import { ProjectGoneError, ProjectsStore, projectName, remotePath } from "./projects";
 import { PROJECTS_KEY, PROJECTS_VERSION, projectLinks, projectScope, readLinks, type LinksStorage } from "./projectLinks";
 import { localChatCache } from "./chatCache";
+import { getUIPrefs, setUIPrefs } from "./uiPrefs";
 
 const running: Hermes[] = [];
 afterEach(async () => {
@@ -216,6 +217,29 @@ describe("folders", () => {
     ]);
     expect(await hermes.projects.worktrees("/srv/notes")).toEqual([]);
     expect(s.restRequests.every((r) => r.method === "GET" && !/worktree\/add|fs\/mkdir/.test(r.path))).toBe(true);
+  });
+});
+
+describe("templates offered only in a project", () => {
+  const tpl = (name: string, project?: { scope: string; id: string }) => ({ id: name, name, description: "", body: "x", ...(project && { project: { ...project, name: "P" } }) });
+
+  it("are kept when the project is deleted here, then offered in every chat; other projects' stay theirs", async () => {
+    const { store } = await setUp();
+    const lab = await store.create("Lab");
+    const ops = await store.create("Ops");
+    const work = projectScope(CONNECTION, "work");
+    setUIPrefs({ templates: [tpl("A", { scope: SCOPE, id: lab.id }), tpl("B", { scope: SCOPE, id: ops.id }), tpl("C", { scope: work, id: lab.id }), tpl("D")] });
+    await store.delete(lab.id);
+    expect(getUIPrefs().templates).toEqual([tpl("A"), tpl("B", { scope: SCOPE, id: ops.id }), tpl("C", { scope: work, id: lab.id }), tpl("D")]);
+  });
+
+  it("are kept when a write finds the project deleted in another client", async () => {
+    const { s, store } = await setUp();
+    const p = await store.create("Lab");
+    setUIPrefs({ templates: [tpl("A", { scope: SCOPE, id: p.id })] });
+    s.projects.default = [];
+    await expect(store.rename(p.id, "Lab 2")).rejects.toBeInstanceOf(ProjectGoneError);
+    expect(getUIPrefs().templates).toEqual([tpl("A")]);
   });
 });
 
