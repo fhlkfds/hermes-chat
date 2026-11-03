@@ -639,6 +639,8 @@ export class FakeHermes {
   toolsetGateBeforeWrite?: Promise<void>;
   /** Platforms whose saved toolset list names `no_mcp`, per profile. Any toggle for that platform clears it. */
   toolsetNoMcp: Record<string, Set<string>> = {};
+  /** Platforms whose saved toolset list Rust can't read for certain, per profile. */
+  toolsetNoMcpUnclear: Record<string, string[]> = {};
   /** `agent.coding_context` is focus, per profile. */
   codingFocus: Record<string, boolean> = {};
   /** `agent.disabled_toolsets`, per profile: off on every platform. Turning one of these on removes it, as Hermes does. */
@@ -738,6 +740,7 @@ export class FakeHermes {
         if (this.toolsetGuardsFailure) throw new Error(this.toolsetGuardsFailure);
         return {
           noMcp: [...(this.toolsetNoMcp[profile] ?? [])].sort(),
+          noMcpUnclear: [...(this.toolsetNoMcpUnclear[profile] ?? [])],
           codingFocus: !!this.codingFocus[profile],
           disabledEverywhere: [...(this.toolsetDisabledEverywhere[profile] ?? [])],
           disabledUnclear: !!this.toolsetDisabledUnclear[profile],

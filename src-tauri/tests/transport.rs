@@ -464,16 +464,32 @@ async fn relays_the_toolset_switch_with_only_enabled_in_the_body() {
 #[test]
 fn toolset_guards_keep_only_no_mcp_platforms_coding_focus_and_disabled_names() {
     let config = json!({
-        "platform_toolsets": {"cli": ["web", "no_mcp"], "telegram": "[web, no_mcp]", "discord": ["discord"]},
+        "platform_toolsets": {
+            "cli": ["web", "no_mcp"],
+            "telegram": "['web', 'no_mcp']",
+            "discord": ["discord"],
+            // Python reads these as `no_mcp`, which a plain read can't be sure of.
+            "slack": r#"["web", "no\u005fmcp"]"#,
+            "matrix": "['web', 'no_' 'mcp']",
+            // Not a list: Hermes ignores it, `no_mcp` and all.
+            "signal": "no_mcp",
+        },
         "agent": {"coding_context": " Lean ", "disabled_toolsets": ["web", " debugging ", ""]},
         "web": {"api_key": "sk-secret"},
     });
     let guards = transport::toolset_guards(&config);
-    let none = || transport::ToolsetGuards { no_mcp: vec![], coding_focus: false, disabled_everywhere: vec![], disabled_unclear: false };
+    let none = || transport::ToolsetGuards {
+        no_mcp: vec![],
+        no_mcp_unclear: vec![],
+        coding_focus: false,
+        disabled_everywhere: vec![],
+        disabled_unclear: false,
+    };
     assert_eq!(
         guards,
         transport::ToolsetGuards {
             no_mcp: vec!["cli".into(), "telegram".into()],
+            no_mcp_unclear: vec!["matrix".into(), "slack".into()],
             coding_focus: true,
             disabled_everywhere: vec!["web".into(), "debugging".into()],
             disabled_unclear: false,
@@ -482,7 +498,13 @@ fn toolset_guards_keep_only_no_mcp_platforms_coding_focus_and_disabled_names() {
     let out = serde_json::to_value(&guards).unwrap();
     assert_eq!(
         out,
-        json!({"noMcp": ["cli", "telegram"], "codingFocus": true, "disabledEverywhere": ["web", "debugging"], "disabledUnclear": false})
+        json!({
+            "noMcp": ["cli", "telegram"],
+            "noMcpUnclear": ["matrix", "slack"],
+            "codingFocus": true,
+            "disabledEverywhere": ["web", "debugging"],
+            "disabledUnclear": false
+        })
     );
     assert!(!out.to_string().contains("sk-secret"));
     assert_eq!(transport::toolset_guards(&json!({})), none());

@@ -229,7 +229,7 @@ export class ToolsetsApi {
   /** The profile's `no_mcp` platforms, coding focus and `agent.disabled_toolsets`; undefined when the config couldn't be read. */
   guards(profile: string): Promise<ToolsetGuards | undefined> {
     return this.readGuards(profile).then(
-      (g) => ({ ...g, disabledEverywhere: g.disabledEverywhere ?? [], disabledUnclear: g.disabledUnclear ?? false }),
+      (g) => ({ ...g, noMcpUnclear: g.noMcpUnclear ?? [], disabledEverywhere: g.disabledEverywhere ?? [], disabledUnclear: g.disabledUnclear ?? false }),
       () => undefined,
     );
   }
@@ -322,6 +322,11 @@ export class ToolsetsApi {
       });
     else {
       if (guards.noMcp.includes(t.platform)) out.push({ kind: "noMcp", platform: t.platform });
+      else if (guards.noMcpUnclear.includes(t.platform))
+        out.push({
+          kind: "unchecked",
+          what: `whether the profile has MCP servers turned off for ${t.platformLabel} with no_mcp, which any change here clears: the profile saves that platform's list in a form this app can't read for certain`,
+        });
       if (enabled && guards.disabledEverywhere.includes(t.name)) out.push({ kind: "everywhere", name: t.name });
       else if (enabled && guards.disabledUnclear)
         out.push({

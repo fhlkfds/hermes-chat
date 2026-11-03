@@ -126,6 +126,19 @@ describe("toolset discovery", () => {
     expect((await api.guards("default"))?.disabledEverywhere).toEqual(["debugging"]);
   });
 
+  it("says it couldn't check no_mcp when Rust can't read the platform's list for certain", async () => {
+    const { server, api } = await connected();
+    server.toolsetNoMcpUnclear.default = ["cli"];
+    const list = await api.list("default");
+    const web = list.toolsets.find((x) => x.name === "web")!;
+    const check = [{ kind: "unchecked", what: expect.stringContaining("no_mcp, which any change here clears: the profile saves that platform's list") }];
+    // Either way: Hermes clears no_mcp on any save.
+    expect(await api.cautions("default", web, false)).toEqual(check);
+    expect(await api.cautions("default", list.toolsets.find((x) => x.name === "discord")!, true)).toEqual([]);
+    expect(await api.set("default", "web", false, true)).toMatchObject({ kind: "confirm", cautions: check });
+    expect(server.toolsetWrites).toEqual([]);
+  });
+
   it("says it couldn't check agent.disabled_toolsets when Rust can't read that list for certain", async () => {
     const { server, api } = await connected();
     server.toolsetDisabledUnclear.default = true;

@@ -865,6 +865,9 @@ pub struct ToolsetGuards {
     /// Platforms whose `platform_toolsets` entry names `no_mcp`, which Hermes's toggle route clears on any change
     /// (`_save_platform_tools` at `bf0203a`), so MCP servers would be offered again.
     pub no_mcp: Vec<String>,
+    /// Platforms whose `platform_toolsets` entry is a string this can't read for certain the way Hermes does
+    /// (`parse_platform_toolsets_value`, `ast.literal_eval`), so it may name `no_mcp`.
+    pub no_mcp_unclear: Vec<String>,
     /// `agent.coding_context` is `focus` (or its aliases `strict`, `lean`): in a code workspace Hermes swaps in a coding
     /// toolset selection instead of the profile's list (`agent/coding_context.coding_selection`).
     pub coding_focus: bool,
@@ -880,17 +883,22 @@ pub struct ToolsetGuards {
 
 /// `ToolsetGuards` from a profile's config as `GET /api/config` answers it.
 pub fn toolset_guards(config: &serde_json::Value) -> ToolsetGuards {
-    let names_no_mcp = |v: &serde_json::Value| match v {
-        serde_json::Value::Array(items) => items.iter().any(|i| i.as_str().map(str::trim) == Some("no_mcp")),
-        // A list literal saved as a string (`parse_platform_toolsets_value`): any mention counts, to be safe.
-        serde_json::Value::String(s) => s.contains("no_mcp"),
-        _ => false,
-    };
-    let mut no_mcp: Vec<String> = config["platform_toolsets"]
-        .as_object()
-        .map(|o| o.iter().filter(|(_, v)| names_no_mcp(v)).map(|(k, _)| k.clone()).collect())
-        .unwrap_or_default();
+    // Hermes reads a platform's entry as a list, or a string list literal; any other value it ignores, `no_mcp` and all.
+    let (mut no_mcp, mut no_mcp_unclear) = (Vec::new(), Vec::new());
+    for (platform, value) in config["platform_toolsets"].as_object().into_iter().flatten() {
+        let read = match value {
+            serde_json::Value::Array(_) => config_string_list(value),
+            serde_json::Value::String(s) if s.trim().starts_with('[') => config_string_list(value),
+            _ => continue,
+        };
+        if read.unclear {
+            no_mcp_unclear.push(platform.clone());
+        } else if read.names.iter().any(|n| n == "no_mcp") {
+            no_mcp.push(platform.clone());
+        }
+    }
     no_mcp.sort();
+    no_mcp_unclear.sort();
     let mode = match &config["agent"]["coding_context"] {
         serde_json::Value::String(s) => s.trim().to_ascii_lowercase(),
         _ => String::new(),
@@ -898,6 +906,7 @@ pub fn toolset_guards(config: &serde_json::Value) -> ToolsetGuards {
     let disabled = config_string_list(&config["agent"]["disabled_toolsets"]);
     ToolsetGuards {
         no_mcp,
+        no_mcp_unclear,
         coding_focus: matches!(mode.as_str(), "focus" | "strict" | "lean"),
         disabled_everywhere: disabled.names,
         disabled_unclear: disabled.unclear,
