@@ -37,6 +37,12 @@ export type InboxEntry = {
    * waiting. Dismissing the entry dismisses that too, up to now.
    */
   alias?: string;
+  /**
+   * For an Approval card: the last activity Hermes reports for its chat's live session, if it lists one. A dismissed
+   * `alias` covers the card too while this is no later than when it was dismissed: the owner dismissed the waiting
+   * session before resuming the chat showed what it waits on.
+   */
+  aliasAt?: number;
   /** Where the chat was started, for a chat the profile's list may not hold, such as one older than a month. */
   source?: Source;
 };
@@ -73,6 +79,8 @@ export function inboxEntries({ profile, chats, connected, others, live, seen }: 
   const entries = new Map<string, InboxEntry>();
   const add = (e: InboxEntry) => entries.has(e.key) || entries.set(e.key, e);
 
+  const liveAt = new Map(live?.sessions.filter((s) => s.profile === profile).map((s) => [s.chatId, s.at]));
+
   // The shown profile, as this connection sees it.
   for (const c of chats) {
     const base = { profile, chatId: c.id, title: c.title, stale: !connected };
@@ -89,6 +97,7 @@ export function inboxEntries({ profile, chats, connected, others, live, seen }: 
           itemId: i.id,
           ended,
           alias: `waiting ${profile} ${c.id}`,
+          aliasAt: liveAt.get(c.id),
           summary: ended ? "Hermes stopped waiting for an answer. Nothing is left to approve." : "A command is waiting for your approval.",
         });
       } else if (i.kind === "error" && i.id !== LOAD_ERROR_ID) {
@@ -254,16 +263,21 @@ export function inboxAcks(storage: AckStorage, scope: string, now = () => Date.n
     listeners.forEach((fn) => fn());
   };
   return {
-    isDismissed: (e, s = state) => kept(s[e.key]) && s[e.key][0] >= e.at,
+    isDismissed: (e, s = state) => {
+      const before = (key: string, at: number) => kept(s[key]) && s[key][0] >= at;
+      return before(e.key, e.at) || (!!e.alias && e.aliasAt !== undefined && before(`resumed ${e.alias}`, e.aliasAt));
+    },
     dismiss: (e, entries = []) => {
       const next: Dismissed = { ...state, [e.key]: [e.at, now()] };
+      // A waiting session dismissed before its chat was resumed here: the cards resuming it shows are what it waited on.
+      if (e.kind === "approval" && !e.itemId) next[`resumed ${e.key}`] = [e.at, now()];
       const others = entries.filter((o) => o.key !== e.key && o.alias === e.alias && !o.ended && !(kept(next[o.key]) && next[o.key][0] >= o.at));
       if (e.alias && !others.length) next[e.alias] = [now(), now()];
       save(next);
     },
     restore: (e) => {
       const { [e.key]: _gone, ...rest } = state;
-      if (e.alias) delete rest[e.alias];
+      for (const k of [e.alias, e.alias && `resumed ${e.alias}`, `resumed ${e.key}`]) if (k) delete rest[k];
       save(rest);
     },
     subscribe: (fn) => {

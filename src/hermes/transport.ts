@@ -466,11 +466,14 @@ export class Hermes {
   /** The titles chats had when the owner switched away from their profile, by `profile chatId`, for the inbox. */
   private titlesSeen = new Map<string, string>();
   /**
-   * The profile each stored session id seen live is in, from looking it up in every profile: the one profile that has
-   * it, or null when more than one does (a copied profile keeps the ids). A session doesn't change profile, so an
-   * answer is kept for as long as the app runs.
+   * The profile each live session is in, by `runtimeId storedId`, from looking its stored id up in every profile: the
+   * one profile that has it, or null when more than one does (a copied profile keeps the ids). A runtime session
+   * doesn't change profile, so an answer is kept while it stays live; the same chat started again, perhaps in a
+   * profile copied since, is looked up afresh.
    */
   private sessionOwners = new Map<string, { profile: string; title: string; source: Source } | null>();
+  /** When each live session not yet placed was last looked up, by the same key, so every one gets its turn. */
+  private ownerTried = new Map<string, number>();
   /** The profile and chat of each runtime session this app started or resumed, for as long as it runs. */
   private runtimeOwners = new Map<string, { profile: string; chatId: string }>();
   /** The latest `session.active_list` read: its connection, when it started, and the read while under way. */
@@ -694,25 +697,34 @@ export class Hermes {
       try {
         const res = obj(await this.request("session.active_list", {}));
         if (gen !== this.generation) return;
-        const sessions = (Array.isArray(res?.sessions) ? res.sessions : []).flatMap((r): LiveSession[] => {
+        const sessions = (Array.isArray(res?.sessions) ? res.sessions : []).flatMap((r): (LiveSession & { key: string })[] => {
           const row = obj(r);
           const status = row?.status === "waiting" ? "waiting" : row?.status === "working" || row?.status === "starting" ? "working" : undefined;
           const chatId = typeof row?.session_key === "string" ? row.session_key : "";
           // A session this app started or resumed is known by its runtime id, which names its profile for sure.
           const mine = typeof row?.id === "string" ? this.runtimeOwners.get(row.id) : undefined;
           const at = typeof row?.last_active === "number" ? row.last_active * 1000 : 0;
-          return status && chatId ? [{ chatId, status, at, ...(mine?.chatId === chatId && { profile: mine.profile }) }] : [];
+          const key = `${typeof row?.id === "string" ? row.id : ""} ${chatId}`;
+          return status && chatId ? [{ chatId, status, at, key, ...(mine?.chatId === chatId && { profile: mine.profile }) }] : [];
         });
-        // Rows don't say their profile. Each other session is looked up by its id in every profile, a few per check.
-        const unknown = sessions.filter((s) => !s.profile && !this.sessionOwners.has(s.chatId)).slice(0, LOOKUPS_PER_CHECK);
+        // Answers about sessions no longer live are dropped.
+        const live = new Set(sessions.map((s) => s.key));
+        for (const m of [this.sessionOwners, this.ownerTried]) for (const k of m.keys()) if (!live.has(k)) m.delete(k);
+        // Rows don't say their profile. Each other session is looked up by its id in every profile, a few per check,
+        // the ones tried longest ago first.
+        const unknown = sessions
+          .filter((s) => !s.profile && !this.sessionOwners.has(s.key))
+          .sort((a, b) => (this.ownerTried.get(a.key) ?? 0) - (this.ownerTried.get(b.key) ?? 0))
+          .slice(0, LOOKUPS_PER_CHECK);
         const profiles = unknown.length ? await this.profiles().catch(() => undefined) : undefined;
         for (const s of profiles ? unknown : []) {
+          this.ownerTried.set(s.key, Date.now());
           const owner = await this.ownerOf(s.chatId, profiles!);
-          if (owner !== undefined) this.sessionOwners.set(s.chatId, owner);
+          if (owner !== undefined) this.sessionOwners.set(s.key, owner);
         }
         if (gen !== this.generation) return;
-        const placed = sessions.map((s): LiveSession => {
-          const owner = s.profile ? undefined : this.sessionOwners.get(s.chatId);
+        const placed = sessions.map(({ key, ...s }): LiveSession => {
+          const owner = s.profile ? undefined : this.sessionOwners.get(key);
           return owner ? { ...s, ...owner } : s;
         });
         this.update({ live: { sessions: placed, checkedAt: Date.now() } });

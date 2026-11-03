@@ -252,6 +252,71 @@ describe("The inbox", () => {
     expect(inbox(hermes).entries.map(brief)).toContain("running work/work-busy");
   });
 
+  it("looks up every live session in turn, though the first few can't be placed yet", async () => {
+    vi.useFakeTimers();
+    const { server, hermes } = await signedIn();
+    // Three chats too new to be stored yet come first, and stay unplaced.
+    server.liveSessions = [
+      ...["new-1", "new-2", "new-3"].map((id, i) => ({ id: `rt-${i}`, session_key: id, status: "working", last_active: nowS() })),
+      { id: "rt-4", session_key: "work-busy", status: "working", last_active: nowS() },
+    ];
+    await hermes.checkOtherProfiles();
+    expect(inbox(hermes).entries.map(brief)).not.toContain("running work/work-busy");
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    await hermes.checkOtherProfiles();
+    expect(inbox(hermes).entries.map(brief)).toContain("running work/work-busy");
+    expect(inbox(hermes).unmatched).toBe(3);
+  });
+
+  it("looks a chat up again when it runs again, so a profile copied since can't put it in the wrong one", async () => {
+    vi.useFakeTimers();
+    const { server, hermes } = await signedIn();
+    server.liveSessions = [{ id: "rt-1", session_key: "work-busy", status: "working", last_active: nowS() }];
+    await hermes.checkOtherProfiles();
+    expect(inbox(hermes).entries.map(brief)).toContain("running work/work-busy");
+
+    // work is copied, ids and all, and the copy's chat runs.
+    server.otherProfiles["work-copy"] = server.otherProfiles.work.map((r) => ({ ...r }));
+    server.liveSessions = [{ id: "rt-2", session_key: "work-busy", status: "working", last_active: nowS() }];
+    await vi.advanceTimersByTimeAsync(20_000);
+    await hermes.checkOtherProfiles();
+    expect(inbox(hermes).entries.map(brief)).not.toContain("running work/work-busy");
+    expect(inbox(hermes).unmatched).toBe(1);
+  });
+
+  it("keeps a waiting session dismissed once resuming its chat shows the Approval, until Hermes reports it active since", async () => {
+    vi.useFakeTimers();
+    const { server, hermes } = await signedIn();
+    server.liveSessions = [{ id: "rt-a", session_key: "work-asks", status: "waiting", last_active: nowS() - 60 }];
+    server.openRequests.set("srq-a", {
+      sid: "rt-a",
+      stored: "work-asks",
+      method: "approval",
+      params: { request_id: "apr-a", command: "x", description: "y", choices: ["once", "deny"] },
+    });
+    await hermes.checkOtherProfiles();
+    const acks = inboxAcks(storage(), "server");
+    acks.dismiss(inbox(hermes).entries.find((e) => e.key === "waiting work work-asks")!);
+
+    await hermes.switchProfile("work");
+    await hermes.idle();
+    await hermes.open("work-asks");
+    await hermes.idle();
+    await vi.advanceTimersByTimeAsync(20_000);
+    await hermes.checkOtherProfiles();
+    const card = () => inbox(hermes).entries.find((e) => e.kind === "approval" && e.chatId === "work-asks")!;
+    expect(card()).toMatchObject({ key: "approval work work-asks apr-a", itemId: "srq-a" });
+    expect(acks.isDismissed(card())).toBe(true);
+    expect(server.responses).toEqual([]);
+
+    // Active since the dismissal: what it waits on now may be new.
+    server.liveSessions[0].last_active = nowS() + 5;
+    await vi.advanceTimersByTimeAsync(20_000);
+    await hermes.checkOtherProfiles();
+    expect(acks.isDismissed(card())).toBe(false);
+  });
+
   it("doesn't bring back an Approval that timed out when the connection then drops", async () => {
     const { server, hermes } = await signedIn();
     const { id, runtime } = await replying(server, hermes);
