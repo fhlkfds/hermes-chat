@@ -379,6 +379,10 @@ describe("The Usage screen", () => {
     rerender(<UsageAnalytics {...props(io, { connected: false })} />);
     await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Not connected to Hermes."));
     expect(screen.queryByLabelText("working")).toBeNull();
+    // Its answer, arriving after the drop, is dropped too.
+    await act(async () => waiting[2].resolve());
+    expect(screen.queryByRole("region", { name: "Tokens" })).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("Not connected to Hermes.");
   });
 
   it("says when it can't read Hermes, and when this Hermes keeps no usage per chat", async () => {

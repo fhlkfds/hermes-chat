@@ -1,6 +1,6 @@
 # Usage analytics screenshots
 
-Captured on 2026-11-03 from the running Hermes Chat debug build (WebKitGTK, dev profile loading the Vite server) built from this branch, on an Xvfb display at 1280 × 820. The window has no window manager, so dialogs have no title bar. Nothing was composited or retouched.
+Captured on 2026-11-03 (retaken on the final code after review round 7) from the running Hermes Chat debug build (WebKitGTK, dev profile loading the Vite server) built from this branch, on an Xvfb display at 1280 × 820. The window has no window manager, so dialogs have no title bar. Nothing was composited or retouched.
 
 The app was signed in by URL to a local stub: the repo's `FakeHermes` behind real HTTP and WebSocket on loopback (`bridge.ts` here), not a real Hermes dashboard. Every chat, model, figure and profile is synthetic, generated from a fixed seed. The stub answers `GET /api/sessions?order=created`, `GET /api/sessions/{id}` and `GET /api/analytics/usage` the way the deployed `bf0203a` does: a compressed chat is listed under its last segment with its first segment's counts, and subagent runs are stored but never listed.
 
