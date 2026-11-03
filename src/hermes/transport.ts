@@ -34,9 +34,10 @@ import { listServerCommands, runServerCommand, type CommandDef, type CommandResu
 import { CronApi } from "./cronJobs";
 import { ModelSettingsApi } from "./modelSettings";
 import type { OpenPipe, Pipe, PipeEvent, RestMethod, Route, Speech, Transcript, VoiceSetup } from "./pipe";
-import { remoteFiles, type RemoteFiles } from "./remoteFiles";
+import { RemoteFilesError, previewSupport, remoteFiles, type RemoteFiles } from "./remoteFiles";
 import { isUnsecure } from "./unsecure";
-import { readServerFile, type FileView } from "./preview";
+import { hostFileView, readServerFile, type FileView } from "./preview";
+import { splitPath, type OutputsIo, type StoredRow as StoredOutputRow } from "./outputs";
 import { chatUsageOf, countersOf, newerChatUsage, replyUsage, ZERO_COUNTERS, type ReplyUsage, type UsageCounters } from "./usage";
 
 /**
@@ -173,6 +174,8 @@ type TranscriptMessage = {
   name?: string | null;
   context?: string | null;
   args?: Record<string, unknown> | null;
+  /** A tool row's call (`tool_call_id`). */
+  tool_call_id?: string | null;
   timestamp?: number | null;
   /** The stored row (`messages.id`); a live session's not-yet-stored tail has none. */
   row_id?: number | null;
@@ -2170,6 +2173,57 @@ export class Hermes {
     return readServerFile((q) => this.rest("GET", q), path, this.snapshot.profile);
   }
 
+  /**
+   * A file on the dashboard's own machine, for the preview pane: found in its folder's listing and read through the
+   * managed files routes, as the Server files screen reads it (ADR 0012), within that screen's preview limits. For
+   * the audio and images Hermes saves itself, which aren't where a profile with an SSH terminal runs its tools.
+   */
+  async readHostFile(path: string): Promise<FileView> {
+    const { dir, name } = splitPath(path);
+    const entry = (await this.files.list(dir)).entries.find((e) => e.name === name);
+    if (!entry || entry.kind !== "file") throw new Error("There's no file at this path on the dashboard's machine.");
+    const support = previewSupport(entry);
+    if (support.kind === "none") return { kind: "unsupported", reason: support.why, size: entry.size };
+    return hostFileView(await this.files.preview(entry, support.kind === "maybe-text"));
+  }
+
+  /**
+   * How Outputs reads Hermes for `profile` (outputs.ts): a chat's stored rows through dashboard REST, each page refused
+   * past its size limit, and a folder's listing through `GET /api/fs/list`, where the profile's tools run. Every
+   * request names the profile, so a run for a profile left behind still reads only that profile.
+   */
+  outputsIo(profile: string): OutputsIo {
+    return {
+      rows: async (chatId, offset, limit, maxBytes) => {
+        const query = new URLSearchParams({ profile, order: "latest", limit: String(limit), offset: String(offset), inline_images: "false" });
+        const body = await this.restGet(`${sessionPath(chatId)}/messages?${query}`, maxBytes);
+        const res = JSON.parse(body) as { messages?: unknown };
+        // UTF-8 bytes, as Rust counted them against the limit.
+        return { rows: Array.isArray(res.messages) ? (res.messages as StoredOutputRow[]) : [], bytes: new TextEncoder().encode(body).byteLength };
+      },
+      listDir: async (path, host) => {
+        // The dashboard's own machine, through the managed files routes Server files lists with (ADR 0012).
+        if (host)
+          return this.files.list(path).then(
+            (l) => ({ entries: l.entries.map((e) => ({ name: e.name, isDirectory: e.kind === "dir" })) }),
+            (e: unknown) => {
+              const status = e instanceof RemoteFilesError ? e.status : undefined;
+              const message = e instanceof Error ? e.message : String(e);
+              if (status === 404 && /isn't on the server/.test(message)) return { entries: [], error: "ENOENT" };
+              if (status === 400 && /not a folder/.test(message)) return { entries: [], error: "ENOTDIR" };
+              if (status === 403) return { entries: [], error: "EACCES" };
+              throw new Error(message);
+            },
+          );
+        const res = JSON.parse(await this.restGet(`api/fs/list?${new URLSearchParams({ path, profile })}`, LIST_MAX_BYTES)) as { entries?: unknown; error?: unknown };
+        const entries = (Array.isArray(res.entries) ? res.entries : []).flatMap((e: { name?: unknown; isDirectory?: unknown }) =>
+          typeof e?.name === "string" ? [{ name: e.name, isDirectory: e.isDirectory === true }] : [],
+        );
+        return { entries, ...(typeof res.error === "string" && { error: res.error }) };
+      },
+    };
+  }
+
   private async rest(method: RestMethod, pathAndQuery: string, body?: unknown): Promise<unknown> {
     // Once closed (signed out), nothing more goes out: the Rust side relays through whichever sign-in is current, which
     // may be another server's by then.
@@ -2339,6 +2393,9 @@ function timeLimit<T>(p: Promise<T>, ms: number): Promise<T> {
   return Promise.race([p, late]).finally(() => clearTimeout(timer));
 }
 
+/** The most a folder listing for Outputs may be: a folder of tens of thousands of entries. */
+const LIST_MAX_BYTES = 8 * 1024 * 1024;
+
 const sessionPath = (chatId: string) => `api/sessions/${encodeURIComponent(chatId)}`;
 
 /** A session's title as the list shows it: an untitled one by its first words. */
@@ -2473,6 +2530,7 @@ function historyItems(messages: TranscriptMessage[]): Item[] {
         {
           kind: "tool",
           id,
+          ...(m.tool_call_id && { callId: m.tool_call_id }),
           name: m.name || "tool",
           args: m.args ?? undefined,
           preview: m.context || undefined,
@@ -2609,6 +2667,7 @@ function applyEvent(c: Chat, type: string, p: Record<string, unknown>): Chat {
       items.push({
         kind: "tool",
         id: String(p.tool_id),
+        callId: String(p.tool_id),
         name: String(p.name ?? "tool"),
         args: p.args as Record<string, unknown> | undefined,
         preview: p.preview as string | undefined,

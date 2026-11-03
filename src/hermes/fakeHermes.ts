@@ -61,6 +61,10 @@ export type TranscriptMessage = {
   display_kind?: string;
   reasoning?: string;
   row_id?: number;
+  /** A tool row's whole result as Hermes stores it, which `session.resume` leaves out (`content` is only for edit tools). */
+  result?: string;
+  /** An assistant row's tool calls as stored: `[{id, type, function: {name, arguments}}]`, `arguments` JSON text. */
+  tool_calls?: unknown;
 };
 
 /** A file on the owner's disk: its bytes as a string, a size alone for a file too big to make, or a folder. */
@@ -519,10 +523,11 @@ export class FakeHermes {
     // `fs_list` (`hermes_cli/web_routers/files.py` at the deployed `bf0203a`): a folder's entries, or none and why.
     "GET /api/fs/list": ({ query }) => {
       const path = query.get("path") ?? "";
-      const isDir = (p: string) => this.serverDirs.has(p) || typeof this.serverFiles[p] === "object";
+      const all = new Set([...this.serverDirs, ...Object.keys(this.serverFiles)]);
+      // A folder holding a file or folder is there too, as on a real disk.
+      const isDir = (p: string) => this.serverDirs.has(p) || typeof this.serverFiles[p] === "object" || [...all].some((q) => q.startsWith(`${p}/`));
       if (typeof this.serverFiles[path] === "string") return { entries: [], error: "ENOTDIR" };
       if (!isDir(path)) return { entries: [], error: "ENOENT" };
-      const all = new Set([...this.serverDirs, ...Object.keys(this.serverFiles)]);
       const inside = [...all].filter((p) => p.startsWith(`${path}/`) && !p.slice(path.length + 1).includes("/"));
       return { entries: inside.map((p) => ({ name: p.split("/").pop(), path: p, isDirectory: isDir(p) })) };
     },
@@ -759,7 +764,8 @@ export class FakeHermes {
         const url = new URL(pathAndQuery, "http://dashboard/");
         const req: RestRequest = { method: "GET", path: url.pathname, query: url.searchParams };
         this.restRequests.push(req);
-        const handler = this.rest[`GET ${req.path}`];
+        const messages = /^\/api\/sessions\/([^/]+)\/messages$/.exec(req.path);
+        const handler = this.rest[`GET ${req.path}`] ?? (messages ? () => this.storedMessages(decodeURIComponent(messages[1]), req.query) : undefined);
         if (!handler) throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
         const body = JSON.stringify(await handler(req));
         if (body.length > maxBytes) throw new Error(`it's ${(body.length / MiB).toFixed(1)} MB now, over the ${Math.floor(maxBytes / MiB)} MB limit`);
@@ -937,7 +943,16 @@ export class FakeHermes {
   private storedMessages(id: string, query: URLSearchParams) {
     const rows = (this.transcripts[id] ?? [])
       .filter((m) => m.row_id !== undefined)
-      .map((m) => ({ id: m.row_id!, session_id: id, role: m.role, content: m.text ?? m.content ?? null, timestamp: m.timestamp ?? null }));
+      .map((m) => ({
+        id: m.row_id!,
+        session_id: id,
+        role: m.role,
+        content: m.role === "tool" ? (m.result ?? m.content ?? null) : (m.text ?? m.content ?? null),
+        tool_name: m.role === "tool" ? (m.name ?? null) : null,
+        tool_call_id: m.tool_call_id ?? null,
+        tool_calls: m.tool_calls === undefined ? null : JSON.stringify(m.tool_calls),
+        timestamp: m.timestamp ?? null,
+      }));
     if (query.get("order") === "latest") rows.reverse();
     const offset = Number(query.get("offset") ?? 0);
     const limit = Number(query.get("limit") ?? 100);
