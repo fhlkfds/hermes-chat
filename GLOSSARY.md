@@ -154,6 +154,10 @@ _Avoid_: tokens (alone, for the whole breakdown), stats
 What a chat's usage cost, only as Hermes recorded it: reported by the provider, estimated, at least an estimate, included in a subscription, or unknown. It counts only the calls Hermes could price. The app keeps no prices of its own, and shows no cost per reply.
 _Avoid_: price, spend, bill (except for a cost the provider reported)
 
+**Usage analytics**:
+The rail's Usage screen: the Usage and Cost Hermes stored for each chat started in a period, added up across chats, models, where chats started, projects, profiles and days. A chat counts in the period it started in, with all its usage so far, and a compressed chat counts once. The total cost says how much of the usage Hermes priced and is never a bill. Hermes's own sums sit beside it for a period ending now, with its helper tasks and subagent runs, which no chat carries. Nothing is kept on this computer; Export CSV saves the chats counted where the owner picks (ADR 0026).
+_Avoid_: dashboard, stats, report, billing
+
 **Context window**:
 What the model reads on each call in a chat: Hermes's instructions, the tool descriptions, instruction files, memory, and the conversation, up to the model's limit. The status bar's meter shows how full it is, and its **context inspector** shows what fills it, as Hermes measures and estimates it. Hermes's total is labelled Exact (the provider's count), Partly estimated, or Estimated; its split by category is always its estimate (ADR 0025).
 _Avoid_: context (alone, for memory), prompt, tokens (for the window)
