@@ -693,7 +693,7 @@ function ToolPreviews({ t }: { t: ToolItem }) {
         <button
           key={x.kind === "server" ? `s:${x.path}` : x.kind === "web" ? `w:${x.url}` : x.kind}
           className="preview-chip"
-          title={x.kind === "server" ? `${x.path}\nOn the Hermes server` : x.kind === "web" ? x.url : undefined}
+          title={x.kind === "server" ? `${withoutBidi(x.path)}\nOn the Hermes server` : x.kind === "web" ? x.url : undefined}
           onClick={() => open(x)}
         >
           {x.kind === "server" ? <Server size={12} /> : <Globe size={12} />}

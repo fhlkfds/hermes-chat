@@ -333,8 +333,8 @@ export async function readRows(io: OutputsIo, chatId: string, stillWanted: () =>
       if (!TOO_BIG.test(message)) throw e;
       // A refused page was read up to its limit before Rust stopped, so it spends that much of the budget.
       read += max;
-      if (CHAT_MAX_BYTES - read < PAGE_MAX_BYTES) {
-        // What's left of the chat's budget is smaller than this page: the rest is older than what was read.
+      if (read >= CHAT_MAX_BYTES) {
+        // The budget is spent: the rest is older than what was read.
         partial.olderRows = true;
         return { rows, partial };
       }
@@ -425,6 +425,8 @@ const OUTPUTS_VERSION = 2;
 /** Most connections and profiles kept, and Outputs kept for one; the least recently indexed chats go first. */
 const SCOPES_KEPT = 8;
 export const OUTPUTS_KEPT = 3000;
+/** Most chats an index keeps a record of, Outputs or not; the records read longest ago, with no Outputs left, go first. */
+export const CHATS_KEPT = 2000;
 
 /** One connection and profile's index. `usedAt`: when it was last read or written, to keep the most recent scopes. */
 export type ScopeIndex = { chats: Record<string, ChatOutputs>; added: Output[]; usedAt: number };
@@ -512,7 +514,7 @@ export function writeScope(storage: OutputsStorage, scope: string, index: ScopeI
  */
 function trimmed<T extends Pick<ScopeIndex, "chats" | "added">>(index: T): T {
   let total = index.added.length + Object.values(index.chats).reduce((n, c) => n + c.outputs.length, 0);
-  if (total <= OUTPUTS_KEPT) return index;
+  if (total <= OUTPUTS_KEPT && Object.keys(index.chats).length <= CHATS_KEPT) return index;
   const chats = { ...index.chats };
   for (const [id, c] of Object.entries(chats).sort(([, a], [, b]) => a.indexedAt - b.indexedAt)) {
     if (total <= OUTPUTS_KEPT) break;
@@ -520,6 +522,9 @@ function trimmed<T extends Pick<ScopeIndex, "chats" | "added">>(index: T): T {
     total -= c.outputs.length;
     chats[id] = { ...c, outputs: [], partial: { ...c.partial, evicted: true } };
   }
+  const records = Object.entries(chats);
+  if (records.length > CHATS_KEPT)
+    for (const [id] of records.filter(([, c]) => !c.outputs.length).sort(([, a], [, b]) => a.indexedAt - b.indexedAt).slice(0, records.length - CHATS_KEPT)) delete chats[id];
   return { ...index, chats };
 }
 
@@ -688,6 +693,15 @@ export class OutputsIndex {
     const out: Output = { key, path: p, how: "added", at: this.now(), availability: checked, ...(chatId && { chatId }) };
     this.set((s) => ({ added: [...s.added.filter((o) => o.key !== key), out] }), true);
     return out;
+  }
+
+  /**
+   * Forgets the chats not in `ids`, the profile's whole chat list as just read: a chat deleted, or no longer listed, keeps
+   * no record. One listed again later is read again. The files the owner added stay.
+   */
+  keepOnly(ids: Set<string>) {
+    if (Object.keys(this.snap.chats).every((id) => ids.has(id))) return;
+    this.set((s) => ({ chats: Object.fromEntries(Object.entries(s.chats).filter(([id]) => ids.has(id))) }), true);
   }
 
   /** Takes an Output the owner added back out. Found ones go only when their chat is indexed without them. */

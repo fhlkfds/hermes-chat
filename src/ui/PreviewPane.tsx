@@ -123,7 +123,7 @@ export function PreviewPane({
             <span id={titleId}>{withoutBidi(previewName(target))}</span>
           </div>
           {address && (
-            <div className="preview-address" title={address}>
+            <div className="preview-address" title={withoutBidi(address)}>
               <bdi>{withoutBidi(address)}</bdi>
             </div>
           )}

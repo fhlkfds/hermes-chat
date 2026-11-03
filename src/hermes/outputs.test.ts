@@ -5,6 +5,7 @@ import { FakeHermes, row, type TranscriptMessage } from "./fakeHermes";
 import { connect, type Hermes } from "./transport";
 import {
   ADDED_MAX,
+  CHATS_KEPT,
   CHAT_MAX_BYTES,
   OUTPUTS_PER_CHAT,
   compactRows,
@@ -541,5 +542,49 @@ describe("the review's cases", () => {
     release();
     await expect(adding).rejects.toThrow(/another profile/);
     expect(index.getSnapshot().added).toEqual([]);
+  });
+
+  it("keeps no more chat records than the cap, dropping empty ones read longest ago first", async () => {
+    const io: OutputsIo = { rows: async () => page([]), listDir: async () => ({ entries: [] }) };
+    let t = 0;
+    const index = new OutputsIndex(io, memory(), "s", () => ++t);
+    // Runs of 25: enough runs to pass the cap.
+    const chats = Array.from({ length: CHATS_KEPT + 30 }, (_, i) => ({ id: `c${i}`, updatedAt: CHATS_KEPT + 30 - i }));
+    for (let run = 0; run < Math.ceil(chats.length / MAX_CHATS_PER_RUN); run++) await index.index(chats);
+    expect(Object.keys(index.getSnapshot().chats).length).toBeLessThanOrEqual(CHATS_KEPT);
+  });
+
+  it("forgets chats no longer in the profile's list, and keeps the files the owner added", async () => {
+    const io: OutputsIo = {
+      rows: async (chatId) => page([{ id: 1, role: "tool", tool_name: "write_file", tool_call_id: chatId, content: JSON.stringify(written(`/srv/${chatId}.txt`)) }]),
+      listDir: async () => ({ entries: [{ name: "kept.csv", isDirectory: false }] }),
+    };
+    const storage = memory();
+    const index = new OutputsIndex(io, storage, "s");
+    await index.index([{ id: "a", updatedAt: 1 }, { id: "deleted", updatedAt: 1 }]);
+    await index.add("/srv/kept.csv");
+    index.keepOnly(new Set(["a"]));
+    expect(Object.keys(index.getSnapshot().chats)).toEqual(["a"]);
+    expect(Object.keys(readScope(storage, "s").chats)).toEqual(["a"]);
+    expect(index.getSnapshot().added).toHaveLength(1);
+  });
+
+  it("tries a smaller page with what is left of the budget instead of stopping at the first refusal", async () => {
+    const limits: number[] = [];
+    const io: OutputsIo = {
+      rows: async (_c, offset, limit, max) => {
+        limits.push(max);
+        // 14 pages of 4 MiB and one of 2 MiB spend 58 MiB. The next 100-row page is refused, leaving 2 MiB, and a
+        // smaller page holding a file fits in it.
+        if (offset < 1500) return { rows: Array.from({ length: limit }, (_, i) => ({ id: offset + i, role: "user" })), bytes: (offset < 1400 ? 4 : 2) * 1024 * 1024 };
+        if (limit > 20) throw new Error("it's 4.0 MB now, over the 4 MB limit");
+        return page([{ id: 9999, role: "tool", tool_name: "write_file", tool_call_id: "late", content: JSON.stringify(written("/srv/late.txt")) }]);
+      },
+      listDir: async () => ({ entries: [] }),
+    };
+    const index = new OutputsIndex(io, memory(), "s");
+    await index.index([{ id: "c", updatedAt: 1 }]);
+    expect(index.getSnapshot().chats.c.outputs.map((o) => o.path)).toEqual(["/srv/late.txt"]);
+    expect(Math.min(...limits)).toBeGreaterThan(0);
   });
 });
