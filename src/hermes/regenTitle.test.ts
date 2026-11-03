@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { editFlags, FakeHermes, row } from "./fakeHermes";
 import { cleanTitle, connect, TitleModelUnavailable, titleModelUnavailable } from "./transport";
 
-type Stored = { id: number; role: string; content: unknown };
+type Stored = { id: number; role: string; content: unknown; display_kind?: string };
 
 /** Stored rows, oldest first: the first two messages fall outside the last five a title is made from. */
 const talk: Stored[] = [
@@ -58,6 +58,18 @@ describe("Regenerating a chat's title", () => {
     expect(server.requests.some((r) => r.method === "prompt.submit" || r.method === "session.resume")).toBe(false);
     expect(editFlags(patches()[0].body)).toEqual({ title: "Nightly backup job fix", profile: "default" });
     expect(title()).toBe("Nightly backup job fix");
+  });
+
+  it("leaves out hidden rows, such as a project's instructions, which the owner never wrote", async () => {
+    // As stored live at `bf0203a`: a seeded hidden row comes back from REST with `display_kind: "hidden"`.
+    const { server, hermes, asks } = await listed([
+      { id: 1, role: "user", content: "Instructions for this chat from the project \"Budget\".", display_kind: "hidden" },
+      { id: 2, role: "user", content: "Plan the budget" },
+      { id: 3, role: "assistant", content: "Here is a plan" },
+    ]);
+    server.oneshotAnswer = "Budget plan";
+    await hermes.regenerateTitle("a");
+    expect(asks()[0].params.input).toBe("USER: Plan the budget\n\nASSISTANT: Here is a plan");
   });
 
   it("reads older pages until it has the last five messages, past a long run of tool rows", async () => {

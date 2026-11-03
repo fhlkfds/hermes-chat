@@ -58,7 +58,7 @@ describe("Stopping a reply", () => {
 
     expect(chat().running).toBe(false);
     expect(chat().items.slice(1)).toEqual([
-      { kind: "tool", id: "t1", name: "terminal", preview: "du -sh /var/log", args: undefined, status: "stopped" },
+      { kind: "tool", id: "t1", callId: "t1", name: "terminal", preview: "du -sh /var/log", args: undefined, status: "stopped" },
       { kind: "assistant", id: "a-2", text: "I was checking the size", interrupted: true },
     ]);
   });

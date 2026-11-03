@@ -1,10 +1,11 @@
-// The Settings screen, in four tabs. General, ported from the prototype: the connection and Sign out, what shows on
+// The Settings screen, in six tabs. General, ported from the prototype: the connection and Sign out, what shows on
 // launch, voice, screenshots, updates, the local cache, and older history. Appearance: how the app looks on this
 // computer (AppearanceSettings.tsx). Model: the profile's models on Hermes (ModelSettings.tsx). Toolsets: which tools
-// Hermes offers the model in the profile (ToolsetSettings.tsx).
+// Hermes offers the model in the profile (ToolsetSettings.tsx). Persona: the profile's SOUL.md on Hermes
+// (PersonaSettings.tsx). Memory: what Hermes remembers for the profile (MemorySettings.tsx).
 // Profiles are switched in the list's header, not here (ADR 0001).
 import { useEffect, useState } from "react";
-import { ArrowLeft, Cpu, Download, KeyRound, Lock, LogOut, Palette, Settings2, ShieldCheck, Trash2, Wrench } from "lucide-react";
+import { ArrowLeft, Brain, Cpu, Download, KeyRound, Lock, LogOut, Palette, PlugZap, Settings2, ShieldCheck, Sparkles, Trash2, Wrench } from "lucide-react";
 import type { Chat, ConnectionStatus } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
 import { TRANSCRIPT_LIMIT_BYTES } from "../hermes/chatCache";
@@ -15,6 +16,11 @@ import type { ModelSettingsApi } from "../hermes/modelSettings";
 import { ModelSettings } from "./ModelSettings";
 import type { ToolsetsApi } from "../hermes/toolsets";
 import { ToolsetSettings } from "./ToolsetSettings";
+import type { MemoryApi } from "../hermes/memory";
+import { MemorySettings } from "./MemorySettings";
+import { PersonaSettings, type PersonaWhere } from "./PersonaSettings";
+import type { PersonaApi } from "../hermes/persona";
+import type { PersonaStore } from "../hermes/personaStore";
 import { StartupSettings } from "./StartupSettings";
 import { VoiceSettings } from "./Voice";
 import type { VoiceSetup } from "../hermes/pipe";
@@ -22,13 +28,20 @@ import { ScreenshotSettings } from "./ScreenshotSettings";
 import type { ScreenshotSupport } from "../hermes/tauriScreenshot";
 import { UpdateSettings } from "./UpdateSettings";
 
-type Tab = "general" | "appearance" | "model" | "toolsets";
-const ALL_TABS = [
+type Tab = "general" | "appearance" | "model" | "toolsets" | "persona" | "memory";
+const TABS = [
   { id: "general", label: "General", Icon: Settings2 },
   { id: "appearance", label: "Appearance", Icon: Palette },
   { id: "model", label: "Model", Icon: Cpu },
   { id: "toolsets", label: "Toolsets", Icon: Wrench },
+  { id: "persona", label: "Persona", Icon: Sparkles },
+  { id: "memory", label: "Memory", Icon: Brain },
 ] as const;
+
+/** Settings → Persona's wiring: the API, where its edits are kept on this computer, and what it edits. */
+export type PersonaWiring = { api: PersonaApi; store: PersonaStore; storeKey: string; where: PersonaWhere };
+
+const allow = (go: () => void) => go();
 
 /** What a pull added: the older chats in Settled, and any pinned in another Hermes client, which are Active. */
 function pulledText(added: Chat[]): string {
@@ -58,11 +71,18 @@ export function SettingsScreen({
   modelSettings,
   toolsets,
   runningReplies = 0,
+  memory,
+  onMemoryDirty = () => {},
+  memoryDiscards = 0,
   onClearCache,
   onPullOlder,
   onSignOut,
+  onSetUp,
   onClose,
   voiceSetup,
+  persona,
+  onPersonaDirty = () => {},
+  guard = allow,
   showTextGeneration,
 }: {
   status: ConnectionStatus;
@@ -90,13 +110,27 @@ export function SettingsScreen({
   toolsets?: ToolsetsApi;
   /** Chats of the shown profile with a reply running now. */
   runningReplies?: number;
+  /** The profile's memory on Hermes; the Memory tab shows only with it. */
+  memory?: MemoryApi;
+  /** Called with whether the Memory tab has an unsaved edit. */
+  onMemoryDirty?: (dirty: boolean) => void;
+  /** Changes each time the owner discards the unsaved memory edit from App's question. */
+  memoryDiscards?: number;
   onClearCache: () => void;
   /** Resolves to the older chats added. */
   onPullOlder: () => Promise<Chat[]>;
   onSignOut: () => Promise<void>;
+  /** Opens setup again, to change the connection or give Hermes a model provider's key. */
+  onSetUp?: () => void;
   onClose: () => void;
   /** The shown profile's voice set-up, for the Voice section. */
   voiceSetup?: () => Promise<VoiceSetup>;
+  /** Settings → Persona; the tab is left out without it. */
+  persona?: PersonaWiring;
+  /** Says whether the Persona tab holds an edit Hermes doesn't have yet. */
+  onPersonaDirty?: (dirty: boolean, kept: boolean) => void;
+  /** Runs `go`, once the owner agrees to leave an unsaved persona or memory edit behind, if there is one. */
+  guard?: (go: () => void) => void;
   /** Set, each time anew, to show the Model tab at the Text generation model: from a title that couldn't be regenerated. */
   showTextGeneration?: object;
 }) {
@@ -106,11 +140,15 @@ export function SettingsScreen({
   const [pulled, setPulled] = useState<string>();
   const [pullError, setPullError] = useState<string>();
   const [signingOut, setSigningOut] = useState(false);
-  const [tab, setTab] = useState<Tab>(showTextGeneration ? "model" : "general");
+  const [tab, setTabNow] = useState<Tab>(showTextGeneration ? "model" : "general");
+  const tabs = TABS.filter(
+    (t) => (t.id !== "toolsets" || toolsets) && (t.id !== "persona" || persona) && (t.id !== "memory" || memory),
+  );
+  // Leaving the Persona or Memory tab asks first while it holds an unsaved edit.
+  const setTab = (t: Tab) => t !== tab && guard(() => setTabNow(t));
   useEffect(() => {
     if (showTextGeneration) setTab("model");
   }, [showTextGeneration]);
-  const TABS = ALL_TABS.filter((t) => t.id !== "toolsets" || toolsets);
 
   const pull = async () => {
     setPulling(true);
@@ -135,9 +173,9 @@ export function SettingsScreen({
           className="settings-tabs"
           role="tablist"
           aria-label="Settings"
-          onKeyDown={(e) => arrowSelect(e, TABS.map((t) => t.id), tab, setTab)}
+          onKeyDown={(e) => arrowSelect(e, tabs.map((t) => t.id), tab, setTab)}
         >
-          {TABS.map(({ id, label, Icon }) => (
+          {tabs.map(({ id, label, Icon }) => (
             <button
               key={id}
               id={`settings-tab-${id}`}
@@ -153,7 +191,25 @@ export function SettingsScreen({
           ))}
         </div>
 
-        {tab === "appearance" ? (
+        {tab === "persona" && persona ? (
+          <div id="settings-panel-persona" role="tabpanel" aria-labelledby="settings-tab-persona">
+            {/* An edit is for one connection and profile: another profile is another editor. */}
+            <PersonaSettings
+              key={`${persona.storeKey}`}
+              api={persona.api}
+              store={persona.store}
+              storeKey={persona.storeKey}
+              where={persona.where}
+              connected={status === "connected"}
+              onDirty={onPersonaDirty}
+            />
+          </div>
+        ) : tab === "memory" && memory ? (
+          <div id="settings-panel-memory" role="tabpanel" aria-labelledby="settings-tab-memory">
+            {/* An edit lives only while this tab is open, and for one profile; leaving with one asks first. */}
+            <MemorySettings key={profile} api={memory} profile={profile} status={status} server={routeLabel(route) ?? "not known until connected"} onDirtyChange={onMemoryDirty} discardSignal={memoryDiscards} />
+          </div>
+        ) : tab === "appearance" ? (
           <div id="settings-panel-appearance" role="tabpanel" aria-labelledby="settings-tab-appearance">
             <AppearanceSettings store={appearance} listFonts={listFonts} />
           </div>
@@ -187,7 +243,8 @@ export function SettingsScreen({
                   disabled={signingOut}
                   onClick={async () => {
                     setSigningOut(true);
-                    await onSignOut();
+                    // Resolves without signing out when the owner chose to stay with an unsaved persona edit.
+                    await onSignOut().finally(() => setSigningOut(false));
                   }}
                 >
                   <LogOut size={14} /> {signingOut ? "Signing out…" : "Sign out"}
@@ -212,6 +269,17 @@ export function SettingsScreen({
                 Signing out deletes the saved password from the keyring. You type it again at the next sign-in.
                 {headers.length > 0 && headersSaved && " The extra request headers stay saved, to change or remove on the sign-in screen."}
               </p>
+              {onSetUp && (
+                <div className="settings-row settings-setup">
+                  <div className="muted small">
+                    Connect to another server, or give Hermes a model provider's API key. The connection in use stays until a new one is tested and
+                    saved.
+                  </div>
+                  <button className="btn" onClick={onSetUp}>
+                    <PlugZap size={14} /> Run setup again
+                  </button>
+                </div>
+              )}
             </section>
 
             <StartupSettings />

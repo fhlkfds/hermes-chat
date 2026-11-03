@@ -3,6 +3,7 @@
 // webview.
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type { LocalFile, OpenPipe, PipeEvent, Route, ToolsetGuards, Transcript, VoiceSetup } from "./pipe";
+import type { Probe, Probed, ProbeFailure, SavedKey } from "./setup";
 
 // A failed command rejects with the Rust error's text, not an Error.
 export const asError = (e: unknown) => Promise.reject(new Error(String(e)));
@@ -24,12 +25,31 @@ export type ExtraHeader = { name: string; value: string };
  */
 export type SignInDetails = { mode: "ssh" | "url"; sshTarget: string; url: string; username: string; password: string; headers?: ExtraHeader[] };
 
+const targetOf = (d: SignInDetails) =>
+  d.mode === "ssh" ? { kind: "ssh", target: d.sshTarget } : { kind: "url", url: d.url, headers: d.headers ?? [] };
+
+/** Setup's connection test (src-tauri `hermes_probe`): it rejects with a `ProbeFailure`, not an Error. */
+export const tauriProbe: Probe = {
+  run: (d, profile) =>
+    invoke<Probed>("hermes_probe", { target: targetOf(d), username: d.username, password: d.password, profile }).catch((e: unknown) =>
+      Promise.reject<Probed>(e && typeof e === "object" ? (e as ProbeFailure) : { stage: "address", message: String(e) }),
+    ),
+  cancel: () => void invoke("hermes_probe_cancel").catch(() => {}),
+};
+
 export function tauriPipe(d: SignInDetails): OpenPipe {
-  const target = d.mode === "ssh" ? { kind: "ssh", target: d.sshTarget } : { kind: "url", url: d.url, headers: d.headers ?? [] };
-  return async (onEvent, profile) => {
+  const target = targetOf(d);
+  return async (onEvent, profile, signal) => {
     const channel = new Channel<PipeEvent>();
     channel.onmessage = onEvent;
-    const route = await invoke<Route>("hermes_connect", { target, username: d.username, password: d.password, profile, onEvent: channel }).catch(asError);
+    // Names this opening, so stopping it can't stop a later one (src-tauri `hermes_connect_cancel`).
+    const attempt = crypto.randomUUID();
+    const stop = () => void invoke("hermes_connect_cancel", { attempt }).catch(() => {});
+    signal?.addEventListener("abort", stop, { once: true });
+    if (signal?.aborted) stop();
+    const route = await invoke<Route>("hermes_connect", { target, username: d.username, password: d.password, profile, attempt, onEvent: channel })
+      .catch(asError)
+      .finally(() => signal?.removeEventListener("abort", stop));
     return {
       route,
       send: (frame) => invoke("hermes_send", { frame }),
@@ -37,6 +57,7 @@ export function tauriPipe(d: SignInDetails): OpenPipe {
       getLimited: (path, maxBytes) => invoke<string>("hermes_get_limited", { path, maxBytes }).catch(asError),
       statFiles: (paths) => invoke<LocalFile[]>("hermes_stat_files", { paths }),
       sendFile: (head, path, tail, maxBytes) => invoke<void>("hermes_send_file", { head, path, tail, maxBytes }).catch(asError),
+      saveProviderKey: (profile, key, value) => invoke<SavedKey>("hermes_save_provider_key", { profile, key, value }).catch(asError),
       // The recording goes as the raw body, not as a JSON list of numbers.
       transcribe: (profile, audio, mime) =>
         invoke<Transcript>("hermes_transcribe", audio, {

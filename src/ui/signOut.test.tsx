@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-// The whole App signing in with extra request headers and signing out again, with the Rust side replaced by FakeHermes
-// and an in-memory keyring behind `invoke`. Sign out must show the sign-in screen with what the keyring has now, even
+// The whole App signing in with extra request headers through first-run setup and signing out again, with the Rust
+// side replaced by FakeHermes and an in-memory keyring behind `invoke`. Sign out must show the sign-in screen with what the keyring has now, even
 // when reading it is slow, never the details the screen had before.
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -17,6 +17,7 @@ let pipe: Pipe | undefined;
 /** When set, reading the saved headers waits for this. */
 let headersGate: Promise<void> | undefined;
 const connects: unknown[] = [];
+const probes: unknown[] = [];
 
 vi.mock("@tauri-apps/api/core", () => ({
   Channel: class {
@@ -30,6 +31,13 @@ vi.mock("@tauri-apps/api/core", () => ({
         pipe = await fake.openPipe((e) => channel.onmessage(e), args.profile as string);
         return { kind: "url", url: "https://hermes.example.com", addresses: [] };
       }
+      case "hermes_probe":
+        probes.push(args.target);
+        return {
+          route: { kind: "url", url: "https://hermes.example.com", addresses: [] },
+          status: '{"version":"0.22.5","auth_required":true,"auth_providers":["basic"]}',
+          ready: JSON.stringify({ jsonrpc: "2.0", method: "event", params: { type: "gateway.ready", payload: fake.readyPayload } }),
+        };
       case "hermes_send":
         return pipe!.send(args.frame as string);
       case "hermes_request":
@@ -67,18 +75,27 @@ describe("Signing out with extra request headers", () => {
   it("shows the sign-in screen with the saved URL and headers once the keyring is read, and no password", async () => {
     const { default: App } = await import("../App");
     render(<App />);
-    await userEvent.click(await screen.findByRole("button", { name: "URL" }));
+    // Nothing is set up yet, so setup opens.
+    await userEvent.click(await screen.findByRole("button", { name: "Get started" }));
+    await userEvent.click(screen.getByRole("button", { name: "URL" }));
     await userEvent.type(screen.getByLabelText(/^Dashboard URL/), "https://hermes.example.com");
     await userEvent.click(screen.getByRole("button", { name: "Add header" }));
     await userEvent.type(screen.getByLabelText("Header 1 name"), "CF-Access-Client-Secret");
     await userEvent.type(screen.getByLabelText("Header 1 value"), "s3cret");
-    await userEvent.type(screen.getByLabelText("Dashboard username"), "liam");
+    // A row left blank is dropped.
+    await userEvent.click(screen.getByRole("button", { name: "Add header" }));
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    await userEvent.type(await screen.findByLabelText("Dashboard username"), "liam");
     await userEvent.type(screen.getByLabelText(/^Dashboard password/), "hunter2");
-    await userEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await userEvent.click(screen.getByRole("button", { name: "Test connection" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Save and connect" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Finish" }));
 
     await userEvent.click(await screen.findByTitle("Settings"));
     expect(screen.getByText("CF-Access-Client-Secret")).toBeTruthy();
-    expect(connects).toEqual([{ kind: "url", url: "https://hermes.example.com", headers: [{ name: "CF-Access-Client-Secret", value: "s3cret" }] }]);
+    const sent = { kind: "url", url: "https://hermes.example.com", headers: [{ name: "CF-Access-Client-Secret", value: "s3cret" }] };
+    expect(probes).toEqual([sent]);
+    expect(connects).toEqual([sent]);
     expect(JSON.stringify({ ...localStorage })).not.toContain("s3cret");
 
     let release!: () => void;
@@ -94,5 +111,6 @@ describe("Signing out with extra request headers", () => {
     expect(value("Header 1 value")).toBe("s3cret");
     expect(value(/^Dashboard password/)).toBe("");
     expect(keyring.has("password")).toBe(false);
-  });
+    // The whole first run goes through setup, which takes a while under a full parallel run.
+  }, 20_000);
 });

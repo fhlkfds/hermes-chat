@@ -50,6 +50,8 @@ export type Item =
   | {
       kind: "tool";
       id: string;
+      /** The tool call's id (`tool_call_id`), the same live and in stored history; Outputs go to the call by it. */
+      callId?: string;
       name: string;
       args?: Record<string, unknown>;
       preview?: string;
@@ -91,6 +93,22 @@ export type ApprovalItem = Extract<Item, { kind: "approval" }>;
 export type OutgoingItem = Extract<Item, { kind: "user" }> & { outgoing: Outgoing };
 
 export const isOutgoing = (i: Item): i is OutgoingItem => i.kind === "user" && i.outgoing !== undefined;
+
+/**
+ * A Queued message: words and files the owner lined up to send after the chat's reply (ADR 0018). `id` is stable for
+ * its life in the queue. Once it goes it leaves the queue and is an outgoing message (`Outgoing`) like any other.
+ */
+export type Queued = { id: string; text: string; attachments?: Attachment[] };
+
+/**
+ * A chat's queue, kept on this computer per connection, profile and chat. `paused`: why it waits for the owner's
+ * Resume (the owner paused it, or the last reply ended in a way the owner should look at first). `unsaved`: the last
+ * write to this computer's storage failed, so it lasts only until the app closes.
+ */
+export type ChatQueue = { items: Queued[]; paused?: string; unsaved?: boolean };
+
+/** The most messages one chat's queue holds. */
+export const QUEUE_LIMIT = 20;
 
 /** The answers the owner can give an Approval: the ones Hermes offers, less the broader grants it rules out. */
 export const offeredChoices = (i: ApprovalItem): ApprovalChoice[] =>
@@ -166,10 +184,45 @@ export type ConnectionStatus = "connected" | "reconnecting" | "offline";
  * chats and the list holds more, so more of them may be Unread. `checkedAt`: when that was read. `error`: why the
  * latest check failed; the other fields then come from an earlier check, if there was one.
  */
-export type OtherProfile = { unread?: number; more?: boolean; checkedAt?: number; error?: string };
+export type OtherProfile = {
+  unread?: number;
+  more?: boolean;
+  checkedAt?: number;
+  error?: string;
+  chats?: ListedChat[];
+  sends?: SavedSend[];
+  failures?: SeenFailure[];
+};
+
+/**
+ * A failure this app saw in a chat of a profile, before the owner switched away from it. Hermes keeps no record of it
+ * that a check could read, so it is kept, by its error row's id and a fingerprint of its text, until the owner is
+ * back in the profile. No text is kept.
+ */
+export type SeenFailure = { chatId: string; title: string; itemId: string; mark: string };
+
+/**
+ * A chat in the page of another profile's list that the latest check read, for the inbox. `at`: its last activity
+ * (Unix ms). `unread`: it counts towards the profile's Unread chats.
+ */
+export type ListedChat = { id: string; title: string; at: number; unread: boolean; source?: Source };
+
+/** A Failed message this computer keeps for a chat in a profile not shown (`Outgoing`): Hermes didn't take it, or may not have. */
+export type SavedSend = { chatId: string; itemId: string; state: "failed" | "unknown"; title?: string };
 
 /** The profiles the app isn't showing, by name. `error`: why the latest check couldn't list the profiles. */
 export type OtherProfiles = { byName: Record<string, OtherProfile>; checkedAt?: number; error?: string };
+
+/**
+ * The sessions live in the dashboard's own process, in every profile, as `session.active_list` last reported them:
+ * the ones working on a turn, or waiting for the owner's answer. `chatId`: the stored session id. `at`: its last
+ * activity (Unix ms). `profile`: the profile it is in, when known: for a session this app started or resumed, or
+ * once looking its id up in every profile found it in exactly one; `title` and `source` then come from that profile's
+ * row. `error`: why the latest check failed; `sessions` are then from the one before. `unsupported`:
+ * this Hermes has no `session.active_list`.
+ */
+export type LiveSession = { chatId: string; status: "working" | "waiting"; at: number; profile?: string; title?: string; source?: Source };
+export type LiveSessions = { sessions: LiveSession[]; checkedAt?: number; error?: string; unsupported?: boolean };
 
 /**
  * A chat found by searching all chats (`Hermes.search`). `snippet`: the text around the match, with the matched words
