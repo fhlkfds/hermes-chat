@@ -438,6 +438,16 @@ The deployed checkout was confirmed at `bf0203a` over SSH. Its routes were read 
 - **Hermes writes it too.** `ensure_hermes_home` (once per process and profile home) runs `_ensure_default_soul_md`. That writes `DEFAULT_SOUL_MD` when the file is missing, or when it exactly matches one of Hermes's older auto-seeded templates, at mode 0600. Probed: a profile with no SOUL.md got the default one when the app first switched to it. `hermes profile update` overwrites a distribution-owned SOUL.md (`profile_distribution.py` `DEFAULT_DIST_OWNED`). `GET /api/profiles` lists that as `distribution_name`.
 - **Probe setup.** The dashboard from the deployed checkout ran on `127.0.0.2:9193`, with a throwaway `HERMES_HOME` and a throwaway basic-auth login, reached through an SSH tunnel on the same local address. A loopback bind of `127.0.0.1` turns the cookie gate off and needs the process session token instead, and the Host header must match the bound host. Only synthetic personas were read or written.
 
+### Slash commands (2026-11-02, deployed `bf0203a`, source read and in-process call)
+
+Read in `tui_gateway/methods_tools.py`, `methods_slash.py`, `command_discovery.py` and `hermes_cli/commands.py` at `bf0203a`. `command_catalog()` and the `command.dispatch` / `slash.exec` handlers were then called in-process from that checkout, with `HERMES_HOME` set to an empty temporary folder, so no profile or live session was touched.
+
+- **`commands.catalog {profile?, session_id?}`** → `{pairs: [[key, desc]], canon: {lower-cased key or alias: key}, commands, categories, skills, skill_count, warning, plugin_discovery_error, plugin_commands}`. `canon` had `/steer` (alias `/s`) and `/context`. Registry commands marked `gateway_only`, and `sethome`, `commands`, `approve` and `deny`, aren't listed. An older server answers -32601.
+- **`command.dispatch {name, arg, session_id}`**: stages quick > plugin > bundle > skill > built-in; anything else is 4018 `not a quick/plugin/bundle/skill command`. `steer` with an empty `arg` is 4004 `usage: /steer <prompt>`. With no turn running (or no session) it answers `{type: "send", message: arg, notice: "No agent running; sent as next turn: …"}`; with one running, `agent.steer(arg)` and `{type: "exec", output: "⏩ Steer queued — arrives after the next tool call: …"}`. The argument arrived with its new lines and indentation.
+- **`slash.exec {command, session_id}`**: 4001 `session not found` for an unknown runtime id. `/context` on a local session is answered in-process from the live session (`_format_live_context_output`) as `{output}`. Most other commands go to a per-session slash worker, a full CLI process.
+- **Not used**: `/compress` changes the session's key (`_sync_session_key_after_compress`); `/undo` and `/retry` rewind stored history and answer `prefill` / `send`. The app would have to reload the transcript and follow a new chat id.
+- What the app does: ADR 0015.
+
 ## Open risks
 
 Items marked UNCONFIRMED above, plus things that must be checked against the user's live Debian server:

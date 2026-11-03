@@ -33,6 +33,7 @@ The application is built with Tauri 2, React 19, and TypeScript, and it uses Vit
 - For voice: speech-to-text and text-to-speech providers set up for the profile on the server (`hermes tools`).
 - For Projects: a Hermes that has the `projects.*` methods. Without them, the chat list works and the project switcher says that Hermes needs an update.
 - For Persona: the dashboard's `GET` and `PUT /api/profiles/{name}/soul` routes, which Hermes at `bf0203a` has. Without them, Settings → Persona says that this Hermes can't edit personas, and reads or writes nothing.
+- For Hermes's slash commands (`/steer`, `/context`): a Hermes whose `/api/ws` answers `commands.catalog`, `command.dispatch` and `slash.exec`, as `bf0203a` does. Without `commands.catalog`, those commands say that Hermes needs an update; the app's own commands still work.
 - For Server files: a dashboard that serves its managed-files routes, `GET /api/files` and `GET /api/files/read`, which the dashboard's own Files tab uses. Hermes at `bf0203a` does. Without them, the Server files screen says that this Hermes needs a dashboard with the Files tab. To limit browsing to one folder, start the dashboard with `HERMES_DASHBOARD_FILES_ROOT=/that/folder`.
 - For Scheduled jobs: a dashboard with the cron routes under `/api/cron/` (Hermes at `bf0203a` has them), and the profile's gateway running on the server, since its scheduler runs the jobs. Set the profile's time zone with `timezone:` in its `config.yaml`; without it Hermes uses the server's own zone, which the app can't name. Without the routes, the screen says that this Hermes has no scheduled jobs.
 
@@ -58,6 +59,7 @@ These features are on the `main` branch.
 - **Status bar.** The status bar shows how full the context window is, a per-chat YOLO switch, the model, and the connection state. Right-click it to choose the items.
 - **Appearance.** Choose light, dark, or system mode, themes (with a theme editor), contrast, interface and code fonts, sizes, word wrap, and chat width.
 - **Desktop notifications.** While the window isn't focused, the app posts a notification when a reply finishes or an Approval is waiting. This needs a freedesktop notification service, such as mako, dunst, swaync, GNOME, or KDE.
+- **Slash commands.** Type `/` at the start of a message for a menu of commands, each marked App or Hermes: `/help`, `/new`, `/rename <title>`, `/delete` (asks first), `/steer <message>` for a running reply, and `/context`. Any other text starting with `/` is sent as a message. See [Slash commands](#slash-commands).
 - **Drafts and reopening.** Drafts are kept for each chat, profile, and connection, and they survive restarts. The app can reopen the last chat at launch.
 
 ### Keyboard shortcuts
@@ -71,6 +73,23 @@ These features are on the `main` branch.
 | Ctrl+\\ | Open a second pane, or close the inactive one |
 | Ctrl+1, Ctrl+2 | Focus the left or right composer |
 | Ctrl+Shift+S | Take a screenshot (configurable in Settings → General) |
+
+### Slash commands
+
+Type `/` at the very start of the composer to open the command menu. Keep typing to filter it by name or description. ↑ and ↓ choose, Enter or Tab fills the command in, and Escape closes the menu. Filling a command in never sends anything: press Enter again to run it. While an input method is composing, these keys stay with it.
+
+| Command | Runs in | What it does |
+| --- | --- | --- |
+| `/help` | App | Lists every command, its argument, and why it can't run now. Escape closes it. |
+| `/new` | App | Opens the New chat pane. |
+| `/rename <title>` | App | Renames the chat in every Hermes client, as Rename in the chat list does. |
+| `/delete` | App | Asks, as the chat list does, then deletes the chat in every Hermes client. |
+| `/steer <message>` | Hermes | Gives the running reply your words after its next tool call, without stopping it. If the reply ended meanwhile, Hermes has the words sent as your next message. |
+| `/context` | Hermes | Shows what fills the chat's context window, as Hermes counts it. |
+
+Hermes's commands need a Hermes that lists them in `commands.catalog` (Hermes at `bf0203a` does), the chat open on Hermes, and for `/steer` a reply running. If the profile has a quick command or plugin command called `steer`, Hermes would run that instead, so the app says so and doesn't run `/steer`. It also holds back when Hermes couldn't list those. A command that can't run says why under the composer and keeps your text. So does one that fails. The text is cleared only once the command has run. An answer that arrives after you switched profile isn't shown, and the text stays in that chat's draft. Text after `/` that isn't one of these commands, or words after a command that takes none (`/help me read this log`), is sent as an ordinary message. To send a command's own text as a message, start it with a space.
+
+Answers and notes stay in the composer, in memory, until you dismiss them or leave the chat. Nothing new is stored on disk. Commands that make Hermes run tools still ask for Approvals as usual.
 
 ### Two chats side by side
 
@@ -293,12 +312,13 @@ Webview local storage is in `$XDG_DATA_HOME/net.l0cky12.hermes-chat/localstorage
 - Long transcripts render in full. Very long chats, especially two at once, can be slow while streaming or resizing.
 - On the legacy protocol, a reply to a Telegram or Discord chat should stay in Hermes clients and not be posted back to Telegram or Discord. This comes from reading Hermes's source and hasn't been tested live.
 - The app doesn't install pacman updates itself: you run the PKGBUILD, and it offers the restart. In-app installation works only for an AppImage you build and sign yourself, since the repo publishes no releases or update server. Checking a package build asks GitHub without signing in, which allows 60 checks an hour.
+- Slash commands are a short list. The app doesn't offer Hermes's other commands, skills, or quick commands, and sends any other `/` text as a message. Command answers aren't kept in the chat's history or Saved copy.
 - The automated tests use a fake Hermes. Native Wayland screenshot pickers and real audio devices aren't covered.
 
 ## Project documents
 
 - [`GLOSSARY.md`](GLOSSARY.md) defines the app's terms, such as Active, Settled, Saved copy, and Approval.
-- [`docs/adr/`](docs/adr/) records the design decisions, for example the [SSH sign-in](docs/adr/0003-sign-in-through-ssh-tunnel-to-the-dashboard.md), the [Unsecure label](docs/adr/0004-direct-url-sign-in-and-what-counts-as-unsecure.md), [extra request headers](docs/adr/0006-extra-request-headers-for-a-gateway-in-front-of-the-dashboard.md), the [preview pane sandbox](docs/adr/0007-preview-pane-shows-untrusted-content-in-sandboxed-frames.md), and [usage and cost](docs/adr/0008-usage-and-cost-come-from-hermes.md), [Server files](docs/adr/0012-server-files-are-the-dashboards-managed-files-read-only.md), [Scheduled jobs](docs/adr/0013-scheduled-jobs-are-hermess-cron-jobs-confirmed-by-read-back.md), and [persona saves](docs/adr/0014-persona-saves-check-hermes-first-and-read-back.md).
+- [`docs/adr/`](docs/adr/) records the design decisions, for example the [SSH sign-in](docs/adr/0003-sign-in-through-ssh-tunnel-to-the-dashboard.md), the [Unsecure label](docs/adr/0004-direct-url-sign-in-and-what-counts-as-unsecure.md), [extra request headers](docs/adr/0006-extra-request-headers-for-a-gateway-in-front-of-the-dashboard.md), the [preview pane sandbox](docs/adr/0007-preview-pane-shows-untrusted-content-in-sandboxed-frames.md), and [usage and cost](docs/adr/0008-usage-and-cost-come-from-hermes.md), [Server files](docs/adr/0012-server-files-are-the-dashboards-managed-files-read-only.md), [Scheduled jobs](docs/adr/0013-scheduled-jobs-are-hermess-cron-jobs-confirmed-by-read-back.md), [persona saves](docs/adr/0014-persona-saves-check-hermes-first-and-read-back.md), and [slash commands](docs/adr/0015-slash-commands-are-a-small-verified-registry.md).
 - [`docs/research/hermes-gateway-api.md`](docs/research/hermes-gateway-api.md) describes the Hermes API that the app relies on.
 
 ## License
