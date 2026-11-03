@@ -11,7 +11,7 @@ import { chatToReopen, forgetOpenChat, rememberOpenChat } from "./hermes/uiPrefs
 import { exportChat } from "./hermes/exportChat";
 import { PROJECTS_KEY, projectLinks, projectScope } from "./hermes/projectLinks";
 import { ProjectsStore, type Project } from "./hermes/projects";
-import { DEFAULTS_KEY, instructionsMessage, modelProblem, resolveNewChat, type ProjectDefaults } from "./hermes/projectDefaults";
+import { instructionsMessage, modelProblem, resolveNewChat, type ProjectDefaults } from "./hermes/projectDefaults";
 import { systemHeaderKeyring, systemKeyring } from "./hermes/tauriKeyring";
 import { appUpdates } from "./hermes/tauriUpdates";
 import { needsAttention, type Updater } from "./hermes/updates";
@@ -369,11 +369,17 @@ export function Main({
     return store;
   }, [hermes, scope, projectStores]);
   const proj = useSyncExternalStore(projects.subscribe, projects.getSnapshot);
-  // Another Hermes Chat window saved projects, such as a project's defaults: show them here too.
+  // Another Hermes Chat window changed the projects, or another window or instance their defaults: show them here too.
+  // Defaults are in a file every instance shares, so they are read again whenever the window comes back to the front.
   useEffect(() => {
-    const changed = (e: StorageEvent) => (e.key === PROJECTS_KEY || e.key === DEFAULTS_KEY) && projects.reread();
+    const changed = (e: StorageEvent) => e.key === PROJECTS_KEY && projects.reread();
+    const back = () => void projects.readDefaults();
     window.addEventListener("storage", changed);
-    return () => window.removeEventListener("storage", changed);
+    window.addEventListener("focus", back);
+    return () => {
+      window.removeEventListener("storage", changed);
+      window.removeEventListener("focus", back);
+    };
   }, [projects]);
   const listable = proj.projects.filter((p) => !p.archived);
   const shownProject = listable.find((p) => p.id === proj.selectedId);
@@ -818,6 +824,7 @@ export function Main({
                   setFilesOpen(false);
                   setJobsOpen(false);
                   setProjectOpen(true);
+                  void projects.readDefaults();
                 }}
               />
             }
@@ -1081,9 +1088,10 @@ function ChatView({
   // profile (projectDefaults.ts). A pick here also stays the composer's Model pick, as before.
   const [chosen, setChosen] = useState<ModelPick>();
   useEffect(() => setChosen(undefined), [chatId, profile]);
-  const settingsFor = (project: { name: string; defaults?: ProjectDefaults } | undefined = shownProject) =>
+  // No default for `project`: an explicit undefined is "no project", never the one this pane last drew.
+  const settingsFor = (project: { name: string; defaults?: ProjectDefaults } | undefined) =>
     resolveNewChat({ chosen, project, sticky, profilePick: catalog?.defaultPick, profileEffort: catalog?.defaultEffort });
-  const startSettings = settingsFor();
+  const startSettings = settingsFor(shownProject);
   const [applying, setApplying] = useState(false);
   useEffect(() => setApplying(false), [chatId]);
 
@@ -1100,8 +1108,9 @@ function ChatView({
   /** The chat to send in: the one in this pane, or a new one started now for the New chat pane. */
   const chatToSendIn = async (): Promise<{ id: string } | { delivery: Delivery }> => {
     if (chatId) return { id: chatId };
-    // The project as it is now, not as it was when the pane drew.
+    // The project and its defaults as they are now, not as they were when the pane drew.
     projects.reread();
+    await projects.readDefaults();
     const snap = projects.getSnapshot();
     const into = snap.selectedId;
     const shown = snap.projects.find((p) => p.id === into);

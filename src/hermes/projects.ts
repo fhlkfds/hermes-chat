@@ -6,7 +6,7 @@
 // Folders are only references. Nothing here creates, moves or deletes a folder, a repository or a worktree on the
 // server: a folder is checked with a read-only directory listing before it is added, and a repository's worktrees are
 // read with `git worktree list` (dashboard REST `GET /api/git/worktrees`), never added.
-import { DEFAULTS_KEY, savedDefaults, windowLock, type DefaultsDoc, type DefaultsDraft, type Lock, type ProjectDefaults } from "./projectDefaults";
+import { savedDefaults, type DefaultsDoc, type DefaultsDraft, type ProjectDefaults } from "./projectDefaults";
 import type { ProjectLinks } from "./projectLinks";
 
 /** One of a project's folders: a path on the server. `primary`: the folder Hermes names the project's main one. */
@@ -193,6 +193,9 @@ export class ProjectsStore {
   private snap: ProjectsSnapshot;
   private listeners = new Set<() => void>();
   private reads = 0;
+  /** The projects' defaults as last read (`readDefaults`). */
+  private stored: Record<string, ProjectDefaults> = {};
+  private defaultsReads = 0;
   // Project writes return whole snapshots. Keep them in order with list reads so an older reply cannot prune
   // associations created after that request, or restore a project that a later request deleted.
   private pending: Promise<unknown> = Promise.resolve();
@@ -209,11 +212,11 @@ export class ProjectsStore {
     /** Where this computer keeps the profile's links (projectLinks.ts `projectScope`). */
     readonly scope: string,
     readonly profile: string,
-    /** Where this computer keeps the projects' defaults (projectDefaults.ts), and the lock every write holds. */
+    /** Where this computer keeps the projects' defaults (projectDefaults.ts). */
     private defaults: DefaultsDoc = savedDefaults,
-    private lock: Lock = windowLock,
   ) {
     this.snap = { profile, loaded: false, loading: false, ...this.fromLinks() };
+    void this.readDefaults();
   }
 
   subscribe = (fn: () => void) => {
@@ -245,7 +248,6 @@ export class ProjectsStore {
         const projects = await this.api.list(this.profile);
         if (n !== this.reads) return;
         this.links.remember(this.scope, projects);
-        this.pruneDefaults();
         this.set({ loaded: true, loading: false, error: undefined, ...this.fromLinks() });
       } catch (e) {
         if (n !== this.reads) return;
@@ -283,12 +285,11 @@ export class ProjectsStore {
       try {
         const projects = await this.api.delete(this.profile, id);
         this.links.remember(this.scope, projects);
-        this.pruneDefaults();
       } catch (e) {
         if (!(e instanceof ProjectGoneError)) throw e;
         this.links.forgetProject(this.scope, id);
-        this.pruneDefaults();
       }
+      this.forgetDefaults(id);
       this.set(this.fromLinks());
     });
   }
@@ -313,21 +314,39 @@ export class ProjectsStore {
   }
 
   /**
-   * Saves project `id`'s defaults for new chats on this computer, over revision `base` (projectLinks.ts
-   * `saveDefaults`). Chats already started don't change.
+   * Saves project `id`'s defaults for new chats on this computer, over revision `base` (projectDefaults.ts
+   * `DefaultsDoc.save`). Chats already started don't change.
    */
   async saveDefaults(id: string, base: number, draft: DefaultsDraft): Promise<ProjectDefaults> {
     try {
-      return await this.lock(DEFAULTS_KEY, () => this.defaults.save(this.scope, id, base, draft));
+      return await this.defaults.save(this.scope, id, base, draft);
     } finally {
-      // A conflict means another window saved: show what it saved.
-      this.set(this.fromLinks());
+      // A conflict means another window or instance saved: show what it saved.
+      await this.readDefaults();
     }
   }
 
-  /** Reads this computer's copy again, after another window changed it. */
+  /**
+   * Reads the projects' defaults again, as another window or instance may have saved them. Resolves once the
+   * snapshot has them; a failed read keeps the ones shown.
+   */
+  async readDefaults(): Promise<void> {
+    const n = ++this.defaultsReads;
+    try {
+      const stored = await this.defaults.read(this.scope);
+      // An older read finishing late doesn't replace a newer one.
+      if (n !== this.defaultsReads) return;
+      this.stored = stored;
+      this.set(this.fromLinks());
+    } catch {
+      // Kept as they were.
+    }
+  }
+
+  /** Reads this computer's copies again, after another window changed them. */
   reread() {
     this.set(this.fromLinks());
+    void this.readDefaults();
   }
 
   /** The chat was deleted, so it is in no project any more. */
@@ -345,17 +364,20 @@ export class ProjectsStore {
     } catch (e) {
       if (e instanceof ProjectGoneError) {
         this.links.forgetProject(this.scope, id);
-        this.pruneDefaults();
+        this.forgetDefaults(id);
         this.set(this.fromLinks());
       }
       throw e;
     }
   }
 
-  /** Forgets the defaults of projects Hermes no longer has. Best effort: one left behind is never shown or used. */
-  private pruneDefaults() {
-    const keep = new Set(this.links.read(this.scope).known.map((p) => p.id));
-    void this.lock(DEFAULTS_KEY, () => this.defaults.prune(this.scope, keep)).catch(() => {});
+  /**
+   * Forgets project `id`'s defaults, once Hermes has said it is gone: deleted here, or answering that it no longer
+   * exists. A list that merely leaves it out could be older than a save, so it never decides this. Best effort: defaults
+   * left behind are never shown or used.
+   */
+  private forgetDefaults(id: string) {
+    void this.defaults.forget(this.scope, id).then(() => this.readDefaults(), () => {});
   }
 
   private keep(project: Project) {
@@ -368,7 +390,7 @@ export class ProjectsStore {
   private fromLinks(): Pick<ProjectsSnapshot, "projects" | "selectedId" | "chats" | "defaults"> {
     const { known, selected, chats } = this.links.read(this.scope);
     const ids = new Set(known.map((p) => p.id));
-    const defaults = Object.fromEntries(Object.entries(this.defaults.read(this.scope)).filter(([id]) => ids.has(id)));
+    const defaults = Object.fromEntries(Object.entries(this.stored).filter(([id]) => ids.has(id)));
     return { projects: known, selectedId: known.some((p) => p.id === selected && !p.archived) ? selected : undefined, chats, defaults };
   }
 

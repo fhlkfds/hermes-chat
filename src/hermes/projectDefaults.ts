@@ -1,14 +1,16 @@
 // A project's defaults for its new chats (GLOSSARY.md "Project defaults", ADR 0014): instructions, a model with its
 // reasoning effort, and a working folder on the server. Hermes keeps projects, but has nowhere to keep these (its
 // `projects.update` takes only a name, description, icon, colour and board), so this computer keeps them, for each
-// connection and profile, in their own document (`hermes-chat.project-defaults`). Only a save or a clean-up writes it,
-// each holding a lock every window of the app shares, so no other write can put an older copy back over a save.
+// connection and profile, in their own document: `project-defaults.json` in the app's data folder, which every running
+// instance shares. It changes only by compare-and-swap under a file lock (defaults_file.rs): a save is written only
+// over the document it was checked against, so no instance's save silently replaces another's.
 //
 // A new chat takes each value from the first of: what the owner chose for that chat, the project's default, and the
 // profile's own. The defaults go to Hermes only when a chat starts, through `session.create`: `model`, `provider` and
 // `reasoning_effort`; `cwd` with `cwd_explicit`; and the instructions as one hidden seeded message (`messages` with
 // `display_kind: "hidden"`), since `session.create` has no instructions field. Changing a default never changes a chat
 // that has started.
+import { invoke } from "@tauri-apps/api/core";
 import { findOption, isEffort, shortName, type Effort, type ModelCatalog, type ModelPick } from "./models";
 
 /**
@@ -144,96 +146,130 @@ export function modelProblem(s: NewChatSettings, catalog?: ModelCatalog): string
 export const instructionsMessage = (project: string, text: string) =>
   `Instructions for this chat from the project "${project}". Follow them unless a later message says otherwise.\n\n${text}`;
 
-/** The storage the defaults are kept in: localStorage in the app. */
-export type DefaultsStorage = Pick<Storage, "getItem" | "setItem">;
+/** Where the defaults document is kept: its text, and a compare-and-swap that every running app instance honours. */
+export type DefaultsFile = {
+  read(): Promise<string | null>;
+  /** Writes `next` only if the document is still `expected` (null: none yet); otherwise answers what it is now. */
+  swap(expected: string | null, next: string): Promise<{ swapped: boolean; current: string | null }>;
+};
 
-export const DEFAULTS_KEY = "hermes-chat.project-defaults";
 /** The document's shape: `{v, scopes: {[scope]: {[projectId]: ProjectDefaults}}}`. Bump it when a field changes meaning. */
 export const DEFAULTS_VERSION = 1;
 
-/** Runs `run` while no other window of this app holds lock `name`. */
-export type Lock = <T>(name: string, run: () => T) => Promise<T>;
-
-/**
- * The Web Locks API, which the web engine holds for every window of this origin at once (WebKitGTK has it, and wry
- * marks the app's scheme secure, which it needs). Without it a save could race another window's, so it is refused.
- */
-export const windowLock: Lock = (name, run) => {
-  const locks = (globalThis.navigator as Navigator | undefined)?.locks;
-  if (!locks) return Promise.reject(new Error("This system's web engine can't keep two Hermes Chat windows from saving over each other, so nothing was saved."));
-  return locks.request(name, async () => run());
-};
-
-/** The projects' defaults kept in a storage. Every call reads it afresh, and a write is checked against that read. */
+/** The projects' defaults kept in a `DefaultsFile`. Every call reads it afresh. */
 export type DefaultsDoc = {
-  read(scope: string): Record<string, ProjectDefaults>;
+  read(scope: string): Promise<Record<string, ProjectDefaults>>;
   /**
    * Keeps project `id`'s defaults over revision `base`, the one the owner started from (0: none yet), and answers
    * them as kept. Throws `DefaultsConflict` if another save landed meanwhile, `NewerDefaultsError` if a newer app wrote
-   * the document, and an error if the draft is wrong or the storage refused it; nothing is kept then. Hold the lock.
+   * the document, and an error if the draft is wrong or the file couldn't be written; nothing is kept then.
    */
-  save(scope: string, id: string, base: number, draft: DefaultsDraft): ProjectDefaults;
-  /** Forgets the defaults of projects Hermes no longer has. Leaves a newer app's document alone. Hold the lock. */
-  prune(scope: string, keep: ReadonlySet<string>): void;
+  save(scope: string, id: string, base: number, draft: DefaultsDraft): Promise<ProjectDefaults>;
+  /** Forgets one project's defaults, after this app deleted the project. Leaves a newer app's document alone. */
+  forget(scope: string, id: string): Promise<void>;
 };
 
-export function defaultsDoc(storage: () => DefaultsStorage): DefaultsDoc {
-  type Loaded = { v: number; scopes: Record<string, unknown>; rest: Record<string, unknown> };
-  const load = (): Loaded => {
-    let raw: unknown;
-    try {
-      raw = JSON.parse(storage().getItem(DEFAULTS_KEY) ?? "null");
-    } catch {
-      raw = undefined;
+type Parsed = { v: number; scopes: Record<string, unknown>; rest: Record<string, unknown> };
+
+function parse(raw: string | null): Parsed {
+  let doc: unknown;
+  try {
+    doc = raw === null ? undefined : JSON.parse(raw);
+  } catch {
+    doc = undefined;
+  }
+  if (!isObj(doc)) return { v: DEFAULTS_VERSION, scopes: {}, rest: {} };
+  const { v, scopes, ...rest } = doc;
+  return { v: Number.isSafeInteger(v) ? (v as number) : DEFAULTS_VERSION, scopes: isObj(scopes) ? scopes : {}, rest };
+}
+
+const ofScope = (doc: Parsed, scope: string): Record<string, unknown> => {
+  const s = doc.scopes[scope];
+  return isObj(s) ? s : {};
+};
+
+const withScope = (doc: Parsed, scope: string, entries: Record<string, unknown>) => {
+  const scopes = { ...doc.scopes };
+  if (Object.keys(entries).length) scopes[scope] = entries;
+  else delete scopes[scope];
+  return JSON.stringify({ ...doc.rest, v: Math.max(doc.v, DEFAULTS_VERSION), scopes });
+};
+
+/** How many times a write is tried again when another instance's write lands between reading and swapping. */
+const SWAP_TRIES = 5;
+
+export function defaultsDoc(file: DefaultsFile): DefaultsDoc {
+  /** Reads, lets `change` decide from that read, and swaps it in; read again and decide again if the file moved. */
+  const update = async <T>(change: (doc: Parsed) => { next?: string; result: T }): Promise<T> => {
+    let raw = await file.read();
+    for (let i = 0; i < SWAP_TRIES; i++) {
+      const { next, result } = change(parse(raw));
+      if (next === undefined) return result;
+      const res = await file.swap(raw, next);
+      if (res.swapped) return result;
+      raw = res.current;
     }
-    if (!isObj(raw)) return { v: DEFAULTS_VERSION, scopes: {}, rest: {} };
-    const { v, scopes, ...rest } = raw;
-    return { v: Number.isSafeInteger(v) ? (v as number) : DEFAULTS_VERSION, scopes: isObj(scopes) ? scopes : {}, rest };
-  };
-  const ofScope = (scopes: Record<string, unknown>, scope: string): Record<string, unknown> => {
-    const s = scopes[scope];
-    return isObj(s) ? s : {};
-  };
-  const write = (doc: Loaded, scope: string, entries: Record<string, unknown>) => {
-    const scopes = { ...doc.scopes };
-    if (Object.keys(entries).length) scopes[scope] = entries;
-    else delete scopes[scope];
-    storage().setItem(DEFAULTS_KEY, JSON.stringify({ ...doc.rest, v: Math.max(doc.v, DEFAULTS_VERSION), scopes }));
+    throw new Error("Another Hermes Chat kept changing the defaults; nothing was saved. Try again.");
   };
   return {
-    read: (scope) => {
+    read: async (scope) => {
       const out: Record<string, ProjectDefaults> = {};
-      for (const [id, d] of Object.entries(ofScope(load().scopes, scope))) {
+      for (const [id, d] of Object.entries(ofScope(parse(await file.read()), scope))) {
         const kept = toDefaults(d);
         if (kept) out[id] = kept;
       }
       return out;
     },
-    save: (scope, id, base, draft) => {
+    save: async (scope, id, base, draft) => {
       const problem = draftProblem(draft);
       if (problem) throw new Error(problem);
-      const doc = load();
-      if (doc.v > DEFAULTS_VERSION) throw new NewerDefaultsError();
-      const entries = ofScope(doc.scopes, scope);
-      const stored = toDefaults(entries[id]);
-      if ((stored?.rev ?? 0) !== base) throw new DefaultsConflict(stored);
       const saved: ProjectDefaults = { rev: base + 1, ...cleanDraft(draft) };
       try {
-        write(doc, scope, { ...entries, [id]: saved });
+        return await update((doc) => {
+          if (doc.v > DEFAULTS_VERSION) throw new NewerDefaultsError();
+          const entries = ofScope(doc, scope);
+          const stored = toDefaults(entries[id]);
+          if ((stored?.rev ?? 0) !== base) throw new DefaultsConflict(stored);
+          return { next: withScope(doc, scope, { ...entries, [id]: saved }), result: saved };
+        });
       } catch (e) {
+        if (e instanceof DefaultsConflict || e instanceof NewerDefaultsError) throw e;
         throw new Error(`This computer couldn't keep them: ${e instanceof Error ? e.message : String(e)}`);
       }
-      return saved;
     },
-    prune: (scope, keep) => {
-      const doc = load();
-      if (doc.v > DEFAULTS_VERSION) return;
-      const entries = ofScope(doc.scopes, scope);
-      const left = Object.fromEntries(Object.entries(entries).filter(([id]) => keep.has(id)));
-      if (Object.keys(left).length !== Object.keys(entries).length) write(doc, scope, left);
+    forget: (scope, id) =>
+      update((doc) => {
+        const entries = ofScope(doc, scope);
+        if (doc.v > DEFAULTS_VERSION || !(id in entries)) return { result: undefined };
+        const { [id]: _gone, ...left } = entries;
+        return { next: withScope(doc, scope, left), result: undefined };
+      }),
+  };
+}
+
+/** The app's file: `project-defaults.json` in its data folder, swapped under a lock every instance takes (defaults_file.rs). */
+export const tauriDefaultsFile: DefaultsFile = {
+  read: () => invoke<string | null>("project_defaults_read"),
+  swap: (expected, next) => invoke("project_defaults_swap", { expected, next }),
+};
+
+/**
+ * A stand-in kept in one webview's storage, for a browser in development and for tests. Only one webview uses it, and
+ * its read-compare-write runs without a pause, so the swap holds there.
+ */
+export function storageDefaultsFile(storage: () => Pick<Storage, "getItem" | "setItem">, key = "hermes-chat.project-defaults"): DefaultsFile {
+  return {
+    read: async () => storage().getItem(key),
+    swap: async (expected, next) => {
+      const current = storage().getItem(key);
+      if (current !== expected) return { swapped: false, current };
+      storage().setItem(key, next);
+      return { swapped: true, current: next };
     },
   };
 }
 
-/** The defaults in the app's localStorage. */
-export const savedDefaults = defaultsDoc(() => globalThis.localStorage);
+/** The defaults the app keeps: in the app's file, or in the webview's storage outside the app. */
+export const savedDefaults = defaultsDoc(
+  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window ? tauriDefaultsFile : storageDefaultsFile(() => globalThis.localStorage),
+);

@@ -6,26 +6,14 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row, type FakeProject } from "../hermes/fakeHermes";
 import { connect, type Hermes } from "../hermes/transport";
-import { PROJECTS_KEY, projectScope } from "../hermes/projectLinks";
-import { DEFAULTS_KEY, savedDefaults, type DefaultsDraft } from "../hermes/projectDefaults";
+import { PROJECTS_KEY, projectLinks, projectScope } from "../hermes/projectLinks";
+import { savedDefaults, type DefaultsDraft } from "../hermes/projectDefaults";
 import { Main } from "../App";
 
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: async () => null }));
 
 beforeAll(() => {
-  // jsdom has no Web Locks; WebKitGTK does. One holder at a time, in order, as the API holds them.
-  let queue = Promise.resolve();
-  Object.defineProperty(navigator, "locks", {
-    configurable: true,
-    value: {
-      request: (_name: string, run: () => unknown) => {
-        const next = queue.then(run);
-        queue = next.then(() => {}, () => {});
-        return next;
-      },
-    },
-  });
   Element.prototype.scrollIntoView = () => {};
   globalThis.CSS ??= { escape: (s: string) => s } as typeof CSS;
 });
@@ -380,7 +368,7 @@ describe("a project's defaults for new chats", () => {
 
   it("shows what a new chat starts with and where each value comes from, then starts it so", async () => {
     const s = server();
-    seed("p_budget", { instructions: "Use metric units.\nKeep it short.", model: opus, folder: "/srv/budget" });
+    await seed("p_budget", { instructions: "Use metric units.\nKeep it short.", model: opus, folder: "/srv/budget" });
     const { user, hermes } = await launch(s);
     await pick(user, "Budget Tracker");
     const panel = startPanel().textContent!;
@@ -406,8 +394,8 @@ describe("a project's defaults for new chats", () => {
   it("keeps two projects' chats apart, and a chat outside any project on the profile's", async () => {
     const s = server();
     s.projects.default.push(project("p_lab", "Lab", ["/srv/app"]));
-    seed("p_budget", { instructions: "Budget rules", folder: "/srv/budget", model: opus });
-    seed("p_lab", { instructions: "Lab rules", folder: "/srv/app" });
+    await seed("p_budget", { instructions: "Budget rules", folder: "/srv/budget", model: opus });
+    await seed("p_lab", { instructions: "Lab rules", folder: "/srv/app" });
     const { user, hermes } = await launch(s);
     for (const [name, text] of [["Budget Tracker", "one"], ["Lab", "two"], ["All chats", "three"]]) {
       await pick(user, name);
@@ -426,7 +414,7 @@ describe("a project's defaults for new chats", () => {
 
   it("starts on a model chosen for the chat over the project's", async () => {
     const s = server();
-    seed("p_budget", { model: opus });
+    await seed("p_budget", { model: opus });
     const { user, hermes } = await launch(s);
     await pick(user, "Budget Tracker");
     await user.click(screen.getByRole("button", { name: /^Model:/ }));
@@ -440,7 +428,7 @@ describe("a project's defaults for new chats", () => {
 
   it("refuses a folder that's gone or Hermes may not open, and gives the message back", async () => {
     const s = server();
-    seed("p_budget", { folder: "/srv/budget" });
+    await seed("p_budget", { folder: "/srv/budget" });
     s.serverDirs.delete("/srv/budget");
     const { user } = await launch(s);
     await pick(user, "Budget Tracker");
@@ -459,7 +447,7 @@ describe("a project's defaults for new chats", () => {
   it("starts nothing when the profile changes while the folder is being checked", async () => {
     const s = server();
     s.otherProfiles = { work: [] };
-    seed("p_budget", { folder: "/srv/budget", instructions: "Budget only" });
+    await seed("p_budget", { folder: "/srv/budget", instructions: "Budget only" });
     const list = s.rest["GET /api/fs/list"];
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
@@ -495,7 +483,7 @@ describe("a project's defaults for new chats", () => {
 
   it("refuses a chat Hermes quietly started in another folder", async () => {
     const s = server();
-    seed("p_budget", { folder: "/srv/budget", instructions: "x" });
+    await seed("p_budget", { folder: "/srv/budget", instructions: "x" });
     const create = s.handlers["session.create"];
     s.handlers["session.create"] = (r) => create({ ...r, params: { ...r.params, cwd: "/elsewhere" } });
     const { user, hermes } = await launch(s);
@@ -510,7 +498,7 @@ describe("a project's defaults for new chats", () => {
 
   it("refuses a project model Hermes doesn't offer, rather than swapping it", async () => {
     const s = server();
-    seed("p_budget", { model: { provider: "anthropic", model: "claude-retired" } });
+    await seed("p_budget", { model: { provider: "anthropic", model: "claude-retired" } });
     const { user } = await launch(s);
     await pick(user, "Budget Tracker");
     expect(within(startPanel()).getByRole("alert").textContent).toContain("claude-retired (anthropic), isn't offered by Hermes");
@@ -521,7 +509,7 @@ describe("a project's defaults for new chats", () => {
 
   it("can't start a chat offline, and still shows what it would start with", async () => {
     const s = server();
-    seed("p_budget", { folder: "/srv/budget" });
+    await seed("p_budget", { folder: "/srv/budget" });
     const { user, hermes } = await launch(s);
     await pick(user, "Budget Tracker");
     await act(async () => s.drop());
@@ -534,7 +522,7 @@ describe("a project's defaults for new chats", () => {
 
   it("edits the defaults with Save and Cancel, changes no chat that has started, and applies them to one only when asked", async () => {
     const s = server();
-    seed("p_budget", { folder: "/srv/budget" });
+    await seed("p_budget", { folder: "/srv/budget" });
     s.projects.default[0].folders.push({ path: "/srv/app", label: null, is_primary: false, added_at: 2 });
     const { user, hermes } = await launch(s);
     await pick(user, "Budget Tracker");
@@ -556,7 +544,7 @@ describe("a project's defaults for new chats", () => {
     expect(document.getElementById("defaults-folder-hint")!.textContent).toContain("/srv/app on ssh://liam@hermes, profile default");
     await user.click(screen.getByRole("button", { name: "Save defaults" }));
     await screen.findByText(/Saved\. New chats in this project use these/);
-    expect(savedDefaults.read(SCOPE).p_budget).toEqual({ rev: 2, instructions: "Answer in French.", folder: "/srv/app" });
+    expect((await savedDefaults.read(SCOPE)).p_budget).toEqual({ rev: 2, instructions: "Answer in French.", folder: "/srv/app" });
     await act(async () => void (await hermes.idle()));
     // The chat that had started didn't change.
     expect(s.requests.slice(before).filter((r) => ["config.set", "session.cwd.set", "prompt.submit"].includes(r.method))).toEqual([]);
@@ -598,7 +586,37 @@ describe("a project's defaults for new chats", () => {
     await act(async () => release());
     await screen.findByText(/Saved\./);
     expect(box.readOnly).toBe(false);
-    expect(savedDefaults.read(SCOPE).p_budget).toEqual({ rev: 1, instructions: "First", folder: "/srv/budget" });
+    expect((await savedDefaults.read(SCOPE)).p_budget).toEqual({ rev: 1, instructions: "First", folder: "/srv/budget" });
+  });
+
+  it("starts a chat with no project's defaults once another window shows every chat", async () => {
+    const s = server();
+    await seed("p_budget", { folder: "/srv/budget", instructions: "Budget only" });
+    const { user, hermes } = await launch(s);
+    await pick(user, "Budget Tracker");
+    // Another window picked All chats; this one hasn't heard yet.
+    projectLinks(localStorage).select(projectScope({ mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" }, "default"), undefined);
+    await send(user, "Plan the budget");
+    await waitFor(() => expect(creates(s)).toHaveLength(1));
+    await act(async () => void (await hermes.idle()));
+    expect(creates(s)[0].cwd).toBeUndefined();
+    expect(creates(s)[0].messages).toBeUndefined();
+  });
+
+  it("puts focus back on its button when Apply closes", async () => {
+    const s = server();
+    await seed("p_budget", { folder: "/srv/budget" });
+    const { user, hermes } = await launch(s);
+    await pick(user, "Budget Tracker");
+    await send(user, "Plan the budget");
+    await waitFor(() => expect(onScreen()).not.toBe("New chat"));
+    await act(async () => void (await hermes.idle()));
+    const open = screen.getByTitle("Apply Budget Tracker's defaults to this chat…");
+    await user.click(open);
+    expect(document.activeElement?.textContent).toBe("Cancel");
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: /Apply Budget/ })).toBeNull();
+    expect(document.activeElement).toBe(open);
   });
 
   it("refuses to save over a save made in another window, and lets the owner choose", async () => {
@@ -608,17 +626,17 @@ describe("a project's defaults for new chats", () => {
     await user.click(screen.getByTitle("Project settings for Budget Tracker"));
     await user.type(screen.getByRole("textbox", { name: "Instructions" }), "Mine");
     await act(async () => {
-      seed("p_budget", { instructions: "Theirs" });
-      window.dispatchEvent(new StorageEvent("storage", { key: DEFAULTS_KEY }));
+      await seed("p_budget", { instructions: "Theirs" });
+      window.dispatchEvent(new Event("focus"));
     });
     // The owner's edits stay on screen.
     expect((screen.getByRole("textbox", { name: "Instructions" }) as HTMLTextAreaElement).value).toBe("Mine");
     await user.click(screen.getByRole("button", { name: "Save defaults" }));
     const alert = await screen.findByText(/changed elsewhere since you opened them/);
     expect(alert.closest("[role=alert]")!.textContent).toContain("Saved there: instructions");
-    expect(savedDefaults.read(SCOPE).p_budget.instructions).toBe("Theirs");
+    expect((await savedDefaults.read(SCOPE)).p_budget.instructions).toBe("Theirs");
     await user.click(screen.getByRole("button", { name: "Save mine over them" }));
     await screen.findByText(/Saved\./);
-    expect(savedDefaults.read(SCOPE).p_budget).toEqual({ rev: 2, instructions: "Mine" });
+    expect((await savedDefaults.read(SCOPE)).p_budget).toEqual({ rev: 2, instructions: "Mine" });
   });
 });

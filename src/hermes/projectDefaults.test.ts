@@ -5,8 +5,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { connect, type Hermes } from "./transport";
 import { catalogFromServer, type ModelPick } from "./models";
 import { FakeHermes, modelOptions } from "./fakeHermes";
-import { DEFAULTS_KEY, DEFAULTS_VERSION, DefaultsConflict, NewerDefaultsError, cleanDraft, defaultsDoc, draftProblem, windowLock, type Lock, instructionsMessage, modelProblem, resolveNewChat, toDefaults } from "./projectDefaults";
-import { PROJECTS_KEY, projectLinks, projectScope, type LinksStorage } from "./projectLinks";
+import { DEFAULTS_VERSION, DefaultsConflict, NewerDefaultsError, cleanDraft, defaultsDoc, draftProblem, storageDefaultsFile, type DefaultsFile, instructionsMessage, modelProblem, resolveNewChat, toDefaults } from "./projectDefaults";
+import { projectLinks, projectScope, type LinksStorage } from "./projectLinks";
 import { ProjectsStore } from "./projects";
 
 const CONNECTION = { mode: "ssh" as const, sshTarget: "liam@hermes", url: "", username: "liam" };
@@ -95,139 +95,177 @@ describe("what a new chat starts with", () => {
 });
 
 describe("keeping the defaults", () => {
-  const doc = (storage: LinksStorage) => defaultsDoc(() => storage);
+  /**
+   * A file shared by separate app instances, as defaults_file.rs keeps it: a read, and a compare-and-swap. `beforeSwap`
+   * runs between a writer's read and its swap, where another instance's write can land.
+   */
+  type Shared = { text: string | null; swaps: number; beforeSwap?: () => Promise<void>; file: DefaultsFile };
+  function sharedFile(initial: string | null = null): Shared {
+    const f: Shared = {
+      text: initial,
+      swaps: 0,
+      file: {
+        read: async () => f.text,
+        swap: async (expected: string | null, next: string) => {
+          const hook = f.beforeSwap;
+          f.beforeSwap = undefined;
+          await hook?.();
+          f.swaps++;
+          if (f.text !== expected) return { swapped: false, current: f.text };
+          f.text = next;
+          return { swapped: true, current: next };
+        },
+      },
+    };
+    return f;
+  }
 
-  it("saves with a revision, in their own document, and is read back after a restart", () => {
-    const storage = memoryStorage();
-    const saved = doc(storage).save(SCOPE, "p_1", 0, { instructions: " Be brief. ", model: opus, folder: "/srv/app" });
+  it("saves with a revision and is read back, by another instance too", async () => {
+    const f = sharedFile();
+    const saved = await defaultsDoc(f.file).save(SCOPE, "p_1", 0, { instructions: " Be brief. ", model: opus, folder: "/srv/app" });
     expect(saved).toEqual({ rev: 1, instructions: "Be brief.", model: opus, folder: "/srv/app" });
-    expect(JSON.parse(storage.data.get(DEFAULTS_KEY)!)).toEqual({ v: DEFAULTS_VERSION, scopes: { [SCOPE]: { p_1: saved } } });
-    expect(storage.data.has(PROJECTS_KEY)).toBe(false);
-    expect(doc(storage).read(SCOPE)).toEqual({ p_1: saved });
+    expect(JSON.parse(f.text!)).toEqual({ v: DEFAULTS_VERSION, scopes: { [SCOPE]: { p_1: saved } } });
+    expect(await defaultsDoc(f.file).read(SCOPE)).toEqual({ p_1: saved });
   });
 
-  it("refuses a save over one made meanwhile in another window, and keeps the other", () => {
-    const storage = memoryStorage();
-    const [mine, theirs] = [doc(storage), doc(storage)];
-    mine.save(SCOPE, "p_1", 0, { instructions: "First" });
-    // Both windows opened the editor at revision 1; the other saves first.
-    theirs.save(SCOPE, "p_1", 1, { instructions: "Theirs" });
-    let conflict: unknown;
-    try {
-      mine.save(SCOPE, "p_1", 1, { instructions: "Mine" });
-    } catch (e) {
-      conflict = e;
-    }
+  it("refuses a save over one made meanwhile in another instance, and keeps the other", async () => {
+    const f = sharedFile();
+    const [mine, theirs] = [defaultsDoc(f.file), defaultsDoc(f.file)];
+    await mine.save(SCOPE, "p_1", 0, { instructions: "First" });
+    await theirs.save(SCOPE, "p_1", 1, { instructions: "Theirs" });
+    const conflict = await mine.save(SCOPE, "p_1", 1, { instructions: "Mine" }).catch((e) => e);
     expect(conflict).toBeInstanceOf(DefaultsConflict);
     expect((conflict as DefaultsConflict).saved).toEqual({ rev: 2, instructions: "Theirs" });
-    expect(mine.read(SCOPE).p_1.instructions).toBe("Theirs");
     // The owner chooses to save theirs over it: over the revision now kept.
-    expect(mine.save(SCOPE, "p_1", 2, { instructions: "Mine" })).toEqual({ rev: 3, instructions: "Mine" });
+    expect(await mine.save(SCOPE, "p_1", 2, { instructions: "Mine" })).toEqual({ rev: 3, instructions: "Mine" });
   });
 
-  it("checks the revision on the same read it writes over", () => {
-    const storage = memoryStorage();
-    const d = doc(storage);
-    d.save(SCOPE, "p_1", 0, { instructions: "First" });
-    const calls: string[] = [];
-    const { getItem, setItem } = storage;
-    storage.getItem = (k) => (calls.push("read"), getItem(k));
-    storage.setItem = (k, v) => (calls.push("write"), setItem(k, v));
-    d.save(SCOPE, "p_1", 1, { instructions: "Second" });
-    expect(calls).toEqual(["read", "write"]);
+  it("can't lose a save that lands between another instance's read and its write", async () => {
+    // Both instances opened the editor at revision 1. Theirs saves after mine has read the file, before mine writes.
+    const f = sharedFile();
+    const [mine, theirs] = [defaultsDoc(f.file), defaultsDoc(f.file)];
+    await mine.save(SCOPE, "p_1", 0, { instructions: "First" });
+    f.beforeSwap = async () => void (await theirs.save(SCOPE, "p_1", 1, { instructions: "Theirs" }));
+    await expect(mine.save(SCOPE, "p_1", 1, { instructions: "Mine" })).rejects.toBeInstanceOf(DefaultsConflict);
+    expect((await mine.read(SCOPE)).p_1).toEqual({ rev: 2, instructions: "Theirs" });
   });
 
-  it("is never written by the projects' other changes, so they can't put an older copy back", () => {
+  it("keeps another project's save that lands between its read and its write", async () => {
+    const f = sharedFile();
+    const [mine, theirs] = [defaultsDoc(f.file), defaultsDoc(f.file)];
+    f.beforeSwap = async () => void (await theirs.save(SCOPE, "p_2", 0, { instructions: "Theirs" }));
+    await mine.save(SCOPE, "p_1", 0, { instructions: "Mine" });
+    expect(await mine.read(SCOPE)).toEqual({ p_1: { rev: 1, instructions: "Mine" }, p_2: { rev: 1, instructions: "Theirs" } });
+  });
+
+  it("is never written by the projects' other changes, so they can't put an older copy back", async () => {
+    const f = sharedFile();
+    await defaultsDoc(f.file).save(SCOPE, "p_1", 0, { instructions: "Keep" });
+    const before = f.text;
     const storage = memoryStorage();
-    doc(storage).save(SCOPE, "p_1", 0, { instructions: "Keep" });
-    const before = storage.data.get(DEFAULTS_KEY);
     const links = projectLinks(storage);
     links.setChat(SCOPE, "p_1", "chat", true);
     links.select(SCOPE, "p_1");
     links.remember(SCOPE, [{ id: "p_2", name: "Other", folders: [], archived: false }]);
     links.forgetProject(SCOPE, "p_2");
-    expect(storage.data.get(DEFAULTS_KEY)).toBe(before);
+    expect(f.text).toBe(before);
   });
 
-  it("removing every default keeps the revision, so the project inherits and old editors still conflict", () => {
-    const d = doc(memoryStorage());
-    d.save(SCOPE, "p_1", 0, { folder: "/srv/app" });
-    expect(d.save(SCOPE, "p_1", 1, {})).toEqual({ rev: 2 });
-    expect(() => d.save(SCOPE, "p_1", 1, { folder: "/srv/app" })).toThrow(DefaultsConflict);
+  it("removing every default keeps the revision, so the project inherits and old editors still conflict", async () => {
+    const d = defaultsDoc(sharedFile().file);
+    await d.save(SCOPE, "p_1", 0, { folder: "/srv/app" });
+    expect(await d.save(SCOPE, "p_1", 1, {})).toEqual({ rev: 2 });
+    await expect(d.save(SCOPE, "p_1", 1, { folder: "/srv/app" })).rejects.toBeInstanceOf(DefaultsConflict);
   });
 
-  it("won't change a document a newer Hermes Chat wrote, in any shape", () => {
-    const newer = JSON.stringify({ v: DEFAULTS_VERSION + 1, scopes: { [SCOPE]: { p_1: { rev: 4, instructions: "Newer", extra: 1 }, p_2: [1, 2] } }, more: true });
-    const storage = memoryStorage({ [DEFAULTS_KEY]: newer });
-    const d = doc(storage);
-    expect(d.read(SCOPE)).toEqual({ p_1: { rev: 4, instructions: "Newer" } });
-    expect(() => d.save(SCOPE, "p_1", 4, { instructions: "Older" })).toThrow(NewerDefaultsError);
-    d.prune(SCOPE, new Set());
-    expect(storage.data.get(DEFAULTS_KEY)).toBe(newer);
-  });
-
-  it("refuses an over-long draft, and a save the storage won't keep", () => {
-    const storage = memoryStorage();
-    const d = doc(storage);
-    expect(() => d.save(SCOPE, "p", 0, { instructions: "x".repeat(20_001) })).toThrow("under 20,000");
-    storage.full = true;
-    expect(() => d.save(SCOPE, "p_1", 0, { instructions: "x" })).toThrow("couldn't keep them");
-    storage.full = false;
-    expect(d.read(SCOPE)).toEqual({});
-  });
-
-  it("keeps each profile's and connection's apart", () => {
-    const d = doc(memoryStorage());
-    d.save(SCOPE, "p_1", 0, { instructions: "Default profile" });
-    expect(d.read(projectScope(CONNECTION, "work"))).toEqual({});
-    expect(d.read(projectScope({ ...CONNECTION, sshTarget: "other@host" }, "default"))).toEqual({});
-  });
-
-  it("forgets a project's defaults when Hermes no longer has it, and keeps the others'", () => {
-    const d = doc(memoryStorage());
-    d.save(SCOPE, "p_1", 0, { instructions: "Gone" });
-    d.save(SCOPE, "p_2", 0, { instructions: "Kept" });
-    d.save(projectScope(CONNECTION, "work"), "p_1", 0, { instructions: "Other profile" });
-    d.prune(SCOPE, new Set(["p_2"]));
-    expect(d.read(SCOPE)).toEqual({ p_2: { rev: 1, instructions: "Kept" } });
-    expect(d.read(projectScope(CONNECTION, "work")).p_1.instructions).toBe("Other profile");
-  });
-
-  it("saves one window at a time, under a lock every window shares", async () => {
-    const storage = memoryStorage();
-    // A lock as the Web Locks API holds it: one holder at a time, in order.
-    let queue = Promise.resolve();
-    const held: string[] = [];
-    const lock: Lock = (name, run) => {
-      const next = queue.then(() => {
-        held.push(name);
-        return run();
-      });
-      queue = next.then(() => {}, () => {});
-      return next;
-    };
-    const store = (links = projectLinks(storage)) => new ProjectsStore({} as never, links, SCOPE, "default", doc(storage), lock);
-    const results = await Promise.allSettled([store().saveDefaults("p_1", 0, { instructions: "A" }), store().saveDefaults("p_1", 0, { instructions: "B" })]);
-    expect(results.map((r) => r.status)).toEqual(["fulfilled", "rejected"]);
-    expect((results[1] as PromiseRejectedResult).reason).toBeInstanceOf(DefaultsConflict);
-    expect(held).toEqual([DEFAULTS_KEY, DEFAULTS_KEY]);
-    expect(doc(storage).read(SCOPE).p_1).toEqual({ rev: 1, instructions: "A" });
-  });
-
-  it("refuses to save where the web engine has no Web Locks, and uses them where it has", async () => {
-    const nav = globalThis.navigator as { locks?: unknown };
-    const had = Object.getOwnPropertyDescriptor(nav, "locks");
-    try {
-      Object.defineProperty(nav, "locks", { value: undefined, configurable: true });
-      await expect(windowLock("x", () => 1)).rejects.toThrow("can't keep two Hermes Chat windows from saving over each other");
-      const names: string[] = [];
-      Object.defineProperty(nav, "locks", { value: { request: (name: string, cb: () => unknown) => (names.push(name), Promise.resolve(cb())) }, configurable: true });
-      await expect(windowLock("hermes-chat.project-defaults", () => 2)).resolves.toBe(2);
-      expect(names).toEqual(["hermes-chat.project-defaults"]);
-    } finally {
-      if (had) Object.defineProperty(nav, "locks", had);
-      else delete nav.locks;
+  it("won't change a document a newer Hermes Chat wrote, in any shape", async () => {
+    for (const scopes of [{ [SCOPE]: { p_1: { rev: 4, instructions: "Newer", extra: 1 } } }, [1, 2], "x", null]) {
+      const newer = JSON.stringify({ v: DEFAULTS_VERSION + 1, scopes, more: true });
+      const f = sharedFile(newer);
+      const d = defaultsDoc(f.file);
+      await expect(d.save(SCOPE, "p_1", 4, { instructions: "Older" })).rejects.toBeInstanceOf(NewerDefaultsError);
+      await d.forget(SCOPE, "p_1");
+      expect(f.text).toBe(newer);
+      expect(f.swaps).toBe(0);
     }
+    expect(await defaultsDoc(sharedFile(JSON.stringify({ v: 2, scopes: { [SCOPE]: { p_1: { rev: 4, instructions: "Newer", extra: 1 } } } })).file).read(SCOPE)).toEqual({
+      p_1: { rev: 4, instructions: "Newer" },
+    });
+  });
+
+  it("refuses an over-long draft, and says when the file can't be written", async () => {
+    const f = sharedFile();
+    const d = defaultsDoc(f.file);
+    await expect(d.save(SCOPE, "p", 0, { instructions: "x".repeat(20_001) })).rejects.toThrow("under 20,000");
+    const broken = defaultsDoc({ read: async () => null, swap: async () => Promise.reject(new Error("Read-only file system")) });
+    await expect(broken.save(SCOPE, "p_1", 0, { instructions: "x" })).rejects.toThrow("couldn't keep them: Read-only file system");
+    expect(f.text).toBeNull();
+  });
+
+  it("keeps each profile's and connection's apart", async () => {
+    const d = defaultsDoc(sharedFile().file);
+    await d.save(SCOPE, "p_1", 0, { instructions: "Default profile" });
+    expect(await d.read(projectScope(CONNECTION, "work"))).toEqual({});
+    expect(await d.read(projectScope({ ...CONNECTION, sshTarget: "other@host" }, "default"))).toEqual({});
+  });
+
+  it("forgets only the project it is told is gone", async () => {
+    const d = defaultsDoc(sharedFile().file);
+    await d.save(SCOPE, "p_1", 0, { instructions: "Gone" });
+    await d.save(SCOPE, "p_2", 0, { instructions: "Kept" });
+    await d.save(projectScope(CONNECTION, "work"), "p_1", 0, { instructions: "Other profile" });
+    await d.forget(SCOPE, "p_1");
+    expect(await d.read(SCOPE)).toEqual({ p_2: { rev: 1, instructions: "Kept" } });
+    expect((await d.read(projectScope(CONNECTION, "work"))).p_1.instructions).toBe("Other profile");
+  });
+
+  it("keeps a project's defaults when a project list older than their save leaves it out", async () => {
+    // Another window made the project and saved its defaults after this one asked Hermes for the list.
+    const f = sharedFile();
+    const s = new FakeHermes();
+    s.projects.default = [];
+    const listed = s.handlers["projects.list"];
+    let answer!: () => void;
+    s.handlers["projects.list"] = (r) => void (answer = () => listed(r));
+    const hermes = await connect(s.openPipe);
+    try {
+      const store = new ProjectsStore(hermes.projects, projectLinks(memoryStorage()), SCOPE, "default", defaultsDoc(f.file));
+      const loading = store.load();
+      await new Promise((r) => setTimeout(r, 0));
+      await defaultsDoc(f.file).save(SCOPE, "p_new", 0, { instructions: "Saved meanwhile" });
+      answer();
+      await loading;
+      await store.readDefaults();
+      expect((await defaultsDoc(f.file).read(SCOPE)).p_new).toEqual({ rev: 1, instructions: "Saved meanwhile" });
+    } finally {
+      await hermes.close();
+    }
+  });
+
+  it("forgets a project's defaults once it is deleted here", async () => {
+    const f = sharedFile();
+    const s = new FakeHermes();
+    s.projects.default = [{ id: "p_1", slug: "p", name: "P", primary_path: null, archived: false, created_at: 1, folders: [] }];
+    const hermes = await connect(s.openPipe);
+    try {
+      const store = new ProjectsStore(hermes.projects, projectLinks(memoryStorage()), SCOPE, "default", defaultsDoc(f.file));
+      await store.load();
+      await store.saveDefaults("p_1", 0, { instructions: "x" });
+      expect(store.getSnapshot().defaults.p_1).toEqual({ rev: 1, instructions: "x" });
+      await store.delete("p_1");
+      await new Promise((r) => setTimeout(r, 0));
+      expect(await defaultsDoc(f.file).read(SCOPE)).toEqual({});
+    } finally {
+      await hermes.close();
+    }
+  });
+
+  it("uses the localStorage stand-in outside the app, with the same swap", async () => {
+    const storage = memoryStorage();
+    const file = storageDefaultsFile(() => storage);
+    expect(await file.swap(null, "a")).toEqual({ swapped: true, current: "a" });
+    expect(await file.swap(null, "b")).toEqual({ swapped: false, current: "a" });
+    expect(storage.data.get("hermes-chat.project-defaults")).toBe("a");
   });
 });
 

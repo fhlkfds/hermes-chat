@@ -4,7 +4,7 @@
 import { useState } from "react";
 import { EFFORT_LABEL, shortName, type ModelPick } from "../hermes/models";
 import type { NewChatSettings, Origin, ProjectDefaults } from "../hermes/projectDefaults";
-import { composing } from "./bits";
+import { composing, useReturnFocus } from "./bits";
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -91,6 +91,8 @@ export function ApplyDefaults({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  // Closing it, however, puts focus back on the button that opened it.
+  useReturnFocus();
   const d = defaults.model;
   const already = !!d && current?.provider === d.provider && current.model === d.model && (!d.effort || current.effort === d.effort);
   const model = d && !already ? d : undefined;
