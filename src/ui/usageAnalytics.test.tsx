@@ -116,8 +116,11 @@ describe("Usage in the app", () => {
     await user.selectOptions(screen.getByRole("combobox", { name: "Profile" }), "All profiles");
     await waitFor(() => expect(screen.getByRole("status").textContent).toMatch(/partly/));
     expect(screen.getByRole("alert").textContent).toMatch(/These totals are partial.*Couldn't read the work profile.*503/s);
-    // A total that is short says so.
+    // A total that is short says so, the cost too.
     expect(tile("Chats")).toBe("4+");
+    const cost = screen.getByRole("region", { name: "Recorded cost" });
+    expect(cost.querySelector(".usage-cost-big")!.textContent).toMatch(/\+$/);
+    expect(cost.textContent).toMatch(/of the tokens read in full/);
   });
 
   it("shows Hermes's own sums and helper tasks for a period with no chats, only subagent runs", async () => {

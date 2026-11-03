@@ -140,6 +140,7 @@ export function UsageAnalytics({ io, profile, listProfiles, projects, projectCha
     const ac = new AbortController();
     setRead({ state: "loading" });
     setDrill(undefined);
+    setExportNote(undefined);
     collectUsage(io, profiles, period, { signal: ac.signal, onProgress: (progress) => !ac.signal.aborted && setRead({ state: "loading", progress }), now }).then(
       (data) => !ac.signal.aborted && setRead({ state: "done", data }),
       (e) => !ac.signal.aborted && !(e instanceof StaleRead) && setRead({ state: "error", error: messageOf(e) }),
@@ -376,7 +377,7 @@ export function UsageAnalytics({ io, profile, listProfiles, projects, projectCha
         ) : data ? (
           <>
             <TotalsTiles totals={totals} partial={partial} />
-            <CostCard totals={totals} />
+            <CostCard totals={totals} partial={partial} />
             {!drill ? (
               <section className="usage-section" aria-labelledby="usage-breakdown">
                 <div className="usage-section-head">
@@ -502,20 +503,26 @@ function TotalsTiles({ totals, partial }: { totals: Totals; partial: boolean }) 
 }
 
 /** The recorded cost, how much of the usage it covers, and by which kind. Never shown as a bill. */
-function CostCard({ totals }: { totals: Totals }) {
+function CostCard({ totals, partial }: { totals: Totals; partial: boolean }) {
   const t = totals.cost;
   const label = tallyLabel(t);
+  // A profile that couldn't be read, or chats past the page limit, are missing from the cost too.
+  const short = partial && /\d/.test(label.short) && !label.short.endsWith("+") ? `${label.short}+` : label.short;
+  const read = t.incomplete || partial ? " read" : "";
   const kinds = COST_KINDS.filter((k) => t.kinds[k].tokens > 0 || t.kinds[k].chats > 0);
   return (
     <section className="usage-section" aria-labelledby="usage-cost">
       <h2 id="usage-cost">Recorded cost</h2>
       <div className="usage-cost-head">
-        <span className="usage-cost-big">{label.short}</span>
+        <span className="usage-cost-big">{short}</span>
         <span className="usage-cost-cover">
-          {t.tokens ? `covers ${pct(coverage(t))} of the tokens${t.incomplete ? " read" : ""} in full` : "no model calls"} · not a bill
+          {t.tokens ? `covers ${pct(coverage(t))} of the tokens${read} in full` : "no model calls"} · not a bill
         </span>
       </div>
-      <p className="usage-note">{label.detail}</p>
+      <p className="usage-note">
+        {label.detail}
+        {partial && " Some of the usage couldn't be read (see above), so its cost isn't here either."}
+      </p>
       {t.tokens > 0 && (
         <>
           <div className="usage-bar" role="img" aria-label={kinds.map((k) => `${COST_KIND_LABEL[k]}: ${pct(t.kinds[k].tokens / t.tokens)} of tokens`).join(", ")}>
@@ -530,8 +537,8 @@ function CostCard({ totals }: { totals: Totals }) {
               ) : null,
             )}
           </div>
-          <div className="usage-table-wrap">
-            <table className="usage-table usage-cost-table">
+          <div className="ua-table-wrap">
+            <table className="ua-table usage-cost-table">
               <thead>
                 <tr>
                   <th scope="col">How Hermes got the cost</th>
@@ -587,8 +594,8 @@ const cell = (t: Totals, field: CountField) => (
 
 function GroupTable({ groups, total, sort, onSort, dim, onDrill }: { groups: Group[]; total: number; sort: Sort; onSort: (s: Sort) => void; dim: Dimension; onDrill: (g: Group) => void }) {
   return (
-    <div className="usage-table-wrap">
-      <table className="usage-table">
+    <div className="ua-table-wrap">
+      <table className="ua-table">
         <thead>
           <tr>
             <SortHeader col="label" sort={sort} onSort={onSort}>
@@ -636,8 +643,8 @@ function GroupTable({ groups, total, sort, onSort, dim, onDrill }: { groups: Gro
 
 function ChatTable({ chats, sort, onSort, zone, shownProfile, onOpen }: { chats: UsageChat[]; sort: Sort; onSort: (s: Sort) => void; zone: string; shownProfile: string; onOpen: (c: UsageChat) => void }) {
   return (
-    <div className="usage-table-wrap">
-      <table className="usage-table usage-chats">
+    <div className="ua-table-wrap">
+      <table className="ua-table usage-chats">
         <thead>
           <tr>
             <SortHeader col="label" sort={sort} onSort={onSort}>
@@ -737,8 +744,8 @@ function HermesTotalsCard({ data, filtered }: { data: UsageDataset; filtered: bo
         {filtered && " The project and model picked don't apply to Hermes's figures; they compare with all the chats read."}
       </p>
       {checks.length > 0 && (
-        <div className="usage-table-wrap">
-          <table className="usage-table">
+        <div className="ua-table-wrap">
+          <table className="ua-table">
             <thead>
               <tr>
                 <th scope="col">Profile</th>
@@ -802,8 +809,8 @@ function HermesTotalsCard({ data, filtered }: { data: UsageDataset; filtered: bo
             Hermes's own work around chats, such as titling, compression and background review. It is in no chat's usage and can't be filtered by project
             or model; Hermes estimates its cost.
           </p>
-          <div className="usage-table-wrap">
-            <table className="usage-table">
+          <div className="ua-table-wrap">
+            <table className="ua-table">
               <thead>
                 <tr>
                   <th scope="col">Task</th>
