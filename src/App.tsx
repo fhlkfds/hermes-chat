@@ -35,6 +35,8 @@ import { inboxAcks, inboxEntries, inboxScope, needsOwner, type InboxEntry } from
 import { ChatPane, type JumpTarget } from "./ui/ChatPane";
 import { BranchDialog, BranchedFrom } from "./ui/Branch";
 import { branchBlocked, type BranchLink } from "./hermes/branch";
+import { replayBlocked, type ReplayKind } from "./hermes/replay";
+import { ReplayDialog, type ReplayHost, type ReplayRef } from "./ui/Replay";
 import type { QueueApi } from "./ui/Queue";
 import { PANE_NAMES, Split, usePaneVisible, type PaneSlot } from "./ui/Split";
 import type { VoiceApi } from "./ui/Voice";
@@ -1848,6 +1850,48 @@ function ChatView({
   const link = useSyncExternalStore(hermes.subscribe, () => hermes.getSnapshot().branches.links[chat.id]);
   const parentListed = useSyncExternalStore(hermes.subscribe, () => !!link && hermes.getSnapshot().chats.some((c) => c.id === link.parentId));
 
+  // Edit and Regenerate (ADR 0032): the message the dialog is open for, if any, and the branches made from this chat's
+  // messages by either, by the owner's message's stored row.
+  const [replayFor, setReplayFor] = useState<{ itemId: string; kind: ReplayKind }>();
+  const [freshAnswer, setFreshAnswer] = useState<string>();
+  useEffect(() => {
+    setReplayFor(undefined);
+    setFreshAnswer(undefined);
+  }, [chatId, profile]);
+  const links = useSyncExternalStore(hermes.subscribe, () => hermes.getSnapshot().branches.links);
+  const allChats = useSyncExternalStore(hermes.subscribe, () => hermes.getSnapshot().chats);
+  const cannotBranch = useSyncExternalStore(hermes.subscribe, () => hermes.getSnapshot().cannotBranch);
+  const replays = useMemo(() => {
+    const variants = new Map<number, ReplayRef[]>();
+    const edits = new Map<number, ReplayRef[]>();
+    const sorted = Object.entries(links).sort(([, a], [, b]) => a.at - b.at);
+    for (const [id, l] of sorted) {
+      if (l.parentId !== chat.id || !l.replay) continue;
+      const listed = allChats.find((c) => c.id === id);
+      // A branch Hermes no longer lists is left out; deleting it here forgets its link.
+      if (!listed) continue;
+      const ref: ReplayRef = { chatId: id, title: listed.title, running: !!listed.running, link: { ...l, replay: l.replay } };
+      const into = l.replay.kind === "edit" ? edits : variants;
+      into.set(l.replay.sourceRowId, [...(into.get(l.replay.sourceRowId) ?? []), ref]);
+    }
+    return { variants, edits };
+  }, [links, allChats, chat.id]);
+  const replayBlock = replayBlocked(chat, status === "connected", cannotBranch);
+  // Stable but for `blocked`, so another answer is read again only when its branch changes.
+  const openRef = useRef(onOpenChat);
+  openRef.current = onOpenChat;
+  const readVariant = useCallback((id: string) => hermes.readVariant(id), [hermes]);
+  const replayHost = useMemo<ReplayHost>(
+    () => ({
+      blocked: replayBlock,
+      fresh: freshAnswer,
+      act: (itemId, kind) => setReplayFor({ itemId, kind }),
+      read: readVariant,
+      open: (id) => openRef.current(id),
+    }),
+    [replayBlock, freshAnswer, readVariant],
+  );
+
   // Slash commands (commands.ts). Each empties the Draft it was typed in only once it has run, only if the owner hasn't
   // changed it meanwhile, and only while the composer it was typed in is still on the chat (`still`). An answer after
   // that does nothing: its Draft stays as typed. One command at a time per Draft, so two panes on one chat can't run it
@@ -1995,6 +2039,7 @@ function ChatView({
       queueApi={queueApi}
       branch={started ? { blocked: branchBlocked(chat, status === "connected"), onBranch: setBranchFrom } : undefined}
       branchedFrom={link && <BranchedFrom link={link} parentListed={parentListed} onOpen={() => onShowAt(link)} />}
+      replay={started ? { host: replayHost, ...replays } : undefined}
       footer={
         <StatusBar
           chat={chat}
@@ -2031,6 +2076,24 @@ function ChatView({
           // The branch opens here; this chat, and its Draft, stay as they were.
           onOpenChat(id);
           if (warnings.length) onToast(`Branch made. ${warnings.join(" ")}`);
+        }}
+      />
+    )}
+    {replayFor && (
+      <ReplayDialog
+        key={`${chat.id}/${replayFor.kind}/${replayFor.itemId}`}
+        kind={replayFor.kind}
+        api={{ preview: () => hermes.previewReplay(chat.id, replayFor.itemId, replayFor.kind), make: (p, text) => hermes.replay(p, text) }}
+        onClose={() => setReplayFor(undefined)}
+        done={({ chatId: id, warnings, delivery }) => {
+          setReplayFor(undefined);
+          if (!stillIn()) return;
+          const notes = [...warnings, ...(delivery.delivery === "accepted" ? [] : [`Hermes didn't take the message in the branch: ${delivery.reason}`])];
+          // An edit is continued in its branch, which opens here; another answer shows under the reply. This chat, and
+          // its Draft, stay as they were.
+          if (replayFor.kind === "edit" || delivery.delivery !== "accepted") onOpenChat(id);
+          else setFreshAnswer(id);
+          if (notes.length) onToast(`Branch made. ${notes.join(" ")}`);
         }}
       />
     )}

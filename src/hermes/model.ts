@@ -29,12 +29,16 @@ export type AttachCheck = { attachments: Attachment[]; refused: string[] };
  * closed, before Hermes answered, so Hermes may have it; the next read of the chat's history settles it. `reason`:
  * why, for `failed` and `unknown`. `attachments`: the files sent with it, so Retry sends them again. `sent`: set as it
  * goes out, to find it in the history: the prompt as sent, and the newest stored row the chat had then (`after`).
+ * `cut`: the message replaces the stored row `rowId` and everything after it, in a branch made by Edit or Regenerate
+ * (ADR 0032); `prompt` is what goes, `@file:` refs included, and `empty` says nothing is left before it. Retry sends
+ * it the same way.
  */
 export type Outgoing = {
   state: "sending" | "failed" | "unknown";
   reason?: string;
   attachments?: Attachment[];
   sent?: { prompt: string; after?: number };
+  cut?: { rowId: number; prompt: string; empty?: boolean };
 };
 
 export type Item =

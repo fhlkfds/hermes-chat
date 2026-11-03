@@ -24,6 +24,7 @@ import { previewName, toolTargets, withoutBidi } from "../hermes/preview";
 import { type CommandHost, useSlashCommands } from "./SlashCommands";
 import { Templates, type TemplateHere } from "./Templates";
 import { BranchButton } from "./Branch";
+import { EditedIn, ReplayButton, ReplayContext, Variants, type ReplayHost, type ReplayRef } from "./Replay";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type ThinkingItem = Extract<Item, { kind: "thinking" }>;
@@ -110,7 +111,9 @@ const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateS
  * `voice` supplies Dictation and Read aloud. `commands` runs the slash commands typed in the composer. `queue` is the
  * chat's queue of messages waiting to go after its reply, and `queueApi` changes it; it is left out for a chat not
  * started yet, which can't queue. `branch` offers Branch from here under each message with text (ADR 0027): `blocked`
- * says why none can be made now. `branchedFrom` is shown at the top of a branch, where it came from.
+ * says why none can be made now. `branchedFrom` is shown at the top of a branch, where it came from. `replay` offers
+ * Edit under the owner's messages and Regenerate under the last reply of each turn (ADR 0032), and shows the other
+ * answers a reply has (`variants`) and the branches a message was edited in (`edits`), by the message's stored row.
  */
 export function ChatPane({
   chat,
@@ -152,6 +155,7 @@ export function ChatPane({
   templates,
   branch,
   branchedFrom,
+  replay,
 }: {
   chat: Chat;
   notLoaded?: boolean;
@@ -198,6 +202,7 @@ export function ChatPane({
   templates?: TemplateHere;
   branch?: { blocked?: string; onBranch: (itemId: string) => void };
   branchedFrom?: ReactNode;
+  replay?: { host: ReplayHost; variants: Map<number, ReplayRef[]>; edits: Map<number, ReplayRef[]> };
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -370,6 +375,22 @@ export function ChatPane({
 
   // Rebuilt only when the chat changes, so a reply streaming in the other pane costs this one little.
   const blocks = useMemo(() => toBlocks(chat.items), [chat.items]);
+  // The last reply of each turn, and the owner's message it answers: Regenerate goes under it (ADR 0032).
+  const turnEnds = useMemo(() => {
+    const ends = new Map<string, Extract<Block, { kind: "user" }>>();
+    let source: Extract<Block, { kind: "user" }> | undefined;
+    let reply: string | undefined;
+    const end = () => reply && source && !source.outgoing && ends.set(reply, source);
+    for (const b of blocks) {
+      if (b.kind === "user") {
+        end();
+        source = b;
+        reply = undefined;
+      } else if (b.kind === "assistant" && b.text.trim()) reply = b.id;
+    }
+    end();
+    return ends;
+  }, [blocks]);
   // Cards ignore clicks for a moment after the transcript changes, since it may have moved them under the pointer.
   const movedAt = useMemo(() => performance.now(), [chat.items]);
   const last = chat.items[chat.items.length - 1];
@@ -465,6 +486,7 @@ export function ChatPane({
         }}
       >
         <JumpContext.Provider value={jumpTo}>
+        <ReplayContext.Provider value={replay?.host}>
         <div className="transcript-inner">
           {chat.source !== "app" && (
             <div className="imported-note">
@@ -512,6 +534,10 @@ export function ChatPane({
               onOutgoing={onOutgoing}
               onBranch={branch && (b.kind === "user" || b.kind === "assistant") ? onBranch : undefined}
               branchBlocked={branch && (b.kind === "user" || b.kind === "assistant") ? branch.blocked : undefined}
+              editable={!!replay && b.kind === "user" && !b.outgoing}
+              regenerate={!!replay && turnEnds.has(b.id)}
+              variants={replay && b.kind === "assistant" ? replay.variants.get(turnEnds.get(b.id)?.rowId ?? -1) : undefined}
+              edits={replay && b.kind === "user" && b.rowId !== undefined ? replay.edits.get(b.rowId) : undefined}
             />
           ))}
           {/* A reply waiting on the owner isn't thinking, and streamed thinking shows its own row. */}
@@ -523,6 +549,7 @@ export function ChatPane({
             </div>
           )}
         </div>
+        </ReplayContext.Provider>
         </JumpContext.Provider>
       </div>
 
@@ -588,6 +615,10 @@ const BlockView = memo(
     onOutgoing,
     onBranch,
     branchBlocked,
+    editable,
+    regenerate,
+    variants,
+    edits,
   }: {
     block: Block;
     live: boolean;
@@ -600,6 +631,11 @@ const BlockView = memo(
     onOutgoing: (itemId: string, action: OutgoingAction) => void;
     onBranch?: (itemId: string) => void;
     branchBlocked?: string;
+    /** Edit under an owner's message, Regenerate under the last reply of a turn (ADR 0032). */
+    editable?: boolean;
+    regenerate?: boolean;
+    variants?: ReplayRef[];
+    edits?: ReplayRef[];
   }) {
     if (block.kind === "user")
       return (
@@ -619,25 +655,34 @@ const BlockView = memo(
           {isOutgoing(block) && block.outgoing.state !== "sending" && (
             <SendFailed item={block} canRetry={canRetry} act={(action) => onOutgoing(block.id, action)} />
           )}
-          {onBranch && !block.outgoing && block.text.trim() && (
+          {(onBranch || editable) && !block.outgoing && block.text.trim() && (
             <div className="msg-actions">
-              <BranchButton blocked={branchBlocked} onBranch={() => onBranch(block.id)} />
+              {editable && <ReplayButton itemId={block.id} kind="edit" />}
+              {onBranch && <BranchButton blocked={branchBlocked} onBranch={() => onBranch(block.id)} />}
             </div>
           )}
+          {edits && edits.length > 0 && <EditedIn edits={edits} />}
         </div>
       );
     if (block.kind === "assistant")
       return (
         <div className="msg assistant" data-item={block.id} data-at={block.at}>
-          <Markdown text={block.text} query={query} />
+          {variants?.length && !live ? (
+            <Variants variants={variants} originalModel={block.usage?.model}>
+              <Markdown text={block.text} query={query} />
+            </Variants>
+          ) : (
+            <Markdown text={block.text} query={query} />
+          )}
           {live && <span className="cursor" />}
           {block.interrupted && <div className="stopped">Stopped</div>}
-          {!live && block.text.trim() && (listen || onBranch) && (
+          {!live && block.text.trim() && (listen || onBranch || regenerate) && (
             <div className="msg-actions-row">
               {listen && <ListenButton speaker={listen.speaker} itemId={block.id} text={block.text} blocked={listen.blocked} />}
-              {onBranch && (
+              {(onBranch || regenerate) && (
                 <div className="msg-actions">
-                  <BranchButton blocked={branchBlocked} onBranch={() => onBranch(block.id)} />
+                  {regenerate && <ReplayButton itemId={block.id} kind="regenerate" />}
+                  {onBranch && <BranchButton blocked={branchBlocked} onBranch={() => onBranch(block.id)} />}
                 </div>
               )}
             </div>
@@ -670,7 +715,11 @@ const BlockView = memo(
     a.canRetry === b.canRetry &&
     a.onOutgoing === b.onOutgoing &&
     a.onBranch === b.onBranch &&
-    a.branchBlocked === b.branchBlocked,
+    a.branchBlocked === b.branchBlocked &&
+    a.editable === b.editable &&
+    a.regenerate === b.regenerate &&
+    a.variants === b.variants &&
+    a.edits === b.edits,
 );
 
 /**

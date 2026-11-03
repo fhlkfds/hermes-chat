@@ -1997,3 +1997,27 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
   .usage-status-actions { margin-left: 0; }
   .usage-filters select, .usage-filters input { max-width: 100%; }
 }
+
+/* ---------- Edit and Regenerate (Replay.tsx, ADR 0032) ---------- */
+.replay-text {
+  width: 100%; box-sizing: border-box; resize: vertical; min-height: 64px; max-height: 40vh; padding: 8px 10px; border-radius: 8px;
+  background: var(--code-bg); border: 1px solid var(--line-2); color: var(--text); outline: none; font: inherit; font-size: calc(13.5rem / 14); line-height: 1.5;
+}
+.replay-text:focus { border-color: var(--line-3); }
+.replay-later li:last-child { color: var(--text-2); }
+.replay-dialog .branch-warning span { min-width: 0; }
+.edited-in {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 4px; font-size: calc(12rem / 14); color: var(--muted);
+  justify-content: flex-end;
+}
+.edited-in .link-btn { display: inline; font-size: inherit; }
+.variants { display: flex; flex-direction: column; gap: 6px; }
+.variant-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; font-size: calc(12rem / 14); color: var(--muted); }
+.variant-step { width: 24px; height: 24px; }
+.variant-step:disabled { opacity: 0.35; cursor: default; }
+.variant-count { font-variant-numeric: tabular-nums; color: var(--text-2); min-width: 7.5em; text-align: center; }
+.variant-meta { min-width: 0; overflow-wrap: anywhere; }
+.variant-meta .link-btn { display: inline; font-size: inherit; }
+.variant-body { border-left: 2px solid var(--line-3); padding-left: 10px; }
+.variant-status { display: flex; align-items: center; gap: 6px; margin: 0; }
+.variant-model { margin: 4px 0 0; overflow-wrap: anywhere; }

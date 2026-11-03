@@ -538,9 +538,25 @@ export class FakeHermes {
         this.store(created.profile)?.push(stored);
       }
       const stored = this.runtime.get(runtimeId);
+      // A rewind (`_truncate_history_for_submit` in `tui_gateway/methods_prompt.py` at the deployed `bf0203a`): the
+      // message replaces the user row `truncate_before_row_id` and everything after it, which Hermes keeps archived
+      // (`active = 0`), so neither the history nor the stored rows list them. Probed live on 2026-11-03.
+      let survivors: Record<string, unknown> = {};
+      if (r.params.truncate_before_row_id !== undefined && !this.ignoresCut && stored) {
+        if (r.params.confirm_truncate !== true)
+          return this.fail(r.id, 4029, "truncation parameters require confirm_truncate=true; an ordinary prompt.submit must not drop session history");
+        const history = this.transcripts[stored] ?? [];
+        const at = history.findIndex((m) => m.row_id === r.params.truncate_before_row_id && m.role === "user");
+        if (at < 0) return this.fail(r.id, 4018, "message not found — the transcript changed; resync and retry");
+        if (at === 0 && r.params.confirm_empty_truncate !== true)
+          return this.fail(r.id, 4028, "truncation would erase the entire session transcript; resubmit with confirm_empty_truncate=true if this is intended");
+        this.archived.push(...history.slice(at).map((m) => ({ ...m, session: stored })));
+        this.transcripts[stored] = history.slice(0, at);
+        survivors = { survivor_user_row_ids: history.slice(0, at).filter((m) => m.role === "user").map((m) => m.row_id) };
+      }
       if (stored) this.storeMessage(stored, { role: "user", text: String(r.params.text), row_id: this.userRowId });
       if (drop === "stored") return this.drop();
-      this.respond(r.id, { status: "streaming", ...(this.userRowId !== undefined && { user_row_id: this.userRowId }) });
+      this.respond(r.id, { status: "streaming", ...(this.userRowId !== undefined && { user_row_id: this.userRowId }), ...survivors });
     },
     // Attachments stage server-side for the session's next turn (research doc §7; `tui_gateway/methods_prompt.py`
     // at the deployed `bf0203a`). Images join `attached_images`; other files land in the session's
@@ -1000,6 +1016,10 @@ export class FakeHermes {
   private resumed = 0;
   /** False: a server older than `session.branch`, which answers it "method not found". */
   branchMethod = true;
+  /** True: a server whose `prompt.submit` ignores `truncate_before_row_id`, and adds the message after the others. */
+  ignoresCut = false;
+  /** Rows a rewind replaced: Hermes keeps them archived, out of the history and the stored rows. */
+  archived: (TranscriptMessage & { session: string })[] = [];
   /** The next `session.branch` drops the connection before Hermes answers: `stored` made the branch first, `lost` never arrived. */
   dropOnBranch?: "stored" | "lost";
   /** While set, `session.branch` fails with this error. `stored`: Hermes stored the branch first, as when its agent can't be built. */

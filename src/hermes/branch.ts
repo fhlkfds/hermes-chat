@@ -9,6 +9,7 @@
 // live on 2026-11-03 against a throwaway HERMES_HOME (docs/research/hermes-gateway-api.md, "Branching").
 import type { Chat, Item } from "./model";
 import type { ModelPick } from "./models";
+import type { ReplayInfo } from "./replay";
 
 /** A stored row of dashboard REST `GET /api/sessions/{id}/messages`, as far as branching reads it. */
 export type StoredBranchRow = { id: number; role?: string; content?: unknown; display_kind?: unknown };
@@ -21,9 +22,9 @@ export type BranchPoint = { role: "user" | "assistant"; excerpt: string; rowId?:
 
 /**
  * A branch this app made, kept on this computer per connection and profile (Hermes keeps only the parent's id). `at`:
- * when it was made, Unix ms.
+ * when it was made, Unix ms. `replay`: made by Edit or Regenerate of the owner's message `point` (ADR 0032).
  */
-export type BranchLink = { parentId: string; parentTitle: string; point: BranchPoint; at: number };
+export type BranchLink = { parentId: string; parentTitle: string; point: BranchPoint; at: number; replay?: ReplayInfo };
 
 /**
  * A branch asked of Hermes whose answer hasn't come back. `key` is the idempotency key it went with, so asking again
@@ -42,6 +43,8 @@ export type BranchAttempt = {
   startedAt: number;
   title?: string;
   model?: ModelPick;
+  /** Made for Edit or Regenerate (ADR 0032): kept with the branch's link. */
+  replay?: ReplayInfo;
 };
 
 /** What this computer keeps about branches for one connection and profile. */
