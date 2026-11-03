@@ -4,7 +4,7 @@
 // SOUL.md on Hermes (PersonaSettings.tsx). Memory: what Hermes remembers for the profile (MemorySettings.tsx).
 // Profiles are switched in the list's header, not here (ADR 0001).
 import { useEffect, useState } from "react";
-import { ArrowLeft, Brain, Cpu, Download, KeyRound, Lock, LogOut, Palette, Settings2, ShieldCheck, Sparkles, Trash2 } from "lucide-react";
+import { ArrowLeft, Brain, Cpu, Download, KeyRound, Lock, LogOut, Palette, PlugZap, Settings2, ShieldCheck, Sparkles, Trash2 } from "lucide-react";
 import type { Chat, ConnectionStatus } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
 import { TRANSCRIPT_LIMIT_BYTES } from "../hermes/chatCache";
@@ -71,6 +71,7 @@ export function SettingsScreen({
   onClearCache,
   onPullOlder,
   onSignOut,
+  onSetUp,
   onClose,
   voiceSetup,
   persona,
@@ -109,6 +110,8 @@ export function SettingsScreen({
   /** Resolves to the older chats added. */
   onPullOlder: () => Promise<Chat[]>;
   onSignOut: () => Promise<void>;
+  /** Opens setup again, to change the connection or give Hermes a model provider's key. */
+  onSetUp?: () => void;
   onClose: () => void;
   /** The shown profile's voice set-up, for the Voice section. */
   voiceSetup?: () => Promise<VoiceSetup>;
@@ -249,6 +252,17 @@ export function SettingsScreen({
                 Signing out deletes the saved password from the keyring. You type it again at the next sign-in.
                 {headers.length > 0 && headersSaved && " The extra request headers stay saved, to change or remove on the sign-in screen."}
               </p>
+              {onSetUp && (
+                <div className="settings-row settings-setup">
+                  <div className="muted small">
+                    Connect to another server, or give Hermes a model provider's API key. The connection in use stays until a new one is tested and
+                    saved.
+                  </div>
+                  <button className="btn" onClick={onSetUp}>
+                    <PlugZap size={14} /> Run setup again
+                  </button>
+                </div>
+              )}
             </section>
 
             <StartupSettings />

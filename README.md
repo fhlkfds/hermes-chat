@@ -273,6 +273,12 @@ These rely on Hermes's legacy `session.create` taking `cwd`, `cwd_explicit`, `mo
 
 <img src="docs/screenshots/readme/sign-in.png" width="420" alt="The sign-in screen in URL mode, with an extra request header whose value is masked">
 
+### Setup
+
+On a computer with nothing saved, the app opens **Setup** instead of the sign-in screen (ADR 0009). It asks for the server, then the dashboard username and password, and tests the connection before saving anything. The test opens the tunnel or resolves the URL, reads `/api/status`, signs in, and opens the chat connection. If a step fails, Setup says which one and what to fix. **Save and connect** then signs in for real, as below. Setup can also give Hermes a model provider's API key: the provider checks it first, and Hermes keeps it in the profile's `.env` on the server. The app never stores it. Account providers, such as Nous Portal, are set up on the server.
+
+To open Setup again, use **Settings → General → Run setup again**, or **Set up a different server…** on the sign-in screen. The connection in use carries on until a new one is tested and saved. A computer that already has a saved sign-in never sees Setup on its own.
+
 ### SSH
 
 Choose **SSH** and enter an SSH target, such as `me@hermes` or a `Host` alias from `~/.ssh/config`. Then enter the dashboard username and password. The app runs the system `ssh` with `BatchMode=yes`, so the key must work without a prompt: use an agent or an unencrypted key. New host keys are accepted on first use (`StrictHostKeyChecking=accept-new`), and a changed key fails. The tunnel forwards a free local port to `127.0.0.1:9119` on the server. SSH connections are never labelled Unsecure.

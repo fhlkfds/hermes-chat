@@ -1,6 +1,7 @@
 // The pipe under the frontend Hermes transport: JSON-RPC text frames in and out of `/api/ws`, plus
 // signed-in dashboard REST calls, the local files the owner attaches, and the dashboard's audio routes for Dictation
 // and Read aloud. In the app it is the Rust side (tauriPipe.ts); in tests it is FakeHermes.
+import type { SavedKey } from "./setup";
 
 /** A local file as `statFiles` finds it: its size, or why it can't be attached (e.g. "it's a folder"). */
 export type LocalFile = { path: string; name: string; size?: number; error?: string };
@@ -48,6 +49,12 @@ export interface Pipe {
    * without passing through the webview. Rejects without sending if the file is now over `maxBytes`.
    */
   sendFile(head: string, path: string, tail: string, maxBytes: number): Promise<void>;
+  /**
+   * Gives Hermes a model provider's API key for `profile`, after the provider has checked it. Only an env var Hermes
+   * lists as a provider's secret is written, and the key isn't kept on this computer. Rejects if the provider turns
+   * it down (src-tauri `Dashboard::save_provider_key`).
+   */
+  saveProviderKey(profile: string, envVar: string, key: string): Promise<SavedKey>;
   /** Sends a recording to Hermes to transcribe with `profile`'s speech-to-text provider. */
   transcribe(profile: string, audio: Uint8Array, mime: string): Promise<Transcript>;
   /** Asks Hermes to read `text` aloud with `profile`'s text-to-speech provider. */
@@ -58,6 +65,7 @@ export interface Pipe {
 
 /**
  * Opens the pipe, with `/api/ws` opened for `profile`. Frames may arrive on `onEvent` before the returned promise
- * resolves. It can be called again after the pipe closes, to reconnect or to switch profile.
+ * resolves. It can be called again after the pipe closes, to reconnect or to switch profile. Aborting `signal` stops
+ * an opening under way, which then rejects; once open, the pipe is closed with `close`.
  */
-export type OpenPipe = (onEvent: (e: PipeEvent) => void, profile: string) => Promise<Pipe>;
+export type OpenPipe = (onEvent: (e: PipeEvent) => void, profile: string, signal?: AbortSignal) => Promise<Pipe>;

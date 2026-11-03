@@ -1,6 +1,7 @@
 // A fake Hermes dashboard for tests: it sits where the Rust pipe does and speaks wire-shaped legacy
 // JSON-RPC frames and dashboard REST bodies (shapes from the deployed contracts, see the research doc).
 import type { LocalFile, OpenPipe, PipeEvent, Route, Speech, VoiceSetup } from "./pipe";
+import type { SavedKey } from "./setup";
 import { FakeServerFiles } from "./fakeServerFiles";
 import { ScheduleError, isoIn, parseSchedule, upcomingRuns } from "./schedule";
 
@@ -119,6 +120,34 @@ export function modelOptions(): Record<string, unknown> {
         },
       },
     ],
+  };
+}
+
+/** A profile's `GET /api/env`, trimmed: three provider keys (OpenRouter set), a shared key, and rows that aren't provider keys. */
+export function fakeEnv(): Record<string, Record<string, unknown>> {
+  const key = (provider: string, provider_label: string, url: string, over: Record<string, unknown> = {}) => ({
+    is_set: false,
+    redacted_value: null,
+    url,
+    is_password: true,
+    channel_managed: false,
+    provider,
+    provider_label,
+    provider_primary: true,
+    provider_profiles: [],
+    ...over,
+  });
+  return {
+    OPENROUTER_API_KEY: key("openrouter", "OpenRouter", "https://openrouter.ai/keys", { is_set: true, redacted_value: "sk-…f3" }),
+    ANTHROPIC_API_KEY: key("anthropic", "Anthropic", "https://console.anthropic.com/settings/keys"),
+    ANTHROPIC_TOKEN: key("anthropic", "Anthropic", "", { provider_primary: false }),
+    DEEPSEEK_API_KEY: key("deepseek", "DeepSeek", "https://platform.deepseek.com/api_keys"),
+    DASHSCOPE_API_KEY: key("alibaba", "Alibaba Cloud (DashScope)", "", {
+      provider_profiles: [{ provider: "alibaba-cn", provider_label: "Alibaba Cloud China", url: "", primary: true }],
+    }),
+    OPENAI_BASE_URL: key("openai-api", "OpenAI", "", { is_password: false }),
+    TELEGRAM_BOT_TOKEN: { is_set: true, redacted_value: "12…9", is_password: true, channel_managed: true, provider: "", provider_label: "" },
+    MY_CUSTOM_VAR: { is_set: true, redacted_value: "…", is_password: true, channel_managed: false, provider: "", custom: true },
   };
 }
 
@@ -296,6 +325,20 @@ export class FakeHermes {
   readonly runtime = new Map<string, string>();
   private created = new Map<string, { source: string; profile?: string }>(); // runtime id, until the first prompt stores it
 
+  /**
+   * The profile's `.env` rows as `GET /api/env` lists them (`hermes_cli/web_routers/config_env.py` at the deployed
+   * `bf0203a`), trimmed. Undefined is a 404, as on a server without the route.
+   */
+  env?: Record<string, Record<string, unknown>> = fakeEnv();
+  /** Provider keys saved through `saveProviderKey`, as (profile, env var, key). */
+  readonly savedKeys: { profile: string; envVar: string; key: string }[] = [];
+  /** What the provider says of a key: `sk-bad` is turned down, `sk-offline` can't be checked, anything else passes. */
+  checkKey = (key: string): { ok: boolean; reachable: boolean; message: string } =>
+    key === "sk-bad"
+      ? { ok: false, reachable: true, message: "That API key was rejected. Double-check it and try again." }
+      : key === "sk-offline"
+        ? { ok: false, reachable: false, message: "Could not reach the provider to verify the key." }
+        : { ok: true, reachable: true, message: "" };
   /** Each profile's projects (`projects.db`), by profile name; a profile the server has but that isn't here has none. */
   projects: Record<string, FakeProject[]> = {};
   /**
@@ -686,6 +729,10 @@ export class FakeHermes {
       const ext = /\.([a-z0-9]+)$/i.exec(path)?.[1].toLowerCase() ?? "";
       return { dataUrl: `data:${FS_MIME[ext] ?? "application/octet-stream"};base64,${btoa(data)}` };
     },
+    "GET /api/env": () => {
+      if (!this.env) throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
+      return this.env;
+    },
     // `get_active_profile_endpoint`: the sticky profile, and the one this dashboard process runs as.
     "GET /api/profiles/active": () => ({ active: "default", current: this.servedProfile }),
     // `get_memory_status` (`hermes_cli/web_routers/ops.py`): the provider and the built-in files' sizes in bytes.
@@ -845,6 +892,8 @@ export class FakeHermes {
         if (!handler) throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
         return JSON.stringify(await handler(req));
       },
+      // Mirrors the Rust side's `Dashboard::save_provider_key`: only a listed provider secret, checked, then saved.
+      saveProviderKey: async (profile, envVar, key) => this.saveProviderKey(profile, envVar, key),
       // Mirrors `Dashboard::get_limited`: refused once the answer passes the limit.
       getLimited: async (pathAndQuery, maxBytes) => {
         const url = new URL(pathAndQuery, "http://dashboard/");
@@ -862,6 +911,20 @@ export class FakeHermes {
       },
     };
   };
+
+  private saveProviderKey(profile: string, envVar: string, key: string): SavedKey {
+    const row = this.env?.[envVar];
+    if (!row || !row.provider || row.is_password !== true || row.channel_managed === true)
+      throw new Error(`Hermes Chat doesn't relay ${envVar}: Hermes doesn't list it as a model provider's key.`);
+    const value = key.trim();
+    if (!value || /[\u0000-\u001f]/.test(value)) throw new Error("Paste the key on one line, without spaces around it.");
+    const checked = this.checkKey(value);
+    // As Rust does, the provider's own message isn't passed on: it can quote part of the key.
+    if (!checked.ok && checked.reachable) throw new Error("The provider turned the key down. Check that you copied all of it, and that it's for this provider.");
+    this.savedKeys.push({ profile, envVar, key: value });
+    this.env![envVar] = { ...row, is_set: true, redacted_value: `${value.slice(0, 3)}…${value.slice(-2)}` };
+    return { verified: checked.ok && checked.reachable };
+  }
 
   /**
    * One `learning.*` request: "method not found" on a server without them, 4000 for a param the contract doesn't

@@ -5,6 +5,7 @@ use axum::extract::{Path, Query, RawQuery};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{AppendHeaders, IntoResponse, Response};
 use axum::routing::{get, patch, post, put};
+use hermes_chat::transport::{ProbeFailure, SavedKey, Stage};
 use axum::{Json, Router};
 use axum::extract::{Request, State};
 use axum::middleware::{self, Next};
@@ -83,6 +84,48 @@ async fn rotate() -> Response {
 /// A refresh that failed: the dashboard clears the access cookie.
 async fn expire() -> Response {
     (AppendHeaders([(header::SET_COOKIE, "hermes_session_at=; Max-Age=0; Path=/")]), Json(json!({}))).into_response()
+}
+
+/// `GET /api/status`, which answers without a sign-in.
+async fn status() -> Response {
+    Json(json!({"version": "0.22.5", "auth_required": true, "auth_providers": ["basic"]})).into_response()
+}
+
+/// Keys `PUT /api/env` saved, as (query, body), for every test; each test uses its own profile.
+static SAVED_KEYS: Mutex<Vec<(String, Value)>> = Mutex::new(Vec::new());
+
+/// `GET /api/env`, trimmed: one provider key, a messaging token the Channels page owns, and a base URL.
+async fn env_rows(headers: HeaderMap) -> Response {
+    if !cookie(&headers).contains("hermes_session_at=AT") {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    Json(json!({
+        "OPENROUTER_API_KEY": {"is_set": false, "provider": "openrouter", "is_password": true, "channel_managed": false},
+        "TELEGRAM_BOT_TOKEN": {"is_set": true, "provider": "", "is_password": true, "channel_managed": true},
+        "OPENAI_BASE_URL": {"is_set": false, "provider": "openai-api", "is_password": false, "channel_managed": false},
+    }))
+    .into_response()
+}
+
+/// `PUT /api/env`. A key starting `sk-echo` gets FastAPI's 422, which echoes what it was sent.
+async fn save_env(RawQuery(query): RawQuery, Json(body): Json<Value>) -> Response {
+    if body["value"].as_str().is_some_and(|v| v.starts_with("sk-echo")) {
+        return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"detail": [{"msg": "bad", "input": body}]}))).into_response();
+    }
+    SAVED_KEYS.lock().unwrap().push((query.unwrap_or_default(), body));
+    Json(json!({"ok": true})).into_response()
+}
+
+/// `POST /api/providers/validate`: `sk-good` passes, `sk-bad` is turned down, `sk-offline` can't be checked, and
+/// `sk-garbled` gets an answer that isn't one. Each failure quotes part of the key, as a provider's message can.
+async fn validate(Json(body): Json<Value>) -> Response {
+    Json(match body["value"].as_str() {
+        Some("sk-bad") => json!({"ok": false, "reachable": true, "message": "Incorrect API key provided: sk-b***ad."}),
+        Some("sk-offline") => json!({"ok": false, "reachable": false, "message": "Could not reach the provider to verify sk-off…ne."}),
+        Some("sk-garbled") => json!({"ok": "sk-garbled", "reachable": true}),
+        _ => json!({"ok": true, "reachable": true, "message": ""}),
+    })
+    .into_response()
 }
 
 /// `GET /api/files/read` as a stand-in for a big answer: `n` bytes of JSON, sent with a Content-Length, or in
@@ -248,6 +291,9 @@ fn stub_routes() -> Router {
         .route("/api/rotate", get(rotate))
         .route("/api/expire", get(expire))
         .route("/api/busy", get(busy))
+        .route("/api/status", get(status))
+        .route("/api/env", get(env_rows).put(save_env))
+        .route("/api/providers/validate", post(validate))
         .route("/api/audio/transcribe", post(transcribe))
         .route("/api/audio/speak", post(speak))
         .route("/api/files/read", get(read_file))
@@ -789,6 +835,117 @@ async fn refuses_to_preview_a_missing_or_oversized_image() {
 }
 
 #[tokio::test]
+async fn a_connection_test_reads_the_status_signs_in_and_waits_for_hermes() {
+    let probed = transport::probe(&stub().await, &sign_in("hunter2"), "default").await.expect("test passes");
+    assert_eq!(serde_json::from_str::<Value>(&probed.status.unwrap()).unwrap()["auth_providers"], json!(["basic"]));
+    assert_eq!(serde_json::from_str::<Value>(&probed.ready).unwrap()["params"]["type"], "gateway.ready");
+}
+
+#[tokio::test]
+async fn a_connection_test_says_the_password_was_wrong_and_keeps_the_status() {
+    let failed = transport::probe(&stub().await, &sign_in("nope"), "default").await.unwrap_err();
+    assert_eq!((failed.stage, failed.message.as_str()), (Stage::SignIn, "Wrong username or password."));
+    assert!(failed.status.unwrap().contains("0.22.5"));
+}
+
+#[tokio::test]
+async fn a_connection_test_says_when_nothing_answers() {
+    let free = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap();
+    let failed = transport::probe(&Url::parse(&format!("http://{free}/")).unwrap(), &sign_in("hunter2"), "default").await.unwrap_err();
+    assert_eq!(failed.stage, Stage::Reach);
+    assert!(failed.message.contains("Can't reach the Hermes dashboard") && failed.message.to_lowercase().contains("refused"), "{}", failed.message);
+}
+
+#[tokio::test]
+async fn a_connection_test_gives_up_on_a_port_that_never_answers() {
+    let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = silent.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut held = vec![];
+        while let Ok((sock, _)) = silent.accept().await {
+            held.push(sock);
+        }
+    });
+    let base = Url::parse(&format!("http://{addr}/")).unwrap();
+    let failed = transport::probe_with(&base, &sign_in("hunter2"), "default", Duration::from_millis(300)).await.unwrap_err();
+    assert_eq!(failed, ProbeFailure::new(Stage::Reach, "The dashboard didn't answer within 0s."));
+}
+
+fn saved_for(profile: &str) -> Vec<Value> {
+    SAVED_KEYS.lock().unwrap().iter().filter(|(q, _)| q == &format!("profile={profile}")).map(|(_, b)| b.clone()).collect()
+}
+
+#[tokio::test]
+async fn saves_a_provider_key_the_provider_accepts() {
+    let dashboard = signed_in().await;
+    let saved = dashboard.save_provider_key("keys-good", "OPENROUTER_API_KEY", "  sk-good ").await.unwrap();
+    assert_eq!(saved, SavedKey { verified: true });
+    assert_eq!(saved_for("keys-good"), vec![json!({"key": "OPENROUTER_API_KEY", "value": "sk-good", "provider_setup": true})]);
+}
+
+#[tokio::test]
+async fn saves_a_key_the_provider_could_not_check_and_says_so() {
+    let dashboard = signed_in().await;
+    let saved = dashboard.save_provider_key("keys-offline", "OPENROUTER_API_KEY", "sk-offline").await.unwrap();
+    assert_eq!(saved, SavedKey { verified: false });
+    assert_eq!(saved_for("keys-offline").len(), 1);
+}
+
+#[tokio::test]
+async fn does_not_save_a_key_the_provider_turns_down() {
+    let dashboard = signed_in().await;
+    let err = dashboard.save_provider_key("keys-bad", "OPENROUTER_API_KEY", "sk-bad").await.unwrap_err();
+    assert_eq!(err.to_string(), transport::KEY_TURNED_DOWN);
+    assert!(saved_for("keys-bad").is_empty());
+    // An answer that isn't one is neither shown nor saved on.
+    let err = dashboard.save_provider_key("keys-bad", "OPENROUTER_API_KEY", "sk-garbled").await.unwrap_err().to_string();
+    assert!(!err.contains("sk-"), "{err}");
+    assert!(saved_for("keys-bad").is_empty());
+}
+
+#[tokio::test]
+async fn saves_only_what_hermes_lists_as_a_provider_key() {
+    let dashboard = signed_in().await;
+    for key in ["TELEGRAM_BOT_TOKEN", "OPENAI_BASE_URL", "NOT_LISTED_API_KEY", "HERMES_DASHBOARD_SESSION_TOKEN", "PATH"] {
+        let err = dashboard.save_provider_key("keys-refused", key, "sk-good").await.unwrap_err();
+        assert!(matches!(err, TransportError::NotRelayed(_)), "{key}: {err:?}");
+    }
+    let err = dashboard.save_provider_key("keys-refused", "OPENROUTER_API_KEY", "sk-good\nEVIL=1").await.unwrap_err();
+    assert!(matches!(err, TransportError::KeyRejected(_)), "{err:?}");
+    assert!(saved_for("keys-refused").is_empty());
+}
+
+#[tokio::test]
+async fn a_failed_key_save_never_shows_the_key_or_part_of_it() {
+    let dashboard = signed_in().await;
+    // Long enough that a 300-character cut of the echo would end inside it.
+    let key = format!("sk-echo-{}", "x".repeat(400));
+    let err = dashboard.save_provider_key("keys-echo", "OPENROUTER_API_KEY", &key).await.unwrap_err().to_string();
+    assert!(err.contains("422") && !err.contains("sk-echo") && !err.contains("xxxx"), "{err}");
+}
+
+#[tokio::test]
+async fn a_connection_test_gives_up_on_a_status_body_that_never_comes() {
+    let stalled = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = stalled.local_addr().unwrap();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut held = vec![];
+        while let Ok((mut sock, _)) = stalled.accept().await {
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            let _ = sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 100\r\n\r\n{").await;
+            held.push(sock);
+        }
+    });
+    let base = Url::parse(&format!("http://{addr}/")).unwrap();
+    let started = std::time::Instant::now();
+    let failed = transport::probe_with(&base, &sign_in("hunter2"), "default", Duration::from_millis(300)).await.unwrap_err();
+    assert_eq!(failed.stage, Stage::Reach);
+    assert!(started.elapsed() < Duration::from_secs(3));
+}
+
+#[tokio::test]
 async fn transcribes_a_recording_as_a_data_url_for_the_profile() {
     let dashboard = signed_in().await;
     let got = dashboard.transcribe("work email", "audio/wav; codecs=1", b"RIFF....WAVE").await.unwrap();
@@ -1156,4 +1313,220 @@ fn a_pasted_file_name_stays_a_plain_basename() {
     let name = long.file_name().unwrap().to_str().unwrap();
     assert!(name.len() <= 255 && name.ends_with(".png"), "{name}");
     std::fs::remove_dir_all(long.parent().unwrap()).unwrap();
+}
+
+#[tokio::test]
+async fn a_connection_test_sends_the_extra_headers_on_every_request() {
+    let (elsewhere, _) = other_site().await;
+    let (base, seen) = gated_stub(&elsewhere).await;
+    transport::probe(&base, &access_sign_in(), "default").await.expect("test passes through the gate");
+    let seen = seen.lock().unwrap();
+    let paths: Vec<_> = seen.iter().map(|(p, _)| p.as_str()).collect();
+    assert!(["/api/status", "/auth/password-login", "/api/ws"].iter().all(|p| paths.contains(p)), "{paths:?}");
+    assert!(seen.iter().all(|(_, secret)| secret.as_deref() == Some("s3cret")), "{seen:?}");
+}
+
+#[tokio::test]
+async fn a_connection_test_stops_at_a_redirect_to_another_site() {
+    let (elsewhere, other) = other_site().await;
+    let away = elsewhere.join("login").unwrap().to_string();
+    let app = Router::new().route("/api/status", get(move || async move { Redirect::temporary(&away) }));
+    let failed = transport::probe(&serve(app).await, &access_sign_in(), "default").await.unwrap_err();
+    assert_eq!(failed.stage, Stage::Reach);
+    assert!(failed.message.contains("another site"), "{}", failed.message);
+    assert!(other.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_connection_test_stops_where_a_gateway_turns_it_away() {
+    let (elsewhere, _) = other_site().await;
+    let (base, seen) = gated_stub(&elsewhere).await;
+    let failed = transport::probe(&base, &sign_in("hunter2"), "default").await.unwrap_err();
+    assert_eq!(failed.stage, Stage::Reach);
+    assert!(failed.message.contains("answered 403"), "{}", failed.message);
+    // It went no further: the password was never sent.
+    assert_eq!(seen.lock().unwrap().iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(), ["/api/status"]);
+}
+
+#[tokio::test]
+async fn a_provider_key_never_follows_a_redirect_to_another_site() {
+    let (elsewhere, other) = other_site().await;
+    let away = elsewhere.join("api/providers/validate").unwrap().to_string();
+    let app = Router::new()
+        .route("/auth/password-login", post(login))
+        .route("/api/env", get(env_rows))
+        .route("/api/providers/validate", post(move || async move { Redirect::temporary(&away) }));
+    // No extra headers, so the sign-in client would follow redirects anywhere.
+    let dashboard = Dashboard::sign_in(&serve(app).await, &sign_in("hunter2")).await.unwrap();
+    let err = dashboard.save_provider_key("default", "OPENROUTER_API_KEY", "sk-good").await.unwrap_err().to_string();
+    assert!(err.contains("307") && !err.contains("sk-good"), "{err}");
+    assert!(other.lock().unwrap().is_empty(), "the key went to another site");
+}
+
+#[tokio::test]
+async fn a_gateways_refusal_never_shows_the_header_values_it_turned_down() {
+    // A gateway that repeats what it was sent in its refusal.
+    let app = Router::new().route(
+        "/api/status",
+        get(|headers: HeaderMap| async move {
+            let secret = headers.get("cf-access-client-secret").and_then(|v| v.to_str().ok()).unwrap_or_default().to_owned();
+            (StatusCode::FORBIDDEN, format!("Forbidden: bad service token {secret}")).into_response()
+        }),
+    );
+    let base = serve(app).await;
+    let failed = transport::probe(&base, &access_sign_in(), "default").await.unwrap_err();
+    assert_eq!(failed.stage, Stage::Reach);
+    assert!(failed.message.contains("answered 403") && !failed.message.contains("s3cret"), "{}", failed.message);
+    // Without extra headers there is nothing to repeat, and the answer helps.
+    let failed = transport::probe(&base, &sign_in("hunter2"), "default").await.unwrap_err();
+    assert!(failed.message.contains("Forbidden: bad service token"), "{}", failed.message);
+}
+
+/// A gateway that lets `/api/status` through, then turns `refuse` away with a page that repeats the secret it got.
+async fn echoing_gateway(refuse: &'static str) -> Url {
+    let echo = |headers: HeaderMap| async move {
+        let secret = headers.get("cf-access-client-secret").and_then(|v| v.to_str().ok()).unwrap_or_default().to_owned();
+        (StatusCode::FORBIDDEN, format!("Forbidden: bad service token {secret}")).into_response()
+    };
+    let mut app = Router::new().route("/api/status", get(status));
+    app = if refuse == "/auth/password-login" {
+        app.route(refuse, post(echo))
+    } else {
+        app.route("/auth/password-login", post(login)).route(refuse, post(echo))
+    };
+    serve(app).await
+}
+
+#[tokio::test]
+async fn a_connection_test_never_shows_a_header_value_a_gateway_repeats_at_sign_in_or_the_ticket() {
+    for (refuse, stage) in [("/auth/password-login", Stage::SignIn), ("/api/auth/ws-ticket", Stage::Chat)] {
+        let failed = transport::probe(&echoing_gateway(refuse).await, &access_sign_in(), "default").await.unwrap_err();
+        assert_eq!(failed.stage, stage, "{refuse}");
+        assert!(failed.message.contains("403") && !failed.message.contains("s3cret"), "{refuse}: {}", failed.message);
+    }
+}
+
+#[tokio::test]
+async fn with_extra_headers_the_dashboards_own_detail_is_still_shown_unless_it_repeats_one() {
+    let app = Router::new()
+        .route("/auth/password-login", post(login))
+        .route("/api/plain", get(|| async { (StatusCode::NOT_FOUND, Json(json!({"detail": "Profile 'x' does not exist."}))) }))
+        .route("/api/repeats", get(|| async { (StatusCode::BAD_REQUEST, Json(json!({"detail": [{"input": "s3cret"}]}))) }));
+    let dashboard = Dashboard::sign_in(&serve(app).await, &access_sign_in()).await.unwrap();
+    let plain = dashboard.request("GET", "api/plain", None).await.unwrap_err().to_string();
+    assert!(plain.contains("Profile 'x' does not exist."), "{plain}");
+    let repeats = dashboard.request("GET", "api/repeats", None).await.unwrap_err().to_string();
+    assert!(repeats.contains("400") && !repeats.contains("s3cret"), "{repeats}");
+}
+
+#[tokio::test]
+async fn a_provider_key_check_that_never_answers_gives_up() {
+    let app = Router::new()
+        .route("/auth/password-login", post(login))
+        .route("/api/env", get(env_rows))
+        .route("/api/providers/validate", post(std::future::pending::<Response>));
+    let dashboard = Dashboard::sign_in(&serve(app).await, &sign_in("hunter2")).await.unwrap();
+    let started = std::time::Instant::now();
+    let err = dashboard.save_provider_key_within("default", "OPENROUTER_API_KEY", "sk-good", Duration::from_millis(300)).await.unwrap_err();
+    assert!(matches!(err, TransportError::KeyTimedOut(_)), "{err:?}");
+    assert!(started.elapsed() < Duration::from_secs(3));
+}
+
+/// Gateway sign-in headers whose secret is long, as a real service token's is.
+const LONG_SECRET: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+fn long_secret_sign_in() -> SignIn {
+    let headers = transport::extra_headers(&[header("CF-Access-Client-Id", "id.access"), header("CF-Access-Client-Secret", LONG_SECRET)]).unwrap();
+    SignIn { headers, ..sign_in("hunter2") }
+}
+
+/// Whether `text` holds any 8 characters of `LONG_SECRET`.
+fn shows_part_of_secret(text: &str) -> bool {
+    (0..=LONG_SECRET.len() - 8).any(|i| text.contains(&LONG_SECRET[i..i + 8]))
+}
+
+#[tokio::test]
+async fn a_redirect_loop_never_shows_the_key_or_a_header_value_it_put_in_the_url() {
+    // The dashboard's own origin, so the redirects are followed until reqwest gives up on them.
+    let lap = |RawQuery(q): RawQuery| async move { Redirect::temporary(&format!("/loop?{}", q.unwrap_or_default())) };
+    let app = Router::new()
+        .route("/auth/password-login", post(login))
+        .route("/api/env", get(env_rows))
+        .route("/api/providers/validate", post(|Json(body): Json<Value>| async move {
+            Redirect::temporary(&format!("/loop?k={}", body["value"].as_str().unwrap_or("none")))
+        }))
+        .route("/api/status", get(|headers: HeaderMap| async move {
+            let secret = headers.get("cf-access-client-secret").and_then(|v| v.to_str().ok()).unwrap_or_default().to_owned();
+            Redirect::temporary(&format!("/loop?s={secret}"))
+        }))
+        .route("/loop", get(lap).post(lap));
+    let base = serve(app).await;
+    let dashboard = Dashboard::sign_in(&base, &sign_in("hunter2")).await.unwrap();
+    let err = dashboard.save_provider_key("default", "OPENROUTER_API_KEY", "sk-good-and-long").await.unwrap_err().to_string();
+    assert!(err.contains("redirect") && !err.contains("sk-good"), "{err}");
+    let failed = transport::probe(&base, &long_secret_sign_in(), "default").await.unwrap_err();
+    assert_eq!(failed.stage, Stage::Reach);
+    assert!(failed.message.contains("redirect") && !shows_part_of_secret(&failed.message), "{}", failed.message);
+}
+
+#[tokio::test]
+async fn a_voice_refusal_never_shows_a_header_value_even_cut_short() {
+    let refuse = |status: StatusCode| {
+        move |headers: HeaderMap| async move {
+            let secret = headers.get("cf-access-client-secret").and_then(|v| v.to_str().ok()).unwrap_or_default().to_owned();
+            // Cut short, as a gateway might, and well past the 800 characters a reason keeps.
+            (status, Json(json!({"detail": format!("{}{}", "x".repeat(790), &secret[..40])}))).into_response()
+        }
+    };
+    let app = Router::new()
+        .route("/auth/password-login", post(login))
+        .route("/api/audio/transcribe", post(refuse(StatusCode::FORBIDDEN)))
+        .route("/api/audio/speak", post(refuse(StatusCode::BAD_REQUEST)));
+    let dashboard = Dashboard::sign_in(&serve(app).await, &long_secret_sign_in()).await.unwrap();
+    let heard = dashboard.transcribe("default", "audio/wav", b"RIFF").await.err().unwrap().to_string();
+    assert!(heard.ends_with("the server answered 403 Forbidden") && !shows_part_of_secret(&heard), "{heard}");
+    let spoken = dashboard.speak("default", "Hello").await.err().unwrap().to_string();
+    assert!(spoken.ends_with("the server answered 400 Bad Request") && !shows_part_of_secret(&spoken), "{spoken}");
+}
+
+#[tokio::test]
+async fn a_chat_connection_closed_with_a_header_value_never_shows_it() {
+    let close = |ws: WebSocketUpgrade, headers: HeaderMap| async move {
+        let secret = headers.get("cf-access-client-secret").and_then(|v| v.to_str().ok()).unwrap_or_default().to_owned();
+        ws.on_upgrade(move |mut ws| async move {
+            // A close reason is at most 123 bytes, so a long value arrives cut short.
+            let reason = format!("Gateway rejected {}", &secret[..40]);
+            let _ = ws.send(Message::Close(Some(axum::extract::ws::CloseFrame { code: 1008, reason: reason.into() }))).await;
+        })
+    };
+    let app = Router::new()
+        .route("/api/status", get(status))
+        .route("/auth/password-login", post(login))
+        .route("/api/auth/ws-ticket", post(ws_ticket))
+        .route("/api/ws", get(close));
+    let failed = transport::probe(&serve(app).await, &long_secret_sign_in(), "default").await.unwrap_err();
+    assert_eq!(failed.stage, Stage::Chat);
+    assert!(failed.message.contains("1008") && !shows_part_of_secret(&failed.message), "{}", failed.message);
+}
+
+#[tokio::test]
+async fn a_redirect_to_an_address_that_repeats_a_header_value_never_shows_it() {
+    // The host name the URL parser lowercases, so the value is found whatever its case.
+    let away = |headers: HeaderMap| async move {
+        let secret = headers.get("cf-access-client-secret").and_then(|v| v.to_str().ok()).unwrap_or_default().to_owned();
+        Redirect::temporary(&format!("https://{secret}.gateway.invalid/login"))
+    };
+    let app = Router::new()
+        .route("/api/status", get(away))
+        .route("/auth/password-login", post(login))
+        .route("/api/sessions", get(away));
+    let base = serve(app).await;
+    let headers = transport::extra_headers(&[header("CF-Access-Client-Secret", "Round6PrivateHeader")]).unwrap();
+    let sign_in = SignIn { headers, ..sign_in("hunter2") };
+    let failed = transport::probe(&base, &sign_in, "default").await.unwrap_err();
+    assert_eq!(failed.stage, Stage::Reach);
+    assert!(failed.message.contains("another site") && !failed.message.to_lowercase().contains("privateh"), "{}", failed.message);
+    let dashboard = Dashboard::sign_in(&base, &sign_in).await.unwrap();
+    let err = dashboard.request("GET", "api/sessions", None).await.unwrap_err();
+    assert!(matches!(err, TransportError::RedirectedHidden), "{err:?}");
 }

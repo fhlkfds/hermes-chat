@@ -48,7 +48,7 @@ export async function signIn(d: SignInDetails, account: Account): Promise<{ herm
     kept.headers = false;
     notSaved.push(`Couldn't save the extra request headers in the system keyring: ${e.message}`);
   });
-  return notSaved.length ? { hermes, notSaved: notSaved.join(" "), kept } : { hermes, kept };
+  return notSaved.length ? { hermes, notSaved: notSaved.join(". "), kept } : { hermes, kept };
 }
 
 /**

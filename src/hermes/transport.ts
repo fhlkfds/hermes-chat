@@ -39,6 +39,7 @@ import { memoryApi, type MemoryApi } from "./memory";
 import type { OpenPipe, Pipe, PipeEvent, RestMethod, Route, Speech, Transcript, VoiceSetup } from "./pipe";
 import { RemoteFilesError, previewSupport, remoteFiles, type RemoteFiles } from "./remoteFiles";
 import { isUnsecure } from "./unsecure";
+import { providerKeys, readyProviders, type ProviderSetup, type SavedKey } from "./setup";
 import { restartHold } from "./unsaved";
 import { hostFileView, readServerFile, type FileView } from "./preview";
 import { splitPath, type OutputsIo, type StoredRow as StoredOutputRow } from "./outputs";
@@ -571,11 +572,21 @@ export class Hermes {
    */
   async dial(): Promise<void> {
     await this.droppedClosing;
+    // Closed meanwhile: from here to the opening below runs at once, so a later close finds `abortDial` set.
+    if (this.closing) throw new Error("Closed by the app.");
     const gen = ++this.generation;
     const ready = new Promise<Record<string, unknown>>((resolve) => (this.onReady = resolve));
     // Set as soon as the pipe closes or the app gives up, even after gateway.ready has arrived.
     let failure: Error | undefined;
-    const failed = new Promise<never>((_, reject) => (this.abortDial = (e) => reject((failure ??= e))));
+    // Giving up also stops Rust opening the connection, which has no other way to end early.
+    const stop = new AbortController();
+    const failed = new Promise<never>(
+      (_, reject) =>
+        (this.abortDial = (e) => {
+          stop.abort();
+          reject((failure ??= e));
+        }),
+    );
     failed.catch(() => {}); // Raced below, once the pipe is open.
     let up = false;
     let pipe: Pipe | undefined;
@@ -586,7 +597,7 @@ export class Hermes {
         if (gen !== this.generation) return;
         if (e.kind === "closed" && !up) this.abortDial?.(new Error(`The connection closed before Hermes was ready: ${e.reason}`));
         else this.handle(e);
-      }, profile);
+      }, profile, stop.signal);
       const payload = await Promise.race([
         ready,
         failed,
@@ -618,6 +629,44 @@ export class Hermes {
   reconnect(): Promise<void> {
     if (!this.redialing) this.failedTries = 0;
     return this.redial();
+  }
+
+  /**
+   * The model providers the shown profile's Hermes can use now, and those it can take an API key for (setup.ts).
+   * A server without `GET /api/env` says so in `unsupported`, and the keys are set on the server instead.
+   */
+  async providerSetup(): Promise<ProviderSetup> {
+    const profile = this.profile;
+    const query = new URLSearchParams({ profile });
+    // Each read is bounded, so setup never waits on a Hermes that stopped answering.
+    const options = await timeLimit(this.request("model.options", { profile }), MODELS_TIMEOUT_MS)
+      .catch(() => timeLimit(this.rest("GET", `api/model/options?${query}`), MODELS_TIMEOUT_MS))
+      .catch(() => undefined);
+    const ready = readyProviders(options);
+    let answered = false;
+    const env = this.rest("GET", `api/env?${query}`).finally(() => (answered = true));
+    env.catch(() => {});
+    let rows: unknown;
+    try {
+      rows = await timeLimit(env, PROVIDERS_TIMEOUT_MS);
+    } catch (e) {
+      // No answer in time is worth trying again; an answer saying no means this server can't take keys from here.
+      if (!answered) throw e;
+      return { keys: [], ready, unsupported: (e as Error).message };
+    }
+    return { keys: providerKeys(rows), ready };
+  }
+
+  /**
+   * Gives the shown profile's Hermes a model provider's API key (`Pipe.saveProviderKey`), then reads its model list
+   * again, so the new provider's models can be picked.
+   */
+  async saveProviderKey(envVar: string, key: string): Promise<SavedKey> {
+    if (!this.pipe) throw new Error("Not connected to Hermes.");
+    const saved = await this.pipe.saveProviderKey(this.profile, envVar, key);
+    if (this.snapshot.models?.profile === this.profile) this.update({ models: undefined });
+    void this.loadModels();
+    return saved;
   }
 
   /** The server's profiles by name, as dashboard REST lists them. One sign-in covers them all (research doc). */
@@ -1686,13 +1735,32 @@ export class Hermes {
     while (this.background.size) await Promise.allSettled([...this.background]);
   }
 
+  /**
+   * Closes the connection for good. Rust holds one connection and routes every command to it, so from here on this
+   * Hermes sends nothing: later calls find no connection rather than using the one that replaces it. Requests in
+   * flight are left unanswered, as when the app quits, so a message being sent is kept as one the app closed on.
+   * Resolves once a reconnect under way has been stopped and closed what it opened, if anything, and a dropped pipe
+   * has closed, so no late close from this Hermes can end the replacement either.
+   */
   async close() {
     this.closing = true;
     this.abortDial?.(new Error("Closed by the app."));
     this.generation++;
     clearTimeout(this.retryTimer);
     clearInterval(this.heartbeat);
-    await this.pipe?.close();
+    const pipe = this.takePipe();
+    await this.redialing?.catch(() => {});
+    await this.droppedClosing;
+    await pipe?.close();
+    // Anything a dial opened after all.
+    await this.takePipe()?.close();
+  }
+
+  /** The pipe in use, now no longer this Hermes's to send on. */
+  private takePipe(): Pipe | undefined {
+    const pipe = this.pipe;
+    this.pipe = undefined;
+    return pipe;
   }
 
   private handle(e: PipeEvent) {
@@ -2751,6 +2819,9 @@ export function cleanTitle(answer: string): string {
       .replace(/[\uD800-\uDBFF]$/, "");
   return title.trim();
 }
+
+/** How long setup waits for Hermes's list of provider keys. */
+const PROVIDERS_TIMEOUT_MS = 20_000;
 
 /** `p`, or a rejection once `ms` have passed without an answer. */
 function timeLimit<T>(p: Promise<T>, ms: number): Promise<T> {

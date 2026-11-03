@@ -23,7 +23,8 @@ import { ScreenshotDesk, type ScreenshotApi } from "./hermes/screenshots";
 import { onDesktopScreenshot, screenshotSupport, showWindow, syncScreenshotOutbox, tauriScreenshots, type ScreenshotSupport } from "./hermes/tauriScreenshot";
 import { checkShortcut, shortcutLabel, shortcutOf } from "./ui/shortcut";
 
-import { tauriPipe, type SignInDetails } from "./hermes/tauriPipe";
+import { tauriPipe, tauriProbe, type SignInDetails } from "./hermes/tauriPipe";
+import { isSetUp } from "./hermes/setup";
 import { isOutgoing, type Attachment, type Chat, type ConnectionStatus, type Found } from "./hermes/model";
 import type { ModelCatalog, ModelPick } from "./hermes/models";
 import { ChatList, Rail, leavingNote } from "./ui/Sidebar";
@@ -49,6 +50,7 @@ import { appearanceStore } from "./ui/appearance";
 import { StatusBar } from "./ui/StatusBar";
 import { systemFonts } from "./ui/tauriFonts";
 import { SignIn } from "./ui/SignIn";
+import { Onboarding, type SetupMode } from "./ui/Onboarding";
 import { ModelControls } from "./ui/ModelPicker";
 import { PANE_MIN_WIDTH, PreviewPane } from "./ui/PreviewPane";
 import { PreviewContext } from "./ui/previewContext";
@@ -126,21 +128,31 @@ const appearance = appearanceStore(localStorage, document.documentElement);
 /** The names of the extra request headers a sign-in sends; only a URL sends them. */
 const headerNames = (d: SignInDetails) => (d.mode === "url" ? (d.headers ?? []).map((h) => h.name.trim()) : []);
 
-/** What launch ends in: signed in with the saved password, or the sign-in screen and why. */
-type Launch = { hermes: Hermes; headers: string[] } | { initial: SignInDetails; error?: string };
+/**
+ * What launch ends in: signed in with the saved password, or the sign-in screen and why. `firstRun`: nothing is set up
+ * on this computer, so setup opens instead of the sign-in screen.
+ */
+type Launch = { hermes: Hermes; details: SignInDetails } | { initial: SignInDetails; error?: string; firstRun?: boolean };
+
+/** Setup, open over whatever else shows, and where it was opened from. */
+type Setup = { mode: SetupMode; initial: SignInDetails };
 let launching: Promise<Launch> | undefined;
 
 /**
  * Signs in with the saved password, if there is one; if Hermes can't be reached, what this computer saved opens to
- * read. If that fails the sign-in screen has it filled in, so Connect tries again. Runs once, though StrictMode runs
- * effects twice.
+ * read. If that fails the sign-in screen has it filled in, so Connect tries again. With no password saved, the
+ * sign-in screen asks for it, unless nothing at all is set up yet: then it's the first run, and setup opens. Runs
+ * once, though StrictMode runs effects twice.
  */
 function launch(): Promise<Launch> {
   return (launching ??= (async () => {
     const saved = await savedSignIn(account);
-    if (!saved) return { initial: await signInForm(account) };
+    if (!saved) {
+      const initial = await signInForm(account);
+      return { initial, firstRun: !isSetUp(initial) };
+    }
     try {
-      return { hermes: await launchSignIn(saved, account), headers: headerNames(saved) };
+      return { hermes: await launchSignIn(saved, account), details: saved };
     } catch (e) {
       return { initial: saved, error: messageOf(e) };
     }
@@ -157,19 +169,81 @@ export default function App() {
   const [kept, setKept] = useState<Kept>({ password: true, headers: true });
   // Only the first sign-in after the app starts reopens the last chat; signing in again after Sign out starts fresh.
   const [coldStart, setColdStart] = useState(true);
+  const [setup, setSetup] = useState<Setup>();
+  // Counts connections, so the main screen starts afresh for each one.
+  const [connections, setConnections] = useState(0);
+  const current = useRef<Hermes | null>(null);
+  current.current = hermes;
+  // The sign-in the connection in use was made with, password and all, so setup can put it back if a new one fails,
+  // even when the keyring couldn't keep the password. The transport holds it anyway, to reconnect.
+  const signedInWith = useRef<SignInDetails>(undefined);
   // The names of the extra request headers the connection sends, for Settings.
   const [headers, setHeaders] = useState<string[]>([]);
 
   useEffect(() => {
     void launch().then((l) => {
       if ("hermes" in l) {
-        setHeaders(l.headers);
+        signedInWith.current = l.details;
+        setHeaders(headerNames(l.details));
         return setHermes(l.hermes);
       }
       setInitial(l.initial);
       setError(l.error);
+      if (l.firstRun) setSetup({ mode: "first-run", initial: l.initial });
     });
   }, []);
+
+  const use = (h: Hermes | null) => {
+    setHermes(h);
+    setConnections((n) => n + 1);
+  };
+
+  /**
+   * Setup's Save and connect. Rust holds one connection, so the one in use closes first, or its reconnects would take
+   * the connection back. If the new one fails after all, the one in use before is put back, as at launch: Offline
+   * with what this computer saved if it can't connect either.
+   */
+  const connectWith = async (d: SignInDetails) => {
+    const before = current.current;
+    if (before) await before.close().catch(() => {});
+    try {
+      const { hermes: h, notSaved, kept } = await signIn(d, account);
+      setNotSaved(notSaved);
+      setKept(kept);
+      setHeaders(headerNames(d));
+      setError(undefined);
+      // The last chat open was on the other connection.
+      if (before) setColdStart(false);
+      signedInWith.current = d;
+      use(h);
+      return { notSaved, kept };
+    } catch (e) {
+      if (before) {
+        const previous = signedInWith.current ?? (await savedSignIn(account));
+        const back = previous ? await launchSignIn(previous, account).catch(() => null) : null;
+        if (back && previous) setHeaders(headerNames(previous));
+        if (!back) {
+          signedInWith.current = undefined;
+          setInitial(await signInForm(account));
+        }
+        use(back);
+      }
+      throw e;
+    }
+  };
+
+  const setupLayer = setup && (
+    <Onboarding
+      key={setup.mode}
+      mode={setup.mode}
+      initial={setup.initial}
+      probe={tauriProbe}
+      hermes={hermes ?? undefined}
+      onConnect={connectWith}
+      onCancel={setup.mode === "first-run" ? undefined : () => setSetup(undefined)}
+      onDone={() => setSetup(undefined)}
+    />
+  );
 
   // Updates: checked once as the app starts, if the owner wants that. Back in the window, a package update waiting to be
   // installed looks again for pacman having installed it, which the owner does in a terminal.
@@ -182,25 +256,38 @@ export default function App() {
 
   if (hermes)
     return (
-      <Main
-        hermes={hermes}
-        connection={account.store.load()}
-        headers={headers}
-        notSaved={notSaved}
-        kept={kept}
-        reopenLast={coldStart}
-        onSignOut={async () => {
+      <>
+        <Main
+          key={connections}
+          hermes={hermes}
+          connection={account.store.load()}
+          headers={headers}
+          notSaved={notSaved}
+          kept={kept}
+          reopenLast={coldStart}
+          covered={!!setup}
+          onSetUp={async () => {
+            // The connection in use, header values and all but the password; ServerFields clears the header values
+            // if the URL changes, so they never go to another server.
+            const now = signedInWith.current ? { ...signedInWith.current, password: "" } : await signInForm(account);
+            setSetup({ mode: "reconfigure", initial: now });
+          }}
+          onSignOut={async () => {
           // Everything is read first, then shown at once: the sign-in screen keeps the details it mounts with.
           const { initial, error } = await signOutToSignIn(hermes, account);
           setHermes(null);
+          signedInWith.current = undefined;
           setColdStart(false);
           setNotSaved(undefined);
           setKept({ password: true, headers: true });
           setInitial(initial);
           setError(error);
         }}
-      />
+        />
+        {setupLayer}
+      </>
     );
+  if (setupLayer) return setupLayer;
   if (!initial)
     return (
       <div className="first-run">
@@ -214,10 +301,12 @@ export default function App() {
     <SignIn
       initial={initial}
       error={error}
+      onSetUp={() => setSetup({ mode: "sign-in", initial: { ...initial, password: "" } })}
       onSignIn={async (d) => {
         setError(undefined);
         try {
           const { hermes: h, notSaved, kept } = await signIn(d, account);
+          signedInWith.current = d;
           setNotSaved(notSaved);
           setKept(kept);
           setHeaders(headerNames(d));
@@ -281,6 +370,8 @@ export function Main({
   notSaved,
   kept = { password: true, headers: true },
   reopenLast = false,
+  covered = false,
+  onSetUp,
   localFiles = tauriLocalFiles,
   webPages = tauriWebPages,
   screenshots = tauriScreenshotWiring,
@@ -298,6 +389,10 @@ export function Main({
   kept?: Kept;
   /** This is the app starting: open the profile's last open chat, if the owner wants it reopened. */
   reopenLast?: boolean;
+  /** Setup is open over the app: nothing here takes focus or keys. */
+  covered?: boolean;
+  /** Opens setup from Settings. */
+  onSetUp?: () => void;
   localFiles?: LocalFiles;
   webPages?: WebPages;
   screenshots?: Screenshots;
@@ -859,7 +954,7 @@ export function Main({
     // Only Ctrl/Cmd chords, and never mid-composition. No bare key does anything app-wide, so nothing typed
     // with focus outside an input can answer an Approval or stop a reply.
     const onKey = (e: KeyboardEvent) => {
-      if (composing(e)) return;
+      if (covered || composing(e)) return;
       if (screenshotShortcut && shortcutOf(e) === screenshotShortcut && !checkShortcut(screenshotShortcut).error) {
         e.preventDefault();
         if (!e.repeat) takeScreenshot();
@@ -920,7 +1015,7 @@ export function Main({
           started={!!listed}
           picked={p.picked}
           jump={p.jump}
-          active={!covering && !previewCovers && (!split || isActive)}
+          active={!covered && !covering && !previewCovers && (!split || isActive)}
           split={split}
           screenshots={desk}
           screenshotWiring={screenshots}
@@ -975,7 +1070,7 @@ export function Main({
 
   return (
     <PreviewContext.Provider value={openPreview}>
-    <div className="app" inert={restarting}>
+    <div className="app" inert={covered || restarting}>
       <Rail
         status={status}
         route={route}
@@ -1188,6 +1283,7 @@ export function Main({
             onClearCache={() => hermes.clearCache()}
             onPullOlder={() => hermes.pullOlderHistory()}
             onSignOut={() => new Promise<void>((done) => guard(() => void onSignOut().finally(done), "signout", done))}
+            onSetUp={onSetUp && (() => guard(onSetUp))}
             onClose={() =>
               guard(() => {
                 flushSync(() => setSettingsOpen(false));
@@ -1250,7 +1346,7 @@ export function Main({
             }}
           />
         ) : null}
-        <Split panes={slots} activeKey={active.key} onActivate={activate} covered={covering || previewCovers} />
+        <Split panes={slots} activeKey={active.key} onActivate={activate} covered={covered || covering || previewCovers} />
         </div>
           {preview && previewShown && (
             <PreviewPane

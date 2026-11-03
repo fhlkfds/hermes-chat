@@ -130,8 +130,90 @@ describe("Hermes transport", () => {
     await expect(
       connect(async (onEvent) => {
         onEvent({ kind: "closed", reason: "closed by the server (4401 )" });
-        return { route: { kind: "ssh", target: "liam@hermes" }, send: async () => {}, request: async () => "", getLimited: async () => "", statFiles: async () => [], sendFile: async () => {}, transcribe: async () => ({ text: "" }), speak: async () => ({ mime: "audio/mpeg", audio: new Uint8Array() }), voiceSetup: async () => ({ transcribe: false, speak: false }), close: async () => {} };
+        return { route: { kind: "ssh", target: "liam@hermes" }, send: async () => {}, request: async () => "", getLimited: async () => "", statFiles: async () => [], sendFile: async () => {}, transcribe: async () => ({ text: "" }), speak: async () => ({ mime: "audio/mpeg", audio: new Uint8Array() }), voiceSetup: async () => ({ transcribe: false, speak: false }), saveProviderKey: async () => ({ verified: true }), close: async () => {} };
       }),
     ).rejects.toThrow("4401");
+  });
+
+  // Rust keeps one connection, so a reconnect's pipe closed after the app moved on would end the next connection.
+  it("closes only once a reconnect under way has let go of its pipe", async () => {
+    const server = new FakeHermes();
+    const log: string[] = [];
+    let opening: (() => void) | undefined;
+    let entered!: () => void;
+    const reopening = new Promise<void>((resolve) => (entered = resolve));
+    const hermes = await connect(async (onEvent, profile) => {
+      if (log.length) {
+        entered();
+        await new Promise<void>((resolve) => (opening = resolve));
+      }
+      const pipe = await server.openPipe(onEvent, profile);
+      log.push("open");
+      return { ...pipe, close: async () => void log.push("close") };
+    });
+    server.drop();
+    void hermes.reconnect();
+    await reopening;
+    let closed = false;
+    const closing = hermes.close().then(() => (closed = true));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(closed).toBe(false);
+
+    opening!();
+    await closing;
+    expect(log).toEqual(["open", "close", "open", "close"]);
+  });
+
+  it("leaves nothing open when closed while a dropped connection is still closing", async () => {
+    const server = new FakeHermes();
+    const log: string[] = [];
+    let closedFirst!: () => void;
+    const hermes = await connect(async (onEvent, profile) => {
+      const pipe = await server.openPipe(onEvent, profile);
+      const n = log.filter((l) => l.startsWith("open")).length + 1;
+      log.push(`open ${n}`);
+      const closing = n === 1 ? new Promise<void>((resolve) => (closedFirst = resolve)) : Promise.resolve();
+      return { ...pipe, close: async () => void (await closing, log.push(`close ${n}`)) };
+    });
+    server.drop();
+    void hermes.reconnect();
+    const closing = hermes.close();
+    closedFirst();
+    await closing;
+    expect(log.filter((l) => l.startsWith("open")).every((l) => log.includes(l.replace("open", "close")))).toBe(true);
+  });
+
+  it("stops a reconnect that never finishes opening, rather than waiting on it for good", async () => {
+    const server = new FakeHermes();
+    let opens = 0;
+    let stopped = false;
+    let entered!: () => void;
+    const reopening = new Promise<void>((resolve) => (entered = resolve));
+    const hermes = await connect(async (onEvent, profile, signal) => {
+      if (opens++ === 0) return server.openPipe(onEvent, profile);
+      entered();
+      // A server that stopped answering midway: only stopping the opening ends it.
+      return new Promise((_, reject) =>
+        signal?.addEventListener("abort", () => {
+          stopped = true;
+          reject(new Error("Connecting was stopped."));
+        }),
+      );
+    });
+    server.drop();
+    void hermes.reconnect();
+    await reopening;
+    await hermes.close();
+    expect(stopped).toBe(true);
+  });
+
+  // Rust sends every command on the one connection it holds, which may soon be the replacement.
+  it("sends nothing once closed, so a replaced connection can't reach the one replacing it", async () => {
+    const { server, hermes } = await signedIn();
+    const sent = server.requests.length;
+    await hermes.close();
+    await expect(hermes.newChat()).rejects.toThrow("Not connected");
+    await expect(hermes.modelSettings.load()).rejects.toThrow("Not connected");
+    expect(server.requests.length).toBe(sent);
   });
 });

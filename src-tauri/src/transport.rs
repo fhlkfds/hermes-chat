@@ -11,6 +11,8 @@
 //! (research doc, "Voice").
 //! A direct connection can carry extra request headers for a gateway in front of the dashboard, such as Cloudflare
 //! Access, on every request and the WebSocket handshake (ADR 0006).
+//! Setup uses two more things here: `probe`, which tests a sign-in without keeping it, and
+//! `Dashboard::save_provider_key`, which gives Hermes a model provider's API key.
 
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
@@ -20,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::net::IpAddr;
 use std::sync::Mutex;
+use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -61,6 +64,11 @@ pub enum TransportError {
     FileTooLarge { size: u64, max: u64 },
     #[error("{0}")]
     File(String),
+    /// The provider turned down an API key the owner typed (`POST /api/providers/validate`).
+    #[error("{0}")]
+    KeyRejected(String),
+    #[error("Hermes didn't finish checking and saving the key within {0} s. It may have saved it anyway: the list of providers shows what Hermes has.")]
+    KeyTimedOut(u64),
     #[error("This Hermes server can't {0}: it has no {1} route. Updating Hermes adds it.")]
     NoVoiceRoute(&'static str, &'static str),
     #[error("{0}")]
@@ -69,6 +77,8 @@ pub enum TransportError {
     BadHeader(String),
     #[error("The dashboard sent Hermes Chat on to {0}, another site. Hermes Chat doesn't follow it there, so your extra request headers aren't sent to it. If a gateway such as Cloudflare Access is in front of the dashboard, check the headers it needs.")]
     Redirected(String),
+    #[error("The dashboard sent Hermes Chat on to another site, whose address isn't shown, as it may repeat your extra request headers. Hermes Chat doesn't follow it there, so your headers aren't sent to it. If a gateway such as Cloudflare Access is in front of the dashboard, check the headers it needs.")]
+    RedirectedHidden,
 }
 
 /// An extra request header as the owner typed it in the sign-in screen.
@@ -132,6 +142,22 @@ pub fn extra_headers(headers: &[ExtraHeader]) -> Result<HeaderMap, TransportErro
         map.insert(name, value);
     }
     Ok(map)
+}
+
+/// The HTTP client for one dashboard: the owner's extra request headers on every request and, with any set, redirects
+/// kept to the dashboard's origin.
+fn client(headers: &HeaderMap) -> Result<reqwest::Client, TransportError> {
+    client_kept_to_origin(headers, false)
+}
+
+/// `client`, with redirects kept to the dashboard's origin even without extra headers when `always` is set, as for a
+/// request that carries a provider key.
+fn client_kept_to_origin(headers: &HeaderMap, always: bool) -> Result<reqwest::Client, TransportError> {
+    let mut http = reqwest::Client::builder().default_headers(headers.clone());
+    if always || !headers.is_empty() {
+        http = http.redirect(redirect::Policy::custom(same_origin_redirects));
+    }
+    http.build().map_err(unreachable)
 }
 
 /// With extra headers set, a redirect is followed only within the dashboard's origin (scheme, host and port), so
@@ -202,12 +228,15 @@ fn audio_mime(raw: &str) -> Option<String> {
 
 /// The reason in a refusal's body: FastAPI's `detail`, an `error`, or else the status alone (a proxy's HTML page says
 /// nothing useful). Long enough for Hermes's "No STT provider available", which lists what each provider needs.
-fn refusal_reason(status: StatusCode, body: &str) -> String {
+fn refusal_reason(status: StatusCode, body: &str, headers: &HeaderMap) -> String {
     let json: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
     let text = json["detail"].as_str().or(json["error"].as_str()).map(str::trim).filter(|s| !s.is_empty());
+    // As `shown_body`: with extra request headers, a refusal may be a gateway's, repeating them. Checked on the whole
+    // reason, before it is shortened.
+    let refused = matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::PROXY_AUTHENTICATION_REQUIRED);
     match text {
-        Some(t) => t.chars().take(800).collect(),
-        None => format!("the server answered {status}"),
+        Some(t) if !(refused && !headers.is_empty()) && !repeats_header(t, headers) => t.chars().take(800).collect(),
+        _ => format!("the server answered {status}"),
     }
 }
 
@@ -547,11 +576,7 @@ pub struct Dashboard {
 impl Dashboard {
     /// Sign in at `base`, the dashboard root (e.g. the local end of the SSH tunnel).
     pub async fn sign_in(base: &Url, sign_in: &SignIn) -> Result<Dashboard, TransportError> {
-        let mut http = reqwest::Client::builder().default_headers(sign_in.headers.clone());
-        if !sign_in.headers.is_empty() {
-            http = http.redirect(redirect::Policy::custom(same_origin_redirects));
-        }
-        let http = http.build().map_err(|e| TransportError::Unreachable(e.to_string()))?;
+        let http = client(&sign_in.headers)?;
         let dashboard = Dashboard { http, base: base.clone(), cookies: Mutex::default(), headers: sign_in.headers.clone() };
         let login = dashboard
             .http
@@ -563,12 +588,12 @@ impl Dashboard {
             }))
             .send()
             .await
-            .map_err(|e| TransportError::Unreachable(e.to_string()))?;
+            .map_err(unreachable)?;
         match login.status() {
             s if s.is_success() => {}
             StatusCode::UNAUTHORIZED => return Err(TransportError::BadCredentials),
             StatusCode::TOO_MANY_REQUESTS => return Err(TransportError::RateLimited),
-            _ => return Err(unexpected(login).await),
+            _ => return Err(unexpected(login, &sign_in.headers).await),
         }
         dashboard.keep_cookies(&login);
         Ok(dashboard)
@@ -583,15 +608,15 @@ impl Dashboard {
             .header(header::COOKIE, self.cookie_header())
             .send()
             .await
-            .map_err(|e| TransportError::Unreachable(e.to_string()))?;
+            .map_err(unreachable)?;
         self.keep_cookies(&ticket);
         if !ticket.status().is_success() {
-            return Err(unexpected(ticket).await);
+            return Err(unexpected(ticket, &self.headers).await);
         }
         let ticket: serde_json::Value = ticket
             .json()
             .await
-            .map_err(|e| TransportError::Unreachable(e.to_string()))?;
+            .map_err(unreachable)?;
         let ticket = ticket["ticket"].as_str().ok_or_else(|| TransportError::Unexpected {
             status: 200,
             body: "ws-ticket response has no ticket".into(),
@@ -611,6 +636,7 @@ impl Dashboard {
             .map_err(|e| TransportError::WebSocket(e.to_string()))?;
 
         let (outgoing, mut to_server) = mpsc::unbounded_channel::<String>();
+        let headers = self.headers.clone();
         let task = tokio::spawn(async move {
             let (mut sink, mut stream) = ws.split();
             let reason = loop {
@@ -634,7 +660,11 @@ impl Dashboard {
                             }
                         }
                         Some(Ok(Message::Close(frame))) => {
-                            break frame.map_or("closed by the server".into(), |f| format!("closed by the server ({} {})", f.code, f.reason));
+                            break frame.map_or("closed by the server".into(), |f| {
+                                // A gateway in front of the dashboard may close with the header values it turned down.
+                                let why = if repeats_header(&f.reason, &headers) { HIDDEN_FOR_HEADERS } else { f.reason.as_str() };
+                                format!("closed by the server ({} {why})", f.code)
+                            });
                         }
                         Some(Ok(_)) => {}
                         Some(Err(e)) => break e.to_string(),
@@ -676,12 +706,12 @@ impl Dashboard {
         if let Some(body) = body {
             req = req.header(header::CONTENT_TYPE, "application/json").body(body);
         }
-        let resp = req.send().await.map_err(|e| TransportError::Unreachable(e.to_string()))?;
+        let resp = req.send().await.map_err(unreachable)?;
         self.keep_cookies(&resp);
         match resp.status() {
-            s if s.is_success() => resp.text().await.map_err(|e| TransportError::Unreachable(e.to_string())),
+            s if s.is_success() => resp.text().await.map_err(unreachable),
             StatusCode::UNAUTHORIZED => Err(TransportError::SignedOut),
-            _ => Err(unexpected(resp).await),
+            _ => Err(unexpected(resp, &self.headers).await),
         }
     }
 
@@ -766,22 +796,22 @@ impl Dashboard {
             .json(body)
             .send()
             .await
-            .map_err(|e| TransportError::Unreachable(e.to_string()))?;
+            .map_err(unreachable)?;
         self.keep_cookies(&resp);
         let status = resp.status();
         if status == StatusCode::UNAUTHORIZED {
             return Err(TransportError::SignedOut);
         }
         if status.is_redirection() {
-            return Err(unexpected(resp).await);
+            return Err(unexpected(resp, &self.headers).await);
         }
-        let text = resp.text().await.map_err(|e| TransportError::Unreachable(e.to_string()))?;
+        let text = resp.text().await.map_err(unreachable)?;
         if status.is_success() {
             return serde_json::from_str(&text)
                 .map(AudioAnswer::Done)
-                .map_err(|_| TransportError::Unexpected { status: status.as_u16(), body: text.chars().take(300).collect() });
+                .map_err(|_| TransportError::Unexpected { status: status.as_u16(), body: shown_body(status, &text, &self.headers) });
         }
-        let reason = refusal_reason(status, &text);
+        let reason = refusal_reason(status, &text, &self.headers);
         // FastAPI's own "no such route" (and the headless backend's catch-all) differ from a refusal by the route
         // itself, such as an unknown profile, which also answers 404 but with its own reason.
         let no_route = match status {
@@ -804,19 +834,19 @@ impl Dashboard {
             .header(header::COOKIE, self.cookie_header())
             .send()
             .await
-            .map_err(|e| TransportError::Unreachable(e.to_string()))?;
+            .map_err(unreachable)?;
         self.keep_cookies(&resp);
         match resp.status() {
             s if s.is_success() => {}
             StatusCode::UNAUTHORIZED => return Err(TransportError::SignedOut),
-            _ => return Err(unexpected(resp).await),
+            _ => return Err(unexpected(resp, &self.headers).await),
         }
         let too_large = |size| TransportError::FileTooLarge { size, max: max_bytes };
         if let Some(size) = resp.content_length().filter(|&n| n > max_bytes) {
             return Err(too_large(size));
         }
         let mut body = Vec::new();
-        while let Some(chunk) = resp.chunk().await.map_err(|e| TransportError::Unreachable(e.to_string()))? {
+        while let Some(chunk) = resp.chunk().await.map_err(unreachable)? {
             body.extend_from_slice(&chunk);
             if body.len() as u64 > max_bytes {
                 return Err(too_large(body.len() as u64));
@@ -908,15 +938,80 @@ fn is_profile_soul(path: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
 }
 
-/// An answer the call didn't expect, with the start of its body. Reads only the first few KB, so a huge or endless
-/// error body can't fill memory.
-async fn unexpected(mut resp: reqwest::Response) -> TransportError {
+/// Said in place of an error body that can't be shown.
+const HIDDEN_FOR_HEADERS: &str = "(not shown, as it may repeat your extra request headers)";
+
+/// How much of a header value `repeats_header` counts as repeating it.
+const HEADER_PIECE: usize = 8;
+
+/// Whether `text` repeats one of the owner's extra request header values, as a gateway such as Cloudflare Access can
+/// in the page it turns a request away with. Any `HEADER_PIECE` bytes of a value count, so a value cut short, as in
+/// a WebSocket close reason, still does. Header values `to_str` accepts are ASCII.
+fn repeats_header(text: &str, headers: &HeaderMap) -> bool {
+    repeats_any(text, headers.values().filter_map(|v| v.to_str().ok()))
+}
+
+/// `repeats_header` for an address, whose host the URL parser lowercased.
+fn address_repeats_header(address: &str, headers: &HeaderMap) -> bool {
+    let values: Vec<String> = headers.values().filter_map(|v| v.to_str().ok()).map(str::to_ascii_lowercase).collect();
+    repeats_any(&address.to_ascii_lowercase(), values.iter().map(String::as_str))
+}
+
+fn repeats_any<'a>(text: &str, values: impl Iterator<Item = &'a str>) -> bool {
+    values.filter(|v| !v.is_empty()).any(|v| {
+        let piece = v.len().min(HEADER_PIECE);
+        (0..=v.len() - piece).any(|i| text.contains(&v[i..i + piece]))
+    })
+}
+
+/// Every string in `v`, keys included, one per line, so `repeats_header` sees them unescaped.
+fn strings_in(v: &serde_json::Value, out: &mut String) {
+    match v {
+        serde_json::Value::String(s) => {
+            out.push_str(s);
+            out.push('\n');
+        }
+        serde_json::Value::Array(a) => a.iter().for_each(|x| strings_in(x, out)),
+        serde_json::Value::Object(o) => o.iter().for_each(|(k, x)| {
+            out.push_str(k);
+            out.push('\n');
+            strings_in(x, out);
+        }),
+        _ => {}
+    }
+}
+
+/// An error body as it may be shown, for a request that carried `headers`. With none, its start as sent. With extra
+/// request headers, only the dashboard's own JSON `detail`, whole and repeating none of their values: a refusal (401,
+/// 403, 407) or any other page could come from a gateway in front, which can echo a value it turned down.
+fn shown_body(status: StatusCode, text: &str, headers: &HeaderMap) -> String {
+    if headers.is_empty() {
+        return text.chars().take(300).collect();
+    }
+    if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::PROXY_AUTHENTICATION_REQUIRED) {
+        return HIDDEN_FOR_HEADERS.into();
+    }
+    let detail = serde_json::from_str::<serde_json::Value>(text).ok().and_then(|v| v.get("detail").cloned());
+    let Some(detail) = detail else { return HIDDEN_FOR_HEADERS.into() };
+    let mut said = String::new();
+    strings_in(&detail, &mut said);
+    if repeats_header(text, headers) || repeats_header(&said, headers) {
+        return HIDDEN_FOR_HEADERS.into();
+    }
+    json!({ "detail": detail }).to_string().chars().take(300).collect()
+}
+
+/// A failed answer as an error, with the start of its body. Reads only the first few KB, so a huge or endless error
+/// body can't fill memory. `headers`: the extra request headers the request carried (`shown_body`).
+async fn unexpected(mut resp: reqwest::Response, headers: &HeaderMap) -> TransportError {
     const KEEP: usize = 4096;
     // A redirect that came back unfollowed: `same_origin_redirects` stopped it at another site.
     if resp.status().is_redirection() {
         let to = resp.headers().get(header::LOCATION).and_then(|l| resp.url().join(l.to_str().ok()?).ok());
         if let Some(to) = to.filter(|to| to.origin() != resp.url().origin()) {
-            return TransportError::Redirected(to.origin().ascii_serialization());
+            // A gateway can put a header value it turned down into the address, even the host name.
+            let to = to.origin().ascii_serialization();
+            return if address_repeats_header(&to, headers) { TransportError::RedirectedHidden } else { TransportError::Redirected(to) };
         }
     }
     let status = resp.status().as_u16();
@@ -928,6 +1023,263 @@ async fn unexpected(mut resp: reqwest::Response) -> TransportError {
         }
     }
     head.truncate(KEEP);
-    let body = String::from_utf8_lossy(&head).chars().take(300).collect();
+    let body = shown_body(resp.status(), &String::from_utf8_lossy(&head), headers);
     TransportError::Unexpected { status, body }
+}
+
+/// How far a connection test got before it failed, so setup can say what to fix.
+/// `Address`: the URL or SSH target, or the SSH tunnel. `Reach`: the dashboard's HTTP port. `SignIn`: the
+/// username and password. `Chat`: the `/api/ws` chat connection. `Cancelled`: the owner stopped the test.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Stage {
+    Address,
+    Reach,
+    SignIn,
+    Chat,
+    Cancelled,
+}
+
+/// A failed connection test. `status`: the dashboard's `GET /api/status` body, when it answered one, so setup can
+/// tell a Hermes dashboard from something else on the port, and which sign-in methods it offers.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ProbeFailure {
+    pub stage: Stage,
+    pub message: String,
+    pub status: Option<String>,
+}
+
+impl ProbeFailure {
+    pub fn new(stage: Stage, message: impl Into<String>) -> Self {
+        ProbeFailure { stage, message: message.into(), status: None }
+    }
+}
+
+/// A connection test that went through: the dashboard's `GET /api/status` body (none if it didn't answer one) and
+/// the first frame `/api/ws` sent, which the webview checks is a legacy `gateway.ready`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Probed {
+    pub status: Option<String>,
+    pub ready: String,
+}
+
+/// How long each step of a connection test may take. The app's own sign-in has no limit, but a test the owner is
+/// watching should say where it stuck.
+pub const PROBE_STEP_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Tests a sign-in at `base` the way `Dashboard::sign_in` and `open_pipe` do it, without keeping anything: reads
+/// `/api/status` (no sign-in needed), signs in, opens `/api/ws` for `profile` and waits for its first frame, then
+/// closes it. The app's own connection, if there is one, is untouched.
+pub async fn probe(base: &Url, sign_in: &SignIn, profile: &str) -> Result<Probed, ProbeFailure> {
+    probe_with(base, sign_in, profile, PROBE_STEP_TIMEOUT).await
+}
+
+pub async fn probe_with(base: &Url, sign_in: &SignIn, profile: &str, step: Duration) -> Result<Probed, ProbeFailure> {
+    let timed_out = |what: &str| format!("{what} didn't answer within {}s.", step.as_secs());
+    // The same headers and redirect rule as the sign-in, so a gateway in front of the dashboard lets this through too.
+    let http = client(&sign_in.headers).map_err(|e| ProbeFailure::new(Stage::Address, e.to_string()))?;
+    // The body is read inside the limit too: a server can send its headers and then stall.
+    let read_status = async {
+        let resp = http.get(endpoint(base, "api/status")).send().await.map_err(unreachable)?;
+        if resp.status().is_redirection() {
+            // Stopped at another site (`same_origin_redirects`), such as a gateway's login page.
+            return match unexpected(resp, &sign_in.headers).await {
+                e @ (TransportError::Redirected(_) | TransportError::RedirectedHidden) => Err(e),
+                _ => Ok(None),
+            };
+        }
+        // The route is public on a Hermes dashboard, so a refusal here is from something in front of it, such as
+        // Cloudflare Access without its headers. Its page isn't shown if the request carried any (`shown_body`).
+        if matches!(resp.status(), StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
+            return Err(unexpected(resp, &sign_in.headers).await);
+        }
+        if !resp.status().is_success() {
+            return Ok(None);
+        }
+        resp.text().await.map(Some).map_err(unreachable)
+    };
+    let status = match tokio::time::timeout(step, read_status).await {
+        Err(_) => return Err(ProbeFailure::new(Stage::Reach, timed_out("The dashboard"))),
+        Ok(Err(e)) => return Err(ProbeFailure::new(Stage::Reach, e.to_string())),
+        Ok(Ok(status)) => status,
+    };
+    let fail = |stage, message: String| ProbeFailure { stage, message, status: status.clone() };
+    let dashboard = match tokio::time::timeout(step, Dashboard::sign_in(base, sign_in)).await {
+        Err(_) => return Err(fail(Stage::SignIn, timed_out("The dashboard's sign-in"))),
+        Ok(Err(e)) => return Err(fail(Stage::SignIn, e.to_string())),
+        Ok(Ok(d)) => d,
+    };
+    let (tx, rx) = tokio::sync::oneshot::channel::<PipeEvent>();
+    let tx = Mutex::new(Some(tx));
+    let pipe = match tokio::time::timeout(
+        step,
+        dashboard.open_pipe(profile, move |e| {
+            if let Some(tx) = tx.lock().unwrap().take() {
+                let _ = tx.send(e);
+            }
+        }),
+    )
+    .await
+    {
+        Err(_) => return Err(fail(Stage::Chat, timed_out("The chat connection"))),
+        Ok(Err(e)) => return Err(fail(Stage::Chat, e.to_string())),
+        Ok(Ok(p)) => p,
+    };
+    let first = tokio::time::timeout(step, rx).await;
+    drop(pipe);
+    match first {
+        Ok(Ok(PipeEvent::Frame { text })) => Ok(Probed { status, ready: text }),
+        Ok(Ok(PipeEvent::Closed { reason })) => Err(fail(Stage::Chat, format!("The chat connection closed before Hermes was ready: {reason}"))),
+        Ok(Err(_)) => Err(fail(Stage::Chat, "The chat connection closed before Hermes was ready.".into())),
+        Err(_) => Err(fail(Stage::Chat, timed_out("Hermes"))),
+    }
+}
+
+/// A request error with its causes, which say what actually went wrong ("Connection refused", "dns error", a
+/// certificate problem); reqwest's own message only names the URL.
+/// A request that got no answer, as an error. The URL is left out: a redirect can put a header value, or a provider
+/// key the dashboard was sent, into the URL it gives up on.
+fn unreachable(e: reqwest::Error) -> TransportError {
+    TransportError::Unreachable(describe(&e.without_url()))
+}
+
+fn describe(e: &reqwest::Error) -> String {
+    let mut parts = vec![e.to_string()];
+    let mut source = std::error::Error::source(e);
+    while let Some(s) = source {
+        let text = s.to_string();
+        if !parts.iter().any(|p| p.contains(&text)) {
+            parts.push(text);
+        }
+        source = s.source();
+    }
+    parts.join(": ")
+}
+
+/// What became of a provider key saved with `Dashboard::save_provider_key`. `verified`: the provider accepted it.
+/// Otherwise Hermes couldn't check it (no check for that provider, or the provider couldn't be reached); it is saved
+/// either way. Hermes's own message isn't passed on: a provider's can quote part of the key, as OpenAI's does.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SavedKey {
+    pub verified: bool,
+}
+
+/// How long checking and saving a provider key may take, all requests together.
+const KEY_SAVE_LIMIT: Duration = Duration::from_secs(30);
+
+/// Said when the provider turns a key down, in place of its own message, which can quote part of the key.
+pub const KEY_TURNED_DOWN: &str = "The provider turned the key down. Check that you copied all of it, and that it's for this provider.";
+
+/// `POST /api/providers/validate`'s answer (`hermes_cli/web_routers/config_env.py` at the deployed `bf0203a`).
+#[derive(Deserialize)]
+struct Validated {
+    ok: bool,
+    reachable: bool,
+}
+
+/// An env var name that can hold a model provider's API key: upper-case, ending `_API_KEY`, `_KEY` or `_TOKEN`,
+/// and not one of Hermes's own (`HERMES_…`, such as the dashboard session token).
+fn provider_key_name(key: &str) -> bool {
+    let shape = (2..=64).contains(&key.len())
+        && key.starts_with(|c: char| c.is_ascii_uppercase())
+        && key.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+    shape && !key.starts_with("HERMES_") && (key.ends_with("_KEY") || key.ends_with("_TOKEN"))
+}
+
+impl Dashboard {
+    /// Gives the profile's Hermes a model provider's API key, the way the dashboard's Keys page does
+    /// (`hermes_cli/web_routers/config_env.py` at the deployed `bf0203a`):
+    ///
+    /// 1. `GET /api/env?profile=` must list `key` as a provider's secret, so nothing else in the profile's `.env`
+    ///    can be written this way, whatever the webview asks.
+    /// 2. `POST /api/providers/validate` asks the provider about the key. A key it turns down isn't saved.
+    /// 3. `PUT /api/env?profile=` saves it in the profile's `.env` on the server.
+    ///
+    /// The key never comes back in an error: a failed answer to a request that carried it isn't shown at all, since
+    /// it may echo the key (FastAPI's 422 does), and cutting it short could leave part of the key behind.
+    pub async fn save_provider_key(&self, profile: &str, key: &str, value: &str) -> Result<SavedKey, TransportError> {
+        self.save_provider_key_within(profile, key, value, KEY_SAVE_LIMIT).await
+    }
+
+    /// `save_provider_key`, giving up after `limit`, every request and answer included, so setup never waits on a
+    /// Hermes or provider that stopped answering.
+    pub async fn save_provider_key_within(&self, profile: &str, key: &str, value: &str, limit: Duration) -> Result<SavedKey, TransportError> {
+        tokio::time::timeout(limit, self.check_and_save_key(profile, key, value))
+            .await
+            .unwrap_or(Err(TransportError::KeyTimedOut(limit.as_secs())))
+    }
+
+    async fn check_and_save_key(&self, profile: &str, key: &str, value: &str) -> Result<SavedKey, TransportError> {
+        let value = value.trim();
+        if !provider_key_name(key) {
+            return Err(TransportError::NotRelayed(format!("{key}: not a model provider's key")));
+        }
+        if value.is_empty() || value.len() > 4096 || value.chars().any(char::is_control) {
+            return Err(TransportError::KeyRejected("Paste the key on one line, without spaces around it.".into()));
+        }
+        // The key never follows a redirect to another site, extra headers or not.
+        let http = client_kept_to_origin(&self.headers, true)?;
+        let scoped = |path: &str| {
+            let mut url = endpoint(&self.base, path);
+            url.query_pairs_mut().append_pair("profile", profile);
+            url
+        };
+
+        let env: serde_json::Value = serde_json::from_str(&self.call(&http, Method::GET, scoped("api/env"), None, true).await?)
+            .map_err(|e| TransportError::Unexpected { status: 200, body: format!("GET /api/env: {e}") })?;
+        let row = &env[key];
+        let is_provider_secret = row["provider"].as_str().is_some_and(|p| !p.is_empty())
+            && row["is_password"] == json!(true)
+            && row["channel_managed"] != json!(true);
+        if !is_provider_secret {
+            return Err(TransportError::NotRelayed(format!("{key}: Hermes doesn't list it as a model provider's key")));
+        }
+
+        let body = json!({"key": key, "value": value}).to_string();
+        let checked = self.call(&http, Method::POST, endpoint(&self.base, "api/providers/validate"), Some(body), false).await?;
+        // Neither the answer nor serde's account of it is shown: either can quote the key.
+        let checked: Validated = serde_json::from_str(&checked).map_err(|_| TransportError::Unexpected {
+            status: 200,
+            body: "Hermes's answer to the key check wasn't understood (not shown, as it may hold the key).".into(),
+        })?;
+        if !checked.ok && checked.reachable {
+            return Err(TransportError::KeyRejected(KEY_TURNED_DOWN.into()));
+        }
+
+        let body = json!({"key": key, "value": value, "provider_setup": true}).to_string();
+        self.call(&http, Method::PUT, scoped("api/env"), Some(body), false).await?;
+        Ok(SavedKey { verified: checked.ok && checked.reachable })
+    }
+
+    /// One signed-in call that the app itself makes, with a JSON body; the webview's are `request`. `show_failure`:
+    /// a failed answer's body goes into the error; off for a request that carries a secret.
+    async fn call(&self, http: &reqwest::Client, method: Method, url: Url, body: Option<String>, show_failure: bool) -> Result<String, TransportError> {
+        let mut req = http.request(method, url).header(header::COOKIE, self.cookie_header());
+        if let Some(body) = body {
+            req = req.header(header::CONTENT_TYPE, "application/json").body(body);
+        }
+        let resp = req.send().await.map_err(unreachable)?;
+        self.keep_cookies(&resp);
+        match resp.status() {
+            s if s.is_success() => resp.text().await.map_err(unreachable),
+            StatusCode::UNAUTHORIZED => Err(TransportError::SignedOut),
+            _ if show_failure => Err(unexpected(resp, &self.headers).await),
+            s => Err(TransportError::Unexpected { status: s.as_u16(), body: "(not shown, as it may hold the key)".into() }),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::provider_key_name;
+
+    #[test]
+    fn only_provider_key_names() {
+        for ok in ["OPENROUTER_API_KEY", "HF_TOKEN", "GITHUB_TOKEN", "Z_AI_API_KEY", "DASHSCOPE_API_KEY"] {
+            assert!(provider_key_name(ok), "{ok}");
+        }
+        for bad in ["HERMES_DASHBOARD_SESSION_TOKEN", "PATH", "OPENAI_BASE_URL", "openrouter_api_key", "_API_KEY", "A B_KEY", "X\nY_KEY", ""] {
+            assert!(!provider_key_name(bad), "{bad}");
+        }
+    }
 }
