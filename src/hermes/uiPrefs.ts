@@ -5,6 +5,7 @@
 // settings feature reads and writes through this module.
 
 import { fromKey, isEffort, type ModelPick } from "./models";
+import { toTemplates, type Template } from "./templates";
 
 export const UI_PREFS_KEY = "hermes-ui-prefs";
 /** The shape the document has now. Bump it, and add a step to UI_PREFS_MIGRATIONS, when a field changes meaning. */
@@ -39,6 +40,8 @@ export type UIPrefs = {
   screenshotShortcut: string | null;
   /** How wide the owner made the preview pane, in px; null until they resize it. */
   previewWidth: number | null;
+  /** The owner's message templates (templates.ts, ADR 0028). */
+  templates: Template[];
 };
 
 /** The shape of a stored shortcut: modifiers in order, then one key (ui/shortcut.ts writes them). */
@@ -58,6 +61,7 @@ export const DEFAULT_UI_PREFS: Readonly<UIPrefs> = Object.freeze({
   statusBar: [...STATUS_BAR_ITEMS],
   screenshotShortcut: "Ctrl+Shift+S",
   previewWidth: null,
+  templates: [],
 });
 
 /** A stored document as read, before its fields are checked. */
@@ -150,6 +154,7 @@ export function readUIPrefs(doc: UIPrefsDoc, d: Readonly<UIPrefs> = DEFAULT_UI_P
     statusBar: toStatusBar(doc.statusBar) ?? [...d.statusBar],
     screenshotShortcut: doc.screenshotShortcut === null || isShortcut(doc.screenshotShortcut) ? doc.screenshotShortcut : d.screenshotShortcut,
     previewWidth: previewWidth === undefined ? d.previewWidth : previewWidth,
+    templates: toTemplates(doc.templates) ?? [...d.templates],
   };
 }
 
@@ -184,6 +189,8 @@ function parse(raw: string | null): { doc: UIPrefsDoc; prefs: UIPrefs } {
 // What was read last, so getUIPrefs returns the same object until the stored document changes (useSyncExternalStore
 // needs that). A change that couldn't be stored is kept here, and holds until the app closes or another window writes.
 let cachedRaw: string | null | undefined;
+/** The last change couldn't be stored: `cached` holds prefs that storage doesn't. The next set tries again. */
+let unstored = false;
 let cached: { doc: UIPrefsDoc; prefs: UIPrefs } = { doc: { v: UI_PREFS_VERSION }, prefs: readUIPrefs({}) };
 
 function current() {
@@ -191,6 +198,7 @@ function current() {
   if (raw !== cachedRaw) {
     cachedRaw = raw;
     cached = parse(raw);
+    unstored = false;
   }
   return cached;
 }
@@ -210,23 +218,32 @@ export function getUIPrefs(): Readonly<UIPrefs> {
  * Merges `patch` into the prefs and keeps them. Each field given replaces the old value whole (`statusBar` is not
  * appended to; `modelPicker: null` forgets the pick); fields left out, or given as undefined, stay as they are.
  * Fields this version doesn't know, written by a newer app, are kept. Listeners hear of it only if something changed.
+ * Answers false if the change couldn't be stored (storage full or refused); it then holds only until the app closes.
  */
-export function setUIPrefs(patch: Partial<UIPrefs>): void {
+export function setUIPrefs(patch: Partial<UIPrefs>): boolean {
   const { doc, prefs } = current();
   const given = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
   // A value that isn't valid leaves the field as it was.
   const next = readUIPrefs(given, prefs);
-  if (JSON.stringify(next) === JSON.stringify(prefs)) return;
+  const same = JSON.stringify(next) === JSON.stringify(prefs);
+  if (same && !unstored) return true;
   const nextDoc: UIPrefsDoc = { ...doc, ...next, v: UI_PREFS_VERSION };
   const raw = JSON.stringify(nextDoc);
   cached = { doc: nextDoc, prefs: next };
+  let kept = false;
   try {
-    storage()?.setItem(UI_PREFS_KEY, raw);
-    cachedRaw = raw;
+    const s = storage();
+    if (s) {
+      s.setItem(UI_PREFS_KEY, raw);
+      cachedRaw = raw;
+      kept = true;
+    }
   } catch {
     // Not kept: `cached` holds the change while the stored document is still the one last read.
   }
-  notify();
+  unstored = !kept;
+  if (!same) notify();
+  return kept;
 }
 
 /** Stars a model (`provider/model`) for the model picker, or unstars a starred one. Never picks it. */

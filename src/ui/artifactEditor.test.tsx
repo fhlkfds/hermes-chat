@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// The artifact editor in the running app (ADR 0027): an Output opened to edit in the preview pane beside the chat,
+// The artifact editor in the running app (ADR 0029): an Output opened to edit in the preview pane beside the chat,
 // against a fake Hermes whose agent fs routes, write-text and `llm.oneshot` answer as the deployed `bf0203a` does.
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";

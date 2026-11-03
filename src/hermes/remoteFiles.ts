@@ -512,7 +512,7 @@ function explainSave(message: string): RemoteFilesError {
 
 /**
  * How a text editor reaches one machine's files: Server files through the managed-files routes (ADR 0024), an
- * artifact through the agent fs routes where its profile's tools run (ADR 0027). `readBytes` resolves to a file's
+ * artifact through the agent fs routes where its profile's tools run (ADR 0029). `readBytes` resolves to a file's
  * exact bytes and the path the server names for it, or rejects with a `RemoteFilesError` whose status says why (404
  * gone; 400 not a regular file; 403 not allowed; 413 too big). `writeText` resolves once the server said it wrote the
  * text, rejects with a `RemoteFilesError` when the server refused (nothing was written), or with `{ lost }` when the

@@ -993,7 +993,7 @@ impl Dashboard {
     }
 
     /// Writes an artifact's whole new text to `path` where `profile`'s tools run, through the agent fs route `POST
-    /// api/fs/write-text?profile=` (ADR 0027). That is the machine an Output written by `write_file` or `patch` is on:
+    /// api/fs/write-text?profile=` (ADR 0029). That is the machine an Output written by `write_file` or `patch` is on:
     /// the profile's SSH workspace when it has one, else the dashboard's own. Hermes stages the text beside the file and
     /// renames it into place, and checks nothing else, so the webview checks the file's revision first and reads it
     /// back after; this only writes. Only a full path is sent, never a credential file (`protected_server_path`: Hermes

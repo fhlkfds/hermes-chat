@@ -647,7 +647,7 @@ async fn files_save_text(
     transfers.run(id, epoch, work).await
 }
 
-/// Writes an artifact's whole new text to `path` where `profile`'s tools run (`POST api/fs/write-text`, ADR 0027). Like
+/// Writes an artifact's whole new text to `path` where `profile`'s tools run (`POST api/fs/write-text`, ADR 0029). Like
 /// `files_save_text`, the webview checks the revision first and reads it back after, and the write is a transfer, so
 /// `files_cancel` stops it and a closed or replaced connection never sends it.
 #[tauri::command]
@@ -706,17 +706,11 @@ async fn headers_delete() -> Result<(), String> {
     saved_password::delete(saved_password::HEADERS).await
 }
 
-/// Saves an exported chat (src/hermes/exportChat.ts) where the owner picks in the native Save dialog, which asks
-/// before replacing a file. The webview never names the path. `None`: the owner cancelled, and nothing was written.
-#[tauri::command]
-async fn chat_export(app: tauri::AppHandle, markdown: String, file_name: String) -> Result<Option<String>, String> {
+/// Writes `text` where the owner picks in the native Save dialog, which asks before replacing a file. The webview
+/// never names the path. `None`: the owner cancelled, and nothing was written.
+async fn save_with_dialog(app: &tauri::AppHandle, title: &str, file_name: String, filter: (&str, &[&str]), text: String) -> Result<Option<String>, String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
-    let mut dialog = app
-        .dialog()
-        .file()
-        .set_title("Export chat — the file may contain sensitive information from the chat")
-        .set_file_name(file_name)
-        .add_filter("Markdown", &["md"]);
+    let mut dialog = app.dialog().file().set_title(title).set_file_name(file_name).add_filter(filter.0, filter.1);
     if let Some(window) = app.get_webview_window("main") {
         dialog = dialog.set_parent(&window);
     }
@@ -725,30 +719,27 @@ async fn chat_export(app: tauri::AppHandle, markdown: String, file_name: String)
     });
     let Some(path) = rx.await.map_err(|e| e.to_string())? else { return Ok(None) };
     let path = path.into_path().map_err(|e| e.to_string())?;
-    std::fs::write(&path, markdown).map_err(|e| e.to_string())?;
+    std::fs::write(&path, text).map_err(|e| e.to_string())?;
     Ok(Some(path.display().to_string()))
+}
+
+/// Saves an exported chat (src/hermes/exportChat.ts) where the owner picks.
+#[tauri::command]
+async fn chat_export(app: tauri::AppHandle, markdown: String, file_name: String) -> Result<Option<String>, String> {
+    let title = "Export chat — the file may contain sensitive information from the chat";
+    save_with_dialog(&app, title, file_name, ("Markdown", &["md"]), markdown).await
+}
+
+/// Saves the owner's message templates (src/hermes/templates.ts `exportFile`) where the owner picks.
+#[tauri::command]
+async fn templates_export(app: tauri::AppHandle, json: String) -> Result<Option<String>, String> {
+    save_with_dialog(&app, "Export templates", "hermes-chat-templates.json".into(), ("JSON", &["json"]), json).await
 }
 
 /// Saves Usage analytics' CSV where the owner picks in the native Save dialog (ADR 0026). `None`: cancelled.
 #[tauri::command]
 async fn usage_export(app: tauri::AppHandle, csv: String, file_name: String) -> Result<Option<String>, String> {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    let mut dialog = app
-        .dialog()
-        .file()
-        .set_title("Export usage — chat titles are in the file")
-        .set_file_name(file_name)
-        .add_filter("CSV", &["csv"]);
-    if let Some(window) = app.get_webview_window("main") {
-        dialog = dialog.set_parent(&window);
-    }
-    dialog.save_file(move |path| {
-        let _ = tx.send(path);
-    });
-    let Some(path) = rx.await.map_err(|e| e.to_string())? else { return Ok(None) };
-    let path = path.into_path().map_err(|e| e.to_string())?;
-    std::fs::write(&path, csv).map_err(|e| e.to_string())?;
-    Ok(Some(path.display().to_string()))
+    save_with_dialog(&app, "Export usage — chat titles are in the file", file_name, ("CSV", &["csv"]), csv).await
 }
 
 /// A local file the owner picked for the preview pane.
@@ -943,6 +934,7 @@ pub fn run(screenshot: bool) {
             headers_save,
             headers_delete,
             chat_export,
+            templates_export,
             usage_export,
             preview_pick_local,
             preview_read_local,

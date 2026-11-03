@@ -88,7 +88,7 @@ export interface Pipe {
   saveText(id: number, path: string, text: string, overwrite: boolean): Promise<string>;
   /**
    * Writes an artifact's text to `path` where `profile`'s tools run (src-tauri `fs_save_text`, `POST api/fs/write-text`,
-   * ADR 0027). Resolves to Hermes's answer; `cancelTransfer(id)` stops it.
+   * ADR 0029). Resolves to Hermes's answer; `cancelTransfer(id)` stops it.
    */
   fsSaveText(id: number, profile: string, path: string, text: string): Promise<string>;
   cancelTransfer(id: number): Promise<void>;

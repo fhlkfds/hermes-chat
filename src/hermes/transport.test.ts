@@ -23,6 +23,7 @@ describe("Hermes transport", () => {
       archivedListed: false,
       others: { byName: {} },
       queues: {},
+      branches: { links: {}, attempts: [] },
       status: "connected",
       route: { kind: "ssh", target: "liam@hermes" },
       unsecure: false,

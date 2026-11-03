@@ -240,7 +240,7 @@ describe("Case 3: the connection drops mid-send", () => {
     await hermes.reconnect();
     await hermes.idle();
     const mine = chat().items.filter((i) => i.kind === "user" && i.text === TEXT);
-    expect(mine).toEqual([{ kind: "user", id: "h-2", text: TEXT }, expect.objectContaining({ outgoing: expect.objectContaining({ state: "failed" }) })]);
+    expect(mine).toEqual([{ kind: "user", id: "h-2", text: TEXT, rowId: 3 }, expect.objectContaining({ outgoing: expect.objectContaining({ state: "failed" }) })]);
   });
 
   it("Retry after reconnect lands normally: the same words, once, as a new message", async () => {
