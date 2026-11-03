@@ -1,4 +1,4 @@
-// A project's defaults for its new chats (GLOSSARY.md "Project defaults", ADR 0014): instructions, a model with its
+// A project's defaults for its new chats (GLOSSARY.md "Project defaults", ADR 0017): instructions, a model with its
 // reasoning effort, and a working folder on the server. Hermes keeps projects, but has nowhere to keep these (its
 // `projects.update` takes only a name, description, icon, colour and board), so this computer keeps them, for each
 // connection and profile, in their own document: `project-defaults.json` in the app's data folder, which every running

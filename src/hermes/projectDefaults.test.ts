@@ -1,4 +1,4 @@
-// Project defaults for new chats (ADR 0014): how a new chat's values are resolved, how the defaults are kept on this
+// Project defaults for new chats (ADR 0017): how a new chat's values are resolved, how the defaults are kept on this
 // computer with revisions, and how a chat starts with them against a fake Hermes that answers `session.create`,
 // `session.cwd.set` and `GET /api/fs/list` as the deployed `bf0203a` did when probed live.
 import { afterEach, describe, expect, it } from "vitest";

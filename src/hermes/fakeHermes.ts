@@ -61,6 +61,10 @@ export type TranscriptMessage = {
   display_kind?: string;
   reasoning?: string;
   row_id?: number;
+  /** A tool row's whole result as Hermes stores it, which `session.resume` leaves out (`content` is only for edit tools). */
+  result?: string;
+  /** An assistant row's tool calls as stored: `[{id, type, function: {name, arguments}}]`, `arguments` JSON text. */
+  tool_calls?: unknown;
 };
 
 /** A file on the owner's disk: its bytes as a string, a size alone for a file too big to make, or a folder. */
@@ -180,6 +184,25 @@ export class FakeHermes {
   /** Every other profile's stored sessions, by profile name. Each profile has its own store (research doc §5). */
   otherProfiles: Record<string, SessionRow[]> = {};
   /**
+   * Each profile's SOUL.md as the file holds it, by profile name; a profile left out has none. Read and written as
+   * `GET`/`PUT /api/profiles/{name}/soul` do at the deployed `bf0203a` (persona.ts).
+   */
+  souls: Record<string, string> = {};
+  /** False: the server is older than the persona routes, and answers them as `bf0203a` answers a path it hasn't. */
+  soulRoutes = true;
+  /** While set, `GET …/soul` fails with this message (e.g. a 500 for a file Hermes may not read). */
+  soulReadError?: string;
+  /** While set, `PUT …/soul` fails with this message and writes nothing. */
+  soulWriteError?: string;
+  /** While set, `PUT …/soul` writes the file, then fails with this message, as a connection lost before the answer. */
+  soulWriteLost?: string;
+  /** Runs as a `PUT …/soul` arrives, before it writes: another client's write in the middle of a Save. */
+  beforeSoulWrite?: () => void;
+  /** Runs after a `PUT …/soul` wrote: another client writing again before the read-back. */
+  afterSoulWrite?: () => void;
+  /** Profile distributions, by profile name, as `GET /api/profiles` lists them (`distribution_name`). */
+  distributions: Record<string, string> = {};
+  /**
    * Scheduled jobs by profile, as `cron/jobs.json` holds them, and how the cron routes behave
    * (`hermes_cli/web_routers/cron.py` at the deployed `bf0203a`, as probed with a throwaway HERMES_HOME).
    */
@@ -200,6 +223,13 @@ export class FakeHermes {
   dropOnPrompt?: "stored" | "lost";
   /** What the model answers every `llm.oneshot` call with, unless `oneshotFailure` says why it failed. */
   oneshotAnswer = "A new title";
+  /** The server commands `commands.catalog` lists; undefined for a Hermes without the method. */
+  commandCatalog: string[] | undefined = ["steer", "context", "compress", "help"];
+  /** The profile's quick commands (`quick_commands` in config.yaml), by name, with their description. */
+  quickCommands: Record<string, string> = {};
+  /** A `/steer` is queued for the running turn; false answers as Hermes does with no turn running. */
+  steerable = true;
+  contextOutput = "Context window: 12,400 / 200,000 tokens (6%)\n  System prompt  3,100\n  Messages       9,300";
   oneshotFailure?: string;
   /** The owner's local disk, by path, for attachments. */
   files: Record<string, FakeFile> = {};
@@ -349,6 +379,33 @@ export class FakeHermes {
       this.imagesStaged--;
       this.respond(r.id, { detached: true, count: this.imagesStaged });
     },
+    // `commands.catalog` (tui_gateway/methods_tools.py, `command_discovery.command_catalog`) at the deployed `bf0203a`:
+    // `canon` maps every listed name and alias to the command's own name. Older servers have no such method.
+    "commands.catalog": (r) => {
+      if (!this.commandCatalog) return this.fail(r.id, -32601, "unknown method: commands.catalog");
+      const canon = Object.fromEntries(this.commandCatalog.flatMap((n) => [[`/${n}`, `/${n}`], ...(n === "steer" ? [["/s", "/steer"]] : [])]));
+      const user = Object.keys(this.quickCommands).map((n) => [`/${n}`, this.quickCommands[n]]);
+      this.respond(r.id, {
+        pairs: [...this.commandCatalog.map((n) => [`/${n}`, n]), ...user], canon, commands: {},
+        categories: [{ name: "Session", pairs: this.commandCatalog.map((n) => [`/${n}`, n]) }, ...(user.length ? [{ name: "User commands", pairs: user }] : [])],
+        skills: {}, skill_count: 0, warning: "", plugin_discovery_error: "", plugin_commands: {},
+      });
+    },
+    // `command.dispatch` `_cmd_steer`: queued for a running turn; with none, Hermes asks for it to be sent as a message.
+    "command.dispatch": (r) => {
+      const sid = String(r.params.session_id);
+      if (!this.runtime.has(sid)) return this.fail(r.id, 4001, "session not found");
+      if (r.params.name !== "steer") return this.fail(r.id, 4018, `not a quick/plugin/bundle/skill command: ${r.params.name}`);
+      const arg = String(r.params.arg ?? "");
+      if (!arg) return this.fail(r.id, 4004, "usage: /steer <prompt>");
+      if (!this.steerable) return this.respond(r.id, { type: "send", message: arg, notice: `No agent running; sent as next turn: ${arg}` });
+      this.respond(r.id, { type: "exec", output: `⏩ Steer queued — arrives after the next tool call: ${arg}` });
+    },
+    // `slash.exec` for `/context`, answered from the live session.
+    "slash.exec": (r) => {
+      if (!this.runtime.has(String(r.params.session_id))) return this.fail(r.id, 4001, "session not found");
+      this.respond(r.id, { output: this.contextOutput });
+    },
     // Legacy `session.interrupt` (tui_gateway/methods_session_interrupt.py). The turn then ends with a
     // `message.complete` whose status is "interrupted"; tests send that themselves.
     "session.interrupt": (r) => {
@@ -485,10 +542,11 @@ export class FakeHermes {
     // `fs_list` (`hermes_cli/web_routers/files.py` at the deployed `bf0203a`): a folder's entries, or none and why.
     "GET /api/fs/list": ({ query }) => {
       const path = query.get("path") ?? "";
-      const isDir = (p: string) => this.serverDirs.has(p) || typeof this.serverFiles[p] === "object";
+      const all = new Set([...this.serverDirs, ...Object.keys(this.serverFiles)]);
+      // A folder holding a file or folder is there too, as on a real disk.
+      const isDir = (p: string) => this.serverDirs.has(p) || typeof this.serverFiles[p] === "object" || [...all].some((q) => q.startsWith(`${p}/`));
       if (typeof this.serverFiles[path] === "string") return { entries: [], error: "ENOTDIR" };
       if (!isDir(path)) return { entries: [], error: "ENOENT" };
-      const all = new Set([...this.serverDirs, ...Object.keys(this.serverFiles)]);
       const inside = [...all].filter((p) => p.startsWith(`${path}/`) && !p.slice(path.length + 1).includes("/"));
       return { entries: inside.map((p) => ({ name: p.split("/").pop(), path: p, isDirectory: isDir(p) })) };
     },
@@ -584,6 +642,7 @@ export class FakeHermes {
         provider: this.profileModel[name]?.provider ?? null,
         description: "",
         display_name: "",
+        distribution_name: this.distributions[name] ?? null,
       })),
     }),
     // Settings → Model (hermes_cli/web_routers/models.py, config_env.py, delegation.py at the deployed `bf0203a`).
@@ -704,6 +763,7 @@ export class FakeHermes {
         const patch = /^\/api\/sessions\/([^/]+)$/.exec(req.path);
         const snapshot = /^\/api\/sessions\/([^/]+)\/mutation-snapshot$/.exec(req.path);
         const messages = /^\/api\/sessions\/([^/]+)\/messages$/.exec(req.path);
+        const soul = /^\/api\/profiles\/([^/]+)\/soul$/.exec(req.path);
         const handler =
           this.rest[`${method} ${req.path}`] ??
           (method === "PATCH" && patch ? () => this.patchSession(patch[1], req.body!) : undefined) ??
@@ -711,7 +771,10 @@ export class FakeHermes {
           (method === "DELETE" && patch ? () => this.deleteSession(decodeURIComponent(patch[1]), req.query.get("profile")) : undefined) ??
           (method === "GET" && snapshot ? () => this.mutationSnapshot(snapshot[1], req.query.get("profile")) : undefined) ??
           (method === "GET" && messages ? () => this.storedMessages(decodeURIComponent(messages[1]), req.query) : undefined) ??
+          (soul && this.soulRoutes && (method === "GET" || method === "PUT") ? () => this.soul(method, decodeURIComponent(soul[1]), req.body) : undefined) ??
           this.cron.route(req);
+        if (soul && this.soulRoutes && method !== "GET" && method !== "PUT") throw new Error(`The dashboard answered 405: {"detail":"Method Not Allowed"}`);
+        if (soul && !this.soulRoutes) throw new Error(`The dashboard answered 404: {"detail":"No such API endpoint: ${req.path}"}`);
         if (!handler) throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
         return JSON.stringify(await handler(req));
       },
@@ -720,7 +783,8 @@ export class FakeHermes {
         const url = new URL(pathAndQuery, "http://dashboard/");
         const req: RestRequest = { method: "GET", path: url.pathname, query: url.searchParams };
         this.restRequests.push(req);
-        const handler = this.rest[`GET ${req.path}`];
+        const messages = /^\/api\/sessions\/([^/]+)\/messages$/.exec(req.path);
+        const handler = this.rest[`GET ${req.path}`] ?? (messages ? () => this.storedMessages(decodeURIComponent(messages[1]), req.query) : undefined);
         if (!handler) throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
         const body = JSON.stringify(await handler(req));
         if (body.length > maxBytes) throw new Error(`it's ${(body.length / MiB).toFixed(1)} MB now, over the ${Math.floor(maxBytes / MiB)} MB limit`);
@@ -731,6 +795,28 @@ export class FakeHermes {
       },
     };
   };
+
+  /**
+   * `GET`/`PUT /api/profiles/{name}/soul` at `bf0203a`: `_resolve_profile_dir` (400 bad name, 404 no profile), then a
+   * read with `encoding="utf-8-sig"` and universal newlines, or an unconditional whole-file write that creates it.
+   */
+  private soul(method: string, name: string, body?: Record<string, unknown>): unknown {
+    if (name !== "default" && !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(name)) throw new Error(`The dashboard answered 400: {"detail":"Invalid profile name '${name}'"}`);
+    if (name !== "default" && !(name in this.otherProfiles)) throw new Error(`The dashboard answered 404: {"detail":"Profile '${name}' does not exist."}`);
+    if (method === "GET") {
+      if (this.soulReadError) throw new Error(this.soulReadError);
+      const file = this.souls[name];
+      return file === undefined ? { content: "", exists: false } : { content: file.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n"), exists: true };
+    }
+    if (typeof body?.content !== "string")
+      throw new Error(`The dashboard answered 422: {"detail":[{"type":"missing","loc":["body","content"],"msg":"Field required"}]}`);
+    this.beforeSoulWrite?.();
+    if (this.soulWriteError) throw new Error(this.soulWriteError);
+    this.souls[name] = body.content;
+    this.afterSoulWrite?.();
+    if (this.soulWriteLost) throw new Error(this.soulWriteLost);
+    return { ok: true };
+  }
 
   /** A Server file for `/api/fs/*`, failing the way `_fs_regular_file` and `_is_sensitive_path` do at `bf0203a`. */
   private serverFile(query: URLSearchParams): { path: string; data: string } {
@@ -876,7 +962,16 @@ export class FakeHermes {
   private storedMessages(id: string, query: URLSearchParams) {
     const rows = (this.transcripts[id] ?? [])
       .filter((m) => m.row_id !== undefined)
-      .map((m) => ({ id: m.row_id!, session_id: id, role: m.role, content: m.text ?? m.content ?? null, timestamp: m.timestamp ?? null }));
+      .map((m) => ({
+        id: m.row_id!,
+        session_id: id,
+        role: m.role,
+        content: m.role === "tool" ? (m.result ?? m.content ?? null) : (m.text ?? m.content ?? null),
+        tool_name: m.role === "tool" ? (m.name ?? null) : null,
+        tool_call_id: m.tool_call_id ?? null,
+        tool_calls: m.tool_calls === undefined ? null : JSON.stringify(m.tool_calls),
+        timestamp: m.timestamp ?? null,
+      }));
     if (query.get("order") === "latest") rows.reverse();
     const offset = Number(query.get("offset") ?? 0);
     const limit = Number(query.get("limit") ?? 100);

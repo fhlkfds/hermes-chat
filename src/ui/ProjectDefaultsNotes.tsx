@@ -1,4 +1,4 @@
-// What a project's defaults (ADR 0014) mean on the chat pane: in the New chat pane, what the next chat starts with and
+// What a project's defaults (ADR 0017) mean on the chat pane: in the New chat pane, what the next chat starts with and
 // where each value comes from; in a started chat, Apply to this chat, which asks first and changes only what Hermes
 // can change in a chat that has started.
 import { useState } from "react";

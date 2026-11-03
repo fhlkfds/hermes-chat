@@ -650,7 +650,8 @@ impl Dashboard {
 
     /// One dashboard REST call for the webview: `GET`, `PATCH` or `DELETE` on a path under `api/`, with a
     /// JSON body. `POST` and `PUT` reach only Settings → Model's two writes (`POST api/model/set`,
-    /// `PUT api/config`) and the scheduled-job writes (`cron_write`). Returns the response body on 2xx.
+    /// `PUT api/config`), the scheduled-job writes (`cron_write`) and Settings → Persona's
+    /// `PUT api/profiles/{name}/soul`. Returns the response body on 2xx.
     pub async fn request(&self, method: &str, path_and_query: &str, body: Option<String>) -> Result<String, TransportError> {
         let (path, query) = path_and_query.split_once('?').unwrap_or((path_and_query, ""));
         let method = match (method, path) {
@@ -661,6 +662,7 @@ impl Dashboard {
             ("PUT", "api/config") => Method::PUT,
             ("POST", _) if cron_write("POST", path) => Method::POST,
             ("PUT", _) if cron_write("PUT", path) => Method::PUT,
+            ("PUT", p) if is_profile_soul(p) => Method::PUT,
             ("POST" | "PUT", _) => return Err(TransportError::NotRelayed(format!("{method} {path}"))),
             (other, _) => return Err(TransportError::NotRelayed(format!("{other} requests"))),
         };
@@ -892,6 +894,18 @@ fn endpoint(base: &Url, path: &str) -> Url {
     let prefix = url.path().trim_end_matches('/').to_owned();
     url.set_path(&format!("{prefix}/{path}"));
     url
+}
+
+/// `api/profiles/{name}/soul` for a Hermes profile id (`hermes_constants.PROFILE_ID_RE`: a lowercase letter or digit,
+/// then up to 63 more of those, `_` or `-`), the one write route Settings → Persona uses.
+fn is_profile_soul(path: &str) -> bool {
+    let Some(name) = path.strip_prefix("api/profiles/").and_then(|p| p.strip_suffix("/soul")) else {
+        return false;
+    };
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit())
+        && name.len() <= 64
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
 }
 
 /// An answer the call didn't expect, with the start of its body. Reads only the first few KB, so a huge or endless
