@@ -344,6 +344,43 @@ describe("The Usage screen", () => {
     expect(page).toHaveBeenCalledTimes(2);
   });
 
+  it("drops the last read's totals once the dates aren't a period, so they can't be exported as one", async () => {
+    const page = vi.fn(async () => ({ rows: [fixtureRow("a", 1, 1000)], total: 1 }));
+    const saveCsv = vi.fn(async () => "/tmp/u.csv");
+    const user = userEvent.setup();
+    render(<UsageAnalytics {...props({ page, session: vi.fn(), hermesTotals: async () => ({ totals: {} }) }, { saveCsv })} />);
+    await user.selectOptions(screen.getByRole("combobox", { name: "Period" }), "Dates…");
+    await waitFor(() => expect(tile("Chats")).toBe("1"));
+    await user.clear(screen.getByLabelText("From"));
+    expect(await screen.findByRole("alert")).toHaveProperty("textContent", expect.stringMatching(/Pick a start date/));
+    expect(screen.queryByRole("region", { name: "Tokens" })).toBeNull();
+    expect(screen.getByRole("button", { name: /Export CSV/ })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("status").textContent).toBe("");
+    expect(saveCsv).not.toHaveBeenCalled();
+  });
+
+  it("stops loading when the dates stop being a period, or the connection drops, mid-read", async () => {
+    const { io, waiting } = gatedIo([fixtureRow("a", 1, 1000)]);
+    const user = userEvent.setup();
+    const { rerender } = render(<UsageAnalytics {...props(io)} />);
+    await waitFor(() => expect(waiting).toHaveLength(1));
+    await user.selectOptions(screen.getByRole("combobox", { name: "Period" }), "Dates…");
+    await waitFor(() => expect(waiting).toHaveLength(2));
+    expect(screen.getByRole("status").textContent).toMatch(/Reading/);
+    await user.clear(screen.getByLabelText("From"));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toBe(""));
+    expect(screen.queryByLabelText("working")).toBeNull();
+    // A late answer for the read given up has nowhere to land.
+    await act(async () => waiting[1].resolve());
+    expect(screen.queryByRole("region", { name: "Tokens" })).toBeNull();
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Period" }), "Last 7 days");
+    await waitFor(() => expect(waiting).toHaveLength(3));
+    rerender(<UsageAnalytics {...props(io, { connected: false })} />);
+    await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Not connected to Hermes."));
+    expect(screen.queryByLabelText("working")).toBeNull();
+  });
+
   it("says when it can't read Hermes, and when this Hermes keeps no usage per chat", async () => {
     const { unmount } = render(<UsageAnalytics {...props({ page: vi.fn(), session: vi.fn(), hermesTotals: vi.fn() }, { connected: false })} />);
     expect(screen.getByText(/Connect to Hermes to read its usage/)).toBeTruthy();

@@ -136,7 +136,18 @@ export function UsageAnalytics({ io, profile, listProfiles, projects, projectCha
   // Each change of what to read starts a new read and cancels the one before: its answers are dropped, and it stops
   // asking Hermes at its next request.
   useEffect(() => {
-    if (!connected || invalid) return;
+    // Dates that aren't a period show nothing: the last read was for another period, and can't be exported as this
+    // one. Offline, the last read stays, as read; one under way stops loading.
+    if (invalid) {
+      setRead({ state: "idle" });
+      setDrill(undefined);
+      setExportNote(undefined);
+      return;
+    }
+    if (!connected) {
+      setRead((r) => (r.state === "loading" ? { state: "idle" } : r));
+      return;
+    }
     const period = periodOf(range, zone, now()) as Period;
     const ac = new AbortController();
     setRead({ state: "loading" });
