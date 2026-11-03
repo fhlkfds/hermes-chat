@@ -1746,3 +1746,20 @@ async fn a_download_names_its_path_as_a_query_and_stays_on_the_file_route() {
     let err = dashboard.download("/srv/data.bin&path=/srv/.env", &dir.join("x"), |_, _| {}).await.err().unwrap();
     assert!(matches!(&err, TransportError::Unexpected { status: 404, .. }), "{err:?}");
 }
+
+#[tokio::test]
+async fn a_download_never_takes_over_a_file_already_named_like_its_part_file() {
+    let dashboard = signed_in().await;
+    let dir = scratch("download-collide");
+    let dest = dir.join("data.bin");
+    // Every part name the next downloads could pick in this process is taken by someone else's file.
+    let pid = std::process::id();
+    for n in 0..64 {
+        std::fs::write(dir.join(format!(".data.bin.{pid}-{n}.part")), "not ours").unwrap();
+    }
+    dashboard.download("/srv/data.bin", &dest, |_, _| {}).await.expect("a free name was found");
+    assert_eq!(std::fs::metadata(&dest).unwrap().len(), 300_000);
+    for n in 0..64 {
+        assert_eq!(std::fs::read_to_string(dir.join(format!(".data.bin.{pid}-{n}.part"))).unwrap(), "not ours", "{n}");
+    }
+}

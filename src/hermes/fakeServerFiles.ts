@@ -56,6 +56,8 @@ export class FakeServerFiles {
   readonly local: Record<string, Uint8Array> = {};
   /** The native Save dialog: the local path the owner picks for a suggested name, or undefined when they close it. */
   saveDialog: (name: string) => string | undefined = (name) => `/home/me/Downloads/${name}`;
+  /** Set: each download reports progress once more after it has ended, as a late Channel message would. */
+  lateProgress = false;
   /** Set: a download fails this way halfway, as the Rust side words it (a full disk, a dropped connection). */
   transferError?: string;
   /** Set: a download holds here after reporting its first bytes, until the promise settles. */
@@ -163,7 +165,7 @@ export class FakeServerFiles {
    * src-tauri `files_download`: the Save dialog, then `GET /api/files/download` into a part file that takes the
    * destination's place only once complete. Stopped (`cancel`, or the connection closing), it leaves `local` as it was.
    */
-  async download(id: number, path: string, name: string, onProgress: (p: { done: number; total: number; dest: string }) => void): Promise<string | undefined> {
+  async download(id: number, path: string, name: string, onProgress: (p: { done: number; total: number; dest: string }) => void): Promise<{ dest: string; bytes: number } | undefined> {
     const dest = this.saveDialog(name);
     if (dest === undefined) return undefined;
     const stopped = new Promise<never>((_, reject) => this.running.set(id, reject));
@@ -176,9 +178,11 @@ export class FakeServerFiles {
       if (this.transferError) throw new Error(this.transferError);
       onProgress({ done: bytes.length, total: bytes.length, dest });
       this.local[dest] = bytes;
-      return dest;
+      return { dest, bytes: bytes.length };
     } finally {
       this.running.delete(id);
+      // A Channel message can reach the webview after the command's answer.
+      if (this.lateProgress) setTimeout(() => onProgress({ done: 1, total: 2, dest }), 0);
     }
   }
 

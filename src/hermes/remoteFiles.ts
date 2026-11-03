@@ -87,9 +87,12 @@ export type TransferPipe = {
    * file; `name` only suggests the file name. Resolves to the local path, or undefined when the owner closed the dialog.
    * Rejects with `TRANSFER_STOPPED` when stopped by `cancel` or by the connection closing.
    */
-  download(id: number, path: string, name: string, onProgress: (p: TransferProgress) => void): Promise<string | undefined>;
+  download(id: number, path: string, name: string, onProgress: (p: TransferProgress) => void): Promise<Downloaded | undefined>;
   cancel(id: number): Promise<void>;
 };
+
+/** A finished download: where it went on this computer, and how many bytes it holds. */
+export type Downloaded = { dest: string; bytes: number };
 
 /** What a stopped transfer rejects with (src-tauri `TRANSFER_STOPPED`). */
 export const TRANSFER_STOPPED = "The transfer was stopped.";
@@ -130,10 +133,13 @@ export type RemoteFiles = {
   subscribe(listener: () => void): () => void;
 };
 
+/** Transfer ids, unique for as long as the app runs, across sign-ins: the Rust side keys running transfers by them. */
+let nextTransferId = 1;
+
 export function remoteFiles(get: RemoteGet, pipe: TransferPipe): RemoteFiles {
   let transfers: Transfer[] = [];
-  let nextId = 1;
   const listeners = new Set<() => void>();
+  const settled = (id: number) => !["picking", "running"].includes(transfers.find((t) => t.id === id)?.state ?? "");
   const change = (id: number, patch: Partial<Transfer> | undefined) => {
     transfers = patch ? transfers.map((t) => (t.id === id ? { ...t, ...patch } : t)) : transfers.filter((t) => t.id !== id);
     for (const l of listeners) l();
@@ -147,17 +153,17 @@ export function remoteFiles(get: RemoteGet, pipe: TransferPipe): RemoteFiles {
     async download(entry) {
       const why = cantDownload(entry);
       if (why) throw new RemoteFilesError(why);
-      const id = nextId++;
+      const id = nextTransferId++;
       transfers = [...transfers, { id, kind: "download", name: entry.name, serverPath: entry.path, done: 0, total: entry.size, state: "picking" }];
       change(id, {});
       try {
-        const dest = await pipe.download(id, entry.path, entry.name, (p) =>
-          change(id, { state: "running", dest: p.dest, done: p.done, ...(typeof p.total === "number" && { total: p.total }) }),
+        const got = await pipe.download(id, entry.path, entry.name, (p) =>
+          // Progress can arrive after the outcome; it never takes a settled transfer back.
+          settled(id) ? undefined : change(id, { state: "running", dest: p.dest, done: p.done, ...(typeof p.total === "number" && { total: p.total }) }),
         );
         // The owner closed the Save dialog: nothing was read or written.
-        if (dest === undefined) return change(id, undefined);
-        const t = transfers.find((t) => t.id === id);
-        change(id, { state: "done", dest, total: t?.done ?? t?.total });
+        if (got === undefined) return change(id, undefined);
+        change(id, { state: "done", dest: got.dest, done: got.bytes, total: got.bytes });
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
         if (message === TRANSFER_STOPPED) return change(id, { state: "stopped" });

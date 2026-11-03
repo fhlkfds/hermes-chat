@@ -427,23 +427,48 @@ async fn hermes_disconnect(state: State<'_, AppState>, transfers: State<'_, Tran
 /// Server file transfers running now, by the webview's id for each, so Cancel can stop one. Every one is stopped when
 /// the connection is replaced or closed, so a transfer never outlives the sign-in it started on (ADR 0023).
 #[derive(Default)]
-struct Transfers(std::sync::Mutex<std::collections::HashMap<u64, tokio::task::AbortHandle>>);
+struct Transfers {
+    /// Each running transfer's abort handle, with the run that registered it.
+    tasks: std::sync::Mutex<std::collections::HashMap<u64, (u64, tokio::task::AbortHandle)>>,
+    /// Counts the times every transfer was stopped. A transfer that started before the latest stop must not go on,
+    /// even if it was still waiting on a dialog then.
+    epoch: std::sync::atomic::AtomicU64,
+    runs: std::sync::atomic::AtomicU64,
+}
 
 impl Transfers {
     fn stop_all(&self) {
-        for (_, task) in self.0.lock().unwrap().drain() {
+        use std::sync::atomic::Ordering;
+        let mut tasks = self.tasks.lock().unwrap();
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+        for (_, (_, task)) in tasks.drain() {
             task.abort();
         }
     }
 
-    /// Runs `work` as transfer `id` until it ends or `files_cancel` stops it.
+    fn epoch(&self) -> u64 {
+        self.epoch.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Runs `work` as transfer `id` until it ends or `files_cancel` or `stop_all` stops it. It is registered before it
+    /// starts, so nothing it does, a dialog included, happens out of reach of either. Given an `id` still running, the
+    /// older transfer is stopped; each run removes only its own entry.
     async fn run<T: Send + 'static>(&self, id: u64, work: impl std::future::Future<Output = Result<T, String>> + Send + 'static) -> Result<T, String> {
-        let task = tokio::spawn(work);
-        if let Some(old) = self.0.lock().unwrap().insert(id, task.abort_handle()) {
-            old.abort();
-        }
+        let run = self.runs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let task = {
+            let mut tasks = self.tasks.lock().unwrap();
+            let task = tokio::spawn(work);
+            if let Some((_, old)) = tasks.insert(id, (run, task.abort_handle())) {
+                old.abort();
+            }
+            task
+        };
         let ended = task.await;
-        self.0.lock().unwrap().remove(&id);
+        let mut tasks = self.tasks.lock().unwrap();
+        if tasks.get(&id).is_some_and(|(r, _)| *r == run) {
+            tasks.remove(&id);
+        }
+        drop(tasks);
         match ended {
             Ok(result) => result,
             Err(e) if e.is_cancelled() => Err(TRANSFER_STOPPED.into()),
@@ -463,46 +488,65 @@ struct TransferProgress {
     dest: String,
 }
 
+/// A finished download: where it went and how many bytes it holds.
+#[derive(Serialize)]
+struct Downloaded {
+    dest: String,
+    bytes: u64,
+}
+
+/// The signed-in dashboard, if the connection is still the one that was current at `epoch`.
+async fn dashboard_since(app: &tauri::AppHandle, epoch: u64) -> Result<Arc<Dashboard>, String> {
+    let transfers = app.state::<Transfers>();
+    let dashboard = dashboard(&app.state::<AppState>()).await?;
+    if transfers.epoch() != epoch {
+        return Err(TRANSFER_STOPPED.into());
+    }
+    Ok(dashboard)
+}
+
 /// Downloads the Server file at `path` (ADR 0023). The owner picks where in the native Save dialog, which asks before
-/// replacing a file there; the webview never names the local path. `None`: the owner cancelled the dialog, and
-/// nothing was read or written. `name` only suggests the file name.
+/// replacing a file there; the webview never names the local path. `None`: the owner cancelled the dialog, and nothing
+/// was read or written. `name` only suggests the file name. The download reads from the connection that was current
+/// when it was asked for, and only from it: one replaced or closed meanwhile, even while the dialog was open, stops it.
 #[tauri::command]
 async fn files_download(
     app: tauri::AppHandle,
-    state: State<'_, AppState>,
     transfers: State<'_, Transfers>,
     id: u64,
     path: String,
     name: String,
     on_progress: Channel<TransferProgress>,
-) -> Result<Option<String>, String> {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    let mut dialog = app.dialog().file().set_title("Download from the Hermes server").set_file_name(name);
-    if let Some(window) = app.get_webview_window("main") {
-        dialog = dialog.set_parent(&window);
-    }
-    dialog.save_file(move |dest| {
-        let _ = tx.send(dest);
-    });
-    let Some(dest) = rx.await.map_err(|e| e.to_string())? else { return Ok(None) };
-    let dest = dest.into_path().map_err(|e| e.to_string())?;
-    // Taken once the destination is picked: the download reads from the sign-in that is current then, and only it.
-    let dashboard = dashboard(&state).await?;
-    let shown = dest.display().to_string();
+) -> Result<Option<Downloaded>, String> {
+    let epoch = transfers.epoch();
     let work = async move {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut dialog = app.dialog().file().set_title("Download from the Hermes server").set_file_name(name);
+        if let Some(window) = app.get_webview_window("main") {
+            dialog = dialog.set_parent(&window);
+        }
+        dialog.save_file(move |dest| {
+            let _ = tx.send(dest);
+        });
+        let Some(dest) = rx.await.map_err(|e| e.to_string())? else { return Ok(None) };
+        let dest = dest.into_path().map_err(|e| e.to_string())?;
+        let dashboard = dashboard_since(&app, epoch).await?;
+        let shown = dest.display().to_string();
+        // Picked: from here on it is a running download, which Cancel can stop.
+        let _ = on_progress.send(TransferProgress { done: 0, total: None, dest: shown.clone() });
         let report = |done, total| {
             let _ = on_progress.send(TransferProgress { done, total, dest: shown.clone() });
         };
-        dashboard.download(&path, &dest, report).await.map_err(|e| e.to_string())?;
-        Ok(dest.display().to_string())
+        let bytes = dashboard.download(&path, &dest, report).await.map_err(|e| e.to_string())?;
+        Ok(Some(Downloaded { dest: shown, bytes }))
     };
-    transfers.run(id, work).await.map(Some)
+    transfers.run(id, work).await
 }
 
 /// Stops transfer `id`, if it is still running. A download's part file is removed; `dest` is left as it was.
 #[tauri::command]
 fn files_cancel(transfers: State<'_, Transfers>, id: u64) {
-    if let Some(task) = transfers.0.lock().unwrap().remove(&id) {
+    if let Some((_, task)) = transfers.tasks.lock().unwrap().remove(&id) {
         task.abort();
     }
 }
@@ -784,4 +828,28 @@ pub fn run(screenshot: bool) {
                 update::relaunch(app);
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Transfers;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn a_replaced_transfer_leaves_its_replacements_cancel_in_place() {
+        let transfers = std::sync::Arc::new(Transfers::default());
+        let t = transfers.clone();
+        let old = tokio::spawn(async move { t.run(7, async { tokio::time::sleep(Duration::from_secs(60)).await; Ok(()) }).await });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let t = transfers.clone();
+        let new = tokio::spawn(async move { t.run(7, async { tokio::time::sleep(Duration::from_secs(60)).await; Ok(()) }).await });
+        assert_eq!(old.await.unwrap(), Err(super::TRANSFER_STOPPED.to_owned()));
+        // The old run ended after the new one registered; the new one must still be reachable.
+        assert!(transfers.tasks.lock().unwrap().contains_key(&7));
+        let epoch = transfers.epoch();
+        transfers.stop_all();
+        assert_eq!(new.await.unwrap(), Err(super::TRANSFER_STOPPED.to_owned()));
+        assert_eq!(transfers.epoch(), epoch + 1);
+        assert!(transfers.tasks.lock().unwrap().is_empty());
+    }
 }

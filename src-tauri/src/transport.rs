@@ -871,8 +871,12 @@ impl Dashboard {
     /// once every byte the server announced has arrived; on any failure, or when the task is aborted (Cancel), the
     /// part file is removed and `dest` is left as it was. `progress` gets the bytes written so far and the size the
     /// server announced. Memory stays bounded: one network chunk at a time.
+    ///
+    /// The file work is synchronous on purpose. An aborted task stops only at an `.await`, and every `.await` here is
+    /// on the network, so an abort can't leave a file operation running on its own: a part file is never left behind,
+    /// and once the rename into place has happened, nothing can stop the download from returning that it did.
     pub async fn download(&self, server_path: &str, dest: &std::path::Path, progress: impl Fn(u64, Option<u64>)) -> Result<u64, TransportError> {
-        use tokio::io::AsyncWriteExt;
+        use std::io::Write;
         let query = url::form_urlencoded::Serializer::new(String::new()).append_pair("path", server_path).finish();
         let (url, _) = relay_url(&self.base, "api/files/download", &query)?;
         let mut resp = self.http.get(url).header(header::COOKIE, self.cookie_header()).send().await.map_err(unreachable)?;
@@ -884,13 +888,12 @@ impl Dashboard {
         }
         let total = resp.content_length();
         let io = |e: std::io::Error| TransportError::File(format!("couldn't write it on this computer: {e}"));
-        let part = PartFile::beside(dest).map_err(io)?;
-        let mut out = tokio::fs::OpenOptions::new().write(true).create_new(true).open(&part.0).await.map_err(io)?;
+        let (part, mut out) = PartFile::create(dest).map_err(io)?;
         let mut written = 0u64;
         let mut told = std::time::Instant::now();
         progress(0, total);
         while let Some(chunk) = resp.chunk().await.map_err(unreachable)? {
-            out.write_all(&chunk).await.map_err(io)?;
+            out.write_all(&chunk).map_err(io)?;
             written += chunk.len() as u64;
             if total.is_some_and(|t| written > t) {
                 return Err(TransportError::File("the server sent more than it said the file holds".into()));
@@ -903,9 +906,9 @@ impl Dashboard {
         if let Some(total) = total.filter(|&t| written != t) {
             return Err(TransportError::File(format!("the download ended early, after {written} of {total} bytes")));
         }
-        out.sync_all().await.map_err(io)?;
+        out.sync_all().map_err(io)?;
         drop(out);
-        tokio::fs::rename(&part.0, dest).await.map_err(io)?;
+        std::fs::rename(&part.0, dest).map_err(io)?;
         part.keep();
         progress(written, total);
         Ok(written)
@@ -934,17 +937,25 @@ impl Dashboard {
 }
 
 /// A download's hidden part file beside its destination, removed when dropped unless `keep` was called: a failed,
-/// cancelled (the task aborted) or interrupted download leaves nothing behind.
+/// cancelled (the task aborted) or interrupted download leaves nothing behind. It owns only a file it created itself.
 struct PartFile(std::path::PathBuf);
 
 impl PartFile {
-    fn beside(dest: &std::path::Path) -> std::io::Result<PartFile> {
+    /// Creates a new part file beside `dest`, never opening or taking over one that is already there.
+    fn create(dest: &std::path::Path) -> std::io::Result<(PartFile, std::fs::File)> {
         use std::sync::atomic::{AtomicU64, Ordering};
         static N: AtomicU64 = AtomicU64::new(0);
         let name = dest.file_name().ok_or_else(|| std::io::Error::other("the destination has no file name"))?;
         let dir = dest.parent().ok_or_else(|| std::io::Error::other("the destination has no folder"))?;
-        let part = format!(".{}.{}-{}.part", name.to_string_lossy(), std::process::id(), N.fetch_add(1, Ordering::Relaxed));
-        Ok(PartFile(dir.join(part)))
+        let mut tries = 0;
+        loop {
+            let part = dir.join(format!(".{}.{}-{}.part", name.to_string_lossy(), std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+            match std::fs::OpenOptions::new().write(true).create_new(true).open(&part) {
+                Ok(file) => return Ok((PartFile(part), file)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && tries < 100 => tries += 1,
+                Err(e) => return Err(e),
+            }
+        }
     }
 
     fn keep(mut self) {

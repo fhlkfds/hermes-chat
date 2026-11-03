@@ -302,6 +302,18 @@ describe("downloads", () => {
     expect(server.managedFiles.local).toEqual({});
   });
 
+  it("keeps a settled download settled when progress arrives late", async () => {
+    const { server, hermes } = await signedIn(homeDisk);
+    server.managedFiles.lateProgress = true;
+    await hermes.files.download(notes);
+    server.managedFiles.transferError = "the download ended early, after 1 of 2 bytes";
+    await hermes.files.download(notes);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(hermes.files.transfers().map((t) => t.state)).toEqual(["done", "failed"]);
+    const size = new TextEncoder().encode("# Notes\n\nCafé ☕\n").length;
+    expect(hermes.files.transfers()[0]).toMatchObject({ done: size, total: size });
+  });
+
   it("refuses a folder, a broken link and a file over 100 MB before asking anything", async () => {
     const { hermes } = await signedIn(homeDisk);
     for (const entry of [
