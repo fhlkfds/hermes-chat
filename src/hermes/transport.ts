@@ -700,7 +700,7 @@ export class Hermes {
     get: (pathAndQuery) => this.rest("GET", pathAndQuery),
   });
   /**
-   * Importing transcripts (importTranscripts.ts, ADR 0025). Each call names its profile, and goes only over a
+   * Importing transcripts (importTranscripts.ts, ADR 0031). Each call names its profile, and goes only over a
    * connection that is up, so a call made before a sign-out or profile switch never reaches another server or profile.
    */
   readonly imports = {

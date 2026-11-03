@@ -205,7 +205,7 @@ What doesn't come in is listed before you import. From Markdown: message times (
 
 The whole file is checked before anything is sent: a broken line, a cut-short file (for a Markdown export: one that stops mid-line, or a tool call or Approval missing its end), a session id that looks like a path, a message without a role, or more than Hermes takes at once (500 chats, 10,000 messages in one chat, 50,000 in all, 5 MB in one chat, 25 MB in all) stops it with the place it went wrong. Hermes then checks every chat again and writes all of them or none. Afterwards each chat is read back from Hermes. If the answer is lost, the app asks Hermes again with the same request, which gets the first one's receipt. If that fails too, the summary says how many chats Hermes has; import the file again for the rest.
 
-Hermes needs every chat title in a profile to be different, so each imported chat's title gets "(imported <its id>)". Imported chats have the source `import` in every Hermes client. Hermes Chat shows them Settled and read-only: there is no composer, because Hermes has their words but not everything the original chat had. Start a new chat to carry on. See [ADR 0025](docs/adr/0025-transcript-imports-are-hermess-session-import-read-only-here.md).
+Hermes needs every chat title in a profile to be different, so each imported chat's title gets "(imported <its id>)". Imported chats have the source `import` in every Hermes client. Hermes Chat shows them Settled and read-only: there is no composer, because Hermes has their words but not everything the original chat had. Start a new chat to carry on. See [ADR 0031](docs/adr/0031-transcript-imports-are-hermess-session-import-read-only-here.md).
 
 ## Install on Arch Linux
 

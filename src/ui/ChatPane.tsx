@@ -530,7 +530,7 @@ export function ChatPane({
 
       {queueApi && <QueuePanel chat={chat} queue={queue} status={status} api={queueApi} />}
       {chat.source === "import" ? (
-        // ADR 0025: an imported transcript is a record, not a session Hermes can carry on as it was.
+        // ADR 0031: an imported transcript is a record, not a session Hermes can carry on as it was.
         <div className="composer-wrap read-only-note" role="note">
           <FileInput size={14} aria-hidden /> This is an imported transcript, so it's read-only here. Hermes has its words, not
           everything the original chat had, so it can't carry on from it. Start a new chat to continue.

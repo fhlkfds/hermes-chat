@@ -1,4 +1,4 @@
-// Importing transcripts (ADR 0025): a file the owner picks is read whole, checked whole, and only then sent to Hermes
+// Importing transcripts (ADR 0031): a file the owner picks is read whole, checked whole, and only then sent to Hermes
 // in one `POST /api/sessions/import`, which writes every chat in it or none. Each chat goes in with `source: "import"`,
 // which marks it in every Hermes client, and an id taken from the file: the session's own id for a Hermes session
 // export, or one made from the file's SHA-256 for a Hermes Chat Markdown export. Hermes skips an id it already has, so

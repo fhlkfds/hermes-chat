@@ -684,7 +684,7 @@ impl Dashboard {
     /// `PUT api/profiles/{name}/soul`, and Settings → Toolsets' switch, `PUT api/tools/toolsets/<name>` with exactly
     /// `{"enabled": true|false}` (`toolset_toggle_allowed`), Settings → Skills' two writes, `PUT api/skills/toggle` and
     /// `PUT api/skills/content` with exactly their fields (`skill_write_allowed`), and Import transcripts'
-    /// `POST api/sessions/import` whose every session is marked `source: "import"` (`import_body_allowed`, ADR 0025).
+    /// `POST api/sessions/import` whose every session is marked `source: "import"` (`import_body_allowed`, ADR 0031).
     /// Returns the response body on 2xx.
     pub async fn request(&self, method: &str, path_and_query: &str, body: Option<String>) -> Result<String, TransportError> {
         let (path, query) = path_and_query.split_once('?').unwrap_or((path_and_query, ""));
@@ -1259,7 +1259,7 @@ fn cron_write(method: &str, path: &str) -> bool {
     }
 }
 
-/// Whether a `POST api/sessions/import` is Import transcripts' (ADR 0025): a JSON object whose `sessions` is a non-empty
+/// Whether a `POST api/sessions/import` is Import transcripts' (ADR 0031): a JSON object whose `sessions` is a non-empty
 /// list of sessions each marked `source: "import"`, so nothing this relays can pass as a chat from another platform.
 pub fn import_body_allowed(body: Option<&str>) -> bool {
     let Some(body) = body.and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok()) else {

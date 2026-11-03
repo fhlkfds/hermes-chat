@@ -1,6 +1,6 @@
 // Importing transcripts against a REAL Hermes dashboard: skipped unless HERMES_LIVE_DASHBOARD is set, and refused
 // unless every profile on that server lives under /tmp, so it only ever writes to a throwaway HERMES_HOME. It imports
-// the real export files it is given, imports them again, and sends a corrupted copy. Set up a server as ADR 0025
+// the real export files it is given, imports them again, and sends a corrupted copy. Set up a server as ADR 0031
 // describes, export a chat from Hermes Chat (Markdown) and with `hermes sessions export` (JSONL), then:
 //
 //   HERMES_LIVE_DASHBOARD=http://127.0.0.2:9339 HERMES_LIVE_USER=fixture HERMES_LIVE_PASSWORD=… \

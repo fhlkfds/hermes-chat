@@ -1,4 +1,4 @@
-// Settings → General → Import transcripts (ADR 0025): pick a format and a file, see what is in it and where it goes,
+// Settings → General → Import transcripts (ADR 0031): pick a format and a file, see what is in it and where it goes,
 // then import it in one write Hermes makes all or nothing. Nothing is sent before Import is pressed, and Cancel or
 // Escape before then leaves Hermes as it was.
 import { useEffect, useId, useRef, useState, type RefObject } from "react";

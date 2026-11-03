@@ -2,7 +2,7 @@
 import type { ModelPick } from "./models";
 import type { ChatUsage, ReplyUsage } from "./usage";
 
-/** `import`: a transcript file imported into Hermes (ADR 0025). Hermes Chat shows it read-only. */
+/** `import`: a transcript file imported into Hermes (ADR 0031). Hermes Chat shows it read-only. */
 export type Source = "app" | "telegram" | "discord" | "cli" | "desktop" | "import" | "other";
 
 export const SOURCE_LABEL: Record<Source, string> = {

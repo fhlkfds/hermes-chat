@@ -1555,7 +1555,7 @@ export class FakeHermes {
   loseImportAnswer: boolean | number = false;
 
   /**
-   * `POST /api/sessions/import`, as probed on the deployed `bf0203a` (ADR 0025): fenced on the first session's revision,
+   * `POST /api/sessions/import`, as probed on the deployed `bf0203a` (ADR 0031): fenced on the first session's revision,
    * every session checked before anything is written (400 with each error), ids Hermes has skipped, and one receipt
    * per request id, so a retried request answers as the first did.
    */

@@ -55,7 +55,7 @@ _Avoid_: origin, platform (as an attribute of a chat)
 A chat whose source is anything other than this app. Imported chats start Settled.
 
 **Imported transcript**:
-A chat brought into Hermes from an export file with Import transcripts: a Hermes Chat Markdown export, or a Hermes session export (JSONL). Its Source is a transcript file (`import` in Hermes), in every Hermes client. It starts Settled and is read-only here: Hermes has its words, not everything the original chat had, so the owner starts a new chat to carry on. It is known by an id taken from the file, the session's own id or one made from the file's SHA-256, so the same file imported again adds nothing (ADR 0025).
+A chat brought into Hermes from an export file with Import transcripts: a Hermes Chat Markdown export, or a Hermes session export (JSONL). Its Source is a transcript file (`import` in Hermes), in every Hermes client. It starts Settled and is read-only here: Hermes has its words, not everything the original chat had, so the owner starts a new chat to carry on. It is known by an id taken from the file, the session's own id or one made from the file's SHA-256, so the same file imported again adds nothing (ADR 0031).
 _Avoid_: restored chat, backup, upload
 
 **Import** (of transcripts):
