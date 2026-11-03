@@ -19,6 +19,16 @@ export type Speech = { mime: string; audio: Uint8Array; provider?: string };
  */
 export type VoiceSetup = { transcribe: boolean; speak: boolean; sttEnabled?: boolean; sttProvider?: string; ttsProvider?: string };
 
+/**
+ * What Settings → Toolsets needs from a profile's config besides the toolset list, read in Rust since the config can
+ * hold API keys. `noMcp`: platforms whose toolset list names `no_mcp`, which Hermes clears on any toolset change.
+ * `codingFocus`: `agent.coding_context` is focus, so Hermes picks a coding toolset in code workspaces.
+ * `disabledEverywhere`: the names in `agent.disabled_toolsets`, which Hermes turns off on every platform; turning one of
+ * them on removes it from that list. `disabledUnclear`: that list is saved in a form Rust can't read for certain, so any
+ * toolset may be on it. `noMcpUnclear`: likewise for platforms whose toolset list may name `no_mcp`.
+ */
+export type ToolsetGuards = { noMcp: string[]; noMcpUnclear: string[]; codingFocus: boolean; disabledEverywhere: string[]; disabledUnclear: boolean };
+
 export type PipeEvent = { kind: "frame"; text: string } | { kind: "closed"; reason: string };
 
 /**
@@ -27,7 +37,7 @@ export type PipeEvent = { kind: "frame"; text: string } | { kind: "closed"; reas
  */
 export type Route = { kind: "ssh"; target: string } | { kind: "url"; url: string; addresses: string[] };
 
-/** The dashboard REST verbs the Rust side relays. POST and PUT reach only Settings → Model's two write routes and the scheduled-job writes. */
+/** The dashboard REST verbs the Rust side relays. POST and PUT reach only Settings → Model's two write routes, the scheduled-job writes, and Settings → Toolsets' switch. */
 export type RestMethod = "GET" | "PATCH" | "DELETE" | "POST" | "PUT";
 
 export interface Pipe {
@@ -60,6 +70,7 @@ export interface Pipe {
   /** Asks Hermes to read `text` aloud with `profile`'s text-to-speech provider. */
   speak(profile: string, text: string): Promise<Speech>;
   voiceSetup(profile: string): Promise<VoiceSetup>;
+  toolsetGuards(profile: string): Promise<ToolsetGuards>;
   close(): Promise<void>;
 }
 

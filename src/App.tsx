@@ -1274,6 +1274,8 @@ export function Main({
             appearance={appearance}
             listFonts={systemFonts}
             modelSettings={hermes.modelSettings}
+            toolsets={hermes.toolsets}
+            runningReplies={chats.filter((c) => c.running).length}
             memory={hermes.memory}
             onMemoryDirty={onMemoryDirty}
             memoryDiscards={memoryDiscards}

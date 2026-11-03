@@ -284,6 +284,9 @@ fn stub_routes() -> Router {
         .route("/api/model/set", post(echo_write))
         .route("/api/config", put(echo_write).get(config))
         .route("/api/model/moa", put(echo_write).post(echo_write))
+        .route("/api/tools/toolsets/{name}", put(echo_write))
+        .route("/api/tools/toolsets/{name}/env", put(echo_write))
+        .route("/api/tools/toolsets/{name}/post-setup", post(echo_write))
         .route("/api/profiles/{name}/soul", put(echo_write).post(echo_write))
         .route("/api/cron/jobs", post(echo_write))
         .route("/api/cron/jobs/{id}", put(echo_write))
@@ -490,6 +493,119 @@ async fn relays_the_model_settings_writes() {
     let body = json!({"config": {"agent": {"reasoning_effort": "low"}}}).to_string();
     let got: Value = serde_json::from_str(&dashboard.request("PUT", "api/config?profile=default", Some(body)).await.unwrap()).unwrap();
     assert_eq!(got, json!({"uri": "/api/config?profile=default", "content_type": "application/json", "body": {"config": {"agent": {"reasoning_effort": "low"}}}}));
+}
+
+#[tokio::test]
+async fn relays_the_toolset_switch_with_only_enabled_in_the_body() {
+    let dashboard = signed_in().await;
+    let got: Value = serde_json::from_str(
+        &dashboard.request("PUT", "api/tools/toolsets/web?profile=work", Some(r#"{"enabled":false}"#.into())).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(got, json!({"uri": "/api/tools/toolsets/web?profile=work", "content_type": "application/json", "body": {"enabled": false}}));
+    // The write-support check: only the probe name, and only with its invalid body.
+    let probe = format!("api/tools/toolsets/{}?profile=work", transport::TOOLSET_PROBE_NAME);
+    assert!(dashboard.request("PUT", &probe, Some(r#"{"enabled":"probe"}"#.into())).await.is_ok());
+}
+
+#[test]
+fn toolset_guards_keep_only_no_mcp_platforms_coding_focus_and_disabled_names() {
+    let config = json!({
+        "platform_toolsets": {
+            "cli": ["web", "no_mcp"],
+            "telegram": "['web', 'no_mcp']",
+            "discord": ["discord"],
+            // Python reads these as `no_mcp`, which a plain read can't be sure of.
+            "slack": r#"["web", "no\u005fmcp"]"#,
+            "matrix": "['web', 'no_' 'mcp']",
+            // Not a list: Hermes ignores it, `no_mcp` and all.
+            "signal": "no_mcp",
+            // Python's strip() removes U+001C, so Hermes reads this one as a list too.
+            "irc": "\u{1c}['web', 'no_mcp']",
+            "line": "x['web', 'no_mcp']",
+        },
+        "agent": {"coding_context": " Lean ", "disabled_toolsets": ["web", " debugging ", ""]},
+        "web": {"api_key": "sk-secret"},
+    });
+    let guards = transport::toolset_guards(&config);
+    let none = || transport::ToolsetGuards {
+        no_mcp: vec![],
+        no_mcp_unclear: vec![],
+        coding_focus: false,
+        disabled_everywhere: vec![],
+        disabled_unclear: false,
+    };
+    assert_eq!(
+        guards,
+        transport::ToolsetGuards {
+            no_mcp: vec!["cli".into(), "irc".into(), "telegram".into()],
+            no_mcp_unclear: vec!["line".into(), "matrix".into(), "slack".into()],
+            coding_focus: true,
+            disabled_everywhere: vec!["web".into(), "debugging".into()],
+            disabled_unclear: false,
+        }
+    );
+    let out = serde_json::to_value(&guards).unwrap();
+    assert_eq!(
+        out,
+        json!({
+            "noMcp": ["cli", "irc", "telegram"],
+            "noMcpUnclear": ["line", "matrix", "slack"],
+            "codingFocus": true,
+            "disabledEverywhere": ["web", "debugging"],
+            "disabledUnclear": false
+        })
+    );
+    assert!(!out.to_string().contains("sk-secret"));
+    assert_eq!(transport::toolset_guards(&json!({})), none());
+    assert!(!transport::toolset_guards(&json!({"agent": {"coding_context": "auto"}})).coding_focus);
+    // As `hermes config set` stores a list, and a single name, both as Hermes's parse_config_string_list reads them.
+    let listed = |v: serde_json::Value| {
+        let g = transport::toolset_guards(&json!({"agent": {"disabled_toolsets": v}}));
+        (g.disabled_everywhere, g.disabled_unclear)
+    };
+    let clear = |names: &[&str]| (names.iter().map(|n| n.to_string()).collect::<Vec<_>>(), false);
+    assert_eq!(listed(json!("['memory', \"web\"]")), clear(&["memory", "web"]));
+    assert_eq!(listed(json!("['memory',]")), clear(&["memory"]));
+    assert_eq!(listed(json!("memory")), clear(&["memory"]));
+    assert_eq!(listed(json!("\u{1c}['web']\u{1f}")), clear(&["web"]));
+    assert_eq!(listed(json!("\u{1c}web")), clear(&["web"]));
+    assert_eq!(listed(json!("[]")), clear(&[]));
+    assert_eq!(listed(json!(null)), clear(&[]));
+    // Python reads these as names this can't be sure of (`"\u0077eb"` is `web`), so any toolset may be listed.
+    for unsure in [r#"["\u0077eb"]"#, "['we' 'b']", "[web, debugging]", "['a,b']", "['web'"] {
+        assert_eq!(listed(json!(unsure)), (vec![], true), "{unsure}");
+    }
+}
+
+#[tokio::test]
+async fn relays_no_other_toolset_write() {
+    let dashboard = signed_in().await;
+    let probe = format!("api/tools/toolsets/{}", transport::TOOLSET_PROBE_NAME);
+    for (method, path, body) in [
+        // Routes under the prefix that write secrets, pick providers or run installs.
+        ("PUT", "api/tools/toolsets/web/env", r#"{"enabled":true}"#),
+        ("PUT", "api/tools/toolsets/web/provider", r#"{"enabled":true}"#),
+        ("POST", "api/tools/toolsets/web/post-setup", r#"{"enabled":true}"#),
+        ("POST", "api/tools/toolsets/web", r#"{"enabled":true}"#),
+        // Bodies with anything but a boolean `enabled`.
+        ("PUT", "api/tools/toolsets/web", r#"{"enabled":true,"profile":"other"}"#),
+        ("PUT", "api/tools/toolsets/web", r#"{"enabled":"yes"}"#),
+        ("PUT", "api/tools/toolsets/web", r#"{}"#),
+        ("PUT", "api/tools/toolsets/web", r#"[true]"#),
+        ("PUT", "api/tools/toolsets/web", "not json"),
+        ("PUT", probe.as_str(), r#"{"enabled":false}"#),
+        ("PUT", "api/tools/toolsets/web", r#"{"enabled":"probe"}"#),
+        // Names this app never sends.
+        ("PUT", "api/tools/toolsets/", r#"{"enabled":true}"#),
+        ("PUT", "api/tools/toolsets/..", r#"{"enabled":true}"#),
+        ("PUT", "api/tools/toolsets/a%2Fb", r#"{"enabled":true}"#),
+        ("PUT", "api/tools/toolsets", r#"{"enabled":true}"#),
+    ] {
+        let err = dashboard.request(method, path, Some(body.into())).await.err().unwrap();
+        assert!(matches!(err, TransportError::NotRelayed(_)), "{method} {path} {body}: {err:?}");
+    }
+    assert!(dashboard.request("PUT", "api/tools/toolsets/web", None).await.is_err());
 }
 
 #[tokio::test]

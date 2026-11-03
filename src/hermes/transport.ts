@@ -35,6 +35,7 @@ import { projectsApi, type ProjectsApi } from "./projects";
 import { listServerCommands, runServerCommand, type CommandDef, type CommandResult, type ServerCommandList } from "./commands";
 import { CronApi } from "./cronJobs";
 import { ModelSettingsApi } from "./modelSettings";
+import { ToolsetsApi } from "./toolsets";
 import { memoryApi, type MemoryApi } from "./memory";
 import type { OpenPipe, Pipe, PipeEvent, RestMethod, Route, Speech, Transcript, VoiceSetup } from "./pipe";
 import { RemoteFilesError, previewSupport, remoteFiles, type RemoteFiles } from "./remoteFiles";
@@ -553,6 +554,26 @@ export class Hermes {
     () => this.profile,
   );
 
+  /**
+   * Settings → Toolsets' reads and writes (toolsets.ts). Each call names its profile. Turning speech-to-text on or off
+   * changes what the Voice section reads, so its cached read is dropped.
+   */
+  readonly toolsets = new ToolsetsApi(
+    // Only over a connection that is up: never a closed or dropped pipe.
+    async (method, pathAndQuery, body) => {
+      const pipe = this.closing ? undefined : this.connectedPipe();
+      if (!pipe) throw new Error("Not connected to Hermes.");
+      return JSON.parse(await pipe.request(method, pathAndQuery, body === undefined ? undefined : JSON.stringify(body)));
+    },
+    async (profile) => {
+      const pipe = this.closing ? undefined : this.connectedPipe();
+      if (!pipe) throw new Error("Not connected to Hermes.");
+      return pipe.toolsetGuards(profile);
+    },
+    (_profile, name) => {
+      if (name === "stt") this.voiceRead = undefined;
+    },
+  );
   /** Settings → Memory's reads and writes (memory.ts). Each call names the profile it is for. */
   readonly memory: MemoryApi = memoryApi({
     rpc: (method, params) => this.request(method, params),

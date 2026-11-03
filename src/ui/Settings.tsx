@@ -1,10 +1,11 @@
-// The Settings screen, in three tabs. General, ported from the prototype: the connection and Sign out, what shows on
+// The Settings screen, in six tabs. General, ported from the prototype: the connection and Sign out, what shows on
 // launch, voice, screenshots, updates, the local cache, and older history. Appearance: how the app looks on this
-// computer (AppearanceSettings.tsx). Model: the profile's models on Hermes (ModelSettings.tsx). Persona: the profile's
-// SOUL.md on Hermes (PersonaSettings.tsx). Memory: what Hermes remembers for the profile (MemorySettings.tsx).
+// computer (AppearanceSettings.tsx). Model: the profile's models on Hermes (ModelSettings.tsx). Toolsets: which tools
+// Hermes offers the model in the profile (ToolsetSettings.tsx). Persona: the profile's SOUL.md on Hermes
+// (PersonaSettings.tsx). Memory: what Hermes remembers for the profile (MemorySettings.tsx).
 // Profiles are switched in the list's header, not here (ADR 0001).
 import { useEffect, useState } from "react";
-import { ArrowLeft, Brain, Cpu, Download, KeyRound, Lock, LogOut, Palette, PlugZap, Settings2, ShieldCheck, Sparkles, Trash2 } from "lucide-react";
+import { ArrowLeft, Brain, Cpu, Download, KeyRound, Lock, LogOut, Palette, PlugZap, Settings2, ShieldCheck, Sparkles, Trash2, Wrench } from "lucide-react";
 import type { Chat, ConnectionStatus } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
 import { TRANSCRIPT_LIMIT_BYTES } from "../hermes/chatCache";
@@ -13,6 +14,8 @@ import type { AppearanceStore, Fonts } from "./appearance";
 import { AppearanceSettings } from "./AppearanceSettings";
 import type { ModelSettingsApi } from "../hermes/modelSettings";
 import { ModelSettings } from "./ModelSettings";
+import type { ToolsetsApi } from "../hermes/toolsets";
+import { ToolsetSettings } from "./ToolsetSettings";
 import type { MemoryApi } from "../hermes/memory";
 import { MemorySettings } from "./MemorySettings";
 import { PersonaSettings, type PersonaWhere } from "./PersonaSettings";
@@ -25,11 +28,12 @@ import { ScreenshotSettings } from "./ScreenshotSettings";
 import type { ScreenshotSupport } from "../hermes/tauriScreenshot";
 import { UpdateSettings } from "./UpdateSettings";
 
-type Tab = "general" | "appearance" | "model" | "persona" | "memory";
+type Tab = "general" | "appearance" | "model" | "toolsets" | "persona" | "memory";
 const TABS = [
   { id: "general", label: "General", Icon: Settings2 },
   { id: "appearance", label: "Appearance", Icon: Palette },
   { id: "model", label: "Model", Icon: Cpu },
+  { id: "toolsets", label: "Toolsets", Icon: Wrench },
   { id: "persona", label: "Persona", Icon: Sparkles },
   { id: "memory", label: "Memory", Icon: Brain },
 ] as const;
@@ -65,6 +69,8 @@ export function SettingsScreen({
   listFonts,
   checkScreenshots,
   modelSettings,
+  toolsets,
+  runningReplies = 0,
   memory,
   onMemoryDirty = () => {},
   memoryDiscards = 0,
@@ -100,6 +106,10 @@ export function SettingsScreen({
   checkScreenshots?: () => Promise<ScreenshotSupport>;
   /** The profile's model setup on Hermes. */
   modelSettings: ModelSettingsApi;
+  /** The profile's toolsets on Hermes; without it there is no Toolsets tab. */
+  toolsets?: ToolsetsApi;
+  /** Chats of the shown profile with a reply running now. */
+  runningReplies?: number;
   /** The profile's memory on Hermes; the Memory tab shows only with it. */
   memory?: MemoryApi;
   /** Called with whether the Memory tab has an unsaved edit. */
@@ -131,7 +141,9 @@ export function SettingsScreen({
   const [pullError, setPullError] = useState<string>();
   const [signingOut, setSigningOut] = useState(false);
   const [tab, setTabNow] = useState<Tab>(showTextGeneration ? "model" : "general");
-  const tabs = TABS.filter((t) => (t.id !== "persona" || persona) && (t.id !== "memory" || memory));
+  const tabs = TABS.filter(
+    (t) => (t.id !== "toolsets" || toolsets) && (t.id !== "persona" || persona) && (t.id !== "memory" || memory),
+  );
   // Leaving the Persona or Memory tab asks first while it holds an unsaved edit.
   const setTab = (t: Tab) => t !== tab && guard(() => setTabNow(t));
   useEffect(() => {
@@ -205,6 +217,11 @@ export function SettingsScreen({
           <div id="settings-panel-model" role="tabpanel" aria-labelledby="settings-tab-model">
             {/* A draft lives only while this tab is open, and for one profile. */}
             <ModelSettings key={profile} api={modelSettings} profile={profile} connected={status === "connected"} showTextGeneration={showTextGeneration} />
+          </div>
+        ) : tab === "toolsets" && toolsets ? (
+          <div id="settings-panel-toolsets" role="tabpanel" aria-labelledby="settings-tab-toolsets">
+            {/* Read for one profile; switching profile reads the new one's afresh. */}
+            <ToolsetSettings key={profile} api={toolsets} profile={profile} connected={status === "connected"} runningReplies={runningReplies} />
           </div>
         ) : (
           <div id="settings-panel-general" role="tabpanel" aria-labelledby="settings-tab-general">

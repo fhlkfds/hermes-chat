@@ -2,7 +2,7 @@
 // `/api/ws` frames and REST calls. It also reads the files the owner attaches, so their bytes never pass through the
 // webview.
 import { Channel, invoke } from "@tauri-apps/api/core";
-import type { LocalFile, OpenPipe, PipeEvent, Route, Transcript, VoiceSetup } from "./pipe";
+import type { LocalFile, OpenPipe, PipeEvent, Route, ToolsetGuards, Transcript, VoiceSetup } from "./pipe";
 import type { Probe, Probed, ProbeFailure, SavedKey } from "./setup";
 
 // A failed command rejects with the Rust error's text, not an Error.
@@ -68,6 +68,7 @@ export function tauriPipe(d: SignInDetails): OpenPipe {
         return { ...got, audio: fromBase64(got.audio) };
       },
       voiceSetup: (profile) => invoke<VoiceSetup>("hermes_voice_setup", { profile }).catch(asError),
+      toolsetGuards: (profile) => invoke<ToolsetGuards>("hermes_toolset_guards", { profile }).catch(asError),
       close: () => invoke("hermes_disconnect"),
     };
   };

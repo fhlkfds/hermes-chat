@@ -1,6 +1,6 @@
 // A fake Hermes dashboard for tests: it sits where the Rust pipe does and speaks wire-shaped legacy
 // JSON-RPC frames and dashboard REST bodies (shapes from the deployed contracts, see the research doc).
-import type { LocalFile, OpenPipe, PipeEvent, Route, Speech, VoiceSetup } from "./pipe";
+import type { LocalFile, OpenPipe, PipeEvent, Route, Speech, ToolsetGuards, VoiceSetup } from "./pipe";
 import type { SavedKey } from "./setup";
 import { FakeServerFiles } from "./fakeServerFiles";
 import { ScheduleError, isoIn, parseSchedule, upcomingRuns } from "./schedule";
@@ -812,6 +812,63 @@ export class FakeHermes {
   /** The profile's model setup, as `config.yaml` holds it, and the catalog `model.options` lists. */
   modelConfig: FakeModelConfig = fakeModelConfig();
 
+  /** The toolsets every profile lists (plugins aside, the catalog is the same for each). */
+  toolsetCatalog: FakeToolset[] = fakeToolsets();
+  /** Each profile's enabled toolsets, as its config.yaml resolves them; a profile not here has the defaults. */
+  toolsetsOn: Record<string, Set<string>> = {};
+  /**
+   * Which toolset routes this server has: all, `read-only` (a list but no toggle route) or `none` (neither), each
+   * missing one answering FastAPI's own 404.
+   */
+  toolsetRoutes: "all" | "read-only" | "none" = "all";
+  /** While set, the toggle route refuses every change with this status and reason, writing nothing. */
+  toolsetRefusal?: { status: number; detail: string };
+  /** Names `agent.disabled_toolsets` strips through a composite: saving them on still reads back off. */
+  toolsetSuppressed = new Set<string>();
+  /** While set, the toggle route waits for it after writing and before it answers. */
+  toolsetGate?: Promise<void>;
+  /** While set, the toggle route waits for it before it writes. */
+  toolsetGateBeforeWrite?: Promise<void>;
+  /** Platforms whose saved toolset list names `no_mcp`, per profile. Any toggle for that platform clears it. */
+  toolsetNoMcp: Record<string, Set<string>> = {};
+  /** Platforms whose saved toolset list Rust can't read for certain, per profile. */
+  toolsetNoMcpUnclear: Record<string, string[]> = {};
+  /** `agent.coding_context` is focus, per profile. */
+  codingFocus: Record<string, boolean> = {};
+  /** `agent.disabled_toolsets`, per profile: off on every platform. Turning one of these on removes it, as Hermes does. */
+  toolsetDisabledEverywhere: Record<string, string[]> = {};
+  /** `agent.disabled_toolsets` saved in a form Rust can't read for certain, per profile. */
+  toolsetDisabledUnclear: Record<string, boolean> = {};
+  /** While set, reading the config for the toolset guards fails with this. */
+  toolsetGuardsFailure?: string;
+  /**
+   * Each toolset's provider rows, as `GET /api/tools/toolsets/{name}/config` answers them (`provider_readiness_status`).
+   * A toolset not here has no provider category. Checked live: web's keyless Exa row is ready and its ddgs row isn't.
+   */
+  toolsetProviders: Record<string, { name: string; post_setup?: string; status: string; is_active: boolean }[]> = {
+    web: [
+      { name: "Exa · Free (keyless)", status: "ready", is_active: false },
+      { name: "DuckDuckGo (ddgs)", post_setup: "ddgs", status: "needs_setup", is_active: false },
+    ],
+    computer_use: [{ name: "cua-driver (background)", post_setup: "cua_driver", status: "needs_setup", is_active: false }],
+    stt: [{ name: "Local Whisper", status: "ready", is_active: true }],
+  };
+  /** While set, the next toolset list read waits for it (once). */
+  toolsetListGateOnce?: Promise<void>;
+  /** While set, `GET /api/tools/toolsets/{name}/config` for that name waits for it. */
+  toolsetConfigGate: Record<string, Promise<void>> = {};
+  /** While set, `GET /api/tools/toolsets/{name}/config` fails with this. */
+  toolsetConfigFailure?: string;
+  /** The next toggle writes, then answers with this error anyway (a failure after the save, such as a 500). */
+  failAfterToolsetWrite?: { status: number; detail: string };
+  /** After the next toggle, every toolset list read fails with a 500. */
+  toolsetReadsFailAfterWrite = false;
+  private toolsetReadsFailing = false;
+  /** The next toggle drops the connection before Hermes answers: `stored` wrote it first, `lost` never arrived. */
+  dropOnToolsetWrite?: "stored" | "lost";
+  /** Every toggle the route took, after validation: profile, name and value. */
+  readonly toolsetWrites: { profile: string; name: string; enabled: boolean }[] = [];
+
   private onEvent?: (e: PipeEvent) => void;
   private imagesStaged = 0;
   private resumed = 0;
@@ -870,6 +927,17 @@ export class FakeHermes {
         return this.speech;
       },
       voiceSetup: async () => ({ ...this.voice }),
+      // Mirrors `Dashboard::toolset_guards`: only these two facts of the config.
+      toolsetGuards: async (profile): Promise<ToolsetGuards> => {
+        if (this.toolsetGuardsFailure) throw new Error(this.toolsetGuardsFailure);
+        return {
+          noMcp: [...(this.toolsetNoMcp[profile] ?? [])].sort(),
+          noMcpUnclear: [...(this.toolsetNoMcpUnclear[profile] ?? [])],
+          codingFocus: !!this.codingFocus[profile],
+          disabledEverywhere: [...(this.toolsetDisabledEverywhere[profile] ?? [])],
+          disabledUnclear: !!this.toolsetDisabledUnclear[profile],
+        };
+      },
       request: async (method, pathAndQuery, body) => {
         const url = new URL(pathAndQuery, "http://dashboard/");
         const req: RestRequest = { method, path: url.pathname, query: url.searchParams, body: body === undefined ? undefined : JSON.parse(body) };
@@ -887,6 +955,8 @@ export class FakeHermes {
           (method === "GET" && messages ? () => this.storedMessages(decodeURIComponent(messages[1]), req.query) : undefined) ??
           (soul && this.soulRoutes && (method === "GET" || method === "PUT") ? () => this.soul(method, decodeURIComponent(soul[1]), req.body) : undefined) ??
           this.cron.route(req);
+        const toolset = /^\/api\/tools\/toolsets(?:\/([^/]+)(\/config)?)?$/.exec(req.path);
+        if (!handler && toolset) return JSON.stringify(await this.toolsetRoute(req, toolset[1], !!toolset[2]));
         if (soul && this.soulRoutes && method !== "GET" && method !== "PUT") throw new Error(`The dashboard answered 405: {"detail":"Method Not Allowed"}`);
         if (soul && !this.soulRoutes) throw new Error(`The dashboard answered 404: {"detail":"No such API endpoint: ${req.path}"}`);
         if (!handler) throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
@@ -911,6 +981,81 @@ export class FakeHermes {
       },
     };
   };
+
+  /** A profile's enabled toolsets, its defaults when it has saved none: every listed one but `discord` and `image_gen`. */
+  enabledToolsets(profile: string): Set<string> {
+    return (this.toolsetsOn[profile] ??= new Set(this.toolsetCatalog.filter((t) => !["discord", "image_gen", "computer_use"].includes(t.name)).map((t) => t.name)));
+  }
+
+  /** `hermes_cli/web_routers/tools.py` at the deployed `bf0203a`: the list, one toolset's config, and the toggle. */
+  private async toolsetRoute(req: RestRequest, rawName: string | undefined, config: boolean): Promise<unknown> {
+    const notFound = () => new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
+    if (this.toolsetRoutes === "none") throw notFound();
+    const profile = req.query.get("profile") ?? "default";
+    if (profile !== "default" && !(profile in this.otherProfiles))
+      throw new Error(`The dashboard answered 404: {"detail":"Profile '${profile}' does not exist"}`);
+    const name = rawName === undefined ? undefined : decodeURIComponent(rawName);
+    const on = this.enabledToolsets(profile);
+    const known = (n: string) => this.toolsetCatalog.find((t) => t.name === n);
+    if (req.method === "GET" && name === undefined && this.toolsetListGateOnce) {
+      const gate = this.toolsetListGateOnce;
+      this.toolsetListGateOnce = undefined;
+      await gate;
+    }
+    if (req.method === "GET" && name === undefined && this.toolsetReadsFailing)
+      throw new Error(`The dashboard answered 500: {"detail":"Internal Server Error"}`);
+    if (req.method === "GET" && name === undefined)
+      return this.toolsetCatalog.map(({ installs: _i, ...t }) => {
+        const enabled = on.has(t.name) && !this.toolsetSuppressed.has(t.name) && !this.toolsetDisabledEverywhere[profile]?.includes(t.name);
+        return { ...t, enabled, available: enabled };
+      });
+    if (req.method === "GET" && name !== undefined && config) {
+      const t = known(name);
+      if (!t) throw new Error(`The dashboard answered 400: {"detail":"Unknown toolset: ${name}"}`);
+      if (this.toolsetConfigFailure) throw new Error(this.toolsetConfigFailure);
+      const gate = this.toolsetConfigGate[name];
+      const providersNow = (this.toolsetProviders[name] ?? []).map((p) => ({ ...p }));
+      if (gate) {
+        delete this.toolsetConfigGate[name];
+        await gate;
+        const providers = providersNow.map((p) => ({ env_vars: [], post_setup: null, ...p }));
+        return { name, has_category: providers.length > 0, providers, active_provider: providers.find((p) => p.is_active)?.name ?? null };
+      }
+      const providers = (this.toolsetProviders[name] ?? []).map((p) => ({ env_vars: [], post_setup: null, ...p }));
+      const active = providers.find((p) => p.is_active)?.name ?? null;
+      return { name, has_category: providers.length > 0, providers, active_provider: active };
+    }
+    if (req.method === "PUT" && name !== undefined && !config) {
+      if (this.toolsetRoutes === "read-only") throw notFound();
+      // `ToolsetToggle`: FastAPI checks the body before the route runs.
+      if (typeof req.body?.enabled !== "boolean")
+        throw new Error(`The dashboard answered 422: {"detail":[{"type":"bool_parsing","loc":["body","enabled"],"msg":"Input should be a valid boolean"}]}`);
+      if (!known(name)) throw new Error(`The dashboard answered 400: {"detail":"Unknown toolset: ${name}"}`);
+      if (this.toolsetRefusal) throw new Error(`The dashboard answered ${this.toolsetRefusal.status}: ${JSON.stringify({ detail: this.toolsetRefusal.detail })}`);
+      await this.toolsetGateBeforeWrite;
+      const drop = this.dropOnToolsetWrite;
+      this.dropOnToolsetWrite = undefined;
+      if (drop === "lost") throw new Error("Can't reach the Hermes dashboard: connection reset");
+      const enabled = req.body.enabled;
+      this.toolsetWrites.push({ profile, name, enabled });
+      if (enabled) on.add(name);
+      else on.delete(name);
+      // `_save_platform_tools` drops the `no_mcp` sentinel from the platform's list; `stt` writes its own section.
+      if (name !== "stt") this.toolsetNoMcp[profile]?.delete(known(name)!.platform);
+      // And clears a toolset just turned on from `agent.disabled_toolsets`, on every platform (#49995).
+      const everywhere = this.toolsetDisabledEverywhere[profile];
+      if (enabled && name !== "stt" && everywhere) this.toolsetDisabledEverywhere[profile] = everywhere.filter((n) => n !== name);
+      if (drop === "stored") throw new Error("Can't reach the Hermes dashboard: connection reset");
+      if (this.toolsetReadsFailAfterWrite) this.toolsetReadsFailing = true;
+      const late = this.failAfterToolsetWrite;
+      this.failAfterToolsetWrite = undefined;
+      if (late) throw new Error(`The dashboard answered ${late.status}: ${JSON.stringify({ detail: late.detail })}`);
+      await this.toolsetGate;
+      const installs = enabled && this.toolsetProviders[name]?.some((p) => p.post_setup === known(name)?.installs && p.status === "needs_setup") ? known(name)?.installs : undefined;
+      return { ok: true, name, platform: known(name)!.platform, enabled, post_setup_started: installs ?? null };
+    }
+    throw notFound();
+  }
 
   private saveProviderKey(profile: string, envVar: string, key: string): SavedKey {
     const row = this.env?.[envVar];
@@ -1335,6 +1480,34 @@ function formatRefValue(value: string): string {
   return q ? `${q}${value}${q}` : value;
 }
 
+/**
+ * A configurable toolset as `GET /api/tools/toolsets` lists it at the deployed `bf0203a` (`CONFIGURABLE_TOOLSETS`,
+ * labels through `gui_toolset_label`). `installs`: a provider `post_setup` the toolset still needs, which turning it on
+ * starts in the background (`toggle_toolset`'s install-on-enable).
+ */
+export type FakeToolset = {
+  name: string;
+  label: string;
+  description: string;
+  platform: string;
+  platform_label: string;
+  configured: boolean;
+  tools: string[];
+  installs?: string;
+};
+
+export function fakeToolsets(): FakeToolset[] {
+  const cli = { platform: "cli", platform_label: "CLI", configured: true };
+  return [
+    { name: "web", label: "Web Search & Scraping", description: "web_search, web_extract", ...cli, tools: ["web_extract", "web_search"] },
+    { name: "terminal", label: "Terminal & Processes", description: "terminal, process", ...cli, tools: ["process", "terminal"] },
+    { name: "file", label: "File Operations", description: "read, write, patch, search", ...cli, tools: ["patch", "read_file", "search_files", "write_file"] },
+    { name: "image_gen", label: "Image Generation", description: "image_generate", ...cli, configured: false, tools: ["image_generate"] },
+    { name: "stt", label: "Speech-to-Text", description: "voice transcription (gateway voice messages + voice mode)", ...cli, tools: [] },
+    { name: "discord", label: "Discord (read/participate)", description: "fetch messages, search members, create thread", platform: "discord", platform_label: "Discord", configured: true, tools: ["discord_fetch"] },
+    { name: "computer_use", label: "Computer Use (macOS/Windows/Linux)", description: "background desktop control via cua-driver", ...cli, tools: ["computer_use"], installs: "cua_driver" },
+  ];
+}
 
 /** A job row in a fake `jobs.json`, in the shape the dashboard sends. */
 export type CronRow = Record<string, unknown> & { id: string; enabled: boolean; state: string };

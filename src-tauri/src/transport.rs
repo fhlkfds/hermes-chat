@@ -680,8 +680,9 @@ impl Dashboard {
 
     /// One dashboard REST call for the webview: `GET`, `PATCH` or `DELETE` on a path under `api/`, with a
     /// JSON body. `POST` and `PUT` reach only Settings → Model's two writes (`POST api/model/set`,
-    /// `PUT api/config`), the scheduled-job writes (`cron_write`) and Settings → Persona's
-    /// `PUT api/profiles/{name}/soul`. Returns the response body on 2xx.
+    /// `PUT api/config`), the scheduled-job writes (`cron_write`), Settings → Persona's
+    /// `PUT api/profiles/{name}/soul`, and Settings → Toolsets' switch, `PUT api/tools/toolsets/<name>` with exactly
+    /// `{"enabled": true|false}` (`toolset_toggle_allowed`). Returns the response body on 2xx.
     pub async fn request(&self, method: &str, path_and_query: &str, body: Option<String>) -> Result<String, TransportError> {
         let (path, query) = path_and_query.split_once('?').unwrap_or((path_and_query, ""));
         let method = match (method, path) {
@@ -692,6 +693,7 @@ impl Dashboard {
             ("PUT", "api/config") => Method::PUT,
             ("POST", _) if cron_write("POST", path) => Method::POST,
             ("PUT", _) if cron_write("PUT", path) => Method::PUT,
+            ("PUT", _) if toolset_toggle_allowed(path, body.as_deref()) => Method::PUT,
             ("PUT", p) if is_profile_soul(p) => Method::PUT,
             ("POST" | "PUT", _) => return Err(TransportError::NotRelayed(format!("{method} {path}"))),
             (other, _) => return Err(TransportError::NotRelayed(format!("{other} requests"))),
@@ -783,6 +785,15 @@ impl Dashboard {
             None => (None, None, None),
         };
         Ok(VoiceSetup { transcribe, speak, stt_enabled, stt_provider, tts_provider })
+    }
+
+    /// `ToolsetGuards` for `profile`, from `GET /api/config`; nothing else of the config is kept.
+    pub async fn toolset_guards(&self, profile: &str) -> Result<ToolsetGuards, TransportError> {
+        let query = url::form_urlencoded::Serializer::new(String::new()).append_pair("profile", profile).finish();
+        let body = self.request("GET", &format!("api/config?{query}"), None).await?;
+        let config: serde_json::Value = serde_json::from_str(&body)
+            .map_err(|_| TransportError::Unexpected { status: 200, body: "the profile's config isn't JSON".into() })?;
+        Ok(toolset_guards(&config))
     }
 
     /// One `POST` to an audio route for `profile`, with a JSON body.
@@ -877,6 +888,129 @@ impl Dashboard {
     }
 }
 
+/// What Settings → Toolsets needs from a profile's config besides the toolset list, read in Rust because the config
+/// can hold API keys. Only these facts leave Rust.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolsetGuards {
+    /// Platforms whose `platform_toolsets` entry names `no_mcp`, which Hermes's toggle route clears on any change
+    /// (`_save_platform_tools` at `bf0203a`), so MCP servers would be offered again.
+    pub no_mcp: Vec<String>,
+    /// Platforms whose `platform_toolsets` entry is a string this can't read for certain the way Hermes does
+    /// (`parse_platform_toolsets_value`, `ast.literal_eval`), so it may name `no_mcp`.
+    pub no_mcp_unclear: Vec<String>,
+    /// `agent.coding_context` is `focus` (or its aliases `strict`, `lean`): in a code workspace Hermes swaps in a coding
+    /// toolset selection instead of the profile's list (`agent/coding_context.coding_selection`).
+    pub coding_focus: bool,
+    /// `agent.disabled_toolsets`: names Hermes turns off on every platform, after each platform's own list. Turning a
+    /// toolset on removes its own name from this list (`_save_platform_tools` at `bf0203a`), so it comes back on every
+    /// platform that lists it, not only here. A composite name here turns off the toolsets inside it, which a switch
+    /// can't undo. Toolset names only; the config's values stay in Rust.
+    pub disabled_everywhere: Vec<String>,
+    /// `agent.disabled_toolsets` is a string this can't read for certain the way Hermes does (`ast.literal_eval`, with
+    /// its escapes and literal forms), so any toolset may be on it.
+    pub disabled_unclear: bool,
+}
+
+/// `ToolsetGuards` from a profile's config as `GET /api/config` answers it.
+pub fn toolset_guards(config: &serde_json::Value) -> ToolsetGuards {
+    // Hermes reads a platform's entry as a list, or a string list literal; any other value it ignores, `no_mcp` and all.
+    let (mut no_mcp, mut no_mcp_unclear) = (Vec::new(), Vec::new());
+    for (platform, value) in config["platform_toolsets"].as_object().into_iter().flatten() {
+        let read = match value {
+            serde_json::Value::Array(_) => config_string_list(value),
+            serde_json::Value::String(s) if py_strip(s).starts_with('[') => config_string_list(value),
+            // Not a list to Hermes, unless this misjudged the string's start: then it can't be sure.
+            serde_json::Value::String(s) if s.contains('[') => {
+                no_mcp_unclear.push(platform.clone());
+                continue;
+            }
+            _ => continue,
+        };
+        if read.unclear {
+            no_mcp_unclear.push(platform.clone());
+        } else if read.names.iter().any(|n| n == "no_mcp") {
+            no_mcp.push(platform.clone());
+        }
+    }
+    no_mcp.sort();
+    no_mcp_unclear.sort();
+    let mode = match &config["agent"]["coding_context"] {
+        serde_json::Value::String(s) => s.trim().to_ascii_lowercase(),
+        _ => String::new(),
+    };
+    let disabled = config_string_list(&config["agent"]["disabled_toolsets"]);
+    ToolsetGuards {
+        no_mcp,
+        no_mcp_unclear,
+        coding_focus: matches!(mode.as_str(), "focus" | "strict" | "lean"),
+        disabled_everywhere: disabled.names,
+        disabled_unclear: disabled.unclear,
+    }
+}
+
+/// `s` without the leading and trailing whitespace Python's `str.strip()` removes: Unicode whitespace, plus the
+/// separators U+001C–U+001F, which Rust's `trim` keeps.
+fn py_strip(s: &str) -> &str {
+    s.trim_matches(|c: char| c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c))
+}
+
+/// A config list's names, and whether they may be incomplete.
+struct ConfigList {
+    names: Vec<String>,
+    unclear: bool,
+}
+
+/// A config list as Hermes's `parse_config_string_list` reads it: a list, a list literal saved as a string
+/// (`"['memory', 'web']"`, as `hermes config set` stores it), or one name. Trimmed, empty names dropped. A literal is
+/// read only when each item is a plainly quoted name; anything else (escapes, other literal forms) is `unclear`,
+/// since Python may read it as names this can't see.
+fn config_string_list(value: &serde_json::Value) -> ConfigList {
+    let clean = |names: Vec<String>| names.into_iter().map(|n| py_strip(&n).to_owned()).filter(|n| !n.is_empty()).collect();
+    match value {
+        serde_json::Value::Array(items) => ConfigList {
+            names: clean(
+                items
+                    .iter()
+                    .map(|i| match i {
+                        serde_json::Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    })
+                    .collect(),
+            ),
+            unclear: false,
+        },
+        serde_json::Value::String(s) if py_strip(s).starts_with('[') => {
+            let inner = py_strip(s).strip_prefix('[').and_then(|r| r.strip_suffix(']'));
+            let quoted = |item: &str| {
+                let item = py_strip(item);
+                ['\'', '"'].into_iter().find_map(|q| {
+                    let name = item.strip_prefix(q)?.strip_suffix(q)?;
+                    let plain = !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || "_.- ".contains(c));
+                    plain.then(|| name.to_owned())
+                })
+            };
+            let items: Option<Vec<String>> = inner.map(|inner| {
+                let mut parts: Vec<&str> = inner.split(',').collect();
+                // `['a',]` is a list of one; `[]` of none.
+                if parts.last().is_some_and(|p| py_strip(p).is_empty()) {
+                    parts.pop();
+                }
+                parts
+            })
+            .and_then(|parts| parts.into_iter().map(quoted).collect());
+            match items {
+                Some(names) => ConfigList { names: clean(names), unclear: false },
+                None => ConfigList { names: Vec::new(), unclear: true },
+            }
+        }
+        // One name to Hermes; one this misjudged as not starting a list can't be read for certain.
+        serde_json::Value::String(s) if s.contains('[') => ConfigList { names: Vec::new(), unclear: true },
+        serde_json::Value::String(s) => ConfigList { names: clean(vec![s.clone()]), unclear: false },
+        _ => ConfigList { names: Vec::new(), unclear: false },
+    }
+}
+
 /// The scheduled-job writes the Scheduled jobs view makes (`hermes_cli/web_routers/cron.py`): `POST api/cron/jobs`
 /// creates a job, `PUT api/cron/jobs/{id}` edits one, and `POST api/cron/jobs/{id}/{pause,resume,trigger}`. The job id
 /// must be one plain path segment, as Hermes's 12-hex-digit ids are.
@@ -917,6 +1051,38 @@ fn relay_url(base: &Url, path: &str, query: &str) -> Result<(Url, String), Trans
 fn is_file_route(path: &str) -> bool {
     let mut segs = path.split('/').filter(|seg| !seg.is_empty());
     segs.next() == Some("api") && matches!(segs.next(), Some("files" | "fs"))
+}
+
+/// The toolset name Settings → Toolsets sends, with an `enabled` that is neither true nor false, to learn whether the
+/// server has the toggle route without changing anything: FastAPI refuses the body before the route runs.
+pub const TOOLSET_PROBE_NAME: &str = "__hermes_chat_probe__";
+
+/// Whether a `PUT` is Settings → Toolsets' switch: `api/tools/toolsets/<name>`, one path segment of ASCII letters,
+/// digits, `_`, `-` and `.` (Hermes's own toolset keys), and a body that is exactly `{"enabled": true}` or
+/// `{"enabled": false}`. Nothing else under that prefix is relayed: not its `env`, `provider`, `model` or
+/// `post-setup` routes, which write secrets or run installs. The probe name takes only `{"enabled": "probe"}`.
+pub fn toolset_toggle_allowed(path: &str, body: Option<&str>) -> bool {
+    let Some(name) = path.strip_prefix("api/tools/toolsets/") else {
+        return false;
+    };
+    let safe = !name.is_empty()
+        && name != "."
+        && name != ".."
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'));
+    if !safe {
+        return false;
+    }
+    let Some(body) = body.and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok()) else {
+        return false;
+    };
+    let Some(fields) = body.as_object().filter(|o| o.len() == 1) else {
+        return false;
+    };
+    match (name == TOOLSET_PROBE_NAME, fields.get("enabled")) {
+        (false, Some(serde_json::Value::Bool(_))) => true,
+        (true, Some(serde_json::Value::String(s))) => s == "probe",
+        _ => false,
+    }
 }
 
 fn endpoint(base: &Url, path: &str) -> Url {

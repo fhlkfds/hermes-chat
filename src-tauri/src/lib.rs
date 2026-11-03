@@ -409,6 +409,12 @@ async fn hermes_get_limited(state: State<'_, AppState>, path: String, max_bytes:
 }
 
 #[tauri::command]
+async fn hermes_toolset_guards(state: State<'_, AppState>, profile: String) -> Result<transport::ToolsetGuards, String> {
+    let dashboard = dashboard(&state).await?;
+    dashboard.toolset_guards(&profile).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn hermes_disconnect(state: State<'_, AppState>) -> Result<(), String> {
     *state.0.lock().await = None;
     Ok(())
@@ -604,6 +610,7 @@ pub fn run(screenshot: bool) {
             hermes_transcribe,
             hermes_speak,
             hermes_voice_setup,
+            hermes_toolset_guards,
             hermes_get_limited,
             hermes_disconnect,
             hermes_connect_cancel,

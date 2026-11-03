@@ -1491,6 +1491,24 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
   .inbox { width: calc(100vw - 60px); }
 }
 
+/* Settings → Toolsets (ToolsetSettings.tsx): one row per toolset, its switch, and what a change came to. */
+.settings p.toolset-scope { margin: 0 0 10px; }
+.settings p.toolset-scope svg { vertical-align: -2px; }
+.toolset-status { margin: 14px 0 6px; }
+.toolset-list { border: 1px solid var(--line); border-radius: var(--radius); padding: 0 14px; margin-top: 8px; }
+.toolset-row { padding: 11px 0; border-top: 1px solid var(--line); }
+.toolset-row:first-child { border-top: 0; }
+.toolset-head { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.toolset-label { min-width: 0; }
+.toolset-label .appearance-title { gap: 8px; flex-wrap: wrap; }
+.toolset-hint { margin-top: 4px; line-height: 1.5; }
+.settings h3.toolset-subhead { margin: 24px 0 6px; }
+.switch:disabled { opacity: 0.5; cursor: not-allowed; }
+.badge.off { color: var(--faint); }
+.toolset-desc { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; white-space: pre-line; }
+.toolset-ask { max-width: none; margin: 8px 0 4px; padding: 12px 14px; border: 1px solid var(--line-2); border-radius: var(--radius); }
+.toolset-ask .confirm-detail { font-family: inherit; font-size: inherit; }
+
 /* Scheduled jobs (ScheduledJobs.tsx) */
 .faint { color: var(--faint); }
 .bad { color: var(--bad); }
