@@ -97,7 +97,7 @@ export function clearCachedChats() {
 /** When a Saved copy was saved, read off the front of its JSON so the rest isn't parsed. */
 const savedAtOf = (k: string) => Number(/^\{"savedAt":(\d+)/.exec(localStorage.getItem(k) ?? "")?.[1] ?? 0);
 
-const SOURCES: Source[] = ["app", "telegram", "discord", "desktop", "cli", "other"];
+const SOURCES: Source[] = ["app", "telegram", "discord", "desktop", "cli", "import", "other"];
 const str = (v: unknown) => (typeof v === "string" ? v : undefined);
 const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
 

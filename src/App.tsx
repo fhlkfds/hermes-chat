@@ -1450,6 +1450,19 @@ export function Main({
             showTextGeneration={showTextGeneration}
             showMemory={showMemory}
             onClearCache={() => hermes.clearCache()}
+            importer={{
+              imports: hermes.imports,
+              profile,
+              scope,
+              projects: proj.projects,
+              shownProject: proj.selectedId,
+              // The project store is the one for the profile the chats went to, even if the owner switched since.
+              onImported: (to, imported, projectId) => {
+                hermes.revealImported(to, imported);
+                if (projectId) for (const c of imported) projects.setChat(projectId, c.id, true);
+              },
+              onOpen: (id) => openChat(id),
+            }}
             onPullOlder={() => hermes.pullOlderHistory()}
             onSignOut={() =>
               new Promise<void>((done) =>

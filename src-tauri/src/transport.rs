@@ -682,8 +682,10 @@ impl Dashboard {
     /// JSON body. `POST` and `PUT` reach only Settings → Model's two writes (`POST api/model/set`,
     /// `PUT api/config`), the scheduled-job writes (`cron_write`), Settings → Persona's
     /// `PUT api/profiles/{name}/soul`, and Settings → Toolsets' switch, `PUT api/tools/toolsets/<name>` with exactly
-    /// `{"enabled": true|false}` (`toolset_toggle_allowed`), and Settings → Skills' two writes, `PUT api/skills/toggle` and
-    /// `PUT api/skills/content` with exactly their fields (`skill_write_allowed`). Returns the response body on 2xx.
+    /// `{"enabled": true|false}` (`toolset_toggle_allowed`), Settings → Skills' two writes, `PUT api/skills/toggle` and
+    /// `PUT api/skills/content` with exactly their fields (`skill_write_allowed`), and Import transcripts'
+    /// `POST api/sessions/import` whose every session is marked `source: "import"` (`import_body_allowed`, ADR 0031).
+    /// Returns the response body on 2xx.
     pub async fn request(&self, method: &str, path_and_query: &str, body: Option<String>) -> Result<String, TransportError> {
         let (path, query) = path_and_query.split_once('?').unwrap_or((path_and_query, ""));
         let method = match (method, path) {
@@ -697,6 +699,7 @@ impl Dashboard {
             ("PUT", _) if toolset_toggle_allowed(path, body.as_deref()) => Method::PUT,
             ("PUT", _) if skill_write_allowed(path, body.as_deref()) => Method::PUT,
             ("PUT", p) if is_profile_soul(p) => Method::PUT,
+            ("POST", "api/sessions/import") if import_body_allowed(body.as_deref()) => Method::POST,
             ("POST" | "PUT", _) => return Err(TransportError::NotRelayed(format!("{method} {path}"))),
             (other, _) => return Err(TransportError::NotRelayed(format!("{other} requests"))),
         };
@@ -1252,6 +1255,20 @@ fn cron_write(method: &str, path: &str) -> bool {
         ("POST", None) => rest.is_empty(),
         ("PUT", Some([id])) => id_ok(id),
         ("POST", Some([id, "pause" | "resume" | "trigger"])) => id_ok(id),
+        _ => false,
+    }
+}
+
+/// Whether a `POST api/sessions/import` is Import transcripts' (ADR 0031): a JSON object whose `sessions` is a non-empty
+/// list of sessions each marked `source: "import"`, so nothing this relays can pass as a chat from another platform.
+pub fn import_body_allowed(body: Option<&str>) -> bool {
+    let Some(body) = body.and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok()) else {
+        return false;
+    };
+    match body.get("sessions").and_then(|s| s.as_array()) {
+        Some(sessions) if !sessions.is_empty() => {
+            sessions.iter().all(|s| s.get("source").and_then(|v| v.as_str()) == Some("import"))
+        }
         _ => false,
     }
 }

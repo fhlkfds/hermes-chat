@@ -30,6 +30,7 @@ import type { VoiceSetup } from "../hermes/pipe";
 import { ScreenshotSettings } from "./ScreenshotSettings";
 import type { ScreenshotSupport } from "../hermes/tauriScreenshot";
 import { UpdateSettings } from "./UpdateSettings";
+import { ImportSection, type ImportWiring } from "./ImportTranscripts";
 
 type Tab = "general" | "appearance" | "model" | "toolsets" | "persona" | "memory" | "skills";
 const TABS = [
@@ -91,6 +92,7 @@ export function SettingsScreen({
   onPersonaDirty = () => {},
   guard = allow,
   showTextGeneration,
+  importer,
   showMemory,
 }: {
   status: ConnectionStatus;
@@ -131,6 +133,8 @@ export function SettingsScreen({
   /** Changes each time the owner discards the unsaved skill edit from App's question. */
   skillDiscards?: number;
   onClearCache: () => void;
+  /** Importing transcripts into the profile shown; without it there is no Import section. */
+  importer?: ImportWiring;
   /** Resolves to the older chats added. */
   onPullOlder: () => Promise<Chat[]>;
   onSignOut: () => Promise<void>;
@@ -369,6 +373,7 @@ export function SettingsScreen({
                 </button>
               </div>
             </section>
+            {importer && <ImportSection wiring={importer} connected={status === "connected"} />}
           </div>
         )}
       </div>

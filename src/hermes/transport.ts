@@ -36,6 +36,7 @@ import { listServerCommands, runServerCommand, type CommandDef, type CommandResu
 import { CronApi } from "./cronJobs";
 import { ModelSettingsApi } from "./modelSettings";
 import { ToolsetsApi } from "./toolsets";
+import { readBack, sendImport, type ImportRest, type PlannedChat } from "./importTranscripts";
 import { memoryApi, type MemoryApi } from "./memory";
 import { SkillsApi } from "./skills";
 import type { OpenPipe, Pipe, PipeEvent, RestMethod, Route, Speech, Transcript, VoiceSetup } from "./pipe";
@@ -706,6 +707,31 @@ export class Hermes {
     rpc: (method, params) => this.request(method, params),
     get: (pathAndQuery) => this.rest("GET", pathAndQuery),
   });
+  /**
+   * Importing transcripts (importTranscripts.ts, ADR 0031). Each call names its profile, and goes only over a
+   * connection that is up, so a call made before a sign-out or profile switch never reaches another server or profile.
+   */
+  readonly imports = {
+    send: (profile: string, chats: PlannedChat[]) => sendImport(this.connectedRest, profile, chats),
+    onServer: (profile: string, ids: string[]) => readBack(this.connectedRest, profile, ids),
+  };
+
+  private connectedRest: ImportRest = async (method, pathAndQuery, body) => {
+    const pipe = this.closing ? undefined : this.connectedPipe();
+    if (!pipe) throw new Error("Not connected to Hermes.");
+    return JSON.parse(await pipe.request(method, pathAndQuery, body === undefined ? undefined : JSON.stringify(body)));
+  };
+
+  /**
+   * Puts chats just imported into the list, as Settled (their Source is a transcript file), even if they are older than
+   * the month the list shows, so they can be opened (`reveal`). Only for the profile they went to.
+   */
+  revealImported(profile: string, chats: { id: string; title: string; startedAt?: number }[]) {
+    if (profile !== this.profile) return;
+    for (const c of chats)
+      this.reveal({ chatId: c.id, title: c.title, source: "import", settled: true, updatedAt: (c.startedAt ?? Date.now() / 1000) * 1000, snippet: [] });
+  }
+
   /** Settings → Persona's reads and writes of a profile's SOUL.md (persona.ts). Each call names its profile. */
   readonly persona = new PersonaApi((method, pathAndQuery, body) => this.rest(method, pathAndQuery, body));
   /** Settings → Skills' reads and writes of a profile's skills (skills.ts). Each call names its profile. */
@@ -3505,6 +3531,7 @@ const RAW_SOURCES: Record<Exclude<Source, "other">, string[]> = {
   discord: ["discord"],
   desktop: ["desktop"],
   cli: ["cli", "tui"],
+  import: ["import"],
 };
 
 /**
@@ -3534,6 +3561,8 @@ export function toSource(stored = "", created?: string | null): Source {
     case "cli":
     case "tui":
       return "cli";
+    case "import":
+      return "import";
     default:
       return "other";
   }
