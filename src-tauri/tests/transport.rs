@@ -1719,7 +1719,8 @@ async fn a_refused_or_broken_download_leaves_the_destination_as_it_was() {
     assert!(names_in(&locked).is_empty());
 }
 
-#[tokio::test]
+// On the app's kind of runtime, where the file work runs through `block_in_place`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelling_a_download_removes_its_part_file() {
     let dashboard = Arc::new(signed_in().await);
     let dir = scratch("download-cancel");
