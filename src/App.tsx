@@ -439,6 +439,14 @@ export function Main({
     memoryDirty.current = dirty;
     setMemoryUnsaved(dirty);
   }, []);
+  // An unsaved edit in Settings → Skills (SkillSettings.tsx) lives only on screen too, and is guarded the same way.
+  const skillDirty = useRef(false);
+  const [skillUnsaved, setSkillUnsaved] = useState(false);
+  const [skillDiscards, setSkillDiscards] = useState(0);
+  const onSkillDirty = useCallback((dirty: boolean) => {
+    skillDirty.current = dirty;
+    setSkillUnsaved(dirty);
+  }, []);
   // Artifacts open to edit beside the chat (artifacts.ts, ADR 0029): their drafts live in memory for this sign-in, so
   // moving around the app keeps them, and only signing out or closing the window would drop one.
   const artifacts = useMemo(
@@ -447,19 +455,20 @@ export function Main({
   );
   const artSnap = useSyncExternalStore(artifacts.subscribe, artifacts.getSnapshot);
   const artifactUnsaved = [...artSnap.values()].some(isDirty);
-  const [leaving, setLeaving] = useState<{ edit: "persona" | "memory" | "artifact"; what: LeaveWhat; go: () => void; stay?: () => void }>();
-  /** Runs `go` now, or once the owner agrees to leave an unsaved persona, memory or artifact edit behind. `stay` runs if they don't. */
+  const [leaving, setLeaving] = useState<{ edit: "persona" | "memory" | "skill" | "artifact"; what: LeaveWhat; go: () => void; stay?: () => void }>();
+  /** Runs `go` now, or once the owner agrees to leave an unsaved persona, memory, skill or artifact edit behind. `stay` runs if they don't. */
   const guard = (go: () => void, what: LeaveWhat = "leave", stay?: () => void) => {
     // Signing out or closing drops artifact edits too: once a settings edit is left, they are asked about in turn.
     const next = what === "signout" || what === "close" ? () => (artifacts.unsaved().length ? setLeaving({ edit: "artifact", what, go, stay }) : go()) : go;
     if (memoryDirty.current) return setLeaving({ edit: "memory", what, go: next, stay });
+    if (skillDirty.current) return setLeaving({ edit: "skill", what, go: next, stay });
     if (personaDirty.current) return setLeaving({ edit: "persona", what, go: next, stay });
     next();
   };
   const guardRef = useRef(guard);
   guardRef.current = guard;
   // Closing the window asks too, only while there is something to lose. A memory edit also holds a page reload.
-  useCloseGuard(memoryUnsaved || artifactUnsaved, (close) => guardRef.current(close, "close"));
+  useCloseGuard(memoryUnsaved || skillUnsaved || artifactUnsaved, (close) => guardRef.current(close, "close"));
   const guardCloseRef = useRef(guardClose);
   useEffect(() => {
     if (!personaUnsaved) return;
@@ -1395,6 +1404,9 @@ export function Main({
             memory={hermes.memory}
             onMemoryDirty={onMemoryDirty}
             memoryDiscards={memoryDiscards}
+            skills={hermes.skills}
+            onSkillDirty={onSkillDirty}
+            skillDiscards={skillDiscards}
             checkScreenshots={screenshots.support}
             voiceSetup={voice.setup}
             showTextGeneration={showTextGeneration}
@@ -1554,8 +1566,9 @@ export function Main({
           )}
         </div>
       )}
-      {leaving?.edit === "memory" && (
+      {(leaving?.edit === "memory" || leaving?.edit === "skill") && (
         <LeaveMemoryEdit
+          subject={leaving.edit}
           profile={profile}
           onStay={() => {
             leaving.stay?.();
@@ -1563,8 +1576,13 @@ export function Main({
           }}
           onDiscard={() => {
             setLeaving(undefined);
-            onMemoryDirty(false);
-            setMemoryDiscards((n) => n + 1);
+            if (leaving.edit === "memory") {
+              onMemoryDirty(false);
+              setMemoryDiscards((n) => n + 1);
+            } else {
+              onSkillDirty(false);
+              setSkillDiscards((n) => n + 1);
+            }
             leaving.go();
           }}
         />

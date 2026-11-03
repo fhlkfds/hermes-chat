@@ -37,6 +37,7 @@ import { CronApi } from "./cronJobs";
 import { ModelSettingsApi } from "./modelSettings";
 import { ToolsetsApi } from "./toolsets";
 import { memoryApi, type MemoryApi } from "./memory";
+import { SkillsApi } from "./skills";
 import type { OpenPipe, Pipe, PipeEvent, RestMethod, Route, Speech, Transcript, VoiceSetup } from "./pipe";
 import { RemoteFilesError, previewSupport, remoteFiles, type EditIo, type RemoteFiles } from "./remoteFiles";
 import { isUnsecure } from "./unsecure";
@@ -699,6 +700,8 @@ export class Hermes {
   });
   /** Settings → Persona's reads and writes of a profile's SOUL.md (persona.ts). Each call names its profile. */
   readonly persona = new PersonaApi((method, pathAndQuery, body) => this.rest(method, pathAndQuery, body));
+  /** Settings → Skills' reads and writes of a profile's skills (skills.ts). Each call names its profile. */
+  readonly skills = new SkillsApi((method, pathAndQuery, body) => this.rest(method, pathAndQuery, body));
 
   /** The profile whose chats are shown. */
   get profile(): string {

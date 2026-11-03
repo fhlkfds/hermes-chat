@@ -2,6 +2,7 @@
 // JSON-RPC frames and dashboard REST bodies (shapes from the deployed contracts, see the research doc).
 import type { LocalFile, OpenPipe, PipeEvent, Route, Speech, ToolsetGuards, VoiceSetup } from "./pipe";
 import type { SavedKey } from "./setup";
+import { FakeSkills } from "./fakeSkills";
 import { FakeServerFiles } from "./fakeServerFiles";
 import { ScheduleError, isoIn, parseSchedule, upcomingRuns } from "./schedule";
 
@@ -353,6 +354,8 @@ export class FakeHermes {
   afterFsWrite?: (path: string) => void;
   /** The server's own disk, for the Server files screen (managed files: `GET /api/files`, `GET /api/files/read`). */
   readonly managedFiles = new FakeServerFiles();
+  /** The profiles' skills, as Settings → Skills reads and writes them (fakeSkills.ts). */
+  readonly skills = new FakeSkills(this.managedFiles);
   /** Whether this connection sent `client.capabilities {server_requests: true}`. */
   answersRequests = false;
   /** Server→client requests nobody has answered yet, by id. */
@@ -900,8 +903,9 @@ export class FakeHermes {
       })),
       main: { provider: this.modelConfig.model.provider, model: this.modelConfig.model.default },
     }),
-    "GET /api/config": () => ({
+    "GET /api/config": ({ query }) => ({
       model: this.modelConfig.model.default,
+      skills: this.skills.config(query.get("profile") || "default"),
       agent: { ...this.modelConfig.agent },
       delegation: { ...this.modelConfig.delegation },
       ...(this.cron.timezone && { timezone: this.cron.timezone }),
@@ -1094,7 +1098,8 @@ export class FakeHermes {
           (method === "GET" && snapshot ? () => this.mutationSnapshot(snapshot[1], req.query.get("profile")) : undefined) ??
           (method === "GET" && messages ? () => this.storedMessages(decodeURIComponent(messages[1]), req.query) : undefined) ??
           (soul && this.soulRoutes && (method === "GET" || method === "PUT") ? () => this.soul(method, decodeURIComponent(soul[1]), req.body) : undefined) ??
-          this.cron.route(req);
+          this.cron.route(req) ??
+          this.skills.route(req);
         const toolset = /^\/api\/tools\/toolsets(?:\/([^/]+)(\/config)?)?$/.exec(req.path);
         if (!handler && toolset) return JSON.stringify(await this.toolsetRoute(req, toolset[1], !!toolset[2]));
         if (soul && this.soulRoutes && method !== "GET" && method !== "PUT") throw new Error(`The dashboard answered 405: {"detail":"Method Not Allowed"}`);

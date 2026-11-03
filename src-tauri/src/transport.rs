@@ -682,7 +682,8 @@ impl Dashboard {
     /// JSON body. `POST` and `PUT` reach only Settings → Model's two writes (`POST api/model/set`,
     /// `PUT api/config`), the scheduled-job writes (`cron_write`), Settings → Persona's
     /// `PUT api/profiles/{name}/soul`, and Settings → Toolsets' switch, `PUT api/tools/toolsets/<name>` with exactly
-    /// `{"enabled": true|false}` (`toolset_toggle_allowed`). Returns the response body on 2xx.
+    /// `{"enabled": true|false}` (`toolset_toggle_allowed`), and Settings → Skills' two writes, `PUT api/skills/toggle` and
+    /// `PUT api/skills/content` with exactly their fields (`skill_write_allowed`). Returns the response body on 2xx.
     pub async fn request(&self, method: &str, path_and_query: &str, body: Option<String>) -> Result<String, TransportError> {
         let (path, query) = path_and_query.split_once('?').unwrap_or((path_and_query, ""));
         let method = match (method, path) {
@@ -694,6 +695,7 @@ impl Dashboard {
             ("POST", _) if cron_write("POST", path) => Method::POST,
             ("PUT", _) if cron_write("PUT", path) => Method::PUT,
             ("PUT", _) if toolset_toggle_allowed(path, body.as_deref()) => Method::PUT,
+            ("PUT", _) if skill_write_allowed(path, body.as_deref()) => Method::PUT,
             ("PUT", p) if is_profile_soul(p) => Method::PUT,
             ("POST" | "PUT", _) => return Err(TransportError::NotRelayed(format!("{method} {path}"))),
             (other, _) => return Err(TransportError::NotRelayed(format!("{other} requests"))),
@@ -1312,6 +1314,39 @@ pub fn toolset_toggle_allowed(path: &str, body: Option<&str>) -> bool {
         (true, Some(serde_json::Value::String(s))) => s == "probe",
         _ => false,
     }
+}
+
+/// Whether a `PUT` is one of Settings → Skills' two writes (`hermes_cli/web_routers/skills.py`): `api/skills/toggle`
+/// with exactly `{"name": <skill>, "enabled": true|false}`, or `api/skills/content` with exactly
+/// `{"name": <skill>, "content": <text>}`. The profile goes in the query, never the body. A skill name is one line of at
+/// most 256 characters with no backslash, no leading `/` and no empty, `.` or `..` segment, so it can't steer Hermes's
+/// lookup out of the skills folders. Nothing else under `api/skills` is relayed: not creating a skill, nor the hub's
+/// install, uninstall or update, which fetch and run code from elsewhere.
+pub fn skill_write_allowed(path: &str, body: Option<&str>) -> bool {
+    let second = match path {
+        "api/skills/toggle" => "enabled",
+        "api/skills/content" => "content",
+        _ => return false,
+    };
+    let Some(fields) = body.and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok()) else {
+        return false;
+    };
+    let Some(fields) = fields.as_object().filter(|o| o.len() == 2) else {
+        return false;
+    };
+    let name_ok = fields.get("name").and_then(|n| n.as_str()).is_some_and(|n| {
+        !n.is_empty()
+            && n.chars().count() <= 256
+            && !n.chars().any(|c| c.is_control() || c == '\\')
+            && !n.starts_with('/')
+            && !n.split('/').any(|seg| seg.is_empty() || seg == "." || seg == "..")
+    });
+    let value_ok = match (second, fields.get(second)) {
+        ("enabled", Some(serde_json::Value::Bool(_))) => true,
+        ("content", Some(serde_json::Value::String(_))) => true,
+        _ => false,
+    };
+    name_ok && value_ok
 }
 
 fn endpoint(base: &Url, path: &str) -> Url {
