@@ -406,12 +406,17 @@ export function Main({
   };
   const shownOutputs = useMemo(() => scopedOutputs(outSnap), [outSnap, outputsChatKey, shownOutputsScope]);
   const outputsRefs = () => outputsChats.map((c) => ({ id: c.id, updatedAt: c.updatedAt }));
+  // The profile's list, once read from Hermes, is every chat it has: the records of the others go, whether or not
+  // Outputs is open. A chat deleted, or no longer listed, keeps no record (outputs.ts `keepOnly`).
+  const listedFromHermes = hermes.hasListed();
+  const allChatsKey = chats.map((c) => c.id).join("\n");
+  useEffect(() => {
+    if (listedFromHermes) outputsIndex.keepOnly(new Set(chats.map((c) => c.id)));
+  }, [outputsIndex, listedFromHermes, allChatsKey]);
   // Opening Outputs, or picking another scope, reads the chats in it that changed since they were last read. A chat
   // changing while it is open (a reply streaming) waits for Refresh, so a reply doesn't set off a read per word.
   useEffect(() => {
     if (!outputsOpen || status !== "connected") return;
-    // The profile's list as just read is every chat it has: the others were deleted, or aren't listed any more.
-    if (hermes.hasListed()) outputsIndex.keepOnly(new Set(chats.map((c) => c.id)));
     // A chat opened on its own reads again the Outputs dropped to stay within the limit.
     void outputsIndex.index(outputsRefs(), false, shownOutputsScope === "chat");
   }, [outputsOpen, status, outputsIndex, shownOutputsScope, outputsChatKey]);

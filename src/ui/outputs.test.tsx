@@ -248,4 +248,20 @@ describe("Outputs", () => {
     expect(tool.textContent).not.toContain("\u202E");
     expect(tool.textContent).toContain("\uFFFDgnp.html");
   });
+
+  it("forgets a chat deleted elsewhere, whatever Outputs shows and whether or not it is open", async () => {
+    const { hermes, user } = await launch();
+    await openChat(user, "Quarterly report");
+    await openOutputs(user);
+    await user.click(screen.getByRole("radio", { name: "All chats in default" }));
+    await waitFor(() => expect(shown()).toContain("cat.png"));
+    await user.click(screen.getByRole("radio", { name: "This chat" }));
+    expect(localStorage.getItem("hermes-chat.outputs")).toContain("/srv/img/cat.png");
+    await act(async () => {
+      await hermes.delete("cats");
+      await hermes.idle();
+    });
+    await waitFor(() => expect(localStorage.getItem("hermes-chat.outputs")).not.toContain("/srv/img/cat.png"));
+    expect(localStorage.getItem("hermes-chat.outputs")).toContain("/srv/out/report.md");
+  });
 });
