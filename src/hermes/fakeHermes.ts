@@ -954,6 +954,7 @@ export class FakeHermes {
         const soul = /^\/api\/profiles\/([^/]+)\/soul$/.exec(req.path);
         const handler =
           this.rest[`${method} ${req.path}`] ??
+          (method === "POST" && req.path === "/api/sessions/import" ? () => this.importSessions(req.body!) : undefined) ??
           (method === "PATCH" && patch ? () => this.patchSession(patch[1], req.body!) : undefined) ??
           (method === "GET" && patch ? () => this.sessionDetail(decodeURIComponent(patch[1]), req.query.get("profile")) : undefined) ??
           (method === "DELETE" && patch ? () => this.deleteSession(decodeURIComponent(patch[1]), req.query.get("profile")) : undefined) ??
@@ -1373,6 +1374,89 @@ export class FakeHermes {
       s.title = title || null;
     }
     return { ok: true };
+  }
+
+  /** The answer to the next import is lost after Hermes wrote it, as when the connection drops (`sendImport`). */
+  loseImportAnswer: boolean | number = false;
+
+  /**
+   * `POST /api/sessions/import`, as probed on the deployed `bf0203a` (ADR 0025): fenced on the first session's revision,
+   * every session checked before anything is written (400 with each error), ids Hermes has skipped, and one receipt
+   * per request id, so a retried request answers as the first did.
+   */
+  private importReceipts = new Map<string, unknown>();
+  private importSessions(body: Record<string, unknown>) {
+    if (body.request_id === undefined && body.expected_revision === undefined)
+      throw new Error(`The dashboard answered 409: {"detail":"client_upgrade_required: this app is out of sync (different versions) with the Hermes backend; update the app to edit sessions"}`);
+    if (body.request_id === undefined || body.expected_revision === undefined) throw new Error(`The dashboard answered 409: {"detail":"mutation_identity_required"}`);
+    const store = this.storeOrFail(body.profile as string | undefined);
+    const lose = () => {
+      if (!this.loseImportAnswer) return;
+      this.loseImportAnswer = typeof this.loseImportAnswer === "number" && this.loseImportAnswer > 1 ? this.loseImportAnswer - 1 : false;
+      throw new Error("The connection to Hermes closed before it answered.");
+    };
+    const receipt = this.importReceipts.get(String(body.request_id));
+    if (receipt) {
+      lose();
+      return receipt;
+    }
+    const sessions = body.sessions as Record<string, unknown>[];
+    const errors = sessions.flatMap((raw, index) => {
+      const bad = (raw.messages as Record<string, unknown>[]).findIndex((m) => typeof m.role !== "string" || !m.role);
+      return bad < 0 ? [] : [{ index, error: `messages[${bad}].role must be a non-empty string`, session_id: raw.id }];
+    });
+    if (errors.length) throw new Error(`The dashboard answered 400: ${JSON.stringify({ detail: { errors } })}`);
+    const anchor = store.find((r) => r.id === sessions[0]?.id);
+    if (body.expected_revision !== (anchor?.runtime_revision ?? 0)) throw new Error(`The dashboard answered 409: {"detail":"revision_conflict"}`);
+    const imported: string[] = [];
+    const skipped: string[] = [];
+    // Titles are UNIQUE in a profile; an insert that breaks it rolls the whole import back as 503 (probed live).
+    const fresh = sessions.filter((raw) => !store.some((r) => r.id === raw.id));
+    const titles = fresh.map((raw) => raw.title).filter((t): t is string => typeof t === "string" && !!t);
+    if (titles.some((t, i) => titles.indexOf(t) !== i || store.some((r) => r.title === t)))
+      throw new Error(`The dashboard answered 503: {"detail":"storage_unavailable"}`);
+    for (const raw of sessions) {
+      const id = String(raw.id);
+      if (store.some((r) => r.id === id)) {
+        skipped.push(id);
+        continue;
+      }
+      const rows = raw.messages as Record<string, unknown>[];
+      const started = typeof raw.started_at === "number" ? raw.started_at : now();
+      const times = rows.map((m) => (typeof m.timestamp === "number" ? m.timestamp : now()));
+      store.push(
+        row(id, 0, {
+          source: String(raw.source ?? "import"),
+          title: typeof raw.title === "string" ? raw.title : null,
+          started_at: started,
+          last_active: Math.max(started, ...times),
+          message_count: rows.length,
+          runtime_revision: id === sessions[0].id ? 1 : 0,
+        }),
+      );
+      // As `_history_to_messages` shows them: a tool row named by its call; stored output kept as `result`.
+      const calls = new Map<string, { name: string; args: Record<string, unknown> }>();
+      this.transcripts[id] = rows.map((m, i): TranscriptMessage => {
+        for (const c of (m.tool_calls as { id: string; function: { name: string; arguments: string } }[] | undefined) ?? [])
+          calls.set(c.id, { name: c.function.name, args: JSON.parse(c.function.arguments || "{}") });
+        const call = calls.get(String(m.tool_call_id));
+        const base = { timestamp: times[i], row_id: 10_000 + Object.keys(this.transcripts).length * 100 + i };
+        return m.role === "tool"
+          ? { ...base, role: "tool", tool_call_id: String(m.tool_call_id), name: call?.name ?? String(m.tool_name ?? "tool"), args: call?.args, result: String(m.content ?? "") }
+          : {
+              ...base,
+              role: m.role as TranscriptMessage["role"],
+              text: typeof m.content === "string" ? m.content : "",
+              ...(typeof m.reasoning === "string" && { reasoning: m.reasoning }),
+              ...(m.tool_calls !== undefined && { tool_calls: m.tool_calls }),
+            };
+      });
+      imported.push(id);
+    }
+    const answer = { ok: true, session_id: sessions[0]?.id, revision: 1, operation: "import", imported: imported.length, skipped: skipped.length, imported_ids: imported, skipped_ids: skipped, detached: 0, errors: [] };
+    this.importReceipts.set(String(body.request_id), answer);
+    lose();
+    return answer;
   }
 
   /**

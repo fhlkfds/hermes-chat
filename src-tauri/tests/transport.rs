@@ -337,6 +337,7 @@ fn stub_routes() -> Router {
         .route("/api/tools/toolsets/{name}/post-setup", post(echo_write))
         .route("/api/profiles/{name}/soul", put(echo_write).post(echo_write))
         .route("/api/cron/jobs", post(echo_write))
+        .route("/api/sessions/import", post(echo_write))
         .route("/api/cron/jobs/{id}", put(echo_write))
         .route("/api/cron/jobs/{id}/{action}", post(echo_write))
         .route("/api/rotate", get(rotate))
@@ -677,6 +678,31 @@ async fn relays_the_scheduled_job_writes() {
     for action in ["pause", "resume", "trigger"] {
         let got: Value = serde_json::from_str(&dashboard.request("POST", &format!("api/cron/jobs/f8f9e9ea90bc/{action}?profile=default"), None).await.unwrap()).unwrap();
         assert_eq!(got["uri"], format!("/api/cron/jobs/f8f9e9ea90bc/{action}?profile=default"));
+    }
+}
+
+#[tokio::test]
+async fn relays_a_session_import_only_when_every_session_is_marked_imported() {
+    let dashboard = signed_in().await;
+    let body = json!({"profile": "default", "request_id": "r", "expected_revision": 0, "sessions": [{"id": "a", "source": "import", "messages": []}]}).to_string();
+    let got: Value = serde_json::from_str(&dashboard.request("POST", "api/sessions/import", Some(body)).await.unwrap()).unwrap();
+    assert_eq!(got["uri"], "/api/sessions/import");
+    assert_eq!(got["body"]["sessions"][0]["source"], "import");
+    for body in [
+        None,
+        Some("not json".to_owned()),
+        Some(json!({"sessions": []}).to_string()),
+        Some(json!({"sessions": [{"id": "a"}]}).to_string()),
+        Some(json!({"sessions": [{"id": "a", "source": "import"}, {"id": "b", "source": "telegram"}]}).to_string()),
+        Some(json!({"sessions": "x"}).to_string()),
+    ] {
+        let err = dashboard.request("POST", "api/sessions/import", body.clone()).await.err().unwrap();
+        assert!(matches!(err, TransportError::NotRelayed(_)), "{body:?}: {err:?}");
+    }
+    let body = json!({"sessions": [{"id": "a", "source": "import"}]}).to_string();
+    for path in ["api/sessions/import/../../auth/logout", "api/sessions/importx", "api/sessions/x/import"] {
+        let err = dashboard.request("POST", path, Some(body.clone())).await.err().unwrap();
+        assert!(matches!(err, TransportError::NotRelayed(_)), "{path}: {err:?}");
     }
 }
 

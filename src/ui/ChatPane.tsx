@@ -1,7 +1,7 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
 // Dictation and Read aloud come from Voice.tsx.
 import { createContext, memo, type ReactNode, useCallback, useContext, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
-import { ArrowUp, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, FileDown, Globe, HardDrive, ListPlus, Paperclip, RotateCcw, Search, Server, Square, Wrench, X } from "lucide-react";
+import { ArrowUp, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, FileDown, FileInput, Globe, HardDrive, ListPlus, Paperclip, RotateCcw, Search, Server, Square, Wrench, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
@@ -433,7 +433,9 @@ export function ChatPane({
           {chat.source !== "app" && (
             <div className="imported-note">
               <SourceIcon source={chat.source} /> Imported from {SOURCE_LABEL[chat.source]}.
-              {chat.settled && " Replying here moves it to Active."}
+              {chat.source === "import"
+                ? " Its messages are dated as the file had them; a Markdown export has only the time it was exported."
+                : chat.settled && " Replying here moves it to Active."}
             </div>
           )}
           {chat.savedAt !== undefined && (
@@ -488,6 +490,13 @@ export function ChatPane({
       </div>
 
       {queueApi && <QueuePanel chat={chat} queue={queue} status={status} api={queueApi} />}
+      {chat.source === "import" ? (
+        // ADR 0025: an imported transcript is a record, not a session Hermes can carry on as it was.
+        <div className="composer-wrap read-only-note" role="note">
+          <FileInput size={14} aria-hidden /> This is an imported transcript, so it's read-only here. Hermes has its words, not
+          everything the original chat had, so it can't carry on from it. Start a new chat to continue.
+        </div>
+      ) : (
       <Composer
         offline={status !== "connected"}
         queueing={queueing}
@@ -520,6 +529,7 @@ export function ChatPane({
         screenshotKeys={screenshotKeys}
         commands={commands}
       />
+      )}
       {footer}
     </div>
   );

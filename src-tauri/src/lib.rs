@@ -709,6 +709,64 @@ async fn chat_export(app: tauri::AppHandle, markdown: String, file_name: String)
     Ok(Some(path.display().to_string()))
 }
 
+/// A transcript file the owner picked to import (src/hermes/importTranscripts.ts), read whole.
+#[derive(Serialize)]
+struct PickedTranscript {
+    name: String,
+    path: String,
+    text: String,
+}
+
+/// The most an import file can be: Hermes's own import limit (`_SESSION_IMPORT_MAX_BYTES` at the deployed `bf0203a`).
+const IMPORT_MAX_BYTES: u64 = 25 * 1024 * 1024;
+
+/// Opens the native Open dialog for a transcript to import, and reads the file picked, up to `max_bytes` (never past
+/// `IMPORT_MAX_BYTES`). The webview never names the path, so no other file can be read this way. `None`: the owner
+/// cancelled.
+#[tauri::command]
+async fn import_pick_file(app: tauri::AppHandle, extensions: Vec<String>, max_bytes: u64) -> Result<Option<PickedTranscript>, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let extensions: Vec<&str> = extensions.iter().map(String::as_str).filter(|e| e.chars().all(|c| c.is_ascii_alphanumeric())).collect();
+    let mut dialog = app.dialog().file().set_title("Import a transcript").add_filter("Transcript", &extensions);
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.set_parent(&window);
+    }
+    dialog.pick_file(move |path| {
+        let _ = tx.send(path);
+    });
+    let Some(path) = rx.await.map_err(|e| e.to_string())? else { return Ok(None) };
+    let path = path.into_path().map_err(|e| e.to_string())?;
+    let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+    let text = tokio::task::spawn_blocking({
+        let path = path.clone();
+        move || read_transcript(&path, max_bytes.min(IMPORT_MAX_BYTES))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(Some(PickedTranscript { name, path: path.display().to_string(), text }))
+}
+
+/// A transcript file's whole text: a regular file of at most `max_bytes`, in UTF-8, without a byte order mark.
+fn read_transcript(path: &std::path::Path, max_bytes: u64) -> Result<String, String> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).map_err(|e| format!("Couldn't open it: {e}"))?;
+    let meta = file.metadata().map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Err("It isn't a file.".into());
+    }
+    let too_big = || format!("It's over {} MB, more than Hermes imports at once.", max_bytes / 1024 / 1024);
+    if meta.len() > max_bytes {
+        return Err(too_big());
+    }
+    let mut bytes = Vec::new();
+    file.take(max_bytes + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(too_big());
+    }
+    let text = String::from_utf8(bytes).map_err(|_| "It isn't UTF-8 text.".to_string())?;
+    Ok(text.strip_prefix('\u{feff}').map(str::to_owned).unwrap_or(text))
+}
+
 /// A local file the owner picked for the preview pane.
 #[derive(Serialize)]
 struct PickedFile {
@@ -900,6 +958,7 @@ pub fn run(screenshot: bool) {
             headers_save,
             headers_delete,
             chat_export,
+            import_pick_file,
             preview_pick_local,
             preview_read_local,
             preview_read_local_image,
@@ -943,6 +1002,23 @@ pub fn run(screenshot: bool) {
 mod tests {
     use super::Transfers;
     use std::time::Duration;
+
+    #[test]
+    fn a_transcript_is_read_whole_only_when_it_is_small_utf8_text() {
+        let dir = std::env::temp_dir().join(format!("hermes-chat-import-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = |name: &str, bytes: &[u8]| {
+            let p = dir.join(name);
+            std::fs::write(&p, bytes).unwrap();
+            p
+        };
+        assert_eq!(super::read_transcript(&file("ok.md", "\u{feff}# Chat\n".as_bytes()), 100).unwrap(), "# Chat\n");
+        assert_eq!(super::read_transcript(&file("exact.md", &[b'a'; 100]), 100).unwrap().len(), 100);
+        assert!(super::read_transcript(&file("big.md", &[b'a'; 101]), 100).unwrap_err().contains("over"));
+        assert!(super::read_transcript(&file("bin.md", &[0xff, 0xfe, 0x00]), 100).unwrap_err().contains("UTF-8"));
+        assert!(super::read_transcript(&dir, 100).unwrap_err().contains("isn't a file"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[tokio::test]
     async fn a_replaced_transfer_leaves_its_replacements_cancel_in_place() {
