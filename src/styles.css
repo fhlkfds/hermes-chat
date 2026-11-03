@@ -166,6 +166,10 @@ code, pre, kbd { font-family: var(--mono); }
 /* Keyboard focus anywhere in the row shows its actions, so Tab can reach them. */
 .row:hover .row-action, .row:focus-within .row-action { display: grid; }
 .row-action:focus-visible { outline: 2px solid var(--line-2); outline-offset: -2px; }
+/* A Settled chat's way back to Active says "Unsettle" and shows without hovering. */
+.row-action.row-unsettle {
+  display: grid; grid-auto-flow: column; gap: 4px; width: auto; padding: 0 6px; font-size: calc(11.5rem / 14);
+}
 .row.confirming { padding-left: 10px; background: rgba(248, 113, 113, 0.08); }
 .row.confirming .row-title { color: var(--muted); }
 .row-confirm { flex: none; font-size: calc(12rem / 14); padding: 3px 8px; border-radius: 6px; color: var(--muted); }
@@ -251,6 +255,12 @@ code, pre, kbd { font-family: var(--mono); }
 }
 .chat-title { display: flex; align-items: center; gap: 8px; font-size: calc(13.5rem / 14); color: var(--text-2); min-width: 0; }
 .chat-title > span:not(.badge):not(.src) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.unsettle-btn {
+  display: inline-flex; align-items: center; gap: 4px; flex: none; padding: 1px 7px; border-radius: 999px;
+  font-size: calc(11rem / 14); color: var(--muted); border: 1px solid var(--line-2);
+}
+.unsettle-btn:hover { background: var(--raised-2); color: var(--text); }
+.unsettle-btn:focus-visible { outline: 2px solid var(--line-2); outline-offset: 1px; }
 .chat-head-actions { display: flex; gap: 2px; opacity: 0.7; }
 .chat-head:hover .chat-head-actions { opacity: 1; }
 

@@ -35,28 +35,36 @@ export function SourceIcon({ source, size = 12 }: { source: Source; size?: numbe
   );
 }
 
-/** Settles an Active chat, or moves a Settled one to Active. */
+/**
+ * Settles an Active chat, or moves a Settled one to Active. `labeled`: on a Settled chat the button also says
+ * "Unsettle" in words, so the way back to Active shows without hovering.
+ */
 export function SettleButton({
   settled,
   size,
   className,
   onSettle,
+  labeled,
 }: {
   settled: boolean;
   size: number;
   className: string;
   onSettle: (settled: boolean) => void;
+  labeled?: boolean;
 }) {
+  const unsettleLabel = labeled && settled;
   return (
     <button
       className={className}
       title={settled ? "Move to Active" : "Settle"}
+      aria-label={unsettleLabel ? "Unsettle" : undefined}
       onClick={(e) => {
         e.stopPropagation();
         onSettle(!settled);
       }}
     >
       {settled ? <ArchiveRestore size={size} /> : <Archive size={size} />}
+      {unsettleLabel && <span>Unsettle</span>}
     </button>
   );
 }
