@@ -66,6 +66,14 @@ export type TranscriptMessage = {
   result?: string;
   /** An assistant row's tool calls as stored: `[{id, type, function: {name, arguments}}]`, `arguments` JSON text. */
   tool_calls?: unknown;
+  /**
+   * Compaction, as stored rows carry it: a row compaction took out of what the model reads (`compacted`, and then not
+   * `active`), a compaction's summary row (`_compressed_summary`), and the message a row holds (`message_uid`), which
+   * the copies compaction keeps share. Only `include_compacted=true` reads compacted rows.
+   */
+  compacted?: boolean;
+  summary?: boolean;
+  message_uid?: string;
 };
 
 /** A file on the owner's disk: its bytes as a string, a size alone for a file too big to make, or a folder. */
@@ -274,6 +282,25 @@ export class FakeHermes {
   /** A `/steer` is queued for the running turn; false answers as Hermes does with no turn running. */
   steerable = true;
   contextOutput = "Context window: 12,400 / 200,000 tokens (6%)\n  System prompt  3,100\n  Messages       9,300";
+  /**
+   * What `session.context_breakdown` answers (`SessionContextBreakdownResult` at the deployed `bf0203a`). Undefined
+   * answers JSON-RPC "method not found", as a Hermes without the method would.
+   */
+  contextBreakdown?: Record<string, unknown> = {
+    categories: [],
+    context_max: 0,
+    context_percent: 0,
+    context_used: 0,
+    estimated_total: 0,
+    context_estimated: false,
+    context_source: "provider_usage",
+    model: "",
+    context_files: [],
+  };
+  /** What `session.compress` answers; undefined answers "method not found". */
+  compressResult?: Record<string, unknown> = { status: "compressed", removed: 0, before_messages: 0, after_messages: 0, before_tokens: 0, after_tokens: 0, summary: { noop: true, headline: "Nothing to compress" } };
+  /** Set to make `GET /api/sessions/{id}/messages` fail with this. */
+  messagesFailure?: string;
   oneshotFailure?: string;
   /** The owner's local disk, by path, for attachments. */
   files: Record<string, FakeFile> = {};
@@ -496,6 +523,9 @@ export class FakeHermes {
     },
     // Legacy `session.interrupt` (tui_gateway/methods_session_interrupt.py). The turn then ends with a
     // `message.complete` whose status is "interrupted"; tests send that themselves.
+    "session.context_breakdown": (r) =>
+      this.contextBreakdown ? this.respond(r.id, structuredClone(this.contextBreakdown)) : this.fail(r.id, -32601, "method not found: session.context_breakdown"),
+    "session.compress": (r) => (this.compressResult ? this.respond(r.id, structuredClone(this.compressResult)) : this.fail(r.id, -32601, "method not found: session.compress")),
     "session.interrupt": (r) => {
       const sid = String(r.params.session_id);
       if (!this.runtime.has(sid)) return this.fail(r.id, 4001, "session not found");
@@ -1316,8 +1346,9 @@ export class FakeHermes {
    * with a stored id are there: a live session's unstored tail isn't.
    */
   private storedMessages(id: string, query: URLSearchParams) {
+    if (this.messagesFailure) throw new Error(this.messagesFailure);
     const rows = (this.transcripts[id] ?? [])
-      .filter((m) => m.row_id !== undefined)
+      .filter((m) => m.row_id !== undefined && (!m.compacted || query.get("include_compacted") === "true"))
       .map((m) => ({
         id: m.row_id!,
         session_id: id,
@@ -1327,6 +1358,10 @@ export class FakeHermes {
         tool_call_id: m.tool_call_id ?? null,
         tool_calls: m.tool_calls === undefined ? null : JSON.stringify(m.tool_calls),
         timestamp: m.timestamp ?? null,
+        active: m.compacted ? 0 : 1,
+        compacted: m.compacted ? 1 : 0,
+        _compressed_summary: m.summary ? 1 : null,
+        message_uid: m.message_uid ?? `uid-${m.row_id}`,
       }));
     if (query.get("order") === "latest") rows.reverse();
     const offset = Number(query.get("offset") ?? 0);
