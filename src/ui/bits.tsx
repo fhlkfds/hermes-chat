@@ -1,6 +1,6 @@
 // Small shared UI bits, ported from the prototype.
 import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
-import { Archive, ArchiveRestore, EyeOff, Globe, Monitor, RotateCcw, Send, Terminal } from "lucide-react";
+import { Archive, ArchiveRestore, EyeOff, FileInput, Globe, Monitor, RotateCcw, Send, Terminal } from "lucide-react";
 import type { ConnectionStatus, Source } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
 import { SOURCE_LABEL } from "../hermes/model";
@@ -25,6 +25,8 @@ export function SourceIcon({ source, size = 12 }: { source: Source; size?: numbe
       <Terminal size={size} strokeWidth={2.4} />
     ) : source === "desktop" ? (
       <Monitor size={size} strokeWidth={2.4} />
+    ) : source === "import" ? (
+      <FileInput size={size} strokeWidth={2.4} />
     ) : (
       <Globe size={size} strokeWidth={2.4} />
     );

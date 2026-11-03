@@ -2,7 +2,8 @@
 import type { ModelPick } from "./models";
 import type { ChatUsage, ReplyUsage } from "./usage";
 
-export type Source = "app" | "telegram" | "discord" | "cli" | "desktop" | "other";
+/** `import`: a transcript file imported into Hermes (ADR 0031). Hermes Chat shows it read-only. */
+export type Source = "app" | "telegram" | "discord" | "cli" | "desktop" | "import" | "other";
 
 export const SOURCE_LABEL: Record<Source, string> = {
   app: "Hermes Chat",
@@ -10,6 +11,7 @@ export const SOURCE_LABEL: Record<Source, string> = {
   discord: "Discord",
   cli: "the command line",
   desktop: "the Hermes desktop app",
+  import: "a transcript file",
   other: "another Hermes platform",
 };
 
@@ -239,4 +241,8 @@ export type Found = Pick<Chat, "title" | "source" | "settled" | "archived" | "up
   find?: string;
   /** The kind of message that matched. */
   role?: "user" | "assistant";
+  /** The model Hermes last recorded for the chat, when it says. */
+  model?: string;
+  /** Hermes stored it as a local chat without saying which app started it, so it can't be matched by source. */
+  sourceUnknown?: boolean;
 };

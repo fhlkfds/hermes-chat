@@ -48,11 +48,19 @@ A chat with something new in it since the owner last opened it, in this app or a
 _Avoid_: new, unseen
 
 **Source**:
-The platform a chat was started on: this app, Telegram, Discord, the command line, or the official Hermes desktop app. A chat's source never changes, even after the owner replies from this app. Chats whose source is this app show no source icon.
+The platform a chat was started on: this app, Telegram, Discord, the command line, the official Hermes desktop app, or a transcript file (an Imported transcript). A chat's source never changes, even after the owner replies from this app. Chats whose source is this app show no source icon.
 _Avoid_: origin, platform (as an attribute of a chat)
 
 **Imported chat**:
 A chat whose source is anything other than this app. Imported chats start Settled.
+
+**Imported transcript**:
+A chat brought into Hermes from an export file with Import transcripts: a Hermes Chat Markdown export, or a Hermes session export (JSONL). Its Source is a transcript file (`import` in Hermes), in every Hermes client. It starts Settled and is read-only here: Hermes has its words, not everything the original chat had, so the owner starts a new chat to carry on. It is known by an id taken from the file, the session's own id or one made from the file's SHA-256, so the same file imported again adds nothing (ADR 0031).
+_Avoid_: restored chat, backup, upload
+
+**Import** (of transcripts):
+Reading an export file the owner picks, checking all of it, showing what it holds and what won't come in, and only then having Hermes write its chats, all or none. Chats Hermes already has are skipped. It counts as imported once Hermes, read back, has each chat.
+_Avoid_: restore, sync, upload
 
 **Profile**:
 A separate Hermes agent setup on the server, with its own chats. The app shows one profile's chats at a time. The profile switcher shows which other profiles have Unread chats, checked every two minutes, so it can lag behind.
@@ -62,6 +70,18 @@ _Avoid_: account, workspace, agent (as a name for a profile), connection (the si
 **Project**:
 A named group of chats and of folders on the server, in one profile. Hermes keeps the project, its name and its folders, so other Hermes clients show it too. Which chats are in it is kept on this computer only. Picking a project in the list shows only its chats; a chat started meanwhile goes in it. A chat can be in several projects, or none. Deleting a project keeps its chats in Hermes and its folders on the server.
 _Avoid_: workspace, group, folder (for the project itself)
+
+**Tag**:
+A label the owner puts on chats, in one profile. A chat can have several tags, or none. The owner creates, renames and deletes tags; a renamed tag stays on its chats. No two tags in a profile share a name, whatever its case. Tags are kept on this computer only, for each connection and profile; Hermes and other Hermes clients don't see them (ADR 0026).
+_Avoid_: label (in the app), category, folder, project
+
+**Chat filter**:
+What the search palette narrows the profile's chats by: words, Tags, Source, model, when the chat was last active, and whether it is Active, Settled or Archived. A chat must match every part. Hermes searches the words and lists the chats; the rest is checked on what Hermes answered, and the results say when more chats may match. Applying a filter changes no chat (ADR 0026).
+_Avoid_: query, view
+
+**Saved filter**:
+A Chat filter the owner named, listed in its own section of the chat list and opened again from there. It is a search, not a group: unlike a Project, it puts no chat anywhere. Kept on this computer only, for each connection and profile (ADR 0026).
+_Avoid_: smart folder, saved search (fine in conversation), view
 
 **Folder** (of a project):
 A path on the server that a project refers to, shown with the connection it is on. Hermes Chat adds only a folder that is already there, and never creates, moves or deletes one. A folder in a git repository shows its branch, and the repository's other worktrees that already exist can be added as folders too; Hermes Chat never creates a worktree.
@@ -254,6 +274,7 @@ _Avoid_: upgrade (pacman's word, for the package step only)
 - Every **Chat** has exactly one **Source**.
 - Every **Chat** belongs to exactly one **Profile**; Active and Settled are kept per profile.
 - An **Imported chat** becomes **Active** only when the owner sends a message in it from this app.
+- An **Imported transcript** is an **Imported chat** that stays **Settled** until the owner unsettles it: nothing can be sent in it from this app.
 - A **Branch** has exactly one parent chat, in the same **Profile**; a chat can have any number of branches.
 - Every **Project** belongs to exactly one **Profile**. A **Chat** can be in any number of its profile's projects, or none; being in one doesn't change whether it is **Active**, **Settled**, **Archived** or **Unread**.
 
@@ -264,6 +285,8 @@ _Avoid_: upgrade (pacman's word, for the package step only)
 - **Settled** vs **Archived**: they are different things. Archiving sets Hermes's own "archived" flag and hides a chat in every Hermes client; settling is this app's view of the owner's attention, stored as the "pinned" flag. Neither touches the other (ADR 0005).
 - **Queued message** vs **Draft** vs **Failed message**: a Draft hasn't been sent or queued; a Queued message waits in the chat's queue to be sent by this app; a Failed message was sent, and Hermes didn't take it or may not have. A queued message that goes leaves the queue, and becomes a Failed message only if Hermes doesn't take it.
 - **Imported chat** vs pulling older history: the list holds the past month's chats until the owner pulls older history in Settings, after which it holds all of the profile's chats. Pulled chats come in Settled unless pinned, but they are Imported chats only if their Source isn't this app.
+- **Imported chat** vs **Imported transcript**: an Imported chat is any chat started outside this app, which the owner can carry on here. An Imported transcript was made from an export file, has the Source `import`, and is read-only here.
+- **Import** vs **Export** and **Upload**: Export saves one chat as a file on this computer; Import makes chats in Hermes from such a file; Upload puts a file on the server's disk, not in a chat.
 - **Draft** vs the New chat pane: the code also calls the pane for a chat not started yet "the draft". In this glossary a Draft is only the composer's unsent text.
 - **Toolset** vs **Approval** and YOLO: a toolset decides which tools the model is offered at all; an Approval, and YOLO, decide whether a command Hermes counts as dangerous runs without asking. Turning a toolset on or off changes neither. Speech-to-text is listed among the toolsets because Hermes lists it there, but it has no tools: its switch is the profile's `stt.enabled`, which Dictation uses.
 - **Dictation** and **Read aloud** vs Hermes's voice mode: Hermes's `/voice` mode (`voice.record`, `voice.tts` over the socket) records with the server's own microphone and speaks through the server's speakers. This app never uses it. Dictation records on this computer, and both use the server only to transcribe and to make the audio.
