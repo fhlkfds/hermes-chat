@@ -1,4 +1,4 @@
-import { type ReactNode, type RefObject, useCallback, useLayoutEffect, useMemo, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { type ReactNode, type RefObject, Suspense, lazy, useCallback, useLayoutEffect, useMemo, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { Columns2, FolderCog, PanelRight, X } from "lucide-react";
 import { RenameConflict, connect, readSaved, type Delivery, type Hermes } from "./hermes/transport";
@@ -45,6 +45,8 @@ import { OutputsIndex, outputsIn, splitPath, type Output } from "./hermes/output
 import { composing, routeLabel } from "./ui/bits";
 import { ProjectScreen, ProjectSwitcher, type ProjectUnread } from "./ui/Projects";
 import { ScheduledJobs } from "./ui/ScheduledJobs";
+import { tauriTerminal } from "./ui/tauriTerminal";
+import { TERMINAL_TARGET_KEY, terminalTarget } from "./hermes/terminal";
 import { ApplyDefaults, NewChatSettingsView } from "./ui/ProjectDefaultsNotes";
 import { appearanceStore } from "./ui/appearance";
 import { StatusBar } from "./ui/StatusBar";
@@ -58,6 +60,9 @@ import { tauriLocalFiles, tauriWebPages, type LocalFiles, type WebPages } from "
 import type { PreviewTarget } from "./hermes/preview";
 import type { Route } from "./hermes/pipe";
 import { getUIPrefs, setUIPrefs, subscribe as subscribeUIPrefs, toggleModelFavorite, type StickyModelPick } from "./hermes/uiPrefs";
+
+// xterm.js is loaded only once the Terminal is first opened.
+const TerminalScreen = lazy(() => import("./ui/Terminal").then((m) => ({ default: m.TerminalScreen })));
 
 const SAVED = "hermes-chat.sign-in"; // Everything but the password and extra headers, which are in the system keyring.
 // Hermes also announces store changes over the socket; the poll catches anything it misses.
@@ -462,6 +467,11 @@ export function Main({
   const [projectOpen, setProjectOpen] = useState(false);
   /** The Scheduled jobs screen covers the chat, as Settings does. */
   const [jobsOpen, setJobsOpen] = useState(false);
+  // The Terminal screen covers the chat too. Once opened it stays mounted for this sign-in, hidden while the owner is
+  // elsewhere, so its ssh session keeps running (ADR 0022).
+  const [terminalOpen, setTerminalOpen] = useState(false);
+  const [terminalMounted, setTerminalMounted] = useState(false);
+  const [terminalRunning, setTerminalRunning] = useState(false);
   // Server files covers the chat panes too. The folder open last stays for this sign-in.
   const [filesOpen, setFilesOpen] = useState(false);
   const [filesPath, setFilesPath] = useState<string>();
@@ -645,6 +655,7 @@ export function Main({
       setProjectOpen(false);
       setFilesOpen(false);
       setJobsOpen(false);
+      setTerminalOpen(false);
       setOutputsOpen(false);
       if (remember) rememberOpenChat(profile, id);
     };
@@ -665,6 +676,7 @@ export function Main({
     setProjectOpen(false);
     setFilesOpen(false);
     setJobsOpen(false);
+    setTerminalOpen(false);
     setOutputsOpen(false);
   });
 
@@ -682,6 +694,7 @@ export function Main({
     setProjectOpen(false);
     setFilesOpen(false);
     setJobsOpen(false);
+    setTerminalOpen(false);
     setOutputsOpen(false);
     rememberOpenChat(profile, chatId);
   });
@@ -711,6 +724,7 @@ export function Main({
       setProjectOpen(false);
       setFilesOpen(false);
       setJobsOpen(false);
+      setTerminalOpen(false);
       setOutputsOpen(false);
       setSearchOpen(false);
       if (!previewFits) setPreviewHidden(true);
@@ -974,7 +988,7 @@ export function Main({
       } else if (e.code === "Backslash" || k === "\\") {
         e.preventDefault();
         toggleSplit();
-      } else if ((k === "1" || k === "2") && !e.shiftKey && !e.altKey && split && !settingsOpen && !filesOpen && !jobsOpen && !outputsOpen) {
+      } else if ((k === "1" || k === "2") && !e.shiftKey && !e.altKey && split && !settingsOpen && !filesOpen && !jobsOpen && !outputsOpen && !terminalOpen) {
         e.preventDefault();
         focusPane(panes[Number(k) - 1].key);
       }
@@ -988,9 +1002,10 @@ export function Main({
   const previewFits = !mainWidth || mainWidth >= CHAT_MIN_WIDTH + PANE_MIN_WIDTH;
   const paneMax = mainWidth ? mainWidth - CHAT_MIN_WIDTH : 1200;
   const paneWidth = Math.min(Math.max(dragWidth ?? previewWidth ?? PREVIEW_DEFAULT_WIDTH, PANE_MIN_WIDTH), Math.max(PANE_MIN_WIDTH, paneMax));
-  // Settings covers the chat, and the pane with it; so do the project screen, Server files and Scheduled jobs.
+  // Settings covers the chat, and the pane with it; so do the project screen, Server files, Scheduled jobs and the
+  // Terminal.
   // Outputs covers the chat panes but keeps the preview pane beside it, since its files open there.
-  const screenCovering = settingsOpen || projectScreenOpen || filesOpen || jobsOpen;
+  const screenCovering = settingsOpen || projectScreenOpen || filesOpen || jobsOpen || terminalOpen;
   const covering = screenCovering || outputsOpen;
   const previewShown = !!preview && !screenCovering && (previewFits || !previewHidden);
   const previewCovers = previewShown && !previewFits;
@@ -1085,6 +1100,7 @@ export function Main({
             setSettingsOpen(false);
             setProjectOpen(false);
             setJobsOpen(false);
+            setTerminalOpen(false);
             setOutputsOpen(false);
             setFilesOpen((o) => !o);
           })
@@ -1095,6 +1111,7 @@ export function Main({
             setProjectOpen(false);
             setFilesOpen(false);
             setJobsOpen(false);
+            setTerminalOpen(false);
             setOutputsOpen((o) => !o);
           })
         }
@@ -1103,17 +1120,31 @@ export function Main({
         onInbox={() => setInboxOpen((o) => !o)}
         inboxOpen={inboxOpen}
         inboxCount={inboxCount}
-        onSettings={() => { setProjectOpen(false); setFilesOpen(false); setJobsOpen(false); setOutputsOpen(false); setShowTextGeneration(undefined); setSettingsOpen(true); }}
+        onSettings={() => { setProjectOpen(false); setFilesOpen(false); setJobsOpen(false); setTerminalOpen(false); setOutputsOpen(false); setShowTextGeneration(undefined); setSettingsOpen(true); }}
         onJobs={() =>
           guard(() => {
             setProjectOpen(false);
             setSettingsOpen(false);
             setFilesOpen(false);
             setOutputsOpen(false);
+            setTerminalOpen(false);
             setJobsOpen(true);
           })
         }
         jobsOpen={jobsOpen && !settingsOpen}
+        onTerminal={() =>
+          guard(() => {
+            setProjectOpen(false);
+            setSettingsOpen(false);
+            setFilesOpen(false);
+            setJobsOpen(false);
+            setOutputsOpen(false);
+            setTerminalMounted(true);
+            setTerminalOpen((o) => !o);
+          })
+        }
+        terminalOpen={terminalOpen && !settingsOpen}
+        terminalRunning={terminalRunning}
         updateWaiting={updateWaiting}
       />
       {listOpen && (
@@ -1138,6 +1169,7 @@ export function Main({
                     setSettingsOpen(false);
                     setFilesOpen(false);
                     setJobsOpen(false);
+                    setTerminalOpen(false);
                     setOutputsOpen(false);
                     setProjectOpen(true);
                   });
@@ -1147,6 +1179,7 @@ export function Main({
                     setSettingsOpen(false);
                     setFilesOpen(false);
                     setJobsOpen(false);
+                    setTerminalOpen(false);
                     setOutputsOpen(false);
                     setProjectOpen(true);
                     void projects.readDefaults();
@@ -1180,6 +1213,7 @@ export function Main({
             setProjectOpen(false);
             setFilesOpen(false);
             setJobsOpen(false);
+            setTerminalOpen(false);
             setOutputsOpen(false);
             setShowTextGeneration({});
             setSettingsOpen(true);
@@ -1348,6 +1382,21 @@ export function Main({
             }}
           />
         ) : null}
+        {terminalMounted && (
+          <Suspense fallback={null}>
+          <TerminalScreen
+            api={tauriTerminal}
+            initialTarget={terminalTarget(connection, localStorage.getItem(TERMINAL_TARGET_KEY))}
+            shown={terminalOpen && !settingsOpen}
+            onTarget={(t) => localStorage.setItem(TERMINAL_TARGET_KEY, t)}
+            onRunning={setTerminalRunning}
+            onClose={() => {
+              flushSync(() => setTerminalOpen(false));
+              focusPane(active.key);
+            }}
+          />
+          </Suspense>
+        )}
         <Split panes={slots} activeKey={active.key} onActivate={activate} covered={covered || covering || previewCovers} />
         </div>
           {preview && previewShown && (

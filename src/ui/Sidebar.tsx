@@ -1,7 +1,7 @@
 // Icon rail beside a chat list (ADR 0001), ported from the prototype's variants C and A. The list's header is the
 // profile switcher. Settings opens from the rail's foot. Right-clicking a chat opens its menu (ChatMenu.tsx).
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, EyeOff, FileOutput, FolderOpen, Inbox as InboxIcon, LockOpen, Search, Settings, SquarePen, Trash2 } from "lucide-react";
+import { CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, EyeOff, FileOutput, FolderOpen, Inbox as InboxIcon, LockOpen, Search, Settings, SquarePen, SquareTerminal, Trash2 } from "lucide-react";
 import type { Chat, ConnectionStatus, OtherProfile, OtherProfiles } from "../hermes/model";
 import { SOURCE_LABEL, isWaiting } from "../hermes/model";
 import { CHECK_EVERY_MS, totalUnread } from "../hermes/otherProfiles";
@@ -32,6 +32,9 @@ export function Rail({
   onSettings,
   onJobs,
   jobsOpen = false,
+  onTerminal,
+  terminalOpen = false,
+  terminalRunning = false,
   updateWaiting = false,
 }: {
   status: ConnectionStatus;
@@ -56,6 +59,11 @@ export function Rail({
   /** Opens Scheduled jobs: Hermes's jobs for the profile, which it runs on the server. */
   onJobs?: () => void;
   jobsOpen?: boolean;
+  /** Opens or closes the Terminal: a shell on the server through the owner's ssh (Terminal.tsx). */
+  onTerminal?: () => void;
+  terminalOpen?: boolean;
+  /** Its ssh is running, maybe out of sight. */
+  terminalRunning?: boolean;
   /** An update is ready to install or restart into (Settings → Updates). */
   updateWaiting?: boolean;
 }) {
@@ -107,6 +115,18 @@ export function Rail({
         {onOutputs && (
           <button className={`icon-btn ${outputsOpen ? "on" : ""}`} title="Outputs: files Hermes made" aria-label="Outputs" aria-pressed={outputsOpen} onClick={onOutputs}>
             <FileOutput size={18} />
+          </button>
+        )}
+        {onTerminal && (
+          <button
+            className={`icon-btn terminal-btn ${terminalOpen ? "on" : ""}`}
+            title={terminalRunning && !terminalOpen ? "Terminal on the server: a session is running" : "Terminal on the server"}
+            aria-label={terminalRunning ? "Terminal, session running" : "Terminal"}
+            aria-pressed={terminalOpen}
+            onClick={onTerminal}
+          >
+            <SquareTerminal size={18} />
+            {terminalRunning && !terminalOpen && <span className="dot terminal-dot" aria-hidden />}
           </button>
         )}
       </div>
