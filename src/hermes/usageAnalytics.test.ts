@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row, type SessionRow } from "./fakeHermes";
 import { connect } from "./transport";
 import {
+  CSV_COLUMNS,
   MAX_PAGES,
   NO_PROJECT,
   StaleRead,
@@ -18,6 +19,7 @@ import {
   groupBy,
   periodOf,
   recordedUsd,
+  reportedNowhere,
   sortChats,
   sortGroups,
   tallyLabel,
@@ -322,6 +324,46 @@ describe("Usage Hermes didn't record", () => {
     const [check] = crossCheck(data);
     expect(check.complete).toBe(false);
     expect(check.hermes.helpers.map((h) => h.task)).toEqual(["title_generation"]);
+  });
+});
+
+describe("Chats that weren't read at all", () => {
+  it("never calls a cost Included, or complete, when a profile couldn't be read", () => {
+    const t = totalsOf([base("a", {}, usage(1000, 100, { cost: ["included", 0] }))]).cost;
+    expect(tallyLabel(t).short).toBe("Included");
+    const label = tallyLabel(t, { partial: true });
+    expect(label.short).toBe("$0.00+");
+    expect(label.detail).toMatch(/of the tokens read/);
+    expect(label.detail).toMatch(/Some chats couldn't be read at all/);
+    // A paid total gets its "+" the same way.
+    expect(tallyLabel(totalsOf([base("b", {}, usage(10, 1, { cost: ["actual", 0.25, 0.25] }))]).cost, { partial: true }).short).toBe("$0.25+");
+    expect(tallyLabel(totalsOf([]).cost, { partial: true }).short).toBe("?");
+  });
+});
+
+describe("A count only some segments reported", () => {
+  it("keeps what the other segments reported, marked short, and leaves out only what no segment reported", async () => {
+    // The first segment (the list row) has input; the later one, read by id, sent none, nor any cache counts.
+    const page = async () => ({
+      rows: [{ id: "tip", started_at: NOW / 1000, _lineage_root_id: "root", _lineage_ids: ["root", "tip"], input_tokens: 1000, output_tokens: 10, api_call_count: 1, cost_status: "estimated", estimated_cost_usd: 0.01 }],
+      total: 1,
+    });
+    const session = async () => ({ id: "tip", output_tokens: 20, api_call_count: 2, cost_status: "estimated", estimated_cost_usd: 0.02 });
+    const data = await collectUsage({ page, session, hermesTotals: async () => ({ totals: {} }) }, ["default"], week());
+    const [c] = data.chats;
+    expect(c.counts.input).toBe(1000);
+    expect(c.unreported).toContain("input");
+    expect(reportedNowhere(c, "input")).toBe(false);
+    expect(reportedNowhere(c, "cacheRead")).toBe(true);
+    // One CSV line's fields, quotes undone.
+    const fields = (line: string) => [...line.matchAll(/("(?:[^"]|"")*"|[^,]*)(?:,|$)/g)].slice(0, -1).map((m) => m[1].replace(/^"|"$/g, "").replace(/""/g, '"'));
+    const row = fields(usageCsv(data.chats, "UTC", () => []).trimEnd().split("\r\n")[1]);
+    expect(row).toHaveLength(CSV_COLUMNS.length);
+    const col = (name: string) => row[CSV_COLUMNS.indexOf(name as never)];
+    expect(col("input_tokens_uncached")).toBe("1000");
+    expect(col("cache_read_tokens")).toBe("");
+    expect(col("output_tokens")).toBe("30");
+    for (const f of ["input", "cacheRead", "cacheWrite", "reasoning"]) expect(col("coverage")).toMatch(new RegExp(`not reported:[^;]*\\b${f}\\b`));
   });
 });
 

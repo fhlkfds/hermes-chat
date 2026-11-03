@@ -475,26 +475,36 @@ export function coverage(t: CostTally): number {
  * A tally in a few characters, never as a bill: `~` when any of it is Hermes's estimate, `+` when some usage has no
  * price or only part of one, so the true cost is higher. Its detail says so in words.
  */
-export function tallyLabel(t: CostTally): { short: string; detail: string; kind: CostKind | "mixed" | "none" } {
+export function tallyLabel(
+  t: CostTally,
+  { partial = false }: { /** Chats that should be here weren't read at all: a profile failed, or past the page limit. */ partial?: boolean } = {},
+): { short: string; detail: string; kind: CostKind | "mixed" | "none" } {
   const used = COST_KINDS.filter((k) => t.kinds[k].tokens > 0 || t.kinds[k].chats > 0);
-  const unread = t.incomplete
-    ? ` ${t.incomplete.toLocaleString()} ${t.incomplete === 1 ? "chat has" : "chats have"} usage that couldn't be read or wasn't recorded: its cost isn't here at all, and the share covered is of the usage read.`
-    : "";
-  if (!used.length) return t.incomplete ? { short: "?", detail: `Nothing read made model calls.${unread}`, kind: "none" } : { short: "—", detail: "No model calls, so nothing to price.", kind: "none" };
-  if (used.length === 1 && used[0] === "included" && !t.incomplete)
+  const short = t.incomplete > 0 || partial;
+  const unread = [
+    t.incomplete
+      ? `${t.incomplete.toLocaleString()} ${t.incomplete === 1 ? "chat has" : "chats have"} usage that couldn't be read or wasn't recorded: its cost isn't here at all, and the share covered is of the usage read.`
+      : "",
+    partial ? "Some chats couldn't be read at all, so their cost isn't here either, and the share covered is of the usage read." : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const tail = unread && ` ${unread}`;
+  if (!used.length) return short ? { short: "?", detail: `Nothing read made model calls.${tail}`, kind: "none" } : { short: "—", detail: "No model calls, so nothing to price.", kind: "none" };
+  if (used.length === 1 && used[0] === "included" && !short)
     return { short: "Included", detail: "Hermes counts all of it as included in a subscription, and recorded no charge.", kind: "included" };
-  if (used.length === 1 && used[0] === "unknown") return { short: "Cost unknown", detail: `Hermes recorded no cost for any of it.${unread}`, kind: "unknown" };
+  if (used.length === 1 && used[0] === "unknown") return { short: "Cost unknown", detail: `Hermes recorded no cost for any of it.${tail}`, kind: "unknown" };
   const dollars = recordedUsd(t);
   // An estimate is an estimate even when it comes to $0.
   const approx = t.kinds.estimated.chats + t.kinds.partial.chats > 0 ? "~" : "";
-  const lower = t.kinds.partial.tokens + t.kinds.unknown.tokens > 0 || t.incomplete > 0;
+  const lower = t.kinds.partial.tokens + t.kinds.unknown.tokens > 0 || short;
   const pct = Math.round(coverage(t) * 100);
   const detail = [
-    `Recorded by Hermes, not a bill: ${pct}% of the tokens${t.incomplete ? " read" : ""} have a cost Hermes recorded in full.`,
+    `Recorded by Hermes, not a bill: ${pct}% of the tokens${short ? " read" : ""} have a cost Hermes recorded in full.`,
     approx && "Part of it is Hermes's own estimate, so your provider's bill may differ.",
     lower && "Some usage has no price, or only part of one, so the true cost is higher.",
     "A call Hermes couldn't price leaves no mark when a later one in the same chat could be.",
-    unread.trim(),
+    unread,
   ]
     .filter(Boolean)
     .join(" ");
@@ -525,6 +535,12 @@ export type Totals = {
   totalShort: number;
   cost: CostTally;
 };
+
+/**
+ * No segment of the chat reported this count, so nothing is known of it. A count some segments reported is known in
+ * part: their sum, short by the rest (`unreported`).
+ */
+export const reportedNowhere = (c: UsageChat, f: CountField) => c.segments.every((s) => !s.usage || s.usage[f] === undefined);
 
 /** A chat's total tokens are short of the truth: a segment unread, or a part of the total not reported. */
 export const chatTotalShort = (c: UsageChat) => c.missing > 0 || c.unreported.some((f) => f !== "reasoning" && f !== "calls");
@@ -773,9 +789,9 @@ export function usageCsv(chats: UsageChat[], zone: string, projectNames: (c: Usa
       c.provider,
       names === undefined ? "unknown (another profile)" : names.join("; "),
       c.archived ? "yes" : "no",
-      ...(["input", "cacheRead", "cacheWrite", "output", "reasoning"] as const).map((f) => (c.unreported.includes(f) ? undefined : c.counts[f])),
+      ...(["input", "cacheRead", "cacheWrite", "output", "reasoning"] as const).map((f) => (reportedNowhere(c, f) ? undefined : c.counts[f])),
       totalOf(c.counts),
-      c.unreported.includes("calls") ? undefined : c.counts.calls,
+      reportedNowhere(c, "calls") ? undefined : c.counts.calls,
       cost.kind === "none" || cost.kind === "unknown" || cost.kind === "included" ? undefined : Number(recordedUsd(t).toFixed(8)),
       cost.kind,
       cost.short,

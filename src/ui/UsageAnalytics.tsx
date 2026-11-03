@@ -15,6 +15,7 @@ import {
   StaleRead,
   chatCost,
   chatTotalShort,
+  reportedNowhere,
   collectUsage,
   coverage,
   crossCheck,
@@ -201,7 +202,9 @@ export function UsageAnalytics({ io, profile, listProfiles, projects, projectCha
 
   const failed = data?.profiles.filter((p) => p.state === "failed") ?? [];
   const capped = data?.profiles.filter((p) => p.state === "capped") ?? [];
-  const partial = !!data && (failed.length > 0 || capped.length > 0 || data.missingSegments > 0);
+  // Whole chats not read: a profile failed, or its period reached past the page limit. Every group may lack some.
+  const unreadChats = failed.length > 0 || capped.length > 0;
+  const partial = !!data && (unreadChats || data.missingSegments > 0);
 
   return (
     <div className="settings usage-screen" ref={screenRef}>
@@ -377,7 +380,7 @@ export function UsageAnalytics({ io, profile, listProfiles, projects, projectCha
         ) : data ? (
           <>
             <TotalsTiles totals={totals} partial={partial} />
-            <CostCard totals={totals} partial={partial} />
+            <CostCard totals={totals} partial={unreadChats} />
             {!drill ? (
               <section className="usage-section" aria-labelledby="usage-breakdown">
                 <div className="usage-section-head">
@@ -392,6 +395,7 @@ export function UsageAnalytics({ io, profile, listProfiles, projects, projectCha
                 </div>
                 <BreakdownNote dim={dim} zone={zone} />
                 <GroupTable
+                  unreadChats={unreadChats}
                   groups={groups}
                   total={totalOf(totals.counts)}
                   sort={sort}
@@ -415,7 +419,7 @@ export function UsageAnalytics({ io, profile, listProfiles, projects, projectCha
                   <>
                     <p className="usage-note">
                       {drilled.totals.chats.toLocaleString()} {drilled.totals.chats === 1 ? "chat" : "chats"} · {tokens(totalOf(drilled.totals.counts))} tokens ·{" "}
-                      {tallyLabel(drilled.totals.cost).short}
+                      {tallyLabel(drilled.totals.cost, { partial: unreadChats }).short}
                     </p>
                     <ChatTable chats={sortChats(drilled.chats, chatSort)} sort={chatSort} onSort={setChatSort} zone={zone} shownProfile={profile} onOpen={onOpenChat} />
                   </>
@@ -503,11 +507,12 @@ function TotalsTiles({ totals, partial }: { totals: Totals; partial: boolean }) 
 }
 
 /** The recorded cost, how much of the usage it covers, and by which kind. Never shown as a bill. */
+/** `partial`: whole chats weren't read (a profile failed, or the page limit), so their cost is missing too. */
 function CostCard({ totals, partial }: { totals: Totals; partial: boolean }) {
   const t = totals.cost;
-  const label = tallyLabel(t);
   // A profile that couldn't be read, or chats past the page limit, are missing from the cost too.
-  const short = partial && /\d/.test(label.short) && !label.short.endsWith("+") ? `${label.short}+` : label.short;
+  const label = tallyLabel(t, { partial });
+  const short = label.short;
   const read = t.incomplete || partial ? " read" : "";
   const kinds = COST_KINDS.filter((k) => t.kinds[k].tokens > 0 || t.kinds[k].chats > 0);
   return (
@@ -519,10 +524,7 @@ function CostCard({ totals, partial }: { totals: Totals; partial: boolean }) {
           {t.tokens ? `covers ${pct(coverage(t))} of the tokens${read} in full` : "no model calls"} · not a bill
         </span>
       </div>
-      <p className="usage-note">
-        {label.detail}
-        {partial && " Some of the usage couldn't be read (see above), so its cost isn't here either."}
-      </p>
+      <p className="usage-note">{label.detail}</p>
       {t.tokens > 0 && (
         <>
           <div className="usage-bar" role="img" aria-label={kinds.map((k) => `${COST_KIND_LABEL[k]}: ${pct(t.kinds[k].tokens / t.tokens)} of tokens`).join(", ")}>
@@ -585,14 +587,32 @@ function SortHeader({ col, sort, onSort, children }: { col: SortKey; sort: Sort;
   );
 }
 
-const cell = (t: Totals, field: CountField) => (
+/** A group's count, "+" when some chat didn't report it or whole chats weren't read. */
+const cell = (t: Totals, field: CountField, short: boolean) => (
   <>
     {field === "calls" ? full(t.counts.calls) : tokens(t.counts[field])}
-    {t.unreported[field] ? <span className="usage-plus">+</span> : null}
+    {t.unreported[field] || short ? <span className="usage-plus">+</span> : null}
   </>
 );
 
-function GroupTable({ groups, total, sort, onSort, dim, onDrill }: { groups: Group[]; total: number; sort: Sort; onSort: (s: Sort) => void; dim: Dimension; onDrill: (g: Group) => void }) {
+function GroupTable({
+  groups,
+  total,
+  sort,
+  onSort,
+  dim,
+  onDrill,
+  unreadChats,
+}: {
+  groups: Group[];
+  total: number;
+  sort: Sort;
+  onSort: (s: Sort) => void;
+  dim: Dimension;
+  onDrill: (g: Group) => void;
+  /** Whole chats weren't read, so any group may be short of some. */
+  unreadChats: boolean;
+}) {
   return (
     <div className="ua-table-wrap">
       <table className="ua-table">
@@ -611,7 +631,7 @@ function GroupTable({ groups, total, sort, onSort, dim, onDrill }: { groups: Gro
         <tbody>
           {groups.map((g) => {
             const sum = totalOf(g.totals.counts);
-            const cost = tallyLabel(g.totals.cost);
+            const cost = tallyLabel(g.totals.cost, { partial: unreadChats });
             return (
               <tr key={g.key}>
                 <th scope="row">
@@ -622,13 +642,16 @@ function GroupTable({ groups, total, sort, onSort, dim, onDrill }: { groups: Gro
                     </span>
                   </button>
                 </th>
-                <td>{g.totals.chats.toLocaleString()}</td>
+                <td>
+                  {g.totals.chats.toLocaleString()}
+                  {unreadChats && <span className="usage-plus">+</span>}
+                </td>
                 {(["input", "cacheRead", "cacheWrite", "output", "reasoning", "calls"] as const).map((f) => (
-                  <td key={f}>{cell(g.totals, f)}</td>
+                  <td key={f}>{cell(g.totals, f, unreadChats)}</td>
                 ))}
                 <td>
                   {tokens(sum)}
-                  {g.totals.totalShort ? <span className="usage-plus">+</span> : null}
+                  {g.totals.totalShort || unreadChats ? <span className="usage-plus">+</span> : null}
                 </td>
                 <td title={cost.detail}>{cost.short}</td>
                 <td>{g.totals.cost.tokens ? `${pct(coverage(g.totals.cost))}${g.totals.cost.incomplete ? " of read" : ""}` : "—"}</td>
@@ -700,7 +723,18 @@ function ChatTable({ chats, sort, onSort, zone, shownProfile, onOpen }: { chats:
                 <td>{dayIn(zone, c.startedAt)}</td>
                 <td className="mono">{c.model ?? "—"}</td>
                 {(["input", "cacheRead", "output", "calls"] as const).map((f) => (
-                  <td key={f}>{c.unreported.includes(f) ? <span className="faint" title="Hermes didn't report this count">—</span> : f === "calls" ? full(c.counts.calls) : tokens(c.counts[f])}</td>
+                  <td key={f}>
+                    {reportedNowhere(c, f) ? (
+                      <span className="faint" title="Hermes didn't report this count">—</span>
+                    ) : (
+                      <>
+                        {f === "calls" ? full(c.counts.calls) : tokens(c.counts[f])}
+                        {c.unreported.includes(f) && (
+                          <span className="usage-plus" title="Part of this chat didn't report this count">+</span>
+                        )}
+                      </>
+                    )}
+                  </td>
                 ))}
                 <td>
                   {tokens(totalOf(c.counts))}

@@ -233,6 +233,49 @@ describe("The Usage screen", () => {
     await waitFor(() => expect(screen.getByText("Saved 1 chats to /home/liam/usage.csv.")).toBeTruthy());
   });
 
+  it("doesn't call a cost Included when a profile couldn't be read", async () => {
+    const io: UsageIo = {
+      page: async (profile) => {
+        if (profile === "work") throw new Error('The dashboard answered 503: {"detail":"busy"}');
+        return { rows: [fixtureRow("a", 1, 1000, { cost_status: "included", estimated_cost_usd: 0 })], total: 1 };
+      },
+      session: vi.fn(),
+      hermesTotals: async () => ({ totals: {} }),
+    };
+    const user = userEvent.setup();
+    render(<UsageAnalytics {...props(io, { listProfiles: async () => ["default", "work"] })} />);
+    await waitFor(() => expect(tile("Chats")).toBe("1"));
+    const big = () => screen.getByRole("region", { name: "Recorded cost" }).querySelector(".usage-cost-big")!.textContent;
+    expect(big()).toBe("Included");
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Profile" }).querySelectorAll("option")).toHaveLength(3));
+    await user.selectOptions(screen.getByRole("combobox", { name: "Profile" }), "All profiles");
+    await waitFor(() => expect(tile("Chats")).toBe("1+"));
+    expect(big()).toBe("$0.00+");
+    // Every breakdown row may lack some chats too.
+    const row = within(screen.getByRole("region", { name: "Breakdown" }).querySelector("tbody")!).getAllByRole("row")[0];
+    expect(row.textContent).toMatch(/1\+/);
+  });
+
+  it("shows what part of a compressed chat reported, marked short, and a dash where nothing did", async () => {
+    const io: UsageIo = {
+      page: async () => ({
+        rows: [{ ...fixtureRow("tip", 1, 1000), _lineage_root_id: "root", _lineage_ids: ["root", "tip"], cache_read_tokens: undefined }],
+        total: 1,
+      }),
+      session: async () => ({ id: "tip", output_tokens: 20, api_call_count: 2, cost_status: "estimated", estimated_cost_usd: 0.02 }),
+      hermesTotals: async () => ({ totals: {} }),
+    };
+    const user = userEvent.setup();
+    render(<UsageAnalytics {...props(io)} />);
+    await waitFor(() => expect(tile("Chats")).toBe("1"));
+    await user.click(screen.getByRole("button", { name: /^m1: show its 1 chats/ }));
+    const cells = within(screen.getByRole("region", { name: /^Model: m1/ }).querySelector("tbody tr")!).getAllByRole("cell");
+    // Started, model, input, cache read, output, calls, total, cost.
+    expect(cells[2].textContent).toBe("1k+");
+    expect(cells[3].textContent).toBe("—");
+    expect(cells[4].textContent).toBe("30");
+  });
+
   it("says why a custom period isn't one, and reads nothing for it", async () => {
     const page = vi.fn(async () => ({ rows: [], total: 0 }));
     const user = userEvent.setup();
