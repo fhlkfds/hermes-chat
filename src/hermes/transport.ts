@@ -25,9 +25,10 @@
 // Token usage and cost (usage.ts, ADR 0008): each reply's usage is how far its session's live counters moved during
 // its turn; each chat's totals and cost are Hermes's stored ones, read with the chat list and after each turn.
 import { PersonaApi } from "./persona";
-import { APPROVAL_CHOICES, isBroadGrant, isOutgoing, isWaiting, offeredChoices, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type ContextPart, type ContextUse, type Found, type Item, type OtherProfiles, type Outgoing, type OutgoingItem, type Queued, type SessionLive, type Source, QUEUE_LIMIT } from "./model";
+import { APPROVAL_CHOICES, isBroadGrant, isOutgoing, isWaiting, offeredChoices, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type ContextPart, type ContextUse, type Found, type Item, type ListedChat, type LiveSession, type LiveSessions, type OtherProfiles, type Outgoing, type OutgoingItem, type Queued, type SavedSend, type SeenFailure, type SessionLive, type Source, QUEUE_LIMIT } from "./model";
 import { catalogFromServer, fallbackCatalog, isEffort, modelKey, pickFromInfo, type ModelCatalog, type ModelPick } from "./models";
 import { noOthers, OtherProfilesCheck } from "./otherProfiles";
+import { failureMark } from "./inbox";
 // Projects are Hermes's own, read and written with legacy `projects.*` (projects.ts, research doc "Projects").
 import { projectsApi, type ProjectsApi } from "./projects";
 import { listServerCommands, runServerCommand, type CommandDef, type CommandResult, type ServerCommandList } from "./commands";
@@ -66,6 +67,11 @@ const MAX_PAGES = 20;
 const MODELS_TIMEOUT_MS = 30_000;
 /** Checking another profile for Unread chats reads one page of its most recent ones. */
 const OTHER_PAGE_SIZE = 50;
+/** A `session.active_list` check asked for sooner than this after the last one, on the same connection, is skipped. */
+const LIVE_MIN_GAP_MS = 15_000;
+/** The most live sessions of unknown profile one check looks up, and the profiles it asks at once for each. */
+const LOOKUPS_PER_CHECK = 3;
+const LOOKUP_AT_ONCE = 4;
 /** The most chats one search lists; dashboard REST caps it at 100. */
 const SEARCH_LIMIT = 50;
 
@@ -333,6 +339,8 @@ export type Snapshot = {
   closedReason?: string;
   syncError?: string;
   others: OtherProfiles;
+  /** What is working or waiting on the owner across the server's profiles, as last checked (`checkOtherProfiles`). */
+  live?: LiveSessions;
   /** The shown profile's queues of messages waiting to go after a reply, by chat id (ADR 0018). */
   queues: Record<string, ChatQueue>;
   /** The models the shown profile can switch to (`loadModels`); none until read. */
@@ -478,10 +486,26 @@ export class Hermes {
     rpc: (method, params) => this.request(method, params),
     get: (pathAndQuery) => this.rest("GET", pathAndQuery),
   });
+  /** The titles chats had when the owner switched away from their profile, by `profile chatId`, for the inbox. */
+  private titlesSeen = new Map<string, string>();
+  /**
+   * The profile each live session is in, by `runtimeId storedId`, from looking its stored id up in every profile: the
+   * one profile that has it, or null when more than one does (a copied profile keeps the ids). A runtime session
+   * doesn't change profile, so an answer is kept while it stays live; the same chat started again, perhaps in a
+   * profile copied since, is looked up afresh.
+   */
+  private sessionOwners = new Map<string, { profile: string; title: string; source: Source } | null>();
+  /** When each live session not yet placed was last looked up, by the same key, so every one gets its turn. */
+  private ownerTried = new Map<string, number>();
+  /** The profile and chat of each runtime session this app started or resumed, for as long as it runs. */
+  private runtimeOwners = new Map<string, { profile: string; chatId: string }>();
+  /** The latest `session.active_list` read: its connection, when it started, and the read while under way. */
+  private liveCheck?: { gen: number; at: number; done?: Promise<void> };
   private others = new OtherProfilesCheck({
     scope: () => (this.pipe && this.snapshot.status === "connected" && !this.closing ? { connection: this.generation, profile: this.profile } : undefined),
     profiles: () => this.profiles(),
     unreadIn: (profile) => this.unreadIn(profile),
+    sendsIn: (profile) => this.sendsIn(profile),
     publish: (others) => this.update({ others }),
   });
 
@@ -679,7 +703,13 @@ export class Hermes {
       this.pipeProfile = undefined;
     }
     const unread = this.snapshot.chats.filter((c) => c.unread).length;
-    this.others.switched(from, name, this.listedAt === undefined ? undefined : { unread, listedAt: this.listedAt });
+    const chats = this.snapshot.chats.filter((c) => !c.archived).map((c): ListedChat => ({ id: c.id, title: c.title, at: c.updatedAt, unread: !!c.unread, source: c.source }));
+    // A chat started here may not be in the saved list yet, so its Failed messages keep the title it had.
+    for (const c of this.snapshot.chats) this.titlesSeen.set(`${from} ${c.id}`, c.title);
+    const failures = this.snapshot.chats.flatMap((c) =>
+      c.items.flatMap((i): SeenFailure[] => (i.kind === "error" && i.id !== LOAD_ERROR_ID ? [{ chatId: c.id, title: c.title, itemId: i.id, mark: failureMark(i.text) }] : [])),
+    );
+    this.others.switched(from, name, this.listedAt === undefined ? undefined : { unread, listedAt: this.listedAt, chats }, failures);
     this.listedAt = undefined;
     this.viewing.clear();
     this.readWhenBack.clear();
@@ -705,12 +735,92 @@ export class Hermes {
   }
 
   /**
-   * Checks the profiles not shown for Unread chats, over dashboard REST and without switching the socket. Only reads:
-   * nothing is marked read. Runs at most every 15 seconds; the app calls it every `CHECK_EVERY_MS`. Results land in
-   * the snapshot's `others`.
+   * Checks the profiles not shown for Unread chats, over dashboard REST and without switching the socket, and asks
+   * Hermes which sessions are working or waiting in any profile (`session.active_list`). Only reads: nothing is marked
+   * read, resumed or answered. Runs at most every 15 seconds; the app calls it every `CHECK_EVERY_MS`, and more often
+   * while the inbox is open. Results land in the snapshot's `others` and `live`.
    */
   checkOtherProfiles(): Promise<void> {
-    return this.others.check();
+    return Promise.all([this.others.check(), this.checkLive()]).then(() => {});
+  }
+
+  /**
+   * Reads the sessions live in the dashboard's process, in every profile, with what each is doing. A check for the
+   * same connection under way is joined; one asked for within 15 seconds of the last is skipped. A server without
+   * the method is asked no more. An answer from a connection since dropped is dropped too.
+   */
+  private checkLive(): Promise<void> {
+    const gen = this.generation;
+    if (!this.connectedPipe() || this.snapshot.live?.unsupported) return Promise.resolve();
+    if (this.liveCheck?.gen === gen && (this.liveCheck.done || Date.now() - this.liveCheck.at < LIVE_MIN_GAP_MS)) return this.liveCheck.done ?? Promise.resolve();
+    const done = (async () => {
+      try {
+        const res = obj(await this.request("session.active_list", {}));
+        if (gen !== this.generation) return;
+        const sessions = (Array.isArray(res?.sessions) ? res.sessions : []).flatMap((r): (LiveSession & { key: string })[] => {
+          const row = obj(r);
+          const status = row?.status === "waiting" ? "waiting" : row?.status === "working" || row?.status === "starting" ? "working" : undefined;
+          const chatId = typeof row?.session_key === "string" ? row.session_key : "";
+          // A session this app started or resumed is known by its runtime id, which names its profile for sure.
+          const mine = typeof row?.id === "string" ? this.runtimeOwners.get(row.id) : undefined;
+          const at = typeof row?.last_active === "number" ? row.last_active * 1000 : 0;
+          const key = `${typeof row?.id === "string" ? row.id : ""} ${chatId}`;
+          return status && chatId ? [{ chatId, status, at, key, ...(mine?.chatId === chatId && { profile: mine.profile }) }] : [];
+        });
+        // Answers about sessions no longer live are dropped.
+        const live = new Set(sessions.map((s) => s.key));
+        for (const m of [this.sessionOwners, this.ownerTried]) for (const k of m.keys()) if (!live.has(k)) m.delete(k);
+        // Rows don't say their profile. Each other session is looked up by its id in every profile, a few per check,
+        // the ones tried longest ago first.
+        const unknown = sessions
+          .filter((s) => !s.profile && !this.sessionOwners.has(s.key))
+          .sort((a, b) => (this.ownerTried.get(a.key) ?? 0) - (this.ownerTried.get(b.key) ?? 0))
+          .slice(0, LOOKUPS_PER_CHECK);
+        const profiles = unknown.length ? await this.profiles().catch(() => undefined) : undefined;
+        for (const s of profiles ? unknown : []) {
+          this.ownerTried.set(s.key, Date.now());
+          const owner = await this.ownerOf(s.chatId, profiles!);
+          if (owner !== undefined) this.sessionOwners.set(s.key, owner);
+        }
+        if (gen !== this.generation) return;
+        const placed = sessions.map(({ key, ...s }): LiveSession => {
+          const owner = s.profile ? undefined : this.sessionOwners.get(key);
+          return owner ? { ...s, ...owner } : s;
+        });
+        this.update({ live: { sessions: placed, checkedAt: Date.now() } });
+      } catch (e) {
+        if (gen !== this.generation) return;
+        if (e instanceof RpcError && e.code === NO_SUCH_METHOD) this.update({ live: { sessions: [], unsupported: true } });
+        else this.update({ live: { sessions: this.snapshot.live?.sessions ?? [], checkedAt: this.snapshot.live?.checkedAt, error: (e as Error).message } });
+      } finally {
+        if (this.liveCheck?.gen === gen) this.liveCheck.done = undefined;
+      }
+    })();
+    this.liveCheck = { gen, at: Date.now(), done };
+    return done;
+  }
+
+  /**
+   * The one profile that has a stored session, by asking each for it (`GET /api/sessions/{id}?profile=`): its row's
+   * title and source with it, null when more than one profile has it, and undefined when none does yet (a new chat is
+   * stored with its first message) or a profile couldn't be asked, so it is looked up again later.
+   */
+  private async ownerOf(chatId: string, profiles: string[]): Promise<{ profile: string; title: string; source: Source } | null | undefined> {
+    const found: { profile: string; title: string; source: Source }[] = [];
+    let unsure = false;
+    for (let i = 0; i < profiles.length; i += LOOKUP_AT_ONCE)
+      await Promise.all(
+        profiles.slice(i, i + LOOKUP_AT_ONCE).map(async (profile) => {
+          try {
+            const row = (await this.rest("GET", `${sessionPath(chatId)}?${new URLSearchParams({ profile })}`)) as SessionRow;
+            found.push({ profile, title: listTitle(row), source: toSource(row.source) });
+          } catch (e) {
+            if (!(e as Error).message.includes("answered 404")) unsure = true;
+          }
+        }),
+      );
+    if (found.length > 1) return null;
+    return unsure || !found.length ? undefined : found[0];
   }
 
   /**
@@ -844,6 +954,7 @@ export class Hermes {
     };
     // A new session's agent starts its counters from zero.
     this.usageFrom.set(res.session_id, countersOf((res.info as { usage?: unknown } | undefined)?.usage) ?? ZERO_COUNTERS);
+    this.runtimeOwners.set(res.session_id, { profile: this.profile, chatId: chat.id });
     this.pinWanted.set(chat.id, true);
     this.update({ chats: [chat, ...this.snapshot.chats] });
     return chat.id;
@@ -1833,9 +1944,13 @@ export class Hermes {
       if (c.runtimeId) this.staleItems.set(c.id, c.items.length);
       if (c.running || c.items.some(isWaiting)) this.resumeOnReconnect.add(c.id);
     }
+    // What the dropped connection last heard about the shown profile's sessions is older than its chats' own state,
+    // which the reconnect resumes; the next check, once connected, reads it again.
+    const live = this.snapshot.live && { ...this.snapshot.live, sessions: this.snapshot.live.sessions.filter((s) => s.profile !== this.profile) };
     // Whatever the turns did meanwhile goes unseen, so the queues wait for the owner to look.
     for (const id of Object.keys(this.snapshot.queues)) this.pauseQueueFor(id, PAUSED.dropped);
     this.update({
+      live,
       status: "reconnecting",
       closedReason: reason,
       chats: this.snapshot.chats.map((c) => (c.runtimeId || c.running ? { ...c, runtimeId: undefined, live: undefined, running: false, stopping: false } : c)),
@@ -1865,6 +1980,8 @@ export class Hermes {
         this.failedTries = 0;
         this.resumeBusyChats();
         void this.sync();
+        // What was live before may have ended meanwhile, so it is asked again at once.
+        void this.checkLive();
       } catch (e) {
         if (this.closing) return;
         this.failedTries++;
@@ -1931,7 +2048,8 @@ export class Hermes {
     this.patchChat(chatId, (c) => ({ ...c, loading: true }));
     resuming = (async () => {
       try {
-        const res = (await this.request("session.resume", { session_id: chatId, profile: this.profile, inline_images: false })) as {
+        const profile = this.profile;
+        const res = (await this.request("session.resume", { session_id: chatId, profile, inline_images: false })) as {
           session_id: string;
           messages?: TranscriptMessage[];
           /** A live session's turn is still going. */
@@ -1941,6 +2059,7 @@ export class Hermes {
           info?: unknown;
           usage?: unknown;
         };
+        this.runtimeOwners.set(res.session_id, { profile, chatId });
         // A session reattached mid-turn has counters part of the way through it; a cold one has no agent yet, so its
         // counters start from zero once one is built (`_lazy_resume_info` carries no usage).
         const counters = countersOf((res.info as { usage?: unknown } | undefined)?.usage);
@@ -2275,14 +2394,26 @@ export class Hermes {
    * How many chats in another profile's list are Unread, counted as the list would show them, from one page of its
    * most recent chats. `more`: the list reaches past that page, so there may be more.
    */
-  private async unreadIn(profile: string): Promise<{ unread: number; more: boolean }> {
+  private async unreadIn(profile: string): Promise<{ unread: number; more: boolean; chats: ListedChat[] }> {
     const cutoff = this.cache.olderPulled(profile) ? -Infinity : Date.now() - LIST_WINDOW_MS;
     const query = new URLSearchParams({ profile, order: "recent", limit: String(OTHER_PAGE_SIZE), offset: "0", exclude_sources: "cron" });
     const res = (await this.rest("GET", `api/sessions?${query}`)) as SessionPage;
-    const unread = res.sessions.filter((r) => r.unread && !r.archived && !this.deleted.has(r.id) && lastActive(r) >= cutoff).length;
+    const chats = res.sessions
+      .filter((r) => !r.archived && !this.deleted.has(r.id))
+      .map((r): ListedChat => ({ id: r.id, title: listTitle(r), at: lastActive(r), unread: !!r.unread && lastActive(r) >= cutoff, source: toSource(r.source) }));
     // As in syncOnce: the page also carries every pinned row, and the unpinned ones follow recency.
     const passedCutoff = res.sessions.some((r) => !r.pinned && lastActive(r) < cutoff);
-    return { unread, more: !passedCutoff && res.sessions.length > 0 && OTHER_PAGE_SIZE < res.total };
+    return { unread: chats.filter((c) => c.unread).length, more: !passedCutoff && res.sessions.length > 0 && OTHER_PAGE_SIZE < res.total, chats };
+  }
+
+  /** The Failed messages this computer keeps for the profile's chats, with the titles its saved list has. */
+  private sendsIn(profile: string): SavedSend[] {
+    const titles = new Map(this.cache.load(profile).map((c) => [c.id, c.title]));
+    return Object.entries(loadOutbox(this.cache, profile)).flatMap(([chatId, rows]) =>
+      rows.flatMap((r): SavedSend[] =>
+        r.outgoing.state === "sending" ? [] : [{ chatId, itemId: r.id, state: r.outgoing.state, title: titles.get(chatId) ?? this.titlesSeen.get(`${profile} ${chatId}`) }],
+      ),
+    );
   }
 
   /** Keeps the profile's list for the next start, without the chats' transcripts. */

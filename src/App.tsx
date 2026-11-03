@@ -26,7 +26,9 @@ import { checkShortcut, shortcutLabel, shortcutOf } from "./ui/shortcut";
 import { tauriPipe, type SignInDetails } from "./hermes/tauriPipe";
 import { isOutgoing, type Attachment, type Chat, type ConnectionStatus, type Found } from "./hermes/model";
 import type { ModelCatalog, ModelPick } from "./hermes/models";
-import { ChatList, Rail } from "./ui/Sidebar";
+import { ChatList, Rail, leavingNote } from "./ui/Sidebar";
+import { Inbox } from "./ui/Inbox";
+import { inboxAcks, inboxEntries, inboxScope, needsOwner, type InboxEntry } from "./hermes/inbox";
 import { ChatPane, type JumpTarget } from "./ui/ChatPane";
 import type { QueueApi } from "./ui/Queue";
 import { PANE_NAMES, Split, usePaneVisible, type PaneSlot } from "./ui/Split";
@@ -57,6 +59,8 @@ import { getUIPrefs, setUIPrefs, subscribe as subscribeUIPrefs, toggleModelFavor
 const SAVED = "hermes-chat.sign-in"; // Everything but the password and extra headers, which are in the system keyring.
 // Hermes also announces store changes over the socket; the poll catches anything it misses.
 const SYNC_EVERY_MS = 60_000;
+// While the inbox is open it asks for fresh checks this often; they run at most every 15 seconds (transport.ts).
+const INBOX_CHECK_EVERY_MS = 30_000;
 const TOAST_MS = 5_000;
 
 /** A short notice above the composer; `undo` puts back what it reports. `at` restarts the timer for a repeat. */
@@ -303,7 +307,7 @@ export function Main({
   onSignOut: () => Promise<void>;
   updates?: Updater;
 }) {
-  const { profile, chats, olderPulled, archivedListed, status, route, unsecure, closedReason, syncError, others, models, switching } = useSyncExternalStore(
+  const { profile, chats, olderPulled, archivedListed, status, route, unsecure, closedReason, syncError, others, live, models, switching } = useSyncExternalStore(
     hermes.subscribe,
     hermes.getSnapshot,
   );
@@ -381,6 +385,17 @@ export function Main({
   const [listOpen, setListOpen] = useState(true);
   const [toast, setToast] = useState<Toast | null>(notSaved ? { text: notSaved, at: Date.now() } : null);
   const [searchOpen, setSearchOpen] = useState(false);
+
+  // The inbox: what needs the owner, or finished, across the profiles (hermes/inbox.ts). Dismissals are kept on this
+  // computer for the connection, and change nothing else. `goTo`: an entry's chat to open once its profile's list
+  // has it. `focusItem`: the card or message in a pane to show once it is on screen.
+  const [inboxOpen, setInboxOpen] = useState(false);
+  const ackScope = inboxScope(connection);
+  const acks = useMemo(() => inboxAcks(localStorage, ackScope), [ackScope]);
+  const dismissed = useSyncExternalStore(acks.subscribe, acks.getSnapshot);
+  const [seen] = useState(() => new Map<string, number>());
+  const [goTo, setGoTo] = useState<{ entry: InboxEntry; approval: boolean }>();
+  const [focusItem, setFocusItem] = useState<{ pane: string; chatId: string; itemId?: string; approval: boolean }>();
 
   // The model pick is sticky: new chats start on it, in this profile, until the owner picks another. It is kept on this
   // computer only and never becomes the profile's default. Picked in another profile, it gives way to this profile's
@@ -481,6 +496,11 @@ export function Main({
     void outputsIndex.index(outputsRefs(), false, shownOutputsScope === "chat");
   }, [outputsOpen, status, outputsIndex, shownOutputsScope, outputsChatKey]);
   const where = routeLabel(route) ?? (connection.mode === "ssh" ? `ssh://${connection.sshTarget}` : connection.url) ?? undefined;
+  const inbox = inboxEntries({ profile, chats, connected: status === "connected", others, live, seen });
+  const inboxShown = inbox.entries.filter((e) => !acks.isDismissed(e, dismissed));
+  // Writes only when a resumed chat shows cards a dismissed waiting session covered.
+  useEffect(() => acks.keepCovered(inbox.entries));
+  const inboxCount = inboxShown.filter(needsOwner).length;
   // Settings → Persona edits this connection and profile's SOUL.md; its edits are kept apart per connection and profile.
   const persona: PersonaWiring = {
     api: hermes.persona,
@@ -620,6 +640,8 @@ export function Main({
   // open chat for the next launch.
   const switchProfile = (name: string) => guard(() => {
     const keep = active.key;
+    setGoTo(undefined);
+    setFocusItem(undefined);
     setPanes([{ key: keep, chatId: null }]);
     activeKeyRef.current = keep;
     setActiveKey(keep);
@@ -630,6 +652,55 @@ export function Main({
     setPreview(null);
     void hermes.switchProfile(name);
   }, "profile");
+
+  // An inbox entry opens its chat, in its own profile, in the pane already showing it or else the active one. Another
+  // profile is switched to first, the way the switcher does, and the chat opens once that profile's list has it.
+  // An unsaved persona edit asks first, as any other way of leaving Settings does.
+  const openEntry = (e: InboxEntry) => {
+    setInboxOpen(false);
+    guard(() => {
+      if (e.profile !== profile) switchProfile(e.profile);
+      setGoTo({ entry: e, approval: e.kind === "approval" && !e.ended });
+    }, e.profile !== profile ? "profile" : "leave");
+  };
+
+  useEffect(() => {
+    const e = goTo?.entry;
+    if (!goTo || !e || e.profile !== profile) return;
+    if (chats.some((c) => c.id === e.chatId)) {
+      const pane = panes.find((p) => p.chatId === e.chatId)?.key ?? active.key;
+      openChat(e.chatId, { pane });
+      setFocusItem({ pane, chatId: e.chatId, itemId: e.itemId, approval: goTo.approval });
+      setGoTo(undefined);
+    } else if (!switching && hermes.hasListed()) {
+      // The list holds the past month, so an older chat a check found is put in it the way a search result is. One
+      // deleted meanwhile says so once it fails to load.
+      hermes.reveal({ chatId: e.chatId, title: e.title, source: e.source ?? "app", settled: true, updatedAt: e.at || Date.now(), snippet: [] });
+    }
+  }, [goTo, profile, chats, switching]);
+
+  // The Approval card or message an entry is about is scrolled to and focused once its chat shows it. Focus goes to
+  // the card itself, never to one of its answers. An Approval in a chat this connection hadn't resumed shows once it
+  // loads; if none is waiting by then, the chat is simply open.
+  useEffect(() => {
+    if (!focusItem) return;
+    const pane = document.querySelector(`[data-pane="${CSS.escape(focusItem.pane)}"]`);
+    const el = focusItem.itemId
+      ? pane?.querySelector<HTMLElement>(`[data-item="${CSS.escape(focusItem.itemId)}"]`)
+      : focusItem.approval
+        ? pane?.querySelector<HTMLElement>(".approval:not(.answered)")
+        : undefined;
+    if (el) {
+      el.scrollIntoView?.({ block: "center" });
+      if (el.tabIndex < 0 && !el.hasAttribute("tabindex")) el.setAttribute("tabindex", "-1");
+      el.focus();
+      setFocusItem(undefined);
+      return;
+    }
+    const chat = chats.find((c) => c.id === focusItem.chatId);
+    if (!focusItem.itemId && !focusItem.approval) setFocusItem(undefined);
+    else if (chat?.runtimeId && !chat.loading) setFocusItem(undefined);
+  }, [focusItem, chats]);
 
   // Undo sends the opposite change, not a stored copy, so it also works once the list has refreshed.
   const setSettled = (id: string, settled: boolean) => {
@@ -750,6 +821,14 @@ export function Main({
     const pick = getUIPrefs().modelPicker;
     if (catalog?.defaultPick && pick?.profile !== profile) setUIPrefs({ modelPicker: { ...catalog.defaultPick, profile } });
   }, [catalog, profile]);
+
+  // The inbox asks for fresh checks as it opens, and keeps asking while it is open.
+  useEffect(() => {
+    if (!inboxOpen) return;
+    void hermes.checkOtherProfiles();
+    const timer = setInterval(() => void hermes.checkOtherProfiles(), INBOX_CHECK_EVERY_MS);
+    return () => clearInterval(timer);
+  }, [hermes, inboxOpen]);
 
   // Unread chats in the other profiles are polled, so the switcher can be up to CHECK_EVERY_MS behind.
   useEffect(() => {
@@ -914,6 +993,9 @@ export function Main({
         }
         outputsOpen={outputsOpen && !settingsOpen && !projectScreenOpen && !filesOpen}
         filesOpen={filesOpen && !settingsOpen && !projectScreenOpen}
+        onInbox={() => setInboxOpen((o) => !o)}
+        inboxOpen={inboxOpen}
+        inboxCount={inboxCount}
         onSettings={() => { setProjectOpen(false); setFilesOpen(false); setJobsOpen(false); setOutputsOpen(false); setShowTextGeneration(undefined); setSettingsOpen(true); }}
         onJobs={() =>
           guard(() => {
@@ -999,6 +1081,22 @@ export function Main({
           onCheckOthers={() => void hermes.checkOtherProfiles()}
           onSwitchProfile={switchProfile}
           onRetrySwitch={() => void (status === "connected" ? hermes.sync() : hermes.reconnect())}
+        />
+      )}
+      {inboxOpen && (
+        <Inbox
+          entries={inboxShown}
+          unmatched={inbox.unmatched}
+          server={where ?? "the server"}
+          profile={profile}
+          connected={status === "connected"}
+          others={others}
+          live={live}
+          leaving={leavingNote(profile, chats)}
+          onOpen={openEntry}
+          onDismiss={(e) => acks.dismiss(e, inbox.entries)}
+          onRefresh={() => void hermes.checkOtherProfiles()}
+          onClose={() => setInboxOpen(false)}
         />
       )}
       <main className="main" ref={mainRef}>

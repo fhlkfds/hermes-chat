@@ -1328,6 +1328,51 @@ button.status-item:disabled { opacity: 0.5; cursor: default; }
   .files-table th:nth-child(3), .files-table td:nth-child(3) { display: none; }
   .files-goto input { width: 150px; }
 }
+/* inbox */
+.inbox-btn { position: relative; }
+.inbox-btn .badge {
+  position: absolute; top: 1px; right: -3px; min-width: 16px; padding: 0 4px; line-height: 15px; text-align: center;
+  background: var(--accent); color: var(--on-accent); font-size: calc(10rem / 14);
+}
+.inbox {
+  position: fixed; top: 0; bottom: 0; left: 60px; z-index: 30; width: 380px; max-width: calc(100vw - 60px);
+  background: var(--raised); border-right: 1px solid var(--line-2); box-shadow: 10px 0 30px rgba(0, 0, 0, 0.35);
+  display: flex; flex-direction: column; min-height: 0;
+}
+.inbox-head { display: flex; align-items: center; gap: 4px; padding: 14px 10px 8px 16px; }
+.inbox-heading { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; }
+.inbox-heading h2 { margin: 0; font-size: calc(15rem / 14); font-weight: 600; }
+.inbox-server { color: var(--faint); font-size: calc(12rem / 14); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inbox-filters { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 12px 8px; }
+.inbox-filter {
+  padding: 3px 9px; border-radius: 999px; font-size: calc(12rem / 14); color: var(--muted); border: 1px solid var(--line-2);
+}
+.inbox-filter:hover { color: var(--text); background: var(--raised-2); }
+.inbox-filter.on { color: var(--text); background: var(--raised-3); border-color: var(--line-3); }
+.inbox-fresh { padding: 0 16px 8px; display: flex; flex-direction: column; gap: 2px; }
+.inbox-note { color: var(--faint); font-size: calc(11.5rem / 14); line-height: 1.4; }
+.inbox-note.err { color: var(--warn); }
+.inbox-leave { margin: 0 12px 10px; padding: 10px; border: 1px solid var(--line-2); border-radius: 8px; max-width: none; }
+.inbox-list { list-style: none; margin: 0; padding: 0 8px 12px; overflow-y: auto; flex: 1; min-height: 0; }
+.inbox-row { display: flex; align-items: flex-start; gap: 2px; border-radius: 8px; }
+.inbox-row:hover { background: var(--raised-2); }
+.inbox-open { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; text-align: left; padding: 8px; border-radius: 8px; }
+.inbox-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.inbox-kind { display: inline-flex; align-items: center; gap: 5px; font-size: calc(11.5rem / 14); font-weight: 500; color: var(--muted); }
+.inbox-row.kind-approval .inbox-kind, .inbox-row.kind-uncertain .inbox-kind { color: var(--warn); }
+.inbox-row.kind-failed .inbox-kind { color: var(--bad); }
+.inbox-row.kind-completed .inbox-kind { color: var(--accent); }
+.inbox-row.is-ended .inbox-kind { color: var(--faint); }
+.inbox-time { color: var(--faint); font-size: calc(11.5rem / 14); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.inbox-title { color: var(--text); font-size: calc(13rem / 14); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inbox-where { color: var(--faint); font-size: calc(11.5rem / 14); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inbox-summary { color: var(--muted); font-size: calc(12rem / 14); line-height: 1.4; }
+.inbox-row.is-stale .inbox-summary { font-style: italic; }
+.inbox-dismiss { margin-top: 6px; flex: none; }
+.inbox-empty { padding: 12px 16px; }
+@media (max-width: 520px) {
+  .inbox { width: calc(100vw - 60px); }
+}
 
 /* Scheduled jobs (ScheduledJobs.tsx) */
 .faint { color: var(--faint); }
