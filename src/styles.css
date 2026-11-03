@@ -1451,7 +1451,8 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .files-upload-dialog h2 { font-size: calc(14rem / 14); margin: 0; display: flex; align-items: center; gap: 8px; }
 .files-upload-dialog .files-meta { margin: 0; }
 .files-collision { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 0; display: flex; flex-direction: column; gap: 8px; font-size: calc(13rem / 14); }
-.files-collision legend { padding: 0 4px; color: var(--warn); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.files-collision-note { color: var(--warn); line-height: 1.5; }
+.files-collision-note svg { vertical-align: -2px; margin-right: 4px; }
 .files-collision label { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; cursor: pointer; }
 .files-collision input { accent-color: var(--accent); margin: 0; }
 .files-collision p, .files-upload-dialog > p { margin: 0; line-height: 1.5; }

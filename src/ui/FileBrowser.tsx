@@ -402,6 +402,7 @@ function UploadDialog({
   const plan = files.planUpload(listing, picked);
   const [collision, setCollision] = useState<Collision>("keep-both");
   const titleId = useId();
+  const takenId = useId();
   const replace = !!plan.taken && collision === "replace";
   const dest = plan.taken && !replace ? `${listing.path.replace(/\/$/, "")}/${plan.keepBothName}` : plan.dest;
   return (
@@ -435,12 +436,12 @@ function UploadDialog({
           </p>
         ) : (
           plan.taken && (
-            <fieldset className="files-collision">
-              <legend>
+            <div className="files-collision" role="radiogroup" aria-labelledby={takenId}>
+              <p id={takenId} className="files-collision-note">
                 <CircleAlert size={13} aria-hidden /> There's already a <span className="mono">{picked.name}</span> in this folder
                 {plan.taken.size !== undefined && `, ${fmtSize(plan.taken.size)}`}
                 {plan.taken.modified !== undefined && `, modified ${storedTime(plan.taken.modified)}`}.
-              </legend>
+              </p>
               <label>
                 <input type="radio" name="collision" checked={collision === "keep-both"} onChange={() => setCollision("keep-both")} /> Keep both: upload this one as{" "}
                 <span className="mono">{plan.keepBothName}</span>
@@ -454,7 +455,7 @@ function UploadDialog({
                   Hermes writes it as a new file, readable and writable only by the server's user; the old file's permissions aren't kept. It can't be undone.
                 </p>
               )}
-            </fieldset>
+            </div>
           )
         )}
         {!plan.refused && <p className="muted small">Nothing is sent until you press {replace ? "Replace" : "Upload"}. The server's own permissions still apply.</p>}
