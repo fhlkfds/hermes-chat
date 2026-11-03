@@ -771,12 +771,20 @@ export class Hermes {
 
   /**
    * Starts a Chat in this app. It is Active from the start, and pinned once Hermes has stored it (ADR 0002). `model`:
-   * what it runs on, for this chat only; left out, it runs on the profile's model.
+   * what it runs on, for this chat only; left out, it runs on the profile's model. `folder`: the server folder it
+   * works in (its session `cwd`), checked by the caller first; Hermes quietly runs a chat in its own folder when it
+   * can't use the one asked for, so the chat is refused unless Hermes says it took it. `instructions`: one hidden
+   * message seeded before the owner's first, which the model reads and no Hermes client shows (ADR 0017).
    */
-  async newChat(model?: ModelPick): Promise<string> {
+  async newChat(model?: ModelPick, start: { folder?: string; instructions?: string } = {}): Promise<string> {
+    const { folder, instructions } = start;
+    const profile = this.profile;
     const res = (await this.request("session.create", {
-      profile: this.profile,
+      profile,
       source: APP_SOURCE,
+      // `cwd_explicit`: a deliberate pick, which beats a profile's configured `terminal.cwd` (`_completion_cwd`).
+      ...(folder && { cwd: folder, cwd_explicit: true }),
+      ...(instructions && { messages: [{ role: "user", content: instructions, display_kind: "hidden" }] }),
       // `SessionCreateParams`: each is this session's own override. `fast` left out keeps the profile's.
       ...(model && {
         model: model.model,
@@ -789,6 +797,14 @@ export class Hermes {
       stored_session_id: string;
       info?: unknown;
     };
+    const cwd = (res.info as { cwd?: unknown } | undefined)?.cwd;
+    if (folder && cwd !== folder) {
+      // Not this chat: drop the session, and the hidden message Hermes stored with it, so nothing is left behind.
+      void this.request("session.close", { session_id: res.session_id }).catch(() => {});
+      if (instructions)
+        void this.rest("DELETE", `api/sessions/${encodeURIComponent(res.stored_session_id)}?${new URLSearchParams({ profile })}`).catch(() => {});
+      throw new Error(`Hermes didn't start it in ${folder}${typeof cwd === "string" && cwd ? `: it would have worked in ${cwd}` : ""}. Nothing was sent.`);
+    }
     const chat: Chat = {
       model: pickFromInfo(res.info) ?? model,
       id: res.stored_session_id,
@@ -890,6 +906,19 @@ export class Hermes {
       this.patchChat(chatId, (c) => (c.model === pick ? { ...c, model: before } : c));
       throw e;
     }
+  }
+
+  /**
+   * Moves a chat's work to `folder` on the server (`session.cwd.set`), for that chat only. Hermes changes it only
+   * while no reply is running, and only to a folder it can find; it says it worked only once Hermes answers with it.
+   */
+  async setFolder(chatId: string, folder: string): Promise<void> {
+    const chat = this.snapshot.chats.find((c) => c.id === chatId);
+    if (!chat) throw new Error("This chat isn't in the list.");
+    if (chat.running) throw new Error("Wait for the reply to finish: Hermes changes the folder only between replies.");
+    const sid = await this.resume(chatId);
+    const res = (await this.request("session.cwd.set", { session_id: sid, profile: this.profile, cwd: folder })) as { cwd?: unknown } | undefined;
+    if (res?.cwd !== folder) throw new Error(`Hermes didn't move it to ${folder}${typeof res?.cwd === "string" ? `: it works in ${res.cwd}` : ""}.`);
   }
 
   /**
@@ -2345,7 +2374,7 @@ const TITLE_INSTRUCTIONS = [
 ].join(" ");
 
 /** A row of dashboard REST `GET /api/sessions/{id}/messages`, as far as titling reads it. */
-type StoredMessage = { role?: string; content?: unknown };
+type StoredMessage = { role?: string; content?: unknown; display_kind?: unknown };
 
 /** The text of a stored message: its `content`, or the text parts of a multimodal one. */
 function storedText(content: unknown): string {
@@ -2357,7 +2386,8 @@ function storedText(content: unknown): string {
 /** The user and assistant messages with text among stored rows, oldest first. */
 const saidIn = (rows: StoredMessage[]) =>
   rows
-    .filter((r) => r.role === "user" || r.role === "assistant")
+    // Hidden rows, such as a project's instructions (ADR 0017), are for the model; the owner never wrote or saw them.
+    .filter((r) => (r.role === "user" || r.role === "assistant") && r.display_kind !== "hidden")
     .map((r) => ({ who: r.role === "user" ? "USER" : "ASSISTANT", text: storedText(r.content).trim() }))
     .filter((m) => m.text);
 

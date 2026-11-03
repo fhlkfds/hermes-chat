@@ -1,6 +1,6 @@
 import { type ReactNode, type RefObject, useCallback, useLayoutEffect, useMemo, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal, flushSync } from "react-dom";
-import { Columns2, PanelRight, X } from "lucide-react";
+import { Columns2, FolderCog, PanelRight, X } from "lucide-react";
 import { RenameConflict, connect, readSaved, type Delivery, type Hermes } from "./hermes/transport";
 import type { CommandHost } from "./ui/SlashCommands";
 import type { ServerCommandList } from "./hermes/commands";
@@ -12,8 +12,9 @@ import { PersonaStore, personaKey } from "./hermes/personaStore";
 import { sending, type Sending } from "./hermes/unsaved";
 import { chatToReopen, forgetOpenChat, rememberOpenChat } from "./hermes/uiPrefs";
 import { exportChat } from "./hermes/exportChat";
-import { projectLinks, projectScope } from "./hermes/projectLinks";
+import { PROJECTS_KEY, projectLinks, projectScope } from "./hermes/projectLinks";
 import { ProjectsStore, type Project } from "./hermes/projects";
+import { instructionsMessage, modelProblem, resolveNewChat, type ProjectDefaults } from "./hermes/projectDefaults";
 import { systemHeaderKeyring, systemKeyring } from "./hermes/tauriKeyring";
 import { appUpdates } from "./hermes/tauriUpdates";
 import { needsAttention, type Updater } from "./hermes/updates";
@@ -39,6 +40,7 @@ import { OutputsIndex, outputsIn, splitPath, type Output } from "./hermes/output
 import { composing, routeLabel } from "./ui/bits";
 import { ProjectScreen, ProjectSwitcher, type ProjectUnread } from "./ui/Projects";
 import { ScheduledJobs } from "./ui/ScheduledJobs";
+import { ApplyDefaults, NewChatSettingsView } from "./ui/ProjectDefaultsNotes";
 import { appearanceStore } from "./ui/appearance";
 import { StatusBar } from "./ui/StatusBar";
 import { systemFonts } from "./ui/tauriFonts";
@@ -417,6 +419,18 @@ export function Main({
     return store;
   }, [hermes, scope, projectStores]);
   const proj = useSyncExternalStore(projects.subscribe, projects.getSnapshot);
+  // Another Hermes Chat window changed the projects, or another window or instance their defaults: show them here too.
+  // Defaults are in a file every instance shares, so they are read again whenever the window comes back to the front.
+  useEffect(() => {
+    const changed = (e: StorageEvent) => e.key === PROJECTS_KEY && projects.reread();
+    const back = () => void projects.readDefaults();
+    window.addEventListener("storage", changed);
+    window.addEventListener("focus", back);
+    return () => {
+      window.removeEventListener("storage", changed);
+      window.removeEventListener("focus", back);
+    };
+  }, [projects]);
   const listable = proj.projects.filter((p) => !p.archived);
   const shownProject = listable.find((p) => p.id === proj.selectedId);
   const projectScreenOpen = projectOpen && !!shownProject;
@@ -825,6 +839,8 @@ export function Main({
           favorites={modelFavorites}
           projects={projects}
           projectNames={listed ? projectNames(chat.id) : shownProject ? [shownProject.name] : undefined}
+          shownProject={shownProject && { name: shownProject.name, defaults: proj.defaults[shownProject.id], has: !!listed && !!proj.chats[shownProject.id]?.includes(chat.id) }}
+          where={where}
           onStarted={(id) => {
             // The chat started from this pane's New chat pane replaces it here, without taking the owner from the
             // other pane if they went there meanwhile.
@@ -943,6 +959,7 @@ export function Main({
                     setJobsOpen(false);
                     setOutputsOpen(false);
                     setProjectOpen(true);
+                    void projects.readDefaults();
                   })
                 }
               />
@@ -1022,6 +1039,19 @@ export function Main({
                   return { problem, worktrees };
                 }}
                 onClose={() => { flushSync(() => setProjectOpen(false)); focusPane(active.key); }}
+                defaults={{
+                  saved: proj.defaults[shownProject.id],
+                  catalog,
+                  profilePick: catalog?.defaultPick,
+                  profileEffort: catalog?.defaultEffort,
+                  favorites: modelFavorites,
+                  onToggleFavorite: toggleModelFavorite,
+                  onSave: async (base, draft) => {
+                    // Checked now when it can be; every chat start checks it again.
+                    if (draft.folder && status === "connected") await hermes.projects.checkFolder(profile, draft.folder);
+                    return projects.saveDefaults(shownProject.id, base, draft);
+                  },
+                }}
               />
             ) : settingsOpen ? (
           <SettingsScreen
@@ -1197,6 +1227,8 @@ function ChatView({
   favorites,
   projects,
   projectNames,
+  shownProject,
+  where,
   onStarted,
   onDraftError,
   onToast,
@@ -1230,6 +1262,10 @@ function ChatView({
   favorites: string[];
   projects: ProjectsStore;
   projectNames?: string[];
+  /** The project the list shows, its defaults for new chats, and whether this chat is in it. */
+  shownProject?: { name: string; defaults?: ProjectDefaults; has: boolean };
+  /** The connection, as a folder on the server is shown beside it. */
+  where?: string;
   onStarted: (id: string) => void;
   onDraftError: (reason: string) => void;
   onToast: (text: string) => void;
@@ -1253,10 +1289,21 @@ function ChatView({
   const composerText = useSyncExternalStore(savedDrafts.subscribe, () => savedDrafts.get(shownDraft));
   const stillIn = () => hermes.profile === profile;
 
-  const shownModel = (started && chat.model) || sticky;
+  // A new chat takes each value from what the owner chose for it here, then the shown project's defaults, then the
+  // profile (projectDefaults.ts). A pick here also stays the composer's Model pick, as before.
+  const [chosen, setChosen] = useState<ModelPick>();
+  useEffect(() => setChosen(undefined), [chatId, profile]);
+  // No default for `project`: an explicit undefined is "no project", never the one this pane last drew.
+  const settingsFor = (project: { name: string; defaults?: ProjectDefaults } | undefined) =>
+    resolveNewChat({ chosen, project, sticky, profilePick: catalog?.defaultPick, profileEffort: catalog?.defaultEffort });
+  const startSettings = settingsFor(shownProject);
+  const [applying, setApplying] = useState(false);
+  useEffect(() => setApplying(false), [chatId]);
+
+  const shownModel = (started && chat.model) || startSettings.model.value;
   const pickModel = (pick: ModelPick) => {
     setUIPrefs({ modelPicker: { ...pick, profile } });
-    if (!started) return;
+    if (!started) return setChosen(pick);
     hermes.setModel(chat.id, pick).catch((e) => stillIn() && onToast(`Couldn't switch this chat's model: ${messageOf(e)}`));
   };
 
@@ -1266,9 +1313,23 @@ function ChatView({
   /** The chat to send in: the one in this pane, or a new one started now for the New chat pane. */
   const chatToSendIn = async (): Promise<{ id: string } | { delivery: Delivery }> => {
     if (chatId) return { id: chatId };
+    // The project and its defaults as they are now, not as they were when the pane drew.
+    projects.reread();
     const into = projects.getSnapshot().selectedId;
     try {
-      const id = await hermes.newChat(sticky);
+      const shown = projects.getSnapshot().projects.find((p) => p.id === into);
+      const defaults = shown && (await projects.freshDefaults().catch((e) => Promise.reject(new Error(`Couldn't read the project's defaults on this computer: ${messageOf(e)}`))));
+      const s = settingsFor(shown && { name: shown.name, defaults: defaults?.[shown.id] });
+      const problem = modelProblem(s, catalog);
+      if (problem) throw new Error(problem);
+      // Hermes would run a chat in a folder it can't list, or quietly in its own; check it is there and allowed first.
+      if (s.folder.value) await hermes.projects.checkFolder(profile, s.folder.value);
+      // The owner may have switched profile, or another window the project shown, meanwhile: these were that one's.
+      if (!stillIn()) throw new Error(`The profile changed to ${hermes.profile} before the chat started. Nothing was sent.`);
+      projects.reread();
+      if (projects.getSnapshot().selectedId !== into) throw new Error("The project shown changed before the chat started. Nothing was sent.");
+      const instructions = s.instructions.value && instructionsMessage(s.project ?? "", s.instructions.value);
+      const id = await hermes.newChat(s.model.value, { folder: s.folder.value, instructions });
       if (into && projects.getSnapshot().projects.some((p) => p.id === into)) projects.setChat(into, id, true);
       if (stillIn()) onStarted(id);
       return { id };
@@ -1400,6 +1461,30 @@ function ChatView({
       key={`${profile}/${chat.id}`}
       chat={chat}
       projects={projectNames}
+      notice={
+        !started && shownProject ? (
+          <NewChatSettingsView settings={startSettings} where={where} profile={profile} problem={modelProblem(startSettings, catalog)} />
+        ) : undefined
+      }
+      banner={
+        started && applying && shownProject?.defaults ? (
+          <ApplyDefaults
+            project={shownProject.name}
+            defaults={shownProject.defaults}
+            current={chat.model}
+            where={where}
+            running={!!chat.running}
+            onApply={async ({ model, folder }) => {
+              if (model) await hermes.setModel(chat.id, model);
+              if (folder) await hermes.setFolder(chat.id, folder);
+            }}
+            onClose={(applied) => {
+              setApplying(false);
+              if (applied && stillIn()) onToast(applied);
+            }}
+          />
+        ) : undefined
+      }
       onUsage={started ? () => void hermes.refreshUsage(chat.id) : undefined}
       notLoaded={started && status !== "connected" && !chat.runtimeId && chat.items.every(isOutgoing)}
       findTarget={findTarget}
@@ -1427,7 +1512,16 @@ function ChatView({
       voice={voice}
       commands={commands}
       paneControls={paneControls}
-      headActions={previewControls}
+      headActions={
+        <>
+          {started && shownProject?.has && shownProject.defaults && (
+            <button className={`icon-btn ${applying ? "on" : ""}`} title={`Apply ${shownProject.name}'s defaults to this chat…`} aria-pressed={applying} onClick={() => setApplying((a) => !a)}>
+              <FolderCog size={16} />
+            </button>
+          )}
+          {previewControls}
+        </>
+      }
       footer={<StatusBar chat={chat} status={status} onYolo={(on) => hermes.setYolo(chat.id, on)} onBreakdown={() => hermes.contextBreakdown(chat.id)} />}
       modelControls={
         <ModelControls

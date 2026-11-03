@@ -131,6 +131,8 @@ export function ChatPane({
   screenshots,
   screenshotKeys,
   projects,
+  notice,
+  banner,
   footer,
   onUsage,
   headActions,
@@ -167,6 +169,10 @@ export function ChatPane({
   screenshotKeys?: string;
   /** The names of the projects the chat is in, or a new chat will be put in. */
   projects?: string[];
+  /** Shown at the top of the transcript: what a new chat starts with. */
+  notice?: ReactNode;
+  /** Shown under the header, outside the transcript's scroll: a question about this chat. */
+  banner?: ReactNode;
   footer?: ReactNode;
   onUsage?: () => void;
   headActions?: ReactNode;
@@ -399,6 +405,7 @@ export function ChatPane({
           </div>
         )}
       </header>
+      {banner && <div className="chat-banner">{banner}</div>}
 
       <div
         className="transcript"
@@ -439,6 +446,7 @@ export function ChatPane({
               <CloudOff size={14} /> This chat isn't saved on this computer. It loads once Hermes is connected.
             </div>
           )}
+          {notice}
           {!chat.loading && !notLoaded && blocks.length === 0 && <div className="empty-chat">What should Hermes work on?</div>}
           {blocks.map((b) => (
             <BlockView

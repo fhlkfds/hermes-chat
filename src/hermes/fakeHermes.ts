@@ -294,6 +294,13 @@ export class FakeHermes {
   /** The `info` session.create and session.resume answer with (`server._session_info`); empty, as from a server
    * that reports none of it, unless a test sets it. */
   sessionInfo: Record<string, unknown> = {};
+  /**
+   * Each runtime session's working folder. As live at the deployed `bf0203a` (probed 2026-11-02 against a throwaway
+   * HERMES_HOME): `session.create` takes a `cwd` that is a folder on the server, and quietly runs in Hermes's own
+   * folder (`hermesHome`) when it isn't one.
+   */
+  readonly sessionCwd = new Map<string, string>();
+  hermesHome = "/home/hermes";
 
   /** Per-method behaviour; tests override entries. Unhandled methods get no answer. */
   readonly handlers: Record<string, Handler> = {
@@ -313,7 +320,9 @@ export class FakeHermes {
         fast: typeof p.fast === "boolean" ? p.fast : base.fast,
       };
       this.sessionModel.set(stored, info);
-      this.respond(r.id, { session_id: runtimeId, stored_session_id: stored, message_count: 0, messages: [], info: { ...this.sessionInfo, ...info } });
+      const cwd = typeof p.cwd === "string" && this.serverDirs.has(p.cwd) ? p.cwd : this.hermesHome;
+      this.sessionCwd.set(runtimeId, cwd);
+      this.respond(r.id, { session_id: runtimeId, stored_session_id: stored, message_count: 0, messages: [], info: { ...this.sessionInfo, ...info, cwd } });
     },
     "session.resume": (r) => {
       const stored = String(r.params.session_id);
@@ -516,6 +525,16 @@ export class FakeHermes {
       }),
     // Keepalive, answered by the WS layer in either protocol generation (research doc §1).
     "gateway.ping": (r) => this.respond(r.id, { ok: true }),
+    // `session.cwd.set` (`tui_gateway/methods_session.py` at `bf0203a`): only an idle session, only a folder that's there.
+    "session.cwd.set": (r) => {
+      const sid = String(r.params.session_id);
+      if (!this.runtime.has(sid)) return this.fail(r.id, 4001, "session not found");
+      const cwd = String(r.params.cwd ?? "");
+      if (!this.serverDirs.has(cwd)) return this.fail(r.id, 4017, `working directory does not exist: ${cwd}`);
+      this.sessionCwd.set(sid, cwd);
+      this.respond(r.id, { ...this.sessionInfo, cwd });
+    },
+    "session.close": (r) => this.respond(r.id, { closed: true }),
   };
 
   /** Per-route REST behaviour, keyed `METHOD /path`. A handler throws to fail the request. */
