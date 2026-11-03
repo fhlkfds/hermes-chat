@@ -36,6 +36,13 @@ function cautionText(c: Caution, t: Toolset): string {
   return `This app couldn't check ${c.what}.`;
 }
 
+/** Why a change the owner started wasn't asked about or sent: Hermes's list changed under it. */
+function outdated(t: Toolset, now: Toolset | undefined): Note {
+  return now === undefined
+    ? { tone: "warn", text: `Not changed: Hermes no longer lists ${t.label}.` }
+    : { tone: "warn", text: `Not changed: ${t.label} was turned ${onOff(now.enabled)} elsewhere while this was being checked. It shows as Hermes has it now.` };
+}
+
 /** The note a change's outcome leaves under the toolset's row. */
 function noteFor(t: Toolset, enabled: boolean, r: ToolsetChange): Note {
   const now = r.list?.toolsets.find((x) => x.name === t.name)?.enabled;
@@ -245,6 +252,14 @@ export function ToolsetSettings({
           ),
         );
         setList(fresh);
+        // A confirmation open for a toolset that has since changed, or gone, no longer asks the right question.
+        setAsk((a) => {
+          if (!a) return a;
+          const now = fresh.toolsets.find((x) => x.name === a.t.name);
+          if (now && now.enabled === a.t.enabled) return a;
+          setNotes((n) => ({ ...n, [a.t.name]: outdated(a.t, now) }));
+          return undefined;
+        });
         if (support) setWrite(support);
         if (full) setGuards(g);
         setLoadError(undefined);
@@ -338,8 +353,11 @@ export function ToolsetSettings({
       if (live.current) setChecking(undefined);
     }
     if (!live.current) return;
-    if (cautions.length) return setAsk({ t, enabled, cautions });
-    await commit(t, enabled);
+    // The list may have been read again while this was checked: ask, or send, only about what Hermes has now.
+    const now = shownList.current?.toolsets.find((x) => x.name === t.name);
+    if (!now || now.enabled !== t.enabled) return setNotes((n) => ({ ...n, [t.name]: outdated(t, now) }));
+    if (cautions.length) return setAsk({ t: now, enabled, cautions });
+    await commit(now, enabled);
   };
 
   const confirm = async () => {
