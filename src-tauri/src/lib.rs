@@ -111,6 +111,7 @@ impl Screenshots {
 #[tauri::command]
 async fn hermes_connect(
     state: State<'_, AppState>,
+    transfers: State<'_, Transfers>,
     target: Target,
     username: String,
     password: String,
@@ -120,6 +121,7 @@ async fn hermes_connect(
 ) -> Result<Route, String> {
     let mut slot = state.0.lock().await;
     *slot = None;
+    transfers.stop_all();
     let attempt = attempt.unwrap_or_default();
     // Run apart, so `hermes_connect_cancel` can stop it; stopping it drops what it opened, SSH tunnel included.
     let task = {
@@ -416,9 +418,143 @@ async fn hermes_toolset_guards(state: State<'_, AppState>, profile: String) -> R
 }
 
 #[tauri::command]
-async fn hermes_disconnect(state: State<'_, AppState>) -> Result<(), String> {
+async fn hermes_disconnect(state: State<'_, AppState>, transfers: State<'_, Transfers>) -> Result<(), String> {
     *state.0.lock().await = None;
+    transfers.stop_all();
     Ok(())
+}
+
+/// Server file transfers running now, by the webview's id for each, so Cancel can stop one. Every one is stopped when
+/// the connection is replaced or closed, so a transfer never outlives the sign-in it started on (ADR 0023).
+#[derive(Default)]
+struct Transfers {
+    /// Each running transfer's abort handle, with the run that registered it.
+    tasks: std::sync::Mutex<std::collections::HashMap<u64, (u64, tokio::task::AbortHandle)>>,
+    /// Counts the times every transfer was stopped. A transfer that started before the latest stop must not go on,
+    /// even if it was still waiting on a dialog then.
+    epoch: std::sync::atomic::AtomicU64,
+    runs: std::sync::atomic::AtomicU64,
+}
+
+impl Transfers {
+    fn stop_all(&self) {
+        use std::sync::atomic::Ordering;
+        let mut tasks = self.tasks.lock().unwrap();
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+        for (_, (_, task)) in tasks.drain() {
+            task.abort();
+        }
+    }
+
+    fn epoch(&self) -> u64 {
+        self.epoch.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Runs `work` as transfer `id` until it ends or `files_cancel` or `stop_all` stops it, if no stop came since
+    /// `epoch` (checked under the same lock `stop_all` takes, so a stop either reaches the work or keeps it from
+    /// starting). Given an `id` still running, the older transfer is stopped; each run removes only its own entry.
+    async fn run<T: Send + 'static>(&self, id: u64, epoch: u64, work: impl std::future::Future<Output = Result<T, String>> + Send + 'static) -> Result<T, String> {
+        let run = self.runs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let task = {
+            let mut tasks = self.tasks.lock().unwrap();
+            if self.epoch() != epoch {
+                return Err(TRANSFER_STOPPED.into());
+            }
+            let task = tokio::spawn(work);
+            if let Some((_, old)) = tasks.insert(id, (run, task.abort_handle())) {
+                old.abort();
+            }
+            task
+        };
+        let ended = task.await;
+        let mut tasks = self.tasks.lock().unwrap();
+        if tasks.get(&id).is_some_and(|(r, _)| *r == run) {
+            tasks.remove(&id);
+        }
+        drop(tasks);
+        match ended {
+            Ok(result) => result,
+            Err(e) if e.is_cancelled() => Err(TRANSFER_STOPPED.into()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+}
+
+/// What a stopped transfer rejects with; the webview tells it from a failure by this text.
+const TRANSFER_STOPPED: &str = "The transfer was stopped.";
+
+/// A transfer's progress: bytes so far, the size the server announced, and where on this computer the file goes.
+#[derive(Clone, Serialize)]
+struct TransferProgress {
+    done: u64,
+    total: Option<u64>,
+    dest: String,
+}
+
+/// A finished download: where it went and how many bytes it holds.
+#[derive(Serialize)]
+struct Downloaded {
+    dest: String,
+    bytes: u64,
+}
+
+/// The signed-in dashboard, if the connection is still the one that was current at `epoch`. Waiting for the connection
+/// lock can outlast a reconnect, so this checks again after.
+async fn dashboard_since(app: &tauri::AppHandle, epoch: u64) -> Result<Arc<Dashboard>, String> {
+    let transfers = app.state::<Transfers>();
+    let dashboard = dashboard(&app.state::<AppState>()).await?;
+    if transfers.epoch() != epoch {
+        return Err(TRANSFER_STOPPED.into());
+    }
+    Ok(dashboard)
+}
+
+/// Downloads the Server file at `path` (ADR 0023). The owner picks where in the native Save dialog, which asks before
+/// replacing a file there; the webview never names the local path. `None`: the owner cancelled the dialog, and nothing
+/// was read or written. `name` only suggests the file name. The download reads from the connection that was current
+/// when it was asked for, and only from it: one replaced or closed meanwhile, even while the dialog was open, stops it.
+/// The dialog itself isn't part of the transfer: the plugin can't close a dialog it opened, so a stop while it is open
+/// would leave it on screen with nowhere for its answer to go. The pick is turned down once it comes instead.
+#[tauri::command]
+async fn files_download(
+    app: tauri::AppHandle,
+    transfers: State<'_, Transfers>,
+    id: u64,
+    path: String,
+    name: String,
+    on_progress: Channel<TransferProgress>,
+) -> Result<Option<Downloaded>, String> {
+    let epoch = transfers.epoch();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut dialog = app.dialog().file().set_title("Download from the Hermes server").set_file_name(name);
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.set_parent(&window);
+    }
+    dialog.save_file(move |dest| {
+        let _ = tx.send(dest);
+    });
+    let Some(dest) = rx.await.map_err(|e| e.to_string())? else { return Ok(None) };
+    let dest = dest.into_path().map_err(|e| e.to_string())?;
+    let work = async move {
+        let dashboard = dashboard_since(&app, epoch).await?;
+        let shown = dest.display().to_string();
+        // Picked: from here on it is a running download, which Cancel can stop.
+        let _ = on_progress.send(TransferProgress { done: 0, total: None, dest: shown.clone() });
+        let report = |done, total| {
+            let _ = on_progress.send(TransferProgress { done, total, dest: shown.clone() });
+        };
+        let bytes = dashboard.download(&path, &dest, report).await.map_err(|e| e.to_string())?;
+        Ok(Some(Downloaded { dest: shown, bytes }))
+    };
+    transfers.run(id, epoch, work).await
+}
+
+/// Stops transfer `id`, if it is still running. A download's part file is removed; `dest` is left as it was.
+#[tauri::command]
+fn files_cancel(transfers: State<'_, Transfers>, id: u64) {
+    if let Some((_, task)) = transfers.tasks.lock().unwrap().remove(&id) {
+        task.abort();
+    }
 }
 
 #[tauri::command]
@@ -632,6 +768,7 @@ pub fn run(screenshot: bool) {
             Ok(())
         })
         .manage(PickedFiles::default())
+        .manage(Transfers::default())
         .manage(terminal::Terminals::default())
         .invoke_handler(tauri::generate_handler![
             hermes_connect,
@@ -647,6 +784,8 @@ pub fn run(screenshot: bool) {
             hermes_toolset_guards,
             hermes_get_limited,
             hermes_disconnect,
+            files_download,
+            files_cancel,
             hermes_connect_cancel,
             hermes_probe,
             hermes_probe_cancel,
@@ -695,4 +834,34 @@ pub fn run(screenshot: bool) {
                 update::relaunch(app);
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Transfers;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn a_replaced_transfer_leaves_its_replacements_cancel_in_place() {
+        let transfers = std::sync::Arc::new(Transfers::default());
+        let t = transfers.clone();
+        let old = tokio::spawn(async move { t.run(7, 0, async { tokio::time::sleep(Duration::from_secs(60)).await; Ok(()) }).await });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let t = transfers.clone();
+        let new = tokio::spawn(async move { t.run(7, 0, async { tokio::time::sleep(Duration::from_secs(60)).await; Ok(()) }).await });
+        assert_eq!(old.await.unwrap(), Err(super::TRANSFER_STOPPED.to_owned()));
+        // The old run ended after the new one registered; the new one must still be reachable.
+        assert!(transfers.tasks.lock().unwrap().contains_key(&7));
+        let epoch = transfers.epoch();
+        transfers.stop_all();
+        assert_eq!(new.await.unwrap(), Err(super::TRANSFER_STOPPED.to_owned()));
+        assert_eq!(transfers.epoch(), epoch + 1);
+        assert!(transfers.tasks.lock().unwrap().is_empty());
+        // Asked for before that stop: it never starts.
+        let started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let s = started.clone();
+        let late = transfers.run(8, epoch, async move { s.store(true, std::sync::atomic::Ordering::SeqCst); Ok(()) }).await;
+        assert_eq!(late, Err(super::TRANSFER_STOPPED.to_owned()));
+        assert!(!started.load(std::sync::atomic::Ordering::SeqCst));
+    }
 }

@@ -284,3 +284,84 @@ describe("Server files", () => {
     expect(document.querySelector(".files")).toBeNull();
   });
 });
+
+describe("Server files: Download", () => {
+  const transfer = () => within(screen.getByRole("region", { name: "Transfers" }));
+
+  it("downloads a file too big to preview to where the owner picks, showing both paths, progress and Cancel", async () => {
+    const s = server();
+    let release!: () => void;
+    s.managedFiles.transferGate = new Promise((r) => (release = r));
+    const { user } = await launch(s);
+    await openFiles(user);
+    await user.click(row_("huge.log"));
+    await screen.findByText(/Previews go up to/);
+    await user.click(screen.getByRole("button", { name: /Download/ }));
+    const progress = await screen.findByRole("progressbar", { name: "Downloading huge.log" });
+    expect(progress.getAttribute("value")).toBe("50");
+    expect(transfer().getByText("/home/liam/huge.log")).toBeTruthy();
+    expect(transfer().getByText("/home/me/Downloads/huge.log")).toBeTruthy();
+    expect(transfer().getByText("1.5 MB of 3.0 MB (50%)")).toBeTruthy();
+    release();
+    await waitFor(() => expect(transfer().getByText("Downloaded, 3.0 MB")).toBeTruthy());
+    expect(s.managedFiles.local["/home/me/Downloads/huge.log"]).toHaveLength(3 * MiB);
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+    await user.click(transfer().getByRole("button", { name: "Dismiss huge.log" }));
+    expect(screen.queryByRole("region", { name: "Transfers" })).toBeNull();
+  });
+
+  it("stops a download on Cancel and leaves this computer's file as it was", async () => {
+    const s = server();
+    s.managedFiles.transferGate = new Promise(() => {});
+    s.managedFiles.local["/home/me/Downloads/notes.md"] = new TextEncoder().encode("mine");
+    const { user } = await launch(s);
+    await openFiles(user);
+    await user.click(row_("notes.md"));
+    await user.click(await screen.findByRole("button", { name: /Download/ }));
+    await screen.findByRole("progressbar");
+    await user.click(transfer().getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(transfer().getByText(/^Stopped\. Nothing was saved/)).toBeTruthy());
+    expect(new TextDecoder().decode(s.managedFiles.local["/home/me/Downloads/notes.md"])).toBe("mine");
+  });
+
+  it("does nothing when the owner closes the Save dialog", async () => {
+    const s = server();
+    s.managedFiles.saveDialog = () => undefined;
+    const { user } = await launch(s);
+    await openFiles(user);
+    await user.click(row_("notes.md"));
+    await user.click(await screen.findByRole("button", { name: /Download/ }));
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Transfers" })).toBeNull());
+    expect(s.managedFiles.local).toEqual({});
+  });
+
+  it("offers no download of a file over Hermes's 100 MB, or of a folder", async () => {
+    const s = server();
+    s.managedFiles.nodes["/home/liam/disk.img"] = { size: 101 * MiB };
+    const { user } = await launch(s);
+    await openFiles(user);
+    await user.click(row_("disk.img"));
+    const button = (await screen.findByRole("button", { name: /Download/ })) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(screen.getByText("It's 101 MB. Hermes sends files up to 100 MB.")).toBeTruthy();
+  });
+
+  it("says why the server refused, and stops a download when the connection closes", async () => {
+    const s = server();
+    const { hermes, user } = await launch(s);
+    await openFiles(user);
+    await user.click(row_("notes.md"));
+    await screen.findByText(/buy milk/);
+    // Made unreadable after it was listed: the server's 403 shows as the browser words it.
+    s.managedFiles.nodes["/home/liam/notes.md"] = { text: "x", unreadable: true };
+    await user.click(screen.getByRole("button", { name: /Download/ }));
+    await waitFor(() => expect(transfer().getByRole("alert").textContent).toBe("The Hermes server's user isn't allowed to read this file."));
+    s.managedFiles.nodes["/home/liam/notes.md"] = { text: "# Notes\n" };
+    s.managedFiles.transferGate = new Promise(() => {});
+    await user.click(screen.getByRole("button", { name: /Download/ }));
+    await screen.findByRole("progressbar");
+    await act(async () => void (await hermes.close()));
+    await waitFor(() => expect(transfer().getAllByText(/^Stopped\./)).toHaveLength(1));
+    expect(s.managedFiles.local).toEqual({});
+  });
+});

@@ -1446,6 +1446,25 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .files-preview-msg p { margin: 0 0 10px; }
 .files-text { margin: 0; padding: 12px 16px; font-size: var(--mono-size); line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-2); tab-size: 4; }
 .files-image { display: block; max-width: calc(100% - 32px); margin: 14px 16px; border-radius: 6px; background: repeating-conic-gradient(var(--raised-2) 0 25%, var(--raised) 0 50%) 0 0 / 16px 16px; }
+.files-preview-actions { display: flex; align-items: center; gap: 6px; flex: none; }
+.files-preview-actions .btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; font-size: calc(12.5rem / 14); }
+.files-preview-note { margin: 0 16px 6px; }
+.files-transfers { flex: none; border-top: 1px solid var(--line); max-height: 30%; overflow: auto; background: var(--sidebar); }
+.files-transfers ul { list-style: none; margin: 0; padding: 4px 0; }
+.files-transfer { display: flex; align-items: center; gap: 12px; padding: 8px 16px 8px 18px; }
+.files-transfer + .files-transfer { border-top: 1px solid var(--line); }
+.files-transfer-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.files-transfer-title { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: calc(13rem / 14); }
+.files-transfer-title svg { flex: none; color: var(--muted); }
+.files-transfer-title svg.ok { color: var(--ok); }
+.files-transfer-title svg.bad { color: var(--bad); }
+.files-transfer-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.files-transfer-title .small { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.files-transfer-where { display: flex; flex-wrap: wrap; gap: 2px 16px; }
+.files-transfer-where .mono { overflow-wrap: anywhere; }
+.files-progress { width: 100%; height: 6px; accent-color: var(--accent); }
+.files-transfer-error { margin: 0; color: var(--bad); font-size: calc(12.5rem / 14); }
+.files-transfer .btn { flex: none; height: 28px; padding: 0 12px; font-size: calc(12.5rem / 14); }
 /* With the preview open, the list gives up the columns the preview shows for the file picked. */
 .files-body.with-preview .files-table th:nth-child(4), .files-body.with-preview .files-table td:nth-child(4) { display: none; }
 @media (max-width: 1240px) {

@@ -274,3 +274,54 @@ describe("the path trail", () => {
     expect(crumbs("/opt/database", "/opt/data")[0]).toEqual({ label: "/", path: "/" });
   });
 });
+
+describe("downloads", () => {
+  const notes: RemoteEntry = { name: "notes.md", path: "/home/liam/notes.md", kind: "file", size: 20 };
+
+  it("says what went wrong on this computer or on the way, and saves nothing", async () => {
+    const { server, hermes } = await signedIn(homeDisk);
+    for (const [error, shown] of [
+      ["couldn't write it on this computer: No space left on device (os error 28)", "Couldn't write it on this computer: No space left on device (os error 28)."],
+      ["Can't reach the Hermes dashboard: error decoding response body", "The download broke off: Can't reach the Hermes dashboard: error decoding response body."],
+      ["the download ended early, after 10 of 20 bytes", "The download broke off: the download ended early, after 10 of 20 bytes."],
+    ]) {
+      server.managedFiles.transferError = error;
+      await hermes.files.download(notes);
+      expect(hermes.files.transfers().at(-1)).toMatchObject({ state: "failed", error: shown, dest: "/home/me/Downloads/notes.md" });
+    }
+    expect(server.managedFiles.local).toEqual({});
+  });
+
+  it("refuses a credential file as Hermes does, and starts nothing while disconnected", async () => {
+    const { server, hermes } = await signedIn(homeDisk);
+    await hermes.files.download({ ...notes, name: ".env", path: "/home/liam/.env" });
+    expect(hermes.files.transfers()[0]).toMatchObject({ state: "failed", error: "Hermes doesn't show credential files, such as .env or auth.json." });
+    server.drop("closed by the server (1006 )");
+    await hermes.files.download(notes);
+    expect(hermes.files.transfers()[1]).toMatchObject({ state: "failed", error: "Hermes isn't connected. Server files can be browsed again once it is." });
+    expect(server.managedFiles.local).toEqual({});
+  });
+
+  it("keeps a settled download settled when progress arrives late", async () => {
+    const { server, hermes } = await signedIn(homeDisk);
+    server.managedFiles.lateProgress = true;
+    await hermes.files.download(notes);
+    server.managedFiles.transferError = "the download ended early, after 1 of 2 bytes";
+    await hermes.files.download(notes);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(hermes.files.transfers().map((t) => t.state)).toEqual(["done", "failed"]);
+    const size = new TextEncoder().encode("# Notes\n\nCafé ☕\n").length;
+    expect(hermes.files.transfers()[0]).toMatchObject({ done: size, total: size });
+  });
+
+  it("refuses a folder, a broken link and a file over 100 MB before asking anything", async () => {
+    const { hermes } = await signedIn(homeDisk);
+    for (const entry of [
+      { ...notes, kind: "dir" as const },
+      { ...notes, kind: "broken-link" as const },
+      { ...notes, size: 100 * MiB + 1 },
+    ])
+      await expect(hermes.files.download(entry)).rejects.toThrow();
+    expect(hermes.files.transfers()).toEqual([]);
+  });
+});

@@ -1,5 +1,5 @@
-// The files on a fake Hermes server, for tests of the file browser: `GET /api/files` and `GET /api/files/read` as the
-// deployed `bf0203a` answers them (`hermes_cli/web_routers/files.py`, `hermes_cli/web_server_files.py`). Listings
+// The files on a fake Hermes server, for tests of the file browser: `GET /api/files`, `GET /api/files/read` and
+// `GET /api/files/download` as the deployed `bf0203a` answers them (`hermes_cli/web_routers/files.py`, `hermes_cli/web_server_files.py`). Listings
 // resolve symbolic links, skip credential files and sort folders first; refusals are FastAPI `{"detail"}` bodies,
 // worded as the Rust side reports them.
 
@@ -49,7 +49,21 @@ const isSensitive = (p: string) => {
   return name === ".env" || name.startsWith(".env.") || name === ".envrc" || SENSITIVE.has(name) || p.split("/").some((s) => SENSITIVE_DIRS.has(s.toLowerCase()));
 };
 
+const STOPPED = "The transfer was stopped.";
+
 export class FakeServerFiles {
+  /** This computer's disk: what downloads wrote, by local path. */
+  readonly local: Record<string, Uint8Array> = {};
+  /** The native Save dialog: the local path the owner picks for a suggested name, or undefined when they close it. */
+  saveDialog: (name: string) => string | undefined = (name) => `/home/me/Downloads/${name}`;
+  /** Set: each download reports progress once more after it has ended, as a late Channel message would. */
+  lateProgress = false;
+  /** Set: a download fails this way halfway, as the Rust side words it (a full disk, a dropped connection). */
+  transferError?: string;
+  /** Set: a download holds here after reporting its first bytes, until the promise settles. */
+  transferGate?: Promise<void>;
+  /** Transfers running now, by id, with how to stop each (src-tauri `Transfers`). */
+  private running = new Map<number, (e: Error) => void>();
   /** The server's disk, by absolute path. Folders above a node needn't be listed: they exist. */
   nodes: Record<string, ServerNode> = {};
   /** `Path.home()` for the server's OS user: where a listing with no path starts. */
@@ -132,6 +146,53 @@ export class FakeServerFiles {
     entries.sort((a, b) => Number(a.is_directory === false) - Number(b.is_directory === false) || a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
     const parent = dir !== "/" && dir !== this.root ? dirname(dir) : null;
     return { path: dir, parent, entries, root: this.root ?? null, locked_root: this.root ?? null, can_change_path: !this.root };
+  }
+
+  /** `_managed_readable_file` and `_managed_file_size`: the bytes `GET /api/files/download` sends for `raw`. */
+  private readable(raw: string): { at: string; bytes: Uint8Array } {
+    const at = this.target(raw);
+    if (this.isDir(at)) fail(400, "Path is not a file");
+    if (isSensitive(at)) fail(403, "Access to sensitive files is not allowed");
+    const node = this.nodes[at] as Exclude<ServerNode, { dir: true } | { link: string }>;
+    if ("unreadable" in node && node.unreadable) fail(403, "File is not readable");
+    const size = "text" in node ? new TextEncoder().encode(node.text).length : "bytes" in node ? node.bytes.length : node.size;
+    if (size > READ_MAX_BYTES) fail(413, "File is too large");
+    const bytes = "text" in node ? new TextEncoder().encode(node.text) : "bytes" in node ? Uint8Array.from(node.bytes, (c) => c.charCodeAt(0)) : new Uint8Array(size);
+    return { at, bytes };
+  }
+
+  /**
+   * src-tauri `files_download`: the Save dialog, then `GET /api/files/download` into a part file that takes the
+   * destination's place only once complete. Stopped (`cancel`, or the connection closing), it leaves `local` as it was.
+   */
+  async download(id: number, path: string, name: string, onProgress: (p: { done: number; total: number; dest: string }) => void): Promise<{ dest: string; bytes: number } | undefined> {
+    const dest = this.saveDialog(name);
+    if (dest === undefined) return undefined;
+    const stopped = new Promise<never>((_, reject) => this.running.set(id, reject));
+    try {
+      const { bytes } = this.readable(path);
+      onProgress({ done: 0, total: bytes.length, dest });
+      const half = Math.floor(bytes.length / 2);
+      onProgress({ done: half, total: bytes.length, dest });
+      if (this.transferGate) await Promise.race([this.transferGate, stopped]);
+      if (this.transferError) throw new Error(this.transferError);
+      onProgress({ done: bytes.length, total: bytes.length, dest });
+      this.local[dest] = bytes;
+      return { dest, bytes: bytes.length };
+    } finally {
+      this.running.delete(id);
+      // A Channel message can reach the webview after the command's answer.
+      if (this.lateProgress) setTimeout(() => onProgress({ done: 1, total: 2, dest }), 0);
+    }
+  }
+
+  cancel(id: number) {
+    this.running.get(id)?.(new Error(STOPPED));
+  }
+
+  /** The connection closed or changed: every transfer stops (src-tauri `Transfers::stop_all`). */
+  stopAll() {
+    for (const stop of this.running.values()) stop(new Error(STOPPED));
   }
 
   /** `GET /api/files/read?path=`: the whole file as a base64 data URL. */
