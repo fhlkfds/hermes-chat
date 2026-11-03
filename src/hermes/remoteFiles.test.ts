@@ -355,6 +355,20 @@ describe("uploads", () => {
     });
   });
 
+  it("reads back the size Rust sent, when the file grew after it was picked", async () => {
+    const { server, hermes } = await signedIn(homeDisk);
+    const file = { name: "grows.log", bytes: "abc" };
+    server.managedFiles.openDialog = () => file;
+    const picked = (await hermes.files.pickUpload())!;
+    expect(picked.size).toBe(3);
+    file.bytes = "abcdefg";
+    await hermes.files.upload(await hermes.files.list("/home/liam"), picked, "keep-both");
+    expect(hermes.files.transfers()[0]).toMatchObject({ state: "done", total: 7, done: 7 });
+    // A pick is good for one upload.
+    await hermes.files.upload(await hermes.files.list("/home/liam"), picked, "keep-both");
+    expect(hermes.files.transfers()[1]).toMatchObject({ state: "failed" });
+  });
+
   it("says when the server's user may not write there", async () => {
     const { server, hermes } = await signedIn(homeDisk);
     server.managedFiles.nodes["/home/liam/locked"] = { dir: true, unreadable: true };

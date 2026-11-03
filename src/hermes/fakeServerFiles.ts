@@ -190,6 +190,7 @@ export class FakeServerFiles {
   openDialog: () => { name: string; bytes: string } | undefined = () => undefined;
   /** What each upload token stands for. */
   private picked = new Map<number, { name: string; bytes: string }>();
+  private picks = 0;
   /** Every upload Hermes was sent: its path and `overwrite`. */
   readonly uploads: { path: string; overwrite: boolean }[] = [];
 
@@ -197,7 +198,7 @@ export class FakeServerFiles {
   pickUpload() {
     const file = this.openDialog();
     if (!file) return undefined;
-    const token = this.picked.size + 1;
+    const token = ++this.picks;
     this.picked.set(token, file);
     return { token, name: file.name, size: file.bytes.length };
   }
@@ -208,7 +209,8 @@ export class FakeServerFiles {
    */
   async upload(id: number, token: number, path: string, overwrite: boolean, onProgress: (p: { done: number; total: number; dest: string }) => void): Promise<string> {
     const file = this.picked.get(token);
-    if (!file) throw new Error("That file wasn't picked in the Open dialog.");
+    if (!file) throw new Error("That file wasn't picked in the Open dialog, or was already sent.");
+    this.picked.delete(token);
     if (isSensitive(path)) throw new Error(`Hermes Chat doesn't relay uploads to ${path}, a credential file Hermes keeps out of reach.`);
     const stopped = new Promise<never>((_, reject) => this.running.set(id, reject));
     try {

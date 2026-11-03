@@ -179,7 +179,7 @@ Saving a copy of one Server file on this computer, where the owner picks in the 
 _Avoid_: export (that is a chat saved as Markdown), save
 
 **Upload** (to the server):
-Sending one file the owner picked on this computer into the folder the Server files screen shows. Before anything is sent, it shows where the file goes. If the name is taken, the owner chooses to keep both or replace. Hermes's file is never replaced unless the owner chose that. It counts as uploaded once the folder, listed again, has the file at the size sent. Credential files such as `.env` are never uploaded over (ADR 0023).
+Sending one file the owner picked on this computer into the folder the Server files screen shows. Before anything is sent, it shows where the file goes. If the name is taken, the owner chooses to keep both or replace. Hermes is asked not to replace a file unless the owner chose that; it checks just before writing, not at the same moment. It counts as uploaded once the folder, listed again, has the file at the size sent. Credential files such as `.env` are never uploaded over (ADR 0023).
 _Avoid_: attach, attachment (that is a file sent with a message), sync
 
 **Terminal**:

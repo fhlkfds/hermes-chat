@@ -550,8 +550,10 @@ async fn files_download(
 }
 
 /// Local files the owner picked to upload, by the token the webview gets for each, so it never names a local path.
+/// Each is kept with the transfers' epoch it was picked in: a pick is good for one upload, over the connection that was
+/// current when it was picked.
 #[derive(Default)]
-struct UploadPicks(std::sync::Mutex<(u64, std::collections::HashMap<u64, std::path::PathBuf>)>);
+struct UploadPicks(std::sync::Mutex<(u64, std::collections::HashMap<u64, (std::path::PathBuf, u64)>)>);
 
 /// A local file picked to upload: its token, name and size.
 #[derive(Serialize)]
@@ -564,7 +566,8 @@ struct PickedUpload {
 /// Opens the native Open dialog for a file to upload to the server. Nothing is sent yet: the webview shows where it
 /// would go first. `None`: the owner cancelled.
 #[tauri::command]
-async fn files_pick_upload(app: tauri::AppHandle, picks: State<'_, UploadPicks>) -> Result<Option<PickedUpload>, String> {
+async fn files_pick_upload(app: tauri::AppHandle, picks: State<'_, UploadPicks>, transfers: State<'_, Transfers>) -> Result<Option<PickedUpload>, String> {
+    let epoch = transfers.epoch();
     let (tx, rx) = tokio::sync::oneshot::channel();
     let mut dialog = app.dialog().file().set_title("Upload to the Hermes server");
     if let Some(window) = app.get_webview_window("main") {
@@ -583,7 +586,10 @@ async fn files_pick_upload(app: tauri::AppHandle, picks: State<'_, UploadPicks>)
     let mut picks = picks.0.lock().unwrap();
     picks.0 += 1;
     let token = picks.0;
-    picks.1.insert(token, path);
+    // Picks never sent are let go once the connection they were picked in is gone.
+    let now = transfers.epoch();
+    picks.1.retain(|_, (_, e)| *e == now);
+    picks.1.insert(token, (path, epoch));
     Ok(Some(PickedUpload { token, name, size: meta.len() }))
 }
 
@@ -600,8 +606,8 @@ async fn files_upload(
     overwrite: bool,
     on_progress: Channel<TransferProgress>,
 ) -> Result<String, String> {
-    let local = picks.0.lock().unwrap().1.get(&token).cloned().ok_or("That file wasn't picked in the Open dialog.")?;
-    let epoch = transfers.epoch();
+    // Taken, not looked up: a pick is good for one upload.
+    let (local, epoch) = picks.0.lock().unwrap().1.remove(&token).ok_or("That file wasn't picked in the Open dialog, or was already sent.")?;
     let dest = path.clone();
     // Registered before it waits for the connection, so a stop meanwhile reaches it; and only the connection that was
     // current when it was asked for is used.

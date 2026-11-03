@@ -442,6 +442,37 @@ describe("Server files: Upload", () => {
     expect(s.managedFiles.uploads).toEqual([]);
   });
 
+  it("refuses to replace a link to a credential file, which Hermes would write through", async () => {
+    const s = server();
+    s.managedFiles.nodes["/home/liam/report.txt"] = { link: "/home/liam/.env" };
+    s.managedFiles.nodes["/home/liam/.env"] = { text: "SECRET=1\n" };
+    s.managedFiles.openDialog = () => ({ name: "report.txt", bytes: "x" });
+    const { user } = await launch(s);
+    await openFiles(user);
+    await user.click(screen.getByRole("button", { name: /Upload/ }));
+    expect(dialog().getByRole("alert").textContent).toBe("report.txt here is a link to a credential file (/home/liam/.env), so Hermes Chat doesn't upload over it.");
+    expect(dialog().queryByRole("button", { name: /Upload|Replace/ })).toBeNull();
+  });
+
+  it("keeps the keyboard in the dialog and gives focus back to Upload… when it closes", async () => {
+    const s = server();
+    s.managedFiles.openDialog = () => ({ name: "notes.md", bytes: "x" });
+    const { user } = await launch(s);
+    await openFiles(user);
+    const upload = screen.getByRole("button", { name: /Upload/ });
+    await user.click(upload);
+    const box = screen.getByRole("dialog", { name: "Upload to the server" });
+    for (let i = 0; i < 6; i++) {
+      await user.tab();
+      expect(box.contains(document.activeElement)).toBe(true);
+    }
+    await user.tab({ shift: true });
+    expect(box.contains(document.activeElement)).toBe(true);
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(upload);
+  });
+
   it("stops an upload on Cancel, leaving the server's folder as it was", async () => {
     const s = server();
     s.managedFiles.transferGate = new Promise(() => {});

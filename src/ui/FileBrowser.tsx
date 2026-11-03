@@ -3,7 +3,7 @@
 // of folders; a file opens in the preview beside the list, where it can be downloaded to this computer. Upload… sends
 // a file the owner picks into the folder on screen, after showing where it goes and what is in the way (ADR 0023).
 // Nothing else on the server can be changed from here.
-import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
+import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type RefObject } from "react";
 import { ArrowLeft, ArrowUp, Check, CircleAlert, Download, File, FileImage, FileText, Folder, House, Link2, Link2Off, RefreshCw, Server, Upload, WifiOff, X } from "lucide-react";
 import type { ConnectionStatus } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
@@ -21,6 +21,7 @@ import {
   type Transfer,
 } from "../hermes/remoteFiles";
 import { STATUS_LABEL, Spinner, composing, fmtSize, routeLabel, storedTime } from "./bits";
+import { useModal } from "./modal";
 
 type Preview =
   | { entry: RemoteEntry; state: "loading" }
@@ -77,6 +78,7 @@ export function FileBrowser({
   const [uploading, setUploading] = useState<{ picked: PickedUpload; listing: RemoteListing }>();
   const [pickError, setPickError] = useState<string>();
   const shownPath = useRef<string | undefined>(undefined);
+  const uploadButton = useRef<HTMLButtonElement>(null);
   shownPath.current = listing?.path;
   // Only the latest listing and preview asked for land; an older answer arriving late is dropped.
   const listSeq = useRef(0);
@@ -239,7 +241,7 @@ export function FileBrowser({
             <span className="muted small">{loading ? "Listing…" : ""}</span>
           )}
         </nav>
-        <button className="btn files-upload" disabled={!connected || !listing} title="Pick a file on this computer to upload into this folder" onClick={pickUpload}>
+        <button ref={uploadButton} className="btn files-upload" disabled={!connected || !listing} title="Pick a file on this computer to upload into this folder" onClick={pickUpload}>
           <Upload size={14} aria-hidden /> Upload…
         </button>
         <form
@@ -375,7 +377,7 @@ export function FileBrowser({
         {preview && <PreviewPane preview={preview} files={files} connected={connected} onOpenAsText={() => open(preview.entry, true)} onClose={dropPreview} />}
       </div>
       <Transfers files={files} />
-      {uploading && <UploadDialog files={files} {...uploading} connected={connected} onSend={sendUpload} onCancel={() => setUploading(undefined)} />}
+      {uploading && <UploadDialog files={files} {...uploading} connected={connected} returnTo={uploadButton} onSend={sendUpload} onCancel={() => setUploading(undefined)} />}
     </div>
   );
 }
@@ -389,6 +391,7 @@ function UploadDialog({
   picked,
   listing,
   connected,
+  returnTo,
   onSend,
   onCancel,
 }: {
@@ -396,6 +399,7 @@ function UploadDialog({
   picked: PickedUpload;
   listing: RemoteListing;
   connected: boolean;
+  returnTo: RefObject<HTMLButtonElement | null>;
   onSend: (collision: Collision) => void;
   onCancel: () => void;
 }) {
@@ -403,16 +407,20 @@ function UploadDialog({
   const [collision, setCollision] = useState<Collision>("keep-both");
   const titleId = useId();
   const takenId = useId();
+  const box = useRef<HTMLDivElement>(null);
+  const keys = useModal(box, returnTo);
   const replace = !!plan.taken && collision === "replace";
   const dest = plan.taken && !replace ? `${listing.path.replace(/\/$/, "")}/${plan.keepBothName}` : plan.dest;
   return (
     <div className="leave-overlay" onMouseDown={(e) => e.target === e.currentTarget && onCancel()}>
       <div
+        ref={box}
         className="leave-dialog files-upload-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
         onKeyDown={(e) => {
+          keys(e);
           if (e.key === "Escape") {
             e.preventDefault();
             onCancel();
@@ -450,6 +458,9 @@ function UploadDialog({
                 <input type="radio" name="collision" checked={collision === "replace"} onChange={() => setCollision("replace")} /> Replace the server's{" "}
                 <span className="mono">{picked.name}</span>
               </label>
+              {!replace && (
+                <p className="muted small">Hermes checks the name again before it writes, though not at the very moment it writes; a file made there in that instant would still be replaced.</p>
+              )}
               {replace && (
                 <p className="muted small">
                   Hermes writes it as a new file, readable and writable only by the server's user; the old file's permissions aren't kept. It can't be undone.
@@ -516,7 +527,7 @@ function Transfers({ files }: { files: RemoteFiles }) {
                               : `Downloaded, ${fmtSize(t.done)}`
                             : up
                               ? t.state === "stopped"
-                                ? "Stopped. Hermes never keeps part of an upload."
+                                ? "Stopped. Hermes never keeps part of a file, but if it had already received all of it, it may still save it: the folder shows what it has."
                                 : "Failed."
                               : t.state === "stopped"
                                 ? "Stopped. Nothing was saved, and any file already there is as it was."

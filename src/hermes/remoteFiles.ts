@@ -195,6 +195,9 @@ export function remoteFiles(get: RemoteGet, pipe: TransferPipe): RemoteFiles {
     const dest = joinPath(listing.path, picked.name);
     const plan: UploadPlan = { dest, taken: listing.entries.find((e) => e.name === picked.name), keepBothName: freeName(picked.name, names) };
     if (protectedPath(dest)) plan.refused = `Hermes keeps credential files such as ${picked.name} out of its file browser, so Hermes Chat doesn't upload over them.`;
+    // A link in the way would be written through: Hermes replaces what it points to.
+    else if (plan.taken?.linkTarget && protectedPath(plan.taken.linkTarget))
+      plan.refused = `${picked.name} here is a link to a credential file (${plan.taken.linkTarget}), so Hermes Chat doesn't upload over it.`;
     else if (picked.size > SERVER_FILE_MAX_BYTES) plan.refused = `It's ${mb(picked.size)}. Hermes takes files up to 100 MB.`;
     else if (plan.taken?.kind === "dir") plan.refused = `There's a folder named ${picked.name} there.`;
     return plan;
@@ -231,21 +234,25 @@ export function remoteFiles(get: RemoteGet, pipe: TransferPipe): RemoteFiles {
       const serverPath = joinPath(listing.path, name);
       const id = add({ kind: "upload", name, localName: picked.name, serverPath, done: 0, total: picked.size, state: "running" });
       try {
-        await pipe.upload(id, picked.token, serverPath, replace, (p) => (settled(id) ? undefined : change(id, { done: p.done })));
+        // The size Rust measured when it opened the file is what it sends, whatever the picker said earlier.
+        await pipe.upload(id, picked.token, serverPath, replace, (p) =>
+          settled(id) ? undefined : change(id, { done: p.done, ...(typeof p.total === "number" && { total: p.total }) }),
+        );
       } catch (e) {
         return failed(id, e, "upload");
       }
       // Read back: Hermes's answer says it wrote the file; the folder's listing says what is there now.
-      change(id, { state: "checking", done: picked.size });
+      const size = transfers.find((t) => t.id === id)?.total ?? picked.size;
+      change(id, { state: "checking", done: size });
       try {
         const now = await list(listing.path);
         const entry = now.entries.find((e) => e.name === name);
-        if (entry?.size === picked.size) change(id, { state: "done" });
+        if (entry?.size === size) change(id, { state: "done" });
         else
           change(id, {
             state: "failed",
             error: entry
-              ? `Hermes said it saved it, but the folder lists ${name} at ${fmtBytes(entry.size)}, not ${fmtBytes(picked.size)}. Something else may have changed it since.`
+              ? `Hermes said it saved it, but the folder lists ${name} at ${fmtBytes(entry.size)}, not ${fmtBytes(size)}. Something else may have changed it since.`
               : `Hermes said it saved it, but the folder doesn't list ${name}. Something else may have moved it since.`,
           });
       } catch (e) {
