@@ -1,16 +1,19 @@
 import { type ReactNode, type RefObject, useCallback, useLayoutEffect, useMemo, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { flushSync } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import { Columns2, PanelRight, X } from "lucide-react";
 import { connect, readSaved, type Delivery, type Hermes } from "./hermes/transport";
 import { CHECK_EVERY_MS } from "./hermes/otherProfiles";
 import { type Account, type Kept, type SavedSignIn, launchSignIn, savedSignIn, signIn, signInForm, signOutToSignIn } from "./hermes/account";
 import { localChatCache } from "./hermes/chatCache";
 import { draftKey, drafts } from "./hermes/drafts";
+import { sending, type Sending } from "./hermes/unsaved";
 import { chatToReopen, forgetOpenChat, rememberOpenChat } from "./hermes/uiPrefs";
 import { exportChat } from "./hermes/exportChat";
 import { projectLinks, projectScope } from "./hermes/projectLinks";
 import { ProjectsStore, type Project } from "./hermes/projects";
 import { systemHeaderKeyring, systemKeyring } from "./hermes/tauriKeyring";
+import { appUpdates } from "./hermes/tauriUpdates";
+import { needsAttention, type Updater } from "./hermes/updates";
 import { desktopNotify } from "./hermes/tauriNotify";
 import { ScreenshotDesk, type ScreenshotApi } from "./hermes/screenshots";
 import { onDesktopScreenshot, screenshotSupport, showWindow, syncScreenshotOutbox, tauriScreenshots, type ScreenshotSupport } from "./hermes/tauriScreenshot";
@@ -26,8 +29,10 @@ import type { VoiceApi } from "./ui/Voice";
 import { SearchPalette } from "./ui/Search";
 import { SettingsScreen } from "./ui/Settings";
 import { LeaveMemoryEdit, useCloseGuard } from "./ui/LeaveMemoryEdit";
+import { FileBrowser } from "./ui/FileBrowser";
 import { composing, routeLabel } from "./ui/bits";
 import { ProjectScreen, ProjectSwitcher, type ProjectUnread } from "./ui/Projects";
+import { ScheduledJobs } from "./ui/ScheduledJobs";
 import { appearanceStore } from "./ui/appearance";
 import { StatusBar } from "./ui/StatusBar";
 import { systemFonts } from "./ui/tauriFonts";
@@ -35,7 +40,7 @@ import { SignIn } from "./ui/SignIn";
 import { ModelControls } from "./ui/ModelPicker";
 import { PANE_MIN_WIDTH, PreviewPane } from "./ui/PreviewPane";
 import { PreviewContext } from "./ui/previewContext";
-import { tauriLocalFiles, type LocalFiles } from "./ui/tauriPreview";
+import { tauriLocalFiles, tauriWebPages, type LocalFiles, type WebPages } from "./ui/tauriPreview";
 import type { PreviewTarget } from "./hermes/preview";
 import type { Route } from "./hermes/pipe";
 import { getUIPrefs, setUIPrefs, subscribe as subscribeUIPrefs, toggleModelFavorite, type StickyModelPick } from "./hermes/uiPrefs";
@@ -151,6 +156,15 @@ export default function App() {
     });
   }, []);
 
+  // Updates: checked once as the app starts, if the owner wants that. Back in the window, a package update waiting to be
+  // installed looks again for pacman having installed it, which the owner does in a terminal.
+  useEffect(() => {
+    if (getUIPrefs().checkUpdatesOnLaunch && appUpdates.getSnapshot().state === "idle") void appUpdates.check();
+    const onFocus = () => void appUpdates.check({ installedOnly: true });
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
+
   if (hermes)
     return (
       <Main
@@ -253,8 +267,10 @@ export function Main({
   kept = { password: true, headers: true },
   reopenLast = false,
   localFiles = tauriLocalFiles,
+  webPages = tauriWebPages,
   screenshots = tauriScreenshotWiring,
   onSignOut,
+  updates = appUpdates,
 }: {
   hermes: Hermes;
   connection: SavedSignIn;
@@ -266,8 +282,10 @@ export function Main({
   /** This is the app starting: open the profile's last open chat, if the owner wants it reopened. */
   reopenLast?: boolean;
   localFiles?: LocalFiles;
+  webPages?: WebPages;
   screenshots?: Screenshots;
   onSignOut: () => Promise<void>;
+  updates?: Updater;
 }) {
   const { profile, chats, olderPulled, archivedListed, status, route, unsecure, closedReason, syncError, others, models, switching } = useSyncExternalStore(
     hermes.subscribe,
@@ -292,12 +310,23 @@ export function Main({
     if (!memoryDirty.current) setSettingsOpen(false);
   };
   useCloseGuard(memoryUnsaved, (close) => guard(close));
+  // A new object each time a row asks Settings to show the Text generation model; the rail's button opens it plainly.
+  const [showTextGeneration, setShowTextGeneration] = useState<object>();
   const voice = useMemo<VoiceApi>(
     () => ({ setup: () => hermes.voiceSetup(), transcribe: (audio, mime) => hermes.transcribe(audio, mime), speak: (text) => hermes.speak(text) }),
     [hermes],
   );
   // The project screen covers the chat pane, as Settings does.
   const [projectOpen, setProjectOpen] = useState(false);
+  /** The Scheduled jobs screen covers the chat, as Settings does. */
+  const [jobsOpen, setJobsOpen] = useState(false);
+  // Server files covers the chat panes too. The folder open last stays for this sign-in.
+  const [filesOpen, setFilesOpen] = useState(false);
+  const [filesPath, setFilesPath] = useState<string>();
+  const update = useSyncExternalStore(updates.subscribe, updates.getSnapshot);
+  const updateWaiting = needsAttention(update);
+  // Drafts were saved for the restart; nothing typed after that would survive it.
+  const restarting = update.state === "restarting";
   // The chat to reopen at launch, until Hermes's list shows it is there or gone, or the owner goes somewhere first.
   const [reopening, setReopening] = useState(() => (reopenLast ? chatToReopen(profile) : undefined));
   // One pane, or two side by side. The chat to reopen opens at once when the list saved on this computer has it, so the
@@ -396,6 +425,8 @@ export function Main({
     setReopening(undefined);
     closeSettings();
     setProjectOpen(false);
+    setFilesOpen(false);
+    setJobsOpen(false);
     if (remember) rememberOpenChat(profile, id);
   };
 
@@ -410,6 +441,8 @@ export function Main({
     setSearchOpen(false);
     closeSettings();
     setProjectOpen(false);
+    setFilesOpen(false);
+    setJobsOpen(false);
   };
 
   // A second pane opens to the right and becomes the active one. Both panes may show the same chat: they are two views
@@ -424,6 +457,8 @@ export function Main({
     setReopening(undefined);
     closeSettings();
     setProjectOpen(false);
+    setFilesOpen(false);
+    setJobsOpen(false);
     rememberOpenChat(profile, chatId);
   };
 
@@ -443,12 +478,15 @@ export function Main({
     setDesk(d);
     return () => d.dispose();
   }, []);
-  // Reveal the composer when Search, Settings, Projects or a narrow preview covers it, so the capture can be reviewed.
+  // Reveal the composer when Search, Settings, Projects, Server files or a narrow preview covers it, so the capture can
+  // be reviewed.
   const takeScreenshot = (remote = false) => {
     if (!desk) return;
     flushSync(() => {
       closeSettings();
       setProjectOpen(false);
+      setFilesOpen(false);
+      setJobsOpen(false);
       setSearchOpen(false);
       if (!previewFits) setPreviewHidden(true);
     });
@@ -653,7 +691,7 @@ export function Main({
         e.preventDefault();
         // Splitting or closing a pane leaves Settings open, so it doesn't ask.
         toggleSplit();
-      } else if ((k === "1" || k === "2") && !e.shiftKey && !e.altKey && split && !settingsOpen) {
+      } else if ((k === "1" || k === "2") && !e.shiftKey && !e.altKey && split && !settingsOpen && !filesOpen && !jobsOpen) {
         e.preventDefault();
         focusPane(panes[Number(k) - 1].key);
       }
@@ -667,8 +705,9 @@ export function Main({
   const previewFits = !mainWidth || mainWidth >= CHAT_MIN_WIDTH + PANE_MIN_WIDTH;
   const paneMax = mainWidth ? mainWidth - CHAT_MIN_WIDTH : 1200;
   const paneWidth = Math.min(Math.max(dragWidth ?? previewWidth ?? PREVIEW_DEFAULT_WIDTH, PANE_MIN_WIDTH), Math.max(PANE_MIN_WIDTH, paneMax));
-  // Settings covers the chat, and the pane with it.
-  const previewShown = !!preview && !settingsOpen && !projectScreenOpen && (previewFits || !previewHidden);
+  // Settings covers the chat, and the pane with it; so do the project screen, Server files and Scheduled jobs.
+  const covering = settingsOpen || projectScreenOpen || filesOpen || jobsOpen;
+  const previewShown = !!preview && !covering && (previewFits || !previewHidden);
   const previewCovers = previewShown && !previewFits;
 
 
@@ -690,7 +729,7 @@ export function Main({
           chat={chat}
           started={!!listed}
           picked={p.picked}
-          active={!settingsOpen && !projectScreenOpen && !previewCovers && (!split || isActive)}
+          active={!covering && !previewCovers && (!split || isActive)}
           split={split}
           screenshots={desk}
           screenshotWiring={screenshots}
@@ -741,7 +780,7 @@ export function Main({
 
   return (
     <PreviewContext.Provider value={openPreview}>
-    <div className="app">
+    <div className="app" inert={restarting}>
       <Rail
         status={status}
         route={route}
@@ -751,7 +790,19 @@ export function Main({
         onToggleList={() => setListOpen((o) => !o)}
         onNew={() => guard(() => newChat())}
         onSearch={() => setSearchOpen(true)}
-        onSettings={() => { setProjectOpen(false); setSettingsOpen(true); }}
+        onFiles={() =>
+          guard(() => {
+            setSettingsOpen(false);
+            setProjectOpen(false);
+            setJobsOpen(false);
+            setFilesOpen((o) => !o);
+          })
+        }
+        filesOpen={filesOpen && !settingsOpen && !projectScreenOpen}
+        onSettings={() => { setProjectOpen(false); setFilesOpen(false); setJobsOpen(false); setShowTextGeneration(undefined); setSettingsOpen(true); }}
+        onJobs={() => guard(() => { setProjectOpen(false); setSettingsOpen(false); setFilesOpen(false); setJobsOpen(true); })}
+        jobsOpen={jobsOpen && !settingsOpen}
+        updateWaiting={updateWaiting}
       />
       {listOpen && (
         <ChatList
@@ -772,11 +823,15 @@ export function Main({
                 onCreate={async (name) => {
                   await projects.create(name);
                   closeSettings();
+                  setFilesOpen(false);
+                  setJobsOpen(false);
                   setProjectOpen(true);
                 }}
                 onManage={() =>
                   guard(() => {
                     closeSettings();
+                    setFilesOpen(false);
+                    setJobsOpen(false);
                     setProjectOpen(true);
                   })
                 }
@@ -793,8 +848,8 @@ export function Main({
           chats={listed}
           archivedListed={archivedListed}
           syncError={syncError}
-          selectedId={settingsOpen || projectScreenOpen ? null : active.chatId}
-          alsoShownId={settingsOpen || projectScreenOpen ? null : (other?.chatId ?? null)}
+          selectedId={covering ? null : active.chatId}
+          alsoShownId={covering ? null : (other?.chatId ?? null)}
           split={split}
           onOpen={(id) => guard(() => openChat(id))}
           onOpenIn={(id, side) => guard(() => openIn(id, side))}
@@ -804,6 +859,16 @@ export function Main({
           onDelete={deleteChat}
           onRename={(id, title, from) => hermes.rename(id, title, from)}
           onRegenTitle={(id) => hermes.regenerateTitle(id)}
+          onTextGenerationSettings={() =>
+            // Showing the Model tab leaves Settings → Memory, so an unsaved edit there asks first.
+            guard(() => {
+              setProjectOpen(false);
+              setFilesOpen(false);
+              setJobsOpen(false);
+              setShowTextGeneration({});
+              setSettingsOpen(true);
+            })
+          }
           onListProfiles={() => hermes.profiles()}
           onCheckOthers={() => void hermes.checkOtherProfiles()}
           onSwitchProfile={(name) => guard(() => switchProfile(name))}
@@ -812,7 +877,15 @@ export function Main({
       )}
       <main className="main" ref={mainRef}>
         <div className="main-chat" inert={previewCovers || undefined}>
-            {projectScreenOpen && shownProject && !settingsOpen ? (
+            {jobsOpen && !settingsOpen ? (
+              <ScheduledJobs
+                key={profile}
+                api={hermes.cron}
+                profile={profile}
+                connected={status === "connected"}
+                onClose={() => { flushSync(() => setJobsOpen(false)); focusPane(active.key); }}
+              />
+            ) : projectScreenOpen && shownProject && !settingsOpen ? (
               <ProjectScreen
                 key={shownProject.id}
                 project={shownProject}
@@ -863,6 +936,7 @@ export function Main({
             guard={(go) => guard(go)}
             checkScreenshots={screenshots.support}
             voiceSetup={voice.setup}
+            showTextGeneration={showTextGeneration}
             onClearCache={() => hermes.clearCache()}
             onPullOlder={() => hermes.pullOlderHistory()}
             onSignOut={() => new Promise<void>((resolve) => guard(() => void onSignOut().finally(resolve), resolve))}
@@ -873,8 +947,20 @@ export function Main({
               })
             }
           />
+        ) : filesOpen ? (
+          <FileBrowser
+            files={hermes.files}
+            status={status}
+            route={route}
+            path={filesPath}
+            onPath={setFilesPath}
+            onClose={() => {
+              flushSync(() => setFilesOpen(false));
+              focusPane(active.key);
+            }}
+          />
         ) : null}
-        <Split panes={slots} activeKey={active.key} onActivate={activate} covered={settingsOpen || projectScreenOpen || previewCovers} />
+        <Split panes={slots} activeKey={active.key} onActivate={activate} covered={covering || previewCovers} />
         </div>
           {preview && previewShown && (
             <PreviewPane
@@ -883,6 +969,7 @@ export function Main({
               serverLabel={serverLabel(route)}
               readServer={(path) => hermes.readServerFile(path)}
               local={localFiles}
+              web={webPages}
               overlay={!previewFits}
               width={paneWidth}
               maxWidth={paneMax}
@@ -936,6 +1023,14 @@ export function Main({
           )}
         </div>
       )}
+      {restarting &&
+        // Outside the inert app, so it is announced.
+        createPortal(
+          <div className="restarting-overlay" role="status">
+            Restarting into {update.to}…
+          </div>,
+          document.body,
+        )}
     </div>
     </PreviewContext.Provider>
   );
@@ -1043,7 +1138,17 @@ function ChatView({
     const paths = attachments.map((a) => a.path);
     screenshots?.hold(paths);
     const typed = savedDrafts.take(shownDraft);
-    const to = await chatToSendIn();
+    // In no outbox until its chat exists: an update's restart meanwhile keeps it as the draft (unsaved.ts).
+    const held: Sending = { key: shownDraft, text: typed };
+    sending.add(held);
+    const to = await chatToSendIn().finally(() => sending.delete(held));
+    if (held.captured) {
+      // Saved as a draft for the restart, so it doesn't go. Should the restart fail, it is back in the composer.
+      const now = savedDrafts.get(held.key);
+      savedDrafts.set(held.key, now ? `${now}\n\n${typed}` : typed);
+      screenshots?.sent(attachments, false);
+      return;
+    }
     if ("delivery" in to) {
       savedDrafts.putBack(draftOf(null), typed);
       screenshots?.sent(attachments, false);

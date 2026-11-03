@@ -1,5 +1,5 @@
 // Settings → Memory: the built-in memory Hermes keeps for the profile, read and edited one entry at a time on the
-// server (GLOSSARY.md "Memory", ADR 0011). Hermes keeps two files in the profile's home, `memories/MEMORY.md` (its own
+// server (GLOSSARY.md "Memory", ADR 0014). Hermes keeps two files in the profile's home, `memories/MEMORY.md` (its own
 // notes) and `memories/USER.md` (what it knows about the owner), each a list of entries separated by a line holding only
 // "§" (`tools/memory_tool.py`, `tools/memory_tool_store.py` at the deployed `bf0203a`).
 //
