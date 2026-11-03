@@ -181,7 +181,7 @@ describe("Settings → Memory", () => {
     expect(screen.queryByRole("textbox", { name: "Your kept edit" })).toBeNull();
   });
 
-  it("keeps typing done after a save whose answer was lost, when Reload shows Hermes has the save", async () => {
+  it("keeps typing done after a lost save to place, rather than putting it on the entry with the saved words", async () => {
     const { s, hermes, user } = await shown();
     await user.click(entry(SHORT));
     await user.clear(editor());
@@ -192,10 +192,46 @@ describe("Settings → Memory", () => {
     await user.type(editor(), " and more");
     await act(async () => void (await hermes.reconnect()));
     await user.click(button(/Reload/));
-    expect((await screen.findByRole("status")).textContent).toMatch(/Hermes has the edit you saved.*What you typed since is still here/);
+    expect((await screen.findByRole("alert")).textContent).toMatch(/save may have gone through.*Your edit is kept below; nothing more was saved/);
+    expect(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Your kept edit" }).value).toBe("First version and more");
+    expect(screen.queryByRole("textbox", { name: /Entry in/ })).toBeNull();
     expect(s.memory.default.memory[1]).toBe("First version");
-    expect(editor().value).toBe("First version and more");
-    expect(screen.getByText("Unsaved")).toBeTruthy();
+  });
+
+  it("opens the entry with the saved words, unedited, when nothing was typed after a lost save", async () => {
+    const { s, hermes, user } = await shown();
+    await user.click(entry(SHORT));
+    await user.clear(editor());
+    await user.type(editor(), "First version");
+    s.dropOnLearning = "applied";
+    await user.click(button("Save"));
+    await screen.findByText(/may or may not have saved/);
+    await act(async () => void (await hermes.reconnect()));
+    await user.click(button(/Reload/));
+    expect((await screen.findByRole("status")).textContent).toMatch(/shows an entry with the words you saved/);
+    expect(editor().value).toBe("First version");
+    expect(screen.queryByText("Unsaved")).toBeNull();
+    expect(screen.queryByRole("textbox", { name: /Your kept edit/ })).toBeNull();
+    expect(s.memory.default.memory).toEqual([FALCON, "First version"]);
+  });
+
+  it("doesn't put a lost save's edit on another entry the agent gave the same words", async () => {
+    const { s, hermes, user } = await shown();
+    await user.click(entry(SHORT));
+    await user.clear(editor());
+    await user.type(editor(), "New words");
+    s.dropOnLearning = "lost";
+    await user.click(button("Save"));
+    await screen.findByText(/may or may not have saved/);
+    await act(async () => void (await hermes.reconnect()));
+    await user.type(editor(), " and more");
+    // Meanwhile the agent removes the entry being edited and gives another one the words that were sent.
+    s.memory.default.memory = ["New words"];
+    await user.click(button(/Reload/));
+    expect((await screen.findByRole("alert")).textContent).toMatch(/Your edit is kept below; nothing more was saved/);
+    expect(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Your kept edit" }).value).toBe("New words and more");
+    expect(screen.queryByRole("textbox", { name: /Entry in/ })).toBeNull();
+    expect(s.memory.default.memory).toEqual(["New words"]);
   });
 
   it("settles a lost save without moving another entry's draft onto it", async () => {
@@ -211,7 +247,7 @@ describe("Settings → Memory", () => {
     await user.click(entry(FALCON));
     await user.type(editor(), " Draft B");
     await user.click(button(/Reload/));
-    expect((await screen.findByRole("status")).textContent).toMatch(/Hermes has the edit whose answer was lost/);
+    expect((await screen.findByRole("alert")).textContent).toMatch(/Memory now has an entry with the words of the edit whose answer was lost/);
     expect(editor().value).toBe(`${FALCON} Draft B`);
     expect(screen.getByRole("group", { name: /Edit entry in MEMORY.md/ })).toBeTruthy();
     expect(screen.getByRole("button", { name: named(FALCON) }).getAttribute("aria-current")).toBe("true");
@@ -305,7 +341,7 @@ describe("Settings → Memory", () => {
     // The agent removes the entry being edited meanwhile.
     s.memory.default.memory = [SHORT];
     await user.click(button(/Reload/));
-    expect((await screen.findByRole("alert")).textContent).toMatch(/Can't tell whether Hermes saved your edit/);
+    expect((await screen.findByRole("alert")).textContent).toMatch(/save may have gone through.*Your edit is kept below; nothing more was saved/);
     expect(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Your kept edit" }).value).toBe(`${SHORT} and more`);
     expect(screen.queryByRole("textbox", { name: /Entry in/ })).toBeNull();
     expect(s.memory.default.memory).toEqual([SHORT]);

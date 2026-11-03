@@ -72,8 +72,8 @@ export function MemorySettings({
   const [kept, setKept] = useState<string[]>([]);
   const keep = (text: string) => setKept((k) => (k.includes(text) ? k : [...k, text]));
   // A save whose outcome is unknown, until a read shows whether Hermes has it: the text sent, and the entry it was for
-  // (its id, file and text as read before the save), and whether another entry in that file already had the new text.
-  const [unsure, setUnsure] = useState<{ text: string; entryId: string; source: MemorySource; from: string; existed: boolean }>();
+  // (its id, file and text as read before the save).
+  const [unsure, setUnsure] = useState<{ text: string; entryId: string; source: MemorySource; from: string }>();
   const [confirmDelete, setConfirmDelete] = useState(false);
   // Opening another entry or file while the open one has an unsaved edit asks first; this is what it would do.
   const [leaving, setLeaving] = useState<() => void>();
@@ -135,51 +135,51 @@ export function MemorySettings({
       const next = await api.load(profile);
       if (!alive.current || n !== reads.current) return;
       if (unsure !== undefined) {
-        // A read settles a save whose answer was lost: Hermes has the text, or it doesn't.
-        // Only the file the save was for: the same text in the other file is another entry. And while the entry's old
-        // text is still there, the save didn't happen (an edit replaces it), even if another entry has the new text.
-        // If another entry already had the new text, a match proves nothing: the edit is kept for the owner to place.
+        // A read settles a save whose answer was lost, as far as it can. Only the file the save was for counts. While
+        // the entry's old text is still there, the save didn't happen (an edit replaces it). Once it's gone, a match
+        // isn't proof: another client may have removed the entry and given another one the same words. So the edit is
+        // never moved onto a matching entry; anything not already in memory is kept for the owner to place.
         const entries = next.resources[unsure.source].entries;
         const oldThere = entries.some((e) => e.text === unsure.from);
-        const saved = oldThere || unsure.existed ? undefined : entries.find((e) => e.text === unsure.text);
+        const match = entries.find((e) => e.text === unsure.text);
+        const mine = editing?.entry.id === unsure.entryId ? editing : undefined;
         setUnsure(undefined);
-        if (!oldThere && unsure.existed) {
-          show(next);
-          if (editing?.entry.id === unsure.entryId && editing.draft !== editing.entry.text) keep(editing.draft);
-          setEditing((open) => (open?.entry.id === unsure.entryId ? undefined : open));
+        if (oldThere) {
           setNotice({
             kind: "unsure",
-            text: "Can't tell whether Hermes saved your edit: the entry is gone, and another entry already had the same words. Your edit is kept below; nothing more was saved.",
-          });
-          return;
-        }
-        if (saved && editing?.entry.id !== unsure.entryId) {
-          // The owner moved on from that entry: say what became of the save, and leave what's open alone.
-          setNotice({ kind: "ok", text: "Hermes has the edit whose answer was lost: reading memory back shows it." });
-          return show(next);
-        }
-        if (saved) {
-          setView(next);
-          setProblem(undefined);
-          setSource(saved.source);
-          // Typing since the save, in the same entry, stays as an edit of the entry Hermes now has.
-          const typedSince = editing && pyStrip(editing.draft) !== unsure.text ? editing.draft : undefined;
-          setEditing({ entry: saved, draft: typedSince ?? saved.text });
-          setNotice({
-            kind: "ok",
-            text: typedSince
-              ? "Hermes has the edit you saved: reading memory back shows it. What you typed since is still here, not saved."
-              : "Hermes has your edit: reading memory back shows it.",
-          });
-          return;
-        }
-        setNotice({
-          kind: "unsure",
-          text:
-            editing?.entry.id === unsure.entryId
+            text: mine
               ? "Hermes doesn't have your edit: reading memory back doesn't show it. Your edit is still here to save again."
               : "Hermes doesn't have the edit whose answer was lost: reading memory back doesn't show it.",
+          });
+          return show(next);
+        }
+        if (!mine) {
+          setNotice({
+            kind: "unsure",
+            text: match
+              ? "Memory now has an entry with the words of the edit whose answer was lost, so that save may have gone through."
+              : "Hermes doesn't have the edit whose answer was lost: reading memory back doesn't show it.",
+          });
+          return show(next);
+        }
+        setView(next);
+        setProblem(undefined);
+        if (match && pyStrip(mine.draft) === unsure.text) {
+          // Nothing typed since, and memory has those words: nothing is lost. The entry opens unedited; nothing is written.
+          setSource(match.source);
+          setEditing({ entry: match, draft: match.text });
+          setNotice({ kind: "ok", text: "Reading memory back shows an entry with the words you saved. Check it's the one you meant." });
+          return;
+        }
+        if (mine.draft !== mine.entry.text) keep(mine.draft);
+        setEditing(undefined);
+        setNotice({
+          kind: "unsure",
+          text: match
+            ? "Hermes has an entry with the words you saved, so the save may have gone through, but the entry you were editing changed or went. Your edit is kept below; nothing more was saved."
+            : "Hermes doesn't have your edit, and the entry you were editing changed or went. Your edit is kept below; nothing more was saved.",
         });
+        return;
       } else if (why === "reload") setNotice(undefined);
       show(next);
     } catch (e) {
@@ -252,9 +252,7 @@ export function MemorySettings({
           text: e instanceof MemoryConflictError ? e.message : `${e.message} Your edit is kept below.`,
         });
       } else if (e instanceof MemoryUnsureError) {
-        const text = pyStrip(at.draft);
-        const existed = !!view?.resources[at.entry.source].entries.some((x) => x.id !== at.entry.id && x.text === text);
-        setUnsure({ text, entryId: at.entry.id, source: at.entry.source, from: at.entry.text, existed });
+        setUnsure({ text: pyStrip(at.draft), entryId: at.entry.id, source: at.entry.source, from: at.entry.text });
         setNotice({ kind: "unsure", text: e.message });
       } else if (e instanceof MemoryUnsupportedError) {
         keep(at.draft);
