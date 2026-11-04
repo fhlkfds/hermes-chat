@@ -338,7 +338,8 @@ describe("Copy chat link", () => {
     const copied: string[] = [];
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (t: string) => void copied.push(t) } });
     await user.click(screen.getByText("NAS disks"));
-    await user.click(screen.getByRole("button", { name: "Copy chat link" }));
+    await user.click(screen.getByRole("button", { name: "More" }));
+    await user.click(screen.getByRole("menuitem", { name: "Copy chat link" }));
     await screen.findByText(/Chat link copied/);
     expect(copied).toHaveLength(1);
     const parsed = parseChatLink(copied[0]);

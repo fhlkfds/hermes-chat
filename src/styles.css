@@ -289,6 +289,7 @@ kbd {
 .tab:hover .tab-close, .tab.on .tab-close { opacity: 1; }
 .tab-close:hover { background: var(--hover); color: var(--text); }
 .tab-new { flex: none; margin: 0 0 3px 2px; }
+.tab-strip-end { flex: none; display: flex; gap: 2px; margin: 0 0 3px auto; padding-left: 6px; }
 .pane-drop { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
 .pane-drop > .chat { flex: 1; min-height: 0; }
 /* Where a dragged chat would land: the whole pane for a new tab, its right or bottom half for a split. */
@@ -308,7 +309,7 @@ kbd {
 .chat-title { display: flex; align-items: center; gap: 8px; font-size: calc(14rem / 14); font-weight: 500; color: var(--text); min-width: 0; }
 .chat-title > span:not(.badge):not(.src) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-head-actions { display: flex; gap: 4px; opacity: 0.75; }
-.chat-head:hover .chat-head-actions { opacity: 1; }
+.chat-head:hover .chat-head-actions, .chat-head-actions:has(.menu), .chat-head-actions:has(.leave-overlay) { opacity: 1; }
 
 .find {
   position: absolute; right: 14px; top: 46px; z-index: 4; display: flex; align-items: center; gap: 2px;

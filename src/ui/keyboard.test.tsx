@@ -542,7 +542,7 @@ describe("Chat list by keyboard", () => {
     await s.user.click(rowButton("Nightly backup"));
     await settle(s.hermes);
     const runtime = s.server.runtimeIdOf("backup")!;
-    await s.user.click(within(document.querySelector<HTMLElement>(".chat-head")!).getByRole("button", { name: "More actions" }));
+    await s.user.click(within(document.querySelector<HTMLElement>(".chat-head")!).getByRole("button", { name: "More" }));
     await s.user.click(screen.getByRole("menuitem", { name: "Delete chat…" }));
     expect(screen.getByRole("alertdialog")).toBeTruthy();
     act(() => s.server.event(runtime, "message.start"));
@@ -550,7 +550,7 @@ describe("Chat list by keyboard", () => {
     expect(screen.queryByRole("alertdialog")).toBeNull();
     act(() => s.server.event(runtime, "message.complete", { text: "Done" }));
     await settle(s.hermes);
-    expect(screen.getByRole("button", { name: "More actions" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "More" })).toBeTruthy();
     expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(screen.queryByRole("menu")).toBeNull();
     expect(deletes(s.server)).toEqual([]);
@@ -560,7 +560,7 @@ describe("Chat list by keyboard", () => {
     const s = await signedIn();
     await s.user.click(rowButton("Nightly backup"));
     await settle(s.hermes);
-    const more = within(document.querySelector<HTMLElement>(".chat-head")!).getByRole("button", { name: "More actions" });
+    const more = within(document.querySelector<HTMLElement>(".chat-head")!).getByRole("button", { name: "More" });
     await s.user.click(more);
     await s.user.click(screen.getByRole("menuitem", { name: "Delete chat…" }));
     expect(screen.getByRole("alertdialog", { name: "Delete “Nightly backup”?" })).toBeTruthy();

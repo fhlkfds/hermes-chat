@@ -1642,7 +1642,7 @@ export function Main({
 
 
   // Each pane's tab strip above its chat, and the pane as a place to drop a chat dragged from the list or a tab.
-  const withTabs = (p: Pane, chatNode: ReactNode) => (
+  const withTabs = (p: Pane, chatNode: ReactNode, controls: ReactNode) => (
     <>
       <TabStrip
         tabs={p.tabs.map((id) => {
@@ -1655,6 +1655,7 @@ export function Main({
         onNew={() => openChat(null, { pane: p.key, fresh: true, newTab: true })}
         onDropChat={(id) => dropChat(p.key, id, "tab")}
         lastClosable={split}
+        controls={controls}
       />
       <PaneDrop onDropChat={(id, zone) => dropChat(p.key, id, zone)}>{chatNode}</PaneDrop>
     </>
@@ -1764,23 +1765,21 @@ export function Main({
               <PanelRight size={16} />
             </button>
           }
-          paneControls={
-            split ? (
-              <button className="icon-btn" title={`Close the ${paneNames(splitDir)[i].toLowerCase()} pane`} aria-label={`Close the ${paneNames(splitDir)[i].toLowerCase()} pane`} onClick={() => closePane(p.key)}>
-                <X size={16} />
-              </button>
-            ) : (
-              <>
-                <button className="icon-btn" title="Split right: open this chat in a second pane beside it (Ctrl+\)" aria-label="Split into two panes" onClick={() => splitWith(p.chatId, "row")}>
-                  <Columns2 size={16} />
-                </button>
-                <button className="icon-btn" title="Split down: open this chat in a second pane below it" aria-label="Split into two panes, one above the other" onClick={() => splitWith(p.chatId, "column")}>
-                  <Rows2 size={16} />
-                </button>
-              </>
-            )
-          }
-        />
+        />,
+        split ? (
+          <button className="icon-btn" title={`Close the ${paneNames(splitDir)[i].toLowerCase()} pane${isActive ? "" : " (Ctrl+\\)"}`} aria-label={`Close the ${paneNames(splitDir)[i].toLowerCase()} pane`} onClick={() => closePane(p.key)}>
+            <X size={16} />
+          </button>
+        ) : (
+          <>
+            <button className="icon-btn" title="Split right: open this chat in a second pane beside it (Ctrl+\)" aria-label="Split into two panes" onClick={() => splitWith(p.chatId, "row")}>
+              <Columns2 size={16} />
+            </button>
+            <button className="icon-btn" title="Split down: open this chat in a second pane below it" aria-label="Split into two panes, one above the other" onClick={() => splitWith(p.chatId, "column")}>
+              <Rows2 size={16} />
+            </button>
+          </>
+        )
       ),
     };
   });
@@ -2527,7 +2526,6 @@ function ChatView({
   onOpenChat,
   onShowAt,
   onOpenTurn,
-  paneControls,
   previewControls,
   screenshots,
   screenshotWiring,
@@ -2590,7 +2588,6 @@ function ChatView({
   onShowAt: (link: BranchLink) => void;
   /** Opens another version of a turn in this pane, at that turn (ADR 0035). */
   onOpenTurn: (chatId: string, turn: number) => void;
-  paneControls: ReactNode;
   previewControls: ReactNode;
   screenshots?: ScreenshotDesk;
   screenshotWiring: Screenshots;
@@ -2902,7 +2899,6 @@ function ChatView({
       // typed stays in the composer, and a failure is a Failed message (ADR 0041).
       voiceSend={started ? (text) => hermes.sendTracked(chat.id, text) : undefined}
       commands={commands}
-      paneControls={paneControls}
       headActions={
         <>
           {started && inWorktree && (
