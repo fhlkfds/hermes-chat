@@ -11,8 +11,12 @@
 import hashlib
 import json
 import os
+import shutil
+import signal
+import stat
 import subprocess
 import sys
+import tempfile
 
 VERSION = 1
 # The most diff text one answer carries. A bigger diff is cut, and says so.
@@ -51,7 +55,7 @@ def environment(read_only):
     return env
 
 
-def run(argv, cwd, read_only=True, stdin=None, timeout=60, merge_output=False):
+def run(argv, cwd, read_only=True, stdin=None, timeout=60, merge_output=False, extra_env=None):
     """(exit status, stdout bytes, stderr bytes) of `argv`, which is always git or gh, never a shell."""
     if argv[0] not in ("git", "gh"):
         raise Refusal("internal", "Only git and gh are run.")
@@ -63,7 +67,7 @@ def run(argv, cwd, read_only=True, stdin=None, timeout=60, merge_output=False):
             stdin=None if stdin is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT if merge_output else subprocess.PIPE,
-            env=environment(read_only),
+            env=dict(environment(read_only), **(extra_env or {})),
             timeout=timeout,
         )
     except FileNotFoundError:
@@ -384,21 +388,40 @@ def index_stamp(top):
     return hashlib.sha256(git_ok(["ls-files", "--stage", "-z"], top)).hexdigest()
 
 
-def worktree_stamp(top, rel):
-    """SHA-256 of a working-tree file's bytes (a link's target for a symbolic link), or None when it's gone."""
+# Files bigger than this are stamped by size, time, inode and mode instead of hashed, so a status stays quick.
+STAMP_HASH_MAX = 32 * 1024 * 1024
+
+
+def snapshot(top, rel):
+    """What a working-tree path is now, read once: (stamp, kind, payload, executable). The stamp is SHA-256 of the executable bit
+    and the bytes (a link's target for a symbolic link), so a chmod counts as a change. kind is "file", "link", "big"
+    (over STAMP_HASH_MAX: stamped by its metadata, payload None), "dir" (a folder or a submodule) or "missing"."""
     full = os.path.join(top, rel)
     try:
-        if os.path.islink(full):
-            return hashlib.sha256(b"link:" + os.readlink(full).encode("utf-8", "surrogateescape")).hexdigest()
-        if not os.path.isfile(full):
-            return None
-        h = hashlib.sha256()
-        with open(full, "rb") as f:
-            for block in iter(lambda: f.read(1 << 20), b""):
-                h.update(block)
-        return h.hexdigest()
+        st = os.lstat(full)
     except OSError:
-        return None
+        return None, "missing", None, False
+    if stat.S_ISLNK(st.st_mode):
+        target = os.readlink(full).encode("utf-8", "surrogateescape")
+        return hashlib.sha256(b"link:" + target).hexdigest(), "link", target, False
+    if stat.S_ISDIR(st.st_mode):
+        return "dir", "dir", None, False
+    if not stat.S_ISREG(st.st_mode):
+        return "special", "special", None, False
+    executable = bool(st.st_mode & 0o111)
+    x = b"x" if executable else b"-"
+    if st.st_size > STAMP_HASH_MAX:
+        return "meta:%s:%d:%d:%d" % (x.decode(), st.st_size, st.st_mtime_ns, st.st_ino), "big", None, executable
+    try:
+        with open(full, "rb") as f:
+            data = f.read()
+    except OSError:
+        return None, "missing", None, False
+    return hashlib.sha256(x + b":" + data).hexdigest(), "file", data, executable
+
+
+def worktree_stamp(top, rel):
+    return snapshot(top, rel)[0]
 
 
 def check_stamps(top, expect):
@@ -419,80 +442,168 @@ def check_stamps(top, expect):
     return head, index
 
 
-def check_files(top, files):
-    """Each file must still have the bytes the screen read for it, so nothing newer is staged unseen."""
-    paths = []
-    for f in files:
-        rel = safe_rel(f.get("path") if isinstance(f, dict) else None, top)
-        if worktree_stamp(top, rel) != f.get("worktree"):
-            raise Refusal(
-                "stale",
-                "%s changed on the server since this screen read it. Nothing was staged. Refresh and look at it again." % rel,
-            )
-        paths.append(rel)
-    if not paths:
-        raise Refusal("internal", "No files were named.")
-    return paths
-
-
 def stamps(top):
     return {"head": head_oid(top), "index": index_stamp(top)}
+
+
+class LockedIndex:
+    """The index, held from the check to the write. It takes the index's own lock (index.lock), as Git does for
+    any change to the index, so no other Git process can change it in between. The write goes to a copy
+    (GIT_INDEX_FILE), and the copy becomes the index only if the write worked. Hooks run on the copy as Git runs them.
+    The lock is let go however the helper ends, a signal from a dropped ssh included."""
+
+    def __init__(self, top):
+        self.index = text(git_ok(["rev-parse", "--path-format=absolute", "--git-path", "index"], top)).strip()
+        self.lock = self.index + ".lock"
+        self.copy = "%s.hermes-%d" % (self.index, os.getpid())
+        self.held = False
+
+    def __enter__(self):
+        try:
+            fd = os.open(self.lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+        except FileExistsError:
+            raise Refusal("locked", "Another Git process is changing the index (index.lock exists). Nothing was changed. Wait for it, then try again.")
+        os.close(fd)
+        self.held = True
+        if os.path.exists(self.index):
+            shutil.copyfile(self.index, self.copy)
+        return self
+
+    @property
+    def env(self):
+        return {"GIT_INDEX_FILE": self.copy}
+
+    def install(self):
+        """The copy, as written, becomes the index: written into the lock, then renamed over the index, as Git does."""
+        if os.path.exists(self.copy):
+            os.replace(self.copy, self.lock)
+            os.replace(self.lock, self.index)
+        self.held = False
+
+    def __exit__(self, *exc):
+        for path in (self.copy,) + ((self.lock,) if self.held else ()):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        self.held = False
+        return False
+
+
+def file_mode(top, rel, kind, executable, env):
+    """The mode Git would stage: a link, or the executable bit the snapshot saw (never read again later) unless
+    core.fileMode is off, when the index's own mode for it stays."""
+    if kind == "link":
+        return "120000"
+    code, out, _ = git(["config", "--bool", "--get", "core.fileMode"], top)
+    if code == 0 and text(out).strip() == "false":
+        code, out, _ = git(["ls-files", "--stage", "-z", "--", rel], top, extra_env=env)
+        existing = text(out).split(" ", 1)[0] if code == 0 and text(out) else ""
+        return existing if existing in ("100644", "100755") else "100644"
+    return "100755" if executable else "100644"
 
 
 # ── staging ─────────────────────────────────────────────────────────────────
 
 
 def op_stage(req):
-    """Stages exactly the files named, each as the screen read it. Never everything."""
+    """Stages exactly the files named, each exactly as the screen read it: the bytes that matched its stamp are what
+    go into the index (git hash-object, then update-index), not whatever the file holds a moment later. Never more."""
     top, _ = checkout(req.get("repo"))
-    check_stamps(top, req.get("expect"))
-    paths = check_files(top, req.get("files") or [])
-    git_ok(["add", "--"] + paths, top, read_only=False)
+    files = req.get("files") or []
+    if not files:
+        raise Refusal("internal", "No files were named.")
+    with LockedIndex(top) as idx:
+        check_stamps(top, req.get("expect"))
+        for f in files:
+            rel = safe_rel(f.get("path") if isinstance(f, dict) else None, top)
+            stamp, kind, data, executable = snapshot(top, rel)
+            if kind in ("dir", "special"):
+                raise Refusal("bad-path", "%s is a folder, a submodule or a special file. Only files are staged here; use the Terminal for it." % rel)
+            if stamp != f.get("worktree"):
+                raise Refusal("stale", "%s changed on the server since this screen read it. Nothing was staged. Refresh and look at it again." % rel)
+            if kind == "missing":
+                git_ok(["update-index", "--remove", "--", rel], top, read_only=False, extra_env=idx.env)
+                continue
+            full = os.path.join(top, rel)
+            if kind == "big":
+                with open(full, "rb") as fh:
+                    blob = text(run(["git", "hash-object", "-w", "--path", rel, "--stdin"], top, read_only=False, stdin=fh.read())[1]).strip()
+                if worktree_stamp(top, rel) != stamp:
+                    raise Refusal("stale", "%s changed while it was being staged. Nothing was staged." % rel)
+            else:
+                # A link is stored as its target's name; a file through its clean filters, as git add would.
+                args = ["hash-object", "-w", "--stdin"] + ([] if kind == "link" else ["--path", rel])
+                blob = text(git_ok(args, top, read_only=False, stdin=data)).strip()
+            mode = file_mode(top, rel, kind, executable, idx.env)
+            git_ok(["update-index", "--add", "--cacheinfo", "%s,%s,%s" % (mode, blob, rel)], top, read_only=False, extra_env=idx.env)
+        idx.install()
     return stamps(top)
 
 
 def op_unstage(req):
     """Takes the files named out of the index, back to HEAD's version. The working tree is left alone."""
     top, _ = checkout(req.get("repo"))
-    head, _ = check_stamps(top, req.get("expect"))
     paths = [safe_rel(p, top) for p in (req.get("paths") or [])]
     if not paths:
         raise Refusal("internal", "No files were named.")
-    if head is None:
-        # Before the first commit there's no HEAD to go back to: unstaging takes the file out of the index.
-        git_ok(["rm", "--cached", "--quiet", "--"] + paths, top, read_only=False)
-    else:
-        git_ok(["restore", "--staged", "--"] + paths, top, read_only=False)
+    with LockedIndex(top) as idx:
+        head, _ = check_stamps(top, req.get("expect"))
+        if head is None:
+            # Before the first commit there's no HEAD to go back to: unstaging takes the file out of the index.
+            git_ok(["rm", "--cached", "--quiet", "--"] + paths, top, read_only=False, extra_env=idx.env)
+        else:
+            git_ok(["restore", "--staged", "--"] + paths, top, read_only=False, extra_env=idx.env)
+        idx.install()
     return stamps(top)
 
 
+def cut_hunks(diff, picked):
+    """A patch of only the hunks at `picked` (by position), cut from the diff just read and checked: its header
+    lines, then each hunk's lines as Git printed them. The screen names hunks; it never sends patch text."""
+    if not isinstance(picked, list) or not picked or not all(isinstance(i, int) for i in picked):
+        raise Refusal("internal", "No hunks were named.")
+    head, hunks = [], []
+    for line in diff.split(b"\n")[:-1] if diff.endswith(b"\n") else diff.split(b"\n"):
+        if line.startswith(b"@@"):
+            hunks.append([line])
+        elif hunks:
+            hunks[-1].append(line)
+        else:
+            head.append(line)
+    if not hunks or any(i < 0 or i >= len(hunks) for i in picked):
+        raise Refusal("stale", "That hunk isn't in the diff any more. Look at it again.")
+    return b"\n".join(head + [l for i in sorted(set(picked)) for l in hunks[i]]) + b"\n"
+
+
 def op_apply(req):
-    """Stages (or, with `reverse`, unstages) hunks: a patch the screen built from a diff it showed. The diff is read
-    again first, and must be byte for byte the one shown; `git apply --cached` then touches only the index."""
+    """Stages (or, with `reverse`, unstages) hunks of a diff the screen showed. The diff is read again, with the index
+    held, and must be byte for byte the one shown; the hunks are cut from it here, and `git apply --cached` changes
+    only the index (a copy, installed if it worked). A stage of hunks reads the working tree once, in that diff."""
     top, _ = checkout(req.get("repo"))
-    check_stamps(top, req.get("expect"))
     path = safe_rel(req.get("path"), top)
     reverse = req.get("reverse") is True
     context = req.get("context")
     if not isinstance(context, int) or context < 0:
         raise Refusal("internal", "The request didn't say which diff the hunks came from.")
-    side = ["--cached"] if reverse else []
-    code, out, err = git(["diff"] + side + ["--no-renames", "--no-color", "--no-ext-diff", "--no-textconv", "-U%d" % context, "--", path], top)
-    if code != 0:
-        raise Refusal("git", text(err).strip() or "git diff failed.", text(err))
-    if hashlib.sha256(out).hexdigest() != req.get("diffSha"):
-        raise Refusal("stale", "The diff of %s changed since it was shown. Nothing was staged. Look at it again." % path)
-    patch = req.get("patch")
-    if not isinstance(patch, str) or not patch:
-        raise Refusal("internal", "No hunks were sent.")
-    args = ["apply", "--cached", "--recount"] + (["--reverse"] if reverse else [])
-    if context == 0:
-        # A diff with no context lines: git apply refuses one unless told it's meant (git-apply(1), --unidiff-zero).
-        args.append("--unidiff-zero")
-    code, _, err = git(args + ["--check", "-"], top, stdin=patch.encode("utf-8"))
-    if code != 0:
-        raise Refusal("stale", "Git can't apply that hunk to the index as it is now. Nothing was changed. Refresh and try again.", text(err))
-    git_ok(args + ["-"], top, read_only=False, stdin=patch.encode("utf-8"))
+    with LockedIndex(top) as idx:
+        check_stamps(top, req.get("expect"))
+        side = ["--cached"] if reverse else []
+        code, out, err = git(["diff"] + side + ["--no-renames", "--no-color", "--no-ext-diff", "--no-textconv", "-U%d" % context, "--", path], top)
+        if code != 0:
+            raise Refusal("git", text(err).strip() or "git diff failed.", text(err))
+        if hashlib.sha256(out).hexdigest() != req.get("diffSha"):
+            raise Refusal("stale", "The diff of %s changed since it was shown. Nothing was staged. Look at it again." % path)
+        patch = cut_hunks(out, req.get("hunks"))
+        args = ["apply", "--cached", "--recount", "--whitespace=nowarn"] + (["--reverse"] if reverse else [])
+        if context == 0:
+            # A diff with no context lines: git apply refuses one unless told it's meant (git-apply(1), --unidiff-zero).
+            args.append("--unidiff-zero")
+        code, _, err = git(args + ["--check", "-"], top, stdin=patch, extra_env=idx.env)
+        if code != 0:
+            raise Refusal("stale", "Git can't apply that hunk to the index as it is now. Nothing was changed. Refresh and try again.", text(err))
+        git_ok(args + ["-"], top, read_only=False, stdin=patch, extra_env=idx.env)
+        idx.install()
     return stamps(top)
 
 
@@ -592,7 +703,38 @@ def op_preview(req):
     }
 
 
-def classify_commit_failure(output, hook_names):
+def traced(args, top, stdin=None, timeout=600, env=None):
+    """Runs a writing git command with Git's own trace (trace2) on, and says which hooks it ran exited non-zero, so a
+    hook's refusal is known from Git, not guessed from what was printed. (exit status, output, failed hook names)"""
+    fd, trace = tempfile.mkstemp(prefix="hermes-repo-trace-")
+    os.close(fd)
+    try:
+        code, out, _ = git(args, top, read_only=False, stdin=stdin, timeout=timeout, merge_output=True, extra_env=dict(env or {}, GIT_TRACE2_EVENT=trace))
+        started, failed = {}, []
+        with open(trace, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                # Only the command itself, not git run inside a hook.
+                if "/" in str(e.get("sid", "")):
+                    continue
+                if e.get("event") == "child_start" and e.get("child_class") == "hook":
+                    started[e.get("child_id")] = e.get("hook_name") or "hook"
+                elif e.get("event") == "child_exit" and e.get("child_id") in started and e.get("code") != 0:
+                    failed.append(started[e.get("child_id")])
+        return code, out, failed
+    finally:
+        try:
+            os.unlink(trace)
+        except OSError:
+            pass
+
+
+def classify_commit_failure(output, failed):
+    if failed:
+        return "hook", "The %s hook refused the commit. Its output is below. Nothing was committed." % ", ".join(failed)
     o = output.lower()
     if "please tell me who you are" in o or "unable to auto-detect email" in o or "empty ident name" in o:
         return "identity", "Git doesn't know who the author is on the server. Set user.name and user.email there (git config), then commit again."
@@ -602,8 +744,6 @@ def classify_commit_failure(output, hook_names):
         return "conflict", "There are unresolved conflicts. Resolve them first."
     if "nothing to commit" in o or "no changes added to commit" in o or "nothing added to commit" in o:
         return "nothing-staged", "Nothing is staged, so there's nothing to commit."
-    if [h for h in hook_names if h != "post-commit"]:
-        return "hook", "A hook refused the commit (%s). Its output is below. Nothing was committed." % ", ".join(h for h in hook_names if h != "post-commit")
     return "git", "Git refused the commit. Its output is below. Nothing was committed."
 
 
@@ -611,29 +751,41 @@ def op_commit(req):
     """Commits the index, only if HEAD and the index are exactly what the preview showed. Hooks run as Git runs them;
     nothing is bypassed. The message is committed verbatim, as previewed. Afterwards the new commit is read back and
     compared with the preview."""
-    top, _ = checkout(req.get("repo"))
+    top, git_dir = checkout(req.get("repo"))
     message = req.get("message")
     if not isinstance(message, str) or not message.strip():
         raise Refusal("empty-message", "Write a commit message first.")
     if not message.endswith("\n"):
         message += "\n"
     expect = req.get("expect")
-    head, _ = check_stamps(top, expect)
-    raw = staged_raw(top)
-    if hashlib.sha256(raw).hexdigest() != (expect or {}).get("rawSha"):
-        raise Refusal("stale", "The staged changes aren't the ones previewed. Nothing was committed. Preview again.")
-    if not raw:
-        raise Refusal("nothing-staged", "Nothing is staged, so there's nothing to commit.")
-    if text(git_ok(["ls-files", "-u", "-z"], top)):
-        raise Refusal("conflict", "There are unresolved conflicts. Resolve them before committing.")
-    _, hook_names = hooks(top)
-    code, out, _ = git(["commit", "--cleanup=verbatim", "-F", "-"], top, read_only=False, stdin=message.encode("utf-8"), timeout=600, merge_output=True)
-    output = text(out)
-    after = head_oid(top)
-    if code != 0 or after == head:
-        kind, why = classify_commit_failure(output, hook_names)
-        # A refused commit leaves HEAD alone; a hook may still have changed files, so say whether the index moved.
-        raise Refusal(kind, why, output)
+    # The index is held from these checks until the commit is done, and the commit is made from a copy of it, so
+    # nothing staged after the checks can get in. Git takes the ref's lock for HEAD itself, against its old value.
+    with LockedIndex(top) as idx:
+        head, _ = check_stamps(top, expect)
+        raw = staged_raw(top)
+        if hashlib.sha256(raw).hexdigest() != (expect or {}).get("rawSha"):
+            raise Refusal("stale", "The staged changes aren't the ones previewed. Nothing was committed. Preview again.")
+        if not raw:
+            raise Refusal("nothing-staged", "Nothing is staged, so there's nothing to commit.")
+        if text(git_ok(["ls-files", "-u", "-z"], top)):
+            raise Refusal("conflict", "There are unresolved conflicts. Resolve them before committing.")
+        operation = in_progress(git_dir)
+        if operation in ("merge", "rebase", "cherry-pick", "revert"):
+            raise Refusal("operation", "A %s is in progress, and committing now would finish part of it. Finish or abort it in the Terminal." % operation)
+        try:
+            code, out, failed = traced(["commit", "--cleanup=verbatim", "-F", "-"], top, stdin=message.encode("utf-8"), timeout=600, env=idx.env)
+        finally:
+            # However it ended, a timeout or a dropped ssh's hangup included: once the commit has landed, the index copy
+            # it was made from (with anything a hook staged) becomes the index, so the index never disagrees with it.
+            if head_oid(top) != head:
+                idx.install()
+        output = text(out)
+        after = head_oid(top)
+        if code != 0 or after == head:
+            kind, why = classify_commit_failure(output, failed)
+            # A refused commit leaves HEAD and the index as they were: the copy a hook may have changed is dropped.
+            raise Refusal(kind, why, output)
+        # What a hook staged during the commit is part of it; the index it left was installed above.
     parents = text(git_ok(["rev-list", "--parents", "-n", "1", after], top)).split()[1:]
     if parents != ([head] if head else []):
         raise Refusal("lost", "A commit was made, but not on top of the HEAD that was checked. Refresh and look at the history in the Terminal.", output)
@@ -660,7 +812,14 @@ OPS = {
 }
 
 
+def stop(signum, frame):
+    # ssh going away sends a hangup; ending through SystemExit lets the index lock be let go on the way out.
+    raise SystemExit(128 + signum)
+
+
 def main():
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(sig, stop)
     try:
         req = json.loads(sys.stdin.buffer.read().decode("utf-8"))
         op = OPS.get(req.get("op")) if isinstance(req, dict) else None

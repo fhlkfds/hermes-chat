@@ -10,7 +10,6 @@ import {
   diffStale,
   failureHint,
   group,
-  hunkPatch,
   hunksSupported,
   parseDiff,
   previewRows,
@@ -162,12 +161,6 @@ describe("failures", () => {
 
 describe("staging and committing", () => {
   const TWO = "diff --git a/f b/f\nindex 1..2 100644\n--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n-a\n+A\n b\n@@ -9,2 +9,2 @@ fn\n y\n-z\n+Z\n\\ No newline at end of file\n";
-
-  it("cuts a patch of the hunks picked, keeping Git's header and lines byte for byte", () => {
-    expect(hunkPatch(TWO, [1])).toBe("diff --git a/f b/f\nindex 1..2 100644\n--- a/f\n+++ b/f\n@@ -9,2 +9,2 @@ fn\n y\n-z\n+Z\n\\ No newline at end of file\n");
-    expect(hunkPatch(TWO, [0])).toBe("diff --git a/f b/f\nindex 1..2 100644\n--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n-a\n+A\n b\n");
-    expect(() => hunkPatch(TWO, [5])).toThrow();
-  });
 
   const change = (over: Partial<Change> = {}): Change => ({ key: "unstaged:f", side: "unstaged", path: "f", code: "M", label: "Modified", binary: false, submodule: false, ...over });
   const reply = (diff: string, over: Partial<DiffReply> = {}): DiffReply => ({ diff, truncated: false, lossy: false, bytes: diff.length, sha: "s", stages: [], ...over });

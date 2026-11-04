@@ -59,10 +59,11 @@ pub enum Request {
     Stage { repo: String, files: Vec<FileStamp>, expect: Expect },
     /// Takes `paths` out of the index, back to HEAD's version; the working tree is left alone.
     Unstage { repo: String, paths: Vec<String>, expect: Expect },
-    /// Stages hunks (or, `reverse`, unstages them): `patch` was built from the diff of `path` shown with `context`
-    /// lines, whose bytes hashed to `diff_sha`. The helper reads that diff again and refuses if it changed.
+    /// Stages hunks (or, `reverse`, unstages them): the hunks at positions `hunks` of the diff of `path` shown with
+    /// `context` lines, whose bytes hashed to `diff_sha`. The helper reads that diff again, refuses if it changed, and
+    /// cuts the hunks from it itself: no patch text comes from the webview.
     #[serde(rename_all = "camelCase")]
-    Apply { repo: String, path: String, patch: String, reverse: bool, context: u32, diff_sha: String, expect: Expect },
+    Apply { repo: String, path: String, hunks: Vec<u32>, reverse: bool, context: u32, diff_sha: String, expect: Expect },
     /// What a commit now would hold, and the stamps a commit must match.
     Preview { repo: String },
     /// Commits the index with `message`, verbatim, only if it is still exactly what the preview showed.

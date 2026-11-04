@@ -301,7 +301,7 @@ describe("Repository screen, staging", () => {
     expect(calls.find((c) => c.request.op === "unstage")?.request).toMatchObject({ paths: ["docs/login.md", "docs/auth.md"] });
   });
 
-  it("stages one hunk, cut from the diff exactly as shown, against that diff's stamps", async () => {
+  it("stages one hunk by its position in the diff shown, against that diff's stamps", async () => {
     const user = userEvent.setup();
     const { api, calls } = writable(() => ({ head: PREVIEW.head, index: "i2" }), { "unstaged:src/auth.ts": { diff: TWO_HUNKS, sha: "d-sha", index: "i1" } });
     show(api);
@@ -314,7 +314,7 @@ describe("Repository screen, staging", () => {
       op: "apply",
       repo: TOP,
       path: "src/auth.ts",
-      patch: "diff --git a/src/auth.ts b/src/auth.ts\nindex 1..2 100644\n--- a/src/auth.ts\n+++ b/src/auth.ts\n@@ -9,2 +9,2 @@\n y\n-z\n+Z\n",
+      hunks: [1],
       reverse: false,
       context: 3,
       diffSha: "d-sha",
@@ -473,5 +473,36 @@ describe("Repository screen, committing", () => {
     await user.type(screen.getByLabelText(/Commit message/), "x");
     expect((screen.getByRole("button", { name: "Review commit…" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "Replace with a suggestion" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe("Repository screen, during an operation", () => {
+  it("won't review a commit while a merge is in progress", async () => {
+    const user = userEvent.setup();
+    const merging = statusOf({ operation: "merge", entries: [{ kind: "ordinary", x: "M", y: ".", sub: false, path: "a.txt", staged: [1, 0] }] });
+    const { api } = fakeApi((_t, r) => (r.op === "status" ? merging : diffOf("")));
+    show(api);
+    await screen.findByText(TOP);
+    await user.type(screen.getByLabelText(/Commit message/), "Merge");
+    const review = screen.getByRole("button", { name: "Review commit…" }) as HTMLButtonElement;
+    expect(review.disabled).toBe(true);
+    expect(review.title).toMatch(/A merge is in progress/);
+  });
+});
+
+describe("Repository screen, a late suggestion", () => {
+  it("doesn't replace a message typed while Hermes was writing", async () => {
+    const user = userEvent.setup();
+    let answer: (m: string) => void = () => {};
+    const suggest = vi.fn(() => new Promise<string>((res) => (answer = res)));
+    const { api } = fakeApi((_t, r) => (r.op === "status" ? STAMPED() : r.op === "preview" ? PREVIEW : diffOf("")));
+    show(api, { suggest });
+    await screen.findByText(TOP);
+    await user.click(screen.getByRole("button", { name: "Suggest a message" }));
+    await waitFor(() => expect(suggest).toHaveBeenCalled());
+    await user.type(screen.getByLabelText(/Commit message/), "My own words");
+    await act(async () => answer("Hermes's words"));
+    expect((screen.getByLabelText(/Commit message/) as HTMLTextAreaElement).value).toBe("My own words");
+    expect(screen.getByRole("alert").textContent).toMatch(/suggestion wasn't used/);
   });
 });

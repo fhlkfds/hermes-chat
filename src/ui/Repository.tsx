@@ -19,7 +19,6 @@ import {
   expectOf,
   failureHint,
   group,
-  hunkPatch,
   hunksSupported,
   parseDiff,
   previewRows,
@@ -253,7 +252,7 @@ export function RepositoryScreen({
     const reverse = c.side === "staged";
     void write(
       `${reverse ? "Unstaging" : "Staging"} a hunk of ${c.path}…`,
-      { op: "apply", repo: shown.top, path: c.path, patch: hunkPatch(d.diff, [i]), reverse, context, diffSha: d.sha, expect: { head: d.head, index: d.index } },
+      { op: "apply", repo: shown.top, path: c.path, hunks: [i], reverse, context, diffSha: d.sha, expect: { head: d.head, index: d.index } },
       `${reverse ? "Unstaged" : "Staged"} a hunk of ${c.path}.`,
     );
   };
@@ -509,7 +508,7 @@ export function RepositoryScreen({
                                 change={c}
                                 selected={c.key === selected}
                                 onSelect={() => setSelected(c.key)}
-                                checked={c.side === "conflict" ? undefined : checked.has(c.key)}
+                                checked={c.side === "conflict" || c.submodule ? undefined : checked.has(c.key)}
                                 onCheck={(on) => tick(c.key, on)}
                               />
                             </li>
@@ -525,6 +524,7 @@ export function RepositoryScreen({
                   onMessage={setMessage}
                   staged={groups.staged.length}
                   conflicts={groups.conflicts.length}
+                  operation={shown.operation}
                   busy={!!writing || loading}
                   suggest={
                     suggest &&
@@ -544,7 +544,7 @@ export function RepositoryScreen({
                 diff={diff}
                 stale={diff.state === "ready" ? diffStale(shown, entryOf(change.path), diff.data) : undefined}
                 busy={!!writing || loading}
-                onStage={change.side === "conflict" ? undefined : () => (change.side === "staged" ? unstage([change]) : stage([change]))}
+                onStage={change.side === "conflict" || change.submodule ? undefined : () => (change.side === "staged" ? unstage([change]) : stage([change]))}
                 onHunk={(i) => diff.state === "ready" && hunk(change, diff.data, i)}
                 onRefresh={() => read(repo, target)}
                 context={context}
@@ -584,6 +584,7 @@ function CommitBox({
   onMessage,
   staged,
   conflicts,
+  operation,
   busy,
   suggest,
   onReview,
@@ -592,6 +593,7 @@ function CommitBox({
   onMessage: (m: string) => void;
   staged: number;
   conflicts: number;
+  operation: Status["operation"];
   busy: boolean;
   suggest?: () => Promise<string>;
   onReview: () => void;
@@ -599,6 +601,9 @@ function CommitBox({
   const id = useId();
   const [asking, setAsking] = useState(false);
   const [askError, setAskError] = useState<string>();
+  /** The message as it is now, for an answer that arrives later: it fills the box only if nothing was typed since. */
+  const current = useRef(message);
+  current.current = message;
   const alive = useRef(true);
   useEffect(() => {
     // Set again on every mount: StrictMode unmounts and mounts once more in development.
@@ -606,7 +611,7 @@ function CommitBox({
     return () => void (alive.current = false);
   }, []);
   const note = subjectNote(message);
-  const why = conflicts ? "Resolve the conflicts first." : !staged ? "Stage something first." : !commitMessage(message) ? "Write a message first." : undefined;
+  const why = operation && operation !== "bisect" ? `A ${operation} is in progress: finish or abort it in the Terminal first.` : conflicts ? "Resolve the conflicts first." : !staged ? "Stage something first." : !commitMessage(message) ? "Write a message first." : undefined;
   return (
     <section className="repo-commit" aria-label="Commit">
       <label htmlFor={id} className="repo-commit-label">
@@ -628,8 +633,13 @@ function CommitBox({
             if (!suggest) return;
             setAsking(true);
             setAskError(undefined);
+            const asked = current.current;
             suggest().then(
-              (m) => alive.current && onMessage(m),
+              (m) => {
+                if (!alive.current) return;
+                if (current.current === asked) onMessage(m);
+                else setAskError("you changed the message while Hermes was writing, so its suggestion wasn't used");
+              },
               (e: unknown) => alive.current && setAskError(e instanceof Error ? e.message : String(e)),
             ).finally(() => alive.current && setAsking(false));
           }}

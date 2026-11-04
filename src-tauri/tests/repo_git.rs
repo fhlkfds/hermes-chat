@@ -389,23 +389,6 @@ fn two_hunks(name: &str) -> Dir {
     d
 }
 
-/// The patch the screen builds for the hunks at `keep` of `diff` (repo.ts `hunkPatch`), done the same way here.
-fn patch_of(diff: &str, keep: &[usize]) -> String {
-    let (head, rest) = diff.split_at(diff.find("\n@@").unwrap() + 1);
-    let hunks: Vec<&str> = rest.split_inclusive('\n').fold(Vec::<String>::new(), |mut acc, line| {
-        if line.starts_with("@@") || acc.is_empty() {
-            acc.push(String::new());
-        }
-        acc.last_mut().unwrap().push_str(line);
-        acc
-    }).iter().map(|h| &*Box::leak(h.clone().into_boxed_str())).collect();
-    let mut out = head.to_owned();
-    for i in keep {
-        out.push_str(hunks[*i]);
-    }
-    out
-}
-
 #[tokio::test]
 async fn one_hunk_can_be_staged_and_unstaged_on_its_own() {
     let d = two_hunks("hunk");
@@ -414,7 +397,7 @@ async fn one_hunk_can_be_staged_and_unstaged_on_its_own() {
     let text = shown["diff"].as_str().unwrap();
     assert_eq!(text.matches("\n@@").count(), 2, "{text}");
     ask(Request::Apply {
-        repo: d.s(), path: "notes.txt".into(), patch: patch_of(text, &[1]), reverse: false, context: 1,
+        repo: d.s(), path: "notes.txt".into(), hunks: vec![1], reverse: false, context: 1,
         diff_sha: shown["sha"].as_str().unwrap().into(), expect: expect_of(&s),
     })
     .await
@@ -428,7 +411,7 @@ async fn one_hunk_can_be_staged_and_unstaged_on_its_own() {
     let s = status(&d).await;
     let staged = diff(&d, "notes.txt", None, DiffSide::Staged, 1).await;
     ask(Request::Apply {
-        repo: d.s(), path: "notes.txt".into(), patch: patch_of(staged["diff"].as_str().unwrap(), &[0]), reverse: true, context: 1,
+        repo: d.s(), path: "notes.txt".into(), hunks: vec![0], reverse: true, context: 1,
         diff_sha: staged["sha"].as_str().unwrap().into(), expect: expect_of(&s),
     })
     .await
@@ -445,7 +428,7 @@ async fn a_hunk_from_a_diff_with_no_context_applies_too() {
     let text = shown["diff"].as_str().unwrap();
     assert!(text.contains("@@ -1 +1 @@") && text.contains("@@ -10 +10 @@"), "{text}");
     ask(Request::Apply {
-        repo: d.s(), path: "notes.txt".into(), patch: patch_of(text, &[0]), reverse: false, context: 0,
+        repo: d.s(), path: "notes.txt".into(), hunks: vec![0], reverse: false, context: 0,
         diff_sha: shown["sha"].as_str().unwrap().into(), expect: expect_of(&s),
     })
     .await
@@ -461,7 +444,7 @@ async fn a_hunk_from_a_diff_that_changed_is_refused() {
     let shown = diff(&d, "notes.txt", None, DiffSide::Unstaged, 1).await;
     write(d.path(), "notes.txt", b"ONE\ntwo\nthree\nfour\nFIVE\nsix\nseven\neight\nnine\nTEN\n");
     let e = ask(Request::Apply {
-        repo: d.s(), path: "notes.txt".into(), patch: patch_of(shown["diff"].as_str().unwrap(), &[1]), reverse: false, context: 1,
+        repo: d.s(), path: "notes.txt".into(), hunks: vec![1], reverse: false, context: 1,
         diff_sha: shown["sha"].as_str().unwrap().into(), expect: expect_of(&s),
     })
     .await
@@ -576,4 +559,188 @@ async fn an_empty_message_is_refused() {
     git(d.path(), &["add", "notes.txt"]);
     let p = preview(&d).await;
     assert_eq!(kind(commit(&d, &p, "  \n").await.unwrap_err()), "empty-message");
+}
+
+#[tokio::test]
+async fn a_hunk_that_isnt_there_is_refused() {
+    let d = two_hunks("hunk-missing");
+    let s = status(&d).await;
+    let shown = diff(&d, "notes.txt", None, DiffSide::Unstaged, 1).await;
+    let e = ask(Request::Apply {
+        repo: d.s(), path: "notes.txt".into(), hunks: vec![5], reverse: false, context: 1,
+        diff_sha: shown["sha"].as_str().unwrap().into(), expect: expect_of(&s),
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(kind(e), "stale");
+    assert_eq!(staged_names(&d), "");
+}
+
+#[tokio::test]
+async fn hunks_apply_under_the_owners_whitespace_and_prefix_settings() {
+    let d = repo("hunk-config");
+    git(d.path(), &["config", "diff.noprefix", "true"]);
+    git(d.path(), &["config", "apply.whitespace", "error"]);
+    write(d.path(), "notes.txt", b"one  \ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n");
+    let s = status(&d).await;
+    let shown = diff(&d, "notes.txt", None, DiffSide::Unstaged, 1).await;
+    ask(Request::Apply {
+        repo: d.s(), path: "notes.txt".into(), hunks: vec![0], reverse: false, context: 1,
+        diff_sha: shown["sha"].as_str().unwrap().into(), expect: expect_of(&s),
+    })
+    .await
+    .unwrap();
+    assert!(git(d.path(), &["diff", "--cached"]).contains("+one  "), "staged exactly as shown, trailing spaces kept");
+}
+
+#[tokio::test]
+async fn folders_and_submodules_are_never_staged_whole() {
+    let d = busy("stage-folder");
+    write(d.path(), "dir/secret.env", b"TOKEN=x\n");
+    let s = status(&d).await;
+    for path in ["dir", "src"] {
+        std::fs::create_dir_all(d.path().join(path)).unwrap();
+        let e = ask(Request::Stage { repo: d.s(), files: vec![FileStamp { path: path.into(), worktree: None }], expect: expect_of(&s) }).await.unwrap_err();
+        assert_eq!(kind(e), "bad-path", "{path}");
+    }
+    assert_eq!(staged_names(&d), "");
+}
+
+#[tokio::test]
+async fn a_commit_during_a_merge_is_refused() {
+    let d = repo("commit-merge");
+    git(d.path(), &["checkout", "-qb", "other"]);
+    write(d.path(), "notes.txt", b"one\nOTHER\n");
+    git(d.path(), &["commit", "-qam", "other"]);
+    git(d.path(), &["checkout", "-q", "main"]);
+    write(d.path(), "notes.txt", b"one\nMAIN\n");
+    git(d.path(), &["commit", "-qam", "main"]);
+    git(d.path(), &["merge", "-q", "other"]);
+    write(d.path(), "notes.txt", b"one\nBOTH\n");
+    git(d.path(), &["add", "notes.txt"]);
+    let p = preview(&d).await;
+    let before = git(d.path(), &["rev-parse", "HEAD"]);
+    assert_eq!(kind(commit(&d, &p, "Merge").await.unwrap_err()), "operation");
+    assert_eq!(git(d.path(), &["rev-parse", "HEAD"]), before);
+}
+
+#[tokio::test]
+async fn a_commit_that_fails_for_another_reason_isnt_blamed_on_a_hook() {
+    let d = busy("commit-not-hook");
+    hook(&d, "pre-commit", "echo 'pre-commit: fine'");
+    git(d.path(), &["config", "commit.gpgSign", "true"]);
+    git(d.path(), &["config", "gpg.program", "false"]);
+    git(d.path(), &["add", "notes.txt"]);
+    let p = preview(&d).await;
+    let e = serde_json::to_value(commit(&d, &p, "Signed?").await.unwrap_err()).unwrap();
+    assert_eq!(e["kind"], "git", "{e}");
+    assert!(e["output"].as_str().unwrap().contains("gpg"), "{e}");
+}
+
+#[tokio::test]
+async fn nothing_another_agent_stages_during_the_commit_gets_in() {
+    let d = busy("commit-concurrent");
+    // The hook plays an agent working in the same checkout: mid-commit it tries to stage new.txt in the real index.
+    hook(&d, "pre-commit", "if env -u GIT_INDEX_FILE git add new.txt 2>/dev/null; then echo 'agent staged new.txt'; else echo 'agent blocked by the index lock'; fi");
+    git(d.path(), &["add", "notes.txt"]);
+    let p = preview(&d).await;
+    let c = commit(&d, &p, "Only notes").await.unwrap();
+    assert!(c["output"].as_str().unwrap().contains("agent blocked by the index lock"), "{c}");
+    let files: Vec<_> = c["files"].as_array().unwrap().iter().map(|f| f["path"].as_str().unwrap().to_owned()).collect();
+    assert_eq!(files, ["notes.txt"]);
+    assert_eq!(c["matches"], true);
+    assert!(!d.path().join(".git/index.lock").exists(), "the lock is let go");
+    assert_eq!(git(d.path(), &["status", "--porcelain", "--", "new.txt"]), "?? new.txt");
+}
+
+#[tokio::test]
+async fn a_held_index_lock_changes_nothing() {
+    let d = busy("index-locked");
+    let s = status(&d).await;
+    std::fs::write(d.path().join(".git/index.lock"), b"").unwrap();
+    let e = ask(Request::Stage { repo: d.s(), files: vec![stamp_of(&s, "notes.txt")], expect: expect_of(&s) }).await.unwrap_err();
+    assert_eq!(kind(e), "locked");
+    assert!(d.path().join(".git/index.lock").exists(), "someone else's lock is left alone");
+    std::fs::remove_file(d.path().join(".git/index.lock")).unwrap();
+    assert_eq!(staged_names(&d), "");
+}
+
+#[tokio::test]
+async fn a_mode_change_after_reading_is_a_change() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = busy("stage-chmod");
+    let s = status(&d).await;
+    std::fs::set_permissions(d.path().join("notes.txt"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let e = ask(Request::Stage { repo: d.s(), files: vec![stamp_of(&s, "notes.txt")], expect: expect_of(&s) }).await.unwrap_err();
+    assert_eq!(kind(e), "stale");
+    // Read again, it stages with the mode it now has, and the bytes that were read.
+    let s = status(&d).await;
+    ask(Request::Stage { repo: d.s(), files: vec![stamp_of(&s, "notes.txt")], expect: expect_of(&s) }).await.unwrap();
+    assert!(git(d.path(), &["ls-files", "--stage", "notes.txt"]).starts_with("100755 "));
+    assert_eq!(git(d.path(), &["show", ":notes.txt"]), std::fs::read_to_string(d.path().join("notes.txt")).unwrap().trim_end());
+}
+
+#[tokio::test]
+async fn a_deleted_file_is_still_staged_as_deleted_and_a_link_as_a_link() {
+    let d = busy("stage-kinds");
+    std::os::unix::fs::symlink("notes.txt", d.path().join("alias")).unwrap();
+    let s = status(&d).await;
+    ask(Request::Stage { repo: d.s(), files: vec![stamp_of(&s, "alias")], expect: expect_of(&s) }).await.unwrap();
+    assert!(git(d.path(), &["ls-files", "--stage", "alias"]).starts_with("120000 "));
+    assert_eq!(git(d.path(), &["show", ":alias"]), "notes.txt");
+}
+
+#[tokio::test]
+async fn an_interrupted_commit_that_landed_leaves_the_index_matching_it() {
+    use tokio::io::AsyncWriteExt;
+    let d = busy("commit-interrupted");
+    let marker = d.path().join(".git/post-commit-started");
+    let pidfile = d.path().join(".git/post-commit-pid");
+    // A formatter stages its change during the commit, then a slow post-commit hook keeps Git busy.
+    hook(&d, "pre-commit", "printf 'formatted\\n' > notes.txt && git add notes.txt");
+    hook(&d, "post-commit", &format!("echo $$ > '{}'; touch '{}'; sleep 30", pidfile.display(), marker.display()));
+    git(d.path(), &["add", "notes.txt"]);
+    let p = preview(&d).await;
+    let before = git(d.path(), &["rev-parse", "HEAD"]);
+    let req = Request::Commit {
+        repo: d.s(),
+        message: "Interrupted".into(),
+        expect: Expect { raw_sha: p["rawSha"].as_str().map(Into::into), ..expect_of(&p) },
+    };
+    let mut child = helper().stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(&serde_json::to_vec(&req).unwrap()).await.unwrap();
+    drop(stdin);
+    for _ in 0..200 {
+        if marker.exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(marker.exists(), "the post-commit hook started");
+    // What a dropped ssh does: the helper gets a signal while Git is still in the post-commit hook.
+    unsafe { libc::kill(child.id().unwrap() as i32, libc::SIGTERM) };
+    let _ = child.wait().await;
+    if let Ok(pid) = std::fs::read_to_string(&pidfile) {
+        unsafe { libc::kill(pid.trim().parse().unwrap(), libc::SIGKILL) };
+    }
+    assert_ne!(git(d.path(), &["rev-parse", "HEAD"]), before, "the commit landed");
+    assert_eq!(git(d.path(), &["show", "HEAD:notes.txt"]), "formatted");
+    assert_eq!(git(d.path(), &["diff", "--cached", "--name-only"]), "", "the index matches the commit, with the hook's change");
+    assert!(!d.path().join(".git/index.lock").exists(), "the lock is let go");
+}
+
+#[tokio::test]
+async fn the_mode_staged_is_the_one_read_even_if_a_filter_changes_it() {
+    let d = busy("stage-filter-chmod");
+    std::fs::write(d.path().join(".git/info/attributes"), "notes.txt filter=chmodder\n").unwrap();
+    // git status runs clean filters too, so the filter only changes the mode once the flag exists: during staging.
+    git(d.path(), &["config", "filter.chmodder.clean", "sh -c '[ -e .git/chmod-now ] && chmod +x \"$1\"; cat' sh %f"]);
+    let s = status(&d).await;
+    assert!(!git(d.path(), &["ls-files", "--stage", "notes.txt"]).is_empty());
+    std::fs::write(d.path().join(".git/chmod-now"), b"").unwrap();
+    ask(Request::Stage { repo: d.s(), files: vec![stamp_of(&s, "notes.txt")], expect: expect_of(&s) }).await.unwrap();
+    assert!(git(d.path(), &["ls-files", "--stage", "notes.txt"]).starts_with("100644 "), "{}", git(d.path(), &["ls-files", "--stage", "notes.txt"]));
+    use std::os::unix::fs::PermissionsExt;
+    assert!(std::fs::metadata(d.path().join("notes.txt")).unwrap().permissions().mode() & 0o111 != 0, "the filter did run");
 }

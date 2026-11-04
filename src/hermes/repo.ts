@@ -115,7 +115,7 @@ export type RepoRequest =
   | { op: "diff"; repo: string; path: string; origPath?: string; side: Side; context: number }
   | { op: "stage"; repo: string; files: { path: string; worktree: string | null }[]; expect: Expect }
   | { op: "unstage"; repo: string; paths: string[]; expect: Expect }
-  | { op: "apply"; repo: string; path: string; patch: string; reverse: boolean; context: number; diffSha: string; expect: Expect }
+  | { op: "apply"; repo: string; path: string; hunks: number[]; reverse: boolean; context: number; diffSha: string; expect: Expect }
   | { op: "preview"; repo: string }
   | { op: "commit"; repo: string; message: string; expect: Expect };
 
@@ -127,7 +127,7 @@ export type RepoApi = { run(target: string, request: RepoRequest): Promise<unkno
  * - ssh: "bad-target", "spawn", "ssh-auth", "ssh-host-key", "ssh-unreachable", "ssh"
  * - the server: "unsupported" (no python3 or git), "timeout", "bad-reply"
  * - the repository: "bad-path", "not-found", "not-repo", "stale", "busy", "git", "internal"
- * - a commit: "hook", "identity", "locked", "conflict", "nothing-staged", "empty-message", "lost"
+ * - a commit: "hook", "identity", "locked", "conflict", "operation", "nothing-staged", "empty-message", "lost"
  * `output` is what ssh or Git printed, shown as it is.
  */
 export class RepoFailure extends Error {
@@ -174,6 +174,8 @@ export function failureHint(f: RepoFailure): string | undefined {
       return "If no Git command is running, the lock was left by one that crashed; remove .git/index.lock in the Terminal.";
     case "conflict":
       return "Resolve the conflicts in the Terminal or ask Hermes to, then stage the resolved files.";
+    case "operation":
+      return "This screen doesn't finish merges, rebases, cherry-picks or reverts. Use the Terminal, or ask Hermes to.";
     case "lost":
       return "Look at the history in the Terminal (git log) before doing anything else.";
     default:
@@ -500,26 +502,6 @@ export function hunksSupported(c: Change, d: DiffReply, parsed: ParsedDiff): boo
   if (c.code !== "M" || c.binary || c.submodule || c.origPath) return false;
   if (d.truncated || d.lossy || parsed.combined || parsed.binary || parsed.newFile || parsed.deletedFile || parsed.mode || parsed.rename) return false;
   return parsed.hunks.length > 0;
-}
-
-/**
- * A patch of only the hunks at `keep`, cut from the diff text exactly as Git printed it: its header lines, then each
- * kept hunk's lines unchanged. The helper applies it with `git apply --cached --recount`, so the hunk headers' line
- * counts needn't be fixed up; Git finds each hunk by its context.
- */
-export function hunkPatch(diff: string, keep: number[]): string {
-  const lines = diff.split("\n");
-  if (lines.at(-1) === "") lines.pop();
-  const head: string[] = [];
-  const hunks: string[][] = [];
-  for (const line of lines) {
-    if (line.startsWith("@@")) hunks.push([line]);
-    else if (hunks.length) hunks[hunks.length - 1].push(line);
-    else head.push(line);
-  }
-  const picked = keep.filter((i) => i >= 0 && i < hunks.length);
-  if (!picked.length) throw new Error("No such hunk.");
-  return [...head, ...picked.flatMap((i) => hunks[i])].join("\n") + "\n";
 }
 
 /** The message as it will be committed: verbatim, with one final new line. Empty when there's nothing but space. */
