@@ -55,3 +55,12 @@ Captured on 2026-11-04 the same way: a build of the app with its frontend built 
 - `27-new-branch-pushed.png`: the push. On the server afterwards, `git ls-remote origin` listed `refs/heads/review/forecast-copy` at `57a1fb6`, and the branch tracked `origin/review/forecast-copy`.
 - `28-after-push.png`: once the remote has the branch at this commit, the card says "Nothing to push" and Push is disabled.
 - `29-unborn-staged-and-edited.png` and `30-unborn-unstaged.png`: `issue66-unborn` has no commits yet. `settings.toml` was staged and then edited again, so it shows as both Staged and Changed. Unstaging it used to fail with Git's "staged content different from both the file and the HEAD". Now it's unstaged, and on the server `git status --short` gave `?? settings.toml` with the edited contents unchanged.
+
+## Review fixes, checked live (#66)
+
+After the Codex review fixes, the app was built again and the same flows were run against the real server in `issue66-newbranch`. A second ssh session stood in for a concurrent agent. Each result was read back over ssh.
+
+- `31-commit-refused-branch-switched.png`: the preview was for `review/forecast-copy`. Then the other session ran `git switch feature/forecast`, a branch at the same commit, which carried the staged change along. HEAD's commit, the index and the staged diff all still matched, but Commit was refused because the branch had changed. Afterwards both branches were still at `57a1fb6` and the change was still staged. After switching back, Preview again and Commit made `98a622e` on `review/forecast-copy`, on top of `57a1fb6`.
+- `32-push-refused-url-changed.png`: with the Push confirmation open, the other session pointed `origin` at another bare repository (`issue66-elsewhere.git`). Push was refused and named the new URL. Neither repository received anything.
+- `33-pushed-after-restore.png`: once `origin` pointed back, the same Push went through. The remote had `review/forecast-copy` at `98a622e`, and `issue66-elsewhere.git` stayed empty.
+- `34-narrow.png`: the screen in a 760-pixel window. The facts, cards and buttons wrap, and nothing is cut off.

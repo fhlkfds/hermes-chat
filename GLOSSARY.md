@@ -255,11 +255,11 @@ Where a change in the Repository screen is. Staged changes are in Git's index, w
 _Avoid_: cached, added (for staged), dirty, unversioned
 
 **Commit preview**:
-What the Repository screen shows before it commits: every staged file, the whole staged diff, the message exactly as it will be committed, the author, the commit it goes on top of, and the hooks that will run. Commit happens only if the repository still has exactly that; otherwise nothing is committed and the preview is read again.
+What the Repository screen shows before it commits: every staged file, the whole staged diff, the message exactly as it will be committed, the author, the branch and the commit it goes on top of, and the hooks that will run. Commit happens only if the repository still has exactly that, on the same branch; otherwise nothing is committed and the preview is read again.
 _Avoid_: dry run, summary
 
 **Push** / **Create pull request**:
-The Repository screen's two separate ways to publish a branch. Push sends the commit shown to the remote branch shown, with the server's own credentials, and never forces. Create pull request asks GitHub, through `gh` on the server, for a pull request from a branch the remote already has. It never pushes.
+The Repository screen's two separate ways to publish a branch. Push sends the commit shown to the remote branch shown, with the server's own credentials, and never forces. Create pull request asks GitHub, through `gh` on the server, for a pull request from a branch the remote already has. It never pushes. Each goes only where it showed: if the branch, its commit, the remote's URL or its GitHub repository changed meanwhile, it's refused and nothing is sent.
 _Avoid_: publish (for either one alone), sync, ship
 
 **Terminal**:
