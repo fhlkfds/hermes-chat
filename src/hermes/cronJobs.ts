@@ -10,6 +10,7 @@
 // - A create whose answer is lost is looked for in the list before anything is sent again (`create`).
 // - An edit sends only the fields the owner changed, after checking that nobody changed the job's shown fields since
 //   the owner opened it (`update`). Fields this app doesn't show are never sent, so Hermes keeps them.
+import { rowText } from "./branch";
 import type { RestMethod } from "./pipe";
 import { type Schedule, type Zone, knownZone, offsetAt, offsetLabel, parseSchedule, storedSchedule } from "./schedule";
 
@@ -37,6 +38,8 @@ export type CronJob = {
   lastDeliveryError?: string;
   /** Where results go: `local` (saved on the server only), a platform such as `telegram`, `origin`, … */
   deliver: string;
+  /** The platform of the chat the job was made from (`origin.platform`), where a bare platform delivery can fall back. */
+  originPlatform?: string;
   /** `times` null runs forever. */
   repeat: { times: number | null; completed: number };
   /** A script job: Hermes runs `script` and delivers what it prints, with no agent. */
@@ -57,8 +60,32 @@ export type CronJob = {
 /** A place Hermes can deliver a job's results (`GET /api/cron/delivery-targets`). */
 export type DeliveryTarget = { id: string; name: string; ready: boolean };
 
-/** One run of a job (`GET /api/cron/jobs/{id}/runs`): an agent session, or a script job's saved output. */
-export type JobRun = { id: string; title: string; preview?: string; startedAt: number; endedAt?: number; running: boolean; script: boolean; status?: string };
+/** How one run went, as far as Hermes recorded it. `unknown`: Hermes has no outcome for it. */
+export type RunState = "running" | "succeeded" | "failed" | "unknown";
+
+/**
+ * One run of a job (`GET /api/cron/jobs/{id}/runs`): an agent session, or a script job's saved output. `error` is what
+ * Hermes recorded about a failure; `note` says why the state is what it is when that isn't plain. `sessionId` is the
+ * agent run's Hermes session, whose reply `CronApi.runResult` reads.
+ */
+export type JobRun = {
+  id: string;
+  title: string;
+  preview?: string;
+  startedAt: number;
+  endedAt?: number;
+  state: RunState;
+  error?: string;
+  note?: string;
+  script: boolean;
+  sessionId?: string;
+};
+
+/** What an agent run replied, read from its session. `reply` is undefined when the session has no reply. */
+export type RunResult = { reply?: string; at?: number };
+
+/** How many runs the history shows at first, and adds each time the owner asks for more. */
+export const RUNS_PAGE = 20;
 
 /** The fields the editor sets. `schedule` is the schedule as typed, `repeat` null for no limit. */
 export type JobFields = { name: string; prompt: string; schedule: string; deliver: string; repeat: number | null };
@@ -155,6 +182,7 @@ export function toJob(v: unknown): CronJob | undefined {
     lastError: opt(v.last_error),
     lastDeliveryError: opt(v.last_delivery_error),
     deliver: text(v.deliver) || "local",
+    originPlatform: isObj(v.origin) ? opt(v.origin.platform) : undefined,
     repeat: { times: typeof repeat.times === "number" ? repeat.times : null, completed: typeof repeat.completed === "number" ? repeat.completed : 0 },
     noAgent: v.no_agent === true,
     script: opt(v.script),
@@ -176,24 +204,93 @@ export function toJob(v: unknown): CronJob | undefined {
   };
 }
 
+/**
+ * A script run's row is its output doc, titled with the execution ledger's status (`COMPLETED · …`, `FAILED · …`,
+ * `_execution_status_title`) or, for the one row Hermes makes from the job when no doc survived, its `last_status`
+ * (`OK · …`, `ERROR · …`, `_cron_output_status_label`). What each says about the run.
+ */
+const SCRIPT_STATES: Record<string, { state: RunState; error?: string; note?: string }> = {
+  completed: { state: "succeeded" },
+  ok: { state: "succeeded" },
+  suppressed: { state: "succeeded", note: "Ran; nothing to deliver." },
+  delivery_queued: { state: "succeeded", note: "Ran; delivery is queued." },
+  delivery_failed: { state: "failed", error: "The run finished, but delivering its result failed." },
+  failed: { state: "failed" },
+  error: { state: "failed" },
+  blocked_config: { state: "failed", error: "Blocked by the job's settings." },
+};
+
+/**
+ * How an agent run's session ended (`cron/scheduler.py`): `cron_complete` when its last row is a real reply,
+ * `cron_incomplete_no_output` when the turn died before one. A run that was compressed continues in a new session,
+ * and Hermes lists only the first (`list_cron_job_runs`).
+ */
+function agentState(v: Record<string, unknown>, running: boolean): Pick<JobRun, "state" | "error" | "note"> {
+  if (running) return { state: "running" };
+  const reason = text(v.end_reason);
+  if (v.ended_at == null)
+    return { state: "unknown", note: "Hermes has no end recorded for this run, and no scheduler is running it: its process may have stopped." };
+  if (reason === "cron_complete") return { state: "succeeded" };
+  if (reason === "cron_incomplete_no_output") return { state: "failed", error: "The run ended without a final reply from the agent." };
+  if (reason === "compression") return { state: "unknown", note: "Hermes compressed this run and went on in a new session, which it doesn't list, so how it ended isn't shown." };
+  return { state: "unknown", note: reason ? `Hermes recorded the run's end as “${reason}”.` : "Hermes recorded no outcome for this run." };
+}
+
 function toRun(v: unknown): JobRun | undefined {
   if (!isObj(v) || typeof v.id !== "string") return undefined;
   const startedAt = typeof v.started_at === "number" ? v.started_at * 1000 : undefined;
   if (startedAt === undefined) return undefined;
-  // A script run's row is its output doc: the title starts with the ledger's status (`FAILED · …`), and the text
-  // with the doc's own header (`# Cron Job: … ---`), which only repeats the job.
+  // The doc's text starts with its own header (`# Cron Job: … ---`), which only repeats the job.
   const titled = /^([A-Z][A-Z ]*[A-Z]) · ([\s\S]*)$/.exec(text(v.title));
   const plain = (t: string) => t.replace(/^# Cron Job:[\s\S]*?---\s*/, "").trim();
+  const script = v.source === "cron_output";
+  const running = v.scheduler_owned === true || (v.ended_at == null && v.is_active === true);
+  const title = plain(titled ? titled[2] : text(v.title)) || "Run";
+  const preview = opt(plain(text(v.preview)));
+  let outcome: Pick<JobRun, "state" | "error" | "note">;
+  if (!script) outcome = agentState(v, running);
+  else if (!titled) outcome = { state: "unknown", note: "Hermes kept this run's output, but no record of how it ended." };
+  else {
+    const word = titled[1].toLowerCase().replace(/ /g, "_");
+    const known = SCRIPT_STATES[word];
+    outcome = known
+      ? { state: known.state, ...(known.note && { note: known.note }), ...((known.error || known.state === "failed") && { error: known.error ?? title }) }
+      : { state: "unknown", note: `Hermes recorded “${sentence(titled[1].toLowerCase()).replace(/\.$/, "")}”.` };
+  }
   return {
     id: v.id,
-    title: plain(titled ? titled[2] : text(v.title)) || "Run",
-    preview: opt(plain(text(v.preview))),
-    ...(titled && { status: sentence(titled[1].toLowerCase()).replace(/\.$/, "") }),
+    title,
+    preview,
     startedAt,
-    endedAt: typeof v.ended_at === "number" ? v.ended_at * 1000 : undefined,
-    running: v.scheduler_owned === true || (v.ended_at == null && v.is_active === true),
-    script: v.source === "cron_output",
+    endedAt: typeof v.ended_at === "number" && v.ended_at * 1000 >= startedAt ? v.ended_at * 1000 : undefined,
+    ...outcome,
+    script,
+    ...(v.source === "cron" && { sessionId: v.id }),
   };
+}
+
+/**
+ * What Hermes would do with a job's `deliver` (`cron/scheduler_delivery.py` `_resolve_single_delivery_target`), checked
+ * against the profile's targets (`cron_delivery_targets`): each place it names that Hermes can't deliver to, in words.
+ * `local`, `origin` and `all` always resolve or fall back on the server, so they are never a problem here. A platform
+ * named alone goes to its home channel, or to the chat the job came from on that platform (`originPlatform`).
+ */
+export function deliveryProblems(deliver: string, targets: DeliveryTarget[], originPlatform?: string): string[] {
+  const named = (p: string) => p.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  return deliver
+    .split(",")
+    .map((d) => d.trim())
+    .filter((d) => d && !["local", "origin", "all"].includes(d))
+    .flatMap((d) => {
+      if (d.startsWith("bot-chat:"))
+        return targets.some((t) => t.id === d) ? [] : [`Bot Chat (${d.slice(9)}) isn't a profile on this server, so Hermes won't deliver there.`];
+      const platform = d.includes(":") ? d.slice(0, d.indexOf(":")) : d;
+      const t = targets.find((x) => x.id === platform.toLowerCase());
+      if (!t) return [`${named(platform)} isn't set up on this profile's gateway, so Hermes won't deliver there.`];
+      if (!d.includes(":") && !t.ready && originPlatform !== platform)
+        return [`${t.name} has no home channel set on the server, so Hermes won't deliver there.`];
+      return [];
+    });
 }
 
 const sentence = (s: string) => {
@@ -335,10 +432,37 @@ export class CronApi {
    * so. Profiles whose jobs can't be read are left out; it never throws.
    */
   async copiesOf(profile: string, id: string): Promise<string[]> {
-    const res = await this.call("GET", "api/profiles").catch(() => undefined);
-    const names = (isObj(res) && Array.isArray(res.profiles) ? res.profiles : []).map((p) => (isObj(p) ? text(p.name) : "")).filter((n) => n && n !== profile);
+    const names = (await this.profiles().catch(() => [])).filter((n) => n !== profile);
     const found = await Promise.all(names.map((n) => this.list(n).then((jobs) => (jobs.some((j) => j.id === id) ? n : ""), () => "")));
     return found.filter(Boolean);
+  }
+
+  /** The server's profiles by name (`GET /api/profiles`), each with its own jobs. */
+  async profiles(): Promise<string[]> {
+    const res = await this.call("GET", "api/profiles");
+    return (isObj(res) && Array.isArray(res.profiles) ? res.profiles : []).map((p) => (isObj(p) ? text(p.name) : "")).filter(Boolean);
+  }
+
+  /**
+   * The reply an agent run ended with: the newest assistant text in its session (`GET /api/sessions/{id}/messages`,
+   * which opens only the named profile's store, unlike the per-job cron routes). Reads only. A script run has no
+   * session; its output is the run's preview.
+   */
+  async runResult(profile: string, run: JobRun): Promise<RunResult> {
+    if (!run.sessionId) throw new CronError("refused", "This run has no agent session: what it printed is shown with the run.");
+    const res = await this.call("GET", `api/sessions/${encodeURIComponent(run.sessionId)}/messages?${q(profile)}&order=latest&limit=50`).catch((e: CronError) => {
+      if (e.kind === "gone") throw new CronError("gone", "This run's session isn't on the server any more.");
+      throw e;
+    });
+    if (!isObj(res)) throw new CronError("unknown", "Hermes answered without the run's messages.");
+    if (typeof res.profile === "string" && res.profile !== profile) throw new CronError("unknown", `Hermes answered with a session in the ${res.profile} profile, not ${profile}, so it isn't shown.`);
+    const rows = Array.isArray(res.messages) ? res.messages.filter(isObj) : [];
+    // `order=latest` is the newest page, in stored order (row ids rising), so the reply is the replying row with the
+    // highest id. A hidden row is Hermes's own, not the agent's reply.
+    const replies = rows.filter((m) => m.role === "assistant" && m.display_kind !== "hidden" && rowText(m.content).trim());
+    const rowId = (m: Record<string, unknown>) => (typeof m.id === "number" ? m.id : -1);
+    const last = replies.reduce<Record<string, unknown> | undefined>((best, m) => (!best || rowId(m) >= rowId(best) ? m : best), undefined);
+    return last ? { reply: rowText(last.content).trim(), ...(typeof last.timestamp === "number" && { at: last.timestamp * 1000 }) } : {};
   }
 
   /** The job as the profile's list has it now; throws `gone` when the list doesn't hold it. */
