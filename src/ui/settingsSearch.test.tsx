@@ -114,6 +114,14 @@ describe("Searching Settings", () => {
     expect(screen.getByRole("group", { name: "Appearance" }).hasAttribute("data-search-miss")).toBe(false);
   });
 
+  it("finds a section by a control's name that shows only to assistive technology", async () => {
+    const { user } = await shown();
+    // "Interface font size" is the size picker's aria-label; the section's text says neither "size" nor the pair.
+    await user.type(box(), "font size");
+    expect(showing("Fonts")).toBe(true);
+    expect(showing("Tray")).toBe(false);
+  });
+
   it("finds a section of the Model tab once Hermes has answered its read", async () => {
     const { user } = await shown();
     await user.type(box(), "subagents");

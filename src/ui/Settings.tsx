@@ -38,7 +38,7 @@ import type { ScreenshotSupport } from "../hermes/tauriScreenshot";
 import { UpdateSettings } from "./UpdateSettings";
 import { ImportSection, type ImportWiring } from "./ImportTranscripts";
 import { BackupSection, type BackupWiring } from "./Backup";
-import { applySearch, clearMarks, queryWords, textMatches } from "./settingsSearch";
+import { NAMED, applySearch, clearMarks, queryWords, textMatches } from "./settingsSearch";
 
 type Tab = "general" | "appearance" | "model" | "toolsets" | "persona" | "memory" | "skills";
 const TABS = [
@@ -240,7 +240,7 @@ export function SettingsScreen({
     const run = () => setFound(applySearch(root, w));
     run();
     const seen = new MutationObserver(run);
-    seen.observe(root, { childList: true, subtree: true, characterData: true });
+    seen.observe(root, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: NAMED });
     return () => {
       seen.disconnect();
       clearMarks();

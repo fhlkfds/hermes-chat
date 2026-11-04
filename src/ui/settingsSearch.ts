@@ -1,4 +1,4 @@
-// Search across Settings: the screen's own rendered text, so there is no index to keep in step with it. A section
+// Search across Settings: the screen's own rendered text and its controls' names, so there is no index to keep in step with it. A section
 // shows while its text holds every word of the query; the rest are hidden, and the words are marked in what shows.
 
 /** The words of a query, lower-cased. */
@@ -24,6 +24,15 @@ function sectionsOf(root: Element): HTMLElement[] {
     const outer = s.parentElement?.closest("section");
     return !outer || !root.contains(outer);
   });
+}
+
+/** Names a control carries only as an attribute, such as a size picker's "Interface font size", searched with the text. */
+export const NAMED = ["aria-label", "title", "placeholder"];
+
+/** The text a section is searched by: what it shows, and its controls' names. */
+export function searchText(el: Element): string {
+  const names = [...el.querySelectorAll(NAMED.map((a) => `[${a}]`).join(","))].flatMap((n) => NAMED.map((a) => n.getAttribute(a) ?? ""));
+  return [el.textContent ?? "", ...names].join(" ");
 }
 
 /** The ranges of each word in the text under `el`, for marking. Text inside a select's options isn't drawn, so isn't marked. */
@@ -68,7 +77,7 @@ export function applySearch(root: Element, words: string[]): number {
   for (const group of root.querySelectorAll<HTMLElement>("[data-search-group]")) {
     let inGroup = 0;
     for (const s of sectionsOf(group)) {
-      const hit = textMatches(s.textContent ?? "", words);
+      const hit = textMatches(searchText(s), words);
       s.toggleAttribute(MISS_ATTR, !hit);
       if (hit) {
         inGroup++;
