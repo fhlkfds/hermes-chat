@@ -805,7 +805,6 @@ function JobDetail({
           onOpenChat={troubleshoot.openChat}
           onRunNow={() => setConfirm("run")}
           onDismiss={() => troubleshoot.store.dismiss(trouble.id)}
-          onEnd={() => troubleshoot.store.end(trouble.id)}
         />
       )}
       {copyNote && (
@@ -1097,7 +1096,6 @@ function TroublePanel({
   onOpenChat,
   onRunNow,
   onDismiss,
-  onEnd,
 }: {
   trouble: Troubleshoot;
   job: CronJob;
@@ -1108,8 +1106,6 @@ function TroublePanel({
   onOpenChat: (chatId: string) => void;
   onRunNow: () => void;
   onDismiss: () => void;
-  /** Reads the job again as it is now, ending the wait for the reply. */
-  onEnd: () => void;
 }) {
   const ended = trouble.phase === "ended";
   // What changed is said only from a list read that started after the reply ended (or, while Hermes works, after the
@@ -1187,8 +1183,8 @@ function TroublePanel({
             <RefreshCw size={14} /> Try again
           </button>
         )}
-        {trouble.phase === "working" && (
-          <button className="btn" disabled={!connected} title="If the reply has ended and this screen didn't notice, read the job as it is now" onClick={onEnd}>
+        {trouble.phase === "working" && reading && (
+          <button className="btn" disabled={!connected || reading.loading} title="Read the job as it is now, to see the changes so far" onClick={reading.reload}>
             <RefreshCw size={14} /> Read the job again
           </button>
         )}

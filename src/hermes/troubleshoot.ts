@@ -155,7 +155,9 @@ export function troubleshootMessage(input: TroubleshootInput): TroubleshootMessa
       else if (result) out.push("- The agent left no reply.");
     });
 
-  return { text: out.join("\n"), cut, hidden: [...hidden] };
+  // A last pass over the whole message catches what any line above let through unredacted: ids, the profile, Hermes's
+  // status words, a timestamp it sent that isn't one. Text already redacted isn't matched again.
+  return { text: safe(out.join("\n")), cut, hidden: [...hidden] };
 }
 
 /**
@@ -307,28 +309,24 @@ export class TroubleshootStore {
   }
 
   /**
-   * What became of the first message. `running`: whether the chat's reply is still running as it answered. A message
-   * Hermes may have (`unknown`) is followed like one it took, and said to be unconfirmed: it may be changing the job.
+   * What became of the first message. One Hermes took, or may have (`unknown`, said to be unconfirmed: it may be
+   * changing the job), is followed as working; whether its reply has already ended is `observe`'s to say, with the
+   * same checks as any other end. Pass the chat store's state as the answer came, as `view`.
    */
-  sent(id: string, delivery: Delivery, running: boolean) {
+  sent(id: string, delivery: Delivery, view: ChatsView) {
     this.patch(id, (t) => {
       if (t.phase !== "starting") return t;
       if (delivery.delivery === "unsent") return { ...t, phase: "failed", reason: delivery.reason };
-      if (delivery.delivery === "unknown") return { ...t, phase: "working", unconfirmed: delivery.reason };
-      return running ? { ...t, phase: "working" } : { ...t, phase: "ended", endedAt: this.now() };
+      return { ...t, phase: "working", ...(delivery.delivery === "unknown" && { unconfirmed: delivery.reason }) };
     });
-  }
-
-  /** The owner says the reply has ended (or wants the job read again as it is): the Jobs screen reads it again. */
-  end(id: string) {
-    this.patch(id, (t) => (t.phase === "working" ? { ...t, phase: "ended", endedAt: this.now() } : t));
+    this.observe(view);
   }
 
   /**
    * Called with the chat store on every change: a working chat of the profile showing, connected and attached, whose
    * reply is no longer running, has ended. A dropped connection isn't an end, nor is the moment after a reconnect
-   * before the chat is resumed. A chat that isn't resumed (say, after a profile switch) stays working until the
-   * owner reads the job again from the Jobs screen.
+   * before the chat is resumed. A chat that isn't resumed (say, after a profile switch) stays working; the Jobs
+   * screen's Read the job again shows the changes so far meanwhile.
    */
   observe(view: ChatsView) {
     if (view.status !== "connected") return;
@@ -395,6 +393,6 @@ export async function startTroubleshoot(
   }
   open(chatId);
   const delivery = await hermes.send(chatId, text);
-  store.sent(t.id, delivery, !!hermes.getSnapshot().chats.find((c) => c.id === chatId)?.running);
+  store.sent(t.id, delivery, hermes.getSnapshot());
   return store.getSnapshot().find((x) => x.id === t.id) ?? t;
 }

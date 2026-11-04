@@ -153,6 +153,19 @@ describe("the Troubleshoot message", () => {
     expect(m.hidden).toContain("secret value");
   });
 
+  it("hides secrets wherever the server's text lands: the job id, profile, status words and a stamp that isn't a time", () => {
+    const m = troubleshootMessage({
+      profile: "token=profilesecret",
+      job: job({ id: "id_secret=idsecret77", last_status: "token=statussecret", next_run_at: "not a time, password=stampsecret" }),
+      zone,
+      targets,
+      runs: [],
+      results: {},
+    });
+    expect(m.text).not.toMatch(/profilesecret|idsecret77|statussecret|stampsecret/);
+    expect(m.hidden).toContain("secret value");
+  });
+
   it("keeps a fence that output with backticks can't close", () => {
     const m = troubleshootMessage({ profile: "work", job: job({ prompt: "Use ```code``` blocks" }), zone, targets, runs: [], results: {} });
     expect(m.text).toMatch(/````text\nUse ```code``` blocks\n````/);
@@ -189,7 +202,7 @@ describe("the troubleshooting store", () => {
     const store = new TroubleshootStore(() => 1000);
     const t = store.start("scope", "work", job());
     store.opened(t.id, "chat-1");
-    store.sent(t.id, { delivery: "accepted" }, true);
+    store.sent(t.id, { delivery: "accepted" }, view([{ id: "chat-1", running: true, runtimeId: "rt-1" }]));
     expect(store.forJob("scope", "work", "abc123")?.phase).toBe("working");
     store.observe(view([{ id: "chat-1", running: true }]));
     expect(store.forJob("scope", "work", "abc123")?.phase).toBe("working");
@@ -205,7 +218,7 @@ describe("the troubleshooting store", () => {
     const store = new TroubleshootStore(() => 7);
     const t = store.start("scope", "work", job());
     store.opened(t.id, "chat-1");
-    store.sent(t.id, { delivery: "accepted" }, true);
+    store.sent(t.id, { delivery: "accepted" }, view([{ id: "chat-1", running: true, runtimeId: "rt-1" }]));
     const phase = () => store.forJob("scope", "work", "abc123")?.phase;
     store.observe(view([{ id: "chat-1", running: true, runtimeId: "rt-1" }]));
     // The drop clears the chat's runtime and running flag, while the status says so.
@@ -224,7 +237,7 @@ describe("the troubleshooting store", () => {
     const store = new TroubleshootStore();
     const t = store.start("scope", "work", job());
     store.opened(t.id, "chat-1");
-    store.sent(t.id, { delivery: "accepted" }, true);
+    store.sent(t.id, { delivery: "accepted" }, view([{ id: "chat-1", running: true, runtimeId: "rt-1" }]));
     store.observe(view([{ id: "chat-1", running: false }]));
     expect(store.forJob("scope", "work", "abc123")?.phase).toBe("working");
     store.observe(view([{ id: "chat-1", running: false, runtimeId: "rt-2" }]));
@@ -235,29 +248,36 @@ describe("the troubleshooting store", () => {
     const store = new TroubleshootStore();
     const t = store.start("scope", "work", job());
     store.opened(t.id, "chat-1");
-    store.sent(t.id, { delivery: "unknown", reason: "The connection dropped before Hermes confirmed it." }, false);
+    store.sent(t.id, { delivery: "unknown", reason: "The connection dropped before Hermes confirmed it." }, view([{ id: "chat-1", running: false }], "work", "reconnecting"));
     expect(store.forJob("scope", "work", "abc123")).toMatchObject({ phase: "working", unconfirmed: "The connection dropped before Hermes confirmed it." });
     store.observe(view([{ id: "chat-1", running: true, runtimeId: "rt-2" }]));
     store.observe(view([{ id: "chat-1", running: false, runtimeId: "rt-2" }]));
     expect(store.forJob("scope", "work", "abc123")?.phase).toBe("ended");
   });
 
-  it("ends when the owner asks for the job to be read again", () => {
-    const store = new TroubleshootStore();
-    const t = store.start("scope", "work", job());
-    store.sent(t.id, { delivery: "accepted" }, true);
-    store.end(t.id);
-    expect(store.forJob("scope", "work", "abc123")?.phase).toBe("ended");
-  });
-
-  it("ends at once when the reply ended before the message's answer, and fails when the message didn't go", () => {
+  it("ends at once when the attached reply ended before the message's answer, and fails when the message didn't go", () => {
     const store = new TroubleshootStore();
     const a = store.start("scope", "work", job());
-    store.sent(a.id, { delivery: "accepted" }, false);
+    store.opened(a.id, "chat-1");
+    store.sent(a.id, { delivery: "accepted" }, view([{ id: "chat-1", running: false, runtimeId: "rt-1" }]));
     expect(store.forJob("scope", "work", "abc123")?.phase).toBe("ended");
     const b = store.start("scope", "work", job({ id: "other" }));
-    store.sent(b.id, { delivery: "unsent", reason: "Hermes is busy." }, false);
+    store.sent(b.id, { delivery: "unsent", reason: "Hermes is busy." }, view([]));
     expect(store.forJob("scope", "work", "other")).toMatchObject({ phase: "failed", reason: "Hermes is busy." });
+  });
+
+  it("isn't ended by an answer that lands just as the connection drops or the profile changes", () => {
+    const store = new TroubleshootStore();
+    const a = store.start("scope", "work", job());
+    store.opened(a.id, "chat-1");
+    // Dropped: the chat isn't running only because the drop cleared it.
+    store.sent(a.id, { delivery: "accepted" }, view([{ id: "chat-1", running: false }], "work", "reconnecting"));
+    expect(store.forJob("scope", "work", "abc123")?.phase).toBe("working");
+    const b = store.start("scope", "work", job({ id: "other" }));
+    store.opened(b.id, "chat-2");
+    // Switched to another profile: its chats don't include this one.
+    store.sent(b.id, { delivery: "accepted" }, view([{ id: "x", running: false, runtimeId: "rt-x" }], "default"));
+    expect(store.forJob("scope", "work", "other")?.phase).toBe("working");
   });
 
   it("keeps the newest troubleshooting of a job, apart for each connection and profile", () => {
