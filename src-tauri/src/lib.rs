@@ -1,5 +1,6 @@
 pub mod defaults_file;
 pub mod fonts;
+pub mod links;
 pub mod media;
 pub mod notify;
 pub mod remote;
@@ -311,6 +312,12 @@ fn screenshot_pending_request(state: State<'_, Screenshots>) -> Option<u64> {
 #[tauri::command]
 fn screenshot_ack_request(state: State<'_, Screenshots>, id: u64) {
     state.requests.acknowledge(id);
+}
+
+/// The chat link waiting for the window, from the command line or a later launch (links.rs); handed out once.
+#[tauri::command]
+fn chat_link_take(links: State<'_, links::Links>) -> Option<String> {
+    links.take()
 }
 
 /// Brings the window forward after a desktop shortcut's screenshot was attached, so the owner can review it.
@@ -914,7 +921,8 @@ fn terminal_close(terminals: State<'_, terminal::Terminals>, id: u64) {
 }
 
 /// Starts the app. `screenshot`: it was started by `hermes-chat --screenshot`, with no other Hermes Chat to take it.
-pub fn run(screenshot: bool) {
+/// `link`: it was started to open a chat link, with no other Hermes Chat to open it (links.rs).
+pub fn run(screenshot: bool, link: Option<String>) {
     let screenshots = Screenshots::default();
     if screenshot {
         screenshots.requests.ask();
@@ -929,6 +937,7 @@ pub fn run(screenshot: bool) {
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .manage(screenshots)
+        .manage(links::Links::new(link))
         .manage(update::Updates::default())
         .on_permission_request(|webview, kind| permission(&webview, kind))
         .setup(|app| {
@@ -950,10 +959,26 @@ pub fn run(screenshot: bool) {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move { handle.state::<update::Updates>().start().await });
             let handle = app.handle().clone();
-            remote::serve(move || {
-                handle.state::<Screenshots>().requests.ask();
-                let _ = handle.emit(remote::EVENT, ());
-            });
+            let linking = app.handle().clone();
+            remote::serve(
+                move || {
+                    handle.state::<Screenshots>().requests.ask();
+                    let _ = handle.emit(remote::EVENT, ());
+                },
+                // A link opened while the app runs: kept for the window, which is brought forward to show it.
+                move |link| {
+                    if !linking.state::<links::Links>().put(link) {
+                        return false;
+                    }
+                    let _ = linking.emit(links::EVENT, ());
+                    if let Some(window) = linking.get_webview_window("main") {
+                        let _ = window.unminimize();
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                    true
+                },
+            );
             Ok(())
         })
         .manage(PickedFiles::default())
@@ -1009,6 +1034,7 @@ pub fn run(screenshot: bool) {
             screenshot_pending_request,
             screenshot_ack_request,
             screenshot_show_window,
+            chat_link_take,
             terminal_open,
             terminal_write,
             terminal_resize,

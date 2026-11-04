@@ -2,7 +2,7 @@
 // menu uses too. Escape or a click elsewhere closes one, and focus goes back to what had it. The arrow keys move
 // between a menu's items.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { Check, Columns2, PanelLeft, PanelRight, Pencil, Sparkles, Tag as TagIcon } from "lucide-react";
+import { Check, Columns2, Link2, PanelLeft, PanelRight, Pencil, Sparkles, Tag as TagIcon } from "lucide-react";
 import type { Chat } from "../hermes/model";
 import type { Project } from "../hermes/projects";
 import type { Tag } from "../hermes/tags";
@@ -17,7 +17,7 @@ export type ChatTags = { list: Tag[]; of: readonly string[]; onToggle: (tagId: s
 /**
  * The right-click menu for one chat, at the pointer, kept inside the window. `onRename` and `onRegenTitle` hand back
  * to the row. `onOpenIn` opens the chat in the left (0) or right (1) pane; with one pane (`split` false) the menu offers
- * to open it in a second pane. The arrow keys move between its items.
+ * to open it in a second pane. `onCopyLink` copies the chat's link (chatLinks.ts). The arrow keys move between its items.
  */
 export function ChatMenu({
   chat,
@@ -27,6 +27,7 @@ export function ChatMenu({
   onOpenIn,
   onRename,
   onRegenTitle,
+  onCopyLink,
   projects,
   tags,
   onClose,
@@ -38,6 +39,7 @@ export function ChatMenu({
   onOpenIn?: (side: number) => void;
   onRename: () => void;
   onRegenTitle: () => void;
+  onCopyLink?: () => void;
   projects?: ChatProjects;
   tags?: ChatTags;
   onClose: () => void;
@@ -71,6 +73,22 @@ export function ChatMenu({
         </span>
         <span className="menu-label">Regenerate title</span>
       </button>
+      {onCopyLink && (
+        <button
+          role="menuitem"
+          className="menu-item"
+          title="Copy a link that opens this chat in Hermes Chat on this computer"
+          onClick={() => {
+            onClose();
+            onCopyLink();
+          }}
+        >
+          <span className="menu-icon">
+            <Link2 size={15} />
+          </span>
+          <span className="menu-label">Copy chat link</span>
+        </button>
+      )}
       {onOpenIn &&
         (split
           ? [

@@ -4,9 +4,10 @@
 //! and takes one once it is signed in. Either way the request waits in Rust until a signed-in window takes it, so one
 //! made at the sign-in screen isn't lost (lib.rs, `screenshot_pending_request`).
 //!
-//! The running app owns the bus name `net.l0cky12.HermesChat` and answers one method, `Screenshot`. Only this user's
-//! own programs can reach their session bus, and a request only opens the picker: nothing is captured until the owner
-//! picks, and nothing is sent until they send the message.
+//! The running app owns the bus name `net.l0cky12.HermesChat` and answers two methods: `Screenshot`, and `OpenLink`
+//! for a chat link opened while it runs (links.rs). Only this user's own programs can reach their session bus. A
+//! screenshot request only opens the picker: nothing is captured until the owner picks, and nothing is sent until they
+//! send the message. A link only shows a chat, once the window has checked it (ADR 0033).
 
 use dbus::blocking::Connection;
 use dbus::channel::MatchingReceiver;
@@ -69,9 +70,18 @@ pub fn forward() -> Result<(), dbus::Error> {
         .method_call(IFACE, "Screenshot", ())
 }
 
-/// Takes the bus name and answers `Screenshot` calls with `asked`, on a thread of its own. If another Hermes Chat
+/// Hands a chat link to the running app. An error when no Hermes Chat is running (or the bus can't be reached), so this
+/// one opens it instead.
+pub fn forward_link(link: &str) -> Result<(), dbus::Error> {
+    let conn = Connection::new_session()?;
+    conn.with_proxy(NAME, PATH, Duration::from_secs(5))
+        .method_call(IFACE, "OpenLink", (link,))
+}
+
+/// Takes the bus name and answers `Screenshot` calls with `asked`, and `OpenLink` calls with `linked`, which says
+/// whether it kept the link, on a thread of its own. If another Hermes Chat
 /// already has the name, the desktop shortcut goes to that one, and this one takes over once it exits.
-pub fn serve(asked: impl Fn() + Send + 'static) {
+pub fn serve(asked: impl Fn() + Send + 'static, linked: impl Fn(String) -> bool + Send + 'static) {
     std::thread::spawn(move || {
         let conn = match Connection::new_session() {
             Ok(c) => c,
@@ -102,10 +112,17 @@ pub fn serve(asked: impl Fn() + Send + 'static) {
                         asked();
                         msg.method_return()
                     }
+                    (Some(IFACE) | None, Some("OpenLink"), Some(PATH)) => match msg.read1::<&str>() {
+                        Ok(link) if linked(link.to_owned()) => msg.method_return(),
+                        _ => msg.error(
+                            &"org.freedesktop.DBus.Error.InvalidArgs".into(),
+                            &std::ffi::CString::new("That isn't a Hermes Chat link.").unwrap(),
+                        ),
+                    },
                     (Some("org.freedesktop.DBus.Peer"), Some("Ping"), _) => msg.method_return(),
                     _ => msg.error(
                         &"org.freedesktop.DBus.Error.UnknownMethod".into(),
-                        &std::ffi::CString::new("Hermes Chat only answers Screenshot.").unwrap(),
+                        &std::ffi::CString::new("Hermes Chat only answers Screenshot and OpenLink.").unwrap(),
                     ),
                 };
                 use dbus::channel::Sender;

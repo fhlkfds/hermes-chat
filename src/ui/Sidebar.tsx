@@ -243,6 +243,7 @@ function ChatRow({
   onDelete,
   onRename,
   onRegenTitle,
+  onCopyLink,
   onTextGenerationSettings,
   projects,
   tags,
@@ -260,6 +261,8 @@ function ChatRow({
   onDelete: () => void;
   onRename: (title: string, from: string) => Promise<unknown>;
   onRegenTitle: () => Promise<unknown>;
+  /** Copies the chat's link (chatLinks.ts). */
+  onCopyLink?: () => void;
   /** Opens Settings → Model at the Text generation model. */
   onTextGenerationSettings?: () => void;
   projects?: ChatProjects;
@@ -375,6 +378,7 @@ function ChatRow({
           onOpenIn={onOpenIn}
           onRename={() => setRenaming(true)}
           onRegenTitle={regenTitle}
+          onCopyLink={onCopyLink}
           onClose={closeMenu}
         />
       )}
@@ -707,6 +711,7 @@ export function ChatList({
   onDelete,
   onRename,
   onRegenTitle,
+  onCopyLink,
   onTextGenerationSettings,
   onListProfiles,
   onCheckOthers,
@@ -741,6 +746,8 @@ export function ChatList({
   onDelete: (id: string) => void;
   onRename: (id: string, title: string, from: string) => Promise<unknown>;
   onRegenTitle: (id: string) => Promise<unknown>;
+  /** Copies a chat's link (chatLinks.ts). */
+  onCopyLink?: (chat: Chat) => void;
   /** Opens Settings → Model at the Text generation model, the model titles are made with. */
   onTextGenerationSettings?: () => void;
   onListProfiles: () => Promise<string[]>;
@@ -775,6 +782,7 @@ export function ChatList({
       onDelete={() => onDelete(c.id)}
       onRename={(title, from) => onRename(c.id, title, from)}
       onRegenTitle={() => onRegenTitle(c.id)}
+      onCopyLink={onCopyLink && (() => onCopyLink(c))}
       onTextGenerationSettings={onTextGenerationSettings}
       projects={projectsOf?.(c.id)}
       tags={tagsOf?.(c.id)}

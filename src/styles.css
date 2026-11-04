@@ -736,6 +736,20 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .toast button:hover { background: var(--accent-soft); }
 @keyframes rise { from { transform: translate(-50%, 6px); opacity: 0; } }
 
+/* chat link notice (ChatLinkNotice.tsx): just under the chat header, never taking focus */
+.link-notice {
+  position: fixed; left: 50%; top: 60px; transform: translateX(-50%); z-index: 31; display: flex; align-items: center; gap: 10px;
+  width: min(620px, calc(100vw - 32px)); padding: 9px 10px 9px 12px; border-radius: 10px; background: var(--raised-2);
+  border: 1px solid var(--line-2); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45); font-size: calc(13rem / 14); flex-wrap: wrap;
+}
+.link-notice.error { border-color: var(--warn); }
+.link-notice-icon { display: flex; color: var(--muted); flex: none; }
+.link-notice.error .link-notice-icon { color: var(--warn); }
+.link-notice-text { flex: 1 1 240px; min-width: 0; line-height: 1.4; }
+.link-notice-actions { display: flex; gap: 6px; flex: none; margin-left: auto; }
+.link-notice .btn.small { height: 28px; padding: 0 10px; }
+.link-notice .btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+
 /* search palette, ported from the prototype */
 .palette-scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); z-index: 40; display: flex; justify-content: center; padding-top: 12vh; }
 .palette {
