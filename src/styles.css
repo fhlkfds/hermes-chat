@@ -894,6 +894,26 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 /* settings tabs */
 .settings h1 { margin-bottom: 16px; }
 .settings-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+/* settings search: the box beside the heading, and the sections of every tab that hold what's typed */
+.settings-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.settings-search { position: relative; display: flex; align-items: center; width: 280px; max-width: 50%; }
+.settings-search > svg { position: absolute; left: 10px; color: var(--muted); pointer-events: none; }
+.settings-search input {
+  flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--line-2); border-radius: 8px; padding: 7px 34px 7px 31px; outline: none;
+  font: inherit; font-size: calc(13rem / 14); color: var(--text);
+}
+.settings-search input:focus { border-color: var(--line-3); }
+.settings-search input::-webkit-search-cancel-button { display: none; }
+.settings-search .icon-btn { position: absolute; right: 2px; width: 28px; height: 28px; }
+.settings [data-search-miss] { display: none; }
+.settings p.settings-search-count { margin: 14px 0 4px; }
+.settings-search-tab {
+  display: flex; align-items: center; gap: 6px; margin: 18px 0 8px; font-size: calc(11.5rem / 14); font-weight: 600; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+.settings-search-elsewhere { padding: 4px 0 14px; border-top: 1px solid var(--line); }
+.settings-search-elsewhere .btn { flex: none; white-space: nowrap; }
+::highlight(settings-search) { background-color: rgba(245, 184, 74, 0.32); }
 .settings-tab {
   display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px; border-radius: 8px; color: var(--muted);
   font-size: calc(13rem / 14); font-weight: 500;

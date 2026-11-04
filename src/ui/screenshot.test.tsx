@@ -432,7 +432,7 @@ describe("Setting the screenshot shortcut", () => {
     await user.keyboard("{Control>}k{/Control}");
     expect(screen.getByRole("alert").textContent).toContain("Ctrl+K: Ctrl+K already opens Search in Hermes Chat.");
     // Search didn't open, and the recorder is still waiting.
-    expect(screen.queryByPlaceholderText(/Search/)).toBeNull();
+    expect(screen.queryByPlaceholderText(/Search all chats/)).toBeNull();
     expect(key.textContent).toContain("Press the shortcut…");
 
     await user.keyboard("{Control>}v{/Control}");
