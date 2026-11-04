@@ -74,37 +74,39 @@ function theWeb(answers: Record<string, Framing | Error | Promise<Framing>> = {}
 /**
  * The Hermes server's loopback as Rust's SSH tunnels reach it (src-tauri/src/server_page.rs). Each `open` gets the
  * next of `answers` (a page opens when there is none left), and the tunnel's end on this computer is
- * `http://127.0.0.1:4100<n>`. `opened`, `closed` and `live` record what the pane did; `drop(id, why)` ends a tunnel
- * as ssh exiting would.
+ * `http://127.0.0.1:4100<n>`. `opened`, `closed` and `live` record what the pane did, by key "1", "2"…; `drop(key,
+ * why)` ends a tunnel as ssh exiting would, even one still connecting.
  */
 function theServer(...answers: (ServerPageError | Promise<void> | { url: string })[]) {
-  const pages: ServerPages & { opened: string[]; closed: number[]; live: Map<number, (why: string) => void>; drop(id: number, why: string): void } = {
+  const pages: ServerPages & { opened: string[]; closed: string[]; live: Map<string, (why: string) => void>; drop(key: string, why: string): void } = {
     opened: [],
     closed: [],
     live: new Map(),
-    open: async (url, onClosed) => {
+    open: (url, onClosed) => {
       pages.opened.push(url);
-      const id = pages.opened.length;
-      const a = answers.shift();
-      if (a instanceof Error) throw a;
-      if (a instanceof Promise) await a;
-      const u = new URL(url);
+      const id = String(pages.opened.length);
       pages.live.set(id, onClosed);
-      const page: ServerPage = {
-        id,
-        url: a && "url" in a ? a.url : `${u.protocol}//127.0.0.1:4100${id}${u.pathname}${u.search}`,
-        target: "liam@hermes",
-        at: `${u.hostname}:${u.port}`,
+      const a = answers.shift();
+      const page = (async (): Promise<ServerPage> => {
+        if (a instanceof Error) {
+          pages.live.delete(id);
+          throw a;
+        }
+        if (a instanceof Promise) await a;
+        const u = new URL(url);
+        return { id, url: a && "url" in a ? a.url : `${u.protocol}//127.0.0.1:4100${id}${u.pathname}${u.search}`, target: "liam@hermes", at: `${u.hostname}:${u.port}` };
+      })();
+      return {
+        page,
+        close: () => {
+          pages.closed.push(id);
+          pages.live.delete(id);
+        },
       };
-      return page;
     },
-    close: (id) => {
-      pages.closed.push(id);
-      pages.live.delete(id);
-    },
-    drop: (id, why) => {
-      const onClosed = pages.live.get(id);
-      pages.live.delete(id);
+    drop: (key, why) => {
+      const onClosed = pages.live.get(key);
+      pages.live.delete(key);
       onClosed?.(why);
     },
   };
@@ -456,7 +458,7 @@ describe("Pages on the Hermes server's own loopback (issue #171)", () => {
 
     expect(pages.closed).toEqual([]);
     await user.click(within(pane()).getByRole("button", { name: "Close the side panel" }));
-    expect(pages.closed).toEqual([1]);
+    expect(pages.closed).toEqual(["1"]);
     expect(pages.live.size).toBe(0);
   });
 
@@ -466,7 +468,7 @@ describe("Pages on the Hermes server's own loopback (issue #171)", () => {
     expect(await frameSrc()).toBe(TUNNEL);
 
     await user.click(within(pane()).getByRole("button", { name: "This computer" }));
-    expect(pages.closed).toEqual([1]);
+    expect(pages.closed).toEqual(["1"]);
     expect(await frameSrc()).toBe(APP_URL);
     expect(pane().querySelector(".where")!.textContent).toBe(" This computer");
     expect(within(pane()).getByText(/on this computer$/).textContent).toBe("From localhost:5173 on this computer");
@@ -481,8 +483,8 @@ describe("Pages on the Hermes server's own loopback (issue #171)", () => {
     // Reload opens a new tunnel and closes the one before.
     await user.click(within(pane()).getByRole("button", { name: "Reload" }));
     expect(await frameSrc()).toBe("http://127.0.0.1:41003/app?v=2");
-    expect(pages.closed).toEqual([1, 2]);
-    expect([...pages.live.keys()]).toEqual([3]);
+    expect(pages.closed).toEqual(["1", "2"]);
+    expect([...pages.live.keys()]).toEqual(["3"]);
   });
 
   it("says when the sign-in has no SSH target, and offers this computer instead", async () => {
@@ -532,7 +534,7 @@ describe("Pages on the Hermes server's own loopback (issue #171)", () => {
     const { user, pages } = await signedIn();
     await user.click(screen.getByRole("link", { name: "the dev server" }));
     expect(await frameSrc()).toBe(TUNNEL);
-    act(() => pages.drop(1, "ssh ended: Connection to hermes closed by remote host."));
+    act(() => pages.drop("1", "ssh ended: Connection to hermes closed by remote host."));
     const alert = await within(pane()).findByRole("alert");
     expect(alert.textContent).toContain("The SSH tunnel to this page closed");
     expect(alert.textContent).toContain("Connection to hermes closed by remote host.");
@@ -544,17 +546,42 @@ describe("Pages on the Hermes server's own loopback (issue #171)", () => {
     expect(await frameSrc()).toBe("http://127.0.0.1:41002/app?v=2");
   });
 
-  it("closes a tunnel that opens after its page has gone", async () => {
+  it("ends a tunnel still connecting when its page goes, without waiting for it", async () => {
     let ready = () => {};
     const pages = theServer(new Promise<void>((resolve) => (ready = resolve)));
     const { user } = await signedIn({ pages });
     await user.click(screen.getByRole("link", { name: "the dev server" }));
     expect(within(pane()).getByRole("status").textContent).toBe(" Opening localhost:5173 on the Hermes server, through SSH to liam@hermes…");
     await user.click(within(pane()).getByRole("button", { name: "Close the side panel" }));
-    expect(pages.closed).toEqual([]);
-    await act(async () => ready());
-    expect(pages.closed).toEqual([1]);
+    expect(pages.closed).toEqual(["1"]);
     expect(pages.live.size).toBe(0);
+    // Its result, if it ever comes, changes nothing.
+    await act(async () => ready());
+    expect(pages.closed).toEqual(["1"]);
+  });
+
+  it("stays closed when the tunnel closes before its open result arrives", async () => {
+    let ready = () => {};
+    const pages = theServer(new Promise<void>((resolve) => (ready = resolve)));
+    const { user } = await signedIn({ pages });
+    await user.click(screen.getByRole("link", { name: "the dev server" }));
+    act(() => pages.drop("1", "ssh ended: Connection reset by peer"));
+    await act(async () => ready());
+    const alert = await within(pane()).findByRole("alert");
+    expect(alert.textContent).toContain("The SSH tunnel to this page closed");
+    expect(alert.textContent).toContain("Connection reset by peer");
+    expect(within(pane()).queryByTitle(/^Web page/)).toBeNull();
+    expect((within(pane()).getByTitle(/^Open in your browser/) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("says the tunnel closed when the app left the server while it connected", async () => {
+    const pages = theServer(new ServerPageError("closed", "Hermes Chat left the Hermes server, so the tunnel to it closed."));
+    const { user } = await signedIn({ pages });
+    await user.click(screen.getByRole("link", { name: "the dev server" }));
+    const alert = await within(pane()).findByRole("alert");
+    expect(alert.textContent).toContain("The SSH tunnel to this page closed");
+    expect(alert.textContent).toContain("Hermes Chat left the Hermes server");
+    expect(within(alert).getByRole("button", { name: "Try again" })).toBeTruthy();
   });
 
   it("loads nothing but the tunnel's own address on this computer", async () => {
@@ -564,7 +591,7 @@ describe("Pages on the Hermes server's own loopback (issue #171)", () => {
     const alert = await within(pane()).findByRole("alert");
     expect(alert.textContent).toContain("The tunnel gave an address the preview doesn't load.");
     expect(within(pane()).queryByTitle(/^Web page/)).toBeNull();
-    expect(pages.closed).toEqual([1]);
+    expect(pages.closed).toEqual(["1"]);
   });
 
   it("opens a typed localhost address on the server, and refuses what isn't a web address, saying why", async () => {

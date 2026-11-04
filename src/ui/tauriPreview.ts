@@ -41,11 +41,11 @@ export const tauriWebPages: WebPages = {
  * (src-tauri/src/server_page.rs, ADR 0051). `url`: where the frame loads it, on this computer's `127.0.0.1`.
  * `target`: the SSH target it goes through. `at`: where it is on the server, as `localhost:3000`.
  */
-export type ServerPage = { id: number; url: string; target: string; at: string };
+export type ServerPage = { id: string; url: string; target: string; at: string };
 
 /**
  * Why a server page didn't open, as Rust says it. `kind` picks what the pane offers: `noSshTarget` and `notConnected`
- * offer this computer; the rest offer Reload too.
+ * offer this computer; `closed` means the app left the server while it connected; the rest offer Try again too.
  */
 export class ServerPageError extends Error {
   constructor(
@@ -56,14 +56,15 @@ export class ServerPageError extends Error {
   }
 }
 
+/** A server page being opened: `page` settles once its tunnel is open or failed; `close` ends it, at any point. */
+export type OpeningPage = { page: Promise<ServerPage>; close(): void };
+
 export type ServerPages = {
   /**
-   * Opens a tunnel for `url`. Rejects with a `ServerPageError`. `onClosed` hears, once, if the tunnel ends without
-   * `close`: ssh exited, or the app left the server.
+   * Opens a tunnel for `url`. `page` rejects with a `ServerPageError`. `onClosed` hears, once, if the tunnel ends
+   * without `close`: ssh exited, or the app left the server.
    */
-  open(url: string, onClosed: (message: string) => void): Promise<ServerPage>;
-  /** Closes the tunnel, ending its ssh. */
-  close(id: number): void;
+  open(url: string, onClosed: (message: string) => void): OpeningPage;
 };
 
 const asServerPageError = (e: unknown) =>
@@ -73,9 +74,13 @@ const asServerPageError = (e: unknown) =>
 
 export const tauriServerPages: ServerPages = {
   open: (url, onClosed) => {
+    // The page's name in Rust from the start, so closing it while ssh connects ends that ssh too.
+    const key = crypto.randomUUID();
     const onEvent = new Channel<{ kind: "closed"; message: string }>();
     onEvent.onmessage = (e) => onClosed(e.message);
-    return invoke<ServerPage>("preview_server_open", { url, onEvent }).catch(asServerPageError);
+    return {
+      page: invoke<ServerPage>("preview_server_open", { url, key, onEvent }).catch(asServerPageError),
+      close: () => void invoke("preview_server_close", { key }).catch(() => {}),
+    };
   },
-  close: (id) => void invoke("preview_server_close", { id }).catch(() => {}),
 };

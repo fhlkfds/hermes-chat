@@ -633,33 +633,36 @@ function ServerWebView({
   onTunnelRef.current = onTunnel;
   useEffect(() => {
     let live = true;
-    let id: number | undefined;
-    const pages = pagesRef.current;
+    // Latched: a tunnel that closed before its open result arrived stays closed.
+    let ended = false;
+    const opening = pagesRef.current.open(url, (message) => {
+      ended = true;
+      if (!live) return;
+      setState({ kind: "closed", message });
+      onTunnelRef.current(undefined);
+    });
     setState({ kind: "opening" });
-    pages
-      .open(url, (message) => {
-        if (!live) return;
-        setState({ kind: "closed", message });
-        onTunnelRef.current(undefined);
-      })
-      .then(
-        (page) => {
-          // Gone while ssh connected: its tunnel closes at once.
-          if (!live) return pages.close(page.id);
-          id = page.id;
-          const src = tunnelUrl(page.url, location.origin);
-          if (!src) {
-            pages.close(page.id);
-            return setState({ kind: "failed", error: new ServerPageError("io", "The tunnel gave an address the preview doesn't load.") });
-          }
-          setState({ kind: "open", page, src });
-          onTunnelRef.current(src);
-        },
-        (e) => live && setState({ kind: "failed", error: e instanceof ServerPageError ? e : new ServerPageError("io", messageOf(e)) }),
-      );
+    opening.page.then(
+      (page) => {
+        if (!live || ended) return;
+        const src = tunnelUrl(page.url, location.origin);
+        if (!src) {
+          opening.close();
+          return setState({ kind: "failed", error: new ServerPageError("io", "The tunnel gave an address the preview doesn't load.") });
+        }
+        setState({ kind: "open", page, src });
+        onTunnelRef.current(src);
+      },
+      (e) => {
+        if (!live || ended) return;
+        const error = e instanceof ServerPageError ? e : new ServerPageError("io", messageOf(e));
+        setState(error.kind === "closed" ? { kind: "closed", message: error.message } : { kind: "failed", error });
+      },
+    );
     return () => {
       live = false;
-      if (id !== undefined) pages.close(id);
+      // Ends the tunnel whether it opened or is still connecting.
+      opening.close();
       onTunnelRef.current(undefined);
     };
   }, [url, tries]);

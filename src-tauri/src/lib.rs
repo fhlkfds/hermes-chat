@@ -455,31 +455,35 @@ const SIGNED_OUT: &str = "Hermes Chat left the Hermes server, so the tunnel to i
 const SIGNED_IN_ELSEWHERE: &str = "Hermes Chat is now connected to another server, so the tunnel to this one closed.";
 
 /// Opens `url`, a page on the Hermes server's own loopback, through an SSH tunnel to the signed-in connection's SSH
-/// target (server_page.rs, ADR 0051). The webview names only the page; Rust parses it again, and picks the target.
-/// `on_event` hears once if the tunnel ends without `preview_server_close`.
+/// target (server_page.rs, ADR 0051). The webview names only the page and its own `key` for it; Rust parses the page
+/// again, and picks the target. The tunnel is registered while the connection is locked, so a sign-out or another
+/// sign-in after this closes it, even while ssh is still connecting. `on_event` hears once if it ends without
+/// `preview_server_close`.
 #[tauri::command]
 async fn preview_server_open(
     state: State<'_, AppState>,
     pages: State<'_, Arc<server_page::ServerPages>>,
     url: String,
+    key: String,
     on_event: Channel<server_page::PageEvent>,
 ) -> Result<server_page::Opened, server_page::ServerPageError> {
     let page = server_page::server_page(&url)?;
-    let target = match &*state.0.lock().await {
+    let starting = match &*state.0.lock().await {
         None => return Err(server_page::ServerPageError::NotConnected),
-        Some(conn) => conn.ssh_target.clone().ok_or(server_page::ServerPageError::NoSshTarget)?,
+        Some(conn) => pages.begin(&key, conn.ssh_target.as_deref().ok_or(server_page::ServerPageError::NoSshTarget)?)?,
     };
     let pages = pages.inner().clone();
     pages
-        .open("ssh", &target, page, move |e| {
+        .open("ssh", starting, page, move |e| {
             let _ = on_event.send(e);
         })
         .await
 }
 
+/// Closes the page `key` opened, or is opening; if Rust hasn't seen its `preview_server_open` yet, that is refused.
 #[tauri::command]
-fn preview_server_close(pages: State<'_, Arc<server_page::ServerPages>>, id: u64) {
-    pages.close(id);
+fn preview_server_close(pages: State<'_, Arc<server_page::ServerPages>>, key: String) {
+    pages.close(&key);
 }
 
 /// Server file transfers running now, by the webview's id for each, so Cancel can stop one. Every one is stopped when
