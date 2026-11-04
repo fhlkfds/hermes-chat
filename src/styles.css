@@ -1710,8 +1710,8 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .settings p.toolset-scope { margin: 0 0 10px; }
 .settings p.toolset-scope svg { vertical-align: -2px; }
 .toolset-scopes { margin: 0 0 12px; display: grid; gap: 2px 0; }
-.toolset-scopes dt { font-weight: 600; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
-.toolset-scopes dd { margin: 0; }
+.toolset-scopes dt { font-weight: 600; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
+.toolset-scopes dd { margin: 0 0 4px; line-height: 1.45; }
 .toolset-chat-status { margin: 0 0 10px; overflow-wrap: anywhere; }
 .toolset-status { margin: 14px 0 6px; }
 .toolset-list { border: 1px solid var(--line); border-radius: var(--radius); padding: 0 14px; margin-top: 8px; }
