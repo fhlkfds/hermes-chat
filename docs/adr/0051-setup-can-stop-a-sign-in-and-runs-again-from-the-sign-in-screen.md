@@ -6,11 +6,13 @@ ADR 0009 made Setup test a sign-in before keeping it, and ADR 0049 made Add and 
 
 While **Save and connect** waits for Hermes, Setup shows **Stop** in place of Back, and Escape does the same. Stop aborts the sign-in through an `AbortSignal` that goes from Setup through `connectWith` and `signIn` to transport's `connect`. There it closes the Hermes being dialled, which stops Rust opening the connection (`hermes_connect_cancel`, from ADR 0009's review), and `connect` rejects with `CONNECT_STOPPED`. Because `signIn` saves nothing until Hermes has answered, a stopped sign-in leaves the connection list and the keyring as they were. Then the connection in use before, if there was one, is put back exactly as after a failed switch (ADR 0009): from the sign-in kept in memory, or Offline with what this computer saved. Setup says "Connecting was stopped. Nothing was saved" and, when something was put back, that the connection in use is back. The tested details stay, so Save and connect can be tried again.
 
+A Save and connect that is still waiting its turn behind another connection change (`src/hermes/serial.ts`) is stopped at once, and never starts (`stoppable`). The connection in use hasn't been touched yet, so there is nothing to put back.
+
 A Stop that lands after Hermes answered changes nothing: the sign-in is kept, and Setup moves on to the providers step. Stopping can't undo a sign-in that has been saved, and pretending otherwise would leave the keyring and the list out of step. Setup still can't be cancelled or closed while a sign-in is under way: it can only be stopped, so it never goes away with a connection half made. If Setup is unmounted anyway, it stops the sign-in.
 
 ## Late answers
 
-The providers step reads and writes for one connection and one profile: the `Hermes` it was given and the profile that `Hermes` shows. Each read is numbered. A list, an error or a save result counts only if it answers the latest read, for the same `Hermes` and profile. When either changes (a connection put back under Setup, or the profile changed), the step clears what it showed and reads again. This is the same rule as a connection test's numbering (ADR 0009), applied to the provider list.
+The providers step reads and writes for one connection and one profile: the `Hermes` it was given and the profile that `Hermes` shows. That pair is the step's scope, and it is numbered. Each read of the provider list is numbered too. A list or its error counts only if it answers the latest read in the same scope. A save's answer counts while the scope is the same, however many reads came between, so trying a failed read again never hides a key that was saved. When the scope changes (a connection put back under Setup, or the profile changed), the step clears what it showed, the key typed and whether one was saved, and reads again. So a key typed for one profile is never sent to another, and a save still under way for the old scope doesn't report into the new one. This is the same rule as a connection test's numbering (ADR 0009), applied to the provider list.
 
 ## Provider keys
 
@@ -22,7 +24,7 @@ After Save and connect, the step's button is **Skip** while no key has been save
 
 ## Run setup again from the sign-in screen
 
-The sign-in screen for a saved connection offers **Run setup again…**. It opens Setup's Edit for that connection (ADR 0049), starting from what is saved for it without the password, so the same id, drafts and data stay with it. Cancel goes back to the sign-in screen. **Set up a new connection…** still adds another. The sign-in screen opens Setup only while it is still showing that connection and nothing is signed in, so a pick made while the saved details were being read wins.
+The sign-in screen for a saved connection offers **Run setup again…**. It opens Setup's Edit for that connection (ADR 0049), starting from what is saved for it without the password, so the same id, drafts and data stay with it. Cancel goes back to the sign-in screen. **Set up a new connection…** still adds another. Reading the saved details can wait on the keyring. Setup then opens only if nothing else was asked for on the sign-in screen meanwhile: no other pick, sign-in, removal or new setup, the screen still showing that connection, and nothing signed in.
 
 ## Drafts
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { serial } from "./serial";
+import { serial, stoppable } from "./serial";
 
 /** A connect that answers when told to, and logs when it starts, finishes and is closed. */
 function fakeRust() {
@@ -66,5 +66,52 @@ describe("Switching connections quickly", () => {
     const run = serial();
     await expect(run(async () => Promise.reject(new Error("Wrong username or password.")))).rejects.toThrow("Wrong");
     expect(await run(async (stale) => (stale() ? "stale" : "ran"))).toBe("ran");
+  });
+});
+
+describe("A change that can be stopped while it waits its turn", () => {
+  const stopped = () => new Error("stopped");
+
+  it("rejects at once when stopped while queued, and never starts", async () => {
+    const run = serial();
+    let letGo!: () => void;
+    const busy = run(() => new Promise<void>((r) => (letGo = r)));
+    const stop = new AbortController();
+    let started = false;
+    const queued = stoppable(run, stop.signal, stopped, async () => {
+      started = true;
+      return "connected";
+    });
+    await tick();
+    stop.abort();
+    await expect(queued).rejects.toThrow("stopped");
+    letGo();
+    await busy;
+    await tick();
+    expect(started).toBe(false);
+  });
+
+  it("leaves a started change to stop itself, and resolves with what it gave", async () => {
+    const run = serial();
+    const stop = new AbortController();
+    let finish!: () => void;
+    const going = stoppable(run, stop.signal, stopped, async () => {
+      await new Promise<void>((r) => (finish = r));
+      return "connected";
+    });
+    await tick();
+    stop.abort();
+    finish();
+    await expect(going).resolves.toBe("connected");
+  });
+
+  it("never starts when stopped before it is asked for, and runs as before without a signal", async () => {
+    const run = serial();
+    const stop = new AbortController();
+    stop.abort();
+    let started = false;
+    await expect(stoppable(run, stop.signal, stopped, async () => void (started = true))).rejects.toThrow("stopped");
+    expect(started).toBe(false);
+    await expect(stoppable(run, undefined, stopped, async () => 7)).resolves.toBe(7);
   });
 });

@@ -337,7 +337,7 @@ export function Onboarding({
               {stopped && (
                 <p className="setup-warn" role="status">
                   <CircleAlert size={14} /> Connecting was stopped. Nothing was saved
-                  {hermes ? ", and the connection you were using is back." : "."}
+                  {hermes ? ", and the connection you were using was put back." : "."}
                 </p>
               )}
             </div>
@@ -659,42 +659,52 @@ function ProviderKeys({
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; text: string }>();
   const [keySaved, setKeySaved] = useState(false);
-  // The connection and profile the step reads and writes for. Only an answer for the latest read, from the same
-  // connection and profile, counts: a late answer after the connection was put back or the profile changed is dropped.
+  // The connection and profile the step reads and writes for. `scopes` moves on when either changes, and `reads` with
+  // each read of the provider list. A list or its error counts only for the latest read in the same scope; a save's
+  // answer counts while the scope is the same, however many reads came between. So a late answer after the
+  // connection was put back or the profile changed is dropped, and a key typed for one never goes to the other.
+  const scopes = useRef(0);
   const reads = useRef(0);
   const profile = useSyncExternalStore(hermes.subscribe, () => hermes.profile);
-  const current = () => ({ hermes, profile, read: reads.current });
-  const sameAs = (was: ReturnType<typeof current>) => was.hermes === hermes && was.profile === hermes.profile && was.read === reads.current;
+  const live = (scope: number) => scope === scopes.current;
 
   const load = () => {
-    const mine = { hermes, profile, read: ++reads.current };
+    const scope = scopes.current;
+    const read = ++reads.current;
     return hermes.providerSetup().then(
       (s) => {
-        if (!sameAs(mine)) return;
+        if (!live(scope) || read !== reads.current) return;
         setSetup(s);
         setLoadError(undefined);
         setChosen((c) => (c && s.keys.some((k) => k.provider === c) ? c : (s.keys.find((k) => !k.isSet) ?? s.keys[0])?.provider));
       },
-      (e) => sameAs(mine) && setLoadError(messageOf(e)),
+      (e) => live(scope) && read === reads.current && setLoadError(messageOf(e)),
     );
   };
   useEffect(() => {
-    // Another connection or profile: what was read for the one before doesn't apply.
+    // Another connection or profile: what was read, typed or saved for the one before doesn't apply.
+    scopes.current++;
     setSetup(undefined);
     setLoadError(undefined);
     setResult(undefined);
+    setChosen(undefined);
+    setKey("");
+    setKeySaved(false);
+    setSaving(false);
     void load();
   }, [hermes, profile]);
 
   const pick: ProviderKey | undefined = setup?.keys.find((k) => k.provider === chosen);
   const save = async () => {
     if (!pick || !key.trim() || saving) return;
-    const mine = current();
+    const scope = scopes.current;
     setSaving(true);
     setResult(undefined);
     try {
+      // `saveProviderKey` writes for the profile Hermes shows; one that changed since this step read means another scope.
+      if (hermes.profile !== profile) return;
       const r = await hermes.saveProviderKey(pick.envVar, key);
-      if (!sameAs(mine)) return;
+      if (!live(scope)) return;
       setKey("");
       setKeySaved(true);
       setResult({
@@ -704,15 +714,16 @@ function ProviderKeys({
           : `Saved, but Hermes couldn't check the key with ${pick.label}. If it's wrong, ${pick.label} will turn down Hermes's first request.`,
       });
     } catch (e) {
-      if (sameAs(mine)) setResult({ ok: false, text: `Not saved: ${withoutKey(messageOf(e), key)}` });
+      if (live(scope)) setResult({ ok: false, text: `Not saved: ${withoutKey(messageOf(e), key)}` });
       return;
     } finally {
-      setSaving(false);
+      if (live(scope)) setSaving(false);
     }
     // Read again to show the key as saved; Finish doesn't wait for it.
     void load();
   };
-  const doneLabel = !afterConnecting ? "Done" : keySaved ? "Finish" : setup?.ready.length ? "Skip" : "Skip for now";
+  // "Skip for now" only once Hermes has said it can use no provider yet; while it is being asked, plain Skip.
+  const doneLabel = !afterConnecting ? "Done" : keySaved ? "Finish" : setup && !setup.ready.length ? "Skip for now" : "Skip";
 
   let body: ReactNode;
   if (loadError)

@@ -14,3 +14,26 @@ export function serial(): Serial {
     return run;
   };
 }
+
+/**
+ * Runs `job` on `serial`, but a `signal` that aborts while the job still waits its turn rejects at once with
+ * `stopped()`, and the job then never starts. Once the job has started, stopping it is the job's own business.
+ */
+export function stoppable<T>(serial: Serial, signal: AbortSignal | undefined, stopped: () => Error, job: (stale: () => boolean) => Promise<T>): Promise<T> {
+  if (signal?.aborted) return Promise.reject(stopped());
+  let started = false;
+  const run = serial(async (stale) => {
+    if (signal?.aborted) throw stopped();
+    started = true;
+    return job(stale);
+  });
+  if (!signal) return run;
+  run.catch(() => {});
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      if (!started) reject(stopped());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    void run.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}

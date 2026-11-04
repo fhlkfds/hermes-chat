@@ -9,7 +9,7 @@ import { CHECK_EVERY_MS } from "./hermes/otherProfiles";
 import { type Account, type Kept, type SavedSignIn, launchSignIn, removeConnection, savedSignIn, signIn, signInForm, signOutToSignIn } from "./hermes/account";
 import { CONNECTIONS_KEY, Connections, type SavedConnection, addressLabel, defaultName, prefScope } from "./hermes/connections";
 import { forgetConnectionData } from "./hermes/forgetConnection";
-import { serial as makeSerial } from "./hermes/serial";
+import { serial as makeSerial, stoppable } from "./hermes/serial";
 import { localChatCache } from "./hermes/chatCache";
 import { draftKey, drafts } from "./hermes/drafts";
 import { PersonaStore, personaKey } from "./hermes/personaStore";
@@ -268,6 +268,11 @@ export default function App({ links = desktopLinks }: { links?: LinkInbox } = {}
   // Whether the main screen reopens the profile's last open chat: at launch, and on switching to a connection.
   const [coldStart, setColdStart] = useState(true);
   const [setup, setSetup] = useState<Setup>();
+  const setupRef = useRef(setup);
+  setupRef.current = setup;
+  // Moves on with everything the owner does on the sign-in screen, so a Run setup again still reading the keyring
+  // gives way to whatever was asked for after it.
+  const signInAsks = useRef(0);
   const [confirmingSetup, setConfirmingSetup] = useState(false);
   const connectionGuard = useRef<((to: SavedConnection) => Promise<boolean>) | undefined>(undefined);
   // A connection being switched to, for the screen shown meanwhile.
@@ -388,11 +393,9 @@ export default function App({ links = desktopLinks }: { links?: LinkInbox } = {}
         setConfirmingSetup(false);
       }
     }
-    if (signal?.aborted) throw new Error(CONNECT_STOPPED);
-    return serial(async (stale) => {
+    // Stopped while it waits its turn: it never starts, and the connection in use isn't touched.
+    return stoppable(serial, signal, () => new Error(CONNECT_STOPPED), async (stale) => {
       if (stale()) throw new Error("A newer connection was selected.");
-      // Stopped while waiting its turn: the connection in use hasn't been touched.
-      if (signal?.aborted) throw new Error(CONNECT_STOPPED);
       const before = current.current;
       const beforeConnection = connectionRef.current;
       const beforeDetails = signedInWith.current;
@@ -565,23 +568,34 @@ export default function App({ links = desktopLinks }: { links?: LinkInbox } = {}
         error={error}
         connection={connection}
         connections={recent}
-        onSetUp={() => setSetup({ mode: "sign-in", initial: BLANK, target: store.draft(BLANK) })}
-        onRerunSetup={(c) =>
+        onSetUp={() => {
+          signInAsks.current++;
+          setSetup({ mode: "sign-in", initial: BLANK, target: store.draft(BLANK) });
+        }}
+        onRerunSetup={(c) => {
+          const mine = ++signInAsks.current;
           void serial(async (stale) => {
-            // From what is saved for it, as Edit does; setup opens only if the screen is still for it.
+            // From what is saved for it, as Edit does. Setup opens only if nothing else was asked for meanwhile: the
+            // screen is still for `c`, nothing signed in, and no other setup opened.
             const d = await signInForm(c, account);
-            if (!stale() && connectionRef.current?.id === c.id && !current.current) setSetup({ mode: "edit", initial: d, target: c, name: c.name });
-          })
-        }
-        onPick={(c) =>
+            if (stale() || mine !== signInAsks.current || setupRef.current || current.current || connectionRef.current?.id !== c.id) return;
+            setSetup({ mode: "edit", initial: d, target: c, name: c.name });
+          });
+        }}
+        onPick={(c) => {
+          signInAsks.current++;
           void serial(async (stale) => {
             const d = (await savedSignIn(c, account)) ?? (await signInForm(c, account));
             if (!stale()) showSignIn(c, d);
-          })
-        }
-        onRemove={setRemoving}
+          });
+        }}
+        onRemove={(c) => {
+          signInAsks.current++;
+          setRemoving(c);
+        }}
         onSignIn={async (d) => {
           if (!connection) return;
+          signInAsks.current++;
           setError(undefined);
           try {
             await connectWith(connection, d);
