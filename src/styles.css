@@ -2102,3 +2102,27 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
   .usage-status-actions { margin-left: 0; }
   .usage-filters select, .usage-filters input { max-width: 100%; }
 }
+
+/* ---------- project membership sync (MembershipSync.tsx, ADR 0033) ---------- */
+.dot.warn { background: var(--warn); }
+.menu-hint { flex: none; margin-left: 8px; font-size: calc(11rem / 14); color: var(--warn); }
+.project-attention { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; border-top: 1px solid var(--line); }
+.project-attention .row-title { color: var(--warn); white-space: normal; }
+.membership-status {
+  display: flex; align-items: flex-start; flex-wrap: wrap; gap: 8px; margin-top: 10px; padding: 8px 10px;
+  border: 1px solid var(--line-2); border-radius: 10px; background: var(--raised-2); line-height: 1.5;
+}
+.membership-status.ms-pending, .membership-status.ms-stranded, .membership-status.ms-preview { border-color: rgba(245, 184, 74, 0.35); }
+.membership-icon { flex: none; display: inline-flex; margin-top: 3px; color: var(--muted); }
+.membership-status.ms-pending .membership-icon, .membership-status.ms-stranded .membership-icon { color: var(--warn); }
+.membership-text { flex: 1 1 240px; min-width: 0; }
+.membership-error { color: var(--bad); }
+.membership-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.leave-overlay .leave-dialog.membership-dialog { max-width: min(600px, calc(100% - 32px)); width: 100%; max-height: min(92vh, 860px); overflow-y: auto; }
+.membership-dialog > * { flex-shrink: 0; }
+.membership-title svg { color: var(--muted); }
+.membership-group h3 { margin: 4px 0; font-size: calc(12rem / 14); font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.membership-group ul { margin: 0; padding-left: 18px; line-height: 1.6; overflow-wrap: anywhere; }
+.membership-conflicts { list-style: none; padding-left: 0 !important; display: flex; flex-direction: column; gap: 8px; }
+.membership-conflicts li { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid rgba(245, 184, 74, 0.3); border-radius: 8px; }
+.membership-dialog .confirm-actions { flex-wrap: wrap; }

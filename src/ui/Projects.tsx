@@ -1,7 +1,8 @@
 // Projects (GLOSSARY.md "Project", ADR 0007): the switcher under the profile's name, which narrows the chat list to one
 // project's chats, and the project screen, where a project is renamed or deleted and its folders added and taken out.
-// The project and its folders are Hermes's; which chats are in it is kept on this computer.
-import { useEffect, useRef, useState } from "react";
+// The project and its folders are Hermes's; which chats are in it is Hermes's when it keeps it, and this computer's when
+// it doesn't (MembershipSync.tsx, ADR 0033).
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Check, ChevronDown, FolderGit2, Folder, FolderKanban, GitBranch, Pencil, Plus, Settings2, Trash2, X } from "lucide-react";
 import { EFFORT_LABEL, shortName, type Effort, type ModelCatalog, type ModelPick } from "../hermes/models";
 import { DefaultsConflict, NewerDefaultsError, cleanDraft, draftProblem, sameDraft, type DefaultsDraft, type ProjectDefaults } from "../hermes/projectDefaults";
@@ -32,7 +33,12 @@ export function ProjectSwitcher({
   onSelect,
   onCreate,
   onManage,
+  attention,
+  onReview,
 }: {
+  /** What the membership sync wants of the owner, if anything: shown as a dot, and a line in the menu. */
+  attention?: string;
+  onReview?: () => void;
   /** The projects that can be shown: archived ones are left out. */
   projects: Project[];
   selected?: Project;
@@ -60,6 +66,7 @@ export function ProjectSwitcher({
   const tip = [
     selected ? `Showing the chats in ${selected.name}` : "Showing every chat",
     unread.hidden > 0 && `${unread.hidden} unread ${unread.hidden === 1 ? "chat isn't" : "chats aren't"} shown`,
+    attention,
   ]
     .filter(Boolean)
     .join("\n");
@@ -70,6 +77,7 @@ export function ProjectSwitcher({
         <FolderKanban size={14} className="project-icon" />
         <span className="project-name">{name}</span>
         {unread.hidden > 0 && <span className="dot" aria-label="Unread chats not shown" />}
+        {attention && <span className="dot warn" aria-label={attention} />}
         <ChevronDown size={13} className="profile-chev" />
       </button>
       {selected && (
@@ -94,6 +102,14 @@ export function ProjectSwitcher({
             setOpen(false);
           }}
           onClose={() => setOpen(false)}
+          attention={attention}
+          onReview={
+            onReview &&
+            (() => {
+              setOpen(false);
+              onReview();
+            })
+          }
         />
       )}
     </div>
@@ -121,7 +137,11 @@ function ProjectMenu({
   onPick,
   onCreate,
   onClose,
+  attention,
+  onReview,
 }: {
+  attention?: string;
+  onReview?: () => void;
   projects: Project[];
   selectedId?: string;
   unread: ProjectUnread;
@@ -171,6 +191,12 @@ function ProjectMenu({
       {!projects.length && !loading && !error && <div className="profile-hint">No projects in this profile yet.</div>}
       {loading && !projects.length && <div className="profile-hint">Loading projects…</div>}
       {error && <div className="profile-hint err">{error}</div>}
+      {attention && onReview && (
+        <button className="profile-option project-attention" onClick={onReview}>
+          <span className="row-title">{attention}</span>
+          <span className="muted small">Review…</span>
+        </button>
+      )}
       {naming ? (
         <div className="project-new">
           <input
@@ -244,7 +270,10 @@ export function ProjectScreen({
   readFolder,
   onClose,
   defaults,
+  membership,
 }: {
+  /** Where the project's membership is kept and how far it is from Hermes (MembershipSync.tsx). */
+  membership?: ReactNode;
   /** The project's defaults for new chats, and how to edit them. */
   defaults: Omit<DefaultsProps, "folders" | "profile" | "connection">;
   project: Project;
@@ -372,7 +401,7 @@ export function ProjectScreen({
         )}
         <p className="muted">
           A project in the <span className="mono">{profile}</span> profile. Hermes keeps the project and its folders, so other Hermes clients
-          show them too. Which chats are in it is kept on this computer.
+          show them too.
         </p>
 
         <section>
@@ -468,10 +497,11 @@ export function ProjectScreen({
           <h2>Chats</h2>
           <p className="muted">
             {chats ? `${chatsText(chats)} in the list.` : "No chats in the list yet."} Put a chat in this project from its right-click menu; a
-            chat started while the list shows this project is put in it too.
+            chat started while the list shows this project is put in it too. Deleting the project takes its chats out of it, and keeps them.
             {unlisted > 0 &&
               ` ${chatsText(unlisted)} in this project ${unlisted === 1 ? "isn't" : "aren't"} in the list: older than a month, or archived or deleted. Pull older history in Settings, or open the archived chats, to see them.`}
           </p>
+          {membership}
         </section>
 
         <section>
