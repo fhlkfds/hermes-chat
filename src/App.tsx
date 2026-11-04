@@ -833,8 +833,9 @@ export function Main({
   const [jobsOpen, setJobsOpen] = useState(false);
   /** Automations (webhook routes, ADR 0036) cover the chat too. */
   const [automationsOpen, setAutomationsOpen] = useState(false);
-  // The side panel's Terminal (ADR 0022, ADR 0039): which shell is shown, and which are running, for the rail's dot.
-  const [termKind, setTermKind] = useState<TerminalKind>("server");
+  // The side panel's Terminal (ADR 0022, ADR 0039): which shell is shown, kept in the prefs so it opens on the one picked
+  // last (the Hermes server's until then, ADR 0051), and which are running, for the rail's dot.
+  const termKind = useSyncExternalStore(subscribeUIPrefs, getUIPrefs).terminalKind;
   const [termRunning, setTermRunning] = useState<Record<TerminalKind, boolean>>({ server: false, local: false });
   const terminalRunning = termRunning.server || termRunning.local;
   // The owner holds Hermes's screen: its computer use waits until they hand back, so the Screen tab says so.
@@ -2606,7 +2607,7 @@ export function Main({
                       local={{ api: tauriLocalTerminal }}
                       shown={shown}
                       kind={termKind}
-                      onKind={setTermKind}
+                      onKind={(k) => setUIPrefs({ terminalKind: k })}
                       onRunning={setTermRunning}
                     />
                   </Suspense>
