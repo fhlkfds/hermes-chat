@@ -51,6 +51,7 @@ import {
 } from "../hermes/repo";
 import { Spinner } from "./bits";
 import { useModal } from "./modal";
+import { WorktreesPanel } from "./Worktrees";
 
 type Load<T> = { state: "idle" } | { state: "loading"; last?: T } | { state: "ready"; data: T } | { state: "failed"; error: RepoFailure; last?: T };
 
@@ -74,6 +75,7 @@ export function RepositoryScreen({
   suggest,
   suggestScope = "",
   openUrl,
+  worktrees,
   onClose,
 }: {
   api: RepoApi;
@@ -96,6 +98,8 @@ export function RepositoryScreen({
   suggestScope?: string;
   /** Opens a pull request's or a check's page in the owner's browser. */
   openUrl?: (url: string) => void;
+  /** Worktrees (ADR 0042): who makes one, the chats Hermes has working in a folder, and starting a chat in one. */
+  worktrees?: Omit<Parameters<typeof WorktreesPanel>[0], "api" | "target" | "top" | "branch" | "onOpen" | "scope">;
   onClose: () => void;
 }) {
   const [target, setTarget] = useState(initialTarget);
@@ -578,6 +582,21 @@ export function RepositoryScreen({
                 openUrl={openUrl}
                 onPushed={() => read(repo, target)}
               />
+              {worktrees && (
+                <WorktreesPanel
+                  key={`${target}\n${shown.top}\n${suggestScope}`}
+                  api={api}
+                  target={target}
+                  top={shown.top}
+                  branch={shown.branch.head}
+                  scope={suggestScope}
+                  onOpen={(path) => {
+                    setPathDraft(path);
+                    open(path);
+                  }}
+                  {...worktrees}
+                />
+              )}
             </div>
             {change && (
               <DiffPanel

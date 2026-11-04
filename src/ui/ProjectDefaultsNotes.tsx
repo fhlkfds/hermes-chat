@@ -8,8 +8,9 @@ import { composing, useReturnFocus } from "./bits";
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-function originLabel(from: Origin, project?: string) {
+function originLabel(from: Origin, project?: string, worktree?: string) {
   if (from === "chat") return "chosen for this chat";
+  if (from === "worktree") return `the worktree for ${worktree ?? "its branch"}`;
   if (from === "project") return `project default${project ? ` (${project})` : ""}`;
   if (from === "pick") return "your model pick";
   return "profile default";
@@ -22,12 +23,12 @@ const modelText = (m?: ModelPick) => (m ? `${shortName(m.model)} (${m.provider})
  * can't start on these, if it can't.
  */
 export function NewChatSettingsView({ settings, where, profile, problem }: { settings: NewChatSettings; where?: string; profile: string; problem?: string }) {
-  const { model, effort, instructions, folder, project } = settings;
+  const { model, effort, instructions, folder, project, worktree } = settings;
   const row = (label: string, value: React.ReactNode, from: Origin) => (
     <div className="start-row">
       <dt>{label}</dt>
       <dd>
-        <span className="start-value">{value}</span> <span className="start-from">{originLabel(from, project)}</span>
+        <span className="start-value">{value}</span> <span className="start-from">{originLabel(from, project, worktree)}</span>
       </dd>
     </div>
   );

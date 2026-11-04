@@ -104,7 +104,7 @@ Which chats are in which project, one link per chat and project. Kept by Hermes 
 _Avoid_: sync conflict (for a change that is only waiting), assignment
 
 **Folder** (of a project):
-A path on the server that a project refers to, shown with the connection it is on. Hermes Chat adds only a folder that is already there, and never creates, moves or deletes one. A folder in a git repository shows its branch, and the repository's other worktrees that already exist can be added as folders too; Hermes Chat never creates a worktree.
+A path on the server that a project refers to, shown with the connection it is on. The project screen adds only a folder that is already there, and never creates, moves or deletes one. A folder in a git repository shows its branch, and the repository's other worktrees that already exist can be added as folders too. Worktrees are made only from the Repository screen (see **Worktree**).
 _Avoid_: directory, workspace, repo (unless it is one)
 
 **Project defaults**:
@@ -297,6 +297,18 @@ _Avoid_: dry run, summary
 **Push** / **Create pull request**:
 The Repository screen's two separate ways to publish a branch. Push sends the commit shown to the remote branch shown, with the server's own credentials, and never forces. Create pull request asks GitHub, through `gh` on the server, for a pull request from a branch the remote already has. It never pushes. Each goes only where it showed: if the branch, its commit, the remote's URL or its GitHub repository changed meanwhile, it's refused and nothing is sent.
 _Avoid_: publish (for either one alone), sync, ship
+
+**Worktree**:
+A second working copy of a repository on the server, on a branch of its own, so a chat can work without touching the repository's own checkout or another chat's. Hermes Chat makes one from the Repository screen, beside the repository (`<repo>.worktrees/<branch>`), from a base and branch the owner saw first. It runs the repository's **setup** once and records which chats work in it. Worktrees made elsewhere are listed but never removed from here. A worktree Hermes Chat made can be **protected**. A chat is **attached** when the record names it. Detach removes it from the record, and the chat keeps its folder. Its record is on the server, beside the repository (ADR 0042).
+_Avoid_: checkout (the repository's own), clone, sandbox, workspace
+
+**Setup** (of a worktree):
+What a new worktree gets once, from the repository's `.worktreeinclude`: each ignored file listed is copied from the repository's own checkout, and each folder is linked. A file Git tracks is never copied, so source changes reach a worktree only through a commit. A failed step keeps its error and can be retried; a step that's done never runs again. Running commands isn't part of it.
+_Avoid_: bootstrap, install, init
+
+**Remove** / **Restore** (a worktree):
+Remove deletes a worktree's folder after a preview of everything it affects: changed and untracked files, ignored files, and commits no remote has. Nothing is removed while it's protected, any chat is attached, Hermes has a chat (not archived) working in its folder, another tool locked it, or another Git repository is nested in it. Its staged and unstaged changes are first kept in a **recovery ref** (`refs/hermes-chat/recovery/…`), and its branch is never deleted. Restore makes it again on that branch and puts the kept changes back, staged ones staged, if the branch hasn't moved.
+_Avoid_: delete, clean up, prune (Hermes's own sweep), discard
 
 **Terminal**:
 The Side panel's tab with the owner's own shells: one on the Hermes server, through their ssh to the sign-in's SSH target or one typed for it, and one on this computer, their login shell. ssh asks there for anything it needs, such as a passphrase or a new host key. Each session runs on while the other is shown or the panel is closed, and the rail shows it; signing out ends both. They are the owner's shells, not Hermes's: nothing typed there reaches a chat, an Approval or the agent (ADR 0022, ADR 0039).

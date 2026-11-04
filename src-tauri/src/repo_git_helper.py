@@ -1231,4 +1231,4 @@ def main():
     sys.stdout.flush()
 
 
-main()
+# main() is called at the end of the program repo_git.rs assembles: this file, then repo_worktrees_helper.py.
