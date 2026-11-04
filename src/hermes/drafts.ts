@@ -2,18 +2,18 @@
 // and chat, so switching chats or restarting the app doesn't lose it. Text only: attachments stay in the composer
 // until it closes. A sent message Hermes didn't take, or may not have, isn't a draft: it stays in its chat, kept in
 // the chat's outbox (transport.ts `Outgoing`), until the owner retries or dismisses it.
-import type { SavedSignIn } from "./account";
+import { type ScopeSource, scopeParts } from "./connections";
 import { persist } from "./unsaved";
 
-const PREFIX = "hermes-chat.draft.";
+export const DRAFT_PREFIX = "hermes-chat.draft.";
+const PREFIX = DRAFT_PREFIX;
 
 /** The storage drafts are kept in: localStorage in the app. */
 export type DraftStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
 /** Where a chat's draft is kept. `chatId` null is the new chat the owner hasn't sent anything in yet. */
-export function draftKey(connection: SavedSignIn, profile: string, chatId: string | null): string {
-  const target = connection.mode === "ssh" ? connection.sshTarget : connection.url;
-  return PREFIX + JSON.stringify([connection.mode, target, connection.username, profile, chatId]);
+export function draftKey(connection: ScopeSource, profile: string, chatId: string | null): string {
+  return PREFIX + JSON.stringify([...scopeParts(connection), profile, chatId]);
 }
 
 export type Drafts = {

@@ -3,7 +3,7 @@
 // resends anything. Each entry has a key that stays the same however often a reconnect or a check reports it again,
 // so it shows once. Dismissing an entry is kept on this computer, per connection, and touches nothing else: not
 // Unread, Active or Settled, nor Archived.
-import type { SavedSignIn } from "./account";
+import { type ScopeSource, connectionScope } from "./connections";
 import type { Chat, LiveSessions, OtherProfiles, Source } from "./model";
 import { isOutgoing, isWaiting } from "./model";
 
@@ -203,15 +203,15 @@ export function failureMark(text: string): string {
 /** How long a dismissal is kept, and the most kept; the oldest go first. */
 const ACK_KEEP_MS = 30 * 86_400_000;
 const ACK_MAX = 1000;
-const PREFIX = "hermes-chat.inbox-dismissed.";
+export const INBOX_PREFIX = "hermes-chat.inbox-dismissed.";
+const PREFIX = INBOX_PREFIX;
 
 /** The storage dismissals are kept in: localStorage in the app. */
 export type AckStorage = Pick<Storage, "getItem" | "setItem">;
 
 /** Which connection a dismissal belongs to: the same server and username, in every profile. */
-export function inboxScope(connection: SavedSignIn): string {
-  const target = connection.mode === "ssh" ? connection.sshTarget : connection.url;
-  return JSON.stringify([connection.mode, target, connection.username]);
+export function inboxScope(connection: ScopeSource): string {
+  return connectionScope(connection);
 }
 
 /** Dismissed entries by key: the entry's time when dismissed, and when that was. */

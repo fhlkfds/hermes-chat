@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type Account, launchSignIn } from "./account";
+import { type SavedConnection, Connections } from "./connections";
 import { TRANSCRIPT_LIMIT_BYTES, localChatCache } from "./chatCache";
 import { FakeHermes, row, type TranscriptMessage } from "./fakeHermes";
 import { type MemoryCache, memoryCache } from "./memoryCache";
@@ -152,30 +153,31 @@ describe("Reading offline after a restart", () => {
 describe("Signing in at launch", () => {
   const details: SignInDetails = { mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam", password: "hunter2" };
 
+  const none = { load: async () => undefined, save: async () => {}, delete: async () => {} };
+  const c: SavedConnection = { id: "0b6f3c1e-2d4a-4f8b-9c7e-5a1d2e3f4a5b", name: "hermes", addedAt: 0, ...details };
   function account(server: FakeHermes, cache: ChatCache, refuse: string): Account {
     return {
-      keyring: { load: async () => "hunter2", save: async () => {}, delete: async () => {} },
-      headerKeyring: { load: async () => undefined, save: async () => {}, delete: async () => {} },
-      store: { load: () => details, save: () => {} },
+      connections: new Connections({ getItem: () => null, setItem: () => {}, removeItem: () => {} }),
+      secrets: () => ({ password: none, headers: none }),
       connect: () => Promise.reject(new Error(refuse)),
-      readSaved: (_d, reason) => readSaved(server.openPipe, reason, cache),
+      readSaved: (_c, _d, reason) => readSaved(server.openPipe, reason, cache),
     };
   }
 
   it("opens what this computer saved when Hermes can't be reached", async () => {
     const { server, cache } = await firstLaunch();
-    const hermes = await launchSignIn(details, account(server, cache, "SSH failed: Connection timed out"));
+    const hermes = await launchSignIn(c, details, account(server, cache, "SSH failed: Connection timed out"));
     expect(hermes.getSnapshot()).toMatchObject({ status: "reconnecting", closedReason: "SSH failed: Connection timed out" });
     await hermes.close();
   });
 
   it("asks for the password when the dashboard turns it down", async () => {
     const { server, cache } = await firstLaunch();
-    await expect(launchSignIn(details, account(server, cache, "Wrong username or password."))).rejects.toThrow("Wrong username or password.");
+    await expect(launchSignIn(c, details, account(server, cache, "Wrong username or password."))).rejects.toThrow("Wrong username or password.");
   });
 
   it("shows the sign-in screen when nothing is saved to read", async () => {
-    await expect(launchSignIn(details, account(new FakeHermes(), memoryCache(), "SSH failed: Connection timed out"))).rejects.toThrow(
+    await expect(launchSignIn(c, details, account(new FakeHermes(), memoryCache(), "SSH failed: Connection timed out"))).rejects.toThrow(
       "SSH failed",
     );
   });

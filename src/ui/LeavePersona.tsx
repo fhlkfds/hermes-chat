@@ -5,16 +5,20 @@ import { useId } from "react";
 import { TriangleAlert } from "lucide-react";
 import { composing } from "./bits";
 
-/** What leaving does: `leave` Settings or its Persona tab, `profile` switch, `signout`, or `close` the window. */
-export type LeaveWhat = "leave" | "profile" | "signout" | "close";
+/**
+ * What leaving does: `leave` Settings or its Persona tab, `profile` switch, `connection` switch, `signout`, or `close`
+ * the window.
+ */
+export type LeaveWhat = "leave" | "profile" | "connection" | "signout" | "close";
 
 const TITLE: Record<LeaveWhat, string> = {
   leave: "Leave without saving the persona?",
   profile: "Switch profile without saving the persona?",
+  connection: "Switch connection without saving the persona?",
   signout: "Sign out without saving the persona?",
   close: "Close Hermes Chat without saving the persona?",
 };
-const GO: Record<LeaveWhat, string> = { leave: "Leave", profile: "Switch anyway", signout: "Sign out", close: "Close anyway" };
+const GO: Record<LeaveWhat, string> = { leave: "Leave", profile: "Switch anyway", connection: "Switch anyway", signout: "Sign out", close: "Close anyway" };
 
 /** `kept`: this computer has the edit, so it can be offered back; false when its storage didn't take it. */
 export function LeavePersona({

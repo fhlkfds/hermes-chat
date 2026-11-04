@@ -221,5 +221,9 @@ describe("Profiles and the pick", () => {
     expect(getUIPrefs().modelPicker).toEqual({ profile: "work", provider: "openai", model: "gpt-5" });
     expect(label(pill())).toBe("Reasoning effort: High");
     expect(server.profileModel.default).toBeUndefined();
+    await act(() => hermes.switchProfile("default"));
+    await act(() => hermes.loadModels());
+    await settle(hermes);
+    await waitFor(() => expect(label(trigger())).toBe("Model: claude-opus-4-5"));
   });
 });

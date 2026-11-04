@@ -72,7 +72,7 @@ describe("Settings tabs", () => {
   it("open on General, with the connection, cache and history", () => {
     settings();
     expect(screen.getByRole("tab", { name: "General" }).getAttribute("aria-selected")).toBe("true");
-    expect(screen.getByRole("heading", { name: "Connection" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Connection in use" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Color scheme" })).toBeNull();
   });
 
@@ -101,7 +101,7 @@ describe("Settings tabs", () => {
     expect(screen.getByRole("tab", { name: "Appearance" }).getAttribute("aria-selected")).toBe("true");
     expect(screen.getByRole("heading", { name: "Color scheme" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Fonts" })).toBeTruthy();
-    expect(screen.queryByRole("heading", { name: "Connection" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Connection in use" })).toBeNull();
   });
 });
 

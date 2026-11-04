@@ -25,6 +25,7 @@ import {
   type CategoryId,
   type CategoryPlan,
   type Conn,
+  type Target,
   type Current,
   type Entry,
   type ExportSummary,
@@ -41,7 +42,7 @@ import { useModal } from "./modal";
 export type BackupWiring = {
   env: BackupEnv;
   /** This computer's connection: where restored data goes. */
-  connection: Conn;
+  connection: Target;
   /** The server's profiles, to map a backup's onto. */
   profiles: () => Promise<string[]>;
   /** The profile shown, offered when the server's list can't be read. */
@@ -407,7 +408,7 @@ function Preview({
   plan: CategoryPlan[];
   problem?: string;
   busy?: string;
-  connection: Conn;
+  connection: Target;
   profiles: string[];
   mapping: Mapping;
   onMap: (place: string, to: string | null | undefined) => void;

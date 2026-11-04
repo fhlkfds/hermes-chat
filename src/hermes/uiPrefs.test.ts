@@ -42,7 +42,7 @@ afterEach(() => {
 
 describe("reading", () => {
   it("is the defaults when nothing is stored", () => {
-    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, checkUpdatesOnLaunch: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, modelFavorites: [], statusBar: ["context", "yolo", "model", "status"], previewWidth: null, screenshotShortcut: "Ctrl+Shift+S", templates: [] });
+    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, checkUpdatesOnLaunch: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, modelPicks: {}, modelFavorites: [], statusBar: ["context", "yolo", "model", "status"], previewWidth: null, screenshotShortcut: "Ctrl+Shift+S", templates: [] });
     expect(getUIPrefs()).toEqual(DEFAULT_UI_PREFS);
   });
 
@@ -76,6 +76,7 @@ describe("reading", () => {
       lastOpenChat: { default: "c1" },
       reasoningBlocks: true,
       modelPicker: { provider: "anthropic", model: "claude-opus-5-5", effort: "max", fast: true },
+      modelPicks: {},
       modelFavorites: ["openai/gpt-5", "anthropic/claude-opus-5-5"],
       statusBar: ["model", "tokens"],
       previewWidth: null, screenshotShortcut: "Ctrl+Shift+S", templates: [],
@@ -112,6 +113,17 @@ describe("reading", () => {
   it("keeps the profile a model was picked in, and drops an effort Hermes doesn't take", () => {
     localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ v: 1, modelPicker: { provider: "openai", model: "gpt-5", effort: "hgih", profile: "work" } }));
     expect(getUIPrefs().modelPicker).toEqual({ provider: "openai", model: "gpt-5", profile: "work" });
+  });
+
+  it("keeps picks for same-named profiles on two connections through reloads", () => {
+    const a = "aaaaaaaa-aaaa-4000-8000-aaaaaaaaaaaa\ndefault";
+    const b = "bbbbbbbb-bbbb-4000-8000-bbbbbbbbbbbb\ndefault";
+    setUIPrefs({ modelPicker: { profile: a, provider: "anthropic", model: "a", effort: "high" } });
+    setUIPrefs({ modelPicker: { profile: b, provider: "openai", model: "b" } });
+    expect(getUIPrefs().modelPicks).toEqual({ [a]: { provider: "anthropic", model: "a", effort: "high" }, [b]: { provider: "openai", model: "b" } });
+    writeFromOtherWindow(JSON.stringify(stored()));
+    expect(getUIPrefs().modelPicks[a].model).toBe("a");
+    expect(getUIPrefs().modelPicks[b].model).toBe("b");
   });
 
   it("stars and unstars a model without picking it", () => {

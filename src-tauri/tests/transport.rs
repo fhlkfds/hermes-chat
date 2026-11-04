@@ -1590,6 +1590,23 @@ async fn a_sign_in_redirected_to_another_site_stops_there() {
     assert!(other_seen.lock().unwrap().is_empty());
 }
 
+#[tokio::test]
+async fn a_password_never_follows_a_cross_origin_307_or_308_without_extra_headers() {
+    for permanent in [false, true] {
+        let (elsewhere, other_seen) = other_site().await;
+        let login = elsewhere.join("steal").unwrap().to_string();
+        let base = serve(Router::new().route("/auth/password-login", post(move || {
+            let login = login.clone();
+            async move {
+                if permanent { Redirect::permanent(&login) } else { Redirect::temporary(&login) }
+            }
+        }))).await;
+        let err = Dashboard::sign_in(&base, &sign_in("hunter2")).await.err().unwrap();
+        assert!(matches!(err, TransportError::Redirected(_)), "{err:?}");
+        assert!(other_seen.lock().unwrap().is_empty(), "the password reached another origin");
+    }
+}
+
 #[test]
 fn builds_extra_headers_and_marks_their_values_sensitive() {
     let map = transport::extra_headers(&[header(" CF-Access-Client-Id ", " id.access\t"), header("Authorization", "Bearer abc")]).unwrap();
@@ -1724,7 +1741,7 @@ async fn a_provider_key_never_follows_a_redirect_to_another_site() {
         .route("/auth/password-login", post(login))
         .route("/api/env", get(env_rows))
         .route("/api/providers/validate", post(move || async move { Redirect::temporary(&away) }));
-    // No extra headers, so the sign-in client would follow redirects anywhere.
+    // No extra headers: provider keys must still stay on the dashboard origin.
     let dashboard = Dashboard::sign_in(&serve(app).await, &sign_in("hunter2")).await.unwrap();
     let err = dashboard.save_provider_key("default", "OPENROUTER_API_KEY", "sk-good").await.unwrap_err().to_string();
     assert!(err.contains("307") && !err.contains("sk-good"), "{err}");

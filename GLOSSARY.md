@@ -1,6 +1,6 @@
 # Hermes Chat
 
-A personal desktop chat client for one remote Hermes Agent server. Chats that need attention sit at the top; finished ones are settled out of the way.
+A personal desktop chat client for the owner's own Hermes Agent servers, one at a time. Chats that need attention sit at the top; finished ones are settled out of the way.
 
 ## Language
 
@@ -81,7 +81,11 @@ _Avoid_: restore, sync, upload
 **Profile**:
 A separate Hermes agent setup on the server, with its own chats. The app shows one profile's chats at a time. The profile switcher shows which other profiles have Unread chats, checked every two minutes, so it can lag behind.
 Switching profile happens in place, with the same sign-in: the list shows what this computer saved for the profile, says it is connecting and loading, and is remembered for the next launch only once its chats load. If they can't, it says why and offers to try again or go back. Each profile keeps its own drafts, Saved copies and Model pick, and nothing that arrives for the profile left shows in the new one. If a reply is running or an Approval waiting, the switcher asks first. Hermes keeps the reply going, and the Approval waits until Hermes stops waiting; switching back brings both back.
-_Avoid_: account, workspace, agent (as a name for a profile), connection (the sign-in, which covers every profile)
+_Avoid_: account, workspace, agent (as a name for a profile), connection (the server signed in to, which covers every profile)
+
+**Connection**:
+A Hermes server this computer can sign in to, saved with a name, how it is reached (SSH or a URL), its address and dashboard username, and when it was last used. Each keeps its own password and Extra request headers in the system keyring, and its own Drafts, Queued messages, Failed messages, Saved copies, profile shown, Model pick and chat to reopen on this computer, so the same profile name on two servers never shares them. One is in use at a time. Switching to another asks first when a reply is running or an Approval waiting; Hermes keeps the reply going, and switching back brings both back. Removing one deletes only what this computer keeps for it, after saying what that is; its chats stay on the server. Nothing picks a connection by its name, or on its own: launch signs in to the one in use, and when that one is removed, the sign-in screen offers the others and waits (ADR 0049).
+_Avoid_: server (the machine itself), account, sign-in (the act of signing in), profile (an agent setup on the server)
 
 **Project**:
 A named group of chats and of folders on the server, in one profile. Hermes keeps the project, its name and its folders, so other Hermes clients show it too. Which chats are in it is kept by Hermes when it has a membership store, so every computer shows the same, and on this computer only when it doesn't, which is every Hermes today (ADR 0033). Picking a project in the list shows only its chats; a chat started meanwhile goes in it. A chat can be in several projects, or none. Deleting a project keeps its chats in Hermes and its folders on the server.
@@ -208,7 +212,7 @@ The transcript of a chat the owner opened lately, kept on this computer so it ca
 _Avoid_: cache (for one chat's copy), offline mode
 
 **Model pick**:
-The model, reasoning effort and fast mode the composer starts new chats on. It is sticky: it stays after starting a chat, switching chats or restarting the app, and is kept on this computer only. It never changes the profile's default model in Hermes. Picking with a chat on screen switches that chat alone, and becomes the pick for new chats. Switching profile starts again from that profile's own model.
+The model, reasoning effort and fast mode the composer starts new chats on. It is sticky: it stays after starting a chat, switching chats or restarting the app, and is kept on this computer only. It never changes the profile's default model in Hermes. Picking with a chat on screen switches that chat alone, and becomes the pick for new chats. Switching profile restores that profile's own pick, or its default model until one is chosen.
 _Avoid_: default model (that is the profile's, in Hermes), current model
 
 **Memory**:
@@ -232,7 +236,7 @@ A model the owner starred in the model picker. Favorites are listed first, and a
 _Avoid_: pinned model (pinning is how Hermes stores Active, ADR 0002)
 
 **Setup**:
-The steps that connect Hermes Chat to a Hermes server: the server, the dashboard sign-in, then optionally a Provider key. Setup tests the connection before it keeps anything, and says what to fix when the test fails. It opens by itself only on a computer with nothing set up, and again from Settings or the sign-in screen. Cancelling it leaves the connection as it was.
+The steps that connect Hermes Chat to a Hermes server: the server, the dashboard sign-in, then optionally a Provider key. Setup tests the connection before it keeps anything, and says what to fix when the test fails. It opens by itself only on a computer with nothing set up, and again to add a Connection or change a saved one, from Settings, the rail or the sign-in screen. Cancelling it leaves every Connection as it was.
 _Avoid_: onboarding (fine in conversation, not in the app), wizard, first-run (that's only when setup opens by itself)
 
 **Provider key**:
@@ -275,7 +279,7 @@ A file on this computer that the owner picked to preview in the Open dialog. Her
 _Avoid_: attachment (that is a file sent with a message)
 
 **Extra request header**:
-A header name and value the owner adds to a URL connection, for a gateway in front of the dashboard such as Cloudflare Access. Hermes Chat sends it with every request to that dashboard and never to another site. Its value is kept in the system keyring and never shown in Settings (ADR 0006).
+A header name and value the owner adds to a URL Connection, for a gateway in front of the dashboard such as Cloudflare Access. Hermes Chat sends it with every request to that dashboard and never to another site, or another Connection. Its value is kept in the system keyring, for that Connection only, and never shown in Settings (ADR 0006).
 _Avoid_: custom header, gateway token
 
 **Server files** (the Files tab):

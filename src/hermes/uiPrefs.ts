@@ -32,6 +32,8 @@ export type UIPrefs = {
   reasoningBlocks: boolean;
   /** null: no sticky pick, so Hermes's default model is used. */
   modelPicker: StickyModelPick | null;
+  /** Picks kept separately for each connection/profile, including the one not currently on screen. */
+  modelPicks: Record<string, ModelPick>;
   /** Starred models, as `provider/model`, listed first in the model picker. Kept even when Hermes no longer lists them. */
   modelFavorites: string[];
   /** The status bar items shown, in order (StatusBar.tsx). Empty: the bar is hidden. */
@@ -57,6 +59,7 @@ export const DEFAULT_UI_PREFS: Readonly<UIPrefs> = Object.freeze({
   lastOpenChat: Object.freeze({}) as Record<string, string>,
   reasoningBlocks: true,
   modelPicker: null,
+  modelPicks: {},
   modelFavorites: [],
   statusBar: [...STATUS_BAR_ITEMS],
   screenshotShortcut: "Ctrl+Shift+S",
@@ -115,6 +118,16 @@ function toModelPick(v: unknown): StickyModelPick | null | undefined {
   };
 }
 
+function toModelPicks(v: unknown): Record<string, ModelPick> | undefined {
+  if (!isDoc(v)) return undefined;
+  return Object.fromEntries(Object.entries(v).slice(-100).flatMap(([scope, raw]) => {
+    const pick = toModelPick(raw);
+    if (!str(scope) || !pick) return [];
+    const { profile: _, ...model } = pick;
+    return [[scope, model]];
+  }));
+}
+
 function toFavorites(v: unknown): string[] | undefined {
   if (!Array.isArray(v)) return undefined;
   return [...new Set(v.filter((k): k is string => str(k, 400) !== undefined && !!fromKey(k)))];
@@ -150,6 +163,7 @@ export function readUIPrefs(doc: UIPrefsDoc, d: Readonly<UIPrefs> = DEFAULT_UI_P
     lastOpenChat: toLastOpenChat(doc.lastOpenChat) ?? { ...d.lastOpenChat },
     reasoningBlocks: typeof doc.reasoningBlocks === "boolean" ? doc.reasoningBlocks : d.reasoningBlocks,
     modelPicker: pick === undefined ? (d.modelPicker && { ...d.modelPicker }) : pick,
+    modelPicks: toModelPicks(doc.modelPicks) ?? (pick?.profile ? { ...d.modelPicks, ...toModelPicks({ [pick.profile]: pick }) } : { ...d.modelPicks }),
     modelFavorites: toFavorites(doc.modelFavorites) ?? [...d.modelFavorites],
     statusBar: toStatusBar(doc.statusBar) ?? [...d.statusBar],
     screenshotShortcut: doc.screenshotShortcut === null || isShortcut(doc.screenshotShortcut) ? doc.screenshotShortcut : d.screenshotShortcut,
@@ -223,6 +237,18 @@ export function getUIPrefs(): Readonly<UIPrefs> {
 export function setUIPrefs(patch: Partial<UIPrefs>): boolean {
   const { doc, prefs } = current();
   const given = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
+  if (patch.modelPicks === undefined && patch.modelPicker !== undefined) {
+    const scope = patch.modelPicker?.profile ?? prefs.modelPicker?.profile;
+    if (scope) {
+      const picks = { ...prefs.modelPicks };
+      if (patch.modelPicker) {
+        const { profile: _, ...pick } = patch.modelPicker;
+        delete picks[scope];
+        picks[scope] = pick;
+      } else delete picks[scope];
+      given.modelPicks = picks;
+    }
+  }
   // A value that isn't valid leaves the field as it was.
   const next = readUIPrefs(given, prefs);
   const same = JSON.stringify(next) === JSON.stringify(prefs);

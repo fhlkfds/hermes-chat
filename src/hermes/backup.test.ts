@@ -7,6 +7,7 @@ import {
   BackupError,
   applyRestore,
   connOf,
+  placesOf,
   defaultMapping,
   loadCurrent,
   makeBackup,
@@ -487,5 +488,37 @@ describe("reading a backup", () => {
     drafts(s).set(draftKey(conn, "default", "c"), "x");
     const entries = await makeBackup(e, CATEGORY_IDS);
     expect((await readBackup(entries)).data.drafts).toHaveLength(1);
+  });
+
+  it("backs up a saved connection's data, kept by its id, by its address, and restores it under the id of the connection here", async () => {
+    // Saved connections keep their data by a stable id (connections.ts, ADR 0049); the backup names the address.
+    const here = { ...conn, id: "aaaaaaaa-0000-4000-8000-000000000001" };
+    const there = { ...conn, id: "bbbbbbbb-0000-4000-8000-000000000002" };
+    const from = env();
+    from.place = placesOf(() => [here]);
+    drafts(from.storage).set(draftKey(here, "default", "chat-a"), "Kept by id");
+    const scope = projectScope(here, "default");
+    from.storage.setItem("hermes-ui-prefs", JSON.stringify({ v: 1, templates: [{ id: "t", name: "N", description: "", body: "b", project: { scope, id: "p", name: "P" } }] }));
+    const entries = await makeBackup(from, CATEGORY_IDS);
+    const backup = await readBackup(entries);
+    expect(Object.values(backup.manifest.places)).toEqual([{ mode: "ssh", target: "liam@hermes.lan", username: "liam", profile: "default" }]);
+    expect(entries.map((e) => e.text).join("")).not.toContain(here.id);
+
+    const into = env();
+    into.place = placesOf(() => [there]);
+    const mapping = defaultMapping(backup, connOf(there), ["default"]);
+    const plan = planRestore(backup, await loadCurrent(into), connOf(there), mapping, all("merge"));
+    await applyRestore(into, plan, ok);
+    expect(drafts(into.storage).get(draftKey(there, "default", "chat-a"))).toBe("Kept by id");
+    expect(JSON.parse(into.storage.getItem("hermes-ui-prefs")!).templates[0].project.scope).toBe(projectScope(there, "default"));
+    // Read back as this computer's own, for the next backup.
+    expect((await makeBackup(into, ["drafts"]))[1].text).toContain("Kept by id");
+  });
+
+  it("leaves out data kept for a connection id no saved connection has", async () => {
+    const e = env();
+    e.place = placesOf(() => []);
+    drafts(e.storage).set(draftKey({ ...conn, id: "cccccccc-0000-4000-8000-000000000003" }, "default", "c"), "orphan");
+    expect((await readBackup(await makeBackup(e, ["drafts"]))).data.drafts).toEqual([]);
   });
 });
