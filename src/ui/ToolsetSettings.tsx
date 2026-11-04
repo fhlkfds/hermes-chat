@@ -298,6 +298,8 @@ export function ToolsetSettings({
       if (api.pending()?.profile === profile) wanted.current = wanted.current ?? false;
       readingNow.current = true;
       const started = stamp.current;
+      // Numbered when the read starts: a later guards read (after a change, on focus) supersedes this one's answer.
+      const guardsSeq = full ? ++guardsRead.current : 0;
       setReading(true);
       try {
         const [fresh, support, g] = await Promise.all([
@@ -331,10 +333,7 @@ export function ToolsetSettings({
           return undefined;
         });
         if (support) setWrite(support);
-        if (full) {
-          guardsRead.current++;
-          setGuards(g);
-        }
+        if (full && guardsSeq === guardsRead.current) setGuards(g);
         setLoadError(undefined);
         setUnsupported(undefined);
         setReread(false);

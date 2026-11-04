@@ -495,6 +495,24 @@ describe("Settings → Toolsets", () => {
       expect(await within(rowOf("Terminal & Processes")).findByText("Forced off on every platform")).toBeTruthy();
     });
 
+    it("an older Refresh landing late doesn't replace what a newer focus read found in the config", async () => {
+      const { server, user } = await shown();
+      expect(await screen.findByText(/Inherited: the profile hasn't saved a list of its own/)).toBeTruthy();
+      let release!: () => void;
+      server.toolsetListGateOnce = new Promise((res) => (release = res));
+      // Refresh: its config read answers at once (still inherited), its list waits.
+      await user.click(screen.getByRole("button", { name: /Refresh/ }));
+      await waitFor(() => expect(server.toolsetListGateOnce).toBeUndefined());
+      // Meanwhile another client saves the profile's own list; focus reads the config again.
+      server.toolsetSavedLists.default = new Set(["cli"]);
+      window.dispatchEvent(new Event("focus"));
+      expect(await screen.findByText(/Saved in profile: the profile has its own list/)).toBeTruthy();
+      act(() => release());
+      await screen.findByText(/Read from Hermes at/);
+      await new Promise((res) => setTimeout(res, 20));
+      expect(screen.getByText(/Saved in profile: the profile has its own list/)).toBeTruthy();
+    });
+
     it("says nothing about inheritance when the saved list can't be read for certain", async () => {
       const server = new FakeHermes();
       server.toolsetNoMcpUnclear.default = ["cli"];
