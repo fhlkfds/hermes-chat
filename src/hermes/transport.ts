@@ -774,6 +774,7 @@ export class Hermes {
     (_profile, name) => {
       if (name === "stt") this.voiceRead = undefined;
     },
+    (method, params) => this.request(method, params),
   );
   /** Settings → Memory's reads and writes (memory.ts). Each call names the profile it is for. */
   readonly memory: MemoryApi = memoryApi({

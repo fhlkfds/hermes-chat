@@ -1951,6 +1951,10 @@ export function Main({
             modelSettings={hermes.modelSettings}
             toolsets={hermes.toolsets}
             runningReplies={chats.filter((c) => c.running).length}
+            openChat={(() => {
+              const c = chats.find((x) => x.id === active.chatId);
+              return c && { id: c.id, title: c.title, runtimeId: c.runtimeId, running: c.running };
+            })()}
             memory={hermes.memory}
             onMemoryDirty={onMemoryDirty}
             memoryDiscards={memoryDiscards}
