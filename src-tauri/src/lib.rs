@@ -122,9 +122,10 @@ async fn hermes_connect(
     on_event: Channel<PipeEvent>,
 ) -> Result<Route, String> {
     let mut slot = state.0.lock().await;
+    // The screen's streams close first, while the connection (and its SSH tunnel) can still carry the close.
+    display::closed(displays.close_all()).await;
     *slot = None;
     transfers.stop_all();
-    displays.close_all();
     let attempt = attempt.unwrap_or_default();
     // Run apart, so `hermes_connect_cancel` can stop it; stopping it drops what it opened, SSH tunnel included.
     let task = {
@@ -422,9 +423,12 @@ async fn hermes_toolset_guards(state: State<'_, AppState>, profile: String) -> R
 
 #[tauri::command]
 async fn hermes_disconnect(state: State<'_, AppState>, transfers: State<'_, Transfers>, displays: State<'_, display::Displays>) -> Result<(), String> {
-    *state.0.lock().await = None;
+    let mut slot = state.0.lock().await;
+    // The screen's streams close first, while the connection (and its SSH tunnel) can still carry the close.
+    display::closed(displays.close_all()).await;
+    *slot = None;
+    drop(slot);
     transfers.stop_all();
-    displays.close_all();
     Ok(())
 }
 

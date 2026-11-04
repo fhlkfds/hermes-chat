@@ -90,6 +90,8 @@ const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 const withoutProfile = ({ profile: _profile, ...pick }: StickyModelPick): ModelPick => pick;
 
+/** Below this width the side panel's Server files drop columns and show a file below the list. */
+const PANEL_COMPACT_WIDTH = 640;
 /** The narrowest the chat gets beside the preview pane; narrower than this and the pane covers the chat instead. */
 const CHAT_MIN_WIDTH = 440;
 const PREVIEW_DEFAULT_WIDTH = 480;
@@ -504,6 +506,8 @@ export function Main({
   const [termKind, setTermKind] = useState<TerminalKind>("server");
   const [termRunning, setTermRunning] = useState<Record<TerminalKind, boolean>>({ server: false, local: false });
   const terminalRunning = termRunning.server || termRunning.local;
+  // The owner holds Hermes's screen: its computer use waits until they hand back, so the Screen tab says so.
+  const [screenHeld, setScreenHeld] = useState(false);
   // The side panel's Files: the folder open last stays for this sign-in. `filesKey` opens it at `filesPath` again.
   const [filesPath, setFilesPath] = useState<string>();
   const [filesKey, setFilesKey] = useState(0);
@@ -1568,6 +1572,7 @@ export function Main({
               onTab={setPanelTab}
               shown={previewShown}
               overlay={!previewFits}
+              compact={(previewFits ? paneWidth : mainWidth || Infinity) < PANEL_COMPACT_WIDTH}
               width={paneWidth}
               maxWidth={paneMax}
               onResize={(w, done) => {
@@ -1576,9 +1581,11 @@ export function Main({
               }}
               onHide={() => setPanelHidden(true)}
               onClose={() => setPanelOpen(false)}
-              running={{ terminal: terminalRunning }}
+              running={{ terminal: terminalRunning, screen: screenHeld && "(you're in control)" }}
               tabs={{
-                preview: () => (
+                // A page or file runs only while it is on screen: a hidden frame could keep playing or loading.
+                preview: (shown) =>
+                  shown && (
                   <PreviewPane
                     key={previewSeq}
                     target={preview ?? { kind: "start" }}
@@ -1590,7 +1597,7 @@ export function Main({
                     artifacts={artifacts}
                     connected={status === "connected"}
                   />
-                ),
+                  ),
                 terminal: (shown) => (
                   <Suspense fallback={null}>
                     <TerminalTab
@@ -1609,7 +1616,7 @@ export function Main({
                 ),
                 files: () => <FileBrowser key={filesKey} files={hermes.files} status={status} route={route} path={filesPath} onPath={setFilesPath} />,
                 // A profile's screen is its own; switching profile starts the tab again.
-                screen: (shown) => <ScreenTab key={profile} api={hermes.screen} shown={shown} connected={status === "connected"} />,
+                screen: (shown) => <ScreenTab key={profile} api={hermes.screen} shown={shown} connected={status === "connected"} onHeld={setScreenHeld} />,
               }}
             />
           )}

@@ -389,6 +389,18 @@ describe("Closing and resizing", () => {
     expect(paneOpen()).toBe(false);
   });
 
+  it("stops a page once it is out of sight, so a closed or covered preview plays and loads nothing", async () => {
+    const { user } = await signedIn();
+    await user.click(screen.getByRole("link", { name: "the docs" }));
+    expect(document.querySelector("iframe[title^='Web page']")).not.toBeNull();
+    await user.click(within(pane()).getByRole("button", { name: "Close the side panel" }));
+    expect(document.querySelector("iframe[title^='Web page']")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Open the side panel" }));
+    expect(within(pane()).getByTitle("Web page: https://docs.example.com/crash")).toBeTruthy();
+    await user.click(within(pane()).getByRole("tab", { name: /Files/ }));
+    expect(document.querySelector("iframe[title^='Web page']")).toBeNull();
+  });
+
   it("resizes from its edge with the keyboard, and keeps the width", async () => {
     const { user } = await signedIn();
     await user.click(screen.getByRole("button", { name: "Open the side panel" }));

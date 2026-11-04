@@ -370,6 +370,20 @@ async fn the_screen_relays_rfb_bytes_both_ways_and_closing_it_is_a_normal_close(
 }
 
 #[tokio::test]
+async fn closing_every_screen_waits_until_its_normal_close_has_gone_out() {
+    let (dashboard, mut closes) = screen_stub().await;
+    let displays = display::Displays::default();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let socket = display::open(dashboard, "SCREEN-1", move |e| drop(tx.send(e))).await.expect("open");
+    next_display(&mut rx).await;
+    displays.keep(displays.epoch(), socket).unwrap();
+    // As at sign-out: once this returns, the connection (and an SSH tunnel) may go.
+    display::closed(displays.close_all()).await;
+    let got = tokio::time::timeout(Duration::from_secs(2), closes.recv()).await.unwrap().unwrap();
+    assert_eq!(got, Some(1000));
+}
+
+#[tokio::test]
 async fn the_screen_reports_hermess_own_close_code() {
     let (dashboard, _closes) = screen_stub().await;
     for (ticket, code) in [("TAKEN-1", 4000), ("SPENT", 4401)] {

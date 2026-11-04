@@ -39,6 +39,11 @@ export interface ScreenApi {
   observe(viewerId?: string): Promise<DisplayObserve>;
   takeOver(viewerId: string): Promise<DisplayLease>;
   handBack(viewerId: string): Promise<DisplayLease>;
+  /**
+   * The viewer the owner holds the screen as, or undefined. Leaving the connection on purpose (sign-out, another
+   * profile) then hands it back first, even if its stream was lost meanwhile.
+   */
+  noteHeld(viewerId: string | undefined): void;
   /** Lease changes Hermes broadcasts, for this profile's screen and others'. */
   onLease(listener: (profileKey: string, lease: DisplayLease) => void): () => void;
   openSocket: OpenScreenSocket;
@@ -127,6 +132,8 @@ export class RelayedSocket {
     if (e instanceof ArrayBuffer) return this.onmessage?.({ data: e });
     this.readyState = 3; // CLOSED
     this.closeCode = e.code;
+    // Hermes closed it: Rust lets go of its end too.
+    this.socket?.close();
     this.onclose?.({ code: e.code, reason: e.reason, wasClean: e.code === 1000 });
   }
 

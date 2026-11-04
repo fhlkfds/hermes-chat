@@ -2116,7 +2116,8 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .panel-tab:focus-visible { outline: 2px solid var(--line-3); outline-offset: -2px; }
 .run-dot { width: 6px; height: 6px; background: var(--ok); }
 .panel-close { flex: none; }
-.panel-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; container-type: inline-size; }
+/* No container query here: containment would trap the Files dialogs, which must cover the window, inside the panel. */
+.panel-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .panel-body[hidden] { display: none; }
 .preview-content { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 /* Too narrow for labels: the icons stay, with their titles. */
@@ -2139,16 +2140,14 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .panel-files .files-head { padding: 12px 14px 4px; }
 .panel-files .files-title { margin-top: 0; }
 .panel-files .files-title h1 { font-size: calc(15rem / 14); }
-@container (max-width: 640px) {
-  .files-body { flex-direction: column; }
-  .files-preview { width: auto; flex: 1 1 55%; border-left: 0; border-top: 1px solid var(--line); }
-  .files-list { flex: 1 1 45%; padding: 6px 8px 24px 10px; }
-  .files-table th:nth-child(3), .files-table td:nth-child(3), .files-table th:nth-child(4), .files-table td:nth-child(4) { display: none; }
-  .files-bar { flex-wrap: wrap; row-gap: 6px; }
-  .files-goto { flex: 1 1 100%; }
-  .files-goto input { width: 100%; }
-  .files-tools input:not([type="checkbox"]) { width: 140px; }
-}
+.side-panel.compact .files-body { flex-direction: column; }
+.side-panel.compact .files-preview { width: auto; flex: 1 1 55%; border-left: 0; border-top: 1px solid var(--line); }
+.side-panel.compact .files-list { flex: 1 1 45%; padding: 6px 8px 24px 10px; }
+.side-panel.compact .files-table :is(th, td):is(:nth-child(3), :nth-child(4)) { display: none; }
+.side-panel.compact .files-bar { flex-wrap: wrap; row-gap: 6px; }
+.side-panel.compact .files-goto { flex: 1 1 100%; }
+.side-panel.compact .files-goto input { width: 100%; }
+.side-panel.compact .files-tools input:not([type="checkbox"]) { width: 140px; }
 
 /* Screen (Screen.tsx): Hermes's Bot Desktop */
 .screen-tab { flex: 1; min-height: 0; display: flex; flex-direction: column; }

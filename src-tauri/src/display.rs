@@ -4,8 +4,9 @@
 //! bytes both ways; noVNC in the webview speaks RFB. What input reaches the screen is Hermes's call (its lease and its
 //! RFB filter), not this relay's.
 //!
-//! Every socket is closed when the connection is replaced or closed, as transfers are (ADR 0023). Closing one sends a
-//! normal close (1000), which Hermes takes as the viewer leaving: control the owner took goes back to the agent.
+//! Every socket is closed when the connection is replaced or closed, as transfers are (ADR 0023), and before it goes,
+//! so the close still has the SSH tunnel to travel through. Closing one sends a normal close (1000), which Hermes takes
+//! as the viewer leaving: control the owner took goes back to the agent.
 
 use crate::transport::{Dashboard, TransportError};
 use futures_util::{SinkExt, StreamExt};
@@ -14,6 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::Message;
@@ -32,15 +34,27 @@ pub enum DisplayEvent {
     Closed { code: u16, reason: String },
 }
 
-/// One open screen socket. Dropping it closes the socket normally.
+/// One open screen socket. Dropping it closes the socket normally; `close` also says when that is done.
 pub struct DisplaySocket {
     outgoing: mpsc::UnboundedSender<Vec<u8>>,
+    task: JoinHandle<()>,
 }
 
 impl DisplaySocket {
     pub fn send(&self, bytes: Vec<u8>) -> Result<(), TransportError> {
         self.outgoing.send(bytes).map_err(|_| TransportError::Closed)
     }
+
+    /// Closes the socket normally; the handle ends once the close has gone out, or `CLOSE_WAIT` has passed.
+    pub fn close(self) -> JoinHandle<()> {
+        drop(self.outgoing);
+        self.task
+    }
+}
+
+/// Waits for sockets `close_all` closed to send their close, at most a little over `CLOSE_WAIT`.
+pub async fn closed(tasks: Vec<JoinHandle<()>>) {
+    let _ = tokio::time::timeout(CLOSE_WAIT + Duration::from_millis(500), futures_util::future::join_all(tasks)).await;
 }
 
 fn checked_ticket(ticket: &str) -> Result<&str, TransportError> {
@@ -57,7 +71,7 @@ pub async fn open(dashboard: Arc<Dashboard>, ticket: &str, on_event: impl Fn(Dis
     let handshake = dashboard.ws_handshake("api/display/ws", &[("display_ticket", checked_ticket(ticket)?)])?;
     let (ws, _) = tokio_tungstenite::connect_async(handshake).await.map_err(|e| TransportError::WebSocket(e.to_string()))?;
     let (outgoing, mut to_server) = mpsc::unbounded_channel::<Vec<u8>>();
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         let (mut sink, mut stream) = ws.split();
         let (code, reason) = loop {
             tokio::select! {
@@ -85,7 +99,7 @@ pub async fn open(dashboard: Arc<Dashboard>, ticket: &str, on_event: impl Fn(Dis
         let reason = if dashboard.hides_reason(&reason) { String::new() } else { reason };
         on_event(DisplayEvent::Closed { code, reason });
     });
-    Ok(DisplaySocket { outgoing })
+    Ok(DisplaySocket { outgoing, task })
 }
 
 /// The screen sockets open now, by id.
@@ -123,11 +137,13 @@ impl Displays {
         self.open.lock().unwrap().remove(&id);
     }
 
-    /// Closes every socket: the connection they were opened on is going.
-    pub fn close_all(&self) {
+    /// Closes every socket: the connection they were opened on is going. Await `closed` on the answer before letting
+    /// the connection go, so the closes still reach Hermes.
+    #[must_use = "the connection must outlast the closes: await display::closed on these"]
+    pub fn close_all(&self) -> Vec<JoinHandle<()>> {
         let mut open = self.open.lock().unwrap();
         self.epoch.fetch_add(1, Ordering::SeqCst);
-        open.clear();
+        open.drain().map(|(_, socket)| socket.close()).collect()
     }
 }
 
@@ -143,20 +159,23 @@ mod tests {
         assert!(checked_ticket("Abc-123_x.y~z").is_ok());
     }
 
-    #[test]
-    fn a_socket_kept_after_close_all_is_closed_instead() {
+    #[tokio::test]
+    async fn a_socket_kept_after_close_all_is_closed_instead() {
         let displays = Displays::default();
+        let socket = |tx| DisplaySocket { outgoing: tx, task: tokio::spawn(async {}) };
         let (tx, mut rx) = mpsc::unbounded_channel();
         let epoch = displays.epoch();
-        displays.close_all();
-        assert_eq!(displays.keep(epoch, DisplaySocket { outgoing: tx }), None);
+        assert!(displays.close_all().is_empty());
+        assert_eq!(displays.keep(epoch, socket(tx)), None);
         // Dropped, so its task would see the end and close.
         assert!(rx.try_recv().is_err() && rx.is_closed());
 
         let (tx, _rx) = mpsc::unbounded_channel();
-        let id = displays.keep(displays.epoch(), DisplaySocket { outgoing: tx }).unwrap();
+        let id = displays.keep(displays.epoch(), socket(tx)).unwrap();
         displays.send(id, vec![1, 2]).unwrap();
-        displays.close_all();
+        let closing = displays.close_all();
+        assert_eq!(closing.len(), 1);
+        closed(closing).await;
         assert!(matches!(displays.send(id, vec![3]), Err(TransportError::Closed)));
     }
 }

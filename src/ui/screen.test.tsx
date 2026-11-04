@@ -57,6 +57,8 @@ class FakeScreen implements ScreenApi {
   };
   takeOver = async (id: string) => (this.state.lease = { holder: "human", viewer_hash: await viewerHash(id), since: 2, epoch: this.state.lease.epoch + 1 });
   handBack = async () => (this.state.lease = { ...agent, epoch: this.state.lease.epoch + 1 });
+  held: (string | undefined)[] = [];
+  noteHeld = (id: string | undefined) => void this.held.push(id);
   onLease = (l: (key: string, lease: DisplayLease) => void) => {
     this.leaseListener = l;
     return () => {};
@@ -115,15 +117,21 @@ describe("The Screen tab", () => {
   it("takes over and hands back, and only then sends keys and pointer", async () => {
     const api = new FakeScreen();
     api.state.running = true;
-    show(api);
+    const onHeld = vi.fn();
+    FakeRfb.made = [];
+    render(<ScreenTab api={api} shown connected loadRfb={async () => FakeRfb as unknown as RfbConstructor} onHeld={onHeld} />);
     await connected();
     fireEvent.click(screen.getByRole("button", { name: /Take over/ }));
     await screen.findByText(/You're in control/);
+    expect(onHeld).toHaveBeenLastCalledWith(true);
+    expect(api.held.at(-1)).toBe("viewer-1");
     expect(FakeRfb.made[0].viewOnly).toBe(false);
     expect(document.querySelector(".screen-view.held")).not.toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /Hand back/ }));
     await screen.findByText("Watching: Hermes is in control.");
     expect(FakeRfb.made[0].viewOnly).toBe(true);
+    expect(onHeld).toHaveBeenLastCalledWith(false);
+    expect(api.held.at(-1)).toBeUndefined();
   });
 
   it("watches again on a fresh ticket, as the same viewer, when someone else takes over", async () => {

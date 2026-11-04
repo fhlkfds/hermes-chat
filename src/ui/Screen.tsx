@@ -63,11 +63,14 @@ export function ScreenTab({
   shown,
   connected,
   loadRfb = loadNoVnc,
+  onHeld,
 }: {
   api: ScreenApi;
   shown: boolean;
   connected: boolean;
   loadRfb?: () => Promise<RfbConstructor>;
+  /** Whether the owner holds the screen, so the panel can say so while the tab isn't shown. */
+  onHeld?: (held: boolean) => void;
 }) {
   const [status, setStatus] = useState<DisplayStatus>();
   const [lease, setLease] = useState<DisplayLease>();
@@ -87,6 +90,12 @@ export function ScreenTab({
   viewerRef.current = viewer;
 
   const held = heldBy(lease, viewer?.hash);
+  const onHeldRef = useRef(onHeld);
+  onHeldRef.current = onHeld;
+  useEffect(() => onHeldRef.current?.(held), [held]);
+  // Not cleared when the tab goes: leaving the connection hands back what the owner still holds.
+  useEffect(() => api.noteHeld(held ? viewer?.id : undefined), [api, held, viewer?.id]);
+  useEffect(() => () => onHeldRef.current?.(false), []);
 
   const noteLease = useCallback((next: DisplayLease) => setLease((known) => (isOlder(known, next) ? known : next)), []);
   const noteStatus = useCallback(
@@ -315,7 +324,7 @@ export function ScreenTab({
         </div>
       )}
       {body}
-      <div className={`screen-view ${held ? "held" : ""}`} hidden={!live} aria-label="Hermes's screen">
+      <div className={`screen-view ${held ? "held" : ""}`} hidden={!live} role="region" aria-label="Hermes's screen">
         <div className="screen-canvas" ref={host} />
         {live && conn.kind !== "live" && (
           <div className="preview-state preview-loading" role={conn.kind === "lost" ? "alert" : "status"}>

@@ -265,10 +265,10 @@ export function TerminalTab({
     <div className="terminal-tab" hidden={!shown}>
       <div className="segmented terminal-kinds" role="group" aria-label="Which computer">
         <button aria-pressed={kind === "server"} onClick={() => onKind("server")} title="A shell on the Hermes server, through your ssh">
-          <Server size={13} /> Server {running.server && <span className="dot run-dot" aria-label="(running)" />}
+          <Server size={13} /> Server {running.server && <span className="dot run-dot" role="img" aria-label="(running)" />}
         </button>
         <button aria-pressed={kind === "local"} onClick={() => onKind("local")} title="A shell on this computer">
-          <Laptop size={13} /> This computer {running.local && <span className="dot run-dot" aria-label="(running)" />}
+          <Laptop size={13} /> This computer {running.local && <span className="dot run-dot" role="img" aria-label="(running)" />}
         </button>
       </div>
       {made.server && <TerminalScreen kind="server" api={server.api} initialTarget={server.initialTarget} onTarget={server.onTarget} shown={shown && kind === "server"} onRunning={ran("server")} />}

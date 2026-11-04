@@ -87,6 +87,8 @@ describe("The relayed stream noVNC drives", () => {
     ws.onclose = closed;
     r.close(4000);
     expect(ws.closeCode).toBe(4000);
+    // Rust lets go of its end of a stream Hermes closed.
+    expect(r.sock.closed).toBe(1);
     expect(closed).toHaveBeenCalledWith({ code: 4000, reason: "control-taken", wasClean: false });
     ws.send(new Uint8Array([1]));
     expect(r.sent).toHaveLength(0);
@@ -127,6 +129,33 @@ describe("display.* over the connection", () => {
 
     const asked = server.requests.filter((r) => r.method.startsWith("display."));
     expect(asked.every((r) => r.params.profile === "default")).toBe(true);
+  });
+
+  it.each(["another profile", "sign-out"])("hands back the screen the owner holds before leaving for %s, stream or no stream", async (leave) => {
+    const server = new FakeHermes();
+    server.otherProfiles = { work: [] };
+    server.display = { status: { supported: true, installed: true, missing: [], running: true }, lease: { holder: "agent", viewer_hash: null, since: 1, epoch: 0 }, minted: new Set() };
+    const hermes = await connect(server.openPipe);
+    const { viewer_id } = await hermes.screen.observe();
+    await hermes.screen.takeOver(viewer_id);
+    hermes.screen.noteHeld(viewer_id);
+    expect(server.display.lease.holder).toBe("human");
+    if (leave === "sign-out") await hermes.close();
+    else await hermes.switchProfile("work");
+    expect(server.display.lease.holder).toBe("agent");
+    const release = server.requests.find((r) => r.method === "display.lease.release")!;
+    expect(release.params).toMatchObject({ viewer_id, profile: "default" });
+  });
+
+  it("leaves the screen alone when the owner doesn't hold it", async () => {
+    const server = new FakeHermes();
+    server.display = { status: { supported: true, installed: true, missing: [], running: true }, lease: { holder: "agent", viewer_hash: null, since: 1, epoch: 0 }, minted: new Set() };
+    const hermes = await connect(server.openPipe);
+    const { viewer_id } = await hermes.screen.observe();
+    hermes.screen.noteHeld(viewer_id);
+    hermes.screen.noteHeld(undefined);
+    await hermes.close();
+    expect(server.requests.some((r) => r.method === "display.lease.release")).toBe(false);
   });
 
   it("says when this Hermes has no screen, and refuses to open a stream the connection can't relay", async () => {

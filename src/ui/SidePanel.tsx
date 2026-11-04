@@ -23,6 +23,7 @@ export function SidePanel({
   onTab,
   shown,
   overlay,
+  compact = false,
   width,
   maxWidth,
   onResize,
@@ -37,14 +38,16 @@ export function SidePanel({
   shown: boolean;
   /** The window is too narrow for the panel beside the chat, so it covers the chat until `onHide`. */
   overlay: boolean;
+  /** Narrower than the Server files table needs: it drops columns and shows a file below the list. */
+  compact?: boolean;
   width: number;
   maxWidth: number;
   /** The owner is dragging the panel's edge; `done` once they let go. */
   onResize: (width: number, done: boolean) => void;
   onHide: () => void;
   onClose: () => void;
-  /** Tabs with something running in them, marked with a dot. */
-  running?: Partial<Record<PanelTab, boolean>>;
+  /** Tabs with something running in them, marked with a dot; a string says what, for screen readers. */
+  running?: Partial<Record<PanelTab, boolean | string>>;
   /** Each tab's content. `shown`: whether it is the tab on screen. */
   tabs: Record<PanelTab, (shown: boolean) => ReactNode>;
 }) {
@@ -72,7 +75,7 @@ export function SidePanel({
       ref={root}
       tabIndex={-1}
       hidden={!shown}
-      className={`preview side-panel ${overlay ? "overlay" : ""} ${dragging ? "dragging" : ""}`}
+      className={`preview side-panel ${overlay ? "overlay" : ""} ${compact ? "compact" : ""} ${dragging ? "dragging" : ""}`}
       style={overlay ? undefined : { width }}
       aria-label="Side panel"
       onKeyDown={onKey}
@@ -98,7 +101,7 @@ export function SidePanel({
             >
               {t.icon}
               <span className="panel-tab-label">{t.label}</span>
-              {running[t.tab] && <span className="dot run-dot" aria-label="(running)" />}
+              {running[t.tab] && <span className="dot run-dot" role="img" aria-label={typeof running[t.tab] === "string" ? (running[t.tab] as string) : "(running)"} />}
             </button>
           ))}
         </div>
