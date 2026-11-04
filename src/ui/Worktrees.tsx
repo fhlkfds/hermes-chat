@@ -290,7 +290,7 @@ export function WorktreesPanel({ api, target, top, hooks, onOpen }: { api: Workt
                     </div>
                     <p className="muted small">
                       <span className="mono">{k.ref}</span> at <span className="mono">{k.commit.slice(0, 12)}</span>
-                      {k.files ? `, ${plural(k.files, "file")} that weren't committed` : ""}
+                      {k.files ? `, ${plural(k.files, "file")} that ${k.files === 1 ? "wasn't" : "weren't"} committed` : ""}
                       {k.at ? `, kept ${new Date(k.at * 1000).toLocaleString()}` : ""}.
                     </p>
                     <div className="wt-actions">
