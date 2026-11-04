@@ -1,6 +1,6 @@
 import { type ReactNode, type RefObject, Suspense, lazy, useCallback, useLayoutEffect, useMemo, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal, flushSync } from "react-dom";
-import { Columns2, FolderCog, GitBranch, PanelRight, Rows2, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Columns2, FolderCog, GitBranch, PanelBottom, PanelLeft, PanelRight, PanelTop, Rows2, X } from "lucide-react";
 import { RenameConflict, connect, readSaved, toSource, type Delivery, type Hermes } from "./hermes/transport";
 import { invoke } from "@tauri-apps/api/core";
 import type { CommandHost } from "./ui/SlashCommands";
@@ -49,7 +49,8 @@ import { replayBlocked, variantsIn, type ReplayKind } from "./hermes/replay";
 import { branchBlocked, type BranchLink } from "./hermes/branch";
 import type { QueueApi } from "./ui/Queue";
 import { paneNames, Split, usePaneVisible, type PaneSlot, type SplitDir } from "./ui/Split";
-import { closeTabIn, navigateTabs, PaneDrop, TabStrip, type DropZone } from "./ui/Tabs";
+import { closeTabIn, navigateTabs, PaneDrop, TabStrip, type TabAction } from "./ui/Tabs";
+import { dropLabel, EDGE_SIDE, EDGES, moveTab, sameMove, type DropZone, type MovedChat, type TabDrop } from "./ui/tabMoves";
 import type { VoiceApi } from "./ui/Voice";
 import { SearchPalette } from "./ui/Search";
 import { SavedFilters, TagManager } from "./ui/Tags";
@@ -1287,14 +1288,87 @@ export function Main({
     openChat(active.tabs[(active.tabs.indexOf(active.chatId) + step + n) % n]);
   };
 
-  // A chat dragged onto a pane: onto its tab strip or middle, it opens in a new tab there; onto its right or bottom
-  // edge, the chat area splits that way with the chat in the second pane, or turns that way if it is split already.
-  const dropChat = (key: string, id: string, zone: DropZone) => {
-    if (zone === "tab") return openChat(id, { pane: key, newTab: true });
-    const dir: SplitDir = zone === "right" ? "row" : "column";
-    if (!split) return splitWith(id, dir);
-    setSplitDir(dir);
-    openChat(id, { pane: panes[1].key, newTab: true });
+  // A chat dragged onto a pane, or moved by a tab's menu or the keyboard: `tabMoves.ts` says where it lands. A tab moves
+  // and a chat from the list opens. A pane whose chat changes shows it afresh, as a chat opened there would.
+  const layoutAfter = (moved: MovedChat, drop: TabDrop, newPane: (chatId: string) => Pane = (chatId) => ({ key: "pane-new", view: 0, chatId, tabs: [chatId] })) =>
+    moveTab(panesRef.current, splitDir, moved, drop, newPane);
+  /** What the hint says a drop would do, or null when it would do nothing. */
+  const previewMove = (moved: MovedChat, drop: TabDrop) => {
+    return layoutAfter(moved, drop) && dropLabel(panesRef.current, moved, drop);
+  };
+  const moveChat = (moved: MovedChat, drop: TabDrop) => guard(() => {
+    const before = new Map(panesRef.current.map((p) => [p.key, p]));
+    const out = layoutAfter(moved, drop, (chatId) => ({ key: newPaneKey(), view: newView(), chatId, tabs: [chatId] }));
+    if (!out) return;
+    navGen.current++;
+    setPanelHidden(true);
+    const panesNow = out.panes.map((p) => {
+      const was = before.get(p.key);
+      return was && was.chatId !== p.chatId ? { ...p, view: newView(), picked: undefined, jump: undefined, worktree: undefined } : p;
+    });
+    panesRef.current = panesNow;
+    setPanes(panesNow);
+    setSplitDir(out.dir);
+    activeKeyRef.current = out.active;
+    setActiveKey(out.active);
+    setReopening(undefined);
+    rememberOpenChat(pref, panesNow.find((p) => p.key === out.active)!.chatId);
+  });
+  const dropChat = (key: string, moved: MovedChat, zone: DropZone, index?: number) => moveChat(moved, { pane: key, zone, index });
+
+  /** Ctrl+Shift+PageUp and PageDown: the tab shown in the active pane moves one place left or right along its strip.
+   * Focus on a tab follows it. */
+  const shiftTab = (step: number) => {
+    const at = active.tabs.indexOf(active.chatId);
+    const to = step < 0 ? at - 1 : at + 2;
+    if (at < 0 || to < 0 || to > active.tabs.length) return;
+    const focused = (document.activeElement as Element | null)?.closest(`[data-pane="${CSS.escape(active.key)}"] .tabs`);
+    moveChat({ id: active.chatId, from: active.key }, { pane: active.key, zone: "tab", index: to });
+    if (focused) requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-pane="${CSS.escape(active.key)}"] .tab-open[aria-selected="true"]`)?.focus());
+  };
+
+  /** A tab's menu: the keyboard way to every drag of a tab (ADR 0052). Each item is the drop it stands for, said as
+   * the drop's hint says it; of items that would do the same, the first is kept. */
+  const tabMenu = (p: Pane, id: string | null): TabAction[] => {
+    const moved = { id, from: p.key };
+    const at = p.tabs.indexOf(id);
+    const shown = p.chatId === id;
+    const edgeIcons = { right: <PanelRight size={15} />, bottom: <PanelBottom size={15} />, left: <PanelLeft size={15} />, top: <PanelTop size={15} /> };
+    const items = (list: { drop: TabDrop; label: string; icon: ReactNode; keys?: string }[]) => {
+      const kept: { out: NonNullable<ReturnType<typeof layoutAfter>>; action: TabAction }[] = [];
+      for (const { drop, label, icon, keys } of list) {
+        const out = layoutAfter(moved, drop);
+        if (out && !kept.some((k) => sameMove(k.out, out))) kept.push({ out, action: { label, icon, keys, run: () => moveChat(moved, drop) } });
+      }
+      return kept.map((k) => k.action);
+    };
+    const along = items([
+      { drop: { pane: p.key, zone: "tab", index: at - 1 }, label: "Move tab left", icon: <ArrowLeft size={15} />, keys: shown ? "Ctrl+Shift+PgUp" : undefined },
+      { drop: { pane: p.key, zone: "tab", index: at + 2 }, label: "Move tab right", icon: <ArrowRight size={15} />, keys: shown ? "Ctrl+Shift+PgDn" : undefined },
+    ]);
+    // Into the other pane's tabs first, as that is the plainest; then the edges of the tab's own pane.
+    const elsewhere = items([
+      ...panes
+        .filter((o) => o.key !== p.key)
+        .map((o) => ({
+          drop: { pane: o.key, zone: "tab" as const },
+          label: `${p.tabs.length === 1 ? "Merge into" : "Move to"} the ${paneNames(splitDir)[panes.indexOf(o)].toLowerCase()} pane`,
+          icon: <Columns2 size={15} />,
+        })),
+      ...EDGES.map((zone) => ({ drop: { pane: p.key, zone }, label: dropLabel(panes, moved, { pane: p.key, zone }), icon: edgeIcons[zone] })),
+      // The other pane's edges: the tab stays, and its pane goes to that side of the other one.
+      ...panes
+        .filter((o) => o.key !== p.key)
+        .flatMap((o) =>
+          EDGES.map((zone) => ({
+            drop: { pane: o.key, zone },
+            label: `Move this pane ${EDGE_SIDE[zone]} the ${paneNames(splitDir)[panes.indexOf(o)].toLowerCase()} pane`,
+            icon: edgeIcons[zone],
+          })),
+        ),
+    ]);
+    const groups = [along, elsewhere, [{ label: "Close tab", icon: <X size={15} />, run: () => closeTab(p.key, id) }]].filter((g) => g.length);
+    return groups.flatMap((g, i) => (i ? ["sep" as const, ...g] : g));
   };
 
   /** Ctrl+\: splits the chat on screen into a second pane, or closes the pane the owner isn't in. */
@@ -1833,6 +1907,9 @@ export function Main({
       } else if (e.key === "Tab" && onChat) {
         e.preventDefault();
         cycleTab(e.shiftKey ? -1 : 1);
+      } else if ((e.key === "PageUp" || e.key === "PageDown") && e.shiftKey && !e.altKey && onChat) {
+        e.preventDefault();
+        shiftTab(e.key === "PageUp" ? -1 : 1);
       } else if (k === "b") {
         e.preventDefault();
         setListOpen((o) => !o);
@@ -1891,6 +1968,7 @@ export function Main({
   const withTabs = (p: Pane, chatNode: ReactNode, controls: ReactNode) => (
     <>
       <TabStrip
+        pane={p.key}
         tabs={p.tabs.map((id) => {
           const c = id === null ? undefined : chats.find((c) => c.id === id);
           return { id, title: c?.title ?? "New chat", running: c?.running, unread: c?.unread };
@@ -1899,11 +1977,15 @@ export function Main({
         onPick={(id) => openChat(id, { pane: p.key })}
         onClose={(id) => closeTab(p.key, id)}
         onNew={() => openChat(null, { pane: p.key, fresh: true, newTab: true })}
-        onDropChat={(id) => dropChat(p.key, id, "tab")}
+        preview={(moved, zone, index) => previewMove(moved, { pane: p.key, zone, index })}
+        onDropChat={(moved, zone, index) => dropChat(p.key, moved, zone, index)}
+        menu={(id) => tabMenu(p, id)}
         lastClosable={split}
         controls={controls}
       />
-      <PaneDrop onDropChat={(id, zone) => dropChat(p.key, id, zone)}>{chatNode}</PaneDrop>
+      <PaneDrop preview={(moved, zone) => previewMove(moved, { pane: p.key, zone })} onDropChat={(moved, zone) => dropChat(p.key, moved, zone)}>
+        {chatNode}
+      </PaneDrop>
     </>
   );
 
