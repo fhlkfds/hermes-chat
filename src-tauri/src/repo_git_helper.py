@@ -1231,4 +1231,4 @@ def main():
     sys.stdout.flush()
 
 
-main()
+# main() runs at the end of repo_worktree_helper.py, which Rust sends after this file as one program.

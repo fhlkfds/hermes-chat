@@ -210,8 +210,11 @@ export function ToolsetSettings({
   profile,
   connected,
   runningReplies = 0,
+  onGuide,
   chat,
 }: {
+  /** Opens the compatibility guide at the toolset switches, from the note saying they can't be changed here. */
+  onGuide?: () => void;
   api: ToolsetsApi;
   profile: string;
   connected: boolean;
@@ -594,7 +597,12 @@ export function ToolsetSettings({
       )}
       {write && !write.ok && (
         <p className="small warn-note toolset-scope" role="status">
-          {write.reason} Each toolset shows whether it's on.
+          {write.reason} Each toolset shows whether it's on.{" "}
+          {onGuide && (
+            <button className="link-btn" onClick={onGuide} aria-label="Compatibility guide: Toolset switches">
+              Compatibility guide
+            </button>
+          )}
         </p>
       )}
       {guards && list.toolsets.some((t) => t.platform === "cli") && (

@@ -1,6 +1,6 @@
 import { type ReactNode, type RefObject, Suspense, lazy, useCallback, useLayoutEffect, useMemo, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal, flushSync } from "react-dom";
-import { Columns2, FolderCog, PanelRight, Rows2, X } from "lucide-react";
+import { Columns2, FolderCog, GitBranch, PanelRight, Rows2, X } from "lucide-react";
 import { RenameConflict, connect, readSaved, toSource, type Delivery, type Hermes } from "./hermes/transport";
 import { invoke } from "@tauri-apps/api/core";
 import type { CommandHost } from "./ui/SlashCommands";
@@ -68,11 +68,16 @@ import { OutputsIndex, outputsIn, splitPath, type Output } from "./hermes/output
 import { STATUS_LABEL, composing, routeLabel } from "./ui/bits";
 import { ProjectScreen, ProjectSwitcher, type ProjectUnread } from "./ui/Projects";
 import { ScheduledJobs } from "./ui/ScheduledJobs";
+import { CapabilityGate } from "./ui/Diagnostics";
+import { guideUrl, type CapabilityId } from "./hermes/capabilities";
+import { useCapabilities } from "./ui/Diagnostics";
 import { Automations } from "./ui/Automations";
 import { tauriLocalTerminal, tauriTerminal } from "./ui/tauriTerminal";
 import { TERMINAL_TARGET_KEY, terminalTarget, type TerminalKind } from "./hermes/terminal";
 import { REPO_PATH_KEY, REPO_RECENT_KEY, REPO_TARGET_KEY, readRecent, remember, repoTarget } from "./hermes/repo";
 import { RepositoryScreen } from "./ui/Repository";
+import { startInWorktree, worktreeChats, type WorktreeChat, type WorktreeStart } from "./hermes/worktrees";
+import type { RepoApi } from "./hermes/repo";
 import { tauriRepo } from "./ui/tauriRepo";
 import { ApplyDefaults, NewChatSettingsView } from "./ui/ProjectDefaultsNotes";
 import { appearanceStore } from "./ui/appearance";
@@ -419,7 +424,17 @@ export default function App({ links = desktopLinks }: { links?: LinkInbox } = {}
  * among them (Tabs.tsx). `draftError`: why the New chat pane couldn't start a chat. `picked`: the search result its chat
  * was opened from; `at` tells one pick from the next.
  */
-type Pane = { key: string; view: number; chatId: string | null; tabs: (string | null)[]; draftError?: string; picked?: { found: Found; at: number }; jump?: JumpTarget };
+type Pane = {
+  key: string;
+  view: number;
+  chatId: string | null;
+  tabs: (string | null)[];
+  draftError?: string;
+  picked?: { found: Found; at: number };
+  jump?: JumpTarget;
+  /** The worktree a New chat pane starts its chat in, picked in the Repository screen (ADR 0043). */
+  worktree?: WorktreeStart;
+};
 
 let panesMade = 0;
 /** A pane's key, which is also its name to Hermes for what is on screen (transport.ts `open`). */
@@ -485,6 +500,7 @@ export function Main({
   onLinkTaken,
   refs = savedConnectionRefs,
   tray = tauriTray,
+  repoApi = tauriRepo,
 }: {
   hermes: Hermes;
   connection: SavedSignIn;
@@ -502,6 +518,8 @@ export function Main({
   localFiles?: LocalFiles;
   webPages?: WebPages;
   screenshots?: Screenshots;
+  /** The Repository screen's helper over ssh, and worktrees' (ADR 0034, 0043). */
+  repoApi?: RepoApi;
   /** The global shortcut (ADR 0033); none outside the desktop app. */
   summon?: SummonApi;
   /** Where Settings → Persona keeps unsaved edits and replaced versions on this computer. */
@@ -592,6 +610,10 @@ export function Main({
   const [showTextGeneration, setShowTextGeneration] = useState<object>();
   /** Set to open Settings on its Memory tab, from the context inspector. */
   const [showMemory, setShowMemory] = useState<object>();
+  /** Set, each time anew, to open Settings → Diagnostics, at the capability a screen's note named. */
+  const [showDiagnostics, setShowDiagnostics] = useState<{ id?: CapabilityId }>();
+  /** What the connected Hermes supports, for the menus that say what it lacks (capabilities.ts). */
+  const caps = useCapabilities(hermes.capabilities);
   const voice = useMemo<VoiceApi>(
     () => ({ setup: () => hermes.voiceSetup(), transcribe: (audio, mime) => hermes.transcribe(audio, mime), speak: (text) => hermes.speak(text) }),
     [hermes],
@@ -612,6 +634,8 @@ export function Main({
   const [screenHeld, setScreenHeld] = useState(false);
   // The Repository screen covers the chat panes too (ADR 0034).
   const [repoOpen, setRepoOpen] = useState(false);
+  /** Where the Repository screen opens when a chat's worktree label opened it: that worktree's Worktrees view. */
+  const [repoAt, setRepoAt] = useState<{ target: string; path: string; view: "worktrees"; n: number }>();
   // The side panel's Files: the folder open last stays for this sign-in. `filesKey` opens it at `filesPath` again.
   const [filesPath, setFilesPath] = useState<string>();
   const [filesKey, setFilesKey] = useState(0);
@@ -793,8 +817,17 @@ export function Main({
     setLogsOpen(false);
     setShowTextGeneration(undefined);
     setShowMemory(undefined);
+    setShowDiagnostics(undefined);
     setSettingsOpen(true);
   };
+  /** Opens Settings → Diagnostics at capability `id`, from the note a screen shows when Hermes lacks it. */
+  const openDiagnostics = (id: CapabilityId) => {
+    openSettings();
+    setShowDiagnostics({ id });
+  };
+  /** Opens a page of the compatibility guide in the owner's browser. */
+  const openGuide = (url: string) =>
+    void webPages.openInBrowser(url).catch((e: unknown) => setToast({ text: `Couldn't open the compatibility guide: ${messageOf(e)}`, at: Date.now() }));
   const listable = proj.projects.filter((p) => !p.archived);
   const shownProject = listable.find((p) => p.id === proj.selectedId);
   const projectScreenOpen = projectOpen && !!shownProject;
@@ -892,12 +925,22 @@ export function Main({
   // unless another is named, and the pane it opens in becomes the active one.
   // `keepSettings`: the move isn't the owner's, so Settings stays on screen. `newTab`: the chat opens in a tab of its
   // own, rather than in place of the one showing.
-  const openChat = (id: string | null, { pane = active.key, remember = true, fresh = false, keepSettings = false, newTab = false } = {}) => {
+  const openChat = (
+    id: string | null,
+    {
+      pane = active.key,
+      remember = true,
+      fresh = false,
+      keepSettings = false,
+      newTab = false,
+      worktree,
+    }: { pane?: string; remember?: boolean; fresh?: boolean; keepSettings?: boolean; newTab?: boolean; worktree?: WorktreeStart } = {},
+  ) => {
     const go = () => {
       navGen.current++;
       setPanelHidden(true);
       if (newTab) setPanes((ps) => ps.map((p) => (p.key === pane && !p.tabs.includes(id) ? { ...p, tabs: [...p.tabs, id] } : p)));
-      patchPane(pane, { chatId: id, picked: undefined, jump: undefined, ...(fresh && { draftError: undefined }) });
+      patchPane(pane, { chatId: id, picked: undefined, jump: undefined, worktree, ...(fresh && { draftError: undefined }) });
       activeKeyRef.current = pane;
       setActiveKey(pane);
       setReopening(undefined);
@@ -915,6 +958,19 @@ export function Main({
   };
 
   const newChat = (remember = true) => openChat(null, { remember, fresh: true });
+
+  /** Opens the Repository screen on a worktree's Worktrees view, as a chat's worktree label does (ADR 0043). */
+  const openRepository = (at: { target: string; path: string; view: "worktrees" }) =>
+    guard(() => {
+      setProjectOpen(false);
+      setSettingsOpen(false);
+      setJobsOpen(false); setAutomationsOpen(false);
+      setOutputsOpen(false);
+      setUsageOpen(false);
+      setLogsOpen(false);
+      setRepoAt((was) => ({ ...at, n: (was?.n ?? 0) + 1 }));
+      setRepoOpen(true);
+    });
 
   const pick = (found: Found) => guard(() => {
     navGen.current++;
@@ -1614,6 +1670,7 @@ export function Main({
       node: withTabs(
         p,
         <ChatView
+          openGuide={openGuide}
           hermes={hermes}
           connection={connection}
           profile={profile}
@@ -1643,12 +1700,18 @@ export function Main({
           }}
           shownProject={shownProject && { name: shownProject.name, defaults: proj.defaults[shownProject.id], has: !!listed && !!proj.chats[shownProject.id]?.includes(chat.id) }}
           where={where}
+          connectionName={hereLabel}
+          repoApi={repoApi}
+          scope={scope}
+          worktree={p.worktree?.scope === scope ? p.worktree : undefined}
+          onDropWorktree={() => patchPane(p.key, { worktree: undefined })}
+          onOpenWorktree={(w) => openRepository({ target: w.target, path: w.path, view: "worktrees" })}
           onStarted={(id) => {
             // The chat started from this pane's New chat pane replaces it here, without taking the owner from the
             // other pane if they went there meanwhile.
             if (panesRef.current.find((now) => now.key === p.key)?.view !== p.view) return;
             const stillActive = activeKeyRef.current === p.key;
-            patchPane(p.key, { chatId: id, picked: undefined });
+            patchPane(p.key, { chatId: id, picked: undefined, worktree: undefined });
             setReopening(undefined);
             if (stillActive) rememberOpenChat(profile, id);
           }}
@@ -1666,6 +1729,7 @@ export function Main({
                   setUsageOpen(false);
                   setLogsOpen(false);
                   setShowTextGeneration(undefined);
+                  setShowDiagnostics(undefined);
                   setShowMemory({});
                   setSettingsOpen(true);
                 }
@@ -1787,6 +1851,7 @@ export function Main({
             setOutputsOpen(false);
             setUsageOpen(false);
             setLogsOpen(false);
+            setRepoAt(undefined);
             setRepoOpen((o) => !o);
           })
         }
@@ -1830,6 +1895,7 @@ export function Main({
                 unread={projectUnread}
                 loading={proj.loading}
                 error={proj.error}
+                unsupported={caps.caps.projects.state === "unsupported" ? { onGuide: () => openGuide(guideUrl("projects")) } : undefined}
                 connected={status === "connected"}
                 onOpen={() => status === "connected" && void projects.load()}
                 onSelect={(id) => {
@@ -1917,6 +1983,7 @@ export function Main({
             setLogsOpen(false);
             // One destination at a time: an earlier Memory shortcut mustn't switch Settings away from this one.
             setShowMemory(undefined);
+            setShowDiagnostics(undefined);
             setShowTextGeneration({});
             setSettingsOpen(true);
           }}
@@ -1942,27 +2009,44 @@ export function Main({
           onDismiss={(e) => acks.dismiss(e, inbox.entries)}
           onRefresh={() => void hermes.checkOtherProfiles()}
           onClose={() => setInboxOpen(false)}
+          onGuide={() => openGuide(guideUrl("liveSessions"))}
         />
       )}
       <main className="main" ref={mainRef}>
         <div className="main-chat" inert={previewCovers || undefined}>
             {automationsOpen && !settingsOpen ? (
-              <Automations
-                key={profile}
-                api={hermes.automations}
-                profile={profile}
-                connected={status === "connected"}
+              <CapabilityGate
+                store={hermes.capabilities}
+                id="automations"
+                openGuide={openGuide}
+                onDiagnostics={openDiagnostics}
                 onClose={() => { flushSync(() => setAutomationsOpen(false)); focusPane(active.key); }}
-                onOpenChat={(id) => openChat(id)}
-              />
+              >
+                <Automations
+                  key={profile}
+                  api={hermes.automations}
+                  profile={profile}
+                  connected={status === "connected"}
+                  onClose={() => { flushSync(() => setAutomationsOpen(false)); focusPane(active.key); }}
+                  onOpenChat={(id) => openChat(id)}
+                />
+              </CapabilityGate>
             ) : jobsOpen && !settingsOpen ? (
-              <ScheduledJobs
-                key={profile}
-                api={hermes.cron}
-                profile={profile}
-                connected={status === "connected"}
+              <CapabilityGate
+                store={hermes.capabilities}
+                id="scheduledJobs"
+                openGuide={openGuide}
+                onDiagnostics={openDiagnostics}
                 onClose={() => { flushSync(() => setJobsOpen(false)); focusPane(active.key); }}
-              />
+              >
+                <ScheduledJobs
+                  key={profile}
+                  api={hermes.cron}
+                  profile={profile}
+                  connected={status === "connected"}
+                  onClose={() => { flushSync(() => setJobsOpen(false)); focusPane(active.key); }}
+                />
+              </CapabilityGate>
             ) : projectScreenOpen && shownProject && !settingsOpen ? (
               <ProjectScreen
                 key={shownProject.id}
@@ -2036,6 +2120,7 @@ export function Main({
               return c && { id: c.id, title: c.title, runtimeId: c.runtimeId, running: c.running };
             })()}
             memory={hermes.memory}
+            memoryProviders={hermes.memoryProviders}
             onMemoryDirty={onMemoryDirty}
             memoryDiscards={memoryDiscards}
             skills={hermes.skills}
@@ -2047,6 +2132,9 @@ export function Main({
             voiceSetup={voice.setup}
             showTextGeneration={showTextGeneration}
             showMemory={showMemory}
+            capabilities={hermes.capabilities}
+            openGuide={openGuide}
+            showDiagnostics={showDiagnostics}
             onClearCache={() => hermes.clearCache()}
             importer={{
               imports: hermes.imports,
@@ -2126,6 +2214,16 @@ export function Main({
             }}
           />
         ) : outputsOpen ? (
+          <CapabilityGate
+            store={hermes.capabilities}
+            id="outputs"
+            openGuide={openGuide}
+            onDiagnostics={openDiagnostics}
+            onClose={() => {
+              flushSync(() => setOutputsOpen(false));
+              focusPane(active.key);
+            }}
+          >
           <OutputsScreen
             snapshot={outSnap}
             outputs={shownOutputs}
@@ -2166,11 +2264,27 @@ export function Main({
               focusPane(active.key);
             }}
           />
+          </CapabilityGate>
         ) : repoOpen ? (
           <RepositoryScreen
-            api={tauriRepo}
-            initialTarget={repoTarget(connection, localStorage.getItem(REPO_TARGET_KEY), localStorage.getItem(TERMINAL_TARGET_KEY))}
-            initialPath={localStorage.getItem(REPO_PATH_KEY) ?? ""}
+            key={repoAt ? `at-${repoAt.n}` : "repo"}
+            api={repoApi}
+            initialTarget={repoAt?.target ?? repoTarget(connection, localStorage.getItem(REPO_TARGET_KEY), localStorage.getItem(TERMINAL_TARGET_KEY))}
+            initialPath={repoAt?.path ?? localStorage.getItem(REPO_PATH_KEY) ?? ""}
+            initialView={repoAt?.view}
+            worktrees={{
+              profile,
+              connection: hereLabel,
+              chatTitle: (id) => hermes.getSnapshot().chats.find((c) => c.id === id)?.title,
+              hermesChatsIn: status === "connected" ? (path) => hermes.chatsWorkingIn(path) : undefined,
+              onStartChat:
+                status === "connected"
+                  ? (w) => {
+                      flushSync(() => setRepoOpen(false));
+                      openChat(null, { fresh: true, worktree: { ...w, scope } });
+                    }
+                  : undefined,
+            }}
             recent={readRecent(localStorage.getItem(REPO_RECENT_KEY))}
             suggestions={(shownProject?.folders ?? []).map((f) => ({ label: shownProject!.name, path: f.path }))}
             onOpened={rememberRepo}
@@ -2238,7 +2352,12 @@ export function Main({
                     />
                   </Suspense>
                 ),
-                files: () => <FileBrowser key={filesKey} files={hermes.files} status={status} route={route} path={filesPath} onPath={setFilesPath} />,
+                // On a server without the managed-files routes, a note takes the browser's place (ADR 0044).
+                files: () => (
+                  <CapabilityGate store={hermes.capabilities} id="serverFiles" openGuide={openGuide} onDiagnostics={openDiagnostics}>
+                    <FileBrowser key={filesKey} files={hermes.files} status={status} route={route} path={filesPath} onPath={setFilesPath} />
+                  </CapabilityGate>
+                ),
                 // A profile's screen is its own; switching profile starts the tab again.
                 screen: (shown) => <ScreenTab key={profile} api={hermes.screen} shown={shown} connected={status === "connected"} onHeld={setScreenHeld} />,
               }}
@@ -2367,6 +2486,7 @@ export function Main({
  * `paneKey` tells Hermes which pane has the chat on screen, so a chat shown in both stays read until both leave it.
  */
 function ChatView({
+  openGuide,
   hermes,
   connection,
   profile,
@@ -2388,6 +2508,12 @@ function ChatView({
   templates,
   shownProject,
   where,
+  connectionName,
+  repoApi,
+  scope,
+  worktree,
+  onDropWorktree,
+  onOpenWorktree,
   onStarted,
   onDraftError,
   onToast,
@@ -2434,8 +2560,20 @@ function ChatView({
   shownProject?: { name: string; defaults?: ProjectDefaults; has: boolean };
   /** The connection, as a folder on the server is shown beside it. */
   where?: string;
+  /** The connection's name, as a worktree's record names who started a chat in it. */
+  connectionName: string;
+  repoApi: RepoApi;
+  /** The connection and profile, as this computer keys what it keeps for each. */
+  scope: string;
+  /** The worktree this New chat pane starts its chat in (ADR 0043). */
+  worktree?: WorktreeStart;
+  onDropWorktree: () => void;
+  /** Opens the Repository screen's Worktrees view on the worktree a chat works in. */
+  onOpenWorktree: (w: WorktreeChat) => void;
   onStarted: (id: string) => void;
   onDraftError: (reason: string) => void;
+  /** Opens a page of the compatibility guide in the owner's browser. */
+  openGuide: (url: string) => void;
   onToast: (text: string) => void;
   /** Opens Settings → Memory, when this Hermes can edit memory from here. */
   onMemorySettings?: () => void;
@@ -2472,12 +2610,15 @@ function ChatView({
   useEffect(() => setChosen(undefined), [chatId, profile]);
   // No default for `project`: an explicit undefined is "no project", never the one this pane last drew.
   const settingsFor = (project: { name: string; defaults?: ProjectDefaults } | undefined) =>
-    resolveNewChat({ chosen, project, sticky, profilePick: catalog?.defaultPick, profileEffort: catalog?.defaultEffort });
+    resolveNewChat({ chosen, chosenFolder: worktree?.path, project, sticky, profilePick: catalog?.defaultPick, profileEffort: catalog?.defaultEffort });
   const startSettings = settingsFor(shownProject);
   const [applying, setApplying] = useState(false);
   useEffect(() => setApplying(false), [chatId]);
 
   const shownModel = (started && chat.model) || startSettings.model.value;
+  // The worktree this chat was started in from this computer, if it was (ADR 0043).
+  const inWorktreeKey = useSyncExternalStore(worktreeChats.subscribe, () => JSON.stringify(started ? (worktreeChats.get(scope, chat.id) ?? null) : null));
+  const inWorktree = useMemo(() => JSON.parse(inWorktreeKey) as WorktreeChat | null, [inWorktreeKey]);
   const pickModel = (pick: ModelPick) => {
     setUIPrefs({ modelPicker: { ...pick, profile } });
     if (!started) return setChosen(pick);
@@ -2506,7 +2647,23 @@ function ChatView({
       projects.reread();
       if (projects.getSnapshot().selectedId !== into) throw new Error("The project shown changed before the chat started. Nothing was sent.");
       const instructions = s.instructions.value && instructionsMessage(s.project ?? "", s.instructions.value);
-      const id = await hermes.newChat(s.model.value, { folder: s.folder.value, instructions });
+      let id: string;
+      if (worktree) {
+        // Its place in the worktree is held on the server before Hermes starts it, so the worktree can't be removed
+        // meanwhile; the chat runs there only if Hermes says it took the folder (newChat). Each wait on the server is
+        // a chance for the owner to switch profile: the chat must start in the profile it was written in, or not at all.
+        const w = worktree;
+        const begin = () => {
+          if (!stillIn()) return Promise.reject(new Error(`The profile changed to ${hermes.profile} before the chat started. Nothing was sent.`));
+          return hermes.newChat(s.model.value, { folder: s.folder.value, instructions });
+        };
+        const started = await startInWorktree(repoApi, w, { profile, connection: connectionName }, begin);
+        id = started.chatId;
+        worktreeChats.set(scope, id, { target: w.target, repo: w.repo, id: w.id, path: w.path, branch: w.branch, token: started.token });
+        if (!stillIn())
+          throw new Error(`The profile changed to ${hermes.profile} while the chat was starting in ${w.path}. It started empty in the ${profile} profile; your message wasn't sent.`);
+        if (started.warning) onToast(started.warning);
+      } else id = await hermes.newChat(s.model.value, { folder: s.folder.value, instructions });
       if (into && projects.getSnapshot().projects.some((p) => p.id === into)) projects.setChat(into, id, true);
       if (stillIn()) onStarted(id);
       return { id };
@@ -2604,7 +2761,9 @@ function ChatView({
   // that does nothing: its Draft stays as typed. One command at a time per Draft, so two panes on one chat can't run it
   // twice.
   const serverCommands = useServerCommands(hermes, status === "connected", profile);
+  const caps = useCapabilities(hermes.capabilities);
   const commands: CommandHost = {
+    guide: caps.caps.commands.state === "unsupported" ? () => openGuide(guideUrl("commands")) : undefined,
     why: (def) => {
       if (def.name === "help" || def.name === "new") return undefined;
       if (!started) return "This chat hasn't started yet. Send a message first.";
@@ -2681,8 +2840,14 @@ function ChatView({
       snoozedUntil={snoozedUntil}
       templates={templates}
       notice={
-        !started && shownProject ? (
-          <NewChatSettingsView settings={startSettings} where={where} profile={profile} problem={modelProblem(startSettings, catalog)} />
+        !started && (shownProject || worktree) ? (
+          <NewChatSettingsView
+            settings={startSettings}
+            where={where}
+            profile={profile}
+            problem={modelProblem(startSettings, catalog)}
+            worktree={worktree && { branch: worktree.branch, path: worktree.path, onDrop: onDropWorktree }}
+          />
         ) : undefined
       }
       banner={
@@ -2739,6 +2904,16 @@ function ChatView({
       paneControls={paneControls}
       headActions={
         <>
+          {started && inWorktree && (
+            <button
+              className="chip wt-chip"
+              title={`Works in the worktree ${inWorktree.path} on ${inWorktree.target}. Open it in the Repository screen.`}
+              aria-label={`Works in the worktree ${inWorktree.path}, on the branch ${inWorktree.branch}. Open it in the Repository screen`}
+              onClick={() => onOpenWorktree(inWorktree)}
+            >
+              <GitBranch size={13} aria-hidden /> <span className="mono">{inWorktree.branch}</span>
+            </button>
+          )}
           {started && shownProject?.has && shownProject.defaults && (
             <button className={`icon-btn ${applying ? "on" : ""}`} title={`Apply ${shownProject.name}'s defaults to this chat…`} aria-pressed={applying} onClick={() => setApplying((a) => !a)}>
               <FolderCog size={16} />

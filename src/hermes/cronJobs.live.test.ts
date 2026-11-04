@@ -1,10 +1,15 @@
 // Scheduled jobs against a REAL Hermes dashboard: skipped unless HERMES_LIVE_DASHBOARD is set, and refused unless
 // every profile on that server lives under /tmp, so it can only run against a throwaway HERMES_HOME. It makes only
 // "[fixture]" jobs that deliver locally, runs only a script job it made (the fixture script prints one line), and
-// deletes what it made. Set up a server as ADR 0013 describes, then:
+// deletes what it made. Set up a server as ADR 0013 describes, with the profile's gateway running (its scheduler makes
+// the runs) and these scripts in `$HERMES_LIVE_HOME/scripts/`: `fixture-echo.sh` prints `fixture ran at <time>`,
+// `fixture-fail.sh` prints a line and exits 3, `fixture-slow.sh` sleeps 45 s and prints a line. Then:
 //
 //   HERMES_LIVE_DASHBOARD=http://127.0.0.2:9339 HERMES_LIVE_USER=fixture HERMES_LIVE_PASSWORD=… \
 //   HERMES_LIVE_HOME=/tmp/hcron/home npx vitest run src/hermes/cronJobs.live.test.ts
+//
+// HERMES_LIVE_AGENT=1 also makes a prompt job and reads its run's reply. Set it only when the default profile's model
+// is a stand-in on loopback: the scheduler sends the prompt to whatever model the profile has.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { CronApi, CronConflict, type RestFn } from "./cronJobs";
 import { parseSchedule } from "./schedule";
@@ -34,6 +39,9 @@ function dashboard(): RestFn & { raw: RestFn } {
   };
   return Object.assign(rest as RestFn, { raw: rest as RestFn });
 }
+
+const AGENT = process.env.HERMES_LIVE_AGENT === "1";
+const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const fixture = { prompt: "[fixture] Do nothing. This job exists only to test Hermes Chat.", deliver: "local", repeat: null };
 
@@ -143,4 +151,41 @@ describe.skipIf(!BASE)("against a throwaway Hermes", () => {
     else expect(runs).toMatchObject({ kind: "unavailable" });
     await cron.remove("default", outcome.job!);
   });
+
+  it("tells the state of runs the scheduler made on its own, and reads an agent run's reply only in its profile", async () => {
+    // Every minute, so the gateway's scheduler runs them with no client asking: nothing here triggers a run.
+    const make = async (body: Record<string, unknown>) => {
+      const raw = (await rest("POST", "api/cron/jobs?profile=default", { schedule: "every 1m", deliver: "local", ...body })) as { id: string };
+      return (await cron.list("default")).find((j) => j.id === raw.id)!;
+    };
+    const ok = await make({ name: "[fixture] live tick", no_agent: true, script: "fixture-echo.sh" });
+    const bad = await make({ name: "[fixture] live failing tick", no_agent: true, script: "fixture-fail.sh" });
+    const agent = AGENT ? await make({ name: "[fixture] live agent tick", prompt: "[fixture] Reply with one short line. This job exists only to test Hermes Chat." }) : undefined;
+    const jobs = [ok, bad, ...(agent ? [agent] : [])];
+    const ran = async () => (await Promise.all(jobs.map((j) => cron.runs("default", j).catch(() => [])))).every((r) => r.some((run) => run.state !== "running"));
+    for (let waited = 0; !(await ran()); waited += 5_000) {
+      if (waited > 200_000) throw new Error("The profile's scheduler ran nothing in 200 s: is its gateway running?");
+      await pause(5_000);
+    }
+    expect((await cron.runs("default", ok)).find((r) => r.state !== "running")).toMatchObject({ state: "succeeded", script: true, preview: expect.stringMatching(/fixture ran at/) });
+    expect((await cron.runs("default", bad)).find((r) => r.state !== "running")).toMatchObject({ state: "failed", error: expect.stringMatching(/exited with code 3/) });
+    if (agent) {
+      const run = (await cron.runs("default", agent)).find((r) => r.state !== "running")!;
+      expect(run).toMatchObject({ state: "succeeded", script: false, sessionId: expect.any(String) });
+      expect((await cron.runResult("default", run)).reply).toBeTruthy();
+      // The messages route opens only the named profile's store.
+      await expect(cron.runResult("fixture-b", run)).rejects.toMatchObject({ kind: "gone" });
+    }
+    for (const j of jobs) await cron.remove("default", j);
+  }, 260_000);
+
+  it("refuses a second run while one is under way", async () => {
+    const raw = (await rest("POST", "api/cron/jobs?profile=default", { name: "[fixture] live slow", schedule: "every 1d", no_agent: true, script: "fixture-slow.sh", deliver: "local", paused: true })) as { id: string };
+    const job = (await cron.list("default")).find((j) => j.id === raw.id)!;
+    const first = cron.runNow("default", job);
+    await pause(4_000);
+    await expect(cron.runNow("default", job)).rejects.toMatchObject({ kind: "busy" });
+    expect(await first).toMatchObject({ completed: true, job: { lastStatus: "ok" } });
+    await cron.remove("default", (await cron.list("default")).find((j) => j.id === job.id)!);
+  }, 120_000);
 });

@@ -237,15 +237,18 @@ describe("Settings → Persona", () => {
   });
 
   it("shows a server without the persona routes, and a file Hermes may not read", async () => {
-    const { server, user } = await launch();
+    const { server, hermes, user } = await launch();
     server.soulRoutes = false;
     await openPersona(user);
-    await screen.findByText("This Hermes server can't edit personas");
+    // The tab's own read finds no route, so the note saying what is missing takes the editor's place (ADR 0044).
+    expect(await screen.findByRole("region", { name: /This Hermes server doesn't support Persona/ })).toBeTruthy();
     expect(screen.queryByRole("textbox", { name: /SOUL.md for/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /Create SOUL.md/ })).toBeNull();
 
     await user.click(screen.getByRole("tab", { name: /General/ }));
     server.soulRoutes = true;
+    // Hermes is updated in place: diagnostics' Check again finds the routes, and the tab opens again.
+    await act(() => hermes.capabilities.refresh());
     server.soulReadError = `The dashboard answered 500: {"detail":"Could not read SOUL.md: [Errno 13] Permission denied"}`;
     await user.click(screen.getByRole("tab", { name: /Persona/ }));
     await screen.findByText("Not allowed");

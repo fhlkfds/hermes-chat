@@ -13,6 +13,8 @@ import { Spinner, composing } from "./bits";
  */
 export type CommandHost = {
   why(def: CommandDef): string | undefined;
+  /** Opens the compatibility guide at Hermes's commands; set only while Hermes is known to lack them. */
+  guide?: () => void;
   run(def: CommandDef, arg: string, still: () => boolean): Promise<string | undefined>;
 };
 
@@ -260,6 +262,14 @@ function CommandHelp({ host, onClose }: { host: CommandHost; onClose: () => void
       </p>
       {group("local", "In this app")}
       {group("server", "On Hermes, for this chat")}
+      {host.guide && (
+        <p className="cmd-why">
+          This Hermes server doesn't support Hermes's slash commands; the app's own commands still work.{" "}
+          <button className="link-btn" onClick={host.guide} aria-label="Compatibility guide: Hermes's slash commands">
+            Compatibility guide
+          </button>
+        </p>
+      )}
     </section>
   );
 }
