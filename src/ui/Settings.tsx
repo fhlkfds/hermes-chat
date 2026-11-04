@@ -318,7 +318,11 @@ export function SettingsScreen({
     const root = results.current;
     if (!root || !wordsKey) return;
     const w = wordsKey.split(" ");
-    const run = () => setFound(applySearch(root, w));
+    const run = () => {
+      setFound(applySearch(root, w));
+      // A match inside a folded explanation (Toolsets' "How a change applies") would be counted but unseen: open the folds.
+      for (const d of root.querySelectorAll<HTMLDetailsElement>("details")) d.open = true;
+    };
     run();
     const seen = new MutationObserver(run);
     seen.observe(root, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: NAMED });
@@ -582,6 +586,7 @@ export function SettingsScreen({
                     discardSignal={memoryDiscards}
                     target={memSel.kind === "profile" ? memSel.name : undefined}
                     onProfiles={setMemProfiles}
+                    onPick={(p) => pickMem(`profile:${p}`)}
                     overview="folded"
                   />
                 </div>

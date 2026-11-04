@@ -97,6 +97,7 @@ export function MemoryProviderSettings({
   discardSignal = 0,
   target: targetProp,
   onProfiles,
+  onPick,
   overview = "table",
 }: {
   api: MemoryProvidersApi;
@@ -104,6 +105,8 @@ export function MemoryProviderSettings({
   target?: string;
   /** Called with every profile's name once they're read, for a list drawn elsewhere. */
   onProfiles?: (profiles: string[]) => void;
+  /** With `target` from outside: a profile picked in the table goes here, so the list elsewhere follows it. */
+  onPick?: (profile: string) => void;
   /** "folded": the all-profiles table sits under a fold, since a list elsewhere already names them. */
   overview?: "table" | "folded";
   /** The profile the app shows, which the screen starts on. */
@@ -216,14 +219,15 @@ export function MemoryProviderSettings({
     if (busy || who === target) return;
     leave(() => switchTo(who));
   };
+  // A profile picked outside shows once no write or read is under way, as `manage` waits, so a late answer can't land on it.
   useEffect(() => {
-    if (targetProp !== undefined && targetProp !== target) {
+    if (targetProp !== undefined && targetProp !== target && !busy) {
       setEdits({});
       setNotice(undefined);
       setConfirmSetup(false);
       switchTo(targetProp);
     }
-  }, [targetProp]);
+  }, [targetProp, busy]);
   useEffect(() => {
     if (rows) onProfiles?.(rows.map((r) => r.profile));
   }, [rows]);
@@ -472,7 +476,7 @@ export function MemoryProviderSettings({
                     return (
                       <tr key={r.profile} className={r.profile === target ? "on" : undefined} aria-current={r.profile === target || undefined}>
                         <th scope="row">
-                          <button className="link-btn mono" disabled={!!busy} onClick={() => manage(r.profile)} title={`Manage ${r.profile}'s provider below`}>
+                          <button className="link-btn mono" disabled={!!busy} onClick={() => (targetProp !== undefined && onPick ? onPick(r.profile) : manage(r.profile))} title={`Manage ${r.profile}'s provider below`}>
                             {r.profile}
                           </button>
                           {r.profile === profile && <div className="muted small">shown in the app</div>}
