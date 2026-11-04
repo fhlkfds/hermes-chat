@@ -3491,6 +3491,14 @@ export class Hermes {
   }
 
   /**
+   * The last `lines` lines of one of `profile`'s Hermes log files (`GET /api/logs`, logs.ts, ADR 0033), as Hermes
+   * answers it: `{file, lines}`. Only while connected; refused past `LIST_MAX_BYTES`.
+   */
+  async readLog(profile: string, file: string, lines: number): Promise<unknown> {
+    return JSON.parse(await this.restGet(`api/logs?${new URLSearchParams({ file, lines: String(lines), profile })}`, LIST_MAX_BYTES));
+  }
+
+  /**
    * How Usage analytics reads Hermes (usageAnalytics.ts, ADR 0026): the stored session rows, every source and archived
    * ones too, newest started first; one stored session by id; and Hermes's own sums for a rolling period. Every request
    * names its profile, and reads only while connected.
