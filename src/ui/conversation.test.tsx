@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Voice conversations through the signed-in app, against a fake Hermes (ADR 0040). The microphone and the audio element
+// Voice conversations through the signed-in app, against a fake Hermes (ADR 0041). The microphone and the audio element
 // are stand-ins (jsdom has neither), fed loud or quiet blocks of samples; everything from the Start button to what
 // Hermes receives and plays is the real code. Each test checks what reached Hermes, what the owner sees, and that the
 // microphone and audio are let go of.
