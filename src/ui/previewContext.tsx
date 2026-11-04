@@ -10,7 +10,7 @@ export const useOpenPreview = () => useContext(PreviewContext);
 
 /**
  * A link in a reply or a previewed Markdown file. An http(s) link opens in the preview pane, a loopback one from the
- * Hermes server (ADR 0051); anything else does nothing, since following it would replace Hermes Chat's own window.
+ * Hermes server (ADR 0052); anything else does nothing, since following it would replace Hermes Chat's own window.
  * Same-page `#anchors` still scroll.
  */
 export function PreviewLink({ href, children, title }: { href?: string; children?: ReactNode; title?: string }) {

@@ -721,7 +721,7 @@ export function Main({
   onSetUp?: () => void;
   localFiles?: LocalFiles;
   webPages?: WebPages;
-  /** Pages on the Hermes server's own loopback, through SSH (ADR 0051). */
+  /** Pages on the Hermes server's own loopback, through SSH (ADR 0052). */
   serverPages?: ServerPages;
   screenshots?: Screenshots;
   /** The Repository screen's helper over ssh, and worktrees' (ADR 0034, 0043). */

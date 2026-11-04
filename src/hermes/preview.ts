@@ -16,7 +16,7 @@ export type PreviewTarget =
   | { kind: "start" }
   /**
    * `on`: for a page on a loopback address (`loopbackOf`), whose loopback it is: the Hermes server's, through an SSH
-   * tunnel (the default, since that is where Hermes runs what it starts), or this computer's (ADR 0051).
+   * tunnel (the default, since that is where Hermes runs what it starts), or this computer's (ADR 0052).
    */
   | { kind: "web"; url: string; on?: PageOn }
   /** `host`: on the dashboard's own machine, read through the managed files routes (ADR 0012), not where tools run. */

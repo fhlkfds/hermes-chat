@@ -21,7 +21,7 @@ The frame is the same sandboxed frame as any web page (ADR 0007), so the tunnel'
 
 ## When there is no SSH target
 
-A URL sign-in (ADR 0004) has no SSH target. The page then says so, offers **Open on this computer instead**, and suggests signing in through SSH. The Terminal's typed target (ADR 0022) isn't used: here the webview never names an ssh destination, and Rust uses only what it signed in with. When #170 settles one SSH target per connection for URL sign-ins, Rust can keep that target with the connection the same way.
+A URL sign-in (ADR 0004) has no SSH target. The page then says so, offers **Open on this computer instead**, and suggests signing in through SSH. The Terminal's own target for such a connection (ADR 0022, ADR 0051, `0051-the-terminal-opens-on-the-hermes-server-and-remembers-the-computer-picked.md`) isn't used: the webview keeps it and passes it to each ssh it starts, while here the webview never names an ssh destination, and Rust uses only the target it signed in with. If URL sign-ins get an SSH target kept with the connection, Rust can hold it the same way.
 
 ## Considered options
 
@@ -29,7 +29,7 @@ A URL sign-in (ADR 0004) has no SSH target. The page then says so, offers **Open
 - **One more forward on the sign-in tunnel's ssh.** Rejected: adding a forward to a running ssh needs a ControlMaster socket, which ADR 0022 also declined, and a page's forward would then live as long as the sign-in.
 - **`ssh -W host:port` for each connection.** It clears config forwards on its own, but each of the frame's connections would be a new SSH sign-in.
 - **Rust fetching the page and serving it from a custom scheme.** Rejected: the page would lose its origin, and a scheme the app serves is nearer the app than a cross-origin frame.
-- **The sign-in's target, or one the webview passes**, as the Terminal and Repository do. Rejected for now: see above.
+- **The Terminal's target, passed by the webview**, as the Terminal and Repository take theirs. Rejected for now: see above.
 
 ## Consequences
 
