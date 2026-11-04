@@ -1,11 +1,22 @@
-// Asking before an unsaved edit in Settings → Memory is dropped: by leaving Settings, opening a chat, switching
+// Asking before an unsaved edit in Settings → Memory or Settings → Skills is dropped: by leaving Settings, opening a chat, switching
 // profile, signing out, or closing the window (MemorySettings.tsx). The edit lives only on screen, so it would be lost.
 import { useEffect, useId } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { guardWindowClose } from "./tauriWindow";
 import { AlertTriangle } from "lucide-react";
 
 /** The question, over the whole window. Keep editing has focus, so a stray Enter keeps the edit; Escape keeps it too. */
-export function LeaveMemoryEdit({ profile, onStay, onDiscard }: { profile: string; onStay: () => void; onDiscard: () => void }) {
+export function LeaveMemoryEdit({
+  profile,
+  onStay,
+  onDiscard,
+  subject = "memory",
+}: {
+  profile: string;
+  onStay: () => void;
+  onDiscard: () => void;
+  /** Whose edit it is: Settings → Memory's, or Settings → Skills'. */
+  subject?: "memory" | "skill";
+}) {
   const noteId = useId();
   return (
     <div className="leave-overlay" onMouseDown={(e) => e.target === e.currentTarget && onStay()}>
@@ -13,7 +24,7 @@ export function LeaveMemoryEdit({ profile, onStay, onDiscard }: { profile: strin
         className="leave-dialog confirm"
         role="alertdialog"
         aria-modal="true"
-        aria-label="Discard your memory edit?"
+        aria-label={`Discard your ${subject} edit?`}
         aria-describedby={noteId}
         onKeyDown={(e) => {
           if (e.key === "Escape") {
@@ -23,10 +34,17 @@ export function LeaveMemoryEdit({ profile, onStay, onDiscard }: { profile: strin
         }}
       >
         <span className="confirm-msg">
-          <AlertTriangle size={13} /> Discard your memory edit?
+          <AlertTriangle size={13} /> Discard your {subject} edit?
         </span>
         <span id={noteId}>
-          You have an edit to the <span className="mono">{profile}</span> profile's memory that isn't saved to Hermes. Leaving now drops it.
+          {subject === "skill" ? (
+            <>
+              You have an edit to a skill in the <span className="mono">{profile}</span> profile{" "}
+            </>
+          ) : (
+            "You have an edit in Settings → Memory, to a memory entry or a memory provider's settings, "
+          )}
+          that isn't saved to Hermes. Leaving now drops it.
         </span>
         <div className="confirm-actions">
           <button className="btn" autoFocus onClick={onStay}>
@@ -54,15 +72,7 @@ export function useCloseGuard(unsaved: boolean, ask: (close: () => void) => void
     window.addEventListener("beforeunload", onUnload);
     let unlisten: (() => void) | undefined;
     let gone = false;
-    if (inTauri()) {
-      const win = getCurrentWindow();
-      void win
-        .onCloseRequested((e) => {
-          e.preventDefault();
-          ask(() => void win.destroy());
-        })
-        .then((stop) => (gone ? stop() : (unlisten = stop)));
-    }
+    if (inTauri()) void guardWindowClose(ask).then((stop) => (gone ? stop() : (unlisten = stop)));
     return () => {
       gone = true;
       window.removeEventListener("beforeunload", onUnload);

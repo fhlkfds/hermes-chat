@@ -231,7 +231,11 @@ describe("Interrupting by keyboard", () => {
     await s.user.tab();
     expect(focused()).toBe(button("Dictate"));
     await s.user.tab();
+    expect(focused()).toBe(button("Start voice conversation"));
+    await s.user.tab();
     expect(focused()).toBe(button("Attach a screenshot"));
+    await s.user.tab();
+    expect(focused()).toBe(button("Templates"));
     await s.user.tab();
     expect(focused()).toBe(button(/^Model:/));
     await s.user.tab();
@@ -291,7 +295,7 @@ describe("Search palette by keyboard", () => {
     await s.user.keyboard("backup");
     const hit = await screen.findByRole("button", { name: /Nightly backup.*Why did the backup fail/ });
     await s.user.tab();
-    expect(focused()).toBe(screen.getByRole("checkbox", { name: "Include archived" }));
+    expect(focused()).toBe(screen.getByRole("button", { name: "Filters" }));
     await s.user.tab();
     expect(focused()).toBe(hit);
     await s.user.keyboard("{Escape}");
@@ -364,6 +368,11 @@ describe("Chat list by keyboard", () => {
     button(/default/).focus();
     await s.user.tab();
     expect(focused()).toBe(button("Archived chats"));
+    // New chat and Search, labeled, come first.
+    await s.user.tab();
+    expect(focused()).toBe(button("New chat"));
+    await s.user.tab();
+    expect(focused()).toBe(button("Search chats"));
     // The project switcher sits under the profile's name, before the chats.
     await s.user.tab();
     expect(focused()).toBe(button(/All chats/));
@@ -373,6 +382,59 @@ describe("Chat list by keyboard", () => {
     await settle(s.hermes);
     expect(s.server.requests.filter((r) => r.method === "session.resume").map((r) => r.params.session_id)).toEqual(["backup"]);
     expect(rowButton("Nightly backup").getAttribute("aria-current")).toBe("true");
+  });
+
+  it("opens the Active chat below or above with Alt+Down and Alt+Up, from anywhere", async () => {
+    const s = await signedIn();
+    const resumed = () => s.server.requests.filter((r) => r.method === "session.resume").map((r) => r.params.session_id);
+    composer().focus();
+    await s.user.keyboard("{Alt>}{ArrowDown}{/Alt}");
+    await settle(s.hermes);
+    expect(rowButton("Nightly backup").getAttribute("aria-current")).toBe("true");
+    await s.user.keyboard("{Alt>}{ArrowDown}{/Alt}");
+    await settle(s.hermes);
+    expect(rowButton("NAS disks").getAttribute("aria-current")).toBe("true");
+    // The last one stays put.
+    await s.user.keyboard("{Alt>}{ArrowDown}{/Alt}");
+    await s.user.keyboard("{Alt>}{ArrowUp}{/Alt}");
+    await settle(s.hermes);
+    expect(rowButton("Nightly backup").getAttribute("aria-current")).toBe("true");
+    expect(resumed()).toEqual(["backup", "nas"]);
+  });
+
+  it("opens the chat below with Alt+Down from a focused chat row, where plain arrows only move focus", async () => {
+    const s = await signedIn();
+    rowButton("Nightly backup").focus();
+    await s.user.keyboard("{Alt>}{ArrowDown}{/Alt}");
+    await settle(s.hermes);
+    expect(rowButton("Nightly backup").getAttribute("aria-current")).toBe("true");
+  });
+
+  it("leaves Alt+arrows alone while another screen covers the chat", async () => {
+    const s = await signedIn();
+    await s.user.click(button("Settings"));
+    await screen.findByRole("heading", { name: "Settings" });
+    await s.user.keyboard("{Alt>}{ArrowDown}{/Alt}");
+    await settle(s.hermes);
+    expect(screen.getByRole("heading", { name: "Settings" })).toBeTruthy();
+    expect(s.server.requests.filter((r) => r.method === "session.resume")).toEqual([]);
+  });
+
+  it("starts a new chat and opens search from the list's labeled buttons", async () => {
+    const s = await signedIn();
+    await s.user.click(rowButton("Nightly backup"));
+    await settle(s.hermes);
+    await s.user.click(button("New chat"));
+    expect(composer().value).toBe("");
+    expect(rowButton("Nightly backup").getAttribute("aria-current")).toBeNull();
+    await s.user.click(button("Search chats"));
+    expect(screen.getByPlaceholderText("Search all chats, including Settled")).toBeTruthy();
+  });
+
+  it("opens Settings with Ctrl+Comma", async () => {
+    const s = await signedIn();
+    await s.user.keyboard("{Control>},{/Control}");
+    expect(await screen.findByRole("heading", { name: "Settings" })).toBeTruthy();
   });
 
   it("moves between chats with the arrow keys without opening them", async () => {

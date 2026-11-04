@@ -1,7 +1,9 @@
 // A fake Hermes dashboard for tests: it sits where the Rust pipe does and speaks wire-shaped legacy
 // JSON-RPC frames and dashboard REST bodies (shapes from the deployed contracts, see the research doc).
-import type { LocalFile, OpenPipe, PipeEvent, Route, Speech, ToolsetGuards, VoiceSetup } from "./pipe";
+import type { LocalFile, OpenPipe, PipeEvent, RestMethod, Route, Speech, ToolsetGuards, VoiceSetup } from "./pipe";
 import type { SavedKey } from "./setup";
+import { FakeMemoryProviders } from "./fakeMemoryProviders";
+import { FakeSkills } from "./fakeSkills";
 import { FakeServerFiles } from "./fakeServerFiles";
 import { ScheduleError, isoIn, parseSchedule, upcomingRuns } from "./schedule";
 
@@ -25,10 +27,18 @@ export type SessionRow = {
   message_count: number;
   pinned: boolean;
   archived: boolean;
+  /** The model the session last ran on (`sessions.model`). */
+  model?: string | null;
+  /** The surface that started a `source: "local"` session (`sessions.created_source`); list rows carry it, search rows don't. */
+  created_source?: string | null;
   /** The read watermark: unread when activity postdates it. `null` = never tracked = read; 0 = marked unread. */
   last_read_at: number | null;
   /** Bumped by every session edit; an edit must name the current one. Missing means 0. */
   runtime_revision?: number;
+  /** The session a branch was made from (`session.branch` stores it). */
+  parent_session_id?: string | null;
+  /** The folder the session works in (`sessions.cwd`). */
+  cwd?: string | null;
   /**
    * Hermes's stored usage for every model call in the session (`sessions` columns at the deployed `bf0203a`; both list
    * and detail rows carry them). Hermes's helper tasks are kept apart and aren't counted here.
@@ -44,6 +54,23 @@ export type SessionRow = {
   cost_status?: string | null;
   cost_source?: string | null;
   pricing_version?: string | null;
+  /** Who billed the model the session used last. */
+  billing_provider?: string | null;
+  /**
+   * A compressed chat's list row: its first segment's counts under its last segment's id, with every segment's id
+   * (`_project_compression_tips` at the deployed `bf0203a`). The other segments are rows with `unlisted` set.
+   */
+  _lineage_root_id?: string;
+  _lineage_ids?: string[];
+  /** Not this fake's to send: a stored session no chat list shows (a later compression segment, a subagent run). */
+  unlisted?: boolean;
+  /** Not this fake's to send: what the list shows instead for a compression root (its last segment's id, model, ...). */
+  listedAs?: Partial<SessionRow>;
+  /** A webhook session's platform identity (`webhook:v2:…`, `webhook:<route>`) and end. */
+  chat_id?: string;
+  user_id?: string;
+  ended_at?: number | null;
+  is_active?: boolean;
 };
 
 /**
@@ -66,6 +93,14 @@ export type TranscriptMessage = {
   result?: string;
   /** An assistant row's tool calls as stored: `[{id, type, function: {name, arguments}}]`, `arguments` JSON text. */
   tool_calls?: unknown;
+  /**
+   * Compaction, as stored rows carry it: a row compaction took out of what the model reads (`compacted`, and then not
+   * `active`), a compaction's summary row (`_compressed_summary`), and the message a row holds (`message_uid`), which
+   * the copies compaction keeps share. Only `include_compacted=true` reads compacted rows.
+   */
+  compacted?: boolean;
+  summary?: boolean;
+  message_uid?: string;
 };
 
 /** A file on the owner's disk: its bytes as a string, a size alone for a file too big to make, or a folder. */
@@ -190,6 +225,14 @@ function setPrimary(p: FakeProject, path: string) {
  */
 const EDITABLE_SOURCES = new Set(["cli", "tui", "gui", "desktop", "oneshot", "tool", "acp", "import", "telegram", "discord", "slack", "whatsapp", "signal", "matrix"]);
 
+/** A history as `session.resume` shows it: hidden rows, such as a project's instructions, aren't shown (`_history_to_messages`). */
+/**
+ * What `session.resume` shows: no hidden rows, and no model-switch marker, a `[System: …]` user row its
+ * `_is_display_hidden_marker` sniff drops though REST still lists it.
+ */
+const shownHistory = (messages: TranscriptMessage[]) =>
+  messages.filter((m) => m.display_kind !== "hidden" && !(m.role === "user" && m.display_kind === "model_switch"));
+
 /** A stored session `daysAgo` days old, unpinned and from this app unless overridden. */
 export function row(id: string, daysAgo: number, over: Partial<SessionRow> = {}): SessionRow {
   const at = now() - daysAgo * DAY;
@@ -251,6 +294,7 @@ export class FakeHermes {
    * (`hermes_cli/web_routers/cron.py` at the deployed `bf0203a`, as probed with a throwaway HERMES_HOME).
    */
   cron: FakeCron = new FakeCron(this);
+  webhooks: FakeWebhooks = new FakeWebhooks();
   /** The `?profile=` each `/api/ws` connection was opened with, in order. */
   readonly wsProfiles: string[] = [];
   /** Stored session id -> its history, as `session.resume` projects it (`_history_to_messages`). */
@@ -267,6 +311,11 @@ export class FakeHermes {
   dropOnPrompt?: "stored" | "lost";
   /** What the model answers every `llm.oneshot` call with, unless `oneshotFailure` says why it failed. */
   oneshotAnswer = "A new title";
+  /**
+   * The profile's Bot Desktop (`display.*`, tui_gateway/methods_display.py at v2026.9.24; ADR 0039): its status and who
+   * holds it. Undefined: a Hermes without it, which answers "method not found".
+   */
+  display?: { status: Record<string, unknown>; lease: { holder: "agent" | "human"; viewer_hash: string | null; since: number; epoch: number }; minted: Set<string> };
   /** The server commands `commands.catalog` lists; undefined for a Hermes without the method. */
   commandCatalog: string[] | undefined = ["steer", "context", "compress", "help"];
   /** The profile's quick commands (`quick_commands` in config.yaml), by name, with their description. */
@@ -274,6 +323,25 @@ export class FakeHermes {
   /** A `/steer` is queued for the running turn; false answers as Hermes does with no turn running. */
   steerable = true;
   contextOutput = "Context window: 12,400 / 200,000 tokens (6%)\n  System prompt  3,100\n  Messages       9,300";
+  /**
+   * What `session.context_breakdown` answers (`SessionContextBreakdownResult` at the deployed `bf0203a`). Undefined
+   * answers JSON-RPC "method not found", as a Hermes without the method would.
+   */
+  contextBreakdown?: Record<string, unknown> = {
+    categories: [],
+    context_max: 0,
+    context_percent: 0,
+    context_used: 0,
+    estimated_total: 0,
+    context_estimated: false,
+    context_source: "provider_usage",
+    model: "",
+    context_files: [],
+  };
+  /** What `session.compress` answers; undefined answers "method not found". */
+  compressResult?: Record<string, unknown> = { status: "compressed", removed: 0, before_messages: 0, after_messages: 0, before_tokens: 0, after_tokens: 0, summary: { noop: true, headline: "Nothing to compress" } };
+  /** Set to make `GET /api/sessions/{id}/messages` fail with this. */
+  messagesFailure?: string;
   oneshotFailure?: string;
   /** The owner's local disk, by path, for attachments. */
   files: Record<string, FakeFile> = {};
@@ -296,8 +364,22 @@ export class FakeHermes {
    * file's text (or bytes, one char per byte); `{ dir: true }` is a folder.
    */
   serverFiles: Record<string, string | { dir: true }> = {};
+  /** Every `POST /api/fs/write-text` that reached the server, in order (artifact saves, ADR 0029). */
+  readonly fsWrites: { profile: string; path: string; text: string }[] = [];
+  /** While set, an artifact save waits for it before Hermes writes. */
+  fsWriteGate?: Promise<void>;
+  /** Hermes's answer to the next artifact saves instead of writing: the Rust side's error text. */
+  fsWriteFailure?: string;
+  /** Set: a read of that path through the agent fs routes fails with this error, as Rust reports it. */
+  fsReadFailure?: (path: string) => string | undefined;
+  /** Runs right after an artifact save is written, before Hermes answers: to change the file meanwhile, say. */
+  afterFsWrite?: (path: string) => void;
   /** The server's own disk, for the Server files screen (managed files: `GET /api/files`, `GET /api/files/read`). */
   readonly managedFiles = new FakeServerFiles();
+  /** The profiles' skills, as Settings → Skills reads and writes them (fakeSkills.ts). */
+  readonly skills = new FakeSkills(this.managedFiles);
+  /** The profiles' external memory providers, as Settings → Memory → External memory reads and writes them. */
+  readonly memoryProviders = new FakeMemoryProviders((p) => p === "default" || p in this.otherProfiles || p in this.memory);
   /** Whether this connection sent `client.capabilities {server_requests: true}`. */
   answersRequests = false;
   /** Server→client requests nobody has answered yet, by id. */
@@ -341,6 +423,21 @@ export class FakeHermes {
         : { ok: true, reachable: true, message: "" };
   /** Each profile's projects (`projects.db`), by profile name; a profile the server has but that isn't here has none. */
   projects: Record<string, FakeProject[]> = {};
+  /**
+   * True: this server has the membership store ADR 0033 proposes (`projects.membership.*`). No Hermes has it yet, so
+   * it is off by default, and the methods answer "method not found" as the deployed `bf0203a` does.
+   */
+  membershipStore = false;
+  /** Each profile's project-chat links, by profile name, in the order they were made. */
+  membership: Record<string, { project_id: string; session_id: string; added_at: number }[]> = {};
+  /** Set: every membership call fails with this message, as a server that can't open its store would. */
+  membershipFails?: string;
+  /** Each profile's membership revision, bumped by every write. */
+  private membershipRev: Record<string, number> = {};
+  /** The revision of each link's last change, removals included, by `profile project_id session_id`. */
+  private linkRevs = new Map<string, number>();
+  /** The first result of every op id applied, by `profile op_id`, so a retried op is answered the same. */
+  private membershipOps = new Map<string, unknown>();
   /**
    * More of the server's folders, by absolute path without a trailing slash, for `GET /api/fs/list`. That route lists
    * these and `serverFiles` together; a `{ dir: true }` entry there is a folder too.
@@ -389,8 +486,42 @@ export class FakeHermes {
    */
   liveSessions: { id: string; session_key: string; status: string; last_active: number; started_at?: number; title?: string; preview?: string }[] = [];
 
+  /**
+   * What `GET /api/health` answers (`hermes_cli/web_routers/status.py` at upstream `74b2ed6`). Hermes 0.16.0 has no such
+   * route; `asOlderHermes` removes it.
+   */
+  health: Record<string, unknown> = { ok: true, version: "0.17.0", displayVersion: "0.17.0", commit: "74b2ed65e6c1d2a3b4c5d6e7f8091a2b3c4d5e6f", auth_required: true };
+  /**
+   * What `GET /api/status` answers, trimmed. Like Hermes's, it carries a path, a process id and an install id that the
+   * app must not keep.
+   */
+  status: Record<string, unknown> = {
+    version: "0.17.0",
+    release_date: "2026-11-01",
+    hermes_home: "/home/fixture/.hermes",
+    gateway_pid: 4242,
+    install_id: "install-1f2e3d4c5b6a",
+    auth_required: true,
+    auth_providers: ["basic"],
+    auth_flows: ["cookie"],
+  };
+
+  /**
+   * Makes this server answer as Hermes 0.16.0 (`3705625`, 2026-06-08) does, as read from its source: no `/api/health`,
+   * no `client.capabilities` or `gateway.capabilities`, no `projects.*` or `learning.*`, and no managed-files or agent
+   * fs routes. Its `/api/status` has the version and the sign-in gate.
+   */
+  asOlderHermes() {
+    const noMethod = (name: string) => (this.handlers[name] = (r) => this.fail(r.id, -32601, `unknown method: ${name}`));
+    for (const m of ["client.capabilities", "gateway.capabilities", "projects.list", "projects.create", "learning.frames", "learning.detail", "learning.edit", "learning.delete"]) noMethod(m);
+    for (const r of ["GET /api/health", "GET /api/files", "GET /api/files/read", "GET /api/fs/list"]) delete this.rest[r];
+    this.status = { version: "0.16.0", release_date: "2026.6.8", auth_required: true, auth_providers: ["basic"] };
+  }
+
   /** Per-method behaviour; tests override entries. Unhandled methods get no answer. */
   readonly handlers: Record<string, Handler> = {
+    // `tui_gateway/contracts/liveness.py` at upstream `74b2ed6`: what this build enforces, as flags.
+    "gateway.capabilities": (r) => this.respond(r.id, { per_session_exclusive_submit: true }),
     "session.active_list": (r) => this.respond(r.id, { sessions: this.liveSessions.map((l) => ({ current: false, message_count: 0, model: "", preview: "", title: "", started_at: l.last_active, ...l })) }),
     "session.create": (r) => {
       const n = this.requests.filter((q) => q.method === "session.create").length;
@@ -398,6 +529,7 @@ export class FakeHermes {
       const stored = `20261031_12000${n}_abc123`;
       this.runtime.set(runtimeId, stored);
       this.created.set(runtimeId, { source: String(r.params.source ?? "tui"), profile: r.params.profile as string | undefined });
+      this.agentTools.set(runtimeId, this.offeredTools((r.params.profile as string | undefined) ?? "default"));
       // `SessionCreateParams` `model` / `provider` / `reasoning_effort` / `fast`: the session's own overrides.
       const base = this.defaultModel(r.params.profile as string | undefined);
       const p = r.params;
@@ -427,9 +559,64 @@ export class FakeHermes {
       }
       const runtimeId = `rt-r${++this.resumed}`;
       this.runtime.set(runtimeId, stored);
-      const messages = this.transcripts[stored] ?? [];
+      this.agentTools.set(runtimeId, this.offeredTools((r.params.profile as string | undefined) ?? "default"));
+      const messages = shownHistory(this.transcripts[stored] ?? []);
       const info = { ...this.sessionInfo, ...this.sessionModel.get(stored) };
       this.respond(r.id, { session_id: runtimeId, stored_session_id: stored, message_count: messages.length, messages, info, running: false });
+    },
+    // `tui_gateway/methods_session_branch.py` `_branch_live` at the deployed `bf0203a`, as probed live on 2026-11-03: the
+    // first `count` rows of the parent's spine (user and assistant rows with text, hidden ones too) are copied to a new
+    // stored session whose `parent_session_id` is the parent and whose source is the live record's (`tui` after a
+    // sourceless resume). Tool rows and tool calls aren't copied. The title is the parent's next in its lineage.
+    "session.branch": (r) => {
+      if (!this.branchMethod) return this.fail(r.id, -32601, "Method not found: session.branch");
+      const drop = this.dropOnBranch;
+      this.dropOnBranch = undefined;
+      if (drop === "lost") return this.drop();
+      const parent = this.runtime.get(String(r.params.session_id ?? ""));
+      if (!parent) return this.fail(r.id, 4001, "session not found");
+      const key = typeof r.params.idempotency_key === "string" ? r.params.idempotency_key : undefined;
+      const known = key && this.branchKeys.get(key);
+      if (known) return this.respond(r.id, this.branchAnswer(known.stored, known.runtimeId, parent));
+      this.beforeBranch?.();
+      const spine = (this.transcripts[parent] ?? []).filter((m) => (m.role === "user" || m.role === "assistant") && (m.text ?? "").trim());
+      if (!spine.length) return this.fail(r.id, 4008, "nothing to branch — send a message first");
+      const count = typeof r.params.count === "number" && r.params.count > 0 ? r.params.count : spine.length;
+      const store = [this.sessions, ...Object.values(this.otherProfiles)].find((s) => s.some((x) => x.id === parent))!;
+      const base = store.find((x) => x.id === parent)!.title ?? "branch";
+      const n = ++this.branched;
+      const titles = new Set(store.map((x) => x.title));
+      let k = 2;
+      while (titles.has(`${base} #${k}`)) k++;
+      const stored = `${parent}-b${n}`;
+      const runtimeId = `rt-b${n}`;
+      const kept = spine.slice(0, count);
+      store.push(row(stored, 0, { source: "tui", title: typeof r.params.name === "string" && r.params.name ? r.params.name : `${base} #${k}`, parent_session_id: parent, message_count: kept.length, preview: kept.find((m) => m.display_kind !== "hidden")?.text ?? "" }));
+      for (const m of kept) this.storeMessage(stored, { role: m.role, text: m.text, ...(m.display_kind && { display_kind: m.display_kind }), ...(m.reasoning && { reasoning: m.reasoning }) });
+      this.runtime.set(runtimeId, stored);
+      if (key) this.branchKeys.set(key, { stored, runtimeId });
+      if (drop === "stored") return this.drop();
+      if (this.branchError) return this.fail(r.id, this.branchError.code, this.branchError.message);
+      this.respond(r.id, this.branchAnswer(stored, runtimeId, parent));
+    },
+    // `session.undo` (`tui_gateway/methods_session.py` at the deployed `bf0203a`, probed live on 2026-11-03): takes the
+    // session's last user turn and everything after it out of its history, and answers how many rows went (0 when
+    // there's no user turn). A row with a `display_kind` other than `steer`, such as a project's hidden instructions or a
+    // model-switch marker, isn't a user turn; a `/steer` row is (`split_user_originated_turn`,
+    // `agent/context_compressor.py`). A marker after the turn goes with it. Refused with 4009 while a turn runs. The rows are soft-deleted: stored rows read back without them.
+    "session.undo": (r) => {
+      if (!this.undoMethod) return this.fail(r.id, -32601, "Method not found: session.undo");
+      const stored = this.runtime.get(String(r.params.session_id ?? ""));
+      if (!stored) return this.fail(r.id, 4001, "session not found");
+      this.undoCalls.push(stored);
+      if (this.undoBusy) return this.fail(r.id, 4009, "session busy — Hermes is still replying. Stop the current reply first (Stop button, or Ctrl+C in a terminal), then run /undo.");
+      if (this.undoError) return this.fail(r.id, this.undoError.code, this.undoError.message);
+      const rows = this.transcripts[stored] ?? [];
+      const at = rows.map((m) => m.role === "user" && (!m.display_kind || m.display_kind === "steer")).lastIndexOf(true);
+      if (at < 0) return this.respond(r.id, { removed: 0 });
+      const removed = rows.length - at - (this.undoShort ? 1 : 0);
+      this.transcripts[stored] = rows.slice(0, rows.length - removed);
+      this.respond(r.id, { removed });
     },
     // The message is stored as its turn starts (`user_row_id` is the staged row), so the history read back has it.
     "prompt.submit": (r) => {
@@ -462,6 +649,37 @@ export class FakeHermes {
       const name = String(r.params.name);
       const refPath = `attachments/${name}`;
       this.respond(r.id, { attached: true, name, path: `/hermes/workspace/${refPath}`, ref_path: refPath, ref_text: `@file:${formatRefValue(refPath)}`, uploaded: true });
+    },
+    "display.status": (r) => this.displayAnswer(r.id),
+    "display.start": (r) => {
+      if (this.display) this.display.status.running = true;
+      this.displayAnswer(r.id);
+    },
+    "display.observe": (r) => {
+      const d = this.display;
+      if (!d) return this.fail(r.id, -32601, "unknown method: display.observe");
+      if (!d.status.running) return this.fail(r.id, 5300, "this profile's Bot Desktop is not running; call display.start first");
+      const asked = String(r.params.viewer_id ?? "");
+      const viewer = d.minted.has(asked) ? asked : `viewer-${d.minted.size + 1}`;
+      d.minted.add(viewer);
+      this.respond(r.id, { ...d.status, lease: d.lease, profile_key: "/home/liam/.hermes", ticket: `ticket-${viewer}`, path: "/api/display/ws", viewer_id: viewer });
+    },
+    "display.lease.acquire": async (r) => {
+      const d = this.display;
+      const viewer = String(r.params.viewer_id ?? "");
+      if (!d) return this.fail(r.id, -32601, "unknown method: display.lease.acquire");
+      if (!d.minted.has(viewer)) return this.fail(r.id, 5300, "viewer_id was not minted for this connection; call display.observe first");
+      const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(viewer))), (b) => b.toString(16).padStart(2, "0")).join("").slice(0, 12);
+      d.lease = { holder: "human", viewer_hash: hash, since: 2, epoch: d.lease.epoch + 1 };
+      this.broadcast("display.lease", { profile_key: "/home/liam/.hermes", lease: d.lease });
+      this.respond(r.id, { lease: d.lease });
+    },
+    "display.lease.release": (r) => {
+      const d = this.display;
+      if (!d) return this.fail(r.id, -32601, "unknown method: display.lease.release");
+      d.lease = { holder: "agent", viewer_hash: null, since: 3, epoch: d.lease.epoch + 1 };
+      this.broadcast("display.lease", { profile_key: "/home/liam/.hermes", lease: d.lease });
+      this.respond(r.id, { lease: d.lease });
     },
     "image.detach": (r) => {
       this.imagesStaged--;
@@ -496,6 +714,9 @@ export class FakeHermes {
     },
     // Legacy `session.interrupt` (tui_gateway/methods_session_interrupt.py). The turn then ends with a
     // `message.complete` whose status is "interrupted"; tests send that themselves.
+    "session.context_breakdown": (r) =>
+      this.contextBreakdown ? this.respond(r.id, structuredClone(this.contextBreakdown)) : this.fail(r.id, -32601, "method not found: session.context_breakdown"),
+    "session.compress": (r) => (this.compressResult ? this.respond(r.id, structuredClone(this.compressResult)) : this.fail(r.id, -32601, "method not found: session.compress")),
     "session.interrupt": (r) => {
       const sid = String(r.params.session_id);
       if (!this.runtime.has(sid)) return this.fail(r.id, 4001, "session not found");
@@ -554,6 +775,12 @@ export class FakeHermes {
       else info.fast = value === "fast";
       if (stored) {
         this.sessionModel.set(stored, info);
+        // A live model switch stores a marker row for the model at once, keeping only the newest
+        // (`_append_model_switch_marker`, `tui_gateway/server.py` at the deployed `bf0203a`).
+        if (key === "model" && this.transcripts[stored]?.length) {
+          this.transcripts[stored] = this.transcripts[stored].filter((m) => m.display_kind !== "model_switch");
+          this.storeMessage(stored, { role: "user", text: `[System: The active model for this chat has changed to ${info.model}.]`, display_kind: "model_switch" });
+        }
         this.event(sid!, "session.info", { ...info });
       } else this.profileModel[profile] = info;
       this.respond(r.id, { key, value });
@@ -609,7 +836,49 @@ export class FakeHermes {
         const at = list.findIndex((p) => p.id === r.params.id);
         if (at < 0) throw [5062, "no such project"];
         list.splice(at, 1);
+        // The contract's `project_sessions` rows go with the project (`ON DELETE CASCADE`); the chats stay.
+        const profile = (r.params.profile as string | undefined) || "default";
+        const links = this.membership[profile];
+        if (links) this.membership[profile] = links.filter((l) => l.project_id !== r.params.id);
         return { projects: list, active_id: null };
+      }),
+    // The membership store ADR 0033 proposes. `apply` runs each op in order: refused for a project or (when adding) a
+    // chat the profile doesn't have; "unchanged" when the link already is as asked; a conflict when another write
+    // changed the link after the op's `base_revision`; otherwise written. A retried op id gets its first answer.
+    "projects.membership.list": (r) =>
+      this.membershipOp(r, (profile, links) => ({ revision: this.membershipRev[profile] ?? 0, links })),
+    "projects.membership.apply": (r) =>
+      this.membershipOp(r, (profile, links) => {
+        const ops = Array.isArray(r.params.ops) ? (r.params.ops as Record<string, unknown>[]) : [];
+        if (ops.length > 200) throw [5063, "at most 200 ops per call"];
+        const results = ops.map((op) => {
+          const key = `${profile} ${String(op.op_id)}`;
+          const seen = this.membershipOps.get(key);
+          if (seen) return seen;
+          const project_id = String(op.project_id ?? "");
+          const session_id = String(op.session_id ?? "");
+          const member = op.member === true;
+          const base = Number(op.base_revision) || 0;
+          const linkKey = `${profile} ${project_id} ${session_id}`;
+          const at = links.findIndex((l) => l.project_id === project_id && l.session_id === session_id);
+          const current = at >= 0;
+          let status: string;
+          if (!(this.projects[profile] ?? []).some((p) => p.id === project_id)) status = "no_project";
+          else if (member && !this.store(profile)!.some((s) => s.id === session_id)) status = "no_session";
+          else if (current === member) status = "unchanged";
+          else if ((this.linkRevs.get(linkKey) ?? 0) > base) status = "conflict";
+          else {
+            status = "applied";
+            if (member) links.push({ project_id, session_id, added_at: Math.floor(now()) });
+            else links.splice(at, 1);
+            this.membershipRev[profile] = (this.membershipRev[profile] ?? 0) + 1;
+            this.linkRevs.set(linkKey, this.membershipRev[profile]);
+          }
+          const result = { op_id: op.op_id, status, member: status === "applied" ? member : current, rev: this.linkRevs.get(linkKey) ?? 0 };
+          this.membershipOps.set(key, result);
+          return result;
+        });
+        return { revision: this.membershipRev[profile] ?? 0, results };
       }),
     // Keepalive, answered by the WS layer in either protocol generation (research doc §1).
     "gateway.ping": (r) => this.respond(r.id, { ok: true }),
@@ -634,10 +903,24 @@ export class FakeHermes {
       this.respond(r.id, { ...this.sessionInfo, cwd });
     },
     "session.close": (r) => this.respond(r.id, { closed: true }),
+    // `tui_gateway/methods_tools.py` `tools.show`: the session's agent's tools grouped by toolset. An id it doesn't hold
+    // falls back to the launch profile's config (`_session_toolsets(None)`), with no error.
+    "tools.show": (r) => {
+      if (!this.toolsShowMethod) return this.fail(r.id, -32601, "Method not found: tools.show");
+      const tools = this.agentTools.get(String(r.params.session_id ?? "")) ?? this.offeredTools("default");
+      const sections = this.toolsetCatalog
+        .map((t) => ({ name: t.name, tools: t.tools.filter((n) => tools.has(n)).map((name) => ({ name, description: "" })) }))
+        .filter((x) => x.tools.length);
+      this.respond(r.id, { sections, total: tools.size });
+    },
+    // `_session_method`: 4001 for a runtime id the gateway doesn't hold (`_sess_nowait`).
+    "session.status": (r) => (this.runtime.has(String(r.params.session_id ?? "")) ? this.respond(r.id, { output: "Hermes TUI Status" }) : this.fail(r.id, 4001, "session not found")),
   };
 
   /** Per-route REST behaviour, keyed `METHOD /path`. A handler throws to fail the request. */
   readonly rest: Record<string, RestHandler> = {
+    "GET /api/health": () => this.health,
+    "GET /api/status": () => this.status,
     // `fs_list` (`hermes_cli/web_routers/files.py` at the deployed `bf0203a`): a folder's entries, or none and why.
     "GET /api/fs/list": ({ query }) => {
       const path = query.get("path") ?? "";
@@ -659,14 +942,45 @@ export class FakeHermes {
       // order=recent, archived=exclude|only|include, then every pinned row not already on the page, archived or not
       // (list_sessions_rich).
       const excluded = (query.get("exclude_sources") ?? "").split(",").filter(Boolean);
-      const visible = this.storeOrFail(query.get("profile")).filter((s) => !excluded.includes(s.source));
+      const only = (query.get("sources") ?? query.get("source") ?? "").split(",").filter(Boolean);
+      // `cwd_prefix` (`_cwd_prefix_clause`): the folder itself or anything under it, never a sibling that shares a prefix.
+      const prefix = (query.get("cwd_prefix") ?? "").replace(/\/+$/, "");
+      const inFolder = (s: SessionRow) => !prefix || (!!s.cwd && (s.cwd === prefix || s.cwd.startsWith(`${prefix}/`)));
+      const visible = this.storeOrFail(query.get("profile")).filter(
+        (s) => !excluded.includes(s.source) && !s.unlisted && (!only.length || only.includes(s.source)) && inFolder(s),
+      );
       const archived = query.get("archived") ?? "exclude";
-      const recent = visible.filter((s) => archived === "include" || s.archived === (archived === "only")).sort((a, b) => (b.last_active ?? b.started_at) - (a.last_active ?? a.started_at));
+      // order=created (the default): newest started first; order=recent: latest activity first.
+      const at = (s: SessionRow) => (query.get("order") === "recent" ? (s.last_active ?? s.started_at) : s.started_at);
+      const recent = visible.filter((s) => archived === "include" || s.archived === (archived === "only")).sort((a, b) => at(b) - at(a));
       const offset = Number(query.get("offset") ?? 0);
       const limit = Number(query.get("limit") ?? 20);
       const page = recent.slice(offset, offset + limit);
       const pinned = visible.filter((s) => s.pinned && !page.includes(s));
-      return { sessions: [...page, ...pinned].map((s) => ({ ...s, unread: unread(s) })), total: recent.length, limit, offset, storage: {} };
+      // A compression root lists as its last segment, with its own counts and every segment's id.
+      const listed = (s: SessionRow) => {
+        const { listedAs, ...stored } = s;
+        return listedAs ? { ...stored, ...listedAs, _lineage_root_id: s.id } : stored;
+      };
+      return { sessions: [...page, ...pinned].map((s) => ({ ...listed(s), unread: unread(s) })), total: recent.length, limit, offset, storage: {} };
+    },
+    // `_get_usage_analytics` (`hermes_cli/web_routers/analytics.py` at the deployed `bf0203a`): sums over every stored
+    // session started in the last `days` days, unlisted ones too, and the helper tasks' usage, which no session carries.
+    "GET /api/analytics/usage": ({ query }) => {
+      if (this.analyticsRefused) throw new Error(`The dashboard answered ${this.analyticsRefused.status}: ${JSON.stringify({ detail: this.analyticsRefused.detail })}`);
+      const days = Number(query.get("days") ?? 30);
+      const cutoff = now() - days * DAY;
+      const rows = this.storeOrFail(query.get("profile")).filter((s) => s.started_at > cutoff);
+      const sum = (k: keyof SessionRow) => rows.reduce((n, s) => n + (Number(s[k]) || 0), 0);
+      return {
+        totals: {
+          total_input: sum("input_tokens"), total_output: sum("output_tokens"), total_cache_read: sum("cache_read_tokens"),
+          total_reasoning: sum("reasoning_tokens"), total_estimated_cost: sum("estimated_cost_usd"), total_actual_cost: sum("actual_cost_usd"),
+          total_sessions: rows.length, total_api_calls: sum("api_call_count"),
+        },
+        by_task: this.helperUsage[query.get("profile") ?? "default"] ?? [],
+        daily: [], by_model: [], period_days: days, skills: [], tools: [],
+      };
     },
     // `search_sessions` in `hermes_cli/web_routers/sessions.py` at the deployed `bf0203a`: one row per chat, archived
     // ones too. Message hits come first, then title matches. FTS5 matches a message holding every word of the query,
@@ -678,12 +992,13 @@ export class FakeHermes {
       if (!words.length) return { results: [] };
       const limit = Math.min(Number(query.get("limit") ?? 20), 100);
       const excluded = (query.get("exclude_sources") ?? "").split(",").filter(Boolean);
-      const store = this.storeOrFail(query.get("profile")).filter((s) => !excluded.includes(s.source));
+      const only = (query.get("sources") ?? "").split(",").filter(Boolean);
+      const store = this.storeOrFail(query.get("profile")).filter((s) => !excluded.includes(s.source) && (!only.length || only.includes(s.source)));
       const hits = (token: string) => words.some((w) => token.toLowerCase().startsWith(w));
       const results = new Map<string, Record<string, unknown>>();
       const add = (s: SessionRow, snippet: string, role: string | null) =>
         results.size < limit && !results.has(s.id) && results.set(s.id, {
-          snippet, role, source: s.source, model: null, session_started: s.started_at, session_id: s.id, lineage_root: s.id,
+          snippet, role, source: s.source, model: s.model ?? null, session_started: s.started_at, session_id: s.id, lineage_root: s.id,
           profile: query.get("profile") ?? "default", id: s.id, title: s.title, started_at: s.started_at,
           last_active: s.last_active ?? s.started_at, message_count: s.message_count, preview: s.preview, archived: s.archived,
         });
@@ -742,7 +1057,8 @@ export class FakeHermes {
         throw new Error(`The dashboard answered 404: {"detail":"Profile '${profile}' does not exist."}`);
       const m = this.memory[profile] ?? { memory: [], profile: [] };
       const bytes = (entries: string[]) => new TextEncoder().encode(entries.join("\n§\n")).length;
-      return { active: this.memoryProvider, providers: [], builtin_files: { memory: bytes(m.memory), user: bytes(m.profile) } };
+      if (!this.memoryProviders.routes) throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
+      return { ...this.memoryProviders.memory(profile, this.memoryProvider), builtin_files: { memory: bytes(m.memory), user: bytes(m.profile) } };
     },
     "GET /api/files": ({ query }) => this.managedFiles.list(query),
     "GET /api/files/read": ({ query }) => this.managedFiles.read(query),
@@ -782,11 +1098,12 @@ export class FakeHermes {
       })),
       main: { provider: this.modelConfig.model.provider, model: this.modelConfig.model.default },
     }),
-    "GET /api/config": () => ({
+    "GET /api/config": ({ query }) => ({
       model: this.modelConfig.model.default,
+      skills: this.skills.config(query.get("profile") || "default"),
       agent: { ...this.modelConfig.agent },
       delegation: { ...this.modelConfig.delegation },
-      ...(this.cron.timezone && { timezone: this.cron.timezone }),
+      ...(this.cron.zoneSetting(query.get("profile") || "default") && { timezone: this.cron.zoneSetting(query.get("profile") || "default") }),
     }),
     "GET /api/delegation/routing": () => ({
       configured: "default",
@@ -811,6 +1128,19 @@ export class FakeHermes {
 
   /** The profile's model setup, as `config.yaml` holds it, and the catalog `model.options` lists. */
   modelConfig: FakeModelConfig = fakeModelConfig();
+
+  /** Runtime session id -> the tool names its agent was built with, from its profile's list then (`tools.show`). */
+  readonly agentTools = new Map<string, Set<string>>();
+  /** Whether the socket has `tools.show`. */
+  toolsShowMethod = true;
+  /** Platforms whose toolset list each profile has saved; any other inherits Hermes's default. A change saves it. */
+  toolsetSavedLists: Record<string, Set<string>> = {};
+  /** The tool names a chat built now in `profile` is offered: its enabled toolsets' tools, `cli` platform only. */
+  offeredTools(profile: string): Set<string> {
+    const on = this.enabledToolsets(profile);
+    const off = (n: string) => this.toolsetSuppressed.has(n) || !!this.toolsetDisabledEverywhere[profile]?.includes(n);
+    return new Set(this.toolsetCatalog.filter((t) => t.platform === "cli" && on.has(t.name) && !off(t.name)).flatMap((t) => t.tools));
+  }
 
   /** The toolsets every profile lists (plugins aside, the catalog is the same for each). */
   toolsetCatalog: FakeToolset[] = fakeToolsets();
@@ -868,10 +1198,35 @@ export class FakeHermes {
   dropOnToolsetWrite?: "stored" | "lost";
   /** Every toggle the route took, after validation: profile, name and value. */
   readonly toolsetWrites: { profile: string; name: string; enabled: boolean }[] = [];
+  /** `GET /api/analytics/usage` `by_task`, by profile: Hermes's helper tasks' usage. */
+  helperUsage: Record<string, Record<string, unknown>[]> = {};
+  /** While set, `GET /api/analytics/usage` answers with this status, as a Hermes without the route answers 404. */
+  analyticsRefused?: { status: number; detail: unknown };
 
   private onEvent?: (e: PipeEvent) => void;
   private imagesStaged = 0;
   private resumed = 0;
+  /** False: a server without `session.undo`, which answers it "method not found". */
+  undoMethod = true;
+  /** While set, `session.undo` is refused as busy, as when a turn is running. */
+  undoBusy = false;
+  /** While set, `session.undo` fails with this error. */
+  undoError?: { code: number; message: string };
+  /** `session.undo` leaves the last row behind, as if Hermes took back a different part than asked. */
+  undoShort = false;
+  /** The stored sessions `session.undo` was asked of, in order. */
+  undoCalls: string[] = [];
+  /** False: a server older than `session.branch`, which answers it "method not found". */
+  branchMethod = true;
+  /** The next `session.branch` drops the connection before Hermes answers: `stored` made the branch first, `lost` never arrived. */
+  dropOnBranch?: "stored" | "lost";
+  /** While set, `session.branch` fails with this error. `stored`: Hermes stored the branch first, as when its agent can't be built. */
+  branchError?: { code: number; message: string; stored?: boolean };
+  /** Runs as a `session.branch` arrives, before Hermes copies anything: another client adding to the parent meanwhile. */
+  beforeBranch?: () => void;
+  /** Each branch Hermes made, by its idempotency key (`_idempotency_keys`): a retry with the key answers the same branch. */
+  private branchKeys = new Map<string, { stored: string; runtimeId: string }>();
+  private branched = 0;
   private asked = 0;
   closed = false;
 
@@ -887,6 +1242,7 @@ export class FakeHermes {
     this.frame({ jsonrpc: "2.0", method: "event", params: { type: "gateway.ready", payload: this.readyPayload } });
     // A new connection hasn't said yet whether it answers server→client requests.
     this.answersRequests = false;
+    const restCall = (method: RestMethod, pathAndQuery: string, body?: string) => this.restCall(method, pathAndQuery, body);
     const send = async (text: string) => {
       if (this.failSend !== undefined) throw new Error(this.failSend);
       const req = JSON.parse(text) as Request | Response;
@@ -932,6 +1288,7 @@ export class FakeHermes {
       discardUpload: async (token) => void this.managedFiles.discardPick(token),
       upload: (id, token, path, overwrite, onProgress) => this.managedFiles.upload(id, token, path, overwrite, onProgress),
       saveText: (id, path, text, overwrite) => this.managedFiles.saveText(path, text, overwrite),
+      fsSaveText: (_id, profile, path, text) => this.fsWriteText(profile, path, text),
       cancelTransfer: async (id) => this.managedFiles.cancel(id),
       // Mirrors `Dashboard::toolset_guards`: only these two facts of the config.
       toolsetGuards: async (profile): Promise<ToolsetGuards> => {
@@ -939,46 +1296,18 @@ export class FakeHermes {
         return {
           noMcp: [...(this.toolsetNoMcp[profile] ?? [])].sort(),
           noMcpUnclear: [...(this.toolsetNoMcpUnclear[profile] ?? [])],
+          savedLists: [...(this.toolsetSavedLists[profile] ?? [])].sort(),
           codingFocus: !!this.codingFocus[profile],
           disabledEverywhere: [...(this.toolsetDisabledEverywhere[profile] ?? [])],
           disabledUnclear: !!this.toolsetDisabledUnclear[profile],
         };
       },
-      request: async (method, pathAndQuery, body) => {
-        const url = new URL(pathAndQuery, "http://dashboard/");
-        const req: RestRequest = { method, path: url.pathname, query: url.searchParams, body: body === undefined ? undefined : JSON.parse(body) };
-        this.restRequests.push(req);
-        const patch = /^\/api\/sessions\/([^/]+)$/.exec(req.path);
-        const snapshot = /^\/api\/sessions\/([^/]+)\/mutation-snapshot$/.exec(req.path);
-        const messages = /^\/api\/sessions\/([^/]+)\/messages$/.exec(req.path);
-        const soul = /^\/api\/profiles\/([^/]+)\/soul$/.exec(req.path);
-        const handler =
-          this.rest[`${method} ${req.path}`] ??
-          (method === "PATCH" && patch ? () => this.patchSession(patch[1], req.body!) : undefined) ??
-          (method === "GET" && patch ? () => this.sessionDetail(decodeURIComponent(patch[1]), req.query.get("profile")) : undefined) ??
-          (method === "DELETE" && patch ? () => this.deleteSession(decodeURIComponent(patch[1]), req.query.get("profile")) : undefined) ??
-          (method === "GET" && snapshot ? () => this.mutationSnapshot(snapshot[1], req.query.get("profile")) : undefined) ??
-          (method === "GET" && messages ? () => this.storedMessages(decodeURIComponent(messages[1]), req.query) : undefined) ??
-          (soul && this.soulRoutes && (method === "GET" || method === "PUT") ? () => this.soul(method, decodeURIComponent(soul[1]), req.body) : undefined) ??
-          this.cron.route(req);
-        const toolset = /^\/api\/tools\/toolsets(?:\/([^/]+)(\/config)?)?$/.exec(req.path);
-        if (!handler && toolset) return JSON.stringify(await this.toolsetRoute(req, toolset[1], !!toolset[2]));
-        if (soul && this.soulRoutes && method !== "GET" && method !== "PUT") throw new Error(`The dashboard answered 405: {"detail":"Method Not Allowed"}`);
-        if (soul && !this.soulRoutes) throw new Error(`The dashboard answered 404: {"detail":"No such API endpoint: ${req.path}"}`);
-        if (!handler) throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
-        return JSON.stringify(await handler(req));
-      },
+      request: (method, pathAndQuery, body) => restCall(method, pathAndQuery, body),
       // Mirrors the Rust side's `Dashboard::save_provider_key`: only a listed provider secret, checked, then saved.
       saveProviderKey: async (profile, envVar, key) => this.saveProviderKey(profile, envVar, key),
-      // Mirrors `Dashboard::get_limited`: refused once the answer passes the limit.
+      // Mirrors `Dashboard::get_limited`: any GET the relay takes, refused once the answer passes the limit.
       getLimited: async (pathAndQuery, maxBytes) => {
-        const url = new URL(pathAndQuery, "http://dashboard/");
-        const req: RestRequest = { method: "GET", path: url.pathname, query: url.searchParams };
-        this.restRequests.push(req);
-        const messages = /^\/api\/sessions\/([^/]+)\/messages$/.exec(req.path);
-        const handler = this.rest[`GET ${req.path}`] ?? (messages ? () => this.storedMessages(decodeURIComponent(messages[1]), req.query) : undefined);
-        if (!handler) throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
-        const body = JSON.stringify(await handler(req));
+        const body = await restCall("GET", pathAndQuery);
         if (body.length > maxBytes) throw new Error(`it's ${(body.length / MiB).toFixed(1)} MB now, over the ${Math.floor(maxBytes / MiB)} MB limit`);
         return body;
       },
@@ -988,6 +1317,36 @@ export class FakeHermes {
       },
     };
   };
+
+  /** One dashboard REST call as the Rust relay makes it: the answer's body on 2xx, or an error worded as Rust words it. */
+  private async restCall(method: RestMethod, pathAndQuery: string, body?: string): Promise<string> {
+    const url = new URL(pathAndQuery, "http://dashboard/");
+    const req: RestRequest = { method, path: url.pathname, query: url.searchParams, body: body === undefined ? undefined : JSON.parse(body) };
+    this.restRequests.push(req);
+    const patch = /^\/api\/sessions\/([^/]+)$/.exec(req.path);
+    const snapshot = /^\/api\/sessions\/([^/]+)\/mutation-snapshot$/.exec(req.path);
+    const messages = /^\/api\/sessions\/([^/]+)\/messages$/.exec(req.path);
+    const soul = /^\/api\/profiles\/([^/]+)\/soul$/.exec(req.path);
+    const handler =
+      this.rest[`${method} ${req.path}`] ??
+      (method === "POST" && req.path === "/api/sessions/import" ? () => this.importSessions(req.body!) : undefined) ??
+      (method === "PATCH" && patch ? () => this.patchSession(patch[1], req.body!) : undefined) ??
+      (method === "GET" && patch ? () => this.sessionDetail(decodeURIComponent(patch[1]), req.query.get("profile")) : undefined) ??
+      (method === "DELETE" && patch ? () => this.deleteSession(decodeURIComponent(patch[1]), req.query.get("profile")) : undefined) ??
+      (method === "GET" && snapshot ? () => this.mutationSnapshot(snapshot[1], req.query.get("profile")) : undefined) ??
+      (method === "GET" && messages ? () => this.storedMessages(decodeURIComponent(messages[1]), req.query) : undefined) ??
+      (soul && this.soulRoutes && (method === "GET" || method === "PUT") ? () => this.soul(method, decodeURIComponent(soul[1]), req.body) : undefined) ??
+      this.webhooks.route(req) ??
+      this.cron.route(req) ??
+      this.skills.route(req) ??
+      this.memoryProviders.route(req);
+    const toolset = /^\/api\/tools\/toolsets(?:\/([^/]+)(\/config)?)?$/.exec(req.path);
+    if (!handler && toolset) return JSON.stringify(await this.toolsetRoute(req, toolset[1], !!toolset[2]));
+    if (soul && this.soulRoutes && method !== "GET" && method !== "PUT") throw new Error(`The dashboard answered 405: {"detail":"Method Not Allowed"}`);
+    if (soul && !this.soulRoutes) throw new Error(`The dashboard answered 404: {"detail":"No such API endpoint: ${req.path}"}`);
+    if (!handler) throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
+    return JSON.stringify(await handler(req));
+  }
 
   /** A profile's enabled toolsets, its defaults when it has saved none: every listed one but `discord` and `image_gen`. */
   enabledToolsets(profile: string): Set<string> {
@@ -1047,8 +1406,10 @@ export class FakeHermes {
       this.toolsetWrites.push({ profile, name, enabled });
       if (enabled) on.add(name);
       else on.delete(name);
-      // `_save_platform_tools` drops the `no_mcp` sentinel from the platform's list; `stt` writes its own section.
+      // `_save_platform_tools` drops the `no_mcp` sentinel from the platform's list, and saves the whole list into the
+      // profile; `stt` writes its own section.
       if (name !== "stt") this.toolsetNoMcp[profile]?.delete(known(name)!.platform);
+      if (name !== "stt") (this.toolsetSavedLists[profile] ??= new Set()).add(known(name)!.platform);
       // And clears a toolset just turned on from `agent.disabled_toolsets`, on every platform (#49995).
       const everywhere = this.toolsetDisabledEverywhere[profile];
       if (enabled && name !== "stt" && everywhere) this.toolsetDisabledEverywhere[profile] = everywhere.filter((n) => n !== name);
@@ -1175,11 +1536,34 @@ export class FakeHermes {
   }
 
   /** A Server file for `/api/fs/*`, failing the way `_fs_regular_file` and `_is_sensitive_path` do at `bf0203a`. */
-  private serverFile(query: URLSearchParams): { path: string; data: string } {
+/**
+   * `fs_write_text` at `bf0203a` for a host-local profile: the parent must be a folder, only a regular file is replaced,
+   * the text is stored as UTF-8 (one char per byte here, as `serverFiles` holds bytes). The Rust side refuses
+   * credential paths before anything is sent (`write_agent_text`).
+   */
+  private async fsWriteText(profile: string, path: string, text: string): Promise<string> {
+    if (/(^|\/)(\.env(\..*)?|auth\.json|config\.yaml)$/i.test(path)) throw new Error(`Hermes Chat doesn't relay writes to ${path}, a credential file Hermes keeps out of reach`);
+    await this.fsWriteGate;
+    if (this.fsWriteFailure !== undefined) throw new Error(this.fsWriteFailure);
+    const parent = path.slice(0, path.lastIndexOf("/")) || "/";
+    const all = [...this.serverDirs, ...Object.keys(this.serverFiles)];
+    const parentIsDir = this.serverDirs.has(parent) || typeof this.serverFiles[parent] === "object" || all.some((p) => p.startsWith(`${parent}/`));
+    if (typeof this.serverFiles[path] === "object") throw new Error(`The dashboard answered 400: {"detail":"Path points to a directory"}`);
+    if (!parentIsDir) throw new Error(`The dashboard answered 400: {"detail":"Parent directory does not exist"}`);
+    const bytes = new TextEncoder().encode(text);
+    this.serverFiles[path] = Array.from(bytes, (b) => String.fromCharCode(b)).join("");
+    this.fsWrites.push({ profile, path, text });
+    this.afterFsWrite?.(path);
+    return JSON.stringify({ ok: true, path, byteSize: bytes.length });
+  }
+
+    private serverFile(query: URLSearchParams): { path: string; data: string } {
     const profile = query.get("profile");
     if (profile && profile !== "default" && !(profile in this.otherProfiles))
       throw new Error(`The dashboard answered 404: {"detail":"Profile '${profile}' does not exist."}`);
     const path = query.get("path") ?? "";
+    const failure = this.fsReadFailure?.(path);
+    if (failure) throw new Error(failure);
     const name = path.split("/").pop() ?? "";
     if (/^\.env(\..*)?$|^auth\.json$|^config\.yaml$/i.test(name))
       throw new Error(`The dashboard answered 403: {"detail":"Access to sensitive files is not allowed"}`);
@@ -1199,6 +1583,11 @@ export class FakeHermes {
 
   event(sessionId: string, type: string, payload: Record<string, unknown> = {}) {
     this.frame({ jsonrpc: "2.0", method: "event", params: { type, session_id: sessionId, payload } });
+  }
+
+  private displayAnswer(id: number) {
+    if (!this.display) return this.fail(id, -32601, "unknown method: display.status");
+    this.respond(id, { ...this.display.status, lease: this.display.lease, profile_key: "/home/liam/.hermes" });
   }
 
   /** A session-less broadcast such as `sessions.changed` (tui_gateway `_broadcast_global_event`). */
@@ -1251,6 +1640,13 @@ export class FakeHermes {
   }
 
   /** A profile's model, effort and fast mode as its config has them: Sonnet at medium effort unless a test set one. */
+  /** What `session.branch` answers for a branch it made: on the profile's model, whatever the parent ran on. */
+  private branchAnswer(stored: string, runtimeId: string, parent: string) {
+    const history = this.transcripts[stored] ?? [];
+    const title = [this.sessions, ...Object.values(this.otherProfiles)].flat().find((s) => s.id === stored)?.title ?? "";
+    return { session_id: runtimeId, stored_session_id: stored, title, parent, message_count: history.length, messages: shownHistory(history), info: { ...this.sessionInfo, ...this.defaultModel() } };
+  }
+
   defaultModel(profile?: string | null): ModelInfo {
     return this.profileModel[profile || "default"] ?? { model: "claude-sonnet-4-5", provider: "anthropic", reasoning_effort: "medium", fast: false };
   }
@@ -1279,6 +1675,16 @@ export class FakeHermes {
       if (!Array.isArray(e)) throw e;
       this.fail(r.id, e[0], e[1]);
     }
+  }
+
+  /** A membership method on the profile's links; "method not found" on a server without the store. */
+  private membershipOp(r: Request, fn: (profile: string, links: { project_id: string; session_id: string; added_at: number }[]) => unknown) {
+    if (!this.membershipStore) return this.fail(r.id, -32601, `unknown method: ${r.method}`);
+    if (this.membershipFails) return this.fail(r.id, 5061, this.membershipFails);
+    this.projectsOp(r, () => {
+      const profile = (r.params.profile as string | undefined) || "default";
+      return fn(profile, (this.membership[profile] ??= []));
+    });
   }
 
   /** A projects method on the one project `params.id` names, answering with it refreshed. */
@@ -1316,8 +1722,9 @@ export class FakeHermes {
    * with a stored id are there: a live session's unstored tail isn't.
    */
   private storedMessages(id: string, query: URLSearchParams) {
+    if (this.messagesFailure) throw new Error(this.messagesFailure);
     const rows = (this.transcripts[id] ?? [])
-      .filter((m) => m.row_id !== undefined)
+      .filter((m) => m.row_id !== undefined && (!m.compacted || query.get("include_compacted") === "true"))
       .map((m) => ({
         id: m.row_id!,
         session_id: id,
@@ -1327,6 +1734,11 @@ export class FakeHermes {
         tool_call_id: m.tool_call_id ?? null,
         tool_calls: m.tool_calls === undefined ? null : JSON.stringify(m.tool_calls),
         timestamp: m.timestamp ?? null,
+        display_kind: m.display_kind ?? null,
+        active: m.compacted ? 0 : 1,
+        compacted: m.compacted ? 1 : 0,
+        _compressed_summary: m.summary ? 1 : null,
+        message_uid: m.message_uid ?? `uid-${m.row_id}`,
       }));
     if (query.get("order") === "latest") rows.reverse();
     const offset = Number(query.get("offset") ?? 0);
@@ -1375,6 +1787,89 @@ export class FakeHermes {
     return { ok: true };
   }
 
+  /** The answer to the next import is lost after Hermes wrote it, as when the connection drops (`sendImport`). */
+  loseImportAnswer: boolean | number = false;
+
+  /**
+   * `POST /api/sessions/import`, as probed on the deployed `bf0203a` (ADR 0031): fenced on the first session's revision,
+   * every session checked before anything is written (400 with each error), ids Hermes has skipped, and one receipt
+   * per request id, so a retried request answers as the first did.
+   */
+  private importReceipts = new Map<string, unknown>();
+  private importSessions(body: Record<string, unknown>) {
+    if (body.request_id === undefined && body.expected_revision === undefined)
+      throw new Error(`The dashboard answered 409: {"detail":"client_upgrade_required: this app is out of sync (different versions) with the Hermes backend; update the app to edit sessions"}`);
+    if (body.request_id === undefined || body.expected_revision === undefined) throw new Error(`The dashboard answered 409: {"detail":"mutation_identity_required"}`);
+    const store = this.storeOrFail(body.profile as string | undefined);
+    const lose = () => {
+      if (!this.loseImportAnswer) return;
+      this.loseImportAnswer = typeof this.loseImportAnswer === "number" && this.loseImportAnswer > 1 ? this.loseImportAnswer - 1 : false;
+      throw new Error("The connection to Hermes closed before it answered.");
+    };
+    const receipt = this.importReceipts.get(String(body.request_id));
+    if (receipt) {
+      lose();
+      return receipt;
+    }
+    const sessions = body.sessions as Record<string, unknown>[];
+    const errors = sessions.flatMap((raw, index) => {
+      const bad = (raw.messages as Record<string, unknown>[]).findIndex((m) => typeof m.role !== "string" || !m.role);
+      return bad < 0 ? [] : [{ index, error: `messages[${bad}].role must be a non-empty string`, session_id: raw.id }];
+    });
+    if (errors.length) throw new Error(`The dashboard answered 400: ${JSON.stringify({ detail: { errors } })}`);
+    const anchor = store.find((r) => r.id === sessions[0]?.id);
+    if (body.expected_revision !== (anchor?.runtime_revision ?? 0)) throw new Error(`The dashboard answered 409: {"detail":"revision_conflict"}`);
+    const imported: string[] = [];
+    const skipped: string[] = [];
+    // Titles are UNIQUE in a profile; an insert that breaks it rolls the whole import back as 503 (probed live).
+    const fresh = sessions.filter((raw) => !store.some((r) => r.id === raw.id));
+    const titles = fresh.map((raw) => raw.title).filter((t): t is string => typeof t === "string" && !!t);
+    if (titles.some((t, i) => titles.indexOf(t) !== i || store.some((r) => r.title === t)))
+      throw new Error(`The dashboard answered 503: {"detail":"storage_unavailable"}`);
+    for (const raw of sessions) {
+      const id = String(raw.id);
+      if (store.some((r) => r.id === id)) {
+        skipped.push(id);
+        continue;
+      }
+      const rows = raw.messages as Record<string, unknown>[];
+      const started = typeof raw.started_at === "number" ? raw.started_at : now();
+      const times = rows.map((m) => (typeof m.timestamp === "number" ? m.timestamp : now()));
+      store.push(
+        row(id, 0, {
+          source: String(raw.source ?? "import"),
+          title: typeof raw.title === "string" ? raw.title : null,
+          started_at: started,
+          last_active: Math.max(started, ...times),
+          message_count: rows.length,
+          runtime_revision: id === sessions[0].id ? 1 : 0,
+        }),
+      );
+      // As `_history_to_messages` shows them: a tool row named by its call; stored output kept as `result`.
+      const calls = new Map<string, { name: string; args: Record<string, unknown> }>();
+      this.transcripts[id] = rows.map((m, i): TranscriptMessage => {
+        for (const c of (m.tool_calls as { id: string; function: { name: string; arguments: string } }[] | undefined) ?? [])
+          calls.set(c.id, { name: c.function.name, args: JSON.parse(c.function.arguments || "{}") });
+        const call = calls.get(String(m.tool_call_id));
+        const base = { timestamp: times[i], row_id: 10_000 + Object.keys(this.transcripts).length * 100 + i };
+        return m.role === "tool"
+          ? { ...base, role: "tool", tool_call_id: String(m.tool_call_id), name: call?.name ?? String(m.tool_name ?? "tool"), args: call?.args, result: String(m.content ?? "") }
+          : {
+              ...base,
+              role: m.role as TranscriptMessage["role"],
+              text: typeof m.content === "string" ? m.content : "",
+              ...(typeof m.reasoning === "string" && { reasoning: m.reasoning }),
+              ...(m.tool_calls !== undefined && { tool_calls: m.tool_calls }),
+            };
+      });
+      imported.push(id);
+    }
+    const answer = { ok: true, session_id: sessions[0]?.id, revision: 1, operation: "import", imported: imported.length, skipped: skipped.length, imported_ids: imported, skipped_ids: skipped, detached: 0, errors: [] };
+    this.importReceipts.set(String(body.request_id), answer);
+    lose();
+    return answer;
+  }
+
   /**
    * `delete_session_endpoint` in `hermes_cli/web_routers/sessions.py` at upstream `c419cf7`: the row and its messages
    * go for good. A session already gone counts as deleted.
@@ -1385,6 +1880,9 @@ export class FakeHermes {
     if (i < 0) return { ok: true, already_absent: true };
     store.splice(i, 1);
     delete this.transcripts[id];
+    // The contract removes a deleted chat's project links with it.
+    const p = profile || "default";
+    if (this.membership[p]) this.membership[p] = this.membership[p].filter((l) => l.session_id !== id);
     return { ok: true, deleted_ids: [id] };
   }
 
@@ -1534,6 +2032,8 @@ export class FakeCron {
     { id: "discord", name: "Discord", home_target_set: false, home_env_var: "DISCORD_HOME_CHANNEL" },
   ];
   runs: Record<string, Record<string, unknown>[]> = {};
+  /** The newest `executions` row per job id, which the list stamps as `latest_execution` (null when none). */
+  executions: Record<string, Record<string, unknown>> = {};
   /** No session store yet: the runs route answers 503, as on a profile whose gateway never started. */
   runsUnavailable = false;
   heartbeat: number | null = 14;
@@ -1593,8 +2093,16 @@ export class FakeCron {
     return row;
   }
 
-  private zoneOf(_profile: string) {
-    return this.timezone || "UTC";
+  /** A profile's own `timezone` setting, where it differs from `timezone` ("" for none). */
+  timezones: Record<string, string> = {};
+
+  /** The profile's `timezone` in its config.yaml, "" when it has none. */
+  zoneSetting(profile: string): string {
+    return profile in this.timezones ? this.timezones[profile] : this.timezone;
+  }
+
+  private zoneOf(profile: string) {
+    return this.zoneSetting(profile) || "UTC";
   }
 
   private next(s: ReturnType<typeof parseSchedule>, zone: string, from: number): string | null {
@@ -1603,7 +2111,7 @@ export class FakeCron {
   }
 
   private stamp(profile: string, row: CronRow) {
-    return { ...structuredClone(row), profile, profile_name: profile, hermes_home: `/home/liam/.hermes${profile === "default" ? "" : `/profiles/${profile}`}`, is_default_profile: profile === "default", scheduler_heartbeat_age_s: this.heartbeat, latest_execution: null };
+    return { ...structuredClone(row), profile, profile_name: profile, hermes_home: `/home/liam/.hermes${profile === "default" ? "" : `/profiles/${profile}`}`, is_default_profile: profile === "default", scheduler_heartbeat_age_s: this.heartbeat, latest_execution: this.executions[row.id] ?? null };
   }
 
   private refuse(status: number, detail: unknown): never {
@@ -1676,7 +2184,12 @@ export class FakeCron {
         return this.stamp(owner, row);
       case "GET jobs/:id/runs":
         if (this.runsUnavailable) this.refuse(503, "Session store is not initialized. Start this profile's gateway to initialize it.");
-        return { runs: this.runs[row.id] ?? [], limit: Number(req.query.get("limit") ?? 20) };
+      {
+        // `_list_cron_job_runs_sync`: the newest `limit` (1 to 100, else 20), and no offset.
+        const asked = Number(req.query.get("limit") ?? 20);
+        const limit = Number.isFinite(asked) ? Math.max(1, Math.min(Math.trunc(asked), 100)) : 20;
+        return { runs: (this.runs[row.id] ?? []).slice(0, limit), limit };
+      }
       case "PUT jobs/:id": {
         const updates = (req.body?.updates ?? {}) as Record<string, unknown>;
         if ("schedule" in updates) {
@@ -1715,3 +2228,173 @@ export class FakeCron {
   }
 }
 
+/** A webhook route as Hermes keeps it in `webhook_subscriptions.json`. */
+export type WebhookRoute = Record<string, unknown> & { secret?: string; secret_env?: string; enabled?: boolean };
+
+/**
+ * Hermes's `/api/webhooks*` routes (`hermes_cli/web_routers/ops.py`): as the deployed `bf0203a` has them when
+ * `contract` is false, and with the `webhooks/1` additions (docs/design/webhook-automations.md) when it is true.
+ */
+export class FakeWebhooks {
+  contract = true;
+  platformEnabled = true;
+  baseUrl = "http://127.0.0.1:8644";
+  routes: Record<string, Record<string, WebhookRoute>> = { default: {} };
+  /** Ledger rows per profile and route, newest first, in the wire shape of `GET …/deliveries`. */
+  deliveries: Record<string, Record<string, Record<string, unknown>[]>> = {};
+  rejections: Record<string, Record<string, Record<string, { count: number; last_at: number }>>> = {};
+  /** Every retry Hermes took: the key and whether side effects were confirmed. */
+  retries: { profile: string; name: string; deliveryId: string; key: string; confirmed: boolean }[] = [];
+  /** The next write whose "METHOD /path" matches fails: `before` it reaches Hermes, or `after` Hermes did it. */
+  failNext?: { match: RegExp; when: "before" | "after"; message?: string };
+  /** Answers waiting on this before a write is handled. */
+  gate?: Promise<void>;
+  private secrets = 0;
+  private now = () => Date.now() / 1000;
+
+  private refuse(status: number, detail: unknown): never {
+    throw new Error(`The dashboard answered ${status}: ${JSON.stringify({ detail })}`);
+  }
+
+  revision(r: WebhookRoute): string {
+    const { secret, ...rest } = r;
+    return `r${Array.from(JSON.stringify({ ...rest, s: secret ?? "" })).reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7).toString(16)}`;
+  }
+
+  summary(profile: string, name: string, r: WebhookRoute): Record<string, unknown> {
+    const base = {
+      name, description: r.description ?? "", events: r.events ?? [], deliver: r.deliver ?? "log", deliver_only: !!r.deliver_only, prompt: r.prompt ?? "",
+      script: r.script ?? "", skills: r.skills ?? [], created_at: r.created_at ?? null, url: `${this.baseUrl}/webhooks/${name}`,
+      secret_set: !!r.secret || !!r.secret_env, enabled: r.enabled !== false,
+    };
+    if (!this.contract) return base;
+    const rows = this.deliveries[profile]?.[name] ?? [];
+    return {
+      ...base, provider: r.provider ?? "", filters: r.filters ?? [], coalesce: r.coalesce ?? null, profile: "default",
+      secret_ref: r.secret_env ? `env:${r.secret_env}` : r.secret ? "stored" : "", secret_env_set: r.secret_env ? r.secret_env === "GITHUB_WEBHOOK_SECRET" : null,
+      deliver_chat_id: (r.deliver_extra as Record<string, unknown> | undefined)?.chat_id ?? null, kind: r.cron_job ? "cron_job" : r.deliver_only ? "deliver_only" : "agent",
+      revision: this.revision(r), last_received_at: rows[0]?.received_at ?? null, rejections: this.rejections[profile]?.[name] ?? {},
+    };
+  }
+
+  /** A route made as Hermes's create makes one; returns its secret. */
+  add(profile: string, name: string, fields: Record<string, unknown> = {}): string {
+    const secret = `fixture-secret-${++this.secrets}`;
+    (this.routes[profile] ??= {})[name] = { description: "Dashboard-created subscription", events: [], prompt: "", skills: [], deliver: "log", created_at: "2026-11-03T15:58:24Z", secret, ...fields };
+    return secret;
+  }
+
+  /** A delivery in the ledger, newest first. */
+  addDelivery(profile: string, name: string, row: Record<string, unknown>) {
+    const rows = ((this.deliveries[profile] ??= {})[name] ??= []);
+    rows.unshift({ event: "issues", action: "opened", received_at: this.now(), updated_at: this.now(), state: "queued", reason: null, session_id: null, outcome: null, duplicates: 0, retry_of: null, excerpt: {}, retryable: false, retry_needs_confirmation: false, ...row });
+  }
+
+  route(req: RestRequest): (() => unknown) | undefined {
+    const m = /^\/api\/webhooks(?:\/([^/]+))?(?:\/(enabled|deliveries))?(?:\/([^/]+)\/retry)?$/.exec(req.path);
+    if (!m) return undefined;
+    const [, rawName, sub, rawDelivery] = m;
+    const name = rawName && decodeURIComponent(rawName);
+    const delivery = rawDelivery && decodeURIComponent(rawDelivery);
+    const profile = req.query.get("profile") ?? "default";
+    const write = req.method !== "GET";
+    return async () => {
+      if (write) await this.gate;
+      const fail = write && this.failNext?.match.test(`${req.method} ${req.path}`) ? this.failNext : undefined;
+      if (fail) this.failNext = undefined;
+      if (fail?.when === "before") throw new Error(fail.message ?? "Can't reach the Hermes dashboard: error sending request");
+      const answer = this.handle(req, profile, name, sub, delivery);
+      if (fail) throw new Error(fail.message ?? "Can't reach the Hermes dashboard: connection closed before message completed");
+      return answer;
+    };
+  }
+
+  private handle(req: RestRequest, profile: string, name?: string, sub?: string, delivery?: string): unknown {
+    const routes = (this.routes[profile] ??= {});
+    const body = req.body ?? {};
+    const notFound = () => this.refuse(404, "Not Found");
+    const known = () => (name && routes[name] ? routes[name] : this.refuse(404, `No subscription named '${name}'`));
+    if (req.method === "GET" && !name)
+      return {
+        enabled: this.platformEnabled, base_url: this.baseUrl,
+        ...(this.contract && { contract: "webhooks/1", providers: ["github"], limits: { retention_seconds: 604800, max_rows_per_route: 1000, max_body_bytes: 1048576, rate_limit_per_minute: 30, signed_timestamp_window_seconds: 300 } }),
+        subscriptions: Object.entries(routes).map(([n, r]) => this.summary(profile, n, r)),
+      };
+    if (req.method === "POST" && !name) {
+      if (!this.platformEnabled) this.refuse(400, "Webhook platform is not enabled. Enable it from the Webhooks page first.");
+      const n = String(body.name ?? "").trim().toLowerCase();
+      if (!/^[a-z0-9][a-z0-9_-]*$/.test(n)) this.refuse(400, "Invalid name. Use lowercase alphanumeric with hyphens/underscores.");
+      if (this.contract && body.create_only && routes[n]) this.refuse(409, `A route named '${n}' already exists.`);
+      const secret = this.contract && body.secret_env ? undefined : `fixture-secret-${++this.secrets}`;
+      const was = routes[n];
+      const r: WebhookRoute = {
+        description: body.description ?? `Dashboard-created subscription: ${n}`, events: body.events ?? [], prompt: body.prompt ?? "", skills: body.skills ?? [],
+        deliver: body.deliver ?? "log", created_at: "2026-11-03T16:00:00Z",
+        ...(secret ? { secret } : { secret_env: body.secret_env as string }),
+        ...(body.script ? { script: body.script } : {}),
+        ...(body.deliver_chat_id ? { deliver_extra: { chat_id: body.deliver_chat_id } } : {}),
+        ...(this.contract && body.provider ? { provider: body.provider } : {}),
+        ...(this.contract && Array.isArray(body.filters) && body.filters.length ? { filters: body.filters } : {}),
+        ...(this.contract && body.coalesce ? { coalesce: body.coalesce } : {}),
+        ...((this.contract && body.enabled === false) || was?.enabled === false ? { enabled: false } : {}),
+      };
+      routes[n] = r;
+      return { ...this.summary(profile, n, r), ...(secret && { secret }) };
+    }
+    if (req.method === "PUT" && name && !sub) {
+      if (!this.contract) this.refuse(405, "Method Not Allowed");
+      const r = known();
+      if (body.revision !== this.revision(r)) this.refuse(409, { message: "This route was changed since it was read.", current: this.summary(profile, name, r) });
+      const next: WebhookRoute = { ...r };
+      for (const k of ["description", "prompt", "deliver", "events", "skills", "provider"]) if (body[k] !== undefined && body[k] !== null) next[k] = body[k];
+      for (const k of ["filters", "coalesce"]) if (body[k] !== undefined && body[k] !== null) (Array.isArray(body[k]) ? (body[k] as unknown[]).length : Object.keys(body[k] as object).length) ? (next[k] = body[k]) : delete next[k];
+      let secret: string | undefined;
+      if (body.secret_env) {
+        next.secret_env = body.secret_env as string;
+        delete next.secret;
+      } else if (body.secret_env === "" && next.secret_env) {
+        delete next.secret_env;
+        secret = next.secret = `fixture-secret-${++this.secrets}`;
+      } else if (body.rotate_secret && !next.secret_env) secret = next.secret = `fixture-secret-${++this.secrets}`;
+      routes[name] = next;
+      return { ...this.summary(profile, name, next), ...(secret && { secret }) };
+    }
+    if (req.method === "PUT" && sub === "enabled") {
+      known().enabled = body.enabled === true;
+      return { ok: true, name, enabled: body.enabled === true };
+    }
+    if (req.method === "DELETE" && name && !sub) {
+      known();
+      delete routes[name];
+      if (this.deliveries[profile]) delete this.deliveries[profile][name];
+      return { ok: true };
+    }
+    if (req.method === "GET" && sub === "deliveries" && !delivery) {
+      if (!this.contract) notFound();
+      known();
+      const limit = Number(req.query.get("limit") ?? 50);
+      const before = Number(req.query.get("before") ?? Infinity);
+      const rows = (this.deliveries[profile]?.[name!] ?? []).filter((d) => (d.received_at as number) < before).slice(0, limit);
+      return { route: name, contract: "webhooks/1", enabled: routes[name!].enabled !== false, deliveries: rows, rejections: this.rejections[profile]?.[name!] ?? {}, next_before: rows.length >= limit ? rows.at(-1)!.received_at : null, limits: { retention_seconds: 604800, max_rows_per_route: 1000, max_body_bytes: 1048576, rate_limit_per_minute: 30, signed_timestamp_window_seconds: 300 } };
+    }
+    if (req.method === "POST" && sub === "deliveries" && delivery) {
+      if (!this.contract) notFound();
+      const r = known();
+      const key = String(body.idempotency_key ?? "");
+      const rows = this.deliveries[profile]?.[name!] ?? [];
+      const same = rows.find((d) => d.idempotency_key === key);
+      if (same) return { status: "already_sent", delivery_id: same.delivery_id };
+      const row = rows.find((d) => d.delivery_id === delivery);
+      if (!row) this.refuse(404, "No such delivery in this route's history.");
+      if (r.enabled === false) this.refuse(409, { code: "paused", message: "The route is paused. Resume it to retry." });
+      if (!row.retryable) this.refuse(409, { code: "not_retryable", message: `Only a failed delivery can be retried; this one is ${row.state}.` });
+      if (row.retry_needs_confirmation && body.confirm_side_effects !== true) this.refuse(409, { code: "needs_confirmation", message: "The failed attempt had started, so its tools may have acted. Confirm to run it again." });
+      const id = `${row.retry_of ?? row.delivery_id}~retry~${key}`;
+      this.retries.push({ profile, name: name!, deliveryId: delivery, key, confirmed: body.confirm_side_effects === true });
+      this.addDelivery(profile, name!, { delivery_id: id, retry_of: row.retry_of ?? row.delivery_id, idempotency_key: key, event: row.event, action: row.action, excerpt: row.excerpt, state: "queued" });
+      row.retryable = false;
+      return { status: "accepted", delivery_id: id, route: name, gateway_status: 202 };
+    }
+    return notFound();
+  }
+}

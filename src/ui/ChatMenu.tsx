@@ -2,18 +2,35 @@
 // menu uses too. Escape or a click elsewhere closes one, and focus goes back to what had it. The arrow keys move
 // between a menu's items.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { Check, Columns2, PanelLeft, PanelRight, Pencil, Sparkles } from "lucide-react";
+import { AlarmClock, AlarmClockOff, AppWindow, CalendarClock, Check, Columns2, Link2, PanelLeft, PanelRight, Pencil, Sparkles, Tag as TagIcon } from "lucide-react";
 import type { Chat } from "../hermes/model";
 import type { Project } from "../hermes/projects";
+import { snoozePresets, wakeFull } from "../hermes/snooze";
+import type { Tag } from "../hermes/tags";
 import { useReturnFocus } from "./bits";
 
 /** The profile's projects, for the chat menu: which ones the chat is in, and putting it in one or taking it out. */
-export type ChatProjects = { list: Project[]; of: Set<string>; onToggle: (projectId: string, inProject: boolean) => void };
+export type ChatProjects = {
+  list: Project[];
+  of: Set<string>;
+  /** Projects whose change for this chat waits for Hermes, or conflicts with another computer's (ADR 0033). */
+  waiting?: Set<string>;
+  onToggle: (projectId: string, inProject: boolean) => void;
+};
+
+/** The profile's tags, for the chat menu: which ones the chat has, putting one on or taking it off, and the tag editor. */
+export type ChatTags = { list: Tag[]; of: readonly string[]; onToggle: (tagId: string, on: boolean) => void; onManage: () => void };
+
+/**
+ * Snoozing the chat from its menu (snooze.ts): `until`, when a snoozed chat wakes; `onSnooze` snoozes it until a time,
+ * `onCustom` asks when, and `onWake` wakes it now.
+ */
+export type ChatSnooze = { until?: number; onSnooze: (until: number) => void; onCustom: () => void; onWake: () => void };
 
 /**
  * The right-click menu for one chat, at the pointer, kept inside the window. `onRename` and `onRegenTitle` hand back
  * to the row. `onOpenIn` opens the chat in the left (0) or right (1) pane; with one pane (`split` false) the menu offers
- * to open it in a second pane. The arrow keys move between its items.
+ * to open it in a second pane. `onCopyLink` copies the chat's link (chatLinks.ts). The arrow keys move between its items.
  */
 export function ChatMenu({
   chat,
@@ -21,9 +38,13 @@ export function ChatMenu({
   y,
   split = false,
   onOpenIn,
+  onOpenTab,
   onRename,
   onRegenTitle,
+  onCopyLink,
   projects,
+  tags,
+  snooze,
   onClose,
 }: {
   chat: Chat;
@@ -31,11 +52,17 @@ export function ChatMenu({
   y: number;
   split?: boolean;
   onOpenIn?: (side: number) => void;
+  /** Opens the chat in a new tab of the active pane. */
+  onOpenTab?: () => void;
   onRename: () => void;
   onRegenTitle: () => void;
+  onCopyLink?: () => void;
   projects?: ChatProjects;
+  tags?: ChatTags;
+  snooze?: ChatSnooze;
   onClose: () => void;
 }) {
+  const now = Date.now();
   return (
     <Menu label={`Actions for ${chat.title}`} x={x} y={y} onClose={onClose}>
       <button
@@ -65,6 +92,37 @@ export function ChatMenu({
         </span>
         <span className="menu-label">Regenerate title</span>
       </button>
+      {onCopyLink && (
+        <button
+          role="menuitem"
+          className="menu-item"
+          title="Copy a link that opens this chat in Hermes Chat on this computer"
+          onClick={() => {
+            onClose();
+            onCopyLink();
+          }}
+        >
+          <span className="menu-icon">
+            <Link2 size={15} />
+          </span>
+          <span className="menu-label">Copy chat link</span>
+        </button>
+      )}
+      {onOpenTab && (
+        <button
+          role="menuitem"
+          className="menu-item"
+          onClick={() => {
+            onClose();
+            onOpenTab();
+          }}
+        >
+          <span className="menu-icon">
+            <AppWindow size={15} />
+          </span>
+          <span className="menu-label">Open in a new tab</span>
+        </button>
+      )}
       {onOpenIn &&
         (split
           ? [
@@ -86,6 +144,58 @@ export function ChatMenu({
             <span className="menu-label">{o.label}</span>
           </button>
         ))}
+      {snooze && (
+        <div role="group" aria-label="Snooze" className="menu-group">
+          <div className="menu-heading" aria-hidden>
+            {snooze.until && snooze.until > now ? `Snoozed until ${wakeFull(snooze.until)}` : "Snooze"}
+          </div>
+          {snooze.until && snooze.until > now && (
+            <button
+              role="menuitem"
+              className="menu-item"
+              onClick={() => {
+                onClose();
+                snooze.onWake();
+              }}
+            >
+              <span className="menu-icon">
+                <AlarmClockOff size={15} />
+              </span>
+              <span className="menu-label">Unsnooze</span>
+            </button>
+          )}
+          {snoozePresets(now).map((p) => (
+            <button
+              key={p.key}
+              role="menuitem"
+              className="menu-item"
+              title={`Until ${wakeFull(p.until)}`}
+              onClick={() => {
+                onClose();
+                snooze.onSnooze(p.until);
+              }}
+            >
+              <span className="menu-icon">
+                <AlarmClock size={15} />
+              </span>
+              <span className="menu-label">{p.label}</span>
+            </button>
+          ))}
+          <button
+            role="menuitem"
+            className="menu-item"
+            onClick={() => {
+              onClose();
+              snooze.onCustom();
+            }}
+          >
+            <span className="menu-icon">
+              <CalendarClock size={15} />
+            </span>
+            <span className="menu-label">Custom…</span>
+          </button>
+        </div>
+      )}
       {!!projects?.list.length && (
         <div role="group" aria-label="Projects" className="menu-group">
           <div className="menu-heading" aria-hidden>
@@ -107,9 +217,49 @@ export function ChatMenu({
               >
                 <span className="menu-icon">{on && <Check size={15} />}</span>
                 <span className="menu-label">{p.name}</span>
+                {projects.waiting?.has(p.id) && <span className="menu-hint">waiting to sync</span>}
               </button>
             );
           })}
+        </div>
+      )}
+      {tags && (
+        <div role="group" aria-label="Tags" className="menu-group">
+          <div className="menu-heading" aria-hidden>
+            Tags
+          </div>
+          {tags.list.map((t) => {
+            const on = tags.of.includes(t.id);
+            return (
+              <button
+                key={t.id}
+                role="menuitemcheckbox"
+                aria-checked={on}
+                className="menu-item"
+                title={on ? `Take the tag ${t.name} off this chat` : `Tag this chat ${t.name}`}
+                onClick={() => {
+                  onClose();
+                  tags.onToggle(t.id, !on);
+                }}
+              >
+                <span className="menu-icon">{on && <Check size={15} />}</span>
+                <span className="menu-label">{t.name}</span>
+              </button>
+            );
+          })}
+          <button
+            role="menuitem"
+            className="menu-item"
+            onClick={() => {
+              onClose();
+              tags.onManage();
+            }}
+          >
+            <span className="menu-icon">
+              <TagIcon size={15} />
+            </span>
+            <span className="menu-label">{tags.list.length ? "Edit tags…" : "Add a tag…"}</span>
+          </button>
         </div>
       )}
     </Menu>

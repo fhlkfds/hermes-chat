@@ -1,0 +1,94 @@
+# Real answers from the throwaway dashboard for issue #69 (see README.md). Synthetic data only; the first line is the
+# deployed checkout's commit.
+f0d94882e8 test(install-e2e): classify the v2026.7.30 macOS DMG app-update refusal as known
+## list (spare)
+42 skills
+spare-brief agent True None False
+release-notes agent True writing False
+house-style external True None False
+bundled: 39
+[200]
+
+## list (default) non-bundled
+['default-only']
+## content
+{"name":"release-notes","content":"---\nname: release-notes\ndescription: Use when asked for release notes. Writes them from merged pull requests.\nversion: 1.0.0\nauthor: Synthetic Fixture\nx-fixture: issue-69   # unknown field, kept as is\nmetadata:\n  hermes:\n    tags: [writing, release]\n---\n\
+## traversal name
+{"detail":"Skill '../../../etc' not found."}
+[404]
+## Hermes's own validation refusal
+{"detail":"Frontmatter must include 'description' field."}
+[400]
+## files listing of the skill folder
+{"path":"/tmp/hc69/home/profiles/spare/skills/writing/release-notes/references","parent":"/tmp/hc69/home/profiles/spare/skills/writing/release-notes","entries":[{"name":"style.md","path":"/tmp/hc69/home/profiles/spare/skills/writing/release-notes/references/style.md","is_directory":false,"size":49,"
+## after turning spare-brief off in the app
+skills:
+  external_dirs:
+    - /tmp/hc69/shared-skills
+  disabled:
+[('spare-brief', False), ('release-notes', True)]
+## default profile untouched
+(no skills: section in default's config.yaml)
+skills:
+  external_dirs:
+    - /tmp/hc69/shared-skills
+  disabled:
+    - spare-brief
+## SKILL.md on disk after Save in the app
+---
+name: release-notes
+description: Use when asked for release notes. Writes them from merged pull requests.
+version: 1.0.0
+author: Synthetic Fixture
+x-fixture: issue-69   # unknown field, kept as is
+metadata:
+  hermes:
+    tags: [writing, release]
+---
+
+# Release notes
+
+## When to Use
+
+When the owner asks for release notes for a version.
+
+Follow references/style.md, and fill in templates/notes.md.
+Keep each entry to one line.
+## after turning spare-brief back on in the app
+skills:
+  external_dirs:
+    - /tmp/hc69/shared-skills
+  disabled: []
+[('spare-brief', True)]
+## disk before the conflict step: has the missing-file edit been written? (expect no 'changelog')
+0
+## another client saves through PUT /api/skills/content
+{"success":true,"message":"Skill 'release-notes' updated (full rewrite).","path":"/tmp/hc69/home/profiles/spare/skills/writing/release-notes","_change":{"description":"Use when asked for release notes. Writes them from merged pull requests."},"system_prompt_preview":"System prompt will show: \"Use when asked for release notes. Writes them from merged...\" — shorten the description to 60 chars so the index shows all of it."}
+[200]
+## SKILL.md on disk after Merge into my edit + Save
+4:version: 1.1.0
+6:x-fixture: issue-69   # unknown field, kept as is
+14:Another client added this line.
+20:Follow references/style.md, and fill in templates/notes.md.
+22:Name the version in the first line.
+## shared SKILL.md after a save into a read-only folder (expect unchanged)
+---
+name: house-style
+description: Use for any document. The team house style, shared between profiles.
+---
+
+# House style
+
+Use sentence case for headings.
+## the throwaway dashboard's log for that save
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/liam/.hermes/hermes-agent/.hermes-runtime/python/generation-1789674564-1047739-ccc645fc/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/tempfile.py", line 257, in _mkstemp_inner
+    fd = _os.open(file, flags, 0o600)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+PermissionError: [Errno 13] Permission denied: '/tmp/hc69/shared-skills/house-style/.tmp_g9893zgy.tmp'
+## shared SKILL.md after reconnecting (the first Save click missed the moved button, so nothing was sent yet)
+
+Use sentence case for headings.
+## shared SKILL.md after reconnecting and saving
+Use sentence case for headings.
+Write numbers as digits.

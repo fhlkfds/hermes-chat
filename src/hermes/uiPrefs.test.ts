@@ -42,7 +42,7 @@ afterEach(() => {
 
 describe("reading", () => {
   it("is the defaults when nothing is stored", () => {
-    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, checkUpdatesOnLaunch: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, modelPicks: {}, modelFavorites: [], statusBar: ["context", "yolo", "model", "status"], previewWidth: null, screenshotShortcut: "Ctrl+Shift+S" });
+    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, checkUpdatesOnLaunch: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, modelPicks: {}, modelFavorites: [], statusBar: ["context", "yolo", "model", "status"], previewWidth: null, screenshotShortcut: "Ctrl+Shift+S", templates: [] });
     expect(getUIPrefs()).toEqual(DEFAULT_UI_PREFS);
   });
 
@@ -79,8 +79,25 @@ describe("reading", () => {
       modelPicks: {},
       modelFavorites: ["openai/gpt-5", "anthropic/claude-opus-5-5"],
       statusBar: ["model", "tokens"],
-      previewWidth: null, screenshotShortcut: "Ctrl+Shift+S",
+      previewWidth: null, screenshotShortcut: "Ctrl+Shift+S", templates: [],
     });
+  });
+
+  it("keeps message templates, checked, and says when the change couldn't be stored", () => {
+    const tpl = { id: "t1", name: "Restart", description: "", body: "Restart {service}" };
+    expect(setUIPrefs({ templates: [tpl, { ...tpl, id: "t2" }] })).toBe(true);
+    expect(stored().templates).toEqual([tpl]);
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("full", "QuotaExceededError");
+    });
+    expect(setUIPrefs({ templates: [] })).toBe(false);
+    // Held until the app closes, but not stored.
+    expect(getUIPrefs().templates).toEqual([]);
+    expect(stored().templates).toEqual([tpl]);
+    // Saving the same thing again, once storage takes it, is really written, not taken as already kept.
+    vi.restoreAllMocks();
+    expect(setUIPrefs({ templates: [] })).toBe(true);
+    expect(stored().templates).toEqual([]);
   });
 
   it("keeps the preview pane's width, and drops one no window could have", () => {

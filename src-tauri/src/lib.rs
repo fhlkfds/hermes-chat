@@ -1,14 +1,22 @@
+pub mod backup;
 pub mod defaults_file;
+pub mod display;
 pub mod fonts;
+pub mod links;
 pub mod media;
 pub mod notify;
+pub mod portal;
 pub mod remote;
+pub mod repo_git;
 pub mod saved_password;
 pub mod screenshot;
+pub mod summon;
 pub mod terminal;
+pub mod tray;
 pub mod transport;
 pub mod tunnel;
 pub mod web_page;
+pub mod x11_grab;
 pub mod update;
 
 use serde::{Deserialize, Serialize};
@@ -112,6 +120,7 @@ impl Screenshots {
 async fn hermes_connect(
     state: State<'_, AppState>,
     transfers: State<'_, Transfers>,
+    displays: State<'_, display::Displays>,
     target: Target,
     username: String,
     password: String,
@@ -122,6 +131,7 @@ async fn hermes_connect(
     let mut slot = state.0.lock().await;
     *slot = None;
     transfers.stop_all();
+    displays.close_all();
     let attempt = attempt.unwrap_or_default();
     // Run apart, so `hermes_connect_cancel` can stop it; stopping it drops what it opened, SSH tunnel included.
     let task = {
@@ -313,14 +323,16 @@ fn screenshot_ack_request(state: State<'_, Screenshots>, id: u64) {
     state.requests.acknowledge(id);
 }
 
+/// The chat link waiting for the window, from the command line or a later launch (links.rs); handed out once.
+#[tauri::command]
+fn chat_link_take(links: State<'_, links::Links>) -> Option<String> {
+    links.take()
+}
+
 /// Brings the window forward after a desktop shortcut's screenshot was attached, so the owner can review it.
 #[tauri::command]
 fn screenshot_show_window(app: tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
-    }
+    tray::show(&app);
 }
 
 /// Saves a file pasted into the composer to a temp file and returns its path. Its bytes come as the raw body, not
@@ -418,9 +430,10 @@ async fn hermes_toolset_guards(state: State<'_, AppState>, profile: String) -> R
 }
 
 #[tauri::command]
-async fn hermes_disconnect(state: State<'_, AppState>, transfers: State<'_, Transfers>) -> Result<(), String> {
+async fn hermes_disconnect(state: State<'_, AppState>, transfers: State<'_, Transfers>, displays: State<'_, display::Displays>) -> Result<(), String> {
     *state.0.lock().await = None;
     transfers.stop_all();
+    displays.close_all();
     Ok(())
 }
 
@@ -647,6 +660,26 @@ async fn files_save_text(
     transfers.run(id, epoch, work).await
 }
 
+/// Writes an artifact's whole new text to `path` where `profile`'s tools run (`POST api/fs/write-text`, ADR 0029). Like
+/// `files_save_text`, the webview checks the revision first and reads it back after, and the write is a transfer, so
+/// `files_cancel` stops it and a closed or replaced connection never sends it.
+#[tauri::command]
+async fn fs_save_text(
+    app: tauri::AppHandle,
+    transfers: State<'_, Transfers>,
+    id: u64,
+    profile: String,
+    path: String,
+    text: String,
+) -> Result<String, String> {
+    let epoch = transfers.epoch();
+    let work = async move {
+        let dashboard = dashboard_since(&app, epoch).await?;
+        dashboard.write_agent_text(&profile, &path, &text).await.map_err(|e| e.to_string())
+    };
+    transfers.run(id, epoch, work).await
+}
+
 /// Stops transfer `id`, if it is still running. A download's part file is removed; `dest` is left as it was.
 #[tauri::command]
 fn files_cancel(transfers: State<'_, Transfers>, id: u64) {
@@ -688,17 +721,11 @@ async fn headers_delete(connection: Option<String>) -> Result<(), String> {
     saved_password::delete(saved_password::account(saved_password::HEADERS, connection.as_deref())?).await
 }
 
-/// Saves an exported chat (src/hermes/exportChat.ts) where the owner picks in the native Save dialog, which asks
-/// before replacing a file. The webview never names the path. `None`: the owner cancelled, and nothing was written.
-#[tauri::command]
-async fn chat_export(app: tauri::AppHandle, markdown: String, file_name: String) -> Result<Option<String>, String> {
+/// Writes `text` where the owner picks in the native Save dialog, which asks before replacing a file. The webview
+/// never names the path. `None`: the owner cancelled, and nothing was written.
+async fn save_with_dialog(app: &tauri::AppHandle, title: &str, file_name: String, filter: (&str, &[&str]), text: String) -> Result<Option<String>, String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
-    let mut dialog = app
-        .dialog()
-        .file()
-        .set_title("Export chat — the file may contain sensitive information from the chat")
-        .set_file_name(file_name)
-        .add_filter("Markdown", &["md"]);
+    let mut dialog = app.dialog().file().set_title(title).set_file_name(file_name).add_filter(filter.0, filter.1);
     if let Some(window) = app.get_webview_window("main") {
         dialog = dialog.set_parent(&window);
     }
@@ -707,8 +734,91 @@ async fn chat_export(app: tauri::AppHandle, markdown: String, file_name: String)
     });
     let Some(path) = rx.await.map_err(|e| e.to_string())? else { return Ok(None) };
     let path = path.into_path().map_err(|e| e.to_string())?;
-    std::fs::write(&path, markdown).map_err(|e| e.to_string())?;
+    std::fs::write(&path, text).map_err(|e| e.to_string())?;
     Ok(Some(path.display().to_string()))
+}
+
+/// A transcript file the owner picked to import (src/hermes/importTranscripts.ts), read whole.
+#[derive(Serialize)]
+struct PickedTranscript {
+    name: String,
+    path: String,
+    text: String,
+}
+
+/// The most an import file can be: Hermes's own import limit (`_SESSION_IMPORT_MAX_BYTES` at the deployed `bf0203a`).
+const IMPORT_MAX_BYTES: u64 = 25 * 1024 * 1024;
+
+/// Opens the native Open dialog for a transcript to import, and reads the file picked, up to `max_bytes` (never past
+/// `IMPORT_MAX_BYTES`). The webview never names the path, so no other file can be read this way. `None`: the owner
+/// cancelled.
+#[tauri::command]
+async fn import_pick_file(app: tauri::AppHandle, extensions: Vec<String>, max_bytes: u64) -> Result<Option<PickedTranscript>, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let extensions: Vec<&str> = extensions.iter().map(String::as_str).filter(|e| e.chars().all(|c| c.is_ascii_alphanumeric())).collect();
+    let mut dialog = app.dialog().file().set_title("Import a transcript").add_filter("Transcript", &extensions);
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.set_parent(&window);
+    }
+    dialog.pick_file(move |path| {
+        let _ = tx.send(path);
+    });
+    let Some(path) = rx.await.map_err(|e| e.to_string())? else { return Ok(None) };
+    let path = path.into_path().map_err(|e| e.to_string())?;
+    let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+    let text = tokio::task::spawn_blocking({
+        let path = path.clone();
+        move || read_transcript(&path, max_bytes.min(IMPORT_MAX_BYTES))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(Some(PickedTranscript { name, path: path.display().to_string(), text }))
+}
+
+/// A transcript file's whole text: a regular file of at most `max_bytes`, in UTF-8, without a byte order mark.
+fn read_transcript(path: &std::path::Path, max_bytes: u64) -> Result<String, String> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).map_err(|e| format!("Couldn't open it: {e}"))?;
+    let meta = file.metadata().map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Err("It isn't a file.".into());
+    }
+    let too_big = || format!("It's over {} MB, more than Hermes imports at once.", max_bytes / 1024 / 1024);
+    if meta.len() > max_bytes {
+        return Err(too_big());
+    }
+    let mut bytes = Vec::new();
+    file.take(max_bytes + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(too_big());
+    }
+    let text = String::from_utf8(bytes).map_err(|_| "It isn't UTF-8 text.".to_string())?;
+    Ok(text.strip_prefix('\u{feff}').map(str::to_owned).unwrap_or(text))
+}
+
+/// Saves an exported chat (src/hermes/exportChat.ts) where the owner picks.
+#[tauri::command]
+async fn chat_export(app: tauri::AppHandle, markdown: String, file_name: String) -> Result<Option<String>, String> {
+    let title = "Export chat — the file may contain sensitive information from the chat";
+    save_with_dialog(&app, title, file_name, ("Markdown", &["md"]), markdown).await
+}
+
+/// Saves the owner's message templates (src/hermes/templates.ts `exportFile`) where the owner picks.
+#[tauri::command]
+async fn templates_export(app: tauri::AppHandle, json: String) -> Result<Option<String>, String> {
+    save_with_dialog(&app, "Export templates", "hermes-chat-templates.json".into(), ("JSON", &["json"]), json).await
+}
+
+/// Saves Usage analytics' CSV where the owner picks in the native Save dialog (ADR 0026). `None`: cancelled.
+#[tauri::command]
+async fn usage_export(app: tauri::AppHandle, csv: String, file_name: String) -> Result<Option<String>, String> {
+    save_with_dialog(&app, "Export usage — chat titles are in the file", file_name, ("CSV", &["csv"]), csv).await
+}
+
+/// Saves Logs' export or support bundle (src/hermes/logs.ts, ADR 0033) where the owner picks. `None`: cancelled.
+#[tauri::command]
+async fn logs_export(app: tauri::AppHandle, text: String, file_name: String) -> Result<Option<String>, String> {
+    save_with_dialog(&app, "Save logs — read the file before sharing it", file_name, ("Text", &["txt", "log"]), text).await
 }
 
 /// A local file the owner picked for the preview pane.
@@ -824,8 +934,86 @@ fn terminal_close(terminals: State<'_, terminal::Terminals>, id: u64) {
     terminals.close(id);
 }
 
+/// Opens a terminal on this computer: the owner's own login shell, in their home folder (ADR 0039). The webview picks
+/// neither the program nor its arguments.
+#[tauri::command]
+async fn terminal_open_local(
+    terminals: State<'_, terminal::Terminals>,
+    cols: u16,
+    rows: u16,
+    on_event: Channel<terminal::TerminalEvent>,
+) -> Result<u64, terminal::TerminalError> {
+    terminals.open(terminal::local_shell_command(), cols, rows, move |e| {
+        let _ = on_event.send(e);
+    })
+}
+
+/// What a screen socket sends the webview: its RFB bytes raw (an ArrayBuffer there), and how it closed as JSON.
+fn display_event(e: display::DisplayEvent) -> tauri::ipc::InvokeResponseBody {
+    match e {
+        display::DisplayEvent::Data(bytes) => tauri::ipc::InvokeResponseBody::Raw(bytes),
+        display::DisplayEvent::Closed { code, reason } => tauri::ipc::InvokeResponseBody::Json(serde_json::json!({ "code": code, "reason": reason }).to_string()),
+    }
+}
+
+/// Opens the Screen's stream, the Bot Desktop's RFB, with a ticket Hermes gave over `/api/ws` (display.rs, ADR 0039).
+/// It is closed with the connection it was opened on.
+#[tauri::command]
+async fn display_open(
+    state: State<'_, AppState>,
+    displays: State<'_, display::Displays>,
+    ticket: String,
+    on_event: Channel<tauri::ipc::InvokeResponseBody>,
+) -> Result<u64, String> {
+    let epoch = displays.epoch();
+    let dashboard = dashboard(&state).await?;
+    let socket = display::open(dashboard, &ticket, move |e| {
+        let _ = on_event.send(display_event(e));
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    displays.keep(epoch, socket).ok_or_else(|| transport::TransportError::Closed.to_string())
+}
+
+/// The webview's RFB bytes for screen socket `x-display-id`, as the raw body.
+#[tauri::command]
+fn display_send(displays: State<'_, display::Displays>, request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    let InvokeBody::Raw(bytes) = request.body() else {
+        return Err("The screen's input didn't arrive as bytes.".into());
+    };
+    let id = header_value(&request, "x-display-id").and_then(|v| v.parse().ok()).ok_or("The screen's input didn't name its socket.")?;
+    displays.send(id, bytes.clone()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn display_close(displays: State<'_, display::Displays>, id: u64) {
+    displays.close(id);
+}
+
+/// One Git operation on the server for the Repository screen: the helper run through `ssh` to `target` (the sign-in's
+/// SSH target, or one the owner gave), with `request` on its stdin (repo_git.rs, ADR 0034).
+#[tauri::command]
+async fn repo_git(target: String, request: repo_git::Request) -> Result<serde_json::Value, repo_git::RepoError> {
+    repo_git::run_over_ssh(&target, &request).await
+}
+
+/// `repo_git`, for a request that reports progress as it goes (creating a worktree and running its setup, removing
+/// one): each progress line goes to `on_progress` as the helper prints it (ADR 0043).
+#[tauri::command]
+async fn repo_git_stream(
+    target: String,
+    request: repo_git::Request,
+    on_progress: Channel<serde_json::Value>,
+) -> Result<serde_json::Value, repo_git::RepoError> {
+    repo_git::run_over_ssh_streaming(&target, &request, move |line| {
+        let _ = on_progress.send(line);
+    })
+    .await
+}
+
 /// Starts the app. `screenshot`: it was started by `hermes-chat --screenshot`, with no other Hermes Chat to take it.
-pub fn run(screenshot: bool) {
+/// `link`: it was started to open a chat link, with no other Hermes Chat to open it (links.rs).
+pub fn run(screenshot: bool, link: Option<String>) {
     let screenshots = Screenshots::default();
     if screenshot {
         screenshots.requests.ask();
@@ -840,7 +1028,10 @@ pub fn run(screenshot: bool) {
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .manage(screenshots)
+        .manage(links::Links::new(link))
         .manage(update::Updates::default())
+        .manage(tray::Tray::default())
+        .on_window_event(tray::on_window_event)
         .on_permission_request(|webview, kind| permission(&webview, kind))
         .setup(|app| {
             use tauri::Emitter;
@@ -860,17 +1051,44 @@ pub fn run(screenshot: bool) {
             // Which package the binary came from, read before anything can upgrade it.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move { handle.state::<update::Updates>().start().await });
+            // The global shortcut registers off the main thread: the desktop may ask the owner first.
+            app.manage(summon::Summon::new(app.handle()));
+            if let Some(window) = app.get_webview_window("main") {
+                let handle = app.handle().clone();
+                window.on_window_event(move |e| {
+                    if let tauri::WindowEvent::Focused(f) = e {
+                        handle.state::<summon::Summon>().focus_changed(*f);
+                    }
+                });
+            }
             let handle = app.handle().clone();
-            remote::serve(move || {
-                handle.state::<Screenshots>().requests.ask();
-                let _ = handle.emit(remote::EVENT, ());
+            std::thread::spawn(move || handle.state::<summon::Summon>().start(&handle));
+            let handle = app.handle().clone();
+            // Requests that came while the app started (main.rs took the bus name first) are handled now.
+            remote::set_handler(move |request| match request {
+                remote::Request::Screenshot => {
+                    handle.state::<Screenshots>().requests.ask();
+                    let _ = handle.emit(remote::EVENT, ());
+                }
+                // A second launch or `--show` brings back this window, hidden to the tray or not (ADR 0034).
+                remote::Request::Show { token } => summon::activate(&handle, false, token, false),
+                remote::Request::Toggle { token } => summon::activate(&handle, true, token, false),
+                // A chat link opened while the app runs: kept for the window, which comes forward to show it.
+                remote::Request::OpenLink { link, token } => {
+                    if handle.state::<links::Links>().put(link) {
+                        let _ = handle.emit(links::EVENT, ());
+                        summon::activate(&handle, false, token, false);
+                    }
+                }
             });
+            tray::start(app.handle());
             Ok(())
         })
         .manage(PickedFiles::default())
         .manage(Transfers::default())
         .manage(UploadPicks::default())
         .manage(terminal::Terminals::default())
+        .manage(display::Displays::default())
         .invoke_handler(tauri::generate_handler![
             hermes_connect,
             hermes_send,
@@ -890,6 +1108,7 @@ pub fn run(screenshot: bool) {
             files_upload,
             files_discard_pick,
             files_save_text,
+            fs_save_text,
             files_cancel,
             hermes_connect_cancel,
             hermes_probe,
@@ -902,6 +1121,10 @@ pub fn run(screenshot: bool) {
             headers_save,
             headers_delete,
             chat_export,
+            import_pick_file,
+            templates_export,
+            usage_export,
+            logs_export,
             preview_pick_local,
             preview_read_local,
             preview_read_local_image,
@@ -916,19 +1139,41 @@ pub fn run(screenshot: bool) {
             screenshot_pending_request,
             screenshot_ack_request,
             screenshot_show_window,
+            chat_link_take,
+            summon::summon_status,
+            summon::summon_set,
+            summon::summon_retry,
+            summon::summon_set_hide,
+            summon::summon_pause,
             terminal_open,
+            repo_git,
+            repo_git_stream,
             terminal_write,
             terminal_resize,
             terminal_close,
+            terminal_open_local,
+            display_open,
+            display_send,
+            display_close,
             update::update_install_kind,
             update::update_check,
             update::update_download_and_install,
             update::app_restart,
             update::restart_drafts_read,
             update::restart_drafts_clear,
+            backup::backup_export,
+            backup::backup_pick,
+            backup::backup_save_recovery,
             defaults_file::project_defaults_read,
             defaults_file::project_defaults_swap,
-            update::restart_drafts_set_aside
+            defaults_file::tags_read,
+            defaults_file::tags_swap,
+            update::restart_drafts_set_aside,
+            tray::tray_status,
+            tray::tray_set_close_to_tray,
+            tray::tray_inbox,
+            tray::window_unsaved,
+            tray::window_hidden
         ])
         .build(context)
         .expect("error while building tauri application")
@@ -936,6 +1181,10 @@ pub fn run(screenshot: bool) {
         // for the next startup's sweep, after persisted references are known, rather than risk deleting Retry bytes.
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
+                // Let go of the global shortcut before a restart's new app registers it again.
+                if let Some(summon) = app.try_state::<summon::Summon>() {
+                    summon.shutdown();
+                }
                 update::relaunch(app);
             }
         });
@@ -945,6 +1194,23 @@ pub fn run(screenshot: bool) {
 mod tests {
     use super::Transfers;
     use std::time::Duration;
+
+    #[test]
+    fn a_transcript_is_read_whole_only_when_it_is_small_utf8_text() {
+        let dir = std::env::temp_dir().join(format!("hermes-chat-import-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = |name: &str, bytes: &[u8]| {
+            let p = dir.join(name);
+            std::fs::write(&p, bytes).unwrap();
+            p
+        };
+        assert_eq!(super::read_transcript(&file("ok.md", "\u{feff}# Chat\n".as_bytes()), 100).unwrap(), "# Chat\n");
+        assert_eq!(super::read_transcript(&file("exact.md", &[b'a'; 100]), 100).unwrap().len(), 100);
+        assert!(super::read_transcript(&file("big.md", &[b'a'; 101]), 100).unwrap_err().contains("over"));
+        assert!(super::read_transcript(&file("bin.md", &[0xff, 0xfe, 0x00]), 100).unwrap_err().contains("UTF-8"));
+        assert!(super::read_transcript(&dir, 100).unwrap_err().contains("isn't a file"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[tokio::test]
     async fn a_replaced_transfer_leaves_its_replacements_cancel_in_place() {

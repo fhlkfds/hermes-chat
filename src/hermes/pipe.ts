@@ -3,6 +3,7 @@
 // and Read aloud. In the app it is the Rust side (tauriPipe.ts); in tests it is FakeHermes.
 import type { Downloaded, PickedUpload, TransferProgress } from "./remoteFiles";
 import type { SavedKey } from "./setup";
+import type { OpenScreenSocket } from "./screen";
 
 /** A local file as `statFiles` finds it: its size, or why it can't be attached (e.g. "it's a folder"). */
 export type LocalFile = { path: string; name: string; size?: number; error?: string };
@@ -16,9 +17,20 @@ export type Speech = { mime: string; audio: Uint8Array; provider?: string };
 /**
  * A profile's voice set-up as far as the app can tell: whether the server has the transcription and speech routes, and
  * which providers the profile's config names. `sttEnabled` and the providers are missing when the config couldn't be
- * read. The config itself never reaches the webview, since its provider sections can hold API keys.
+ * read. The config itself never reaches the webview, since its provider sections can hold API keys. `silenceThreshold`,
+ * `silenceDuration` and `maxRecordingSeconds` are the profile's `voice.*` turn settings, when it sets them to numbers;
+ * a Voice conversation ends a turn with them as Hermes's own voice mode does (voiceTurns.ts).
  */
-export type VoiceSetup = { transcribe: boolean; speak: boolean; sttEnabled?: boolean; sttProvider?: string; ttsProvider?: string };
+export type VoiceSetup = {
+  transcribe: boolean;
+  speak: boolean;
+  sttEnabled?: boolean;
+  sttProvider?: string;
+  ttsProvider?: string;
+  silenceThreshold?: number;
+  silenceDuration?: number;
+  maxRecordingSeconds?: number;
+};
 
 /**
  * What Settings → Toolsets needs from a profile's config besides the toolset list, read in Rust since the config can
@@ -26,9 +38,10 @@ export type VoiceSetup = { transcribe: boolean; speak: boolean; sttEnabled?: boo
  * `codingFocus`: `agent.coding_context` is focus, so Hermes picks a coding toolset in code workspaces.
  * `disabledEverywhere`: the names in `agent.disabled_toolsets`, which Hermes turns off on every platform; turning one of
  * them on removes it from that list. `disabledUnclear`: that list is saved in a form Rust can't read for certain, so any
- * toolset may be on it. `noMcpUnclear`: likewise for platforms whose toolset list may name `no_mcp`.
+ * toolset may be on it. `noMcpUnclear`: likewise for platforms whose toolset list may name `no_mcp`. `savedLists`: platforms
+ * whose list the profile has saved; any other platform not in `noMcpUnclear` inherits Hermes's default list.
  */
-export type ToolsetGuards = { noMcp: string[]; noMcpUnclear: string[]; codingFocus: boolean; disabledEverywhere: string[]; disabledUnclear: boolean };
+export type ToolsetGuards = { noMcp: string[]; noMcpUnclear: string[]; savedLists: string[]; codingFocus: boolean; disabledEverywhere: string[]; disabledUnclear: boolean };
 
 export type PipeEvent = { kind: "frame"; text: string } | { kind: "closed"; reason: string };
 
@@ -38,7 +51,7 @@ export type PipeEvent = { kind: "frame"; text: string } | { kind: "closed"; reas
  */
 export type Route = { kind: "ssh"; target: string } | { kind: "url"; url: string; addresses: string[] };
 
-/** The dashboard REST verbs the Rust side relays. POST and PUT reach only Settings → Model's two write routes, the scheduled-job writes, and Settings → Toolsets' switch. */
+/** The dashboard REST verbs the Rust side relays. POST and PUT reach only Settings → Model's two write routes, the scheduled-job writes, Settings → Toolsets' switch, Settings → Persona's save, and Settings → Skills' switch and save. */
 export type RestMethod = "GET" | "PATCH" | "DELETE" | "POST" | "PUT";
 
 export interface Pipe {
@@ -86,7 +99,17 @@ export interface Pipe {
   upload(id: number, token: number, path: string, overwrite: boolean, onProgress: (p: TransferProgress) => void): Promise<string>;
   /** Writes an edit's text to the server path `path` (src-tauri `files_save_text`, ADR 0024). Resolves to Hermes's answer. */
   saveText(id: number, path: string, text: string, overwrite: boolean): Promise<string>;
+  /**
+   * Writes an artifact's text to `path` where `profile`'s tools run (src-tauri `fs_save_text`, `POST api/fs/write-text`,
+   * ADR 0029). Resolves to Hermes's answer; `cancelTransfer(id)` stops it.
+   */
+  fsSaveText(id: number, profile: string, path: string, text: string): Promise<string>;
   cancelTransfer(id: number): Promise<void>;
+  /**
+   * Opens the Screen's RFB stream with a ticket from `display.observe` (src-tauri `display_open`, ADR 0039). Rust closes
+   * it with the connection. Optional: a pipe without it has no Screen.
+   */
+  openDisplay?: OpenScreenSocket;
   close(): Promise<void>;
 }
 

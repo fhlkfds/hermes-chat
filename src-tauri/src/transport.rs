@@ -209,6 +209,16 @@ pub struct VoiceSetup {
     pub stt_provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tts_provider: Option<String>,
+    /// `voice.silence_threshold`: the loudness, as the RMS of 16-bit samples, below which a voice conversation counts
+    /// a moment as quiet. Hermes's own voice mode ends a turn with the same three `voice.*` settings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub silence_threshold: Option<f64>,
+    /// `voice.silence_duration`: seconds of quiet after speech that end a turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub silence_duration: Option<f64>,
+    /// `voice.max_recording_seconds`: the longest one turn may be; 0 or less means Hermes sets no limit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_recording_seconds: Option<f64>,
 }
 
 /// How an audio route answered: its JSON, no such route, or a refusal and Hermes's reason.
@@ -243,6 +253,11 @@ fn refusal_reason(status: StatusCode, body: &str, headers: &HeaderMap) -> String
 /// A config value as a short display string, or `None` if it isn't a non-empty string.
 fn config_word(v: &serde_json::Value) -> Option<String> {
     v.as_str().map(str::trim).filter(|s| !s.is_empty()).map(|s| s.chars().take(64).collect())
+}
+
+/// A `voice.*` number as Hermes's `_numeric_or` takes it: a real int or float (YAML `true` isn't one), else `None`.
+fn config_number(v: &serde_json::Value) -> Option<f64> {
+    v.as_f64().filter(|n| n.is_finite())
 }
 
 /// `stt.enabled` as Hermes reads it (`is_truthy_value(cfg.get("enabled", True), default=True)` in
@@ -622,15 +637,7 @@ impl Dashboard {
             body: "ws-ticket response has no ticket".into(),
         })?;
 
-        let mut ws_url = endpoint(&self.base, "api/ws");
-        ws_url
-            .set_scheme(if self.base.scheme() == "https" { "wss" } else { "ws" })
-            .expect("http(s) URLs map to ws(s)");
-        ws_url.query_pairs_mut().append_pair("ticket", ticket).append_pair("profile", profile);
-        let mut handshake = ws_url.as_str().into_client_request().map_err(|e| TransportError::WebSocket(e.to_string()))?;
-        for (name, value) in &self.headers {
-            handshake.headers_mut().insert(name, value.clone());
-        }
+        let handshake = self.ws_handshake("api/ws", &[("ticket", ticket), ("profile", profile)])?;
         let (ws, _) = tokio_tungstenite::connect_async(handshake)
             .await
             .map_err(|e| TransportError::WebSocket(e.to_string()))?;
@@ -678,11 +685,36 @@ impl Dashboard {
         Ok(Pipe { outgoing, task })
     }
 
+    /// The WebSocket handshake for `path` under the dashboard, with `query` and the owner's extra request headers. No
+    /// cookie: each socket is let in by its own single-use ticket in the query, as the official clients do.
+    pub fn ws_handshake(&self, path: &str, query: &[(&str, &str)]) -> Result<tokio_tungstenite::tungstenite::handshake::client::Request, TransportError> {
+        let mut ws_url = endpoint(&self.base, path);
+        ws_url
+            .set_scheme(if self.base.scheme() == "https" { "wss" } else { "ws" })
+            .expect("http(s) URLs map to ws(s)");
+        ws_url.query_pairs_mut().extend_pairs(query);
+        let mut handshake = ws_url.as_str().into_client_request().map_err(|e| TransportError::WebSocket(e.to_string()))?;
+        for (name, value) in &self.headers {
+            handshake.headers_mut().insert(name, value.clone());
+        }
+        Ok(handshake)
+    }
+
+    /// Whether a server's close reason may repeat the owner's extra request headers, so it mustn't be shown.
+    pub fn hides_reason(&self, reason: &str) -> bool {
+        repeats_header(reason, &self.headers)
+    }
+
     /// One dashboard REST call for the webview: `GET`, `PATCH` or `DELETE` on a path under `api/`, with a
     /// JSON body. `POST` and `PUT` reach only Settings → Model's two writes (`POST api/model/set`,
     /// `PUT api/config`), the scheduled-job writes (`cron_write`), Settings → Persona's
     /// `PUT api/profiles/{name}/soul`, and Settings → Toolsets' switch, `PUT api/tools/toolsets/<name>` with exactly
-    /// `{"enabled": true|false}` (`toolset_toggle_allowed`). Returns the response body on 2xx.
+    /// `{"enabled": true|false}` (`toolset_toggle_allowed`), Settings → Skills' two writes, `PUT api/skills/toggle` and
+    /// `PUT api/skills/content` with exactly their fields (`skill_write_allowed`), and Import transcripts'
+    /// `POST api/sessions/import` whose every session is marked `source: "import"` (`import_body_allowed`, ADR 0031),
+    /// the Automations writes (`webhook_write`, ADR 0036), and Settings → Memory's external memory writes
+    /// (`memory_provider_write`, ADR 0045).
+    /// Returns the response body on 2xx.
     pub async fn request(&self, method: &str, path_and_query: &str, body: Option<String>) -> Result<String, TransportError> {
         let (path, query) = path_and_query.split_once('?').unwrap_or((path_and_query, ""));
         let method = match (method, path) {
@@ -694,7 +726,13 @@ impl Dashboard {
             ("POST", _) if cron_write("POST", path) => Method::POST,
             ("PUT", _) if cron_write("PUT", path) => Method::PUT,
             ("PUT", _) if toolset_toggle_allowed(path, body.as_deref()) => Method::PUT,
+            ("PUT", _) if skill_write_allowed(path, body.as_deref()) => Method::PUT,
+            ("PUT", _) if memory_provider_write("PUT", path, body.as_deref()) => Method::PUT,
+            ("POST", _) if memory_provider_write("POST", path, body.as_deref()) => Method::POST,
+            ("POST", _) if webhook_write("POST", path, body.as_deref()) => Method::POST,
+            ("PUT", _) if webhook_write("PUT", path, body.as_deref()) => Method::PUT,
             ("PUT", p) if is_profile_soul(p) => Method::PUT,
+            ("POST", "api/sessions/import") if import_body_allowed(body.as_deref()) => Method::POST,
             ("POST" | "PUT", _) => return Err(TransportError::NotRelayed(format!("{method} {path}"))),
             (other, _) => return Err(TransportError::NotRelayed(format!("{other} requests"))),
         };
@@ -769,7 +807,8 @@ impl Dashboard {
 
     /// Reads whether the server has the two audio routes, and which providers `profile`'s config names. The routes
     /// are asked with bodies they refuse before doing any work (an empty recording, no text), so nothing is
-    /// transcribed or spoken. Only the provider names and `stt.enabled` are kept from the config.
+    /// transcribed or spoken. Only the provider names, `stt.enabled` and the three `voice.*` turn settings are kept
+    /// from the config.
     pub async fn voice_setup(&self, profile: &str) -> Result<VoiceSetup, TransportError> {
         let has = |a: AudioAnswer| !matches!(a, AudioAnswer::NoRoute);
         let transcribe = has(self.post_audio("api/audio/transcribe", profile, &json!({"data_url": ""})).await?);
@@ -784,7 +823,17 @@ impl Dashboard {
             Some(c) => (Some(truthy(&c["stt"]["enabled"])), config_word(&c["stt"]["provider"]), config_word(&c["tts"]["provider"])),
             None => (None, None, None),
         };
-        Ok(VoiceSetup { transcribe, speak, stt_enabled, stt_provider, tts_provider })
+        let voice = |key: &str| config.as_ref().and_then(|c| config_number(&c["voice"][key]));
+        Ok(VoiceSetup {
+            transcribe,
+            speak,
+            stt_enabled,
+            stt_provider,
+            tts_provider,
+            silence_threshold: voice("silence_threshold"),
+            silence_duration: voice("silence_duration"),
+            max_recording_seconds: voice("max_recording_seconds"),
+        })
     }
 
     /// `ToolsetGuards` for `profile`, from `GET /api/config`; nothing else of the config is kept.
@@ -992,6 +1041,38 @@ impl Dashboard {
         }
     }
 
+    /// Writes an artifact's whole new text to `path` where `profile`'s tools run, through the agent fs route `POST
+    /// api/fs/write-text?profile=` (ADR 0029). That is the machine an Output written by `write_file` or `patch` is on:
+    /// the profile's SSH workspace when it has one, else the dashboard's own. Hermes stages the text beside the file and
+    /// renames it into place, and checks nothing else, so the webview checks the file's revision first and reads it
+    /// back after; this only writes. Only a full path is sent, never a credential file (`protected_server_path`: Hermes
+    /// doesn't guard this route), and never more than Hermes takes. Returns Hermes's answer.
+    pub async fn write_agent_text(&self, profile: &str, path: &str, text: &str) -> Result<String, TransportError> {
+        if !(path.starts_with('/') || path.starts_with("~/")) || path.contains('\0') || path.ends_with('/') {
+            return Err(TransportError::NotRelayed(format!("writes to {path}: not a full path to a file")));
+        }
+        if path.split('/').any(|seg| seg == "..") {
+            return Err(TransportError::NotRelayed(format!("writes to {path}: it has '..' in it")));
+        }
+        if protected_server_path(path) {
+            return Err(TransportError::NotRelayed(format!("writes to {path}, a credential file Hermes keeps out of reach")));
+        }
+        let size = text.len() as u64;
+        if size > AGENT_TEXT_MAX_BYTES {
+            return Err(TransportError::FileTooLarge { size, max: AGENT_TEXT_MAX_BYTES });
+        }
+        let query = url::form_urlencoded::Serializer::new(String::new()).append_pair("profile", profile).finish();
+        let (url, _) = relay_url(&self.base, "api/fs/write-text", &query)?;
+        let body = serde_json::json!({ "path": path, "content": text });
+        let resp = self.http.post(url).header(header::COOKIE, self.cookie_header()).json(&body).send().await.map_err(unreachable)?;
+        self.keep_cookies(&resp);
+        match resp.status() {
+            s if s.is_success() => resp.text().await.map_err(unreachable),
+            StatusCode::UNAUTHORIZED => Err(TransportError::SignedOut),
+            _ => Err(unexpected(resp, &self.headers).await),
+        }
+    }
+
     /// Take in every Set-Cookie: a new value replaces the old one, an empty one deletes it. Only
     /// `name=value` is kept; the dashboard is the only site this jar talks to.
     fn keep_cookies(&self, resp: &reqwest::Response) {
@@ -1031,6 +1112,8 @@ pub enum UploadSource {
 
 /// The most Hermes takes or sends of one managed file (`_MANAGED_FILE_MAX_BYTES` at `bf0203a`).
 pub const MANAGED_FILE_MAX_BYTES: u64 = 100 * MIB;
+/// The most `POST api/fs/write-text` takes (`_FS_TEXT_WRITE_MAX_BYTES` at `bf0203a`).
+pub const AGENT_TEXT_MAX_BYTES: u64 = 8 * MIB;
 const UPLOAD_CHUNK_BYTES: usize = 256 * 1024;
 
 /// A server path Hermes never lists, reads or sends (`_is_sensitive_path` in `hermes_cli/web_routers/files.py` at
@@ -1094,6 +1177,10 @@ pub struct ToolsetGuards {
     /// Platforms whose `platform_toolsets` entry is a string this can't read for certain the way Hermes does
     /// (`parse_platform_toolsets_value`, `ast.literal_eval`), so it may name `no_mcp`.
     pub no_mcp_unclear: Vec<String>,
+    /// Platforms whose `platform_toolsets` entry is a list Hermes reads as the profile's own saved list
+    /// (`_platform_toolsets_explicitly_saved`). Any other platform not in `no_mcp_unclear` inherits Hermes's default
+    /// list for it (`_platform_default_toolset`).
+    pub saved_lists: Vec<String>,
     /// `agent.coding_context` is `focus` (or its aliases `strict`, `lean`): in a code workspace Hermes swaps in a coding
     /// toolset selection instead of the profile's list (`agent/coding_context.coding_selection`).
     pub coding_focus: bool,
@@ -1110,7 +1197,7 @@ pub struct ToolsetGuards {
 /// `ToolsetGuards` from a profile's config as `GET /api/config` answers it.
 pub fn toolset_guards(config: &serde_json::Value) -> ToolsetGuards {
     // Hermes reads a platform's entry as a list, or a string list literal; any other value it ignores, `no_mcp` and all.
-    let (mut no_mcp, mut no_mcp_unclear) = (Vec::new(), Vec::new());
+    let (mut no_mcp, mut no_mcp_unclear, mut saved_lists) = (Vec::new(), Vec::new(), Vec::new());
     for (platform, value) in config["platform_toolsets"].as_object().into_iter().flatten() {
         let read = match value {
             serde_json::Value::Array(_) => config_string_list(value),
@@ -1124,12 +1211,16 @@ pub fn toolset_guards(config: &serde_json::Value) -> ToolsetGuards {
         };
         if read.unclear {
             no_mcp_unclear.push(platform.clone());
-        } else if read.names.iter().any(|n| n == "no_mcp") {
+            continue;
+        }
+        if read.names.iter().any(|n| n == "no_mcp") {
             no_mcp.push(platform.clone());
         }
+        saved_lists.push(platform.clone());
     }
     no_mcp.sort();
     no_mcp_unclear.sort();
+    saved_lists.sort();
     let mode = match &config["agent"]["coding_context"] {
         serde_json::Value::String(s) => s.trim().to_ascii_lowercase(),
         _ => String::new(),
@@ -1138,6 +1229,7 @@ pub fn toolset_guards(config: &serde_json::Value) -> ToolsetGuards {
     ToolsetGuards {
         no_mcp,
         no_mcp_unclear,
+        saved_lists,
         coding_focus: matches!(mode.as_str(), "focus" | "strict" | "lean"),
         disabled_everywhere: disabled.names,
         disabled_unclear: disabled.unclear,
@@ -1220,6 +1312,20 @@ fn cron_write(method: &str, path: &str) -> bool {
     }
 }
 
+/// Whether a `POST api/sessions/import` is Import transcripts' (ADR 0031): a JSON object whose `sessions` is a non-empty
+/// list of sessions each marked `source: "import"`, so nothing this relays can pass as a chat from another platform.
+pub fn import_body_allowed(body: Option<&str>) -> bool {
+    let Some(body) = body.and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok()) else {
+        return false;
+    };
+    match body.get("sessions").and_then(|s| s.as_array()) {
+        Some(sessions) if !sessions.is_empty() => {
+            sessions.iter().all(|s| s.get("source").and_then(|v| v.as_str()) == Some("import"))
+        }
+        _ => false,
+    }
+}
+
 /// Where a relayed REST call goes, and its path as the dashboard will route it: with `.` segments resolved and
 /// percent-escapes decoded (the server decodes them before routing, so `%2F` is a `/` to it). Both the path asked
 /// for and the routed one must stay under `api/` without `.` or `..` segments.
@@ -1278,6 +1384,110 @@ pub fn toolset_toggle_allowed(path: &str, body: Option<&str>) -> bool {
         (true, Some(serde_json::Value::String(s))) => s == "probe",
         _ => false,
     }
+}
+
+/// The Automations writes (ADR 0036, Hermes's `/api/webhooks` routes and the `webhooks/1` contract): `POST
+/// api/webhooks` creates a route, `PUT api/webhooks/{name}` edits one, `PUT api/webhooks/{name}/enabled` pauses or
+/// resumes one, and `POST api/webhooks/{name}/deliveries/{id}/retry` retries a failed delivery. The route name is one
+/// segment as Hermes names routes, the delivery id one unreserved segment. Each body is a JSON object with only the
+/// keys the app sends: never a `secret` (Hermes makes secrets, or reads them from its own environment), never
+/// `deliver_only`, and nothing reaches `POST api/webhooks/enable`, which rewrites the config and restarts the gateway.
+fn webhook_write(method: &str, path: &str, body: Option<&str>) -> bool {
+    let Some(rest) = path.strip_prefix("api/webhooks") else { return false };
+    let name_ok = |n: &str| {
+        // Hermes's route-name rule (`^[a-z0-9][a-z0-9_-]*$`, no length limit); 200 covers any route it lists.
+        (1..=200).contains(&n.len())
+            && (n.as_bytes()[0].is_ascii_lowercase() || n.as_bytes()[0].is_ascii_digit())
+            && n.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+    };
+    let id_ok = |i: &str| (1..=200).contains(&i.len()) && i != "." && i != ".." && i.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~'));
+    let keys: &[&str] = match (method, rest.strip_prefix('/').map(|r| r.split('/').collect::<Vec<_>>()).as_deref()) {
+        ("POST", None) if rest.is_empty() => &[
+            "name", "description", "events", "prompt", "skills", "deliver", "deliver_chat_id", "script", "provider", "filters", "coalesce",
+            "secret_env", "enabled", "create_only",
+        ],
+        ("PUT", Some([name])) if name_ok(name) => &[
+            "revision", "description", "events", "prompt", "skills", "deliver", "deliver_chat_id", "provider", "filters", "coalesce", "secret_env",
+            "rotate_secret",
+        ],
+        ("PUT", Some([name, "enabled"])) if name_ok(name) => &["enabled"],
+        ("POST", Some([name, "deliveries", id, "retry"])) if name_ok(name) && id_ok(id) => &["idempotency_key", "confirm_side_effects"],
+        _ => return false,
+    };
+    let Some(fields) = body.and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok()).and_then(|v| v.as_object().cloned()) else {
+        return false;
+    };
+    let only_known = fields.keys().all(|k| keys.contains(&k.as_str()));
+    let enabled_ok = keys != ["enabled"] || matches!(fields.get("enabled"), Some(serde_json::Value::Bool(_)));
+    only_known && enabled_ok
+}
+
+/// Whether a `PUT` is one of Settings → Skills' two writes (`hermes_cli/web_routers/skills.py`): `api/skills/toggle`
+/// with exactly `{"name": <skill>, "enabled": true|false}`, or `api/skills/content` with exactly
+/// `{"name": <skill>, "content": <text>}`. The profile goes in the query, never the body. A skill name is one line of at
+/// most 256 characters with no backslash, no leading `/` and no empty, `.` or `..` segment, so it can't steer Hermes's
+/// lookup out of the skills folders. Nothing else under `api/skills` is relayed: not creating a skill, nor the hub's
+/// install, uninstall or update, which fetch and run code from elsewhere.
+pub fn skill_write_allowed(path: &str, body: Option<&str>) -> bool {
+    let second = match path {
+        "api/skills/toggle" => "enabled",
+        "api/skills/content" => "content",
+        _ => return false,
+    };
+    let Some(fields) = body.and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok()) else {
+        return false;
+    };
+    let Some(fields) = fields.as_object().filter(|o| o.len() == 2) else {
+        return false;
+    };
+    let name_ok = fields.get("name").and_then(|n| n.as_str()).is_some_and(|n| {
+        !n.is_empty()
+            && n.chars().count() <= 256
+            && !n.chars().any(|c| c.is_control() || c == '\\')
+            && !n.starts_with('/')
+            && !n.split('/').any(|seg| seg.is_empty() || seg == "." || seg == "..")
+    });
+    let value_ok = match (second, fields.get(second)) {
+        ("enabled", Some(serde_json::Value::Bool(_))) => true,
+        ("content", Some(serde_json::Value::String(_))) => true,
+        _ => false,
+    };
+    name_ok && value_ok
+}
+
+/// Settings → Memory's external memory writes (ADR 0045, Hermes's `/api/memory` routes): `PUT api/memory/provider`
+/// `{"provider": name}` picks a profile's provider ("" for built-in memory only), `PUT
+/// api/memory/providers/{name}/config` `{"values": {key: text}}`, never empty, saves its settings, and `POST
+/// api/memory/providers/{name}/setup` with exactly `{"values": {}}` installs what its manifest declares. Names are one
+/// segment as Hermes allows them (`_MEMORY_PROVIDER_NAME_RE`). Setup never carries settings, so an install is only ever
+/// what the owner confirmed, and `api/memory/reset`, which deletes the built-in memory files, isn't reached.
+fn memory_provider_write(method: &str, path: &str, body: Option<&str>) -> bool {
+    let name_ok = |n: &str| {
+        let mut b = n.bytes();
+        n.len() <= 64 && matches!(b.next(), Some(c) if c.is_ascii_alphanumeric()) && b.all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+    };
+    let Some(fields) = body.and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok()) else {
+        return false;
+    };
+    let Some(fields) = fields.as_object().filter(|o| o.len() == 1) else {
+        return false;
+    };
+    if method == "PUT" && path == "api/memory/provider" {
+        return fields.get("provider").and_then(|p| p.as_str()).is_some_and(|p| p.is_empty() || name_ok(p));
+    }
+    let Some((name, action)) = path.strip_prefix("api/memory/providers/").and_then(|p| p.split_once('/')) else {
+        return false;
+    };
+    let Some(values) = fields.get("values").and_then(|v| v.as_object()) else {
+        return false;
+    };
+    name_ok(name)
+        && match (method, action) {
+            // Never empty: Hermes's declared route would still switch the provider, without the readiness check.
+            ("PUT", "config") => !values.is_empty() && values.iter().all(|(k, v)| !k.is_empty() && k.len() <= 128 && v.is_string()),
+            ("POST", "setup") => values.is_empty(),
+            _ => false,
+        }
 }
 
 fn endpoint(base: &Url, path: &str) -> Url {
@@ -1632,7 +1842,90 @@ impl Dashboard {
 
 #[cfg(test)]
 mod tests {
-    use super::provider_key_name;
+    use super::{memory_provider_write, provider_key_name, webhook_write};
+
+    #[test]
+    fn only_the_memory_provider_writes() {
+        for (method, path, body) in [
+            ("PUT", "api/memory/provider", r#"{"provider":"honcho"}"#),
+            ("PUT", "api/memory/provider", r#"{"provider":""}"#),
+            ("PUT", "api/memory/providers/honcho/config", r#"{"values":{"workspace":"shared","apiKey":"k"}}"#),
+            ("PUT", "api/memory/providers/my_mem-0/config", r#"{"values":{"user_id":"owner"}}"#),
+            ("POST", "api/memory/providers/retaindb/setup", r#"{"values":{}}"#),
+        ] {
+            assert!(memory_provider_write(method, path, Some(body)), "{method} {path} {body}");
+        }
+        for (method, path, body) in [
+            // Deleting the built-in memory files isn't reached.
+            ("POST", "api/memory/reset", r#"{"target":"all"}"#),
+            ("PUT", "api/memory/provider", r#"{"provider":"../x"}"#),
+            ("PUT", "api/memory/provider", r#"{"provider":"honcho","x":1}"#),
+            ("PUT", "api/memory/provider", r#"{"provider":true}"#),
+            ("POST", "api/memory/provider", r#"{"provider":"honcho"}"#),
+            // Setup never carries settings.
+            ("POST", "api/memory/providers/honcho/setup", r#"{"values":{"apiKey":"k"}}"#),
+            ("PUT", "api/memory/providers/honcho/setup", r#"{"values":{}}"#),
+            ("POST", "api/memory/providers/honcho/config", r#"{"values":{}}"#),
+            ("PUT", "api/memory/providers/honcho/config", r#"{"values":{"timeout":30}}"#),
+            ("PUT", "api/memory/providers/honcho/config", r#"{"values":{"":"x"}}"#),
+            // An empty write would switch the provider unchecked.
+            ("PUT", "api/memory/providers/honcho/config", r#"{"values":{}}"#),
+            ("PUT", "api/memory/providers/honcho/config", r#"{"values":{},"x":1}"#),
+            ("PUT", "api/memory/providers/honcho/config", r#"{"values":[]}"#),
+            ("PUT", "api/memory/providers/..%2Fx/config", r#"{"values":{}}"#),
+            ("PUT", "api/memory/providers/../config", r#"{"values":{}}"#),
+            ("PUT", "api/memory/providers/_x/config", r#"{"values":{}}"#),
+            ("PUT", "api/memory/providers/honcho/config/x", r#"{"values":{}}"#),
+            ("PUT", "api/memory/providers/honcho", r#"{"values":{}}"#),
+            ("PUT", "api/memory/providers/honcho/config", "not json"),
+        ] {
+            assert!(!memory_provider_write(method, path, Some(body)), "{method} {path} {body}");
+        }
+        assert!(!memory_provider_write("PUT", &format!("api/memory/providers/{}/config", "a".repeat(65)), Some(r#"{"values":{}}"#)));
+        assert!(!memory_provider_write("PUT", "api/memory/provider", None));
+    }
+
+    #[test]
+    fn only_the_automations_writes() {
+        for (method, path, body) in [
+            ("POST", "api/webhooks", r#"{"name":"triage","events":["issues"],"prompt":"p","filters":[],"create_only":true}"#),
+            ("PUT", "api/webhooks/triage", r#"{"revision":"abc","prompt":"p","rotate_secret":true}"#),
+            ("PUT", "api/webhooks/triage-2_x/enabled", r#"{"enabled":false}"#),
+            ("POST", "api/webhooks/triage/deliveries/7b1c0a10-0000-4000-8000-000000000001~retry~ab12/retry", r#"{"idempotency_key":"k","confirm_side_effects":true}"#),
+        ] {
+            assert!(webhook_write(method, path, Some(body)), "{method} {path} {body}");
+        }
+        // Every route Hermes lists stays manageable, the editor's longest new name (64) and beyond.
+        let long = |n: usize| format!("api/webhooks/{}/enabled", "a".repeat(n));
+        assert!(webhook_write("PUT", &long(65), Some(r#"{"enabled":false}"#)));
+        assert!(webhook_write("PUT", &long(200), Some(r#"{"enabled":false}"#)));
+        assert!(!webhook_write("PUT", &long(201), Some(r#"{"enabled":false}"#)));
+        for (method, path, body) in [
+            // A secret never goes through the webview, and direct delivery isn't set from here.
+            ("POST", "api/webhooks", r#"{"name":"triage","secret":"s"}"#),
+            ("POST", "api/webhooks", r#"{"name":"triage","deliver_only":true}"#),
+            ("PUT", "api/webhooks/triage", r#"{"revision":"r","secret":"s"}"#),
+            // The platform switch rewrites the config and restarts the gateway.
+            ("POST", "api/webhooks/enable", r#"{}"#),
+            ("PUT", "api/webhooks/triage/enabled", r#"{"enabled":"no"}"#),
+            ("PUT", "api/webhooks/triage/enabled", r#"{"enabled":true,"profile":"x"}"#),
+            ("PUT", "api/webhooks/Triage", r#"{"revision":"r"}"#),
+            ("PUT", "api/webhooks/-x", r#"{"revision":"r"}"#),
+            ("PUT", "api/webhooks/..", r#"{"revision":"r"}"#),
+            ("PUT", "api/webhooks/a%2Fb", r#"{"revision":"r"}"#),
+            ("PUT", "api/webhooks", r#"{"name":"x"}"#),
+            ("POST", "api/webhooks/triage", r#"{"name":"x"}"#),
+            ("POST", "api/webhooks/triage/deliveries/../retry", r#"{"idempotency_key":"k"}"#),
+            ("POST", "api/webhooks/triage/deliveries/a%2Fb/retry", r#"{"idempotency_key":"k"}"#),
+            ("POST", "api/webhooks/triage/deliveries/x/retry/now", r#"{"idempotency_key":"k"}"#),
+            ("POST", "api/webhooksx", r#"{"name":"x"}"#),
+            ("POST", "api/webhooks", "not json"),
+            ("POST", "api/webhooks", "[]"),
+        ] {
+            assert!(!webhook_write(method, path, Some(body)), "{method} {path} {body}");
+        }
+        assert!(!webhook_write("POST", "api/webhooks", None));
+    }
 
     #[test]
     fn only_provider_key_names() {

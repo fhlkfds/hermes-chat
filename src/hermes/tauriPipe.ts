@@ -83,7 +83,19 @@ export function tauriPipe(d: SignInDetails): OpenPipe {
         return invoke<string>("files_upload", { id, token, path, overwrite, onProgress: channel }).catch(asError);
       },
       saveText: (id, path, text, overwrite) => invoke<string>("files_save_text", { id, path, text, overwrite }).catch(asError),
+      fsSaveText: (id, profile, path, text) => invoke<string>("fs_save_text", { id, profile, path, text }).catch(asError),
       cancelTransfer: (id) => invoke("files_cancel", { id }),
+      openDisplay: async (ticket, onData, onClose) => {
+        // RFB bytes arrive raw, as an ArrayBuffer; the close, once, as JSON.
+        const channel = new Channel<ArrayBuffer | { code: number; reason: string }>();
+        channel.onmessage = (m) => (m instanceof ArrayBuffer ? onData(m) : onClose(m.code, m.reason));
+        const id = await invoke<number>("display_open", { ticket, onEvent: channel }).catch(asError);
+        return {
+          // The owner's keys and pointer go as the raw body.
+          send: (bytes) => void invoke("display_send", bytes, { headers: { "x-display-id": String(id) } }).catch(() => {}),
+          close: () => void invoke("display_close", { id }).catch(() => {}),
+        };
+      },
       close: () => invoke("hermes_disconnect"),
     };
   };

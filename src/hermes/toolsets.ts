@@ -21,6 +21,12 @@
 // `HERMES_TUI_TOOLSETS` uses that list instead, and with `agent.coding_context: focus` Hermes picks a coding selection in
 // a code workspace (`_load_enabled_toolsets` checks both first).
 //
+// What one open chat has is a separate read, over the WS socket: `tools.show {session_id}` lists the tools Hermes offers
+// that chat's agent (the toolsets it was built with, less `agent.disabled_toolsets` and tools whose requirements aren't
+// met), or, before its agent is built, what the profile would build it with. Hermes has no write for one chat that keeps
+// the conversation (`tools.configure` with a session rebuilds the agent and clears its in-memory history), and none for
+// the whole server (`HERMES_TUI_TOOLSETS` is the dashboard process's environment), so neither is offered here.
+//
 // Nothing is taken on trust: every change is checked against a fresh read first (another client may have changed it),
 // and reported as saved only once a read afterwards shows it.
 
@@ -102,6 +108,17 @@ const cautionKey = (c: Caution) =>
 
 /** The toolsets whose providers Hermes checks for readiness at `bf0203a` (`TOOL_CATEGORIES`). */
 const PROVIDER_TOOLSETS = ["web", "browser", "image_gen", "video_gen", "x_search", "tts", "stt", "computer_use"];
+
+/** One JSON-RPC call over the connection's WS socket; resolves to the result, rejects with a `code` on Hermes's error. */
+export type Rpc = (method: string, params: Record<string, unknown>) => Promise<unknown>;
+
+/**
+ * What one open chat is offered, read from Hermes. `read`: the tool names its agent has now. `closed`: Hermes no longer
+ * has the chat open, so it gets the profile's list when it is opened again. `unsupported`: this Hermes doesn't say.
+ */
+export type ChatTools = { kind: "read"; tools: Set<string>; readAt: number } | { kind: "closed" } | { kind: "unsupported"; reason: string };
+
+const rpcCode = (e: unknown) => (e && typeof e === "object" && typeof (e as { code?: unknown }).code === "number" ? (e as { code: number }).code : undefined);
 
 /** One signed-in dashboard REST call; resolves to the parsed JSON body. */
 export type Rest = (method: "GET" | "PUT", pathAndQuery: string, body?: unknown) => Promise<unknown>;
@@ -194,7 +211,46 @@ export class ToolsetsApi {
     private readonly readGuards: (profile: string) => Promise<ToolsetGuards>,
     /** Called after a change Hermes may have taken, so cached reads that depend on it are dropped. */
     private readonly changed: (profile: string, name: string) => void = () => {},
+    /** The WS socket, for what one open chat has (`chatTools`). */
+    private readonly rpc?: Rpc,
+    /**
+     * Called as the write check starts, for where to say what it found: whether Hermes has the switch's route
+     * (capabilities.ts `toolsetSwitches`). Asked at the start, so an answer that comes after a reconnect or profile
+     * switch is told to the connection it went out on.
+     */
+    private readonly checkingWrites: () => (found: "supported" | "unsupported" | "unknown", why: string) => void = () => () => {},
   ) {}
+
+  /**
+   * The tools Hermes offers `profile`'s chat whose live session is `runtimeId`, from `tools.show`. Two limits of that
+   * call are checked first:
+   * - It picks the session's own toolsets, but checks each tool's requirements (keys, packages, plugins) as the profile
+   *   the dashboard runs as (`get_tool_definitions` runs outside the session's profile scope). So it is read only for a
+   *   chat of that profile (`GET /api/profiles/active` → `current`).
+   * - It answers an id Hermes no longer holds with its launch profile's list instead of an error, so the answer counts
+   *   only when `session.status` still finds the session after it: then it was there while `tools.show` read it.
+   */
+  async chatTools(profile: string, runtimeId: string): Promise<ChatTools> {
+    if (!this.rpc) return { kind: "unsupported", reason: "This app can't ask Hermes about one chat here." };
+    const served = str(obj(await this.rest("GET", "api/profiles/active")).current);
+    if (served !== profile)
+      return {
+        kind: "unsupported",
+        reason: `Hermes checks what a chat is offered as the profile its dashboard runs as${served && served !== "custom" ? `, ${served}` : ""}, so it can't say for certain for a chat in the ${profile} profile.`,
+      };
+    let shown: Json;
+    try {
+      shown = obj(await this.rpc("tools.show", { session_id: runtimeId }));
+      await this.rpc("session.status", { session_id: runtimeId });
+    } catch (e) {
+      if (rpcCode(e) === -32601) return { kind: "unsupported", reason: "This Hermes server doesn't say which tools an open chat has." };
+      if (rpcCode(e) === 4001) return { kind: "closed" };
+      throw e;
+    }
+    if (!Array.isArray(shown.sections)) throw new Error("Hermes answered with something other than a tool list.");
+    const tools = new Set(shown.sections.flatMap((s) => (Array.isArray(obj(s).tools) ? (obj(s).tools as unknown[]) : [])).map((t) => str(obj(t).name)).filter(Boolean));
+    return { kind: "read", tools, readAt: Date.now() };
+  }
 
   /** The change on its way, if any. */
   readonly pending = (): Pending | undefined => this.current;
@@ -240,18 +296,23 @@ export class ToolsetsApi {
    * server that took the body would still refuse the unknown name (400) before reading the config.
    */
   async writeSupport(profile: string): Promise<WriteSupport> {
+    const tell = this.checkingWrites();
+    const found = (state: "supported" | "unsupported" | "unknown", support: WriteSupport): WriteSupport => {
+      tell(state, support.ok ? "Hermes refused the write check before changing anything, as it does when it has the route." : support.reason);
+      return support;
+    };
     try {
       await this.rest("PUT", this.path(profile, PROBE_NAME), { enabled: "probe" });
       // Nothing should take that body; say so rather than guess.
-      return { ok: false, reason: "Hermes answered the write check in a way this app doesn't expect, so it won't change toolsets." };
+      return found("unknown", { ok: false, reason: "Hermes answered the write check in a way this app doesn't expect, so it won't change toolsets." });
     } catch (e) {
       const f = failureOf(e);
       if (f.signedOut) throw e;
-      if (f.status === 422 || f.status === 400) return { ok: true };
-      if (noRoute(f)) return { ok: false, reason: "This Hermes server lists toolsets but has no route to change them. Updating Hermes adds it." };
-      if (f.status === 403) return { ok: false, reason: `Hermes doesn't let this sign-in change toolsets: ${f.reason}` };
+      if (f.status === 422 || f.status === 400) return found("supported", { ok: true });
+      if (noRoute(f)) return found("unsupported", { ok: false, reason: "This Hermes server lists toolsets but has no route to change them. Updating Hermes adds it." });
+      if (f.status === 403) return found("unknown", { ok: false, reason: `Hermes doesn't let this sign-in change toolsets: ${f.reason}` });
       if (f.status === undefined && !f.notRelayed) throw new Error(f.reason);
-      return { ok: false, reason: `Hermes didn't take the write check: ${f.reason}` };
+      return found("unknown", { ok: false, reason: `Hermes didn't take the write check: ${f.reason}` });
     }
   }
 

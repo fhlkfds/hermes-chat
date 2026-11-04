@@ -1,4 +1,4 @@
-// Saved connections (ADR 0025): the Hermes servers this computer can sign in to, each with a name, how it is reached
+// Saved connections (ADR 0048): the Hermes servers this computer can sign in to, each with a name, how it is reached
 // (SSH or URL), its non-secret address and username, and when it was last used. Each has a stable id that never
 // changes, even when its address is edited. Its password and extra request headers are kept in the system keyring
 // under that id (tauriKeyring.ts), and everything this computer keeps for it (drafts, queues, the outbox, Saved

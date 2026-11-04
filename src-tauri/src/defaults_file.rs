@@ -2,7 +2,8 @@
 //! Hermes Chat on this computer shares. The webview only reads it, and changes it by compare-and-swap: the new text is
 //! written only if the file still holds what the webview read, checked and written while holding an exclusive `flock`
 //! on a lock file beside it. Separate app instances have separate webview storage and lock registries, so this is
-//! what keeps one instance's save from silently replacing another's.
+//! what keeps one instance's save from silently replacing another's. Tags and Saved filters (ADR 0026) are kept the
+//! same way, in a file of their own.
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::OpenOptionsExt;
@@ -12,8 +13,9 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
-const FILE: &str = "project-defaults.json";
-const LOCK: &str = "project-defaults.lock";
+/// The files kept this way, by name: `<name>.json`, swapped under `<name>.lock`.
+const DEFAULTS: &str = "project-defaults";
+const TAGS: &str = "tags";
 
 /// What a swap did: `swapped`, or not because the file held `current` instead of what was expected.
 #[derive(Debug, Serialize, PartialEq)]
@@ -31,25 +33,25 @@ fn read_file(path: &Path) -> io::Result<Option<String>> {
 }
 
 /// The file's text, or `None` when there is none yet.
-pub fn read(dir: &Path) -> io::Result<Option<String>> {
-    read_file(&dir.join(FILE))
+pub fn read(dir: &Path, name: &str) -> io::Result<Option<String>> {
+    read_file(&dir.join(format!("{name}.json")))
 }
 
 /// Writes `next` if the file holds exactly `expected` (`None`: no file yet), under an exclusive lock that every
 /// instance takes. The write goes to a private temporary file renamed over the old one, so a crash leaves either.
-pub fn swap(dir: &Path, expected: Option<&str>, next: &str) -> io::Result<Swap> {
+pub fn swap(dir: &Path, name: &str, expected: Option<&str>, next: &str) -> io::Result<Swap> {
     fs::create_dir_all(dir)?;
-    let lock = OpenOptions::new().create(true).truncate(false).write(true).mode(0o600).open(dir.join(LOCK))?;
+    let lock = OpenOptions::new().create(true).truncate(false).write(true).mode(0o600).open(dir.join(format!("{name}.lock")))?;
     // SAFETY: flock on a descriptor this function owns; the lock goes when `lock` is closed at the end.
     if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
         return Err(io::Error::last_os_error());
     }
-    let path = dir.join(FILE);
+    let path = dir.join(format!("{name}.json"));
     let current = read_file(&path)?;
     if current.as_deref() != expected {
         return Ok(Swap { swapped: false, current });
     }
-    let tmp: PathBuf = dir.join(format!("{FILE}.{}.tmp", std::process::id()));
+    let tmp: PathBuf = dir.join(format!("{name}.json.{}.tmp", std::process::id()));
     {
         let mut f = OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
         f.write_all(next.as_bytes())?;
@@ -63,19 +65,37 @@ fn dir(app: &AppHandle) -> Result<PathBuf, String> {
     app.path().app_data_dir().map_err(|e| e.to_string())
 }
 
+async fn read_named(app: AppHandle, name: &'static str) -> Result<Option<String>, String> {
+    let dir = dir(&app)?;
+    tokio::task::spawn_blocking(move || read(&dir, name)).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())
+}
+
+async fn swap_named(app: AppHandle, name: &'static str, expected: Option<String>, next: String) -> Result<Swap, String> {
+    let dir = dir(&app)?;
+    tokio::task::spawn_blocking(move || swap(&dir, name, expected.as_deref(), &next))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn project_defaults_read(app: AppHandle) -> Result<Option<String>, String> {
-    let dir = dir(&app)?;
-    tokio::task::spawn_blocking(move || read(&dir)).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())
+    read_named(app, DEFAULTS).await
 }
 
 #[tauri::command]
 pub async fn project_defaults_swap(app: AppHandle, expected: Option<String>, next: String) -> Result<Swap, String> {
-    let dir = dir(&app)?;
-    tokio::task::spawn_blocking(move || swap(&dir, expected.as_deref(), &next))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    swap_named(app, DEFAULTS, expected, next).await
+}
+
+#[tauri::command]
+pub async fn tags_read(app: AppHandle) -> Result<Option<String>, String> {
+    read_named(app, TAGS).await
+}
+
+#[tauri::command]
+pub async fn tags_swap(app: AppHandle, expected: Option<String>, next: String) -> Result<Swap, String> {
+    swap_named(app, TAGS, expected, next).await
 }
 
 #[cfg(test)]
@@ -91,13 +111,13 @@ mod tests {
     #[test]
     fn swaps_only_over_what_was_read() {
         let d = temp_dir("cas");
-        assert_eq!(read(&d).unwrap(), None);
-        assert!(swap(&d, None, "one").unwrap().swapped);
-        assert_eq!(swap(&d, None, "two").unwrap(), Swap { swapped: false, current: Some("one".into()) });
-        assert!(swap(&d, Some("one"), "two").unwrap().swapped);
-        assert_eq!(read(&d).unwrap().as_deref(), Some("two"));
+        assert_eq!(read(&d, DEFAULTS).unwrap(), None);
+        assert!(swap(&d, DEFAULTS, None, "one").unwrap().swapped);
+        assert_eq!(swap(&d, DEFAULTS, None, "two").unwrap(), Swap { swapped: false, current: Some("one".into()) });
+        assert!(swap(&d, DEFAULTS, Some("one"), "two").unwrap().swapped);
+        assert_eq!(read(&d, DEFAULTS).unwrap().as_deref(), Some("two"));
         use std::os::unix::fs::PermissionsExt;
-        assert_eq!(fs::metadata(d.join(FILE)).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(fs::metadata(d.join("project-defaults.json")).unwrap().permissions().mode() & 0o777, 0o600);
         fs::remove_dir_all(&d).unwrap();
     }
 
@@ -105,17 +125,27 @@ mod tests {
     fn lets_one_of_many_racing_writers_win() {
         // As separate instances would: each read the same text, and all try to replace it at once.
         let d = temp_dir("race");
-        swap(&d, None, "base").unwrap();
+        swap(&d, TAGS, None, "base").unwrap();
         let won: Vec<bool> = (0..16)
             .map(|i| {
                 let d = d.clone();
-                std::thread::spawn(move || swap(&d, Some("base"), &format!("writer {i}")).unwrap().swapped)
+                std::thread::spawn(move || swap(&d, TAGS, Some("base"), &format!("writer {i}")).unwrap().swapped)
             })
             .collect::<Vec<_>>()
             .into_iter()
             .map(|t| t.join().unwrap())
             .collect();
         assert_eq!(won.iter().filter(|w| **w).count(), 1);
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn keeps_each_file_apart() {
+        let d = temp_dir("apart");
+        assert!(swap(&d, TAGS, None, "tags").unwrap().swapped);
+        assert_eq!(read(&d, DEFAULTS).unwrap(), None);
+        assert!(swap(&d, DEFAULTS, None, "defaults").unwrap().swapped);
+        assert_eq!(read(&d, TAGS).unwrap().as_deref(), Some("tags"));
         fs::remove_dir_all(&d).unwrap();
     }
 }

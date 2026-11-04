@@ -1,0 +1,374 @@
+// @vitest-environment jsdom
+// Settings → Skills on screen, against the fake dashboard: the list with source, scope and state, search, switches
+// read back, the editor's file identity, validation errors that keep the edit, missing referenced files, a concurrent
+// edit kept beside the owner's and merged, restoring a version saved over here, inert skill text, and asking before an
+// unsaved edit is dropped. Every skill here is synthetic.
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { useState } from "react";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { FakeHermes, row } from "../hermes/fakeHermes";
+import { memoryCache } from "../hermes/memoryCache";
+import type { ConnectionStatus } from "../hermes/model";
+import { connect, type Hermes } from "../hermes/transport";
+import { Main } from "../App";
+import { appearanceStore } from "./appearance";
+import { SettingsScreen } from "./Settings";
+
+vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }) }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: async () => null }));
+
+beforeAll(() => {
+  Element.prototype.scrollIntoView = () => {};
+  globalThis.CSS ??= { escape: (s: string) => s } as typeof CSS;
+});
+
+const running: Hermes[] = [];
+afterEach(async () => {
+  cleanup();
+  await Promise.all(running.splice(0).map((h) => h.close()));
+  localStorage.clear();
+});
+
+const HOME = "/home/liam/.hermes";
+const DIR = `${HOME}/skills/writing/release-notes`;
+const skill = (name: string, description: string, body: string) => `---\nname: ${name}\ndescription: ${description}\nx-custom: keep\n---\n\n${body}`;
+const NOTES = skill("release-notes", "Write release notes from merged PRs.", "## When to Use\n\nFollow references/style.md.\n");
+
+function server() {
+  const s = new FakeHermes();
+  s.sessions = [row("backup", 1, { pinned: true, title: "Nightly backup" })];
+  s.otherProfiles = { spare: [row("notes", 1, { pinned: true, title: "Reading notes" })] };
+  s.skills.add("default", { dir: DIR, source: "agent", category: "writing" }, NOTES, { "references/style.md": "Short." });
+  s.skills.add("default", { dir: `${HOME}/skills/github`, source: "bundled" }, skill("github", "Work with GitHub.", "Use gh.\n"));
+  s.skills.add("default", { dir: "/srv/shared-skills/house-style", source: "external" }, skill("house-style", "The team's <b>house</b> style.", "<img src=x onerror=alert(1)>\n"));
+  s.skills.add("default", { dir: `${HOME}/skills/hermes-agent`, source: "bundled" }, skill("hermes-agent", "Hermes itself.", "Docs.\n"));
+  s.skills.add("spare", { dir: `${HOME}/profiles/spare/skills/scratch`, source: "agent" }, skill("scratch", "The spare profile's skill.", "Body.\n"));
+  return s;
+}
+
+function memoryStorage() {
+  const items = new Map<string, string>();
+  return { getItem: (k: string) => items.get(k) ?? null, setItem: (k: string, v: string) => void items.set(k, v) };
+}
+
+function Shell({ hermes, profile, status }: { hermes: Hermes; profile: string; status: ConnectionStatus }) {
+  const [appearance] = useState(() => appearanceStore(memoryStorage(), document.createElement("html")));
+  return (
+    <SettingsScreen
+      status={status}
+      route={{ kind: "ssh", target: "liam@hermes" }}
+      unsecure={false}
+      username="liam"
+      passwordSaved
+      profile={profile}
+      olderPulled={false}
+      cacheBytes={() => 0}
+      appearance={appearance}
+      listFonts={async () => ({ all: [], mono: [] })}
+      modelSettings={hermes.modelSettings}
+      skills={hermes.skills}
+      onClearCache={() => {}}
+      onPullOlder={async () => []}
+      onSignOut={async () => {}}
+      onClose={() => {}}
+    />
+  );
+}
+
+async function shown({ s = server(), profile = "default", status = "connected" as ConnectionStatus } = {}) {
+  const hermes = await connect(s.openPipe, "default");
+  running.push(hermes);
+  const user = userEvent.setup();
+  const view = render(<Shell hermes={hermes} profile={profile} status={status} />);
+  await user.click(screen.getByRole("tab", { name: /Skills/ }));
+  await screen.findByRole("list", { name: "Skills" });
+  return { s, hermes, user, view };
+}
+
+const list = () => screen.getByRole("list", { name: "Skills" });
+const rowOf = (name: string) => within(list()).getByText(name, { selector: ".mono" }).closest("li")! as HTMLElement;
+const editor = () => screen.getByRole<HTMLTextAreaElement>("textbox", { name: /SKILL\.md/ });
+const button = (name: string | RegExp) => screen.getByRole("button", { name });
+const puts = (s: FakeHermes) => s.restRequests.filter((r) => r.method === "PUT" && r.path === "/api/skills/content");
+
+/** Opens `name` in the editor. */
+async function openSkill(user: ReturnType<typeof userEvent.setup>, name: string) {
+  await user.click(within(rowOf(name)).getByRole("button", { name: "Edit" }));
+  await screen.findByRole("group", { name: `Edit ${name}` });
+}
+
+/** Replaces the editor's text (typing it would be slow and treats braces as keys). */
+async function setText(user: ReturnType<typeof userEvent.setup>, text: string) {
+  await user.clear(editor());
+  await user.click(editor());
+  await user.paste(text);
+}
+
+describe("Settings → Skills list", () => {
+  it("lists each skill with its source, scope and state, and a switch that is read back", async () => {
+    const { s, user } = await shown();
+    expect(within(list()).getAllByRole("listitem").map((li) => li.querySelector(".mono")?.textContent)).toEqual(["release-notes", "house-style", "github", "hermes-agent"]);
+    expect(within(rowOf("release-notes")).getByText("Local")).toBeTruthy();
+    expect(within(rowOf("release-notes")).getByText("Category: writing")).toBeTruthy();
+    expect(within(rowOf("github")).getByText("Built in")).toBeTruthy();
+    expect(within(rowOf("house-style")).getByText("Shared folder")).toBeTruthy();
+    expect(within(rowOf("hermes-agent")).getByText("Always on")).toBeTruthy();
+    expect(within(rowOf("hermes-agent")).queryByRole("switch")).toBeNull();
+    const sw = within(rowOf("github")).getByRole("switch", { name: "github" });
+    expect(sw.getAttribute("aria-checked")).toBe("true");
+    await user.click(sw);
+    expect((await within(rowOf("github")).findByRole("status")).textContent).toMatch(/Turned off, and read back from Hermes. .*refuses to load it in any chat, even one already going/);
+    expect(within(rowOf("github")).getByRole("switch").getAttribute("aria-checked")).toBe("false");
+    expect([...s.skills.disabled.default]).toEqual(["github"]);
+    expect(screen.getByText(/4 skills, 1 off/)).toBeTruthy();
+  });
+
+  it("says when reading back doesn't show the switch's change", async () => {
+    const s = server();
+    const { user } = await shown({ s });
+    // Another client turns it straight back on between the write and the read-back.
+    s.skills.toggleLost = undefined;
+    const route = s.skills.route.bind(s.skills);
+    s.skills.route = (req) => {
+      const h = route(req);
+      return h && req.path === "/api/skills/toggle" ? () => (h(), s.skills.disabled.default?.delete("github"), { ok: true }) : h;
+    };
+    await user.click(within(rowOf("github")).getByRole("switch"));
+    expect((await within(rowOf("github")).findByRole("alert")).textContent).toMatch(/reading back shows github on, so the change didn't take/);
+  });
+
+  it("finds skills by name, description or category", async () => {
+    const { user } = await shown();
+    await user.type(screen.getByRole("searchbox", { name: "Search skills" }), "WRITING");
+    expect(within(list()).getAllByRole("listitem")).toHaveLength(1);
+    expect(screen.getByText(/1 of 4 skills/)).toBeTruthy();
+    await user.clear(screen.getByRole("searchbox", { name: "Search skills" }));
+    await user.type(screen.getByRole("searchbox", { name: "Search skills" }), "nothing like this");
+    expect(screen.getByText(/No skills match/)).toBeTruthy();
+  });
+
+  it("marks a skill a per-platform list keeps off in this app's chats", async () => {
+    const s = server();
+    s.skills.platformDisabled.default = { tui: ["release-notes"] };
+    await shown({ s });
+    expect(within(rowOf("release-notes")).getByText("Off in this app's chats")).toBeTruthy();
+    expect(within(rowOf("release-notes")).getByText(/skills\.platform_disabled\.tui/)).toBeTruthy();
+  });
+
+  it("shows another profile's skills only, and an unsupported server plainly", async () => {
+    const { s } = await shown({ profile: "spare" });
+    expect(within(list()).getAllByRole("listitem")).toHaveLength(1);
+    expect(s.restRequests.filter((r) => r.path === "/api/skills").every((r) => r.query.get("profile") === "spare")).toBe(true);
+    cleanup();
+    const old = server();
+    old.skills.routes = false;
+    const hermes = await connect(old.openPipe, "default");
+    running.push(hermes);
+    const user = userEvent.setup();
+    render(<Shell hermes={hermes} profile="default" status="connected" />);
+    await user.click(screen.getByRole("tab", { name: /Skills/ }));
+    expect((await screen.findByRole("alert")).textContent).toMatch(/This Hermes server can't manage skills.*GET \/api\/skills/);
+  });
+
+  it("renders skill text as inert text", async () => {
+    const { user } = await shown();
+    expect(within(rowOf("house-style")).getByText("The team's <b>house</b> style.")).toBeTruthy();
+    expect(document.querySelector("b, img")).toBeNull();
+    await openSkill(user, "house-style");
+    expect(editor().value).toContain("<img src=x onerror=alert(1)>");
+    expect(document.querySelector("img")).toBeNull();
+  });
+});
+
+describe("Settings → Skills editor", () => {
+  it("names the file it edits, saves only on Save, and reads it back", async () => {
+    const { s, user } = await shown();
+    await openSkill(user, "release-notes");
+    const group = screen.getByRole("group", { name: "Edit release-notes" });
+    expect(within(group).getByText(`${DIR}/SKILL.md`)).toBeTruthy();
+    expect(within(group).getByText("This profile")).toBeTruthy();
+    await user.type(editor(), "More.");
+    expect(screen.getByText("Unsaved")).toBeTruthy();
+    expect(puts(s)).toEqual([]);
+    await user.click(button("Save"));
+    expect((await screen.findByText(/Saved, and read back from Hermes/)).textContent).toMatch(/next load, in any chat, gets this text/);
+    expect(s.skills.file(DIR)).toBe(`${NOTES}More.`);
+    expect(screen.queryByText("Unsaved")).toBeNull();
+  });
+
+  it("shows what to fix for malformed front matter, keeps the edit, and lets Hermes's own refusal through", async () => {
+    const { s, user } = await shown();
+    await openSkill(user, "release-notes");
+    await setText(user, NOTES.replace("\n---\n\n## When", "\n\n## When"));
+    expect(within(screen.getByRole("alert", { name: "Fix before saving" })).getByText(/front matter isn't closed/)).toBeTruthy();
+    expect((button("Save") as HTMLButtonElement).disabled).toBe(true);
+    await setText(user, NOTES.replace("name: release-notes", "name: notes-v2"));
+    expect(screen.getByText(/Renaming a skill isn't supported here/)).toBeTruthy();
+    // A refusal the screen can't foresee (a security scan) is shown as Hermes words it.
+    await setText(user, `${NOTES}More.\n`);
+    s.skills.writeRefusal = { status: 400, detail: "Security scan blocked this skill (dangerous findings)" };
+    await user.click(button("Save"));
+    expect((await screen.findByText(/Security scan blocked this skill/)).textContent).toMatch(/Your edit is still here/);
+    expect(editor().value).toBe(`${NOTES}More.\n`);
+    expect(s.skills.file(DIR)).toBe(NOTES);
+  });
+
+  it("stops a save that names files the skill's folder doesn't have, until the owner chooses", async () => {
+    const { s, user } = await shown();
+    await openSkill(user, "release-notes");
+    await setText(user, NOTES.replace("references/style.md", "references/style.md and templates/missing.md"));
+    await user.click(button("Save"));
+    const problems = await screen.findByRole("alert", { name: "Fix before saving" });
+    expect(within(problems).getByText("templates/missing.md")).toBeTruthy();
+    expect(puts(s)).toEqual([]);
+    await user.click(within(problems).getByRole("button", { name: "Save with missing files" }));
+    await screen.findByText(/Saved, and read back/);
+    expect(s.skills.file(DIR)).toContain("templates/missing.md");
+    // A path out of the folder is never saved.
+    await setText(user, `${NOTES}See references/../../../etc/passwd\n`);
+    await user.click(button("Save"));
+    expect(await screen.findByText(/leads out of the skill's folder/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Save with missing files" })).toBeNull();
+    expect(puts(s)).toHaveLength(1);
+  });
+
+  it("keeps both versions when the skill changed elsewhere, and merges them", async () => {
+    const { s, user } = await shown();
+    await openSkill(user, "release-notes");
+    await setText(user, NOTES.replace("Follow references/style.md.", "Always follow references/style.md."));
+    const theirs = NOTES.replace("x-custom: keep", "x-custom: keep\nversion: 2.0.0");
+    s.skills.write(DIR, theirs);
+    await user.click(button("Save"));
+    expect((await screen.findByText(/changed on the server since you opened it, so nothing was saved/)).textContent).toBeTruthy();
+    expect(s.skills.file(DIR)).toBe(theirs);
+    expect(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "The version on the server now" }).value).toBe(theirs);
+    expect(editor().value).toContain("Always follow");
+    await user.click(button(/Merge into my edit/));
+    expect(editor().value).toContain("version: 2.0.0");
+    expect(editor().value).toContain("Always follow");
+    await user.click(button("Save"));
+    await screen.findByText(/Saved, and read back/);
+    expect(s.skills.file(DIR)).toBe(editor().value);
+  });
+
+  it("keeps the conflict's actions off while a save is under way, so its answer can't replace a merge", async () => {
+    const { s, user } = await shown();
+    await openSkill(user, "release-notes");
+    await setText(user, NOTES.replace("Follow", "Always follow"));
+    s.skills.write(DIR, NOTES.replace("x-custom: keep", "x-custom: keep\nversion: 2.0.0"));
+    await user.click(button("Save"));
+    await screen.findByRole("group", { name: "The version on the server now" });
+    let release!: () => void;
+    s.skills.readGate = new Promise<void>((r) => (release = r));
+    await user.click(button("Save"));
+    expect((button(/Merge into my edit/) as HTMLButtonElement).disabled).toBe(true);
+    expect((button("Use the server's version") as HTMLButtonElement).disabled).toBe(true);
+    await user.click(button(/Merge into my edit/));
+    expect(editor().value).toContain("Always follow");
+    expect(editor().value).not.toContain("version: 2.0.0");
+    release();
+    s.skills.readGate = undefined;
+    await waitFor(() => expect((button(/Merge into my edit/) as HTMLButtonElement).disabled).toBe(false));
+    await user.click(button(/Merge into my edit/));
+    expect(editor().value).toContain("version: 2.0.0");
+    expect(editor().value).toContain("Always follow");
+  });
+
+  it("edits a skill listed by its category path without calling it a rename", async () => {
+    const s = server();
+    s.skills.add("default", { dir: `${HOME}/skills/notes/release-notes`, source: "agent" }, skill("release-notes", "The other one.", "Body.\n"));
+    const { user } = await shown({ s });
+    await openSkill(user, "writing/release-notes");
+    await user.type(editor(), "More.");
+    expect(screen.queryByText(/Renaming a skill/)).toBeNull();
+    await user.click(button("Save"));
+    await screen.findByText(/Saved, and read back/);
+    expect(s.skills.file(DIR)).toBe(`${NOTES}More.`);
+  });
+
+  it("gives each skill its own element ids, so a switch is named for its own skill", async () => {
+    const s = server();
+    s.skills.add("default", { dir: `${HOME}/skills/x/example`, source: "agent" }, skill("example", "One.", "Body.\n"));
+    s.skills.add("default", { dir: `${HOME}/skills/y/example`, source: "agent" }, skill("example", "Two.", "Body.\n"));
+    s.skills.add("default", { dir: `${HOME}/skills/x_example`, source: "agent" }, skill("x_example", "Three.", "Body.\n"));
+    await shown({ s });
+    expect(screen.getByRole("switch", { name: "x/example" })).not.toBe(screen.getByRole("switch", { name: "x_example" }));
+    expect(new Set([...document.querySelectorAll("[id^=skill-]")].map((e) => e.id)).size).toBe(document.querySelectorAll("[id^=skill-]").length);
+  });
+
+  it("lists a skill named constructor without mistaking it for a platform list entry", async () => {
+    const s = server();
+    s.skills.add("default", { dir: `${HOME}/skills/constructor`, source: "agent" }, skill("constructor", "Odd name.", "Body.\n"));
+    await shown({ s });
+    expect(within(rowOf("constructor")).queryByText("Off in this app's chats")).toBeNull();
+  });
+
+  it("restores the version a save from here replaced, to check and save again", async () => {
+    const { s, user } = await shown();
+    await openSkill(user, "release-notes");
+    expect(screen.queryByRole("button", { name: /Restore previous version/ })).toBeNull();
+    await user.type(editor(), "Oops.");
+    await user.click(button("Save"));
+    await screen.findByText(/Saved, and read back/);
+    await user.click(button(/Restore previous version/));
+    expect(editor().value).toBe(NOTES);
+    expect(s.skills.file(DIR)).toBe(`${NOTES}Oops.`);
+    await user.click(button("Save"));
+    await screen.findByText(/Saved, and read back/);
+    expect(s.skills.file(DIR)).toBe(NOTES);
+  });
+
+  it("keeps the edit when disconnected, with Save and Reload off", async () => {
+    const s = server();
+    const hermes = await connect(s.openPipe, "default");
+    running.push(hermes);
+    const user = userEvent.setup();
+    const view = render(<Shell hermes={hermes} profile="default" status="connected" />);
+    await user.click(screen.getByRole("tab", { name: /Skills/ }));
+    await screen.findByRole("list", { name: "Skills" });
+    await openSkill(user, "release-notes");
+    await user.type(editor(), "Kept.");
+    view.rerender(<Shell hermes={hermes} profile="default" status="offline" />);
+    expect((button("Save") as HTMLButtonElement).disabled).toBe(true);
+    expect((button(/Reload/) as HTMLButtonElement).disabled).toBe(true);
+    expect(editor().value).toBe(`${NOTES}Kept.`);
+  });
+
+  it("asks before Cancel drops an unsaved edit, and returns focus to the skill", async () => {
+    const { user } = await shown();
+    await openSkill(user, "release-notes");
+    await user.type(editor(), "Draft.");
+    await user.click(button("Cancel"));
+    await user.click(within(screen.getByRole("alertdialog", { name: "Discard your edit?" })).getByRole("button", { name: "Keep editing" }));
+    expect(editor().value).toBe(`${NOTES}Draft.`);
+    await user.click(button("Cancel"));
+    await user.click(within(screen.getByRole("alertdialog", { name: "Discard your edit?" })).getByRole("button", { name: "Discard edit" }));
+    await waitFor(() => expect(document.activeElement).toBe(within(rowOf("release-notes")).getByRole("button", { name: "Edit" })));
+  });
+});
+
+describe("An unsaved skill edit in the app", () => {
+  it("asks before leaving Settings, and stays on Keep editing", async () => {
+    const s = server();
+    const hermes = await connect(s.openPipe, undefined, memoryCache());
+    running.push(hermes);
+    render(<Main hermes={hermes} connection={{ mode: "ssh", sshTarget: "liam@hermes-skills", url: "", username: "liam" }} onSignOut={async () => {}} />);
+    await waitFor(() => expect(hermes.hasListed()).toBe(true));
+    await act(async () => void (await hermes.idle()));
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /Settings/ }));
+    await user.click(screen.getByRole("tab", { name: /Skills/ }));
+    await screen.findByRole("list", { name: "Skills" });
+    await openSkill(user, "release-notes");
+    await user.type(editor(), "Unsaved.");
+    await user.click(button(/Back to chat/));
+    const dialog = screen.getByRole("alertdialog", { name: "Discard your skill edit?" });
+    expect(within(dialog).getByText(/a skill in the/)).toBeTruthy();
+    await user.click(within(dialog).getByRole("button", { name: "Keep editing" }));
+    expect(editor().value).toBe(`${NOTES}Unsaved.`);
+    await user.click(screen.getByRole("tab", { name: /General/ }));
+    await user.click(within(screen.getByRole("alertdialog", { name: "Discard your skill edit?" })).getByRole("button", { name: "Discard edit" }));
+    expect(screen.getByRole("tab", { name: /General/ }).getAttribute("aria-selected")).toBe("true");
+  });
+});

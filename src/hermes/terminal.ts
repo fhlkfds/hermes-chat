@@ -1,6 +1,9 @@
 // A terminal on the server: the owner's own `ssh` run in a pseudo-terminal by Rust (src-tauri/src/terminal.rs,
 // ADR 0022). This is the session's lifecycle, apart from the screen that draws it (src/ui/Terminal.tsx).
 
+/** Where a terminal's shell runs: on the Hermes server through ssh, or on this computer (ADR 0039). */
+export type TerminalKind = "server" | "local";
+
 /** What the terminal sends back: bytes ssh printed, then, once, how it ended. */
 export type TerminalEvent = { kind: "output"; data: Uint8Array } | { kind: "exit"; code: number | null };
 
@@ -36,11 +39,11 @@ export function terminalTarget(signIn: { mode: "ssh" | "url"; sshTarget: string 
 }
 
 /** How a session's end reads under the terminal. */
-export function endedText(s: Extract<TerminalState, { kind: "ended" }>): string {
+export function endedText(s: Extract<TerminalState, { kind: "ended" }>, kind: TerminalKind = "server"): string {
   if (s.byOwner) return "You ended the session.";
   if (s.code === 0) return "The session ended.";
   // ssh's own failures (it couldn't connect, or the key was refused) are 255; ssh has printed why above.
-  if (s.code === 255) return "ssh couldn't connect or lost the connection. What it said is above.";
+  if (s.code === 255 && kind === "server") return "ssh couldn't connect or lost the connection. What it said is above.";
   if (s.code === null) return "The session was ended by a signal.";
   return `The session ended with exit status ${s.code}.`;
 }

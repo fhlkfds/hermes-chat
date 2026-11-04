@@ -14,7 +14,7 @@ import { NAME_MAX, defaultName } from "../hermes/connections";
  * `first-run`: nothing is set up on this computer, so there is nowhere to cancel to; Cancel starts over.
  * `sign-in`: opened from the sign-in screen, to add a connection. `reconfigure`: opened from Settings while signed in,
  * to change the connection in use or add a provider key; the connection in use carries on until the change is tested
- * and saved. `add`: adds another saved connection. `edit`: changes a saved connection (ADR 0025). Both start at the
+ * and saved. `add`: adds another saved connection. `edit`: changes a saved connection (ADR 0048). Both start at the
  * Server step.
  */
 export type SetupMode = "first-run" | "sign-in" | "reconfigure" | "add" | "edit";

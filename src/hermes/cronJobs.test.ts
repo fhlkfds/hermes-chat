@@ -4,7 +4,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { FakeHermes } from "./fakeHermes";
 import { connect, type Hermes } from "./transport";
-import { CronConflict, CronError, cronError, missedRunNote, statusLabel, type JobFields } from "./cronJobs";
+import { CronApi, CronConflict, CronError, cronError, deliveryProblems, missedRunNote, statusLabel, type JobFields } from "./cronJobs";
 
 const running: Hermes[] = [];
 afterEach(async () => {
@@ -91,9 +91,239 @@ describe("listing", () => {
       { id: "local-abc", title: "Morning brief", preview: "Summarize…", source: "cron", started_at: 1_793_640_000, ended_at: null, is_active: true, scheduler_owned: true },
     ];
     expect(await cron.runs("default", job)).toEqual([
-      { id: "cron_output:x:1", title: "fixture ran at 2026-11-02T20:39:36Z", preview: "fixture ran at 2026-11-02T20:39:36Z", startedAt: 1_793_651_976_000, endedAt: 1_793_651_976_000, running: false, script: true, status: "Completed" },
-      { id: "local-abc", title: "Morning brief", preview: "Summarize…", startedAt: 1_793_640_000_000, endedAt: undefined, running: true, script: false },
+      { id: "cron_output:x:1", title: "fixture ran at 2026-11-02T20:39:36Z", preview: "fixture ran at 2026-11-02T20:39:36Z", startedAt: 1_793_651_976_000, endedAt: 1_793_651_976_000, state: "succeeded", script: true },
+      { id: "local-abc", title: "Morning brief", preview: "Summarize…", startedAt: 1_793_640_000_000, endedAt: undefined, state: "running", script: false, sessionId: "local-abc" },
     ]);
+  });
+});
+
+describe("run history", () => {
+  // Rows as the deployed `bf0203a` answered on a throwaway HERMES_HOME (2026-11-04), its gateway running the jobs
+  // with no Hermes Chat process: a script that printed a line, one that exited 3, an agent job with no model set,
+  // and the same agent job against a loopback stand-in model.
+  const REAL = [
+    {
+      id: "local-54afb7",
+      title: "[fixture] agent · Nov 04 09:37",
+      preview: "[IMPORTANT: You are running as a scheduled cron job. DELIVER...",
+      source: "cron",
+      started_at: 1793806654.122434,
+      ended_at: 1793806655.5490303,
+      end_reason: "cron_complete",
+      is_active: false,
+      scheduler_owned: false,
+      profile: "default",
+      cron_execution_id: "4b6630e5",
+    },
+    {
+      id: "cron_output:c251:2026-11-04_09-35-34",
+      title: "COMPLETED · # Cron Job: [fixture] echo **Job ID:** c251bbd77765 **Run Time:** 2026-11-04 09:35:34 **Mode:** no_agent (script) --- [fixture] ok at 15:35:34",
+      preview: "# Cron Job: [fixture] echo **Job ID:** c251bbd77765 **Run Time:** 2026-11-04 09:35:34 **Mode:** no_agent (script) --- [fixture] ok at 15:35:34",
+      source: "cron_output",
+      started_at: 1793806534.0,
+      ended_at: 1793806534.0,
+      end_reason: null,
+      is_active: false,
+      scheduler_owned: null,
+      profile: null,
+    },
+    {
+      id: "cron_output:5e34:2026-11-04_09-35-34",
+      title: "FAILED · Script exited with code 3\nstdout:\n[fixture] about to fail",
+      preview: "# Cron Job: [fixture] fails **Job ID:** 5e3452a77317 **Run Time:** 2026-11-04 09:35:34 **Mode:** no_agent (script) **Status:** script failed Script exited with code 3 stdout: [fix…",
+      source: "cron_output",
+      started_at: 1793806533.0,
+      ended_at: 1793806533.0,
+      is_active: false,
+      scheduler_owned: null,
+      profile: null,
+    },
+    {
+      id: "cron_output:3ce9:2026-11-04_09-35-34",
+      title: "FAILED · RuntimeError: Cron job '[fixture] agent' has no model configured (job.model=None, HERMES_MODEL='', config.yaml model.default missing or empty).",
+      preview: "# Cron Job: 3ce9dfd6d5bd (FAILED) RuntimeError: Cron job '[fixture] agent' has no model configured…",
+      source: "cron_output",
+      started_at: 1793806532.0,
+      ended_at: 1793806532.0,
+      is_active: false,
+      scheduler_owned: null,
+      profile: null,
+    },
+  ];
+
+  it("tells each run's state from what Hermes recorded, with its error", async () => {
+    const { s, cron } = await setUp();
+    const job = await cron.create("default", fields(), true);
+    s.cron.runs[job.id] = REAL;
+    const runs = await cron.runs("default", job);
+    expect(runs.map((r) => [r.state, r.error ?? null])).toEqual([
+      ["succeeded", null],
+      ["succeeded", null],
+      ["failed", "Script exited with code 3\nstdout:\n[fixture] about to fail"],
+      ["failed", expect.stringMatching(/^RuntimeError: Cron job '\[fixture\] agent' has no model configured/)],
+    ]);
+    expect(runs[0]).toMatchObject({ sessionId: "local-54afb7", script: false, startedAt: 1793806654.122434 * 1000, endedAt: 1793806655.5490303 * 1000 });
+    expect(runs[1]).toMatchObject({ preview: "[fixture] ok at 15:35:34", script: true });
+    expect(runs[1].sessionId).toBeUndefined();
+  });
+
+  it("says when a run's outcome is unknown, and why", async () => {
+    const { s, cron } = await setUp();
+    const job = await cron.create("default", fields(), true);
+    const at = 1_793_800_000;
+    s.cron.runs[job.id] = [
+      // Two runs at once: a manual one claimed while the scheduler's was still going.
+      { id: "local-a", source: "cron", started_at: at, ended_at: null, is_active: false, scheduler_owned: true, profile: "default" },
+      { id: "local-b", source: "cron", started_at: at - 5, ended_at: null, is_active: true, scheduler_owned: false, profile: "default" },
+      // Never closed, and no live scheduler owns it: its process died.
+      { id: "local-c", source: "cron", started_at: at - 600, ended_at: null, is_active: false, scheduler_owned: false, profile: "default" },
+      { id: "local-d", source: "cron", started_at: at - 700, ended_at: at - 650, end_reason: "cron_incomplete_no_output", profile: "default" },
+      { id: "local-e", source: "cron", started_at: at - 800, ended_at: at - 790, end_reason: "compression", profile: "default" },
+      { id: "local-f", source: "cron", started_at: at - 900, ended_at: at - 890, end_reason: "agent_close", profile: "default" },
+      // Output Hermes kept with no ledger record, and the one row it makes from the job when no output survived.
+      { id: "cron_output:x:old", title: "plain output", preview: "plain output", source: "cron_output", started_at: at - 1000 },
+      { id: "cron_output:x:latest", title: "DELIVERY FAILED · Telegram said no", preview: "Telegram said no", source: "cron_output", started_at: at - 1100 },
+      { id: "cron_output:x:odd", title: "SKIPPED BY HOOK · output", source: "cron_output", started_at: at - 1200 },
+    ];
+    const runs = await cron.runs("default", job);
+    expect(runs.map((r) => r.state)).toEqual(["running", "running", "unknown", "failed", "unknown", "unknown", "unknown", "failed", "unknown"]);
+    expect(runs[2].note).toMatch(/no end recorded for this run, and no scheduler is running it/);
+    expect(runs[3].error).toBe("The run ended without a final reply from the agent.");
+    expect(runs[4].note).toMatch(/compressed this run and went on in a new session/);
+    expect(runs[5].note).toBe("Hermes recorded the run's end as “agent_close”.");
+    expect(runs[6].note).toMatch(/no record of how it ended/);
+    // Hermes's own words come after the state's.
+    expect(runs[7].error).toBe("The run finished, but delivering its result failed: Telegram said no");
+    expect(runs[8].note).toBe("Hermes recorded “Skipped by hook”.");
+  });
+
+  it("reads the row Hermes makes from the job when no output survived, with or without its error", async () => {
+    const { s, cron } = await setUp();
+    const job = await cron.create("default", fields(), true);
+    const latest = (title: string, preview?: string) => ({ id: `cron_output:${job.id}:latest`, title, ...(preview && { preview }), source: "cron_output", started_at: 1_793_800_000 });
+    const one = async (row: Record<string, unknown>) => {
+      s.cron.runs[job.id] = [row];
+      return (await cron.runs("default", job))[0];
+    };
+    // `_list_cron_output_runs`: the status alone when the job has no `last_error`.
+    expect(await one(latest("OK"))).toMatchObject({ state: "succeeded" });
+    expect(await one(latest("SUPPRESSED"))).toMatchObject({ state: "succeeded", note: "Ran; nothing to deliver." });
+    expect(await one(latest("DELIVERY FAILED"))).toMatchObject({ state: "failed", error: "The run finished, but delivering its result failed." });
+    expect(await one(latest("ERROR"))).toMatchObject({ state: "failed", error: "Hermes recorded the run as failed, with no reason." });
+    expect(await one(latest("BLOCKED CONFIG · Missing API key", "Missing API key"))).toMatchObject({ state: "failed", error: "Blocked by the job's settings: Missing API key" });
+    expect(await one(latest("Script-only run"))).toMatchObject({ state: "unknown" });
+    // A status named like an object's own machinery is just a status this app doesn't know.
+    for (const odd of ["CONSTRUCTOR", "TO STRING", "HAS OWN PROPERTY · x", "PROTO"]) expect(await one(latest(odd))).toMatchObject({ state: "unknown" });
+    // An output doc's title is what the script printed, so a shout there isn't a status.
+    expect(await one({ id: `cron_output:${job.id}:2026-11-04_09-35-34`, title: "OK", preview: "OK", source: "cron_output", started_at: 1_793_800_000 })).toMatchObject({ state: "unknown", preview: "OK" });
+  });
+
+  it("asks for the newest runs a page at a time, as far as Hermes's limit", async () => {
+    const { s, cron } = await setUp();
+    const job = await cron.create("default", fields(), true);
+    s.cron.runs[job.id] = Array.from({ length: 130 }, (_, i) => ({ id: `cron_output:${job.id}:${i}`, title: `COMPLETED · run ${i}`, source: "cron_output", started_at: 1_793_600_000 - i * 60 }));
+    expect(await cron.runs("default", job)).toHaveLength(20);
+    expect(await cron.runs("default", job, 40)).toHaveLength(40);
+    expect((await cron.runs("default", job, 100)).at(-1)!.title).toBe("run 99");
+    expect(s.restRequests.filter((r) => r.path.endsWith("/runs")).map((r) => r.query.get("limit"))).toEqual(["20", "40", "100"]);
+  });
+
+  it("reads an agent run's reply from its own profile's session", async () => {
+    const { s, cron } = await setUp();
+    s.transcripts["local-run"] = [
+      { role: "user", text: "[IMPORTANT: You are running as a scheduled cron job.] Fixture only.", row_id: 1 },
+      { role: "assistant", text: "[fixture] Done.", row_id: 2 },
+    ];
+    const run = { id: "local-run", title: "", startedAt: 0, state: "succeeded" as const, script: false, sessionId: "local-run" };
+    expect(await cron.runResult("default", run)).toEqual({ reply: "[fixture] Done." });
+    const read = s.restRequests.at(-1)!;
+    expect(read.path).toBe("/api/sessions/local-run/messages");
+    expect([read.query.get("profile"), read.query.get("order")]).toEqual(["default", "latest"]);
+    await expect(cron.runResult("default", { ...run, sessionId: undefined, script: true })).rejects.toMatchObject({ kind: "refused" });
+  });
+
+  it("takes the newest reply from a page in stored order, and refuses another profile's session", async () => {
+    // As the deployed server answers `order=latest`: the newest page, oldest row first.
+    const page = (profile: string) => ({
+      session_id: "local-run",
+      profile,
+      messages: [
+        { id: 7, role: "assistant", content: "First try." },
+        { id: 8, role: "tool", content: "{}" },
+        { id: 9, role: "assistant", content: [{ type: "text", text: "Final answer." }] },
+        { id: 10, role: "assistant", content: "Hidden note.", display_kind: "hidden" },
+      ],
+    });
+    const run = { id: "local-run", title: "", startedAt: 0, state: "succeeded" as const, script: false, sessionId: "local-run" };
+    const api = new CronApi(async () => page("default"));
+    expect((await api.runResult("default", run)).reply).toBe("Final answer.");
+    await expect(new CronApi(async () => page("work")).runResult("default", run)).rejects.toMatchObject({ kind: "unknown", message: expect.stringMatching(/work profile, not default/) });
+    await expect(new CronApi(async () => ({ messages: [] })).runResult("default", run)).resolves.toEqual({});
+    await expect(
+      new CronApi(async () => {
+        throw new Error('The dashboard answered 404: {"detail":"Session not found"}');
+      }).runResult("default", run),
+    ).rejects.toMatchObject({ kind: "gone", message: "This run's session isn't on the server any more." });
+  });
+});
+
+describe("delivery", () => {
+  const targets = [
+    { id: "local", name: "Local (save only)", ready: true },
+    { id: "telegram", name: "Telegram", ready: true },
+    { id: "discord", name: "Discord", ready: false },
+    { id: "bot-chat:default", name: "Bot Chat (default)", ready: true },
+  ];
+
+  it("says which places Hermes can't deliver a job to", () => {
+    for (const ok of ["local", "origin", "all", "telegram", "telegram:-100123", "discord:4242", "bot-chat:default", "local,telegram"]) expect(deliveryProblems(ok, targets)).toEqual([]);
+    // `parse_bot_chat_deliver_token`: alone, or with no name, it is the job's own profile; names are normalized.
+    for (const own of ["bot-chat", "bot-chat:", "Bot-Chat", "bot-chat:Default", "bot-chat: default "]) expect(deliveryProblems(own, targets)).toEqual([]);
+    expect(deliveryProblems("discord", targets)).toEqual(["Discord has no home channel set on the server, so Hermes won't deliver there."]);
+    // A platform named alone falls back to the chat the job came from on it.
+    expect(deliveryProblems("discord", targets, "discord")).toEqual([]);
+    expect(deliveryProblems("slack", targets)).toEqual(["Slack isn't set up on this profile's gateway, so Hermes won't deliver there."]);
+    expect(deliveryProblems("home_assistant:abc", targets)).toEqual(["Home Assistant isn't set up on this profile's gateway, so Hermes won't deliver there."]);
+    expect(deliveryProblems("bot-chat:gone", targets)).toEqual(["Bot Chat (gone) isn't a profile on this server, so Hermes won't deliver there."]);
+    expect(deliveryProblems("telegram, slack", targets)).toHaveLength(1);
+  });
+
+  it("reads the job's origin platform", async () => {
+    const { s, cron } = await setUp();
+    const row = s.cron.add("default", { name: "From Discord", prompt: "p", schedule: "0 9 * * *", deliver: "discord" });
+    row.origin = { platform: "discord", chat_id: "42" };
+    expect((await cron.list("default"))[0]).toMatchObject({ deliver: "discord", originPlatform: "discord" });
+  });
+});
+
+describe("permission failures and overlapping runs", () => {
+  it("says the dashboard refused, and changes nothing, when it doesn't allow a write", async () => {
+    const { s, cron } = await setUp();
+    s.cron.failNext = { match: /^POST /, when: "before", message: 'The dashboard answered 403: {"detail":"Forbidden"}' };
+    await expect(cron.create("default", fields(), false)).rejects.toMatchObject({ kind: "forbidden", message: "The dashboard doesn't allow this: Forbidden" });
+    expect(s.cron.jobs.default).toHaveLength(0);
+    // A refusal is certain, so the next press sends at once instead of warning about a job that may exist.
+    await cron.create("default", fields(), false);
+    expect(s.cron.jobs.default).toHaveLength(1);
+    const job = (await cron.list("default"))[0];
+    s.cron.failNext = { match: /pause$/, when: "before", message: 'The dashboard answered 403: {"detail":"Forbidden"}' };
+    await expect(cron.setPaused("default", job, true)).rejects.toMatchObject({ kind: "forbidden" });
+    expect(s.cron.jobs.default[0].enabled).toBe(true);
+  });
+
+  it("says a reading the dashboard refuses is refused, not missing", async () => {
+    const { s, cron } = await setUp();
+    const route = s.cron.route.bind(s.cron);
+    s.cron.route = (req) => (req.path === "/api/cron/jobs" ? () => Promise.reject(new Error('The dashboard answered 403: {"detail":"Not allowed for this user"}')) : route(req));
+    await expect(cron.list("default")).rejects.toMatchObject({ kind: "forbidden", message: "The dashboard doesn't allow this: Not allowed for this user" });
+  });
+
+  it("doesn't start a second run while one is under way", async () => {
+    const { s, cron } = await setUp();
+    const job = await cron.create("default", fields(), false);
+    s.cron.failNext = { match: /trigger$/, when: "before", message: 'The dashboard answered 409: {"detail":"Job is already running or was claimed by another scheduler"}' };
+    await expect(cron.runNow("default", job)).rejects.toMatchObject({ kind: "busy", message: "This job is running already. Its result shows here once it finishes." });
+    expect(s.cron.jobs.default[0].last_run_at).toBeNull();
   });
 });
 

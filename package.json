@@ -6,13 +6,14 @@
   "license": "GPL-3.0-or-later",
   "type": "module",
   "scripts": {
-    "app": "WEBKIT_DISABLE_DMABUF_RENDERER=1 tauri dev",
+    "app": "HERMES_CHAT_NEW_INSTANCE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 tauri dev",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
     "tauri": "tauri"
   },
   "dependencies": {
+    "@novnc/novnc": "1.7.0",
     "@tauri-apps/api": "^2.12.4",
     "@tauri-apps/plugin-dialog": "^2.8.4",
     "@xterm/addon-fit": "^0.11.0",

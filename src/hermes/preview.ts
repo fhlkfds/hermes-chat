@@ -5,6 +5,7 @@
 // frame (ADR 0007). Everything shown is untrusted: nothing here turns it into HTML the app itself renders.
 import type { Item } from "./model";
 import type { RemotePreview } from "./remoteFiles";
+import type { ArtifactRef } from "./artifacts";
 
 /**
  * What the pane shows. `start`: the pane is open with nothing in it yet. `server`: a path on the Hermes server.
@@ -16,6 +17,8 @@ export type PreviewTarget =
   | { kind: "web"; url: string }
   /** `host`: on the dashboard's own machine, read through the managed files routes (ADR 0012), not where tools run. */
   | { kind: "server"; path: string; host?: boolean }
+  /** An Output open to edit (artifacts.ts, ADR 0029): read and saved on the machine `ref` names. */
+  | { kind: "artifact"; ref: ArtifactRef }
   | { kind: "local"; path: string; name: string }
   | { kind: "tool"; name: string; text: string };
 
@@ -65,6 +68,8 @@ export function previewName(t: PreviewTarget): string {
       return t.name;
     case "server":
       return t.path.split("/").filter(Boolean).pop() ?? t.path;
+    case "artifact":
+      return t.ref.path.split("/").filter(Boolean).pop() ?? t.ref.path;
     case "web":
       try {
         const u = new URL(t.url);

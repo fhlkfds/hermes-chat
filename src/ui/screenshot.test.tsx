@@ -319,16 +319,16 @@ describe("Taking a screenshot for the composer", () => {
       disconnect() {}
     });
     const { rust, user } = await signedIn();
-    await user.click(screen.getByRole("button", { name: "Open the preview" }));
+    await user.click(screen.getByRole("button", { name: "Open the side panel" }));
     expect(document.querySelector(".main-chat")!.hasAttribute("inert")).toBe(true);
 
     rust.pressDesktopShortcut();
     expect(document.querySelector(".main-chat")!.hasAttribute("inert")).toBe(false);
-    expect(document.querySelector("aside.preview")).toBeNull();
+    expect(document.querySelector("aside.preview:not([hidden])")).toBeNull();
     await rust.land();
     await waitFor(() => expect(chips()).toHaveLength(1));
 
-    await user.click(screen.getByRole("button", { name: "Show the preview" }));
+    await user.click(screen.getByRole("button", { name: "Show the side panel" }));
     rust.pressDesktopShortcut();
     await rust.fail({ kind: "denied", message: "Screenshot permission denied" });
     expect((await screen.findByRole("alert")).textContent).toContain("Screenshot permission denied");
@@ -432,7 +432,7 @@ describe("Setting the screenshot shortcut", () => {
     await user.keyboard("{Control>}k{/Control}");
     expect(screen.getByRole("alert").textContent).toContain("Ctrl+K: Ctrl+K already opens Search in Hermes Chat.");
     // Search didn't open, and the recorder is still waiting.
-    expect(screen.queryByPlaceholderText(/Search/)).toBeNull();
+    expect(screen.queryByPlaceholderText(/Search all chats/)).toBeNull();
     expect(key.textContent).toContain("Press the shortcut…");
 
     await user.keyboard("{Control>}v{/Control}");

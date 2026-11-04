@@ -1,7 +1,7 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
 // Dictation and Read aloud come from Voice.tsx.
 import { createContext, memo, type ReactNode, useCallback, useContext, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
-import { ArrowUp, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, FileDown, Globe, HardDrive, ListPlus, Paperclip, RotateCcw, Search, Server, Square, Wrench, X } from "lucide-react";
+import { ArrowUp, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, FileDown, FileInput, FileText, Globe, HardDrive, Link2, ListPlus, Paperclip, RotateCcw, Search, Server, Square, Wrench, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
@@ -12,15 +12,26 @@ import { ApprovalCard } from "./ApprovalCard";
 import { QueuePanel, type QueueApi } from "./Queue";
 import { Markdown } from "./Markdown";
 import { ArchiveButton, SettleButton, SourceIcon, Spinner, StoredTime, composing, highlight } from "./bits";
+import { wakeFull } from "../hermes/snooze";
 import { AttachmentChip, Previews, readPreview } from "./previews";
 import { Speaker } from "./speaker";
 import { DictationNoteView, DictationStrip, ListenButton, MicButton, type VoiceApi, listenBlocked, micBlocked, useDictation, useVoiceSetup } from "./Voice";
 import { withTranscript } from "../hermes/voice";
+import { turnSettings } from "../hermes/voiceTurns";
+import type { Delivery } from "../hermes/transport";
+import { ConversationPanel, StartConversationButton, conversationAway, startBlocked, usePageHidden, useVoiceConversation } from "./VoiceConversation";
+import type { ConversationState, VoiceConversation } from "./conversation";
 import type { VoiceSetup } from "../hermes/pipe";
 import { ChatUsageButton, ReplyUsageLine } from "./Usage";
 import { useOpenPreview } from "./previewContext";
+import { ShowInChatContext, type ShowInChat } from "./showInChat";
 import { previewName, toolTargets, withoutBidi } from "../hermes/preview";
 import { type CommandHost, useSlashCommands } from "./SlashCommands";
+import { Templates, type TemplateHere } from "./Templates";
+import { BranchButton } from "./Branch";
+import { useWindowHidden } from "./windowState";
+import { EditButton, RegenerateButton, VariantNav } from "./Replay";
+import { turnsOf, type ReplayKind, type Variant } from "../hermes/replay";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type ThinkingItem = Extract<Item, { kind: "thinking" }>;
@@ -49,8 +60,15 @@ const sameBlock = (a: Block, b: Block) =>
  */
 export type FindTarget = { query: string; itemId?: string; at: number };
 
-/** A tool call to go to and open, by its call id (`Item.callId`); `at` tells one request from the next. */
-export type JumpTarget = { callId: string; at: number };
+/**
+ * What to go to: a tool call, opened, by its call id (`Item.callId`), or a message by its stored row (`rowId`), as a
+ * branch's link back does. `at` tells one request from the next.
+ */
+export type JumpTarget =
+  | { callId: string; rowId?: undefined; turn?: undefined; at: number }
+  | { rowId: number; callId?: undefined; turn?: undefined; at: number }
+  /** The owner's message that starts turn `turn` (from 0), and its reply: where a version of that turn is opened. */
+  | { turn: number; callId?: undefined; rowId?: undefined; at: number };
 /** The tool call being gone to, for the tool rows and groups that hold it to open themselves. */
 const JumpContext = createContext<JumpTarget | undefined>(undefined);
 
@@ -95,15 +113,19 @@ const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateS
 
 /**
  * `alsoPostsIn`: the Telegram or Discord chat Hermes will also post its replies in. `draft`: the composer's text, kept
- * outside the pane so it survives switching chats. `onAnswer` answers an Approval card. `onSettle`, `onArchive` and
- * `onExport` are left out for a chat not started yet. `notLoaded`: the chat has no Saved copy and can't load until
+ * outside the pane so it survives switching chats. `onAnswer` answers an Approval card. `onSettle`, `onArchive`,
+ * `onExport` and `onCopyLink` are left out for a chat not started yet. `notLoaded`: the chat has no Saved copy and can't load until
  * Hermes is connected. `onRetry`, `onEdit` and `onDismiss` act on failed or unconfirmed messages. `modelControls`
  * contains the model picker; `footer` contains the status bar. Only the active pane answers Ctrl+F and takes focus as
  * it opens. Native drops attach to the pane under the pointer. `paneControls` follows the chat's own buttons.
  * `screenshots` attaches captures; `screenshotKeys` names the shortcut.
- * `voice` supplies Dictation and Read aloud. `commands` runs the slash commands typed in the composer. `queue` is the
+ * `voice` supplies Dictation and Read aloud. `voiceSend` puts a Voice conversation's turn in the chat as the owner's
+ * message; it is left out for a chat not started yet, where a conversation can't start (ADR 0041). `commands` runs the slash commands typed in the composer. `queue` is the
  * chat's queue of messages waiting to go after its reply, and `queueApi` changes it; it is left out for a chat not
- * started yet, which can't queue.
+ * started yet, which can't queue. `branch` offers Branch from here under each message with text (ADR 0027): `blocked`
+ * says why none can be made now. `branchedFrom` is shown at the top of a branch, where it came from. `replay` offers
+ * Edit under the owner's messages and Regenerate under each turn's last reply (ADR 0035); `blocked` says why neither
+ * can be used now. `variants` are the versions of this chat's turns, shown under each turn's last reply.
  */
 export function ChatPane({
   chat,
@@ -125,15 +147,18 @@ export function ChatPane({
   onSettle,
   onArchive,
   onExport,
+  onCopyLink,
   modelControls,
   active = true,
   visible = true,
   split = false,
   paneControls,
   voice,
+  voiceSend,
   screenshots,
   screenshotKeys,
   projects,
+  snoozedUntil,
   notice,
   banner,
   footer,
@@ -142,6 +167,11 @@ export function ChatPane({
   queue,
   queueApi,
   commands,
+  templates,
+  branch,
+  branchedFrom,
+  replay,
+  variants,
 }: {
   chat: Chat;
   notLoaded?: boolean;
@@ -164,16 +194,21 @@ export function ChatPane({
   onSettle?: (settled: boolean) => void;
   onArchive?: (archived: boolean) => void;
   onExport?: () => void;
+  /** Copies the chat's link (chatLinks.ts). */
+  onCopyLink?: () => void;
   modelControls?: ReactNode;
   active?: boolean;
   visible?: boolean;
   split?: boolean;
   paneControls?: ReactNode;
   voice?: VoiceApi;
+  voiceSend?: (text: string) => Promise<{ delivery: Delivery; itemId?: string }>;
   screenshots?: ScreenshotDesk;
   screenshotKeys?: string;
   /** The names of the projects the chat is in, or a new chat will be put in. */
   projects?: string[];
+  /** When the chat wakes, if the owner snoozed it and it hasn't woken yet (snooze.ts). */
+  snoozedUntil?: number;
   /** Shown at the top of the transcript: what a new chat starts with. */
   notice?: ReactNode;
   /** Shown under the header, outside the transcript's scroll: a question about this chat. */
@@ -184,6 +219,12 @@ export function ChatPane({
   queue?: ChatQueue;
   queueApi?: QueueApi;
   commands?: CommandHost;
+  /** Where the composer's Templates are picked from (Templates.tsx). */
+  templates?: TemplateHere;
+  branch?: { blocked?: string; onBranch: (itemId: string) => void };
+  branchedFrom?: ReactNode;
+  replay?: { blocked?: string; onReplay: (itemId: string, kind: ReplayKind) => void };
+  variants?: { byTurn: Map<number, Variant[]>; onPick: (chatId: string, turn: number) => void };
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -202,6 +243,19 @@ export function ChatPane({
   }, [!voice]);
   const listen = speaker && { speaker, blocked: listenBlocked(status, voiceSetup) };
   useEffect(() => { if (!active) speaker?.stop(); }, [active, speaker]);
+  // Hidden to the tray, nothing is read aloud (ADR 0034).
+  const windowHidden = useWindowHidden();
+  useEffect(() => { if (windowHidden) speaker?.stop(); }, [windowHidden, speaker]);
+  // A Voice conversation runs through the same speaker, and pauses whenever the owner can't see it (ADR 0041).
+  const minimized = usePageHidden();
+  const conversation = useVoiceConversation({
+    voice,
+    speaker,
+    send: voiceSend,
+    stopReply: onStop,
+    chat,
+    away: conversationAway({ status, windowHidden, pageHidden: minimized, active }),
+  });
   // The blocks are memoized, so they get one answer handler for the life of the pane.
   const onAnswerRef = useRef(onAnswer);
   onAnswerRef.current = onAnswer;
@@ -213,10 +267,45 @@ export function ChatPane({
   const outgoingRef = useRef({ retry: onRetry, edit: onEdit, dismiss: onDismiss });
   outgoingRef.current = { retry: onRetry, edit: onEdit, dismiss: onDismiss };
   const onOutgoing = useCallback((itemId: string, action: OutgoingAction) => outgoingRef.current[action](itemId), []);
+  // And Branch from here, one handler for every message.
+  const branchRef = useRef(branch?.onBranch);
+  branchRef.current = branch?.onBranch;
+  const onBranch = useCallback((itemId: string) => branchRef.current?.(itemId), []);
+  // And Edit and Regenerate.
+  const replayRef = useRef(replay?.onReplay);
+  replayRef.current = replay?.onReplay;
+  const onReplay = useCallback((itemId: string, kind: ReplayKind) => replayRef.current?.(itemId, kind), []);
+  const pickRef = useRef(variants?.onPick);
+  pickRef.current = variants?.onPick;
+  const onPickVariant = useCallback((chatId: string, turn: number) => pickRef.current?.(chatId, turn), []);
+  // Each turn's owner's message, and its last reply with text: where Regenerate and the versions of the turn go.
+  const turns = useMemo(() => {
+    const ofUser = turnsOf(chat.items);
+    const lastReply = new Map<number, string>();
+    let turn = -1;
+    for (const i of chat.items) {
+      if (i.kind === "user" && !i.outgoing) turn = ofUser.get(i.id)!;
+      else if (i.kind === "assistant" && turn >= 0 && i.text.trim()) lastReply.set(turn, i.id);
+    }
+    const anchor = new Map<string, number>();
+    for (const [id, t] of ofUser) anchor.set(lastReply.get(t) ?? id, t);
+    return { ofUser, regenerable: new Set(lastReply.values()), anchor };
+  }, [chat.items]);
   // A failed message can be sent again once Hermes is connected and the chat has no reply running.
   const canRetry = status === "connected" && !chat.loading && !chat.running;
   const findRef = useRef<HTMLInputElement>(null);
   const stickToBottom = useRef(true);
+  // For the status bar's context inspector: a stored time to the message there, marked as a jump to a tool call is.
+  const showInChat = useCallback<ShowInChat>((at) => {
+    const msgs = Array.from(scrollRef.current?.querySelectorAll<HTMLElement>(".msg[data-item]") ?? []);
+    const el = at === undefined ? msgs[0] : msgs.find((m) => m.dataset.at !== undefined && Number(m.dataset.at) >= at);
+    if (!el) return false;
+    stickToBottom.current = false;
+    el.scrollIntoView?.({ block: "start" });
+    el.classList.add("jumped");
+    setTimeout(() => el.classList.remove("jumped"), 2500);
+    return true;
+  }, []);
   const [findOpen, setFindOpen] = useState(false);
   const [query, setQuery] = useState("");
   // Which match is the current one, counting from the top of the chat.
@@ -286,8 +375,19 @@ export function ChatPane({
   }, [jumpTo?.at]);
   useLayoutEffect(() => {
     if (!jumping) return;
-    const id = CSS.escape(jumping.callId);
-    const el = scrollRef.current?.querySelector<HTMLElement>(`[data-call="${id}"]`) ?? scrollRef.current?.querySelector<HTMLElement>(`[data-calls~="${id}"]`);
+    let el: HTMLElement | null | undefined;
+    if (jumping.rowId !== undefined) {
+      const rowId = jumping.rowId;
+      const item = chat.items.find((i) => (i.kind === "user" || i.kind === "assistant") && i.rowId === rowId);
+      el = item && scrollRef.current?.querySelector<HTMLElement>(`[data-item="${CSS.escape(item.id)}"]`);
+    } else if (jumping.turn !== undefined) {
+      const turn = jumping.turn;
+      const id = [...turns.anchor].find(([, t]) => t === turn)?.[0];
+      el = id ? scrollRef.current?.querySelector<HTMLElement>(`[data-item="${CSS.escape(id)}"]`) : undefined;
+    } else {
+      const id = CSS.escape(jumping.callId);
+      el = scrollRef.current?.querySelector<HTMLElement>(`[data-call="${id}"]`) ?? scrollRef.current?.querySelector<HTMLElement>(`[data-calls~="${id}"]`);
+    }
     if (el) {
       setJumping(undefined);
       el.scrollIntoView?.({ block: "center" });
@@ -349,8 +449,10 @@ export function ChatPane({
           {chat.source !== "app" && <SourceIcon source={chat.source} size={13} />}
           <span>{chat.title}</span>
           {chat.settled && <span className="badge">Settled</span>}
-          {chat.settled && onSettle && !chat.archived && (
-            <SettleButton settled size={12} className="unsettle-btn" labeled onSettle={onSettle} />
+          {!chat.settled && !chat.archived && snoozedUntil !== undefined && (
+            <span className="badge" title={`Snoozed until ${wakeFull(snoozedUntil)}`}>
+              Snoozed
+            </span>
           )}
           {chat.archived && <span className="badge">Archived</span>}
           {projects?.map((name) => (
@@ -374,6 +476,11 @@ export function ChatPane({
             {onExport && (
               <button className="icon-btn" title="Export as Markdown" onClick={onExport}>
                 <FileDown size={16} />
+              </button>
+            )}
+            {onCopyLink && (
+              <button className="icon-btn" title="Copy chat link" aria-label="Copy chat link" onClick={onCopyLink}>
+                <Link2 size={16} />
               </button>
             )}
             {onSettle && !chat.archived && <SettleButton settled={chat.settled} size={16} className="icon-btn" onSettle={onSettle} />}
@@ -433,9 +540,12 @@ export function ChatPane({
           {chat.source !== "app" && (
             <div className="imported-note">
               <SourceIcon source={chat.source} /> Imported from {SOURCE_LABEL[chat.source]}.
-              {chat.settled && " Replying here moves it to Active."}
+              {chat.source === "import"
+                ? " Its messages are dated as the file had them; a Markdown export has only the time it was exported."
+                : chat.settled && " Replying here moves it to Active."}
             </div>
           )}
+          {branchedFrom}
           {chat.savedAt !== undefined && (
             <div className="saved-note" role="note">
               {status === "connected" ? <HardDrive size={13} /> : <CloudOff size={13} />}
@@ -460,7 +570,17 @@ export function ChatPane({
             </div>
           )}
           {notice}
-          {!chat.loading && !notLoaded && blocks.length === 0 && <div className="empty-chat">What should Hermes work on?</div>}
+          {!chat.loading && !notLoaded && blocks.length === 0 && (
+            <div className="empty-state">
+              <div className="empty-chat">What should Hermes work on?</div>
+              <ul className="empty-keys" aria-label="Keyboard shortcuts">
+                <li><kbd>Ctrl N</kbd> New chat</li>
+                <li><kbd>Ctrl K</kbd> Search chats</li>
+                <li><kbd>Alt ↑↓</kbd> Switch chats</li>
+                <li><kbd>Ctrl ,</kbd> Settings</li>
+              </ul>
+            </div>
+          )}
           {blocks.map((b) => (
             <BlockView
               key={b.id}
@@ -473,6 +593,14 @@ export function ChatPane({
               listen={b.kind === "assistant" ? listen : undefined}
               canRetry={b.kind === "user" && !!b.outgoing && canRetry}
               onOutgoing={onOutgoing}
+              onBranch={branch && (b.kind === "user" || b.kind === "assistant") ? onBranch : undefined}
+              branchBlocked={branch && (b.kind === "user" || b.kind === "assistant") ? branch.blocked : undefined}
+              onReplay={replay && ((b.kind === "user" && turns.ofUser.has(b.id)) || (b.kind === "assistant" && turns.regenerable.has(b.id))) ? onReplay : undefined}
+              replayBlocked={replay && (b.kind === "user" || b.kind === "assistant") ? replay.blocked : undefined}
+              versions={turns.anchor.has(b.id) ? variants?.byTurn.get(turns.anchor.get(b.id)!) : undefined}
+              chatId={chat.id}
+              turn={turns.anchor.get(b.id)}
+              onPickVariant={onPickVariant}
             />
           ))}
           {/* A reply waiting on the owner isn't thinking, and streamed thinking shows its own row. */}
@@ -488,6 +616,13 @@ export function ChatPane({
       </div>
 
       {queueApi && <QueuePanel chat={chat} queue={queue} status={status} api={queueApi} />}
+      {chat.source === "import" ? (
+        // ADR 0031: an imported transcript is a record, not a session Hermes can carry on as it was.
+        <div className="composer-wrap read-only-note" role="note">
+          <FileInput size={14} aria-hidden /> This is an imported transcript, so it's read-only here. Hermes has its words, not
+          everything the original chat had, so it can't carry on from it. Start a new chat to continue.
+        </div>
+      ) : (
       <Composer
         offline={status !== "connected"}
         queueing={queueing}
@@ -515,12 +650,16 @@ export function ChatPane({
         }}
         voice={voice}
         voiceSetup={voiceSetup}
+        conversation={conversation}
+        started={!!voiceSend}
         status={status}
         screenshots={screenshots}
         screenshotKeys={screenshotKeys}
         commands={commands}
+        templates={templates}
       />
-      {footer}
+      )}
+      <ShowInChatContext.Provider value={showInChat}>{footer}</ShowInChatContext.Provider>
     </div>
   );
 }
@@ -546,6 +685,14 @@ const BlockView = memo(
     listen,
     canRetry,
     onOutgoing,
+    onBranch,
+    branchBlocked,
+    onReplay,
+    replayBlocked,
+    versions,
+    chatId,
+    turn,
+    onPickVariant,
   }: {
     block: Block;
     live: boolean;
@@ -556,10 +703,22 @@ const BlockView = memo(
     listen?: Listen;
     canRetry: boolean;
     onOutgoing: (itemId: string, action: OutgoingAction) => void;
+    onBranch?: (itemId: string) => void;
+    branchBlocked?: string;
+    onReplay?: (itemId: string, kind: ReplayKind) => void;
+    replayBlocked?: string;
+    versions?: Variant[];
+    chatId: string;
+    turn?: number;
+    onPickVariant: (chatId: string, turn: number) => void;
   }) {
+    const current = versions ? versions.findIndex((v) => v.chatId === chatId) : -1;
+    const nav = versions && current >= 0 && turn !== undefined && (
+      <VariantNav versions={versions} current={current} onPick={(id) => onPickVariant(id, turn)} />
+    );
     if (block.kind === "user")
       return (
-        <div className={`msg user${block.outgoing ? ` outgoing ${block.outgoing.state}` : ""}`} data-item={block.id}>
+        <div className={`msg user${block.outgoing ? ` outgoing ${block.outgoing.state}` : ""}`} data-item={block.id} data-at={block.at}>
           {block.attachments && (
             <div className="msg-files">
               {block.attachments.map((name, i) => (
@@ -575,15 +734,33 @@ const BlockView = memo(
           {isOutgoing(block) && block.outgoing.state !== "sending" && (
             <SendFailed item={block} canRetry={canRetry} act={(action) => onOutgoing(block.id, action)} />
           )}
+          {(onBranch || onReplay) && !block.outgoing && block.text.trim() && (
+            <div className="msg-actions">
+              {onReplay && <EditButton blocked={replayBlocked} onEdit={() => onReplay(block.id, "edit")} />}
+              {onBranch && <BranchButton blocked={branchBlocked} onBranch={() => onBranch(block.id)} />}
+            </div>
+          )}
+          {nav}
         </div>
       );
     if (block.kind === "assistant")
       return (
-        <div className="msg assistant" data-item={block.id}>
+        <div className="msg assistant" data-item={block.id} data-at={block.at}>
           <Markdown text={block.text} query={query} />
           {live && <span className="cursor" />}
           {block.interrupted && <div className="stopped">Stopped</div>}
-          {listen && !live && block.text.trim() && <ListenButton speaker={listen.speaker} itemId={block.id} text={block.text} blocked={listen.blocked} />}
+          {!live && block.text.trim() && (listen || onBranch || onReplay) && (
+            <div className="msg-actions-row">
+              {listen && <ListenButton speaker={listen.speaker} itemId={block.id} text={block.text} blocked={listen.blocked} />}
+              {(onBranch || onReplay) && (
+                <div className="msg-actions">
+                  {onReplay && <RegenerateButton blocked={replayBlocked} onRegenerate={() => onReplay(block.id, "regenerate")} />}
+                  {onBranch && <BranchButton blocked={branchBlocked} onBranch={() => onBranch(block.id)} />}
+                </div>
+              )}
+            </div>
+          )}
+          {!live && nav}
           <StoredTime at={block.at} />
           {block.usage && !live && <ReplyUsageLine usage={block.usage} />}
         </div>
@@ -610,7 +787,15 @@ const BlockView = memo(
     a.listen?.speaker === b.listen?.speaker &&
     a.listen?.blocked === b.listen?.blocked &&
     a.canRetry === b.canRetry &&
-    a.onOutgoing === b.onOutgoing,
+    a.onOutgoing === b.onOutgoing &&
+    a.onBranch === b.onBranch &&
+    a.branchBlocked === b.branchBlocked &&
+    a.onReplay === b.onReplay &&
+    a.replayBlocked === b.replayBlocked &&
+    a.versions === b.versions &&
+    a.chatId === b.chatId &&
+    a.turn === b.turn &&
+    a.onPickVariant === b.onPickVariant,
 );
 
 /**
@@ -674,7 +859,7 @@ function ToolRow({ t }: { t: ToolItem }) {
   const [open, setOpen] = useState(false);
   const jump = useContext(JumpContext);
   useEffect(() => {
-    if (jump && t.callId === jump.callId) setOpen(true);
+    if (jump?.callId && t.callId === jump.callId) setOpen(true);
   }, [jump?.at]);
   const summary = t.status === "stopped" ? "stopped" : t.summary;
   return (
@@ -742,7 +927,7 @@ function ToolGroup({ tools }: { tools: ToolItem[] }) {
   const [open, setOpen] = useState(false);
   const jump = useContext(JumpContext);
   useEffect(() => {
-    if (jump && tools.some((t) => t.callId === jump.callId)) setOpen(true);
+    if (jump?.callId && tools.some((t) => t.callId === jump.callId)) setOpen(true);
   }, [jump?.at]);
   if (tools.length === 1)
     return (
@@ -790,10 +975,13 @@ function Composer({
   dropHere,
   voice,
   voiceSetup,
+  conversation,
+  started = false,
   status,
   screenshots,
   screenshotKeys,
   commands,
+  templates = NO_PROJECTS,
 }: {
   offline: boolean;
   /** Enter, and the Queue button, add the message to the chat's queue (`onQueue`, which says why it couldn't). */
@@ -816,11 +1004,15 @@ function Composer({
   dropHere?: (x: number, y: number) => boolean;
   voice?: VoiceApi;
   voiceSetup?: VoiceSetup;
+  /** The pane's Voice conversation, and whether the chat has started, which one needs. */
+  conversation?: VoiceConversation;
+  started?: boolean;
   status: ConnectionStatus;
   /** Screenshots come from here, and staged ones go back to it to be deleted once sent, removed or left behind. */
   screenshots?: ScreenshotDesk;
   screenshotKeys?: string;
   commands?: CommandHost;
+  templates?: TemplateHere;
 }) {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const focused = useRef(autoFocus);
@@ -844,6 +1036,11 @@ function Composer({
   const [refused, setRefused] = useState<string[]>([]);
   const [dragging, setDragging] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const talk = useSyncExternalStore(conversation?.subscribe ?? noDesk, conversation?.getSnapshot ?? (() => NOT_TALKING));
+  const talking = talk.phase !== "off";
+  const startTalkRef = useRef<HTMLButtonElement>(null);
+  // Why the conversation couldn't start, after a click on the Start button while it can't.
+  const [talkBlocked, setTalkBlocked] = useState<string>();
   const previews = useRef<Previews>(null);
   const [, previewed] = useReducer((n: number) => n + 1, 0);
 
@@ -860,6 +1057,10 @@ function Composer({
   }, [dictation.active]);
   // Leaving a pane (including Settings or the narrow switcher) releases its microphone and drops late transcripts.
   useEffect(() => { if (!autoFocus) dictation.cancel(); }, [autoFocus]);
+  // So does hiding the window to the tray: the microphone never stays open behind a hidden window (ADR 0034). The
+  // recording is dropped, as Cancel drops it; nothing is sent to Hermes to transcribe.
+  const windowHidden = useWindowHidden();
+  useEffect(() => { if (windowHidden) dictation.cancel(); }, [windowHidden]);
 
   // Files still being read, saved or checked: sending waits for them, so none misses the message it was added for.
   const [attaching, setAttaching] = useState(0);
@@ -965,6 +1166,9 @@ function Composer({
     ta.style.height = Math.min(ta.scrollHeight, 240) + "px";
   }, [text]);
 
+  // The template library; Insert puts its message in the draft, never sends it.
+  const [picking, setPicking] = useState(false);
+
   const sendable = attaching === 0 && (!!text.trim() || attachments.length > 0);
   const slash = useSlashCommands(commands, text, onText, taRef);
   const send = () => {
@@ -999,6 +1203,25 @@ function Composer({
         </div>
       )}
       <DictationNoteView dictation={dictation} />
+      {talkBlocked && !talking && (
+        <div className="voice-note" role="alert">
+          <span>{talkBlocked}</span>
+          <button className="link-btn" onClick={() => setTalkBlocked(undefined)}>
+            Dismiss
+          </button>
+        </div>
+      )}
+      {conversation && talking && (
+        <ConversationPanel
+          conversation={conversation}
+          setup={voiceSetup}
+          onEnd={() => {
+            conversation.end();
+            // Back to the button that started it, once it is shown again.
+            requestAnimationFrame(() => (startTalkRef.current ?? taRef.current)?.focus());
+          }}
+        />
+      )}
       {shot.capturing && (
         <div className="capture-note" role="status">
           Taking a screenshot: select a region or window, or press Esc to cancel.
@@ -1029,6 +1252,7 @@ function Composer({
         )}
         <textarea
           ref={taRef}
+          data-composer
           rows={1}
           autoFocus={autoFocus}
           placeholder="Message Hermes"
@@ -1057,7 +1281,18 @@ function Composer({
           <button className="icon-btn" title="Attach files" onClick={() => void pick()}>
             <Paperclip size={16} />
           </button>
-          {voice && !dictation.active && <MicButton dictation={dictation} blocked={micBlocked(status, voiceSetup)} />}
+          {voice && !dictation.active && !talking && <MicButton dictation={dictation} blocked={micBlocked(status, voiceSetup)} />}
+          {conversation && !dictation.active && !talking && (
+            <StartConversationButton
+              ref={startTalkRef}
+              blocked={startBlocked(status, voiceSetup, started, dictation.active)}
+              onBlocked={setTalkBlocked}
+              onStart={() => {
+                setTalkBlocked(undefined);
+                conversation.start(turnSettings(voiceSetup));
+              }}
+            />
+          )}
           {screenshots && (
             <button
               className="icon-btn"
@@ -1069,6 +1304,9 @@ function Composer({
               <Camera size={16} />
             </button>
           )}
+          <button className="icon-btn" title="Templates" aria-label="Templates" aria-haspopup="dialog" onClick={() => setPicking(true)}>
+            <FileText size={16} />
+          </button>
           {modelControls}
           {!dictation.active && <span className="composer-keys">{queueing ? "Enter to queue" : "Enter to send"} · Shift+Enter for a new line</span>}
           {queueing && onQueue && (
@@ -1090,6 +1328,22 @@ function Composer({
         </div>
         {dictation.active && <DictationStrip dictation={dictation} />}
       </div>
+      {picking && (
+        <Templates
+          here={templates}
+          draft={text}
+          returnTo={taRef}
+          onClose={() => setPicking(false)}
+          onInsert={(next) => {
+            onText(next);
+            // After React has put the new text in.
+            requestAnimationFrame(() => taRef.current?.setSelectionRange(next.length, next.length));
+          }}
+        />
+      )}
     </div>
   );
 }
+
+const NO_PROJECTS: TemplateHere = { scope: "", projects: [], here: [] };
+const NOT_TALKING: ConversationState = { phase: "off", muted: false, hearing: false, playing: false, heard: [], devices: [] };

@@ -10,6 +10,7 @@ use axum::{Json, Router};
 use axum::extract::{Request, State};
 use axum::middleware::{self, Next};
 use axum::response::Redirect;
+use hermes_chat::display;
 use hermes_chat::transport::{self, Dashboard, ExtraHeader, LocalFile, PipeEvent, SignIn, TransportError};
 use std::sync::{Arc, Mutex};
 use serde_json::{json, Value};
@@ -270,6 +271,8 @@ async fn config(headers: HeaderMap, Query(q): Query<HashMap<String, String>>) ->
         "model": {"default": "glm-5.3-flash", "api_key": "sk-model-SECRET"},
         "stt": {"enabled": false, "provider": "groq", "groq": {"api_key": "gsk-SECRET"}},
         "tts": {"provider": "openai", "openai": {"api_key": "sk-tts-SECRET", "voice": "alloy"}},
+        // `true` is YAML for a typo'd number: Hermes's `_numeric_or` drops it, and so does the app.
+        "voice": {"silence_threshold": 350, "silence_duration": 1.5, "max_recording_seconds": true, "gpt_live": {"api_key": "sk-live-SECRET"}},
     }))
     .into_response()
 }
@@ -312,6 +315,99 @@ async fn session(mut ws: WebSocket, profile: Option<String>) {
     }
 }
 
+/// The Bot Desktop bridge: `SCREEN-1` echoes each binary frame back reversed and, once the viewer goes, reports the
+/// close code it got on `closes`, or None for none; `TAKEN-1` closes at once with Hermes's 4000 `control-taken`; anything else is 4401.
+async fn display_ws(ws: WebSocketUpgrade, Query(q): Query<HashMap<String, String>>, State(closes): State<Closes>) -> Response {
+    let ticket = q.get("display_ticket").cloned().unwrap_or_default();
+    ws.on_upgrade(move |mut ws| async move {
+        let close = |code: u16, reason: &'static str| Message::Close(Some(axum::extract::ws::CloseFrame { code, reason: reason.into() }));
+        match ticket.as_str() {
+            "SCREEN-1" => {
+                ws.send(Message::Binary(b"RFB 003.008\n".to_vec().into())).await.unwrap();
+                while let Some(Ok(m)) = ws.recv().await {
+                    match m {
+                        Message::Binary(b) => ws.send(Message::Binary(b.iter().rev().copied().collect::<Vec<u8>>().into())).await.unwrap(),
+                        Message::Close(f) => {
+                            let _ = closes.send(f.map(|f| f.code));
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+                // Gone with no close frame.
+                let _ = closes.send(None);
+            }
+            "TAKEN-1" => drop(ws.send(close(4000, "control-taken")).await),
+            _ => drop(ws.send(close(4401, "display ticket missing, expired or used")).await),
+        }
+    })
+}
+
+type Closes = mpsc::UnboundedSender<Option<u16>>;
+
+async fn screen_stub() -> (Arc<Dashboard>, mpsc::UnboundedReceiver<Option<u16>>) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let app = Router::new()
+        .route("/auth/password-login", post(login))
+        .route("/api/display/ws", get(display_ws))
+        .with_state(tx);
+    let dashboard = Dashboard::sign_in(&serve(app).await, &sign_in("hunter2")).await.expect("signed in");
+    (Arc::new(dashboard), rx)
+}
+
+async fn next_display(rx: &mut mpsc::UnboundedReceiver<display::DisplayEvent>) -> display::DisplayEvent {
+    tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.expect("event in time").expect("socket open")
+}
+
+#[tokio::test]
+async fn the_screen_relays_rfb_bytes_both_ways_and_closing_it_is_a_normal_close() {
+    let (dashboard, mut closes) = screen_stub().await;
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let socket = display::open(dashboard, "SCREEN-1", move |e| drop(tx.send(e))).await.expect("open");
+    assert_eq!(next_display(&mut rx).await, display::DisplayEvent::Data(b"RFB 003.008\n".to_vec()));
+    socket.send(vec![1, 2, 3]).unwrap();
+    assert_eq!(next_display(&mut rx).await, display::DisplayEvent::Data(vec![3, 2, 1]));
+    // Hermes hands control back only on a normal close.
+    drop(socket);
+    let got = tokio::time::timeout(Duration::from_secs(5), closes.recv()).await.unwrap().unwrap();
+    assert_eq!(got, Some(1000));
+}
+
+#[tokio::test]
+async fn the_connection_going_drops_each_screen_without_a_close_so_hermes_keeps_the_owner_in_control() {
+    let (dashboard, mut closes) = screen_stub().await;
+    let displays = display::Displays::default();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let socket = display::open(dashboard, "SCREEN-1", move |e| drop(tx.send(e))).await.expect("open");
+    next_display(&mut rx).await;
+    displays.keep(displays.epoch(), socket).unwrap();
+    displays.close_all();
+    // Hermes gets no close frame: a dropped link, not a viewer leaving.
+    let got = tokio::time::timeout(Duration::from_secs(5), closes.recv()).await.unwrap().unwrap();
+    assert_eq!(got, None);
+    match next_display(&mut rx).await {
+        display::DisplayEvent::Closed { code, .. } => assert_eq!(code, 1006),
+        other => panic!("expected a close, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn the_screen_reports_hermess_own_close_code() {
+    let (dashboard, _closes) = screen_stub().await;
+    for (ticket, code) in [("TAKEN-1", 4000), ("SPENT", 4401)] {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let _socket = display::open(dashboard.clone(), ticket, move |e| drop(tx.send(e))).await.expect("open");
+        match next_display(&mut rx).await {
+            display::DisplayEvent::Closed { code: got, reason } => {
+                assert_eq!(got, code, "{reason}");
+                assert!(!reason.is_empty());
+            }
+            other => panic!("expected a close, got {other:?}"),
+        }
+    }
+    assert!(display::open(dashboard, "two words", |_| {}).await.is_err(), "a ticket with a space isn't one");
+}
+
 async fn stub() -> Url {
     serve(stub_routes()).await
 }
@@ -336,7 +432,12 @@ fn stub_routes() -> Router {
         .route("/api/tools/toolsets/{name}/env", put(echo_write))
         .route("/api/tools/toolsets/{name}/post-setup", post(echo_write))
         .route("/api/profiles/{name}/soul", put(echo_write).post(echo_write))
+        .route("/api/skills", post(echo_write))
+        .route("/api/skills/toggle", put(echo_write))
+        .route("/api/skills/content", put(echo_write))
+        .route("/api/skills/hub/install", post(echo_write))
         .route("/api/cron/jobs", post(echo_write))
+        .route("/api/sessions/import", post(echo_write))
         .route("/api/cron/jobs/{id}", put(echo_write))
         .route("/api/cron/jobs/{id}/{action}", post(echo_write))
         .route("/api/rotate", get(rotate))
@@ -580,6 +681,7 @@ fn toolset_guards_keep_only_no_mcp_platforms_coding_focus_and_disabled_names() {
     let none = || transport::ToolsetGuards {
         no_mcp: vec![],
         no_mcp_unclear: vec![],
+        saved_lists: vec![],
         coding_focus: false,
         disabled_everywhere: vec![],
         disabled_unclear: false,
@@ -589,6 +691,8 @@ fn toolset_guards_keep_only_no_mcp_platforms_coding_focus_and_disabled_names() {
         transport::ToolsetGuards {
             no_mcp: vec!["cli".into(), "irc".into(), "telegram".into()],
             no_mcp_unclear: vec!["line".into(), "matrix".into(), "slack".into()],
+            // `signal` holds a string Hermes doesn't read as a list, so it inherits Hermes's default like an absent one.
+            saved_lists: vec!["cli".into(), "discord".into(), "irc".into(), "telegram".into()],
             coding_focus: true,
             disabled_everywhere: vec!["web".into(), "debugging".into()],
             disabled_unclear: false,
@@ -600,6 +704,7 @@ fn toolset_guards_keep_only_no_mcp_platforms_coding_focus_and_disabled_names() {
         json!({
             "noMcp": ["cli", "irc", "telegram"],
             "noMcpUnclear": ["line", "matrix", "slack"],
+            "savedLists": ["cli", "discord", "irc", "telegram"],
             "codingFocus": true,
             "disabledEverywhere": ["web", "debugging"],
             "disabledUnclear": false
@@ -607,6 +712,9 @@ fn toolset_guards_keep_only_no_mcp_platforms_coding_focus_and_disabled_names() {
     );
     assert!(!out.to_string().contains("sk-secret"));
     assert_eq!(transport::toolset_guards(&json!({})), none());
+    // Null, an empty saved list, and a string list literal: inherited, saved (even empty), saved.
+    let saved = transport::toolset_guards(&json!({"platform_toolsets": {"cli": null, "discord": [], "slack": "['web']"}})).saved_lists;
+    assert_eq!(saved, vec!["discord".to_string(), "slack".to_string()]);
     assert!(!transport::toolset_guards(&json!({"agent": {"coding_context": "auto"}})).coding_focus);
     // As `hermes config set` stores a list, and a single name, both as Hermes's parse_config_string_list reads them.
     let listed = |v: serde_json::Value| {
@@ -625,6 +733,54 @@ fn toolset_guards_keep_only_no_mcp_platforms_coding_focus_and_disabled_names() {
     for unsure in [r#"["\u0077eb"]"#, "['we' 'b']", "[web, debugging]", "['a,b']", "['web'"] {
         assert_eq!(listed(json!(unsure)), (vec![], true), "{unsure}");
     }
+}
+
+#[tokio::test]
+async fn relays_the_two_skill_writes_with_exactly_their_fields() {
+    let dashboard = signed_in().await;
+    let got: Value = serde_json::from_str(
+        &dashboard.request("PUT", "api/skills/toggle?profile=spare", Some(r#"{"name":"cat/notes","enabled":false}"#.into())).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(got, json!({"uri": "/api/skills/toggle?profile=spare", "content_type": "application/json", "body": {"name": "cat/notes", "enabled": false}}));
+    let body = json!({"name": "notes", "content": "---\nname: notes\n---\nBody\n"}).to_string();
+    let got: Value = serde_json::from_str(&dashboard.request("PUT", "api/skills/content?profile=spare", Some(body)).await.unwrap()).unwrap();
+    assert_eq!(got["body"], json!({"name": "notes", "content": "---\nname: notes\n---\nBody\n"}));
+}
+
+#[tokio::test]
+async fn relays_no_other_skill_write() {
+    let dashboard = signed_in().await;
+    for (method, path, body) in [
+        // Creating a skill, and the hub's routes, which fetch and run code from elsewhere.
+        ("POST", "api/skills", r#"{"name":"x","content":"y"}"#),
+        ("POST", "api/skills/hub/install", r#"{"identifier":"github/x"}"#),
+        ("POST", "api/skills/toggle", r#"{"name":"x","enabled":true}"#),
+        ("PUT", "api/skills/lock", r#"{"name":"x","locked":true}"#),
+        // Bodies with anything else, or a profile in the body.
+        ("PUT", "api/skills/toggle", r#"{"name":"x","enabled":true,"profile":"other"}"#),
+        ("PUT", "api/skills/toggle", r#"{"name":"x","enabled":"yes"}"#),
+        ("PUT", "api/skills/toggle", r#"{"name":"x","content":"y"}"#),
+        ("PUT", "api/skills/content", r#"{"name":"x","content":7}"#),
+        ("PUT", "api/skills/content", r#"{"name":"x","enabled":true}"#),
+        ("PUT", "api/skills/content", r#"{"content":"y"}"#),
+        ("PUT", "api/skills/content", "not json"),
+        // Names that could steer Hermes's lookup out of the skills folders.
+        ("PUT", "api/skills/content", r#"{"name":"../../etc","content":"y"}"#),
+        ("PUT", "api/skills/content", r#"{"name":"a/../b","content":"y"}"#),
+        ("PUT", "api/skills/content", r#"{"name":"/etc/x","content":"y"}"#),
+        ("PUT", "api/skills/content", r#"{"name":"a\\b","content":"y"}"#),
+        ("PUT", "api/skills/content", r#"{"name":"a\nb","content":"y"}"#),
+        ("PUT", "api/skills/content", r#"{"name":"","content":"y"}"#),
+        ("PUT", "api/skills/toggle", r#"{"name":"a//b","enabled":true}"#),
+        ("PUT", "api/skills/toggle", r#"{"name":"./a","enabled":true}"#),
+    ] {
+        let err = dashboard.request(method, path, Some(body.into())).await.err().unwrap();
+        assert!(matches!(err, TransportError::NotRelayed(_)), "{method} {path} {body}: {err:?}");
+    }
+    assert!(dashboard.request("PUT", "api/skills/toggle", None).await.is_err());
+    let long = format!(r#"{{"name":"{}","enabled":true}}"#, "a".repeat(257));
+    assert!(matches!(dashboard.request("PUT", "api/skills/toggle", Some(long)).await, Err(TransportError::NotRelayed(_))));
 }
 
 #[tokio::test]
@@ -677,6 +833,31 @@ async fn relays_the_scheduled_job_writes() {
     for action in ["pause", "resume", "trigger"] {
         let got: Value = serde_json::from_str(&dashboard.request("POST", &format!("api/cron/jobs/f8f9e9ea90bc/{action}?profile=default"), None).await.unwrap()).unwrap();
         assert_eq!(got["uri"], format!("/api/cron/jobs/f8f9e9ea90bc/{action}?profile=default"));
+    }
+}
+
+#[tokio::test]
+async fn relays_a_session_import_only_when_every_session_is_marked_imported() {
+    let dashboard = signed_in().await;
+    let body = json!({"profile": "default", "request_id": "r", "expected_revision": 0, "sessions": [{"id": "a", "source": "import", "messages": []}]}).to_string();
+    let got: Value = serde_json::from_str(&dashboard.request("POST", "api/sessions/import", Some(body)).await.unwrap()).unwrap();
+    assert_eq!(got["uri"], "/api/sessions/import");
+    assert_eq!(got["body"]["sessions"][0]["source"], "import");
+    for body in [
+        None,
+        Some("not json".to_owned()),
+        Some(json!({"sessions": []}).to_string()),
+        Some(json!({"sessions": [{"id": "a"}]}).to_string()),
+        Some(json!({"sessions": [{"id": "a", "source": "import"}, {"id": "b", "source": "telegram"}]}).to_string()),
+        Some(json!({"sessions": "x"}).to_string()),
+    ] {
+        let err = dashboard.request("POST", "api/sessions/import", body.clone()).await.err().unwrap();
+        assert!(matches!(err, TransportError::NotRelayed(_)), "{body:?}: {err:?}");
+    }
+    let body = json!({"sessions": [{"id": "a", "source": "import"}]}).to_string();
+    for path in ["api/sessions/import/../../auth/logout", "api/sessions/importx", "api/sessions/x/import"] {
+        let err = dashboard.request("POST", path, Some(body.clone())).await.err().unwrap();
+        assert!(matches!(err, TransportError::NotRelayed(_)), "{path}: {err:?}");
     }
 }
 
@@ -1180,18 +1361,40 @@ async fn reads_the_voice_setup_without_passing_on_any_key() {
     let setup = signed_in().await.voice_setup("default").await.unwrap();
     assert_eq!(
         setup,
-        transport::VoiceSetup { transcribe: true, speak: true, stt_enabled: Some(false), stt_provider: Some("groq".into()), tts_provider: Some("openai".into()) }
+        transport::VoiceSetup {
+            transcribe: true,
+            speak: true,
+            stt_enabled: Some(false),
+            stt_provider: Some("groq".into()),
+            tts_provider: Some("openai".into()),
+            silence_threshold: Some(350.0),
+            silence_duration: Some(1.5),
+            max_recording_seconds: None,
+        }
     );
     let json = serde_json::to_string(&setup).unwrap();
     assert!(!json.contains("SECRET"), "{json}");
-    assert_eq!(json, r#"{"transcribe":true,"speak":true,"sttEnabled":false,"sttProvider":"groq","ttsProvider":"openai"}"#);
+    assert_eq!(
+        json,
+        r#"{"transcribe":true,"speak":true,"sttEnabled":false,"sttProvider":"groq","ttsProvider":"openai","silenceThreshold":350.0,"silenceDuration":1.5}"#
+    );
 }
 
 #[tokio::test]
 async fn a_server_without_voice_has_neither_route() {
     for profile in ["old", "older"] {
         let setup = signed_in().await.voice_setup(profile).await.unwrap();
-        assert_eq!(setup, transport::VoiceSetup { transcribe: false, speak: false, stt_enabled: None, stt_provider: None, tts_provider: None }, "{profile}");
+        let none = transport::VoiceSetup {
+            transcribe: false,
+            speak: false,
+            stt_enabled: None,
+            stt_provider: None,
+            tts_provider: None,
+            silence_threshold: None,
+            silence_duration: None,
+            max_recording_seconds: None,
+        };
+        assert_eq!(setup, none, "{profile}");
     }
 }
 
@@ -1803,6 +2006,68 @@ async fn a_download_never_takes_over_a_file_already_named_like_its_part_file() {
     for n in 0..64 {
         assert_eq!(std::fs::read_to_string(dir.join(format!(".data.bin.{pid}-{n}.part"))).unwrap(), "not ours", "{n}");
     }
+}
+
+/// `POST /api/fs/write-text?profile=`, as `hermes_cli/web_routers/files.py` takes it at `bf0203a`: a JSON
+/// `{path, content}`. It answers with what it got, as Hermes answers `{ok, path, byteSize}`.
+async fn fs_write_text(State(writes): State<Arc<Mutex<Vec<String>>>>, headers: HeaderMap, RawQuery(query): RawQuery, Json(body): Json<Value>) -> Response {
+    let path = body["path"].as_str().unwrap_or_default().to_owned();
+    writes.lock().unwrap().push(path.clone());
+    if path == "/srv/readonly.md" {
+        return (StatusCode::FORBIDDEN, Json(json!({"detail": "File is not writable"}))).into_response();
+    }
+    let content = body["content"].as_str().unwrap_or_default();
+    Json(json!({"ok": true, "path": path, "byteSize": content.len(), "content": content, "query": query, "cookie": cookie(&headers)})).into_response()
+}
+
+async fn fs_write_stub() -> (Dashboard, Arc<Mutex<Vec<String>>>) {
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let app = Router::new()
+        .route("/auth/password-login", post(login))
+        .route("/api/fs/write-text", post(fs_write_text))
+        .with_state(writes.clone());
+    let dashboard = Dashboard::sign_in(&serve(app).await, &sign_in("hunter2")).await.unwrap();
+    (dashboard, writes)
+}
+
+#[tokio::test]
+async fn writes_an_artifacts_text_where_the_profiles_tools_run() {
+    let (dashboard, writes) = fs_write_stub().await;
+    let text = "# Plan\r\n\u{feff}naïve ✓ 🚀\n";
+    let got: Value = serde_json::from_str(&dashboard.write_agent_text("work two", "/srv/out/plan.md", text).await.expect("written")).unwrap();
+    assert_eq!(got["path"], "/srv/out/plan.md");
+    assert_eq!(got["content"], text, "the text goes exactly as given");
+    assert_eq!(got["byteSize"], text.len());
+    assert_eq!(got["query"], "profile=work+two");
+    assert_eq!(got["cookie"], "hermes_session_at=AT; hermes_session_rt=RT");
+    assert_eq!(*writes.lock().unwrap(), vec!["/srv/out/plan.md".to_owned()]);
+    // A path under the home folder is the tools' own form too.
+    dashboard.write_agent_text("default", "~/notes/todo.txt", "x").await.expect("a home path is sent");
+}
+
+#[tokio::test]
+async fn an_artifact_write_refuses_credential_files_odd_paths_and_too_much_text() {
+    let (dashboard, writes) = fs_write_stub().await;
+    for path in ["/srv/.env", "/home/me/.hermes/auth.json", "/srv/mcp-tokens/x.json", "relative.md", "/srv/a/../b.md", "/srv/dir/", "/srv/a\0b"] {
+        let err = dashboard.write_agent_text("default", path, "x").await.err().unwrap();
+        assert!(matches!(err, TransportError::NotRelayed(_)), "{path}: {err:?}");
+    }
+    let big = "x".repeat(transport::AGENT_TEXT_MAX_BYTES as usize + 1);
+    let err = dashboard.write_agent_text("default", "/srv/big.md", &big).await.err().unwrap();
+    assert!(matches!(err, TransportError::FileTooLarge { .. }), "{err:?}");
+    assert!(writes.lock().unwrap().is_empty(), "nothing reached the server");
+    let err = dashboard.write_agent_text("default", "/srv/readonly.md", "x").await.err().unwrap();
+    assert!(matches!(&err, TransportError::Unexpected { status: 403, body } if body.contains("not writable")), "{err:?}");
+}
+
+#[tokio::test]
+async fn the_generic_relay_still_refuses_writes_to_the_agent_fs_routes() {
+    let (dashboard, writes) = fs_write_stub().await;
+    for path in ["api/fs/write-text", "api/./fs/write-text", "api/%66s/write-text"] {
+        let err = dashboard.request("POST", path, Some(r#"{"path":"/srv/x.md","content":"x"}"#.into())).await.err().unwrap();
+        assert!(matches!(err, TransportError::NotRelayed(_)), "{path}: {err:?}");
+    }
+    assert!(writes.lock().unwrap().is_empty());
 }
 
 /// A stub dashboard with only sign-in and the upload route, and the server paths it was sent.

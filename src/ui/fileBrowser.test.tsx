@@ -7,6 +7,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row } from "../hermes/fakeHermes";
 import { connect, type Hermes } from "../hermes/transport";
 import { Main } from "../App";
+import type { TrayWiring } from "../hermes/tauriTray";
 
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: async () => null }));
@@ -44,10 +45,25 @@ function server() {
   return s;
 }
 
-async function launch(s: FakeHermes) {
+/** The tray's menu picks, as Rust sends them once it has shown the window (tray.rs). */
+function stubTray() {
+  const picks = { newChat: new Set<() => void>(), inbox: new Set<() => void>() };
+  const on = (set: Set<() => void>) => (fn: () => void) => (set.add(fn), () => void set.delete(fn));
+  const wiring: TrayWiring = {
+    status: async () => ({ closeToTray: true, tray: "shown" }),
+    setCloseToTray: async (on) => ({ closeToTray: on, tray: "shown" }),
+    onStatus: () => () => {},
+    onNewChat: on(picks.newChat),
+    onOpenInbox: on(picks.inbox),
+    reportInbox: () => {},
+  };
+  return { wiring, pick: (item: keyof typeof picks) => act(() => picks[item].forEach((f) => f())) };
+}
+
+async function launch(s: FakeHermes, tray = stubTray().wiring) {
   const hermes = await connect(s.openPipe);
   running.push(hermes);
-  render(<Main hermes={hermes} connection={{ mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" }} onSignOut={async () => {}} />);
+  render(<Main hermes={hermes} tray={tray} connection={{ mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" }} onSignOut={async () => {}} />);
   await waitFor(() => expect(hermes.hasListed()).toBe(true));
   await act(async () => void (await hermes.idle()));
   return { hermes, user: userEvent.setup() };
@@ -254,34 +270,36 @@ describe("Server files", () => {
     expect((screen.getByRole("button", { name: "Up one folder" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("takes turns with Settings over the chat, and leaves no chat marked open meanwhile", async () => {
+  it("opens in the side panel beside the chat, and Settings covers it as it covers the chat", async () => {
     const { user } = await launch(server());
     await user.click(screen.getByRole("button", { name: /Nightly backup/ }));
     await waitFor(() => expect(document.querySelector("[aria-current='true']")).not.toBeNull());
     await openFiles(user);
     const filesButton = screen.getByRole("button", { name: "Server files" });
     expect(filesButton.getAttribute("aria-pressed")).toBe("true");
-    expect(document.querySelector("[aria-current='true']")).toBeNull();
+    // The chat stays open beside it.
+    expect(document.querySelector("[aria-current='true']")).not.toBeNull();
+    expect(screen.getByRole("tab", { name: "Files" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.queryByRole("button", { name: "Back to chat" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "Settings" }));
-    await waitFor(() => expect(document.querySelector(".files")).toBeNull());
+    await waitFor(() => expect(document.querySelector("aside.side-panel")!.hasAttribute("hidden")).toBe(true));
     expect(filesButton.getAttribute("aria-pressed")).toBe("false");
     await openFiles(user);
-    expect(screen.queryByRole("button", { name: "Back to chat" })).toBeTruthy();
     expect(document.querySelectorAll(".files")).toHaveLength(1);
+    // The rail's button closes it again.
+    await user.click(filesButton);
+    expect(document.querySelector("aside.side-panel")!.hasAttribute("hidden")).toBe(true);
   });
 
-  it("gives way to a chat, and opens again where it was", async () => {
+  it("stays beside a chat that opens, on the folder it was in", async () => {
     const { user } = await launch(server());
     await openFiles(user);
     await user.click(row_("projects"));
     await waitFor(() => expect(names()).toEqual(["app"]));
     await user.click(screen.getByRole("button", { name: /Nightly backup/ }));
-    await waitFor(() => expect(document.querySelector(".files")).toBeNull());
-    expect(document.querySelector(".chat-title span")?.textContent).toBe("Nightly backup");
-    await openFiles(user);
+    await waitFor(() => expect(document.querySelector(".chat-title span")?.textContent).toBe("Nightly backup"));
+    expect(document.querySelector("aside.side-panel")!.hasAttribute("hidden")).toBe(false);
     expect(trail()).toEqual(["/", "home", "/liam", "/projects"]);
-    await user.click(screen.getByRole("button", { name: "Back to chat" }));
-    expect(document.querySelector(".files")).toBeNull();
   });
 });
 
@@ -599,6 +617,20 @@ describe("Server files: editing text", () => {
       expect(box.contains(document.activeElement)).toBe(true);
     }
     expect((editor().getByRole("textbox") as HTMLTextAreaElement).value).toContain("draft");
+  });
+
+  it("keeps the edit when the tray's New chat or Open Inbox is picked: the window only comes forward", async () => {
+    const s = server();
+    const tray = stubTray();
+    const { user } = await launch(s, tray.wiring);
+    const area = await openEditor(user);
+    await user.type(area, "draft");
+    tray.pick("newChat");
+    tray.pick("inbox");
+    expect(screen.getByRole("dialog", { name: /^Edit / })).toBeTruthy();
+    expect((editor().getByRole("textbox") as HTMLTextAreaElement).value).toContain("draft");
+    expect(document.querySelector(".files")).not.toBeNull();
+    expect(screen.queryByRole("dialog", { name: /Inbox/ })).toBeNull();
   });
 
   it("asks before dropping an unsaved edit, and won't edit what it can't round-trip", async () => {

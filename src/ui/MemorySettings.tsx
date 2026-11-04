@@ -3,7 +3,7 @@
 // checked against the entry as it was read, then read back. An edit Hermes didn't take is kept on screen to copy or put
 // in another entry; it is never stored on this computer. Memory text is shown as plain text, never rendered.
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, Check, Copy, Info, RefreshCw, Trash2, Undo2 } from "lucide-react";
+import { AlertTriangle, Check, Copy, History, Info, RefreshCw, Trash2, Undo2 } from "lucide-react";
 import type { ConnectionStatus } from "../hermes/model";
 import {
   MEMORY_RESOURCES,
@@ -13,6 +13,7 @@ import {
   MemoryUnsureError,
   MemoryUnverifiedError,
   charCount,
+  duplicateProblem,
   entryProblem,
   pyStrip,
   resourceChars,
@@ -36,6 +37,7 @@ const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const entriesText = (n: number) => `${n} ${n === 1 ? "entry" : "entries"}`;
 /** An entry's first line, for the list; the editor shows all of it. */
 const firstLine = (text: string) => text.split("\n").find((l) => l.trim()) ?? text;
+const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
 /** Whether there's an unsaved edit Settings → Memory would lose by closing. */
 export const memoryDirty = (editing: Editing | undefined, kept: readonly string[]) =>
@@ -80,6 +82,7 @@ export function MemorySettings({
   // Answers for this profile only: a late answer after the screen went away, or after a newer read, is dropped.
   const alive = useRef(true);
   const reads = useRef(0);
+  const textArea = useRef<HTMLTextAreaElement>(null);
 
   const dirty = memoryDirty(editing, kept);
   useEffect(() => onDirtyChange(dirty), [dirty]);
@@ -242,7 +245,7 @@ export function MemorySettings({
       setView(next);
       setEditing({ entry, draft: entry.text });
       setKept((k) => k.filter((t) => t !== at.fromKept && pyStrip(t) !== entry.text));
-      setNotice({ kind: "ok", text: `Saved, and read back from Hermes. New chats on ${profile} start with it.` });
+      setNotice({ kind: "ok", text: `Saved, and read back from Hermes. New chats on ${profile} start with it. Restore previous version puts back what it replaced.` });
     } catch (e) {
       if (!alive.current) return;
       if (e instanceof MemoryConflictError || e instanceof MemoryUnverifiedError) {
@@ -299,7 +302,18 @@ export function MemorySettings({
   const meta = resourceOf(source);
   const filePath = view?.home ? `${view.home.replace(/\/+$/, "")}/memories/${meta.file}` : meta.file;
   const changed = !!editing && editing.draft !== editing.entry.text;
-  const draftProblem = changed && editing ? entryProblem(editing.draft) : undefined;
+  const draftProblem = changed && editing ? (entryProblem(editing.draft) ?? (view && duplicateProblem(editing.draft, editing.entry, view.resources[editing.entry.source].entries))) : undefined;
+  // What this app's last save of the open entry replaced, unless that's already in the editor.
+  const before = editing && api.replacedBy(profile, editing.entry);
+  const restorable = before && before.text !== editing?.draft ? before : undefined;
+  const restore = (r: NonNullable<typeof restorable>, at: MemoryEntry) =>
+    leaveEntry(() => {
+      // Only into the entry it was for, in case another opened meanwhile.
+      setEditing((cur) => (cur?.entry.id === at.id ? { ...cur, draft: r.text, fromKept: undefined } : cur));
+      // The Restore button goes once its text is in the editor, so focus moves there rather than to the page.
+      textArea.current?.focus();
+      setNotice({ kind: "ok", text: `The text your save at ${clock(r.savedAt)} replaced is in the editor. Save to put it back on Hermes; nothing has changed there yet.` });
+    });
 
   return (
     <>
@@ -362,7 +376,7 @@ export function MemorySettings({
             {view.provider && (
               <p className="muted small">
                 <Info size={12} /> This profile also uses the <span className="mono">{view.provider}</span> memory provider. What it stores is kept by that
-                provider, not in these files, and isn't shown here.
+                provider, not in these files, and isn't shown here. Its settings are under External memory below.
               </p>
             )}
             <div className="memory-resources" role="tablist" aria-label="Memory files">
@@ -443,6 +457,7 @@ export function MemorySettings({
                       {changed && <span className="badge warn">Unsaved</span>}
                     </span>
                     <textarea
+                      ref={textArea}
                       className="memory-text"
                       value={editing.draft}
                       spellCheck={false}
@@ -483,9 +498,16 @@ export function MemorySettings({
                     </div>
                   ) : (
                     <div className="memory-actions">
-                      <button className="btn danger" disabled={!connected || !!busy || changed} onClick={() => setConfirmDelete(true)} title={changed ? "Save or cancel your edit first." : undefined}>
-                        <Trash2 size={14} /> {busy === "delete" ? "Removing…" : "Delete"}
-                      </button>
+                      <div className="confirm-actions">
+                        <button className="btn danger" disabled={!connected || !!busy || changed} onClick={() => setConfirmDelete(true)} title={changed ? "Save or cancel your edit first." : undefined}>
+                          <Trash2 size={14} /> {busy === "delete" ? "Removing…" : "Delete"}
+                        </button>
+                        {restorable && (
+                          <button className="btn" disabled={!!busy} onClick={() => restore(restorable, editing.entry)} title={`The text your save at ${clock(restorable.savedAt)} replaced.`}>
+                            <History size={14} /> Restore previous version
+                          </button>
+                        )}
+                      </div>
                       <div className="confirm-actions">
                         <button
                           className="btn"
@@ -514,7 +536,9 @@ export function MemorySettings({
               )}
 
               <p className="muted small settings-note">
-                To add a memory, ask Hermes in a chat to remember it. Hermes has no call for adding one from another app.
+                To add a memory, ask Hermes in a chat to remember it. Hermes has no call for adding one from another app. Restore previous version
+                puts back what a save from here replaced, while the entry still holds what you saved, until you sign out or close Hermes Chat. It's kept
+                only in this app's memory, never on the server or this computer's disk, and a removed entry can't be put back from here.
               </p>
             </div>
           </>

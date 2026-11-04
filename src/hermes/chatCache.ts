@@ -13,15 +13,19 @@ import type { ChatCache, SavedTranscript } from "./transport";
 import { UI_PREFS_KEY } from "./uiPrefs";
 import { replyUsageOf } from "./usage";
 import { persist } from "./unsaved";
+import { NO_BRANCHES, type BranchAttempt, type BranchLink, type BranchPoint, type BranchStore, type BranchVariant } from "./branch";
+import { pickOf } from "./models";
 
 /** Every key prefix this module keeps a connection's data under, each followed by its scope (connections.ts). */
-export const CACHE_PREFIXES = () => [LIST_PREFIX, TRANSCRIPT_PREFIX, PROFILE_PREFIX, PULLED_PREFIX, OUTBOX_PREFIX, QUEUE_PREFIX, HELD_PREFIX];
+export const CACHE_PREFIXES = () => [LIST_PREFIX, TRANSCRIPT_PREFIX, PROFILE_PREFIX, PULLED_PREFIX, OUTBOX_PREFIX, QUEUE_PREFIX, HELD_PREFIX, BRANCH_PREFIX];
 const LIST_PREFIX = "hermes-chat.chats.";
 const TRANSCRIPT_PREFIX = "hermes-chat.transcript.";
 const PROFILE_PREFIX = "hermes-chat.profile.";
 const PULLED_PREFIX = "hermes-chat.older-pulled.";
 const OUTBOX_PREFIX = "hermes-chat.outbox.";
 const QUEUE_PREFIX = "hermes-chat.queue.";
+/** The branches this app made, and the ones whose answer was lost, per connection and profile (ADR 0027). */
+const BRANCH_PREFIX = "hermes-chat.branches.";
 /** Where drafts.ts kept a chat's sent messages Hermes didn't take, or may not have, before the outbox: moved into it. */
 const HELD_PREFIX = "hermes-chat.undelivered.";
 
@@ -102,7 +106,7 @@ export function clearCachedChats() {
 /** When a Saved copy was saved, read off the front of its JSON so the rest isn't parsed. */
 const savedAtOf = (k: string) => Number(/^\{"savedAt":(\d+)/.exec(localStorage.getItem(k) ?? "")?.[1] ?? 0);
 
-const SOURCES: Source[] = ["app", "telegram", "discord", "desktop", "cli", "other"];
+const SOURCES: Source[] = ["app", "telegram", "discord", "desktop", "cli", "import", "other"];
 const str = (v: unknown) => (typeof v === "string" ? v : undefined);
 const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
 
@@ -136,7 +140,10 @@ function toItem(v: unknown): Item | undefined {
   switch (i.kind) {
     case "user": {
       const attachments = Array.isArray(i.attachments) ? i.attachments.filter((a): a is string => typeof a === "string") : undefined;
-      return text === undefined ? undefined : { kind: "user", id, text, ...(attachments?.length && { attachments }), ...(at !== undefined && { at }) };
+      const rowId = Number.isSafeInteger(i.rowId) ? (i.rowId as number) : undefined;
+      return text === undefined
+        ? undefined
+        : { kind: "user", id, text, ...(attachments?.length && { attachments }), ...(at !== undefined && { at }), ...(rowId !== undefined && { rowId }) };
     }
     case "assistant": {
       const rowId = Number.isSafeInteger(i.rowId) ? (i.rowId as number) : undefined;
@@ -199,7 +206,7 @@ function toOutgoing(v: unknown): OutgoingItem | undefined {
 }
 
 /** A kept queue, rebuilt from its fields, or undefined if it isn't one. Messages that aren't one are left out. */
-function toQueue(v: unknown): ChatQueue | undefined {
+export function toQueue(v: unknown): ChatQueue | undefined {
   const q = v as { items?: unknown; paused?: unknown } | null;
   if (!q || !Array.isArray(q.items)) return undefined;
   const items = q.items.flatMap((i): Queued[] => {
@@ -209,6 +216,61 @@ function toQueue(v: unknown): ChatQueue | undefined {
     return [{ id: r.id, text: r.text, ...(attachments.length && { attachments }) }];
   });
   return { items, ...(typeof q.paused === "string" && { paused: q.paused }) };
+}
+
+/** A kept branch store, rebuilt from its fields; links and attempts that aren't one are left out. */
+export function toBranches(v: unknown): BranchStore {
+  const o = v as { links?: unknown; attempts?: unknown } | null;
+  if (!o || typeof o !== "object") return NO_BRANCHES;
+  const point = (p: unknown): BranchPoint | undefined => {
+    const q = p as { role?: unknown; excerpt?: unknown } | null;
+    const rowId = Number.isSafeInteger((q as { rowId?: unknown } | null)?.rowId) ? ((q as { rowId: number }).rowId) : undefined;
+    return q && (q.role === "user" || q.role === "assistant") && typeof q.excerpt === "string" ? { role: q.role, excerpt: q.excerpt, ...(rowId !== undefined && { rowId }) } : undefined;
+  };
+  const variant = (v: unknown): BranchVariant | undefined => {
+    const q = v as Record<string, unknown> | null;
+    if (!q || typeof q !== "object" || (q.kind !== "edit" && q.kind !== "regenerate") || !str(q.rootId) || !Number.isSafeInteger(q.turn) || (q.turn as number) < 0) return undefined;
+    const model = pickOf(q.model);
+    const pending = q.pending as Record<string, unknown> | null | undefined;
+    const kept =
+      pending && typeof pending.text === "string" && str(pending.prefix) && str(pending.through)
+        ? { text: pending.text, prefix: str(pending.prefix)!, through: str(pending.through)! }
+        : undefined;
+    return { kind: q.kind, rootId: str(q.rootId)!, turn: q.turn as number, ...(model && { model }), ...(kept && { pending: kept }) };
+  };
+  const links: Record<string, BranchLink> = {};
+  for (const [id, l] of Object.entries(o.links && typeof o.links === "object" ? o.links : {})) {
+    const r = l as Record<string, unknown>;
+    const p = point(r?.point);
+    const v = variant(r?.variant);
+    if (p && str(r.parentId) && str(r.parentTitle) !== undefined && num(r.at) !== undefined)
+      links[id] = { parentId: str(r.parentId)!, parentTitle: str(r.parentTitle)!, point: p, at: num(r.at)!, ...(v && { variant: v }) };
+  }
+  const attempts = (Array.isArray(o.attempts) ? o.attempts : []).flatMap((a): BranchAttempt[] => {
+    const r = a as Record<string, unknown>;
+    const p = point(r?.point);
+    const count = num(r?.count);
+    const startedAt = num(r?.startedAt);
+    if (!p || !str(r.key) || !str(r.parentId) || !str(r.fingerprint) || count === undefined || startedAt === undefined || !Array.isArray(r.before)) return [];
+    const model = pickOf(r.model);
+    const v = variant(r.variant);
+    return [
+      {
+        key: str(r.key)!,
+        parentId: str(r.parentId)!,
+        parentTitle: str(r.parentTitle) ?? "",
+        point: p,
+        count,
+        fingerprint: str(r.fingerprint)!,
+        before: r.before.filter((b): b is string => typeof b === "string"),
+        startedAt,
+        ...(str(r.title) && { title: str(r.title) }),
+        ...(model && { model }),
+        ...(v && { variant: v }),
+      },
+    ];
+  });
+  return { links, attempts };
 }
 
 /** A message drafts.ts held, as an outbox row. One Hermes may have got is found in the history by its words alone. */
@@ -229,6 +291,7 @@ export function localChatCache(connection: ScopeSource): ChatCache {
   const pulledKey = PULLED_PREFIX + scope();
   const outboxKey = (profile: string, chatId: string) => OUTBOX_PREFIX + scope(profile, chatId);
   const queueKey = (profile: string, chatId: string) => QUEUE_PREFIX + scope(profile, chatId);
+  const branchKey = (profile: string) => BRANCH_PREFIX + scope(profile);
   /** The chat ids of the profile's keys under `prefix`: the key's scope with the chat id last. */
   const chatsUnder = (prefix: string, profile: string, keys = keysOf(prefix + scope(profile).slice(0, -1) + ",")) =>
     keys.filter((k) => k.startsWith(prefix + scope(profile).slice(0, -1) + ",")).flatMap((k) => {
@@ -396,6 +459,17 @@ export function localChatCache(connection: ScopeSource): ChatCache {
       if (ok) liveQueues.delete(key);
       for (const fn of outboxListeners) fn();
       return ok;
+    },
+    loadBranches(profile) {
+      try {
+        return toBranches(JSON.parse(localStorage.getItem(branchKey(profile)) ?? "null"));
+      } catch {
+        return NO_BRANCHES;
+      }
+    },
+    saveBranches(profile, store) {
+      const empty = !Object.keys(store.links).length && !store.attempts.length;
+      return persist(() => localStorage, branchKey(profile), empty ? null : JSON.stringify(store));
     },
     rememberOlderPulled(profile) {
       try {
