@@ -99,6 +99,10 @@ _Avoid_: upload, file (when the attachment is meant)
 An image of a region or window of the owner's screen, taken from the composer by a shortcut or the camera button, and staged as an Attachment. It stays on this computer until the message is sent. Composer captures are deleted when removed or left behind; a failed or uncertain message keeps its Screenshot for Retry until confirmed, reconciled or dismissed.
 _Avoid_: screen capture, snapshot
 
+**Global shortcut**:
+A key the owner sets in Settings that brings Hermes Chat's one window forward from any app, with the cursor in the selected pane's composer, and optionally hides it when it's already in front. It's registered the way the desktop allows: grabbed on X11, asked of the desktop portal on Wayland, or bound by the owner in the desktop to `hermes-chat --show` or `--toggle` where neither is possible. Settings shows what registered, never only what was chosen (ADR 0033).
+_Avoid_: hotkey (fine in conversation), summon key, screenshot shortcut (that one works only inside the app, unless bound to `--screenshot`)
+
 **Branch**:
 A new chat that starts with another chat's history up to one message, made from that message with Branch from here. Hermes copies the history and keeps which chat the branch came from, so every Hermes client has it. Hermes copies what the owner and Hermes said, and Hermes's reasoning, but not tool outputs. A file a copied message refers to stays where it is on the server, for the branch to read while it's there. The chat it came from stays as it was. A branch has its own Draft and Queued messages, and what the owner sends goes to it alone. It is Active, runs on its parent's model in its parent's folder, and takes Hermes's name for it (the parent's title with a number) unless the owner gives one. Its top says where it came from. Which message that was is kept on this computer only. A branch can't be made while a reply is running or an Approval waits. Branching never undoes anything Hermes did on the server (ADR 0027).
 _Avoid_: fork, copy, clone, thread
