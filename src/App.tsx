@@ -2652,6 +2652,9 @@ function ChatView({
       screenshots={screenshots}
       screenshotKeys={screenshotKeys}
       voice={voice}
+      // A Voice conversation's turn goes straight to the chat, as a slash command's message does: what the owner has
+      // typed stays in the composer, and a failure is a Failed message (ADR 0041).
+      voiceSend={started ? (text) => hermes.sendTracked(chat.id, text) : undefined}
       commands={commands}
       paneControls={paneControls}
       headActions={

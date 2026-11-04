@@ -33,6 +33,16 @@ export class Speaker {
     return this.state?.itemId === itemId ? this.state : undefined;
   }
 
+  /** What is loading, playing or failed, whichever reply it is. */
+  current(): Speaking | undefined {
+    return this.state;
+  }
+
+  /** The text of the reply last started, for telling an echo of it from the owner's own words. */
+  lastSpoken(): string | undefined {
+    return this.spoken;
+  }
+
   /** Reads the reply aloud, or stops it if it's already loading or playing. Another reply playing is stopped first. */
   toggle(itemId: string, text: string): void {
     const now = this.of(itemId);
@@ -40,9 +50,18 @@ export class Speaker {
     void this.start(itemId, text);
   }
 
+  /** Reads the reply aloud from the start, whatever was playing: a Voice conversation speaking Hermes's answer. */
+  play(itemId: string, text: string): void {
+    if (this.disposed) return;
+    void this.start(itemId, text);
+  }
+
+  private spoken?: string;
+
   private async start(itemId: string, text: string) {
     this.release();
     const turn = ++this.turn;
+    this.spoken = text;
     this.set({ itemId, phase: "loading" });
     let speech: Speech;
     try {
