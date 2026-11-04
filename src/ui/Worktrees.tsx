@@ -253,7 +253,9 @@ export function WorktreesPanel({ api, target, top, hooks, onOpen }: { api: Workt
                       {r.state === "create-interrupted"
                         ? `Making it on ${r.branch} was cut off before Git made it${r.exists ? ", but something is at that path now" : ""}.`
                         : `Git no longer lists it${r.exists ? ", but something is at that path" : ", and its folder is gone"}.`}{" "}
-                      Forgetting it drops this app's record only; nothing on disk changes.
+                      {r.exists
+                        ? "Look at what is left there (in Server files or the Terminal), move anything you need, and delete the folder; then Forget it drops this app's record."
+                        : "Forgetting it drops this app's record only; nothing on disk changes."}
                     </p>
                     <div className="wt-actions">
                       <button
@@ -1049,6 +1051,7 @@ function RemoveDialog({
                     <li key={f.path}>
                       <span className="muted">{f.kind === "untracked" ? "??" : f.xy.replace(/\./g, " ")}</span> {f.from ? `${f.from} → ` : ""}
                       {f.path}
+                      {f.hidden && <span className="muted"> (changed, though marked assume-unchanged or skip-worktree)</span>}
                     </li>
                   ))}
                 </ul>
@@ -1075,6 +1078,7 @@ function RemoveDialog({
                 <span>
                   Ignored files go with the folder and aren't kept: {plan.ignored.slice(0, 8).join(", ")}
                   {plan.ignored.length > 8 ? `, and ${plan.ignored.length - 8} more` : ""}.
+                  {plan.ignoredUnchecked && " There are too many to check one by one: a change to them after this preview isn't noticed."}
                 </span>
               </p>
             )}

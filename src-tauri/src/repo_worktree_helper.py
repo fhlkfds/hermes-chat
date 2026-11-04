@@ -34,6 +34,8 @@ MAX_KEEP_FILE = 100 * 1024 * 1024
 MAX_DETAIL = 40
 MAX_LOG = 64 * 1024
 MAX_LISTED = 2000
+# The most ignored files and folders a removal's stamp reads, one by one. Past it, later changes to the rest aren't seen.
+MAX_IGNORED_WALK = 1000000
 MAX_INCLUDE = 200
 PROGRESS = "\x1fhermes-progress\x1f"
 # A test makes setup wait between entries, to cut it off part way.
@@ -302,6 +304,37 @@ def changes(path, links):
     return rows, info
 
 
+def hidden_changes(path):
+    """Tracked files whose changes Git doesn't report because of an index flag: `assume-unchanged`, or `skip-worktree`
+    for a file that is on disk anyway. Each is compared with its staged blob; one that differs, or can't be compared
+    (a link), is a change status never shows."""
+    code, out, _ = git(["ls-files", "-z", "-v", "--stage"], path)
+    found = []
+    if code != 0:
+        return found
+    for raw in out.split(b"\0"):
+        line = text(raw)
+        if not line or "\t" not in line:
+            continue
+        head, rel = line.split("\t", 1)
+        parts = head.split(" ")
+        tag, mode, oid = parts[0], parts[1], parts[2]
+        if not (tag.islower() or tag == "S"):
+            continue
+        full = os.path.join(path, rel)
+        if not os.path.lexists(full):
+            continue
+        if mode == "160000" or os.path.isdir(full):
+            continue
+        if os.path.islink(full) or not os.path.isfile(full):
+            found.append(rel)
+            continue
+        c, o, _ = git(["hash-object", "--path", rel, "--", rel], path)
+        if c != 0 or text(o).strip() != oid:
+            found.append(rel)
+    return found
+
+
 def counts(rows):
     c = {"staged": 0, "unstaged": 0, "untracked": 0, "conflicts": 0}
     for r in rows:
@@ -340,7 +373,10 @@ def submodules(path, depth=0):
         if not os.path.exists(os.path.join(full, ".git")):
             continue
         sub_rows, _ = changes(full, set())
-        unpublished = int(git_line(["rev-list", "--count", "HEAD", "--not", "--remotes"], full) or 0)
+        # Its Git folder goes with the worktree: every local branch and tag, and the stash, not only HEAD, would go too.
+        unpublished = int(git_line(["rev-list", "--count", "HEAD", "--branches", "--tags", "--not", "--remotes"], full) or 0)
+        if git_line(["rev-parse", "-q", "--verify", "refs/stash"], full):
+            unpublished += 1
         out.append({"path": rel, "dirty": len(sub_rows), "unpublished": unpublished})
         if depth < 3:
             out.extend({"path": rel + "/" + s["path"], "dirty": s["dirty"], "unpublished": s["unpublished"]} for s in submodules(full, depth + 1))
@@ -736,6 +772,14 @@ def op_worktree_create(req):
     with Records(top) as R:
         if rec_id in R.doc["worktrees"]:
             raise Refusal("duplicate", "This worktree was already asked for. Refresh the list to see how far it got.")
+        # One record per folder, checked under the lock: two creations for the same path can't both be recorded.
+        real = os.path.realpath(plan["path"])
+        other = next((r for r in R.doc["worktrees"].values() if isinstance(r, dict) and os.path.realpath(r.get("path") or "") == real), None)
+        if other or os.path.lexists(plan["path"]):
+            raise Refusal("exists", "%s is already there, or another creation is making it. Nothing was created. Check the new preview." % plan["path"])
+        before_paths = {os.path.realpath(t["path"]) for t in list_trees(top)}
+        if real in before_paths:
+            raise Refusal("exists", "Git already has a worktree at %s. Nothing was created." % plan["path"])
         rec = {
             "id": rec_id,
             "path": plan["path"],
@@ -762,7 +806,16 @@ def op_worktree_create(req):
     code, out, err = git(args, top, read_only=False, timeout=900)
     output = (text(out) + text(err)).strip()
     made = tree_at(list_trees(top), plan["path"])
-    if code != 0 and made and made.get("locked") != "initializing" and os.path.isdir(plan["path"]):
+    # Adopted only when this run's Git made it: it wasn't there before, Git didn't say the path or branch existed, and
+    # it has the branch asked for.
+    ours_made = (
+        made is not None
+        and made.get("branch") == plan["branch"]
+        and "already exists" not in output
+        and "already checked out" not in output
+        and "already used by worktree" not in output
+    )
+    if code != 0 and ours_made and made.get("locked") != "initializing" and os.path.isdir(plan["path"]):
         # Git made the worktree and checked it out, then something after (a post-checkout hook) failed. It's kept,
         # recorded, as a setup that failed: Retry, Open, or Remove it from the list.
         git(["worktree", "lock", "--reason", LOCK_REASON + rec_id, plan["path"]], top, read_only=False)
@@ -784,8 +837,17 @@ def op_worktree_create(req):
         raise Refusal("git", "Git couldn't make the worktree.%s" % note, output)
     progress("create", "Git made the worktree.", output=output[-4000:])
     git(["worktree", "lock", "--reason", LOCK_REASON + rec_id, plan["path"]], top, read_only=False)
+    locked = tree_at(list_trees(top), plan["path"])
     with Records(top) as R:
         rec = R.doc["worktrees"].get(rec_id)
+        if not locked or locked.get("locked") != LOCK_REASON + rec_id:
+            # Not locked as this app's: something else holds it. It stays recorded, as a failed setup, for the owner.
+            rec["state"] = "setup-failed"
+            rec.pop("run", None)
+            rec["setup"] = dict(rec.get("setup") or {}, state="failed", finishedAt=time.time(),
+                                log="Git made the worktree, but it couldn't be locked as this app's (its lock: %r)." % ((locked or {}).get("locked"),))
+            R.save()
+            return {"worktree": rec_view(rec), "output": output}
         rec["state"] = "ready"
         rec.pop("run", None)
         rec["createOutput"] = output[-MAX_LOG:]
@@ -918,6 +980,8 @@ def removal_facts(top, rec):
             len(rec["chats"]), "" if len(rec["chats"]) == 1 else "s", "s" if len(rec["chats"]) == 1 else "")})
     links = setup_links(rec)
     rows, _ = changes(path, links)
+    listed = {r["path"] for r in rows}
+    rows = rows + [{"kind": "change", "xy": ".H", "sub": False, "path": rel, "hidden": True} for rel in hidden_changes(path) if rel not in listed]
     stamped = []
     for r in rows:
         snap = snapshot(path, r["path"])
@@ -926,7 +990,7 @@ def removal_facts(top, rec):
             size = os.lstat(os.path.join(path, r["path"])).st_size if snap[1] in ("file", "big") else None
         except OSError:
             pass
-        row = {"path": r["path"], "from": r.get("from"), "kind": r["kind"], "xy": r["xy"], "sub": r["sub"], "size": size}
+        row = {"path": r["path"], "from": r.get("from"), "kind": r["kind"], "xy": r["xy"], "sub": r["sub"], "size": size, "hidden": bool(r.get("hidden"))}
         stamped.append([r["path"], r.get("from"), r["xy"], snap[0]])
         if r["kind"] == "untracked" and r["path"].endswith("/") and os.path.exists(os.path.join(path, r["path"], ".git")):
             block.append({"kind": "embedded", "message": "%s is a separate Git repository inside the worktree. Its commits and history can't be kept here: move it out first." % r["path"]})
@@ -936,17 +1000,36 @@ def removal_facts(top, rec):
     if len(facts["files"]) > MAX_LISTED:
         facts["files"], facts["filesCut"] = facts["files"][:MAX_LISTED], True
     facts["fileCount"] = len(rows)
+    facts["hidden"] = [r["path"] for r in rows if r.get("hidden")]
     code, out, _ = git(["status", "--porcelain=v2", "-z", "--ignored=matching", "--untracked-files=normal"], path)
     ignored = sorted(text(f)[2:] for f in out.split(b"\0") if text(f).startswith("! ") and text(f)[2:].rstrip("/") not in links) if code == 0 else []
     facts["ignored"] = ignored[:200]
     # An ignored file that appears, or changes, after the preview makes it stale: it would go with the folder unseen.
-    ignored_stamp = []
+    ignored_stamp, walked = [], 0
     for rel in ignored:
+        top_entry = os.path.join(path, rel.rstrip("/"))
         try:
-            st = os.lstat(os.path.join(path, rel))
-            ignored_stamp.append([rel, st.st_mode, st.st_size, st.st_mtime_ns])
+            st = os.lstat(top_entry)
         except OSError:
             ignored_stamp.append([rel, None])
+            continue
+        ignored_stamp.append([rel, st.st_mode, st.st_size, st.st_mtime_ns])
+        if not stat.S_ISDIR(st.st_mode):
+            continue
+        # Every file and folder inside, links not followed: an edit deep in an ignored folder after the preview counts.
+        for root, dirs, files in os.walk(top_entry, followlinks=False):
+            for name in dirs + files:
+                walked += 1
+                if walked > MAX_IGNORED_WALK:
+                    break
+                try:
+                    sub = os.lstat(os.path.join(root, name))
+                    ignored_stamp.append([os.path.relpath(os.path.join(root, name), path), sub.st_mode, sub.st_size, sub.st_mtime_ns])
+                except OSError:
+                    pass
+            if walked > MAX_IGNORED_WALK:
+                break
+    facts["ignoredUnchecked"] = walked > MAX_IGNORED_WALK
     if os.path.exists(text(git_ok(["rev-parse", "--path-format=absolute", "--git-path", "index.lock"], path)).strip()):
         block.append({"kind": "locked", "message": "Another Git process is changing its index (index.lock exists). Wait for it, then check again."})
     unpublished, facts["lost"] = commits_only_here(path, tree["detached"])
@@ -958,7 +1041,7 @@ def removal_facts(top, rec):
     for s in facts["submodules"]:
         if s["dirty"] or s["unpublished"]:
             block.append({"kind": "submodule", "message": "The submodule %s has %s that removing the folder would lose. Commit and push them in the submodule first." % (
-                s["path"], "changes" if s["dirty"] else "commits no remote has")})
+                s["path"], "changes" if s["dirty"] else "commits, branches, tags or a stash no remote has")})
     wt_git = git_line(["rev-parse", "--absolute-git-dir"], path)
     facts["operation"] = in_progress(wt_git) if wt_git else None
     if facts["operation"]:
@@ -1023,6 +1106,10 @@ def keep_changes(top, rec, facts):
                 parents = ["-p", commit(staged_tree, parents, "Staged in %s when Hermes Chat removed it\n" % path)]
         else:
             staged_note = "The index had conflicts, so only the working files are kept.\n"
+        # Changes an assume-unchanged or skip-worktree flag hides: the flag is cleared in the copy only, so they're kept too.
+        for rel in facts.get("hidden") or []:
+            git_ok(["update-index", "--no-assume-unchanged", "--no-skip-worktree", "--", rel], path, read_only=False, extra_env=env)
+            git_ok(["add", "--", rel], path, read_only=False, extra_env=env)
         git_ok(["add", "-A"], path, read_only=False, extra_env=env, timeout=600)
         for link in sorted(links):
             git_ok(["rm", "-q", "--cached", "--ignore-unmatch", "--", link], path, read_only=False, extra_env=env)
@@ -1050,6 +1137,15 @@ def keep_ref(top, rec, commit, tree, files):
     if git_line(["rev-parse", "-q", "--verify", ref + "^{commit}"], top) != commit or (tree and git_line(["rev-parse", "-q", "--verify", ref + "^{tree}"], top) != tree):
         raise Refusal("internal", "The kept commit couldn't be read back. Nothing was removed.")
     return {"ref": ref, "commit": commit, "files": files}
+
+
+def restore(rec, before):
+    """Puts back the state a record had before a removal that didn't happen: a failed setup stays failed, with Retry."""
+    rec["state"] = before.get("state")
+    if "run" in before:
+        rec["run"] = before["run"]
+    else:
+        rec.pop("run", None)
 
 
 def op_worktree_remove(req):
@@ -1088,13 +1184,11 @@ def op_worktree_remove(req):
                 git(["worktree", "lock", "--reason", LOCK_REASON + rec_id, rec["path"]], top, read_only=False)
                 raise Refusal("git", "Git didn't remove the worktree.%s" % (" Its changes are kept in %s." % kept["ref"] if kept else ""), text(err) + text(out))
         except BaseException:
-            rec["state"] = "ready"
-            rec.pop("run", None)
+            restore(rec, before)
             R.save()
             raise
         if os.path.lexists(rec["path"]) or tree_at(list_trees(top), rec["path"]):
-            rec["state"] = "ready"
-            rec.pop("run", None)
+            restore(rec, before)
             R.save()
             raise Refusal("git", "Git answered, but the worktree is still there.")
         del R.doc["worktrees"][rec_id]

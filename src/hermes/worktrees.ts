@@ -113,7 +113,8 @@ export type WorktreePlan = {
   stamp: string;
 };
 
-export type RemovalFile = { path: string; from?: string | null; kind: "change" | "conflict" | "untracked"; xy: string; sub: boolean; size: number | null };
+/** `hidden`: a change Git's status doesn't show, because the file is marked assume-unchanged or skip-worktree. */
+export type RemovalFile = { path: string; from?: string | null; kind: "change" | "conflict" | "untracked"; xy: string; sub: boolean; size: number | null; hidden?: boolean };
 export type Blocker = { kind: string; message: string };
 
 export type RemovalPlan = {
@@ -125,6 +126,10 @@ export type RemovalPlan = {
   fileCount: number;
   filesCut: boolean;
   ignored: string[];
+  /** More ignored files than the stamp reads one by one: later changes to the rest aren't noticed. */
+  ignoredUnchecked?: boolean;
+  /** Files whose changes an index flag hides, kept too. */
+  hidden?: string[];
   unpublished: { sha: string; subject: string }[];
   unpublishedCount: number;
   lost: number;

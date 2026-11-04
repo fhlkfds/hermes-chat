@@ -678,3 +678,97 @@ async fn a_failing_post_checkout_hook_leaves_the_worktree_recorded_with_retry() 
     std::fs::remove_file(&hook).unwrap();
     assert_eq!(ask(Request::WorktreeSetup { repo: s(&app), id: ID.into() }).await.unwrap()["worktree"]["state"], "ready");
 }
+
+#[tokio::test]
+async fn two_creations_for_the_same_folder_cant_both_be_recorded() {
+    let (_d, app) = repo("same-path");
+    let p = plan(&app, "main", "feature/twice", true, "", false).await.unwrap();
+    let (a, b) = tokio::join!(ask(create_req(&app, ID, &p, false)), ask(create_req(&app, ID2, &p, false)));
+    assert_eq!([a.is_ok(), b.is_ok()].iter().filter(|ok| **ok).count(), 1, "{a:?} {b:?}");
+    let refused = if a.is_ok() { b } else { a };
+    assert!(["exists", "busy", "stale", "branch-exists"].contains(&kind(refused.unwrap_err()).as_str()));
+    let doc: Value = serde_json::from_str(&std::fs::read_to_string(app.join(".git/hermes-chat/worktrees.json")).unwrap()).unwrap();
+    assert_eq!(doc["worktrees"].as_object().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn edits_an_index_flag_hides_are_listed_and_kept() {
+    let (d, app) = repo("hidden");
+    create(&app, ID, "feature/hid", false).await;
+    let wt = d.path().join("app-feature-hid");
+    git(&wt, &["update-index", "--assume-unchanged", "README.md"]);
+    write(&wt, "README.md", "hello\nhidden edit\n");
+    write(&wt, "other.txt", "an ordinary new file\n");
+    let p = remove_plan(&app, ID).await;
+    assert_eq!(p["hidden"], serde_json::json!(["README.md"]));
+    let done = remove(&app, ID, &p["stamp"]).await.unwrap();
+    let kept = done["kept"]["ref"].as_str().unwrap();
+    assert_eq!(git(&app, &["show", &format!("{kept}:README.md")]), "hello\nhidden edit");
+    assert_eq!(git(&app, &["show", &format!("{kept}:other.txt")]), "an ordinary new file");
+}
+
+#[tokio::test]
+async fn a_submodule_branch_no_remote_has_blocks_removal_even_with_head_published() {
+    let (d, app) = repo("sub-branch");
+    let lib = d.path().join("lib");
+    std::fs::create_dir_all(&lib).unwrap();
+    git(&lib, &["init", "-q", "-b", "main"]);
+    write(&lib, "lib.txt", "lib\n");
+    git(&lib, &["add", "."]);
+    git(&lib, &["-c", "user.name=A", "-c", "user.email=a@x", "commit", "-qm", "lib"]);
+    git(&app, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", &s(&lib), "vendor/lib"]);
+    git(&app, &["commit", "-qm", "submodule"]);
+    create(&app, ID, "feature/sb", false).await;
+    let wt = d.path().join("app-feature-sb");
+    git(&wt, &["-c", "protocol.file.allow=always", "submodule", "update", "-q", "--init"]);
+    let sub = wt.join("vendor/lib");
+    git(&sub, &["switch", "-q", "-c", "private"]);
+    write(&sub, "private.txt", "only here\n");
+    git(&sub, &["add", "."]);
+    git(&sub, &["-c", "user.name=A", "-c", "user.email=a@x", "commit", "-qm", "private work"]);
+    git(&sub, &["switch", "-q", "--detach", "origin/main"]);
+    let p = remove_plan(&app, ID).await;
+    assert!(blockers(&p).contains(&"submodule".to_string()), "{p}");
+}
+
+#[tokio::test]
+async fn an_edit_deep_in_an_ignored_folder_after_the_preview_makes_it_stale() {
+    let (d, app) = repo("ignored-deep");
+    create(&app, ID, "feature/deep", false).await;
+    let wt = d.path().join("app-feature-deep");
+    write(&wt, "node_modules/pkg/lib/index.js", "one\n");
+    let p = remove_plan(&app, ID).await;
+    std::thread::sleep(Duration::from_millis(20));
+    write(&wt, "node_modules/pkg/lib/index.js", "two, longer\n");
+    assert_eq!(kind(remove(&app, ID, &p["stamp"]).await.unwrap_err()), "stale", "an edited file");
+    let p = remove_plan(&app, ID).await;
+    write(&wt, "node_modules/pkg/lib/new.js", "new\n");
+    assert_eq!(kind(remove(&app, ID, &p["stamp"]).await.unwrap_err()), "stale", "a new file in a nested folder");
+}
+
+#[tokio::test]
+async fn a_removal_that_fails_leaves_a_failed_setup_failed() {
+    let (d, app) = repo("remove-fails");
+    write(&app, "data", "a file\n");
+    write(&app, ".worktreeinclude", "data/seed.db\n");
+    write(&app, "locked/inside.txt", "x\n");
+    git(&app, &["add", "."]);
+    git(&app, &["commit", "-qm", "data"]);
+    std::fs::remove_file(app.join("data")).unwrap();
+    write(&app, "data/seed.db", "rows\n");
+    assert_eq!(create(&app, ID, "feature/f", true).await["worktree"]["state"], "setup-failed");
+    let wt = d.path().join("app-feature-f");
+    // Git can't delete a file in a read-only folder, so the removal fails.
+    std::fs::set_permissions(wt.join("locked"), std::os::unix::fs::PermissionsExt::from_mode(0o555)).unwrap();
+    let p = remove_plan(&app, ID).await;
+    let failed = remove(&app, ID, &p["stamp"]).await;
+    std::fs::set_permissions(wt.join("locked"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    assert!(failed.is_err());
+    // Git dropped its own entry but couldn't delete the whole folder. The record keeps the state it had, and the
+    // list shows it with what is left on disk: nothing is forgotten for the owner.
+    let l = list(&app).await;
+    let rec = &l["missing"][0];
+    assert_eq!(rec["state"], "setup-failed", "the failed setup isn't marked ready");
+    assert_eq!(rec["exists"], true);
+    assert!(wt.join("locked/inside.txt").is_file());
+}
