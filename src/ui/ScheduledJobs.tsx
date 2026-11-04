@@ -1,10 +1,28 @@
 // Scheduled jobs (GLOSSARY.md "Scheduled job", ADR 0013): the profile's cron jobs, which Hermes keeps and runs on the
 // server, also while Hermes Chat is closed. The screen lists them with their schedule, time zone and next run, and
 // creates, edits, pauses, resumes, runs and deletes them through Hermes. Every change shows only once Hermes, read
-// back, has it.
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, CalendarClock, CircleAlert, History, Pause, Pencil, Play, Plus, RefreshCw, Trash2, Zap } from "lucide-react";
-import { CronConflict, CronError, RUNS_MAX, type CronApi, type CronJob, type DeliveryTarget, type JobFields, type JobRun, type JobsZone, jobsZone, missedRunNote, statusLabel } from "../hermes/cronJobs";
+// back, has it. Every read is sequenced: an answer that a newer read, another job or another profile has superseded
+// is dropped, never shown.
+import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowLeft, CalendarClock, ChevronDown, ChevronRight, CircleAlert, History, Pause, Pencil, Play, Plus, RefreshCw, Trash2, Zap } from "lucide-react";
+import {
+  CronConflict,
+  CronError,
+  RUNS_MAX,
+  RUNS_PAGE,
+  type CronApi,
+  type CronJob,
+  type DeliveryTarget,
+  type JobFields,
+  type JobRun,
+  type JobsZone,
+  type RunResult,
+  type RunState,
+  deliveryProblems,
+  jobsZone,
+  missedRunNote,
+  statusLabel,
+} from "../hermes/cronJobs";
 import { type Schedule, ScheduleError, clockChangeNote, explainSchedule, formatInstant, isoIn, offsetAt, parseSchedule, upcomingRuns } from "../hermes/schedule";
 import { Spinner } from "./bits";
 
@@ -12,11 +30,37 @@ const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const HERE = Intl.DateTimeFormat().resolvedOptions().timeZone;
 /** A scheduler that hasn't checked the jobs for this long is likely not running (it checks about every minute). */
 const STALE_SCHEDULER_S = 300;
+/** `returnTo` for the editor of a new job, which has no id. */
+const NEW = "\u0000new";
 
-type Loaded = { jobs: CronJob[]; zone: JobsZone; targets: DeliveryTarget[]; catchUp: boolean };
+/** A profile's jobs and what scheduling them needs. `targets` is undefined when Hermes's list of them couldn't be read. */
+type Loaded = { jobs: CronJob[]; zone: JobsZone; targets?: DeliveryTarget[]; catchUp: boolean };
 type View = { kind: "list" } | { kind: "job"; id: string } | { kind: "edit"; id?: string };
 
-/** An instant on the jobs' clock, and on this computer's when that reads differently. */
+/** Reads a profile's jobs, time zone, catch-up setting and delivery targets. Only the job list is required. */
+async function readProfile(api: CronApi, profile: string): Promise<Loaded> {
+  const [jobs, setting, targets] = await Promise.all([api.list(profile), api.scheduling(profile).catch(() => undefined), api.targets(profile).catch(() => undefined)]);
+  return { jobs, zone: jobsZone(setting?.timezone, jobs), targets, catchUp: setting?.catchUp ?? true };
+}
+
+/**
+ * Orders a component's reads: `next()` starts one and supersedes those before it, and `current(n)` is true only for
+ * the latest while the component is mounted. StrictMode's extra unmount supersedes the reads of the first mount.
+ */
+function useSequence() {
+  const seq = useRef(0);
+  const live = useRef(true);
+  useEffect(() => {
+    live.current = true;
+    return () => {
+      live.current = false;
+      seq.current++;
+    };
+  }, []);
+  return useMemo(() => ({ next: () => ++seq.current, current: (n: number) => live.current && n === seq.current, live: () => live.current }), []);
+}
+
+/** An instant on the schedule's clock, and on this computer's when that reads differently. */
 function When({ at, zone }: { at: number; zone: JobsZone }) {
   const there = formatInstant(at, zone.zone);
   const differs = zone.zone !== HERE && offsetAt(zone.zone, at) !== offsetAt(HERE, at);
@@ -28,11 +72,21 @@ function When({ at, zone }: { at: number; zone: JobsZone }) {
   );
 }
 
-function deliveryLabel(id: string, targets: DeliveryTarget[]): string {
+/** Which clock the times on this screen are on: the schedule's, and this computer's beside it when they differ. */
+function zoneSentence(zone: JobsZone): string {
+  // A zone Hermes doesn't name is only how times are shown here; the banner below says what is unknown.
+  if (!zone.named) return `Times are shown in ${zone.label}, which may not be the zone Hermes runs this profile's jobs in.`;
+  const differs = zone.zone !== HERE && offsetAt(zone.zone, Date.now()) !== offsetAt(HERE, Date.now());
+  return `Times are in ${zone.label}, the schedule time zone Hermes runs this profile's jobs in.${differs ? ` Where this computer's time zone, ${HERE}, reads differently, its time is shown too, marked “here”.` : ""}`;
+}
+
+function deliveryLabel(id: string, targets: DeliveryTarget[] | undefined): string {
   if (id === "local") return "Saved on the server only";
   if (id === "origin") return "Back where it was created";
-  const t = targets.find((x) => x.id === id);
-  return t ? t.name : id;
+  return id
+    .split(",")
+    .map((d) => targets?.find((x) => x.id === d.trim())?.name ?? d.trim())
+    .join(", ");
 }
 
 /** Whether a job will run on its schedule, and what to say instead when it won't. */
@@ -43,6 +97,9 @@ function runState(j: CronJob): { runs: true } | { runs: false; why: string; tone
   if (!j.nextRunAt) return { runs: false, why: "Hermes has no next run for it.", tone: "muted" };
   return { runs: true };
 }
+
+/** Whether Hermes's ledger says a run of the job is under way now. */
+const underWay = (j: CronJob) => !!j.latest && ["claimed", "running"].includes(j.latest.status);
 
 function NextRun({ job, zone }: { job: CronJob; zone: JobsZone }) {
   const s = runState(job);
@@ -67,6 +124,7 @@ function LastRun({ job, zone }: { job: CronJob; zone: JobsZone }) {
 }
 
 function stateBadge(j: CronJob) {
+  if (underWay(j)) return <span className="badge">Running</span>;
   if (j.state === "completed") return <span className="badge">Finished</span>;
   if (!j.enabled || j.state === "paused") return <span className="badge">Paused</span>;
   if (j.state === "error") return <span className="badge warn">Error</span>;
@@ -86,7 +144,7 @@ function Upcoming({ schedule, zone, first, remaining }: { schedule?: Schedule; z
   return (
     <>
       {runs.length ? (
-        <ol className="job-runs-preview">
+        <ol className="job-runs-preview" aria-label="Upcoming runs">
           {runs.map((r) => (
             <li key={r}>
               <When at={r} zone={zone} />
@@ -115,41 +173,70 @@ export function ScheduledJobs({ api, profile, connected, onClose }: { api: CronA
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<CronError | Error>();
   const [view, setView] = useState<View>({ kind: "list" });
-  /** What happened to a job that has left the list, said on the list. */
+  /** What happened to a job that has left the list, or went to another profile, said on the list. */
   const [notice, setNotice] = useState<string>();
-  const live = useRef(true);
-  useEffect(() => {
-    // Set again on mount: StrictMode mounts twice, and a flag only cleared would drop every load after the first.
-    live.current = true;
-    return () => void (live.current = false);
-  }, []);
+  const loads = useSequence();
+  /** Whether a list read is under way, so a write landing meanwhile can supersede it. */
+  const listing = useRef(false);
+  /** The job whose row to focus when the list shows again. */
+  const returnTo = useRef<string | undefined>(undefined);
+  const heading = useRef<HTMLHeadingElement>(null);
+  const listHeading = useRef<HTMLHeadingElement>(null);
+  const newJob = useRef<HTMLButtonElement>(null);
 
   const load = async () => {
+    const n = loads.next();
+    listing.current = true;
     setLoading(true);
     setError(undefined);
     try {
-      const [jobs, setting, targets] = await Promise.all([
-        api.list(profile),
-        api.scheduling(profile).catch(() => undefined),
-        api.targets(profile).catch(() => [] as DeliveryTarget[]),
-      ]);
-      if (!live.current) return;
-      setLoaded({ jobs, zone: jobsZone(setting?.timezone, jobs), targets, catchUp: setting?.catchUp ?? true });
+      const got = await readProfile(api, profile);
+      if (loads.current(n)) setLoaded(got);
     } catch (e) {
-      if (live.current) setError(e as Error);
+      if (loads.current(n)) setError(e as Error);
     } finally {
-      if (live.current) setLoading(false);
+      if (loads.current(n)) {
+        listing.current = false;
+        setLoading(false);
+      }
     }
   };
 
   useEffect(() => {
     if (connected) void load();
-    else setLoading(false);
+    else {
+      // A read under way when the connection went is superseded: its answer, if one comes, is dropped.
+      loads.next();
+      listing.current = false;
+      setLoading(false);
+    }
   }, [connected]);
 
-  /** A job as Hermes read it back after a change, put in the list. `null` takes it out. */
-  const apply = (id: string, job: CronJob | null) =>
+  /** Moves to another view, putting focus where the owner can carry on with the keyboard. */
+  const go = (next: View) => {
+    if (view.kind !== "list" && next.kind === "list") returnTo.current = view.id ?? NEW;
+    setView(next);
+  };
+  useEffect(() => {
+    if (view.kind !== "list") {
+      heading.current?.focus();
+      return;
+    }
+    const id = returnTo.current;
+    returnTo.current = undefined;
+    // Back from a job: its row, or the heading when the job has left the list. Back from a new one: New job.
+    const to = id === NEW ? newJob.current : id ? document.querySelector<HTMLElement>(`.job-row[data-job-id="${CSS.escape(id)}"]`) : undefined;
+    if (id) (to ?? listHeading.current)?.focus();
+  }, [view]);
+
+  /**
+   * A job as Hermes read it back after a change, put in the list. `null` takes it out. A list read that started before
+   * the change could answer with the job as it was, so it is superseded and the list is read again, after the change.
+   */
+  const apply = (id: string, job: CronJob | null) => {
     setLoaded((l) => l && { ...l, jobs: job ? (l.jobs.some((j) => j.id === id) ? l.jobs.map((j) => (j.id === id ? job : j)) : [...l.jobs, job]) : l.jobs.filter((j) => j.id !== id) });
+    if (listing.current && loads.live()) void load();
+  };
 
   const unsupported = error instanceof CronError && (error.kind === "unsupported" || error.kind === "forbidden");
   const jobs = loaded?.jobs ?? [];
@@ -159,17 +246,17 @@ export function ScheduledJobs({ api, profile, connected, onClose }: { api: CronA
   return (
     <div className="settings jobs-screen">
       <div className="settings-inner">
-        <button className="back" onClick={view.kind === "list" ? onClose : () => setView(view.kind === "edit" && view.id ? { kind: "job", id: view.id } : { kind: "list" })}>
+        <button className="back" onClick={view.kind === "list" ? onClose : () => go(view.kind === "edit" && view.id ? { kind: "job", id: view.id } : { kind: "list" })}>
           <ArrowLeft size={15} /> {view.kind === "list" ? "Back to chat" : view.kind === "edit" && view.id ? "Back to the job" : "Back to the jobs"}
         </button>
         {view.kind === "list" && (
           <>
-            <h1 className="project-title">
+            <h1 className="project-title" ref={listHeading} tabIndex={-1}>
               <CalendarClock size={20} /> <span>Scheduled jobs</span>
             </h1>
             <p className="muted">
               Jobs Hermes runs on the server for the <span className="mono">{profile}</span> profile, at the times set here, also while Hermes Chat is
-              closed.{loaded && <> Times are in {loaded.zone.label}.</>}
+              closed.{loaded && <> {zoneSentence(loaded.zone)}</>}
             </p>
           </>
         )}
@@ -201,7 +288,7 @@ export function ScheduledJobs({ api, profile, connected, onClose }: { api: CronA
           <>
             {!unsupported && (
               <div className="jobs-actions">
-                <button className="btn primary" disabled={!connected || !loaded} onClick={() => setView({ kind: "edit" })}>
+                <button ref={newJob} className="btn primary" disabled={!connected || !loaded} onClick={() => go({ kind: "edit" })}>
                   <Plus size={14} /> New job
                 </button>
                 <button className="btn" disabled={!connected || loading} onClick={() => void load()}>
@@ -236,37 +323,51 @@ export function ScheduledJobs({ api, profile, connected, onClose }: { api: CronA
             )}
             {loaded && jobs.length > 0 && (
               <ul className="job-list">
-                {jobs.map((j) => (
-                  <li key={j.id}>
-                    <button className="job-row" onClick={() => setView({ kind: "job", id: j.id })}>
-                      <div className="job-row-head">
-                        <span className="job-name">{j.name}</span>
-                        {stateBadge(j)}
-                      </div>
-                      <div className="job-row-line">
-                        {j.schedule ? explainSchedule(j.schedule, loaded.zone.zone) : j.scheduleText}
-                        <span className="mono faint"> · {j.scheduleText}</span>
-                      </div>
-                      <div className="job-row-line">
-                        <NextRun job={j} zone={loaded.zone} />
-                      </div>
-                      <div className="job-row-line small">
-                        <LastRun job={j} zone={loaded.zone} />
-                        <span className="faint"> · {deliveryLabel(j.deliver, loaded.targets)}</span>
-                      </div>
-                    </button>
-                  </li>
-                ))}
+                {jobs.map((j) => {
+                  const problem = loaded.targets && deliveryProblems(j.deliver, loaded.targets, j.originPlatform)[0];
+                  return (
+                    <li key={j.id}>
+                      <button className="job-row" data-job-id={j.id} onClick={() => go({ kind: "job", id: j.id })}>
+                        <div className="job-row-head">
+                          <span className="job-name">{j.name}</span>
+                          {stateBadge(j)}
+                        </div>
+                        <div className="job-row-line">
+                          {j.schedule ? explainSchedule(j.schedule, loaded.zone.zone) : j.scheduleText}
+                          <span className="mono faint"> · {j.scheduleText}</span>
+                        </div>
+                        <div className="job-row-line">
+                          <NextRun job={j} zone={loaded.zone} />
+                        </div>
+                        <div className="job-row-line small">
+                          <LastRun job={j} zone={loaded.zone} />
+                          <span className="faint"> · {deliveryLabel(j.deliver, loaded.targets)}</span>
+                        </div>
+                        {problem && <div className="job-row-line small job-status warn">{problem}</div>}
+                      </button>
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </>
         )}
 
         {view.kind === "job" && loaded && shown && (
-          <JobDetail key={shown.id} api={api} profile={profile} connected={connected} job={shown} loaded={loaded} onChanged={apply} onEdit={() => setView({ kind: "edit", id: shown.id })} onDeleted={() => setView({ kind: "list" })}
+          <JobDetail
+            key={shown.id}
+            api={api}
+            profile={profile}
+            connected={connected}
+            job={shown}
+            loaded={loaded}
+            heading={heading}
+            onChanged={apply}
+            onEdit={() => go({ kind: "edit", id: shown.id })}
+            onDeleted={() => go({ kind: "list" })}
             onToast={(text) => {
               setNotice(text);
-              setView({ kind: "list" });
+              go({ kind: "list" });
             }}
           />
         )}
@@ -279,16 +380,80 @@ export function ScheduledJobs({ api, profile, connected, onClose }: { api: CronA
             connected={connected}
             job={shown}
             loaded={loaded}
-            onSaved={(job) => {
+            heading={heading}
+            onSaved={(job, where) => {
+              if (where !== profile) {
+                setNotice(`Created “${job.name}” in the ${where} profile. Its jobs and runs show when you switch to that profile.`);
+                go({ kind: "list" });
+                return;
+              }
               apply(job.id, job);
-              setView({ kind: "job", id: job.id });
+              go({ kind: "job", id: job.id });
             }}
             onSeen={(job) => apply(job.id, job)}
-            onCancel={() => setView(view.id ? { kind: "job", id: view.id } : { kind: "list" })}
+            onCancel={() => go(view.id ? { kind: "job", id: view.id } : { kind: "list" })}
           />
         )}
       </div>
     </div>
+  );
+}
+
+const RUN_STATES: Record<RunState, { text: string; className: string }> = {
+  running: { text: "Running", className: "run-running" },
+  succeeded: { text: "Succeeded", className: "run-succeeded" },
+  failed: { text: "Failed", className: "run-failed" },
+  unknown: { text: "Unknown", className: "run-unknown" },
+};
+
+/** "1 min 20 s": how long a run took. */
+function took(ms: number): string {
+  const s = Math.round(ms / 1000);
+  if (s < 1) return "under a second";
+  if (s < 60) return `${s} s`;
+  const m = Math.floor(s / 60);
+  return m < 60 ? `${m} min${s % 60 ? ` ${s % 60} s` : ""}` : `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ""}`;
+}
+
+/** One run in the history: its state, when, how it ended, and its result. */
+function RunRow({ run, zone, result, onResult }: { run: JobRun; zone: JobsZone; result?: RunResult | string | "loading"; onResult?: () => void }) {
+  const state = RUN_STATES[run.state];
+  const open = result !== undefined;
+  const resultId = `job-run-result-${run.id.replace(/[^A-Za-z0-9_-]/g, "_")}`;
+  return (
+    <li>
+      <div className="job-history-head">
+        <span className={`badge ${state.className}`}>{state.text}</span>
+        <span>
+          {run.script ? "Finished " : "Started "}
+          <When at={run.startedAt} zone={zone} />
+        </span>
+        {!run.script && run.endedAt !== undefined && <span className="faint">took {took(run.endedAt - run.startedAt)}</span>}
+      </div>
+      {run.error && <div className="bad small job-history-error">{run.error}</div>}
+      {run.note && <div className="muted small">{run.note}</div>}
+      {run.script && run.preview && !run.error && <div className="muted small job-history-preview">{run.preview}</div>}
+      {onResult && (
+        <button type="button" className="job-result-toggle" aria-expanded={open} aria-controls={resultId} onClick={onResult}>
+          {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />} {open ? "Hide the result" : "Show the result"}
+        </button>
+      )}
+      {open && (
+        <div id={resultId} className="job-result" role="region" aria-label="Run result">
+          {result === "loading" ? (
+            <span className="muted small">
+              <Spinner /> Reading the run's reply…
+            </span>
+          ) : typeof result === "string" ? (
+            <span className="bad small">{result}</span>
+          ) : result.reply ? (
+            <pre className="job-prompt">{result.reply}</pre>
+          ) : (
+            <span className="muted small">This run's session has no reply from the agent.</span>
+          )}
+        </div>
+      )}
+    </li>
   );
 }
 
@@ -298,6 +463,7 @@ function JobDetail({
   connected,
   job,
   loaded,
+  heading,
   onChanged,
   onEdit,
   onDeleted,
@@ -308,6 +474,7 @@ function JobDetail({
   connected: boolean;
   job: CronJob;
   loaded: Loaded;
+  heading: RefObject<HTMLHeadingElement | null>;
   onChanged: (id: string, job: CronJob | null) => void;
   onEdit: () => void;
   onDeleted: () => void;
@@ -318,10 +485,23 @@ function JobDetail({
   const [confirm, setConfirm] = useState<"run" | "delete">();
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
-  const [runs, setRuns] = useState<JobRun[] | string>();
+  /** The latest history read: its rows and the limit it asked for, or why it failed. */
+  const [runs, setRuns] = useState<{ rows: JobRun[]; limit: number } | string>();
+  const [runLimit, setRunLimit] = useState(RUNS_PAGE);
+  const [readingRuns, setReadingRuns] = useState(false);
+  /** Each run's result once asked for, by run id, so a late answer lands only on its own run. */
+  const [results, setResults] = useState<Record<string, RunResult | string | "loading">>({});
   const [copies, setCopies] = useState<string[]>([]);
+  const historyReads = useSequence();
+  const copyReads = useSequence();
+  const life = useSequence();
+  const runButton = useRef<HTMLButtonElement>(null);
+  const deleteButton = useRef<HTMLButtonElement>(null);
+
   useEffect(() => {
-    if (connected) void api.copiesOf(profile, job.id).then(setCopies);
+    if (!connected) return;
+    const n = copyReads.next();
+    void api.copiesOf(profile, job.id).then((c) => copyReads.current(n) && setCopies(c));
   }, [connected, job.id]);
   const copyNote =
     copies.length > 0 &&
@@ -329,16 +509,52 @@ function JobDetail({
   const zone = loaded.zone;
   const offline = connected ? undefined : "Connect to Hermes to change this job.";
   const paused = !job.enabled || job.state === "paused";
+  const problems = loaded.targets ? deliveryProblems(job.deliver, loaded.targets, job.originPlatform) : [];
 
-  const [runLimit, setRunLimit] = useState(20);
-  const readRuns = (limit = runLimit) =>
+  const readRuns = (limit = runLimit) => {
+    const n = historyReads.next();
+    setReadingRuns(true);
     void api.runs(profile, job, limit).then(
-      (r) => setRuns(r),
-      (e) => setRuns(messageOf(e)),
-    );
+      (rows) => historyReads.current(n) && setRuns({ rows, limit }),
+      (e) => historyReads.current(n) && setRuns(messageOf(e)),
+    ).finally(() => historyReads.current(n) && setReadingRuns(false));
+  };
   useEffect(() => {
     if (connected) readRuns();
+    else historyReads.next();
   }, [connected, job.lastRunAt, runLimit]);
+
+  /** Each run's latest result read: a newer read, a Hide, or the run changing supersedes an older one. */
+  const resultReads = useRef<Record<string, number>>({});
+  const readResult = (run: JobRun) => {
+    const n = (resultReads.current[run.id] = (resultReads.current[run.id] ?? 0) + 1);
+    const mine = () => life.live() && resultReads.current[run.id] === n;
+    setResults((r) => ({ ...r, [run.id]: "loading" }));
+    void api.runResult(profile, run).then(
+      (res) => mine() && setResults((r) => ({ ...r, [run.id]: res })),
+      (e) => mine() && setResults((r) => ({ ...r, [run.id]: messageOf(e) })),
+    );
+  };
+  const showResult = (run: JobRun) => {
+    if (results[run.id] === undefined) return readResult(run);
+    resultReads.current[run.id] = (resultReads.current[run.id] ?? 0) + 1;
+    setResults((r) => {
+      const rest = { ...r };
+      delete rest[run.id];
+      return rest;
+    });
+  };
+  // A run whose state or end changed since its result was read (it was running) is read again.
+  const seen = useRef<Record<string, string>>({});
+  useEffect(() => {
+    if (typeof runs !== "object") return;
+    for (const r of runs.rows) {
+      const now = `${r.state}:${r.endedAt ?? ""}`;
+      const was = seen.current[r.id];
+      seen.current[r.id] = now;
+      if (was !== undefined && was !== now && results[r.id] !== undefined && connected) readResult(r);
+    }
+  }, [runs]);
 
   const act = async (what: NonNullable<typeof busy>, fn: () => Promise<void>) => {
     setBusy(what);
@@ -348,11 +564,19 @@ function JobDetail({
     try {
       await fn();
     } catch (e) {
-      setError(messageOf(e));
+      // What Hermes's list now says goes to the list even if the owner has left this job meanwhile.
       if (e instanceof CronError && e.kind === "gone") onChanged(job.id, null);
+      if (life.live()) setError(messageOf(e));
     } finally {
-      setBusy(undefined);
+      if (life.live()) setBusy(undefined);
     }
+  };
+
+  /** Closes a confirmation without acting, giving focus back to the button that opened it. */
+  const dismiss = () => {
+    const back = confirm === "run" ? runButton : deleteButton;
+    setConfirm(undefined);
+    requestAnimationFrame(() => back.current?.focus());
   };
 
   const runNow = () =>
@@ -364,16 +588,23 @@ function JobDetail({
         : !outcome.job
           ? "The run finished, and the job is no longer in the list: Hermes removes a one-shot once it has run, or it was deleted elsewhere."
           : `The run finished: ${status ?? "Hermes recorded no result"}.${outcome.job.lastError ? ` ${outcome.job.lastError}` : ""}`;
+      // The list takes what Hermes read back whether or not the owner is still on this job; only this view's notice,
+      // and moving to the list, wait on the owner still being here.
       if (!outcome.job) {
         onChanged(job.id, null);
-        onToast?.(said);
+        if (life.live()) onToast?.(said);
         return;
       }
       if (!outcome.unverified) onChanged(job.id, outcome.job);
+      if (!life.live()) return;
       setNotice(outcome.unverified ? `${said} The list couldn't be read afterwards to confirm it; refresh to check.` : said);
+      readRuns();
     });
 
   const deliver = deliveryLabel(job.deliver, loaded.targets);
+  const history = typeof runs === "object" ? runs : undefined;
+  const rows = history?.rows;
+  const running = underWay(job) || !!rows?.some((r) => r.state === "running");
   const kept = [
     job.noAgent && ["Runs", `the script ${job.script ?? ""} with no agent, and delivers what it prints`],
     !job.noAgent && job.script && ["Script", `${job.script}, run before the prompt`],
@@ -386,7 +617,7 @@ function JobDetail({
 
   return (
     <>
-      <h1 className="project-title">
+      <h1 className="project-title" ref={heading} tabIndex={-1}>
         <CalendarClock size={20} /> <span>{job.name}</span> {stateBadge(job)}
       </h1>
       <div className="jobs-actions">
@@ -405,10 +636,10 @@ function JobDetail({
         >
           {paused ? <Play size={14} /> : <Pause size={14} />} {busy === "pause" ? "Pausing…" : busy === "resume" ? "Resuming…" : paused ? "Resume" : "Pause"}
         </button>
-        <button className="btn" disabled={!connected || !!busy} title={offline} onClick={() => setConfirm("run")}>
+        <button ref={runButton} className="btn" disabled={!connected || !!busy} title={offline} onClick={() => setConfirm("run")}>
           <Zap size={14} /> {busy === "run" ? "Running on the server…" : "Run now"}
         </button>
-        <button className="btn danger" disabled={!connected || !!busy} title={offline} onClick={() => setConfirm("delete")}>
+        <button ref={deleteButton} className="btn danger" disabled={!connected || !!busy} title={offline} onClick={() => setConfirm("delete")}>
           <Trash2 size={14} /> {busy === "delete" ? "Deleting…" : "Delete"}
         </button>
       </div>
@@ -418,14 +649,16 @@ function JobDetail({
         </p>
       )}
       {confirm === "run" && (
-        <div className="confirm" role="alertdialog" aria-label="Run this job now?" onKeyDown={(e) => e.key === "Escape" && setConfirm(undefined)}>
+        <div className="confirm" role="alertdialog" aria-label="Run this job now?" onKeyDown={(e) => e.key === "Escape" && dismiss()}>
           <span>
             Run “{job.name}” now? On the server, Hermes {job.noAgent ? "runs its script" : "sends its prompt to the agent, which can use its tools,"} and
             delivers the result: {deliver.toLowerCase()}. This is a real run, and can take as long as the job does.
             {paused && " Hermes also resumes the job, so it runs on its schedule again afterwards."}
+            {running && " A run of this job is under way on the server: Hermes runs one at a time and refuses another until it ends."}
+            {problems.length > 0 && ` ${problems.join(" ")}`}
           </span>
           <div className="confirm-actions">
-            <button className="btn" autoFocus onClick={() => setConfirm(undefined)}>
+            <button className="btn" autoFocus onClick={dismiss}>
               Cancel
             </button>
             <button className="btn primary" onClick={() => void runNow()}>
@@ -435,10 +668,10 @@ function JobDetail({
         </div>
       )}
       {confirm === "delete" && (
-        <div className="confirm" role="alertdialog" aria-label="Delete this job?" onKeyDown={(e) => e.key === "Escape" && setConfirm(undefined)}>
+        <div className="confirm" role="alertdialog" aria-label="Delete this job?" onKeyDown={(e) => e.key === "Escape" && dismiss()}>
           <span>Delete “{job.name}”? Hermes removes it for good, in every Hermes client, and it won't run again. This can't be undone.</span>
           <div className="confirm-actions">
-            <button className="btn" autoFocus onClick={() => setConfirm(undefined)}>
+            <button className="btn" autoFocus onClick={dismiss}>
               Cancel
             </button>
             <button
@@ -447,7 +680,7 @@ function JobDetail({
                 void act("delete", async () => {
                   await api.remove(profile, job);
                   onChanged(job.id, null);
-                  onDeleted();
+                  if (life.live()) onDeleted();
                 })
               }
             >
@@ -477,7 +710,10 @@ function JobDetail({
         <p>
           {job.schedule ? explainSchedule(job.schedule, zone.zone) : "Hermes Chat can't read this schedule."} <span className="mono faint">{job.scheduleText}</span>
         </p>
-        <p className="muted small">Time zone: {zone.label}.</p>
+        <p className="muted small">
+          {zone.named ? `Schedule time zone: ${zone.label}. ` : `Schedule time zone: not named by Hermes. Times are shown in ${zone.label}. `}
+          {zone.named && zone.zone !== HERE && `Shown beside it where it differs: this computer's, ${HERE}.`}
+        </p>
         <p>
           <NextRun job={job} zone={zone} />
         </p>
@@ -506,6 +742,12 @@ function JobDetail({
         <h2>{job.noAgent ? "Script" : "Prompt"}</h2>
         {job.prompt ? <pre className="job-prompt">{job.prompt}</pre> : <p className="muted">{job.noAgent ? `Runs ${job.script}.` : "No prompt."}</p>}
         <p className="muted small">Delivers to: {deliver}.</p>
+        {problems.map((p) => (
+          <p key={p} className="job-banner" role="note">
+            <CircleAlert size={14} /> {p}
+          </p>
+        ))}
+        {!loaded.targets && job.deliver !== "local" && <p className="muted small">Hermes Chat couldn't read where this profile can deliver, so it can't check this job's delivery.</p>}
         {kept.length > 0 && (
           <dl className="job-kept">
             {kept.map(([k, v]) => (
@@ -519,50 +761,52 @@ function JobDetail({
         )}
       </section>
 
-      <section>
-        <h2>
-          <History size={14} /> Runs
-        </h2>
+      <section aria-labelledby="job-runs-heading">
+        <div className="job-section-head">
+          <h2 id="job-runs-heading">
+            <History size={14} /> Runs
+          </h2>
+          {connected && (
+            <button className="btn small" disabled={readingRuns} onClick={() => readRuns()}>
+              <RefreshCw size={13} /> {readingRuns ? "Reading…" : "Refresh runs"}
+            </button>
+          )}
+        </div>
         <p>
           <LastRun job={job} zone={zone} />
         </p>
         {job.lastError && <p className="bad small">{job.lastError}</p>}
         {job.lastDeliveryError && <p className="bad small">Delivery: {job.lastDeliveryError}</p>}
-        {job.latest && ["claimed", "running"].includes(job.latest.status) && <p className="muted small">A run is under way on the server.</p>}
+        {running && <p className="muted small">A run is under way on the server.</p>}
         {runs === undefined ? (
           connected && (
-            <div className="empty-hint">
+            <div className="empty-hint" role="status">
               <Spinner /> Reading the run history…
             </div>
           )
         ) : typeof runs === "string" ? (
-          <p className="muted small">{runs}</p>
-        ) : runs.length ? (
-          <ul className="job-history">
-            {runs.map((r) => (
-              <li key={r.id}>
-                <div>
-                  <When at={r.startedAt} zone={zone} />
-                  {r.running && <span className="badge">Running</span>}
-                  {r.status && <span className={`badge ${r.status === "Failed" ? "warn" : ""}`}>{r.status}</span>}
-                </div>
-                <div className="job-history-title">{r.title}</div>
-                {r.preview && r.preview !== r.title && <div className="muted small job-history-preview">{r.preview}</div>}
-              </li>
+          <p className="muted small" role="alert">
+            {runs}
+          </p>
+        ) : runs.rows.length ? (
+          <ul className="job-history" aria-label="Run history, newest first">
+            {runs.rows.map((r) => (
+              <RunRow key={r.id} run={r} zone={zone} result={results[r.id]} onResult={r.sessionId && connected ? () => showResult(r) : undefined} />
             ))}
           </ul>
         ) : (
           <p className="muted small">Hermes has no runs of this job on record.</p>
         )}
-        {Array.isArray(runs) && runs.length >= runLimit && (
-          runLimit < RUNS_MAX ? (
-            <button className="btn" onClick={() => setRunLimit(RUNS_MAX)}>
-              Show more runs
+        {history && history.rows.length >= history.limit && (
+          history.limit < RUNS_MAX ? (
+            <button className="btn" disabled={readingRuns || !connected} onClick={() => setRunLimit(Math.min(RUNS_MAX, history.limit + RUNS_PAGE))}>
+              {readingRuns && runLimit > history.limit ? "Reading…" : "Show more runs"}
             </button>
           ) : (
             <p className="muted small">Hermes lists a job's latest {RUNS_MAX} runs; older ones aren't shown.</p>
           )
         )}
+        {rows && rows.length > 0 && <p className="faint small">Showing the latest {rows.length} {rows.length === 1 ? "run" : "runs"}.</p>}
       </section>
     </>
   );
@@ -591,6 +835,7 @@ function JobEditor({
   connected,
   job,
   loaded,
+  heading,
   onSaved,
   onSeen,
   onCancel,
@@ -601,12 +846,31 @@ function JobEditor({
   /** The job edited; undefined for a new one. */
   job?: CronJob;
   loaded: Loaded;
-  onSaved: (job: CronJob) => void;
+  heading: RefObject<HTMLHeadingElement | null>;
+  /** The job as Hermes has it after the save, and the profile it is in. */
+  onSaved: (job: CronJob, profile: string) => void;
   /** The job as Hermes has it now, read while saving, for the list. */
   onSeen: (job: CronJob) => void;
   onCancel: () => void;
 }) {
-  const zone = loaded.zone;
+  // A new job can go in any of the server's profiles; an edited one stays in its own, since Hermes has no move.
+  const [where, setWhere] = useState(profile);
+  const [profiles, setProfiles] = useState<string[]>([profile]);
+  /** The chosen profile's jobs and settings: this screen's for its own profile, read for another, or why not. */
+  const [context, setContext] = useState<Loaded | string | undefined>(loaded);
+  const contextReads = useSequence();
+  const profileReads = useSequence();
+  useEffect(() => {
+    if (job || !connected) return;
+    const n = profileReads.next();
+    void api.profiles().then(
+      (names) => profileReads.current(n) && setProfiles(names.includes(profile) ? names : [profile, ...names]),
+      () => {},
+    );
+  }, [connected]);
+  const ctx = typeof context === "object" ? context : undefined;
+  const zone = (ctx ?? loaded).zone;
+
   // The job as the edits started from: after a conflict, the job as Hermes has it now.
   const [base, setBase] = useState(job);
   const initial = (j?: CronJob): JobFields => ({
@@ -627,6 +891,23 @@ function JobEditor({
   const [conflict, setConflict] = useState<CronConflict>();
   const set = (patch: Partial<JobFields>) => setForm((f) => ({ ...f, ...patch }));
 
+  /** Puts the new job in another profile: reads that profile's zone and delivery targets, dropping any older read. */
+  const choose = (p: string) => {
+    setWhere(p);
+    const n = contextReads.next();
+    const use = (got: Loaded) => {
+      setContext(got);
+      // A delivery the chosen profile doesn't offer would go nowhere there.
+      setForm((f) => (f.deliver === "local" || got.targets?.some((t) => t.id === f.deliver) ? f : { ...f, deliver: "local" }));
+    };
+    if (p === profile) return use(loaded);
+    setContext(undefined);
+    void readProfile(api, p).then(
+      (got) => contextReads.current(n) && use(got),
+      (e) => contextReads.current(n) && setContext(`Hermes Chat couldn't read the ${p} profile's jobs: ${messageOf(e)}`),
+    );
+  };
+
   const scheduleChanged = !base || form.schedule.trim() !== initial(base).schedule.trim();
   const parsed = useMemo((): Schedule | ScheduleError | undefined => {
     if (!form.schedule.trim() && !touched) return undefined;
@@ -644,42 +925,48 @@ function JobEditor({
   const scheduleProblem = scheduleChanged ? (parsed instanceof ScheduleError ? parsed.message : parsed ? undefined : "Enter a schedule.") : undefined;
   const problems = [promptProblem, scheduleProblem, repeatProblem].filter(Boolean);
 
-  const targets = loaded.targets.length ? loaded.targets : [{ id: "local", name: "Local (save only)", ready: true }];
+  const known = ctx?.targets;
+  const targets = known?.length ? known : [{ id: "local", name: "Local (save only)", ready: true }];
   const options = targets.some((t) => t.id === form.deliver) ? targets : [...targets, { id: form.deliver, name: deliveryLabel(form.deliver, []), ready: true }];
+  const deliveryProblem = known ? deliveryProblems(form.deliver, known, base?.originPlatform)[0] : undefined;
 
   const save = async () => {
     setTouched(true);
-    if (problems.length || saving) return;
+    if (problems.length || saving || !ctx) return;
     setSaving(true);
     setError(undefined);
     const fields: JobFields = { ...form, repeat: once ? null : repeatText.trim() ? Number(repeatText) : null };
+    const into = where;
+    // A save that lands after the owner left the editor still goes to this profile's list; only moving on waits.
+    const done = (job: CronJob, where: string) => (contextReads.live() ? onSaved(job, where) : where === profile && onSeen(job));
     try {
-      if (!base) onSaved(await api.create(profile, fields, paused));
+      if (!base) done(await api.create(into, fields, paused), into);
       else {
         const edits: Partial<JobFields> = { name: fields.name, prompt: fields.prompt, deliver: fields.deliver, ...(scheduleChanged && { schedule: fields.schedule }), ...(!once && { repeat: fields.repeat }) };
-        onSaved(await api.update(profile, base, edits));
+        done(await api.update(profile, base, edits), profile);
       }
     } catch (e) {
+      if (e instanceof CronConflict) onSeen(e.job);
+      if (!contextReads.live()) return;
       if (e instanceof CronConflict) {
         setConflict(e);
         setBase(e.job);
-        onSeen(e.job);
       } else setError(messageOf(e));
     } finally {
-      setSaving(false);
+      if (contextReads.live()) setSaving(false);
     }
   };
 
   const preview = parsed && !(parsed instanceof ScheduleError) ? parsed : !scheduleChanged ? base?.schedule : undefined;
+  const limit = once ? 1 : /^[1-9]\d*$/.test(repeatText.trim()) ? Number(repeatText) : null;
+  const startsPaused = base ? !base.enabled || base.state === "paused" : paused;
 
   return (
     <>
-      <h1 className="project-title">
+      <h1 className="project-title" ref={heading} tabIndex={-1}>
         <CalendarClock size={20} /> <span>{job ? `Edit ${job.name}` : "New scheduled job"}</span>
       </h1>
-      <p className="muted">
-        In the <span className="mono">{profile}</span> profile. Hermes keeps the job on the server and runs it there, so it runs while Hermes Chat is closed.
-      </p>
+      <p className="muted">Hermes keeps the job on the server and runs it there, so it runs while Hermes Chat is closed.</p>
       <form
         className="job-form"
         noValidate
@@ -688,6 +975,38 @@ function JobEditor({
           void save();
         }}
       >
+        {base ? (
+          <p className="field">
+            <span className="field-label">Profile</span>
+            <span>
+              <span className="mono">{profile}</span>
+              <span className="field-hint"> Hermes can't move a job to another profile; to run it in another, create it there.</span>
+            </span>
+          </p>
+        ) : (
+          <label className="field">
+            <span className="field-label" id="job-profile-label">
+              Profile
+            </span>
+            <select value={where} disabled={saving} aria-labelledby="job-profile-label" aria-describedby="job-profile-help" onChange={(e) => choose(e.target.value)}>
+              {profiles.map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                  {p === profile ? " (this one)" : ""}
+                </option>
+              ))}
+            </select>
+            <span className="field-hint" id="job-profile-help">
+              Each profile has its own jobs, time zone and delivery places.
+              {context === undefined && " Reading that profile's settings…"}
+            </span>
+            {typeof context === "string" && (
+              <span className="field-hint err" role="alert">
+                {context}
+              </span>
+            )}
+          </label>
+        )}
         <label className="field">
           <span className="field-label">Name</span>
           <input value={form.name} placeholder="Named after the prompt if left empty" maxLength={200} onChange={(e) => set({ name: e.target.value })} />
@@ -709,7 +1028,7 @@ function JobEditor({
             onBlur={() => form.schedule.trim() && setTouched(true)}
           />
           <span className="field-hint" id="job-schedule-help">
-            Times are in {zone.label}.{" "}
+            {!ctx ? `Reading the ${where} profile's time zone…` : zone.named ? `Times are in ${zone.label}, the ${where} profile's schedule time zone.` : `Times are shown in ${zone.label}.`}{" "}
             {EXAMPLES.map((x) => (
               <button key={x} type="button" className="job-example" onClick={() => set({ schedule: x })}>
                 {x}
@@ -717,8 +1036,13 @@ function JobEditor({
             ))}
           </span>
           {scheduleProblem && (touched || parsed instanceof ScheduleError) && <span className="field-hint err" role="alert">{scheduleProblem}</span>}
+          {ctx?.zone.note && (
+            <span className="field-hint job-dst" role="note">
+              {ctx.zone.note}
+            </span>
+          )}
         </label>
-        {preview && (
+        {preview && ctx && (
           <div className="job-preview" aria-live="polite">
             <div>
               <strong>{explainSchedule(preview, zone.zone)}</strong>
@@ -733,8 +1057,10 @@ function JobEditor({
           </div>
         )}
         <label className="field">
-          <span className="field-label">Deliver to</span>
-          <select value={form.deliver} onChange={(e) => set({ deliver: e.target.value })}>
+          <span className="field-label" id="job-deliver-label">
+            Deliver to
+          </span>
+          <select value={form.deliver} aria-labelledby="job-deliver-label" aria-describedby="job-deliver-help" onChange={(e) => set({ deliver: e.target.value })}>
             {options.map((t) => (
               <option key={t.id} value={t.id} disabled={!t.ready && t.id !== form.deliver}>
                 {deliveryLabel(t.id, targets)}
@@ -742,7 +1068,12 @@ function JobEditor({
               </option>
             ))}
           </select>
-          <span className="field-hint">Only the places this profile's gateway has set up.</span>
+          <span className="field-hint" id="job-deliver-help">
+            {ctx && !known
+              ? "Hermes Chat couldn't read where this profile can deliver, so only saving on the server is offered."
+              : "Only the places this profile's gateway has set up. Nothing is sent to try it: the first delivery is the job's first real run."}
+          </span>
+          {deliveryProblem && <span className="field-hint err">{deliveryProblem}</span>}
         </label>
         {!once && (
           <label className="field">
@@ -755,6 +1086,39 @@ function JobEditor({
           <label className="job-check">
             <input type="checkbox" checked={paused} onChange={(e) => setPaused(e.target.checked)} /> Create it paused, so it doesn't run until you resume it
           </label>
+        )}
+        {preview && ctx && !problems.length && (
+          <section className="job-summary" aria-label="Summary">
+            <h3 className="job-sub">Summary</h3>
+            <dl className="job-kept">
+              <div>
+                <dt>Job</dt>
+                <dd>{form.name.trim() || "Named by Hermes after its prompt"}</dd>
+              </div>
+              <div>
+                <dt>Profile</dt>
+                <dd>{where}</dd>
+              </div>
+              <div>
+                <dt>Runs</dt>
+                <dd>
+                  {explainSchedule(preview, zone.zone)}, {zone.named ? `on the schedule time zone, ${zone.label}` : `shown in ${zone.label}; Hermes Chat can't confirm the ${where} profile's own time zone`}
+                </dd>
+              </div>
+              <div>
+                <dt>Stops</dt>
+                <dd>{limit === 1 ? "After its one run" : limit ? `After ${limit} runs${base?.repeat.completed ? ` (${base.repeat.completed} done)` : ""}` : "Never: it runs until paused or deleted"}</dd>
+              </div>
+              <div>
+                <dt>Delivers to</dt>
+                <dd>{deliveryLabel(form.deliver, targets)}</dd>
+              </div>
+              <div>
+                <dt>Starts</dt>
+                <dd>{startsPaused ? "Paused: it won't run until resumed" : "At the first upcoming run above"}</dd>
+              </div>
+            </dl>
+          </section>
         )}
         {conflict && (
           <div className="job-error" role="alert">
@@ -781,7 +1145,7 @@ function JobEditor({
           <button type="button" className="btn" onClick={onCancel}>
             Cancel
           </button>
-          <button type="submit" className="btn primary" disabled={!connected || saving} title={connected ? undefined : "Connect to Hermes to save."}>
+          <button type="submit" className="btn primary" disabled={!connected || saving || !ctx} title={connected ? undefined : "Connect to Hermes to save."}>
             {saving ? "Saving…" : base ? (conflict ? "Save over their changes" : "Save") : "Create job"}
           </button>
         </div>
