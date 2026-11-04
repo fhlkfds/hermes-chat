@@ -2,7 +2,7 @@
 // connection form. With more than one saved connection (ADR 0049) the recent-connection picker beside the form picks
 // which one the form is for; nothing is picked on its own, so with none picked the form waits for the owner.
 import { useState } from "react";
-import { CircleAlert, KeyRound, Trash2 } from "lucide-react";
+import { CircleAlert, KeyRound, PlugZap, Trash2 } from "lucide-react";
 import type { SignInDetails } from "../hermes/tauriPipe";
 import { type SavedConnection, addressLabel } from "../hermes/connections";
 import { explainSignIn } from "../hermes/setup";
@@ -16,6 +16,7 @@ export function SignIn({
   connections = [],
   onSignIn,
   onSetUp,
+  onRerunSetup,
   onPick,
   onRemove,
 }: {
@@ -29,6 +30,8 @@ export function SignIn({
   onSignIn: (d: SignInDetails) => Promise<void>;
   /** Opens setup, to test and save a new connection step by step. */
   onSetUp?: () => void;
+  /** Runs setup again for the connection the form is for, starting from what is saved for it. */
+  onRerunSetup?: (c: SavedConnection) => void;
   /** The owner picked another saved connection in the picker. */
   onPick?: (c: SavedConnection) => void;
   /** Asks to remove the connection the form is for. */
@@ -118,6 +121,11 @@ export function SignIn({
             <button className="btn primary" type="submit" disabled={!ready || busy}>
               {busy ? "Connecting…" : "Connect"}
             </button>
+            {onRerunSetup && (
+              <button type="button" className="link setup-link" disabled={busy} onClick={() => onRerunSetup(connection)}>
+                <PlugZap size={12} /> Run setup again…
+              </button>
+            )}
             {onRemove && (
               <button type="button" className="link setup-link" disabled={busy} onClick={() => onRemove(connection)}>
                 <Trash2 size={12} /> Remove this connection…

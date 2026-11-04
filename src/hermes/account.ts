@@ -27,7 +27,7 @@ export type Secrets = { password: Keyring; headers: Keyring };
 export type Account = {
   connections: Connections;
   secrets: (c: SavedConnection) => Secrets;
-  connect: (c: SavedConnection, d: SignInDetails) => Promise<Hermes>;
+  connect: (c: SavedConnection, d: SignInDetails, signal?: AbortSignal) => Promise<Hermes>;
   readSaved: (c: SavedConnection, d: SignInDetails, reason: string) => Hermes | undefined;
 };
 
@@ -62,15 +62,17 @@ function passwordFor(c: SavedConnection, raw: string | undefined): string | unde
  * Signs in to `c` with `d`, and once Hermes has answered, keeps `c` with `d`'s address (and `name`, if given) as the
  * connection in use, and saves the password and extra headers in its keyring entries. `c` may be a new connection
  * (`Connections.draft`), which is saved only now. A keyring that can't save doesn't stop the sign-in; `notSaved`
- * says what wasn't kept and why.
+ * says what wasn't kept and why. `signal` stops it while Hermes hasn't answered yet; then nothing is saved, and it
+ * rejects with transport's `CONNECT_STOPPED`. Once Hermes has answered, the sign-in is kept whatever `signal` says.
  */
 export async function signIn(
   c: SavedConnection,
   d: SignInDetails,
   account: Account,
   name?: string,
+  signal?: AbortSignal,
 ): Promise<{ hermes: Hermes; connection: SavedConnection; notSaved?: string; kept: Kept }> {
-  const hermes = await account.connect(c, d);
+  const hermes = await account.connect(c, d, signal);
   const { password, headers = [] } = d;
   const connection: SavedConnection = { ...c, ...addressOf(d), name: name === undefined ? c.name : cleanName(name, d) };
   try {

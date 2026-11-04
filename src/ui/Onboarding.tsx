@@ -1,7 +1,7 @@
 // Setup: connecting Hermes Chat to a Hermes server, step by step (ADR 0009). It opens by itself on a computer with no
 // connection set up, from the sign-in screen to set up a different server, and from Settings to change the connection
 // or give Hermes a model provider's key. Nothing is kept until a tested connection is saved.
-import { useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
 import { Check, CircleAlert, Globe, KeyRound, Minus, Plus, ShieldAlert, ShieldCheck, Terminal, X } from "lucide-react";
 import type { ExtraHeader, SignInDetails } from "../hermes/tauriPipe";
 import type { Kept } from "../hermes/account";
@@ -27,6 +27,19 @@ type Test = { state: "idle" } | { state: "testing" } | { state: "done"; outcome:
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+/**
+ * `text` as long as it repeats no 8 characters of `key`, or of a key that short in full. Rust already keeps the
+ * provider's and Hermes's own words out of a key's errors, since they can quote it; this checks again before anything
+ * is shown, so no part of a key reaches the screen even if a message slips through.
+ */
+export function withoutKey(text: string, key: string): string {
+  const k = key.trim();
+  if (!k) return text;
+  const n = Math.min(8, k.length);
+  for (let i = 0; i + n <= k.length; i++) if (text.includes(k.slice(i, i + n))) return "Hermes's answer isn't shown, as it may repeat the key.";
+  return text;
+}
+
 export function Onboarding({
   mode,
   initial,
@@ -48,9 +61,10 @@ export function Onboarding({
   /**
    * Saves the tested sign-in and connects with it, in place of any connection in use. Rejects with why it couldn't.
    * `notSaved`: why the keyring couldn't keep the password or the extra request headers, when it couldn't, and `kept`
-   * which of them it did keep.
+   * which of them it did keep. `signal` is Stop: it stops the sign-in while Hermes hasn't answered, and then this
+   * rejects, with nothing saved and the connection in use before put back.
    */
-  onConnect: (d: SignInDetails, name: string) => Promise<{ notSaved?: string; kept?: Kept }>;
+  onConnect: (d: SignInDetails, name: string, signal: AbortSignal) => Promise<{ notSaved?: string; kept?: Kept }>;
   /** Leaves setup with nothing changed. Absent on first run. */
   onCancel?: () => void;
   /** Leaves setup once a connection is saved. */
@@ -63,6 +77,11 @@ export function Onboarding({
   const [test, setTest] = useState<Test>({ state: "idle" });
   const [connecting, setConnecting] = useState(false);
   const [connectError, setConnectError] = useState<string>();
+  // Stops Save and connect while Hermes hasn't answered. `stopping`: Stop was pressed and the sign-in is winding down,
+  // putting back the connection in use before, if there was one.
+  const dialing = useRef<AbortController>(undefined);
+  const [stopping, setStopping] = useState(false);
+  const [stopped, setStopped] = useState(false);
   // The connection setup saved, which the providers step uses; Settings' own one when only adding a key.
   const [saved, setSaved] = useState(false);
   const [notSaved, setNotSaved] = useState<string>();
@@ -80,6 +99,7 @@ export function Onboarding({
     return () => {
       run.current++;
       if (testing.current) probe.cancel();
+      dialing.current?.abort();
       if (opener?.isConnected) opener.focus();
     };
   }, [probe]);
@@ -99,6 +119,7 @@ export function Onboarding({
     if (test.state === "testing") stopTest();
     else if (test.state === "done") setTest({ state: "idle" });
     setConnectError(undefined);
+    setStopped(false);
   };
 
   const startTest = async () => {
@@ -114,19 +135,34 @@ export function Onboarding({
   };
 
   const connect = async () => {
+    if (connecting) return;
+    const stop = new AbortController();
+    dialing.current = stop;
     setConnecting(true);
     setConnectError(undefined);
+    setStopped(false);
     try {
-      const { notSaved, kept } = await onConnect(withHeaders(d), name);
+      const { notSaved, kept } = await onConnect(withHeaders(d), name, stop.signal);
       setNotSaved(notSaved && `${notSaved.replace(/\.?$/, ".")} ${retypeLater(kept)}`);
       setSaved(true);
       setD((was) => ({ ...was, password: "" }));
       setStep("providers");
     } catch (e) {
-      setConnectError(messageOf(e));
+      // Stopped: the owner knows why; say what became of the connection, not a failure.
+      if (stop.signal.aborted) setStopped(true);
+      else setConnectError(messageOf(e));
     } finally {
+      if (dialing.current === stop) dialing.current = undefined;
       setConnecting(false);
+      setStopping(false);
     }
+  };
+
+  /** Stop: stops Save and connect while Hermes hasn't answered. */
+  const stopConnecting = () => {
+    if (!dialing.current || stopping) return;
+    setStopping(true);
+    dialing.current.abort();
   };
 
   /** Cancel: leave without changes, or on first run start over, forgetting the password typed. */
@@ -144,7 +180,13 @@ export function Onboarding({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape" || !canCancel) return;
+      if (e.key !== "Escape") return;
+      // Escape while connecting stops it, as the Stop button does; it never leaves setup with a sign-in under way.
+      if (connecting) {
+        e.preventDefault();
+        return stopConnecting();
+      }
+      if (!canCancel) return;
       e.preventDefault();
       cancel();
     };
@@ -199,7 +241,8 @@ export function Onboarding({
             </h1>
             <p className="muted">
               Hermes Chat talks to the Hermes dashboard running on your server.
-              {(mode === "add" || mode === "edit") && " The connection in use carries on until this one is tested and saved."}
+              {(mode === "add" || mode === "edit") && hermes && " The connection in use carries on until this one is tested and saved."}
+              {mode === "edit" && !hermes && " Nothing changes until the connection is tested and saved."}
             </p>
             <Field label="Name" hint="Shown in the connection list. Two connections can share a name; their addresses tell them apart.">
               {(a) => (
@@ -281,17 +324,34 @@ export function Onboarding({
                 </div>
               )}
               {test.state === "done" && <TestResult outcome={test.outcome} mode={d.mode} />}
+              {stopping && (
+                <div className="setup-testing">
+                  <span className="spinner" aria-hidden /> Stopping…
+                </div>
+              )}
               {connectError && (
                 <div className="sign-in-error" role="alert">
                   The test passed, but connecting failed: {connectError}
                 </div>
               )}
+              {stopped && (
+                <p className="setup-warn" role="status">
+                  <CircleAlert size={14} /> Connecting was stopped. Nothing was saved
+                  {hermes ? ", and the connection you were using is back." : "."}
+                </p>
+              )}
             </div>
 
             <div className="setup-actions">
-              <button type="button" className="btn" disabled={connecting} onClick={() => (test.state === "testing" ? stopTest() : setStep("server"))}>
-                {test.state === "testing" ? "Stop test" : "Back"}
-              </button>
+              {connecting ? (
+                <button type="button" className="btn" disabled={stopping} onClick={stopConnecting}>
+                  Stop
+                </button>
+              ) : (
+                <button type="button" className="btn" onClick={() => (test.state === "testing" ? stopTest() : setStep("server"))}>
+                  {test.state === "testing" ? "Stop test" : "Back"}
+                </button>
+              )}
               {test.state === "done" && test.outcome.ok ? (
                 <>
                   <button type="button" className="btn" disabled={connecting} onClick={() => void startTest()}>
@@ -316,8 +376,8 @@ export function Onboarding({
             heading={heading}
             hermes={hermes}
             notSaved={notSaved}
+            afterConnecting={saved}
             onDone={saved ? onDone : (onCancel ?? onDone)}
-            doneLabel={saved ? "Finish" : "Done"}
           />
         )}
       </div>
@@ -571,22 +631,26 @@ function TestResult({ outcome, mode }: { outcome: TestOutcome; mode: SignInDetai
   );
 }
 
-/** The providers step: which providers Hermes can use now, and a key for another, saved on the server. */
+/**
+ * The providers step: which providers Hermes can use now, and a key for another, saved on the server.
+ * `afterConnecting`: setup has just saved a connection, so leaving is Skip (nothing given) or Finish (a key saved);
+ * otherwise it was opened only to add a key, and leaving is Done.
+ */
 function ProviderKeys({
   titleId,
   heading,
   hermes,
   notSaved,
+  afterConnecting,
   onDone,
-  doneLabel,
 }: {
   titleId: string;
   heading: RefObject<HTMLHeadingElement | null>;
   hermes: Hermes;
   /** Why the keyring couldn't keep what setup just saved, and what to type again because of it. */
   notSaved?: string;
+  afterConnecting: boolean;
   onDone: () => void;
-  doneLabel: string;
 }) {
   const [setup, setSetup] = useState<ProviderSetup>();
   const [loadError, setLoadError] = useState<string>();
@@ -594,26 +658,45 @@ function ProviderKeys({
   const [key, setKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; text: string }>();
+  const [keySaved, setKeySaved] = useState(false);
+  // The connection and profile the step reads and writes for. Only an answer for the latest read, from the same
+  // connection and profile, counts: a late answer after the connection was put back or the profile changed is dropped.
+  const reads = useRef(0);
+  const profile = useSyncExternalStore(hermes.subscribe, () => hermes.profile);
+  const current = () => ({ hermes, profile, read: reads.current });
+  const sameAs = (was: ReturnType<typeof current>) => was.hermes === hermes && was.profile === hermes.profile && was.read === reads.current;
 
-  const load = () =>
-    hermes.providerSetup().then(
+  const load = () => {
+    const mine = { hermes, profile, read: ++reads.current };
+    return hermes.providerSetup().then(
       (s) => {
+        if (!sameAs(mine)) return;
         setSetup(s);
         setLoadError(undefined);
-        setChosen((c) => c ?? (s.keys.find((k) => !k.isSet) ?? s.keys[0])?.provider);
+        setChosen((c) => (c && s.keys.some((k) => k.provider === c) ? c : (s.keys.find((k) => !k.isSet) ?? s.keys[0])?.provider));
       },
-      (e) => setLoadError(messageOf(e)),
+      (e) => sameAs(mine) && setLoadError(messageOf(e)),
     );
-  useEffect(() => void load(), [hermes]);
+  };
+  useEffect(() => {
+    // Another connection or profile: what was read for the one before doesn't apply.
+    setSetup(undefined);
+    setLoadError(undefined);
+    setResult(undefined);
+    void load();
+  }, [hermes, profile]);
 
   const pick: ProviderKey | undefined = setup?.keys.find((k) => k.provider === chosen);
   const save = async () => {
     if (!pick || !key.trim() || saving) return;
+    const mine = current();
     setSaving(true);
     setResult(undefined);
     try {
       const r = await hermes.saveProviderKey(pick.envVar, key);
+      if (!sameAs(mine)) return;
       setKey("");
+      setKeySaved(true);
       setResult({
         ok: true,
         text: r.verified
@@ -621,7 +704,7 @@ function ProviderKeys({
           : `Saved, but Hermes couldn't check the key with ${pick.label}. If it's wrong, ${pick.label} will turn down Hermes's first request.`,
       });
     } catch (e) {
-      setResult({ ok: false, text: `Not saved: ${messageOf(e)}` });
+      if (sameAs(mine)) setResult({ ok: false, text: `Not saved: ${withoutKey(messageOf(e), key)}` });
       return;
     } finally {
       setSaving(false);
@@ -629,6 +712,7 @@ function ProviderKeys({
     // Read again to show the key as saved; Finish doesn't wait for it.
     void load();
   };
+  const doneLabel = !afterConnecting ? "Done" : keySaved ? "Finish" : setup?.ready.length ? "Skip" : "Skip for now";
 
   let body: ReactNode;
   if (loadError)
@@ -740,7 +824,10 @@ function ProviderKeys({
       <h1 id={titleId} ref={heading} tabIndex={-1}>
         Model providers
       </h1>
-      <p className="muted">Hermes needs an API key for at least one model provider to answer.</p>
+      <p className="muted">
+        Hermes needs an API key for at least one model provider to answer.
+        {afterConnecting && !keySaved && " This step is optional: skip it if the server already has one."}
+      </p>
       {notSaved && (
         <p className="setup-warn" role="status">
           <CircleAlert size={14} /> Connected. {notSaved}

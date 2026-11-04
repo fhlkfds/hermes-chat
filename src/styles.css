@@ -697,8 +697,10 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .toggle.on::after { transform: translateX(11px); background: #fff; }
 
 /* sign-in */
-.first-run { height: 100%; display: grid; place-items: center; background: radial-gradient(ellipse at top, var(--raised), var(--bg) 60%); }
-.first-run-card { width: 400px; text-align: center; }
+/* A card taller than the window scrolls: auto margins centre it when it fits and start it at the top when it doesn't,
+   where centring alone would cut off its top and bottom out of reach. */
+.first-run { height: 100%; display: grid; place-items: center; overflow-y: auto; padding: 24px 16px; background: radial-gradient(ellipse at top, var(--raised), var(--bg) 60%); }
+.first-run-card { width: min(400px, 100%); text-align: center; margin: auto; }
 .first-run-card h1 { font-size: calc(22rem / 14); font-weight: 600; margin: 0 0 6px; letter-spacing: -0.01em; }
 .first-run-card p { margin: 0 0 26px; }
 .conn-form { text-align: left; display: flex; flex-direction: column; gap: 16px; }
@@ -1428,7 +1430,7 @@ button.status-item:disabled { opacity: 0.5; cursor: default; }
   position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; overflow-y: auto; padding: 32px 16px;
   background: radial-gradient(ellipse at top, var(--raised), var(--bg) 60%);
 }
-.setup-card { width: min(480px, 100%); }
+.setup-card { width: min(480px, 100%); margin: auto; }
 .setup-top { display: flex; align-items: center; gap: 14px; margin-bottom: 22px; min-height: 30px; }
 .setup-top .rail-brand { cursor: default; flex: none; }
 .setup-close { margin-left: auto; }
@@ -2094,7 +2096,7 @@ button.provider-row:hover:not(:disabled) { background: var(--hover); }
 .conn-menu-actions { display: flex; gap: 6px; justify-content: flex-end; border-top: 1px solid var(--line); padding-top: 8px; }
 .conn-picker { text-align: left; display: flex; flex-direction: column; gap: 4px; }
 .first-run-card .conn-picker { margin: 0 0 22px; }
-.first-run-card.with-picker { width: 440px; }
+.first-run-card.with-picker { width: min(440px, 100%); }
 .conn-picker-label { font-size: calc(11.5rem / 14); color: var(--faint); text-transform: uppercase; letter-spacing: 0.04em; padding: 0 8px 2px; }
 .conn-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; max-height: 300px; overflow-y: auto; }
 .conn-option {
