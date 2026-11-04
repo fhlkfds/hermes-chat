@@ -4,10 +4,10 @@
 //! and takes one once it is signed in. Either way the request waits in Rust until a signed-in window takes it, so one
 //! made at the sign-in screen isn't lost (lib.rs, `screenshot_pending_request`).
 //!
-//! `hermes-chat --show` and `hermes-chat --toggle` are the same idea for the global shortcut (summon.rs, ADR 0033): a
-//! key bound in the desktop runs one, and the running app brings its one window forward (or, for `--toggle`, hides it
-//! when it is already in front). With none running, the app starts. A plain `hermes-chat` with one already running
-//! shows that one too, so there is only ever one Hermes Chat.
+//! `hermes-chat --show` and `hermes-chat --toggle` are the same idea for the window itself (summon.rs): a key bound in
+//! the desktop (a Hyprland `bind`, say) runs one, and the running app brings its one window forward (or, for
+//! `--toggle`, hides it when it is already in front). With none running, the app starts. A plain `hermes-chat` with
+//! one already running shows that one too, so there is only ever one Hermes Chat.
 //!
 //! `hermes-chat <link>` is how the desktop opens a chat link (links.rs, ADR 0037): with Hermes Chat running, the link
 //! goes to it and its window comes forward; with none running, the app starts and keeps the link for its window.
@@ -278,8 +278,47 @@ mod tests {
         assert_eq!(request_of(vec![link.clone()], None, false), Some(Request::Show { token: None }));
     }
 
-    fn private_bus() -> crate::portal::fake_portal::FakePortal {
-        crate::portal::fake_portal::FakePortal::start(crate::portal::fake_portal::Behavior::Grant)
+    /// A private session bus of its own, so tests never touch the owner's.
+    struct PrivateBus {
+        address: String,
+        daemon: std::process::Child,
+        dir: std::path::PathBuf,
+    }
+
+    impl Drop for PrivateBus {
+        fn drop(&mut self) {
+            let _ = self.daemon.kill();
+            let _ = self.daemon.wait();
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn private_bus() -> PrivateBus {
+        use std::io::BufRead;
+        static N: AtomicU64 = AtomicU64::new(0);
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("hermes-chat-test-bus-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = dir.join("bus.conf");
+        std::fs::write(
+            &config,
+            format!(
+                r#"<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig><type>session</type><listen>unix:dir={}</listen><auth>EXTERNAL</auth>
+<policy context="default"><allow send_destination="*" eavesdrop="true"/><allow eavesdrop="true"/><allow own="*"/></policy></busconfig>"#,
+                dir.display()
+            ),
+        )
+        .unwrap();
+        let mut daemon = std::process::Command::new("dbus-daemon")
+            .arg(format!("--config-file={}", config.display()))
+            .args(["--nofork", "--print-address=1"])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("dbus-daemon");
+        let mut line = String::new();
+        std::io::BufReader::new(daemon.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        PrivateBus { address: line.trim().to_owned(), daemon, dir }
     }
 
     fn connect(address: &str) -> Connection {

@@ -4,8 +4,6 @@
 import { DEFAULT_UI_PREFS } from "../hermes/uiPrefs";
 
 export const DEFAULT_SCREENSHOT_SHORTCUT = DEFAULT_UI_PREFS.screenshotShortcut!;
-/** What Reset sets the global shortcut to (src-tauri/src/summon.rs `DEFAULT_SHORTCUT`). */
-export const DEFAULT_GLOBAL_SHORTCUT = "Ctrl+Alt+H";
 
 const MODIFIERS = ["Ctrl", "Alt", "Shift", "Super"] as const;
 const OTHER_KEYS = ["PrintScreen", "Pause", "ScrollLock", "Insert"];
@@ -69,30 +67,5 @@ export function checkShortcut(s: string): { error?: string; warning?: string } {
     return { warning: "Print Screen is usually your desktop's own screenshot key, so Hermes Chat may never see it. If pressing it does nothing here, pick another." };
   if (mods.has("Super"))
     return { warning: "Desktops often keep Super shortcuts for themselves. If pressing it does nothing here, pick another." };
-  return {};
-}
-
-/** Ctrl+Shift shortcuts terminals use for copy and paste; a key grabbed from every app would take them there too. */
-const TERMINAL_KEYS: Record<string, string> = { C: "copies in terminals", V: "pastes in terminals" };
-
-/**
- * What's wrong with a shortcut that brings Hermes Chat forward from any app. It takes the key from every app, so it
- * needs Ctrl, Alt or Super whatever the key, and mustn't be one Hermes Chat or typing already uses. Whether another app
- * has grabbed it is for the desktop to say when it registers.
- */
-export function checkGlobalShortcut(s: string, screenshotShortcut: string | null): { error?: string; warning?: string } {
-  const parts = s.split("+");
-  const key = parts[parts.length - 1];
-  const mods = new Set(parts.slice(0, -1));
-  const label = shortcutLabel(s);
-  if (!mods.has("Ctrl") && !mods.has("Alt") && !mods.has("Super"))
-    return { error: "Add Ctrl, Alt or Super, so the shortcut doesn't take a key other apps use." };
-  if (screenshotShortcut && s === screenshotShortcut) return { error: `${label} is already the screenshot shortcut.` };
-  if (mods.has("Ctrl") && mods.has("Shift") && !mods.has("Alt") && !mods.has("Super") && TERMINAL_KEYS[key])
-    return { error: `${label} ${TERMINAL_KEYS[key]}. Pick another shortcut.` };
-  const { error, warning } = checkShortcut(s);
-  if (error) return { error };
-  if (warning && mods.has("Super")) return { warning: "Desktops often keep Super shortcuts for themselves, so yours may refuse it or take the press first." };
-  if (warning) return { warning: "Print Screen is usually your desktop's own screenshot key, so it may refuse it or take the press first." };
   return {};
 }

@@ -28,7 +28,8 @@ export const closeTabIn = (tabs: (string | null)[], id: string | null) => {
 
 export type TabInfo = { id: string | null; title: string; running?: boolean; unread?: boolean };
 
-/** One pane's tab strip. A chat dropped on it opens in a new tab. `lastClosable`: closing the last tab closes the pane. */
+/** One pane's tab strip. A chat dropped on it opens in a new tab. `lastClosable`: closing the last tab closes the pane.
+ * `controls` sit at the strip's far end: the pane's split buttons, or its close button once split. */
 export function TabStrip({
   tabs,
   current,
@@ -37,6 +38,7 @@ export function TabStrip({
   onNew,
   onDropChat,
   lastClosable = false,
+  controls,
 }: {
   tabs: TabInfo[];
   current: string | null;
@@ -45,6 +47,7 @@ export function TabStrip({
   onNew: () => void;
   onDropChat: (id: string) => void;
   lastClosable?: boolean;
+  controls?: ReactNode;
 }) {
   const [over, setOver] = useState(false);
   // The tab shown is scrolled into sight when the strip is wider than the pane.
@@ -114,6 +117,7 @@ export function TabStrip({
       <button className="icon-btn tab-new" title="New chat in a new tab" aria-label="New tab" onClick={onNew}>
         <Plus size={15} />
       </button>
+      {controls && <div className="tab-strip-end">{controls}</div>}
     </div>
   );
 }

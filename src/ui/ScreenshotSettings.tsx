@@ -8,8 +8,7 @@ import { DEFAULT_SCREENSHOT_SHORTCUT, checkShortcut, onlyModifiers, shortcutLabe
 const COMMAND = "hermes-chat --screenshot";
 
 /** `checkSupport`: how screenshots are taken on this desktop, or why they can't be. */
-/** `globalShortcut`: the shortcut that shows Hermes Chat from any app, which this one mustn't take. */
-export function ScreenshotSettings({ checkSupport, globalShortcut = null }: { checkSupport?: () => Promise<ScreenshotSupport>; globalShortcut?: string | null }) {
+export function ScreenshotSettings({ checkSupport }: { checkSupport?: () => Promise<ScreenshotSupport> }) {
   const { screenshotShortcut } = useSyncExternalStore(subscribe, getUIPrefs);
   const [recording, setRecording] = useState(false);
   const [problem, setProblem] = useState<string>();
@@ -41,7 +40,6 @@ export function ScreenshotSettings({ checkSupport, globalShortcut = null }: { ch
     if (!s) return setProblem("Use a letter, a number, F1 to F24, or Print Screen, with Ctrl, Alt, Shift or Super.");
     const { error } = checkShortcut(s);
     if (error) return setProblem(`${shortcutLabel(s)}: ${error}`);
-    if (s === globalShortcut) return setProblem(`${shortcutLabel(s)} already shows Hermes Chat from any app.`);
     setUIPrefs({ screenshotShortcut: s });
     setProblem(undefined);
     setRecording(false);
@@ -83,11 +81,7 @@ export function ScreenshotSettings({ checkSupport, globalShortcut = null }: { ch
           ) : (
             <button
               className="btn"
-              onClick={() =>
-                DEFAULT_SCREENSHOT_SHORTCUT === globalShortcut
-                  ? setProblem(`${shortcutLabel(DEFAULT_SCREENSHOT_SHORTCUT)} already shows Hermes Chat from any app.`)
-                  : setUIPrefs({ screenshotShortcut: DEFAULT_SCREENSHOT_SHORTCUT })
-              }
+              onClick={() => setUIPrefs({ screenshotShortcut: DEFAULT_SCREENSHOT_SHORTCUT })}
             >
               Use {DEFAULT_SCREENSHOT_SHORTCUT}
             </button>
@@ -126,6 +120,10 @@ export function ScreenshotSettings({ checkSupport, globalShortcut = null }: { ch
       <p className="muted small">
         Pick keys your desktop doesn't already use. If Hermes Chat might not be open yet, run{" "}
         <code>env WEBKIT_DISABLE_DMABUF_RENDERER=1 {COMMAND}</code> instead, as the app's launcher does.
+      </p>
+      <p className="muted small">
+        To bring Hermes Chat forward from any app, bind a key the same way to <code>hermes-chat --toggle</code> (or <code>--show</code>, which
+        never hides it), for example <code>bind = SUPER, H, exec, hermes-chat --toggle</code> in <code>hyprland.conf</code>.
       </p>
 
       <h3>On this desktop</h3>

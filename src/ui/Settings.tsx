@@ -7,8 +7,7 @@
 // supports (Diagnostics.tsx); a tab whose feature Hermes lacks says so in its place.
 // Profiles are switched in the list's header, not here (ADR 0001). The search box (Ctrl+F) shows the sections of every
 // tab whose text holds what was typed (settingsSearch.ts).
-import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
-import { getUIPrefs, subscribe as subscribeUIPrefs } from "../hermes/uiPrefs";
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowLeft, Brain, Cpu, Download, KeyRound, Lock, LogOut, Palette, PlugZap, Puzzle, Search, Settings2, ShieldCheck, Sparkles, Stethoscope, Trash2, Wrench, X } from "lucide-react";
 import type { Chat, ConnectionStatus } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
@@ -33,8 +32,6 @@ import { StartupSettings } from "./StartupSettings";
 import { VoiceSettings } from "./Voice";
 import type { VoiceSetup } from "../hermes/pipe";
 import { ScreenshotSettings } from "./ScreenshotSettings";
-import { GlobalShortcutSettings, useSummonStatus } from "./GlobalShortcutSettings";
-import type { SummonApi } from "../hermes/summon";
 import { TraySettings } from "./TraySettings";
 import type { TrayWiring } from "../hermes/tauriTray";
 import type { ScreenshotSupport } from "../hermes/tauriScreenshot";
@@ -108,7 +105,6 @@ export function SettingsScreen({
   appearance,
   listFonts,
   checkScreenshots,
-  summon,
   tray,
   modelSettings,
   toolsets,
@@ -157,8 +153,6 @@ export function SettingsScreen({
   listFonts: () => Promise<Fonts>;
   /** How screenshots are taken on this desktop; left out where there is no desktop app to ask. */
   checkScreenshots?: () => Promise<ScreenshotSupport>;
-  /** The global shortcut; left out where there is no desktop app. */
-  summon?: SummonApi;
   /** The tray icon and Close to tray; left out where there is no desktop app to ask. */
   tray?: TrayWiring;
   /** The profile's model setup on Hermes. */
@@ -221,8 +215,6 @@ export function SettingsScreen({
   const [signingOut, setSigningOut] = useState(false);
   /** What's typed in the search box; Settings shows search results while it holds a word. */
   const [query, setQuery] = useState("");
-  const summonStatus = useSummonStatus(summon);
-  const { screenshotShortcut } = useSyncExternalStore(subscribeUIPrefs, getUIPrefs);
   // The Memory tab's two parts each say whether they hold an unsaved change; the tab has one while either does.
   const memoryParts = useRef({ entries: false, providers: false });
   const memoryPart = (part: "entries" | "providers") => (dirty: boolean) => {
@@ -417,14 +409,7 @@ export function SettingsScreen({
       <TraySettings tray={tray} />
 
       <VoiceSettings status={status} profile={profile} setup={voiceSetup} />
-      <GlobalShortcutSettings
-        api={summon}
-        status={summonStatus.status}
-        setStatus={summonStatus.setStatus}
-        loadError={summonStatus.error}
-        screenshotShortcut={screenshotShortcut}
-      />
-      <ScreenshotSettings checkSupport={checkScreenshots} globalShortcut={summonStatus.status?.shortcut ?? null} />
+      <ScreenshotSettings checkSupport={checkScreenshots} />
       <UpdateSettings />
 
       <section>
