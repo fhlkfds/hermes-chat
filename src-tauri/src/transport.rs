@@ -712,7 +712,8 @@ impl Dashboard {
     /// `{"enabled": true|false}` (`toolset_toggle_allowed`), Settings → Skills' two writes, `PUT api/skills/toggle` and
     /// `PUT api/skills/content` with exactly their fields (`skill_write_allowed`), and Import transcripts'
     /// `POST api/sessions/import` whose every session is marked `source: "import"` (`import_body_allowed`, ADR 0031),
-    /// and the Automations writes (`webhook_write`, ADR 0036).
+    /// the Automations writes (`webhook_write`, ADR 0036), and Settings → Memory's external memory writes
+    /// (`memory_provider_write`, ADR 0042).
     /// Returns the response body on 2xx.
     pub async fn request(&self, method: &str, path_and_query: &str, body: Option<String>) -> Result<String, TransportError> {
         let (path, query) = path_and_query.split_once('?').unwrap_or((path_and_query, ""));
@@ -726,6 +727,8 @@ impl Dashboard {
             ("PUT", _) if cron_write("PUT", path) => Method::PUT,
             ("PUT", _) if toolset_toggle_allowed(path, body.as_deref()) => Method::PUT,
             ("PUT", _) if skill_write_allowed(path, body.as_deref()) => Method::PUT,
+            ("PUT", _) if memory_provider_write("PUT", path, body.as_deref()) => Method::PUT,
+            ("POST", _) if memory_provider_write("POST", path, body.as_deref()) => Method::POST,
             ("POST", _) if webhook_write("POST", path, body.as_deref()) => Method::POST,
             ("PUT", _) if webhook_write("PUT", path, body.as_deref()) => Method::PUT,
             ("PUT", p) if is_profile_soul(p) => Method::PUT,
@@ -1452,6 +1455,41 @@ pub fn skill_write_allowed(path: &str, body: Option<&str>) -> bool {
     name_ok && value_ok
 }
 
+/// Settings → Memory's external memory writes (ADR 0042, Hermes's `/api/memory` routes): `PUT api/memory/provider`
+/// `{"provider": name}` picks a profile's provider ("" for built-in memory only), `PUT
+/// api/memory/providers/{name}/config` `{"values": {key: text}}`, never empty, saves its settings, and `POST
+/// api/memory/providers/{name}/setup` with exactly `{"values": {}}` installs what its manifest declares. Names are one
+/// segment as Hermes allows them (`_MEMORY_PROVIDER_NAME_RE`). Setup never carries settings, so an install is only ever
+/// what the owner confirmed, and `api/memory/reset`, which deletes the built-in memory files, isn't reached.
+fn memory_provider_write(method: &str, path: &str, body: Option<&str>) -> bool {
+    let name_ok = |n: &str| {
+        let mut b = n.bytes();
+        n.len() <= 64 && matches!(b.next(), Some(c) if c.is_ascii_alphanumeric()) && b.all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+    };
+    let Some(fields) = body.and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok()) else {
+        return false;
+    };
+    let Some(fields) = fields.as_object().filter(|o| o.len() == 1) else {
+        return false;
+    };
+    if method == "PUT" && path == "api/memory/provider" {
+        return fields.get("provider").and_then(|p| p.as_str()).is_some_and(|p| p.is_empty() || name_ok(p));
+    }
+    let Some((name, action)) = path.strip_prefix("api/memory/providers/").and_then(|p| p.split_once('/')) else {
+        return false;
+    };
+    let Some(values) = fields.get("values").and_then(|v| v.as_object()) else {
+        return false;
+    };
+    name_ok(name)
+        && match (method, action) {
+            // Never empty: Hermes's declared route would still switch the provider, without the readiness check.
+            ("PUT", "config") => !values.is_empty() && values.iter().all(|(k, v)| !k.is_empty() && k.len() <= 128 && v.is_string()),
+            ("POST", "setup") => values.is_empty(),
+            _ => false,
+        }
+}
+
 fn endpoint(base: &Url, path: &str) -> Url {
     let mut url = base.clone();
     let prefix = url.path().trim_end_matches('/').to_owned();
@@ -1804,7 +1842,48 @@ impl Dashboard {
 
 #[cfg(test)]
 mod tests {
-    use super::{provider_key_name, webhook_write};
+    use super::{memory_provider_write, provider_key_name, webhook_write};
+
+    #[test]
+    fn only_the_memory_provider_writes() {
+        for (method, path, body) in [
+            ("PUT", "api/memory/provider", r#"{"provider":"honcho"}"#),
+            ("PUT", "api/memory/provider", r#"{"provider":""}"#),
+            ("PUT", "api/memory/providers/honcho/config", r#"{"values":{"workspace":"shared","apiKey":"k"}}"#),
+            ("PUT", "api/memory/providers/my_mem-0/config", r#"{"values":{"user_id":"owner"}}"#),
+            ("POST", "api/memory/providers/retaindb/setup", r#"{"values":{}}"#),
+        ] {
+            assert!(memory_provider_write(method, path, Some(body)), "{method} {path} {body}");
+        }
+        for (method, path, body) in [
+            // Deleting the built-in memory files isn't reached.
+            ("POST", "api/memory/reset", r#"{"target":"all"}"#),
+            ("PUT", "api/memory/provider", r#"{"provider":"../x"}"#),
+            ("PUT", "api/memory/provider", r#"{"provider":"honcho","x":1}"#),
+            ("PUT", "api/memory/provider", r#"{"provider":true}"#),
+            ("POST", "api/memory/provider", r#"{"provider":"honcho"}"#),
+            // Setup never carries settings.
+            ("POST", "api/memory/providers/honcho/setup", r#"{"values":{"apiKey":"k"}}"#),
+            ("PUT", "api/memory/providers/honcho/setup", r#"{"values":{}}"#),
+            ("POST", "api/memory/providers/honcho/config", r#"{"values":{}}"#),
+            ("PUT", "api/memory/providers/honcho/config", r#"{"values":{"timeout":30}}"#),
+            ("PUT", "api/memory/providers/honcho/config", r#"{"values":{"":"x"}}"#),
+            // An empty write would switch the provider unchecked.
+            ("PUT", "api/memory/providers/honcho/config", r#"{"values":{}}"#),
+            ("PUT", "api/memory/providers/honcho/config", r#"{"values":{},"x":1}"#),
+            ("PUT", "api/memory/providers/honcho/config", r#"{"values":[]}"#),
+            ("PUT", "api/memory/providers/..%2Fx/config", r#"{"values":{}}"#),
+            ("PUT", "api/memory/providers/../config", r#"{"values":{}}"#),
+            ("PUT", "api/memory/providers/_x/config", r#"{"values":{}}"#),
+            ("PUT", "api/memory/providers/honcho/config/x", r#"{"values":{}}"#),
+            ("PUT", "api/memory/providers/honcho", r#"{"values":{}}"#),
+            ("PUT", "api/memory/providers/honcho/config", "not json"),
+        ] {
+            assert!(!memory_provider_write(method, path, Some(body)), "{method} {path} {body}");
+        }
+        assert!(!memory_provider_write("PUT", &format!("api/memory/providers/{}/config", "a".repeat(65)), Some(r#"{"values":{}}"#)));
+        assert!(!memory_provider_write("PUT", "api/memory/provider", None));
+    }
 
     #[test]
     fn only_the_automations_writes() {

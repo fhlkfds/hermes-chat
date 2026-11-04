@@ -2,6 +2,7 @@
 // JSON-RPC frames and dashboard REST bodies (shapes from the deployed contracts, see the research doc).
 import type { LocalFile, OpenPipe, PipeEvent, Route, Speech, ToolsetGuards, VoiceSetup } from "./pipe";
 import type { SavedKey } from "./setup";
+import { FakeMemoryProviders } from "./fakeMemoryProviders";
 import { FakeSkills } from "./fakeSkills";
 import { FakeServerFiles } from "./fakeServerFiles";
 import { ScheduleError, isoIn, parseSchedule, upcomingRuns } from "./schedule";
@@ -375,6 +376,8 @@ export class FakeHermes {
   readonly managedFiles = new FakeServerFiles();
   /** The profiles' skills, as Settings → Skills reads and writes them (fakeSkills.ts). */
   readonly skills = new FakeSkills(this.managedFiles);
+  /** The profiles' external memory providers, as Settings → Memory → External memory reads and writes them. */
+  readonly memoryProviders = new FakeMemoryProviders((p) => p === "default" || p in this.otherProfiles || p in this.memory);
   /** Whether this connection sent `client.capabilities {server_requests: true}`. */
   answersRequests = false;
   /** Server→client requests nobody has answered yet, by id. */
@@ -1013,7 +1016,8 @@ export class FakeHermes {
         throw new Error(`The dashboard answered 404: {"detail":"Profile '${profile}' does not exist."}`);
       const m = this.memory[profile] ?? { memory: [], profile: [] };
       const bytes = (entries: string[]) => new TextEncoder().encode(entries.join("\n§\n")).length;
-      return { active: this.memoryProvider, providers: [], builtin_files: { memory: bytes(m.memory), user: bytes(m.profile) } };
+      if (!this.memoryProviders.routes) throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
+      return { ...this.memoryProviders.memory(profile, this.memoryProvider), builtin_files: { memory: bytes(m.memory), user: bytes(m.profile) } };
     },
     "GET /api/files": ({ query }) => this.managedFiles.list(query),
     "GET /api/files/read": ({ query }) => this.managedFiles.read(query),
@@ -1275,7 +1279,8 @@ export class FakeHermes {
           (soul && this.soulRoutes && (method === "GET" || method === "PUT") ? () => this.soul(method, decodeURIComponent(soul[1]), req.body) : undefined) ??
           this.webhooks.route(req) ??
           this.cron.route(req) ??
-          this.skills.route(req);
+          this.skills.route(req) ??
+          this.memoryProviders.route(req);
         const toolset = /^\/api\/tools\/toolsets(?:\/([^/]+)(\/config)?)?$/.exec(req.path);
         if (!handler && toolset) return JSON.stringify(await this.toolsetRoute(req, toolset[1], !!toolset[2]));
         if (soul && this.soulRoutes && method !== "GET" && method !== "PUT") throw new Error(`The dashboard answered 405: {"detail":"Method Not Allowed"}`);

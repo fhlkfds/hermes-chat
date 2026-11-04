@@ -37,7 +37,13 @@ export function LeaveMemoryEdit({
           <AlertTriangle size={13} /> Discard your {subject} edit?
         </span>
         <span id={noteId}>
-          You have an edit to {subject === "skill" ? "a skill in " : ""}the <span className="mono">{profile}</span> profile{subject === "memory" ? "'s memory" : ""}{" "}
+          {subject === "skill" ? (
+            <>
+              You have an edit to a skill in the <span className="mono">{profile}</span> profile{" "}
+            </>
+          ) : (
+            "You have an edit in Settings → Memory, to a memory entry or a memory provider's settings, "
+          )}
           that isn't saved to Hermes. Leaving now drops it.
         </span>
         <div className="confirm-actions">

@@ -5,7 +5,7 @@
 // (PersonaSettings.tsx). Memory: what Hermes remembers for the profile (MemorySettings.tsx). Skills: the profile's
 // skills, switched and edited on Hermes (SkillSettings.tsx).
 // Profiles are switched in the list's header, not here (ADR 0001).
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { getUIPrefs, subscribe as subscribeUIPrefs } from "../hermes/uiPrefs";
 import { ArrowLeft, Brain, Cpu, Download, KeyRound, Lock, LogOut, Palette, PlugZap, Puzzle, Settings2, ShieldCheck, Sparkles, Trash2, Wrench } from "lucide-react";
 import type { Chat, ConnectionStatus } from "../hermes/model";
@@ -20,6 +20,8 @@ import type { ToolsetsApi } from "../hermes/toolsets";
 import { ToolsetSettings, type OpenChat } from "./ToolsetSettings";
 import type { MemoryApi } from "../hermes/memory";
 import { MemorySettings } from "./MemorySettings";
+import type { MemoryProvidersApi } from "../hermes/memoryProviders";
+import { MemoryProviderSettings } from "./MemoryProviderSettings";
 import type { SkillsApi } from "../hermes/skills";
 import { SkillSettings } from "./SkillSettings";
 import { PersonaSettings, type PersonaWhere } from "./PersonaSettings";
@@ -86,6 +88,7 @@ export function SettingsScreen({
   runningReplies = 0,
   openChat,
   memory,
+  memoryProviders,
   onMemoryDirty = () => {},
   memoryDiscards = 0,
   skills,
@@ -138,6 +141,8 @@ export function SettingsScreen({
   openChat?: OpenChat;
   /** The profile's memory on Hermes; the Memory tab shows only with it. */
   memory?: MemoryApi;
+  /** Each profile's external memory provider on Hermes, shown in the Memory tab under the profile's own memory. */
+  memoryProviders?: MemoryProvidersApi;
   /** Called with whether the Memory tab has an unsaved edit. */
   onMemoryDirty?: (dirty: boolean) => void;
   /** Changes each time the owner discards the unsaved memory edit from App's question. */
@@ -180,6 +185,14 @@ export function SettingsScreen({
   const [signingOut, setSigningOut] = useState(false);
   const summonStatus = useSummonStatus(summon);
   const { screenshotShortcut } = useSyncExternalStore(subscribeUIPrefs, getUIPrefs);
+  // The Memory tab's two parts each say whether they hold an unsaved change; the tab has one while either does.
+  const memoryParts = useRef({ entries: false, providers: false });
+  const memoryPart = (part: "entries" | "providers") => (dirty: boolean) => {
+    memoryParts.current[part] = dirty;
+    onMemoryDirty(memoryParts.current.entries || memoryParts.current.providers);
+  };
+  const onEntriesDirty = useCallback(memoryPart("entries"), [onMemoryDirty]);
+  const onProvidersDirty = useCallback(memoryPart("providers"), [onMemoryDirty]);
   const [tab, setTabNow] = useState<Tab>(showTextGeneration ? "model" : showMemory && memory ? "memory" : "general");
   const tabs = TABS.filter(
     (t) => (t.id !== "toolsets" || toolsets) && (t.id !== "persona" || persona) && (t.id !== "memory" || memory) && (t.id !== "skills" || skills),
@@ -250,7 +263,10 @@ export function SettingsScreen({
         ) : tab === "memory" && memory ? (
           <div id="settings-panel-memory" role="tabpanel" aria-labelledby="settings-tab-memory">
             {/* An edit lives only while this tab is open, and for one profile; leaving with one asks first. */}
-            <MemorySettings key={profile} api={memory} profile={profile} status={status} server={routeLabel(route) ?? "not known until connected"} onDirtyChange={onMemoryDirty} discardSignal={memoryDiscards} />
+            <MemorySettings key={profile} api={memory} profile={profile} status={status} server={routeLabel(route) ?? "not known until connected"} onDirtyChange={onEntriesDirty} discardSignal={memoryDiscards} />
+            {memoryProviders && (
+              <MemoryProviderSettings key={`providers-${profile}`} api={memoryProviders} profile={profile} connected={status === "connected"} onDirtyChange={onProvidersDirty} discardSignal={memoryDiscards} />
+            )}
           </div>
         ) : tab === "skills" && skills ? (
           <div id="settings-panel-skills" role="tabpanel" aria-labelledby="settings-tab-skills">

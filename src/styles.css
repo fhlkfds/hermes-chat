@@ -1444,6 +1444,48 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .memory-notice.unsure { color: var(--warn); }
 .memory-recovered { margin-top: 16px; padding: 12px 14px; border: 1px solid rgba(245, 184, 74, 0.35); border-radius: var(--radius); display: flex; flex-direction: column; gap: 8px; }
 .settings .memory-recovered p { margin: 0; }
+/* Settings → Memory → External memory (MemoryProviderSettings.tsx): every profile's provider, then one profile's. */
+.badge.ok { background: rgba(124, 196, 154, 0.14); color: var(--ok); }
+.badge.bad { background: rgba(227, 139, 139, 0.14); color: var(--bad); }
+.err-text { color: var(--bad); }
+.provider-status { white-space: nowrap; }
+.provider-overview-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 14px 0 8px; }
+.provider-table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); }
+.provider-table { width: 100%; border-collapse: collapse; font-size: calc(12.5rem / 14); }
+.provider-table th, .provider-table td { text-align: left; vertical-align: top; padding: 7px 12px; }
+.provider-table thead th { color: var(--faint); font-weight: 500; border-bottom: 1px solid var(--line); }
+.provider-table tbody tr + tr > * { border-top: 1px solid var(--line); }
+.provider-table tbody th { font-weight: 400; }
+.provider-table .provider-sharing { margin-top: 3px; }
+.provider-table tr.on { background: var(--raised-2); }
+.provider-table .mono { overflow-wrap: anywhere; }
+.provider-manage { margin-top: 22px; display: flex; flex-direction: column; gap: 10px; }
+.provider-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.provider-list li + li { border-top: 1px solid var(--line); }
+.provider-row { display: flex; align-items: center; gap: 12px; width: 100%; padding: 9px 12px; text-align: left; font-size: calc(13rem / 14); }
+button.provider-row:hover:not(:disabled) { background: var(--hover); }
+.provider-row.on { background: var(--raised-2); }
+.provider-row:focus-visible { outline: 2px solid var(--line-2); outline-offset: -2px; }
+.provider-row-main { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.provider-row-main > div { flex-basis: 100%; }
+.provider-row-name { font-weight: 500; }
+.provider-editor { display: flex; flex-direction: column; gap: 14px; padding: 14px; border: 1px solid var(--line); border-radius: var(--radius); }
+.provider-editor .memory-state { margin-bottom: 0; }
+.provider-group { display: flex; flex-direction: column; gap: 12px; }
+.provider-group-name { font-size: calc(11.5rem / 14); text-transform: uppercase; letter-spacing: 0.04em; color: var(--faint); }
+.provider-field.check { flex-direction: row; flex-wrap: wrap; align-items: center; }
+.provider-field.check input { padding: 0; width: 16px; height: 16px; order: -1; }
+.provider-field.check .field-hint { flex-basis: 100%; }
+.provider-field select { max-width: 360px; }
+.provider-more summary { cursor: pointer; font-size: calc(12.5rem / 14); color: var(--muted); margin-bottom: 12px; }
+.provider-more[open] summary { margin-bottom: 14px; }
+.provider-setup { display: flex; flex-direction: column; gap: 6px; }
+.provider-setup .confirm { max-width: none; }
+.provider-copy { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 10px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.provider-copy .field { flex: 0 1 360px; min-width: 200px; }
+.provider-copy .field-hint { flex-basis: 100%; }
+.provider-steps { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.provider-output { margin: 4px 0 0; padding: 8px 10px; max-height: 160px; overflow: auto; background: var(--raised-2); border-radius: var(--radius); font-family: var(--mono); font-size: calc(11.5rem / 14); white-space: pre-wrap; }
 /* Settings → Skills (SkillSettings.tsx): the list reuses the toolset rows, the editor Memory's. */
 .skills-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
 .skills-search { flex: 1; min-width: 180px; display: flex; align-items: center; gap: 6px; color: var(--muted); }

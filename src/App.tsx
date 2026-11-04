@@ -1956,6 +1956,7 @@ export function Main({
               return c && { id: c.id, title: c.title, runtimeId: c.runtimeId, running: c.running };
             })()}
             memory={hermes.memory}
+            memoryProviders={hermes.memoryProviders}
             onMemoryDirty={onMemoryDirty}
             memoryDiscards={memoryDiscards}
             skills={hermes.skills}

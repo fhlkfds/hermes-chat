@@ -376,7 +376,7 @@ export function MemorySettings({
             {view.provider && (
               <p className="muted small">
                 <Info size={12} /> This profile also uses the <span className="mono">{view.provider}</span> memory provider. What it stores is kept by that
-                provider, not in these files, and isn't shown here.
+                provider, not in these files, and isn't shown here. Its settings are under External memory below.
               </p>
             )}
             <div className="memory-resources" role="tablist" aria-label="Memory files">
