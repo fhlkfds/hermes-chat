@@ -3,8 +3,8 @@
 // creates, edits, pauses, resumes, runs and deletes them through Hermes. Every change shows only once Hermes, read
 // back, has it. Every read is sequenced: an answer that a newer read, another job or another profile has superseded
 // is dropped, never shown.
-import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, CalendarClock, ChevronDown, ChevronRight, CircleAlert, History, Pause, Pencil, Play, Plus, RefreshCw, Trash2, Zap } from "lucide-react";
+import { type RefObject, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { ArrowLeft, CalendarClock, ChevronDown, ChevronRight, CircleAlert, History, MessageSquare, Pause, Pencil, Play, Plus, RefreshCw, Trash2, Wrench, Zap } from "lucide-react";
 import {
   CronConflict,
   CronError,
@@ -24,6 +24,7 @@ import {
   statusLabel,
 } from "../hermes/cronJobs";
 import { type Schedule, ScheduleError, clockChangeNote, explainSchedule, formatInstant, isoIn, offsetAt, parseSchedule, upcomingRuns } from "../hermes/schedule";
+import { type Troubleshoot, type TroubleshootMessage, type TroubleshootStore, type TroubleshootInput, gatherTroubleshoot, jobChanges, troubleshootMessage } from "../hermes/troubleshoot";
 import { Spinner } from "./bits";
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -35,7 +36,21 @@ const NEW = "\u0000new";
 
 /** A profile's jobs and what scheduling them needs. `targets` is undefined when Hermes's list of them couldn't be read. */
 type Loaded = { jobs: CronJob[]; zone: JobsZone; targets?: DeliveryTarget[]; catchUp: boolean };
-type View = { kind: "list" } | { kind: "job"; id: string } | { kind: "edit"; id?: string };
+/** `ask`: open the job with its Troubleshoot preview started, as the list's Troubleshoot button does. */
+type View = { kind: "list" } | { kind: "job"; id: string; ask?: boolean } | { kind: "edit"; id?: string };
+
+/**
+ * Handing a job to Hermes in a new chat (ADR 0051). `start` starts the chat in this profile with the message, which
+ * the app shows; `openChat` shows an earlier one. Left out, the screen has no Troubleshoot buttons.
+ */
+export type TroubleshootWiring = {
+  store: TroubleshootStore;
+  scope: string;
+  start: (job: CronJob, text: string) => Promise<unknown>;
+  openChat: (chatId: string) => void;
+};
+const NO_TROUBLES: Troubleshoot[] = [];
+const noSubscribe = () => () => {};
 
 /** Reads a profile's jobs, time zone, catch-up setting and delivery targets. Only the job list is required. */
 async function readProfile(api: CronApi, profile: string): Promise<Loaded> {
@@ -168,11 +183,26 @@ function Upcoming({ schedule, zone, first, remaining }: { schedule?: Schedule; z
  * The profile's scheduled jobs. `api` reaches Hermes; nothing here schedules anything itself. The screen starts again
  * when the profile changes (App keys it on the profile).
  */
-export function ScheduledJobs({ api, profile, connected, onClose }: { api: CronApi; profile: string; connected: boolean; onClose: () => void }) {
+export function ScheduledJobs({
+  api,
+  profile,
+  connected,
+  onClose,
+  troubleshoot,
+  openJob,
+}: {
+  api: CronApi;
+  profile: string;
+  connected: boolean;
+  onClose: () => void;
+  troubleshoot?: TroubleshootWiring;
+  /** The job to show first, instead of the list. */
+  openJob?: string;
+}) {
   const [loaded, setLoaded] = useState<Loaded>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<CronError | Error>();
-  const [view, setView] = useState<View>({ kind: "list" });
+  const [view, setView] = useState<View>(openJob ? { kind: "job", id: openJob } : { kind: "list" });
   /** What happened to a job that has left the list, or went to another profile, said on the list. */
   const [notice, setNotice] = useState<string>();
   const loads = useSequence();
@@ -201,6 +231,19 @@ export function ScheduledJobs({ api, profile, connected, onClose }: { api: CronA
       }
     }
   };
+
+  // This profile's troubleshooting chats. When one's reply ends, the jobs are read again so its changes show.
+  const allTroubles = useSyncExternalStore(troubleshoot?.store.subscribe ?? noSubscribe, troubleshoot?.store.getSnapshot ?? (() => NO_TROUBLES));
+  const troubles = useMemo(() => allTroubles.filter((t) => t.scope === troubleshoot?.scope && t.profile === profile), [allTroubles, troubleshoot?.scope, profile]);
+  const troubleOf = (id: string) => troubles.find((t) => t.jobId === id);
+  const endedKey = troubles.filter((t) => t.phase === "ended").map((t) => `${t.id}@${t.endedAt}`).join(" ");
+  const endedSeen = useRef(endedKey);
+  useEffect(() => {
+    if (endedKey === endedSeen.current) return;
+    const before = new Set(endedSeen.current.split(" "));
+    endedSeen.current = endedKey;
+    if (connected && endedKey.split(" ").some((k) => k && !before.has(k))) void load();
+  }, [endedKey]);
 
   useEffect(() => {
     if (connected) void load();
@@ -325,8 +368,9 @@ export function ScheduledJobs({ api, profile, connected, onClose }: { api: CronA
               <ul className="job-list">
                 {jobs.map((j) => {
                   const problem = loaded.targets && deliveryProblems(j.deliver, loaded.targets, j.originPlatform)[0];
+                  const trouble = troubleOf(j.id);
                   return (
-                    <li key={j.id}>
+                    <li key={j.id} className={troubleshoot ? "job-item has-trouble" : "job-item"}>
                       <button className="job-row" data-job-id={j.id} onClick={() => go({ kind: "job", id: j.id })}>
                         <div className="job-row-head">
                           <span className="job-name">{j.name}</span>
@@ -344,7 +388,19 @@ export function ScheduledJobs({ api, profile, connected, onClose }: { api: CronA
                           <span className="faint"> · {deliveryLabel(j.deliver, loaded.targets)}</span>
                         </div>
                         {problem && <div className="job-row-line small job-status warn">{problem}</div>}
+                        {trouble && <div className="job-row-line small job-trouble-line">{troubleLine(trouble, j)}</div>}
                       </button>
+                      {troubleshoot && (
+                        <button
+                          className="btn small job-row-trouble"
+                          disabled={!connected}
+                          aria-label={`Troubleshoot ${j.name}`}
+                          title="Hand this job to Hermes in a new chat, to find and fix what's wrong"
+                          onClick={() => go({ kind: "job", id: j.id, ask: true })}
+                        >
+                          <Wrench size={13} /> Troubleshoot
+                        </button>
+                      )}
                     </li>
                   );
                 })}
@@ -362,6 +418,9 @@ export function ScheduledJobs({ api, profile, connected, onClose }: { api: CronA
             job={shown}
             loaded={loaded}
             heading={heading}
+            troubleshoot={troubleshoot}
+            trouble={troubleOf(shown.id)}
+            ask={view.ask}
             onChanged={apply}
             onEdit={() => go({ kind: "edit", id: shown.id })}
             onDeleted={() => go({ kind: "list" })}
@@ -416,7 +475,20 @@ function took(ms: number): string {
 }
 
 /** One run in the history: its state, when, how it ended, and its result. */
-function RunRow({ run, zone, result, onResult }: { run: JobRun; zone: JobsZone; result?: RunResult | string | "loading"; onResult?: () => void }) {
+function RunRow({
+  run,
+  zone,
+  result,
+  onResult,
+  onTroubleshoot,
+}: {
+  run: JobRun;
+  zone: JobsZone;
+  result?: RunResult | string | "loading";
+  onResult?: () => void;
+  /** Hands the job to Hermes with this run picked out; offered on a failed run. */
+  onTroubleshoot?: () => void;
+}) {
   const state = RUN_STATES[run.state];
   const open = result !== undefined;
   const resultId = `job-run-result-${run.id.replace(/[^A-Za-z0-9_-]/g, "_")}`;
@@ -433,6 +505,11 @@ function RunRow({ run, zone, result, onResult }: { run: JobRun; zone: JobsZone; 
       {run.error && <div className="bad small job-history-error">{run.error}</div>}
       {run.note && <div className="muted small">{run.note}</div>}
       {run.script && run.preview && !run.error && <div className="muted small job-history-preview">{run.preview}</div>}
+      {onTroubleshoot && run.state === "failed" && (
+        <button type="button" className="btn small job-run-trouble" onClick={onTroubleshoot}>
+          <Wrench size={13} /> Troubleshoot this run
+        </button>
+      )}
       {onResult && (
         <button type="button" className="job-result-toggle" aria-expanded={open} aria-controls={resultId} onClick={onResult}>
           {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />} {open ? "Hide the result" : "Show the result"}
@@ -468,6 +545,9 @@ function JobDetail({
   onEdit,
   onDeleted,
   onToast,
+  troubleshoot,
+  trouble,
+  ask,
 }: {
   api: CronApi;
   profile: string;
@@ -480,6 +560,11 @@ function JobDetail({
   onDeleted: () => void;
   /** Says something on the list, once this job has left it. */
   onToast?: (text: string) => void;
+  troubleshoot?: TroubleshootWiring;
+  /** The newest troubleshooting chat for this job, in this app run. */
+  trouble?: Troubleshoot;
+  /** Start the Troubleshoot preview at once. */
+  ask?: boolean;
 }) {
   const [busy, setBusy] = useState<"pause" | "resume" | "run" | "delete">();
   const [confirm, setConfirm] = useState<"run" | "delete">();
@@ -497,6 +582,44 @@ function JobDetail({
   const life = useSequence();
   const runButton = useRef<HTMLButtonElement>(null);
   const deleteButton = useRef<HTMLButtonElement>(null);
+  /** The Troubleshoot preview: being read, ready (the message, editable), or why it couldn't be read. */
+  const [prep, setPrep] = useState<"reading" | (TroubleshootMessage & { input: TroubleshootInput }) | { failed: string }>();
+  const [message, setMessage] = useState("");
+  const [starting, setStarting] = useState(false);
+  const prepReads = useSequence();
+  const prepare = (run?: JobRun) => {
+    const n = prepReads.next();
+    setPrep("reading");
+    setStarting(false);
+    void gatherTroubleshoot(api, profile, job, { zone: loaded.zone, targets: loaded.targets }, run).then(
+      (input) => {
+        if (!prepReads.current(n)) return;
+        const m = troubleshootMessage(input);
+        setPrep({ ...m, input });
+        setMessage(m.text);
+      },
+      (e) => prepReads.current(n) && setPrep({ failed: messageOf(e) }),
+    );
+  };
+  const closePrep = () => {
+    prepReads.next();
+    setPrep(undefined);
+  };
+  useEffect(() => {
+    if (ask && troubleshoot && connected) prepare();
+  }, []);
+  const startChat = async () => {
+    if (!troubleshoot || typeof prep !== "object" || !("input" in prep)) return;
+    setStarting(true);
+    try {
+      await troubleshoot.start(prep.input.job, message);
+      if (life.live()) setPrep(undefined);
+    } catch (e) {
+      if (life.live()) setPrep({ failed: messageOf(e) });
+    } finally {
+      if (life.live()) setStarting(false);
+    }
+  };
 
   useEffect(() => {
     if (!connected) return;
@@ -522,7 +645,7 @@ function JobDetail({
   useEffect(() => {
     if (connected) readRuns();
     else historyReads.next();
-  }, [connected, job.lastRunAt, runLimit]);
+  }, [connected, job.lastRunAt, runLimit, trouble?.endedAt]);
 
   /** Each run's latest result read: a newer read, a Hide, or the run changing supersedes an older one. */
   const resultReads = useRef<Record<string, number>>({});
@@ -642,7 +765,36 @@ function JobDetail({
         <button ref={deleteButton} className="btn danger" disabled={!connected || !!busy} title={offline} onClick={() => setConfirm("delete")}>
           <Trash2 size={14} /> {busy === "delete" ? "Deleting…" : "Delete"}
         </button>
+        {troubleshoot && (
+          <button className="btn" disabled={!connected || !!busy || prep === "reading" || starting} title={offline} onClick={() => prepare()}>
+            <Wrench size={14} /> Troubleshoot
+          </button>
+        )}
       </div>
+      {prep !== undefined && (
+        <TroublePreview
+          profile={profile}
+          job={job}
+          prep={prep}
+          message={message}
+          starting={starting}
+          connected={connected}
+          onMessage={setMessage}
+          onStart={() => void startChat()}
+          onCancel={closePrep}
+        />
+      )}
+      {trouble && !prep && troubleshoot && (
+        <TroublePanel
+          trouble={trouble}
+          job={job}
+          connected={connected}
+          busy={!!busy}
+          onOpenChat={troubleshoot.openChat}
+          onRunNow={() => setConfirm("run")}
+          onDismiss={() => troubleshoot.store.dismiss(trouble.id)}
+        />
+      )}
       {copyNote && (
         <p className="job-banner" role="note">
           <CircleAlert size={14} /> {copyNote}
@@ -791,7 +943,14 @@ function JobDetail({
         ) : runs.rows.length ? (
           <ul className="job-history" aria-label="Run history, newest first">
             {runs.rows.map((r) => (
-              <RunRow key={r.id} run={r} zone={zone} result={results[r.id]} onResult={r.sessionId && connected ? () => showResult(r) : undefined} />
+              <RunRow
+                key={r.id}
+                run={r}
+                zone={zone}
+                result={results[r.id]}
+                onResult={r.sessionId && connected ? () => showResult(r) : undefined}
+                onTroubleshoot={troubleshoot && connected && !busy && !starting ? () => prepare(r) : undefined}
+              />
             ))}
           </ul>
         ) : (
@@ -809,6 +968,183 @@ function JobDetail({
         {rows && rows.length > 0 && <p className="faint small">Showing the latest {rows.length} {rows.length === 1 ? "run" : "runs"}.</p>}
       </section>
     </>
+  );
+}
+
+/** A troubleshooting chat's state in a line, for the job's row in the list. */
+function troubleLine(t: Troubleshoot, job: CronJob): string {
+  if (t.phase === "failed") return "Troubleshooting didn't start.";
+  if (t.phase !== "ended") return "Hermes is troubleshooting this job in a chat.";
+  const n = jobChanges(t.before, job).length;
+  return n ? `Troubleshooting chat ended: ${n} ${n === 1 ? "change" : "changes"} to this job. Open it to see what changed.` : "Troubleshooting chat ended: nothing on this job changed.";
+}
+
+/** The message a Troubleshoot chat starts with, shown and editable before anything is sent. */
+function TroublePreview({
+  profile,
+  job,
+  prep,
+  message,
+  starting,
+  connected,
+  onMessage,
+  onStart,
+  onCancel,
+}: {
+  profile: string;
+  job: CronJob;
+  prep: "reading" | (TroubleshootMessage & { input: TroubleshootInput }) | { failed: string };
+  message: string;
+  starting: boolean;
+  connected: boolean;
+  onMessage: (text: string) => void;
+  onStart: () => void;
+  onCancel: () => void;
+}) {
+  // Opened from a run far down the page, the preview would be out of sight: bring it into view, and put focus in it.
+  const box = useRef<HTMLElement>(null);
+  useEffect(() => {
+    box.current?.scrollIntoView?.({ block: "nearest" });
+    box.current?.focus({ preventScroll: true });
+  }, []);
+  return (
+    <section
+      ref={box}
+      tabIndex={-1}
+      className="job-trouble"
+      aria-label="Troubleshoot in a new chat"
+      onKeyDown={(e) => e.key === "Escape" && !starting && onCancel()}
+    >
+      <h2>
+        <Wrench size={14} /> Troubleshoot in a new chat
+      </h2>
+      {prep === "reading" ? (
+        <p className="muted small" role="status">
+          <Spinner /> Reading “{job.name}” and its latest runs…
+        </p>
+      ) : "failed" in prep ? (
+        <>
+          <p className="sign-in-error small" role="alert">
+            {prep.failed}
+          </p>
+          <div className="confirm-actions">
+            <button className="btn" onClick={onCancel}>
+              Close
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <p className="small">
+            Hermes Chat starts a new chat in the <span className="mono">{profile}</span> profile, the job's, with the message below. Hermes looks for the
+            cause and can change this job with its own cron tools; it is asked to say what it changes, and this screen reads the job again when its reply
+            ends, to show what changed. The message goes to the model as written: check it, and edit out anything you don't want sent.
+          </p>
+          {(prep.cut.length > 0 || prep.hidden.length > 0) && (
+            <ul className="muted small job-trouble-notes">
+              {prep.cut.length > 0 && <li>Cut short to fit: {prep.cut.join(", ")}. Hermes can read the whole of it on the server.</li>}
+              {prep.hidden.length > 0 && (
+                <li>
+                  Hidden, as it looked like a secret: {prep.hidden.join(", ")}. Hermes Chat recognises common key and token shapes only, so read the
+                  message before sending.
+                </li>
+              )}
+            </ul>
+          )}
+          <textarea className="job-trouble-message" aria-label="First message" value={message} spellCheck={false} onChange={(e) => onMessage(e.target.value)} />
+          <div className="confirm-actions">
+            <button className="btn" disabled={starting} onClick={onCancel}>
+              Cancel
+            </button>
+            <button className="btn primary" disabled={starting || !connected || !message.trim()} onClick={onStart}>
+              <MessageSquare size={14} /> {starting ? "Starting the chat…" : "Start the chat"}
+            </button>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+/** What a troubleshooting chat came to: where it is, and what changed on the job since it started. */
+function TroublePanel({
+  trouble,
+  job,
+  connected,
+  busy,
+  onOpenChat,
+  onRunNow,
+  onDismiss,
+}: {
+  trouble: Troubleshoot;
+  job: CronJob;
+  connected: boolean;
+  busy: boolean;
+  onOpenChat: (chatId: string) => void;
+  onRunNow: () => void;
+  onDismiss: () => void;
+}) {
+  const changes = trouble.phase === "failed" ? [] : jobChanges(trouble.before, job);
+  return (
+    <section className="job-trouble" aria-label="Troubleshooting">
+      <h2>
+        <Wrench size={14} /> Troubleshooting
+      </h2>
+      {trouble.phase === "failed" ? (
+        <p className="sign-in-error small" role="alert">
+          {trouble.reason}
+        </p>
+      ) : trouble.phase === "ended" ? (
+        <p className="small" role="status">
+          Hermes's reply in the troubleshooting chat has ended, and this job was read again.{" "}
+          {changes.length ? "What changed on the job since the chat started:" : "Nothing on the job has changed since the chat started."}
+        </p>
+      ) : (
+        <p className="small" role="status">
+          <Spinner /> {trouble.phase === "starting" ? "Starting the chat…" : "Hermes is working on this job in a chat. This screen reads the job again when its reply ends."}
+        </p>
+      )}
+      {changes.length > 0 && (
+        <ul className="job-changes" aria-label="What changed">
+          {changes.map((c) =>
+            c.long ? (
+              <li key={c.field}>
+                <span className="job-change-field">{c.field}</span> changed:
+                <div className="job-change-pair">
+                  <span className="faint small">Before</span>
+                  <pre className="job-prompt">{c.before ?? "(none)"}</pre>
+                  <span className="faint small">Now</span>
+                  <pre className="job-prompt">{c.after ?? "(none)"}</pre>
+                </div>
+              </li>
+            ) : (
+              <li key={c.field}>
+                <span className="job-change-field">{c.field}</span>: <span className="mono">{c.before ?? "(none)"}</span> → <span className="mono">{c.after ?? "(none)"}</span>
+              </li>
+            ),
+          )}
+        </ul>
+      )}
+      <div className="jobs-actions">
+        {trouble.phase === "ended" && (
+          <button className="btn primary" disabled={!connected || busy} onClick={onRunNow}>
+            <Zap size={14} /> Run now to check the fix
+          </button>
+        )}
+        {trouble.chatId && (
+          <button className="btn" onClick={() => onOpenChat(trouble.chatId!)}>
+            <MessageSquare size={14} /> Open the chat
+          </button>
+        )}
+        {(trouble.phase === "ended" || trouble.phase === "failed") && (
+          <button className="btn" onClick={onDismiss}>
+            Dismiss
+          </button>
+        )}
+      </div>
+      {trouble.phase === "ended" && <p className="faint small">Run now is a real run, with the job's real delivery: it asks first. The chat stays in your chat list.</p>}
+      {job.state === "completed" && trouble.phase === "ended" && <p className="faint small">The job has no more runs on its schedule.</p>}
+    </section>
   );
 }
 

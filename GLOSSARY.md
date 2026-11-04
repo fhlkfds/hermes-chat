@@ -374,6 +374,10 @@ _Avoid_: trigger, test run
 One run of a Scheduled job, as Hermes recorded it: an agent session, or the output a script job printed. Its state is running, succeeded, failed, or unknown, when Hermes recorded no outcome (the run's process stopped, or Hermes went on in a session it doesn't list). Its result is the agent's last reply, read from the session, or the script's output.
 _Avoid_: execution (Hermes's ledger word, fine in server-side talk), attempt, chat (an agent run is a Hermes session, but not one of the chats)
 
+**Troubleshoot** (a Scheduled job):
+The owner's action, on a job or on one of its failed Job runs, that hands the job to Hermes in a new Chat in the job's profile. The first message carries the job, its newest runs with their errors and results, and the problems the Scheduled jobs screen flags, with long text cut and recognisable secrets hidden; the owner sees and can edit it before it is sent. Hermes finds the cause and changes the job with its own cron tools, saying what it changed. When its reply ends, the Scheduled jobs screen reads the job again, shows what changed since the chat started, and offers Run now (ADR 0051).
+_Avoid_: diagnose, debug, fix (Hermes fixes; the owner troubleshoots), repair
+
 **Schedule time zone**:
 The time zone Hermes reads a profile's schedules in and runs its jobs on: the profile's `timezone` setting, else the server's own zone. Times on the Scheduled jobs screen are on it, with this computer's time beside them when it reads differently; daylight-saving changes follow it.
 _Avoid_: local time (ambiguous between the server and this computer), display time zone (this computer's)

@@ -668,3 +668,143 @@ describe("the Scheduled jobs screen", () => {
     expect(screen.queryByText("[fixture] Weekday brief")).toBeNull();
   });
 });
+
+describe("Troubleshoot on the Scheduled jobs screen", () => {
+  const creates = (s: FakeHermes) => s.requests.filter((q) => q.method === "session.create");
+  const submitted = (s: FakeHermes) => s.requests.filter((q) => q.method === "prompt.submit").map((q) => String(q.params.text));
+  const failedRun = (id: string, at = 1_793_800_000) => ({ id: `cron_output:${id}:1`, title: "FAILED · Script exited with code 3", preview: "boom", source: "cron_output", started_at: at });
+
+  it("hands a job to Hermes in a new chat in the job's profile, then shows what changed and offers Run now", async () => {
+    const s = server();
+    const work = s.cron.add("work", { name: "[fixture] Work report", prompt: "Fixture only.", schedule: "0 8 * * *", deliver: "discord" });
+    s.cron.runs[work.id] = [failedRun(work.id)];
+    const { hermes, user } = await launch(s);
+    await act(async () => void (await hermes.switchProfile("work")));
+    await screen.findByText("[fixture] Work report");
+
+    // The button is on each job in the list, and shows the message before anything is sent.
+    await user.click(screen.getByRole("button", { name: "Troubleshoot [fixture] Work report" }));
+    const preview = await screen.findByRole("region", { name: "Troubleshoot in a new chat" });
+    const box = (await within(preview).findByRole("textbox", { name: "First message" })) as HTMLTextAreaElement;
+    const text = box.value;
+    expect(text).toMatch(/“\[fixture\] Work report” \(id `[^`]+`\) in the work profile/);
+    expect(text).toMatch(/- Schedule: `0 8 \* \* \*`/);
+    expect(text).toMatch(/- State: scheduled \(not paused\)/);
+    expect(text).toMatch(/Discord has no home channel set on the server/);
+    expect(text).toMatch(/### 1\. Failed\n- Script run/);
+    expect(text).toMatch(/Script exited with code 3/);
+    expect(within(preview).getByText(/new chat in the/).textContent).toMatch(/work profile, the job's/);
+    expect(creates(s)).toHaveLength(0);
+
+    await user.click(within(preview).getByRole("button", { name: "Start the chat" }));
+    await waitFor(() => expect(submitted(s)).toEqual([text]));
+    // The chat started in the job's profile, and shows in place of the Jobs screen.
+    expect(creates(s).map((q) => q.params.profile)).toEqual(["work"]);
+    await waitFor(() => expect(document.querySelector(".jobs-screen")).toBeNull());
+    const chat = hermes.getSnapshot().chats.find((c) => c.running)!;
+    expect(chat).toBeTruthy();
+
+    // Hermes fixes the job with its own cron tool, and its reply ends.
+    const row = s.cron.jobs.work.find((j) => j.id === work.id)!;
+    row.deliver = "telegram";
+    row.prompt = "Fixture only, and say so.";
+    act(() => s.event(s.runtimeIdOf(chat.id)!, "message.complete", { text: "Changed the delivery from discord to telegram." }));
+    await user.click(await screen.findByRole("button", { name: "See what changed" }));
+
+    const panel = await screen.findByRole("region", { name: "Troubleshooting" });
+    expect(within(panel).getByText(/What changed on the job since the chat started/)).toBeTruthy();
+    const changes = within(panel).getByRole("list", { name: "What changed" });
+    expect(changes.textContent).toMatch(/Delivers to: discord → telegram/);
+    expect(changes.textContent).toMatch(/Prompt changed:BeforeFixture only\.NowFixture only, and say so\./);
+    // The app itself changed nothing on the job.
+    expect(writes(s)).toHaveLength(0);
+    await user.click(within(panel).getByRole("button", { name: "Run now to check the fix" }));
+    expect(screen.getByRole("alertdialog", { name: "Run this job now?" })).toBeTruthy();
+  });
+
+  it("offers Troubleshoot on a failed run, and reads the job again when the chat's reply ends", async () => {
+    const s = server();
+    const id = s.cron.jobs.default[0].id;
+    const at = 1_793_806_654;
+    s.cron.runs[id] = [
+      { id: "local-ok", source: "cron", started_at: at, ended_at: at + 80, end_reason: "cron_complete", profile: "default" },
+      failedRun(id, at - 60),
+    ];
+    s.transcripts["local-ok"] = [
+      { role: "user", text: "Fixture only.", row_id: 1 },
+      { role: "assistant", text: "[fixture] Here is the weekday brief.", row_id: 2 },
+    ];
+    const { hermes, user } = await launch(s);
+    await user.click(screen.getByText("[fixture] Weekday brief"));
+    const history = await screen.findByRole("list", { name: "Run history, newest first" });
+    const rows = within(history).getAllByRole("listitem");
+    expect(within(rows[0]).queryByRole("button", { name: "Troubleshoot this run" })).toBeNull();
+    await user.click(within(rows[1]).getByRole("button", { name: "Troubleshoot this run" }));
+    const box = (await screen.findByRole("textbox", { name: "First message" })) as HTMLTextAreaElement;
+    // Opened from far down the page, the preview takes focus, so it is where the owner is.
+    expect(document.activeElement).toBe(screen.getByRole("region", { name: "Troubleshoot in a new chat" }));
+    expect(box.value).toMatch(/### 2\. Failed \(the run I picked\)/);
+    // An agent run's reply is read for the message, as Show the result reads it.
+    expect(box.value).toMatch(/The agent's last reply:\n```text\n\[fixture\] Here is the weekday brief\./);
+    // The owner can edit the message before it goes.
+    await user.type(box, "\n\nIt started failing after I renamed the channel.");
+    await user.click(screen.getByRole("button", { name: "Start the chat" }));
+    await waitFor(() => expect(submitted(s)).toHaveLength(1));
+    expect(submitted(s)[0]).toMatch(/after I renamed the channel\.$/);
+    expect(creates(s).map((q) => q.params.profile)).toEqual(["default"]);
+    const chat = hermes.getSnapshot().chats.find((c) => c.running)!;
+
+    // Back on the Jobs screen while Hermes works: the job says so.
+    await user.click(screen.getByRole("button", { name: "Scheduled jobs" }));
+    expect((await screen.findByText("[fixture] Weekday brief")).closest("li")!.textContent).toMatch(/Hermes is troubleshooting this job in a chat/);
+    await user.click(screen.getByText("[fixture] Weekday brief"));
+    const panel = await screen.findByRole("region", { name: "Troubleshooting" });
+    expect(within(panel).getByText(/Hermes is working on this job in a chat/)).toBeTruthy();
+
+    const row = s.cron.jobs.default.find((j) => j.id === id)!;
+    row.enabled = false;
+    row.state = "paused";
+    const lists = () => s.restRequests.filter((r) => r.method === "GET" && r.path === "/api/cron/jobs").length;
+    const before = lists();
+    act(() => s.event(s.runtimeIdOf(chat.id)!, "message.complete", { text: "Paused it." }));
+    // Read again without the owner pressing Refresh, and no toast: the screen says it.
+    await waitFor(() => expect(within(panel).getByRole("list", { name: "What changed" }).textContent).toMatch(/State: scheduled → paused/));
+    expect(lists()).toBeGreaterThan(before);
+    expect(screen.queryByRole("button", { name: "See what changed" })).toBeNull();
+    expect(within(panel).getByRole("button", { name: "Open the chat" })).toBeTruthy();
+    await user.click(within(panel).getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByRole("region", { name: "Troubleshooting" })).toBeNull();
+    expect(writes(s)).toHaveLength(0);
+  });
+
+  it("says when nothing on the job changed", async () => {
+    const s = server();
+    const { hermes, user } = await launch(s);
+    await user.click(screen.getByText("[fixture] Weekday brief"));
+    await user.click(await screen.findByRole("button", { name: "Troubleshoot" }));
+    await user.click(await screen.findByRole("button", { name: "Start the chat" }));
+    await waitFor(() => expect(submitted(s)).toHaveLength(1));
+    expect(submitted(s)[0]).toMatch(/Hermes has no runs of this job on record\./);
+    const chat = hermes.getSnapshot().chats.find((c) => c.running)!;
+    act(() => s.event(s.runtimeIdOf(chat.id)!, "message.complete", { text: "Nothing to fix." }));
+    await user.click(await screen.findByRole("button", { name: "See what changed" }));
+    const panel = await screen.findByRole("region", { name: "Troubleshooting" });
+    expect(within(panel).getByText(/Nothing on the job has changed since the chat started/)).toBeTruthy();
+  });
+
+  it("starts nothing when Hermes refuses the chat's first message, and says why", async () => {
+    const s = server();
+    s.rejectPrompt = { code: 4009, message: "session busy" };
+    const { user } = await launch(s);
+    await user.click(screen.getByText("[fixture] Weekday brief"));
+    await user.click(await screen.findByRole("button", { name: "Troubleshoot" }));
+    await user.click(await screen.findByRole("button", { name: "Start the chat" }));
+    await waitFor(() => expect(creates(s)).toHaveLength(1));
+    s.rejectPrompt = undefined;
+    await user.click(screen.getByRole("button", { name: "Scheduled jobs" }));
+    expect((await screen.findByText("[fixture] Weekday brief")).closest("li")!.textContent).toMatch(/Troubleshooting didn't start/);
+    await user.click(screen.getByText("[fixture] Weekday brief"));
+    expect(within(await screen.findByRole("region", { name: "Troubleshooting" })).getByRole("alert").textContent).toMatch(/session busy/);
+  });
+});
+
