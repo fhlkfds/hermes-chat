@@ -831,7 +831,7 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 .switch:focus-visible { outline: 2px solid var(--line-2); outline-offset: 2px; }
 /* settings tabs */
 .settings h1 { margin-bottom: 16px; }
-.settings-tabs { display: flex; gap: 4px; margin-bottom: 8px; }
+.settings-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
 .settings-tab {
   display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px; border-radius: 8px; color: var(--muted);
   font-size: calc(13rem / 14); font-weight: 500;

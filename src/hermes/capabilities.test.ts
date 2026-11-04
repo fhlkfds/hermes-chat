@@ -209,6 +209,12 @@ describe("partial and malformed answers", () => {
     expect(t.caps.getSnapshot().facts.versionWhy).toMatch(/Hermes answered 500, which may pass/);
   });
 
+  it("keeps no fact that looks like a secret", () => {
+    expect(healthFacts({ version: "token=fixtureSecret123", displayVersion: "Bearer abcdefghijklmnop", commit: "74b2ed6" })).toMatchObject({ version: undefined, build: undefined, commit: "74b2ed6" });
+    expect(statusFacts({ release_date: "password=hunter2", auth_providers: ["basic", "sk-ant-api03-abcdefghijklmnopqrst"] })).toMatchObject({ releaseDate: undefined, authProviders: ["basic"] });
+    expect(flagsFrom({ "ghp_abcdefghijklmnopqrstuvwxyz0123": true, ok: true })).toEqual(["ok"]);
+  });
+
   it("drops fields of the wrong type, too long, or with control characters", () => {
     expect(healthFacts({ version: "1.0\u001b[31m", displayVersion: 7, commit: "not-hex!", auth_required: "yes" })).toEqual({
       version: undefined,
@@ -370,6 +376,22 @@ describe("late answers and connection changes", () => {
 });
 
 describe("what the app's own requests show", () => {
+  it("keeps a screen's newer answer when a check that started earlier answers late, either way", async () => {
+    for (const late of [() => Promise.reject(answered(502, "Bad Gateway")), () => Promise.resolve({ path: "/", entries: [] })]) {
+      const held: ((v: Promise<unknown>) => void)[] = [];
+      const t = store({ ...NEW, "GET api/files": () => new Promise<unknown>((r) => held.push(r)) });
+      t.caps.connected(1, "default", {}, Promise.resolve({}));
+      await vi.waitFor(() => expect(held.length).toBe(1));
+      // The Server files screen's own read finds no route while the check is out.
+      t.caps.observe(1, { route: "api/files?path=/" }, noRoute());
+      expect(t.caps.refuses({ rest: "POST", path: "api/files/upload-stream" })).toBe("serverFiles");
+      held[0](late());
+      await vi.waitFor(() => expect(t.caps.getSnapshot().checking).toBe(false));
+      expect(t.caps.get("serverFiles")).toMatchObject({ state: "unsupported", source: "observed" });
+      expect(t.caps.refuses({ rest: "POST", path: "api/files/upload-stream" })).toBe("serverFiles");
+    }
+  });
+
   it("settles a capability from a screen's answer, but not from a timeout or refusal", async () => {
     const t = store(NEW);
     t.caps.connected(1, "default", {}, Promise.resolve({}));
@@ -425,6 +447,17 @@ describe("refusing writes Hermes can't take", () => {
     expect(t.caps.refuses({ rpc: "prompt.submit" })).toBeUndefined();
   });
 
+  it("refuses a toolset switch once Settings → Toolsets found no route for it, but not its write check", () => {
+    const t = store(NEW);
+    t.caps.connected(1, "default", {}, Promise.resolve({}));
+    expect(t.caps.refuses({ rest: "PUT", path: "api/tools/toolsets/web?profile=default" })).toBeUndefined();
+    t.caps.report(1, "toolsetSwitches", "unsupported", "no route");
+    expect(t.caps.refuses({ rest: "PUT", path: "api/tools/toolsets/web?profile=default" })).toBe("toolsetSwitches");
+    expect(t.caps.refuses({ rest: "PUT", path: "api/tools/toolsets/__hermes_chat_probe__?profile=default" })).toBeUndefined();
+    // The list is still there, so reading it isn't refused either.
+    expect(t.caps.refuses({ rest: "GET", path: "api/tools/toolsets?profile=default" })).toBeUndefined();
+  });
+
   it("doesn't refuse while a capability is only unknown or couldn't be checked", () => {
     const t = store(NEW);
     expect(t.caps.refuses({ rest: "PUT", path: "api/skills/toggle" })).toBeUndefined();
@@ -449,6 +482,21 @@ describe("checking again", () => {
     // Only the facts, to see whether the build changed.
     expect(again.sort()).toEqual(["GET api/health", "GET api/status", "RPC gateway.capabilities"]);
     expect(t.caps.getSnapshot().checkedAt).toBe(now);
+  });
+
+  it("checks again once each capability's own check is old, however often it reconnects", async () => {
+    let now = 1_000_000;
+    const t = store(NEW, { now: () => now });
+    await connectAndCheck(t, 1);
+    // Reconnecting every ten minutes reads the facts each time, which renews no capability.
+    for (let gen = 2; gen <= 4; gen++) {
+      t.caps.disconnected();
+      now += 10 * 60_000;
+      const before = t.calls.length;
+      await connectAndCheck(t, gen);
+      if (gen === 2) expect(t.calls.slice(before)).not.toContain("GET api/files");
+      if (gen === 3) expect(t.calls.slice(before)).toContain("GET api/files");
+    }
   });
 
   it("checks everything again once the last check is old", async () => {
@@ -491,6 +539,16 @@ describe("checking again", () => {
     expect(t.calls.slice(before)).toContain("GET api/webhooks");
     expect(t.calls.slice(before)).not.toContain("GET api/files");
     expect(t.caps.get("automations").state).toBe("supported");
+  });
+
+  it("forgets on Check again what only a screen can check, so it checks it afresh", async () => {
+    const t = store(NEW);
+    await connectAndCheck(t);
+    t.caps.report(1, "toolsetSwitches", "unsupported", "no route");
+    expect(t.caps.refuses({ rest: "PUT", path: "api/tools/toolsets/web" })).toBe("toolsetSwitches");
+    await t.caps.refresh();
+    expect(t.caps.get("toolsetSwitches").state).toBe("unknown");
+    expect(t.caps.get("chat").state).toBe("supported");
   });
 
   it("checks everything when asked, from diagnostics", async () => {

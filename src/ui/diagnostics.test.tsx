@@ -148,6 +148,19 @@ describe("Connection diagnostics", () => {
     expect(screen.getByText("Report copied, with secrets taken out.")).toBeTruthy();
   });
 
+  it("never shows a fact Hermes sent that looks like a secret", async () => {
+    const store = scriptedStore({
+      ...NEW,
+      "GET api/health": { version: "token=fixtureSecret123", displayVersion: "0.17.0", commit: "74b2ed65e6" },
+      "GET api/status": { version: "0.17.0", release_date: "password=fixturePassword9", auth_providers: ["basic", "sk-ant-api03-fixturefixturefixture"] },
+    });
+    diagnostics(store);
+    act(() => store.connected(1, "default", {}, Promise.resolve({})));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toMatch(/Checked/));
+    expect(document.body.textContent).not.toMatch(/fixtureSecret123|fixturePassword9|sk-ant-api03/);
+    expect(screen.getByText("0.17.0")).toBeTruthy();
+  });
+
   it("says when the report couldn't be copied", async () => {
     const store = scriptedStore(NEW);
     diagnostics(store, { copyText: () => Promise.reject(new Error("denied")) });

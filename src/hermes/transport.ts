@@ -780,7 +780,10 @@ export class Hermes {
       if (name === "stt") this.voiceRead = undefined;
     },
     // What its write check found, which only Settings → Toolsets can learn (capabilities.ts `toolsetSwitches`).
-    (state, why) => this.capabilities.report(this.generation, "toolsetSwitches", state, why),
+    () => {
+      const gen = this.generation;
+      return (state, why) => this.capabilities.report(gen, "toolsetSwitches", state, why);
+    },
   );
   /** Settings → Memory's reads and writes (memory.ts). Each call names the profile it is for. */
   readonly memory: MemoryApi = memoryApi({

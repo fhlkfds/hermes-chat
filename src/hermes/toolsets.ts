@@ -194,8 +194,12 @@ export class ToolsetsApi {
     private readonly readGuards: (profile: string) => Promise<ToolsetGuards>,
     /** Called after a change Hermes may have taken, so cached reads that depend on it are dropped. */
     private readonly changed: (profile: string, name: string) => void = () => {},
-    /** Told what the write check found: whether Hermes has the switch's route (capabilities.ts `toolsetSwitches`). */
-    private readonly checkedWrites: (found: "supported" | "unsupported" | "unknown", why: string) => void = () => {},
+    /**
+     * Called as the write check starts, for where to say what it found: whether Hermes has the switch's route
+     * (capabilities.ts `toolsetSwitches`). Asked at the start, so an answer that comes after a reconnect or profile
+     * switch is told to the connection it went out on.
+     */
+    private readonly checkingWrites: () => (found: "supported" | "unsupported" | "unknown", why: string) => void = () => () => {},
   ) {}
 
   /** The change on its way, if any. */
@@ -242,8 +246,9 @@ export class ToolsetsApi {
    * server that took the body would still refuse the unknown name (400) before reading the config.
    */
   async writeSupport(profile: string): Promise<WriteSupport> {
+    const tell = this.checkingWrites();
     const found = (state: "supported" | "unsupported" | "unknown", support: WriteSupport): WriteSupport => {
-      this.checkedWrites(state, support.ok ? "Hermes refused the write check before changing anything, as it does when it has the route." : support.reason);
+      tell(state, support.ok ? "Hermes refused the write check before changing anything, as it does when it has the route." : support.reason);
       return support;
     };
     try {

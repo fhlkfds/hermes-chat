@@ -6,6 +6,22 @@ import { afterEach, describe, expect, it } from "vitest";
 import { FakeHermes, row, type RestRequest } from "./fakeHermes";
 import { CapabilityUnsupportedError } from "./capabilities";
 import { ProtocolMismatchError, connect, type Hermes } from "./transport";
+import type { OpenPipe } from "./pipe";
+
+/** The server's pipe, with the toolsets write check (a PUT to `PROBE_NAME`) held back while `held` is set. */
+function holdingWriteChecks(server: FakeHermes) {
+  const gate: { held?: Promise<void>; release?: () => void } = {};
+  const openPipe: OpenPipe = async (...args) => {
+    const pipe = await server.openPipe(...args);
+    const request = pipe.request.bind(pipe);
+    return {
+      ...pipe,
+      request: (method, path, body) => (gate.held && method === "PUT" && path.includes("__hermes_chat_probe__") ? gate.held.then(() => request(method, path, body)) : request(method, path, body)),
+    };
+  };
+  const hold = () => (gate.held = new Promise((r) => (gate.release = () => (gate.held = undefined, r()))));
+  return { openPipe, hold, release: () => gate.release?.() };
+}
 
 const running: Hermes[] = [];
 afterEach(async () => {
@@ -119,6 +135,40 @@ describe("capabilities over the transport", () => {
     expect(writesSent(server).filter((r) => r.path.startsWith("/api/tools"))).toEqual([]);
     expect(await hermes.toolsets.writeSupport("default")).toMatchObject({ ok: false });
     expect(hermes.capabilities.get("toolsetSwitches")).toMatchObject({ state: "unsupported", source: "observed" });
+  });
+
+  it("never sends a toolset switch once Hermes is found to lack the route, but still lets its write check through", { timeout: 10_000 }, async () => {
+    const server = new FakeHermes();
+    server.toolsetRoutes = "read-only";
+    const hermes = await signedIn(server);
+    await checked(hermes);
+    await hermes.toolsets.writeSupport("default");
+    expect(hermes.capabilities.get("toolsetSwitches").state).toBe("unsupported");
+    const before = writesSent(server).length;
+    // Settings → Toolsets reads a refusal before sending as `rejected`, as it reads the relay's own.
+    expect(await hermes.toolsets.set("default", "web", false, true)).toMatchObject({ kind: "rejected" });
+    expect(writesSent(server).slice(before)).toEqual([]);
+    // The check itself still goes, so it can find the route once Hermes has it.
+    server.toolsetRoutes = "all";
+    expect(await hermes.toolsets.writeSupport("default")).toEqual({ ok: true });
+    expect(hermes.capabilities.get("toolsetSwitches").state).toBe("supported");
+  });
+
+  it("tells a toolset write check's answer to the connection it went out on", { timeout: 10_000 }, async () => {
+    const server = new FakeHermes();
+    server.otherProfiles = { work: [] };
+    server.toolsetRoutes = "read-only";
+    const pipe = holdingWriteChecks(server);
+    const hermes = await connect(pipe.openPipe);
+    running.push(hermes);
+    await hermes.sync();
+    pipe.hold();
+    const late = hermes.toolsets.writeSupport("default");
+    await hermes.switchProfile("work");
+    pipe.release();
+    await late;
+    // The 404 was for the default profile's connection, which is gone: the new one learnt nothing from it.
+    expect(hermes.capabilities.get("toolsetSwitches").state).toBe("unknown");
   });
 
   it("still refuses the canonical session protocol", async () => {

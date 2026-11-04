@@ -175,6 +175,9 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
     without: "Settings → Toolsets shows each toolset's state without switches.",
     anchor: "toolsets",
     notChecked: "Diagnostics can't check this by reading. Settings → Toolsets checks it when it opens (ADR 0021).",
+    // A switch only: the write check Settings → Toolsets sends goes to a name no toolset has (`PROBE_NAME`), and is
+    // let through so it can find the route again.
+    writeRoutes: [new RegExp(`^api\\/tools\\/toolsets\\/(?!${PROBE_NAME}$)[^/]+$`)],
   },
   {
     id: "persona",
@@ -350,19 +353,27 @@ export function redact(text: string): string {
 }
 
 /** A short string from an answer, or nothing: only plain text, and no more than `max` characters. */
-const shortText = (v: unknown, max = 80) => (typeof v === "string" && v.trim() && v.length <= max && !/[\u0000-\u001f\u007f]/.test(v) ? v.trim() : undefined);
+const plainText = (v: unknown, max: number) => (typeof v === "string" && v.trim() && v.length <= max && !/[\u0000-\u001f\u007f]/.test(v) ? v.trim() : undefined);
+/** A short string from an answer that doesn't look like a secret, or nothing. */
+const shortText = (v: unknown, max = 80) => {
+  const t = plainText(v, max);
+  return t && unsecret(t) ? t : undefined;
+};
+/** Text the redaction leaves as it is. A fact that looks like a secret isn't kept or shown at all. */
+const unsecret = (t: string) => redact(t) === t;
 /** A version as Hermes reports it. A git checkout without a release says `unknown`, which is no version. */
 const versionText = (v: unknown) => {
   const t = shortText(v);
   return t && t.toLowerCase() !== "unknown" ? t : undefined;
 };
 const NAME = /^[A-Za-z0-9_.-]{1,40}$/;
-const names = (v: unknown) => (Array.isArray(v) ? v.filter((n): n is string => typeof n === "string" && NAME.test(n)).slice(0, 20) : undefined);
+const names = (v: unknown) => (Array.isArray(v) ? v.filter((n): n is string => typeof n === "string" && NAME.test(n) && unsecret(n)).slice(0, 20) : undefined);
 
 /** The facts in a `GET /api/health` answer; undefined for one that isn't an object. */
 export function healthFacts(body: unknown): ServerFacts | undefined {
   if (!isObj(body)) return undefined;
-  const commit = shortText(body.commit, 64);
+  // Only hex is kept, which the redaction would take for a key-like line.
+  const commit = plainText(body.commit, 64);
   return {
     version: versionText(body.version),
     build: versionText(body.displayVersion),
@@ -390,7 +401,7 @@ export const protocolOf = (payload: Record<string, unknown>): Protocol => (paylo
 export function flagsFrom(result: unknown): string[] | undefined {
   if (!isObj(result)) return undefined;
   return Object.entries(result)
-    .filter(([k, v]) => v === true && NAME.test(k))
+    .filter(([k, v]) => v === true && NAME.test(k) && unsecret(k))
     .map(([k]) => k)
     .sort()
     .slice(0, 20);
@@ -454,8 +465,9 @@ export class CapabilityUnsupportedError extends Error {
 }
 
 /** The capability a dashboard request's path belongs to, for its writes; none for a path no capability guards. */
-const writeRouteOwner = (path: string) => CAPABILITIES.find((c) => c.writeRoutes?.some((r) => r.test(path)));
-const writeMethodOwner = (method: string) => CAPABILITIES.find((c) => c.writeMethods?.test(method));
+/** Every capability that guards a write: a route can belong to more than one, such as a toolset switch. */
+const writeRouteOwners = (path: string) => CAPABILITIES.filter((c) => c.writeRoutes?.some((r) => r.test(path)));
+const writeMethodOwners = (method: string) => CAPABILITIES.filter((c) => c.writeMethods?.test(method));
 
 /**
  * What the connected Hermes can do: the facts it gives about itself and each capability's state. The transport calls
@@ -471,6 +483,8 @@ export class CapabilityStore {
   private scope?: Scope;
   /** Counts checks started. A check's answers land only while it is the latest. */
   private run = 0;
+  /** Counts the changes to each capability, so a check that started before a newer answer doesn't replace it. */
+  private revs = new Map<CapabilityId, number>();
   /** The build the last whole check was for. */
   private checkedFor?: string;
   /** When the current connection opened: what was settled since then needs no check. */
@@ -502,7 +516,14 @@ export class CapabilityStore {
 
   private setCap(id: CapabilityId, cap: Omit<Capability, "id" | "checkedAt">) {
     const why = cap.why === undefined ? undefined : redact(cap.why);
+    this.revs.set(id, (this.revs.get(id) ?? 0) + 1);
     this.set({ caps: { ...this.snap.caps, [id]: { id, ...cap, why, checkedAt: this.now() } } });
+  }
+
+  /** Puts back a capability as it starts, before anything is learnt. */
+  private setCapRaw(id: CapabilityId, cap: Capability) {
+    this.revs.set(id, (this.revs.get(id) ?? 0) + 1);
+    this.set({ caps: { ...this.snap.caps, [id]: cap } });
   }
 
   private current = (scope: Scope, run?: number) => this.scope === scope && scope.gen === this.liveGen() && (run === undefined || run === this.run);
@@ -580,8 +601,8 @@ export class CapabilityStore {
    * still go, so their answers can show the capability is there after all.
    */
   refuses(call: { rest: string; path: string } | { rpc: string }): CapabilityId | undefined {
-    const spec = "rest" in call ? (call.rest === "GET" ? undefined : writeRouteOwner(call.path.split("?")[0])) : writeMethodOwner(call.rpc);
-    return spec && this.snap.caps[spec.id].state === "unsupported" ? spec.id : undefined;
+    const owners = "rest" in call ? (call.rest === "GET" ? [] : writeRouteOwners(call.path.split("?")[0])) : writeMethodOwners(call.rpc);
+    return owners.find((c) => this.snap.caps[c.id].state === "unsupported")?.id;
   }
 
   private async check(scope: Scope, force: boolean): Promise<void> {
@@ -592,16 +613,21 @@ export class CapabilityStore {
     // A build is known by its commit when Hermes names one, else by its version: a git checkout has no version.
     const key = facts.commit ?? facts.build ?? facts.version;
     const sameBuild = key !== undefined && key === this.checkedFor;
-    const recent = this.snap.checkedAt !== undefined && this.now() - this.snap.checkedAt < RECHECK_AFTER_MS;
     this.set({ facts: { ...facts, protocol: this.snap.facts.protocol } });
     // Another build may have other routes: only what this connection learnt stands.
     if (!sameBuild && this.checkedFor !== undefined) {
       const kept = Object.values(this.snap.caps).filter((c) => (c.checkedAt ?? 0) >= this.connectedAt);
       this.set({ caps: { ...fresh(), ...Object.fromEntries(kept.map((c) => [c.id, c])) } });
     }
-    // Not checked again: what this connection's own requests have settled, and on a reconnect to the same build
-    // checked lately, what that check settled.
-    const known = (c: Capability) => settled(c) && ((c.checkedAt ?? 0) >= this.connectedAt || (sameBuild && recent));
+    // Check again asks each screen to find out afresh what diagnostics can't check by reading (toolset switches).
+    if (force) {
+      const start = fresh();
+      for (const c of CAPABILITIES) if (!c.probe && c.notChecked && c.id !== "chat" && c.id !== "approvals") this.setCapRaw(c.id, start[c.id]);
+    }
+    // Not checked again: what this connection's own requests have settled, and on a reconnect to the same build, what
+    // was settled less than RECHECK_AFTER_MS ago, by each capability's own time: reading the facts renews none.
+    const known = (c: Capability) =>
+      settled(c) && ((c.checkedAt ?? 0) >= this.connectedAt || (sameBuild && c.checkedAt !== undefined && this.now() - c.checkedAt < RECHECK_AFTER_MS));
     const due = CAPABILITIES.filter((c) => c.probe && (force || !known(this.snap.caps[c.id])));
     await Promise.all(due.map((c) => this.probe(c, scope, run)));
     if (!this.current(scope, run)) return;
@@ -644,6 +670,7 @@ export class CapabilityStore {
 
   private async probe(spec: CapabilitySpec, scope: Scope, run: number) {
     const probe = spec.probe!;
+    const rev = this.revs.get(spec.id);
     let result: Omit<Capability, "id" | "checkedAt">;
     try {
       // The answer is checked for its shape and then let go: nothing of it is kept.
@@ -657,7 +684,8 @@ export class CapabilityStore {
     } catch (e) {
       result = { source: "probed", ...(e instanceof SyntaxError ? { state: "unknown", why: "Hermes answered with something that isn't JSON." } : stateOfFailure(failureOf(e))) };
     }
-    if (this.current(scope, run)) this.setCap(spec.id, result);
+    // A screen's own answer that came in meanwhile is newer, and stands.
+    if (this.current(scope, run) && this.revs.get(spec.id) === rev) this.setCap(spec.id, result);
   }
 }
 
