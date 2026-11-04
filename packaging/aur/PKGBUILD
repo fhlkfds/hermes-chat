@@ -10,7 +10,7 @@ url='https://github.com/l0cky12/hermes-chat'
 license=('GPL-3.0-or-later')
 depends=('webkit2gtk-4.1' 'gtk3' 'libsoup3' 'glib2' 'cairo' 'gdk-pixbuf2' 'dbus'
          'libgcc' 'glibc' 'hicolor-icon-theme')
-makedepends=('git' 'cargo' 'npm')
+makedepends=('git' 'cargo' 'pnpm')
 optdepends=('openssh: sign in through an SSH tunnel'
             'org.freedesktop.secrets: remember the dashboard password'
             'slurp: pick a region or window for screenshots on Hyprland and Sway'
@@ -36,7 +36,7 @@ pkgver() {
 prepare() {
   cd "$_pkgname"
   export RUSTUP_TOOLCHAIN=stable
-  npm ci --cache "$srcdir/npm-cache"
+  pnpm install --frozen-lockfile --store-dir "$srcdir/pnpm-store"
   cargo fetch --locked --manifest-path src-tauri/Cargo.toml \
     --target "$(rustc -vV | sed -n 's/host: //p')"
 }
@@ -51,7 +51,7 @@ build() {
 package() {
   cd "$_pkgname"
   install -Dm755 "src-tauri/target/release/$_pkgname" "$pkgdir/usr/bin/$_pkgname"
-  # The launcher sets WEBKIT_DISABLE_DMABUF_RENDERER=1, as `npm run app` does.
+  # The launcher sets WEBKIT_DISABLE_DMABUF_RENDERER=1, as `pnpm run app` does.
   install -Dm644 "$srcdir/$_pkgname.desktop" "$pkgdir/usr/share/applications/$_pkgname.desktop"
   install -Dm644 src-tauri/icons/32x32.png "$pkgdir/usr/share/icons/hicolor/32x32/apps/$_pkgname.png"
   install -Dm644 src-tauri/icons/128x128.png "$pkgdir/usr/share/icons/hicolor/128x128/apps/$_pkgname.png"

@@ -2,6 +2,10 @@
 
 Personal Tauri 2 + React + TypeScript desktop chat client for a remote Hermes Agent, built for Arch Linux.
 
+## Package manager
+
+The frontend uses **pnpm** (`packageManager` in `package.json`, lockfile `pnpm-lock.yaml`). Run `pnpm install`, `pnpm test`, `pnpm run build`. Never run `npm install` or commit a `package-lock.json`; worktrees share one pnpm store so each checkout's `node_modules` costs almost no disk.
+
 ## Agent skills
 
 ### Issue tracker

@@ -247,7 +247,7 @@ Settings → General → **Updates** shows the installed version, what's newer, 
 
 - **The `hermes-chat-git` package** (pacman owns `/usr/bin/hermes-chat`): the app compares the package's commit with `main` on GitHub and lists the pull requests merged since. It never replaces the package's files. You run the update yourself, from your checkout: `git pull && packaging/aur/build.sh -si`. Back in the app, it sees the new version and offers **Restart now**.
 - **A standalone AppImage built with an update key**: Tauri's updater downloads the new AppImage, checks its signature against the public key built into the app, and replaces the AppImage. Then you restart.
-- **Anything else** (for example `npm run app`, or a binary you copied): the app says it isn't updated from here.
+- **Anything else** (for example `pnpm run app`, or a binary you copied): the app says it isn't updated from here.
 
 The repo ships no AppImage, update server or signing key yet, so standalone updates are off. To turn them on for your own builds, generate a key once. Keep the private key and its password out of the repo:
 
@@ -273,10 +273,10 @@ Publish the `.AppImage`, its `.sig`, and a `latest.json` in Tauri's [static JSON
 
 ## Development
 
-Install the Tauri 2 prerequisites, Node.js, and npm:
+Install the Tauri 2 prerequisites, Node.js, and pnpm:
 
 ```sh
-sudo pacman -S --needed rust nodejs npm webkit2gtk-4.1 base-devel curl wget file openssl \
+sudo pacman -S --needed rust nodejs pnpm webkit2gtk-4.1 base-devel curl wget file openssl \
   appmenu-gtk-module libappindicator-gtk3 librsvg openssh
 ```
 
@@ -285,28 +285,28 @@ CI uses Node.js 22 and stable Rust.
 Then, from the repository root:
 
 ```sh
-npm ci          # install the exact versions in package-lock.json
-npm run app     # run the desktop app in development mode
+pnpm install --frozen-lockfile   # install the exact versions in pnpm-lock.yaml
+pnpm run app     # run the desktop app in development mode
 ```
 
-`npm run app` runs `tauri dev` with `WEBKIT_DISABLE_DMABUF_RENDERER=1`. This variable prevents a blank window on some Wayland setups. Tauri starts the Vite dev server on port 1420 itself.
+`pnpm run app` runs `tauri dev` with `WEBKIT_DISABLE_DMABUF_RENDERER=1`. This variable prevents a blank window on some Wayland setups. Tauri starts the Vite dev server on port 1420 itself.
 
 | Command | What it does |
 | --- | --- |
-| `npm run app` | Runs the desktop app with hot reload. |
-| `npm run dev` | Runs only the Vite dev server on port 1420. The page can't connect to Hermes outside the Tauri window. |
-| `npm run build` | Type-checks with `tsc --noEmit`, and builds the frontend into `dist/`. |
-| `npm test` | Runs the frontend tests (Vitest and jsdom) against a fake Hermes. |
-| `npm run tauri -- build --no-bundle` | Builds the release binary `src-tauri/target/release/hermes-chat`. No installer bundles are configured. |
-| `cd src-tauri && cargo test --lib --test transport --test media --test screenshot` | Runs the Rust tests. The `dist/` folder must exist first, so run `npm run build` or `mkdir -p dist`. |
+| `pnpm run app` | Runs the desktop app with hot reload. |
+| `pnpm run dev` | Runs only the Vite dev server on port 1420. The page can't connect to Hermes outside the Tauri window. |
+| `pnpm run build` | Type-checks with `tsc --noEmit`, and builds the frontend into `dist/`. |
+| `pnpm test` | Runs the frontend tests (Vitest and jsdom) against a fake Hermes. |
+| `pnpm run tauri -- build --no-bundle` | Builds the release binary `src-tauri/target/release/hermes-chat`. No installer bundles are configured. |
+| `cd src-tauri && cargo test --lib --test transport --test media --test screenshot` | Runs the Rust tests. The `dist/` folder must exist first, so run `pnpm run build` or `mkdir -p dist`. |
 | `HERMES_HOME=$(mktemp -d) ~/.hermes/hermes-agent/venv/bin/python tools/cron-golden.py ~/.hermes/hermes-agent` | Regenerates `src/hermes/cronGolden.json`, what Hermes's own scheduler code makes of a set of schedules, which `schedule.test.ts` checks the schedule preview against. |
-| `HERMES_LIVE_DASHBOARD=… npx vitest run src/hermes/cronJobs.live.test.ts` | Runs the Scheduled jobs calls against a real dashboard. It refuses one whose profiles don't all live under `/tmp`; see the file's header. Skipped by `npm test`. |
-| `HERMES_LIVE_DASHBOARD=… npx vitest run src/hermes/importTranscripts.live.test.ts` | Imports real export files into a real dashboard, imports them again, and sends a corrupted file. It refuses one whose profiles don't all live under `/tmp`; see the file's header. Skipped by `npm test`. |
+| `HERMES_LIVE_DASHBOARD=… pnpm vitest run src/hermes/cronJobs.live.test.ts` | Runs the Scheduled jobs calls against a real dashboard. It refuses one whose profiles don't all live under `/tmp`; see the file's header. Skipped by `pnpm test`. |
+| `HERMES_LIVE_DASHBOARD=… pnpm vitest run src/hermes/importTranscripts.live.test.ts` | Imports real export files into a real dashboard, imports them again, and sends a corrupted file. It refuses one whose profiles don't all live under `/tmp`; see the file's header. Skipped by `pnpm test`. |
 | `node bench/run.mjs` | Benchmarks long chats (50, 200, and 800 turns) in headless Chromium. See below. |
 
 The benchmark times opening, streaming, find-in-chat, scrolling, two simultaneous streams, and divider dragging. It needs `$CHROME` or Playwright's cached headless shell (`npx playwright install chromium-headless-shell`). Set `THROTTLE=4` to slow the CPU four times.
 
-GitHub Actions (`.github/workflows/ci.yml`) runs `npm test`, `npm run build`, and the Rust tests on every pull request and on pushes to `main`.
+GitHub Actions (`.github/workflows/ci.yml`) runs `pnpm test`, `pnpm run build`, and the Rust tests on every pull request and on pushes to `main`.
 
 ## Project defaults
 
@@ -427,7 +427,7 @@ Webview local storage is in `$XDG_DATA_HOME/net.l0cky12.hermes-chat/localstorage
 
 | Problem | What to try |
 | --- | --- |
-| The window is blank | Start the app with `WEBKIT_DISABLE_DMABUF_RENDERER=1`. The launcher and `npm run app` already set it. |
+| The window is blank | Start the app with `WEBKIT_DISABLE_DMABUF_RENDERER=1`. The launcher and `pnpm run app` already set it. |
 | "SSH failed" or "SSH didn't open the tunnel within 20s" | Check that `ssh -o BatchMode=yes <target> true` works without a prompt. Load a passphrase-protected key with `ssh-add`. Check that the dashboard listens on port 9119 on the server. |
 | "Wrong username or password" | Use the dashboard's own username and password, not the SSH account. |
 | "This Hermes server speaks the canonical session protocol" | That Hermes version isn't supported yet. |
