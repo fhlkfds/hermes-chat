@@ -17,7 +17,7 @@
 //
 // Memory text comes from the agent and whatever it read, so it is shown as plain text, never rendered, and never kept
 // on this computer. The one exception to "never kept": what a save from here replaced, held in this app's memory (never
-// on disk) until sign-out or quit, so the owner can put it back (ADR 0039).
+// on disk) until sign-out or quit, so the owner can put it back (ADR 0040).
 
 /** Which of the profile's memory files an entry is in, by the name `learning.*` gives it. */
 export type MemorySource = "memory" | "profile";
@@ -95,7 +95,7 @@ export class MemoryUnverifiedError extends Error {
 
 /**
  * What a save from this app replaced: `text` was the entry before it, `saved` the entry the save left, at `savedAt`
- * (ms). Kept in this app's memory only, per profile and file, the most recent `KEEP_REPLACED` (ADR 0039).
+ * (ms). Kept in this app's memory only, per profile and file, the most recent `KEEP_REPLACED` (ADR 0040).
  */
 export type MemoryReplaced = { text: string; saved: string; savedAt: number };
 
