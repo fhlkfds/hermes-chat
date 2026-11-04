@@ -107,6 +107,8 @@ export function Rail({
             {inboxCount > 0 && <span className="badge" aria-hidden>{inboxCount > 99 ? "99+" : inboxCount}</span>}
           </button>
         )}
+        {/* Chats above, the profile's tools below. */}
+        <span className="rail-sep" aria-hidden />
         {onFiles && (
           <button className={`icon-btn ${filesOpen ? "on" : ""}`} title="Server files" aria-pressed={filesOpen} onClick={onFiles}>
             <FolderOpen size={18} />
@@ -702,6 +704,8 @@ export function ChatList({
   onCheckOthers,
   onSwitchProfile,
   onRetrySwitch,
+  onNew,
+  onSearch,
 }: {
   profile: string;
   projectSwitcher?: ReactNode;
@@ -735,6 +739,9 @@ export function ChatList({
   onCheckOthers: () => void;
   onSwitchProfile: (name: string) => void;
   onRetrySwitch: () => void;
+  /** The list's own New chat and Search buttons, labeled with their keys; the rail keeps icons for both. */
+  onNew?: () => void;
+  onSearch?: () => void;
 }) {
   const [settledOpen, setSettledOpen] = useState(false);
   // Opening a Settled chat, say from a search, shows it in the list; settling the chat on screen doesn't.
@@ -785,6 +792,24 @@ export function ChatList({
           <EyeOff size={16} />
         </button>
       </div>
+      {(onNew || onSearch) && (
+        <div className="sb-actions">
+          {onNew && (
+            <button className="sb-action primary" onClick={onNew}>
+              <SquarePen size={15} />
+              <span>New chat</span>
+              <kbd aria-hidden>Ctrl N</kbd>
+            </button>
+          )}
+          {onSearch && (
+            <button className="sb-action" onClick={onSearch}>
+              <Search size={15} />
+              <span>Search chats</span>
+              <kbd aria-hidden>Ctrl K</kbd>
+            </button>
+          )}
+        </div>
+      )}
       {projectSwitcher && <div className="sb-project">{projectSwitcher}</div>}
       <div className="sb-scroll">
         {switching && (

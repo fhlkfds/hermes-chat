@@ -627,6 +627,17 @@ export function Main({
     setSearchStart(start);
     setSearchOpen(true);
   };
+  const openSettings = () => {
+    setProjectOpen(false);
+    setFilesOpen(false);
+    setJobsOpen(false);
+    setTerminalOpen(false);
+    setOutputsOpen(false);
+    setUsageOpen(false);
+    setShowTextGeneration(undefined);
+    setShowMemory(undefined);
+    setSettingsOpen(true);
+  };
   const listable = proj.projects.filter((p) => !p.archived);
   const shownProject = listable.find((p) => p.id === proj.selectedId);
   const projectScreenOpen = projectOpen && !!shownProject;
@@ -1042,6 +1053,18 @@ export function Main({
         if (!e.repeat) takeScreenshot();
         return;
       }
+      // Alt+Up/Down: the Active chat above or below the one showing, as the list orders them. Lists that use the
+      // same keys (the queue, Server files) take them first.
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown") && !e.defaultPrevented) {
+        const order = listed.filter((c) => !c.settled && !c.archived).sort((a, b) => b.updatedAt - a.updatedAt);
+        const at = order.findIndex((c) => c.id === active.chatId);
+        const next = order[at < 0 ? 0 : at + (e.key === "ArrowDown" ? 1 : -1)];
+        if (next) {
+          e.preventDefault();
+          openChat(next.id);
+        }
+        return;
+      }
       if (!(e.ctrlKey || e.metaKey)) return;
       const k = e.key.toLowerCase();
       if (k === "k") {
@@ -1054,6 +1077,9 @@ export function Main({
       } else if (k === "b") {
         e.preventDefault();
         setListOpen((o) => !o);
+      } else if (k === ",") {
+        e.preventDefault();
+        openSettings();
       } else if (e.code === "Backslash" || k === "\\") {
         e.preventDefault();
         toggleSplit();
@@ -1221,7 +1247,7 @@ export function Main({
         onInbox={() => setInboxOpen((o) => !o)}
         inboxOpen={inboxOpen}
         inboxCount={inboxCount}
-        onSettings={() => { setProjectOpen(false); setFilesOpen(false); setJobsOpen(false); setTerminalOpen(false); setOutputsOpen(false); setUsageOpen(false); setShowTextGeneration(undefined); setShowMemory(undefined); setSettingsOpen(true); }}
+        onSettings={openSettings}
         onJobs={() =>
           guard(() => {
             setProjectOpen(false);
@@ -1351,6 +1377,8 @@ export function Main({
           onCheckOthers={() => void hermes.checkOtherProfiles()}
           onSwitchProfile={switchProfile}
           onRetrySwitch={() => void (status === "connected" ? hermes.sync() : hermes.reconnect())}
+          onNew={() => newChat()}
+          onSearch={() => openSearch()}
         />
       )}
       {inboxOpen && (

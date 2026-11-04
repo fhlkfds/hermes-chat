@@ -366,6 +366,11 @@ describe("Chat list by keyboard", () => {
     button(/default/).focus();
     await s.user.tab();
     expect(focused()).toBe(button("Archived chats"));
+    // New chat and Search, labeled, come first.
+    await s.user.tab();
+    expect(focused()).toBe(button("New chat"));
+    await s.user.tab();
+    expect(focused()).toBe(button("Search chats"));
     // The project switcher sits under the profile's name, before the chats.
     await s.user.tab();
     expect(focused()).toBe(button(/All chats/));
@@ -375,6 +380,30 @@ describe("Chat list by keyboard", () => {
     await settle(s.hermes);
     expect(s.server.requests.filter((r) => r.method === "session.resume").map((r) => r.params.session_id)).toEqual(["backup"]);
     expect(rowButton("Nightly backup").getAttribute("aria-current")).toBe("true");
+  });
+
+  it("opens the Active chat below or above with Alt+Down and Alt+Up, from anywhere", async () => {
+    const s = await signedIn();
+    const resumed = () => s.server.requests.filter((r) => r.method === "session.resume").map((r) => r.params.session_id);
+    composer().focus();
+    await s.user.keyboard("{Alt>}{ArrowDown}{/Alt}");
+    await settle(s.hermes);
+    expect(rowButton("Nightly backup").getAttribute("aria-current")).toBe("true");
+    await s.user.keyboard("{Alt>}{ArrowDown}{/Alt}");
+    await settle(s.hermes);
+    expect(rowButton("NAS disks").getAttribute("aria-current")).toBe("true");
+    // The last one stays put.
+    await s.user.keyboard("{Alt>}{ArrowDown}{/Alt}");
+    await s.user.keyboard("{Alt>}{ArrowUp}{/Alt}");
+    await settle(s.hermes);
+    expect(rowButton("Nightly backup").getAttribute("aria-current")).toBe("true");
+    expect(resumed()).toEqual(["backup", "nas"]);
+  });
+
+  it("opens Settings with Ctrl+Comma", async () => {
+    const s = await signedIn();
+    await s.user.keyboard("{Control>},{/Control}");
+    expect(await screen.findByRole("heading", { name: "Settings" })).toBeTruthy();
   });
 
   it("moves between chats with the arrow keys without opening them", async () => {

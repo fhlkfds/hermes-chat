@@ -499,7 +499,17 @@ export function ChatPane({
             </div>
           )}
           {notice}
-          {!chat.loading && !notLoaded && blocks.length === 0 && <div className="empty-chat">What should Hermes work on?</div>}
+          {!chat.loading && !notLoaded && blocks.length === 0 && (
+            <div className="empty-state">
+              <div className="empty-chat">What should Hermes work on?</div>
+              <ul className="empty-keys" aria-label="Keyboard shortcuts">
+                <li><kbd>Ctrl N</kbd> New chat</li>
+                <li><kbd>Ctrl K</kbd> Search chats</li>
+                <li><kbd>Alt ↑↓</kbd> Switch chats</li>
+                <li><kbd>Ctrl ,</kbd> Settings</li>
+              </ul>
+            </div>
+          )}
           {blocks.map((b) => (
             <BlockView
               key={b.id}

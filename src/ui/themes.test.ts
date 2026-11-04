@@ -8,15 +8,15 @@ const hermes = BUILTIN_THEMES[0];
 describe("Theme colors", () => {
   it("are the stylesheet's original colors for Hermes in dark at the default contrast", () => {
     expect(themeVars(hermes.dark, "dark")).toMatchObject({
-      "--bg": "#161618",
-      "--sidebar": "#111113",
-      "--raised": "#1e1e21",
-      "--text": "#e7e7ea",
-      "--muted": "#8d8d90",
-      "--faint": "#5c5c5e",
-      "--accent": "#d97757",
-      "--code-bg": "#0d0d0e",
-      "--text-strong": "#ffffff",
+      "--bg": "#1b1c20",
+      "--sidebar": "#18191d",
+      "--raised": "#222328",
+      "--text": "#d6d7dc",
+      "--muted": "#86878b",
+      "--faint": "#5a5b5f",
+      "--accent": "#d08b6e",
+      "--code-bg": "#16161a",
+      "--text-strong": "#e8e9ec",
     });
   });
 
