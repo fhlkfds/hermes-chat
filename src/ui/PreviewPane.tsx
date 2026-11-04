@@ -3,10 +3,23 @@
 // app, HTML files render with scripts and network off, and Markdown renders without raw HTML, as replies do.
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { AlertTriangle, Check, Copy, ExternalLink, FileQuestion, Globe, Laptop, Plus, RotateCw, Server, Wrench } from "lucide-react";
-import { fenced, parseAddress, previewName, sandboxedHtml, withoutBidi, type FileView, type Framing, type PreviewTarget } from "../hermes/preview";
+import {
+  fenced,
+  loopbackOf,
+  pageOn,
+  parseAddress,
+  previewName,
+  sandboxedHtml,
+  tunnelUrl,
+  withoutBidi,
+  type FileView,
+  type Framing,
+  type PageOn,
+  type PreviewTarget,
+} from "../hermes/preview";
 import { Markdown } from "./Markdown";
 import { Spinner, fmtSize } from "./bits";
-import type { LocalFiles, WebPages } from "./tauriPreview";
+import { ServerPageError, type LocalFiles, type ServerPage, type ServerPages, type WebPages } from "./tauriPreview";
 import type { ArtifactStore } from "../hermes/artifacts";
 import { ArtifactEditor } from "./ArtifactEditor";
 
@@ -44,7 +57,7 @@ const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 /**
  * The side panel's Preview tab (SidePanel.tsx). `serverLabel`: how the app reaches the Hermes server, e.g.
  * `liam@hermes`, so a Server file says where it is. `web`: asks whether a site refuses to be shown in the frame, and
- * opens a page in the owner's browser.
+ * opens a page in the owner's browser. `serverPages`: opens a page on the Hermes server's own loopback through SSH.
  */
 export function PreviewPane({
   target,
@@ -52,6 +65,7 @@ export function PreviewPane({
   readServer,
   local,
   web,
+  serverPages,
   onOpen,
   artifacts,
   connected = true,
@@ -62,6 +76,7 @@ export function PreviewPane({
   readServer: (path: string, host?: boolean) => Promise<FileView>;
   local: LocalFiles;
   web: WebPages;
+  serverPages: ServerPages;
   onOpen: (t: PreviewTarget) => void;
   /** Where an artifact's draft lives (artifacts.ts): editing it in the pane, and away from it, share one store. */
   artifacts?: ArtifactStore;
@@ -71,7 +86,11 @@ export function PreviewPane({
   const [reloads, setReloads] = useState(0);
   const [copied, setCopied] = useState(false);
   const [openError, setOpenError] = useState<string>();
+  // A server page's tunnel address while it is open: the only way the owner's browser can reach that page.
+  const [tunnel, setTunnel] = useState<string>();
   const titleId = useId();
+  const on = target.kind === "web" ? pageOn(target) : undefined;
+  const browserUrl = target.kind !== "web" ? undefined : on === "server" ? tunnel : target.url;
   const address = target.kind === "server" || target.kind === "local" ? target.path : target.kind === "artifact" ? target.ref.path : target.kind === "web" ? target.url : undefined;
 
   const openInBrowser = (url: string) => {
@@ -84,7 +103,7 @@ export function PreviewPane({
       <header className="preview-head">
         <div className="preview-title">
           <div className="preview-name">
-            <Where target={target} serverLabel={serverLabel} />
+            <Where target={target} serverLabel={serverLabel} on={on} />
             <span id={titleId}>{withoutBidi(previewName(target))}</span>
           </div>
           {address && (
@@ -108,7 +127,12 @@ export function PreviewPane({
             </button>
           )}
           {target.kind === "web" && (
-            <button className="icon-btn" title="Open in your browser" onClick={() => openInBrowser(target.url)}>
+            <button
+              className="icon-btn"
+              title={on === "server" ? "Open in your browser, through this page's SSH tunnel while it is open here" : "Open in your browser"}
+              disabled={!browserUrl}
+              onClick={() => browserUrl && openInBrowser(browserUrl)}
+            >
               <ExternalLink size={15} />
             </button>
           )}
@@ -132,6 +156,24 @@ export function PreviewPane({
       <div className="preview-body">
         {target.kind === "start" ? (
           <StartView serverLabel={serverLabel} local={local} onOpen={onOpen} />
+        ) : target.kind === "web" && on ? (
+          <div className="preview-web">
+            <PageOnSwitch at={loopbackOf(target.url)!.at} on={on} serverLabel={serverLabel} onSwitch={(next) => onOpen({ ...target, on: next })} />
+            {on === "server" ? (
+              <ServerWebView
+                key={reloads}
+                url={target.url}
+                pages={serverPages}
+                serverLabel={serverLabel}
+                check={web.check}
+                onTunnel={setTunnel}
+                onOpenInBrowser={openInBrowser}
+                onLocal={() => onOpen({ ...target, on: "local" })}
+              />
+            ) : (
+              <WebView key={reloads} url={target.url} check={web.check} onOpenInBrowser={() => openInBrowser(target.url)} />
+            )}
+          </div>
         ) : target.kind === "web" ? (
           <WebView key={reloads} url={target.url} check={web.check} onOpenInBrowser={() => openInBrowser(target.url)} />
         ) : target.kind === "tool" ? (
@@ -156,7 +198,19 @@ export function PreviewPane({
 }
 
 /** Where what's shown lives: on the Hermes server, on this computer, on the web, or in a tool call. */
-function Where({ target, serverLabel }: { target: PreviewTarget; serverLabel: string }) {
+function Where({ target, serverLabel, on }: { target: PreviewTarget; serverLabel: string; on?: PageOn }) {
+  if (target.kind === "web" && on === "server")
+    return (
+      <span className="where where-server" title={`A page on the Hermes server's own ${loopbackOf(target.url)?.at}, through SSH to ${serverLabel}`}>
+        <Server size={12} /> Server · {serverLabel}
+      </span>
+    );
+  if (target.kind === "web" && on === "local")
+    return (
+      <span className="where where-local" title={`A page on this computer's own ${loopbackOf(target.url)?.at}, loaded in an isolated frame`}>
+        <Laptop size={12} /> This computer
+      </span>
+    );
   switch (target.kind) {
     case "server":
     case "artifact":
@@ -372,7 +426,19 @@ function TextView({ view, name }: { view: Extract<FileView, { kind: "text" }>; n
  * a note and Open in your browser, and a site this computer can't reach says so instead of loading forever. Anything
  * else (a script that blanks the page, say) still can't be told apart, so a page slow to load says it may not show.
  */
-function WebView({ url, check, onOpenInBrowser }: { url: string; check: (url: string) => Promise<Framing>; onOpenInBrowser: () => void }) {
+function WebView({
+  url,
+  src = url,
+  check,
+  onOpenInBrowser,
+}: {
+  /** The page's address, as the owner sees it. */
+  url: string;
+  /** Where the frame loads it from, if not `url`: a server page's tunnel. */
+  src?: string;
+  check: (url: string) => Promise<Framing>;
+  onOpenInBrowser: () => void;
+}) {
   const [loaded, setLoaded] = useState(false);
   const [slow, setSlow] = useState(false);
   const [closed, setClosed] = useState(false);
@@ -388,14 +454,14 @@ function WebView({ url, check, onOpenInBrowser }: { url: string; check: (url: st
   useEffect(() => {
     let live = true;
     // A check that fails says nothing either way: the frame is left to show what it can.
-    checkRef.current(url).then(
+    checkRef.current(src).then(
       (f) => live && setFraming(f),
       () => {},
     );
     return () => {
       live = false;
     };
-  }, [url]);
+  }, [src]);
   const onLoad = () => {
     // A page that redirected the frame onto the app's own origin could reach the app; such a frame is emptied at once.
     // The frame-src policy (index.html) and Tauri's invoke key are the main guards; this is the last one (ADR 0007).
@@ -464,7 +530,7 @@ function WebView({ url, check, onOpenInBrowser }: { url: string; check: (url: st
           ref={frame}
           className="preview-frame"
           title={`Web page: ${url}`}
-          src={url}
+          src={src}
           sandbox={WEB_SANDBOX}
           allow={WEB_PERMISSIONS}
           referrerPolicy="no-referrer"
@@ -488,6 +554,166 @@ function WebView({ url, check, onOpenInBrowser }: { url: string; check: (url: st
       </div>
     </div>
   );
+}
+
+/**
+ * For a page on a loopback address: whose loopback it comes from, and the switch between the Hermes server's (through
+ * SSH) and this computer's.
+ */
+function PageOnSwitch({ at, on, serverLabel, onSwitch }: { at: string; on: PageOn; serverLabel: string; onSwitch: (on: PageOn) => void }) {
+  return (
+    <div className="preview-on">
+      <span className="preview-on-text">
+        {on === "server" ? <Server size={13} /> : <Laptop size={13} />}
+        <span>
+          {on === "server" ? (
+            <>
+              From <b>{at}</b> on the Hermes server, through SSH to {serverLabel}
+            </>
+          ) : (
+            <>
+              From <b>{at}</b> on this computer
+            </>
+          )}
+        </span>
+      </span>
+      <div className="segmented" role="group" aria-label={`Open ${at} from`}>
+        <button aria-pressed={on === "server"} onClick={() => on !== "server" && onSwitch("server")} title={`${at} on the Hermes server, through SSH`}>
+          Hermes server
+        </button>
+        <button aria-pressed={on === "local"} onClick={() => on !== "local" && onSwitch("local")} title={`${at} on this computer`}>
+          This computer
+        </button>
+      </div>
+    </div>
+  );
+}
+
+type Tunnel = { kind: "opening" } | { kind: "open"; page: ServerPage; src: string } | { kind: "failed"; error: ServerPageError } | { kind: "closed"; message: string };
+
+/** What a server page that didn't open is called, by why. */
+const FAILED_TITLE: Record<string, string> = {
+  noSshTarget: "No SSH target for this server",
+  notConnected: "Not connected to the Hermes server",
+  portClosed: "Nothing answers there on the server",
+  notWeb: "This isn't a web page",
+  notLoopback: "This page isn't on the server's own loopback",
+  tooMany: "Too many server pages open",
+  timeout: "SSH didn't connect",
+};
+
+/**
+ * A page on the Hermes server's own loopback: Rust opens an SSH tunnel for it when it shows, and the frame loads it
+ * through the tunnel's end on this computer. The tunnel closes when this goes: another page, the Preview closed or
+ * hidden, or Reload (which opens a new one).
+ */
+function ServerWebView({
+  url,
+  pages,
+  serverLabel,
+  check,
+  onTunnel,
+  onOpenInBrowser,
+  onLocal,
+}: {
+  url: string;
+  pages: ServerPages;
+  serverLabel: string;
+  check: (url: string) => Promise<Framing>;
+  onTunnel: (url: string | undefined) => void;
+  onOpenInBrowser: (url: string) => void;
+  onLocal: () => void;
+}) {
+  const [state, setState] = useState<Tunnel>({ kind: "opening" });
+  const [tries, setTries] = useState(0);
+  const at = loopbackOf(url)?.at ?? url;
+  const pagesRef = useRef(pages);
+  pagesRef.current = pages;
+  const onTunnelRef = useRef(onTunnel);
+  onTunnelRef.current = onTunnel;
+  useEffect(() => {
+    let live = true;
+    let id: number | undefined;
+    const pages = pagesRef.current;
+    setState({ kind: "opening" });
+    pages
+      .open(url, (message) => {
+        if (!live) return;
+        setState({ kind: "closed", message });
+        onTunnelRef.current(undefined);
+      })
+      .then(
+        (page) => {
+          // Gone while ssh connected: its tunnel closes at once.
+          if (!live) return pages.close(page.id);
+          id = page.id;
+          const src = tunnelUrl(page.url, location.origin);
+          if (!src) {
+            pages.close(page.id);
+            return setState({ kind: "failed", error: new ServerPageError("io", "The tunnel gave an address the preview doesn't load.") });
+          }
+          setState({ kind: "open", page, src });
+          onTunnelRef.current(src);
+        },
+        (e) => live && setState({ kind: "failed", error: e instanceof ServerPageError ? e : new ServerPageError("io", messageOf(e)) }),
+      );
+    return () => {
+      live = false;
+      if (id !== undefined) pages.close(id);
+      onTunnelRef.current(undefined);
+    };
+  }, [url, tries]);
+
+  const again = (
+    <button className="btn primary" onClick={() => setTries((n) => n + 1)}>
+      <RotateCw size={14} /> Try again
+    </button>
+  );
+  const local = (
+    <button className="link-btn" onClick={onLocal}>
+      Open on this computer instead
+    </button>
+  );
+  if (state.kind === "opening")
+    return (
+      <div className="preview-state" role="status">
+        <Spinner /> Opening {at} on the Hermes server, through SSH to {serverLabel}…
+      </div>
+    );
+  if (state.kind === "failed") {
+    const { kind, message } = state.error;
+    const title = kind === "portClosed" ? `Nothing answers at ${at} on the server` : (FAILED_TITLE[kind] ?? "Couldn't open an SSH tunnel to the server");
+    return (
+      <div className="preview-state preview-error" role="alert">
+        <AlertTriangle size={18} />
+        <div>
+          <div className="preview-state-title">{title}</div>
+          <div>{message}</div>
+          {kind === "portClosed" && <div>If Hermes is still starting it, try again in a moment.</div>}
+          {kind === "noSshTarget" && <div>Sign in through SSH to reach pages on the server, or open this one on this computer.</div>}
+          <div className="preview-state-actions">
+            {kind !== "noSshTarget" && kind !== "notWeb" && kind !== "notLoopback" && again}
+            {kind !== "notWeb" && local}
+          </div>
+        </div>
+      </div>
+    );
+  }
+  if (state.kind === "closed")
+    return (
+      <div className="preview-state preview-error" role="alert">
+        <AlertTriangle size={18} />
+        <div>
+          <div className="preview-state-title">The SSH tunnel to this page closed</div>
+          <div>{state.message}</div>
+          <div className="preview-state-actions">
+            {again}
+            {local}
+          </div>
+        </div>
+      </div>
+    );
+  return <WebView url={url} src={state.src} check={check} onOpenInBrowser={() => onOpenInBrowser(state.src)} />;
 }
 
 /** The host a web address names, for messages about it. */

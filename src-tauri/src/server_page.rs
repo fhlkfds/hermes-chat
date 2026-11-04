@@ -1,0 +1,1044 @@
+//! Pages on the Hermes server's own loopback in the Preview (ADR 0051): `http://localhost:3000` in a reply means the
+//! server's port 3000, where Hermes ran the dev server, not this computer's.
+//!
+//! Each page gets a tunnel of its own, made of two parts:
+//!
+//! - The owner's `ssh` to the signed-in connection's SSH target, forwarding a Unix socket in a private folder (0700) to
+//!   the page's loopback host and port on the server: `ssh -N -L <socket>:<host>:<port> -- <target>`. Every argument is
+//!   one `Command` argument: the host is one of three fixed strings, the port a number, the socket a path this module
+//!   made, and the target is the one Rust signed in with, checked as the sign-in tunnel checks it. No shell runs.
+//! - A TCP listener Rust binds on `127.0.0.1:0` and keeps, so the port is ephemeral and never released for another
+//!   program to take before ssh binds it. Each connection the frame makes is copied to and from ssh's socket.
+//!
+//! The webview names only the page's address. Rust parses it again and refuses anything that isn't an http(s) address
+//! on the server's loopback; it never takes an ssh host, option or socket path from the webview.
+//!
+//! A tunnel ends when the webview closes it (the page leaves the Preview), when ssh exits, when the sign-in goes or
+//! moves to another SSH target, and when the app exits: ssh is started with `PR_SET_PDEATHSIG`, so even an app that
+//! crashes takes it along.
+
+use serde::Serialize;
+use std::collections::HashMap;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, UnixStream};
+use tokio::process::{Child, Command};
+use tokio::sync::oneshot;
+use url::{Host, Url};
+
+/// How long ssh has to sign in and listen on its socket.
+const READY_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long the first request through a new tunnel waits for any answer before the page is shown anyway.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+/// The most server pages open at once, so a runaway webview can't start ssh after ssh.
+pub const MAX_OPEN: usize = 8;
+/// How much of what ssh printed is kept, to say why it stopped.
+const STDERR_KEPT: usize = 4096;
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ServerPageError {
+    /// The address isn't a web page the preview opens at all.
+    #[error("{0}")]
+    NotWeb(String),
+    /// A web address, but not on loopback: it opens on this computer, as any web page does.
+    #[error("Only localhost, 127.0.0.1 and [::1] addresses open through SSH on the Hermes server.")]
+    NotLoopback,
+    #[error("Hermes Chat isn't connected to the Hermes server right now. Try again once it is.")]
+    NotConnected,
+    #[error("This sign-in uses a dashboard URL, so Hermes Chat has no SSH target to reach the server's own pages.")]
+    NoSshTarget,
+    #[error("{MAX_OPEN} server pages are open already. Close one first.")]
+    TooMany,
+    #[error("Couldn't start ssh: {0}")]
+    Spawn(String),
+    #[error("SSH failed: {0}")]
+    Ssh(String),
+    #[error("SSH didn't connect within {}s.", READY_TIMEOUT.as_secs())]
+    Timeout,
+    /// The server refused the forward, or something there took the connection and closed it without a word.
+    #[error("Nothing on the Hermes server answered at {at}.{}", detail.as_deref().map(|d| format!(" ssh said: {d}")).unwrap_or_default())]
+    PortClosed { at: String, detail: Option<String> },
+    #[error("{0}")]
+    Io(String),
+}
+
+impl ServerPageError {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::NotWeb(_) => "notWeb",
+            Self::NotLoopback => "notLoopback",
+            Self::NotConnected => "notConnected",
+            Self::NoSshTarget => "noSshTarget",
+            Self::TooMany => "tooMany",
+            Self::Spawn(_) => "spawn",
+            Self::Ssh(_) => "ssh",
+            Self::Timeout => "timeout",
+            Self::PortClosed { .. } => "portClosed",
+            Self::Io(_) => "io",
+        }
+    }
+}
+
+/// `{ kind, message }`, so the webview can pick what to offer (the switch, Reload) without reading the words.
+impl Serialize for ServerPageError {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut st = s.serialize_struct("ServerPageError", 2)?;
+        st.serialize_field("kind", self.kind())?;
+        st.serialize_field("message", &self.to_string())?;
+        st.end()
+    }
+}
+
+/// Which loopback a page's address names. `Any` is `0.0.0.0`, which servers print for "every address"; it is
+/// reached on the server's `127.0.0.1`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Loopback {
+    Localhost,
+    V4,
+    V6,
+    Any,
+}
+
+impl Loopback {
+    /// The host ssh connects to on the server. `localhost` is resolved there, as the page's own address means, so a
+    /// server listening on `::1` only is reached too.
+    pub fn forward_host(self) -> &'static str {
+        match self {
+            Loopback::Localhost => "localhost",
+            Loopback::V4 | Loopback::Any => "127.0.0.1",
+            Loopback::V6 => "[::1]",
+        }
+    }
+}
+
+/// A page on the server's loopback: its address as given, which loopback, and the port (the scheme's default if none).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerPage {
+    pub url: Url,
+    pub host: Loopback,
+    pub port: u16,
+}
+
+impl ServerPage {
+    /// `localhost:3000`, for messages.
+    pub fn at(&self) -> String {
+        let host = match self.host {
+            Loopback::Localhost => "localhost",
+            Loopback::V4 => "127.0.0.1",
+            Loopback::V6 => "[::1]",
+            Loopback::Any => "0.0.0.0",
+        };
+        format!("{host}:{}", self.port)
+    }
+
+    /// The same page through the tunnel's local end: only the host and port change.
+    pub fn local_url(&self, local_port: u16) -> Url {
+        let mut u = self.url.clone();
+        u.set_host(Some("127.0.0.1")).expect("an http(s) URL takes an IP host");
+        u.set_port(Some(local_port)).expect("an http(s) URL takes a port");
+        u
+    }
+}
+
+/// Parses a page address the webview sent and keeps it only if it is an http(s) address, without a username or
+/// password, on `localhost`, `127.0.0.1`, `[::1]` or `0.0.0.0`.
+pub fn server_page(raw: &str) -> Result<ServerPage, ServerPageError> {
+    let url = Url::parse(raw.trim()).map_err(|_| ServerPageError::NotWeb("That isn't a web address.".into()))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(ServerPageError::NotWeb(format!(
+            "Only http:// and https:// pages open in the preview, and {}: isn't one.",
+            url.scheme()
+        )));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(ServerPageError::NotWeb("Web addresses with a username or password in them don't open in the preview.".into()));
+    }
+    let host = match url.host() {
+        Some(Host::Domain(d)) if d.eq_ignore_ascii_case("localhost") => Loopback::Localhost,
+        Some(Host::Ipv4(ip)) if ip == std::net::Ipv4Addr::LOCALHOST => Loopback::V4,
+        Some(Host::Ipv4(ip)) if ip.is_unspecified() => Loopback::Any,
+        Some(Host::Ipv6(ip)) if ip.is_loopback() => Loopback::V6,
+        _ => return Err(ServerPageError::NotLoopback),
+    };
+    let port = url.port_or_known_default().ok_or_else(|| ServerPageError::NotWeb("That isn't a web address.".into()))?;
+    if port == 0 {
+        return Err(ServerPageError::NotWeb("Port 0 isn't a port a page can be on.".into()));
+    }
+    Ok(ServerPage { url, host, port })
+}
+
+/// An SSH target as the sign-in tunnel takes it: no leading '-', which ssh would read as an option, and no whitespace.
+pub fn checked_target(target: &str) -> Option<&str> {
+    let target = target.trim();
+    (!target.is_empty() && !target.starts_with('-') && !target.contains(char::is_whitespace)).then_some(target)
+}
+
+/// ssh's arguments for a tunnel from `socket` to `page` on `target`'s loopback.
+///
+/// - `-N`, `-T`: no command, no terminal; stdin is closed.
+/// - `BatchMode`: nothing to answer a prompt with, so a key that needs one fails rather than waiting.
+/// - No `StrictHostKeyChecking=accept-new`: the sign-in already knows this host's key; a new one is refused.
+/// - `ControlMaster=no`, `ControlPath=none`: with the owner's ControlMaster, the forward would be set up in that
+///   master and outlive this ssh. Now it ends with it.
+/// - `ExitOnForwardFailure=no`: a `LocalForward` in the owner's config for this host is opened by every ssh to it, and
+///   the sign-in tunnel holds its port already, so with `yes` it would end every tunnel. Whether this tunnel's own
+///   forward works is seen directly: its socket accepts, or ssh names the socket in an error (`open`).
+/// - `StreamLocalBindMask=0177`: only the owner can connect to the socket (its folder is 0700 as well).
+pub fn ssh_args(target: &str, socket: &Path, page: &ServerPage) -> Result<Vec<OsString>, ServerPageError> {
+    let target = checked_target(target).ok_or_else(|| ServerPageError::Ssh("The sign-in's SSH target isn't one ssh can take.".into()))?;
+    let socket = socket.to_str().filter(|s| socket_path_ok(s)).ok_or_else(|| ServerPageError::Io("The tunnel's socket path isn't usable.".into()))?;
+    let forward = format!("{socket}:{}:{}", page.host.forward_host(), page.port);
+    let mut args: Vec<OsString> = [
+        "-N", "-T",
+        "-o", "BatchMode=yes",
+        "-o", "ConnectTimeout=15",
+        "-o", "ServerAliveInterval=15",
+        "-o", "ServerAliveCountMax=3",
+        "-o", "ControlMaster=no",
+        "-o", "ControlPath=none",
+        "-o", "ExitOnForwardFailure=no",
+        "-o", "StreamLocalBindMask=0177",
+        "-o", "StreamLocalBindUnlink=yes",
+        "-L",
+    ]
+    .iter()
+    .map(OsString::from)
+    .collect();
+    args.push(forward.into());
+    args.push("--".into());
+    args.push(target.into());
+    Ok(args)
+}
+
+/// A socket path ssh's `-L` reads as one path: absolute, short enough for `sun_path`, and only characters that can't
+/// split the forward spec (`:`) or be read as anything but a path.
+fn socket_path_ok(s: &str) -> bool {
+    s.starts_with('/') && s.len() < 100 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"/_.-".contains(&b))
+}
+
+/// A private folder for one tunnel's socket: `$XDG_RUNTIME_DIR` (the owner's own, 0700) when it is usable, else the
+/// temporary folder. Made with mode 0700 and a new name, never reusing a folder that is already there. Removed with
+/// what is in it when dropped.
+struct SocketDir(PathBuf);
+
+impl SocketDir {
+    fn bases() -> [Option<PathBuf>; 2] {
+        [std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from), Some(std::env::temp_dir())]
+    }
+
+    fn new() -> std::io::Result<Self> {
+        use std::os::unix::fs::DirBuilderExt;
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        static SWEPT: std::sync::Once = std::sync::Once::new();
+        SWEPT.call_once(|| {
+            for base in Self::bases().into_iter().flatten() {
+                sweep(&base, |pid| Path::new(&format!("/proc/{pid}")).exists());
+            }
+        });
+        let bases = Self::bases();
+        let mut last = std::io::Error::other("no usable folder for the tunnel's socket");
+        for base in bases.into_iter().flatten().filter(|b| b.is_absolute() && b.is_dir()) {
+            for _ in 0..8 {
+                let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
+                let name = format!("hermes-chat-page-{}-{}-{nanos:x}", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed));
+                let dir = base.join(name);
+                if !dir.join("s").to_str().is_some_and(socket_path_ok) {
+                    break;
+                }
+                match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+                    Ok(()) => return Ok(SocketDir(dir)),
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(e) => {
+                        last = e;
+                        break;
+                    }
+                }
+            }
+        }
+        Err(last)
+    }
+
+    fn socket(&self) -> PathBuf {
+        self.0.join("s")
+    }
+}
+
+/// Removes the socket folders in `base` that an app no longer running left behind (one that was killed, so its drops
+/// never ran; its ssh went with it). Only folders named as `SocketDir` names them, owned by this user, whose app's
+/// pid `alive` says is gone; and only their socket and the folder itself, never anything else in them.
+fn sweep(base: &Path, alive: impl Fn(u32) -> bool) {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(entries) = std::fs::read_dir(base) else { return };
+    let me = unsafe { libc::getuid() };
+    for e in entries.flatten() {
+        let name = e.file_name();
+        let Some(pid) = name.to_str().and_then(|n| n.strip_prefix("hermes-chat-page-")).and_then(|r| r.split('-').next()).and_then(|p| p.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let Ok(meta) = std::fs::symlink_metadata(e.path()) else { continue };
+        if !meta.is_dir() || meta.uid() != me || pid == std::process::id() || alive(pid) {
+            continue;
+        }
+        let _ = std::fs::remove_file(e.path().join("s"));
+        let _ = std::fs::remove_dir(e.path());
+    }
+}
+
+impl Drop for SocketDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(self.socket());
+        let _ = std::fs::remove_dir(&self.0);
+    }
+}
+
+/// `ssh` with `args`: stdin closed, stdout dropped, stderr kept. It is killed when dropped, and, through
+/// `PR_SET_PDEATHSIG`, when the app's thread that started it ends, which for a tokio worker is when the app exits.
+fn spawn_ssh(program: &str, args: &[OsString]) -> Result<Child, ServerPageError> {
+    let mut command = Command::new(program);
+    command.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).kill_on_drop(true);
+    let parent = std::process::id() as libc::pid_t;
+    // SAFETY: only async-signal-safe calls between fork and exec.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM as libc::c_ulong, 0, 0, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // The app may have gone between fork and prctl; then nothing would ever signal this one.
+            if libc::getppid() != parent {
+                libc::_exit(1);
+            }
+            Ok(())
+        });
+    }
+    command.spawn().map_err(|e| ServerPageError::Spawn(e.to_string()))
+}
+
+/// The last `STDERR_KEPT` bytes ssh printed, read as it prints, so a chatty ssh never blocks on a full pipe.
+#[derive(Clone, Default)]
+struct Stderr(Arc<Mutex<Vec<u8>>>);
+
+impl Stderr {
+    fn drain(&self, mut from: tokio::process::ChildStderr) {
+        let kept = self.0.clone();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 1024];
+            while let Ok(n) = from.read(&mut buf).await {
+                if n == 0 {
+                    break;
+                }
+                let mut k = kept.lock().unwrap();
+                k.extend_from_slice(&buf[..n]);
+                let over = k.len().saturating_sub(STDERR_KEPT);
+                k.drain(..over);
+            }
+        });
+    }
+
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().unwrap()).trim().to_owned()
+    }
+
+    /// The last line about a forward the server couldn't open (`channel 2: open failed: connect failed: …`).
+    fn open_failed(&self) -> Option<String> {
+        self.text().lines().rev().find(|l| l.contains("open failed")).map(|l| l.trim().to_owned())
+    }
+}
+
+/// What the webview gets back from opening a page: its id for `close`, the address to load in the frame, the SSH
+/// target it goes through, and the page's place on the server (`localhost:3000`).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Opened {
+    pub id: u64,
+    pub url: String,
+    pub target: String,
+    pub at: String,
+}
+
+/// Sent once when a tunnel ends without the webview closing it: ssh exited, or the sign-in went or changed.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum PageEvent {
+    Closed { message: String },
+}
+
+struct Open {
+    target: String,
+    /// Ends the tunnel, with what to tell the webview (`None`: the webview asked).
+    stop: oneshot::Sender<Option<String>>,
+}
+
+/// The server pages open now, by id.
+#[derive(Default)]
+pub struct ServerPages {
+    next: AtomicU64,
+    open: Mutex<HashMap<u64, Open>>,
+    /// Reserved by an `open` still connecting, so the cap holds while ssh signs in.
+    starting: AtomicU64,
+}
+
+impl ServerPages {
+    /// Opens a tunnel to `page` through ssh to `target`, waits until ssh listens and the page's port answers, then
+    /// serves it on `127.0.0.1` at an ephemeral port. `on_event` hears once if it ends without `close`.
+    pub async fn open(
+        self: &Arc<Self>,
+        program: &str,
+        target: &str,
+        page: ServerPage,
+        on_event: impl Fn(PageEvent) + Send + 'static,
+    ) -> Result<Opened, ServerPageError> {
+        let target = checked_target(target).ok_or(ServerPageError::NoSshTarget)?.to_owned();
+        let _slot = self.reserve()?;
+        let dir = SocketDir::new().map_err(|e| ServerPageError::Io(format!("Couldn't make a folder for the tunnel: {e}")))?;
+        let socket = dir.socket();
+        let mut child = spawn_ssh(program, &ssh_args(&target, &socket, &page)?)?;
+        let stderr = Stderr::default();
+        if let Some(e) = child.stderr.take() {
+            stderr.drain(e);
+        }
+
+        // Ready once ssh accepts on its socket; then one request finds out whether anything answers on the port.
+        let deadline = tokio::time::Instant::now() + READY_TIMEOUT;
+        let probe = loop {
+            if child.try_wait().map_err(|e| ServerPageError::Spawn(e.to_string()))?.is_some() {
+                // Let the drain catch ssh's last words.
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let said = stderr.text();
+                return Err(ServerPageError::Ssh(if said.is_empty() { "ssh exited without saying why.".into() } else { said }));
+            }
+            if let Ok(s) = UnixStream::connect(&socket).await {
+                break s;
+            }
+            // ssh couldn't make this tunnel's socket (`unix_listener: cannot bind to path …`); it keeps running for the
+            // rest, so say so now rather than at the timeout.
+            let said = stderr.text();
+            if socket.to_str().is_some_and(|p| said.contains(p)) {
+                return Err(ServerPageError::Ssh(said));
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(ServerPageError::Timeout);
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        if !answers(probe, &page).await {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            return Err(ServerPageError::PortClosed { at: page.at(), detail: stderr.open_failed() });
+        }
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.map_err(|e| ServerPageError::Io(e.to_string()))?;
+        let local_port = listener.local_addr().map_err(|e| ServerPageError::Io(e.to_string()))?.port();
+        let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
+        let (stop, stopped) = oneshot::channel();
+        self.open.lock().unwrap().insert(id, Open { target: target.clone(), stop });
+
+        let pages = Arc::clone(self);
+        tokio::spawn(async move {
+            // Everything the tunnel holds lives in this task: ending it drops the listener, the copies, ssh (killed on
+            // drop) and the socket's folder.
+            let _dir = dir;
+            let serving = serve(listener, socket);
+            tokio::pin!(serving);
+            let why = tokio::select! {
+                status = child.wait() => {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    let said = stderr.text();
+                    Some(match status {
+                        Ok(s) if said.is_empty() => format!("ssh ended ({s})."),
+                        _ => format!("ssh ended: {said}"),
+                    })
+                }
+                why = stopped => {
+                    let _ = child.start_kill();
+                    let _ = child.wait().await;
+                    why.unwrap_or(None)
+                }
+                () = &mut serving => Some("The tunnel stopped listening.".into()),
+            };
+            pages.open.lock().unwrap().remove(&id);
+            if let Some(message) = why {
+                on_event(PageEvent::Closed { message });
+            }
+        });
+
+        Ok(Opened { id, url: page.local_url(local_port).to_string(), target, at: page.at() })
+    }
+
+    fn reserve(&self) -> Result<Reserved<'_>, ServerPageError> {
+        let starting = self.starting.fetch_add(1, Ordering::SeqCst) + 1;
+        let reserved = Reserved(&self.starting);
+        if self.open.lock().unwrap().len() + starting as usize > MAX_OPEN {
+            return Err(ServerPageError::TooMany);
+        }
+        Ok(reserved)
+    }
+
+    /// Closes the tunnel `id`, if it is still open. The webview asked, so it isn't told.
+    pub fn close(&self, id: u64) {
+        if let Some(o) = self.open.lock().unwrap().remove(&id) {
+            let _ = o.stop.send(None);
+        }
+    }
+
+    /// Closes every tunnel, telling each page `why`: on sign-out, and at exit.
+    pub fn close_all(&self, why: &str) {
+        for (_, o) in self.open.lock().unwrap().drain() {
+            let _ = o.stop.send(Some(why.to_owned()));
+        }
+    }
+
+    /// Closes the tunnels that don't go through `target`, once the app is signed in somewhere else.
+    pub fn close_other_targets(&self, target: Option<&str>, why: &str) {
+        let target = target.and_then(checked_target);
+        let mut open = self.open.lock().unwrap();
+        let others: Vec<u64> = open.iter().filter(|(_, o)| Some(o.target.as_str()) != target).map(|(id, _)| *id).collect();
+        for id in others {
+            if let Some(o) = open.remove(&id) {
+                let _ = o.stop.send(Some(why.to_owned()));
+            }
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.open.lock().unwrap().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+struct Reserved<'a>(&'a AtomicU64);
+
+impl Drop for Reserved<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Whether anything answers through a new tunnel. A `HEAD` request goes through; any bytes back, or no answer yet
+/// within `PROBE_TIMEOUT` (a slow server), count as answering. ssh closing the connection with nothing said means the
+/// server couldn't connect to the port.
+async fn answers(mut s: UnixStream, page: &ServerPage) -> bool {
+    let host = page.at();
+    let request = format!("HEAD / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+    if s.write_all(request.as_bytes()).await.is_err() {
+        return false;
+    }
+    let mut b = [0u8; 1];
+    match tokio::time::timeout(PROBE_TIMEOUT, s.read(&mut b)).await {
+        Ok(Ok(0)) => false,
+        Ok(Ok(_)) => true,
+        // A reset after the request went: ssh dropped it as it does for a refused forward.
+        Ok(Err(_)) => false,
+        Err(_) => true,
+    }
+}
+
+/// Accepts the frame's connections on `listener` and copies each one to and from ssh's `socket`. Runs until dropped;
+/// returns only if accepting fails.
+async fn serve(listener: TcpListener, socket: PathBuf) {
+    let mut conns = tokio::task::JoinSet::new();
+    loop {
+        tokio::select! {
+            accepted = listener.accept() => {
+                let Ok((mut tcp, _)) = accepted else { return };
+                let socket = socket.clone();
+                conns.spawn(async move {
+                    if let Ok(mut unix) = UnixStream::connect(&socket).await {
+                        let _ = tokio::io::copy_bidirectional(&mut tcp, &mut unix).await;
+                    }
+                });
+            }
+            Some(_) = conns.join_next(), if !conns.is_empty() => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn page(raw: &str) -> ServerPage {
+        server_page(raw).unwrap()
+    }
+
+    #[test]
+    fn loopback_web_addresses_are_server_pages() {
+        let p = page("http://localhost:3000/app?x=1#top");
+        assert_eq!((p.host, p.port), (Loopback::Localhost, 3000));
+        assert_eq!(page("http://LOCALHOST:5173").host, Loopback::Localhost);
+        assert_eq!(page("http://127.0.0.1:8000/").host, Loopback::V4);
+        // WHATWG URL parsing normalises the other spellings of 127.0.0.1.
+        assert_eq!(page("http://127.1:8000/").host, Loopback::V4);
+        assert_eq!(page("http://[::1]:8080/").host, Loopback::V6);
+        assert_eq!(page("http://0.0.0.0:8000/").host, Loopback::Any);
+        assert_eq!(page("http://localhost/").port, 80);
+        assert_eq!(page("https://localhost/").port, 443);
+    }
+
+    #[test]
+    fn anything_else_is_refused_and_says_why() {
+        for raw in ["ftp://localhost:21/", "file:///etc/passwd", "ssh://localhost:22", "javascript:alert(1)", "postgres://localhost:5432/db"] {
+            let e = server_page(raw).unwrap_err();
+            assert!(matches!(e, ServerPageError::NotWeb(ref m) if m.contains("http://")), "{raw}: {e:?}");
+        }
+        assert!(matches!(server_page("not a url"), Err(ServerPageError::NotWeb(_))));
+        assert!(matches!(server_page("http://user:pw@localhost:3000/"), Err(ServerPageError::NotWeb(ref m)) if m.contains("username")));
+        assert!(matches!(server_page("http://localhost:0/"), Err(ServerPageError::NotWeb(_))));
+        for raw in ["https://example.com/", "http://10.0.0.5:3000/", "http://127.0.0.2:3000/", "http://localhost.evil.com/", "http://app.localhost:3000/"] {
+            assert_eq!(server_page(raw), Err(ServerPageError::NotLoopback), "{raw}");
+        }
+    }
+
+    #[test]
+    fn the_frame_loads_the_same_page_on_the_local_end() {
+        assert_eq!(page("http://localhost:3000/a/b?q=1#f").local_url(41234).as_str(), "http://127.0.0.1:41234/a/b?q=1#f");
+        assert_eq!(page("https://[::1]/x").local_url(40000).as_str(), "https://127.0.0.1:40000/x");
+        assert_eq!(page("http://0.0.0.0:8000").at(), "0.0.0.0:8000");
+    }
+
+    #[test]
+    fn ssh_arguments_are_fixed_options_one_forward_and_the_target_last() {
+        let args = ssh_args("liam@hermes", Path::new("/run/user/1000/hermes-chat-page-1-1-a/s"), &page("http://localhost:3000/")).unwrap();
+        let args: Vec<&str> = args.iter().map(|a| a.to_str().unwrap()).collect();
+        assert_eq!(
+            args,
+            [
+                "-N", "-T",
+                "-o", "BatchMode=yes",
+                "-o", "ConnectTimeout=15",
+                "-o", "ServerAliveInterval=15",
+                "-o", "ServerAliveCountMax=3",
+                "-o", "ControlMaster=no",
+                "-o", "ControlPath=none",
+                "-o", "ExitOnForwardFailure=no",
+                "-o", "StreamLocalBindMask=0177",
+                "-o", "StreamLocalBindUnlink=yes",
+                "-L", "/run/user/1000/hermes-chat-page-1-1-a/s:localhost:3000",
+                "--", "liam@hermes",
+            ]
+        );
+        let fwd = |raw: &str| {
+            let a = ssh_args("h", Path::new("/tmp/d/s"), &page(raw)).unwrap();
+            a[a.len() - 3].to_str().unwrap().to_owned()
+        };
+        assert_eq!(fwd("http://127.0.0.1:8000/"), "/tmp/d/s:127.0.0.1:8000");
+        assert_eq!(fwd("http://0.0.0.0:8000/"), "/tmp/d/s:127.0.0.1:8000");
+        assert_eq!(fwd("http://[::1]:8080/"), "/tmp/d/s:[::1]:8080");
+        assert_eq!(fwd("https://localhost/"), "/tmp/d/s:localhost:443");
+    }
+
+    #[test]
+    fn a_target_that_could_be_an_option_or_more_than_one_argument_is_refused() {
+        let p = page("http://localhost:3000/");
+        for t in ["", "  ", "-oProxyCommand=sh", "liam@hermes -L 1:2:3", "a\tb", "a\nb"] {
+            assert!(ssh_args(t, Path::new("/tmp/d/s"), &p).is_err(), "{t:?}");
+        }
+        // Surrounding whitespace is trimmed, as the sign-in does.
+        let a = ssh_args("  hermes  ", Path::new("/tmp/d/s"), &p).unwrap();
+        assert_eq!(a.last().unwrap(), "hermes");
+    }
+
+    #[test]
+    fn a_socket_path_that_could_split_the_forward_is_refused() {
+        let p = page("http://localhost:3000/");
+        for s in ["relative/s", "/tmp/a:b/s", "/tmp/a b/s", &format!("/{}", "x".repeat(120))] {
+            assert!(ssh_args("h", Path::new(s), &p).is_err(), "{s}");
+        }
+    }
+
+    #[test]
+    fn socket_folders_are_private_new_and_removed() {
+        use std::os::unix::fs::PermissionsExt;
+        let a = SocketDir::new().unwrap();
+        let b = SocketDir::new().unwrap();
+        assert_ne!(a.0, b.0);
+        assert_eq!(std::fs::metadata(&a.0).unwrap().permissions().mode() & 0o777, 0o700);
+        let path = a.0.clone();
+        std::fs::write(a.socket(), b"").unwrap();
+        drop(a);
+        assert!(!path.exists());
+    }
+
+    /// A stand-in for `ssh` that really forwards: it listens on the `-L` socket and connects each connection to the
+    /// forward's host and port here, saying what real ssh says when that fails. It writes its pid and socket to
+    /// `<dir>/ran`. With `fail`, it prints a real ssh error and exits 255 instead.
+    const FAKE_SSH: &str = r#"
+import os, socket, sys, threading
+d, mode = sys.argv[1], sys.argv[2]
+args = sys.argv[3:]
+if mode == "fail":
+    sys.stderr.write("ssh: Could not resolve hostname nowhere: Name or service not known\n")
+    sys.exit(255)
+sock, rest = args[args.index("-L") + 1].split(":", 1)
+host, port = rest.rsplit(":", 1)
+host = {"localhost": "127.0.0.1", "[::1]": "::1"}.get(host, host)
+with open(os.path.join(d, "ran"), "w") as f:
+    f.write(f"{os.getpid()}\n{sock}\n{' '.join(args)}\n")
+os.umask(0o177)
+srv = socket.socket(socket.AF_UNIX)
+srv.bind(sock)
+srv.listen(16)
+def pump(a, b):
+    try:
+        while True:
+            data = a.recv(65536)
+            if not data:
+                break
+            b.sendall(data)
+    except OSError:
+        pass
+    for s in (a, b):
+        try:
+            s.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+def handle(c):
+    try:
+        r = socket.create_connection((host, int(port)))
+    except OSError as e:
+        sys.stderr.write(f"channel 2: open failed: connect failed: {e.strerror}\n")
+        sys.stderr.flush()
+        c.close()
+        return
+    threading.Thread(target=pump, args=(c, r), daemon=True).start()
+    pump(r, c)
+while True:
+    c, _ = srv.accept()
+    threading.Thread(target=handle, args=(c,), daemon=True).start()
+"#;
+
+    /// A fake ssh program for one test: a script that runs `FAKE_SSH` with this test's folder and `mode`.
+    struct Fake {
+        dir: PathBuf,
+        program: String,
+    }
+
+    impl Fake {
+        fn new(name: &str, mode: &str) -> Fake {
+            let dir = std::env::temp_dir().join(format!("hermes-chat-fake-ssh-{}-{name}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("fake.py"), FAKE_SSH).unwrap();
+            let program = dir.join("ssh");
+            std::fs::write(&program, format!("#!/bin/sh\nexec python3 {}/fake.py {} {mode} \"$@\"\n", dir.display(), dir.display())).unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+            Fake { program: program.to_str().unwrap().to_owned(), dir }
+        }
+
+        /// The fake's pid, its socket, and the arguments it was given.
+        fn ran(&self) -> (i32, PathBuf, String) {
+            let text = std::fs::read_to_string(self.dir.join("ran")).unwrap();
+            let mut lines = text.lines();
+            (lines.next().unwrap().parse().unwrap(), lines.next().unwrap().into(), lines.next().unwrap().into())
+        }
+    }
+
+    impl Drop for Fake {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// Whether `pid` has ended (gone, or a zombie no one reaped yet).
+    fn ended(pid: i32) -> bool {
+        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Err(_) => true,
+            Ok(stat) => stat.rsplit(')').next().is_some_and(|rest| rest.trim_start().starts_with('Z')),
+        }
+    }
+
+    async fn until(what: &str, mut f: impl FnMut() -> bool) {
+        for _ in 0..100 {
+            if f() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("timed out waiting until {what}");
+    }
+
+    /// A web server on this computer's loopback, standing in for the dev server on the server's, answering every
+    /// request with `body`.
+    async fn web_server(body: &'static str) -> u16 {
+        let l = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut s, _)) = l.accept().await else { return };
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = s.read(&mut buf).await;
+                    let reply = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                    let _ = s.write_all(reply.as_bytes()).await;
+                });
+            }
+        });
+        port
+    }
+
+    async fn get(url: &str) -> std::io::Result<String> {
+        let u = Url::parse(url).unwrap();
+        let mut s = tokio::net::TcpStream::connect(("127.0.0.1", u.port().unwrap())).await?;
+        s.write_all(format!("GET {} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n", u.path()).as_bytes()).await?;
+        let mut out = String::new();
+        s.read_to_string(&mut out).await?;
+        Ok(out)
+    }
+
+    type Events = Arc<Mutex<Vec<PageEvent>>>;
+
+    fn events() -> (Events, impl Fn(PageEvent) + Send + 'static) {
+        let got: Events = Arc::default();
+        let into = got.clone();
+        (got, move |e| into.lock().unwrap().push(e))
+    }
+
+    #[tokio::test]
+    async fn a_page_opens_through_ssh_on_its_own_local_port_and_closing_it_ends_ssh() {
+        let fake = Fake::new("open-close", "ok");
+        let port = web_server("from the server").await;
+        let pages = Arc::new(ServerPages::default());
+        let (got, on_event) = events();
+        let opened = pages.open(&fake.program, "liam@hermes", page(&format!("http://localhost:{port}/app")), on_event).await.unwrap();
+
+        let local = Url::parse(&opened.url).unwrap();
+        assert_eq!(local.host_str(), Some("127.0.0.1"));
+        assert_ne!(local.port(), Some(port));
+        assert_eq!(local.path(), "/app");
+        assert_eq!((opened.target.as_str(), opened.at.clone()), ("liam@hermes", format!("localhost:{port}")));
+        assert!(get(&opened.url).await.unwrap().ends_with("from the server"));
+
+        let (pid, socket, args) = fake.ran();
+        assert!(args.ends_with(&format!(":localhost:{port} -- liam@hermes")), "{args}");
+        assert!(!ended(pid));
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(socket.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(pages.len(), 1);
+
+        pages.close(opened.id);
+        until("ssh ends", || ended(pid)).await;
+        until("the socket's folder is gone", || !socket.parent().unwrap().exists()).await;
+        until("the local port closes", || std::net::TcpStream::connect(("127.0.0.1", local.port().unwrap())).is_err()).await;
+        assert!(pages.is_empty());
+        // The webview closed it, so it isn't told.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(got.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_port_nothing_listens_on_says_so_and_leaves_nothing_running() {
+        let fake = Fake::new("closed-port", "ok");
+        let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+        let pages = Arc::new(ServerPages::default());
+        let e = pages.open(&fake.program, "hermes", page(&format!("http://127.0.0.1:{port}/")), |_| {}).await.unwrap_err();
+        match &e {
+            ServerPageError::PortClosed { at, detail } => {
+                assert_eq!(at, &format!("127.0.0.1:{port}"));
+                assert!(detail.as_deref().is_some_and(|d| d.contains("open failed")), "{detail:?}");
+            }
+            e => panic!("{e:?}"),
+        }
+        let (pid, socket, _) = fake.ran();
+        until("ssh ends", || ended(pid)).await;
+        assert!(!socket.parent().unwrap().exists());
+        assert!(pages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn ssh_failing_says_what_ssh_said() {
+        let fake = Fake::new("fails", "fail");
+        let pages = Arc::new(ServerPages::default());
+        let e = pages.open(&fake.program, "nowhere", page("http://localhost:3000/"), |_| {}).await.unwrap_err();
+        assert_eq!(e, ServerPageError::Ssh("ssh: Could not resolve hostname nowhere: Name or service not known".into()));
+        assert!(pages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn no_ssh_target_is_refused_before_ssh_runs() {
+        let fake = Fake::new("no-target", "ok");
+        let pages = Arc::new(ServerPages::default());
+        for t in ["", "-oProxyCommand=x"] {
+            let e = pages.open(&fake.program, t, page("http://localhost:3000/"), |_| {}).await.unwrap_err();
+            assert_eq!(e, ServerPageError::NoSshTarget);
+        }
+        assert!(!fake.dir.join("ran").exists());
+    }
+
+    #[tokio::test]
+    async fn ssh_ending_on_its_own_tells_the_page() {
+        let fake = Fake::new("ssh-dies", "ok");
+        let port = web_server("x").await;
+        let pages = Arc::new(ServerPages::default());
+        let (got, on_event) = events();
+        let opened = pages.open(&fake.program, "hermes", page(&format!("http://localhost:{port}/")), on_event).await.unwrap();
+        let (pid, socket, _) = fake.ran();
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+        until("the page hears", || !got.lock().unwrap().is_empty()).await;
+        assert!(matches!(&got.lock().unwrap()[0], PageEvent::Closed { message } if message.starts_with("ssh ended")));
+        until("the socket's folder is gone", || !socket.parent().unwrap().exists()).await;
+        assert!(pages.is_empty());
+        pages.close(opened.id);
+    }
+
+    #[tokio::test]
+    async fn leaving_the_server_closes_its_pages_and_says_why() {
+        let a = Fake::new("leave-a", "ok");
+        let b = Fake::new("leave-b", "ok");
+        let port = web_server("x").await;
+        let pages = Arc::new(ServerPages::default());
+        let (got_a, on_a) = events();
+        let (got_b, on_b) = events();
+        pages.open(&a.program, "a", page(&format!("http://localhost:{port}/")), on_a).await.unwrap();
+        pages.open(&b.program, "b", page(&format!("http://localhost:{port}/")), on_b).await.unwrap();
+        let (pid_a, pid_b) = (a.ran().0, b.ran().0);
+
+        // Signed in through `a` again: only `b`'s page goes.
+        pages.close_other_targets(Some("a"), "moved");
+        until("b's ssh ends", || ended(pid_b)).await;
+        assert_eq!(*got_b.lock().unwrap(), [PageEvent::Closed { message: "moved".into() }]);
+        assert!(!ended(pid_a));
+        assert_eq!(pages.len(), 1);
+
+        pages.close_all("signed out");
+        until("a's ssh ends", || ended(pid_a)).await;
+        assert_eq!(*got_a.lock().unwrap(), [PageEvent::Closed { message: "signed out".into() }]);
+        assert!(pages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn several_pages_open_at_once_up_to_the_limit() {
+        let port = web_server("x").await;
+        let pages = Arc::new(ServerPages::default());
+        let fakes: Vec<Fake> = (0..MAX_OPEN).map(|i| Fake::new(&format!("many-{i}"), "ok")).collect();
+        let mut ids = Vec::new();
+        for f in &fakes {
+            ids.push(pages.open(&f.program, "hermes", page(&format!("http://localhost:{port}/")), |_| {}).await.unwrap().id);
+        }
+        assert_eq!(pages.len(), MAX_OPEN);
+        let extra = Fake::new("many-extra", "ok");
+        let e = pages.open(&extra.program, "hermes", page(&format!("http://localhost:{port}/")), |_| {}).await.unwrap_err();
+        assert_eq!(e, ServerPageError::TooMany);
+        assert!(!extra.dir.join("ran").exists());
+        // Each closes on its own.
+        pages.close(ids[0]);
+        until("one closes", || pages.len() == MAX_OPEN - 1).await;
+        pages.close_all("done");
+        until("all close", || pages.is_empty()).await;
+        for f in &fakes {
+            let pid = f.ran().0;
+            until("ssh ends", || ended(pid)).await;
+        }
+    }
+
+    #[test]
+    fn ssh_dies_with_the_thread_that_started_it() {
+        // Started from a thread that then ends, without the child being dropped (and killed) by the runtime: only
+        // PR_SET_PDEATHSIG can end it.
+        let pid = std::thread::spawn(|| {
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            rt.block_on(async {
+                let child = spawn_ssh("sleep", &["1000".into()]).unwrap();
+                let pid = child.id().unwrap() as i32;
+                std::mem::forget(child);
+                pid
+            })
+        })
+        .join()
+        .unwrap();
+        let mut gone = false;
+        for _ in 0..100 {
+            if ended(pid) {
+                gone = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
+        assert!(gone, "sleep outlived the thread that started it");
+    }
+
+    /// Against real OpenSSH, when `HERMES_REAL_SSH` names an ssh program (a wrapper with its own `-F`) and
+    /// `HERMES_REAL_SSH_TARGET` a target whose loopback serves a page on `localhost:5173` (IPv6 only, as Vite binds)
+    /// and `127.0.0.1:8000`, with nothing on port 5999. Run with `--ignored`.
+    #[tokio::test]
+    #[ignore = "needs a real sshd: HERMES_REAL_SSH and HERMES_REAL_SSH_TARGET"]
+    async fn real_ssh_forwards_to_the_servers_loopback_and_cleans_up() {
+        let (Ok(program), Ok(target)) = (std::env::var("HERMES_REAL_SSH"), std::env::var("HERMES_REAL_SSH_TARGET")) else {
+            panic!("set HERMES_REAL_SSH and HERMES_REAL_SSH_TARGET");
+        };
+        let pages = Arc::new(ServerPages::default());
+        for raw in ["http://localhost:5173/", "http://[::1]:5173/", "http://127.0.0.1:8000/", "http://0.0.0.0:8000/"] {
+            let opened = pages.open(&program, &target, page(raw), |_| {}).await.unwrap_or_else(|e| panic!("{raw}: {e}"));
+            let body = get(&opened.url).await.unwrap();
+            assert!(body.starts_with("HTTP/1.0 200") || body.starts_with("HTTP/1.1 200"), "{raw}: {body}");
+            pages.close(opened.id);
+        }
+        until("every tunnel closes", || pages.is_empty()).await;
+        let e = pages.open(&program, &target, page("http://localhost:5999/"), |_| {}).await.unwrap_err();
+        assert!(matches!(&e, ServerPageError::PortClosed { detail: Some(d), .. } if d.contains("open failed")), "{e:?}");
+        // Nothing of ours is left running.
+        let ours = || {
+            std::fs::read_dir("/proc")
+                .unwrap()
+                .filter_map(|e| std::fs::read_to_string(e.ok()?.path().join("cmdline")).ok())
+                .filter(|c| c.contains("hermes-chat-page-"))
+                .map(|c| c.replace('\0', " "))
+                .collect::<Vec<_>>()
+        };
+        eprintln!("right after: {:?}", ours());
+        for _ in 0..100 {
+            if ours().is_empty() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("still running: {:?}", ours());
+    }
+
+    #[test]
+    fn folders_left_by_an_app_that_is_gone_are_swept_and_nothing_else() {
+        let base = std::env::temp_dir().join(format!("hermes-chat-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let make = |name: &str, files: &[&str]| {
+            let d = base.join(name);
+            std::fs::create_dir(&d).unwrap();
+            for f in files {
+                std::fs::write(d.join(f), b"").unwrap();
+            }
+            d
+        };
+        let gone = make("hermes-chat-page-111-0-abc", &["s"]);
+        let running = make("hermes-chat-page-222-0-abc", &["s"]);
+        let mine = make(&format!("hermes-chat-page-{}-0-abc", std::process::id()), &["s"]);
+        // A folder with more than ssh's socket in it isn't ours to empty.
+        let other = make("hermes-chat-page-333-0-abc", &["s", "notes.txt"]);
+        let unrelated = make("something-else-111", &["s"]);
+        sweep(&base, |pid| pid == 222);
+        assert!(!gone.exists());
+        assert!(running.join("s").exists());
+        assert!(mine.join("s").exists());
+        assert!(other.join("notes.txt").exists());
+        assert!(unrelated.join("s").exists());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn errors_reach_the_webview_with_a_kind() {
+        let v = serde_json::to_value(ServerPageError::NoSshTarget).unwrap();
+        assert_eq!(v["kind"], "noSshTarget");
+        assert!(v["message"].as_str().unwrap().contains("dashboard URL"));
+        let v = serde_json::to_value(ServerPageError::PortClosed { at: "localhost:3000".into(), detail: None }).unwrap();
+        assert_eq!(v["kind"], "portClosed");
+        assert_eq!(v["message"], "Nothing on the Hermes server answered at localhost:3000.");
+    }
+}

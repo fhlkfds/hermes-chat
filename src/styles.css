@@ -1238,6 +1238,10 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 .preview-web { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .preview-web-note { flex: none; font-size: calc(11.5rem / 14); color: var(--faint); padding: 6px 12px; border-bottom: 1px solid var(--line); line-height: 1.4; }
 .preview-web-note .link-btn { display: inline; color: inherit; font-size: inherit; }
+.preview-on { flex: none; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px; padding: 6px 12px; border-bottom: 1px solid var(--line); font-size: calc(12rem / 14); color: var(--muted); }
+.preview-on-text { display: flex; align-items: flex-start; gap: 6px; min-width: 0; flex: 1 1 220px; overflow-wrap: anywhere; line-height: 1.4; }
+.preview-on-text svg { flex: none; margin-top: 2px; }
+.preview-on-text b { color: var(--text); font-weight: 600; }
 .preview-state-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; margin-top: 12px; }
 .preview-state-actions .btn { display: inline-flex; align-items: center; gap: 6px; }
 .preview-state .preview-state-actions svg { color: inherit; margin-top: 0; }

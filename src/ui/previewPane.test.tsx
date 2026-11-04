@@ -9,7 +9,7 @@ import { FakeHermes, row } from "../hermes/fakeHermes";
 import { connect, type Hermes } from "../hermes/transport";
 import { getUIPrefs } from "../hermes/uiPrefs";
 import type { FileView, Framing } from "../hermes/preview";
-import type { LocalFiles, WebPages } from "./tauriPreview";
+import { ServerPageError, type LocalFiles, type ServerPage, type ServerPages, type WebPages } from "./tauriPreview";
 import { Main } from "../App";
 
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }) }));
@@ -72,10 +72,50 @@ function theWeb(answers: Record<string, Framing | Error | Promise<Framing>> = {}
 }
 
 /**
+ * The Hermes server's loopback as Rust's SSH tunnels reach it (src-tauri/src/server_page.rs). Each `open` gets the
+ * next of `answers` (a page opens when there is none left), and the tunnel's end on this computer is
+ * `http://127.0.0.1:4100<n>`. `opened`, `closed` and `live` record what the pane did; `drop(id, why)` ends a tunnel
+ * as ssh exiting would.
+ */
+function theServer(...answers: (ServerPageError | Promise<void> | { url: string })[]) {
+  const pages: ServerPages & { opened: string[]; closed: number[]; live: Map<number, (why: string) => void>; drop(id: number, why: string): void } = {
+    opened: [],
+    closed: [],
+    live: new Map(),
+    open: async (url, onClosed) => {
+      pages.opened.push(url);
+      const id = pages.opened.length;
+      const a = answers.shift();
+      if (a instanceof Error) throw a;
+      if (a instanceof Promise) await a;
+      const u = new URL(url);
+      pages.live.set(id, onClosed);
+      const page: ServerPage = {
+        id,
+        url: a && "url" in a ? a.url : `${u.protocol}//127.0.0.1:4100${id}${u.pathname}${u.search}`,
+        target: "liam@hermes",
+        at: `${u.hostname}:${u.port}`,
+      };
+      return page;
+    },
+    close: (id) => {
+      pages.closed.push(id);
+      pages.live.delete(id);
+    },
+    drop: (id, why) => {
+      const onClosed = pages.live.get(id);
+      pages.live.delete(id);
+      onClosed?.(why);
+    },
+  };
+  return pages;
+}
+
+/**
  * Signed in, with the chat "Fix the app" open: a reply with a link, then a read_file call on a server file, a
  * browser_navigate call and a terminal call.
  */
-async function signedIn({ local = localDisk({}), web = theWeb() } = {}) {
+async function signedIn({ local = localDisk({}), web = theWeb(), pages = theServer() } = {}) {
   const server = new FakeHermes();
   server.sessions = [row("fix", 1, { pinned: true, title: "Fix the app" }), row("other", 2, { pinned: true, title: "Another chat" })];
   server.transcripts = {
@@ -84,7 +124,10 @@ async function signedIn({ local = localDisk({}), web = theWeb() } = {}) {
       { role: "tool", name: "read_file", context: "main.py", args: { path: "/home/liam/app/main.py" } },
       { role: "tool", name: "browser_navigate", context: "docs", args: { url: "https://docs.example.com/crash" } },
       { role: "tool", name: "patch", context: "main.py", args: { path: "/home/liam/app/main.py" }, content: '{"success": true, "diff": "-a\\n+b"}' },
-      { role: "assistant", text: "It reads a missing file. See [the docs](https://docs.example.com/crash) and [a mail](mailto:x@example.com)." },
+      {
+        role: "assistant",
+        text: "It reads a missing file. See [the docs](https://docs.example.com/crash) and [a mail](mailto:x@example.com). The fix runs at [the dev server](http://localhost:5173/app?v=2).",
+      },
     ],
   };
   server.serverFiles = {
@@ -98,12 +141,19 @@ async function signedIn({ local = localDisk({}), web = theWeb() } = {}) {
   const hermes = await connect(server.openPipe);
   const user = userEvent.setup();
   render(
-    <Main hermes={hermes} connection={{ mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" }} localFiles={local} webPages={web} onSignOut={async () => {}} />,
+    <Main
+      hermes={hermes}
+      connection={{ mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" }}
+      localFiles={local}
+      webPages={web}
+      serverPages={pages}
+      onSignOut={async () => {}}
+    />,
   );
   await user.click(await screen.findByRole("button", { name: /Fix the app/ }));
   await screen.findByText(/It reads a missing file/);
   await settle(hermes);
-  return { server, hermes, user, local, web };
+  return { server, hermes, user, local, web, pages };
 }
 
 /** Opens the chat's tool calls, then the one named `name`. */
@@ -349,7 +399,9 @@ describe("Web pages a site won't let the pane show (issue #55)", () => {
   it("says a site can't be reached rather than loading forever, until the frame loads after all", async () => {
     const url = "http://127.0.0.1:4599/";
     const web = theWeb({ [url]: { kind: "unreachable", message: "Connection refused (os error 111)" } });
-    await openWeb(url, web);
+    const { user } = await openWeb(url, web);
+    // On this computer's own loopback, not the server's.
+    await user.click(await within(pane()).findByRole("button", { name: "This computer" }));
     const alert = await within(pane()).findByRole("alert");
     expect(alert.textContent).toContain("Couldn't reach 127.0.0.1:4599");
     expect(alert.textContent).toContain("Connection refused (os error 111)");
@@ -369,6 +421,175 @@ describe("Web pages a site won't let the pane show (issue #55)", () => {
     expect((await within(pane()).findByRole("alert")).textContent).toBe(
       "Couldn't open it in your browser: Couldn't find xdg-open, which opens pages in your browser.",
     );
+  });
+});
+
+describe("Pages on the Hermes server's own loopback (issue #171)", () => {
+  const APP_URL = "http://localhost:5173/app?v=2";
+  const TUNNEL = "http://127.0.0.1:41001/app?v=2";
+  const frameSrc = async () => (await within(pane()).findByTitle(`Web page: ${APP_URL}`)).getAttribute("src");
+
+  it("opens a localhost link from a reply on the server through SSH, says so, and closes the tunnel with the preview", async () => {
+    const { user, web, pages } = await signedIn();
+    expect(screen.getByRole("link", { name: "the dev server" }).title).toBe(`${APP_URL}\nOpens in the preview, from the Hermes server`);
+    await user.click(screen.getByRole("link", { name: "the dev server" }));
+
+    // The frame loads the tunnel's end on this computer; the owner still sees the page's own address.
+    expect(await frameSrc()).toBe(TUNNEL);
+    expect(pages.opened).toEqual([APP_URL]);
+    expect(within(pane()).getByText("Server · liam@hermes")).toBeTruthy();
+    expect(within(pane()).getByText(APP_URL)).toBeTruthy();
+    expect(within(pane()).getByText(/on the Hermes server, through SSH to liam@hermes/).textContent).toBe(
+      "From localhost:5173 on the Hermes server, through SSH to liam@hermes",
+    );
+    expect(within(pane()).getByRole("button", { name: "Hermes server", pressed: true })).toBeTruthy();
+    expect(within(pane()).getByRole("button", { name: "This computer", pressed: false })).toBeTruthy();
+    // The same sandbox as any web page.
+    const frame = within(pane()).getByTitle(`Web page: ${APP_URL}`);
+    expect(frame.getAttribute("sandbox")!.split(" ").sort()).toEqual(["allow-forms", "allow-same-origin", "allow-scripts"]);
+    // The framing check asks the page through the tunnel too.
+    expect(web.checked).toEqual([TUNNEL]);
+
+    // The owner's browser reaches it only through the tunnel.
+    await user.click(within(pane()).getByTitle(/^Open in your browser, through this page's SSH tunnel/));
+    expect(web.opened).toEqual([TUNNEL]);
+
+    expect(pages.closed).toEqual([]);
+    await user.click(within(pane()).getByRole("button", { name: "Close the side panel" }));
+    expect(pages.closed).toEqual([1]);
+    expect(pages.live.size).toBe(0);
+  });
+
+  it("switches to this computer, closing the tunnel, and back to the server through a new one", async () => {
+    const { user, pages } = await signedIn();
+    await user.click(screen.getByRole("link", { name: "the dev server" }));
+    expect(await frameSrc()).toBe(TUNNEL);
+
+    await user.click(within(pane()).getByRole("button", { name: "This computer" }));
+    expect(pages.closed).toEqual([1]);
+    expect(await frameSrc()).toBe(APP_URL);
+    expect(pane().querySelector(".where")!.textContent).toBe(" This computer");
+    expect(within(pane()).getByText(/on this computer$/).textContent).toBe("From localhost:5173 on this computer");
+    expect(within(pane()).getByRole("button", { name: "This computer", pressed: true })).toBeTruthy();
+    // Opening it in the browser is this computer's own address now.
+    expect(within(pane()).getByTitle("Open in your browser")).toBeTruthy();
+
+    await user.click(within(pane()).getByRole("button", { name: "Hermes server" }));
+    expect(await frameSrc()).toBe("http://127.0.0.1:41002/app?v=2");
+    expect(pages.opened).toEqual([APP_URL, APP_URL]);
+
+    // Reload opens a new tunnel and closes the one before.
+    await user.click(within(pane()).getByRole("button", { name: "Reload" }));
+    expect(await frameSrc()).toBe("http://127.0.0.1:41003/app?v=2");
+    expect(pages.closed).toEqual([1, 2]);
+    expect([...pages.live.keys()]).toEqual([3]);
+  });
+
+  it("says when the sign-in has no SSH target, and offers this computer instead", async () => {
+    const pages = theServer(
+      new ServerPageError("noSshTarget", "This sign-in uses a dashboard URL, so Hermes Chat has no SSH target to reach the server's own pages."),
+    );
+    const { user } = await signedIn({ pages });
+    await user.click(screen.getByRole("link", { name: "the dev server" }));
+    const alert = await within(pane()).findByRole("alert");
+    expect(alert.textContent).toContain("No SSH target for this server");
+    expect(alert.textContent).toContain("This sign-in uses a dashboard URL");
+    expect(alert.textContent).toContain("Sign in through SSH to reach pages on the server");
+    // Trying again can't help.
+    expect(within(alert).queryByRole("button", { name: "Try again" })).toBeNull();
+    expect(within(pane()).queryByTitle(/^Web page/)).toBeNull();
+
+    await user.click(within(alert).getByRole("button", { name: "Open on this computer instead" }));
+    expect(await frameSrc()).toBe(APP_URL);
+    expect(pages.opened).toHaveLength(1);
+  });
+
+  it("says when nothing answers at the port on the server, and tries again", async () => {
+    const pages = theServer(new ServerPageError("portClosed", "Nothing on the Hermes server answered at localhost:5173. ssh said: channel 2: open failed: connect failed: Connection refused"));
+    const { user } = await signedIn({ pages });
+    await user.click(screen.getByRole("link", { name: "the dev server" }));
+    const alert = await within(pane()).findByRole("alert");
+    expect(alert.textContent).toContain("Nothing answers at localhost:5173 on the server");
+    expect(alert.textContent).toContain("Connection refused");
+    expect(alert.textContent).toContain("try again in a moment");
+
+    await user.click(within(alert).getByRole("button", { name: "Try again" }));
+    expect(await frameSrc()).toBe("http://127.0.0.1:41002/app?v=2");
+  });
+
+  it("says when ssh fails, with what ssh said", async () => {
+    const pages = theServer(new ServerPageError("ssh", "SSH failed: liam@hermes: Permission denied (publickey)."));
+    const { user } = await signedIn({ pages });
+    await user.click(screen.getByRole("link", { name: "the dev server" }));
+    const alert = await within(pane()).findByRole("alert");
+    expect(alert.textContent).toContain("Couldn't open an SSH tunnel to the server");
+    expect(alert.textContent).toContain("Permission denied (publickey)");
+    expect(within(alert).getByRole("button", { name: "Try again" })).toBeTruthy();
+    expect(within(alert).getByRole("button", { name: "Open on this computer instead" })).toBeTruthy();
+  });
+
+  it("says when the tunnel closes under the page, and opens a new one on Try again", async () => {
+    const { user, pages } = await signedIn();
+    await user.click(screen.getByRole("link", { name: "the dev server" }));
+    expect(await frameSrc()).toBe(TUNNEL);
+    act(() => pages.drop(1, "ssh ended: Connection to hermes closed by remote host."));
+    const alert = await within(pane()).findByRole("alert");
+    expect(alert.textContent).toContain("The SSH tunnel to this page closed");
+    expect(alert.textContent).toContain("Connection to hermes closed by remote host.");
+    expect(within(pane()).queryByTitle(/^Web page/)).toBeNull();
+    // Nothing to open in the browser without a tunnel.
+    expect((within(pane()).getByTitle(/^Open in your browser/) as HTMLButtonElement).disabled).toBe(true);
+
+    await user.click(within(alert).getByRole("button", { name: "Try again" }));
+    expect(await frameSrc()).toBe("http://127.0.0.1:41002/app?v=2");
+  });
+
+  it("closes a tunnel that opens after its page has gone", async () => {
+    let ready = () => {};
+    const pages = theServer(new Promise<void>((resolve) => (ready = resolve)));
+    const { user } = await signedIn({ pages });
+    await user.click(screen.getByRole("link", { name: "the dev server" }));
+    expect(within(pane()).getByRole("status").textContent).toBe(" Opening localhost:5173 on the Hermes server, through SSH to liam@hermes…");
+    await user.click(within(pane()).getByRole("button", { name: "Close the side panel" }));
+    expect(pages.closed).toEqual([]);
+    await act(async () => ready());
+    expect(pages.closed).toEqual([1]);
+    expect(pages.live.size).toBe(0);
+  });
+
+  it("loads nothing but the tunnel's own address on this computer", async () => {
+    const pages = theServer({ url: "https://evil.example/" });
+    const { user } = await signedIn({ pages });
+    await user.click(screen.getByRole("link", { name: "the dev server" }));
+    const alert = await within(pane()).findByRole("alert");
+    expect(alert.textContent).toContain("The tunnel gave an address the preview doesn't load.");
+    expect(within(pane()).queryByTitle(/^Web page/)).toBeNull();
+    expect(pages.closed).toEqual([1]);
+  });
+
+  it("opens a typed localhost address on the server, and refuses what isn't a web address, saying why", async () => {
+    const { user, pages } = await signedIn();
+    await user.click(screen.getByRole("button", { name: "Open the side panel" }));
+    const box = within(pane()).getByRole("textbox");
+    await user.type(box, "ftp://localhost:21/{Enter}");
+    expect(within(pane()).getByRole("alert").textContent).toBe("Only http:// and https:// pages open in the preview, and ftp: isn't a web address.");
+    await user.clear(box);
+    await user.type(box, "ssh://liam@hermes{Enter}");
+    expect(within(pane()).getByRole("alert").textContent).toBe("Only http:// and https:// pages open in the preview, and ssh: isn't a web address.");
+    expect(pages.opened).toEqual([]);
+
+    await user.clear(box);
+    await user.type(box, "localhost:5173{Enter}");
+    expect((await within(pane()).findByTitle("Web page: http://localhost:5173/")).getAttribute("src")).toBe("http://127.0.0.1:41001/");
+    expect(pages.opened).toEqual(["http://localhost:5173/"]);
+  });
+
+  it("leaves pages on other hosts on this computer, with no switch", async () => {
+    const { user, pages } = await signedIn();
+    await user.click(screen.getByRole("link", { name: "the docs" }));
+    expect(within(pane()).getByText("Web")).toBeTruthy();
+    expect(within(pane()).queryByRole("button", { name: "Hermes server" })).toBeNull();
+    expect(pages.opened).toEqual([]);
   });
 });
 

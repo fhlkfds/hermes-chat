@@ -9,6 +9,7 @@ pub mod remote;
 pub mod repo_git;
 pub mod saved_password;
 pub mod screenshot;
+pub mod server_page;
 pub mod summon;
 pub mod terminal;
 pub mod tray;
@@ -35,6 +36,8 @@ struct Connection {
     dashboard: Arc<Dashboard>,
     pipe: Arc<Pipe>,
     _tunnel: Option<Tunnel>,
+    /// The SSH target the sign-in went through, if it did: where the Preview's server pages go (server_page.rs).
+    ssh_target: Option<String>,
 }
 
 /// Where the owner signs in: through an SSH tunnel (ADR 0003), or straight to a dashboard URL.
@@ -119,6 +122,7 @@ async fn hermes_connect(
     state: State<'_, AppState>,
     transfers: State<'_, Transfers>,
     displays: State<'_, display::Displays>,
+    pages: State<'_, Arc<server_page::ServerPages>>,
     target: Target,
     username: String,
     password: String,
@@ -157,6 +161,8 @@ async fn hermes_connect(
         Err(e) if e.is_cancelled() => return Err(CONNECT_STOPPED.into()),
         Err(e) => return Err(e.to_string()),
     };
+    // Server pages opened through another SSH target, or for a URL sign-in none, belong to the server left behind.
+    pages.close_other_targets(connection.ssh_target.as_deref(), SIGNED_IN_ELSEWHERE);
     *slot = Some(connection);
     Ok(route)
 }
@@ -177,7 +183,11 @@ async fn open_connection(
         })
         .await
         .map_err(|e| e.to_string())?;
-    Ok((Connection { dashboard: Arc::new(dashboard), pipe: Arc::new(pipe), _tunnel: tunnel }, route))
+    let ssh_target = match &route {
+        Route::Ssh { target } => Some(target.clone()),
+        Route::Url { .. } => None,
+    };
+    Ok((Connection { dashboard: Arc::new(dashboard), pipe: Arc::new(pipe), _tunnel: tunnel, ssh_target }, route))
 }
 
 /// Stops the connection `hermes_connect` is opening for `attempt`, or, if it hasn't begun, stops it before it does.
@@ -428,11 +438,48 @@ async fn hermes_toolset_guards(state: State<'_, AppState>, profile: String) -> R
 }
 
 #[tauri::command]
-async fn hermes_disconnect(state: State<'_, AppState>, transfers: State<'_, Transfers>, displays: State<'_, display::Displays>) -> Result<(), String> {
+async fn hermes_disconnect(
+    state: State<'_, AppState>,
+    transfers: State<'_, Transfers>,
+    displays: State<'_, display::Displays>,
+    pages: State<'_, Arc<server_page::ServerPages>>,
+) -> Result<(), String> {
     *state.0.lock().await = None;
     transfers.stop_all();
     displays.close_all();
+    pages.close_all(SIGNED_OUT);
     Ok(())
+}
+
+const SIGNED_OUT: &str = "Hermes Chat left the Hermes server, so the tunnel to it closed.";
+const SIGNED_IN_ELSEWHERE: &str = "Hermes Chat is now connected to another server, so the tunnel to this one closed.";
+
+/// Opens `url`, a page on the Hermes server's own loopback, through an SSH tunnel to the signed-in connection's SSH
+/// target (server_page.rs, ADR 0051). The webview names only the page; Rust parses it again, and picks the target.
+/// `on_event` hears once if the tunnel ends without `preview_server_close`.
+#[tauri::command]
+async fn preview_server_open(
+    state: State<'_, AppState>,
+    pages: State<'_, Arc<server_page::ServerPages>>,
+    url: String,
+    on_event: Channel<server_page::PageEvent>,
+) -> Result<server_page::Opened, server_page::ServerPageError> {
+    let page = server_page::server_page(&url)?;
+    let target = match &*state.0.lock().await {
+        None => return Err(server_page::ServerPageError::NotConnected),
+        Some(conn) => conn.ssh_target.clone().ok_or(server_page::ServerPageError::NoSshTarget)?,
+    };
+    let pages = pages.inner().clone();
+    pages
+        .open("ssh", &target, page, move |e| {
+            let _ = on_event.send(e);
+        })
+        .await
+}
+
+#[tauri::command]
+fn preview_server_close(pages: State<'_, Arc<server_page::ServerPages>>, id: u64) {
+    pages.close(id);
 }
 
 /// Server file transfers running now, by the webview's id for each, so Cancel can stop one. Every one is stopped when
@@ -1077,6 +1124,7 @@ pub fn run(screenshot: bool, link: Option<String>) {
         .manage(UploadPicks::default())
         .manage(terminal::Terminals::default())
         .manage(display::Displays::default())
+        .manage(Arc::new(server_page::ServerPages::default()))
         .invoke_handler(tauri::generate_handler![
             hermes_connect,
             hermes_send,
@@ -1118,6 +1166,8 @@ pub fn run(screenshot: bool, link: Option<String>) {
             preview_read_local_image,
             preview_check_web,
             preview_open_in_browser,
+            preview_server_open,
+            preview_server_close,
             notify_desktop,
             system_fonts,
             screenshot_capture,
@@ -1164,6 +1214,8 @@ pub fn run(screenshot: bool, link: Option<String>) {
         // for the next startup's sweep, after persisted references are known, rather than risk deleting Retry bytes.
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
+                // Each ssh also has PR_SET_PDEATHSIG, so none outlives the app even if this doesn't run.
+                app.state::<Arc<server_page::ServerPages>>().close_all("Hermes Chat quit.");
                 update::relaunch(app);
             }
         });

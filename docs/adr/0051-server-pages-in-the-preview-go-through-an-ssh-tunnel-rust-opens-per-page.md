@@ -1,0 +1,39 @@
+# Server pages in the Preview go through an SSH tunnel that Rust opens for each page
+
+A link to `http://localhost:3000` in a reply means the Hermes server's own port 3000, where Hermes started the dev server. The Preview loaded it from this computer's loopback, where nothing (or something else) listens (ADR 0007, "Consequences"). Issue #171.
+
+Now a web page on a loopback address (`localhost`, `127.0.0.1`, `[::1]`, `0.0.0.0`), from a reply, a tool call or the address box, opens on the **Hermes server** by default. Rust opens an SSH tunnel to the server's loopback when the page shows, and the frame loads the page through the tunnel's end on this computer. A switch above the page, **Hermes server** / **This computer**, opens it from this computer's loopback instead. The badge in the Preview's header says which: `Server · <target>` or `This computer`. Typing `localhost:5173` without a scheme opens `http://localhost:5173/`. Any address that isn't http(s) is refused, and the message names its scheme.
+
+## How a tunnel is made (`src-tauri/src/server_page.rs`)
+
+- **Where it goes.** The SSH target is the one Rust signed in with (ADR 0003), kept with the connection. The webview names only the page's address; Rust parses it again and keeps it only if it is http(s), has no username or password, and is on one of the four loopback names. The forward goes to `localhost` (resolved on the server, so a server on `::1` only, as Vite binds, is reached), `127.0.0.1` (also for `0.0.0.0`) or `[::1]`, at the page's port. Nothing else on the server can be reached this way.
+- **ssh.** `ssh -N -T -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ControlMaster=no -o ControlPath=none -o ExitOnForwardFailure=no -o StreamLocalBindMask=0177 -o StreamLocalBindUnlink=yes -L <socket>:<host>:<port> -- <target>`. Each is one `Command` argument and no shell runs: the host is one of three fixed strings, the port a number, the socket a path Rust made, and the target is checked as the sign-in tunnel checks it.
+  - `ControlMaster=no`, `ControlPath=none`: through the owner's ControlMaster, the forward would be set up in the master and outlive this ssh.
+  - `ExitOnForwardFailure=no`: every ssh to the host also opens the `LocalForward`s in the owner's config, whose ports the sign-in tunnel already holds. With `yes` (as the sign-in tunnel has), that ended every page's ssh at once (seen with real OpenSSH 10.0). Whether this tunnel's own forward works is seen directly instead: its socket accepts, or ssh names the socket in an error.
+  - No `StrictHostKeyChecking=accept-new`: the sign-in has already met this host. A changed key fails.
+- **Two halves, so the port is never free for another program.** ssh forwards a Unix socket in a new private folder (mode 0700, in `$XDG_RUNTIME_DIR`, else the temporary folder). Rust binds `127.0.0.1:0` itself, keeps the listener, and copies each of the frame's connections to and from ssh's socket. With `ssh -L 127.0.0.1:<port>`, Rust would have to pick a free port and release it for ssh to bind, and another program could take it between the two.
+- **Open.** Rust waits up to 20 s for ssh's socket to accept, then sends one `HEAD /` through it. ssh closing that connection with nothing back means nothing on the server answered at that port, and the Preview says so, with what ssh said (`channel 2: open failed: connect failed: Connection refused`). Any answer, or none within 5 s, opens the page.
+- **Close.** The tunnel closes when the page leaves the Preview: another page, the switch, Reload (which opens a new one), or the Preview closing or going out of sight (pages run only while shown, ADR 0039). Closing ends ssh, the listener and every copy, and removes the socket's folder. A tunnel also closes, and the page says why with **Try again**, when ssh exits, when the app signs out, and when it signs in to a different SSH target. At exit, Rust closes them all, and each ssh is started with `PR_SET_PDEATHSIG` (checked against a parent that already went), so none outlives an app that crashes either. An app that is killed leaves the socket's empty folder behind; the next first tunnel removes those whose app is no longer running.
+- **Several pages** each get their own ssh and port, up to 8 at once.
+
+The frame is the same sandboxed frame as any web page (ADR 0007), so the tunnel's `http://127.0.0.1:<port>` origin gives the page nothing of the app's. The webview loads the address Rust returns only if it is http(s) on `127.0.0.1` at a port and not the app's own origin. The framing check (ADR 0011) asks the page through the tunnel. **Open in your browser** opens the tunnel's address, so it works while the page is open in the Preview.
+
+## When there is no SSH target
+
+A URL sign-in (ADR 0004) has no SSH target. The page then says so, offers **Open on this computer instead**, and suggests signing in through SSH. The Terminal's typed target (ADR 0022) isn't used: here the webview never names an ssh destination, and Rust uses only what it signed in with. When #170 settles one SSH target per connection for URL sign-ins, Rust can keep that target with the connection the same way.
+
+## Considered options
+
+- **`ssh -L 127.0.0.1:<port>:…` straight to TCP**, as the sign-in tunnel does. Rejected for pages: it needs the free-port-then-release race above, and a page's port would be ssh's to keep after Rust thought it closed.
+- **One more forward on the sign-in tunnel's ssh.** Rejected: adding a forward to a running ssh needs a ControlMaster socket, which ADR 0022 also declined, and a page's forward would then live as long as the sign-in.
+- **`ssh -W host:port` for each connection.** It clears config forwards on its own, but each of the frame's connections would be a new SSH sign-in.
+- **Rust fetching the page and serving it from a custom scheme.** Rejected: the page would lose its origin, and a scheme the app serves is nearer the app than a cross-origin frame.
+- **The sign-in's target, or one the webview passes**, as the Terminal and Repository do. Rejected for now: see above.
+
+## Consequences
+
+- Any program on this computer can connect to a tunnel's port while it is open, as with any `ssh -L`, and reach that one port on the server's loopback. The port is ephemeral and the tunnel lasts only while the page shows.
+- A page that links or redirects to `http://localhost:3000/…` by its full address sends the frame to this computer's port 3000, since the frame can't be followed. Relative links stay in the tunnel.
+- The server's page sees requests for `Host: 127.0.0.1:<port>`. Dev servers allow loopback addresses by default (Vite, webpack, Django in debug).
+- The `HEAD /` that checks a new tunnel reaches the page's server.
+- ADR 0007's consequence that pages on the server's loopback don't load is replaced by this.
