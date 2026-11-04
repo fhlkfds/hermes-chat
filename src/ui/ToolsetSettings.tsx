@@ -1,12 +1,14 @@
 // Settings → Toolsets: which toolsets Hermes offers the model, for the profile shown, as Hermes has them on the server.
 // A switch changes one toolset for the whole profile; it is checked against a fresh read first and shown as saved only
-// once Hermes reads it back that way. Reads and writes: toolsets.ts.
+// once Hermes reads it back that way. Beside each, read-only: whether the profile inherits Hermes's default list, what
+// forces it off, and what the open chat actually has. Reads and writes: toolsets.ts.
 import { Fragment, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { RefreshCw, ShieldCheck, TriangleAlert } from "lucide-react";
 import {
   UnsupportedServerError,
   changeableName,
   type Caution,
+  type ChatTools,
   type Pending,
   type Toolset,
   type ToolsetChange,
@@ -27,6 +29,16 @@ const timeOf = (at: number) => new Date(at).toLocaleTimeString([], { hour: "2-di
 type Note = { tone: "ok" | "warn" | "error"; text: string; unsettled?: string };
 /** A change being checked before it's sent: whether it may start an install or bring MCP servers back. */
 type Checking = { name: string; enabled: boolean };
+
+/** The chat open in the app, for what Hermes offers it now. `runtimeId`: its live session on this connection, if any. */
+export type OpenChat = { id: string; title: string; runtimeId?: string; running?: boolean };
+
+/** What the open chat has of a toolset's tools, or undefined when it can't tell (no tools, another platform, no read). */
+function chatHas(t: Toolset, read: ChatTools | undefined): "all" | "none" | { some: number } | undefined {
+  if (read?.kind !== "read" || t.configOnly || t.platform !== "cli" || !t.tools.length) return undefined;
+  const n = t.tools.filter((x) => read.tools.has(x)).length;
+  return n === t.tools.length ? "all" : n === 0 ? "none" : { some: n };
+}
 
 /** One caution, as the confirmation says it. */
 function cautionText(c: Caution, t: Toolset): string {
@@ -97,6 +109,8 @@ function ToolsetRow({
   checking,
   problem,
   offEverywhere,
+  inherited,
+  chat,
   note,
   onToggle,
 }: {
@@ -111,6 +125,10 @@ function ToolsetRow({
   problem?: string;
   /** Named in `agent.disabled_toolsets`, which turns it off on every platform. */
   offEverywhere?: boolean;
+  /** The profile has saved no list for its platform: it inherits Hermes's default. Undefined: couldn't tell. */
+  inherited?: boolean;
+  /** What the open chat has of its tools. */
+  chat?: ReturnType<typeof chatHas>;
   note?: Note;
   onToggle: (t: Toolset) => void;
 }) {
@@ -126,7 +144,8 @@ function ToolsetRow({
             {t.label}
             {t.platform !== "cli" && <span className="badge">{t.platformLabel} only</span>}
             {(!t.configured || problem) && <span className="badge warn">Needs setup</span>}
-            {offEverywhere && <span className="badge off">Off on every platform</span>}
+            {inherited && !t.configOnly && <span className="badge">Inherited</span>}
+            {offEverywhere && <span className="badge off">Forced off on every platform</span>}
           </div>
           {/* Plugin toolsets can describe themselves at length: two lines here, all of it on hover. */}
           <div className="muted small toolset-desc" id={`${id}-desc`} title={t.description || undefined}>
@@ -155,6 +174,12 @@ function ToolsetRow({
       {t.platform !== "cli" && <div className="muted small toolset-hint">Changes Hermes's {t.platformLabel} chats, not this app's.</div>}
       {offEverywhere && (
         <div className="muted small toolset-hint">The profile's agent.disabled_toolsets turns it off on every platform. Turning it on here takes it off that list.</div>
+      )}
+      {chat !== undefined && (
+        <div className="muted small toolset-hint toolset-chat">
+          This chat: {chat === "all" ? "has it" : chat === "none" ? "doesn't have it" : `has ${chat.some} of its ${t.tools.length} tools`}.
+          {(chat === "all") !== t.enabled && ` That isn't the profile's setting: an open chat keeps the tools Hermes built it with${t.enabled ? ", and Hermes leaves out tools whose requirements aren't met" : ""}.`}
+        </div>
       )}
       {t.configOnly && (
         <div className="muted small toolset-hint">A setting with no tools of its own: it turns speech-to-text on or off for the profile, Dictation in this app included.</div>
@@ -186,6 +211,7 @@ export function ToolsetSettings({
   connected,
   runningReplies = 0,
   onGuide,
+  chat,
 }: {
   /** Opens the compatibility guide at the toolset switches, from the note saying they can't be changed here. */
   onGuide?: () => void;
@@ -194,6 +220,8 @@ export function ToolsetSettings({
   connected: boolean;
   /** Chats of this profile with a reply running now. */
   runningReplies?: number;
+  /** The chat open in the app's active pane, in this profile. */
+  chat?: OpenChat;
 }) {
   const [list, setList] = useState<ToolsetList>();
   const [write, setWrite] = useState<WriteSupport>();
@@ -219,6 +247,8 @@ export function ToolsetSettings({
   const live = useRef(true);
   /** Bumped by each change's result: a read that started before it is older than what's shown, and is dropped. */
   const stamp = useRef(0);
+  /** Bumped by each config-guards read after a change, and by each full read: only the latest one's answer is shown. */
+  const guardsRead = useRef(0);
   /** Bumped by each provider-readiness read: only the latest one's answer is shown. */
   const readinessRead = useRef(0);
   /**
@@ -235,6 +265,28 @@ export function ToolsetSettings({
     return () => void (live.current = false);
   }, []);
 
+  // What the open chat has, read for its live session only. Each read is numbered: only the latest one's answer, for the
+  // session still open, is shown, so a late answer for a chat left (or a connection gone) never replaces it.
+  const [chatRead, setChatRead] = useState<{ runtimeId: string; read?: ChatTools; error?: string }>();
+  const chatSeq = useRef(0);
+  const runtimeId = connected ? chat?.runtimeId : undefined;
+  const readChat = useCallback(async () => {
+    const mine = ++chatSeq.current;
+    if (!runtimeId) return setChatRead(undefined);
+    setChatRead((c) => (c?.runtimeId === runtimeId ? c : { runtimeId }));
+    const out = await api.chatTools(profile, runtimeId).then(
+      (read) => ({ runtimeId, read }),
+      (e) => ({ runtimeId, error: messageOf(e) }),
+    );
+    if (live.current && mine === chatSeq.current) setChatRead(out);
+  }, [api, profile, runtimeId]);
+  useEffect(() => void readChat(), [readChat]);
+  // Called after an await (a save, a focus), when the chat's live session may have changed: always the current one.
+  const readChatNow = useRef(readChat);
+  readChatNow.current = readChat;
+  // The chat read shown, only while it is for the session open now.
+  const chatShown = chatRead?.runtimeId === runtimeId ? chatRead : undefined;
+
   /**
    * Reads the list for this component's profile, and with `full` whether Hermes takes changes, the config guards and
    * provider readiness too. Asked while another read is under way, it runs once that is done; while a change to this
@@ -249,6 +301,8 @@ export function ToolsetSettings({
       if (api.pending()?.profile === profile) wanted.current = wanted.current ?? false;
       readingNow.current = true;
       const started = stamp.current;
+      // Numbered when the read starts: a later guards read (after a change, on focus) supersedes this one's answer.
+      const guardsSeq = full ? ++guardsRead.current : 0;
       setReading(true);
       try {
         const [fresh, support, g] = await Promise.all([
@@ -282,7 +336,7 @@ export function ToolsetSettings({
           return undefined;
         });
         if (support) setWrite(support);
-        if (full) setGuards(g);
+        if (full && guardsSeq === guardsRead.current) setGuards(g);
         setLoadError(undefined);
         setUnsupported(undefined);
         setReread(false);
@@ -329,10 +383,17 @@ export function ToolsetSettings({
   }, [connected, reread, read]);
   // Coming back to the window reads it again, for changes made elsewhere meanwhile.
   useEffect(() => {
-    const onFocus = () => connected && list && void read(false);
+    // Another client may have saved the profile's own list, or forced a toolset off: the config is read again too.
+    const onFocus = () => connected && list && (void read(false), void readChatNow.current(), readGuards());
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, [connected, list, read]);
+
+  /** The config facts (inherited, forced off, no_mcp) read again; only the latest read's answer is shown. */
+  const readGuards = () => {
+    const mine = ++guardsRead.current;
+    void api.guards(profile).then((g) => g && live.current && mine === guardsRead.current && setGuards(g));
+  };
 
   const commit = async (t: Toolset, enabled: boolean, accepted: Caution[] = []) => {
     let note: Note;
@@ -356,6 +417,9 @@ export function ToolsetSettings({
       note = { tone: "error", text: `Nothing changed: couldn't read ${t.label} from Hermes first: ${messageOf(e)}` };
     }
     setNotes((n) => ({ ...n, [t.name]: note }));
+    // Whether the change reached the open chat is read, not assumed; so is whether the profile now has its own list.
+    void readChatNow.current();
+    readGuards();
   };
 
   const toggle = async (t: Toolset) => {
@@ -411,10 +475,30 @@ export function ToolsetSettings({
         Which tools Hermes offers the model in the <span className="mono">{profile}</span> profile. Hermes keeps this list on the server, in the profile's
         settings, so the command line, the TUI and the Hermes desktop app use it too. It is the same for every chat in the profile.
       </p>
-      <p className="muted small toolset-scope">
-        <strong>When it takes effect:</strong> in chats Hermes starts after the change. A chat Hermes already has open, and a reply running in it, keeps the
-        tools it started with. A server started with <span className="mono">HERMES_TUI_TOOLSETS</span> set uses that list instead.
-      </p>
+      <dl className="toolset-scopes small" aria-label="What a change reaches">
+        <dt>
+          This chat <span className="badge off">Not changeable here</span>
+        </dt>
+        <dd className="muted">
+          Hermes has no setting for one chat's toolsets that keeps the conversation: its only way rebuilds the chat's agent and clears what the chat holds in
+          memory. A chat Hermes already has open, and a reply running in it, keeps the tools it was built with, its next turns included. Under each
+          toolset, the open chat's line says what Hermes offers it now.
+        </dd>
+        <dt>
+          The <span className="mono">{profile}</span> profile <span className="badge">Changed here</span>
+        </dt>
+        <dd className="muted">
+          <strong>When it takes effect:</strong> in chats Hermes starts after the change, and a chat Hermes opens again after closing it, in every Hermes
+          client.
+        </dd>
+        <dt>
+          The whole server <span className="badge off">Not changeable here</span>
+        </dt>
+        <dd className="muted">
+          A server started with <span className="mono">HERMES_TUI_TOOLSETS</span> set uses that list for every chat instead. It is set where Hermes runs, and no
+          route reports or changes it.
+        </dd>
+      </dl>
       <p className="muted small toolset-scope">
         <ShieldCheck size={12} /> Toolsets aren't Approvals. Turning one on doesn't change which commands Hermes asks about before running them, or YOLO.
       </p>
@@ -456,6 +540,8 @@ export function ToolsetSettings({
         checking={checking}
         problem={problems[t.name]}
         offEverywhere={guards?.disabledEverywhere.includes(t.name)}
+        inherited={guards && !guards.noMcpUnclear.includes(t.platform) ? !guards.savedLists.includes(t.platform) : undefined}
+        chat={chatHas(t, chatShown?.read)}
         note={notes[t.name]}
         onToggle={(x) => void toggle(x)}
       />
@@ -519,6 +605,34 @@ export function ToolsetSettings({
           )}
         </p>
       )}
+      {guards && list.toolsets.some((t) => t.platform === "cli") && (
+        <p className="small muted toolset-scope" role="status">
+          {guards.noMcpUnclear.includes("cli")
+            ? "This app can't tell whether the profile has saved its own list: it's saved in a form this app can't read for certain."
+            : guards.savedLists.includes("cli")
+              ? "Saved in profile: the profile has its own list, shown here."
+              : "Inherited: the profile hasn't saved a list of its own, so it has Hermes's default. The first change here saves the whole list, as shown, into the profile."}{" "}
+          Forced values come on top: agent.disabled_toolsets turns toolsets off on every platform, and a server pin replaces the list.
+        </p>
+      )}
+      <div className="small muted toolset-scope toolset-chat-status" role="status" aria-label="This chat">
+        {!chat
+          ? "No chat is open, so there's no chat to compare with."
+          : !connected
+            ? `“${chat.title}”: what it has is read when Hermes is back.`
+            : !chat.runtimeId
+              ? `“${chat.title}” isn't open on Hermes yet, so it has no tools of its own: it gets the profile's list when Hermes opens it.`
+              : !chatShown?.read && !chatShown?.error
+                ? `Reading what “${chat.title}” has…`
+                : chatShown.error
+                  ? <span className="sign-in-error">Couldn't read what “{chat.title}” has: {chatShown.error}</span>
+                  : chatShown.read!.kind === "closed"
+                    ? `Hermes no longer has “${chat.title}” open: it gets the profile's list when it's opened again.`
+                    : chatShown.read!.kind === "unsupported"
+                      ? `${chatShown.read!.reason} Each toolset shows the profile's setting only.`
+                      : `“${chat.title}”: what Hermes offers it, read at ${timeOf(chatShown.read!.readAt)}, is under each toolset.`}
+        {chat?.running && connected && " A reply is running in it now; nothing here changes the tools it's using."}
+      </div>
       {pending && pending.profile !== profile && (
         <p className="small muted toolset-scope" role="status">
           Waiting for a change in the {pending.profile} profile to finish before this one can change.
@@ -529,7 +643,7 @@ export function ToolsetSettings({
           {reading ? "Reading the toolsets from Hermes…" : loadError ? null : `Read from Hermes at ${timeOf(list.readAt)}.`}
           {loadError && <span className="sign-in-error">Couldn't read them again: {loadError}</span>}
         </div>
-        <button className="btn" disabled={!connected || locked || reading} onClick={() => void read(true)}>
+        <button className="btn" disabled={!connected || locked || reading} onClick={() => (void read(true), void readChat())}>
           <RefreshCw size={14} /> Refresh
         </button>
       </div>

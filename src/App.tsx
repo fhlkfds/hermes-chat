@@ -1988,6 +1988,10 @@ export function Main({
             modelSettings={hermes.modelSettings}
             toolsets={hermes.toolsets}
             runningReplies={chats.filter((c) => c.running).length}
+            openChat={(() => {
+              const c = chats.find((x) => x.id === active.chatId);
+              return c && { id: c.id, title: c.title, runtimeId: c.runtimeId, running: c.running };
+            })()}
             memory={hermes.memory}
             onMemoryDirty={onMemoryDirty}
             memoryDiscards={memoryDiscards}
@@ -2205,7 +2209,7 @@ export function Main({
                     />
                   </Suspense>
                 ),
-                // On a server without the managed-files routes, a note takes the browser's place (ADR 0041).
+                // On a server without the managed-files routes, a note takes the browser's place (ADR 0042).
                 files: () => (
                   <CapabilityGate store={hermes.capabilities} id="serverFiles" openGuide={openGuide} onDiagnostics={openDiagnostics}>
                     <FileBrowser key={filesKey} files={hermes.files} status={status} route={route} path={filesPath} onPath={setFilesPath} />

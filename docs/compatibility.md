@@ -1,6 +1,6 @@
 # Hermes server compatibility
 
-Hermes Chat works with more than one version of Hermes, but not every version has every feature. This guide lists what each feature needs from the Hermes server, how the app checks for it, and what the app does when the server doesn't have it. The decision record is [ADR 0041](adr/0041-capabilities-are-what-hermes-says-or-answers-checked-only-by-reading.md).
+Hermes Chat works with more than one version of Hermes, but not every version has every feature. This guide lists what each feature needs from the Hermes server, how the app checks for it, and what the app does when the server doesn't have it. The decision record is [ADR 0042](adr/0042-capabilities-are-what-hermes-says-or-answers-checked-only-by-reading.md).
 
 To see what your server has, open **Settings → Diagnostics**, or **Settings → General → Connection diagnostics**. It shows the server's version, protocol, sign-in and feature flags, and the state of each feature below.
 

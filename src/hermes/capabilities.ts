@@ -1,5 +1,5 @@
 // What the connected Hermes server can do: the typed contract that the transport, Connection diagnostics, and every
-// screen that depends on a server route or method share (ADR 0041, docs/compatibility.md). There is one store per
+// screen that depends on a server route or method share (ADR 0042, docs/compatibility.md). There is one store per
 // Hermes (one sign-in), kept in memory only.
 //
 // Where each answer comes from, in this order:

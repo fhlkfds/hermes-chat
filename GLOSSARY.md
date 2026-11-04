@@ -172,7 +172,7 @@ Hermes asking the owner before it runs a command it counts as dangerous. It show
 _Avoid_: permission, confirmation, prompt
 
 **Toolset**:
-A named group of tools Hermes can offer the model, such as Web Search or Terminal. Which toolsets are on is a setting of the profile, kept by Hermes on the server: the list new chats in the profile start with, in every Hermes client, unless the server pins its own or the profile's coding focus mode picks one in a code workspace. A change reaches chats Hermes starts afterwards; a chat Hermes already has open, and a reply running in it, keeps the tools it started with. Settings → Toolsets says a change is saved only once Hermes reads it back that way. A toolset being on doesn't let Hermes run anything it would otherwise ask about: Approvals and YOLO decide that.
+A named group of tools Hermes can offer the model, such as Web Search or Terminal. Which toolsets are on is a setting of the profile, kept by Hermes on the server: the list new chats in the profile start with, in every Hermes client, unless the server pins its own or the profile's coding focus mode picks one in a code workspace. A change reaches chats Hermes starts, or opens again, afterwards. A chat Hermes already has open, and a reply running in it, keeps the tools it started with, on its next turns too. Settings → Toolsets says a change is saved only once Hermes reads it back that way. It also shows, apart from the profile's setting, what the open chat has, as Hermes reads it for that chat. The profile's list is **inherited** while the profile hasn't saved one of its own: it is Hermes's default. A toolset is **forced off** when `agent.disabled_toolsets` turns it off on every platform, whatever the list says. A toolset being on doesn't let Hermes run anything it would otherwise ask about: Approvals and YOLO decide that.
 _Avoid_: tool permissions, capabilities, plugins (a plugin can bring a toolset, but isn't one)
 
 **Inbox**:
@@ -184,7 +184,7 @@ A `hermes-chat://` link that opens one chat in its profile, made with Copy chat 
 _Avoid_: deep link (fine in conversation), share link (nothing is shared with anyone), URL (for the link itself)
 
 **Capability**:
-A feature of this app that needs something from the Hermes server, such as a route or a method, and whether the connected server has it: Supported, Not supported, Unknown (Hermes answered, but that settles nothing) or Couldn't check (no answer, which may pass). Learnt from what Hermes says about itself, from the app's own requests, or from one request that only reads; never from a version number alone. Kept in memory for the current sign-in only (ADR 0041).
+A feature of this app that needs something from the Hermes server, such as a route or a method, and whether the connected server has it: Supported, Not supported, Unknown (Hermes answered, but that settles nothing) or Couldn't check (no answer, which may pass). Learnt from what Hermes says about itself, from the app's own requests, or from one request that only reads; never from a version number alone. Kept in memory for the current sign-in only (ADR 0042).
 _Avoid_: feature flag (Hermes's own advertised switches, which diagnostics lists separately), permission, support (alone)
 
 **Connection diagnostics**:

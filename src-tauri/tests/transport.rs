@@ -679,6 +679,7 @@ fn toolset_guards_keep_only_no_mcp_platforms_coding_focus_and_disabled_names() {
     let none = || transport::ToolsetGuards {
         no_mcp: vec![],
         no_mcp_unclear: vec![],
+        saved_lists: vec![],
         coding_focus: false,
         disabled_everywhere: vec![],
         disabled_unclear: false,
@@ -688,6 +689,8 @@ fn toolset_guards_keep_only_no_mcp_platforms_coding_focus_and_disabled_names() {
         transport::ToolsetGuards {
             no_mcp: vec!["cli".into(), "irc".into(), "telegram".into()],
             no_mcp_unclear: vec!["line".into(), "matrix".into(), "slack".into()],
+            // `signal` holds a string Hermes doesn't read as a list, so it inherits Hermes's default like an absent one.
+            saved_lists: vec!["cli".into(), "discord".into(), "irc".into(), "telegram".into()],
             coding_focus: true,
             disabled_everywhere: vec!["web".into(), "debugging".into()],
             disabled_unclear: false,
@@ -699,6 +702,7 @@ fn toolset_guards_keep_only_no_mcp_platforms_coding_focus_and_disabled_names() {
         json!({
             "noMcp": ["cli", "irc", "telegram"],
             "noMcpUnclear": ["line", "matrix", "slack"],
+            "savedLists": ["cli", "discord", "irc", "telegram"],
             "codingFocus": true,
             "disabledEverywhere": ["web", "debugging"],
             "disabledUnclear": false
@@ -706,6 +710,9 @@ fn toolset_guards_keep_only_no_mcp_platforms_coding_focus_and_disabled_names() {
     );
     assert!(!out.to_string().contains("sk-secret"));
     assert_eq!(transport::toolset_guards(&json!({})), none());
+    // Null, an empty saved list, and a string list literal: inherited, saved (even empty), saved.
+    let saved = transport::toolset_guards(&json!({"platform_toolsets": {"cli": null, "discord": [], "slack": "['web']"}})).saved_lists;
+    assert_eq!(saved, vec!["discord".to_string(), "slack".to_string()]);
     assert!(!transport::toolset_guards(&json!({"agent": {"coding_context": "auto"}})).coding_focus);
     // As `hermes config set` stores a list, and a single name, both as Hermes's parse_config_string_list reads them.
     let listed = |v: serde_json::Value| {

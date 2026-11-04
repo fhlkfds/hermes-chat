@@ -779,6 +779,7 @@ export class Hermes {
     (_profile, name) => {
       if (name === "stt") this.voiceRead = undefined;
     },
+    (method, params) => this.request(method, params),
     // What its write check found, which only Settings → Toolsets can learn (capabilities.ts `toolsetSwitches`).
     () => {
       const gen = this.generation;
@@ -822,7 +823,7 @@ export class Hermes {
 
   /**
    * What this Hermes server can do, for Connection diagnostics and the screens that depend on it (capabilities.ts,
-   * ADR 0041). Its checks only read, through the connection in use, and it is kept in memory for this sign-in only. A
+   * ADR 0042). Its checks only read, through the connection in use, and it is kept in memory for this sign-in only. A
    * write whose capability Hermes lacks is refused here, before it is sent.
    */
   readonly capabilities = new CapabilityStore(

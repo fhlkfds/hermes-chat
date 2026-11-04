@@ -1,4 +1,4 @@
-// The capability store (capabilities.ts, ADR 0041) against a scripted Hermes: what each kind of answer means, when
+// The capability store (capabilities.ts, ADR 0042) against a scripted Hermes: what each kind of answer means, when
 // checks run again, that late answers for an older connection are dropped, that nothing it sends writes, and that the
 // copied report holds no secret. The answers are modelled on Hermes's own source: upstream `74b2ed6` and 0.16.0.
 import { afterEach, describe, expect, it, vi } from "vitest";
