@@ -1047,12 +1047,17 @@ export function Main({
   }, [catalog, profile]);
 
   // The tray (ADR 0033). Its New chat and Open Inbox come here once Rust has shown the window; New chat asks first
-  // about an unsaved edit, as the app's own New chat does. It is told only how many Inbox entries need the owner, for
-  // its menu and the dot on its icon, never what they say; signing out clears it.
+  // about an unsaved edit, as the app's own New chat does. While a modal dialog is open (a Server file being edited,
+  // a question), they only bring the window forward, as the app's shortcuts stop at a modal: the owner sees the dialog
+  // and decides. The tray is told only how many Inbox entries need the owner, for its menu and the dot on its icon,
+  // never what they say; signing out clears it.
+  const trayCovered = () => covered || !!document.querySelector('[aria-modal="true"]');
   const trayNewChat = useRef(() => {});
-  trayNewChat.current = () => covered || newChat();
+  trayNewChat.current = () => trayCovered() || newChat();
+  const trayInbox = useRef(() => {});
+  trayInbox.current = () => trayCovered() || setInboxOpen(true);
   useEffect(() => tray.onNewChat(() => trayNewChat.current()), [tray]);
-  useEffect(() => tray.onOpenInbox(() => !covered && setInboxOpen(true)), [tray, covered]);
+  useEffect(() => tray.onOpenInbox(() => trayInbox.current()), [tray]);
   useEffect(() => tray.reportInbox(inboxCount), [tray, inboxCount]);
   useEffect(() => () => tray.reportInbox(0), [tray]);
   // Hidden to the tray, the window shows no chat: replies arriving meanwhile leave their chats Unread.
