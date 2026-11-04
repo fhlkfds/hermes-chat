@@ -2500,7 +2500,7 @@ p.logs-status { margin: 0 0 8px; line-height: 1.5; }
 .cap-badge.cap-ok { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
 .cap-badge.cap-no { background: color-mix(in srgb, var(--bad) 16%, transparent); color: var(--bad); }
 .cap-badge.cap-unknown { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
-.capability-missing { padding: 18px 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--raised); margin: 8px 0; }
+.capability-missing, .settings section.capability-missing { padding: 18px 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--raised); margin: 8px 0; }
 .capability-missing h2 { display: flex; align-items: center; gap: 8px; font-size: calc(14rem / 14); font-weight: 600; margin: 0 0 8px; }
 .capability-missing p { margin: 0 0 10px; font-size: calc(13rem / 14); line-height: 1.55; overflow-wrap: anywhere; }
 .capability-missing-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }

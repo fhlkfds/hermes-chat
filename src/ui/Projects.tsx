@@ -199,7 +199,7 @@ function ProjectMenu({
       </div>
       {!projects.length && !loading && !error && <div className="profile-hint">No projects in this profile yet.</div>}
       {loading && !projects.length && <div className="profile-hint">Loading projects…</div>}
-      {error && <div className="profile-hint err">{error}</div>}
+      {error && !unsupported && <div className="profile-hint err">{error}</div>}
       {unsupported && (
         <div className="profile-hint">
           This Hermes server doesn't support projects.{" "}

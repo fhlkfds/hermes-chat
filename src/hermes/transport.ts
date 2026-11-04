@@ -3683,6 +3683,7 @@ export class Hermes {
     if (refused) return Promise.reject(new CapabilityUnsupportedError(refused));
     const answer = pipe.request(method, pathAndQuery, body === undefined ? undefined : JSON.stringify(body));
     if (method === "GET") this.observe({ route: pathAndQuery }, answer);
+    else this.observeWrite({ route: pathAndQuery }, answer);
     return answer;
   }
 
@@ -3698,13 +3699,19 @@ export class Hermes {
     return answer;
   }
 
-  /** Tells diagnostics how a request the screens made was answered, for the connection it went out on. */
+  /** Tells diagnostics how a request the screens made was answered, with the answer, for the connection it went out on. */
   private observe(call: { route: string } | { method: string }, answer: Promise<unknown>) {
     const gen = this.generation;
     answer.then(
-      () => this.capabilities.observe(gen, call),
+      (value) => this.capabilities.observe(gen, call, undefined, value),
       (e: unknown) => this.capabilities.observe(gen, call, e),
     );
+  }
+
+  /** Tells diagnostics when a change the screens sent failed, so a route or method Hermes lacks isn't sent to again. */
+  private observeWrite(call: { route: string } | { method: string }, answer: Promise<unknown>) {
+    const gen = this.generation;
+    answer.catch((e: unknown) => this.capabilities.observeWrite(gen, call, e));
   }
 
   private track(p: Promise<unknown>) {
@@ -3722,7 +3729,10 @@ export class Hermes {
     const id = this.nextId++;
     const done = new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
     // Diagnostics learns from the screens' own requests (not its own checks), for the connection each went out on.
-    if (observe) this.observe({ method }, done);
+    if (observe) {
+      this.observe({ method }, done);
+      this.observeWrite({ method }, done);
+    }
     const frame = JSON.stringify({ jsonrpc: "2.0", id, method, params });
     const [head, tail, ...rest] = frame.split(JSON.stringify(FILE_MARK).slice(1, -1));
     const sent = !file

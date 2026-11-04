@@ -212,8 +212,10 @@ describe("the note in place of a screen", () => {
     expect(screen.getByText("the screen")).toBeTruthy();
   });
 
-  it("replaces it with what is missing, links to diagnostics and the guide, and moves focus there", async () => {
+  it("opens as the note alone when Hermes already lacks the feature, linking to diagnostics and the guide", async () => {
     const store = scriptedStore(NEW);
+    act(() => store.connected(1, "default", {}, Promise.resolve({})));
+    act(() => store.observe(1, { route: "api/webhooks?profile=default" }, new Error(`The dashboard answered 404: {"detail":"Not Found"}`)));
     const openGuide = vi.fn();
     const onDiagnostics = vi.fn();
     render(
@@ -221,21 +223,35 @@ describe("the note in place of a screen", () => {
         <button>New automation</button>
       </CapabilityGate>,
     );
-    act(() => store.connected(1, "default", {}, Promise.resolve({})));
-    screen.getByRole("button", { name: "New automation" }).focus();
-    act(() => store.observe(1, { route: "api/webhooks?profile=default" }, new Error(`The dashboard answered 404: {"detail":"Not Found"}`)));
-    // The screen, and anything in it that could write, is gone.
+    // The screen, and anything in it that could write, isn't there.
     expect(screen.queryByRole("button", { name: "New automation" })).toBeNull();
     const note = screen.getByRole("region", { name: /This Hermes server doesn't support Automations/ });
-    expect(note.textContent).toMatch(/Automations needs The webhook routes under \/api\/webhooks/);
+    expect(note.textContent).toMatch(/Automations needs the webhook routes under \/api\/webhooks/);
     expect(note.textContent).toMatch(/Updating Hermes on the server adds it\. Checked just now/);
-    await waitFor(() => expect(document.activeElement).toBe(within(note).getByRole("heading")));
     const user = userEvent.setup();
     await user.click(within(note).getByRole("button", { name: "Connection diagnostics" }));
     expect(onDiagnostics).toHaveBeenCalledWith("automations");
     await user.click(within(note).getByRole("button", { name: "Compatibility guide: Automations" }));
     expect(openGuide).toHaveBeenCalledWith(guideUrl("automations"));
     expect(screen.getByRole("heading", { level: 1, name: "Automations" })).toBeTruthy();
+  });
+
+  it("keeps a screen already open, with what it typed, and puts the note above it", async () => {
+    const store = scriptedStore(NEW);
+    act(() => store.connected(1, "default", {}, Promise.resolve({})));
+    render(
+      <CapabilityGate store={store} id="memory" openGuide={() => {}}>
+        <textarea aria-label="Entry" defaultValue="" />
+      </CapabilityGate>,
+    );
+    const user = userEvent.setup();
+    await user.type(screen.getByRole("textbox", { name: "Entry" }), "An unsaved edit");
+    // A reconnect to an older build finds Hermes lacks the feature while the edit is open.
+    act(() => store.observe(1, { method: "learning.detail" }, Object.assign(new Error("unknown method"), { code: -32601 })));
+    expect(screen.getByRole("region", { name: /doesn't support Memory/ })).toBeTruthy();
+    expect((screen.getByRole("textbox", { name: "Entry" }) as HTMLTextAreaElement).value).toBe("An unsaved edit");
+    // Its writes are refused before they are sent.
+    expect(store.refuses({ rpc: "learning.edit" })).toBe("memory");
   });
 });
 
@@ -319,6 +335,30 @@ describe("in the app", () => {
     await user.click(screen.getByRole("button", { name: "Server files" }));
     expect(await screen.findByRole("region", { name: /doesn't support Server files/ })).toBeTruthy();
     expect(s.restRequests.filter((r) => r.method !== "GET" && r.path.startsWith("/api/files"))).toEqual([]);
+  });
+
+  it("links to the guide where Settings → Toolsets says the switches can't be changed", { timeout: 15_000 }, async () => {
+    const s = new FakeHermes();
+    s.toolsetRoutes = "read-only";
+    const { hermes, user, opens } = await launch(s);
+    await act(() => settledChecks(hermes));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("tab", { name: /Toolsets/ }));
+    await user.click(await screen.findByRole("button", { name: "Compatibility guide: Toolset switches" }));
+    expect(opens).toHaveBeenCalledWith(guideUrl("toolsetSwitches"));
+  });
+
+  it("links to the guide from /help when Hermes has no commands, and keeps the app's own", { timeout: 15_000 }, async () => {
+    const s = new FakeHermes();
+    s.commandCatalog = undefined;
+    const { hermes, user, opens } = await launch(s);
+    await act(() => settledChecks(hermes));
+    await user.click(screen.getByPlaceholderText("Message Hermes"));
+    await user.keyboard("/help{Enter}{Enter}");
+    const help = screen.getByRole("region", { name: "Commands" });
+    expect(within(help).getByText(/the app's own commands still work/)).toBeTruthy();
+    await user.click(within(help).getByRole("button", { name: "Compatibility guide: Hermes's slash commands" }));
+    expect(opens).toHaveBeenCalledWith(guideUrl("commands"));
   });
 
   it("says in the project menu that Hermes has no projects, with no New project to send", { timeout: 15_000 }, async () => {

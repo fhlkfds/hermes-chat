@@ -376,6 +376,38 @@ describe("late answers and connection changes", () => {
 });
 
 describe("what the app's own requests show", () => {
+  it("keeps a missing route missing when a sibling route answers, in either order and after Check again", async () => {
+    for (const order of ["read first", "list first"]) {
+      const t = store(NEW);
+      await connectAndCheck(t);
+      const list = () => t.caps.observe(1, { route: "api/files?path=/" }, undefined, "{}");
+      const read = () => t.caps.observe(1, { route: "api/files/read?path=/x" }, noRoute());
+      if (order === "read first") (read(), list());
+      else (list(), read());
+      expect(t.caps.get("serverFiles").state, order).toBe("unsupported");
+      // The check reads the list, which answers: reading a file still has no route.
+      await t.caps.refresh();
+      expect(t.caps.get("serverFiles").state, order).toBe("unsupported");
+      expect(t.caps.refuses({ rest: "POST", path: "api/files/upload-stream" })).toBe("serverFiles");
+      // Only an answer from that same route takes it back.
+      t.caps.observe(1, { route: "api/files/read?path=/x" }, undefined, '{"path":"/x"}');
+      expect(t.caps.get("serverFiles").state, order).toBe("supported");
+    }
+  });
+
+  it("doesn't count an answer that isn't JSON, or of another shape, as support", () => {
+    const t = store(NEW);
+    t.caps.connected(1, "default", {}, Promise.resolve({}));
+    t.caps.observe(1, { route: "api/cron/jobs?profile=default" }, undefined, "<html>Sign in</html>");
+    expect(t.caps.get("scheduledJobs").state).toBe("unknown");
+    t.caps.observe(1, { route: "api/tools/toolsets?profile=default" }, undefined, '{"toolsets":[]}');
+    expect(t.caps.get("toolsets").state).toBe("unknown");
+    t.caps.observe(1, { method: "session.active_list" }, undefined, { sessions: "none" });
+    expect(t.caps.get("liveSessions").state).toBe("unknown");
+    t.caps.observe(1, { route: "api/tools/toolsets?profile=default" }, undefined, "[]");
+    expect(t.caps.get("toolsets").state).toBe("supported");
+  });
+
   it("keeps a screen's newer answer when a check that started earlier answers late, either way", async () => {
     for (const late of [() => Promise.reject(answered(502, "Bad Gateway")), () => Promise.resolve({ path: "/", entries: [] })]) {
       const held: ((v: Promise<unknown>) => void)[] = [];
@@ -399,7 +431,7 @@ describe("what the app's own requests show", () => {
     expect(t.caps.get("scheduledJobs")).toMatchObject({ state: "unsupported", source: "observed" });
     t.caps.observe(1, { route: "api/cron/jobs?profile=default" }, new Error("Can't reach the Hermes dashboard: timeout"));
     expect(t.caps.get("scheduledJobs").state).toBe("unsupported");
-    t.caps.observe(1, { route: "api/cron/jobs?profile=default" });
+    t.caps.observe(1, { route: "api/cron/jobs?profile=default" }, undefined, "[]");
     expect(t.caps.get("scheduledJobs")).toMatchObject({ state: "supported", source: "observed" });
     t.caps.observe(1, { method: "projects.list" }, noMethod("projects.list"));
     expect(t.caps.get("projects").state).toBe("unsupported");
@@ -412,7 +444,7 @@ describe("what the app's own requests show", () => {
     const t = store(NEW);
     t.setGen(1);
     t.caps.connected(1, "default", {}, Promise.resolve({}));
-    t.caps.observe(1, { route: "api/cron/jobs?profile=default" });
+    t.caps.observe(1, { route: "api/cron/jobs?profile=default" }, undefined, "[]");
     await vi.waitFor(() => expect(t.caps.getSnapshot().checkedAt).toBeDefined());
     expect(t.calls).not.toContain("GET api/cron/jobs");
     expect(t.calls).toContain("GET api/webhooks");
@@ -429,11 +461,42 @@ describe("what the app's own requests show", () => {
 });
 
 describe("refusing writes Hermes can't take", () => {
+  it("learns from a change Hermes has no route or method for, and sends the next one nowhere", () => {
+    const t = store(NEW);
+    t.caps.connected(1, "default", {}, Promise.resolve({}));
+    // The catalog answered, so the commands look supported, until running one finds no method.
+    t.caps.observe(1, { method: "commands.catalog" }, undefined, { pairs: [] });
+    expect(t.caps.get("commands").state).toBe("supported");
+    t.caps.observeWrite(1, { method: "command.dispatch" }, noMethod("command.dispatch"));
+    expect(t.caps.get("commands")).toMatchObject({ state: "unsupported", why: expect.stringMatching(/no such method, for a change this app sends \(command\.dispatch\)/) });
+    expect(t.caps.refuses({ rpc: "command.dispatch" })).toBe("commands");
+    // A read that answers again doesn't take it back: only the method that was missing can.
+    t.caps.observe(1, { method: "commands.catalog" }, undefined, { pairs: [] });
+    expect(t.caps.get("commands").state).toBe("unsupported");
+    // A REST write's own refusal, such as a job that is gone, says nothing about the route.
+    t.caps.observeWrite(1, { route: "api/cron/jobs/j1?profile=default" }, answered(404, "Job not found"));
+    expect(t.caps.get("scheduledJobs").state).toBe("unknown");
+    t.caps.observeWrite(1, { route: "api/cron/jobs?profile=default" }, noRoute());
+    expect(t.caps.refuses({ rest: "POST", path: "api/cron/jobs?profile=default" })).toBe("scheduledJobs");
+    // Membership's missing store is expected, and isn't counted against Projects.
+    t.caps.observeWrite(1, { method: "projects.membership.apply" }, noMethod("projects.membership.apply"));
+    expect(t.caps.get("projects").state).toBe("unknown");
+  });
+
+  it("ignores a write failure from a connection since gone", () => {
+    const t = store(NEW);
+    t.caps.connected(1, "default", {}, Promise.resolve({}));
+    t.setGen(2);
+    t.caps.observeWrite(1, { method: "command.dispatch" }, noMethod("command.dispatch"));
+    expect(t.caps.get("commands").state).toBe("unknown");
+  });
+
   it("refuses a write only while its capability is unsupported, and never a read", async () => {
     const t = store(OLD);
     await connectAndCheck(t, 1, Promise.reject(noMethod("client.capabilities")));
     expect(t.caps.refuses({ rpc: "projects.create" })).toBe("projects");
-    expect(t.caps.refuses({ rpc: "projects.membership.apply" })).toBe("projects");
+    // Membership is a store no Hermes has yet (ADR 0033): its absence is expected, so it isn't Projects' write.
+    expect(t.caps.refuses({ rpc: "projects.membership.apply" })).toBeUndefined();
     expect(t.caps.refuses({ rpc: "learning.edit" })).toBe("memory");
     expect(t.caps.refuses({ rpc: "learning.delete" })).toBe("memory");
     expect(t.caps.refuses({ rest: "POST", path: "api/files/upload-stream" })).toBe("serverFiles");

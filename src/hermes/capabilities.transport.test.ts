@@ -171,6 +171,24 @@ describe("capabilities over the transport", () => {
     expect(hermes.capabilities.get("toolsetSwitches").state).toBe("unknown");
   });
 
+  it("sends a change no further once Hermes answered it has no route for it", { timeout: 10_000 }, async () => {
+    const server = new FakeHermes();
+    server.souls = { default: "# Fixture\n" };
+    // This Hermes reads SOUL.md but has no route to write it.
+    server.rest["PUT /api/profiles/default/soul"] = () => {
+      throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
+    };
+    const hermes = await signedIn(server);
+    await checked(hermes);
+    const soul = await hermes.persona.read("default");
+    await expect(hermes.persona.save("default", soul, "# Changed\n")).rejects.toThrow();
+    const puts = () => server.restRequests.filter((r) => r.method === "PUT");
+    expect(puts()).toHaveLength(1);
+    expect(hermes.capabilities.get("persona").state).toBe("unsupported");
+    await expect(hermes.persona.save("default", soul, "# Changed again\n")).rejects.toMatchObject({ kind: "unsupported" });
+    expect(puts()).toHaveLength(1);
+  });
+
   it("still refuses the canonical session protocol", async () => {
     const server = new FakeHermes();
     server.readyPayload = { ...server.readyPayload, session_authority: true };

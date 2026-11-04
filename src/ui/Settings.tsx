@@ -38,7 +38,7 @@ import type { ScreenshotSupport } from "../hermes/tauriScreenshot";
 import { UpdateSettings } from "./UpdateSettings";
 import { ImportSection, type ImportWiring } from "./ImportTranscripts";
 import { BackupSection, type BackupWiring } from "./Backup";
-import type { CapabilityId, CapabilityStore } from "../hermes/capabilities";
+import { guideUrl, type CapabilityId, type CapabilityStore } from "../hermes/capabilities";
 import { CapabilityGate, DiagnosticsSettings, type OpenGuide } from "./Diagnostics";
 
 type Tab = "general" | "appearance" | "model" | "toolsets" | "persona" | "memory" | "skills" | "diagnostics";
@@ -325,7 +325,7 @@ export function SettingsScreen({
         ) : tab === "toolsets" && toolsets ? (
           <div id="settings-panel-toolsets" role="tabpanel" aria-labelledby="settings-tab-toolsets">
             {/* Read for one profile; switching profile reads the new one's afresh. */}
-            {gated("toolsets", <ToolsetSettings key={profile} api={toolsets} profile={profile} connected={status === "connected"} runningReplies={runningReplies} />)}
+            {gated("toolsets", <ToolsetSettings key={profile} api={toolsets} profile={profile} connected={status === "connected"} runningReplies={runningReplies} onGuide={() => openGuide(guideUrl("toolsetSwitches"))} />)}
           </div>
         ) : tab === "diagnostics" && capabilities ? (
           <div id="settings-panel-diagnostics" role="tabpanel" aria-labelledby="settings-tab-diagnostics">

@@ -261,9 +261,11 @@ export function DiagnosticsSettings({
 
 /**
  * Shows `children` unless the connected Hermes is known to lack capability `id`. Then a note says what is missing and
- * what Hermes needs, and links to diagnostics and the guide, in place of the screen, so nothing is read or written
- * through a route Hermes doesn't have. While the capability is supported, unknown or couldn't be checked, the screen
- * shows and finds out for itself. `title` and `onClose` frame the note as a screen of its own, for the rail's screens.
+ * what Hermes needs, and links to diagnostics and the guide, in place of the screen, so it reads and writes nothing.
+ * While the capability is supported, unknown or couldn't be checked, the screen shows and finds out for itself.
+ * A screen already open when Hermes turns out to lack its feature stays, with the note above it, so an unsaved edit in
+ * it isn't lost; the transport refuses its writes (capabilities.ts). `title` and `onClose` frame the note as a screen
+ * of its own, for the rail's screens.
  */
 export function CapabilityGate({
   store,
@@ -286,24 +288,25 @@ export function CapabilityGate({
   const snap = useCapabilities(store);
   const cap = snap.caps[id];
   const missing = cap.state === "unsupported";
-  const heading = useRef<HTMLHeadingElement>(null);
-  const shownBefore = useRef(missing);
-  // A screen open when Hermes turns out to lack its feature is replaced by the note. Focus that was inside the screen
-  // would fall to the page, so it moves to the note instead.
-  useEffect(() => {
-    if (missing && !shownBefore.current && (document.activeElement === document.body || document.activeElement === null)) heading.current?.focus();
-    shownBefore.current = missing;
-  }, [missing]);
-  if (!missing) return <>{children}</>;
+  // Whether the screen was shown when this gate opened: then it stays, whatever is learnt later.
+  const [screenOpen] = useState(!missing);
+  // The note's slot comes first either way, so the screen keeps its place, and its state, when the note appears.
+  if (!missing)
+    return (
+      <>
+        {null}
+        {children}
+      </>
+    );
   const spec = specOf(id);
   const headingId = `capability-missing-${id}`;
   const note = (
     <section className="capability-missing" aria-labelledby={headingId}>
-      <h2 id={headingId} ref={heading} tabIndex={-1}>
+      <h2 id={headingId}>
         <Stethoscope size={15} aria-hidden /> This Hermes server doesn't support {spec.label}
       </h2>
       <p>
-        {spec.label} needs {spec.needs.replace(/\.$/, "")}. {cap.why}
+        {spec.label} needs {spec.needs.replace(/^The /, "the ").replace(/\.$/, "")}. {cap.why}
       </p>
       <p className="muted">
         {spec.without} Updating Hermes on the server adds it. <Checked at={cap.checkedAt} />
@@ -321,6 +324,13 @@ export function CapabilityGate({
       </div>
     </section>
   );
+  if (screenOpen)
+    return (
+      <>
+        {note}
+        {children}
+      </>
+    );
   if (!onClose) return note;
   return (
     <div className="settings">

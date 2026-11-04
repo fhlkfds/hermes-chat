@@ -117,11 +117,12 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
     label: "Projects",
     usedBy: "The project switcher and project screens",
     needs: "The projects.* methods on /api/ws.",
-    without: "The chat list works. The project switcher says that Hermes needs an update.",
+    without: "The chat list works. The project menu says Hermes doesn't support projects, and offers no New project.",
     anchor: "projects",
     probe: { kind: "rpc", method: "projects.list", params: (profile) => ({ profile }), shape: (r) => isObj(r) || isList(r) },
     methods: ["projects.list"],
-    writeMethods: /^projects\.(?!list$|get$)/,
+    // Not `projects.membership.*`: no Hermes has that store yet (ADR 0033), so its "method not found" is expected.
+    writeMethods: /^projects\.(?!list$|get$|membership\.)/,
   },
   {
     id: "commands",
@@ -165,7 +166,7 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
     anchor: "toolsets",
     probe: { kind: "rest", path: (profile) => `api/tools/toolsets?${new URLSearchParams({ profile })}`, shape: isList },
     routes: [/^api\/tools\/toolsets$/],
-    writeRoutes: [/^api\/tools\/toolsets\//],
+    // Its only write is a switch, which `toolsetSwitches` guards: a missing switch route mustn't hold the list back.
   },
   {
     id: "toolsetSwitches",
@@ -456,6 +457,25 @@ function within<T>(p: Promise<T>, ms: number): Promise<T> {
   return Promise.race([p, late]).finally(() => clearTimeout(timer));
 }
 
+/** The key a capability's check settles: its route's, or its method. */
+const probeKey = (spec: CapabilitySpec) => (spec.probe!.kind === "rpc" ? spec.probe!.method : spec.routes![0].source);
+
+/**
+ * Whether a screen's answer shows the route or method there, as the app reads it: JSON for a route, and of the shape
+ * the capability's check wants when it is the route or method that check reads.
+ */
+function valid(spec: CapabilitySpec, key: string, answer: unknown): boolean {
+  let value = answer;
+  if (typeof answer === "string") {
+    try {
+      value = JSON.parse(answer);
+    } catch {
+      return false;
+    }
+  }
+  return spec.probe && probeKey(spec) === key ? spec.probe.shape(value) : value !== undefined;
+}
+
 /** A write refused here because the connected Hermes lacks what it needs. Nothing was sent. */
 export class CapabilityUnsupportedError extends Error {
   constructor(readonly capability: CapabilityId) {
@@ -485,6 +505,8 @@ export class CapabilityStore {
   private run = 0;
   /** Counts the changes to each capability, so a check that started before a newer answer doesn't replace it. */
   private revs = new Map<CapabilityId, number>();
+  /** For each capability, the routes and methods Hermes was found to lack, by key (`found`). */
+  private missing = new Map<CapabilityId, Set<string>>();
   /** The build the last whole check was for. */
   private checkedFor?: string;
   /** When the current connection opened: what was settled since then needs no check. */
@@ -571,27 +593,70 @@ export class CapabilityStore {
    * JSON-RPC request. `error` is its failure; none for one that answered. Settles the capabilities that route or
    * method belongs to, for the connection `gen` it went out on.
    */
-  observe(gen: number, call: { route: string } | { method: string }, error?: unknown) {
+  observe(gen: number, call: { route: string } | { method: string }, error?: unknown, answer?: unknown) {
     if (!this.scope || this.scope.gen !== gen || gen !== this.liveGen()) return;
-    const specs =
-      "route" in call
-        ? CAPABILITIES.filter((c) => c.routes?.some((r) => r.test(call.route.split("?")[0])))
-        : CAPABILITIES.filter((c) => c.methods?.includes(call.method));
-    for (const spec of specs) {
+    for (const [spec, key] of this.readOwners(call)) {
       if (error === undefined) {
-        this.setCap(spec.id, { state: "supported", source: "observed", why: "Hermes answered this app's own request." });
+        // Only an answer of the shape the app reads counts, so a 200 that is an HTML page or a changed shape settles
+        // nothing (`valid`).
+        if (this.snap.caps[spec.id].state === "supported" && !this.missing.get(spec.id)?.size) continue;
+        if (!valid(spec, key, answer)) continue;
+        this.found(spec.id, key, { state: "supported", source: "observed", why: "Hermes answered this app's own request." });
         continue;
       }
       const { state, why } = stateOfFailure(failureOf(error));
       // Only a sure answer from the screens' traffic replaces what a check found. A timeout or refusal there says
       // nothing new about the route.
-      if (state === "supported" || state === "unsupported") this.setCap(spec.id, { state, source: "observed", why });
+      if (state === "supported" || state === "unsupported") this.found(spec.id, key, { state, source: "observed", why });
     }
+  }
+
+  /**
+   * A write a screen sent that failed: `route` for a dashboard write (`api/…`), or `method` for a JSON-RPC one. When
+   * Hermes says it has no such route or method, the capability that write belongs to is not supported, and the next
+   * write for it is refused before it is sent.
+   */
+  observeWrite(gen: number, call: { route: string } | { method: string }, error: unknown) {
+    if (!this.scope || this.scope.gen !== gen || gen !== this.liveGen()) return;
+    const { state, why } = stateOfFailure(failureOf(error));
+    if (state !== "unsupported") return;
+    const path = "route" in call ? call.route.split("?")[0] : undefined;
+    const owners = path !== undefined ? writeRouteOwners(path) : writeMethodOwners((call as { method: string }).method);
+    for (const spec of owners) {
+      const key = path !== undefined ? `write ${spec.writeRoutes!.find((r) => r.test(path))!.source}` : `write ${(call as { method: string }).method}`;
+      this.found(spec.id, key, { state, source: "observed", why: `${why.replace(/\.$/, "")}, for a change this app sends (${path ?? (call as { method: string }).method}).` });
+    }
+  }
+
+  /** The capabilities a read belongs to, each with the key of the route or method that settles it. */
+  private readOwners(call: { route: string } | { method: string }): [CapabilitySpec, string][] {
+    if ("method" in call) return CAPABILITIES.filter((c) => c.methods?.includes(call.method)).map((c): [CapabilitySpec, string] => [c, call.method]);
+    const path = call.route.split("?")[0];
+    return CAPABILITIES.flatMap((c): [CapabilitySpec, string][] => {
+      const r = c.routes?.find((r) => r.test(path));
+      return r ? [[c, r.source]] : [];
+    });
+  }
+
+  /**
+   * What one route or method (`key`) showed. Hermes lacking any route or method a capability needs makes it not
+   * supported; only an answer from that same route or method takes that back, so a sibling route that answers (the
+   * file list, when reading a file has no route) can't.
+   */
+  private found(id: CapabilityId, key: string, cap: Omit<Capability, "id" | "checkedAt">) {
+    const missing = this.missing.get(id) ?? new Set<string>();
+    if (cap.state === "unsupported") missing.add(key);
+    else missing.delete(key);
+    this.missing.set(id, missing);
+    if (cap.state !== "unsupported" && missing.size) return;
+    this.setCap(id, cap);
   }
 
   /** What a screen found by its own check, such as Settings → Toolsets' write check (ADR 0021). */
   report(gen: number, id: CapabilityId, state: CapabilityState, why: string) {
     if (!this.scope || this.scope.gen !== gen || gen !== this.liveGen()) return;
+    // The screen's own check covers all of it, so it takes back what a failed write showed.
+    this.missing.delete(id);
     this.setCap(id, { state, source: "observed", why });
   }
 
@@ -617,12 +682,17 @@ export class CapabilityStore {
     // Another build may have other routes: only what this connection learnt stands.
     if (!sameBuild && this.checkedFor !== undefined) {
       const kept = Object.values(this.snap.caps).filter((c) => (c.checkedAt ?? 0) >= this.connectedAt);
+      for (const id of [...this.missing.keys()]) if (!kept.some((c) => c.id === id)) this.missing.delete(id);
       this.set({ caps: { ...fresh(), ...Object.fromEntries(kept.map((c) => [c.id, c])) } });
     }
     // Check again asks each screen to find out afresh what diagnostics can't check by reading (toolset switches).
     if (force) {
       const start = fresh();
-      for (const c of CAPABILITIES) if (!c.probe && c.notChecked && c.id !== "chat" && c.id !== "approvals") this.setCapRaw(c.id, start[c.id]);
+      for (const c of CAPABILITIES)
+        if (!c.probe && c.notChecked && c.id !== "chat" && c.id !== "approvals") {
+          this.missing.delete(c.id);
+          this.setCapRaw(c.id, start[c.id]);
+        }
     }
     // Not checked again: what this connection's own requests have settled, and on a reconnect to the same build, what
     // was settled less than RECHECK_AFTER_MS ago, by each capability's own time: reading the facts renews none.
@@ -685,7 +755,7 @@ export class CapabilityStore {
       result = { source: "probed", ...(e instanceof SyntaxError ? { state: "unknown", why: "Hermes answered with something that isn't JSON." } : stateOfFailure(failureOf(e))) };
     }
     // A screen's own answer that came in meanwhile is newer, and stands.
-    if (this.current(scope, run) && this.revs.get(spec.id) === rev) this.setCap(spec.id, result);
+    if (this.current(scope, run) && this.revs.get(spec.id) === rev) this.found(spec.id, probeKey(spec), result);
   }
 }
 

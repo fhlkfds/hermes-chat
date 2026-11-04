@@ -1556,6 +1556,7 @@ export function Main({
       title: chat.title,
       node: (
         <ChatView
+          openGuide={openGuide}
           hermes={hermes}
           connection={connection}
           profile={profile}
@@ -2338,6 +2339,7 @@ export function Main({
  * `paneKey` tells Hermes which pane has the chat on screen, so a chat shown in both stays read until both leave it.
  */
 function ChatView({
+  openGuide,
   hermes,
   connection,
   profile,
@@ -2407,6 +2409,8 @@ function ChatView({
   where?: string;
   onStarted: (id: string) => void;
   onDraftError: (reason: string) => void;
+  /** Opens a page of the compatibility guide in the owner's browser. */
+  openGuide: (url: string) => void;
   onToast: (text: string) => void;
   /** Opens Settings → Memory, when this Hermes can edit memory from here. */
   onMemorySettings?: () => void;
@@ -2575,7 +2579,9 @@ function ChatView({
   // that does nothing: its Draft stays as typed. One command at a time per Draft, so two panes on one chat can't run it
   // twice.
   const serverCommands = useServerCommands(hermes, status === "connected", profile);
+  const caps = useCapabilities(hermes.capabilities);
   const commands: CommandHost = {
+    guide: caps.caps.commands.state === "unsupported" ? () => openGuide(guideUrl("commands")) : undefined,
     why: (def) => {
       if (def.name === "help" || def.name === "new") return undefined;
       if (!started) return "This chat hasn't started yet. Send a message first.";
