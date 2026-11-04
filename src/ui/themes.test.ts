@@ -26,6 +26,8 @@ describe("Theme colors", () => {
         const v = themeVars(theme[mode], mode);
         expect(contrastRatio(v["--text"], v["--bg"]), `${theme.name} ${mode} text`).toBeGreaterThan(10);
         expect(contrastRatio(v["--muted"], v["--bg"]), `${theme.name} ${mode} muted`).toBeGreaterThan(4.5);
+        // Section labels and shortcut hints are muted text on the list panel.
+        expect(contrastRatio(v["--muted"], v["--sidebar"]), `${theme.name} ${mode} muted on the list`).toBeGreaterThan(4.5);
         expect(contrastRatio(v["--accent"], v["--bg"]), `${theme.name} ${mode} accent`).toBeGreaterThan(4.5);
         expect(contrastRatio(v["--on-accent"], v["--accent"]), `${theme.name} ${mode} on accent`).toBeGreaterThan(4.5);
       }

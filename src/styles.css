@@ -135,15 +135,15 @@ code, pre, kbd { font-family: var(--mono); }
 .sb-action span { flex: 1; }
 .sb-action svg { color: var(--muted); flex: none; }
 .sb-action:hover { background: var(--hover-2); color: var(--text); }
-.sb-action.primary { background: var(--raised-2); color: var(--text); border: 1px solid var(--line); }
-.sb-action.primary:hover { background: var(--raised-3); }
+/* Outlined, not filled, so it never reads as the selected chat (.row.sel). */
+.sb-action.primary { color: var(--text); border: 1px solid var(--line-2); }
 .sb-action.primary svg { color: var(--accent); }
-.sb-action:focus-visible { outline: 2px solid var(--line-3); outline-offset: -2px; }
+.sb-action:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 kbd {
-  font-size: calc(10.5rem / 14); color: var(--faint); border: 1px solid var(--line-2); border-radius: 5px; padding: 1px 5px;
+  font-size: calc(11rem / 14); color: var(--muted); border: 1px solid var(--line-2); border-radius: 5px; padding: 1px 5px;
   font-family: inherit; letter-spacing: 0.02em; white-space: nowrap;
 }
-.section-label { font-size: calc(11rem / 14); color: var(--faint); padding: 12px 10px 6px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+.section-label { font-size: calc(11rem / 14); color: var(--muted); padding: 12px 10px 6px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
 .section-toggle {
   display: flex; align-items: center; gap: 4px; width: 100%; padding: 14px 10px 6px 6px; font-size: calc(11.5rem / 14);
   color: var(--faint); font-weight: 500;
@@ -441,10 +441,11 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
   background: var(--raised); border: 1px solid var(--line-2); border-radius: 18px; padding: 12px 12px 10px 16px;
   position: relative; transition: border-color 0.15s, box-shadow 0.15s; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.16);
 }
-.composer:focus-within { border-color: var(--line-3); box-shadow: 0 6px 24px rgba(0, 0, 0, 0.16), 0 0 0 3px var(--accent-soft); }
+.composer:focus-within { border-color: var(--line-3); }
+:root[data-mode="light"] .composer { box-shadow: 0 4px 16px rgba(0, 0, 0, 0.05); }
 .composer.dragging { border-color: var(--accent); border-style: dashed; }
 .drop-overlay {
-  position: absolute; inset: 0; border-radius: 16px; background: var(--overlay); display: grid; place-items: center;
+  position: absolute; inset: 0; border-radius: 18px; background: var(--overlay); display: grid; place-items: center;
   color: var(--accent); font-size: calc(13rem / 14); z-index: 2; pointer-events: none;
 }
 .composer textarea {

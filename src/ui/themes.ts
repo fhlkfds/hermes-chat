@@ -114,7 +114,7 @@ export function themeVars(p: Palette, mode: Mode, contrast = DEFAULT_CONTRAST): 
     "--text": text,
     "--text-2": shade(0.89 + 0.08 * k),
     "--text-strong": mix(text, extreme, dark ? 0.45 : 0.6),
-    "--muted": shade((dark ? 0.57 : 0.64) + spread(0.18, 0.1)),
+    "--muted": shade((dark ? 0.57 : 0.67) + spread(0.18, 0.1)),
     "--faint": shade((dark ? 0.335 : 0.42) + spread(0.2, 0.08)),
     "--accent": p.accent,
     "--accent-soft": alpha(p.accent, dark ? 0.16 : 0.12),

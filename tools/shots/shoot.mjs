@@ -19,6 +19,7 @@ const scenes = {
   "new-chat": { query: "", steps: [] },
   chat: { query: "", steps: [click("button", "Nightly backup")] },
   "chat-light": { query: "?mode=light", steps: [click("button", "Nightly backup")] },
+  "new-chat-light": { query: "?mode=light", steps: [] },
   search: { query: "", steps: [click("button", "Nightly backup"), key("k", { ctrlKey: true })] },
   settings: { query: "", steps: [key(",", { ctrlKey: true })] },
 };

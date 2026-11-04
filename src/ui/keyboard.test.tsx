@@ -400,6 +400,35 @@ describe("Chat list by keyboard", () => {
     expect(resumed()).toEqual(["backup", "nas"]);
   });
 
+  it("opens the chat below with Alt+Down from a focused chat row, where plain arrows only move focus", async () => {
+    const s = await signedIn();
+    rowButton("Nightly backup").focus();
+    await s.user.keyboard("{Alt>}{ArrowDown}{/Alt}");
+    await settle(s.hermes);
+    expect(rowButton("Nightly backup").getAttribute("aria-current")).toBe("true");
+  });
+
+  it("leaves Alt+arrows alone while another screen covers the chat", async () => {
+    const s = await signedIn();
+    await s.user.click(button("Server files"));
+    await screen.findByRole("heading", { name: "Server files" });
+    await s.user.keyboard("{Alt>}{ArrowDown}{/Alt}");
+    await settle(s.hermes);
+    expect(screen.getByRole("heading", { name: "Server files" })).toBeTruthy();
+    expect(s.server.requests.filter((r) => r.method === "session.resume")).toEqual([]);
+  });
+
+  it("starts a new chat and opens search from the list's labeled buttons", async () => {
+    const s = await signedIn();
+    await s.user.click(rowButton("Nightly backup"));
+    await settle(s.hermes);
+    await s.user.click(button("New chat"));
+    expect(composer().value).toBe("");
+    expect(rowButton("Nightly backup").getAttribute("aria-current")).toBeNull();
+    await s.user.click(button("Search chats"));
+    expect(screen.getByPlaceholderText("Search all chats, including Settled")).toBeTruthy();
+  });
+
   it("opens Settings with Ctrl+Comma", async () => {
     const s = await signedIn();
     await s.user.keyboard("{Control>},{/Control}");

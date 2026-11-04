@@ -1044,8 +1044,8 @@ export function Main({
   };
 
   useEffect(() => {
-    // Only Ctrl/Cmd chords, and never mid-composition. No bare key does anything app-wide, so nothing typed
-    // with focus outside an input can answer an Approval or stop a reply.
+    // Only Ctrl/Cmd chords and Alt+Up/Down, never mid-composition. No bare key does anything app-wide, so nothing
+    // typed with focus outside an input can answer an Approval or stop a reply.
     const onKey = (e: KeyboardEvent) => {
       if (covered || composing(e)) return;
       if (screenshotShortcut && shortcutOf(e) === screenshotShortcut && !checkShortcut(screenshotShortcut).error) {
@@ -1053,9 +1053,11 @@ export function Main({
         if (!e.repeat) takeScreenshot();
         return;
       }
-      // Alt+Up/Down: the Active chat above or below the one showing, as the list orders them. Lists that use the
-      // same keys (the queue, Server files) take them first.
-      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown") && !e.defaultPrevented) {
+      // Alt+Up/Down: the Active chat above or below the one showing, as the list orders them. Only while the chat is
+      // on screen; a list that uses the same keys (the queue) takes them first, and a select keeps Alt+Down to open.
+      const onChat = !settingsOpen && !filesOpen && !jobsOpen && !outputsOpen && !terminalOpen && !usageOpen && !projectScreenOpen && !searchOpen;
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+        if (!onChat || e.defaultPrevented || (e.target as Element | null)?.tagName === "SELECT") return;
         const order = listed.filter((c) => !c.settled && !c.archived).sort((a, b) => b.updatedAt - a.updatedAt);
         const at = order.findIndex((c) => c.id === active.chatId);
         const next = order[at < 0 ? 0 : at + (e.key === "ArrowDown" ? 1 : -1)];
@@ -1248,6 +1250,7 @@ export function Main({
         inboxOpen={inboxOpen}
         inboxCount={inboxCount}
         onSettings={openSettings}
+        settingsOpen={settingsOpen}
         onJobs={() =>
           guard(() => {
             setProjectOpen(false);

@@ -30,6 +30,7 @@ export function Rail({
   onOutputs,
   outputsOpen = false,
   onSettings,
+  settingsOpen = false,
   onJobs,
   jobsOpen = false,
   onUsage,
@@ -58,6 +59,7 @@ export function Rail({
   onOutputs?: () => void;
   outputsOpen?: boolean;
   onSettings: () => void;
+  settingsOpen?: boolean;
   /** Opens Scheduled jobs: Hermes's jobs for the profile, which it runs on the server. */
   onJobs?: () => void;
   jobsOpen?: boolean;
@@ -147,7 +149,12 @@ export function Rail({
           <span className={`conn-dot ${status} ${unsecure ? "unsecure" : ""}`} />
           {unsecure && <LockOpen className="conn-lock" size={9} strokeWidth={2.8} />}
         </button>
-        <button className="icon-btn settings-btn" title={updateWaiting ? "Settings: an update is ready" : "Settings"} onClick={onSettings}>
+        <button
+          className={`icon-btn settings-btn ${settingsOpen ? "on" : ""}`}
+          title={updateWaiting ? "Settings: an update is ready" : "Settings"}
+          aria-pressed={settingsOpen}
+          onClick={onSettings}
+        >
           <Settings size={18} />
           {updateWaiting && <span className="dot update-dot" />}
         </button>
@@ -665,7 +672,8 @@ function ProfileMenu({
 
 /** Up and Down move focus between the chats in the list, Active then Settled, without opening them. */
 function moveBetweenChats(e: KeyboardEvent<HTMLElement>) {
-  if ((e.key !== "ArrowDown" && e.key !== "ArrowUp") || !(e.target as Element).classList.contains("row-open")) return;
+  // Alt+arrows open the chat above or below instead (App.tsx), so they pass.
+  if ((e.key !== "ArrowDown" && e.key !== "ArrowUp") || e.altKey || !(e.target as Element).classList.contains("row-open")) return;
   e.preventDefault();
   const rows = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>(".row-open"));
   rows[rows.indexOf(e.target as HTMLButtonElement) + (e.key === "ArrowDown" ? 1 : -1)]?.focus();
