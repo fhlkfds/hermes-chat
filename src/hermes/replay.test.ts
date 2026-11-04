@@ -6,7 +6,7 @@ import type { SavedSignIn } from "./account";
 import { localChatCache } from "./chatCache";
 import { FakeHermes, row } from "./fakeHermes";
 import { memoryCache } from "./memoryCache";
-import type { Item } from "./model";
+import { isOutgoing, type Item, type OutgoingItem } from "./model";
 import { branchPreviewOf, replayPrompt, replaySource, replaysOf, replyAfter, splitRefs } from "./replay";
 import { connect, type Hermes } from "./transport";
 
@@ -204,6 +204,29 @@ describe("Edit", () => {
     expect(texts(chat(chatId).items).at(-1)).toBe("user: Weekly?");
   });
 
+  it("finds the copy though the switch to the original's model took out a marker copied before it", async () => {
+    const { server, hermes, chat } = await chatWithHistory();
+    // The original was switched once already, so a marker sits in it; later turns come after it.
+    await hermes.setModel("c1", { provider: "openrouter", model: "deepseek/deepseek-v4" });
+    server.storeMessage("c1", { role: "user", text: "Should /tmp be backed up?" });
+    server.storeMessage("c1", { role: "assistant", text: "No, skip /tmp." });
+    await hermes.sync();
+    await hermes.close();
+    const again = await connect(server.openPipe, undefined, memoryCache());
+    await again.sync();
+    await again.open("c1");
+    await again.idle();
+    const target = again.getSnapshot().chats.find((c) => c.id === "c1")!.items.find((i) => i.kind === "user" && i.text.startsWith("Should /tmp"))!.id;
+    const p = await again.previewReplay("c1", target, "edit");
+    const { chatId, delivery } = await again.replay(p, "Should /var/tmp be backed up?");
+    expect(delivery.delivery).toBe("accepted");
+    // Hermes took out the copied marker when the branch was switched, and the cut archived the one it added.
+    expect(stored(server, chatId).at(-1)).toBe("user: Should /var/tmp be backed up?");
+    expect(stored(server, chatId).filter((t) => t.startsWith("user: Should /tmp"))).toEqual([]);
+    void chat;
+    await again.close();
+  });
+
   it("refuses at the branch's own last read when a later turn arrived after the dialog's check", async () => {
     const { server, hermes, itemWith, branches } = await chatWithHistory();
     const p = await hermes.previewReplay("c1", itemWith("How long should we keep"), "edit");
@@ -345,6 +368,47 @@ describe("Edit and Regenerate: when they can't be done", () => {
     expect(server.last("prompt.submit")!.params).toMatchObject({ text: "Weekly snapshots?", confirm_truncate: true });
     expect(stored(server, chatId).at(-1)).toBe("user: Weekly snapshots?");
     expect(stored(server, chatId).filter((t) => t.includes("How long should we keep"))).toEqual([]);
+  });
+});
+
+describe("Edit and Regenerate: Retry of a replay Hermes didn't take", () => {
+  async function failedReplay() {
+    const ctx = await chatWithHistory();
+    ctx.server.rejectPrompt = { code: 4009, message: "session busy" };
+    const p = await ctx.hermes.previewReplay("c1", ctx.itemWith("How long should we keep"), "edit");
+    const { chatId } = await ctx.hermes.replay(p, "Weekly snapshots?");
+    ctx.server.rejectPrompt = undefined;
+    const failed = () => ctx.chat(chatId).items.find((i): i is OutgoingItem => isOutgoing(i))!;
+    return { ...ctx, chatId, failed };
+  }
+
+  it("isn't sent in place of the original once the owner sent another message in the branch", async () => {
+    const { server, hermes, chatId, failed } = await failedReplay();
+    await hermes.send(chatId, "Something else first");
+    await answer(server, hermes, chatId, "Noted.");
+    const before = JSON.stringify(server.transcripts[chatId]);
+    const cuts = server.requests.filter((r) => r.method === "prompt.submit" && r.params.truncate_before_row_id !== undefined).length;
+    const res = await hermes.retry(chatId, failed().id);
+    expect(res).toMatchObject({ delivery: "unsent", reason: expect.stringContaining("Messages were added to this branch") });
+    expect(failed().outgoing).toMatchObject({ state: "failed", reason: expect.stringContaining("Messages were added") });
+    expect(server.requests.filter((r) => r.method === "prompt.submit" && r.params.truncate_before_row_id !== undefined)).toHaveLength(cuts);
+    expect(JSON.stringify(server.transcripts[chatId])).toBe(before);
+  });
+
+  it("isn't sent in place of the original once another client added to the branch", async () => {
+    const { server, hermes, chatId, failed } = await failedReplay();
+    server.storeMessage(chatId, { role: "user", text: "From another client" });
+    const res = await hermes.retry(chatId, failed().id);
+    expect(res).toMatchObject({ delivery: "unsent", reason: expect.stringContaining("Messages were added to this branch") });
+    expect(stored(server, chatId).at(-1)).toBe("user: From another client");
+  });
+
+  it("names the model the Retry went on, and its stored row, under the answer", async () => {
+    const { server, hermes, chatId, failed } = await failedReplay();
+    await hermes.setModel(chatId, { provider: "openrouter", model: "qwen/qwen3-max", effort: "low" });
+    server.userRowId = 500;
+    expect(await hermes.retry(chatId, failed().id)).toEqual({ delivery: "accepted" });
+    expect(hermes.getSnapshot().branches.links[chatId].replay).toMatchObject({ branchRowId: 500, model: { provider: "openrouter", model: "qwen/qwen3-max", effort: "low" } });
   });
 });
 

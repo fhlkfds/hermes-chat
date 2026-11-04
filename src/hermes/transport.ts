@@ -68,6 +68,7 @@ import {
 } from "./branch";
 import {
   branchPreviewOf,
+  cutStale,
   replayBlocked,
   replayedCopy,
   replayPreviewOf,
@@ -548,6 +549,8 @@ export class Hermes {
   private noApprovalReceived = false;
   /** Messages Hermes hasn't accepted yet, so a Stop waits for the turn it stops. */
   private submitting = new Map<string, Promise<unknown>>();
+  /** Chats whose replayed message is being checked before a Retry sends it again in place of its copy (ADR 0032). */
+  private checkingCut = new Set<string>();
   /** Each chat's last message sent from here, until a turn ends, with the stored row Hermes gave it, if any. */
   private turns = new Map<string, { userId: string; rowId: Promise<number | undefined> }>();
   /**
@@ -1549,29 +1552,37 @@ export class Hermes {
     const { chatId, warnings } = await this.branch(branchPreviewOf(preview), undefined, info, preview.whole);
     const unsent = (reason: string) => ({ chatId, warnings, delivery: { delivery: "unsent", reason } as Delivery });
     // The branch's copy of the owner's message, by its stored row there: what the message replaces.
-    let copy: SpineRow | undefined;
+    let found: { copy: SpineRow; empty: boolean } | undefined;
     try {
-      copy = replayedCopy(await this.storedRows(chatId, profile), preview.count, preview.fingerprint);
+      found = replayedCopy(await this.storedRows(chatId, profile), preview.copyKey);
     } catch {
       // Not read back: nothing goes, so nothing can land after the copy instead of in its place.
     }
     if (this.profile !== profile) return unsent("The profile changed before the message went. The branch is in that profile's list.");
-    if (!copy) return unsent("Hermes Chat couldn't read the branch back to find your message in it, so it sent nothing. The branch ends with your original message.");
+    if (!found) return unsent("Hermes Chat couldn't read the branch back to find your message in it, so it sent nothing. The branch ends with your original message.");
+    const { copy, empty } = found;
     // Loaded first, so the copy can come off the screen: the message takes its place.
     await this.resume(chatId).catch(() => {});
     this.patchChat(chatId, (c) => ({ ...c, items: withoutCopy(c.items, copy.id) }));
     const shown = preview.kind === "edit" ? text.trim() : preview.original;
-    const sent = await this.deliver(chatId, shown, [], undefined, { rowId: copy.id, prompt, ...(preview.count === 1 && { empty: true }) });
-    if (this.profile === profile) {
-      const model = this.snapshot.chats.find((c) => c.id === chatId)?.model;
-      this.updateBranches(profile, (b) => {
-        const link = b.links[chatId];
-        if (!link?.replay) return b;
-        const replay: ReplayInfo = { ...link.replay, ...(sent.rowId !== undefined && { branchRowId: sent.rowId }), ...(model && { model }) };
-        return { ...b, links: { ...b.links, [chatId]: { ...link, replay } } };
-      });
-    }
+    const sent = await this.deliver(chatId, shown, [], undefined, { rowId: copy.id, prompt, ...(empty && { empty: true }) });
+    if (sent.delivery.delivery === "accepted") this.noteReplaySent(profile, chatId, sent.rowId);
     return { chatId, warnings, delivery: sent.delivery };
+  }
+
+  /**
+   * Keeps with a replay branch's link what its message went with, once Hermes took it: the model and settings the
+   * branch runs on now, and the message's stored row there, so the answers name what wrote them (ADR 0032).
+   */
+  private noteReplaySent(profile: string, chatId: string, rowId?: number) {
+    if (this.profile !== profile) return;
+    const model = this.snapshot.chats.find((c) => c.id === chatId)?.model;
+    this.updateBranches(profile, (b) => {
+      const link = b.links[chatId];
+      if (!link?.replay) return b;
+      const replay: ReplayInfo = { ...link.replay, ...(rowId !== undefined && { branchRowId: rowId }), ...(model && { model }) };
+      return { ...b, links: { ...b.links, [chatId]: { ...link, replay } } };
+    });
   }
 
   /**
@@ -1845,11 +1856,27 @@ export class Hermes {
   async retry(chatId: string, itemId: string): Promise<Delivery | undefined> {
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
     const first = chat?.items.find((i): i is OutgoingItem => i.id === itemId && isOutgoing(i));
-    if (!chat || !first || first.outgoing.state === "sending" || chat.running || this.submitting.has(chatId)) return undefined;
+    if (!chat || !first || first.outgoing.state === "sending" || chat.running || this.submitting.has(chatId) || this.checkingCut.has(chatId)) return undefined;
     const profile = this.profile;
+    const cut = first.outgoing.cut;
+    if (cut) {
+      // A replay goes again only in place of the copy it replaces, while nothing has come after it (ADR 0032).
+      this.checkingCut.add(chatId);
+      const why = await this.storedRows(chatId, profile).then(
+        (rows) => cutStale(rows, cut.rowId),
+        (e) => `Hermes Chat couldn't read this branch to check that nothing came after your original message, so it didn't send this again (${(e as Error).message}).`,
+      );
+      this.checkingCut.delete(chatId);
+      if (why) {
+        if (this.profile === profile) this.setOutgoing(profile, chatId, itemId, (r) => withOutgoing(r, { state: "failed", reason: why }));
+        return { delivery: "unsent", reason: why };
+      }
+      if (this.profile !== profile) return undefined;
+    }
     this.setOutgoing(profile, chatId, itemId, () => null);
-    const { delivery, itemId: again } = await this.deliver(chatId, first.text, first.outgoing.attachments ?? [], undefined, first.outgoing.cut);
+    const { delivery, itemId: again, rowId } = await this.deliver(chatId, first.text, first.outgoing.attachments ?? [], undefined, cut);
     if (delivery.delivery === "unsent" && first.outgoing.state === "unknown" && again) this.setOutgoing(profile, chatId, again, () => first);
+    if (cut && delivery.delivery === "accepted") this.noteReplaySent(profile, chatId, rowId);
     return delivery;
   }
 

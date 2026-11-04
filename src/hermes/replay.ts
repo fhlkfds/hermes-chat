@@ -89,6 +89,11 @@ export type ReplayPreview = {
   model?: ModelPick;
   /** `spineKey` of the rows copied, through the owner's message. */
   fingerprint: string;
+  /**
+   * `spineKey` of the same rows less model-switch markers: what the branch must still hold once ADR 0027 switches its
+   * model, since Hermes then deactivates every earlier marker in it and adds its own (`_append_model_switch_marker`).
+   */
+  copyKey: string;
   whole: string;
 };
 
@@ -155,6 +160,7 @@ export function replayPreviewOf(
     refs: [...new Set(fileRefs(row.text))],
     ...(chat.model && { model: chat.model }),
     fingerprint: spineKey(spine.slice(0, index + 1)),
+    copyKey: spineKey(spine.slice(0, index + 1).filter((r) => !r.marker)),
     whole: wholeKey(rows, spine),
   };
 }
@@ -168,16 +174,32 @@ export function replayPrompt(p: Pick<ReplayPreview, "kind" | "stored" | "refsPre
 }
 
 /**
- * The branch's copy of the owner's message, read back from its stored rows: the last of the `count` spine rows it was
- * made with, when they are the rows the preview showed. Only Hermes's model-switch marker may come after it, which ADR
- * 0027's switch to the original's model stores at once (`_append_model_switch_marker`); the cut archives it with the
- * copy. Anything else after it, and the copy isn't replaced.
+ * The branch's copy of the owner's message, read back from its stored rows: its last message, when its messages are
+ * the ones the preview showed (`copyKey`). Model-switch markers don't count: ADR 0027's switch to the original's model
+ * makes Hermes deactivate every marker the branch copied and add one after the copy (`_append_model_switch_marker`),
+ * which the cut archives with it. `empty`: nothing but markers comes before the copy, so the cut needs
+ * `confirm_empty_truncate`. Undefined when anything else changed.
  */
-export function replayedCopy(rows: StoredBranchRow[], count: number, fingerprint: string): SpineRow | undefined {
-  const spine = spineOf(rows);
-  const copy = spine[count - 1];
-  if (!copy || copy.role !== "user" || spineKey(spine.slice(0, count)) !== fingerprint) return undefined;
-  return rows.every((r) => r.id <= copy.id || r.display_kind === "model_switch") ? copy : undefined;
+export function replayedCopy(rows: StoredBranchRow[], copyKey: string): { copy: SpineRow; empty: boolean } | undefined {
+  const spine = spineOf(rows).filter((r) => !r.marker);
+  const copy = spine.at(-1);
+  if (!copy || copy.role !== "user" || spineKey(spine) !== copyKey) return undefined;
+  if (!rows.every((r) => r.id <= copy.id || r.display_kind === "model_switch")) return undefined;
+  return { copy, empty: !rows.some((r) => r.id < copy.id && r.display_kind !== "model_switch") };
+}
+
+/**
+ * Why a replayed message Hermes didn't take can't be sent again in place of the copy (stored row `rowId`) now, or
+ * nothing: the copy must still be in the branch, with nothing after it but a model-switch marker. A Retry after the
+ * owner, or another client, added to the branch would otherwise archive those messages too.
+ */
+export function cutStale(rows: StoredBranchRow[], rowId: number): string | undefined {
+  const at = rows.findIndex((r) => r.id === rowId);
+  if (at < 0)
+    return "Your original message isn't in this branch any more, so there's nothing for this one to replace. Edit takes these words back into the composer, to send as a new message.";
+  if (rows.slice(at + 1).some((r) => r.display_kind !== "model_switch"))
+    return "Messages were added to this branch after your original message. Sending this in its place would take them out of the branch, so it wasn't sent again. Edit takes these words back into the composer, to send as a new message.";
+  return undefined;
 }
 
 /** The Branch from here preview the branch is made with: through the owner's message. */
