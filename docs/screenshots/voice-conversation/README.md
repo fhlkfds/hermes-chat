@@ -35,4 +35,4 @@ This verifies that real devices open, run side by side and are released. It does
 
 To show turns being heard, these used WebKitGTK's mock capture device, turned on by a temporary one-line patch to `src-tauri/src/lib.rs` (`set_enable_mock_capture_devices(true)`). The patch was removed before committing, as it was for the Dictation screenshots. The device plays a steady tone, so it is "speech" that never pauses. Turns were therefore ended with Send now, and muting stopped the next one. Each turn reached the bridge as valid 16 kHz mono 16-bit WAV (484,504 and 219,982 bytes). The tone kept sounding through Speaking, and no turn was made from it.
 
-Image 10 predates a wording fix: the panel then said "Hermes couldn't transcribe" twice. It now shows the transport's message once.
+Image 10 predates a wording fix: the panel then said "Hermes couldn't transcribe" twice. It now shows the transport's message once. Image 4 predates a correction from review: it says "Nothing is saved on this computer". The panel now says the audio is never saved, and the text sent is kept as typed messages are (in the chat's Saved copy, or as a Failed message).
