@@ -1,8 +1,8 @@
 // The preview pane beside the chat: a web page, a Server file, a Local file or a tool call's output (GLOSSARY.md
 // "Preview pane"). Everything it shows is untrusted (ADR 0007): web pages load in a sandboxed frame that can't reach the
 // app, HTML files render with scripts and network off, and Markdown renders without raw HTML, as replies do.
-import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
-import { AlertTriangle, ArrowLeft, Check, Copy, ExternalLink, FileQuestion, Globe, Laptop, Plus, RotateCw, Server, Wrench, X } from "lucide-react";
+import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { AlertTriangle, Check, Copy, ExternalLink, FileQuestion, Globe, Laptop, Plus, RotateCw, Server, Wrench } from "lucide-react";
 import { fenced, parseAddress, previewName, sandboxedHtml, withoutBidi, type FileView, type Framing, type PreviewTarget } from "../hermes/preview";
 import { Markdown } from "./Markdown";
 import { Spinner, fmtSize } from "./bits";
@@ -10,9 +10,6 @@ import type { LocalFiles, WebPages } from "./tauriPreview";
 import type { ArtifactStore } from "../hermes/artifacts";
 import { ArtifactEditor } from "./ArtifactEditor";
 
-/** The narrowest the pane gets, and the step the arrow keys resize it by. */
-export const PANE_MIN_WIDTH = 300;
-const KEY_STEP = 32;
 /** Text past this many characters shows without highlighting, which would hold up the window. */
 const HIGHLIGHT_MAX_CHARS = 100_000;
 /** When a web page that hasn't loaded gets a note that it may never show. */
@@ -45,10 +42,9 @@ const WEB_PERMISSIONS = [
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /**
- * `serverLabel`: how the app reaches the Hermes server, e.g. `liam@hermes`, so a Server file says where it is.
- * `web`: asks whether a site refuses to be shown in the frame, and opens a page in the owner's browser.
- * `overlay`: the window is too narrow for the pane beside the chat, so it covers the chat until `onHide`.
- * `onResize(width, done)`: the owner is dragging the pane's edge; `done` once they let go.
+ * The side panel's Preview tab (SidePanel.tsx). `serverLabel`: how the app reaches the Hermes server, e.g.
+ * `liam@hermes`, so a Server file says where it is. `web`: asks whether a site refuses to be shown in the frame, and
+ * opens a page in the owner's browser.
  */
 export function PreviewPane({
   target,
@@ -56,13 +52,7 @@ export function PreviewPane({
   readServer,
   local,
   web,
-  overlay,
-  width,
-  maxWidth,
-  onResize,
   onOpen,
-  onHide,
-  onClose,
   artifacts,
   connected = true,
 }: {
@@ -72,13 +62,7 @@ export function PreviewPane({
   readServer: (path: string, host?: boolean) => Promise<FileView>;
   local: LocalFiles;
   web: WebPages;
-  overlay: boolean;
-  width: number;
-  maxWidth: number;
-  onResize: (width: number, done: boolean) => void;
   onOpen: (t: PreviewTarget) => void;
-  onHide: () => void;
-  onClose: () => void;
   /** Where an artifact's draft lives (artifacts.ts): editing it in the pane, and away from it, share one store. */
   artifacts?: ArtifactStore;
   connected?: boolean;
@@ -86,14 +70,8 @@ export function PreviewPane({
   // Reload bumps this; each target starts again from 0 because the pane is keyed by it.
   const [reloads, setReloads] = useState(0);
   const [copied, setCopied] = useState(false);
-  const [dragging, setDragging] = useState(false);
   const [openError, setOpenError] = useState<string>();
   const titleId = useId();
-  const root = useRef<HTMLElement>(null);
-  // Covering the chat makes it inert, focus included, so focus moves into the pane unless something in it has it.
-  useEffect(() => {
-    if (overlay && !root.current?.contains(document.activeElement)) root.current?.focus();
-  }, [overlay]);
   const address = target.kind === "server" || target.kind === "local" ? target.path : target.kind === "artifact" ? target.ref.path : target.kind === "web" ? target.url : undefined;
 
   const openInBrowser = (url: string) => {
@@ -101,29 +79,9 @@ export function PreviewPane({
     web.openInBrowser(url).catch((e) => setOpenError(`Couldn't open it in your browser: ${messageOf(e)}`));
   };
 
-  const onKey = (e: ReactKeyboardEvent) => {
-    if (e.key !== "Escape" || e.defaultPrevented) return;
-    e.preventDefault();
-    if (overlay) onHide();
-    else onClose();
-  };
-
   return (
-    <aside
-      ref={root}
-      tabIndex={-1}
-      className={`preview ${overlay ? "overlay" : ""} ${dragging ? "dragging" : ""}`}
-      style={overlay ? undefined : { width }}
-      aria-labelledby={titleId}
-      onKeyDown={onKey}
-    >
-      {!overlay && <ResizeHandle width={width} maxWidth={maxWidth} onResize={onResize} onDragging={setDragging} />}
+    <section className="preview-content" aria-labelledby={titleId}>
       <header className="preview-head">
-        {overlay && (
-          <button className="icon-btn" title="Back to the chat" onClick={onHide}>
-            <ArrowLeft size={16} />
-          </button>
-        )}
         <div className="preview-title">
           <div className="preview-name">
             <Where target={target} serverLabel={serverLabel} />
@@ -164,9 +122,6 @@ export function PreviewPane({
               <Plus size={16} />
             </button>
           )}
-          <button className="icon-btn" title="Close the preview" onClick={onClose}>
-            <X size={16} />
-          </button>
         </div>
       </header>
       {openError && (
@@ -196,7 +151,7 @@ export function PreviewPane({
           <FileBody key={reloads} name={target.name} load={() => local.read(target)} />
         )}
       </div>
-    </aside>
+    </section>
   );
 }
 
@@ -231,68 +186,6 @@ function Where({ target, serverLabel }: { target: PreviewTarget; serverLabel: st
     default:
       return null;
   }
-}
-
-/** The pane's left edge: drag it, or focus it and use the arrow keys, to make the pane wider or narrower. */
-function ResizeHandle({
-  width,
-  maxWidth,
-  onResize,
-  onDragging,
-}: {
-  width: number;
-  maxWidth: number;
-  onResize: (width: number, done: boolean) => void;
-  onDragging: (on: boolean) => void;
-}) {
-  const start = useRef<{ x: number; width: number } | null>(null);
-  const clamp = (w: number) => Math.round(Math.min(Math.max(w, PANE_MIN_WIDTH), Math.max(PANE_MIN_WIDTH, maxWidth)));
-  const move = (e: ReactPointerEvent, done: boolean) => {
-    if (!start.current) return;
-    // The pane is on the right, so dragging its edge left makes it wider.
-    onResize(clamp(start.current.width + start.current.x - e.clientX), done);
-    if (done) {
-      start.current = null;
-      onDragging(false);
-    }
-  };
-  return (
-    <div
-      className="preview-resize"
-      role="separator"
-      aria-orientation="vertical"
-      aria-label="Resize the preview"
-      aria-valuemin={PANE_MIN_WIDTH}
-      aria-valuemax={Math.max(PANE_MIN_WIDTH, maxWidth)}
-      aria-valuenow={width}
-      tabIndex={0}
-      onPointerDown={(e) => {
-        if (e.button !== 0) return;
-        e.preventDefault();
-        e.currentTarget.setPointerCapture?.(e.pointerId);
-        start.current = { x: e.clientX, width };
-        onDragging(true);
-      }}
-      onPointerMove={(e) => move(e, false)}
-      onPointerUp={(e) => move(e, true)}
-      onPointerCancel={(e) => move(e, true)}
-      onKeyDown={(e) => {
-        const next =
-          e.key === "ArrowLeft"
-            ? width + KEY_STEP
-            : e.key === "ArrowRight"
-              ? width - KEY_STEP
-              : e.key === "Home"
-                ? maxWidth
-                : e.key === "End"
-                  ? PANE_MIN_WIDTH
-                  : undefined;
-        if (next === undefined) return;
-        e.preventDefault();
-        onResize(clamp(next), true);
-      }}
-    />
-  );
 }
 
 /** The empty pane: type a web address or a server path, or pick a file on this computer. */

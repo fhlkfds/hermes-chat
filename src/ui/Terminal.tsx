@@ -1,12 +1,12 @@
-// The Terminal screen: a shell on the server through the owner's own ssh (ADR 0022). It covers the chat panes like
-// Server files, but stays alive behind them: going back to a chat leaves the session running, and the screen shows it
-// again as it was. Ending the session, or ssh exiting, keeps what was printed, with a way to connect again.
+// The side panel's Terminal (ADR 0022, ADR 0039): a shell on the server through the owner's own ssh, and a shell on
+// this computer, each in a terminal of its own. Both stay alive while the owner is in another tab or the panel is
+// hidden. Ending a session, or its shell exiting, keeps what was printed, with a way to start again.
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, Plug, SquareTerminal, X } from "lucide-react";
+import { Laptop, Play, Plug, Server, X } from "lucide-react";
 import { Terminal as XTerm, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { TerminalSession, endedText, type TerminalApi, type TerminalState } from "../hermes/terminal";
+import { TerminalSession, endedText, type TerminalApi, type TerminalKind, type TerminalState } from "../hermes/terminal";
 import { Spinner } from "./bits";
 
 /** The terminal's colours and font, from the app's theme (appearance.ts sets these on the root). */
@@ -29,24 +29,28 @@ function look(): { theme: ITheme; fontFamily: string; fontSize: number } {
   };
 }
 
+/**
+ * One terminal. `server`: ssh to `initialTarget`, or to one the owner types. `local`: the owner's own login shell on
+ * this computer, which Rust picks; `initialTarget` only labels it.
+ */
 export function TerminalScreen({
+  kind = "server",
   api,
   initialTarget,
   shown,
   onTarget,
   onRunning,
-  onClose,
 }: {
+  kind?: TerminalKind;
   api: TerminalApi;
   /** Where to connect: the target last used for the terminal, or the sign-in's. Empty asks the owner first. */
   initialTarget: string;
-  /** False while the owner is back in a chat: the session keeps running out of sight. */
+  /** False while the owner is elsewhere: the session keeps running out of sight. */
   shown: boolean;
   /** A target the owner typed and connected to, to use next time. */
-  onTarget: (target: string) => void;
-  /** Whether ssh is running, for the rail. */
+  onTarget?: (target: string) => void;
+  /** Whether the shell is running, for the rail and the panel's tabs. */
   onRunning?: (running: boolean) => void;
-  onClose: () => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const screenRef = useRef<HTMLDivElement>(null);
@@ -65,7 +69,7 @@ export function TerminalScreen({
     fit.current?.fit();
     if (s.state.kind !== "idle") t.write("\r\n");
     // The cursor shows only while a session runs.
-    t.write(`\x1b[?25h\x1b[2m── ssh ${to.trim()} ──\x1b[0m\r\n`);
+    t.write(`\x1b[?25h\x1b[2m── ${kind === "local" ? "this computer" : `ssh ${to.trim()}`} ──\x1b[0m\r\n`);
     void s.start(to, t.cols, t.rows);
     t.focus();
   };
@@ -121,7 +125,9 @@ export function TerminalScreen({
       if (host.current?.contains(e.target as Node)) e.stopPropagation();
     };
     screen.addEventListener("keydown", keep);
-    if (initialTarget.trim()) connect(initialTarget);
+    // A local shell starts at once, as any terminal does; the server's when there is a target to connect to.
+    if (kind === "local") connect("this computer");
+    else if (initialTarget.trim()) connect(initialTarget);
     else t.write("\x1b[?25l");
     return () => {
       screen.removeEventListener("keydown", keep);
@@ -147,74 +153,126 @@ export function TerminalScreen({
   const running = state.kind === "connecting" || state.kind === "open";
   const submit = () => {
     if (!target.trim() || running) return;
-    onTarget(target.trim());
+    onTarget?.(target.trim());
     connect(target);
   };
+  const what = kind === "local" ? "A shell on this computer" : "A shell on the Hermes server";
 
   return (
-    <div className="terminal-screen" ref={screenRef} hidden={!shown}>
-      <div className="terminal-head">
-        <button className="back" onClick={onClose}>
-          <ArrowLeft size={15} /> Back to chat
-        </button>
-        <div className="terminal-title">
-          <h1>
-            <SquareTerminal size={18} /> Terminal
-          </h1>
-          {state.kind !== "idle" && <span className="mono muted">ssh {state.target}</span>}
-          <span className={`terminal-status ${state.kind}`} role="status">
-            {state.kind === "connecting" ? (
-              <>
-                <Spinner /> Connecting…
-              </>
-            ) : state.kind === "open" ? (
-              "Connected"
-            ) : state.kind === "ended" ? (
-              "Ended"
-            ) : state.kind === "failed" ? (
-              "Couldn't start"
-            ) : (
-              "Not connected"
-            )}
-          </span>
-          <span className="terminal-spacer" />
-          {running && (
-            <button className="btn" onClick={() => session.current?.end()} title="Ends ssh and the shell on the server">
-              <X size={14} /> End session
-            </button>
+    <div className="terminal-screen" ref={screenRef} hidden={!shown} data-kind={kind}>
+      <div className="terminal-title">
+        {state.kind !== "idle" && <span className="mono muted terminal-where">{kind === "local" ? "your login shell" : `ssh ${state.target}`}</span>}
+        <span className={`terminal-status ${state.kind}`} role="status" aria-label={`${what}: ${statusWord(state)}`}>
+          {state.kind === "connecting" ? (
+            <>
+              <Spinner /> {kind === "local" ? "Starting…" : "Connecting…"}
+            </>
+          ) : (
+            statusWord(state)
           )}
-        </div>
+        </span>
+        <span className="terminal-spacer" />
+        {running && (
+          <button className="btn" onClick={() => session.current?.end()} title={kind === "local" ? "Ends the shell on this computer" : "Ends ssh and the shell on the server"}>
+            <X size={14} /> End session
+          </button>
+        )}
       </div>
-      {!running && (
-        <form
-          className="terminal-connect"
-          onSubmit={(e) => {
-            e.preventDefault();
-            submit();
-          }}
-        >
-          <p className={state.kind === "failed" ? "bad" : "muted"}>
-            {state.kind === "ended"
-              ? endedText(state)
-              : state.kind === "failed"
-                ? state.message
-                : "A shell on the Hermes server, through your own ssh: your ~/.ssh/config, keys and agent apply, and ssh asks here for anything it needs."}
-          </p>
-          <div className="terminal-connect-row">
-            <label>
-              <span>SSH target</span>
-              <input className="mono" value={target} placeholder="liam@hermes" spellCheck={false} autoCapitalize="off" onChange={(e) => setTarget(e.target.value)} />
-            </label>
-            <button className="btn primary" type="submit" disabled={!target.trim()}>
-              <Plug size={14} /> {state.kind === "idle" ? "Connect" : "Connect again"}
-            </button>
+      {!running &&
+        (kind === "local" ? (
+          <div className="terminal-connect">
+            <p className={state.kind === "failed" ? "bad" : "muted"}>
+              {state.kind === "ended"
+                ? endedText(state, kind)
+                : state.kind === "failed"
+                  ? state.message
+                  : "Your own login shell on this computer, in your home folder. It runs as you, with everything you can do in any other terminal; Hermes never sees it."}
+            </p>
+            <div className="terminal-connect-row">
+              <button className="btn primary" onClick={() => connect("this computer")}>
+                <Play size={14} /> {state.kind === "idle" ? "Start" : "Start again"}
+              </button>
+            </div>
           </div>
-        </form>
-      )}
+        ) : (
+          <form
+            className="terminal-connect"
+            onSubmit={(e) => {
+              e.preventDefault();
+              submit();
+            }}
+          >
+            <p className={state.kind === "failed" ? "bad" : "muted"}>
+              {state.kind === "ended"
+                ? endedText(state, kind)
+                : state.kind === "failed"
+                  ? state.message
+                  : "A shell on the Hermes server, through your own ssh: your ~/.ssh/config, keys and agent apply, and ssh asks here for anything it needs."}
+            </p>
+            <div className="terminal-connect-row">
+              <label>
+                <span>SSH target</span>
+                <input className="mono" value={target} placeholder="liam@hermes" spellCheck={false} autoCapitalize="off" onChange={(e) => setTarget(e.target.value)} />
+              </label>
+              <button className="btn primary" type="submit" disabled={!target.trim()}>
+                <Plug size={14} /> {state.kind === "idle" ? "Connect" : "Connect again"}
+              </button>
+            </div>
+          </form>
+        ))}
       <div className="terminal-body">
-        <div className="terminal-host" ref={host} aria-label="Terminal" />
+        <div className="terminal-host" ref={host} aria-label={kind === "local" ? "Terminal on this computer" : "Terminal on the server"} />
       </div>
-      <p className="terminal-foot faint">Ctrl+Shift+C copies the selection and Ctrl+Shift+V pastes. Going back to a chat keeps the session running.</p>
+      <p className="terminal-foot faint">Ctrl+Shift+C copies the selection and Ctrl+Shift+V pastes. The session keeps running in other tabs.</p>
+    </div>
+  );
+}
+
+function statusWord(s: TerminalState) {
+  return s.kind === "connecting" ? "Connecting" : s.kind === "open" ? "Connected" : s.kind === "ended" ? "Ended" : s.kind === "failed" ? "Couldn't start" : "Not connected";
+}
+
+/**
+ * The Terminal tab: the server's shell and this computer's, one shown at a time. Each is made the first time it is
+ * picked and kept from then on, so its session runs on while the other is shown.
+ */
+export function TerminalTab({
+  server,
+  local,
+  shown,
+  kind,
+  onKind,
+  onRunning,
+}: {
+  server: { api: TerminalApi; initialTarget: string; onTarget: (target: string) => void };
+  local: { api: TerminalApi };
+  shown: boolean;
+  kind: TerminalKind;
+  onKind: (k: TerminalKind) => void;
+  /** Which shells are running, for the rail's dot. */
+  onRunning?: (running: Record<TerminalKind, boolean>) => void;
+}) {
+  const [made, setMade] = useState<Record<TerminalKind, boolean>>({ server: kind === "server", local: kind === "local" });
+  const [running, setRunning] = useState<Record<TerminalKind, boolean>>({ server: false, local: false });
+  const onRunningRef = useRef(onRunning);
+  onRunningRef.current = onRunning;
+  useEffect(() => {
+    if (!made[kind]) setMade((m) => ({ ...m, [kind]: true }));
+  }, [kind, made]);
+  useEffect(() => onRunningRef.current?.(running), [running]);
+  const ran = (k: TerminalKind) => (on: boolean) => setRunning((r) => (r[k] === on ? r : { ...r, [k]: on }));
+  return (
+    <div className="terminal-tab" hidden={!shown}>
+      <div className="segmented terminal-kinds" role="group" aria-label="Which computer">
+        <button aria-pressed={kind === "server"} onClick={() => onKind("server")} title="A shell on the Hermes server, through your ssh">
+          <Server size={13} /> Server {running.server && <span className="dot run-dot" role="img" aria-label="(running)" />}
+        </button>
+        <button aria-pressed={kind === "local"} onClick={() => onKind("local")} title="A shell on this computer">
+          <Laptop size={13} /> This computer {running.local && <span className="dot run-dot" role="img" aria-label="(running)" />}
+        </button>
+      </div>
+      {made.server && <TerminalScreen kind="server" api={server.api} initialTarget={server.initialTarget} onTarget={server.onTarget} shown={shown && kind === "server"} onRunning={ran("server")} />}
+      {made.local && <TerminalScreen kind="local" api={local.api} initialTarget="" shown={shown && kind === "local"} onRunning={ran("local")} />}
     </div>
   );
 }

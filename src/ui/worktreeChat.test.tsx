@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Starting a chat in a worktree (ADR 0040), through the whole app: the Repository screen's worktree list, the New chat
+// Starting a chat in a worktree (ADR 0042), through the whole app: the Repository screen's worktree list, the New chat
 // pane, Hermes's `session.create` with the worktree as its folder, and the record on the server that the chat works
 // there. Hermes is the repo's FakeHermes; Rust's `repo_git` command is a fake answering as the helper does.
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";

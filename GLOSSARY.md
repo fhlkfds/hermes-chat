@@ -155,8 +155,12 @@ _Avoid_: voice message, voice mode (Hermes's own hands-free voice chat), speech 
 The owner's action that has Hermes speak one reply with the profile's text-to-speech provider, played on this computer. One reply plays at a time, and opening another chat stops it. The audio isn't saved.
 _Avoid_: TTS, playback, voice mode
 
+**Voice conversation**:
+Talking with Hermes hands-free in a started chat, from Start voice conversation until End: Dictation and Read aloud in turn. The microphone on this computer listens, a turn ends after the profile's `voice.silence_duration` of quiet (or on Send now), Hermes transcribes it, the text goes to the chat as the owner's message, and the reply is spoken. It never listens while anything plays, so Hermes's voice can't become a turn. "What Hermes got" shows each turn's text and whether it was sent. It pauses, closing the microphone, when Hermes disconnects, the window is hidden or minimized, or its pane loses focus, and only the owner resumes it. Opening another chat or profile ends it. Its audio is never saved on this computer; the text sent is a chat message, kept here as typed messages are (ADR 0041).
+_Avoid_: voice mode (Hermes's own), voice chat, live mode, hands-free mode
+
 **Close to tray**:
-The owner's setting that has closing the window hide it in the tray instead of quitting. It is off unless the owner turns it on, and works only while the desktop shows the tray icon; otherwise closing quits. A hidden window keeps its chats, drafts and replies coming in, but drops a Dictation recording and stops Read aloud, and the chat it shows doesn't count as on screen, so new replies leave it Unread. The tray menu, the global shortcut, or launching Hermes Chat again brings back the same window. Quit in the tray menu always exits. The setting is kept on this computer (ADR 0034).
+The owner's setting that has closing the window hide it in the tray instead of quitting. It is off unless the owner turns it on, and works only while the desktop shows the tray icon; otherwise closing quits. A hidden window keeps its chats, drafts and replies coming in, but drops a Dictation recording, stops Read aloud, pauses a Voice conversation, and the chat it shows doesn't count as on screen, so new replies leave it Unread. The tray menu, the global shortcut, or launching Hermes Chat again brings back the same window. Quit in the tray menu always exits. The setting is kept on this computer (ADR 0034).
 _Avoid_: minimize to tray, background mode, run in background
 
 **Failed message**:
@@ -172,7 +176,7 @@ Hermes asking the owner before it runs a command it counts as dangerous. It show
 _Avoid_: permission, confirmation, prompt
 
 **Toolset**:
-A named group of tools Hermes can offer the model, such as Web Search or Terminal. Which toolsets are on is a setting of the profile, kept by Hermes on the server: the list new chats in the profile start with, in every Hermes client, unless the server pins its own or the profile's coding focus mode picks one in a code workspace. A change reaches chats Hermes starts afterwards; a chat Hermes already has open, and a reply running in it, keeps the tools it started with. Settings → Toolsets says a change is saved only once Hermes reads it back that way. A toolset being on doesn't let Hermes run anything it would otherwise ask about: Approvals and YOLO decide that.
+A named group of tools Hermes can offer the model, such as Web Search or Terminal. Which toolsets are on is a setting of the profile, kept by Hermes on the server: the list new chats in the profile start with, in every Hermes client, unless the server pins its own or the profile's coding focus mode picks one in a code workspace. A change reaches chats Hermes starts, or opens again, afterwards. A chat Hermes already has open, and a reply running in it, keeps the tools it started with, on its next turns too. Settings → Toolsets says a change is saved only once Hermes reads it back that way. It also shows, apart from the profile's setting, what the open chat has, as Hermes reads it for that chat. The profile's list is **inherited** while the profile hasn't saved one of its own: it is Hermes's default. A toolset is **forced off** when `agent.disabled_toolsets` turns it off on every platform, whatever the list says. A toolset being on doesn't let Hermes run anything it would otherwise ask about: Approvals and YOLO decide that.
 _Avoid_: tool permissions, capabilities, plugins (a plugin can bring a toolset, but isn't one)
 
 **Inbox**:
@@ -200,7 +204,7 @@ The model, reasoning effort and fast mode the composer starts new chats on. It i
 _Avoid_: default model (that is the profile's, in Hermes), current model
 
 **Memory**:
-What Hermes remembers about the owner and their work between chats, for one profile. Hermes keeps it on the server in two files: its own notes, and what it knows about the owner. Each is a list of entries. The agent adds, changes and removes entries during chats; the owner can change or remove one in Settings → Memory, which saves to the server and reads it back. Hermes reads memory into a chat when the chat starts, so an edit reaches chats started after it. Only the profile the Hermes dashboard runs as can be edited from this app.
+What Hermes remembers about the owner and their work between chats, for one profile. Hermes keeps it on the server in two files: its own notes, and what it knows about the owner. Each is a list of entries. The agent adds, changes and removes entries during chats; the owner can change or remove one in Settings → Memory, which saves to the server and reads it back. Hermes reads memory into a chat when the chat starts, so an edit reaches chats started after it. Only the profile the Hermes dashboard runs as can be edited from this app. What a save from here replaced can be put back with Restore previous version until sign-out or quit, while the entry still holds what was saved; it's kept in the app's memory only (ADR 0040).
 _Avoid_: notes, knowledge, context (for memory), cache (a Saved copy is not memory)
 
 **Skill**:
@@ -242,9 +246,13 @@ _Avoid_: context (alone, for memory), prompt, tokens (for the window)
 Hermes swapping a chat's older messages for one summary that the model reads in their place, when the window fills or when the owner asks with **Compact now**. Every message stays in the chat and in Hermes, but the model no longer reads the ones taken out word for word. The context inspector lists the compactions Hermes stored, with the summary it kept. Compact now asks first, and is offered only between replies on a Hermes that can compact.
 _Avoid_: compression (Hermes's word, fine in server-side talk), summary (that is what a compaction leaves), truncation
 
-**Preview pane**:
-The resizable pane beside the chat that shows a web page, a Server file, a Local file or a tool call's output. It opens from a link in a reply, from an opened tool call, or from the chat's header. In a window too narrow for both, it covers the chat until the owner goes back to it. What it shows can't reach the app, the sign-in or this computer's other files (ADR 0007). A web page whose site refuses to be shown inside other apps gets a note and Open in your browser instead (ADR 0011).
-_Avoid_: viewer, side panel, artifact (the official desktop app's word)
+**Side panel**:
+The resizable panel beside the chat, with four tabs: Preview, Terminal, Files and Screen. It opens from the chat's header, and at a tab from the rail, a link or a tool call. In a window too narrow for both, it covers the chat until the owner goes back to it. Closing it, or going to another tab, leaves what runs in it running (ADR 0039).
+_Avoid_: drawer, sidebar (that is the chat list), inspector
+
+**Preview**:
+The Side panel's tab that shows a web page, a Server file, a Local file or a tool call's output. It opens from a link in a reply or from an opened tool call. What it shows can't reach the app, the sign-in or this computer's other files (ADR 0007). A web page whose site refuses to be shown inside other apps gets a note and Open in your browser instead (ADR 0011).
+_Avoid_: preview pane (its name before the Side panel), viewer, artifact (the official desktop app's word)
 
 **Server file**:
 A file on the Hermes server, by its full path there. Hermes reads it, and Hermes may refuse, for example a file with credentials. Paths in tool calls are Server files, since that is where Hermes runs its tools.
@@ -258,8 +266,8 @@ _Avoid_: attachment (that is a file sent with a message)
 A header name and value the owner adds to a URL connection, for a gateway in front of the dashboard such as Cloudflare Access. Hermes Chat sends it with every request to that dashboard and never to another site. Its value is kept in the system keyring and never shown in Settings (ADR 0006).
 _Avoid_: custom header, gateway token
 
-**Server files screen**:
-The rail's browser for the Server files on the machine the Hermes dashboard runs on. It lists folders through the dashboard's managed files, as the server's own user can open them, the same for every profile, and never shows credential files such as `.env`. The server may limit it to one folder. Nothing on this computer is shown there. A file can be downloaded from it, a file the owner picks can be uploaded into the folder on screen, and a text file can be edited; nothing else on the server can be changed from it (ADR 0012, ADR 0023, ADR 0024).
+**Server files** (the Files tab):
+The Side panel's browser for the Server files on the machine the Hermes dashboard runs on. It lists folders through the dashboard's managed files, as the server's own user can open them, the same for every profile, and never shows credential files such as `.env`. The server may limit it to one folder. Nothing on this computer is shown there. A file can be downloaded from it, a file the owner picks can be uploaded into the folder on screen, and a text file can be edited; nothing else on the server can be changed from it (ADR 0012, ADR 0023, ADR 0024).
 _Avoid_: remote files, file manager, workspace (Hermes's word for a session's working folder)
 
 **Download** (of a Server file):
@@ -267,11 +275,11 @@ Saving a copy of one Server file on this computer, where the owner picks in the 
 _Avoid_: export (that is a chat saved as Markdown), save
 
 **Upload** (to the server):
-Sending one file the owner picked on this computer into the folder the Server files screen shows. Before anything is sent, it shows where the file goes. If the name is taken, the owner chooses to keep both or replace. Hermes is asked not to replace a file unless the owner chose that; it checks just before writing, not at the same moment. It counts as uploaded once the folder, listed again, has the file at the size sent. Credential files such as `.env` are never uploaded over (ADR 0025).
+Sending one file the owner picked on this computer into the folder Server files shows. Before anything is sent, it shows where the file goes. If the name is taken, the owner chooses to keep both or replace. Hermes is asked not to replace a file unless the owner chose that; it checks just before writing, not at the same moment. It counts as uploaded once the folder, listed again, has the file at the size sent. Credential files such as `.env` are never uploaded over (ADR 0025).
 _Avoid_: attach, attachment (that is a file sent with a message), sync
 
 **Edit** (of a Server file):
-Changing a text file on the server from the Server files screen, and saving it back. Save shows the changes first, and writes only if the server still has the version the edit started from. It counts as saved once Hermes, read back, has the edit. If the file changed on the server, nothing is written, and both versions stay: the owner merges them, takes the server's, or saves theirs as a copy (ADR 0024).
+Changing a text file on the server from Server files, and saving it back. Save shows the changes first, and writes only if the server still has the version the edit started from. It counts as saved once Hermes, read back, has the edit. If the file changed on the server, nothing is written, and both versions stay: the owner merges them, takes the server's, or saves theirs as a copy (ADR 0024).
 _Avoid_: patch, sync, overwrite
 
 **Repository**:
@@ -291,7 +299,7 @@ The Repository screen's two separate ways to publish a branch. Push sends the co
 _Avoid_: publish (for either one alone), sync, ship
 
 **Worktree**:
-A second working copy of a repository on the server, on a branch of its own, so a chat can work without touching the repository's own checkout or another chat's. Hermes Chat makes one from the Repository screen, beside the repository (`<repo>.worktrees/<branch>`), from a base and branch the owner saw first. It runs the repository's **setup** once and records which chats work in it. Worktrees made elsewhere are listed but never removed from here. A worktree Hermes Chat made can be **protected**. A chat is **attached** when the record names it. Detach removes it from the record, and the chat keeps its folder. Its record is on the server, beside the repository (ADR 0040).
+A second working copy of a repository on the server, on a branch of its own, so a chat can work without touching the repository's own checkout or another chat's. Hermes Chat makes one from the Repository screen, beside the repository (`<repo>.worktrees/<branch>`), from a base and branch the owner saw first. It runs the repository's **setup** once and records which chats work in it. Worktrees made elsewhere are listed but never removed from here. A worktree Hermes Chat made can be **protected**. A chat is **attached** when the record names it. Detach removes it from the record, and the chat keeps its folder. Its record is on the server, beside the repository (ADR 0042).
 _Avoid_: checkout (the repository's own), clone, sandbox, workspace
 
 **Setup** (of a worktree):
@@ -303,15 +311,23 @@ Remove deletes a worktree's folder after a preview of everything it affects: cha
 _Avoid_: delete, clean up, prune (Hermes's own sweep), discard
 
 **Terminal**:
-The rail's screen with a shell on the Hermes server, through the owner's own ssh to the sign-in's SSH target, or one typed for it. ssh asks there for anything it needs, such as a passphrase or a new host key. Going back to a chat leaves the session running, and the rail shows it; signing out ends it. It is the owner's shell, not Hermes's: nothing typed there reaches a chat, an Approval or the agent (ADR 0022).
-_Avoid_: console, shell (for the screen), Hermes's terminal tool (the agent's, which runs in a chat)
+The Side panel's tab with the owner's own shells: one on the Hermes server, through their ssh to the sign-in's SSH target or one typed for it, and one on this computer, their login shell. ssh asks there for anything it needs, such as a passphrase or a new host key. Each session runs on while the other is shown or the panel is closed, and the rail shows it; signing out ends both. They are the owner's shells, not Hermes's: nothing typed there reaches a chat, an Approval or the agent (ADR 0022, ADR 0039).
+_Avoid_: console, shell (for the tab), Hermes's terminal tool (the agent's, which runs in a chat)
+
+**Screen**:
+The Side panel's view of Hermes's Bot Desktop for the profile shown: a desktop on the server where the agent's computer use and its browser run. The owner watches it, and can Take over and Hand back. Hermes starts, stops and keeps it, one per profile; this computer only shows it (ADR 0039).
+_Avoid_: remote desktop, VNC, browser (for the whole screen), computer use (that is the agent's tool)
+
+**Take over** / **Hand back**:
+The owner's actions that make their keys and pointer drive the Screen, and give it back to the agent. While the owner holds it, Hermes's computer use waits. Another viewer taking over puts the owner back to watching; leaving the Screen hands back.
+_Avoid_: control, lease (Hermes's word, fine in server-side talk), takeover (as a verb)
 
 **Output**:
 A Server file that one of Hermes's tools reported writing in a chat: `write_file`, a file `patch` created, `text_to_speech` audio or an `image_generate` image. It is known by its path, the tool call that made it, and that call's chat. A path a reply or another tool only mentions isn't an Output. The same path written twice is two Outputs, two versions, and only the newest is what the path holds now. The owner can also add a Server file to Outputs by its path. Outputs shows them for the open chat, the project the list shows, or every chat in the profile, and says when a file was last found at its path. This computer keeps only their paths and where they came from (ADR 0016).
 _Avoid_: artifact for an Output in general (the official desktop app's word, which also counts mentioned paths and links; here an **Artifact** is an Output open to edit), attachment, generated file (in the app's text)
 
 **Artifact**:
-An Output that is a text file, open to edit in the preview pane beside the chat. It is one path on one machine (where the profile's tools run, or the dashboard's own), opened in one connection and profile. Its draft stays in this app's memory, apart from the file, until Save. Save writes only if the server still has the version the edit started from, and counts as saved once Hermes, read back, has it. "Ask Hermes to edit" gets a **proposal**: Hermes's new text for the selection, made against the editor's exact text, which the owner reviews and applies to the editor, never straight to the file. The versions a save replaced stay recoverable until the app quits or the owner signs out (ADR 0029).
+An Output that is a text file, open to edit in the Preview beside the chat. It is one path on one machine (where the profile's tools run, or the dashboard's own), opened in one connection and profile. Its draft stays in this app's memory, apart from the file, until Save. Save writes only if the server still has the version the edit started from, and counts as saved once Hermes, read back, has it. "Ask Hermes to edit" gets a **proposal**: Hermes's new text for the selection, made against the editor's exact text, which the owner reviews and applies to the editor, never straight to the file. The versions a save replaced stay recoverable until the app quits or the owner signs out (ADR 0029).
 _Avoid_: document (any file), canvas, patch (for the proposal before it's applied)
 
 **Unsecure**:
@@ -357,12 +373,14 @@ _Avoid_: upgrade (pacman's word, for the package step only)
 - An **Imported chat** becomes **Active** only when the owner sends a message in it from this app.
 - An **Imported transcript** is an **Imported chat** that stays **Settled** until the owner unsettles it: nothing can be sent in it from this app.
 - A **Branch** has exactly one parent chat, in the same **Profile**; a chat can have any number of branches.
+- Every **Screen** belongs to exactly one **Profile**; switching profile shows the other profile's.
 - Every **Version** of a turn is a **Branch**; a turn's versions share one root chat, whose own answer is the Original.
 - Every **Project** belongs to exactly one **Profile**. A **Chat** can be in any number of its profile's projects, or none; being in one doesn't change whether it is **Active**, **Settled**, **Archived** or **Unread**.
 
 ## Flagged ambiguities
 
-- **Artifact** vs **Edit** (of a Server file): both edit a text file's text with the same checked save, but an Artifact is an Output, edited beside the chat on the machine its tool wrote it on, with Hermes's proposed edits and kept versions. A Server file edit covers the window and only reaches the dashboard's machine.
+- **Screen** vs a web page in the **Preview**: both can show a site, but the Screen's browser runs on the server and is the agent's, with its sign-ins; the Preview loads the page on this computer, isolated from the app, and is the owner's alone.
+- **Artifact** vs **Edit** (of a Server file): both edit a text file's text with the same checked save, but an Artifact is an Output, edited beside the chat on the machine its tool wrote it on, with Hermes's proposed edits and kept versions. A Server file edit is made in the Files tab and only reaches the dashboard's machine.
 - **Output** vs a path in a reply: Outputs counts only what a tool's own result says it wrote. A reply that says "saved to /srv/x.pdf", or a `terminal` command that creates a file, makes no Output, though the owner can add that file by its path.
 - **Settled** vs **Archived**: they are different things. Archiving sets Hermes's own "archived" flag and hides a chat in every Hermes client; settling is this app's view of the owner's attention, stored as the "pinned" flag. Neither touches the other (ADR 0005).
 - **Queued message** vs **Draft** vs **Failed message**: a Draft hasn't been sent or queued; a Queued message waits in the chat's queue to be sent by this app; a Failed message was sent, and Hermes didn't take it or may not have. A queued message that goes leaves the queue, and becomes a Failed message only if Hermes doesn't take it.
@@ -372,7 +390,8 @@ _Avoid_: upgrade (pacman's word, for the package step only)
 - **Import** vs **Export** and **Upload**: Export saves one chat as a file on this computer; Import makes chats in Hermes from such a file; Upload puts a file on the server's disk, not in a chat.
 - **Draft** vs the New chat pane: the code also calls the pane for a chat not started yet "the draft". In this glossary a Draft is only the composer's unsent text.
 - **Toolset** vs **Approval** and YOLO: a toolset decides which tools the model is offered at all; an Approval, and YOLO, decide whether a command Hermes counts as dangerous runs without asking. Turning a toolset on or off changes neither. Speech-to-text is listed among the toolsets because Hermes lists it there, but it has no tools: its switch is the profile's `stt.enabled`, which Dictation uses.
-- **Dictation** and **Read aloud** vs Hermes's voice mode: Hermes's `/voice` mode (`voice.record`, `voice.tts` over the socket) records with the server's own microphone and speaks through the server's speakers. This app never uses it. Dictation records on this computer, and both use the server only to transcribe and to make the audio.
+- **Dictation**, **Read aloud** and **Voice conversation** vs Hermes's voice mode: Hermes's `/voice` mode (`voice.record`, `voice.tts` over the socket) records with the server's own microphone and speaks through the server's speakers. This app never uses it. Dictation and a Voice conversation record on this computer, and all three use the server only to transcribe and to make the audio. A Voice conversation borrows only voice mode's turn settings (`voice.silence_*`, `voice.max_recording_seconds`).
+- **Stop speaking** vs **Stop reply** (in a Voice conversation): Stop speaking stops the reply's audio and leaves the reply as it is; Stop reply is the composer's Stop, which has Hermes stop the reply itself.
 - **Automation** vs **Scheduled job**: both start Hermes tasks on the server, an automation when an event arrives, a scheduled job at set times. A route can also start a scheduled job on each event (`cron_job`); Hermes Chat shows such a route but doesn't set it up. An automation's tasks are `webhook` sessions, listed among the chats as from another Hermes platform.
 - **Retry** (of a Delivery) vs **Retry** (of a Failed message): retrying a delivery has Hermes run the stored event again as a new task on the server, through the automation's rules as they are now; it never undoes what the failed attempt did.
 - **Scheduled job** vs its runs: each run of an agent job is a Hermes session with source `cron`. The chat list leaves those out; the job's runs show on the Scheduled jobs screen.

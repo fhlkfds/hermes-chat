@@ -17,3 +17,4 @@ Settings → Memory edits Hermes's built-in memory, `memories/MEMORY.md` and `me
 - A conflict, or a save that reads back differently, keeps the owner's text on screen to copy or to put in an entry they choose. The app never overwrites newer text without the owner choosing to.
 - A save reaches chats that start after it. A running chat keeps the memory it started with until Hermes compresses its history. Saving never restarts Hermes.
 - Unsaved edits are protected while Settings is open: leaving Settings, changing tab, opening a chat, switching profile, signing out, taking a screenshot or closing the window asks first, and an automatic close (a chat leaving the list) leaves Settings open. Closing the window after the question needs the `core:window:allow-destroy` permission.
+- What a save replaced is kept in this app's memory for the sign-in, so it can be put back: see ADR 0040.

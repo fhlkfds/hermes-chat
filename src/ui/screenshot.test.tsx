@@ -319,16 +319,16 @@ describe("Taking a screenshot for the composer", () => {
       disconnect() {}
     });
     const { rust, user } = await signedIn();
-    await user.click(screen.getByRole("button", { name: "Open the preview" }));
+    await user.click(screen.getByRole("button", { name: "Open the side panel" }));
     expect(document.querySelector(".main-chat")!.hasAttribute("inert")).toBe(true);
 
     rust.pressDesktopShortcut();
     expect(document.querySelector(".main-chat")!.hasAttribute("inert")).toBe(false);
-    expect(document.querySelector("aside.preview")).toBeNull();
+    expect(document.querySelector("aside.preview:not([hidden])")).toBeNull();
     await rust.land();
     await waitFor(() => expect(chips()).toHaveLength(1));
 
-    await user.click(screen.getByRole("button", { name: "Show the preview" }));
+    await user.click(screen.getByRole("button", { name: "Show the side panel" }));
     rust.pressDesktopShortcut();
     await rust.fail({ kind: "denied", message: "Screenshot permission denied" });
     expect((await screen.findByRole("alert")).textContent).toContain("Screenshot permission denied");

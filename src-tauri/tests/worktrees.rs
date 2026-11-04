@@ -1,4 +1,4 @@
-//! Managed worktrees (repo_worktrees_helper.py, ADR 0040), run as the server runs them: the exact remote command
+//! Managed worktrees (repo_worktrees_helper.py, ADR 0042), run as the server runs them: the exact remote command
 //! string through `sh -c`, against real Git repositories in a temporary folder. Only ssh itself is left out.
 
 use hermes_chat::repo_git::{self, ChatRef, RepoError, Request};

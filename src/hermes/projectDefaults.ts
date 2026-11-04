@@ -92,7 +92,7 @@ export type NewChatSettings = {
   folder: Resolved<string>;
   /** The project whose defaults apply, if any. */
   project?: string;
-  /** The branch of the worktree the chat starts in, if it starts in one (ADR 0040). */
+  /** The branch of the worktree the chat starts in, if it starts in one (ADR 0042). */
   worktree?: string;
 };
 

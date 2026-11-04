@@ -1,4 +1,4 @@
-// Worktrees in the Repository screen (ADR 0040): the repository's worktrees on the server, the ones Hermes Chat made
+// Worktrees in the Repository screen (ADR 0042): the repository's worktrees on the server, the ones Hermes Chat made
 // with their chats, changes and unpushed commits, and making, setting up, starting a chat in, and removing them. Every
 // Git operation runs on the server through the Repository screen's helper over the owner's ssh.
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";

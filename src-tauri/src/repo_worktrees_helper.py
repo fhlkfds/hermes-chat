@@ -1,6 +1,6 @@
 
 
-# ── worktrees (ADR 0040) ────────────────────────────────────────────────────
+# ── worktrees (ADR 0042) ────────────────────────────────────────────────────
 # Worktrees of the server's repository that Hermes Chat makes and manages. Each is made with the exact base, branch and
 # folder the owner saw first, set up once from the repository's own `.worktreeinclude`, listed with its chats, changes
 # and unpushed commits, and removed only after a preview, with its changes kept in a recovery ref first. Branches are
@@ -583,7 +583,7 @@ def op_worktree_list(req):
         "worktrees": rows,
         # A create or removal whose answer was lost, or that stopped part way, with no worktree to show for it.
         "unfinished": [r for r in records if r["state"] in ("creating", "removing", "restoring", "ready") and tree_at(trees, r["path"]) is None],
-        # Read by Hermes too, to check it's on the same server as this repository (ADR 0040).
+        # Read by Hermes too, to check it's on the same server as this repository (ADR 0042).
         "registry": Registry(common).file,
         "removed": sorted((r for r in records if r["state"] == "removed"), key=lambda r: -r["removed"]["at"]),
     }

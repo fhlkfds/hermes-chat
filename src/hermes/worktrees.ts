@@ -1,5 +1,5 @@
 // Worktrees of a repository on the Hermes server, made and managed through the Repository screen's helper over the
-// owner's ssh (src-tauri/src/repo_worktrees_helper.py, ADR 0040). This file holds the requests, what the helper
+// owner's ssh (src-tauri/src/repo_worktrees_helper.py, ADR 0042). This file holds the requests, what the helper
 // answers, and the rules the screen applies on top: what stops a removal, and how far a setup has got. The screen is
 // src/ui/Worktrees.tsx.
 import { RepoFailure } from "./repo";

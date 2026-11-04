@@ -5,6 +5,7 @@ import { Check, Mic, RotateCcw, Square, Volume2, X } from "lucide-react";
 import type { Speech, Transcript, VoiceSetup } from "../hermes/pipe";
 import type { ConnectionStatus } from "../hermes/model";
 import { MAX_RECORDING_SECONDS, clock, dictationBlocked, messageOf, readAloudBlocked, sttProvider, ttsProvider } from "../hermes/voice";
+import { conversationBlocked, turnSettings } from "../hermes/voiceTurns";
 import { type AudioEnv, type Capture, CaptureAborted, type Recording, startCapture } from "./recorder";
 import type { Speaker } from "./speaker";
 import { Spinner } from "./bits";
@@ -282,6 +283,19 @@ export function micBlocked(status: ConnectionStatus, setup: VoiceSetup | undefin
   return dictationBlocked(setup);
 }
 
+/** How a Voice conversation's turns end with this profile's `voice.*` settings, as a Settings row says it. */
+function conversationTurns(setup: VoiceSetup): { label: string; needs: string } {
+  const t = turnSettings(setup);
+  const source = (fromProfile: boolean) => (fromProfile ? "the profile's" : "Hermes's default");
+  return {
+    label: `Ends a turn after ${t.silenceSeconds} s of quiet`,
+    needs:
+      `Needs both of the above. A turn ends after ${t.silenceSeconds} s of quiet (voice.silence_duration, ${source(t.fromProfile.silence)}), ` +
+      `below loudness ${t.threshold} (voice.silence_threshold, ${source(t.fromProfile.threshold)}), and lasts at most ${Math.round(t.maxSeconds)} s ` +
+      `(voice.max_recording_seconds, ${source(t.fromProfile.max)}).`,
+  };
+}
+
 /** Settings → Voice: what the profile's providers are and need, and where recordings go. */
 export function VoiceSettings({ status, profile, setup }: { status: ConnectionStatus; profile: string; setup?: () => Promise<VoiceSetup> }) {
   const [got, setGot] = useState<{ setup?: VoiceSetup; error?: string }>();
@@ -314,7 +328,8 @@ export function VoiceSettings({ status, profile, setup }: { status: ConnectionSt
       <h2>Voice</h2>
       <p className="muted">
         Dictate a message with the microphone in the composer: the text lands in the composer for you to edit before sending. Read aloud, under a
-        reply, has Hermes speak it. Hermes does both on the server with the <span className="mono">{profile}</span> profile's own speech
+        reply, has Hermes speak it. Start voice conversation, beside the microphone, does both in turn, hands-free, until you end it. Hermes does
+        all of them on the server with the <span className="mono">{profile}</span> profile's own speech
         providers, so their keys never reach this app.
       </p>
       {!connected ? (
@@ -331,11 +346,13 @@ export function VoiceSettings({ status, profile, setup }: { status: ConnectionSt
         <>
           {row("Dictation", dictationBlocked(s), sttProvider(s))}
           {row("Read aloud", readAloudBlocked(s), ttsProvider(s))}
+          {row("Voice conversation", conversationBlocked(status, s, true), conversationTurns(s))}
         </>
       )}
       <p className="muted small settings-note">
         Pick the providers on the server with <span className="mono">hermes tools</span> (Speech-to-Text and Text-to-Speech). The microphone is
-        open only while you record. Recordings stay in memory here and go to Hermes, and on to the provider if it's a cloud one; Hermes deletes its
+        open only while you record, or while a voice conversation is on; a conversation pauses when you leave its chat pane or hide the window,
+        and only you can resume it. Recordings stay in memory here and go to Hermes, and on to the provider if it's a cloud one; Hermes deletes its
         copy once it has the text. Recordings stop by themselves after {MAX_RECORDING_SECONDS / 60} minutes.
       </p>
     </section>
