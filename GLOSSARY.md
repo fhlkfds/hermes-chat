@@ -104,7 +104,7 @@ Which chats are in which project, one link per chat and project. Kept by Hermes 
 _Avoid_: sync conflict (for a change that is only waiting), assignment
 
 **Folder** (of a project):
-A path on the server that a project refers to, shown with the connection it is on. Hermes Chat adds only a folder that is already there, and never creates, moves or deletes one. A folder in a git repository shows its branch, and the repository's other worktrees that already exist can be added as folders too; Hermes Chat never creates a worktree.
+A path on the server that a project refers to, shown with the connection it is on. Hermes Chat adds only a folder that is already there, and never creates, moves or deletes one from the project screen. A folder in a git repository shows its branch, and the repository's other worktrees can be added as folders too. Worktrees are made and removed only in the Repository screen's Worktrees view.
 _Avoid_: directory, workspace, repo (unless it is one)
 
 **Project defaults**:
@@ -277,6 +277,18 @@ _Avoid_: patch, sync, overwrite
 **Repository**:
 The rail's screen for a Git checkout on the Hermes server: its folder, branch, upstream, and changed files with their diffs. It reads through the owner's own ssh, the Terminal's target or the sign-in's, not through the dashboard, so it works while Hermes is away. Git runs there as the SSH user, with that user's config, hooks and credentials (ADR 0034).
 _Avoid_: repo (in the interface), project (a Project is Hermes's group of chats and folders), workspace
+
+**Worktree**:
+A separate working folder of a repository on the server, with its own branch, made by Git (`git worktree add`). The Repository screen's Worktrees view lists them all. A **managed** worktree is one Hermes Chat made: it is recorded in the repository with its setup and the chats working in it, and only it can be removed from here. A chat started in a worktree works only there. A worktree with a chat **attached** can't be removed until the owner detaches it: a quiet chat still counts. A **Protected** worktree, the main checkout, and one Hermes Chat didn't make are never removed (ADR 0041).
+_Avoid_: workspace, sandbox, clone (a clone has its own `.git`), checkout (for a worktree that isn't the main one)
+
+**Setup** (of a worktree):
+What runs once in a new worktree before a chat works there: the files and folders the repository's `.worktreeinclude` names, copied or linked from the checkout it was made from, as Hermes does for its own worktrees. Setup commands, such as an install script, aren't run. A failed or cut-off setup leaves the worktree, with Retry.
+_Avoid_: bootstrap, provisioning, install
+
+**Kept changes**:
+What a worktree's removal saved first: every changed and untracked file, as a commit on top of its HEAD (or HEAD itself, for commits no branch had), under `refs/hermes-chat/kept/` in the repository. Restore in a new worktree starts one from it. Nothing here deletes them.
+_Avoid_: stash (it isn't one), backup, archive (Hermes's own sweep uses `refs/hermes/archive/`)
 
 **Staged** / **Not staged** / **Untracked**:
 Where a change in the Repository screen is. Staged changes are in Git's index, what the next commit would hold. Not staged changes are in the working tree only. An Untracked file isn't in Git yet. One file can have changes in both of the first two, and the screen shows each side's diff on its own.

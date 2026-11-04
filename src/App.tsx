@@ -1,6 +1,6 @@
 import { type ReactNode, type RefObject, Suspense, lazy, useCallback, useLayoutEffect, useMemo, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal, flushSync } from "react-dom";
-import { Columns2, FolderCog, PanelRight, X } from "lucide-react";
+import { Columns2, FolderCog, GitBranch, PanelRight, X } from "lucide-react";
 import { RenameConflict, connect, readSaved, toSource, type Delivery, type Hermes } from "./hermes/transport";
 import { invoke } from "@tauri-apps/api/core";
 import type { CommandHost } from "./ui/SlashCommands";
@@ -72,6 +72,8 @@ import { tauriTerminal } from "./ui/tauriTerminal";
 import { TERMINAL_TARGET_KEY, terminalTarget } from "./hermes/terminal";
 import { REPO_PATH_KEY, REPO_RECENT_KEY, REPO_TARGET_KEY, readRecent, remember, repoTarget } from "./hermes/repo";
 import { RepositoryScreen } from "./ui/Repository";
+import { startInWorktree, worktreeChats, type WorktreeChat, type WorktreeStart } from "./hermes/worktrees";
+import type { RepoApi } from "./hermes/repo";
 import { tauriRepo } from "./ui/tauriRepo";
 import { ApplyDefaults, NewChatSettingsView } from "./ui/ProjectDefaultsNotes";
 import { appearanceStore } from "./ui/appearance";
@@ -413,7 +415,15 @@ export default function App({ links = desktopLinks }: { links?: LinkInbox } = {}
  * One pane of the chat area. `chatId` null: the New chat pane. `draftError`: why the New chat pane couldn't start a
  * chat. `picked`: the search result its chat was opened from; `at` tells one pick from the next.
  */
-type Pane = { key: string; chatId: string | null; draftError?: string; picked?: { found: Found; at: number }; jump?: JumpTarget };
+type Pane = {
+  key: string;
+  chatId: string | null;
+  draftError?: string;
+  picked?: { found: Found; at: number };
+  jump?: JumpTarget;
+  /** The worktree a New chat pane starts its chat in, picked in the Repository screen (ADR 0041). */
+  worktree?: WorktreeStart;
+};
 
 let panesMade = 0;
 /** A pane's key, which is also its name to Hermes for what is on screen (transport.ts `open`). */
@@ -475,6 +485,7 @@ export function Main({
   onLinkTaken,
   refs = savedConnectionRefs,
   tray = tauriTray,
+  repoApi = tauriRepo,
 }: {
   hermes: Hermes;
   connection: SavedSignIn;
@@ -492,6 +503,8 @@ export function Main({
   localFiles?: LocalFiles;
   webPages?: WebPages;
   screenshots?: Screenshots;
+  /** The Repository screen's helper over ssh, and worktrees' (ADR 0034, 0041). */
+  repoApi?: RepoApi;
   /** The global shortcut (ADR 0033); none outside the desktop app. */
   summon?: SummonApi;
   /** Where Settings → Persona keeps unsaved edits and replaced versions on this computer. */
@@ -601,6 +614,8 @@ export function Main({
   const [terminalRunning, setTerminalRunning] = useState(false);
   // The Repository screen covers the chat panes too (ADR 0034).
   const [repoOpen, setRepoOpen] = useState(false);
+  /** Where the Repository screen opens when a chat's worktree label opened it: that worktree's Worktrees view. */
+  const [repoAt, setRepoAt] = useState<{ target: string; path: string; view: "worktrees"; n: number }>();
   // Server files covers the chat panes too. The folder open last stays for this sign-in.
   const [filesOpen, setFilesOpen] = useState(false);
   const [filesPath, setFilesPath] = useState<string>();
@@ -861,11 +876,14 @@ export function Main({
   // the app closes cleanly. Going somewhere also ends the wait to reopen the last one. A chat opens in the active pane
   // unless another is named, and the pane it opens in becomes the active one.
   // `keepSettings`: the move isn't the owner's, so Settings stays on screen.
-  const openChat = (id: string | null, { pane = active.key, remember = true, fresh = false, keepSettings = false } = {}) => {
+  const openChat = (
+    id: string | null,
+    { pane = active.key, remember = true, fresh = false, keepSettings = false, worktree }: { pane?: string; remember?: boolean; fresh?: boolean; keepSettings?: boolean; worktree?: WorktreeStart } = {},
+  ) => {
     const go = () => {
       navGen.current++;
       setPreviewHidden(true);
-      patchPane(pane, { chatId: id, picked: undefined, jump: undefined, ...(fresh && { draftError: undefined }) });
+      patchPane(pane, { chatId: id, picked: undefined, jump: undefined, worktree, ...(fresh && { draftError: undefined }) });
       activeKeyRef.current = pane;
       setActiveKey(pane);
       setReopening(undefined);
@@ -885,6 +903,21 @@ export function Main({
   };
 
   const newChat = (remember = true) => openChat(null, { remember, fresh: true });
+
+  /** Opens the Repository screen on a worktree's Worktrees view, as a chat's worktree label does (ADR 0041). */
+  const openRepository = (at: { target: string; path: string; view: "worktrees" }) =>
+    guard(() => {
+      setProjectOpen(false);
+      setSettingsOpen(false);
+      setFilesOpen(false);
+      setJobsOpen(false); setAutomationsOpen(false);
+      setOutputsOpen(false);
+      setUsageOpen(false);
+      setTerminalOpen(false);
+      setLogsOpen(false);
+      setRepoAt((was) => ({ ...at, n: (was?.n ?? 0) + 1 }));
+      setRepoOpen(true);
+    });
 
   const pick = (found: Found) => guard(() => {
     navGen.current++;
@@ -1545,12 +1578,18 @@ export function Main({
           }}
           shownProject={shownProject && { name: shownProject.name, defaults: proj.defaults[shownProject.id], has: !!listed && !!proj.chats[shownProject.id]?.includes(chat.id) }}
           where={where}
+          connectionName={hereLabel}
+          repoApi={repoApi}
+          scope={scope}
+          worktree={p.worktree?.scope === scope ? p.worktree : undefined}
+          onDropWorktree={() => patchPane(p.key, { worktree: undefined })}
+          onOpenWorktree={(w) => openRepository({ target: w.target, path: w.path, view: "worktrees" })}
           onStarted={(id) => {
             // The chat started from this pane's New chat pane replaces it here, without taking the owner from the
             // other pane if they went there meanwhile.
             if (panesRef.current.find((now) => now.key === p.key) !== p) return;
             const stillActive = activeKeyRef.current === p.key;
-            patchPane(p.key, { chatId: id, picked: undefined });
+            patchPane(p.key, { chatId: id, picked: undefined, worktree: undefined });
             setReopening(undefined);
             if (stillActive) rememberOpenChat(profile, id);
           }}
@@ -1719,6 +1758,7 @@ export function Main({
             setUsageOpen(false);
             setTerminalOpen(false);
             setLogsOpen(false);
+            setRepoAt(undefined);
             setRepoOpen((o) => !o);
           })
         }
@@ -2119,9 +2159,24 @@ export function Main({
           />
         ) : repoOpen ? (
           <RepositoryScreen
-            api={tauriRepo}
-            initialTarget={repoTarget(connection, localStorage.getItem(REPO_TARGET_KEY), localStorage.getItem(TERMINAL_TARGET_KEY))}
-            initialPath={localStorage.getItem(REPO_PATH_KEY) ?? ""}
+            key={repoAt ? `at-${repoAt.n}` : "repo"}
+            api={repoApi}
+            initialTarget={repoAt?.target ?? repoTarget(connection, localStorage.getItem(REPO_TARGET_KEY), localStorage.getItem(TERMINAL_TARGET_KEY))}
+            initialPath={repoAt?.path ?? localStorage.getItem(REPO_PATH_KEY) ?? ""}
+            initialView={repoAt?.view}
+            worktrees={{
+              profile,
+              connection: hereLabel,
+              chatTitle: (id) => hermes.getSnapshot().chats.find((c) => c.id === id)?.title,
+              hermesChatsIn: status === "connected" ? (path) => hermes.chatsWorkingIn(path) : undefined,
+              onStartChat:
+                status === "connected"
+                  ? (w) => {
+                      flushSync(() => setRepoOpen(false));
+                      openChat(null, { fresh: true, worktree: { ...w, scope } });
+                    }
+                  : undefined,
+            }}
             recent={readRecent(localStorage.getItem(REPO_RECENT_KEY))}
             suggestions={(shownProject?.folders ?? []).map((f) => ({ label: shownProject!.name, path: f.path }))}
             onOpened={rememberRepo}
@@ -2322,6 +2377,12 @@ function ChatView({
   templates,
   shownProject,
   where,
+  connectionName,
+  repoApi,
+  scope,
+  worktree,
+  onDropWorktree,
+  onOpenWorktree,
   onStarted,
   onDraftError,
   onToast,
@@ -2368,6 +2429,16 @@ function ChatView({
   shownProject?: { name: string; defaults?: ProjectDefaults; has: boolean };
   /** The connection, as a folder on the server is shown beside it. */
   where?: string;
+  /** The connection's name, as a worktree's record names who started a chat in it. */
+  connectionName: string;
+  repoApi: RepoApi;
+  /** The connection and profile, as this computer keys what it keeps for each. */
+  scope: string;
+  /** The worktree this New chat pane starts its chat in (ADR 0041). */
+  worktree?: WorktreeStart;
+  onDropWorktree: () => void;
+  /** Opens the Repository screen's Worktrees view on the worktree a chat works in. */
+  onOpenWorktree: (w: WorktreeChat) => void;
   onStarted: (id: string) => void;
   onDraftError: (reason: string) => void;
   onToast: (text: string) => void;
@@ -2406,12 +2477,15 @@ function ChatView({
   useEffect(() => setChosen(undefined), [chatId, profile]);
   // No default for `project`: an explicit undefined is "no project", never the one this pane last drew.
   const settingsFor = (project: { name: string; defaults?: ProjectDefaults } | undefined) =>
-    resolveNewChat({ chosen, project, sticky, profilePick: catalog?.defaultPick, profileEffort: catalog?.defaultEffort });
+    resolveNewChat({ chosen, chosenFolder: worktree?.path, project, sticky, profilePick: catalog?.defaultPick, profileEffort: catalog?.defaultEffort });
   const startSettings = settingsFor(shownProject);
   const [applying, setApplying] = useState(false);
   useEffect(() => setApplying(false), [chatId]);
 
   const shownModel = (started && chat.model) || startSettings.model.value;
+  // The worktree this chat was started in from this computer, if it was (ADR 0041).
+  const inWorktreeKey = useSyncExternalStore(worktreeChats.subscribe, () => JSON.stringify(started ? (worktreeChats.get(scope, chat.id) ?? null) : null));
+  const inWorktree = useMemo(() => JSON.parse(inWorktreeKey) as WorktreeChat | null, [inWorktreeKey]);
   const pickModel = (pick: ModelPick) => {
     setUIPrefs({ modelPicker: { ...pick, profile } });
     if (!started) return setChosen(pick);
@@ -2440,7 +2514,17 @@ function ChatView({
       projects.reread();
       if (projects.getSnapshot().selectedId !== into) throw new Error("The project shown changed before the chat started. Nothing was sent.");
       const instructions = s.instructions.value && instructionsMessage(s.project ?? "", s.instructions.value);
-      const id = await hermes.newChat(s.model.value, { folder: s.folder.value, instructions });
+      const begin = () => hermes.newChat(s.model.value, { folder: s.folder.value, instructions });
+      let id: string;
+      if (worktree) {
+        // Its place in the worktree is held on the server before Hermes starts it, so the worktree can't be removed
+        // meanwhile; the chat runs there only if Hermes says it took the folder (newChat).
+        const w = worktree;
+        const started = await startInWorktree(repoApi, w, { profile, connection: connectionName }, begin);
+        id = started.chatId;
+        worktreeChats.set(scope, id, { target: w.target, repo: w.repo, id: w.id, path: w.path, branch: w.branch, token: started.token });
+        if (started.warning && stillIn()) onToast(started.warning);
+      } else id = await begin();
       if (into && projects.getSnapshot().projects.some((p) => p.id === into)) projects.setChat(into, id, true);
       if (stillIn()) onStarted(id);
       return { id };
@@ -2615,8 +2699,14 @@ function ChatView({
       snoozedUntil={snoozedUntil}
       templates={templates}
       notice={
-        !started && shownProject ? (
-          <NewChatSettingsView settings={startSettings} where={where} profile={profile} problem={modelProblem(startSettings, catalog)} />
+        !started && (shownProject || worktree) ? (
+          <NewChatSettingsView
+            settings={startSettings}
+            where={where}
+            profile={profile}
+            problem={modelProblem(startSettings, catalog)}
+            worktree={worktree && { branch: worktree.branch, path: worktree.path, onDrop: onDropWorktree }}
+          />
         ) : undefined
       }
       banner={
@@ -2670,6 +2760,16 @@ function ChatView({
       paneControls={paneControls}
       headActions={
         <>
+          {started && inWorktree && (
+            <button
+              className="chip wt-chip"
+              title={`Works in the worktree ${inWorktree.path} on ${inWorktree.target}. Open it in the Repository screen.`}
+              aria-label={`Works in the worktree ${inWorktree.path}, on the branch ${inWorktree.branch}. Open it in the Repository screen`}
+              onClick={() => onOpenWorktree(inWorktree)}
+            >
+              <GitBranch size={13} aria-hidden /> <span className="mono">{inWorktree.branch}</span>
+            </button>
+          )}
           {started && shownProject?.has && shownProject.defaults && (
             <button className={`icon-btn ${applying ? "on" : ""}`} title={`Apply ${shownProject.name}'s defaults to this chat…`} aria-pressed={applying} onClick={() => setApplying((a) => !a)}>
               <FolderCog size={16} />

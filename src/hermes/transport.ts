@@ -201,6 +201,10 @@ type SessionRow = {
   /** The session it was branched (or compressed) from. */
   parent_session_id?: string | null;
   message_count?: number;
+  /** The folder it works in, as Hermes stored it. */
+  cwd?: string | null;
+  /** Running now, or active lately, as the dashboard decides (`_is_active`). */
+  is_active?: boolean;
 };
 type SessionPage = { sessions: SessionRow[]; total: number };
 /** Dashboard REST `GET /api/sessions/{id}`, as far as this app reads it. Flags come as stored, 0 or 1. */
@@ -1165,6 +1169,27 @@ export class Hermes {
     if (row?.id !== chatId) return null;
     const listed = profile === this.profile ? this.snapshot.chats.find((c) => c.id === chatId) : undefined;
     return { ...this.toFound({ ...row, archived: !!row.archived } as SearchRow, listed, !row.pinned), snippet: [] };
+  }
+
+  /**
+   * The chats Hermes has working in `path` or a folder inside it, in every profile, from any Hermes client
+   * (`GET /api/sessions?cwd_prefix=`, archived ones included). Only rows whose own `cwd` is inside `path` count. Rejects
+   * when a profile can't be asked: a removal must not go ahead on a partial answer (ADR 0041).
+   */
+  async chatsWorkingIn(path: string): Promise<{ id: string; title: string; profile: string; cwd: string; active: boolean }[]> {
+    const root = path.replace(/\/+$/, "");
+    const within = (cwd: string) => cwd === root || cwd.startsWith(`${root}/`);
+    const profiles = await this.profiles();
+    const pages = await Promise.all(
+      profiles.map(async (profile) => {
+        const q = new URLSearchParams({ cwd_prefix: root, archived: "include", limit: "100", profile });
+        const page = (await this.rest("GET", `api/sessions?${q}`)) as SessionPage;
+        return (page.sessions ?? []).flatMap((r) =>
+          typeof r.cwd === "string" && within(r.cwd) ? [{ id: r.id, title: r.title || r.preview || "Untitled chat", profile, cwd: r.cwd, active: !!r.is_active }] : [],
+        );
+      }),
+    );
+    return pages.flat();
   }
 
   /** Puts a found chat in the list, if it isn't there yet, so it can be opened (`open`). */

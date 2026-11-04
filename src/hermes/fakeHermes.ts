@@ -36,6 +36,8 @@ export type SessionRow = {
   runtime_revision?: number;
   /** The session a branch was made from (`session.branch` stores it). */
   parent_session_id?: string | null;
+  /** The folder the session works in (`sessions.cwd`). */
+  cwd?: string | null;
   /**
    * Hermes's stored usage for every model call in the session (`sessions` columns at the deployed `bf0203a`; both list
    * and detail rows carry them). Hermes's helper tasks are kept apart and aren't counted here.
@@ -852,8 +854,11 @@ export class FakeHermes {
       // (list_sessions_rich).
       const excluded = (query.get("exclude_sources") ?? "").split(",").filter(Boolean);
       const only = (query.get("sources") ?? query.get("source") ?? "").split(",").filter(Boolean);
+      // `cwd_prefix` (`_cwd_prefix_clause`): the folder itself or anything under it, never a sibling that shares a prefix.
+      const prefix = (query.get("cwd_prefix") ?? "").replace(/\/+$/, "");
+      const inFolder = (s: SessionRow) => !prefix || (!!s.cwd && (s.cwd === prefix || s.cwd.startsWith(`${prefix}/`)));
       const visible = this.storeOrFail(query.get("profile")).filter(
-        (s) => !excluded.includes(s.source) && !s.unlisted && (!only.length || only.includes(s.source)),
+        (s) => !excluded.includes(s.source) && !s.unlisted && (!only.length || only.includes(s.source)) && inFolder(s),
       );
       const archived = query.get("archived") ?? "exclude";
       // order=created (the default): newest started first; order=recent: latest activity first.

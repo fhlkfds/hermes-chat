@@ -101,6 +101,8 @@ export type NewChatSettings = {
  */
 export function resolveNewChat(o: {
   chosen?: ModelPick;
+  /** A folder the owner chose for this chat: a worktree it is started in (ADR 0041). */
+  chosenFolder?: string;
   project?: { name: string; defaults?: ProjectDefaults };
   sticky?: ModelPick;
   profilePick?: ModelPick;
@@ -120,7 +122,7 @@ export function resolveNewChat(o: {
     model,
     effort,
     instructions: d?.instructions ? { value: d.instructions, from: "project" } : { from: "profile" },
-    folder: d?.folder ? { value: d.folder, from: "project" } : { from: "profile" },
+    folder: o.chosenFolder ? { value: o.chosenFolder, from: "chat" } : d?.folder ? { value: d.folder, from: "project" } : { from: "profile" },
     ...(o.project && { project: o.project.name }),
   };
 }
