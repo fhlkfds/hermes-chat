@@ -275,6 +275,82 @@ describe("removing an entry", () => {
   });
 });
 
+describe("recovering what a save replaced", () => {
+  it("keeps what a confirmed save replaced, and saving it puts the entry back", async () => {
+    const { s, hermes } = await setUp();
+    const view = await hermes.memory.load("default");
+    const { entry } = await hermes.memory.save("default", view.resources.memory.entries[0], "Postgres 17");
+    const before = hermes.memory.replacedBy("default", entry);
+    expect(before).toMatchObject({ text: FALCON, saved: "Postgres 17" });
+    expect(typeof before?.savedAt).toBe("number");
+    // Restoring is an ordinary checked save, and is itself recoverable.
+    const back = await hermes.memory.save("default", entry, before!.text);
+    expect(s.memory.default.memory[0]).toBe(FALCON);
+    expect(hermes.memory.replacedBy("default", back.entry)?.text).toBe("Postgres 17");
+  });
+
+  it("won't save an entry as another entry's exact text, so a restore can't later overwrite the survivor", async () => {
+    const s = server();
+    s.memory.default.memory = ["First", "Second"];
+    const { hermes } = await setUp(s);
+    const view = await hermes.memory.load("default");
+    const e = await hermes.memory.save("default", view.resources.memory.entries[0], "  Second\n").catch((x) => x);
+    expect(e).toBeInstanceOf(MemoryRefusedError);
+    expect(e.message).toMatch(/Another entry in MEMORY.md already says exactly this/);
+    expect(s.memory.default.memory).toEqual(["First", "Second"]);
+    expect(learning(s).some((r) => r.method === "learning.edit")).toBe(false);
+    expect(hermes.memory.replacedBy("default", view.resources.memory.entries[1])).toBeUndefined();
+  });
+
+  it("offers nothing once the entry changed after the save, or for a save that didn't read back", async () => {
+    const s = server();
+    const { hermes } = await setUp(s);
+    const view = await hermes.memory.load("default");
+    const { entry } = await hermes.memory.save("default", view.resources.memory.entries[0], "Postgres 17");
+    s.memory.default.memory[0] = "Postgres 18 (agent)";
+    const now = (await hermes.memory.load("default")).resources.memory.entries[0];
+    expect(hermes.memory.replacedBy("default", now)).toBeUndefined();
+    expect(hermes.memory.replacedBy("default", entry)).toBeDefined();
+
+    s.beforeLearning = (method) => {
+      if (method === "learning.frames" && s.memory.default.memory[1] === "Short.") s.memory.default.memory[1] = "Long (agent).";
+    };
+    const short = (await hermes.memory.load("default")).resources.memory.entries[1];
+    await expect(hermes.memory.save("default", short, "Short.")).rejects.toBeInstanceOf(MemoryUnverifiedError);
+    expect(hermes.memory.replacedBy("default", { ...short, text: "Short." })).toBeUndefined();
+  });
+
+  it("keeps nothing for a lost answer or a conflict", async () => {
+    const s = server();
+    const { hermes } = await setUp(s);
+    let view = await hermes.memory.load("default");
+    s.memory.default.profile[0] = "Name: Sam Example. Works in UTC+2.";
+    await expect(hermes.memory.save("default", view.resources.profile.entries[0], "Name: Sam.")).rejects.toBeInstanceOf(MemoryConflictError);
+    view = await hermes.memory.load("default");
+    s.dropOnLearning = "applied";
+    await expect(hermes.memory.save("default", view.resources.memory.entries[0], "Postgres 17")).rejects.toBeInstanceOf(MemoryUnsureError);
+    await hermes.reconnect();
+    view = await hermes.memory.load("default");
+    for (const e of [...view.resources.memory.entries, ...view.resources.profile.entries]) expect(hermes.memory.replacedBy("default", e)).toBeUndefined();
+  });
+
+  it("is kept per profile and file, the latest ten, and not by a new sign-in", async () => {
+    const s = server();
+    const { hermes } = await setUp(s);
+    let entry = (await hermes.memory.load("default")).resources.memory.entries[0];
+    for (let i = 1; i <= 11; i++) entry = (await hermes.memory.save("default", entry, `Version ${i}`)).entry;
+    expect(hermes.memory.replacedBy("default", entry)?.text).toBe("Version 10");
+    expect(hermes.memory.replacedBy("research", entry)).toBeUndefined();
+    expect(hermes.memory.replacedBy("default", { ...entry, source: "profile" })).toBeUndefined();
+    // The eleventh save pushed out the first, which replaced FALCON.
+    expect(hermes.memory.replacedBy("default", { ...entry, text: "Version 1" })).toBeUndefined();
+    expect(hermes.memory.replacedBy("default", { ...entry, text: "Version 2" })?.text).toBe("Version 1");
+    const again = await connect(s.openPipe);
+    running.push(again);
+    expect(again.memory.replacedBy("default", entry)).toBeUndefined();
+  });
+});
+
 describe("entry text", () => {
   it("strips as Python does", () => {
     expect(pyStrip("  hi \x1c")).toBe("hi");

@@ -68,8 +68,8 @@ import { STATUS_LABEL, composing, routeLabel } from "./ui/bits";
 import { ProjectScreen, ProjectSwitcher, type ProjectUnread } from "./ui/Projects";
 import { ScheduledJobs } from "./ui/ScheduledJobs";
 import { Automations } from "./ui/Automations";
-import { tauriTerminal } from "./ui/tauriTerminal";
-import { TERMINAL_TARGET_KEY, terminalTarget } from "./hermes/terminal";
+import { tauriLocalTerminal, tauriTerminal } from "./ui/tauriTerminal";
+import { TERMINAL_TARGET_KEY, terminalTarget, type TerminalKind } from "./hermes/terminal";
 import { REPO_PATH_KEY, REPO_RECENT_KEY, REPO_TARGET_KEY, readRecent, remember, repoTarget } from "./hermes/repo";
 import { RepositoryScreen } from "./ui/Repository";
 import { startInWorktree, worktreeChats, type WorktreeChat, type WorktreeStart } from "./hermes/worktrees";
@@ -82,7 +82,9 @@ import { systemFonts } from "./ui/tauriFonts";
 import { SignIn } from "./ui/SignIn";
 import { Onboarding, type SetupMode } from "./ui/Onboarding";
 import { ModelControls } from "./ui/ModelPicker";
-import { PANE_MIN_WIDTH, PreviewPane } from "./ui/PreviewPane";
+import { PreviewPane } from "./ui/PreviewPane";
+import { PANE_MIN_WIDTH, SidePanel, type PanelTab } from "./ui/SidePanel";
+import { ScreenTab } from "./ui/Screen";
 import { PreviewContext } from "./ui/previewContext";
 import { tauriLocalFiles, tauriWebPages, type LocalFiles, type WebPages } from "./ui/tauriPreview";
 import type { PreviewTarget } from "./hermes/preview";
@@ -102,7 +104,7 @@ function rememberRepo(top: string) {
 }
 
 // xterm.js is loaded only once the Terminal is first opened.
-const TerminalScreen = lazy(() => import("./ui/Terminal").then((m) => ({ default: m.TerminalScreen })));
+const TerminalTab = lazy(() => import("./ui/Terminal").then((m) => ({ default: m.TerminalTab })));
 
 const SAVED = "hermes-chat.sign-in"; // Everything but the password and extra headers, which are in the system keyring.
 // Hermes also announces store changes over the socket; the poll catches anything it misses.
@@ -118,6 +120,8 @@ const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 const withoutProfile = ({ profile: _profile, ...pick }: StickyModelPick): ModelPick => pick;
 
+/** Below this width the side panel's Server files drop columns and show a file below the list. */
+const PANEL_COMPACT_WIDTH = 640;
 /** The narrowest the chat gets beside the preview pane; narrower than this and the pane covers the chat instead. */
 const CHAT_MIN_WIDTH = 440;
 const PREVIEW_DEFAULT_WIDTH = 480;
@@ -607,18 +611,19 @@ export function Main({
   const [jobsOpen, setJobsOpen] = useState(false);
   /** Automations (webhook routes, ADR 0036) cover the chat too. */
   const [automationsOpen, setAutomationsOpen] = useState(false);
-  // The Terminal screen covers the chat too. Once opened it stays mounted for this sign-in, hidden while the owner is
-  // elsewhere, so its ssh session keeps running (ADR 0022).
-  const [terminalOpen, setTerminalOpen] = useState(false);
-  const [terminalMounted, setTerminalMounted] = useState(false);
-  const [terminalRunning, setTerminalRunning] = useState(false);
+  // The side panel's Terminal (ADR 0022, ADR 0039): which shell is shown, and which are running, for the rail's dot.
+  const [termKind, setTermKind] = useState<TerminalKind>("server");
+  const [termRunning, setTermRunning] = useState<Record<TerminalKind, boolean>>({ server: false, local: false });
+  const terminalRunning = termRunning.server || termRunning.local;
+  // The owner holds Hermes's screen: its computer use waits until they hand back, so the Screen tab says so.
+  const [screenHeld, setScreenHeld] = useState(false);
   // The Repository screen covers the chat panes too (ADR 0034).
   const [repoOpen, setRepoOpen] = useState(false);
   /** Where the Repository screen opens when a chat's worktree label opened it: that worktree's Worktrees view. */
   const [repoAt, setRepoAt] = useState<{ target: string; path: string; view: "worktrees"; n: number }>();
-  // Server files covers the chat panes too. The folder open last stays for this sign-in.
-  const [filesOpen, setFilesOpen] = useState(false);
+  // The side panel's Files: the folder open last stays for this sign-in. `filesKey` opens it at `filesPath` again.
   const [filesPath, setFilesPath] = useState<string>();
+  const [filesKey, setFilesKey] = useState(0);
   // Outputs covers the chat panes too, but not the preview pane, where its files open.
   const [outputsOpen, setOutputsOpen] = useState(false);
   const [outputsScope, setOutputsScope] = useState<OutputsScope>("chat");
@@ -694,19 +699,33 @@ export function Main({
   const catalog = models?.profile === profile ? models : undefined;
   const sticky: ModelPick | undefined = modelPicker?.profile === profile ? withoutProfile(modelPicker) : catalog?.defaultPick;
 
-  // What the preview pane beside the chat shows; null when it is closed. `previewHidden`: in a window too narrow for
-  // both, the pane covers the chat, and the owner has gone back to the chat without closing it.
+  // The side panel beside the chat (ADR 0039): its tab, and whether it is open. Once opened it stays mounted for this
+  // sign-in, hidden while closed, so a shell or the screen in it keeps running. `panelHidden`: in a window too narrow
+  // for both, the panel covers the chat, and the owner has gone back to the chat without closing it.
+  const [panelTab, setPanelTab] = useState<PanelTab>("preview");
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [panelMounted, setPanelMounted] = useState(false);
+  const [panelHidden, setPanelHidden] = useState(false);
+  // What the Preview tab shows; null for the page that asks what to open.
   const [preview, setPreview] = useState<PreviewTarget | null>(null);
-  const [previewHidden, setPreviewHidden] = useState(false);
   // Counts what has been opened, so opening the same file again loads it again.
   const [previewSeq, setPreviewSeq] = useState(0);
-  // The width while the owner drags the pane's edge; it is kept in the display preferences once they let go.
+  // The width while the owner drags the panel's edge; it is kept in the display preferences once they let go.
   const [dragWidth, setDragWidth] = useState<number | null>(null);
-  const openPreview = useCallback((t: PreviewTarget) => {
-    setPreview(t);
-    setPreviewHidden(false);
-    setPreviewSeq((n) => n + 1);
+  const openPanel = useCallback((tab: PanelTab) => {
+    setPanelTab(tab);
+    setPanelOpen(true);
+    setPanelMounted(true);
+    setPanelHidden(false);
   }, []);
+  const openPreview = useCallback(
+    (t: PreviewTarget) => {
+      setPreview(t);
+      setPreviewSeq((n) => n + 1);
+      openPanel("preview");
+    },
+    [openPanel],
+  );
   const mainRef = useRef<HTMLElement>(null);
   const mainWidth = useWidth(mainRef);
 
@@ -773,9 +792,7 @@ export function Main({
   };
   const openSettings = () => {
     setProjectOpen(false);
-    setFilesOpen(false);
     setJobsOpen(false); setAutomationsOpen(false);
-    setTerminalOpen(false);
     setRepoOpen(false);
     setOutputsOpen(false);
     setUsageOpen(false);
@@ -882,16 +899,14 @@ export function Main({
   ) => {
     const go = () => {
       navGen.current++;
-      setPreviewHidden(true);
+      setPanelHidden(true);
       patchPane(pane, { chatId: id, picked: undefined, jump: undefined, worktree, ...(fresh && { draftError: undefined }) });
       activeKeyRef.current = pane;
       setActiveKey(pane);
       setReopening(undefined);
       if (!keepSettings) setSettingsOpen(false);
       setProjectOpen(false);
-      setFilesOpen(false);
       setJobsOpen(false); setAutomationsOpen(false);
-      setTerminalOpen(false);
       setRepoOpen(false);
       setOutputsOpen(false);
       setUsageOpen(false);
@@ -909,11 +924,9 @@ export function Main({
     guard(() => {
       setProjectOpen(false);
       setSettingsOpen(false);
-      setFilesOpen(false);
       setJobsOpen(false); setAutomationsOpen(false);
       setOutputsOpen(false);
       setUsageOpen(false);
-      setTerminalOpen(false);
       setLogsOpen(false);
       setRepoAt((was) => ({ ...at, n: (was?.n ?? 0) + 1 }));
       setRepoOpen(true);
@@ -921,7 +934,7 @@ export function Main({
 
   const pick = (found: Found) => guard(() => {
     navGen.current++;
-    setPreviewHidden(true);
+    setPanelHidden(true);
     hermes.reveal(found);
     patchPane(active.key, { chatId: found.chatId, picked: { found, at: Date.now() }, jump: undefined });
     setReopening(undefined);
@@ -929,9 +942,7 @@ export function Main({
     setSearchOpen(false);
     setSettingsOpen(false);
     setProjectOpen(false);
-    setFilesOpen(false);
     setJobsOpen(false); setAutomationsOpen(false);
-    setTerminalOpen(false);
     setRepoOpen(false);
     setOutputsOpen(false);
     setUsageOpen(false);
@@ -943,7 +954,7 @@ export function Main({
   const splitWith = (chatId: string | null) => guard(() => {
     if (split) return;
     navGen.current++;
-    setPreviewHidden(true);
+    setPanelHidden(true);
     const key = newPaneKey();
     setPanes((ps) => (ps.length > 1 ? ps : [...ps, { key, chatId }]));
     activeKeyRef.current = key;
@@ -951,9 +962,7 @@ export function Main({
     setReopening(undefined);
     setSettingsOpen(false);
     setProjectOpen(false);
-    setFilesOpen(false);
     setJobsOpen(false); setAutomationsOpen(false);
-    setTerminalOpen(false);
     setRepoOpen(false);
     setOutputsOpen(false);
     setUsageOpen(false);
@@ -984,15 +993,13 @@ export function Main({
     flushSync(() => {
       setSettingsOpen(false);
       setProjectOpen(false);
-      setFilesOpen(false);
       setJobsOpen(false); setAutomationsOpen(false);
-      setTerminalOpen(false);
       setRepoOpen(false);
       setOutputsOpen(false);
       setUsageOpen(false);
       setLogsOpen(false);
       setSearchOpen(false);
-      if (!previewFits) setPreviewHidden(true);
+      if (!previewFits) setPanelHidden(true);
     });
     focusPane(active.key);
     void desk.capture({ remote });
@@ -1037,7 +1044,9 @@ export function Main({
     setSettingsOpen(false);
     setProjectOpen(false);
     setToast(null);
+    // What the Preview showed was the old profile's; the Screen tab starts again for the new one.
     setPreview(null);
+    if (panelTab === "preview") setPanelOpen(false);
     void hermes.switchProfile(name);
   };
   const switchProfile = (name: string) => guard(() => switchProfileNow(name), "profile");
@@ -1508,7 +1517,7 @@ export function Main({
       } else if (e.code === "Backslash" || k === "\\") {
         e.preventDefault();
         toggleSplit();
-      } else if ((k === "1" || k === "2") && !e.shiftKey && !e.altKey && split && !settingsOpen && !filesOpen && !jobsOpen && !automationsOpen && !outputsOpen && !terminalOpen && !repoOpen) {
+      } else if ((k === "1" || k === "2") && !e.shiftKey && !e.altKey && split && !settingsOpen && !jobsOpen && !automationsOpen && !outputsOpen && !repoOpen) {
         e.preventDefault();
         focusPane(panes[Number(k) - 1].key);
       }
@@ -1522,13 +1531,26 @@ export function Main({
   const previewFits = !mainWidth || mainWidth >= CHAT_MIN_WIDTH + PANE_MIN_WIDTH;
   const paneMax = mainWidth ? mainWidth - CHAT_MIN_WIDTH : 1200;
   const paneWidth = Math.min(Math.max(dragWidth ?? previewWidth ?? PREVIEW_DEFAULT_WIDTH, PANE_MIN_WIDTH), Math.max(PANE_MIN_WIDTH, paneMax));
-  // Settings covers the chat, and the pane with it; so do the project screen, Server files, Scheduled jobs and the
-  // Terminal.
-  // Outputs covers the chat panes but keeps the preview pane beside it, since its files open there.
-  const screenCovering = settingsOpen || projectScreenOpen || filesOpen || jobsOpen || automationsOpen || terminalOpen || usageOpen || logsOpen || repoOpen;
+  // Settings covers the chat, and the side panel with it; so do the project screen, Scheduled jobs, Automations, Usage,
+  // Logs and the Repository screen. Outputs covers the chat panes but keeps the side panel beside it, since its files
+  // open there.
+  const screenCovering = settingsOpen || projectScreenOpen || jobsOpen || automationsOpen || usageOpen || logsOpen || repoOpen;
   const covering = screenCovering || outputsOpen;
-  const previewShown = !!preview && !screenCovering && (previewFits || !previewHidden);
+  const previewShown = panelOpen && !screenCovering && (previewFits || !panelHidden);
   const previewCovers = previewShown && !previewFits;
+  /** The rail's Terminal and Server files: open the side panel at that tab, or close it if it is showing it already. */
+  const railPanel = (tab: PanelTab) =>
+    guard(() => {
+      setSettingsOpen(false);
+      setProjectOpen(false);
+      setJobsOpen(false);
+      setAutomationsOpen(false);
+      setUsageOpen(false);
+      setLogsOpen(false);
+      setRepoOpen(false);
+      if (previewShown && panelTab === tab) setPanelOpen(false);
+      else openPanel(tab);
+    });
 
   // The global shortcut or `hermes-chat --show` brought the window forward: the cursor goes back in the selected pane's
   // composer, its draft as it was. Settings or another screen over the chat stays as it was left, unsaved edits and all.
@@ -1601,9 +1623,7 @@ export function Main({
             hermes.memory
               ? () => {
                   setProjectOpen(false);
-                  setFilesOpen(false);
                   setJobsOpen(false); setAutomationsOpen(false);
-                  setTerminalOpen(false);
                   setRepoOpen(false);
                   setOutputsOpen(false);
                   setUsageOpen(false);
@@ -1638,8 +1658,8 @@ export function Main({
             });
           }}
           previewControls={
-            <button className={`icon-btn ${previewShown ? "on" : ""}`} title={!preview ? "Open the preview" : previewShown ? "Close the preview" : "Show the preview"} aria-pressed={previewShown}
-              onClick={() => (!preview ? openPreview({ kind: "start" }) : previewShown ? setPreview(null) : setPreviewHidden(false))}>
+            <button className={`icon-btn ${previewShown ? "on" : ""}`} title={!panelOpen ? "Open the side panel" : previewShown ? "Close the side panel" : "Show the side panel"} aria-pressed={previewShown}
+              onClick={() => (!panelOpen ? openPanel(panelTab) : previewShown ? setPanelOpen(false) : setPanelHidden(false))}>
               <PanelRight size={16} />
             </button>
           }
@@ -1671,34 +1691,20 @@ export function Main({
         onToggleList={() => setListOpen((o) => !o)}
         onNew={() => newChat()}
         onSearch={() => openSearch()}
-        onFiles={() =>
-          guard(() => {
-            setSettingsOpen(false);
-            setProjectOpen(false);
-            setJobsOpen(false); setAutomationsOpen(false);
-            setTerminalOpen(false);
-            setRepoOpen(false);
-            setOutputsOpen(false);
-            setUsageOpen(false);
-            setLogsOpen(false);
-            setFilesOpen((o) => !o);
-          })
-        }
+        onFiles={() => railPanel("files")}
         onOutputs={() =>
           guard(() => {
             setSettingsOpen(false);
             setProjectOpen(false);
-            setFilesOpen(false);
             setJobsOpen(false); setAutomationsOpen(false);
-            setTerminalOpen(false);
             setRepoOpen(false);
             setUsageOpen(false);
             setLogsOpen(false);
             setOutputsOpen((o) => !o);
           })
         }
-        outputsOpen={outputsOpen && !settingsOpen && !projectScreenOpen && !filesOpen}
-        filesOpen={filesOpen && !settingsOpen && !projectScreenOpen}
+        outputsOpen={outputsOpen && !settingsOpen && !projectScreenOpen}
+        filesOpen={previewShown && panelTab === "files"}
         onInbox={() => setInboxOpen((o) => !o)}
         inboxOpen={inboxOpen}
         inboxCount={inboxCount}
@@ -1708,11 +1714,9 @@ export function Main({
           guard(() => {
             setProjectOpen(false);
             setSettingsOpen(false);
-            setFilesOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
             setLogsOpen(false);
-            setTerminalOpen(false);
             setRepoOpen(false);
             setAutomationsOpen(false);
             setJobsOpen(true);
@@ -1723,40 +1727,23 @@ export function Main({
           guard(() => {
             setProjectOpen(false);
             setSettingsOpen(false);
-            setFilesOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
             setLogsOpen(false);
-            setTerminalOpen(false);
             setRepoOpen(false);
             setJobsOpen(false);
             setAutomationsOpen(true);
           })
         }
         automationsOpen={automationsOpen && !settingsOpen}
-        onTerminal={() =>
-          guard(() => {
-            setProjectOpen(false);
-            setSettingsOpen(false);
-            setFilesOpen(false);
-            setJobsOpen(false); setAutomationsOpen(false);
-            setOutputsOpen(false);
-            setUsageOpen(false);
-            setLogsOpen(false);
-            setRepoOpen(false);
-            setTerminalMounted(true);
-            setTerminalOpen((o) => !o);
-          })
-        }
+        onTerminal={() => railPanel("terminal")}
         onRepo={() =>
           guard(() => {
             setProjectOpen(false);
             setSettingsOpen(false);
-            setFilesOpen(false);
             setJobsOpen(false); setAutomationsOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
-            setTerminalOpen(false);
             setLogsOpen(false);
             setRepoAt(undefined);
             setRepoOpen((o) => !o);
@@ -1767,32 +1754,28 @@ export function Main({
           guard(() => {
             setProjectOpen(false);
             setSettingsOpen(false);
-            setFilesOpen(false);
             setJobsOpen(false); setAutomationsOpen(false);
-            setTerminalOpen(false);
             setRepoOpen(false);
             setOutputsOpen(false);
             setLogsOpen(false);
             setUsageOpen((o) => !o);
           })
         }
-        usageOpen={usageOpen && !settingsOpen && !projectScreenOpen && !filesOpen && !jobsOpen && !automationsOpen}
+        usageOpen={usageOpen && !settingsOpen && !projectScreenOpen && !jobsOpen && !automationsOpen}
         onLogs={() =>
           guard(() => {
             setProjectOpen(false);
             setSettingsOpen(false);
-            setFilesOpen(false);
             setJobsOpen(false);
             setAutomationsOpen(false);
-            setTerminalOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
             setRepoOpen(false);
             setLogsOpen((o) => !o);
           })
         }
-        logsOpen={logsOpen && !settingsOpen && !projectScreenOpen && !filesOpen && !jobsOpen && !automationsOpen && !usageOpen}
-        terminalOpen={terminalOpen && !settingsOpen}
+        logsOpen={logsOpen && !settingsOpen && !projectScreenOpen && !jobsOpen && !automationsOpen && !usageOpen}
+        terminalOpen={previewShown && panelTab === "terminal"}
         terminalRunning={terminalRunning}
         updateWaiting={updateWaiting}
       />
@@ -1816,9 +1799,7 @@ export function Main({
                   await projects.create(name);
                   guard(() => {
                     setSettingsOpen(false);
-                    setFilesOpen(false);
                     setJobsOpen(false); setAutomationsOpen(false);
-                    setTerminalOpen(false);
                     setRepoOpen(false);
                     setOutputsOpen(false);
                     setUsageOpen(false);
@@ -1829,9 +1810,7 @@ export function Main({
                 onManage={() =>
                   guard(() => {
                     setSettingsOpen(false);
-                    setFilesOpen(false);
                     setJobsOpen(false); setAutomationsOpen(false);
-                    setTerminalOpen(false);
                     setRepoOpen(false);
                     setOutputsOpen(false);
                     setUsageOpen(false);
@@ -1889,9 +1868,7 @@ export function Main({
           onCopyLink={copyChatLink}
           onTextGenerationSettings={() => {
             setProjectOpen(false);
-            setFilesOpen(false);
             setJobsOpen(false); setAutomationsOpen(false);
-            setTerminalOpen(false);
             setRepoOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
@@ -2071,18 +2048,6 @@ export function Main({
             onPersonaDirty={onPersonaDirty}
             guard={guard}
           />
-        ) : filesOpen ? (
-          <FileBrowser
-            files={hermes.files}
-            status={status}
-            route={route}
-            path={filesPath}
-            onPath={setFilesPath}
-            onClose={() => {
-              flushSync(() => setFilesOpen(false));
-              focusPane(active.key);
-            }}
-          />
         ) : usageOpen ? (
           <UsageAnalytics
             key={profile}
@@ -2147,10 +2112,8 @@ export function Main({
             }}
             onShowFolder={(o) => {
               setFilesPath(splitPath(o.path).dir);
-              setOutputsOpen(false);
-              setUsageOpen(false);
-              setLogsOpen(false);
-              setFilesOpen(true);
+              setFilesKey((k) => k + 1);
+              openPanel("files");
             }}
             onClose={() => {
               flushSync(() => setOutputsOpen(false));
@@ -2194,43 +2157,60 @@ export function Main({
             }}
           />
         ) : null}
-        {terminalMounted && (
-          <Suspense fallback={null}>
-          <TerminalScreen
-            api={tauriTerminal}
-            initialTarget={terminalTarget(connection, localStorage.getItem(TERMINAL_TARGET_KEY))}
-            shown={terminalOpen && !settingsOpen}
-            onTarget={(t) => localStorage.setItem(TERMINAL_TARGET_KEY, t)}
-            onRunning={setTerminalRunning}
-            onClose={() => {
-              flushSync(() => setTerminalOpen(false));
-              focusPane(active.key);
-            }}
-          />
-          </Suspense>
-        )}
         <Split panes={slots} activeKey={active.key} onActivate={activate} covered={covered || covering || previewCovers || windowHidden} />
         </div>
-          {preview && previewShown && (
-            <PreviewPane
-              key={previewSeq}
-              target={preview}
-              serverLabel={serverLabel(route)}
-              readServer={(path, host) => (host ? hermes.readHostFile(path) : hermes.readServerFile(path))}
-              local={localFiles}
-              web={webPages}
+          {panelMounted && (
+            <SidePanel
+              tab={panelTab}
+              onTab={setPanelTab}
+              shown={previewShown}
               overlay={!previewFits}
+              compact={(previewFits ? paneWidth : mainWidth || Infinity) < PANEL_COMPACT_WIDTH}
               width={paneWidth}
               maxWidth={paneMax}
               onResize={(w, done) => {
                 setDragWidth(done ? null : w);
                 if (done) setUIPrefs({ previewWidth: w });
               }}
-              onOpen={openPreview}
-              onHide={() => setPreviewHidden(true)}
-              onClose={() => setPreview(null)}
-              artifacts={artifacts}
-              connected={status === "connected"}
+              onHide={() => setPanelHidden(true)}
+              onClose={() => setPanelOpen(false)}
+              running={{ terminal: terminalRunning, screen: screenHeld && "(you're in control)" }}
+              tabs={{
+                // A page or file runs only while it is on screen: a hidden frame could keep playing or loading.
+                preview: (shown) =>
+                  shown && (
+                  <PreviewPane
+                    key={previewSeq}
+                    target={preview ?? { kind: "start" }}
+                    serverLabel={serverLabel(route)}
+                    readServer={(path, host) => (host ? hermes.readHostFile(path) : hermes.readServerFile(path))}
+                    local={localFiles}
+                    web={webPages}
+                    onOpen={openPreview}
+                    artifacts={artifacts}
+                    connected={status === "connected"}
+                  />
+                  ),
+                terminal: (shown) => (
+                  <Suspense fallback={null}>
+                    <TerminalTab
+                      server={{
+                        api: tauriTerminal,
+                        initialTarget: terminalTarget(connection, localStorage.getItem(TERMINAL_TARGET_KEY)),
+                        onTarget: (t) => localStorage.setItem(TERMINAL_TARGET_KEY, t),
+                      }}
+                      local={{ api: tauriLocalTerminal }}
+                      shown={shown}
+                      kind={termKind}
+                      onKind={setTermKind}
+                      onRunning={setTermRunning}
+                    />
+                  </Suspense>
+                ),
+                files: () => <FileBrowser key={filesKey} files={hermes.files} status={status} route={route} path={filesPath} onPath={setFilesPath} />,
+                // A profile's screen is its own; switching profile starts the tab again.
+                screen: (shown) => <ScreenTab key={profile} api={hermes.screen} shown={shown} connected={status === "connected"} onHeld={setScreenHeld} />,
+              }}
             />
           )}
       </main>
