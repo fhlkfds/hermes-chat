@@ -75,12 +75,12 @@ describe("The chat header", () => {
     await user.keyboard("{Enter}");
     const menu = screen.getByRole("menu", { name: "More actions for Nightly backup" });
     expect(more.getAttribute("aria-expanded")).toBe("true");
-    expect([...menu.querySelectorAll("[role=menuitem]")].map((m) => m.textContent)).toEqual(["Export as Markdown", "Copy chat link", "Settle", "Archive"]);
+    expect([...menu.querySelectorAll("[role=menuitem]")].map((m) => m.textContent)).toEqual(["Export as Markdown", "Copy chat link", "Settle", "Archive", "Delete chat…"]);
     expect(document.activeElement!.textContent).toBe("Export as Markdown");
     await user.keyboard("{ArrowDown}{ArrowDown}");
     expect(document.activeElement!.textContent).toBe("Settle");
     await user.keyboard("{ArrowUp}{ArrowUp}{ArrowUp}");
-    expect(document.activeElement!.textContent).toBe("Archive");
+    expect(document.activeElement!.textContent).toBe("Delete chat…");
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("menu")).toBeNull();
     expect(document.activeElement).toBe(more);

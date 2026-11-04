@@ -12,6 +12,8 @@ settle, archive, split right, split down), all looking equally important.
   it opens below its button with the first item focused, the arrow keys move between items, Enter runs one, and Escape
   or a click elsewhere closes it and gives focus back to the button. The button says `aria-haspopup="menu"` and
   `aria-expanded`.
+- **Delete chat… is the menu's last item** (#165), after a separator, left out while a reply runs. It asks first, as
+  every way of deleting a chat does (DeleteChat.tsx).
 - **Split right and Split down are at the end of each pane's tab strip.** ADR 0046 made splitting part of tabs; the
   buttons now sit with the strip's New tab button, and a split pane's close button takes their place there.
 - **Tooltips name the shortcut where there is one.** Find in chat (Ctrl+F), Split right (Ctrl+\), and the other pane's

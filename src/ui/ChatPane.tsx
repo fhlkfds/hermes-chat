@@ -1,7 +1,7 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
 // Dictation and Read aloud come from Voice.tsx.
 import { createContext, memo, type ReactNode, useCallback, useContext, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
-import { Archive, ArchiveRestore, ArrowUp, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, EyeOff, FileDown, FileInput, FileText, Globe, HardDrive, Link2, ListPlus, Ellipsis, Paperclip, RotateCcw, Search, Server, Square, Wrench, X } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowUp, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, EyeOff, FileDown, FileInput, FileText, Globe, HardDrive, Link2, ListPlus, Ellipsis, Paperclip, RotateCcw, Search, Server, Square, Trash2, Wrench, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
@@ -10,6 +10,7 @@ import { SOURCE_LABEL, isOutgoing, isWaiting } from "../hermes/model";
 import type { DeskState, ScreenshotDesk } from "../hermes/screenshots";
 import { ApprovalCard } from "./ApprovalCard";
 import { Menu } from "./ChatMenu";
+import { DeleteChatDialog } from "./DeleteChat";
 import { QueuePanel, type QueueApi } from "./Queue";
 import { Markdown } from "./Markdown";
 import { SourceIcon, Spinner, StoredTime, composing, highlight } from "./bits";
@@ -111,7 +112,9 @@ async function clipboardImages(): Promise<File[]> {
 
 /**
  * The header's More (⋯) menu: the chat's less-used actions, each with its name. It opens below its button, at the
- * button's right edge, and the arrow keys move between its items (ChatMenu.tsx's Menu).
+ * button's right edge, and the arrow keys move between its items (ChatMenu.tsx's Menu). `onDelete`, left out while a
+ * reply runs, adds Delete chat… last; it asks first (DeleteChat.tsx), and a reply starting meanwhile takes the question
+ * away for good.
  */
 function MoreMenu({
   chat,
@@ -119,19 +122,26 @@ function MoreMenu({
   onCopyLink,
   onSettle,
   onArchive,
+  onDelete,
 }: {
   chat: Chat;
   onExport?: () => void;
   onCopyLink?: () => void;
   onSettle?: (settled: boolean) => void;
   onArchive?: (archived: boolean) => void;
+  onDelete?: () => void;
 }) {
   const [at, setAt] = useState<{ x: number; y: number }>();
   const close = useCallback(() => setAt(undefined), []);
-  const item = (label: string, icon: ReactNode, run: () => void, title?: string) => (
+  const button = useRef<HTMLButtonElement>(null);
+  const [askDelete, setAskDelete] = useState(false);
+  useEffect(() => {
+    if (!onDelete) setAskDelete(false);
+  }, [!onDelete]);
+  const item = (label: string, icon: ReactNode, run: () => void, title?: string, danger?: boolean) => (
     <button
       role="menuitem"
-      className="menu-item"
+      className={`menu-item${danger ? " danger" : ""}`}
       title={title}
       onClick={() => {
         close();
@@ -145,8 +155,9 @@ function MoreMenu({
   return (
     <>
       <button
+        ref={button}
         className={`icon-btn ${at ? "on" : ""}`}
-        title="More actions: export, copy link, settle, archive"
+        title={`More actions: export, copy link, settle, archive${onDelete ? ", delete" : ""}`}
         aria-label="More"
         aria-haspopup="menu"
         aria-expanded={!!at}
@@ -172,7 +183,24 @@ function MoreMenu({
             (chat.archived
               ? item("Restore", <RotateCcw size={15} />, () => onArchive(false))
               : item("Archive", <EyeOff size={15} />, () => onArchive(true), "Hide in every Hermes client, keeping its history"))}
+          {onDelete && (
+            <>
+              <div className="menu-sep" role="separator" />
+              {item("Delete chat…", <Trash2 size={15} />, () => setAskDelete(true), "Delete this chat in every Hermes client. This can't be undone.", true)}
+            </>
+          )}
         </Menu>
+      )}
+      {askDelete && onDelete && (
+        <DeleteChatDialog
+          title={chat.title}
+          returnTo={button}
+          onClose={() => setAskDelete(false)}
+          onDelete={() => {
+            setAskDelete(false);
+            onDelete();
+          }}
+        />
       )}
     </>
   );
@@ -218,6 +246,7 @@ export function ChatPane({
   onArchive,
   onExport,
   onCopyLink,
+  onDelete,
   modelControls,
   active = true,
   visible = true,
@@ -265,6 +294,8 @@ export function ChatPane({
   onExport?: () => void;
   /** Copies the chat's link (chatLinks.ts). */
   onCopyLink?: () => void;
+  /** Deletes the chat, once the owner has said yes in the header menu's question. */
+  onDelete?: () => void;
   modelControls?: ReactNode;
   active?: boolean;
   visible?: boolean;
@@ -375,6 +406,8 @@ export function ChatPane({
     return true;
   }, []);
   const [findOpen, setFindOpen] = useState(false);
+  // Deleting waits for a reply to finish, here or in another client.
+  const deleteHere = chat.running ? undefined : onDelete;
   const [query, setQuery] = useState("");
   // Which match is the current one, counting from the top of the chat.
   const [matchIndex, setMatchIndex] = useState(0);
@@ -543,8 +576,8 @@ export function ChatPane({
             >
               <Search size={16} />
             </button>
-            {(onExport || onCopyLink || (onSettle && !chat.archived) || (onArchive && !chat.running)) && (
-              <MoreMenu chat={chat} onExport={onExport} onCopyLink={onCopyLink} onSettle={onSettle} onArchive={onArchive} />
+            {(onExport || onCopyLink || (onSettle && !chat.archived) || (onArchive && !chat.running) || deleteHere) && (
+              <MoreMenu chat={chat} onExport={onExport} onCopyLink={onCopyLink} onSettle={onSettle} onArchive={onArchive} onDelete={deleteHere} />
             )}
           </div>
         </div>
