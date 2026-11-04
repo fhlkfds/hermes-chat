@@ -26,9 +26,10 @@ export type VoiceSetup = { transcribe: boolean; speak: boolean; sttEnabled?: boo
  * `codingFocus`: `agent.coding_context` is focus, so Hermes picks a coding toolset in code workspaces.
  * `disabledEverywhere`: the names in `agent.disabled_toolsets`, which Hermes turns off on every platform; turning one of
  * them on removes it from that list. `disabledUnclear`: that list is saved in a form Rust can't read for certain, so any
- * toolset may be on it. `noMcpUnclear`: likewise for platforms whose toolset list may name `no_mcp`.
+ * toolset may be on it. `noMcpUnclear`: likewise for platforms whose toolset list may name `no_mcp`. `savedLists`: platforms
+ * whose list the profile has saved; any other platform not in `noMcpUnclear` inherits Hermes's default list.
  */
-export type ToolsetGuards = { noMcp: string[]; noMcpUnclear: string[]; codingFocus: boolean; disabledEverywhere: string[]; disabledUnclear: boolean };
+export type ToolsetGuards = { noMcp: string[]; noMcpUnclear: string[]; savedLists: string[]; codingFocus: boolean; disabledEverywhere: string[]; disabledUnclear: boolean };
 
 export type PipeEvent = { kind: "frame"; text: string } | { kind: "closed"; reason: string };
 

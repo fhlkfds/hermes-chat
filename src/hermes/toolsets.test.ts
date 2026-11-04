@@ -434,3 +434,56 @@ describe("failureOf", () => {
     expect(failureOf(new Error("Can't reach the Hermes dashboard: reset"))).toEqual({ reason: "Can't reach the Hermes dashboard: reset" });
   });
 });
+
+describe("what one open chat has (tools.show)", () => {
+  const started = async (hermes: Awaited<ReturnType<typeof connect>>) => {
+    const id = await hermes.newChat();
+    return hermes.getSnapshot().chats.find((c) => c.id === id)!.runtimeId!;
+  };
+
+  it("reads the chat's own tools, asking session.status after tools.show", async () => {
+    const { server, hermes, api } = await connected();
+    const rid = await started(hermes);
+    server.enabledToolsets("default").delete("web");
+    const read = await api.chatTools(rid);
+    // Built before the change: the chat keeps web.
+    expect(read.kind === "read" && [...read.tools].sort()).toEqual(["patch", "process", "read_file", "search_files", "terminal", "web_extract", "web_search", "write_file"]);
+    const asked = server.requests.filter((r) => r.method === "tools.show" || r.method === "session.status").map((r) => [r.method, r.params.session_id]);
+    expect(asked.slice(-2)).toEqual([
+      ["tools.show", rid],
+      ["session.status", rid],
+    ]);
+    // Read-only: nothing written.
+    expect(writes(server)).toEqual([]);
+    expect(server.requests.some((r) => r.method === "tools.configure")).toBe(false);
+  });
+
+  it("each profile's chat has its own profile's tools", async () => {
+    const server = new FakeHermes();
+    server.otherProfiles = { work: [] };
+    server.enabledToolsets("work").delete("file");
+    const work = await connect(server.openPipe, "work");
+    const read = await work.toolsets.chatTools(await started(work));
+    expect(read.kind === "read" && read.tools.has("read_file")).toBe(false);
+    const home = await connect(server.openPipe, "default");
+    const mine = await home.toolsets.chatTools(await started(home));
+    expect(mine.kind === "read" && mine.tools.has("read_file")).toBe(true);
+  });
+
+  it("a session Hermes no longer holds is closed, never its launch profile's fallback", async () => {
+    const { server, hermes, api } = await connected();
+    const rid = await started(hermes);
+    server.runtime.delete(rid);
+    expect(await api.chatTools(rid)).toEqual({ kind: "closed" });
+  });
+
+  it("an older server without tools.show is unsupported; other errors are thrown", async () => {
+    const { server, hermes, api } = await connected();
+    const rid = await started(hermes);
+    server.toolsShowMethod = false;
+    expect(await api.chatTools(rid)).toMatchObject({ kind: "unsupported" });
+    server.toolsShowMethod = true;
+    server.handlers["tools.show"] = (r) => server.fail(r.id, 5034, "tools.show failed: boom");
+    await expect(api.chatTools(rid)).rejects.toThrow(/boom/);
+  });
+});

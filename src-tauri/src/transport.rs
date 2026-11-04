@@ -1136,6 +1136,10 @@ pub struct ToolsetGuards {
     /// Platforms whose `platform_toolsets` entry is a string this can't read for certain the way Hermes does
     /// (`parse_platform_toolsets_value`, `ast.literal_eval`), so it may name `no_mcp`.
     pub no_mcp_unclear: Vec<String>,
+    /// Platforms whose `platform_toolsets` entry is a list Hermes reads as the profile's own saved list
+    /// (`_platform_toolsets_explicitly_saved`). Any other platform not in `no_mcp_unclear` inherits Hermes's default
+    /// list for it (`_platform_default_toolset`).
+    pub saved_lists: Vec<String>,
     /// `agent.coding_context` is `focus` (or its aliases `strict`, `lean`): in a code workspace Hermes swaps in a coding
     /// toolset selection instead of the profile's list (`agent/coding_context.coding_selection`).
     pub coding_focus: bool,
@@ -1152,7 +1156,7 @@ pub struct ToolsetGuards {
 /// `ToolsetGuards` from a profile's config as `GET /api/config` answers it.
 pub fn toolset_guards(config: &serde_json::Value) -> ToolsetGuards {
     // Hermes reads a platform's entry as a list, or a string list literal; any other value it ignores, `no_mcp` and all.
-    let (mut no_mcp, mut no_mcp_unclear) = (Vec::new(), Vec::new());
+    let (mut no_mcp, mut no_mcp_unclear, mut saved_lists) = (Vec::new(), Vec::new(), Vec::new());
     for (platform, value) in config["platform_toolsets"].as_object().into_iter().flatten() {
         let read = match value {
             serde_json::Value::Array(_) => config_string_list(value),
@@ -1166,12 +1170,16 @@ pub fn toolset_guards(config: &serde_json::Value) -> ToolsetGuards {
         };
         if read.unclear {
             no_mcp_unclear.push(platform.clone());
-        } else if read.names.iter().any(|n| n == "no_mcp") {
+            continue;
+        }
+        if read.names.iter().any(|n| n == "no_mcp") {
             no_mcp.push(platform.clone());
         }
+        saved_lists.push(platform.clone());
     }
     no_mcp.sort();
     no_mcp_unclear.sort();
+    saved_lists.sort();
     let mode = match &config["agent"]["coding_context"] {
         serde_json::Value::String(s) => s.trim().to_ascii_lowercase(),
         _ => String::new(),
@@ -1180,6 +1188,7 @@ pub fn toolset_guards(config: &serde_json::Value) -> ToolsetGuards {
     ToolsetGuards {
         no_mcp,
         no_mcp_unclear,
+        saved_lists,
         coding_focus: matches!(mode.as_str(), "focus" | "strict" | "lean"),
         disabled_everywhere: disabled.names,
         disabled_unclear: disabled.unclear,
