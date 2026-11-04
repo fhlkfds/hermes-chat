@@ -519,6 +519,37 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .voice-note {
   display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; font-size: calc(12rem / 14); color: var(--warn); padding: 0 6px 8px;
 }
+/* Voice conversation (VoiceConversation.tsx): above the composer while one is on. Everything wraps, for split and narrow panes. */
+.conversation {
+  margin: 0 0 8px; padding: 8px 10px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--raised);
+  display: flex; flex-direction: column; gap: 6px; min-width: 0; font-size: calc(12.5rem / 14); outline: none;
+}
+.conversation:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+.conv-head, .conv-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; min-width: 0; }
+.conv-mic { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line-2); color: var(--muted); flex: none; }
+.conv-mic.open { color: var(--bad); border-color: var(--bad); }
+.conv-steps { display: flex; flex-wrap: wrap; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.conv-step { padding: 2px 8px; border-radius: 999px; color: var(--faint); }
+.conv-step.on { color: var(--text-strong); background: var(--raised-3); font-weight: 600; }
+.conv-status { display: flex; align-items: center; gap: 6px; color: var(--text); min-width: 0; overflow-wrap: anywhere; }
+.conversation .voice-note { padding: 0; }
+.conv-controls .btn { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; flex: none; }
+.conv-controls .btn[aria-disabled="true"] { opacity: 0.5; }
+.conv-controls .btn[aria-pressed="true"] { background: var(--raised-3); color: var(--text-strong); }
+.conv-device { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); min-width: 0; max-width: 100%; }
+.conv-device select { min-width: 0; max-width: 220px; }
+.conv-heard-wrap { min-width: 0; }
+.conv-heard-title { font-size: calc(11rem / 14); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint); }
+.conv-heard { margin: 2px 0 0; padding: 0; list-style: none; max-height: 120px; overflow-y: auto; }
+.conv-heard li { display: flex; flex-wrap: wrap; gap: 2px 8px; padding: 2px 0; min-width: 0; }
+.conv-heard-text { color: var(--text); overflow-wrap: anywhere; min-width: 0; }
+.conv-heard-state { color: var(--muted); }
+.conv-heard-failed .conv-heard-state, .conv-heard-unknown .conv-heard-state { color: var(--bad); }
+.conv-heard-not-sent .conv-heard-state { color: var(--warn); }
+.conv-empty { margin: 2px 0 0; }
+.conv-about { color: var(--muted); }
+.conv-about summary { cursor: pointer; }
+.conv-about p { margin: 4px 0 0; line-height: 1.45; }
 .link-btn { display: inline-flex; align-items: center; gap: 4px; color: var(--text-2); text-decoration: underline; text-underline-offset: 2px; }
 .link-btn:hover { color: var(--text-strong); }
 .icon-btn[aria-disabled="true"] { opacity: 0.45; cursor: default; }
