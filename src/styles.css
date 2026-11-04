@@ -374,8 +374,10 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 @keyframes blink { 50% { opacity: 0; } }
 .stopped { font-size: calc(12rem / 14); color: var(--faint); margin-top: 4px; }
 .msg-time { display: block; font-size: calc(11.5rem / 14); color: var(--faint); margin-top: 4px; }
-/* Read aloud under a reply (Voice.tsx): faint until the reply is hovered or focused, and while it loads, plays or failed. */
-.msg-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 6px; opacity: 0; transition: opacity 0.15s; }
+/* Copy, Edit, Regenerate and Read aloud under a message (CopyMessage.tsx, Replay.tsx, Voice.tsx): faint until the message is
+   hovered or focused, and while Read aloud loads, plays or failed. Not selectable, so selecting a message and pressing
+   Ctrl+C copies only its words. */
+.msg-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 6px; opacity: 0; transition: opacity 0.15s; user-select: none; -webkit-user-select: none; }
 .msg.assistant:hover .msg-actions, .msg.user:hover .msg-actions, .msg-actions:focus-within, .msg-actions.active { opacity: 1; }
 .msg-actions-row { display: flex; flex-wrap: wrap; gap: 0 8px; }
 .msg.user .msg-actions { margin-top: 0; }

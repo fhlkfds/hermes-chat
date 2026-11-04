@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Markdown } from "./Markdown";
+import { replyMarkdown } from "./CopyMessage";
 
 const render = (text: string, query?: string) => renderToStaticMarkup(<Markdown text={text} query={query} />);
 
@@ -18,5 +19,23 @@ describe("Markdown", () => {
     const html = render("Restart the **gateway**.\n\n```bash\nsystemctl restart gateway\n```", "GATEWAY");
     expect(html.match(/<mark class="hit">gateway<\/mark>/g)).toHaveLength(2);
     expect(render("Restart the gateway.", "")).not.toContain("<mark");
+  });
+});
+
+describe("A reply's words to copy", () => {
+  it("keeps the reply's Markdown as Hermes wrote it", () => {
+    const reply = "## Fixed\n\n- Restarted **gateway**\n- See [logs](https://nas/logs)\n\n```bash\nsystemctl status gateway\n```";
+    expect(replyMarkdown(reply)).toBe(reply);
+  });
+
+  it("leaves out thinking written inline, and closes up the lines it leaves", () => {
+    expect(replyMarkdown("<think>The owner wants a yes.\nKeep it short.</think>\n\nYes, it's up.")).toBe("Yes, it's up.");
+    expect(replyMarkdown("First.\n\n<THINKING>check the port</THINKING>\n\n\nSecond.")).toBe("First.\n\nSecond.");
+    expect(replyMarkdown("<reasoning>still going")).toBe("");
+  });
+
+  it("leaves a tag that only mentions thinking in the middle of a reply", () => {
+    expect(replyMarkdown("Wrap it in `<think>` tags.")).toBe("Wrap it in `<think>` tags.");
+    expect(replyMarkdown("Put `<think>` before and `</think>` after.")).toBe("Put `<think>` before and `</think>` after.");
   });
 });
