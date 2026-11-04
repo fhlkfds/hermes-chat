@@ -1,0 +1,284 @@
+//! The Repository screen's Git operations, run on the Hermes server through the owner's own `ssh` (ADR 0034).
+//!
+//! The remote command is a constant: `python3 -I -c` with the helper program (repo_git_helper.py) built into the app.
+//! What the screen asks for travels on ssh's stdin as one JSON request, and the helper runs `git` with an argument list
+//! it builds, never through a shell. So no path, file name or message the owner types is ever read by a shell on
+//! either machine. The webview can ask only for the operations in `Request`; nothing here runs a command it names.
+//!
+//! ssh runs with `BatchMode=yes`: there is no terminal to answer a passphrase or a new host key, so ssh fails instead
+//! of waiting, and the screen says how to fix it (connect once in the Terminal, or load the key into the agent).
+
+use base64::Engine;
+use serde::{Deserialize, Serialize};
+use std::process::Stdio;
+use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::process::Command;
+
+/// The helper program, sent unchanged every time.
+pub const HELPER: &str = include_str!("repo_git_helper.py");
+
+/// What the helper prints before its answer, so anything a login script prints first can't be mistaken for it.
+const MARK: &str = "\u{1e}hermes-repo\u{1e}";
+
+/// The most an answer can be (the helper cuts diffs well below this).
+const MAX_REPLY: usize = 16 * 1024 * 1024;
+
+/// Which changes of a file a diff shows.
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum DiffSide {
+    /// The index against HEAD: what the next commit would include.
+    Staged,
+    /// The working tree against the index.
+    Unstaged,
+    /// A file Git doesn't track yet, shown as all added.
+    Untracked,
+    /// A file with a merge conflict: Git's combined diff.
+    Conflict,
+}
+
+/// The operations the screen can ask for. Anything else can't be expressed.
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[serde(tag = "op", rename_all = "camelCase")]
+pub enum Request {
+    /// The checkout that holds `repo`: its top folder, branch, upstream and changed files.
+    Status { repo: String },
+    /// One file's diff. `repo` is the top folder Status gave; `path` (and a rename's `orig_path`) are relative to it.
+    #[serde(rename_all = "camelCase")]
+    Diff {
+        repo: String,
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        orig_path: Option<String>,
+        side: DiffSide,
+        context: u32,
+    },
+}
+
+impl Request {
+    /// How long the whole round trip may take, ssh's connection included.
+    fn timeout(&self) -> Duration {
+        Duration::from_secs(60)
+    }
+}
+
+/// A failure, as the screen tells them apart. `kind` is what the screen keys on; `message` is shown as it is.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RepoError {
+    BadTarget,
+    Spawn(String),
+    /// ssh couldn't get in: `why` is "ssh-auth", "ssh-host-key", "ssh-unreachable" or "ssh", and `detail` is what ssh said.
+    Ssh { why: &'static str, detail: String },
+    /// The server can't run the helper (no python3).
+    Unsupported(String),
+    /// No answer in time. Whether a write happened isn't known, so the screen reads the repository again.
+    Timeout(u64),
+    /// Something answered, but not the helper.
+    BadReply(String),
+    /// The helper ran and refused, or git did: `kind` and `message` are the helper's.
+    Helper { kind: String, message: String, output: String },
+}
+
+impl std::fmt::Display for RepoError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RepoError::BadTarget => write!(f, "Enter an SSH target such as liam@hermes or a host alias from ~/.ssh/config."),
+            RepoError::Spawn(e) => write!(f, "Couldn't start ssh: {e}"),
+            RepoError::Ssh { why: "ssh-auth", .. } => write!(
+                f,
+                "ssh couldn't sign in to the server without asking. The key needs to be in your SSH agent, or unencrypted."
+            ),
+            RepoError::Ssh { why: "ssh-host-key", .. } => write!(
+                f,
+                "ssh doesn't know this server's host key yet. Connect once from the Terminal and accept it, then try again."
+            ),
+            RepoError::Ssh { why: "ssh-unreachable", .. } => write!(f, "ssh couldn't reach the server."),
+            RepoError::Ssh { .. } => write!(f, "ssh failed."),
+            RepoError::Unsupported(e) => write!(f, "{e}"),
+            RepoError::Timeout(s) => write!(f, "The server didn't answer within {s} s."),
+            RepoError::BadReply(e) => write!(f, "The server's answer wasn't one this app understands: {e}"),
+            RepoError::Helper { message, .. } => write!(f, "{message}"),
+        }
+    }
+}
+
+impl Serialize for RepoError {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let (kind, output): (&str, &str) = match self {
+            RepoError::BadTarget => ("bad-target", ""),
+            RepoError::Spawn(_) => ("spawn", ""),
+            RepoError::Ssh { why, detail } => (why, detail.as_str()),
+            RepoError::Unsupported(_) => ("unsupported", ""),
+            RepoError::Timeout(_) => ("timeout", ""),
+            RepoError::BadReply(_) => ("bad-reply", ""),
+            RepoError::Helper { kind, output, .. } => (kind.as_str(), output.as_str()),
+        };
+        let mut st = s.serialize_struct("RepoError", 3)?;
+        st.serialize_field("kind", kind)?;
+        st.serialize_field("message", &self.to_string())?;
+        st.serialize_field("output", output)?;
+        st.end()
+    }
+}
+
+/// The command ssh runs on the server. It is the same string every time: nothing in it comes from the owner.
+pub fn remote_command() -> String {
+    let program = base64::engine::general_purpose::STANDARD.encode(HELPER);
+    format!("exec python3 -I -c 'import base64;exec(base64.b64decode(\"{program}\"))'")
+}
+
+/// `ssh` to `target`, running the helper. The target is checked as the tunnel checks it: no leading '-', no whitespace.
+pub fn ssh_command(target: &str) -> Result<Command, RepoError> {
+    let target = target.trim();
+    if target.is_empty() || target.starts_with('-') || target.contains(char::is_whitespace) {
+        return Err(RepoError::BadTarget);
+    }
+    let mut command = Command::new("ssh");
+    command.args([
+        "-T",
+        "-o", "BatchMode=yes",
+        "-o", "ConnectTimeout=15",
+        "-o", "ServerAliveInterval=15",
+        // A LocalForward in the owner's config would clash with the sign-in tunnel, and isn't needed here.
+        "-o", "ClearAllForwardings=yes",
+        "--",
+        target,
+    ]);
+    command.arg(remote_command());
+    Ok(command)
+}
+
+/// What ssh's own failure (exit status 255) was about, from what it printed.
+pub fn ssh_failure(stderr: &str) -> &'static str {
+    let s = stderr.to_ascii_lowercase();
+    if s.contains("host key verification failed") || s.contains("remote host identification has changed") {
+        "ssh-host-key"
+    } else if s.contains("permission denied") || s.contains("too many authentication failures") {
+        "ssh-auth"
+    } else if s.contains("could not resolve")
+        || s.contains("connection refused")
+        || s.contains("connection timed out")
+        || s.contains("no route to host")
+        || s.contains("network is unreachable")
+        || s.contains("operation timed out")
+    {
+        "ssh-unreachable"
+    } else {
+        "ssh"
+    }
+}
+
+/// Runs `command` (ssh, or in tests the helper itself), sends it `request`, and reads the helper's answer: its
+/// `result` on success, or what it refused with.
+pub async fn run(mut command: Command, request: &Request) -> Result<serde_json::Value, RepoError> {
+    let body = serde_json::to_vec(request).map_err(|e| RepoError::BadReply(e.to_string()))?;
+    command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    let mut child = command.spawn().map_err(|e| RepoError::Spawn(e.to_string()))?;
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let mut stdout = child.stdout.take().expect("piped stdout");
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    let limit = request.timeout();
+    let work = async {
+        let write = async move {
+            // A helper that never starts (no python3) closes stdin early; its exit status says why.
+            let _ = stdin.write_all(&body).await;
+            drop(stdin);
+        };
+        let read_out = async {
+            let mut buf = Vec::new();
+            let _ = (&mut stdout).take(MAX_REPLY as u64 + 1).read_to_end(&mut buf).await;
+            buf
+        };
+        let read_err = async {
+            let mut buf = Vec::new();
+            let _ = (&mut stderr).take(64 * 1024).read_to_end(&mut buf).await;
+            buf
+        };
+        let ((), out, err) = tokio::join!(write, read_out, read_err);
+        let status = child.wait().await;
+        (status, out, err)
+    };
+    let (status, out, err) = tokio::time::timeout(limit, work)
+        .await
+        .map_err(|_| RepoError::Timeout(limit.as_secs()))?;
+    let status = status.map_err(|e| RepoError::Spawn(e.to_string()))?;
+    let err = String::from_utf8_lossy(&err).trim().to_owned();
+    if out.len() > MAX_REPLY {
+        return Err(RepoError::BadReply("it was too big.".into()));
+    }
+    let out = String::from_utf8_lossy(&out);
+    let Some(at) = out.rfind(MARK) else {
+        return Err(match status.code() {
+            Some(255) => RepoError::Ssh { why: ssh_failure(&err), detail: err },
+            Some(127) => RepoError::Unsupported(format!(
+                "The server has no python3 on the PATH ssh gives it, which the Repository screen needs.{}",
+                if err.is_empty() { String::new() } else { format!(" ({err})") }
+            )),
+            _ => RepoError::BadReply(if err.is_empty() { "no answer.".into() } else { err }),
+        });
+    };
+    let reply: serde_json::Value =
+        serde_json::from_str(&out[at + MARK.len()..]).map_err(|e| RepoError::BadReply(e.to_string()))?;
+    if reply.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+        return Ok(reply.get("result").cloned().unwrap_or(serde_json::Value::Null));
+    }
+    let e = reply.get("error").cloned().unwrap_or_default();
+    let field = |k: &str| e.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_owned();
+    Err(RepoError::Helper { kind: field("kind"), message: field("message"), output: field("output") })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_remote_command_is_constant_and_quotes_nothing_from_outside() {
+        let c = remote_command();
+        assert_eq!(c, remote_command());
+        let program = c.split('"').nth(1).unwrap();
+        assert!(program.chars().all(|ch| ch.is_ascii_alphanumeric() || "+/=".contains(ch)));
+        assert_eq!(base64::engine::general_purpose::STANDARD.decode(program).unwrap(), HELPER.as_bytes());
+    }
+
+    #[test]
+    fn ssh_refuses_a_target_that_could_be_an_option() {
+        assert_eq!(ssh_command("-oProxyCommand=x").err(), Some(RepoError::BadTarget));
+        assert_eq!(ssh_command("a b").err(), Some(RepoError::BadTarget));
+        assert_eq!(ssh_command("  ").err(), Some(RepoError::BadTarget));
+        let cmd = ssh_command("liam@hermes").unwrap();
+        let args: Vec<_> = cmd.as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        let dashdash = args.iter().position(|a| a == "--").unwrap();
+        assert_eq!(args[dashdash + 1], "liam@hermes");
+        assert_eq!(args[dashdash + 2], remote_command());
+        assert_eq!(args.len(), dashdash + 3);
+        assert!(args.windows(2).any(|w| w == ["-o", "BatchMode=yes"]));
+    }
+
+    #[test]
+    fn ssh_failures_are_told_apart() {
+        assert_eq!(ssh_failure("Host key verification failed."), "ssh-host-key");
+        assert_eq!(ssh_failure("liam@x: Permission denied (publickey)."), "ssh-auth");
+        assert_eq!(ssh_failure("ssh: Could not resolve hostname nope: Name or service not known"), "ssh-unreachable");
+        assert_eq!(ssh_failure("kex_exchange_identification: read: Connection reset by peer"), "ssh");
+    }
+
+    #[test]
+    fn requests_carry_only_their_own_fields() {
+        let r: Request = serde_json::from_str(r#"{"op":"diff","repo":"/r","path":"a","side":"staged","context":3,"argv":["rm"]}"#).unwrap();
+        let back = serde_json::to_value(&r).unwrap();
+        assert!(back.get("argv").is_none());
+        assert!(serde_json::from_str::<Request>(r#"{"op":"exec","argv":["rm"]}"#).is_err());
+    }
+
+    #[test]
+    fn errors_serialize_with_their_kind() {
+        let v = serde_json::to_value(RepoError::Ssh { why: "ssh-auth", detail: "Permission denied".into() }).unwrap();
+        assert_eq!(v["kind"], "ssh-auth");
+        assert_eq!(v["output"], "Permission denied");
+        let v = serde_json::to_value(RepoError::Helper { kind: "stale".into(), message: "m".into(), output: String::new() }).unwrap();
+        assert_eq!(v["kind"], "stale");
+        assert_eq!(v["message"], "m");
+    }
+}

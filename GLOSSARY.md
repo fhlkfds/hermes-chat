@@ -238,6 +238,14 @@ _Avoid_: attach, attachment (that is a file sent with a message), sync
 Changing a text file on the server from the Server files screen, and saving it back. Save shows the changes first, and writes only if the server still has the version the edit started from. It counts as saved once Hermes, read back, has the edit. If the file changed on the server, nothing is written, and both versions stay: the owner merges them, takes the server's, or saves theirs as a copy (ADR 0024).
 _Avoid_: patch, sync, overwrite
 
+**Repository**:
+The rail's screen for a Git checkout on the Hermes server: its folder, branch, upstream, and changed files with their diffs. It reads through the owner's own ssh, the Terminal's target or the sign-in's, not through the dashboard, so it works while Hermes is away. Git runs there as the SSH user, with that user's config, hooks and credentials (ADR 0034).
+_Avoid_: repo (in the interface), project (a Project is Hermes's group of chats and folders), workspace
+
+**Staged** / **Not staged** / **Untracked**:
+Where a change in the Repository screen is. Staged changes are in Git's index, what the next commit would hold. Not staged changes are in the working tree only. An Untracked file isn't in Git yet. One file can have changes in both of the first two, and the screen shows each side's diff on its own.
+_Avoid_: cached, added (for staged), dirty, unversioned
+
 **Terminal**:
 The rail's screen with a shell on the Hermes server, through the owner's own ssh to the sign-in's SSH target, or one typed for it. ssh asks there for anything it needs, such as a passphrase or a new host key. Going back to a chat leaves the session running, and the rail shows it; signing out ends it. It is the owner's shell, not Hermes's: nothing typed there reaches a chat, an Approval or the agent (ADR 0022).
 _Avoid_: console, shell (for the screen), Hermes's terminal tool (the agent's, which runs in a chat)

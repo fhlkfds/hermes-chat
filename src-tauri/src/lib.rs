@@ -3,6 +3,7 @@ pub mod fonts;
 pub mod media;
 pub mod notify;
 pub mod remote;
+pub mod repo_git;
 pub mod saved_password;
 pub mod screenshot;
 pub mod terminal;
@@ -919,6 +920,13 @@ fn terminal_close(terminals: State<'_, terminal::Terminals>, id: u64) {
     terminals.close(id);
 }
 
+/// One Git operation on the server for the Repository screen: the helper run through `ssh` to `target` (the sign-in's
+/// SSH target, or one the owner gave), with `request` on its stdin (repo_git.rs, ADR 0034).
+#[tauri::command]
+async fn repo_git(target: String, request: repo_git::Request) -> Result<serde_json::Value, repo_git::RepoError> {
+    repo_git::run(repo_git::ssh_command(&target)?, &request).await
+}
+
 /// Starts the app. `screenshot`: it was started by `hermes-chat --screenshot`, with no other Hermes Chat to take it.
 pub fn run(screenshot: bool) {
     let screenshots = Screenshots::default();
@@ -1017,6 +1025,7 @@ pub fn run(screenshot: bool) {
             screenshot_ack_request,
             screenshot_show_window,
             terminal_open,
+            repo_git,
             terminal_write,
             terminal_resize,
             terminal_close,

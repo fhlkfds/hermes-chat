@@ -59,6 +59,9 @@ import { ProjectScreen, ProjectSwitcher, type ProjectUnread } from "./ui/Project
 import { ScheduledJobs } from "./ui/ScheduledJobs";
 import { tauriTerminal } from "./ui/tauriTerminal";
 import { TERMINAL_TARGET_KEY, terminalTarget } from "./hermes/terminal";
+import { REPO_PATH_KEY, REPO_RECENT_KEY, REPO_TARGET_KEY, readRecent, remember, repoTarget } from "./hermes/repo";
+import { RepositoryScreen } from "./ui/Repository";
+import { tauriRepo } from "./ui/tauriRepo";
 import { ApplyDefaults, NewChatSettingsView } from "./ui/ProjectDefaultsNotes";
 import { appearanceStore } from "./ui/appearance";
 import { StatusBar } from "./ui/StatusBar";
@@ -72,6 +75,16 @@ import { tauriLocalFiles, tauriWebPages, type LocalFiles, type WebPages } from "
 import type { PreviewTarget } from "./hermes/preview";
 import type { Route } from "./hermes/pipe";
 import { getUIPrefs, setUIPrefs, subscribe as subscribeUIPrefs, toggleModelFavorite, type StickyModelPick } from "./hermes/uiPrefs";
+
+/** Keeps the repository folder opened last, and the recent ones, on this computer (Repository screen, ADR 0034). */
+function rememberRepo(top: string) {
+  try {
+    localStorage.setItem(REPO_PATH_KEY, top);
+    localStorage.setItem(REPO_RECENT_KEY, JSON.stringify(remember(readRecent(localStorage.getItem(REPO_RECENT_KEY)), top)));
+  } catch {
+    // A full or unavailable localStorage only loses the memory of the folder.
+  }
+}
 
 // xterm.js is loaded only once the Terminal is first opened.
 const TerminalScreen = lazy(() => import("./ui/Terminal").then((m) => ({ default: m.TerminalScreen })));
@@ -505,6 +518,8 @@ export function Main({
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [terminalMounted, setTerminalMounted] = useState(false);
   const [terminalRunning, setTerminalRunning] = useState(false);
+  // The Repository screen covers the chat panes too (ADR 0034).
+  const [repoOpen, setRepoOpen] = useState(false);
   // Server files covers the chat panes too. The folder open last stays for this sign-in.
   const [filesOpen, setFilesOpen] = useState(false);
   const [filesPath, setFilesPath] = useState<string>();
@@ -646,6 +661,7 @@ export function Main({
     setFilesOpen(false);
     setJobsOpen(false);
     setTerminalOpen(false);
+    setRepoOpen(false);
     setOutputsOpen(false);
     setUsageOpen(false);
     setLogsOpen(false);
@@ -745,6 +761,7 @@ export function Main({
       setFilesOpen(false);
       setJobsOpen(false);
       setTerminalOpen(false);
+      setRepoOpen(false);
       setOutputsOpen(false);
       setUsageOpen(false);
       setLogsOpen(false);
@@ -768,6 +785,7 @@ export function Main({
     setFilesOpen(false);
     setJobsOpen(false);
     setTerminalOpen(false);
+    setRepoOpen(false);
     setOutputsOpen(false);
     setUsageOpen(false);
     setLogsOpen(false);
@@ -788,6 +806,7 @@ export function Main({
     setFilesOpen(false);
     setJobsOpen(false);
     setTerminalOpen(false);
+    setRepoOpen(false);
     setOutputsOpen(false);
     setUsageOpen(false);
     setLogsOpen(false);
@@ -820,6 +839,7 @@ export function Main({
       setFilesOpen(false);
       setJobsOpen(false);
       setTerminalOpen(false);
+      setRepoOpen(false);
       setOutputsOpen(false);
       setUsageOpen(false);
       setLogsOpen(false);
@@ -1104,7 +1124,7 @@ export function Main({
       } else if (e.code === "Backslash" || k === "\\") {
         e.preventDefault();
         toggleSplit();
-      } else if ((k === "1" || k === "2") && !e.shiftKey && !e.altKey && split && !settingsOpen && !filesOpen && !jobsOpen && !outputsOpen && !terminalOpen) {
+      } else if ((k === "1" || k === "2") && !e.shiftKey && !e.altKey && split && !settingsOpen && !filesOpen && !jobsOpen && !outputsOpen && !terminalOpen && !repoOpen) {
         e.preventDefault();
         focusPane(panes[Number(k) - 1].key);
       }
@@ -1121,7 +1141,7 @@ export function Main({
   // Settings covers the chat, and the pane with it; so do the project screen, Server files, Scheduled jobs and the
   // Terminal.
   // Outputs covers the chat panes but keeps the preview pane beside it, since its files open there.
-  const screenCovering = settingsOpen || projectScreenOpen || filesOpen || jobsOpen || terminalOpen || usageOpen || logsOpen;
+  const screenCovering = settingsOpen || projectScreenOpen || filesOpen || jobsOpen || terminalOpen || usageOpen || logsOpen || repoOpen;
   const covering = screenCovering || outputsOpen;
   const previewShown = !!preview && !screenCovering && (previewFits || !previewHidden);
   const previewCovers = previewShown && !previewFits;
@@ -1184,6 +1204,7 @@ export function Main({
                   setFilesOpen(false);
                   setJobsOpen(false);
                   setTerminalOpen(false);
+                  setRepoOpen(false);
                   setOutputsOpen(false);
                   setUsageOpen(false);
                   setLogsOpen(false);
@@ -1248,6 +1269,7 @@ export function Main({
             setProjectOpen(false);
             setJobsOpen(false);
             setTerminalOpen(false);
+            setRepoOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
             setLogsOpen(false);
@@ -1261,6 +1283,7 @@ export function Main({
             setFilesOpen(false);
             setJobsOpen(false);
             setTerminalOpen(false);
+            setRepoOpen(false);
             setUsageOpen(false);
             setLogsOpen(false);
             setOutputsOpen((o) => !o);
@@ -1282,6 +1305,7 @@ export function Main({
             setUsageOpen(false);
             setLogsOpen(false);
             setTerminalOpen(false);
+            setRepoOpen(false);
             setJobsOpen(true);
           })
         }
@@ -1295,10 +1319,25 @@ export function Main({
             setOutputsOpen(false);
             setUsageOpen(false);
             setLogsOpen(false);
+            setRepoOpen(false);
             setTerminalMounted(true);
             setTerminalOpen((o) => !o);
           })
         }
+        onRepo={() =>
+          guard(() => {
+            setProjectOpen(false);
+            setSettingsOpen(false);
+            setFilesOpen(false);
+            setJobsOpen(false);
+            setOutputsOpen(false);
+            setUsageOpen(false);
+            setTerminalOpen(false);
+            setLogsOpen(false);
+            setRepoOpen((o) => !o);
+          })
+        }
+        repoOpen={repoOpen && !settingsOpen && !projectScreenOpen}
         onUsage={() =>
           guard(() => {
             setProjectOpen(false);
@@ -1306,6 +1345,7 @@ export function Main({
             setFilesOpen(false);
             setJobsOpen(false);
             setTerminalOpen(false);
+            setRepoOpen(false);
             setOutputsOpen(false);
             setLogsOpen(false);
             setUsageOpen((o) => !o);
@@ -1321,6 +1361,7 @@ export function Main({
             setTerminalOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
+            setRepoOpen(false);
             setLogsOpen((o) => !o);
           })
         }
@@ -1352,6 +1393,7 @@ export function Main({
                     setFilesOpen(false);
                     setJobsOpen(false);
                     setTerminalOpen(false);
+                    setRepoOpen(false);
                     setOutputsOpen(false);
                     setUsageOpen(false);
                     setLogsOpen(false);
@@ -1364,6 +1406,7 @@ export function Main({
                     setFilesOpen(false);
                     setJobsOpen(false);
                     setTerminalOpen(false);
+                    setRepoOpen(false);
                     setOutputsOpen(false);
                     setUsageOpen(false);
                     setLogsOpen(false);
@@ -1409,6 +1452,7 @@ export function Main({
             setFilesOpen(false);
             setJobsOpen(false);
             setTerminalOpen(false);
+            setRepoOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
             setLogsOpen(false);
@@ -1643,6 +1687,20 @@ export function Main({
             }}
             onClose={() => {
               flushSync(() => setOutputsOpen(false));
+              focusPane(active.key);
+            }}
+          />
+        ) : repoOpen ? (
+          <RepositoryScreen
+            api={tauriRepo}
+            initialTarget={repoTarget(connection, localStorage.getItem(REPO_TARGET_KEY), localStorage.getItem(TERMINAL_TARGET_KEY))}
+            initialPath={localStorage.getItem(REPO_PATH_KEY) ?? ""}
+            recent={readRecent(localStorage.getItem(REPO_RECENT_KEY))}
+            suggestions={(shownProject?.folders ?? []).map((f) => ({ label: shownProject!.name, path: f.path }))}
+            onOpened={rememberRepo}
+            onTarget={(t) => localStorage.setItem(REPO_TARGET_KEY, t)}
+            onClose={() => {
+              flushSync(() => setRepoOpen(false));
               focusPane(active.key);
             }}
           />
