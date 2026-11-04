@@ -67,6 +67,9 @@ import { OutputsIndex, outputsIn, splitPath, type Output } from "./hermes/output
 import { STATUS_LABEL, composing, routeLabel } from "./ui/bits";
 import { ProjectScreen, ProjectSwitcher, type ProjectUnread } from "./ui/Projects";
 import { ScheduledJobs } from "./ui/ScheduledJobs";
+import { CapabilityGate } from "./ui/Diagnostics";
+import { guideUrl, type CapabilityId } from "./hermes/capabilities";
+import { useCapabilities } from "./ui/Diagnostics";
 import { Automations } from "./ui/Automations";
 import { tauriTerminal } from "./ui/tauriTerminal";
 import { TERMINAL_TARGET_KEY, terminalTarget } from "./hermes/terminal";
@@ -582,6 +585,10 @@ export function Main({
   const [showTextGeneration, setShowTextGeneration] = useState<object>();
   /** Set to open Settings on its Memory tab, from the context inspector. */
   const [showMemory, setShowMemory] = useState<object>();
+  /** Set, each time anew, to open Settings → Diagnostics, at the capability a screen's note named. */
+  const [showDiagnostics, setShowDiagnostics] = useState<{ id?: CapabilityId }>();
+  /** What the connected Hermes supports, for the menus that say what it lacks (capabilities.ts). */
+  const caps = useCapabilities(hermes.capabilities);
   const voice = useMemo<VoiceApi>(
     () => ({ setup: () => hermes.voiceSetup(), transcribe: (audio, mime) => hermes.transcribe(audio, mime), speak: (text) => hermes.speak(text) }),
     [hermes],
@@ -767,8 +774,17 @@ export function Main({
     setLogsOpen(false);
     setShowTextGeneration(undefined);
     setShowMemory(undefined);
+    setShowDiagnostics(undefined);
     setSettingsOpen(true);
   };
+  /** Opens Settings → Diagnostics at capability `id`, from the note a screen shows when Hermes lacks it. */
+  const openDiagnostics = (id: CapabilityId) => {
+    openSettings();
+    setShowDiagnostics({ id });
+  };
+  /** Opens a page of the compatibility guide in the owner's browser. */
+  const openGuide = (url: string) =>
+    void webPages.openInBrowser(url).catch((e: unknown) => setToast({ text: `Couldn't open the compatibility guide: ${messageOf(e)}`, at: Date.now() }));
   const listable = proj.projects.filter((p) => !p.archived);
   const shownProject = listable.find((p) => p.id === proj.selectedId);
   const projectScreenOpen = projectOpen && !!shownProject;
@@ -1570,6 +1586,7 @@ export function Main({
                   setUsageOpen(false);
                   setLogsOpen(false);
                   setShowTextGeneration(undefined);
+                  setShowDiagnostics(undefined);
                   setShowMemory({});
                   setSettingsOpen(true);
                 }
@@ -1766,6 +1783,7 @@ export function Main({
                 unread={projectUnread}
                 loading={proj.loading}
                 error={proj.error}
+                unsupported={caps.caps.projects.state === "unsupported" ? { onGuide: () => openGuide(guideUrl("projects")) } : undefined}
                 connected={status === "connected"}
                 onOpen={() => status === "connected" && void projects.load()}
                 onSelect={(id) => {
@@ -1858,6 +1876,7 @@ export function Main({
             setLogsOpen(false);
             // One destination at a time: an earlier Memory shortcut mustn't switch Settings away from this one.
             setShowMemory(undefined);
+            setShowDiagnostics(undefined);
             setShowTextGeneration({});
             setSettingsOpen(true);
           }}
@@ -1883,27 +1902,44 @@ export function Main({
           onDismiss={(e) => acks.dismiss(e, inbox.entries)}
           onRefresh={() => void hermes.checkOtherProfiles()}
           onClose={() => setInboxOpen(false)}
+          onGuide={() => openGuide(guideUrl("liveSessions"))}
         />
       )}
       <main className="main" ref={mainRef}>
         <div className="main-chat" inert={previewCovers || undefined}>
             {automationsOpen && !settingsOpen ? (
-              <Automations
-                key={profile}
-                api={hermes.automations}
-                profile={profile}
-                connected={status === "connected"}
+              <CapabilityGate
+                store={hermes.capabilities}
+                id="automations"
+                openGuide={openGuide}
+                onDiagnostics={openDiagnostics}
                 onClose={() => { flushSync(() => setAutomationsOpen(false)); focusPane(active.key); }}
-                onOpenChat={(id) => openChat(id)}
-              />
+              >
+                <Automations
+                  key={profile}
+                  api={hermes.automations}
+                  profile={profile}
+                  connected={status === "connected"}
+                  onClose={() => { flushSync(() => setAutomationsOpen(false)); focusPane(active.key); }}
+                  onOpenChat={(id) => openChat(id)}
+                />
+              </CapabilityGate>
             ) : jobsOpen && !settingsOpen ? (
-              <ScheduledJobs
-                key={profile}
-                api={hermes.cron}
-                profile={profile}
-                connected={status === "connected"}
+              <CapabilityGate
+                store={hermes.capabilities}
+                id="scheduledJobs"
+                openGuide={openGuide}
+                onDiagnostics={openDiagnostics}
                 onClose={() => { flushSync(() => setJobsOpen(false)); focusPane(active.key); }}
-              />
+              >
+                <ScheduledJobs
+                  key={profile}
+                  api={hermes.cron}
+                  profile={profile}
+                  connected={status === "connected"}
+                  onClose={() => { flushSync(() => setJobsOpen(false)); focusPane(active.key); }}
+                />
+              </CapabilityGate>
             ) : projectScreenOpen && shownProject && !settingsOpen ? (
               <ProjectScreen
                 key={shownProject.id}
@@ -1984,6 +2020,9 @@ export function Main({
             voiceSetup={voice.setup}
             showTextGeneration={showTextGeneration}
             showMemory={showMemory}
+            capabilities={hermes.capabilities}
+            openGuide={openGuide}
+            showDiagnostics={showDiagnostics}
             onClearCache={() => hermes.clearCache()}
             importer={{
               imports: hermes.imports,
@@ -2032,17 +2071,28 @@ export function Main({
             guard={guard}
           />
         ) : filesOpen ? (
-          <FileBrowser
-            files={hermes.files}
-            status={status}
-            route={route}
-            path={filesPath}
-            onPath={setFilesPath}
+          <CapabilityGate
+            store={hermes.capabilities}
+            id="serverFiles"
+            openGuide={openGuide}
+            onDiagnostics={openDiagnostics}
             onClose={() => {
               flushSync(() => setFilesOpen(false));
               focusPane(active.key);
             }}
-          />
+          >
+            <FileBrowser
+              files={hermes.files}
+              status={status}
+              route={route}
+              path={filesPath}
+              onPath={setFilesPath}
+              onClose={() => {
+                flushSync(() => setFilesOpen(false));
+                focusPane(active.key);
+              }}
+            />
+          </CapabilityGate>
         ) : usageOpen ? (
           <UsageAnalytics
             key={profile}
@@ -2075,6 +2125,16 @@ export function Main({
             }}
           />
         ) : outputsOpen ? (
+          <CapabilityGate
+            store={hermes.capabilities}
+            id="outputs"
+            openGuide={openGuide}
+            onDiagnostics={openDiagnostics}
+            onClose={() => {
+              flushSync(() => setOutputsOpen(false));
+              focusPane(active.key);
+            }}
+          >
           <OutputsScreen
             snapshot={outSnap}
             outputs={shownOutputs}
@@ -2117,6 +2177,7 @@ export function Main({
               focusPane(active.key);
             }}
           />
+          </CapabilityGate>
         ) : repoOpen ? (
           <RepositoryScreen
             api={tauriRepo}

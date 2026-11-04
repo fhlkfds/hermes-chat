@@ -194,6 +194,8 @@ export class ToolsetsApi {
     private readonly readGuards: (profile: string) => Promise<ToolsetGuards>,
     /** Called after a change Hermes may have taken, so cached reads that depend on it are dropped. */
     private readonly changed: (profile: string, name: string) => void = () => {},
+    /** Told what the write check found: whether Hermes has the switch's route (capabilities.ts `toolsetSwitches`). */
+    private readonly checkedWrites: (found: "supported" | "unsupported" | "unknown", why: string) => void = () => {},
   ) {}
 
   /** The change on its way, if any. */
@@ -240,18 +242,22 @@ export class ToolsetsApi {
    * server that took the body would still refuse the unknown name (400) before reading the config.
    */
   async writeSupport(profile: string): Promise<WriteSupport> {
+    const found = (state: "supported" | "unsupported" | "unknown", support: WriteSupport): WriteSupport => {
+      this.checkedWrites(state, support.ok ? "Hermes refused the write check before changing anything, as it does when it has the route." : support.reason);
+      return support;
+    };
     try {
       await this.rest("PUT", this.path(profile, PROBE_NAME), { enabled: "probe" });
       // Nothing should take that body; say so rather than guess.
-      return { ok: false, reason: "Hermes answered the write check in a way this app doesn't expect, so it won't change toolsets." };
+      return found("unknown", { ok: false, reason: "Hermes answered the write check in a way this app doesn't expect, so it won't change toolsets." });
     } catch (e) {
       const f = failureOf(e);
       if (f.signedOut) throw e;
-      if (f.status === 422 || f.status === 400) return { ok: true };
-      if (noRoute(f)) return { ok: false, reason: "This Hermes server lists toolsets but has no route to change them. Updating Hermes adds it." };
-      if (f.status === 403) return { ok: false, reason: `Hermes doesn't let this sign-in change toolsets: ${f.reason}` };
+      if (f.status === 422 || f.status === 400) return found("supported", { ok: true });
+      if (noRoute(f)) return found("unsupported", { ok: false, reason: "This Hermes server lists toolsets but has no route to change them. Updating Hermes adds it." });
+      if (f.status === 403) return found("unknown", { ok: false, reason: `Hermes doesn't let this sign-in change toolsets: ${f.reason}` });
       if (f.status === undefined && !f.notRelayed) throw new Error(f.reason);
-      return { ok: false, reason: `Hermes didn't take the write check: ${f.reason}` };
+      return found("unknown", { ok: false, reason: `Hermes didn't take the write check: ${f.reason}` });
     }
   }
 

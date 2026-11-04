@@ -98,7 +98,7 @@ const REPLACEABLE = new Set(["steer"]);
  */
 export async function listServerCommands(rpc: Rpc, profile: string): Promise<ServerCommandList> {
   const res = await rpc("commands.catalog", { profile }).catch((e) => {
-    throw isObj(e) && e.code === NO_SUCH_METHOD ? new Error("This Hermes doesn't list its commands. Update Hermes to use them here.") : e;
+    throw isObj(e) && e.code === NO_SUCH_METHOD ? new Error("This Hermes doesn't list its commands. Update Hermes to use them here; Settings → Diagnostics shows what it supports.") : e;
   });
   if (!isObj(res)) throw new Error("Hermes gave no list of its commands.");
   const failed =
