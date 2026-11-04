@@ -168,9 +168,17 @@ describe("The Screen tab", () => {
     // Rust drops the stream with the connection.
     act(() => api.closes[0](1006, "the connection to Hermes closed"));
     act(() => FakeRfb.made[0].fire("disconnect", { clean: false }));
+    expect(screen.getByText("The stream from the server was lost.")).toBeTruthy();
+    // Back on a new connection, as a new viewer: Hermes still has the owner's earlier hold, and the tab says whose.
+    api.observe = async (viewerId?: string) => {
+      api.observed.push(viewerId);
+      return { ...api.state, ticket: "t2", viewer_id: "viewer-2" };
+    };
     rerender(<ScreenTab api={api} shown connected loadRfb={load} />);
     await waitFor(() => expect(FakeRfb.made).toHaveLength(2));
     expect(api.sockets).toBe(2);
+    expect(await screen.findByText(/You still have control from before the connection dropped/)).toBeTruthy();
+    expect(screen.queryByText("Someone else has taken over this screen.")).toBeNull();
   });
 
   it("offers to reconnect when the stream is lost, rather than trying for ever", async () => {

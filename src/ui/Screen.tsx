@@ -90,6 +90,10 @@ export function ScreenTab({
   viewerRef.current = viewer;
 
   const held = heldBy(lease, viewer?.hash);
+  // Viewers this tab held the screen as on connections since gone. Hermes keeps such a hold when a connection drops,
+  // so the owner can be told it is still theirs.
+  const pastHolds = useRef(new Set<string>());
+  if (held && viewer) pastHolds.current.add(viewer.hash);
   const onHeldRef = useRef(onHeld);
   onHeldRef.current = onHeld;
   useEffect(() => onHeldRef.current?.(held), [held]);
@@ -170,7 +174,7 @@ export function ScreenTab({
         } else if (code === CLOSE_SCREEN_GONE) {
           setConn({ kind: "idle" });
         } else {
-          setConn({ kind: "lost", why: e.detail?.clean ? "The stream ended." : "The stream from the server was lost." });
+          setConn({ kind: "lost", why: code === 1000 && e.detail?.clean ? "The stream ended." : "The stream from the server was lost." });
         }
         void refresh();
       });
@@ -228,7 +232,8 @@ export function ScreenTab({
   const handBack = () => act(async () => viewer && noteLease(await api.handBack(viewer.id)));
 
   const phase = status && phaseOf(status);
-  const someoneElse = lease?.holder === "human" && !held;
+  const heldBefore = lease?.holder === "human" && !held && !!lease.viewer_hash && pastHolds.current.has(lease.viewer_hash);
+  const someoneElse = lease?.holder === "human" && !held && !heldBefore;
 
   let body;
   if (unavailable)
@@ -290,14 +295,16 @@ export function ScreenTab({
   return (
     <div className="screen-tab" hidden={!shown}>
       <div className="screen-bar">
-        <span className={`screen-who ${held ? "you" : someoneElse ? "other" : ""}`} role="status">
+        <span className={`screen-who ${held || heldBefore ? "you" : someoneElse ? "other" : ""}`} role="status">
           {!live
             ? "Bot Desktop"
             : held
               ? "You're in control. Hermes's computer use waits until you hand back."
-              : someoneElse
-                ? "Someone else has taken over this screen."
-                : "Watching: Hermes is in control."}
+              : heldBefore
+                ? "You still have control from before the connection dropped, so Hermes's computer use is waiting. Take over to carry on here, then hand back."
+                : someoneElse
+                  ? "Someone else has taken over this screen."
+                  : "Watching: Hermes is in control."}
         </span>
         <span className="terminal-spacer" />
         {live &&
