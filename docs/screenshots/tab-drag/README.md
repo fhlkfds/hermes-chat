@@ -1,4 +1,4 @@
-# Dragging tab screenshots (#166, ADR 0051)
+# Dragging tab screenshots (#166, ADR 0052)
 
 Captured on 2026-11-04 from the running Tauri debug application (WebKitGTK) on an Xvfb display with openbox, signed in
 to the `FakeHermes` stand-in dashboard in `bridge.ts` on loopback. Chats and replies are fixture data; no real model or

@@ -1,5 +1,5 @@
 // Where a chat goes when it is dragged onto a pane, from the chat list or from a tab, or moved there from a tab's menu
-// or the keyboard. One function decides every case, so a drag, its hint and its keyboard way can't disagree (ADR 0051).
+// or the keyboard. One function decides every case, so a drag, its hint and its keyboard way can't disagree (ADR 0052).
 import type { SplitDir } from "./Split";
 
 export type Edge = "left" | "right" | "top" | "bottom";

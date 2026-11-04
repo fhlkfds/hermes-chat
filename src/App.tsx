@@ -1327,7 +1327,7 @@ export function Main({
     if (focused) requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-pane="${CSS.escape(active.key)}"] .tab-open[aria-selected="true"]`)?.focus());
   };
 
-  /** A tab's menu: the keyboard way to every drag of a tab (ADR 0051). Each item is the drop it stands for, said as
+  /** A tab's menu: the keyboard way to every drag of a tab (ADR 0052). Each item is the drop it stands for, said as
    * the drop's hint says it; of items that would do the same, the first is kept. */
   const tabMenu = (p: Pane, id: string | null): TabAction[] => {
     const moved = { id, from: p.key };
