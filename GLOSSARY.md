@@ -9,15 +9,27 @@ One Hermes conversation as this app shows it, with its full message history.
 _Avoid_: session (Hermes's word for the same thing; keep it for server-side talk), conversation, thread
 
 **Active**:
-The state of a chat the owner is currently working in. Active chats are listed first. A chat becomes Active when the owner starts it in this app, or when the owner sends a message in it from this app.
+The state of a chat the owner is currently working in: any chat that isn't Settled. The list doesn't label it. An Active chat shows at the top of the list when it needs the owner or is done, in Working while Hermes replies in it, and in Snoozed while it is snoozed (ADR 0036). A chat becomes Active when the owner starts it in this app, or when the owner sends a message in it from this app.
 _Avoid_: open, live, current
 
 **Settled**:
-The state of a chat the owner has put out of the way. Settled chats sit in a collapsed section below the Active ones. Only the owner settles a chat; nothing settles on its own. A new message from another platform leaves a Settled chat where it is.
+The state of a chat the owner has put out of the way. Settled chats sit in a collapsed drawer at the foot of the list. Only the owner settles a chat; nothing settles on its own. A new message from another platform leaves a Settled chat where it is.
 _Avoid_: archived, done, closed
 
 **Settle** / **Unsettle**:
-The owner's manual actions that move a chat from Active to Settled, and back.
+The owner's manual actions that move a chat from Active to Settled, and back. Both are the same icon-only button, named when hovered. Settling a snoozed chat forgets the snooze.
+
+**Working**:
+Where the list shows an Active chat while Hermes is writing a reply in it and isn't waiting on the owner. Nobody puts a chat there: it moves there when a reply starts, and back to the top once Hermes asks the owner something (an Approval) or the reply ends. A Settled or snoozed chat stays where it is while Hermes works in it.
+_Avoid_: running (fine in conversation), busy, in progress
+
+**Snoozed**:
+An Active chat the owner has put out of the way until a time they chose. It sits in a collapsed section under Working, soonest to wake first, and shows when it wakes. When that time comes it goes back to the top of the list, as new as when it woke. Snoozes are kept on this computer only, for each connection and profile; Hermes and other Hermes clients don't see them (ADR 0036).
+_Avoid_: hidden, deferred, reminder
+
+**Snooze** / **Unsnooze**:
+The owner's actions, from a chat's right-click menu, that snooze an Active chat (for 1 hour, 3 hours, until tomorrow at 9, until next Monday at 9, or for a duration or until a date and time the owner picks) and wake it early. Sending a message in a snoozed chat from this app wakes it. A new message from another platform doesn't. Settled chats can't be snoozed.
+_Avoid_: remind me, defer
 
 **Archived**:
 A chat the owner has hidden in every Hermes client without deleting it. Its history stays on the server, and so does whether it is Active or Settled. Archived chats show only in the archived view, or in a search the owner asks to include them. A chat archived in another Hermes client is Archived here too.
@@ -271,6 +283,7 @@ _Avoid_: upgrade (pacman's word, for the package step only)
 ## Relationships
 
 - Every **Chat** is either **Active** or **Settled**, never both. An **Archived** chat keeps that state for when it is restored.
+- An **Active** chat shows in one place in the list: **Snoozed** if it is snoozed, **Working** if Hermes is replying in it, otherwise at the top.
 - Every **Chat** has exactly one **Source**.
 - Every **Chat** belongs to exactly one **Profile**; Active and Settled are kept per profile.
 - An **Imported chat** becomes **Active** only when the owner sends a message in it from this app.

@@ -156,6 +156,12 @@ kbd {
 .settled-section.open { border-top: 1px solid var(--line); }
 .settled-list { overflow-y: auto; min-height: 0; }
 .settled-list .row-title { color: var(--muted); }
+/* Working and Snoozed sit under the chats that need the owner, in the list's scroll. */
+.row[data-section="snoozed"] .row-title { color: var(--muted); }
+/* A collapsed section's rows stay mounted, hidden; .row's own display would otherwise show them. */
+.row[hidden] { display: none; }
+.row-wake { font-variant-numeric: tabular-nums; }
+.row-meta .row-wake + * { margin-left: 6px; }
 .sync-error { color: var(--warn); font-size: calc(12rem / 14); padding: 6px 10px 10px; }
 .empty-hint { color: var(--faint); font-size: calc(12.5rem / 14); padding: 6px 10px 10px; }
 
@@ -185,10 +191,6 @@ kbd {
 /* Keyboard focus anywhere in the row shows its actions, so Tab can reach them. */
 .row:hover .row-action, .row:focus-within .row-action { display: grid; }
 .row-action:focus-visible { outline: 2px solid var(--line-2); outline-offset: -2px; }
-/* A Settled chat's way back to Active says "Unsettle" and shows without hovering. */
-.row-action.row-unsettle {
-  display: grid; grid-auto-flow: column; gap: 4px; width: auto; padding: 0 6px; font-size: calc(11.5rem / 14);
-}
 .row.confirming { padding-left: 10px; background: rgba(248, 113, 113, 0.08); }
 .row.confirming .row-title { color: var(--muted); }
 .row-confirm { flex: none; font-size: calc(12rem / 14); padding: 3px 8px; border-radius: 6px; color: var(--muted); }
@@ -276,12 +278,6 @@ kbd {
 }
 .chat-title { display: flex; align-items: center; gap: 8px; font-size: calc(14rem / 14); font-weight: 500; color: var(--text); min-width: 0; }
 .chat-title > span:not(.badge):not(.src) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.unsettle-btn {
-  display: inline-flex; align-items: center; gap: 4px; flex: none; padding: 1px 7px; border-radius: 999px;
-  font-size: calc(11rem / 14); color: var(--muted); border: 1px solid var(--line-2);
-}
-.unsettle-btn:hover { background: var(--raised-2); color: var(--text); }
-.unsettle-btn:focus-visible { outline: 2px solid var(--line-2); outline-offset: 1px; }
 .chat-head-actions { display: flex; gap: 4px; opacity: 0.75; }
 .chat-head:hover .chat-head-actions { opacity: 1; }
 
@@ -2102,3 +2098,19 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
   .usage-status-actions { margin-left: 0; }
   .usage-filters select, .usage-filters input { max-width: 100%; }
 }
+
+/* Custom snooze (Snooze.tsx, ADR 0036) */
+.leave-overlay .leave-dialog.snooze-dialog { max-width: 400px; width: calc(100% - 40px); }
+.snooze-dialog h2 { font-size: calc(14rem / 14); margin: 0; display: flex; align-items: center; gap: 8px; }
+.snooze-dialog .leave-title svg { color: var(--muted); }
+.snooze-dialog .segmented { align-self: flex-start; }
+.snooze-form { display: flex; flex-direction: column; gap: 8px; }
+.snooze-field { display: flex; align-items: center; gap: 8px; }
+.snooze-field > span, .snooze-field > label { color: var(--muted); flex: none; }
+.snooze-field input, .snooze-field select {
+  background: var(--raised-2); border: 1px solid var(--line-2); border-radius: 8px; padding: 6px 9px; outline: none; color: var(--text);
+}
+.snooze-field input { flex: 1; min-width: 0; }
+.snooze-field input:focus, .snooze-field select:focus { border-color: var(--line-3); }
+.snooze-field input[type="number"] { max-width: 90px; }
+.snooze-dialog p.snooze-when { margin: 0; }

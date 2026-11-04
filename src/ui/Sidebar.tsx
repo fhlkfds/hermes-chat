@@ -7,10 +7,11 @@ import { SOURCE_LABEL, isWaiting } from "../hermes/model";
 import { CHECK_EVERY_MS, totalUnread } from "../hermes/otherProfiles";
 import type { Route } from "../hermes/pipe";
 import { RenameConflict, TitleModelUnavailable, type Snapshot } from "../hermes/transport";
-import { ChatMenu, type ChatProjects, type ChatTags } from "./ChatMenu";
+import { chatSections, wakeFull, wakeLabel, type Snoozes } from "../hermes/snooze";
+import { ChatMenu, type ChatProjects, type ChatSnooze, type ChatTags } from "./ChatMenu";
+import { SnoozeDialog, useSnoozeClock } from "./Snooze";
 import { ArchiveButton, STATUS_LABEL, SettleButton, SourceIcon, Spinner, composing, relTime, routeLabel, useReturnFocus } from "./bits";
 
-const byRecent = (a: Chat, b: Chat) => b.updatedAt - a.updatedAt;
 
 
 export function Rail({
@@ -171,11 +172,13 @@ export function Rail({
 function RenameRow({
   chat,
   selected,
+  hidden,
   onRename,
   onDone,
 }: {
   chat: Chat;
   selected: boolean;
+  hidden?: boolean;
   onRename: (title: string, from: string) => Promise<unknown>;
   onDone: () => void;
 }) {
@@ -195,7 +198,7 @@ function RenameRow({
     });
   };
   return (
-    <div className={`row renaming ${selected ? "sel" : ""}`}>
+    <div className={`row renaming ${selected ? "sel" : ""}`} hidden={hidden}>
       <input
         className="row-rename"
         aria-label="Chat title"
@@ -227,7 +230,8 @@ function RenameRow({
  * Menu key or Shift+F10 on it, opens its menu. The trash button asks before deleting, in the row itself: Escape,
  * Cancel or clicking away keeps the chat. Cancel and the trash button share a key, so React keeps the one button, and
  * focus with it, when the row goes back. An archived chat has Restore in place of Settle and Archive. A chat with
- * a reply running can't be archived, restored or deleted. Regenerate title in the menu shows a spinner until the new
+ * a reply running can't be archived, restored or deleted. `snooze`: the chat can be snoozed from its menu. A snoozed
+ * chat shows when it wakes in place of its age. `section`: where the list shows it, for styling. Regenerate title in the menu shows a spinner until the new
  * title is saved, and why underneath if it isn't. When Hermes can't use the Text generation model's provider, that
  * note says how to fix it and offers the setting.
  */
@@ -246,6 +250,9 @@ function ChatRow({
   onTextGenerationSettings,
   projects,
   tags,
+  snooze,
+  section,
+  hidden,
 }: {
   chat: Chat;
   selected: boolean;
@@ -264,6 +271,10 @@ function ChatRow({
   onTextGenerationSettings?: () => void;
   projects?: ChatProjects;
   tags?: ChatTags;
+  snooze?: ChatSnooze;
+  section?: string;
+  /** In a collapsed section: kept, with its rename box or menu, but out of sight. */
+  hidden?: boolean;
 }) {
   const [confirming, setConfirming] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -296,11 +307,14 @@ function ChatRow({
     if (wasRenaming.current && !renaming && (!now || now === document.body)) openButton.current?.focus();
     wasRenaming.current = renaming;
   }, [renaming]);
-  if (renaming) return <RenameRow chat={chat} selected={selected} onRename={onRename} onDone={() => setRenaming(false)} />;
+  const now = Date.now();
+  const sleepsUntil = snooze?.until !== undefined && snooze.until > now ? snooze.until : undefined;
+  if (renaming) return <RenameRow chat={chat} selected={selected} hidden={hidden} onRename={onRename} onDone={() => setRenaming(false)} />;
   if (confirming)
     return (
       <div
         className={`row confirming ${selected ? "sel" : ""}`}
+        hidden={hidden}
         onKeyDown={(e) => e.key === "Escape" && setConfirming(false)}
         onBlur={(e) => e.currentTarget.contains(e.relatedTarget) || setConfirming(false)}
       >
@@ -316,6 +330,8 @@ function ChatRow({
   return (
     <div
       className={`row ${selected ? "sel" : ""} ${alsoShown ? "shown" : ""} ${chat.unread ? "unread" : ""} ${menu ? "menu-open" : ""} ${retitleError ? "retitle-failed" : ""} ${retitling ? "retitling" : ""}`}
+      data-section={section}
+      hidden={hidden}
       onContextMenu={(e) => {
         e.preventDefault();
         setRetitleError(undefined);
@@ -329,7 +345,7 @@ function ChatRow({
         className="row-open"
         data-chat={chat.id}
         aria-current={selected || undefined}
-        title={`${retitling ? "Writing a new title…" : chat.source !== "app" ? `${chat.title} (from ${SOURCE_LABEL[chat.source]})` : chat.title}${alsoShown ? " (in the other pane)" : ""}`}
+        title={`${retitling ? "Writing a new title…" : chat.source !== "app" ? `${chat.title} (from ${SOURCE_LABEL[chat.source]})` : chat.title}${alsoShown ? " (in the other pane)" : ""}${sleepsUntil ? ` (snoozed until ${wakeFull(sleepsUntil)})` : ""}`}
         onClick={() => {
           setRetitleError(undefined);
           onOpen();
@@ -338,15 +354,21 @@ function ChatRow({
         {chat.source !== "app" && <SourceIcon source={chat.source} />}
         <span className="row-title">{chat.title}</span>
         <span className="row-meta">
-          {chat.running || retitling ? <Spinner /> : chat.unread ? <span className="dot" title="Unread" /> : relTime(chat.updatedAt)}
+          {sleepsUntil && <span className="row-wake">{wakeLabel(sleepsUntil, now)}</span>}
+          {chat.running || retitling ? (
+            <Spinner />
+          ) : chat.unread ? (
+            <span className="dot" title="Unread" />
+          ) : (
+            !sleepsUntil && relTime(chat.updatedAt)
+          )}
         </span>
       </button>
       {!chat.archived && (
         <SettleButton
           settled={chat.settled}
           size={14}
-          className={chat.settled ? "row-action row-unsettle" : "row-action"}
-          labeled
+          className="row-action"
           onSettle={onSettle}
         />
       )}
@@ -372,6 +394,7 @@ function ChatRow({
           x={menu.x}
           y={menu.y}
           split={split}
+          snooze={snooze}
           onOpenIn={onOpenIn}
           onRename={() => setRenaming(true)}
           onRegenTitle={regenTitle}
@@ -670,17 +693,21 @@ function ProfileMenu({
   );
 }
 
-/** Up and Down move focus between the chats in the list, Active then Settled, without opening them. */
+/** Up and Down move focus between the chats in the list, top to bottom through its sections, without opening them. */
 function moveBetweenChats(e: KeyboardEvent<HTMLElement>) {
   // Alt+arrows open the chat above or below instead (App.tsx), so they pass.
   if ((e.key !== "ArrowDown" && e.key !== "ArrowUp") || e.altKey || !(e.target as Element).classList.contains("row-open")) return;
   e.preventDefault();
-  const rows = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>(".row-open"));
+  const rows = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>(".row-open")).filter((r) => !r.closest("[hidden]"));
   rows[rows.indexOf(e.target as HTMLButtonElement) + (e.key === "ArrowDown" ? 1 : -1)]?.focus();
 }
 
 /**
- * The chat list. `archivedListed`: it shows the profile's archived chats instead of the Active and Settled ones.
+ * The chat list, in sections (snooze.ts `chatSections`): first, unlabeled, the chats that need the owner or are done;
+ * then Working, the chats Hermes is replying in; then Snoozed, collapsed; and Settled, a drawer at the foot. The
+ * first three are one list of rows and headings, so a row that moves between them, as a reply starts or ends, keeps
+ * its menu, rename box and focus. The Custom snooze dialog belongs to the list, not a row, for the same reason.
+ * `archivedListed`: it shows the profile's archived chats instead.
  * `projectSwitcher` sits under the profile's name; `chats` are only the shown project's when one is picked there.
  * `projectsOf`: the projects a chat's menu offers to put it in or take it out of.
  */
@@ -702,6 +729,10 @@ export function ChatList({
   onOpen,
   onOpenIn = () => {},
   onSettle,
+  snoozes = {},
+  attentionSince,
+  onSnooze,
+  onWake,
   onArchive,
   onListArchived,
   onDelete,
@@ -736,6 +767,12 @@ export function ChatList({
   /** Opens a chat in the left (0) or right (1) pane, opening the right one if there is one pane. */
   onOpenIn?: (id: string, side: number) => void;
   onSettle: (id: string, settled: boolean) => void;
+  /** When each snoozed chat wakes (snooze.ts). */
+  snoozes?: Snoozes;
+  /** When each chat last stopped working, so the top lists it as new then (snooze.ts `AttentionClock`). */
+  attentionSince?: Readonly<Record<string, number>>;
+  onSnooze?: (id: string, until: number) => void;
+  onWake?: (id: string) => void;
   onArchive: (id: string, archived: boolean) => void;
   onListArchived: (on: boolean) => void;
   onDelete: (id: string) => void;
@@ -752,18 +789,32 @@ export function ChatList({
   onSearch?: () => void;
 }) {
   const [settledOpen, setSettledOpen] = useState(false);
-  // Opening a Settled chat, say from a search, shows it in the list; settling the chat on screen doesn't.
-  const selectedSettled = chats.some((c) => c.id === selectedId && c.settled);
+  const [snoozedOpen, setSnoozedOpen] = useState(false);
+  // The chat whose Custom snooze dialog is open.
+  const [customFor, setCustomFor] = useState<Chat>();
+  // Re-sorts the list when the next snooze wakes.
+  const now = useSnoozeClock(snoozes);
+  const { top, working, snoozed, settled, archived } = chatSections(chats, snoozes, now, attentionSince);
+  // The dialog closes if its chat leaves the list, or is settled or archived meanwhile (in another window or client).
+  const customGone = !!customFor && !chats.some((c) => c.id === customFor.id && !c.settled && !c.archived);
+  useEffect(() => {
+    if (customGone) setCustomFor(undefined);
+  }, [customGone]);
+  // Opening a Settled or Snoozed chat, say from a search, shows it in the list; settling or snoozing the chat on
+  // screen doesn't.
+  const selectedSettled = settled.some((c) => c.id === selectedId);
+  const selectedSnoozed = snoozed.some((c) => c.id === selectedId);
   useEffect(() => {
     if (selectedSettled) setSettledOpen(true);
+    if (selectedSnoozed) setSnoozedOpen(true);
   }, [selectedId]);
-  const active = chats.filter((c) => !c.settled && !c.archived).sort(byRecent);
-  const settled = chats.filter((c) => c.settled && !c.archived).sort(byRecent);
-  const archived = chats.filter((c) => c.archived).sort(byRecent);
   const settledUnread = settled.filter((c) => c.unread).length;
-  const row = (c: Chat) => (
+  const snoozedUnread = snoozed.filter((c) => c.unread).length;
+  const row = (c: Chat, section?: string, hidden?: boolean) => (
     <ChatRow
       key={c.id}
+      section={section}
+      hidden={hidden}
       chat={c}
       selected={c.id === selectedId}
       alsoShown={c.id === alsoShownId && c.id !== selectedId}
@@ -778,6 +829,11 @@ export function ChatList({
       onTextGenerationSettings={onTextGenerationSettings}
       projects={projectsOf?.(c.id)}
       tags={tagsOf?.(c.id)}
+      snooze={
+        onSnooze && onWake && !c.settled && !c.archived
+          ? { until: snoozes[c.id], onSnooze: (until) => onSnooze(c.id, until), onCustom: () => setCustomFor(c), onWake: () => onWake(c.id) }
+          : undefined
+      }
     />
   );
   return (
@@ -832,13 +888,34 @@ export function ChatList({
         {archivedListed ? (
           <>
             <div className="section-label">Archived</div>
-            {archived.length ? archived.map(row) : <div className="empty-hint">No archived chats.</div>}
+            {archived.length ? archived.map((c) => row(c)) : <div className="empty-hint">No archived chats.</div>}
           </>
         ) : (
-          <>
-            <div className="section-label">Active</div>
-            {active.length ? active.map(row) : <div className="empty-hint">Nothing active. Start a new chat.</div>}
-          </>
+          // One keyed array, so React keeps a row that moves from one section to another.
+          [
+            ...top.map((c) => row(c, "top")),
+            !top.length && (
+              <div key="empty" className="empty-hint">
+                {working.length || snoozed.length ? "Nothing needs you right now." : "Nothing needs you. Start a new chat."}
+              </div>
+            ),
+            working.length > 0 && (
+              <div key="working" className="section-label">
+                Working <span className="count">{working.length}</span>
+              </div>
+            ),
+            ...working.map((c) => row(c, "working")),
+            snoozed.length > 0 && (
+              <button key="snoozed" className="section-toggle" aria-expanded={snoozedOpen} onClick={() => setSnoozedOpen((o) => !o)}>
+                <ChevronRight size={14} className={`chev ${snoozedOpen ? "open" : ""}`} />
+                Snoozed
+                <span className="count">{snoozed.length}</span>
+                {snoozedUnread > 0 && !snoozedOpen && <span className="dot" title={`${snoozedUnread} unread`} />}
+              </button>
+            ),
+            // Kept while collapsed, hidden, so a row snoozed meanwhile (from another window) keeps its rename box.
+            ...snoozed.map((c) => row(c, "snoozed", !snoozedOpen)),
+          ]
         )}
       </div>
       {/* Settled is pinned to the foot of the list and opens upward as a drawer with its own scroll. */}
@@ -850,8 +927,23 @@ export function ChatList({
             <span className="count">{settled.length}</span>
             {settledUnread > 0 && !settledOpen && <span className="dot" title={`${settledUnread} unread`} />}
           </button>
-          {settledOpen && <div className="settled-list">{settled.map(row)}</div>}
+          {settledOpen && <div className="settled-list">{settled.map((c) => row(c, "settled"))}</div>}
         </div>
+      )}
+      {customFor && !customGone && (
+        <SnoozeDialog
+          title={customFor.title}
+          returnTo={{
+            get current() {
+              return document.querySelector<HTMLElement>(`.row-open[data-chat="${CSS.escape(customFor.id)}"]`);
+            },
+          }}
+          onClose={() => setCustomFor(undefined)}
+          onSnooze={(until) => {
+            setCustomFor(undefined);
+            onSnooze?.(customFor.id, until);
+          }}
+        />
       )}
     </aside>
   );

@@ -473,6 +473,7 @@ export class Hermes {
   private nextId = 1;
   private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   private listeners = new Set<() => void>();
+  private sendListeners = new Set<(profile: string, chatId: string) => void>();
   private snapshot: Snapshot;
   /** Chats this app moved between Active and Settled that Hermes hasn't stored yet: the `pinned` flag each should
    * have (ADR 0002). While a chat is here, this flag beats the one the server lists. */
@@ -1186,6 +1187,15 @@ export class Hermes {
   };
 
   getSnapshot = () => this.snapshot;
+
+  /**
+   * Calls `fn` each time the owner sends a message from this app (the composer, the queue, or Retry), with the profile
+   * and chat it goes to, as it starts on its way. Returns a function that stops it.
+   */
+  onSend = (fn: (profile: string, chatId: string) => void) => {
+    this.sendListeners.add(fn);
+    return () => void this.sendListeners.delete(fn);
+  };
 
   /**
    * Starts a Chat in this app. It is Active from the start, and pinned once Hermes has stored it (ADR 0002). `model`:
@@ -1905,6 +1915,7 @@ export class Hermes {
       title: c.items.length === 0 && c.runtimeId ? (text || attachments[0]?.name || c.title).slice(0, 48) : c.title,
       items: [...c.items, user],
     }));
+    for (const fn of this.sendListeners) fn(profile, chatId);
     // Kept from the start, so a message on its way when the app closes isn't lost.
     const kept = this.saveOutbox(chatId);
     queued?.kept(kept);
