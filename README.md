@@ -348,7 +348,7 @@ packaging/aur/build.sh -si
 The package installs:
 
 - `/usr/bin/hermes-chat`
-- the app icon in the hicolor theme, at 16 to 512 px plus scalable and symbolic versions (redraw them from `assets/` with `tools/icons/build.sh`; see [ADR 0048](docs/adr/0048-the-app-icon-is-the-rails-h-hinted-per-size-with-its-own-tray-image.md))
+- the app icon in the hicolor theme, at 16 to 512 px plus scalable and symbolic versions (redraw them from `assets/` with `tools/icons/build.sh`; see [ADR 0049](docs/adr/0049-the-app-icon-is-the-rails-h-hinted-per-size-with-its-own-tray-image.md))
 - a desktop launcher that sets `WEBKIT_DISABLE_DMABUF_RENDERER=1`, and registers Hermes Chat for `hermes-chat://` [chat links](#chat-links) (`MimeType=x-scheme-handler/hermes-chat`)
 
 Optional dependencies:

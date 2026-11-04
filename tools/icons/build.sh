@@ -1,5 +1,5 @@
 #!/bin/sh
-# Regenerates every PNG/ICO/ICNS in src-tauri/icons/ from the SVG sources (issue #177, ADR 0048).
+# Regenerates every PNG/ICO/ICNS in src-tauri/icons/ from the SVG sources (issue #177, ADR 0049).
 #
 #   assets/icon.svg              the master: Tauri's suite, and hicolor 64-512
 #   assets/icons/icon-<N>.svg    pixel-hinted sources for hicolor 16, 22, 24, 32 and 48 (and 32x32.png)

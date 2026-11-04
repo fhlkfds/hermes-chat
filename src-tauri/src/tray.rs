@@ -1,4 +1,4 @@
-//! The tray icon and Close to tray (issue #77, ADR 0034; the icon's design: issue #177, ADR 0048).
+//! The tray icon and Close to tray (issue #77, ADR 0034; the icon's design: issue #177, ADR 0049).
 //!
 //! The tray icon offers Show/Hide, New chat, Open Inbox (with how many entries need the owner, never chat text) and
 //! Quit. Its icon gets a dot while the Inbox has something. Closing the window quits, as it always has, unless the owner
@@ -140,7 +140,7 @@ pub fn inbox_label(count: u32) -> String {
     }
 }
 
-/// The tray icon, drawn for panels (assets/icons/tray.svg, ADR 0048): the app's clay tile and H, full-bleed, with a
+/// The tray icon, drawn for panels (assets/icons/tray.svg, ADR 0049): the app's clay tile and H, full-bleed, with a
 /// darker rim so it stands apart from light and dark panels alike. One 64px image, which the panel scales to its size.
 const TRAY_ICON: &[u8] = include_bytes!("../icons/tray.png");
 /// The same icon with the Inbox dot (assets/icons/tray-inbox.svg): a red dot top-right, ringed clear of the tile.

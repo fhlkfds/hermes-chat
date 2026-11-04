@@ -31,5 +31,5 @@ Issue #177 asks for a real app icon in place of the green placeholder square. It
 
 - At 22 and 24 px the tray icon is slightly soft, because the panel scales a 64 px image by a fraction. Hinted tray sizes would need the tray to load a themed icon by name, but Tauri's tray (the `tray-icon` crate) writes the image to a temporary PNG and gives libayatana that file's path.
 - `icon.ico` and `icon.icns` are generated for completeness but not used: the app isn't built for Windows or macOS.
-- After changing a source SVG, run `tools/icons/build.sh` and commit the PNGs. Nothing checks that the PNGs match their sources.
+- After changing a source SVG, run `tools/icons/build.sh` and commit the PNGs. Nothing checks that the PNGs match their sources. A rebuild reproduces every PNG and `icon.ico` byte for byte, but not `icon.icns`, whose encoder isn't deterministic; leave it out of a commit unless the master changed.
 - The design was scored over several rounds by a Claude and a Codex reviewer for looks, clarity, contrast and scaling, on contact sheets of each size on dark and light panels. The PR records the rounds.

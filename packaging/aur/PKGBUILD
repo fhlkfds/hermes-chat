@@ -55,7 +55,7 @@ package() {
   install -Dm755 "src-tauri/target/release/$_pkgname" "$pkgdir/usr/bin/$_pkgname"
   # The launcher sets WEBKIT_DISABLE_DMABUF_RENDERER=1, as `npm run app` does.
   install -Dm644 "$srcdir/$_pkgname.desktop" "$pkgdir/usr/share/applications/$_pkgname.desktop"
-  # The launcher's Icon=hermes-chat: every hicolor size tools/icons/build.sh renders (hinted below 64px, ADR 0048),
+  # The launcher's Icon=hermes-chat: every hicolor size tools/icons/build.sh renders (hinted below 64px, ADR 0049),
   # the master SVG, and a one-colour symbolic icon for high-contrast and symbolic themes.
   local size
   for size in 16 22 24 32 48 64 128 256 512; do
