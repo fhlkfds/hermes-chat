@@ -1008,7 +1008,7 @@ export class FakeHermes {
       skills: this.skills.config(query.get("profile") || "default"),
       agent: { ...this.modelConfig.agent },
       delegation: { ...this.modelConfig.delegation },
-      ...(this.cron.timezone && { timezone: this.cron.timezone }),
+      ...(this.cron.zoneSetting(query.get("profile") || "default") && { timezone: this.cron.zoneSetting(query.get("profile") || "default") }),
     }),
     "GET /api/delegation/routing": () => ({
       configured: "default",
@@ -1978,8 +1978,16 @@ export class FakeCron {
     return row;
   }
 
-  private zoneOf(_profile: string) {
-    return this.timezone || "UTC";
+  /** A profile's own `timezone` setting, where it differs from `timezone` ("" for none). */
+  timezones: Record<string, string> = {};
+
+  /** The profile's `timezone` in its config.yaml, "" when it has none. */
+  zoneSetting(profile: string): string {
+    return profile in this.timezones ? this.timezones[profile] : this.timezone;
+  }
+
+  private zoneOf(profile: string) {
+    return this.zoneSetting(profile) || "UTC";
   }
 
   private next(s: ReturnType<typeof parseSchedule>, zone: string, from: number): string | null {

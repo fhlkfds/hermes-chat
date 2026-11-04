@@ -192,8 +192,28 @@ describe("run history", () => {
     expect(runs[4].note).toMatch(/compressed this run and went on in a new session/);
     expect(runs[5].note).toBe("Hermes recorded the run's end as “agent_close”.");
     expect(runs[6].note).toMatch(/no record of how it ended/);
-    expect(runs[7].error).toBe("The run finished, but delivering its result failed.");
+    // Hermes's own words come after the state's.
+    expect(runs[7].error).toBe("The run finished, but delivering its result failed: Telegram said no");
     expect(runs[8].note).toBe("Hermes recorded “Skipped by hook”.");
+  });
+
+  it("reads the row Hermes makes from the job when no output survived, with or without its error", async () => {
+    const { s, cron } = await setUp();
+    const job = await cron.create("default", fields(), true);
+    const latest = (title: string, preview?: string) => ({ id: `cron_output:${job.id}:latest`, title, ...(preview && { preview }), source: "cron_output", started_at: 1_793_800_000 });
+    const one = async (row: Record<string, unknown>) => {
+      s.cron.runs[job.id] = [row];
+      return (await cron.runs("default", job))[0];
+    };
+    // `_list_cron_output_runs`: the status alone when the job has no `last_error`.
+    expect(await one(latest("OK"))).toMatchObject({ state: "succeeded" });
+    expect(await one(latest("SUPPRESSED"))).toMatchObject({ state: "succeeded", note: "Ran; nothing to deliver." });
+    expect(await one(latest("DELIVERY FAILED"))).toMatchObject({ state: "failed", error: "The run finished, but delivering its result failed." });
+    expect(await one(latest("ERROR"))).toMatchObject({ state: "failed", error: "Hermes recorded the run as failed, with no reason." });
+    expect(await one(latest("BLOCKED CONFIG · Missing API key", "Missing API key"))).toMatchObject({ state: "failed", error: "Blocked by the job's settings: Missing API key" });
+    expect(await one(latest("Script-only run"))).toMatchObject({ state: "unknown" });
+    // An output doc's title is what the script printed, so a shout there isn't a status.
+    expect(await one({ id: `cron_output:${job.id}:2026-11-04_09-35-34`, title: "OK", preview: "OK", source: "cron_output", started_at: 1_793_800_000 })).toMatchObject({ state: "unknown", preview: "OK" });
   });
 
   it("asks for the newest runs a page at a time, as far as Hermes's limit", async () => {
@@ -255,6 +275,8 @@ describe("delivery", () => {
 
   it("says which places Hermes can't deliver a job to", () => {
     for (const ok of ["local", "origin", "all", "telegram", "telegram:-100123", "discord:4242", "bot-chat:default", "local,telegram"]) expect(deliveryProblems(ok, targets)).toEqual([]);
+    // `parse_bot_chat_deliver_token`: alone, or with no name, it is the job's own profile; names are normalized.
+    for (const own of ["bot-chat", "bot-chat:", "Bot-Chat", "bot-chat:Default", "bot-chat: default "]) expect(deliveryProblems(own, targets)).toEqual([]);
     expect(deliveryProblems("discord", targets)).toEqual(["Discord has no home channel set on the server, so Hermes won't deliver there."]);
     // A platform named alone falls back to the chat the job came from on it.
     expect(deliveryProblems("discord", targets, "discord")).toEqual([]);

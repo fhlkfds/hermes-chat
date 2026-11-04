@@ -502,6 +502,51 @@ describe("the Scheduled jobs screen", () => {
     await waitFor(() => expect((document.activeElement as HTMLElement).dataset.jobId).toBe(screen.getByText("[fixture] Weekday brief").closest("button")!.dataset.jobId));
   });
 
+  it("puts a change Hermes confirmed in the list, though the owner left the job before it landed", async () => {
+    const { user, s } = await launch();
+    let release!: () => void;
+    s.cron.gate = new Promise<void>((r) => (release = r));
+    await user.click(screen.getByText("[fixture] Weekday brief"));
+    await user.click(screen.getByRole("button", { name: /Pause/ }));
+    await user.click(screen.getByRole("button", { name: /Back to the jobs/ }));
+    release();
+    await waitFor(() => expect(within(screen.getByText("[fixture] Weekday brief").closest("button")!).queryByText("Paused")).toBeTruthy());
+    s.cron.gate = new Promise<void>((r) => (release = r));
+    await user.click(screen.getByText("[fixture] Weekday brief"));
+    await user.click(within(document.querySelector<HTMLElement>(".jobs-screen")!).getByRole("button", { name: "Delete" }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete job" }));
+    await user.click(screen.getByRole("button", { name: /Back to the jobs/ }));
+    release();
+    await waitFor(() => expect(screen.queryByText("[fixture] Weekday brief")).toBeNull());
+    expect(screen.getByRole("heading", { name: "Scheduled jobs" })).toBeTruthy();
+  });
+
+  it("keeps Hermes's own words for a failed delivery", async () => {
+    const s = server();
+    const id = s.cron.jobs.default[0].id;
+    s.cron.runs[id] = [{ id: `cron_output:${id}:latest`, title: "DELIVERY FAILED · Telegram said: chat not found", preview: "Telegram said: chat not found", source: "cron_output", started_at: 1_793_800_000 }];
+    const { user } = await launch(s);
+    await user.click(screen.getByText("[fixture] Weekday brief"));
+    const row = within(await screen.findByRole("list", { name: "Run history, newest first" })).getByRole("listitem");
+    expect(row.textContent).toMatch(/Failed.*delivering its result failed: Telegram said: chat not found/);
+  });
+
+  it("says when the profile a new job goes in has no time zone Hermes Chat can name", async () => {
+    const s = server();
+    s.cron.timezones = { work: "" };
+    const { user } = await launch(s);
+    await user.click(screen.getByRole("button", { name: /New job/ }));
+    const where = screen.getByLabelText("Profile") as HTMLSelectElement;
+    await waitFor(() => expect(within(where).getAllByRole("option")).toHaveLength(2));
+    await user.selectOptions(where, "work");
+    expect(await screen.findByText(/Hermes uses the server's own time zone and doesn't name it/)).toBeTruthy();
+    expect(screen.getByText(/^Times are shown in this computer's time zone/)).toBeTruthy();
+    expect(screen.queryByText(/the work profile's schedule time zone/)).toBeNull();
+    await user.type(screen.getByPlaceholderText(/What Hermes should do/), "Fixture only.");
+    await user.type(screen.getByPlaceholderText("every day at 9am"), "every day at 7am");
+    expect(screen.getByRole("region", { name: "Summary" }).textContent).toMatch(/can't confirm the work profile's own time zone/);
+  });
+
   it("never shows a profile's jobs once another profile is current", async () => {
     const s = server();
     s.cron.add("work", { name: "[fixture] Work job", prompt: "Fixture only.", schedule: "0 8 * * *" });

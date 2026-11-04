@@ -206,8 +206,9 @@ export function toJob(v: unknown): CronJob | undefined {
 
 /**
  * A script run's row is its output doc, titled with the execution ledger's status (`COMPLETED · …`, `FAILED · …`,
- * `_execution_status_title`) or, for the one row Hermes makes from the job when no doc survived, its `last_status`
- * (`OK · …`, `ERROR · …`, `_cron_output_status_label`). What each says about the run.
+ * `_execution_status_title`) or, for the one row Hermes makes from the job when no doc survived (id `…:latest`), its
+ * `last_status`, alone or with `last_error` (`OK`, `ERROR · …`, `_cron_output_status_label`). What each says about the
+ * run; `error` is said before whatever Hermes recorded with it.
  */
 const SCRIPT_STATES: Record<string, { state: RunState; error?: string; note?: string }> = {
   completed: { state: "succeeded" },
@@ -241,11 +242,13 @@ function toRun(v: unknown): JobRun | undefined {
   const startedAt = typeof v.started_at === "number" ? v.started_at * 1000 : undefined;
   if (startedAt === undefined) return undefined;
   // The doc's text starts with its own header (`# Cron Job: … ---`), which only repeats the job.
-  const titled = /^([A-Z][A-Z ]*[A-Z]) · ([\s\S]*)$/.exec(text(v.title));
+  // Only Hermes's own row from the job may be a status alone: an output doc's title is what the script printed.
+  const titled = /^([A-Z][A-Z ]*[A-Z]) · ([\s\S]*)$/.exec(text(v.title)) ?? (v.id.endsWith(":latest") ? /^([A-Z][A-Z ]*[A-Z])()$/.exec(text(v.title)) : null);
   const plain = (t: string) => t.replace(/^# Cron Job:[\s\S]*?---\s*/, "").trim();
   const script = v.source === "cron_output";
   const running = v.scheduler_owned === true || (v.ended_at == null && v.is_active === true);
-  const title = plain(titled ? titled[2] : text(v.title)) || "Run";
+  const detail = plain(titled ? titled[2] : text(v.title));
+  const title = detail || "Run";
   const preview = opt(plain(text(v.preview)));
   let outcome: Pick<JobRun, "state" | "error" | "note">;
   if (!script) outcome = agentState(v, running);
@@ -253,9 +256,12 @@ function toRun(v: unknown): JobRun | undefined {
   else {
     const word = titled[1].toLowerCase().replace(/ /g, "_");
     const known = SCRIPT_STATES[word];
-    outcome = known
-      ? { state: known.state, ...(known.note && { note: known.note }), ...((known.error || known.state === "failed") && { error: known.error ?? title }) }
-      : { state: "unknown", note: `Hermes recorded “${sentence(titled[1].toLowerCase()).replace(/\.$/, "")}”.` };
+    const said = (lead: string) => (detail ? `${lead.replace(/\.$/, "")}: ${detail}` : lead);
+    outcome = !known
+      ? { state: "unknown", note: `Hermes recorded “${sentence(titled[1].toLowerCase()).replace(/\.$/, "")}”.` }
+      : known.state === "failed"
+        ? { state: "failed", error: known.error ? said(known.error) : detail || "Hermes recorded the run as failed, with no reason." }
+        : { state: known.state, ...(known.note && { note: known.note }) };
   }
   return {
     id: v.id,
@@ -282,8 +288,12 @@ export function deliveryProblems(deliver: string, targets: DeliveryTarget[], ori
     .map((d) => d.trim())
     .filter((d) => d && !["local", "origin", "all"].includes(d))
     .flatMap((d) => {
-      if (d.startsWith("bot-chat:"))
-        return targets.some((t) => t.id === d) ? [] : [`Bot Chat (${d.slice(9)}) isn't a profile on this server, so Hermes won't deliver there.`];
+      // `parse_bot_chat_deliver_token`: `bot-chat` alone (or with no name) is the job's own profile; a name is
+      // matched as `normalize_profile_name` does, trimmed and lowercased.
+      if (/^bot-chat(:|$)/i.test(d)) {
+        const name = d.slice(9).trim();
+        return !name || targets.some((t) => t.id === `bot-chat:${name.toLowerCase()}`) ? [] : [`Bot Chat (${name}) isn't a profile on this server, so Hermes won't deliver there.`];
+      }
       const platform = d.includes(":") ? d.slice(0, d.indexOf(":")) : d;
       const t = targets.find((x) => x.id === platform.toLowerCase());
       if (!t) return [`${named(platform)} isn't set up on this profile's gateway, so Hermes won't deliver there.`];

@@ -391,6 +391,7 @@ const RUN_STATES: Record<RunState, { text: string; className: string }> = {
 /** "1 min 20 s": how long a run took. */
 function took(ms: number): string {
   const s = Math.round(ms / 1000);
+  if (s < 1) return "under a second";
   if (s < 60) return `${s} s`;
   const m = Math.floor(s / 60);
   return m < 60 ? `${m} min${s % 60 ? ` ${s % 60} s` : ""}` : `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ""}`;
@@ -529,9 +530,9 @@ function JobDetail({
     try {
       await fn();
     } catch (e) {
-      if (!life.live()) return;
-      setError(messageOf(e));
+      // What Hermes's list now says goes to the list even if the owner has left this job meanwhile.
       if (e instanceof CronError && e.kind === "gone") onChanged(job.id, null);
+      if (life.live()) setError(messageOf(e));
     } finally {
       if (life.live()) setBusy(undefined);
     }
@@ -547,19 +548,21 @@ function JobDetail({
   const runNow = () =>
     act("run", async () => {
       const outcome = await api.runNow(profile, job);
-      if (!life.live()) return;
       const status = outcome.job?.lastStatus ? statusLabel(outcome.job.lastStatus).text : undefined;
       const said = !outcome.completed
         ? "Hermes took the run, but hasn't recorded its result yet. Refresh later to see it."
         : !outcome.job
           ? "The run finished, and the job is no longer in the list: Hermes removes a one-shot once it has run, or it was deleted elsewhere."
           : `The run finished: ${status ?? "Hermes recorded no result"}.${outcome.job.lastError ? ` ${outcome.job.lastError}` : ""}`;
+      // The list takes what Hermes read back whether or not the owner is still on this job; only this view's notice,
+      // and moving to the list, wait on the owner still being here.
       if (!outcome.job) {
         onChanged(job.id, null);
-        onToast?.(said);
+        if (life.live()) onToast?.(said);
         return;
       }
       if (!outcome.unverified) onChanged(job.id, outcome.job);
+      if (!life.live()) return;
       setNotice(outcome.unverified ? `${said} The list couldn't be read afterwards to confirm it; refresh to check.` : said);
       readRuns();
     });
@@ -593,8 +596,7 @@ function JobDetail({
           title={offline}
           onClick={() =>
             void act(paused ? "resume" : "pause", async () => {
-              const back = await api.setPaused(profile, job, !paused);
-              if (life.live()) onChanged(job.id, back);
+              onChanged(job.id, await api.setPaused(profile, job, !paused));
             })
           }
         >
@@ -643,9 +645,8 @@ function JobDetail({
               onClick={() =>
                 void act("delete", async () => {
                   await api.remove(profile, job);
-                  if (!life.live()) return;
                   onChanged(job.id, null);
-                  onDeleted();
+                  if (life.live()) onDeleted();
                 })
               }
             >
@@ -899,18 +900,20 @@ function JobEditor({
     setError(undefined);
     const fields: JobFields = { ...form, repeat: once ? null : repeatText.trim() ? Number(repeatText) : null };
     const into = where;
+    // A save that lands after the owner left the editor still goes to this profile's list; only moving on waits.
+    const done = (job: CronJob, where: string) => (contextReads.live() ? onSaved(job, where) : where === profile && onSeen(job));
     try {
-      if (!base) onSaved(await api.create(into, fields, paused), into);
+      if (!base) done(await api.create(into, fields, paused), into);
       else {
         const edits: Partial<JobFields> = { name: fields.name, prompt: fields.prompt, deliver: fields.deliver, ...(scheduleChanged && { schedule: fields.schedule }), ...(!once && { repeat: fields.repeat }) };
-        onSaved(await api.update(profile, base, edits), profile);
+        done(await api.update(profile, base, edits), profile);
       }
     } catch (e) {
+      if (e instanceof CronConflict) onSeen(e.job);
       if (!contextReads.live()) return;
       if (e instanceof CronConflict) {
         setConflict(e);
         setBase(e.job);
-        onSeen(e.job);
       } else setError(messageOf(e));
     } finally {
       if (contextReads.live()) setSaving(false);
@@ -988,7 +991,7 @@ function JobEditor({
             onBlur={() => form.schedule.trim() && setTouched(true)}
           />
           <span className="field-hint" id="job-schedule-help">
-            {ctx ? `Times are in ${zone.label}, the ${where} profile's schedule time zone.` : `Reading the ${where} profile's time zone…`}{" "}
+            {!ctx ? `Reading the ${where} profile's time zone…` : zone.named ? `Times are in ${zone.label}, the ${where} profile's schedule time zone.` : `Times are shown in ${zone.label}.`}{" "}
             {EXAMPLES.map((x) => (
               <button key={x} type="button" className="job-example" onClick={() => set({ schedule: x })}>
                 {x}
@@ -996,6 +999,11 @@ function JobEditor({
             ))}
           </span>
           {scheduleProblem && (touched || parsed instanceof ScheduleError) && <span className="field-hint err" role="alert">{scheduleProblem}</span>}
+          {ctx?.zone.note && (
+            <span className="field-hint job-dst" role="note">
+              {ctx.zone.note}
+            </span>
+          )}
         </label>
         {preview && ctx && (
           <div className="job-preview" aria-live="polite">
@@ -1057,7 +1065,7 @@ function JobEditor({
               <div>
                 <dt>Runs</dt>
                 <dd>
-                  {explainSchedule(preview, zone.zone)}, on the schedule time zone, {zone.label}
+                  {explainSchedule(preview, zone.zone)}, {zone.named ? `on the schedule time zone, ${zone.label}` : `shown in ${zone.label}; Hermes Chat can't confirm the ${where} profile's own time zone`}
                 </dd>
               </div>
               <div>
