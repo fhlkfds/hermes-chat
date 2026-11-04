@@ -169,6 +169,16 @@ export function entryProblem(text: string): string | undefined {
   if (/(^|\n)§(\n|$)/.test(t)) return "A line holding only “§” separates entries in Hermes's memory file, so this would be saved as several entries. Change or remove that line.";
 }
 
+/**
+ * Why `text` can't replace `entry` in a file holding `entries`: another entry already says exactly that. Hermes keeps
+ * one copy of identical entries when it next reads the file, so the save would merge the two and drop one.
+ */
+export function duplicateProblem(text: string, entry: MemoryEntry, entries: readonly MemoryEntry[]): string | undefined {
+  const t = pyStrip(text);
+  if (t !== entry.text && entries.some((e) => e.id !== entry.id && e.text === t))
+    return `Another entry in ${resourceOf(entry.source).file} already says exactly this. Hermes would keep only one of them; to drop this entry, use Delete.`;
+}
+
 /** `memory:<source>:<index>:<fingerprint>` → its parts; anything else isn't a memory node. */
 function parseId(id: string): { source: MemorySource; index: number; fingerprint?: string } | undefined {
   const parts = id.split(":");
@@ -314,7 +324,12 @@ export function memoryApi(io: MemoryIO, now = () => Date.now()): MemoryApi {
       const next = pyStrip(text);
       await checkServed(profile);
       await checkUnchanged(profile, entry);
-      if (next !== entry.text) await write(profile, "learning.edit", { id: entry.id, content: next });
+      if (next !== entry.text) {
+        // ponytail: checked on a fresh read, not under Hermes's lock; an identical entry written in between still merges.
+        const dup = duplicateProblem(next, entry, (await read(profile)).resources[entry.source].entries);
+        if (dup) throw new MemoryRefusedError(dup);
+        await write(profile, "learning.edit", { id: entry.id, content: next });
+      }
       const view = await read(profile);
       const saved = view.resources[entry.source].entries.find((e) => e.text === next);
       if (!saved) throw new MemoryUnverifiedError(`Hermes said it saved the entry, but ${entry.source === "memory" ? "MEMORY.md" : "USER.md"} doesn't have it when read back. It may have been changed again meanwhile.`, view);

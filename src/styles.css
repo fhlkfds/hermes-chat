@@ -1400,7 +1400,9 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 }
 .memory-text:focus { border-color: var(--line-3); }
 .memory-text[readonly] { color: var(--muted); }
-.memory-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.memory-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.memory-actions .confirm-actions { flex-wrap: wrap; }
+.memory-actions .btn { white-space: nowrap; }
 .memory-editor > .btn { align-self: flex-start; }
 .memory-leave { max-width: none; margin-top: 12px; padding: 10px 12px; border: 1px solid var(--line-2); border-radius: var(--radius); }
 .memory-editor .confirm { max-width: none; }

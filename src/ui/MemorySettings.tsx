@@ -13,6 +13,7 @@ import {
   MemoryUnsureError,
   MemoryUnverifiedError,
   charCount,
+  duplicateProblem,
   entryProblem,
   pyStrip,
   resourceChars,
@@ -300,7 +301,7 @@ export function MemorySettings({
   const meta = resourceOf(source);
   const filePath = view?.home ? `${view.home.replace(/\/+$/, "")}/memories/${meta.file}` : meta.file;
   const changed = !!editing && editing.draft !== editing.entry.text;
-  const draftProblem = changed && editing ? entryProblem(editing.draft) : undefined;
+  const draftProblem = changed && editing ? (entryProblem(editing.draft) ?? (view && duplicateProblem(editing.draft, editing.entry, view.resources[editing.entry.source].entries))) : undefined;
   // What this app's last save of the open entry replaced, unless that's already in the editor.
   const before = editing && api.replacedBy(profile, editing.entry);
   const restorable = before && before.text !== editing?.draft ? before : undefined;

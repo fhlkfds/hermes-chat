@@ -32,6 +32,7 @@ afterEach(async () => {
 const FALCON = "Project Falcon uses Postgres 16; migrations live in db/migrations.";
 const SHORT = "Owner prefers short answers with a code sample first.";
 const SAM = "Name: Sam Example. Works in UTC+1.";
+const BRITISH = "Owner writes in British English.";
 
 function server() {
   const s = new FakeHermes();
@@ -166,6 +167,17 @@ describe("Settings → Memory", () => {
     await user.click(await screen.findByRole("button", { name: named(SHORT) }));
     await user.click(button(/Restore previous version/));
     expect(editor().value).toBe("Owner prefers short answers.");
+  });
+
+  it("won't save an entry as the exact words of another entry in the file", async () => {
+    const { s, user } = await shown();
+    await user.click(entry(SHORT));
+    await user.clear(editor());
+    await user.click(editor());
+    await user.paste(FALCON);
+    expect(screen.getByText(/Another entry in MEMORY.md already says exactly this/)).toBeTruthy();
+    expect(button("Save")).toHaveProperty("disabled", true);
+    expect(learning(s, "learning.edit")).toEqual([]);
   });
 
   it("doesn't offer to restore once the entry changed after the save", async () => {
@@ -358,37 +370,39 @@ describe("Settings → Memory", () => {
     const { s, hermes, user } = await shown();
     await user.click(entry(FALCON));
     await user.clear(editor());
-    await user.type(editor(), SHORT);
+    await user.type(editor(), BRITISH);
     s.dropOnLearning = "lost";
     await user.click(button("Save"));
     await screen.findByText(/may or may not have saved/);
     await act(async () => void (await hermes.reconnect()));
     await user.type(editor(), " and more");
+    // Meanwhile the agent gives the other entry the words of the lost save.
+    s.memory.default.memory[1] = BRITISH;
     await user.click(button(/Reload/));
     expect((await screen.findByRole("alert")).textContent).toMatch(/Hermes doesn't have your edit/);
     expect(screen.getByRole("button", { name: named(FALCON) }).getAttribute("aria-current")).toBe("true");
     await user.click(button("Save"));
     await screen.findByText(/Saved, and read back/);
-    expect(s.memory.default.memory).toEqual([`${SHORT} and more`, SHORT]);
+    expect(s.memory.default.memory).toEqual([`${BRITISH} and more`, BRITISH]);
   });
 
   it("keeps the edit when a lost save can't be told apart from another entry with the same words", async () => {
     const { s, hermes, user } = await shown();
     await user.click(entry(FALCON));
     await user.clear(editor());
-    await user.type(editor(), SHORT);
+    await user.type(editor(), BRITISH);
     s.dropOnLearning = "lost";
     await user.click(button("Save"));
     await screen.findByText(/may or may not have saved/);
     await act(async () => void (await hermes.reconnect()));
     await user.type(editor(), " and more");
-    // The agent removes the entry being edited meanwhile.
-    s.memory.default.memory = [SHORT];
+    // The agent removes the entry being edited meanwhile, and has an entry with the lost save's words.
+    s.memory.default.memory = [BRITISH];
     await user.click(button(/Reload/));
     expect((await screen.findByRole("alert")).textContent).toMatch(/save may have gone through.*Your edit is kept below; nothing more was saved/);
-    expect(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Your kept edit" }).value).toBe(`${SHORT} and more`);
+    expect(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Your kept edit" }).value).toBe(`${BRITISH} and more`);
     expect(screen.queryByRole("textbox", { name: /Entry in/ })).toBeNull();
-    expect(s.memory.default.memory).toEqual([SHORT]);
+    expect(s.memory.default.memory).toEqual([BRITISH]);
   });
 
   it("still settles a kept edit put in an entry after a Reload", async () => {

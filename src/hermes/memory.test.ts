@@ -289,6 +289,19 @@ describe("recovering what a save replaced", () => {
     expect(hermes.memory.replacedBy("default", back.entry)?.text).toBe("Postgres 17");
   });
 
+  it("won't save an entry as another entry's exact text, so a restore can't later overwrite the survivor", async () => {
+    const s = server();
+    s.memory.default.memory = ["First", "Second"];
+    const { hermes } = await setUp(s);
+    const view = await hermes.memory.load("default");
+    const e = await hermes.memory.save("default", view.resources.memory.entries[0], "  Second\n").catch((x) => x);
+    expect(e).toBeInstanceOf(MemoryRefusedError);
+    expect(e.message).toMatch(/Another entry in MEMORY.md already says exactly this/);
+    expect(s.memory.default.memory).toEqual(["First", "Second"]);
+    expect(learning(s).some((r) => r.method === "learning.edit")).toBe(false);
+    expect(hermes.memory.replacedBy("default", view.resources.memory.entries[1])).toBeUndefined();
+  });
+
   it("offers nothing once the entry changed after the save, or for a save that didn't read back", async () => {
     const s = server();
     const { hermes } = await setUp(s);
