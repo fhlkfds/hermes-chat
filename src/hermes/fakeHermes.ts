@@ -542,6 +542,23 @@ export class FakeHermes {
       if (this.branchError) return this.fail(r.id, this.branchError.code, this.branchError.message);
       this.respond(r.id, this.branchAnswer(stored, runtimeId, parent));
     },
+    // `session.undo` (`tui_gateway/methods_session.py` at the deployed `bf0203a`, probed live on 2026-11-03): takes the
+    // session's last user turn and everything after it out of its history, and answers how many rows went (0 when
+    // there's no user turn). Refused with 4009 while a turn runs. The rows are soft-deleted: stored rows read back without them.
+    "session.undo": (r) => {
+      if (!this.undoMethod) return this.fail(r.id, -32601, "Method not found: session.undo");
+      const stored = this.runtime.get(String(r.params.session_id ?? ""));
+      if (!stored) return this.fail(r.id, 4001, "session not found");
+      this.undoCalls.push(stored);
+      if (this.undoBusy) return this.fail(r.id, 4009, "session busy — Hermes is still replying. Stop the current reply first (Stop button, or Ctrl+C in a terminal), then run /undo.");
+      if (this.undoError) return this.fail(r.id, this.undoError.code, this.undoError.message);
+      const rows = this.transcripts[stored] ?? [];
+      const at = rows.map((m) => m.role === "user" && m.display_kind !== "hidden").lastIndexOf(true);
+      if (at < 0) return this.respond(r.id, { removed: 0 });
+      const removed = rows.length - at - (this.undoShort ? 1 : 0);
+      this.transcripts[stored] = rows.slice(0, rows.length - removed);
+      this.respond(r.id, { removed });
+    },
     // The message is stored as its turn starts (`user_row_id` is the staged row), so the history read back has it.
     "prompt.submit": (r) => {
       const drop = this.dropOnPrompt;
@@ -1062,6 +1079,16 @@ export class FakeHermes {
   private onEvent?: (e: PipeEvent) => void;
   private imagesStaged = 0;
   private resumed = 0;
+  /** False: a server without `session.undo`, which answers it "method not found". */
+  undoMethod = true;
+  /** While set, `session.undo` is refused as busy, as when a turn is running. */
+  undoBusy = false;
+  /** While set, `session.undo` fails with this error. */
+  undoError?: { code: number; message: string };
+  /** `session.undo` leaves the last row behind, as if Hermes took back a different part than asked. */
+  undoShort = false;
+  /** The stored sessions `session.undo` was asked of, in order. */
+  undoCalls: string[] = [];
   /** False: a server older than `session.branch`, which answers it "method not found". */
   branchMethod = true;
   /** The next `session.branch` drops the connection before Hermes answers: `stored` made the branch first, `lost` never arrived. */

@@ -577,6 +577,22 @@ Read in the deployed checkout (`tui_gateway/methods_session_branch.py`, `tui_gat
 - **Errors.** 4008 `nothing to branch — send a message first` when the spine is empty. 5008 `branch failed: …` when the copy fails. 5000 `agent init failed on branch: …` comes after the row is stored. 5032 (no AI provider) came before anything was stored in the first probe run. An unknown method is JSON-RPC −32601.
 - **The official desktop app** counts its own copyable spine (`toBranchMessages`: user and assistant messages with text) and sends `count` plus `through_message_id`; its legacy client drops `through_message_id` (`apps/desktop/src/api/client.ts:66-70`). It sends no `name`.
 
+### Edit and Regenerate (2026-11-03, deployed checkout at `f0d94882e8`, a descendant of `bf0203a`, probed over SSH)
+
+Read in `tui_gateway/methods_session.py` (`session.undo`), `tui_gateway/methods_tools.py` (`_cmd_retry`, `_cmd_undo`) and `tui_gateway/methods_session_branch.py`, then probed live. The probe started an isolated `hermes_cli.main dashboard --isolated` on `127.0.0.1` with a fresh `HERMES_HOME` under `/tmp` and a throwaway `HERMES_DASHBOARD_SESSION_TOKEN`. Its model was a loopback stub, so no real model was called. Hermes's `SessionDB` seeded one synthetic `gui` chat: Q1, A1, Q2 with an `@file:` ref, an assistant row with `tool_calls`, its tool row, A2, Q3 and A3. The dashboard and stub were killed by PID, and the directory was removed. The owner's `~/.hermes` was never opened.
+
+- **No replay call.** Nothing replays a session from a message boundary into a new session. `/retry` and `session.undo` rewind the session they're called on, in place. Canonical `session.mutate {operation: "rewind", target_message_id}` does too (`hermes_state_mutations.py:44`).
+- **`count = 0` copies everything.** `_branch_live` applies `count` only when `count > 0` (`methods_session_branch.py:108`). So a branch can't end before the first message.
+- **`session.undo {session_id}`** (live session) → `{removed}`. It truncates from the last user-originated turn. It is refused with 4009 `session busy — Hermes is still replying. Stop the current reply first …` while a turn runs. It also checks `running` under `history_lock`.
+- **Branch through a message, then undo, then resend.**
+  - `session.branch {count: 1}` copied Q1. `session.undo` on the branch answered `{removed: 1}`, and the branch's `GET /api/sessions/{id}/messages` was then empty. A second undo answered `{removed: 0}`.
+  - `prompt.submit` with edited text answered `{status: "streaming", user_row_id}`. The branch then held the edited message and its reply only. `parent_session_id` was the parent, `source` was `tui`.
+  - `session.branch {count: 3}` through Q2, then undo, left Q1 and A1. `prompt.submit` of Q2's stored text, `@file:` ref included, reached the model with Hermes's file context.
+- **The parent.** Its 8 rows were unchanged after all of it.
+- **Per-reply model.** Stored rows have no model field. Their keys include `finish_reason`, `token_count` and `reasoning`, but not `model`. The session row has `model` and `model_config` only. So a reply's model isn't stored, only the session's latest.
+- **Images.** `_cmd_retry` refuses `attached_images` with 4018 `retry cannot safely reconstruct or combine attached media`.
+- What the app does: ADR 0035.
+
 ## Artifacts (editing Outputs, ADR 0029)
 
 Read in the deployed `bf0203a` source on 2026-11-03; not probed live.
