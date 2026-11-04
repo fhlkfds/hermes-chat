@@ -101,6 +101,15 @@ describe("queryWords and textMatches", () => {
     expect(applySearch(root, queryWords("then"))).toBe(1);
     expect(highlights.get(HIGHLIGHT_NAME)!.ranges.map((r) => r.toString())).toEqual(["then"]);
   });
+
+  it("marks whatever it matches when lower-casing depends on where a letter stands (Greek final sigma)", () => {
+    const root = document.createElement("div");
+    root.innerHTML = "<div data-search-group><section><h2>Signed in as ΟΣ and ος</h2></section></div>";
+    for (const q of ["ΟΣ", "ος", "οσ"]) {
+      expect(applySearch(root, queryWords(q))).toBe(1);
+      expect(highlights.get(HIGHLIGHT_NAME)!.ranges.map((r) => r.toString())).toEqual(["ΟΣ", "ος"]);
+    }
+  });
 });
 
 describe("Searching Settings", () => {

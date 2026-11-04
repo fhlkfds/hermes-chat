@@ -1,14 +1,14 @@
 // Search across Settings: the screen's own rendered text and its controls' names, so there is no index to keep in step with it. A section
 // shows while its text holds every word of the query; the rest are hidden, and the words are marked in what shows.
 
-/** The words of a query, lower-cased. */
+/** The words of a query, folded as the text they're found in is (`lowered`). */
 export function queryWords(query: string): string[] {
-  return query.toLowerCase().split(/\s+/).filter(Boolean);
+  return lowered(query).low.split(/\s+/).filter(Boolean);
 }
 
 /** Whether `text` holds every one of `words`, ignoring case. */
 export function textMatches(text: string, words: string[]): boolean {
-  const t = text.toLowerCase();
+  const t = lowered(text).low;
   return words.every((w) => t.includes(w));
 }
 
@@ -36,8 +36,10 @@ export function searchText(el: Element): string {
 }
 
 /**
- * `text` lower-cased, with where each of its code units came from in `text`: lower-casing can change the length
- * ("İ" becomes two code units), so offsets found in the lower-cased text are mapped back before marking.
+ * `text` folded for matching, with where each of its code units came from in `text`. Each character is lower-cased on
+ * its own, which can change the length ("İ" becomes two code units), so offsets found in the folded text are mapped
+ * back before marking. Matching, the query and marking all fold this one way, so whatever matches is marked; a final
+ * sigma folds to σ, so "ος", "οσ" and "ΟΣ" find one another wherever they stand in a word.
  */
 export function lowered(text: string): { low: string; start: number[]; end: number[] } {
   let low = "";
@@ -45,7 +47,7 @@ export function lowered(text: string): { low: string; start: number[]; end: numb
   const end: number[] = [];
   let i = 0;
   for (const ch of text) {
-    const l = ch.toLowerCase();
+    const l = ch === "ς" ? "σ" : ch.toLowerCase();
     for (let k = 0; k < l.length; k++) {
       start.push(i);
       end.push(i + ch.length);
