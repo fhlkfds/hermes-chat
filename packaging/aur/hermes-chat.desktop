@@ -7,5 +7,5 @@ Icon=hermes-chat
 Terminal=false
 Categories=Network;Chat;
 StartupWMClass=hermes-chat
-# Chat links (hermes-chat://chat?…, ADR 0033) open in Hermes Chat. The link arrives as %u.
+# Chat links (hermes-chat://chat?…, ADR 0037) open in Hermes Chat. The link arrives as %u.
 MimeType=x-scheme-handler/hermes-chat;

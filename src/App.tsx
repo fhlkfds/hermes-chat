@@ -80,6 +80,8 @@ import { PreviewContext } from "./ui/previewContext";
 import { tauriLocalFiles, tauriWebPages, type LocalFiles, type WebPages } from "./ui/tauriPreview";
 import type { PreviewTarget } from "./hermes/preview";
 import type { Route } from "./hermes/pipe";
+import { tauriTray, type TrayWiring } from "./hermes/tauriTray";
+import { useWindowHidden } from "./ui/windowState";
 import { getUIPrefs, setUIPrefs, subscribe as subscribeUIPrefs, toggleModelFavorite, type StickyModelPick } from "./hermes/uiPrefs";
 
 // xterm.js is loaded only once the Terminal is first opened.
@@ -456,6 +458,7 @@ export function Main({
   linkSuperseded,
   onLinkTaken,
   refs = savedConnectionRefs,
+  tray = tauriTray,
 }: {
   hermes: Hermes;
   connection: SavedSignIn;
@@ -488,6 +491,8 @@ export function Main({
   linkSuperseded?: number;
   /** The connection references chat links name (chatLinks.ts). */
   refs?: ConnectionRefs;
+  /** The tray icon and Close to tray (tray.rs, ADR 0034). */
+  tray?: TrayWiring;
 }) {
   const { profile, chats, olderPulled, archivedListed, status, route, unsecure, closedReason, syncError, others, live, models, switching, branchNews } = useSyncExternalStore(
     hermes.subscribe,
@@ -1162,6 +1167,23 @@ export function Main({
     const pick = getUIPrefs().modelPicker;
     if (catalog?.defaultPick && pick?.profile !== profile) setUIPrefs({ modelPicker: { ...catalog.defaultPick, profile } });
   }, [catalog, profile]);
+
+  // The tray (ADR 0034). Its New chat and Open Inbox come here once Rust has shown the window; New chat asks first
+  // about an unsaved edit, as the app's own New chat does. While a modal dialog is open (a Server file being edited,
+  // a question), they only bring the window forward, as the app's shortcuts stop at a modal: the owner sees the dialog
+  // and decides. The tray is told only how many Inbox entries need the owner, for its menu and the dot on its icon,
+  // never what they say; signing out clears it.
+  const trayCovered = () => covered || !!document.querySelector('[aria-modal="true"]');
+  const trayNewChat = useRef(() => {});
+  trayNewChat.current = () => trayCovered() || newChat();
+  const trayInbox = useRef(() => {});
+  trayInbox.current = () => trayCovered() || setInboxOpen(true);
+  useEffect(() => tray.onNewChat(() => trayNewChat.current()), [tray]);
+  useEffect(() => tray.onOpenInbox(() => trayInbox.current()), [tray]);
+  useEffect(() => tray.reportInbox(inboxCount), [tray, inboxCount]);
+  useEffect(() => () => tray.reportInbox(0), [tray]);
+  // Hidden to the tray, the window shows no chat: replies arriving meanwhile leave their chats Unread.
+  const windowHidden = useWindowHidden();
 
   // The inbox asks for fresh checks as it opens, and keeps asking while it is open.
   useEffect(() => {
@@ -1882,6 +1904,7 @@ export function Main({
             onSkillDirty={onSkillDirty}
             skillDiscards={skillDiscards}
             checkScreenshots={screenshots.support}
+            tray={tray}
             summon={summon}
             voiceSetup={voice.setup}
             showTextGeneration={showTextGeneration}
@@ -2027,7 +2050,7 @@ export function Main({
           />
           </Suspense>
         )}
-        <Split panes={slots} activeKey={active.key} onActivate={activate} covered={covered || covering || previewCovers} />
+        <Split panes={slots} activeKey={active.key} onActivate={activate} covered={covered || covering || previewCovers || windowHidden} />
         </div>
           {preview && previewShown && (
             <PreviewPane

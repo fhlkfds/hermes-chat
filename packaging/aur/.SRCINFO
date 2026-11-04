@@ -23,12 +23,14 @@ pkgbase = hermes-chat-git
 	optdepends = slurp: pick a region or window for screenshots on Hyprland and Sway
 	optdepends = grim: take screenshots on Hyprland and Sway
 	optdepends = xdg-desktop-portal: take screenshots on GNOME and KDE Plasma
+	optdepends = desktop-file-utils: let other apps open hermes-chat:// chat links
+	optdepends = libayatana-appindicator: show the tray icon and use Close to tray
 	provides = hermes-chat
 	conflicts = hermes-chat
 	options = !debug
 	source = hermes-chat::git+https://github.com/l0cky12/hermes-chat.git
 	source = hermes-chat.desktop
 	sha256sums = SKIP
-	sha256sums = 4e69886b7eeca1e9ceb1cc528d7fb6f202708d74e1590b7a166534a35d4304d9
+	sha256sums = e1bbcd9b872d66015782fe4afce508d0259c1c7521dd5f63bc6fc331cdba64ca
 
 pkgname = hermes-chat-git
