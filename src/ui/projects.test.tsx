@@ -175,6 +175,7 @@ describe("a chat's menu", () => {
       "Rename…",
       "Regenerate title",
       "Copy chat link",
+      "Open in a new tab",
       "Open in a second pane",
       // Snooze (ADR 0036)
       "1 hour",
