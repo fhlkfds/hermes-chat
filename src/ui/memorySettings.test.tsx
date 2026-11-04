@@ -155,6 +155,7 @@ describe("Settings → Memory", () => {
     await user.click(button(/Restore previous version/));
     await user.click(button("Discard edit"));
     expect(editor().value).toBe(SHORT);
+    expect(document.activeElement).toBe(editor());
     expect((await screen.findByRole("status")).textContent).toMatch(/replaced is in the editor\. Save to put it back on Hermes; nothing has changed there yet/);
     expect(s.memory.default.memory[1]).toBe("Owner prefers short answers.");
     await user.click(button("Save"));

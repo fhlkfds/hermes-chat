@@ -82,6 +82,7 @@ export function MemorySettings({
   // Answers for this profile only: a late answer after the screen went away, or after a newer read, is dropped.
   const alive = useRef(true);
   const reads = useRef(0);
+  const textArea = useRef<HTMLTextAreaElement>(null);
 
   const dirty = memoryDirty(editing, kept);
   useEffect(() => onDirtyChange(dirty), [dirty]);
@@ -309,6 +310,8 @@ export function MemorySettings({
     leaveEntry(() => {
       // Only into the entry it was for, in case another opened meanwhile.
       setEditing((cur) => (cur?.entry.id === at.id ? { ...cur, draft: r.text, fromKept: undefined } : cur));
+      // The Restore button goes once its text is in the editor, so focus moves there rather than to the page.
+      textArea.current?.focus();
       setNotice({ kind: "ok", text: `The text your save at ${clock(r.savedAt)} replaced is in the editor. Save to put it back on Hermes; nothing has changed there yet.` });
     });
 
@@ -454,6 +457,7 @@ export function MemorySettings({
                       {changed && <span className="badge warn">Unsaved</span>}
                     </span>
                     <textarea
+                      ref={textArea}
                       className="memory-text"
                       value={editing.draft}
                       spellCheck={false}
