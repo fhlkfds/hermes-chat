@@ -409,6 +409,21 @@ export class FakeHermes {
   /** Each profile's projects (`projects.db`), by profile name; a profile the server has but that isn't here has none. */
   projects: Record<string, FakeProject[]> = {};
   /**
+   * True: this server has the membership store ADR 0033 proposes (`projects.membership.*`). No Hermes has it yet, so
+   * it is off by default, and the methods answer "method not found" as the deployed `bf0203a` does.
+   */
+  membershipStore = false;
+  /** Each profile's project-chat links, by profile name, in the order they were made. */
+  membership: Record<string, { project_id: string; session_id: string; added_at: number }[]> = {};
+  /** Set: every membership call fails with this message, as a server that can't open its store would. */
+  membershipFails?: string;
+  /** Each profile's membership revision, bumped by every write. */
+  private membershipRev: Record<string, number> = {};
+  /** The revision of each link's last change, removals included, by `profile project_id session_id`. */
+  private linkRevs = new Map<string, number>();
+  /** The first result of every op id applied, by `profile op_id`, so a retried op is answered the same. */
+  private membershipOps = new Map<string, unknown>();
+  /**
    * More of the server's folders, by absolute path without a trailing slash, for `GET /api/fs/list`. That route lists
    * these and `serverFiles` together; a `{ dir: true }` entry there is a folder too.
    */
@@ -731,7 +746,49 @@ export class FakeHermes {
         const at = list.findIndex((p) => p.id === r.params.id);
         if (at < 0) throw [5062, "no such project"];
         list.splice(at, 1);
+        // The contract's `project_sessions` rows go with the project (`ON DELETE CASCADE`); the chats stay.
+        const profile = (r.params.profile as string | undefined) || "default";
+        const links = this.membership[profile];
+        if (links) this.membership[profile] = links.filter((l) => l.project_id !== r.params.id);
         return { projects: list, active_id: null };
+      }),
+    // The membership store ADR 0033 proposes. `apply` runs each op in order: refused for a project or (when adding) a
+    // chat the profile doesn't have; "unchanged" when the link already is as asked; a conflict when another write
+    // changed the link after the op's `base_revision`; otherwise written. A retried op id gets its first answer.
+    "projects.membership.list": (r) =>
+      this.membershipOp(r, (profile, links) => ({ revision: this.membershipRev[profile] ?? 0, links })),
+    "projects.membership.apply": (r) =>
+      this.membershipOp(r, (profile, links) => {
+        const ops = Array.isArray(r.params.ops) ? (r.params.ops as Record<string, unknown>[]) : [];
+        if (ops.length > 200) throw [5063, "at most 200 ops per call"];
+        const results = ops.map((op) => {
+          const key = `${profile} ${String(op.op_id)}`;
+          const seen = this.membershipOps.get(key);
+          if (seen) return seen;
+          const project_id = String(op.project_id ?? "");
+          const session_id = String(op.session_id ?? "");
+          const member = op.member === true;
+          const base = Number(op.base_revision) || 0;
+          const linkKey = `${profile} ${project_id} ${session_id}`;
+          const at = links.findIndex((l) => l.project_id === project_id && l.session_id === session_id);
+          const current = at >= 0;
+          let status: string;
+          if (!(this.projects[profile] ?? []).some((p) => p.id === project_id)) status = "no_project";
+          else if (member && !this.store(profile)!.some((s) => s.id === session_id)) status = "no_session";
+          else if (current === member) status = "unchanged";
+          else if ((this.linkRevs.get(linkKey) ?? 0) > base) status = "conflict";
+          else {
+            status = "applied";
+            if (member) links.push({ project_id, session_id, added_at: Math.floor(now()) });
+            else links.splice(at, 1);
+            this.membershipRev[profile] = (this.membershipRev[profile] ?? 0) + 1;
+            this.linkRevs.set(linkKey, this.membershipRev[profile]);
+          }
+          const result = { op_id: op.op_id, status, member: status === "applied" ? member : current, rev: this.linkRevs.get(linkKey) ?? 0 };
+          this.membershipOps.set(key, result);
+          return result;
+        });
+        return { revision: this.membershipRev[profile] ?? 0, results };
       }),
     // Keepalive, answered by the WS layer in either protocol generation (research doc §1).
     "gateway.ping": (r) => this.respond(r.id, { ok: true }),
@@ -1492,6 +1549,16 @@ export class FakeHermes {
     }
   }
 
+  /** A membership method on the profile's links; "method not found" on a server without the store. */
+  private membershipOp(r: Request, fn: (profile: string, links: { project_id: string; session_id: string; added_at: number }[]) => unknown) {
+    if (!this.membershipStore) return this.fail(r.id, -32601, `unknown method: ${r.method}`);
+    if (this.membershipFails) return this.fail(r.id, 5061, this.membershipFails);
+    this.projectsOp(r, () => {
+      const profile = (r.params.profile as string | undefined) || "default";
+      return fn(profile, (this.membership[profile] ??= []));
+    });
+  }
+
   /** A projects method on the one project `params.id` names, answering with it refreshed. */
   private projectOp(r: Request, fn: (p: FakeProject) => void) {
     this.projectsOp(r, (list) => {
@@ -1685,6 +1752,9 @@ export class FakeHermes {
     if (i < 0) return { ok: true, already_absent: true };
     store.splice(i, 1);
     delete this.transcripts[id];
+    // The contract removes a deleted chat's project links with it.
+    const p = profile || "default";
+    if (this.membership[p]) this.membership[p] = this.membership[p].filter((l) => l.session_id !== id);
     return { ok: true, deleted_ids: [id] };
   }
 

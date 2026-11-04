@@ -80,7 +80,7 @@ Switching profile happens in place, with the same sign-in: the list shows what t
 _Avoid_: account, workspace, agent (as a name for a profile), connection (the sign-in, which covers every profile)
 
 **Project**:
-A named group of chats and of folders on the server, in one profile. Hermes keeps the project, its name and its folders, so other Hermes clients show it too. Which chats are in it is kept on this computer only. Picking a project in the list shows only its chats; a chat started meanwhile goes in it. A chat can be in several projects, or none. Deleting a project keeps its chats in Hermes and its folders on the server.
+A named group of chats and of folders on the server, in one profile. Hermes keeps the project, its name and its folders, so other Hermes clients show it too. Which chats are in it is kept by Hermes when it has a membership store, so every computer shows the same, and on this computer only when it doesn't, which is every Hermes today (ADR 0033). Picking a project in the list shows only its chats; a chat started meanwhile goes in it. A chat can be in several projects, or none. Deleting a project keeps its chats in Hermes and its folders on the server.
 _Avoid_: workspace, group, folder (for the project itself)
 
 **Tag**:
@@ -94,6 +94,10 @@ _Avoid_: query, view
 **Saved filter**:
 A Chat filter the owner named, listed in its own section of the chat list and opened again from there. It is a search, not a group: unlike a Project, it puts no chat anywhere. Kept on this computer only, for each connection and profile (ADR 0026).
 _Avoid_: smart folder, saved search (fine in conversation), view
+
+**Membership** (of a project):
+Which chats are in which project, one link per chat and project. Kept by Hermes when it answers `projects.membership.*`, and on this computer when it doesn't. Moving this computer's membership to Hermes shows a preview first and keeps a recovery copy. A change Hermes hasn't confirmed yet is **waiting to sync**. A change that another computer contradicted after this one last synced is a **conflict**: Hermes's version is shown until the owner keeps theirs or Hermes's (ADR 0033).
+_Avoid_: sync conflict (for a change that is only waiting), assignment
 
 **Folder** (of a project):
 A path on the server that a project refers to, shown with the connection it is on. Hermes Chat adds only a folder that is already there, and never creates, moves or deletes one. A folder in a git repository shows its branch, and the repository's other worktrees that already exist can be added as folders too; Hermes Chat never creates a worktree.
