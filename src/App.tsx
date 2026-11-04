@@ -520,7 +520,7 @@ export function Main({
   screenshots?: Screenshots;
   /** The Repository screen's helper over ssh, and worktrees' (ADR 0034, 0043). */
   repoApi?: RepoApi;
-  /** The global shortcut (ADR 0033); none outside the desktop app. */
+  /** Tells the window `hermes-chat --show` or `--toggle` brought it forward; none outside the desktop app. */
   summon?: SummonApi;
   /** Where Settings → Persona keeps unsaved edits and replaced versions on this computer. */
   personaStore?: PersonaStore;
@@ -1631,7 +1631,7 @@ export function Main({
       else openPanel(tab);
     });
 
-  // The global shortcut or `hermes-chat --show` brought the window forward: the cursor goes back in the selected pane's
+  // `hermes-chat --show`, `--toggle` or a second launch brought the window forward: the cursor goes back in the selected pane's
   // composer, its draft as it was. Settings or another screen over the chat stays as it was left, unsaved edits and all.
   const onSummonedRef = useRef(() => {});
   onSummonedRef.current = () => {
@@ -2128,7 +2128,6 @@ export function Main({
             skillDiscards={skillDiscards}
             checkScreenshots={screenshots.support}
             tray={tray}
-            summon={summon}
             voiceSetup={voice.setup}
             showTextGeneration={showTextGeneration}
             showMemory={showMemory}
