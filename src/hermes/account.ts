@@ -1,4 +1,4 @@
-// Signing in and out of a saved connection (connections.ts, ADR 0048). Each connection's dashboard password is kept in
+// Signing in and out of a saved connection (connections.ts, ADR 0049). Each connection's dashboard password is kept in
 // the system keyring under its id, so the app signs in at launch without asking; the rest of the connection is kept in
 // the connection list, so the sign-in screen after Sign out has everything but the password. Its extra request
 // headers, whose values can be secrets, are kept in the keyring too, and stay after Sign out.

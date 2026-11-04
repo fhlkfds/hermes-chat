@@ -723,7 +723,7 @@ export function Main({
   screenshots?: Screenshots;
   /** The Repository screen's helper over ssh, and worktrees' (ADR 0034, 0043). */
   repoApi?: RepoApi;
-  /** The global shortcut (ADR 0033); none outside the desktop app. */
+  /** Tells the window `hermes-chat --show` or `--toggle` brought it forward; none outside the desktop app. */
   summon?: SummonApi;
   /** Where Settings → Persona keeps unsaved edits and replaced versions on this computer. */
   personaStore?: PersonaStore;
@@ -1333,7 +1333,7 @@ export function Main({
   };
   const switchProfile = (name: string) => guard(() => switchProfileNow(name), "profile");
 
-  // Another saved connection (ADR 0048). Whatever is running or waiting here is named first, from the inbox's entries,
+  // Another saved connection (ADR 0049). Whatever is running or waiting here is named first, from the inbox's entries,
   // which cover every profile on this server; an unsaved persona or memory edit asks first too. Nothing is stopped:
   // Hermes keeps a running reply going after this connection closes, as it does when the profile switches.
   const [connectionAsk, setConnectionAsk] = useState<{ to: SavedConnection; notes: string[]; go: () => void; stay?: () => void }>();
@@ -1876,7 +1876,7 @@ export function Main({
       else openPanel(tab);
     });
 
-  // The global shortcut or `hermes-chat --show` brought the window forward: the cursor goes back in the selected pane's
+  // `hermes-chat --show`, `--toggle` or a second launch brought the window forward: the cursor goes back in the selected pane's
   // composer, its draft as it was. Settings or another screen over the chat stays as it was left, unsaved edits and all.
   const onSummonedRef = useRef(() => {});
   onSummonedRef.current = () => {
@@ -1887,7 +1887,7 @@ export function Main({
 
 
   // Each pane's tab strip above its chat, and the pane as a place to drop a chat dragged from the list or a tab.
-  const withTabs = (p: Pane, chatNode: ReactNode) => (
+  const withTabs = (p: Pane, chatNode: ReactNode, controls: ReactNode) => (
     <>
       <TabStrip
         tabs={p.tabs.map((id) => {
@@ -1900,6 +1900,7 @@ export function Main({
         onNew={() => openChat(null, { pane: p.key, fresh: true, newTab: true })}
         onDropChat={(id) => dropChat(p.key, id, "tab")}
         lastClosable={split}
+        controls={controls}
       />
       <PaneDrop onDropChat={(id, zone) => dropChat(p.key, id, zone)}>{chatNode}</PaneDrop>
     </>
@@ -2009,23 +2010,21 @@ export function Main({
               <PanelRight size={16} />
             </button>
           }
-          paneControls={
-            split ? (
-              <button className="icon-btn" title={`Close the ${paneNames(splitDir)[i].toLowerCase()} pane`} aria-label={`Close the ${paneNames(splitDir)[i].toLowerCase()} pane`} onClick={() => closePane(p.key)}>
-                <X size={16} />
-              </button>
-            ) : (
-              <>
-                <button className="icon-btn" title="Split right: open this chat in a second pane beside it (Ctrl+\)" aria-label="Split into two panes" onClick={() => splitWith(p.chatId, "row")}>
-                  <Columns2 size={16} />
-                </button>
-                <button className="icon-btn" title="Split down: open this chat in a second pane below it" aria-label="Split into two panes, one above the other" onClick={() => splitWith(p.chatId, "column")}>
-                  <Rows2 size={16} />
-                </button>
-              </>
-            )
-          }
-        />
+        />,
+        split ? (
+          <button className="icon-btn" title={`Close the ${paneNames(splitDir)[i].toLowerCase()} pane${isActive ? "" : " (Ctrl+\\)"}`} aria-label={`Close the ${paneNames(splitDir)[i].toLowerCase()} pane`} onClick={() => closePane(p.key)}>
+            <X size={16} />
+          </button>
+        ) : (
+          <>
+            <button className="icon-btn" title="Split right: open this chat in a second pane beside it (Ctrl+\)" aria-label="Split into two panes" onClick={() => splitWith(p.chatId, "row")}>
+              <Columns2 size={16} />
+            </button>
+            <button className="icon-btn" title="Split down: open this chat in a second pane below it" aria-label="Split into two panes, one above the other" onClick={() => splitWith(p.chatId, "column")}>
+              <Rows2 size={16} />
+            </button>
+          </>
+        )
       ),
     };
   });
@@ -2384,7 +2383,6 @@ export function Main({
             skillDiscards={skillDiscards}
             checkScreenshots={screenshots.support}
             tray={tray}
-            summon={summon}
             voiceSetup={voice.setup}
             showTextGeneration={showTextGeneration}
             showMemory={showMemory}
@@ -2809,7 +2807,6 @@ function ChatView({
   onOpenChat,
   onShowAt,
   onOpenTurn,
-  paneControls,
   previewControls,
   screenshots,
   screenshotWiring,
@@ -2872,7 +2869,6 @@ function ChatView({
   onShowAt: (link: BranchLink) => void;
   /** Opens another version of a turn in this pane, at that turn (ADR 0035). */
   onOpenTurn: (chatId: string, turn: number) => void;
-  paneControls: ReactNode;
   previewControls: ReactNode;
   screenshots?: ScreenshotDesk;
   screenshotWiring: Screenshots;
@@ -3172,6 +3168,7 @@ function ChatView({
       onSettle={started ? onSettle : undefined}
       onExport={started ? onExport : undefined}
       onCopyLink={started ? onCopyLink : undefined}
+      onDelete={started ? () => void onDelete() : undefined}
       onArchive={started ? onArchive : undefined}
       active={active}
       visible={visible}
@@ -3183,7 +3180,6 @@ function ChatView({
       // typed stays in the composer, and a failure is a Failed message (ADR 0041).
       voiceSend={started ? (text) => hermes.sendTracked(chat.id, text) : undefined}
       commands={commands}
-      paneControls={paneControls}
       headActions={
         <>
           {started && inWorktree && (

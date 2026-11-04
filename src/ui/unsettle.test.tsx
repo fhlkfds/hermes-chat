@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// The Unsettle button on a Settled chat, in the Settled drawer and in the chat's header, against a fake Hermes.
+// The Unsettle button on a Settled chat, in the Settled drawer and in the chat header's More menu, against a fake Hermes.
 // Each test checks what reached Hermes and what the toast says, not which handler ran.
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -67,18 +67,17 @@ describe("Unsettle", () => {
     await waitFor(() => expect(within(drawer).getByRole("button", { name: /Old notes/ })).toBeTruthy());
   });
 
-  it("is only the icon toggle in the chat's header, beside the Settled badge", async () => {
+  it("is in the chat header's More menu, not beside the Settled badge", async () => {
     const { server, hermes, user } = await signedIn();
     await user.click(screen.getByRole("button", { name: /Old notes/ }));
     await act(async () => void (await hermes.idle()));
     const title = document.querySelector<HTMLElement>(".chat-title")!;
     expect(within(title).getByText("Settled")).toBeTruthy();
     expect(within(title).queryByRole("button", { name: "Unsettle" })).toBeNull();
-    const toggle = within(document.querySelector<HTMLElement>(".chat-head-actions")!).getByRole("button", { name: "Unsettle" });
-    expect(toggle.textContent).toBe("");
-    expect(toggle.title).toBe("Unsettle");
+    expect(within(document.querySelector<HTMLElement>(".chat-head-actions")!).queryByRole("button", { name: "Unsettle" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "More" }));
 
-    await user.click(toggle);
+    await user.click(screen.getByRole("menuitem", { name: "Unsettle" }));
     await act(async () => void (await hermes.idle()));
     expect(pinnedWrites(server)).toEqual([true]);
     expect(toast().textContent).toContain("Unsettled: Old notes");

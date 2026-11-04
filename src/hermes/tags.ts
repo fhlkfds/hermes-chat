@@ -293,7 +293,7 @@ function parse(raw: string | null): UIPrefsDoc {
 }
 
 /**
- * Forgets every scope `match` picks, after the owner removed their connection (forgetConnection.ts, ADR 0048). Other
+ * Forgets every scope `match` picks, after the owner removed their connection (forgetConnection.ts, ADR 0049). Other
  * scopes, and fields a newer app wrote, are kept as stored.
  */
 export async function forgetTagScopes(file: TagsFile, match: (scope: string) => boolean): Promise<void> {
