@@ -98,7 +98,7 @@ export function RepositoryScreen({
   suggestScope?: string;
   /** Opens a pull request's or a check's page in the owner's browser. */
   openUrl?: (url: string) => void;
-  /** Worktrees (ADR 0039): who makes one, the chats Hermes has working in a folder, and starting a chat in one. */
+  /** Worktrees (ADR 0040): who makes one, the chats Hermes has working in a folder, and starting a chat in one. */
   worktrees?: Omit<Parameters<typeof WorktreesPanel>[0], "api" | "target" | "top" | "branch" | "onOpen" | "scope">;
   onClose: () => void;
 }) {

@@ -15,7 +15,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
-/// The helper program, sent unchanged every time: the Repository screen's operations, then the worktrees' (ADR 0039).
+/// The helper program, sent unchanged every time: the Repository screen's operations, then the worktrees' (ADR 0040).
 pub const HELPER: &str = concat!(include_str!("repo_git_helper.py"), include_str!("repo_worktrees_helper.py"), "\n\nmain()\n");
 
 /// What the helper prints before its answer, so anything a login script prints first can't be mistaken for it.
@@ -98,7 +98,7 @@ pub enum Request {
     #[serde(rename_all = "camelCase")]
     RemoteHead { repo: String, remote: String, remote_branch: String },
     /// The repository's worktrees, which of them Hermes Chat manages and which chats use each, their changes and
-    /// unpushed commits, and those removed with their kept changes (ADR 0039).
+    /// unpushed commits, and those removed with their kept changes (ADR 0040).
     WorktreeList { repo: String },
     /// Exactly what a create would do: the branch, the commit it starts at, the folder, the setup steps, and a stamp.
     #[serde(rename_all = "camelCase")]

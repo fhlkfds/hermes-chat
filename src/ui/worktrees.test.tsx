@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Worktrees in the Repository screen (ADR 0039) against a fake of Rust's `repo_git` command. Its answers have the
+// Worktrees in the Repository screen (ADR 0040) against a fake of Rust's `repo_git` command. Its answers have the
 // shapes repo_worktrees_helper.py gives for real repositories (src-tauri/tests/worktrees.rs).
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -137,7 +137,7 @@ describe("the list", () => {
   it("says when Hermes Chat has made none", async () => {
     const { api } = fakeApi(() => listOf([]));
     show(api);
-    await waitFor(() => expect(panel().textContent).toContain("No worktrees made by Hermes Chat yet."));
+    await waitFor(() => expect(panel().textContent).toContain("No worktrees made by Hermes Chat are here."));
   });
 
   it("says when the server can't do it", async () => {
@@ -231,7 +231,7 @@ describe("making one", () => {
     expect(what).toContain(PATH);
     expect(what).toContain("fix/login (new, not tracking anything)");
     expect(what).toContain("57a1fb6 Add the login form");
-    expect(what).toContain("2 changed · 1 untracked changes. They stay there");
+    expect(what).toContain("has uncommitted changes (2 changed · 1 untracked). They stay there");
     expect(what).toContain("Copy .env");
     expect(what).toContain("Skip local.cfg");
     expect(ops(calls, "worktreePlan")).toEqual([{ op: "worktreePlan", repo: TOP, branch: "fix/login", newBranch: true, base: "main" }]);
@@ -245,6 +245,24 @@ describe("making one", () => {
     expect(within(dialog()).getByText(/HEAD is now at 57a1fb6/)).toBeTruthy();
     await user.click(within(dialog()).getByRole("button", { name: "Start chat here" }));
     expect(onStartChat).toHaveBeenCalledWith(expect.objectContaining({ path: PATH, branch: "fix/login", id: (create as { id: string }).id }));
+  });
+
+  it("runs a worktree's steps left as soon as Retry setup opens it", async () => {
+    const r = record({ setup: [{ entry: ".env", action: "copy", state: "failed", message: "[Errno 13] Permission denied" }, { entry: "node_modules", action: "link", state: "pending", message: "" }] });
+    let rec = r;
+    const { api, calls } = fakeApi((q) => {
+      if (q.op === "worktreeList") return listOf([managedRow(rec)]);
+      if (q.op === "worktreeSetup") {
+        rec = { ...rec, setup: rec.setup.map((s, i) => (i === q.step ? { ...s, state: "done", message: "Copied." } : s)) };
+        return { record: rec };
+      }
+      throw new Error(`unexpected ${q.op}`);
+    });
+    const user = userEvent.setup();
+    show(api);
+    await user.click(await screen.findByRole("button", { name: "Retry setup" }));
+    await within(dialog()).findByText("The worktree is ready.");
+    expect(ops(calls, "worktreeSetup").map((c) => (c as { step: number }).step)).toEqual([0, 1]);
   });
 
   it("makes an edit stale: it must be previewed again", async () => {

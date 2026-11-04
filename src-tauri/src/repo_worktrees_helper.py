@@ -1,6 +1,6 @@
 
 
-# ── worktrees (ADR 0039) ────────────────────────────────────────────────────
+# ── worktrees (ADR 0040) ────────────────────────────────────────────────────
 # Worktrees of the server's repository that Hermes Chat makes and manages. Each is made with the exact base, branch and
 # folder the owner saw first, set up once from the repository's own `.worktreeinclude`, listed with its chats, changes
 # and unpushed commits, and removed only after a preview, with its changes kept in a recovery ref first. Branches are
@@ -776,6 +776,11 @@ def op_worktree_restore(req):
                 rec["state"] = "ready"
             reg.save()
             raise
+        # The setup's copies were ignored files, deleted with the folder: its steps run again (a link the kept
+        # changes brought back is found already there).
+        for step in rec["setup"]:
+            if step["state"] == "done":
+                step.update(state="pending", message="")
         rec.update(state="ready", restoredAt=now(), restoredFrom=gone, removed=None, chats=[])
         reg.save()
         return {"record": rec, "output": output}

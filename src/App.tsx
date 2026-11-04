@@ -414,7 +414,7 @@ export default function App({ links = desktopLinks }: { links?: LinkInbox } = {}
  * One pane of the chat area. `chatId` null: the New chat pane. `draftError`: why the New chat pane couldn't start a
  * chat. `picked`: the search result its chat was opened from; `at` tells one pick from the next.
  */
-/** `worktree`: the New chat pane starts its chat in this worktree (ADR 0039). */
+/** `worktree`: the New chat pane starts its chat in this worktree (ADR 0040). */
 type Pane = { key: string; chatId: string | null; draftError?: string; picked?: { found: Found; at: number }; jump?: JumpTarget; worktree?: WorktreeLaunch };
 
 let panesMade = 0;
@@ -2379,7 +2379,7 @@ function ChatView({
   /** The project the list shows, its defaults for new chats, and whether this chat is in it. */
   shownProject?: { name: string; defaults?: ProjectDefaults; has: boolean };
   /** The connection, as a folder on the server is shown beside it. */
-  /** The worktree a chat started in this New chat pane works in (ADR 0039). */
+  /** The worktree a chat started in this New chat pane works in (ADR 0040). */
   worktree?: WorktreeLaunch;
   where?: string;
   onStarted: (id: string) => void;
@@ -2470,7 +2470,7 @@ function ChatView({
   };
 
   /**
-   * Records on the server that the chat works in the worktree, so the worktree can't be removed under it (ADR 0039).
+   * Records on the server that the chat works in the worktree, so the worktree can't be removed under it (ADR 0040).
    * Hermes keeps the chat's folder too, which a removal also checks, so a failure here is said but doesn't stop it.
    */
   const recordInWorktree = async (w: WorktreeLaunch, id: string, first: string) => {

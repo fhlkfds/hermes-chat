@@ -1,4 +1,4 @@
-//! Managed worktrees (repo_worktrees_helper.py, ADR 0039), run as the server runs them: the exact remote command
+//! Managed worktrees (repo_worktrees_helper.py, ADR 0040), run as the server runs them: the exact remote command
 //! string through `sh -c`, against real Git repositories in a temporary folder. Only ssh itself is left out.
 
 use hermes_chat::repo_git::{self, ChatRef, RepoError, Request};
@@ -323,12 +323,14 @@ async fn setup_copies_ignored_files_once_skips_source_files_and_a_failed_step_ca
 #[tokio::test]
 async fn removal_previews_files_and_commits_keeps_changes_in_a_ref_and_restore_puts_them_back() {
     let d = repo("remove-dirty");
+    write(&d.repo(), ".env", "TOKEN=synthetic\n");
+    write(&d.repo(), ".worktreeinclude", ".env\n");
     made(&d, ID, "work").await;
     let tree = d.tree("work");
+    ask(Request::WorktreeSetup { repo: d.s(), id: ID.into(), step: 0 }).await.unwrap();
     let ahead = commit(&tree, "app.txt", "committed here\n", "unpushed work");
     write(&tree, "app.txt", "edited after\n");
     write(&tree, "new.txt", "untracked\n");
-    write(&tree, ".env", "ignored\n");
     let f = removal(&d, ID).await;
     assert!(f["blockers"].as_array().unwrap().is_empty(), "{f}");
     let files: Vec<_> = f["files"].as_array().unwrap().iter().map(|x| (x["status"].as_str().unwrap(), x["path"].as_str().unwrap())).collect();
@@ -356,6 +358,9 @@ async fn removal_previews_files_and_commits_keeps_changes_in_a_ref_and_restore_p
     assert_eq!(read(&tree, "new.txt"), "untracked\n");
     assert_eq!(git(&tree, &["rev-parse", "HEAD"]), ahead);
     assert_eq!(row(&list(&d).await, &tree)["locked"], format!("hermes-chat {ID}"));
+    // The setup's ignored copy went with the folder, so its step is to run again.
+    assert_eq!(back["record"]["setup"][0]["state"], "pending");
+    assert!(!tree.join(".env").exists());
     // The ref stays: nothing kept is ever deleted.
     assert_eq!(git(&d.repo(), &["rev-parse", reference]), kept["commit"].as_str().unwrap());
 }

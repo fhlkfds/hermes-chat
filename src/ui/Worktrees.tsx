@@ -1,4 +1,4 @@
-// Worktrees in the Repository screen (ADR 0039): the repository's worktrees on the server, the ones Hermes Chat made
+// Worktrees in the Repository screen (ADR 0040): the repository's worktrees on the server, the ones Hermes Chat made
 // with their chats, changes and unpushed commits, and making, setting up, starting a chat in, and removing them. Every
 // Git operation runs on the server through the Repository screen's helper over the owner's ssh.
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
@@ -113,7 +113,7 @@ export function WorktreesPanel({
     <section className="repo-publish repo-worktrees" aria-label="Worktrees" aria-busy={loading}>
       <div className="repo-section-head">
         <h2 className="repo-commit-label">
-          <GitBranch size={14} aria-hidden /> Worktrees {data && <span className="count">{data.worktrees.length}</span>}
+          <GitBranch size={14} aria-hidden /> Worktrees {data && <span className="count">{managed.length}</span>}
         </h2>
         <button className="btn" disabled={!data || data.newer || !!busy} onClick={() => setCreating({})}>
           <GitBranchPlus size={13} aria-hidden /> New worktree…
@@ -148,8 +148,8 @@ export function WorktreesPanel({
         <>
           {managed.length === 0 && (
             <p className="muted small repo-none">
-              No worktrees made by Hermes Chat yet. New worktree… makes one beside the repository, on a branch of its own, for a chat to work in without
-              touching this checkout.
+              No worktrees made by Hermes Chat are here. New worktree… makes one beside the repository, on a branch of its own, for a chat to work in
+              without touching this checkout.
             </p>
           )}
           {managed.length > 0 && (
@@ -591,6 +591,15 @@ function CreateDialog({
     if (r) create(undefined, { branch: r.branch, newBranch: r.newBranch, ...(r.newBranch && { base: r.base }), stamp: "" });
   };
 
+  // Opened from a worktree's Run setup or Retry setup: the steps left run at once, for the worktree it opened with.
+  // Once, StrictMode included.
+  const autoRan = useRef(false);
+  useEffect(() => {
+    if (autoRan.current || resume?.state !== "ready" || !stepsToRun(resume).length) return;
+    autoRan.current = true;
+    void runSetup(resume);
+  }, []);
+
   const working = phase.phase === "creating" || (phase.phase === "setup" && phase.running !== undefined) || (phase.phase === "lost" && phase.checking);
   useEffect(() => {
     if (!working) primary.current?.focus();
@@ -599,7 +608,8 @@ function CreateDialog({
   const plan = phase.phase === "form" && phase.plan?.state === "ready" ? phase.plan.data : undefined;
   const record = phase.phase === "setup" ? phase.record : undefined;
   const summary = record && setupSummary(record);
-  const failed = !!summary?.failed.length || (phase.phase === "setup" && !!phase.error);
+  // Not finished: a step failed, or some haven't run (Retry runs them).
+  const failed = !!summary?.failed.length || !!summary?.pending || (phase.phase === "setup" && !!phase.error);
 
   return (
     <div className="leave-overlay" onMouseDown={(e) => e.target === e.currentTarget && close()}>
@@ -708,7 +718,7 @@ function CreateDialog({
                 </button>
                 {!phase.checking && (phase.plan || resume) && (!phase.error || answerLost(phase.error) || phase.error.kind === "git") && (
                   <button className="btn primary" onClick={resend}>
-                    {phase.note?.startsWith("Nothing") ? "Try again" : "Finish making it"}
+                    {phase.note?.startsWith("Making it stopped") ? "Finish making it" : "Try again"}
                   </button>
                 )}
               </div>
@@ -792,7 +802,8 @@ function PlanView({ plan }: { plan: WorktreePlan }) {
       </dl>
       {sourceDirty && (
         <p className="files-banner" role="note">
-          <CircleAlert size={14} aria-hidden /> {s.path} has {countsLabel(s).toLowerCase()} changes. They stay there: the worktree starts from the commit above, without them.
+          <CircleAlert size={14} aria-hidden /> {s.path} has uncommitted changes ({countsLabel(s).toLowerCase()}). They stay there: the worktree starts from the
+          commit above, without them.
         </p>
       )}
       {plan.submoduleCount > 0 && (
