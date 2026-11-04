@@ -55,8 +55,14 @@ package() {
   install -Dm755 "src-tauri/target/release/$_pkgname" "$pkgdir/usr/bin/$_pkgname"
   # The launcher sets WEBKIT_DISABLE_DMABUF_RENDERER=1, as `npm run app` does.
   install -Dm644 "$srcdir/$_pkgname.desktop" "$pkgdir/usr/share/applications/$_pkgname.desktop"
-  install -Dm644 src-tauri/icons/32x32.png "$pkgdir/usr/share/icons/hicolor/32x32/apps/$_pkgname.png"
-  install -Dm644 src-tauri/icons/128x128.png "$pkgdir/usr/share/icons/hicolor/128x128/apps/$_pkgname.png"
-  install -Dm644 src-tauri/icons/icon.png "$pkgdir/usr/share/icons/hicolor/512x512/apps/$_pkgname.png"
+  # The launcher's Icon=hermes-chat: every hicolor size tools/icons/build.sh renders (hinted below 64px, ADR 0048),
+  # the master SVG, and a one-colour symbolic icon for high-contrast and symbolic themes.
+  local size
+  for size in 16 22 24 32 48 64 128 256 512; do
+    install -Dm644 "src-tauri/icons/hicolor/${size}x${size}.png" \
+      "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/$_pkgname.png"
+  done
   install -Dm644 assets/icon.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/$_pkgname.svg"
+  install -Dm644 assets/icons/hermes-chat-symbolic.svg \
+    "$pkgdir/usr/share/icons/hicolor/symbolic/apps/$_pkgname-symbolic.svg"
 }
