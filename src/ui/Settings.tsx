@@ -248,12 +248,23 @@ export function SettingsScreen({
   }, [wordsKey]);
   // Ctrl+F finds in Settings; the chat panes it covers aren't active, so theirs doesn't open. A dialog keeps its focus, and a
   // shortcut recorder keeps the keys it takes.
+  // Escape ends a search from anywhere in Settings, not only the box: the focus is often on a result by then.
+  const searchingRef = useRef(false);
+  searchingRef.current = searching;
+  const screenRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!e.defaultPrevented && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "f" && !document.querySelector('[aria-modal="true"]')) {
+      if (e.defaultPrevented || document.querySelector('[aria-modal="true"]')) return;
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "f") {
         e.preventDefault();
         searchBox.current?.focus();
         searchBox.current?.select();
+      } else if (e.key === "Escape" && searchingRef.current) {
+        const at = document.activeElement;
+        if (at && at !== document.body && !screenRef.current?.contains(at)) return;
+        e.preventDefault();
+        setQuery("");
+        searchBox.current?.focus();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -444,7 +455,7 @@ export function SettingsScreen({
   const total = found + elsewhere.length;
 
   return (
-    <div className="settings">
+    <div className="settings" ref={screenRef}>
       <div className="settings-inner">
         <button className="back" onClick={onClose}>
           <ArrowLeft size={15} /> Back to chat
@@ -460,12 +471,6 @@ export function SettingsScreen({
               placeholder="Search settings"
               value={query}
               onChange={(e) => typed(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape" && query) {
-                  e.stopPropagation();
-                  setQuery("");
-                }
-              }}
             />
             {query && (
               <button className="icon-btn" aria-label="Clear search" title="Clear search" onClick={() => (setQuery(""), searchBox.current?.focus())}>
@@ -478,7 +483,12 @@ export function SettingsScreen({
           className="settings-tabs"
           role="tablist"
           aria-label="Settings"
-          onKeyDown={(e) => arrowSelect(e, tabs.map((t) => t.id), tab, pick)}
+          // While searching no tab is selected, so the arrows move on from the tab that has the focus.
+          onKeyDown={(e) => {
+            const ids = tabs.map((t) => t.id);
+            const focused = ids.find((id) => (e.target as HTMLElement).id === `settings-tab-${id}`);
+            arrowSelect(e, ids, searching && focused ? focused : tab, pick);
+          }}
         >
           {tabs.map(({ id, label, Icon }) => {
             const on = !searching && shownTab === id;
@@ -504,8 +514,9 @@ export function SettingsScreen({
             <p className="muted small settings-search-count" role="status">
               {total ? `${total} ${total === 1 ? "match" : "matches"} for “${query.trim()}”` : `No settings match “${query.trim()}”.`}
             </p>
+            <div ref={results}>
             {elsewhere.map(({ id, label, Icon }) => (
-              <div key={id} className="settings-row settings-search-elsewhere">
+              <div key={id} className="settings-row settings-search-elsewhere" data-search-mark>
                 <div>
                   <div className="settings-search-tab">
                     <Icon size={13} /> {label}
@@ -517,7 +528,6 @@ export function SettingsScreen({
                 </button>
               </div>
             ))}
-            <div ref={results}>
               {tabs
                 .filter((t) => SEARCHED.includes(t.id))
                 .map(({ id, label, Icon }) => (

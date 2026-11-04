@@ -9,7 +9,7 @@ import { FakeHermes } from "../hermes/fakeHermes";
 import { connect, type Hermes } from "../hermes/transport";
 import { appearanceStore } from "./appearance";
 import { SettingsScreen } from "./Settings";
-import { HIGHLIGHT_NAME, queryWords, textMatches } from "./settingsSearch";
+import { HIGHLIGHT_NAME, applySearch, queryWords, textMatches } from "./settingsSearch";
 
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: async () => null }));
@@ -90,6 +90,17 @@ describe("queryWords and textMatches", () => {
     expect(textMatches("Close to tray: closing the window hides it", ["tray", "close"])).toBe(true);
     expect(textMatches("Close to tray", ["tray", "dock"])).toBe(false);
   });
+
+  it("marks a word whose lower case is longer than it, at its place in the original text", () => {
+    // "İ" lower-cases to two code units, so offsets in the lower-cased text run one past the original's.
+    const root = document.createElement("div");
+    root.innerHTML = "<div data-search-group><section><h2>Profile İpek, then Ipek</h2></section></div>";
+    const shown = applySearch(root, queryWords("İpek"));
+    expect(shown).toBe(1);
+    expect(highlights.get(HIGHLIGHT_NAME)!.ranges.map((r) => r.toString())).toEqual(["İpek"]);
+    expect(applySearch(root, queryWords("then"))).toBe(1);
+    expect(highlights.get(HIGHLIGHT_NAME)!.ranges.map((r) => r.toString())).toEqual(["then"]);
+  });
 });
 
 describe("Searching Settings", () => {
@@ -134,6 +145,8 @@ describe("Searching Settings", () => {
     const { user } = await shown();
     await user.type(box(), "remembers");
     expect(screen.queryByRole("group", { name: "Memory" })).toBeNull();
+    // The result's own text is marked too.
+    expect(highlights.get(HIGHLIGHT_NAME)!.ranges.map((r) => r.toString())).toEqual(["remembers"]);
     await user.click(screen.getByRole("button", { name: "Open Memory" }));
     expect(box().value).toBe("");
     expect(screen.getByRole("tab", { name: /Memory/ }).getAttribute("aria-selected")).toBe("true");
@@ -169,6 +182,27 @@ describe("Searching Settings", () => {
     await user.click(screen.getByRole("tab", { name: /Model/ }));
     expect(box().value).toBe("");
     expect(screen.getByRole("tabpanel").id).toBe("settings-panel-model");
+  });
+
+  it("ends with Escape when the focus has moved into the results", async () => {
+    const { user } = await shown();
+    await user.type(box(), "tray");
+    screen.getByRole("switch", { name: "Close to tray" }).focus();
+    await user.keyboard("{Escape}");
+    expect(box().value).toBe("");
+    expect(document.activeElement).toBe(box());
+    expect(screen.getByRole("tabpanel").id).toBe("settings-panel-general");
+  });
+
+  it("moves with the arrows from the focused tab while searching, not the one shown before", async () => {
+    const { user } = await shown();
+    await user.click(screen.getByRole("tab", { name: /Appearance/ }));
+    await user.type(box(), "tray");
+    screen.getByRole("tab", { name: /General/ }).focus();
+    await user.keyboard("{ArrowRight}");
+    expect(box().value).toBe("");
+    expect(screen.getByRole("tabpanel").id).toBe("settings-panel-appearance");
+    expect(document.activeElement).toBe(screen.getByRole("tab", { name: /Appearance/ }));
   });
 
   it("asks before starting a search over a tab with an unsaved edit, and starts it only once agreed", async () => {

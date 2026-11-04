@@ -35,6 +35,27 @@ export function searchText(el: Element): string {
   return [el.textContent ?? "", ...names].join(" ");
 }
 
+/**
+ * `text` lower-cased, with where each of its code units came from in `text`: lower-casing can change the length
+ * ("İ" becomes two code units), so offsets found in the lower-cased text are mapped back before marking.
+ */
+export function lowered(text: string): { low: string; start: number[]; end: number[] } {
+  let low = "";
+  const start: number[] = [];
+  const end: number[] = [];
+  let i = 0;
+  for (const ch of text) {
+    const l = ch.toLowerCase();
+    for (let k = 0; k < l.length; k++) {
+      start.push(i);
+      end.push(i + ch.length);
+    }
+    low += l;
+    i += ch.length;
+  }
+  return { low, start, end };
+}
+
 /** The ranges of each word in the text under `el`, for marking. Text inside a select's options isn't drawn, so isn't marked. */
 function wordRanges(el: Element, words: string[]): Range[] {
   const ranges: Range[] = [];
@@ -43,12 +64,12 @@ function wordRanges(el: Element, words: string[]): Range[] {
     acceptNode: (n) => (n.parentElement?.closest("option, script, style") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
   });
   for (let n = walk.nextNode(); n; n = walk.nextNode()) {
-    const text = (n.textContent ?? "").toLowerCase();
+    const { low, start, end } = lowered(n.textContent ?? "");
     for (const w of words) {
-      for (let at = text.indexOf(w); at >= 0; at = text.indexOf(w, at + w.length)) {
+      for (let at = low.indexOf(w); at >= 0; at = low.indexOf(w, at + w.length)) {
         const r = doc.createRange();
-        r.setStart(n, at);
-        r.setEnd(n, at + w.length);
+        r.setStart(n, start[at]);
+        r.setEnd(n, end[at + w.length - 1]);
         ranges.push(r);
       }
     }
@@ -69,7 +90,8 @@ export function clearMarks(): void {
 
 /**
  * Shows only the sections in each group under `root` (an element with `data-search-group`) whose text holds every word,
- * hides a group left with none, and marks the words where the WebView can draw CSS highlights. Returns how many sections show.
+ * hides a group left with none, and marks the words where the WebView can draw CSS highlights, in those sections and in
+ * any result under `root` marked `data-search-mark`. Returns how many sections show.
  */
 export function applySearch(root: Element, words: string[]): number {
   let shown = 0;
@@ -87,6 +109,7 @@ export function applySearch(root: Element, words: string[]): number {
     group.toggleAttribute(MISS_ATTR, inGroup === 0);
     shown += inGroup;
   }
+  for (const el of root.querySelectorAll("[data-search-mark]")) ranges.push(...wordRanges(el, words));
   const highlights = registry();
   if (highlights) {
     const Highlight = (globalThis as unknown as { Highlight: new (...r: Range[]) => unknown }).Highlight;
