@@ -15,8 +15,12 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
-/// The helper program, sent unchanged every time: the Repository screen's operations, then the worktrees' (ADR 0042).
-pub const HELPER: &str = concat!(include_str!("repo_git_helper.py"), include_str!("repo_worktrees_helper.py"), "\n\nmain()\n");
+/// The helper program, sent unchanged every time: the Git half, then the worktree half (ADR 0043), which ends by
+/// running it.
+pub const HELPER: &str = concat!(include_str!("repo_git_helper.py"), include_str!("repo_worktree_helper.py"));
+
+/// What the helper prints on stderr before a progress line, which `run_streaming` passes on as it comes.
+const PROGRESS: &str = "\u{1f}hermes-progress\u{1f}";
 
 /// What the helper prints before its answer, so anything a login script prints first can't be mistaken for it.
 const MARK: &str = "\u{1e}hermes-repo\u{1e}";
@@ -97,55 +101,32 @@ pub enum Request {
     /// What `remote_branch` is on `remote` now, asked of the remote itself. Settles a push whose answer was lost.
     #[serde(rename_all = "camelCase")]
     RemoteHead { repo: String, remote: String, remote_branch: String },
-    /// The repository's worktrees, which of them Hermes Chat manages and which chats use each, their changes and
-    /// unpushed commits, and those removed with their kept changes (ADR 0042).
+    /// Every worktree of the repository `repo` is in, with what this app recorded about the ones it made: their
+    /// chats, setup and state, and the changes kept from removed ones (ADR 0043).
     WorktreeList { repo: String },
-    /// Exactly what a create would do: the branch, the commit it starts at, the folder, the setup steps, and a stamp.
+    /// What creating a worktree would do, checked but not done: the base commit, the branch, the folder (a suggested
+    /// one when `path` is empty), the setup entries, and a stamp the creation must match.
     #[serde(rename_all = "camelCase")]
-    WorktreePlan {
-        repo: String,
-        branch: String,
-        new_branch: bool,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        base: Option<String>,
-    },
-    /// Makes the worktree the plan with `stamp` showed. `id` is made by the screen, so the same request sent again
-    /// after its answer was lost finishes that worktree instead of making a second.
+    WorktreePlan { repo: String, base: String, branch: String, new_branch: bool, path: String, setup: bool },
+    /// Creates the worktree the plan stamped `expect` showed, recorded as `id`, then runs setup once if `setup`.
     #[serde(rename_all = "camelCase")]
-    WorktreeCreate {
-        repo: String,
-        id: String,
-        branch: String,
-        new_branch: bool,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        base: Option<String>,
-        stamp: String,
-        /// Who made it, kept in the record: "Hermes Chat on <computer>".
-        by: String,
-    },
-    /// Runs one setup step of a managed worktree, if it hasn't run yet.
-    WorktreeSetup { repo: String, id: String, step: u32 },
-    /// Records that a chat works in the worktree; it can't be removed while any chat is recorded.
-    WorktreeAttach { repo: String, id: String, chat: ChatRef },
-    WorktreeDetach { repo: String, id: String, scope: String, chat: String },
+    WorktreeCreate { repo: String, id: String, base: String, branch: String, new_branch: bool, path: String, setup: bool, expect: String },
+    /// Runs setup again for a worktree whose setup failed or was cut off.
+    WorktreeSetup { repo: String, id: String },
+    /// Holds the worktree for a chat about to start there (`token`), before Hermes is asked to start it.
+    WorktreeAttach { repo: String, id: String, token: String, profile: String, connection: String },
+    /// The chat that `token` held a place for has started: Hermes's id for it.
+    WorktreeAttachConfirm { repo: String, id: String, token: String, chat: String },
+    /// The owner detached a chat from the worktree, or a chat that held a place never started.
+    WorktreeDetach { repo: String, id: String, token: String },
+    /// Marks a worktree this app made as Protected, or not: a protected one can't be removed.
     WorktreeProtect { repo: String, id: String, protected: bool },
-    /// Drops the record of a worktree that isn't there: a create that didn't finish, or one removed.
+    /// What removing the worktree would touch, what it would keep, what stops it, and a stamp of it all.
+    WorktreeRemovePlan { repo: String, id: String },
+    /// Removes the worktree, keeping its changes first, only if the plan stamped `expect` still holds.
+    WorktreeRemove { repo: String, id: String, expect: String },
+    /// Drops the record of a worktree whose folder is gone. Nothing on disk changes.
     WorktreeForget { repo: String, id: String },
-    /// What removing a managed worktree would affect and what stops it.
-    WorktreeRemoval { repo: String, id: String },
-    /// Removes it, if it's still as the preview with `stamp` showed, keeping its changes in a recovery ref first.
-    WorktreeRemove { repo: String, id: String, stamp: String },
-    /// Makes a removed worktree again and puts its kept changes back.
-    WorktreeRestore { repo: String, id: String },
-}
-
-/// A chat, as the worktree record names it: the connection and profile it's in, its stored id, and its title.
-#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
-pub struct ChatRef {
-    pub scope: String,
-    pub chat: String,
-    #[serde(default)]
-    pub title: String,
 }
 
 /// What a push or a pull request expects HEAD to be.
@@ -189,7 +170,7 @@ impl Request {
                 | Request::RemoteHead { .. }
                 | Request::WorktreeList { .. }
                 | Request::WorktreePlan { .. }
-                | Request::WorktreeRemoval { .. }
+                | Request::WorktreeRemovePlan { .. }
         )
     }
 
@@ -204,11 +185,12 @@ impl Request {
             Request::PublishInfo { .. } | Request::PrStatus { .. } | Request::RemoteHead { .. } => Duration::from_secs(240),
             // ls-remote, a list, the create and the read-back: the helper's own limits add up to five minutes.
             Request::PrCreate { .. } => Duration::from_secs(360),
-            // `git worktree add` checks out a whole tree and runs post-checkout hooks; a removal may first keep every
-            // change. The helper gives each git call ten minutes.
-            Request::WorktreeCreate { .. } | Request::WorktreeSetup { .. } | Request::WorktreeRemove { .. } | Request::WorktreeRestore { .. } => {
-                Duration::from_secs(660)
-            }
+            // Git checks out every file (it gets 15 minutes), then setup copies and links what .worktreeinclude names.
+            Request::WorktreeCreate { .. } | Request::WorktreeSetup { .. } => Duration::from_secs(1800),
+            // Keeping every changed file, then Git removing the folder.
+            Request::WorktreeRemove { .. } => Duration::from_secs(1200),
+            // Each worktree's status, or every changed file read and hashed.
+            Request::WorktreeList { .. } | Request::WorktreeRemovePlan { .. } | Request::WorktreePlan { .. } => Duration::from_secs(300),
             _ => Duration::from_secs(60),
         }
     }
@@ -276,16 +258,15 @@ impl Serialize for RepoError {
 }
 
 /// The command ssh runs on the server. It is the same string every time: nothing in it comes from the owner. The
-/// program is zlib-compressed: one argument can't be longer than 128 KiB on Linux (MAX_ARG_STRLEN), on this computer
-/// or in the server's shell, and the plain program in base64 would be.
+/// program is deflated, then base64: the remote shell gets it as one argument, and Linux allows one argument 128 KiB.
 pub fn remote_command() -> String {
     static COMMAND: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     COMMAND
         .get_or_init(|| {
             use std::io::Write;
             let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
-            z.write_all(HELPER.as_bytes()).expect("compress in memory");
-            let program = base64::engine::general_purpose::STANDARD.encode(z.finish().expect("compress in memory"));
+            z.write_all(HELPER.as_bytes()).expect("deflate in memory");
+            let program = base64::engine::general_purpose::STANDARD.encode(z.finish().expect("deflate in memory"));
             format!("exec python3 -I -c 'import base64,zlib;exec(zlib.decompress(base64.b64decode(\"{program}\")))'")
         })
         .clone()
@@ -321,10 +302,19 @@ pub fn dropped_before_login(e: &RepoError) -> bool {
 /// Runs `request` through ssh to `target`. A read whose connection sshd dropped before signing in is tried once more,
 /// half a second later; a write never is, so nothing is ever done twice.
 pub async fn run_over_ssh(target: &str, request: &Request) -> Result<serde_json::Value, RepoError> {
-    match run(ssh_command(target)?, request).await {
+    run_over_ssh_streaming(target, request, |_| {}).await
+}
+
+/// `run_over_ssh`, passing each progress line the helper prints to `on_progress` as it comes.
+pub async fn run_over_ssh_streaming(
+    target: &str,
+    request: &Request,
+    on_progress: impl Fn(serde_json::Value) + Send + Sync,
+) -> Result<serde_json::Value, RepoError> {
+    match run_streaming(ssh_command(target)?, request, &on_progress).await {
         Err(e) if request.reads_only() && dropped_before_login(&e) => {
             tokio::time::sleep(Duration::from_millis(500)).await;
-            run(ssh_command(target)?, request).await
+            run_streaming(ssh_command(target)?, request, &on_progress).await
         }
         other => other,
     }
@@ -352,7 +342,17 @@ pub fn ssh_failure(stderr: &str) -> &'static str {
 
 /// Runs `command` (ssh, or in tests the helper itself), sends it `request`, and reads the helper's answer: its
 /// `result` on success, or what it refused with.
-pub async fn run(mut command: Command, request: &Request) -> Result<serde_json::Value, RepoError> {
+pub async fn run(command: Command, request: &Request) -> Result<serde_json::Value, RepoError> {
+    run_streaming(command, request, &|_| {}).await
+}
+
+/// `run`, reading the helper's stderr line by line: a progress line (`PROGRESS`, then JSON) goes to `on_progress` as it
+/// comes; anything else is kept, as ssh's own words, for the failure.
+pub async fn run_streaming(
+    mut command: Command,
+    request: &Request,
+    on_progress: &(dyn Fn(serde_json::Value) + Send + Sync),
+) -> Result<serde_json::Value, RepoError> {
     let body = serde_json::to_vec(request).map_err(|e| RepoError::BadReply(e.to_string()))?;
     command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     let mut child = command.spawn().map_err(|e| RepoError::Spawn(e.to_string()))?;
@@ -372,8 +372,27 @@ pub async fn run(mut command: Command, request: &Request) -> Result<serde_json::
             buf
         };
         let read_err = async {
+            use tokio::io::AsyncBufReadExt;
             let mut buf = Vec::new();
-            let _ = (&mut stderr).take(64 * 1024).read_to_end(&mut buf).await;
+            let mut lines = tokio::io::BufReader::new(&mut stderr);
+            let mut line = Vec::new();
+            loop {
+                line.clear();
+                match (&mut lines).take(1024 * 1024).read_until(b'\n', &mut line).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+                let s = String::from_utf8_lossy(&line);
+                if let Some(json) = s.strip_prefix(PROGRESS) {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(json.trim_end()) {
+                        on_progress(v);
+                        continue;
+                    }
+                }
+                if buf.len() < 64 * 1024 {
+                    buf.extend_from_slice(&line[..line.len().min(64 * 1024 - buf.len())]);
+                }
+            }
             buf
         };
         let ((), out, err) = tokio::join!(write, read_out, read_err);
@@ -419,12 +438,13 @@ mod tests {
         assert_eq!(c, remote_command());
         let program = c.split('"').nth(1).unwrap();
         assert!(program.chars().all(|ch| ch.is_ascii_alphanumeric() || "+/=".contains(ch)));
-        let packed = base64::engine::general_purpose::STANDARD.decode(program).unwrap();
-        let mut unpacked = String::new();
-        std::io::Read::read_to_string(&mut flate2::read::ZlibDecoder::new(&packed[..]), &mut unpacked).unwrap();
-        assert_eq!(unpacked, HELPER);
-        // Under Linux's limit for one argument, with room to grow.
-        assert!(c.len() < 96 * 1024, "{} bytes", c.len());
+        let deflated = base64::engine::general_purpose::STANDARD.decode(program).unwrap();
+        let mut helper = String::new();
+        std::io::Read::read_to_string(&mut flate2::read::ZlibDecoder::new(&deflated[..]), &mut helper).unwrap();
+        assert_eq!(helper, HELPER);
+        // One argument to the remote shell: Linux's MAX_ARG_STRLEN is 128 KiB.
+        assert!(c.len() < 120 * 1024, "the remote command is {} bytes", c.len());
+        assert!(HELPER.trim_end().ends_with("main()"), "the program ends by running main()");
     }
 
     #[test]

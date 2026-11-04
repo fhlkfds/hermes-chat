@@ -1,310 +1,321 @@
-// Worktrees in the Repository screen (ADR 0042): the repository's worktrees on the server, the ones Hermes Chat made
-// with their chats, changes and unpushed commits, and making, setting up, starting a chat in, and removing them. Every
-// Git operation runs on the server through the Repository screen's helper over the owner's ssh.
-import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { Check, CircleAlert, CircleDashed, CircleX, FolderOpen, GitBranch, GitBranchPlus, Lock, MessageSquarePlus, RefreshCw, RotateCcw, Shield, ShieldOff, Trash2 } from "lucide-react";
-import { asRepoFailure, type RepoApi, RepoFailure } from "../hermes/repo";
+// The Repository screen's Worktrees view (ADR 0043): the repository's worktrees on the server, with what each holds
+// and which chats work in it; New worktree, with a preview of exactly what will be made and a setup run once; and
+// Remove, with a preview of what it touches, which keeps every change first. Everything runs on the server through the
+// screen's helper (worktrees.ts).
+import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { Check, CircleAlert, FolderGit2, GitBranch, Lock, MessageSquarePlus, Plus, RefreshCw, RotateCcw, Shield, ShieldOff, Trash2, Unlink, X } from "lucide-react";
+import { RepoFailure, asRepoFailure } from "../hermes/repo";
 import {
-  answerLost,
-  asList,
-  asPlan,
-  asRecord,
-  asRemoval,
-  countsLabel,
-  folderName,
-  removalBlockers,
-  setupSummary,
-  stepsToRun,
-  type RemovalFacts,
-  type ServerWorktree,
-  type SetupStep,
-  type WorktreeLaunch,
+  STATE_LABEL,
+  asCreated,
+  asRemovalPlan,
+  asRemoved,
+  asWorktreeList,
+  asWorktreePlan,
+  canRetrySetup,
+  canStartIn,
+  dirtyText,
+  inside,
+  newWorktreeId,
+  plural,
+  worktreeChats,
+  type AttachedChat,
+  type HermesChatIn,
+  type Kept,
+  type Progress,
+  type RemovalPlan,
+  type Removed,
+  type Worktree,
+  type WorktreeApi,
   type WorktreeList,
   type WorktreePlan,
   type WorktreeRecord,
-  type WorktreeRow,
+  type WorktreeRequest,
 } from "../hermes/worktrees";
 import { Spinner } from "./bits";
 import { useModal } from "./modal";
 import { Failure } from "./Repository";
 
-type Load<T> = { state: "loading"; last?: T } | { state: "ready"; data: T } | { state: "failed"; error: RepoFailure; last?: T };
-type HermesChats = { chats: { id: string; title: string; archived: boolean }[]; more: boolean };
+type Load<T> = { state: "idle" } | { state: "loading"; last?: T } | { state: "ready"; data: T } | { state: "failed"; error: RepoFailure; last?: T };
+const lastOf = <T,>(l: Load<T>): T | undefined => (l.state === "ready" ? l.data : l.state === "idle" ? undefined : l.last);
 
-const short = (sha?: string | null) => (sha ? sha.slice(0, 7) : "");
+/** A transport failure: whether a write happened isn't known. */
+const lostAnswer = (e: RepoFailure) => e.kind === "timeout" || e.kind === "spawn" || e.kind === "bad-reply" || e.kind.startsWith("ssh");
 
-export function WorktreesPanel({
-  api,
-  target,
-  top,
-  branch,
-  scope,
-  by,
-  chatsIn,
-  onOpen,
-  onStartChat,
-}: {
-  api: RepoApi;
-  target: string;
-  /** The checkout the screen has open: any worktree of the repository. */
-  top: string;
-  /** Its branch, offered as the base of a new one. */
-  branch: string | null;
-  /** The connection and profile chats are recorded under. */
-  scope: string;
-  /** Who makes a worktree, kept in its record. */
-  by: string;
-  /** The profile's chats Hermes keeps as working in a worktree's folder, once Hermes is shown to be on the same server
-   * (it reads the worktree's record); absent while Hermes isn't connected. */
-  chatsIn?: (w: ServerWorktree) => Promise<HermesChats>;
-  /** Opens a folder in the Repository screen. */
-  onOpen: (path: string) => void;
-  /** Starts a new chat working in the worktree; absent while Hermes isn't connected. */
-  onStartChat?: (w: WorktreeLaunch) => void;
-}) {
-  const [list, setList] = useState<Load<WorktreeList>>({ state: "loading" });
-  const [creating, setCreating] = useState<{ record?: WorktreeRecord }>();
-  const [removing, setRemoving] = useState<WorktreeRecord>();
-  const [busy, setBusy] = useState<string>();
-  const [error, setError] = useState<{ what: string; error: RepoFailure }>();
-  // Only the newest read is shown: an answer for an older one, or one that lands after this panel moved on, is dropped.
-  const gen = useRef(0);
+/** What the screen around the view gives it: who is looking, and how to start a chat or ask Hermes about one. */
+export type WorktreeHooks = {
+  /** The connection and profile shown, as the record names them. */
+  profile: string;
+  connection: string;
+  /** A chat's title, when it is one of the shown profile's chats on the shown connection. */
+  chatTitle(chat: string): string | undefined;
+  /** The chats Hermes has working in `path` (any client), in each profile it can list; rejects when Hermes can't be
+   * asked. Absent while Hermes isn't connected. */
+  hermesChatsIn?: (path: string) => Promise<HermesChatIn[]>;
+  /** Opens the New chat pane set to start in this worktree. Absent while Hermes isn't connected. */
+  onStartChat?: (w: { target: string; repo: string; id: string; path: string; branch: string }) => void;
+};
+
+export function WorktreesPanel({ api, target, top, hooks, onOpen }: { api: WorktreeApi; target: string; top: string; hooks: WorktreeHooks; onOpen: (path: string) => void }) {
+  const [list, setList] = useState<Load<WorktreeList>>({ state: "idle" });
+  const run = useRef(0);
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
     return () => void (alive.current = false);
   }, []);
+  const [creating, setCreating] = useState<{ base?: string; branch?: string } | null>(null);
+  const [removing, setRemoving] = useState<WorktreeRecord | null>(null);
+  const [busy, setBusy] = useState<string>();
+  const [error, setError] = useState<{ what: string; error: RepoFailure }>();
+  const [done, setDone] = useState<string>();
+  const [detaching, setDetaching] = useState<{ id: string; chat: AttachedChat }>();
+  const newButton = useRef<HTMLButtonElement>(null);
 
-  const load = useCallback(() => {
-    const n = ++gen.current;
-    setList((l) => ({ state: "loading", last: l.state === "ready" ? l.data : l.last }));
+  const read = useCallback(() => {
+    const n = ++run.current;
+    setList((l) => ({ state: "loading", last: lastOf(l) }));
     api.run(target, { op: "worktreeList", repo: top }).then(
       (v) => {
-        if (!alive.current || n !== gen.current) return;
+        if (n !== run.current || !alive.current) return;
         try {
-          setList({ state: "ready", data: asList(v) });
+          setList({ state: "ready", data: asWorktreeList(v) });
         } catch (e) {
-          setList((l) => ({ state: "failed", error: asRepoFailure(e), last: l.state === "loading" ? l.last : undefined }));
+          setList({ state: "failed", error: asRepoFailure(e) });
         }
       },
-      (e: unknown) => alive.current && n === gen.current && setList((l) => ({ state: "failed", error: asRepoFailure(e), last: l.state === "loading" ? l.last : undefined })),
+      (e: unknown) => n === run.current && alive.current && setList((l) => ({ state: "failed", error: asRepoFailure(e), last: lastOf(l) })),
     );
   }, [api, target, top]);
-  useEffect(load, [load]);
+  useEffect(read, [read]);
 
-  const data = list.state === "ready" ? list.data : list.last;
-  const loading = list.state === "loading";
-
-  /** A small write from a row: one at a time, then the list is read again. */
-  const write = (what: string, req: Parameters<RepoApi["run"]>[1]) => {
+  /** One change to a worktree's record, then the list read again whatever happened. */
+  const act = async (what: string, request: WorktreeRequest, after?: string) => {
+    if (busy) return;
     setBusy(what);
     setError(undefined);
-    api.run(target, req).then(
-      () => alive.current && (setBusy(undefined), load()),
-      (e: unknown) => alive.current && (setBusy(undefined), setError({ what, error: asRepoFailure(e) }), load()),
-    );
+    setDone(undefined);
+    try {
+      const v = await api.run(target, request);
+      if (!alive.current) return;
+      if (after) setDone(after);
+      return v;
+    } catch (e) {
+      if (alive.current) setError({ what: what.replace(/…$/, ""), error: asRepoFailure(e) });
+    } finally {
+      if (alive.current) {
+        setBusy(undefined);
+        read();
+      }
+    }
   };
 
-  /** What a chat started in the worktree needs: where its record is, and its branch as Git has it now. */
-  const launch = (r: WorktreeRecord, row?: WorktreeRow): WorktreeLaunch | undefined =>
-    data && {
-      target,
-      repo: data.main,
-      registry: data.registry,
-      id: r.id,
-      path: r.path,
-      branch: row ? (row.branch ?? `detached at ${short(row.head)}`) : r.branch,
-    };
-
-  const managed = data?.worktrees.filter((w) => w.record) ?? [];
-  const others = data?.worktrees.filter((w) => !w.record) ?? [];
+  const shown = lastOf(list);
+  const loading = list.state === "loading";
+  const failure = list.state === "failed" ? list.error : undefined;
+  const others = shown?.worktrees.filter((w) => !w.main) ?? [];
 
   return (
-    <section className="repo-publish repo-worktrees" aria-label="Worktrees" aria-busy={loading}>
-      <div className="repo-section-head">
-        <h2 className="repo-commit-label">
-          <GitBranch size={14} aria-hidden /> Worktrees {data && <span className="count">{managed.length}</span>}
+    <section className="wt" aria-label="Worktrees" aria-busy={loading}>
+      <div className="wt-head">
+        <h2>
+          Worktrees {shown && <span className="count">{shown.worktrees.length}</span>}
         </h2>
-        <button className="btn" disabled={!data || data.newer || !!busy} onClick={() => setCreating({})}>
-          <GitBranchPlus size={13} aria-hidden /> New worktree…
-        </button>
-        <button className="icon-btn" title="Read the worktrees again" aria-label="Refresh worktrees" disabled={loading} onClick={load}>
-          <RefreshCw size={14} className={loading ? "spin" : undefined} />
-        </button>
+        <span className="muted small">
+          Separate working folders of {shown?.main ?? top}, on the server. Each has its own branch; chats started in one work only there.
+        </span>
+        <div className="wt-head-actions">
+          <button className="icon-btn" aria-label="Read the worktrees again" title="Read the worktrees again" disabled={loading} onClick={read}>
+            <RefreshCw size={16} className={loading ? "spin" : undefined} />
+          </button>
+          <button ref={newButton} className="btn primary" disabled={!shown || !!busy} onClick={() => setCreating({})}>
+            <Plus size={14} aria-hidden /> New worktree…
+          </button>
+        </div>
       </div>
-      {list.state === "failed" && (
-        <Failure
-          failure={list.error}
-          what={list.error.kind === "unsupported" ? "Worktrees aren't available for this repository" : "Couldn't read the worktrees"}
-        />
+
+      {failure?.kind === "unsupported" ? (
+        <div className="files-banner warn" role="status">
+          <CircleAlert size={14} aria-hidden />
+          <span>
+            Worktrees aren't supported on this server: {failure.message} The rest of the Repository screen still works.
+          </span>
+        </div>
+      ) : (
+        failure && <Failure failure={failure} what="Couldn't read the worktrees" onDismiss={shown ? () => setList({ state: "ready", data: shown }) : undefined} />
       )}
       {error && <Failure failure={error.error} what={`${error.what} didn't happen`} onDismiss={() => setError(undefined)} />}
       {busy && (
-        <p className="muted small repo-review-status" role="status">
-          <Spinner /> {busy}…
-        </p>
+        <div className="files-banner" role="status">
+          <Spinner /> <span>{busy}</span>
+        </div>
       )}
-      {!data && loading && (
-        <p className="muted small repo-review-status" role="status">
+      {done && !busy && (
+        <div className="files-banner ok" role="status">
+          <Check size={14} aria-hidden /> <span>{done}</span>
+          <button className="icon-btn" aria-label="Dismiss" onClick={() => setDone(undefined)}>
+            <X size={14} />
+          </button>
+        </div>
+      )}
+      {!shown && loading && (
+        <p className="muted wt-empty">
           <Spinner /> Reading the worktrees…
         </p>
       )}
-      {data?.newer && (
-        <div className="files-banner warn" role="status">
-          <CircleAlert size={14} aria-hidden /> A newer Hermes Chat keeps this repository's worktrees. They're shown here, but only that version can change them.
-        </div>
-      )}
-      {data && (
+
+      {shown && (
         <>
-          {managed.length === 0 && (
-            <p className="muted small repo-none">
-              No worktrees made by Hermes Chat are here. New worktree… makes one beside the repository, on a branch of its own, for a chat to work in
-              without touching this checkout.
-            </p>
-          )}
-          {managed.length > 0 && (
-            <ul className="wt-list" aria-label="Worktrees made by Hermes Chat">
-              {managed.map((w) => (
-                <li key={w.path}>
-                  <ManagedRow
-                    row={w}
-                    hasRemote={data.hasRemote}
-                    busy={!!busy || data.newer}
-                    onOpen={() => onOpen(w.path)}
-                    onStartChat={onStartChat && w.record!.state === "ready" && !w.missing ? () => onStartChat(launch(w.record!, w)!) : undefined}
-                    onFinish={w.record!.state === "restoring" ? () => write("Restore", { op: "worktreeRestore", repo: top, id: w.record!.id }) : undefined}
-                    onSetup={() => setCreating({ record: w.record! })}
-                    onProtect={(on) => write(on ? "Protect" : "Unprotect", { op: "worktreeProtect", repo: top, id: w.record!.id, protected: on })}
-                    onDetach={(c) => write("Detach", { op: "worktreeDetach", repo: top, id: w.record!.id, scope: c.scope, chat: c.chat })}
-                    onRemove={() => setRemoving(w.record!)}
-                    scope={scope}
-                  />
-                </li>
-              ))}
-            </ul>
-          )}
-          {data.unfinished.length > 0 && (
-            <div className="repo-card" role="group" aria-label="Unfinished">
-              <h3>
-                <CircleAlert size={14} aria-hidden /> Not finished
-              </h3>
-              <ul className="wt-plain">
-                {data.unfinished.map((r) => (
-                  <li key={r.id}>
-                    <span className="mono">{r.branch}</span> <span className="muted small mono">{r.path}</span>{" "}
-                    <span className="muted small">
-                      {r.state === "creating"
-                        ? "Making it stopped before the worktree was there."
-                        : r.state === "removing"
-                          ? "Its removal stopped after the folder went. Finish records it as removed, with what it kept."
-                          : r.state === "restoring"
-                            ? "Restoring it stopped before the worktree was there. Finish restoring tries again."
-                            : "The worktree isn't there any more: it was removed outside Hermes Chat."}
-                    </span>
-                    <div className="wt-actions">
-                      {r.state === "creating" && (
-                        <button className="btn" disabled={!!busy} onClick={() => setCreating({ record: r })}>
-                          Finish making it
-                        </button>
-                      )}
-                      {r.state === "removing" && (
-                        <button className="btn" disabled={!!busy || data.newer} onClick={() => write("Finish removal", { op: "worktreeRemove", repo: top, id: r.id, stamp: "" })}>
-                          Finish removal
-                        </button>
-                      )}
-                      {r.state === "restoring" && (
-                        <button className="btn" disabled={!!busy || data.newer} onClick={() => write("Restore", { op: "worktreeRestore", repo: top, id: r.id })}>
-                          Finish restoring
-                        </button>
-                      )}
-                      <button className="btn" disabled={!!busy || data.newer} onClick={() => write("Forget", { op: "worktreeForget", repo: top, id: r.id })}>
-                        Forget
-                      </button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {others.length > 0 && (
-            <details className="wt-others">
-              <summary>
-                Other worktrees <span className="count">{others.length}</span>
-              </summary>
-              <p className="muted small">Made outside Hermes Chat, or the repository's own checkout. They're shown, never removed from here.</p>
-              <ul className="wt-plain" aria-label="Other worktrees">
-                {others.map((w) => (
-                  <li key={w.path}>
-                    <span className="mono">{w.branch ?? (w.detached ? "detached HEAD" : "—")}</span> <span className="muted small mono">{w.path}</span>{" "}
-                    <span className="muted small">
-                      {w.main ? "the repository's own checkout" : w.missing ? "folder missing" : countsLabel(w.changes)}
-                      {w.locked !== null && ` · locked${w.locked ? `: ${w.locked}` : ""}`}
-                    </span>
-                    {!w.current && !w.missing && (
-                      <button className="btn wt-inline" onClick={() => onOpen(w.path)} aria-label={`Open ${w.path} here`}>
-                        <FolderOpen size={13} aria-hidden /> Open
-                      </button>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </details>
-          )}
-          {data.removed.length > 0 && (
-            <details className="wt-others">
-              <summary>
-                Removed <span className="count">{data.removed.length}</span>
-              </summary>
-              <ul className="wt-plain" aria-label="Removed worktrees">
-                {data.removed.map((r) => (
-                  <li key={r.id}>
-                    <span className="mono">{r.removed?.branch ?? "detached HEAD"}</span> <span className="muted small mono">{r.path}</span>{" "}
-                    <span className="muted small">
-                      removed {new Date(r.removed!.at).toLocaleString()}
-                      {r.removed?.kept ? (
-                        <>
-                          {" "}
-                          · its changes are kept in <span className="mono">{r.removed.kept.ref}</span>
-                        </>
-                      ) : (
-                        " · it had no changes to keep"
-                      )}
-                      {r.removed?.branch && ` · the branch ${r.removed.branch} is kept`}
-                    </span>
-                    <div className="wt-actions">
-                      <button className="btn" disabled={!!busy || data.newer} onClick={() => write("Restore", { op: "worktreeRestore", repo: top, id: r.id })}>
-                        <RotateCcw size={13} aria-hidden /> Restore
+          {others.length === 0 && <p className="muted wt-empty">No other worktrees yet. New worktree… makes one beside the repository, on its own branch.</p>}
+          <ul className="wt-list" data-stale={loading || undefined}>
+            {shown.worktrees.map((w, i) => (
+              <li key={w.path}>
+                <WorktreeRow
+                  w={w}
+                  detailed={i < shown.detailLimit}
+                  hooks={hooks}
+                  busy={!!busy}
+                  current={inside(top, w.path) && (w.main ? !shown.worktrees.some((o) => !o.main && inside(top, o.path)) : true)}
+                  onOpen={() => onOpen(w.path)}
+                  onStart={hooks.onStartChat && w.managed ? () => startHere(w) : undefined}
+                  onRetry={() =>
+                    w.managed &&
+                    void (async () => {
+                      if (busy) return;
+                      setBusy(`Running setup again in ${w.path}…`);
+                      setError(undefined);
+                      try {
+                        const request: WorktreeRequest = { op: "worktreeSetup", repo: top, id: w.managed!.id };
+                        const v = await (api.stream ? api.stream(target, request, () => undefined) : api.run(target, request));
+                        const rec = (v as { worktree: WorktreeRecord }).worktree;
+                        if (alive.current) setDone(rec.state === "ready" ? `Setup finished in ${w.path}.` : `Setup failed again in ${w.path}. Its log is below.`);
+                      } catch (e) {
+                        if (alive.current) setError({ what: "Running setup again", error: asRepoFailure(e) });
+                      } finally {
+                        if (alive.current) {
+                          setBusy(undefined);
+                          read();
+                        }
+                      }
+                    })()
+                  }
+                  onProtect={(on) =>
+                    w.managed &&
+                    void act(`${on ? "Protecting" : "Unprotecting"} ${w.path}…`, { op: "worktreeProtect", repo: top, id: w.managed.id, protected: on }, on ? `${w.path} is protected: it can't be removed.` : `${w.path} isn't protected any more.`)
+                  }
+                  onRemove={() => w.managed && setRemoving(w.managed)}
+                  onDetach={(chat) => w.managed && setDetaching({ id: w.managed.id, chat })}
+                />
+                {detaching && detaching.id === w.managed?.id && (
+                  <div className="wt-confirm" role="group" aria-label="Detach the chat">
+                    <p>
+                      Detach {chatName(detaching.chat, hooks)}? The chat keeps working in {w.path}; detaching only means this worktree no longer counts it, so it could be removed.
+                    </p>
+                    <div className="confirm-actions">
+                      <button className="btn" autoFocus onClick={() => setDetaching(undefined)}>
+                        Cancel
                       </button>
                       <button
-                        className="btn"
-                        disabled={!!busy || data.newer}
-                        title="Drops only this entry. The branch and any kept changes stay in the repository."
-                        onClick={() => write("Forget", { op: "worktreeForget", repo: top, id: r.id })}
+                        className="btn danger"
+                        onClick={() => {
+                          const { id, chat } = detaching;
+                          setDetaching(undefined);
+                          void act(`Detaching ${chatName(chat, hooks)}…`, { op: "worktreeDetach", repo: top, id, token: chat.token }, `Detached ${chatName(chat, hooks)}.`).then(
+                            (v) => v && worktreeChats.forgetToken(chat.token),
+                          );
+                        }}
                       >
-                        Forget
+                        Detach
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+          {shown.worktrees.length > shown.detailLimit && (
+            <p className="muted small">Only the first {shown.detailLimit} worktrees are read in detail; open one to see its changes.</p>
+          )}
+
+          {shown.missing.length > 0 && (
+            <section className="wt-section" aria-label="Recorded, but not on disk">
+              <h3>Recorded, but not on disk</h3>
+              <ul className="wt-list">
+                {shown.missing.map((r) => (
+                  <li key={r.id} className="wt-row">
+                    <div className="wt-row-main">
+                      <span className="mono wt-path">{r.path}</span>
+                      <span className="wt-badges">
+                        <span className={`badge ${r.running ? "" : "warn"}`}>{STATE_LABEL[r.state] ?? r.state}</span>
+                      </span>
+                    </div>
+                    <p className="muted small">
+                      {r.state === "create-interrupted"
+                        ? `Making it on ${r.branch} was cut off before Git made it${r.exists ? ", but something is at that path now" : ""}.`
+                        : `Git no longer lists it${r.exists ? ", but something is at that path" : ", and its folder is gone"}.`}{" "}
+                      {r.exists
+                        ? "Look at what is left there (in Server files or the Terminal), move anything you need, and delete the folder; then Forget it drops this app's record."
+                        : "Forgetting it drops this app's record only; nothing on disk changes."}
+                    </p>
+                    <div className="wt-actions">
+                      <button
+                        className="btn"
+                        disabled={!!busy || r.running || !!r.exists || r.chats.length > 0}
+                        title={r.chats.length ? "Detach its chats first" : r.exists ? "Something is at its path" : undefined}
+                        onClick={() => void act(`Forgetting ${r.path}…`, { op: "worktreeForget", repo: top, id: r.id }, `Forgot ${r.path}.`)}
+                      >
+                        Forget it
                       </button>
                     </div>
                   </li>
                 ))}
               </ul>
-            </details>
+            </section>
+          )}
+
+          {shown.kept.length > 0 && (
+            <section className="wt-section" aria-label="Changes kept from removed worktrees">
+              <h3>Changes kept from removed worktrees</h3>
+              <p className="muted small">Each is a commit under refs/hermes-chat/kept/ in the repository. Nothing here deletes them.</p>
+              <ul className="wt-list">
+                {shown.kept.map((k) => (
+                  <li key={k.ref} className="wt-row">
+                    <div className="wt-row-main">
+                      <span className="mono wt-path">{k.path ?? k.ref}</span>
+                      {k.branch && (
+                        <span className="wt-branch">
+                          <GitBranch size={13} aria-hidden /> <span className="mono">{k.branch}</span>
+                        </span>
+                      )}
+                    </div>
+                    <p className="muted small">
+                      <span className="mono">{k.ref}</span> at <span className="mono">{k.commit.slice(0, 12)}</span>
+                      {k.files ? `, ${plural(k.files, "file")} that ${k.files === 1 ? "wasn't" : "weren't"} committed` : ""}
+                      {k.at ? `, kept ${new Date(k.at * 1000).toLocaleString()}` : ""}.
+                    </p>
+                    <div className="wt-actions">
+                      <button className="btn" disabled={!!busy} onClick={() => setCreating({ base: k.ref, branch: restoredName(k) })}>
+                        <RotateCcw size={13} aria-hidden /> Restore in a new worktree…
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </section>
           )}
         </>
       )}
-      {creating && (
+
+      {creating && shown && (
         <CreateDialog
           api={api}
           target={target}
           top={top}
-          branch={branch}
-          by={by}
-          resume={creating.record}
+          initial={creating}
+          onStartChat={hooks.onStartChat}
           onOpen={onOpen}
-          onStartChat={onStartChat && data && ((r) => onStartChat(launch(r, data.worktrees.find((w) => w.record?.id === r.id))!))}
-          onClose={() => {
-            setCreating(undefined);
-            load();
-          }}
+          onChanged={read}
+          onClose={() => setCreating(null)}
         />
       )}
       {removing && (
@@ -313,343 +324,319 @@ export function WorktreesPanel({
           target={target}
           top={top}
           record={removing}
-          registry={data?.registry ?? ""}
-          chatsIn={chatsIn}
+          hooks={hooks}
+          onRemoved={(r) => {
+            setDone(
+              `Removed ${r.removed}.${r.branch ? ` The branch ${r.branch} is kept${r.unpublished ? `, with ${plural(r.unpublished, "commit")} no remote has` : ""}.` : ""}${r.kept ? ` Its changes are kept in ${r.kept.ref}.` : ""}`,
+            );
+          }}
           onClose={() => {
-            setRemoving(undefined);
-            load();
+            setRemoving(null);
+            read();
           }}
         />
       )}
     </section>
   );
+
+  function startHere(w: Worktree) {
+    if (!hooks.onStartChat || !w.managed) return;
+    hooks.onStartChat({ target, repo: top, id: w.managed.id, path: w.path, branch: w.branch ?? "(detached)" });
+  }
 }
 
-function ManagedRow({
-  row: w,
-  hasRemote,
+const restoredName = (k: Kept) => `${(k.branch ?? "kept").replace(/-restored(-\d+)?$/, "")}-restored`;
+
+function chatName(c: AttachedChat, hooks: WorktreeHooks): string {
+  const mine = c.profile === hooks.profile && c.connection === hooks.connection;
+  const title = mine && c.chat ? hooks.chatTitle(c.chat) : undefined;
+  if (title) return `"${title}"`;
+  const where = mine ? "" : ` in the ${c.profile} profile${c.connection === hooks.connection ? "" : ` on ${c.connection}`}`;
+  return c.chat ? `the chat ${c.chat}${where}` : `a chat being started${where}`;
+}
+
+function WorktreeRow({
+  w,
+  detailed,
+  hooks,
   busy,
-  scope,
+  current,
   onOpen,
-  onStartChat,
-  onFinish,
-  onSetup,
+  onStart,
+  onRetry,
   onProtect,
-  onDetach,
   onRemove,
+  onDetach,
 }: {
-  row: WorktreeRow;
-  /** A restore that stopped part way: finish it. */
-  onFinish?: () => void;
-  hasRemote: boolean;
+  w: Worktree;
+  detailed: boolean;
+  hooks: WorktreeHooks;
   busy: boolean;
-  scope: string;
+  current: boolean;
   onOpen: () => void;
-  onStartChat?: () => void;
-  onSetup: () => void;
+  onStart?: () => void;
+  onRetry: () => void;
   onProtect: (on: boolean) => void;
-  onDetach: (c: WorktreeRecord["chats"][number]) => void;
   onRemove: () => void;
+  onDetach: (chat: AttachedChat) => void;
 }) {
-  const r = w.record!;
-  const setup = setupSummary(r);
-  const [confirmDetach, setConfirmDetach] = useState<string>();
-  const name = w.branch ?? r.branch;
+  const m = w.managed;
+  const dirty = dirtyText(w.dirty);
+  const blockers = w.protected.filter((p) => p.kind !== "marked");
+  const removable = !!m && !w.main && blockers.length === 0 && !m.protected && !m.running && m.chats.length === 0;
+  const removeWhy = !m
+    ? undefined
+    : m.protected
+      ? "It's protected"
+      : m.chats.length
+        ? "Chats work in it: detach them first"
+        : m.running
+          ? "Hermes Chat is still working on it"
+          : blockers[0]?.message;
+  const startable = canStartIn(w) && !!onStart && (!m || m.state !== "setup");
   return (
-    <div className="repo-card wt-card" aria-label={`Worktree ${name}`} role="group">
-      <h3>
-        <GitBranch size={14} aria-hidden /> <span className="mono">{w.branch ?? (w.detached ? `detached at ${short(w.head)}` : r.branch)}</span>
-        {w.current && <span className="chip-tag">open here</span>}
-        {r.protected && (
-          <span className="chip-tag">
-            <Shield size={11} aria-hidden /> protected
-          </span>
-        )}
-        {w.locked !== null && w.locked !== `hermes-chat ${r.id}` && (
-          <span className="chip-tag warn">
-            <Lock size={11} aria-hidden /> locked by another tool
-          </span>
-        )}
-      </h3>
-      <div className="mono small wt-path" title="Its folder on the server">
-        {w.path}
-      </div>
-      <div className="small wt-facts">
-        {w.missing ? (
-          <span className="err">The folder isn't there.</span>
-        ) : w.error ? (
-          <span className="err">{w.error}</span>
-        ) : (
-          <>
-            <span>{countsLabel(w.changes)}</span>
-            <span>
-              {!hasRemote
-                ? "No remote: its commits are only here"
-                : w.unpushed
-                  ? `${w.unpushed} commit${w.unpushed === 1 ? "" : "s"} not on a remote`
-                  : "Nothing unpushed"}
+    <div className={`wt-row ${current ? "current" : ""}`}>
+      <div className="wt-row-main">
+        <FolderGit2 size={15} aria-hidden className="wt-icon" />
+        <span className="mono wt-path" title={w.path}>
+          {w.path}
+        </span>
+        <span className="wt-branch">
+          <GitBranch size={13} aria-hidden /> <span className="mono">{w.branch ?? (w.detached ? `detached at ${w.head?.slice(0, 7)}` : w.bare ? "bare" : "?")}</span>
+        </span>
+        <span className="wt-badges">
+          {w.main && <span className="badge">Main checkout</span>}
+          {current && <span className="badge">Open here</span>}
+          {m ? <span className="badge">Made here</span> : !w.main && <span className="badge muted">Not made by Hermes Chat</span>}
+          {m && m.state !== "ready" && <span className={`badge ${m.running ? "" : "warn"}`}>{STATE_LABEL[m.state] ?? m.state}</span>}
+          {m?.protected && (
+            <span className="badge">
+              <Shield size={11} aria-hidden /> Protected
             </span>
-          </>
-        )}
-        <span className="muted">
-          from {r.base} at {short(r.baseSha)} · made by {r.createdBy}
+          )}
+          {w.protected.some((p) => p.kind === "locked") && (
+            <span className="badge warn" title={w.protected.find((p) => p.kind === "locked")?.message}>
+              <Lock size={11} aria-hidden /> Locked by another tool
+            </span>
+          )}
+          {w.prunable !== null && <span className="badge warn">Git can't find its folder</span>}
         </span>
       </div>
-      {r.state === "removing" && (
-        <div className="files-banner warn" role="status">
-          <CircleAlert size={14} aria-hidden /> Removing it stopped before the folder went. Remove… previews it again and carries on.
-        </div>
-      )}
-      {onFinish && (
-        <div className="files-banner warn" role="status">
-          <CircleAlert size={14} aria-hidden /> Restoring it stopped before its kept changes were all back.
-          <button className="btn" disabled={busy} onClick={onFinish}>
-            Finish restoring
-          </button>
-        </div>
-      )}
-      {setup.total > 0 && (
-        <div className={`small wt-setup ${setup.failed.length ? "err" : ""}`}>
-          Setup: {setup.done} of {setup.total} done
-          {setup.failed.length > 0 && `, failed: ${setup.failed.map((s) => s.entry).join(", ")}`}
-          {setup.pending > 0 && !setup.failed.length && `, ${setup.pending} not run yet`}
-        </div>
-      )}
-      <div className="small">
-        {r.chats.length === 0 ? (
-          <span className="muted">No chat recorded as working here.</span>
+      <p className="wt-facts small">
+        {!w.exists ? (
+          <span className="err">The folder isn't there.</span>
+        ) : !detailed || !w.dirty ? (
+          <span className="muted">{w.error ?? "Not read in detail."}</span>
         ) : (
-          <ul className="wt-chats" aria-label="Chats working here">
-            {r.chats.map((c) => (
-              <li key={`${c.scope}\n${c.chat}`}>
-                <span>“{c.title || c.chat}”</span>
-                {c.scope !== scope && <span className="muted"> (another connection or profile)</span>}
-                {confirmDetach === `${c.scope}\n${c.chat}` ? (
-                  <span className="wt-confirm" role="group" aria-label="Detach this chat?">
-                    <span className="muted"> The chat keeps working in this folder; only the worktree stops counting it. </span>
-                    <button className="btn" autoFocus disabled={busy} onClick={() => onDetach(c)}>
-                      Detach
-                    </button>
-                    <button className="btn" onClick={() => setConfirmDetach(undefined)}>
-                      Cancel
-                    </button>
-                  </span>
-                ) : (
-                  <button className="btn wt-inline" disabled={busy} aria-label={`Detach “${c.title || c.chat}”`} onClick={() => setConfirmDetach(`${c.scope}\n${c.chat}`)}>
-                    Detach…
-                  </button>
-                )}
-              </li>
-            ))}
-          </ul>
+          <>
+            <span>{dirty ?? "No changes"}</span>
+            <span>
+              {w.unpublished ? `${plural(w.unpublished, "commit")} no remote has` : "Every commit is on a remote"}
+              {w.lost ? `, ${plural(w.lost, "commit")} on no branch` : ""}
+            </span>
+            {w.upstream && (
+              <span className="muted">
+                Tracks {w.upstream}
+                {w.ahead || w.behind ? ` (${w.ahead ?? 0} ahead, ${w.behind ?? 0} behind, as of the last fetch)` : ""}
+              </span>
+            )}
+            {!!w.submodules && <span className="muted">{plural(w.submodules, "submodule")} checked out</span>}
+          </>
         )}
-      </div>
+      </p>
+      {m && m.chats.length > 0 && (
+        <ul className="wt-chats" aria-label={`Chats working in ${w.path}`}>
+          {m.chats.map((c) => (
+            <li key={c.token}>
+              <span>
+                {chatName(c, hooks)}
+                {c.state === "starting" && <span className="muted"> (starting; not confirmed)</span>}
+              </span>
+              <button className="btn small" disabled={busy} aria-label={`Detach ${chatName(c, hooks)} from ${w.path}`} onClick={() => onDetach(c)}>
+                <Unlink size={12} aria-hidden /> Detach…
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {m && m.setup.state !== "skipped" && m.setup.state !== "pending" && (
+        <details className="wt-setup" open={m.state === "setup-failed" || m.state === "setup-interrupted"}>
+          <summary>
+            Setup: {m.setup.state === "done" ? "done" : m.setup.state === "failed" ? "failed" : m.state === "setup-interrupted" ? "cut off" : "running"}
+          </summary>
+          <pre className="repo-output mono">{m.setup.log || "No log yet."}</pre>
+        </details>
+      )}
+      {m?.state === "create-interrupted" && (
+        <p className="files-banner warn small" role="status">
+          <CircleAlert size={13} aria-hidden />
+          <span>
+            {w.locked === "initializing"
+              ? "Making this worktree was cut off while Git was checking out its files. Remove it (its files are kept first) and make it again."
+              : "Making this worktree was cut off after Git made it. Retry finishes it."}
+          </span>
+        </p>
+      )}
       <div className="wt-actions">
-        <button className="btn primary" disabled={busy || !onStartChat} title={onStartChat ? undefined : "Connect to Hermes to start a chat"} onClick={onStartChat}>
-          <MessageSquarePlus size={13} aria-hidden /> Start chat here
-        </button>
-        {!w.current && !w.missing && (
-          <button className="btn" onClick={onOpen} aria-label={`Open ${name} in this screen`}>
-            <FolderOpen size={13} aria-hidden /> Open
+        {w.exists && !current && (
+          <button className="btn" disabled={busy} onClick={onOpen}>
+            Open
           </button>
         )}
-        {(setup.failed.length > 0 || setup.pending > 0) && !w.missing && (
-          <button className="btn" disabled={busy} onClick={onSetup}>
-            <RotateCcw size={13} aria-hidden /> {setup.failed.length ? "Retry setup" : "Run setup"}
+        {onStart && (
+          <button className="btn" disabled={busy || !startable} title={startable ? undefined : "Not while it's being made, set up or removed"} onClick={onStart}>
+            <MessageSquarePlus size={13} aria-hidden /> Start a chat here
           </button>
         )}
-        <button className="btn" disabled={busy || r.state !== "ready"} onClick={() => onProtect(!r.protected)}>
-          {r.protected ? <ShieldOff size={13} aria-hidden /> : <Shield size={13} aria-hidden />} {r.protected ? "Unprotect" : "Protect"}
-        </button>
-        <button className="btn danger" disabled={busy || (r.state !== "ready" && r.state !== "removing")} onClick={onRemove} aria-label={`Remove the worktree ${name}…`}>
-          <Trash2 size={13} aria-hidden /> Remove…
-        </button>
+        {w.exists && canRetrySetup(w) && (
+          <button className="btn" disabled={busy} onClick={onRetry}>
+            <RotateCcw size={13} aria-hidden /> Retry {m?.state === "create-interrupted" ? "" : "setup"}
+          </button>
+        )}
+        {m && (
+          <button className="btn" disabled={busy} aria-pressed={m.protected} onClick={() => onProtect(!m.protected)}>
+            {m.protected ? <ShieldOff size={13} aria-hidden /> : <Shield size={13} aria-hidden />} {m.protected ? "Unprotect" : "Protect"}
+          </button>
+        )}
+        {m && !w.main && (
+          <button className="btn danger" disabled={busy || !removable} title={removable ? undefined : removeWhy} aria-label={`Remove ${w.path}…`} onClick={onRemove}>
+            <Trash2 size={13} aria-hidden /> Remove…
+          </button>
+        )}
       </div>
+      {m && !removable && removeWhy && <p className="muted small wt-why">Can't be removed: {removeWhy}.</p>}
+      {!m && !w.main && <p className="muted small wt-why">Hermes Chat didn't make this worktree, so it lists it but never removes it.</p>}
     </div>
   );
 }
 
-const STEP_ICON: Record<SetupStep["state"], ReactNode> = {
-  pending: <CircleDashed size={13} aria-label="not run yet" />,
-  done: <Check size={13} aria-label="done" />,
-  failed: <CircleX size={13} aria-label="failed" />,
-  skipped: <span className="muted" aria-label="skipped">–</span>,
-};
+// ── New worktree ────────────────────────────────────────────────────────────
 
-function SetupSteps({ steps, running }: { steps: SetupStep[]; running?: number }) {
-  if (!steps.length) return <p className="muted small">This repository has no .worktreeinclude, so there's no setup to run.</p>;
-  return (
-    <ol className="wt-steps" aria-label="Setup steps">
-      {steps.map((s, i) => (
-        <li key={i} className={`wt-step ${s.state}`}>
-          {running === i ? <Spinner /> : STEP_ICON[s.state]}{" "}
-          <span>
-            {s.action === "copy" ? "Copy" : s.action === "link" ? "Link" : "Skip"} <span className="mono">{s.entry}</span>
-          </span>
-          {s.message && <div className="muted small wt-step-msg">{s.message}</div>}
-        </li>
-      ))}
-    </ol>
-  );
-}
+type CreateState =
+  | { phase: "editing"; plan?: WorktreePlan; planning?: boolean; error?: RepoFailure }
+  | { phase: "creating"; plan: WorktreePlan; id: string; log: Progress[] }
+  | { phase: "created"; plan: WorktreePlan; record: WorktreeRecord; log: Progress[]; output?: string; error?: RepoFailure }
+  | { phase: "lost"; plan: WorktreePlan; id: string; log: Progress[]; error: RepoFailure; found?: WorktreeRecord | null; askError?: string }
+  | { phase: "refused"; plan: WorktreePlan; error: RepoFailure; log: Progress[] };
 
-type CreatePhase =
-  | { phase: "form"; plan?: Load<WorktreePlan> }
-  | { phase: "creating"; plan: WorktreePlan }
-  | { phase: "lost"; plan?: WorktreePlan; checking: boolean; note?: string; error?: RepoFailure }
-  | { phase: "setup"; record: WorktreeRecord; running?: number; output?: string; error?: RepoFailure };
-
-/**
- * New worktree: the form, its preview from the server, then making it, then each setup step in turn with what it did.
- * `resume`: a worktree made already whose setup isn't finished, or a create that stopped part way.
- */
 function CreateDialog({
   api,
   target,
   top,
-  branch,
-  by,
-  resume,
-  onOpen,
+  initial,
   onStartChat,
+  onOpen,
+  onChanged,
   onClose,
 }: {
-  api: RepoApi;
+  api: WorktreeApi;
   target: string;
   top: string;
-  branch: string | null;
-  by: string;
-  resume?: WorktreeRecord;
+  initial: { base?: string; branch?: string };
+  onStartChat?: WorktreeHooks["onStartChat"];
   onOpen: (path: string) => void;
-  onStartChat?: (r: WorktreeRecord) => void;
+  onChanged: () => void;
   onClose: () => void;
 }) {
+  const [mode, setMode] = useState<"new" | "existing">("new");
+  const [base, setBase] = useState(initial.base ?? "HEAD");
+  const [branch, setBranch] = useState(initial.branch ?? "");
+  const [path, setPath] = useState("");
+  const [setup, setSetup] = useState(true);
+  const [state, setState] = useState<CreateState>({ phase: "editing" });
   const box = useRef<HTMLDivElement>(null);
   const keys = useModal(box);
   const titleId = useId();
-  const ids = { branch: useId(), base: useId() };
+  const id = useId();
   const alive = useRef(true);
+  const asked = useRef(0);
   useEffect(() => {
     alive.current = true;
     return () => void (alive.current = false);
   }, []);
-  const [newBranch, setNewBranch] = useState(true);
-  const [name, setName] = useState("");
-  const [base, setBase] = useState(branch ?? "HEAD");
-  // Made once per dialog: a create sent again after its answer was lost finishes this same worktree.
-  const [id] = useState(() => resume?.id ?? crypto.randomUUID());
-  const [phase, setPhase] = useState<CreatePhase>(() =>
-    resume ? (resume.state === "creating" ? { phase: "lost", checking: false, note: "Making it stopped part way. Finish sends the same request again." } : { phase: "setup", record: resume }) : { phase: "form" },
-  );
-  const planGen = useRef(0);
-  const primary = useRef<HTMLButtonElement>(null);
+  const doneButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (state.phase === "created" || state.phase === "lost" || state.phase === "refused") doneButton.current?.focus();
+  }, [state.phase]);
+
+  // Any change to the form makes the preview old: it must be read again before anything is made.
+  const edit = <T,>(set: (v: T) => void) => (v: T) => {
+    asked.current++;
+    set(v);
+    setState({ phase: "editing" });
+  };
 
   const preview = () => {
-    const n = ++planGen.current;
-    setPhase({ phase: "form", plan: { state: "loading" } });
-    api.run(target, { op: "worktreePlan", repo: top, branch: name.trim(), newBranch, ...(newBranch && { base: base.trim() }) }).then(
+    const n = ++asked.current;
+    setState({ phase: "editing", planning: true });
+    api.run(target, { op: "worktreePlan", repo: top, base: mode === "new" ? base : "", branch, newBranch: mode === "new", path, setup }).then(
       (v) => {
-        if (!alive.current || n !== planGen.current) return;
+        if (n !== asked.current || !alive.current) return;
         try {
-          setPhase({ phase: "form", plan: { state: "ready", data: asPlan(v) } });
+          setState({ phase: "editing", plan: asWorktreePlan(v) });
         } catch (e) {
-          setPhase({ phase: "form", plan: { state: "failed", error: asRepoFailure(e) } });
+          setState({ phase: "editing", error: asRepoFailure(e) });
         }
       },
-      (e: unknown) => alive.current && n === planGen.current && setPhase({ phase: "form", plan: { state: "failed", error: asRepoFailure(e) } }),
+      (e: unknown) => n === asked.current && alive.current && setState({ phase: "editing", error: asRepoFailure(e) }),
     );
   };
-  // Any edit makes the preview out of date: it must be read again before anything is made.
-  const edited = () => {
-    planGen.current++;
-    setPhase({ phase: "form" });
-  };
 
-  /** Runs the steps left, one request each, so each one's result shows as it lands. `output`: what Git printed
-   * making the worktree, kept on screen throughout. */
-  const runSetup = async (record: WorktreeRecord, output?: string) => {
-    let rec = record;
-    for (const step of stepsToRun(rec)) {
-      setPhase({ phase: "setup", record: rec, running: step, output });
-      try {
-        rec = asRecord(await api.run(target, { op: "worktreeSetup", repo: top, id: rec.id, step })).record;
-      } catch (e) {
-        if (!alive.current) return;
-        return setPhase({ phase: "setup", record: rec, output, error: asRepoFailure(e) });
-      }
+  const create = (plan: WorktreePlan) => {
+    const rid = newWorktreeId();
+    const log: Progress[] = [];
+    setState({ phase: "creating", plan, id: rid, log });
+    const request: WorktreeRequest = {
+      op: "worktreeCreate",
+      repo: top,
+      id: rid,
+      base: plan.base,
+      branch: plan.branch,
+      newBranch: plan.newBranch,
+      path: plan.path,
+      setup: setup && plan.setup.length > 0,
+      expect: plan.stamp,
+    };
+    const onProgress = (p: Progress) => {
       if (!alive.current) return;
-      // A failed step stops the run; the steps after it wait for Retry.
-      if (rec.setup[step].state === "failed") break;
-    }
-    setPhase({ phase: "setup", record: rec, output });
-  };
-
-  const create = (plan: WorktreePlan | undefined, req: { branch: string; newBranch: boolean; base?: string; stamp: string }) => {
-    setPhase(plan ? { phase: "creating", plan } : { phase: "lost", checking: true });
-    api.run(target, { op: "worktreeCreate", repo: top, id, by, ...req }).then(
+      log.push(p);
+      setState((s) => (s.phase === "creating" && s.id === rid ? { ...s, log: [...log] } : s));
+    };
+    (api.stream ? api.stream(target, request, onProgress) : api.run(target, request)).then(
       (v) => {
         if (!alive.current) return;
-        const { record, output } = asRecord(v);
-        void runSetup(record, output);
+        onChanged();
+        try {
+          const made = asCreated(v);
+          setState({ phase: "created", plan, record: made.worktree, log: [...log], output: made.output });
+        } catch (e) {
+          setState({ phase: "lost", plan, id: rid, log: [...log], error: asRepoFailure(e) });
+        }
       },
       (e: unknown) => {
         if (!alive.current) return;
         const error = asRepoFailure(e);
-        // Refused, so nothing was made: back to the form, which must be previewed again.
-        if (!answerLost(error)) return setPhase(plan ? { phase: "form", plan: { state: "failed", error } } : { phase: "lost", checking: false, error });
-        // The answer was lost: whether the worktree was made isn't known until the server is asked.
-        setPhase({ phase: "lost", plan, checking: true, error });
+        onChanged();
+        if (!lostAnswer(error)) return setState({ phase: "refused", plan, error, log: [...log] });
+        // The answer was lost: whether it was made isn't known. Ask the record, which says how far it got.
+        setState({ phase: "lost", plan, id: rid, log: [...log], error });
         api.run(target, { op: "worktreeList", repo: top }).then(
-          (v) => {
+          (l) => {
             if (!alive.current) return;
-            const l = asList(v);
-            const made = l.worktrees.find((w) => w.record?.id === id)?.record ?? l.unfinished.find((r) => r.id === id);
-            if (made?.state === "ready") {
-              void runSetup(made, "The answer was lost, but the server has the worktree.");
-            } else
-              setPhase({
-                phase: "lost",
-                plan,
-                checking: false,
-                error,
-                note: made ? "Making it stopped part way. Finish sends the same request again." : "Nothing was made. You can try again.",
-              });
+            const list = asWorktreeList(l);
+            const found = list.worktrees.find((w) => w.managed?.id === rid)?.managed ?? list.missing.find((r) => r.id === rid) ?? null;
+            setState((s) => (s.phase === "lost" && s.id === rid ? { ...s, found } : s));
           },
-          (e2: unknown) => alive.current && setPhase({ phase: "lost", plan, checking: false, error: asRepoFailure(e2), note: "The server couldn't be asked whether it was made. Try again when it's reachable: the same request finishes it or makes it once." }),
+          (e2: unknown) => alive.current && setState((s) => (s.phase === "lost" && s.id === rid ? { ...s, askError: asRepoFailure(e2).message } : s)),
         );
       },
     );
   };
 
-  const resend = () => {
-    const r = resume;
-    if (phase.phase === "lost" && phase.plan) {
-      const p = phase.plan;
-      return create(p, { branch: p.branch, newBranch: p.newBranch, ...(p.newBranch && { base: p.base }), stamp: p.stamp });
-    }
-    // A create left part way by an earlier window: its record holds what was asked.
-    if (r) create(undefined, { branch: r.branch, newBranch: r.newBranch, ...(r.newBranch && { base: r.base }), stamp: "" });
-  };
-
-  // Opened from a worktree's Run setup or Retry setup: the steps left run at once, for the worktree it opened with.
-  // Once, StrictMode included.
-  const autoRan = useRef(false);
-  useEffect(() => {
-    if (autoRan.current || resume?.state !== "ready" || !stepsToRun(resume).length) return;
-    autoRan.current = true;
-    void runSetup(resume);
-  }, []);
-
-  const working = phase.phase === "creating" || (phase.phase === "setup" && phase.running !== undefined) || (phase.phase === "lost" && phase.checking);
-  useEffect(() => {
-    if (!working) primary.current?.focus();
-  }, [working, phase.phase]);
+  const working = state.phase === "creating" || (state.phase === "editing" && state.planning);
   const close = () => !working && onClose();
-  const plan = phase.phase === "form" && phase.plan?.state === "ready" ? phase.plan.data : undefined;
-  const record = phase.phase === "setup" ? phase.record : undefined;
-  const summary = record && setupSummary(record);
-  // Not finished: a step failed, or some haven't run (Retry runs them).
-  const failed = !!summary?.failed.length || !!summary?.pending || (phase.phase === "setup" && !!phase.error);
+  const plan = state.phase === "editing" ? state.plan : state.plan;
+  const finished = state.phase === "created" ? state.record : state.phase === "lost" && state.found ? state.found : undefined;
 
   return (
     <div className="leave-overlay" onMouseDown={(e) => e.target === e.currentTarget && close()}>
@@ -669,289 +656,331 @@ function CreateDialog({
         }}
       >
         <h2 id={titleId} className="leave-title">
-          <GitBranchPlus size={15} aria-hidden /> {record ? `Worktree ${record.branch}` : "New worktree"}
+          <FolderGit2 size={15} aria-hidden /> {state.phase === "created" ? "Worktree made" : "New worktree"}
         </h2>
-        <div className="repo-review-body">
-          {phase.phase === "form" && (
-            <form
-              className="wt-form"
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (plan) create(plan, { branch: plan.branch, newBranch: plan.newBranch, ...(plan.newBranch && { base: plan.base }), stamp: plan.stamp });
-                else if (name.trim() && (!newBranch || base.trim())) preview();
-              }}
-            >
-              <fieldset className="wt-kind">
-                <legend>Branch</legend>
-                <label>
-                  <input type="radio" name="wt-kind" checked={newBranch} onChange={() => (setNewBranch(true), edited())} /> New branch
-                </label>
-                <label>
-                  <input type="radio" name="wt-kind" checked={!newBranch} onChange={() => (setNewBranch(false), edited())} /> Existing branch
-                </label>
-              </fieldset>
-              <label htmlFor={ids.branch}>{newBranch ? "New branch name" : "Branch to check out"}</label>
-              <input
-                id={ids.branch}
-                className="repo-pr-title mono"
-                autoFocus
-                value={name}
-                placeholder={newBranch ? "fix/login-timeout" : "feature/search"}
-                onChange={(e) => (setName(e.target.value), edited())}
-              />
-              {newBranch && (
-                <>
-                  <label htmlFor={ids.base}>Start from (branch, tag or commit)</label>
-                  <input id={ids.base} className="repo-pr-title mono" value={base} onChange={(e) => (setBase(e.target.value), edited())} />
-                </>
-              )}
-              {name.trim() && !plan && (
-                <p className="muted small">
-                  Folder on the server: <span className="mono">…{"/"}&lt;repository&gt;.worktrees/{folderName(name.trim()) || "?"}</span>, shown in full by Preview.
-                </p>
-              )}
-              {phase.plan?.state === "loading" && (
-                <p className="repo-review-status" role="status">
-                  <Spinner /> Checking on the server…
-                </p>
-              )}
-              {phase.plan?.state === "failed" && <Failure failure={phase.plan.error} what="This worktree can't be made" />}
-              {plan && <PlanView plan={plan} />}
-              <div className="confirm-actions">
-                <button type="button" className="btn" onClick={close}>
-                  Cancel
-                </button>
-                {plan ? (
-                  <button ref={primary} className="btn primary">
-                    Create worktree
-                  </button>
-                ) : (
-                  <button ref={primary} className="btn primary" disabled={!name.trim() || (newBranch && !base.trim()) || phase.plan?.state === "loading"}>
-                    Preview
-                  </button>
-                )}
-              </div>
-            </form>
-          )}
-          {phase.phase === "creating" && (
-            <>
-              <PlanView plan={phase.plan} />
-              <p className="repo-review-status" role="status">
-                <Spinner /> Making the worktree on the server…
-              </p>
-            </>
-          )}
-          {phase.phase === "lost" && (
-            <>
-              {phase.plan && <PlanView plan={phase.plan} />}
-              {phase.error && <Failure failure={phase.error} what={answerLost(phase.error) ? "The answer from the server was lost" : "The worktree wasn't made"} />}
-              {phase.checking ? (
-                <p className="repo-review-status" role="status">
-                  <Spinner /> Asking the server whether it was made…
-                </p>
+        {state.phase === "editing" && (
+          <form
+            className="wt-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (state.plan) create(state.plan);
+              else preview();
+            }}
+          >
+            <fieldset className="wt-mode">
+              <legend>Branch</legend>
+              <label>
+                <input type="radio" name={`${id}-mode`} checked={mode === "new"} onChange={() => edit(setMode)("new")} /> New branch
+              </label>
+              <label>
+                <input type="radio" name={`${id}-mode`} checked={mode === "existing"} onChange={() => edit(setMode)("existing")} /> Existing local branch
+              </label>
+            </fieldset>
+            <label htmlFor={`${id}-branch`}>{mode === "new" ? "New branch name" : "Branch to check out"}</label>
+            <input id={`${id}-branch`} className="mono" autoFocus value={branch} placeholder={mode === "new" ? "feature/login" : "release"} onChange={(e) => edit(setBranch)(e.target.value)} />
+            {mode === "new" && (
+              <>
+                <label htmlFor={`${id}-base`}>Base: the commit it starts from</label>
+                <input id={`${id}-base`} className="mono" value={base} placeholder="main, origin/main, a tag or a commit" onChange={(e) => edit(setBase)(e.target.value)} />
+                <span className="field-hint">A branch, tag or commit already in the repository. Nothing is fetched.</span>
+              </>
+            )}
+            <label htmlFor={`${id}-path`}>Folder on the server</label>
+            <input id={`${id}-path`} className="mono" value={path} placeholder="Beside the repository, named after the branch" onChange={(e) => edit(setPath)(e.target.value)} />
+            <label className="wt-check">
+              <input type="checkbox" checked={setup} onChange={(e) => edit(setSetup)(e.target.checked)} /> Run setup once after it's made (the files .worktreeinclude names)
+            </label>
+            {state.error && <Failure failure={state.error} what="Can't make it" />}
+            {state.plan && <PlanFacts plan={state.plan} setup={setup} />}
+            <div className="confirm-actions">
+              <button type="button" className="btn" onClick={close} disabled={state.planning}>
+                Cancel
+              </button>
+              {state.plan ? (
+                <button className="btn primary">Create worktree</button>
               ) : (
-                phase.note && <p role="status">{phase.note}</p>
-              )}
-              <div className="confirm-actions">
-                <button ref={primary} className="btn" disabled={phase.checking} onClick={close}>
-                  Close
+                <button className="btn primary" disabled={!branch.trim() || (mode === "new" && !base.trim()) || state.planning}>
+                  {state.planning ? (
+                    <>
+                      <Spinner /> Checking…
+                    </>
+                  ) : (
+                    "Preview"
+                  )}
                 </button>
-                {!phase.checking && (phase.plan || resume) && (!phase.error || answerLost(phase.error) || phase.error.kind === "git") && (
-                  <button className="btn primary" onClick={resend}>
-                    {phase.note?.startsWith("Making it stopped") ? "Finish making it" : "Try again"}
+              )}
+            </div>
+          </form>
+        )}
+        {state.phase !== "editing" && plan && <PlanFacts plan={plan} setup={setup} compact />}
+        {"log" in state && state.log.length > 0 && (
+          <ol className="wt-log mono" role="log" aria-live="polite" aria-label="Progress">
+            {state.log.map((l, i) => (
+              <li key={i}>{l.message}</li>
+            ))}
+          </ol>
+        )}
+        {state.phase === "creating" && (
+          <p role="status" className="repo-review-status">
+            <Spinner /> {state.log.at(-1)?.step === "setup" ? "Running setup…" : "Making the worktree…"}
+          </p>
+        )}
+        {state.phase === "refused" && <Failure failure={state.error} what="It wasn't made" />}
+        {state.phase === "lost" && (
+          <p className="files-banner warn" role="alert">
+            <CircleAlert size={14} aria-hidden />{" "}
+            <span>
+              The connection dropped before the server answered ({state.error.message}).{" "}
+              {state.askError
+                ? `Reading the worktrees failed too (${state.askError}). Refresh the list once the server is back: a worktree made part way shows there, with Retry.`
+                : state.found === undefined
+                  ? "Reading the worktrees to see how far it got…"
+                  : state.found === null
+                    ? "The server has no record of it: nothing was made."
+                    : `The server has it: ${STATE_LABEL[state.found.state] ?? state.found.state}.${state.found.state === "ready" ? "" : " It's in the list, with what you can do next."}`}
+            </span>
+          </p>
+        )}
+        {finished && (
+          <>
+            <p className={`files-banner ${finished.state === "ready" ? "ok" : "warn"}`} role="status">
+              {finished.state === "ready" ? <Check size={14} aria-hidden /> : <CircleAlert size={14} aria-hidden />}{" "}
+              <span>
+                {finished.state === "ready"
+                  ? `Made ${finished.path} on ${finished.branch}${finished.setup.state === "done" ? ", and setup ran" : ""}.`
+                  : finished.state === "setup-failed"
+                    ? `Made ${finished.path} on ${finished.branch}, but setup failed. The worktree is kept: retry setup from the list, or start a chat in it anyway.`
+                    : `${finished.path}: ${STATE_LABEL[finished.state] ?? finished.state}.`}
+              </span>
+            </p>
+            {/* The progress log above already says what setup did; the record's log is for an answer that came without it. */}
+            {finished.setup.log && finished.state !== "ready" && !("log" in state && state.log.length) && <pre className="repo-output mono">{finished.setup.log}</pre>}
+          </>
+        )}
+        {state.phase !== "editing" && (
+          <div className="confirm-actions">
+            {finished && finished.state !== "create-interrupted" && finished.state !== "creating" && (
+              <>
+                <button
+                  className="btn"
+                  disabled={working}
+                  onClick={() => {
+                    onClose();
+                    onOpen(finished.path);
+                  }}
+                >
+                  Open
+                </button>
+                {onStartChat && (
+                  <button
+                    className="btn"
+                    disabled={working}
+                    onClick={() => {
+                      onClose();
+                      onStartChat({ target, repo: top, id: finished.id, path: finished.path, branch: finished.branch });
+                    }}
+                  >
+                    <MessageSquarePlus size={13} aria-hidden /> Start a chat in it
                   </button>
                 )}
-              </div>
-            </>
-          )}
-          {record && phase.phase === "setup" && (
-            <>
-              <dl className="repo-review-facts">
-                <dt>Folder</dt>
-                <dd className="mono">{record.path}</dd>
-                <dt>Branch</dt>
-                <dd className="mono">{record.branch}</dd>
-                <dt>Starts at</dt>
-                <dd>
-                  <span className="mono">{short(record.baseSha)}</span> ({record.base})
-                </dd>
-              </dl>
-              <h3>Setup</h3>
-              <SetupSteps steps={record.setup} running={phase.running} />
-              {phase.error && <Failure failure={phase.error} what="A setup step couldn't run" />}
-              {phase.output && (
-                <>
-                  <h3>What Git printed</h3>
-                  <pre className="repo-output mono">{phase.output}</pre>
-                </>
-              )}
-              <p role="status" className={failed ? "err" : undefined}>
-                {phase.running !== undefined
-                  ? `Running step ${phase.running + 1} of ${record.setup.length}…`
-                  : failed
-                    ? "Setup didn't finish. The worktree is there; retry setup, or open it to look."
-                    : "The worktree is ready."}
-              </p>
-              <div className="confirm-actions">
-                <button className="btn" disabled={working} onClick={close}>
-                  Close
-                </button>
-                {failed && (
-                  <>
-                    <button className="btn" disabled={working} onClick={() => (onOpen(record.path), onClose())}>
-                      <FolderOpen size={13} aria-hidden /> Open
-                    </button>
-                    <button ref={primary} className="btn primary" disabled={working} onClick={() => void runSetup(record, phase.output)}>
-                      <RotateCcw size={13} aria-hidden /> Retry
-                    </button>
-                  </>
-                )}
-                {!failed && onStartChat && (
-                  <button ref={primary} className="btn primary" disabled={working} onClick={() => (onStartChat(record), onClose())}>
-                    <MessageSquarePlus size={13} aria-hidden /> Start chat here
-                  </button>
-                )}
-              </div>
-            </>
-          )}
-        </div>
+              </>
+            )}
+            {state.phase === "refused" && (
+              <button className="btn" onClick={() => setState({ phase: "editing" })}>
+                Change it
+              </button>
+            )}
+            <button ref={doneButton} className="btn primary" disabled={working} onClick={close}>
+              Close
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-function PlanView({ plan }: { plan: WorktreePlan }) {
-  const s = plan.source;
-  const sourceDirty = s.staged + s.changed + s.untracked + s.conflicts > 0;
+function PlanFacts({ plan, setup, compact }: { plan: WorktreePlan; setup: boolean; compact?: boolean }) {
+  const dirty = dirtyText(plan.sourceDirty);
+  const runs = setup && plan.setup.length > 0;
   return (
     <div className="wt-plan" aria-label="What will be made">
       <dl className="repo-review-facts">
-        <dt>Folder on the server</dt>
+        <dt>Folder</dt>
         <dd className="mono">{plan.path}</dd>
         <dt>Branch</dt>
         <dd>
-          <span className="mono">{plan.branch}</span> {plan.newBranch ? "(new, not tracking anything)" : "(existing, checked out as it is)"}
+          <span className="mono">{plan.branch}</span> {plan.newBranch ? "(new, tracking nothing)" : "(existing)"}
         </dd>
-        <dt>Starts at</dt>
+        <dt>From</dt>
         <dd>
-          <span className="mono">{short(plan.baseSha)}</span> {plan.subject}
-          {plan.newBranch && <span className="muted"> ({plan.base})</span>}
+          <span className="mono">{plan.baseRef ?? plan.base}</span> at <span className="mono">{plan.baseOid.slice(0, 12)}</span> <span className="muted">{plan.baseSubject}</span>
         </dd>
-        <dt>Repository</dt>
-        <dd className="mono">{plan.repo}</dd>
+        {!compact && (
+          <>
+            <dt>Setup</dt>
+            <dd>{runs ? `${plural(plan.setup.length, "entry", "entries")} from ${plan.source}/.worktreeinclude, once` : plan.setup.length ? "Not run" : "Nothing to set up: no .worktreeinclude"}</dd>
+          </>
+        )}
       </dl>
-      {sourceDirty && (
-        <p className="files-banner" role="note">
-          <CircleAlert size={14} aria-hidden /> {s.path} has uncommitted changes ({countsLabel(s).toLowerCase()}). They stay there: the worktree starts from the
-          commit above, without them.
-        </p>
+      {!compact && (
+        <>
+          {dirty && (
+            <p className="files-banner small" role="note">
+              <CircleAlert size={13} aria-hidden />
+              <span>
+                {plan.source} has changes ({dirty}). They stay there: the new worktree starts from {plan.baseOid.slice(0, 12)} without them.
+              </span>
+            </p>
+          )}
+          {plan.submodules.length > 0 && (
+            <p className="files-banner small" role="note">
+              <CircleAlert size={13} aria-hidden />
+              <span>
+                The base has {plural(plan.submodules.length, "submodule")} ({plan.submodules.slice(0, 5).join(", ")}). Git doesn't check them out in a new worktree; run
+                git submodule update --init there if a chat needs them.
+              </span>
+            </p>
+          )}
+          {runs && (
+            <ul className="wt-setup-plan">
+              {plan.setup.map((e) => (
+                <li key={e.entry}>
+                  <span className="mono">{e.entry}</span>{" "}
+                  <span className="muted">
+                    {e.action === "copy" ? `copied (${e.size ?? 0} bytes)` : e.action === "link" ? `linked to ${e.target}` : `skipped: ${e.reason}`}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="muted small">
+            Setup commands (an install script) aren't run: Hermes has no supported way to declare them. Ask Hermes in the chat, or run them in the Terminal.
+          </p>
+        </>
       )}
-      {plan.submoduleCount > 0 && (
-        <p className="files-banner" role="note">
-          <CircleAlert size={14} aria-hidden /> {plan.submoduleCount} submodule{plan.submoduleCount === 1 ? "" : "s"} ({plan.submodules.slice(0, 3).join(", ")}
-          {plan.submoduleCount > 3 ? "…" : ""}) won't be checked out. Run git submodule update in the worktree if a chat needs them.
-        </p>
-      )}
-      <h3>Setup, from .worktreeinclude</h3>
-      <SetupSteps steps={plan.setup} />
     </div>
   );
 }
 
-const FILE_STATUS: Record<RemovalFacts["files"][number]["status"], string> = {
-  staged: "staged",
-  changed: "changed",
-  both: "staged and changed",
-  conflict: "conflicted",
-  untracked: "untracked",
-};
+// ── Remove ──────────────────────────────────────────────────────────────────
 
-/** Remove: the preview of what it affects and what stops it, then the removal, which keeps the changes first. */
+type RemoveState =
+  | { phase: "reading" }
+  | { phase: "ready"; plan: RemovalPlan; error?: RepoFailure }
+  | { phase: "removing"; plan: RemovalPlan; log: Progress[] }
+  | { phase: "removed"; result: Removed }
+  | { phase: "failed"; error: RepoFailure; plan?: RemovalPlan };
+
 function RemoveDialog({
   api,
   target,
   top,
   record,
-  registry,
-  chatsIn,
+  hooks,
+  onRemoved,
   onClose,
 }: {
-  api: RepoApi;
+  api: WorktreeApi;
   target: string;
   top: string;
   record: WorktreeRecord;
-  /** The server's record of the repository's worktrees, which Hermes reads to show it's on the same server. */
-  registry: string;
-  chatsIn?: (w: ServerWorktree) => Promise<HermesChats>;
+  hooks: WorktreeHooks;
+  onRemoved: (r: Removed) => void;
   onClose: () => void;
 }) {
+  const [state, setState] = useState<RemoveState>({ phase: "reading" });
+  const [hermes, setHermes] = useState<{ state: "reading" | "ready" | "failed" | "unavailable"; chats: HermesChatIn[]; error?: string }>({ state: hooks.hermesChatsIn ? "reading" : "unavailable", chats: [] });
+  const [ack, setAck] = useState(false);
   const box = useRef<HTMLDivElement>(null);
   const keys = useModal(box);
   const titleId = useId();
-  const primary = useRef<HTMLButtonElement>(null);
   const alive = useRef(true);
+  const read = useRef(0);
+  const primary = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     alive.current = true;
     return () => void (alive.current = false);
   }, []);
-  type State =
-    | { phase: "loading" }
-    | { phase: "failed"; error: RepoFailure }
-    | { phase: "ready"; facts: RemovalFacts; hermes: HermesChats | Error | undefined; error?: RepoFailure }
-    | { phase: "removing"; facts: RemovalFacts }
-    | { phase: "removed"; record: WorktreeRecord }
-    | { phase: "lost"; facts: RemovalFacts; error: RepoFailure };
-  const [state, setState] = useState<State>({ phase: "loading" });
 
-  // Read when asked, not a dependency: the app makes a new one on every render, and that must not start the preview
-  // again, least of all while removing.
-  const chatsRef = useRef(chatsIn);
-  chatsRef.current = chatsIn;
-  const ask = async () => {
-    const asking = chatsRef.current;
-    return asking ? asking({ path: record.path, registry, id: record.id }).catch((e: unknown) => (e instanceof Error ? e : new Error(String(e)))) : undefined;
-  };
-
-  // Only the newest preview's answer is shown, and none once Remove is under way.
-  const previewGen = useRef(0);
-  const load = () => {
-    const n = ++previewGen.current;
-    setState({ phase: "loading" });
-    Promise.all([api.run(target, { op: "worktreeRemoval", repo: top, id: record.id }).then(asRemoval), ask()]).then(
-      ([facts, hermes]) => alive.current && n === previewGen.current && setState({ phase: "ready", facts, hermes }),
-      (e: unknown) => alive.current && n === previewGen.current && setState({ phase: "failed", error: asRepoFailure(e) }),
+  // Hermes is asked through a ref: the app around the dialog draws again whenever a chat streams, and that must not
+  // read the preview again, clear the owner's tick, or (during a removal) take the dialog out of `removing`.
+  const chatsIn = useRef(hooks.hermesChatsIn);
+  chatsIn.current = hooks.hermesChatsIn;
+  const asked = useRef(0);
+  const askHermes = useCallback(() => {
+    const n = ++asked.current;
+    setAck(false);
+    const ask = chatsIn.current;
+    if (!ask) return setHermes({ state: "unavailable", chats: [] });
+    setHermes({ state: "reading", chats: [] });
+    ask(record.path).then(
+      (chats) => n === asked.current && alive.current && setHermes({ state: "ready", chats }),
+      (e: unknown) => n === asked.current && alive.current && setHermes({ state: "failed", chats: [], error: e instanceof Error ? e.message : String(e) }),
     );
-  };
-  // Once per dialog: StrictMode's second mount starts a newer preview, whose answer is the one shown.
-  useEffect(load, []);
-
-  const remove = async (facts: RemovalFacts) => {
-    previewGen.current++;
-    setState({ phase: "removing", facts });
-    // Asked again right before: a chat may have started working there since the preview.
-    const hermes = await ask();
-    if (!alive.current) return;
-    if (removalBlockers(facts, hermes).length) return setState({ phase: "ready", facts, hermes });
-    api.run(target, { op: "worktreeRemove", repo: top, id: record.id, stamp: facts.stamp }).then(
-      (v) => alive.current && setState({ phase: "removed", record: asRecord(v).record }),
-      (e: unknown) => {
-        if (!alive.current) return;
-        const error = asRepoFailure(e);
-        if (answerLost(error)) return setState({ phase: "lost", facts, error });
-        setState({ phase: "ready", facts, hermes, error });
+  }, [record.path]);
+  const load = useCallback(() => {
+    const n = ++read.current;
+    setState({ phase: "reading" });
+    api.run(target, { op: "worktreeRemovePlan", repo: top, id: record.id }).then(
+      (v) => {
+        if (n !== read.current || !alive.current) return;
+        try {
+          setState({ phase: "ready", plan: asRemovalPlan(v) });
+        } catch (e) {
+          setState({ phase: "failed", error: asRepoFailure(e) });
+        }
       },
+      (e: unknown) => n === read.current && alive.current && setState({ phase: "failed", error: asRepoFailure(e) }),
+    );
+    askHermes();
+  }, [api, target, top, record.id, askHermes]);
+  useEffect(load, [load]);
+  // Hermes connecting or going away makes the last answer about its chats an old one: ask again (or say it can't be
+  // asked), and the owner's tick goes with it.
+  const available = !!hooks.hermesChatsIn;
+  const seenAvailable = useRef(available);
+  useEffect(() => {
+    if (seenAvailable.current === available) return;
+    seenAvailable.current = available;
+    askHermes();
+  }, [available, askHermes]);
+  useEffect(() => {
+    if (state.phase !== "reading" && state.phase !== "removing") primary.current?.focus();
+  }, [state.phase]);
+
+  const remove = (plan: RemovalPlan) => {
+    const log: Progress[] = [];
+    setState({ phase: "removing", plan, log });
+    const request: WorktreeRequest = { op: "worktreeRemove", repo: top, id: record.id, expect: plan.stamp };
+    const onProgress = (p: Progress) => {
+      if (!alive.current) return;
+      log.push(p);
+      setState((s) => (s.phase === "removing" ? { ...s, log: [...log] } : s));
+    };
+    (api.stream ? api.stream(target, request, onProgress) : api.run(target, request)).then(
+      (v) => {
+        if (!alive.current) return;
+        try {
+          const result = asRemoved(v);
+          setState({ phase: "removed", result });
+          onRemoved(result);
+        } catch (e) {
+          setState({ phase: "failed", error: asRepoFailure(e) });
+        }
+      },
+      (e: unknown) => alive.current && setState({ phase: "ready", plan, error: asRepoFailure(e) }),
     );
   };
 
-  const working = state.phase === "loading" || state.phase === "removing";
-  useEffect(() => {
-    if (!working) primary.current?.focus();
-  }, [working]);
-  const close = () => !working && onClose();
-  const facts = state.phase === "ready" || state.phase === "removing" || state.phase === "lost" ? state.facts : undefined;
-  const blockers = state.phase === "ready" ? removalBlockers(state.facts, state.hermes) : [];
-  const archived = state.phase === "ready" && state.hermes && !(state.hermes instanceof Error) ? state.hermes.chats.filter((c) => c.archived) : [];
-  const keeps = !!facts && (facts.files.length > 0 || facts.keepHead);
+  const busy = state.phase === "removing";
+  const close = () => !busy && onClose();
+  const plan = state.phase === "ready" || state.phase === "removing" ? state.plan : state.phase === "failed" ? state.plan : undefined;
+  const active = hermes.chats.filter((c) => c.active);
+  const quiet = hermes.chats.filter((c) => !c.active);
+  const stale = state.phase === "ready" && state.error?.kind === "stale";
+  const blocked = !plan || plan.blockers.length > 0 || active.length > 0 || hermes.state === "reading";
+  const needsAck = quiet.length > 0 || hermes.state === "failed" || hermes.state === "unavailable";
 
   return (
     <div className="leave-overlay" onMouseDown={(e) => e.target === e.currentTarget && close()}>
@@ -961,7 +990,7 @@ function RemoveDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        aria-busy={working}
+        aria-busy={busy || state.phase === "reading"}
         onKeyDown={(e) => {
           keys(e);
           if (e.key === "Escape") {
@@ -971,139 +1000,182 @@ function RemoveDialog({
         }}
       >
         <h2 id={titleId} className="leave-title">
-          <Trash2 size={15} aria-hidden /> {state.phase === "removed" ? "Worktree removed" : `Remove the worktree ${record.branch}?`}
+          <Trash2 size={15} aria-hidden /> {state.phase === "removed" ? "Worktree removed" : `Remove ${record.path}`}
         </h2>
-        <div className="repo-review-body">
-          {state.phase === "loading" && (
-            <p className="repo-review-status" role="status">
-              <Spinner /> Reading what removing it would affect…
-            </p>
-          )}
-          {state.phase === "failed" && <Failure failure={state.error} what="Couldn't read the worktree" />}
-          {facts && state.phase !== "removed" && (
-            <>
-              <dl className="repo-review-facts">
-                <dt>Folder</dt>
-                <dd className="mono">{facts.path}</dd>
-                <dt>Branch</dt>
-                <dd>{facts.branch ? <><span className="mono">{facts.branch}</span>: kept, never deleted</> : `detached at ${short(facts.head)}`}</dd>
-              </dl>
-              {blockers.length > 0 && (
-                <div className="files-banner warn" role="alert">
-                  <CircleAlert size={14} aria-hidden />
-                  <div>
-                    <strong>It can't be removed now.</strong>
-                    <ul>
-                      {blockers.map((b, i) => (
-                        <li key={i}>{b.message}</li>
-                      ))}
-                    </ul>
-                  </div>
+        {state.phase === "reading" && (
+          <p role="status" className="repo-review-status">
+            <Spinner /> Reading what removing it would touch…
+          </p>
+        )}
+        {state.phase === "failed" && <Failure failure={state.error} what="Couldn't check it" />}
+        {plan && state.phase !== "removed" && (
+          <>
+            <dl className="repo-review-facts">
+              <dt>Folder</dt>
+              <dd className="mono">{plan.path}</dd>
+              <dt>Branch</dt>
+              <dd>
+                {plan.branch ? (
+                  <>
+                    <span className="mono">{plan.branch}</span> is kept: branches are never deleted here.
+                  </>
+                ) : (
+                  `Detached at ${plan.head?.slice(0, 12)}`
+                )}
+              </dd>
+              <dt>Kept first</dt>
+              <dd>
+                {plan.keep
+                  ? `${plan.fileCount ? `${plural(plan.fileCount, "changed or untracked file")}` : ""}${plan.fileCount && plan.lost ? " and " : ""}${plan.lost ? `${plural(plan.lost, "commit")} no branch has` : ""}, as a commit under refs/hermes-chat/kept/, restorable from the list.`
+                  : "Nothing: there are no changes only this folder holds."}
+              </dd>
+            </dl>
+            {plan.blockers.length > 0 && (
+              <div className="files-banner err" role="alert">
+                <CircleAlert size={14} aria-hidden />
+                <div>
+                  <span>It can't be removed:</span>
+                  <ul>
+                    {plan.blockers.map((b, i) => (
+                      <li key={i}>{b.message}</li>
+                    ))}
+                  </ul>
                 </div>
-              )}
-              {archived.length > 0 && (
-                <p className="muted small">
-                  Archived chats that worked here: {archived.map((c) => `“${c.title}”`).join(", ")}. They'd lose their folder.
-                </p>
-              )}
-              <h3>Files that will be kept {facts.files.length > 0 && <span className="count">{facts.fileCount ?? facts.files.length}</span>}</h3>
-              {facts.files.length === 0 ? (
-                <p className="muted small">No changes: it matches its last commit.</p>
-              ) : (
-                <ul className="wt-files" aria-label="Changed and untracked files">
-                  {facts.files.map((f) => (
+              </div>
+            )}
+            {plan.files.length > 0 && (
+              <section aria-label="Files that will be kept">
+                <h3 className="small">Changed and untracked files ({plan.fileCount})</h3>
+                <ul className="wt-files mono">
+                  {plan.files.slice(0, 200).map((f) => (
                     <li key={f.path}>
-                      <span className="mono">{f.path}</span> <span className="muted small">{FILE_STATUS[f.status]}</span>
+                      <span className="muted">{f.kind === "untracked" ? "??" : f.xy.replace(/\./g, " ")}</span> {f.from ? `${f.from} → ` : ""}
+                      {f.path}
+                      {f.hidden && <span className="muted"> (changed, though marked assume-unchanged or skip-worktree)</span>}
                     </li>
                   ))}
                 </ul>
-              )}
-              <h3>Commits not on a remote {facts.unpushed.length > 0 && <span className="count">{facts.unpushed.length}</span>}</h3>
-              {facts.unpushed.length === 0 ? (
-                <p className="muted small">None.</p>
-              ) : (
-                <>
-                  <p className="muted small">
-                    {facts.branch ? `They stay on the branch ${facts.branch}.` : "They're on no branch, so the recovery ref keeps them."}
-                    {facts.hasRemote === false && " This repository has no remote."}
-                  </p>
-                  <ul className="wt-files" aria-label="Commits not on a remote">
-                    {facts.unpushed.slice(0, 50).map((c) => (
-                      <li key={c.sha}>
-                        <span className="mono">{short(c.sha)}</span> {c.subject}
+                {plan.fileCount > 200 && <p className="muted small">and {plan.fileCount - 200} more.</p>}
+              </section>
+            )}
+            {plan.unpublishedCount > 0 && (
+              <section aria-label="Commits no remote has">
+                <h3 className="small">
+                  {plural(plan.unpublishedCount, "commit")} no remote has{plan.branch ? `: they stay on ${plan.branch}` : ""}
+                </h3>
+                <ul className="repo-commits">
+                  {plan.unpublished.slice(0, 10).map((c) => (
+                    <li key={c.sha}>
+                      <span className="mono muted">{c.sha.slice(0, 7)}</span> {c.subject}
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+            {plan.ignored.length > 0 && (
+              <p className="files-banner warn small" role="note">
+                <CircleAlert size={13} aria-hidden />
+                <span>
+                  Ignored files go with the folder and aren't kept: {plan.ignored.slice(0, 8).join(", ")}
+                  {plan.ignored.length > 8 ? `, and ${plan.ignored.length - 8} more` : ""}.
+                  {plan.ignoredUnchecked && " There are too many to check one by one: a change to them after this preview isn't noticed."}
+                </span>
+              </p>
+            )}
+            {hermes.state === "reading" && (
+              <p role="status" className="muted small">
+                <Spinner /> Asking Hermes which chats work in this folder…
+              </p>
+            )}
+            {active.length > 0 && (
+              <div className="files-banner err" role="alert">
+                <CircleAlert size={14} aria-hidden />
+                <span>Hermes is working in it now, in {active.map((c) => `"${c.title}" (${c.profile})`).join(", ")}. Wait for it to finish.</span>
+              </div>
+            )}
+            {quiet.length > 0 && (
+              <div className="files-banner warn" role="note">
+                <CircleAlert size={14} aria-hidden />
+                <div>
+                  <span>Hermes has chats whose folder is in it. A quiet chat may still be needed; it would lose its folder:</span>
+                  <ul>
+                    {quiet.slice(0, 10).map((c) => (
+                      <li key={`${c.profile}/${c.id}`}>
+                        "{c.title}" ({c.profile}) <span className="mono muted">{c.cwd}</span>
                       </li>
                     ))}
                   </ul>
-                </>
-              )}
-              {facts.ignored.length > 0 && (
-                <>
-                  <h3>
-                    Ignored, deleted with the folder <span className="count">{facts.ignored.length}</span>
-                  </h3>
-                  <ul className="wt-files" aria-label="Ignored files deleted with the folder">
-                    {facts.ignored.slice(0, 50).map((f) => (
-                      <li key={f} className="mono">
-                        {f}
-                      </li>
-                    ))}
-                  </ul>
-                </>
-              )}
-              <p className="small">
-                {keeps
-                  ? "Before anything is deleted, the changes are saved as one commit in a recovery ref (refs/hermes-chat/recovery/…), read back, and only then is the folder removed. Restore puts them back."
-                  : "Nothing needs keeping. The folder is removed; the branch stays."}
+                </div>
+              </div>
+            )}
+            {(hermes.state === "failed" || hermes.state === "unavailable") && (
+              <p className="files-banner warn small" role="note">
+                <CircleAlert size={13} aria-hidden />
+                <span>
+                  {hermes.state === "failed" ? `Hermes couldn't be asked which chats work in this folder (${hermes.error}).` : "Hermes isn't connected, so it couldn't be asked which chats work in this folder."} Chats
+                  started from other apps aren't checked.
+                </span>
               </p>
-              {state.phase === "ready" && state.error && <Failure failure={state.error} what="Nothing was removed" />}
-              {state.phase === "lost" && (
-                <>
-                  <Failure failure={state.error} what="The answer from the server was lost" />
-                  <p role="status">Whether it was removed isn't known yet. Close, and the list shows what the server has now. Nothing is sent again on its own.</p>
-                </>
-              )}
-              {state.phase === "removing" && (
-                <p className="repo-review-status" role="status">
-                  <Spinner /> {keeps ? "Keeping the changes, then removing…" : "Removing…"}
-                </p>
-              )}
-            </>
-          )}
-          {state.phase === "removed" && (
-            <>
-              <p role="status">
-                {state.record.path} was removed.{" "}
-                {state.record.removed?.kept ? (
-                  <>
-                    Its changes are kept in <span className="mono">{state.record.removed.kept.ref}</span>.
-                  </>
-                ) : (
-                  "It had no changes to keep."
-                )}{" "}
-                {state.record.removed?.branch && `The branch ${state.record.removed.branch} is still there.`}
-              </p>
-            </>
-          )}
-          <div className="confirm-actions">
-            <button ref={state.phase === "ready" && !blockers.length ? undefined : primary} className="btn" disabled={working} onClick={close}>
-              {state.phase === "removed" ? "Close" : "Cancel"}
+            )}
+            {needsAck && !blocked && (
+              <label className="wt-check">
+                <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} /> I've checked these chats: none of them needs this folder.
+              </label>
+            )}
+            {state.phase === "ready" && state.error && <Failure failure={state.error} what="It wasn't removed" />}
+          </>
+        )}
+        {state.phase === "removing" && (
+          <>
+            {state.log.length > 0 && (
+              <ol className="wt-log mono" role="log" aria-label="Progress">
+                {state.log.map((l, i) => (
+                  <li key={i}>{l.message}</li>
+                ))}
+              </ol>
+            )}
+            <p role="status" className="repo-review-status">
+              <Spinner /> {state.plan.keep ? "Keeping its changes, then removing it…" : "Removing it…"}
+            </p>
+          </>
+        )}
+        {state.phase === "removed" && (
+          <p className="files-banner ok" role="status">
+            <Check size={14} aria-hidden />{" "}
+            <span>
+              Removed {state.result.removed}.
+              {state.result.branch ? ` The branch ${state.result.branch} is kept${state.result.unpublished ? `, with ${plural(state.result.unpublished, "commit")} no remote has` : ""}.` : ""}
+              {state.result.kept ? ` Its changes are in ${state.result.kept.ref} (${state.result.kept.commit.slice(0, 12)}).` : ""}
+            </span>
+          </p>
+        )}
+        <div className="confirm-actions">
+          {state.phase === "removed" ? (
+            <button ref={primary} className="btn primary" onClick={onClose}>
+              Close
             </button>
-            {state.phase === "ready" && (
-              <button
-                ref={blockers.length ? undefined : primary}
-                className="btn danger"
-                disabled={blockers.length > 0}
-                onClick={() => void remove(state.facts)}
-              >
-                {keeps ? "Keep changes and remove" : "Remove worktree"}
+          ) : (
+            <>
+              <button ref={blocked || stale ? primary : undefined} className="btn" onClick={close} disabled={busy}>
+                Cancel
               </button>
-            )}
-            {(state.phase === "failed" || (state.phase === "ready" && !!state.error)) && (
-              <button className="btn" onClick={load}>
-                Preview again
-              </button>
-            )}
-          </div>
+              {(stale || state.phase === "failed") && (
+                <button className="btn" onClick={load} disabled={busy}>
+                  <RefreshCw size={13} aria-hidden /> Check again
+                </button>
+              )}
+              {!stale && state.phase !== "failed" && (
+                <button
+                  ref={blocked ? undefined : primary}
+                  className="btn danger"
+                  disabled={busy || blocked || state.phase !== "ready" || (needsAck && !ack)}
+                  onClick={() => plan && remove(plan)}
+                >
+                  {plan?.keep ? "Keep changes and remove" : "Remove"}
+                </button>
+              )}
+            </>
+          )}
         </div>
       </div>
     </div>

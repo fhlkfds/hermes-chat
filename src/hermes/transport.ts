@@ -204,6 +204,10 @@ type SessionRow = {
   /** The session it was branched (or compressed) from. */
   parent_session_id?: string | null;
   message_count?: number;
+  /** The folder it works in, as Hermes stored it. */
+  cwd?: string | null;
+  /** Running now, or active lately, as the dashboard decides (`_is_active`). */
+  is_active?: boolean;
 };
 type SessionPage = { sessions: SessionRow[]; total: number };
 /** Dashboard REST `GET /api/sessions/{id}`, as far as this app reads it. Flags come as stored, 0 or 1. */
@@ -1235,6 +1239,38 @@ export class Hermes {
     return { ...this.toFound({ ...row, archived: !!row.archived } as SearchRow, listed, !row.pinned), snippet: [] };
   }
 
+  /**
+   * The chats Hermes has working in `path` or a folder inside it, in every profile, from any Hermes client
+   * (`GET /api/sessions?cwd_prefix=`, archived ones included). Only rows whose own `cwd` is inside `path` count. Rejects
+   * when a profile can't be asked: a removal must not go ahead on a partial answer (ADR 0043).
+   */
+  async chatsWorkingIn(path: string): Promise<{ id: string; title: string; profile: string; cwd: string; active: boolean }[]> {
+    const root = path.replace(/\/+$/, "");
+    const within = (cwd: string) => cwd === root || cwd.startsWith(`${root}/`);
+    const PAGE = 100;
+    // A removal must not go ahead on part of the list: every page is read, and too many to read is a refusal.
+    const MAX_PAGES = 50;
+    const profiles = await this.profiles();
+    const pages = await Promise.all(
+      profiles.map(async (profile) => {
+        const rows = new Map<string, SessionRow>();
+        for (let offset = 0, n = 0; ; offset += PAGE, n++) {
+          if (n >= MAX_PAGES) throw new Error(`The ${profile} profile has more than ${MAX_PAGES * PAGE} chats in this folder, too many to check.`);
+          const q = new URLSearchParams({ cwd_prefix: root, archived: "include", limit: String(PAGE), offset: String(offset), profile });
+          const page = (await this.rest("GET", `api/sessions?${q}`)) as SessionPage;
+          if (!Array.isArray(page?.sessions) || typeof page.total !== "number") throw new Error(`Hermes's answer for the ${profile} profile wasn't a list of chats.`);
+          // Pinned rows come with every page: each chat counts once.
+          for (const r of page.sessions) rows.set(r.id, r);
+          if (offset + PAGE >= page.total) break;
+        }
+        return [...rows.values()].flatMap((r) =>
+          typeof r.cwd === "string" && within(r.cwd) ? [{ id: r.id, title: r.title || r.preview || "Untitled chat", profile, cwd: r.cwd, active: !!r.is_active }] : [],
+        );
+      }),
+    );
+    return pages.flat();
+  }
+
   /** Puts a found chat in the list, if it isn't there yet, so it can be opened (`open`). */
   reveal(found: Found) {
     if (this.snapshot.chats.some((c) => c.id === found.chatId)) return;
@@ -1294,35 +1330,15 @@ export class Hermes {
   };
 
   /**
-   * The profile's chats that Hermes keeps as working in `folder` or under it, archived ones too, from any Hermes
-   * client (`GET /api/sessions?cwd_prefix=`). Hermes stores a chat's folder with its first prompt. At most 100: `more`
-   * says there are others.
-   */
-  async chatsIn(folder: string, profile = this.profile): Promise<{ chats: { id: string; title: string; archived: boolean }[]; more: boolean }> {
-    const query = new URLSearchParams({ profile, cwd_prefix: folder, archived: "include", limit: "100", offset: "0" });
-    const res = (await this.rest("GET", `api/sessions?${query}`)) as SessionPage;
-    const chats = res.sessions.map((r) => ({ id: r.id, title: listTitle(r), archived: !!r.archived }));
-    return { chats, more: res.total > res.sessions.length };
-  }
-
-  /** A text file on the server, as Hermes reads it (`GET /api/fs/read-text`), for the profile shown. */
-  async readServerText(path: string): Promise<string> {
-    const res = (await this.rest("GET", `api/fs/read-text?${new URLSearchParams({ path, profile: this.profile })}`)) as { text?: unknown; truncated?: unknown };
-    if (typeof res?.text !== "string" || res.truncated) throw new Error(`Hermes didn't read all of ${path}.`);
-    return res.text;
-  }
-
-  /**
    * Starts a Chat in this app. It is Active from the start, and pinned once Hermes has stored it (ADR 0002). `model`:
    * what it runs on, for this chat only; left out, it runs on the profile's model. `folder`: the server folder it
    * works in (its session `cwd`), checked by the caller first; Hermes quietly runs a chat in its own folder when it
    * can't use the one asked for, so the chat is refused unless Hermes says it took it. `instructions`: one hidden
    * message seeded before the owner's first, which the model reads and no Hermes client shows (ADR 0017).
    */
-  async newChat(model?: ModelPick, start: { folder?: string; instructions?: string; confirm?: (id: string) => Promise<void> } = {}): Promise<string> {
-    const { folder, instructions, confirm } = start;
+  async newChat(model?: ModelPick, start: { folder?: string; instructions?: string } = {}): Promise<string> {
+    const { folder, instructions } = start;
     const profile = this.profile;
-    const generation = this.generation;
     const res = (await this.request("session.create", {
       profile,
       source: APP_SOURCE,
@@ -1342,27 +1358,12 @@ export class Hermes {
       info?: unknown;
     };
     const cwd = (res.info as { cwd?: unknown } | undefined)?.cwd;
-    // Not this chat: drop the session, and the hidden message Hermes stored with it, so nothing is left behind.
-    const drop = () => {
+    if (folder && cwd !== folder) {
+      // Not this chat: drop the session, and the hidden message Hermes stored with it, so nothing is left behind.
       void this.request("session.close", { session_id: res.session_id }).catch(() => {});
       if (instructions)
         void this.rest("DELETE", `api/sessions/${encodeURIComponent(res.stored_session_id)}?${new URLSearchParams({ profile })}`).catch(() => {});
-    };
-    if (folder && cwd !== folder) {
-      drop();
       throw new Error(`Hermes didn't start it in ${folder}${typeof cwd === "string" && cwd ? `: it would have worked in ${cwd}` : ""}. Nothing was sent.`);
-    }
-    // `confirm`: what must hold before anything is sent, such as the worktree recording this chat (ADR 0042).
-    if (confirm) {
-      await confirm(res.stored_session_id).catch((e: unknown) => {
-        drop();
-        throw new Error(`${e instanceof Error ? e.message : String(e)} Nothing was sent.`);
-      });
-      // Confirming took a while: a chat started for one profile or connection never lands in another.
-      if (this.profile !== profile || this.generation !== generation) {
-        drop();
-        throw new Error("The profile or the connection changed while the chat was starting. Nothing was sent.");
-      }
     }
     const chat: Chat = {
       model: pickFromInfo(res.info) ?? model,

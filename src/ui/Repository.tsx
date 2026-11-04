@@ -51,7 +51,7 @@ import {
 } from "../hermes/repo";
 import { Spinner } from "./bits";
 import { useModal } from "./modal";
-import { WorktreesPanel } from "./Worktrees";
+import { WorktreesPanel, type WorktreeHooks } from "./Worktrees";
 
 type Load<T> = { state: "idle" } | { state: "loading"; last?: T } | { state: "ready"; data: T } | { state: "failed"; error: RepoFailure; last?: T };
 
@@ -64,6 +64,9 @@ const SECTIONS: { key: "conflicts" | "staged" | "unstaged" | "untracked"; title:
   { key: "untracked", title: "Untracked" },
 ];
 
+/** With no app around it (as in tests): no chats to name, start or ask about. */
+const NO_HOOKS: WorktreeHooks = { profile: "", connection: "", chatTitle: () => undefined };
+
 export function RepositoryScreen({
   api,
   initialTarget,
@@ -75,7 +78,8 @@ export function RepositoryScreen({
   suggest,
   suggestScope = "",
   openUrl,
-  worktrees,
+  worktrees = NO_HOOKS,
+  initialView = "changes",
   onClose,
 }: {
   api: RepoApi;
@@ -98,10 +102,13 @@ export function RepositoryScreen({
   suggestScope?: string;
   /** Opens a pull request's or a check's page in the owner's browser. */
   openUrl?: (url: string) => void;
-  /** Worktrees (ADR 0042): who makes one, the chats Hermes has working in a folder, and starting a chat in one. */
-  worktrees?: Omit<Parameters<typeof WorktreesPanel>[0], "api" | "target" | "top" | "branch" | "onOpen" | "scope">;
+  /** What the Worktrees view needs from the app (ADR 0043). */
+  worktrees?: WorktreeHooks;
+  /** Which view the screen opens on. */
+  initialView?: "changes" | "worktrees";
   onClose: () => void;
 }) {
+  const [view, setView] = useState<"changes" | "worktrees">(initialView);
   const [target, setTarget] = useState(initialTarget);
   const [editingTarget, setEditingTarget] = useState(!initialTarget);
   const [targetDraft, setTargetDraft] = useState(initialTarget);
@@ -421,7 +428,50 @@ export function RepositoryScreen({
         </button>
       </form>
 
-      {!repo && offers.length > 0 && (
+      {repo && target && (
+        <div className="repo-views" role="tablist" aria-label="Repository views">
+          {(["changes", "worktrees"] as const).map((v) => (
+            <button
+              key={v}
+              role="tab"
+              id={`${pathId}-tab-${v}`}
+              aria-selected={view === v}
+              aria-controls={`${pathId}-panel-${v}`}
+              tabIndex={view === v ? 0 : -1}
+              className={`repo-view ${view === v ? "on" : ""}`}
+              onClick={() => setView(v)}
+              onKeyDown={(e) => {
+                if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+                e.preventDefault();
+                const next = v === "changes" ? "worktrees" : "changes";
+                setView(next);
+                document.getElementById(`${pathId}-tab-${next}`)?.focus();
+              }}
+            >
+              {v === "changes" ? "Changes" : "Worktrees"}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {view === "worktrees" && repo && target && (
+        <div role="tabpanel" className="repo-worktrees" id={`${pathId}-panel-worktrees`} aria-labelledby={`${pathId}-tab-worktrees`}>
+          <WorktreesPanel
+            key={`${target}\n${shown?.top ?? repo}`}
+            api={api}
+            target={target}
+            top={shown?.top ?? repo}
+            hooks={worktrees}
+            onOpen={(path) => {
+              setView("changes");
+              setPathDraft(path);
+              open(path);
+            }}
+          />
+        </div>
+      )}
+
+      {view === "changes" && !repo && offers.length > 0 && (
         <div className="repo-offers">
           {offers.map((o) => (
             <button
@@ -439,6 +489,8 @@ export function RepositoryScreen({
         </div>
       )}
 
+      {view === "changes" && (
+      <div role={repo && target ? "tabpanel" : undefined} id={`${pathId}-panel-changes`} aria-labelledby={repo && target ? `${pathId}-tab-changes` : undefined} className="repo-changes">
       {failure && <Failure failure={failure} what={`Couldn't read ${repo}`} onDismiss={shown ? () => setStatus({ state: "ready", data: shown }) : undefined} />}
       {writeError && <Failure failure={writeError.error} what={`${writeError.what} didn't happen`} onDismiss={() => setWriteError(undefined)} />}
       {writing && (
@@ -582,21 +634,6 @@ export function RepositoryScreen({
                 openUrl={openUrl}
                 onPushed={() => read(repo, target)}
               />
-              {worktrees && (
-                <WorktreesPanel
-                  key={`${target}\n${shown.top}\n${suggestScope}`}
-                  api={api}
-                  target={target}
-                  top={shown.top}
-                  branch={shown.branch.head}
-                  scope={suggestScope}
-                  onOpen={(path) => {
-                    setPathDraft(path);
-                    open(path);
-                  }}
-                  {...worktrees}
-                />
-              )}
             </div>
             {change && (
               <DiffPanel
@@ -617,6 +654,8 @@ export function RepositoryScreen({
             )}
           </div>
         </>
+      )}
+      </div>
       )}
       {reviewing && shown && (
         <CommitDialog

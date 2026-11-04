@@ -1,548 +1,632 @@
 // @vitest-environment jsdom
-// Worktrees in the Repository screen (ADR 0042) against a fake of Rust's `repo_git` command. Its answers have the
-// shapes repo_worktrees_helper.py gives for real repositories (src-tauri/tests/worktrees.rs).
+// The Repository screen's Worktrees view (ADR 0043) against a fake of Rust's `repo_git` and `repo_git_stream`
+// commands. Its answers have the shapes repo_worktree_helper.py gives for real repositories
+// (src-tauri/tests/repo_worktree.rs, which runs the helper itself).
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { RepoFailure, type RepoApi, type RepoRequest } from "../hermes/repo";
-import type { RemovalFacts, WorktreeList, WorktreePlan, WorktreeRecord, WorktreeRow } from "../hermes/worktrees";
-import { WorktreesPanel } from "./Worktrees";
+import { RepoFailure, type RepoApi, type RepoRequest, type Status } from "../hermes/repo";
+import type { HermesChatIn, Progress, RemovalPlan, Worktree, WorktreeList, WorktreePlan, WorktreeRecord } from "../hermes/worktrees";
+import { RepositoryScreen } from "./Repository";
+import type { WorktreeHooks } from "./Worktrees";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  localStorage.clear();
+});
 
-const TOP = "/srv/app";
-const PATH = "/srv/app.worktrees/fix-login";
-const SHA = "57a1fb6c0ffee57a1fb6c0ffee57a1fb6c0ffee5";
+const MAIN = "/srv/app";
+const WT = "/srv/app-feature-login";
+const ID = "0123456789abcdef";
+
+const status = (top = MAIN): Status => ({
+  top,
+  gitDir: `${top}/.git`,
+  head: "a".repeat(40),
+  index: "i",
+  branch: { oid: "a".repeat(40), head: "main", detached: false, upstream: null, ahead: null, behind: null },
+  operation: null,
+  entries: [],
+  truncated: false,
+});
 
 const record = (over: Partial<WorktreeRecord> = {}): WorktreeRecord => ({
-  id: "0b5c1f3e-7a2d-4c61-9e0f-1a2b3c4d5e6f",
-  path: PATH,
-  branch: "fix/login",
+  id: ID,
+  path: WT,
+  branch: "feature/login",
   newBranch: true,
   base: "main",
-  baseSha: SHA,
-  setup: [],
-  state: "ready",
-  protected: false,
-  chats: [],
+  baseOid: "a".repeat(40),
+  source: MAIN,
   createdAt: 1,
-  createdBy: "Hermes Chat (default via ssh://liam@hermes)",
+  protected: false,
+  state: "ready",
+  running: false,
+  setup: { state: "done", entries: [], log: "Copied .env (9 bytes)" },
+  chats: [],
   ...over,
 });
 
-const mainRow: WorktreeRow = { path: TOP, head: SHA, branch: "main", detached: false, locked: null, prunable: false, main: true, current: true, missing: false, record: null, changes: { staged: 0, changed: 2, untracked: 1, conflicts: 0 }, unpushed: 0 };
-const managedRow = (r: WorktreeRecord, over: Partial<WorktreeRow> = {}): WorktreeRow => ({
-  path: r.path,
-  head: SHA,
-  branch: r.branch,
+const tree = (over: Partial<Worktree> = {}): Worktree => ({
+  path: WT,
+  head: "b".repeat(40),
+  branch: "feature/login",
   detached: false,
-  locked: `hermes-chat ${r.id}`,
-  prunable: false,
+  bare: false,
+  locked: `hermes-chat: managed worktree ${ID}`,
+  prunable: null,
   main: false,
-  current: false,
-  missing: false,
-  record: r,
-  changes: { staged: 0, changed: 1, untracked: 2, conflicts: 0 },
-  unpushed: 3,
+  exists: true,
+  managed: record(),
+  dirty: { staged: 0, unstaged: 1, untracked: 2, conflicts: 0 },
+  unpublished: 1,
+  lost: 0,
+  upstream: null,
+  ahead: null,
+  behind: null,
+  submodules: 0,
+  protected: [],
   ...over,
 });
-const REGISTRY = `${TOP}/.git/hermes-chat/worktrees.json`;
-const listOf = (rows: WorktreeRow[], over: Partial<WorktreeList> = {}): WorktreeList => ({
-  top: TOP,
-  main: TOP,
-  hasRemote: true,
-  newer: false,
-  worktrees: [mainRow, ...rows],
-  unfinished: [],
-  removed: [],
-  registry: REGISTRY,
+
+const mainTree = (): Worktree =>
+  tree({ path: MAIN, branch: "main", main: true, locked: null, managed: null, unpublished: 0, dirty: { staged: 0, unstaged: 0, untracked: 0, conflicts: 0 }, protected: [{ kind: "main", message: "This is the repository's main checkout." }] });
+
+const listOf = (worktrees: Worktree[], over: Partial<WorktreeList> = {}): WorktreeList => ({
+  top: MAIN,
+  main: MAIN,
+  commonDir: `${MAIN}/.git`,
+  worktrees,
+  missing: [],
+  kept: [],
+  detailLimit: 40,
+  git: "2.47",
   ...over,
 });
 
 const plan = (over: Partial<WorktreePlan> = {}): WorktreePlan => ({
-  repo: TOP,
-  path: PATH,
-  branch: "fix/login",
-  newBranch: true,
+  repo: MAIN,
+  main: MAIN,
+  source: MAIN,
   base: "main",
-  baseSha: SHA,
-  subject: "Add the login form",
-  setup: [
-    { entry: ".env", action: "copy", state: "pending", message: "" },
-    { entry: "node_modules", action: "link", state: "pending", message: "" },
-    { entry: "local.cfg", action: "skip", state: "skipped", message: "Git doesn't ignore it, so it's part of the source." },
-  ],
-  stamp: "stamp-1",
-  source: { path: TOP, staged: 0, changed: 2, untracked: 1, conflicts: 0 },
+  baseOid: "a".repeat(40),
+  baseRef: "refs/heads/main",
+  baseSubject: "first",
+  branch: "feature/login",
+  newBranch: true,
+  path: WT,
+  suggested: true,
+  sourceDirty: { staged: 0, unstaged: 1, untracked: 1, conflicts: 0 },
   submodules: [],
-  submoduleCount: 0,
+  setup: [{ entry: ".env", action: "copy", size: 9 }],
+  setupCommands: "unsupported",
+  stamp: "plan-stamp",
   ...over,
 });
 
-const removal = (over: Partial<RemovalFacts> = {}): RemovalFacts => ({
-  path: PATH,
-  blockers: [],
+const removal = (over: Partial<RemovalPlan> = {}): RemovalPlan => ({
+  path: WT,
+  branch: "feature/login",
+  head: "b".repeat(40),
+  detached: false,
   files: [
-    { status: "changed", path: "src/login.ts" },
-    { status: "untracked", path: "notes.txt" },
+    { path: "README.md", kind: "change", xy: ".M", sub: false, size: 12 },
+    { path: "notes/new.txt", kind: "untracked", xy: "??", sub: false, size: 10 },
   ],
   fileCount: 2,
+  filesCut: false,
   ignored: [".env"],
-  unpushed: [{ sha: SHA, subject: "Fix the timeout" }],
-  hasRemote: true,
-  head: SHA,
-  branch: "fix/login",
-  keepHead: false,
-  stamp: "rm-1",
+  unpublished: [{ sha: "c".repeat(40), subject: "unpushed work" }],
+  unpublishedCount: 1,
+  lost: 0,
+  submodules: [],
+  processes: [],
+  blockers: [],
+  operation: null,
+  keep: true,
+  stamp: "removal-stamp",
+  worktree: record(),
   ...over,
 });
 
-type Answer = (r: RepoRequest) => unknown | Promise<unknown>;
-function fakeApi(answer: Answer) {
-  const calls: RepoRequest[] = [];
+type Answer = (r: RepoRequest, target: string) => unknown | Promise<unknown>;
+
+/** Records each request; `answers[op]` answers it, and `progress[op]` is streamed first when `stream` is used. */
+function fakeApi(answers: Partial<Record<RepoRequest["op"], Answer>>, progress: Partial<Record<RepoRequest["op"], Progress[]>> = {}) {
+  const calls: { target: string; request: RepoRequest; streamed: boolean }[] = [];
+  const answer = async (target: string, request: RepoRequest) => {
+    const a = answers[request.op];
+    if (request.op === "status") return a ? a(request, target) : status(request.repo);
+    if (request.op === "publishInfo") throw new RepoFailure("git", "no remote");
+    if (!a) throw new Error(`unexpected ${request.op}`);
+    return a(request, target);
+  };
   const api: RepoApi = {
-    run: async (_t, request) => {
-      calls.push(request);
-      return answer(request);
+    run: async (target, request) => {
+      calls.push({ target, request, streamed: false });
+      return answer(target, request);
+    },
+    stream: async (target, request, onProgress) => {
+      calls.push({ target, request, streamed: true });
+      for (const p of progress[request.op] ?? []) onProgress(p);
+      return answer(target, request);
     },
   };
-  return { api, calls };
-}
-const ops = (calls: RepoRequest[], op: RepoRequest["op"]) => calls.filter((c) => c.op === op);
-
-function show(api: RepoApi, props: Partial<Parameters<typeof WorktreesPanel>[0]> = {}) {
-  const onOpen = vi.fn();
-  const onStartChat = vi.fn();
-  const chatsIn = vi.fn(async () => ({ chats: [] as { id: string; title: string; archived: boolean }[], more: false }));
-  render(
-    <StrictMode>
-      <WorktreesPanel api={api} target="liam@hermes" top={TOP} branch="main" scope="scope-a" by="Hermes Chat (test)" chatsIn={chatsIn} onOpen={onOpen} onStartChat={onStartChat} {...props} />
-    </StrictMode>,
-  );
-  return { onOpen, onStartChat, chatsIn };
+  const ops = (op: RepoRequest["op"]) => calls.filter((c) => c.request.op === op).map((c) => c.request);
+  return { api, calls, ops };
 }
 
-const panel = () => screen.getByRole("region", { name: "Worktrees" });
-const dialog = () => screen.getByRole("dialog");
+const hooksOf = (over: Partial<WorktreeHooks> = {}): WorktreeHooks => ({
+  profile: "default",
+  connection: "liam@hermes",
+  chatTitle: (id) => ({ "20261104_a": "Fix the login page" })[id],
+  hermesChatsIn: async () => [],
+  onStartChat: vi.fn(),
+  ...over,
+});
 
-describe("the list", () => {
-  it("says so while reading, then lists the managed worktrees with their changes, unpushed commits and chats", async () => {
-    let answer!: (v: unknown) => void;
-    const r = record({ chats: [{ scope: "scope-a", chat: "s1", title: "Fix the login timeout" }, { scope: "scope-b", chat: "s9", title: "Other profile" }] });
-    const { api } = fakeApi((q) => (q.op === "worktreeList" ? new Promise((res) => (answer = res)) : undefined));
-    show(api);
-    expect(within(panel()).getByRole("status").textContent).toContain("Reading the worktrees");
-    await act(async () => answer(listOf([managedRow(r)])));
-    const card = within(panel()).getByRole("group", { name: "Worktree fix/login" });
-    expect(card.textContent).toContain(PATH);
-    expect(card.textContent).toContain("1 changed · 2 untracked");
-    expect(card.textContent).toContain("3 commits not on a remote");
-    expect(card.textContent).toContain("“Fix the login timeout”");
-    expect(card.textContent).toContain("“Other profile” (another connection or profile)");
-    // The repository's own checkout is listed apart, and never offered for removal.
-    expect(within(panel()).getByRole("list", { name: "Other worktrees" }).textContent).toContain("the repository's own checkout");
-    expect(within(panel()).getAllByRole("button", { name: /^Remove the worktree/ })).toHaveLength(1);
+const screenWith = (api: RepoApi, hooks: WorktreeHooks) => (
+  <StrictMode>
+    <RepositoryScreen api={api} initialTarget="liam@hermes" initialPath={MAIN} recent={[]} suggestions={[]} onOpened={() => {}} onTarget={() => {}} worktrees={hooks} onClose={() => {}} />
+  </StrictMode>
+);
+
+async function show(api: RepoApi, hooks: WorktreeHooks = hooksOf()) {
+  const user = userEvent.setup();
+  const view = render(screenWith(api, hooks));
+  rerenderWith = (h) => view.rerender(screenWith(api, h));
+  await screen.findByRole("tab", { name: "Worktrees" });
+  await user.click(screen.getByRole("tab", { name: "Worktrees" }));
+  return user;
+}
+
+/** Draws the screen again with new hooks, as the app does whenever a chat streams. */
+let rerenderWith: (hooks: WorktreeHooks) => void = () => {};
+
+const rowOf = (path: string) => screen.getByText(path, { selector: ".wt-path" }).closest(".wt-row") as HTMLElement;
+
+describe("the Worktrees view", () => {
+  it("shows loading, then each worktree with its branch, changes, unpublished commits and protection", async () => {
+    let answer!: (l: WorktreeList) => void;
+    const { api } = fakeApi({ worktreeList: () => new Promise((r) => (answer = r)) });
+    await show(api);
+    expect(screen.getByText("Reading the worktrees…")).toBeTruthy();
+    await act(async () => answer(listOf([mainTree(), tree()])));
+    const row = rowOf(WT);
+    expect(row.textContent).toContain("feature/login");
+    expect(row.textContent).toContain("1 changed, 2 untracked");
+    expect(row.textContent).toContain("1 commit no remote has");
+    expect(row.textContent).toContain("Made here");
+    const main = rowOf(MAIN);
+    expect(main.textContent).toContain("Main checkout");
+    expect(within(main).queryByRole("button", { name: /Remove/ })).toBeNull();
+    expect(within(main).queryByRole("button", { name: /Start a chat here/ })).toBeNull();
   });
 
-  it("says when Hermes Chat has made none", async () => {
-    const { api } = fakeApi(() => listOf([]));
-    show(api);
-    await waitFor(() => expect(panel().textContent).toContain("No worktrees made by Hermes Chat are here."));
+  it("says when there are no other worktrees yet", async () => {
+    const { api } = fakeApi({ worktreeList: () => listOf([mainTree()]) });
+    await show(api);
+    expect(await screen.findByText(/No other worktrees yet/)).toBeTruthy();
   });
 
-  it("says when the server can't do it", async () => {
-    const { api } = fakeApi(() => {
-      throw new RepoFailure("unsupported", "This is a bare repository. Worktrees are made here from a repository with its own checkout.");
+  it("says plainly when the server can't do worktrees, and the Changes view still works", async () => {
+    const { api } = fakeApi({ worktreeList: () => Promise.reject(new RepoFailure("unsupported", "Worktrees here need Git 2.36 or newer on the server; it has 2.30.")) });
+    const user = await show(api);
+    const banner = await screen.findByText(/Worktrees aren't supported on this server/);
+    expect(banner.textContent).toContain("Git 2.36");
+    await user.click(screen.getByRole("tab", { name: "Changes" }));
+    expect(await screen.findByText(/No changes: the working tree matches HEAD/)).toBeTruthy();
+  });
+
+  it("shows a failure to read, with ssh's words, and reads again on Refresh", async () => {
+    let fail = true;
+    const { api, ops } = fakeApi({ worktreeList: () => (fail ? Promise.reject(new RepoFailure("ssh-unreachable", "ssh couldn't reach the server.", "No route to host")) : listOf([mainTree()])) });
+    const user = await show(api);
+    expect((await screen.findByRole("alert")).textContent).toContain("No route to host");
+    fail = false;
+    await user.click(screen.getByRole("button", { name: "Read the worktrees again" }));
+    await screen.findByText(/No other worktrees yet/);
+    expect(ops("worktreeList").length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("drops a late answer once a newer read was asked for", async () => {
+    const waiting: ((l: WorktreeList) => void)[] = [];
+    const { api } = fakeApi({ worktreeList: () => new Promise<WorktreeList>((r) => waiting.push(r)) });
+    const user = await show(api);
+    await waitFor(() => expect(waiting.length).toBeGreaterThan(0));
+    await user.click(screen.getByRole("button", { name: "Read the worktrees again" }));
+    const n = waiting.length;
+    await act(async () => waiting[n - 1](listOf([mainTree(), tree()])));
+    // The older read answers last, with a list that has no worktrees: it must not replace the newer one.
+    await act(async () => waiting.slice(0, n - 1).forEach((r) => r(listOf([mainTree()]))));
+    expect(rowOf(WT)).toBeTruthy();
+    expect(screen.queryByText(/No other worktrees yet/)).toBeNull();
+  });
+
+  it("names an attached chat by its title in this profile, and only by profile in another", async () => {
+    const chats = [
+      { token: "aaaaaaaaaaaaaaaa", chat: "20261104_a", profile: "default", connection: "liam@hermes", state: "attached" as const, at: 1 },
+      { token: "bbbbbbbbbbbbbbbb", chat: "20261104_b", profile: "work", connection: "liam@hermes", state: "attached" as const, at: 1 },
+      { token: "cccccccccccccccc", chat: null, profile: "default", connection: "liam@hermes", state: "starting" as const, at: 1 },
+    ];
+    const { api } = fakeApi({ worktreeList: () => listOf([mainTree(), tree({ managed: record({ chats }) })]) });
+    await show(api, hooksOf({ chatTitle: (id) => ({ "20261104_a": "Fix the login page", "20261104_b": "Secret work title" })[id] }));
+    const list = await screen.findByRole("list", { name: `Chats working in ${WT}` });
+    expect(list.textContent).toContain('"Fix the login page"');
+    // Another profile's chat isn't looked up in this one's list.
+    expect(list.textContent).toContain("the chat 20261104_b in the work profile");
+    expect(list.textContent).not.toContain("Secret work title");
+    expect(list.textContent).toContain("a chat being started (starting; not confirmed)");
+    // A quiet chat still blocks removal.
+    const remove = within(rowOf(WT)).getByRole("button", { name: `Remove ${WT}…` }) as HTMLButtonElement;
+    expect(remove.disabled).toBe(true);
+    expect(rowOf(WT).textContent).toContain("Can't be removed: Chats work in it: detach them first.");
+  });
+
+  it("detaches a chat only after saying the chat keeps working in the folder", async () => {
+    let chats = [{ token: "aaaaaaaaaaaaaaaa", chat: "20261104_a", profile: "default", connection: "liam@hermes", state: "attached" as const, at: 1 }];
+    const { api, ops } = fakeApi({
+      worktreeList: () => listOf([mainTree(), tree({ managed: record({ chats }) })]),
+      worktreeDetach: () => {
+        chats = [];
+        return record();
+      },
     });
-    show(api);
-    await waitFor(() => expect(within(panel()).getByRole("alert").textContent).toContain("Worktrees aren't available for this repository"));
-    expect(within(panel()).getByRole("button", { name: /New worktree/ })).toHaveProperty("disabled", true);
+    const user = await show(api);
+    await user.click(await screen.findByRole("button", { name: `Detach "Fix the login page" from ${WT}` }));
+    const confirm = screen.getByRole("group", { name: "Detach the chat" });
+    expect(confirm.textContent).toContain(`The chat keeps working in ${WT}`);
+    expect(ops("worktreeDetach")).toEqual([]);
+    await user.click(within(confirm).getByRole("button", { name: "Detach" }));
+    await waitFor(() => expect(ops("worktreeDetach")).toEqual([{ op: "worktreeDetach", repo: MAIN, id: ID, token: "aaaaaaaaaaaaaaaa" }]));
+    await waitFor(() => expect((within(rowOf(WT)).getByRole("button", { name: `Remove ${WT}…` }) as HTMLButtonElement).disabled).toBe(false));
   });
 
-  it("drops an answer for an older read", async () => {
-    const answers: ((v: unknown) => void)[] = [];
-    const { api } = fakeApi((q) => (q.op === "worktreeList" ? new Promise((res) => answers.push(res)) : undefined));
-    const user = userEvent.setup();
-    show(api);
-    await waitFor(() => expect(answers.length).toBeGreaterThan(0));
-    await act(async () => answers.at(-1)!(listOf([])));
-    await user.click(within(panel()).getByRole("button", { name: "Refresh worktrees" }));
-    await user.click(within(panel()).getByRole("button", { name: "Refresh worktrees" }));
-    const [older, newer] = answers.slice(-2);
-    await act(async () => newer(listOf([managedRow(record())])));
-    await act(async () => older(listOf([])));
-    expect(within(panel()).getByRole("group", { name: "Worktree fix/login" })).toBeTruthy();
-  });
-
-  it("detaches a chat only once the owner confirms, and protects", async () => {
-    const r = record({ chats: [{ scope: "scope-a", chat: "s1", title: "Fix the login timeout" }] });
-    const { api, calls } = fakeApi((q) => (q.op === "worktreeList" ? listOf([managedRow(r)]) : { record: r }));
-    const user = userEvent.setup();
-    show(api);
-    await user.click(await screen.findByRole("button", { name: "Detach “Fix the login timeout”" }));
-    expect(ops(calls, "worktreeDetach")).toEqual([]);
-    expect(screen.getByRole("group", { name: "Detach this chat?" }).textContent).toContain("keeps working in this folder");
-    await user.click(screen.getByRole("button", { name: "Detach" }));
-    await waitFor(() => expect(ops(calls, "worktreeDetach")).toEqual([{ op: "worktreeDetach", repo: TOP, id: r.id, scope: "scope-a", chat: "s1" }]));
-    await user.click(screen.getByRole("button", { name: "Protect" }));
-    await waitFor(() => expect(ops(calls, "worktreeProtect")).toEqual([{ op: "worktreeProtect", repo: TOP, id: r.id, protected: true }]));
-  });
-
-  it("starts a chat on the branch the worktree has now, not the one it was made on", async () => {
-    const r = record();
-    const { api } = fakeApi(() => listOf([managedRow(r, { branch: "fix/login-v2" })]));
-    const user = userEvent.setup();
-    const { onStartChat } = show(api);
-    await user.click(await screen.findByRole("button", { name: "Start chat here" }));
-    expect(onStartChat).toHaveBeenCalledWith(expect.objectContaining({ branch: "fix/login-v2" }));
-  });
-
-  it("offers Start chat only while Hermes is connected", async () => {
-    const r = record();
-    const { api } = fakeApi(() => listOf([managedRow(r)]));
-    const user = userEvent.setup();
-    const { onStartChat } = show(api);
-    await user.click(await screen.findByRole("button", { name: "Start chat here" }));
-    expect(onStartChat).toHaveBeenCalledWith({ target: "liam@hermes", repo: TOP, registry: REGISTRY, id: r.id, path: PATH, branch: "fix/login" });
-    cleanup();
-    show(api, { onStartChat: undefined });
-    expect(await screen.findByRole("button", { name: "Start chat here" })).toHaveProperty("disabled", true);
+  it("protects a worktree from removal, and lists one made by hand without offering to remove it", async () => {
+    const byHand = tree({ path: "/srv/byhand", branch: "byhand", locked: null, managed: null, protected: [{ kind: "unmanaged", message: "Hermes Chat didn't make this worktree, so it doesn't remove it." }] });
+    let marked = false;
+    const { api, ops } = fakeApi({
+      worktreeList: () => listOf([mainTree(), tree({ managed: record({ protected: marked }) }), byHand]),
+      worktreeProtect: (r) => {
+        marked = (r as { protected: boolean }).protected;
+        return record({ protected: marked });
+      },
+    });
+    const user = await show(api);
+    expect(rowOf("/srv/byhand").textContent).toContain("Not made by Hermes Chat");
+    expect(within(rowOf("/srv/byhand")).queryByRole("button", { name: /Remove/ })).toBeNull();
+    await user.click(within(rowOf(WT)).getByRole("button", { name: "Protect" }));
+    await waitFor(() => expect(rowOf(WT).textContent).toContain("Protected"));
+    expect(ops("worktreeProtect")).toEqual([{ op: "worktreeProtect", repo: MAIN, id: ID, protected: true }]);
+    expect((within(rowOf(WT)).getByRole("button", { name: `Remove ${WT}…` }) as HTMLButtonElement).disabled).toBe(true);
   });
 });
 
-describe("making one", () => {
-  /** A server that makes the worktree, then runs each setup step as `steps` says. */
-  function making(steps: Record<number, ("done" | "failed")[]> = {}, create?: () => unknown) {
-    let rec: WorktreeRecord | undefined;
-    const tries: Record<number, number> = {};
-    return fakeApi((q) => {
-      if (q.op === "worktreeList") return listOf(rec ? [managedRow(rec)] : []);
-      if (q.op === "worktreePlan") return plan();
-      if (q.op === "worktreeCreate") {
-        if (create) return create();
-        rec = record({ id: q.id, setup: plan().setup });
-        return { record: rec, output: "Preparing worktree (new branch 'fix/login')\nHEAD is now at 57a1fb6 Add the login form\n" };
-      }
-      if (q.op === "worktreeSetup") {
-        const n = (tries[q.step] = (tries[q.step] ?? 0) + 1);
-        const state = steps[q.step]?.[n - 1] ?? "done";
-        rec = { ...rec!, setup: rec!.setup.map((s, i) => (i === q.step ? { ...s, state, message: state === "failed" ? "[Errno 13] Permission denied: '/srv/app/.env'" : "Copied." } : s)) };
-        return { record: rec };
-      }
-      throw new Error(`unexpected ${q.op}`);
-    });
-  }
-
-  async function fillAndPreview(user: ReturnType<typeof userEvent.setup>) {
+describe("New worktree", () => {
+  it("previews the folder, base and setup, creates it with progress, then starts a chat in it", async () => {
+    const onStartChat = vi.fn();
+    const { api, ops, calls } = fakeApi(
+      {
+        worktreeList: () => listOf([mainTree()]),
+        worktreePlan: () => plan(),
+        worktreeCreate: (r) => ({ worktree: record({ id: (r as { id: string }).id }), output: "Preparing worktree" }),
+      },
+      { worktreeCreate: [{ step: "create", message: `Creating ${WT} on feature/login`, at: 1 }, { step: "setup", message: "Copied .env (9 bytes)", at: 2 }] },
+    );
+    const user = await show(api, hooksOf({ onStartChat }));
     await user.click(await screen.findByRole("button", { name: /New worktree/ }));
-    await user.type(within(dialog()).getByLabelText("New branch name"), "fix/login");
-    expect(within(dialog()).getByLabelText("Start from (branch, tag or commit)")).toHaveProperty("value", "main");
-    await user.click(within(dialog()).getByRole("button", { name: "Preview" }));
-    await within(dialog()).findByRole("button", { name: "Create worktree" });
-  }
+    const dialog = screen.getByRole("dialog", { name: "New worktree" });
+    await user.type(within(dialog).getByLabelText("New branch name"), "feature/login");
+    await user.clear(within(dialog).getByLabelText(/Base/));
+    await user.type(within(dialog).getByLabelText(/Base/), "main");
+    await user.click(within(dialog).getByRole("button", { name: "Preview" }));
+    const facts = await within(dialog).findByLabelText("What will be made");
+    expect(facts.textContent).toContain(WT);
+    expect(facts.textContent).toContain("refs/heads/main at aaaaaaaaaaaa");
+    expect(facts.textContent).toContain(`${MAIN} has changes (1 changed, 1 untracked). They stay there`);
+    expect(facts.textContent).toContain(".env copied (9 bytes)");
+    expect(facts.textContent).toContain("Setup commands (an install script) aren't run");
+    expect(ops("worktreePlan")).toEqual([{ op: "worktreePlan", repo: MAIN, base: "main", branch: "feature/login", newBranch: true, path: "", setup: true }]);
 
-  it("previews the exact folder, branch, base and setup, says the source's changes stay, then makes it and runs setup", async () => {
-    const { api, calls } = making();
-    const user = userEvent.setup();
-    const { onStartChat } = show(api);
-    await fillAndPreview(user);
-    const what = within(dialog()).getByLabelText("What will be made").textContent!;
-    expect(what).toContain(PATH);
-    expect(what).toContain("fix/login (new, not tracking anything)");
-    expect(what).toContain("57a1fb6 Add the login form");
-    expect(what).toContain("has uncommitted changes (2 changed · 1 untracked). They stay there");
-    expect(what).toContain("Copy .env");
-    expect(what).toContain("Skip local.cfg");
-    expect(ops(calls, "worktreePlan")).toEqual([{ op: "worktreePlan", repo: TOP, branch: "fix/login", newBranch: true, base: "main" }]);
+    // Changing the form makes the preview old: it must be checked again.
+    await user.type(within(dialog).getByLabelText("New branch name"), "x");
+    expect(within(dialog).queryByRole("button", { name: "Create worktree" })).toBeNull();
+    await user.type(within(dialog).getByLabelText("New branch name"), "{Backspace}");
+    await user.click(within(dialog).getByRole("button", { name: "Preview" }));
+    await user.click(await within(dialog).findByRole("button", { name: "Create worktree" }));
 
-    await user.click(within(dialog()).getByRole("button", { name: "Create worktree" }));
-    await within(dialog()).findByText("The worktree is ready.");
-    const [create] = ops(calls, "worktreeCreate");
-    expect(create).toMatchObject({ op: "worktreeCreate", repo: TOP, branch: "fix/login", newBranch: true, base: "main", stamp: "stamp-1", by: "Hermes Chat (test)" });
-    // Each step that does something ran once, in order; the skipped one never.
-    expect(ops(calls, "worktreeSetup").map((c) => (c as { step: number }).step)).toEqual([0, 1]);
-    expect(within(dialog()).getByText(/HEAD is now at 57a1fb6/)).toBeTruthy();
-    await user.click(within(dialog()).getByRole("button", { name: "Start chat here" }));
-    expect(onStartChat).toHaveBeenCalledWith(expect.objectContaining({ path: PATH, branch: "fix/login", id: (create as { id: string }).id }));
+    const made = await screen.findByRole("dialog", { name: "Worktree made" });
+    expect(within(made).getByRole("log", { name: "Progress" }).textContent).toContain("Copied .env (9 bytes)");
+    expect(made.textContent).toContain(`Made ${WT} on feature/login, and setup ran.`);
+    const create = ops("worktreeCreate")[0] as Extract<RepoRequest, { op: "worktreeCreate" }>;
+    expect(create).toMatchObject({ repo: MAIN, base: "main", branch: "feature/login", newBranch: true, path: WT, setup: true, expect: "plan-stamp" });
+    expect(create.id).toMatch(/^[0-9a-f]{16}$/);
+    expect(calls.find((c) => c.request.op === "worktreeCreate")!.streamed).toBe(true);
+
+    await user.click(within(made).getByRole("button", { name: /Start a chat in it/ }));
+    expect(onStartChat).toHaveBeenCalledWith({ target: "liam@hermes", repo: MAIN, id: create.id, path: WT, branch: "feature/login" });
   });
 
-  it("runs a worktree's steps left as soon as Retry setup opens it", async () => {
-    const r = record({ setup: [{ entry: ".env", action: "copy", state: "failed", message: "[Errno 13] Permission denied" }, { entry: "node_modules", action: "link", state: "pending", message: "" }] });
-    let rec = r;
-    const { api, calls } = fakeApi((q) => {
-      if (q.op === "worktreeList") return listOf([managedRow(rec)]);
-      if (q.op === "worktreeSetup") {
-        rec = { ...rec, setup: rec.setup.map((s, i) => (i === q.step ? { ...s, state: "done", message: "Copied." } : s)) };
-        return { record: rec };
-      }
-      throw new Error(`unexpected ${q.op}`);
+  it("uses an existing branch, and shows Git's refusal beside the form", async () => {
+    const { api, ops } = fakeApi({
+      worktreeList: () => listOf([mainTree()]),
+      worktreePlan: () => Promise.reject(new RepoFailure("checked-out", "release is already checked out in /srv/app-release. Git allows a branch in one worktree at a time.")),
     });
-    const user = userEvent.setup();
-    show(api);
-    await user.click(await screen.findByRole("button", { name: "Retry setup" }));
-    await within(dialog()).findByText("The worktree is ready.");
-    expect(ops(calls, "worktreeSetup").map((c) => (c as { step: number }).step)).toEqual([0, 1]);
+    const user = await show(api);
+    await user.click(await screen.findByRole("button", { name: /New worktree/ }));
+    const dialog = screen.getByRole("dialog", { name: "New worktree" });
+    await user.click(within(dialog).getByRole("radio", { name: "Existing local branch" }));
+    expect(within(dialog).queryByLabelText(/Base/)).toBeNull();
+    await user.type(within(dialog).getByLabelText("Branch to check out"), "release");
+    await user.click(within(dialog).getByRole("button", { name: "Preview" }));
+    expect((await within(dialog).findByRole("alert")).textContent).toContain("already checked out in /srv/app-release");
+    expect(ops("worktreePlan")[0]).toMatchObject({ base: "", branch: "release", newBranch: false });
+    expect(ops("worktreeCreate")).toEqual([]);
   });
 
-  it("starts a chat from the setup dialog on the branch the worktree has now", async () => {
-    let rec = record({ setup: [{ entry: ".env", action: "copy", state: "pending", message: "" }] });
-    const { api } = fakeApi((q) => {
-      if (q.op === "worktreeList") return listOf([managedRow(rec, { branch: "fix/login-v2" })]);
-      if (q.op === "worktreeSetup") return { record: (rec = { ...rec, setup: [{ ...rec.setup[0], state: "done" }] }) };
-      throw new Error(`unexpected ${q.op}`);
+  it("keeps a worktree whose setup failed, says so, and Retry runs setup again from the list", async () => {
+    let state: WorktreeRecord["state"] = "setup-failed";
+    const failedSetup = () =>
+      record({ state, setup: { state: state === "ready" ? "done" : "failed", entries: [], log: "Failed data/seed.db: Not a directory" } });
+    const { api, ops } = fakeApi({
+      worktreeList: () => listOf([mainTree(), tree({ managed: failedSetup() })]),
+      worktreePlan: () => plan({ setup: [{ entry: "data/seed.db", action: "copy", size: 5 }] }),
+      worktreeCreate: () => ({ worktree: failedSetup() }),
+      worktreeSetup: () => {
+        state = "ready";
+        return { worktree: failedSetup() };
+      },
     });
-    const user = userEvent.setup();
-    const { onStartChat } = show(api);
-    await user.click(await screen.findByRole("button", { name: "Run setup" }));
-    await within(dialog()).findByText("The worktree is ready.");
-    await user.click(within(dialog()).getByRole("button", { name: "Start chat here" }));
-    expect(onStartChat).toHaveBeenCalledWith(expect.objectContaining({ branch: "fix/login-v2" }));
+    const user = await show(api);
+    await user.click(await screen.findByRole("button", { name: /New worktree/ }));
+    const dialog = screen.getByRole("dialog", { name: "New worktree" });
+    await user.type(within(dialog).getByLabelText("New branch name"), "feature/login");
+    await user.click(within(dialog).getByRole("button", { name: "Preview" }));
+    await user.click(await within(dialog).findByRole("button", { name: "Create worktree" }));
+    const made = await screen.findByRole("dialog", { name: "Worktree made" });
+    expect(made.textContent).toContain("but setup failed. The worktree is kept");
+    expect(made.textContent).toContain("Failed data/seed.db: Not a directory");
+    // Open and Start a chat stay offered: the worktree is usable.
+    expect(within(made).getByRole("button", { name: "Open" })).toBeTruthy();
+    await user.click(within(made).getByRole("button", { name: "Close" }));
+
+    const row = rowOf(WT);
+    expect(row.textContent).toContain("Setup failed");
+    await user.click(within(row).getByRole("button", { name: /Retry setup/ }));
+    await waitFor(() => expect(ops("worktreeSetup")).toEqual([{ op: "worktreeSetup", repo: MAIN, id: ID }]));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toContain(`Setup finished in ${WT}.`));
   });
 
-  it("makes an edit stale: it must be previewed again", async () => {
-    const { api, calls } = making();
-    const user = userEvent.setup();
-    show(api);
-    await fillAndPreview(user);
-    await user.type(within(dialog()).getByLabelText("New branch name"), "-2");
-    expect(within(dialog()).queryByRole("button", { name: "Create worktree" })).toBeNull();
-    expect(ops(calls, "worktreeCreate")).toEqual([]);
+  it("after a connection drop during creation, asks the record how far it got instead of creating again", async () => {
+    let listed = listOf([mainTree()]);
+    const { api, ops } = fakeApi(
+      {
+        worktreeList: () => listed,
+        worktreePlan: () => plan(),
+        worktreeCreate: (r) => {
+          // The server got as far as setup, then ssh dropped.
+          listed = listOf([mainTree(), tree({ managed: record({ id: (r as { id: string }).id, state: "setup-interrupted", setup: { state: "running", entries: [], log: "" } }) })]);
+          return Promise.reject(new RepoFailure("ssh", "ssh failed.", "Connection to hermes closed by remote host."));
+        },
+      },
+      { worktreeCreate: [{ step: "create", message: `Creating ${WT}`, at: 1 }] },
+    );
+    const user = await show(api);
+    await user.click(await screen.findByRole("button", { name: /New worktree/ }));
+    const dialog = screen.getByRole("dialog", { name: "New worktree" });
+    await user.type(within(dialog).getByLabelText("New branch name"), "feature/login");
+    await user.click(within(dialog).getByRole("button", { name: "Preview" }));
+    await user.click(await within(dialog).findByRole("button", { name: "Create worktree" }));
+    await waitFor(() => expect(dialog.textContent).toContain("The server has it: Setup was cut off."));
+    expect(dialog.textContent).toContain("The connection dropped before the server answered");
+    expect(ops("worktreeCreate")).toHaveLength(1);
+    await user.click(within(dialog).getByRole("button", { name: "Close" }));
+    const row = rowOf(WT);
+    expect(row.textContent).toContain("Setup was cut off");
+    expect(within(row).getByRole("button", { name: /Retry setup/ })).toBeTruthy();
   });
 
-  it("stops at a failed setup step with Retry and Open, and Retry runs only what's left", async () => {
-    const { api, calls } = making({ 0: ["failed", "done"] });
-    const user = userEvent.setup();
-    const { onOpen } = show(api);
-    await fillAndPreview(user);
-    await user.click(within(dialog()).getByRole("button", { name: "Create worktree" }));
-    await within(dialog()).findByText(/Setup didn't finish/);
-    expect(within(dialog()).getByRole("list", { name: "Setup steps" }).textContent).toContain("Permission denied");
-    // The step after the failed one waits.
-    expect(ops(calls, "worktreeSetup").map((c) => (c as { step: number }).step)).toEqual([0]);
-    expect(within(dialog()).getByRole("button", { name: "Open" })).toBeTruthy();
-    await user.click(within(dialog()).getByRole("button", { name: "Retry" }));
-    await within(dialog()).findByText("The worktree is ready.");
-    expect(ops(calls, "worktreeSetup").map((c) => (c as { step: number }).step)).toEqual([0, 0, 1]);
-    expect(onOpen).not.toHaveBeenCalled();
-  });
-
-  it("asks the server after a lost answer, and carries on when the worktree is there", async () => {
-    let made: WorktreeRecord | undefined;
-    const base = making();
-    const { api, calls } = fakeApi((q) => {
-      if (q.op === "worktreeCreate") {
-        made = record({ id: q.id, setup: [] });
-        throw new RepoFailure("ssh", "ssh failed.", "Connection to hermes closed by remote host.");
-      }
-      if (q.op === "worktreeList") return listOf(made ? [managedRow(made)] : []);
-      return base.api.run("", q);
-    });
-    const user = userEvent.setup();
-    show(api);
-    await fillAndPreview(user);
-    await user.click(within(dialog()).getByRole("button", { name: "Create worktree" }));
-    await within(dialog()).findByText("The worktree is ready.");
-    expect(within(dialog()).getByText(/The answer was lost, but the server has the worktree/)).toBeTruthy();
-    expect(ops(calls, "worktreeCreate")).toHaveLength(1);
-  });
-
-  it("after a lost answer with nothing made, Try again sends the same request with the same id", async () => {
-    let n = 0;
-    const base = making();
-    const { api, calls } = fakeApi((q) => {
-      if (q.op === "worktreeCreate" && ++n === 1) throw new RepoFailure("timeout", "The server didn't answer within 660 s.");
-      return base.api.run("", q);
-    });
-    const user = userEvent.setup();
-    show(api);
-    await fillAndPreview(user);
-    await user.click(within(dialog()).getByRole("button", { name: "Create worktree" }));
-    await within(dialog()).findByText("Nothing was made. You can try again.");
-    await user.click(within(dialog()).getByRole("button", { name: "Try again" }));
-    await within(dialog()).findByText("The worktree is ready.");
-    const [a, b] = ops(calls, "worktreeCreate") as { id: string; stamp: string }[];
-    expect(b.id).toBe(a.id);
-    expect(b.stamp).toBe(a.stamp);
-  });
-
-  it("goes back to the form when the server refuses a stale preview", async () => {
-    const { api } = making({}, () => {
-      throw new RepoFailure("stale", "Something changed since the preview. Nothing was made. Look at the preview again.");
-    });
-    const user = userEvent.setup();
-    show(api);
-    await fillAndPreview(user);
-    await user.click(within(dialog()).getByRole("button", { name: "Create worktree" }));
-    expect((await within(dialog()).findByRole("alert")).textContent).toContain("Something changed since the preview");
-    expect(within(dialog()).getByRole("button", { name: "Preview" })).toBeTruthy();
-  });
-
-  it("closes with Escape and puts focus back on New worktree", async () => {
-    const { api } = making();
-    const user = userEvent.setup();
-    show(api);
+  it("closes on Escape and gives focus back to New worktree", async () => {
+    const { api } = fakeApi({ worktreeList: () => listOf([mainTree()]) });
+    const user = await show(api);
     const opener = await screen.findByRole("button", { name: /New worktree/ });
     await user.click(opener);
-    expect(document.activeElement).toBe(within(dialog()).getByLabelText("New branch name"));
+    expect(document.activeElement).toBe(screen.getByLabelText("New branch name"));
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(document.activeElement).toBe(opener);
   });
 });
 
-describe("removing one", () => {
-  function removing(facts: RemovalFacts, remove?: (q: RepoRequest) => unknown) {
-    const r = record();
-    return fakeApi((q) => {
-      if (q.op === "worktreeList") return listOf([managedRow(r)]);
-      if (q.op === "worktreeRemoval") return facts;
-      if (q.op === "worktreeRemove") {
-        if (remove) return remove(q);
-        return { record: { ...r, state: "removed", removed: { at: 2, head: SHA, branch: "fix/login", kept: { ref: `refs/hermes-chat/recovery/${r.id}/2`, commit: "c".repeat(40) }, files: 2, unpushed: 1 } } };
-      }
-      throw new Error(`unexpected ${q.op}`);
-    });
-  }
-
-  it("previews the files kept, the commits that stay on the branch and the ignored files deleted, then keeps and removes", async () => {
-    const { api, calls } = removing(removal());
-    const user = userEvent.setup();
-    const { chatsIn } = show(api);
-    await user.click(await screen.findByRole("button", { name: "Remove the worktree fix/login…" }));
-    const d = await screen.findByRole("dialog", { name: "Remove the worktree fix/login?" });
-    await within(d).findByRole("list", { name: "Changed and untracked files" });
-    expect(within(d).getByRole("list", { name: "Changed and untracked files" }).textContent).toContain("src/login.ts changed");
-    expect(within(d).getByRole("list", { name: "Commits not on a remote" }).textContent).toContain("Fix the timeout");
-    expect(d.textContent).toContain("They stay on the branch fix/login.");
-    expect(within(d).getByRole("list", { name: "Ignored files deleted with the folder" }).textContent).toBe(".env");
-    expect(chatsIn).toHaveBeenCalledWith({ path: PATH, registry: REGISTRY, id: record().id });
-    const asked = chatsIn.mock.calls.length;
-    await user.click(within(d).getByRole("button", { name: "Keep changes and remove" }));
-    await within(d).findByText(/was removed/);
-    expect(d.textContent).toContain(`refs/hermes-chat/recovery/${record().id}/2`);
-    expect(ops(calls, "worktreeRemove")).toEqual([{ op: "worktreeRemove", repo: TOP, id: record().id, stamp: "rm-1" }]);
-    // Hermes was asked again right before removing.
-    expect(chatsIn).toHaveBeenCalledTimes(asked + 1);
-  });
-
-  it("can't remove while the server or Hermes says something works there, or Hermes can't be asked", async () => {
-    const user = userEvent.setup();
-    const { api, calls } = removing(removal({ blockers: [{ kind: "shared", message: "1 chat uses it. Detach each one first; a quiet chat doesn't mean its worktree is done with." }] }));
-    show(api);
-    await user.click(await screen.findByRole("button", { name: "Remove the worktree fix/login…" }));
-    expect((await within(dialog()).findByRole("alert")).textContent).toContain("a quiet chat doesn't mean its worktree is done with");
-    expect(within(dialog()).getByRole("button", { name: "Keep changes and remove" })).toHaveProperty("disabled", true);
-    cleanup();
-
-    show(removing(removal()).api, { chatsIn: async () => ({ chats: [{ id: "s1", title: "Fix login", archived: false }], more: false }) });
-    await user.click(await screen.findByRole("button", { name: "Remove the worktree fix/login…" }));
-    expect((await within(dialog()).findByRole("alert")).textContent).toContain("Hermes has 1 chat working in this folder: “Fix login”");
-    cleanup();
-
-    show(removing(removal()).api, { chatsIn: undefined });
-    await user.click(await screen.findByRole("button", { name: "Remove the worktree fix/login…" }));
-    expect((await within(dialog()).findByRole("alert")).textContent).toContain("Hermes isn't connected");
-    expect(ops(calls, "worktreeRemove")).toEqual([]);
-  });
-
-  it("isn't started again, or overwritten, when the app draws a new chatsIn while removing", async () => {
-    let finish!: (v: unknown) => void;
-    const r = record();
-    const { api, calls } = fakeApi((q) => {
-      if (q.op === "worktreeList") return listOf([managedRow(r)]);
-      if (q.op === "worktreeRemoval") return removal();
-      if (q.op === "worktreeRemove") return new Promise((res) => (finish = res));
-      throw new Error(`unexpected ${q.op}`);
-    });
-    const user = userEvent.setup();
-    const props = { api, target: "liam@hermes", top: TOP, branch: "main", scope: "scope-a", by: "t", onOpen: () => {}, onStartChat: () => {} };
-    const fresh = () => async () => ({ chats: [] as { id: string; title: string; archived: boolean }[], more: false });
-    const { rerender } = render(<WorktreesPanel {...props} chatsIn={fresh()} />);
-    await user.click(await screen.findByRole("button", { name: "Remove the worktree fix/login…" }));
-    await user.click(await within(dialog()).findByRole("button", { name: "Keep changes and remove" }));
-    await waitFor(() => expect(ops(calls, "worktreeRemove")).toHaveLength(1));
-    const previews = ops(calls, "worktreeRemoval").length;
-    // Another chat's update redraws the app, which hands over a new function.
-    rerender(<WorktreesPanel {...props} chatsIn={fresh()} />);
-    rerender(<WorktreesPanel {...props} chatsIn={fresh()} />);
-    expect(ops(calls, "worktreeRemoval")).toHaveLength(previews);
-    expect(within(dialog()).getByRole("status").textContent).toContain("Keeping the changes, then removing");
-    await act(async () => finish({ record: { ...r, state: "removed", removed: { at: 2, head: SHA, branch: "fix/login", kept: null, files: 0, unpushed: 0 } } }));
-    expect(within(dialog()).getByRole("status").textContent).toContain("was removed");
-  });
-
-  it("can't remove when Hermes isn't on the worktree's server", async () => {
-    const user = userEvent.setup();
-    show(removing(removal()).api, {
-      chatsIn: async () => {
-        throw new Error("Hermes can't see this worktree's record, so it may be running on another computer");
+describe("Remove", () => {
+  const setup = (answers: Partial<Record<RepoRequest["op"], Answer>> = {}, hooks: Partial<WorktreeHooks> = {}) => {
+    let gone = false;
+    const fake = fakeApi({
+      worktreeList: () => listOf(gone ? [mainTree()] : [mainTree(), tree()]),
+      worktreeRemovePlan: () => removal(),
+      worktreeRemove: () => {
+        gone = true;
+        return { removed: WT, branch: "feature/login", unpublished: 1, kept: { ref: `refs/hermes-chat/kept/${ID}-20261104120000`, commit: "d".repeat(40), files: 2 } };
       },
+      ...answers,
     });
-    await user.click(await screen.findByRole("button", { name: "Remove the worktree fix/login…" }));
-    expect((await within(dialog()).findByRole("alert")).textContent).toContain("may be running on another computer");
-    expect(within(dialog()).getByRole("button", { name: "Keep changes and remove" })).toHaveProperty("disabled", true);
+    return { ...fake, hooks: hooksOf(hooks) };
+  };
+
+  it("previews every file it keeps, the commits that stay on the branch and the ignored files it doesn't keep, then keeps and removes", async () => {
+    const { api, ops, hooks } = setup();
+    const user = await show(api, hooks);
+    await user.click(await screen.findByRole("button", { name: `Remove ${WT}…` }));
+    const dialog = await screen.findByRole("dialog", { name: `Remove ${WT}` });
+    await within(dialog).findByLabelText("Files that will be kept");
+    expect(dialog.textContent).toContain("feature/login is kept: branches are never deleted here.");
+    expect(dialog.textContent).toContain("2 changed or untracked files, as a commit under refs/hermes-chat/kept/");
+    expect(within(dialog).getByLabelText("Files that will be kept").textContent).toContain("notes/new.txt");
+    expect(within(dialog).getByLabelText("Commits no remote has").textContent).toContain("unpushed work");
+    expect(dialog.textContent).toContain("Ignored files go with the folder and aren't kept: .env");
+    await user.click(within(dialog).getByRole("button", { name: "Keep changes and remove" }));
+    await waitFor(() => expect(within(dialog).getByRole("status").textContent).toContain(`Its changes are in refs/hermes-chat/kept/${ID}-20261104120000`));
+    expect(ops("worktreeRemove")).toEqual([{ op: "worktreeRemove", repo: MAIN, id: ID, expect: "removal-stamp" }]);
   });
 
-  it("stops if a chat started working there after the preview", async () => {
-    const { api, calls } = removing(removal());
+  it("can't remove while something blocks it, and says what", async () => {
+    const { api, hooks } = setup({
+      worktreeRemovePlan: () =>
+        removal({
+          blockers: [
+            { kind: "submodule", message: "The submodule vendor/lib has changes that removing the folder would lose." },
+            { kind: "processes", message: "1 process works in the folder (node 4242)." },
+          ],
+        }),
+    });
+    const user = await show(api, hooks);
+    await user.click(await screen.findByRole("button", { name: `Remove ${WT}…` }));
+    const dialog = await screen.findByRole("dialog", { name: `Remove ${WT}` });
+    const alert = await within(dialog).findByText(/It can't be removed/);
+    expect(alert.closest("[role=alert]")!.textContent).toContain("vendor/lib");
+    expect(alert.closest("[role=alert]")!.textContent).toContain("node 4242");
+    expect((within(dialog).getByRole("button", { name: "Keep changes and remove" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("is blocked while Hermes works in the folder, and asks the owner to check quiet chats from other apps", async () => {
+    let chats: HermesChatIn[] = [{ id: "s1", title: "Refactor auth", profile: "work", cwd: `${WT}/src`, active: true }];
+    const { api, ops, hooks } = setup({}, { hermesChatsIn: async () => chats });
+    const user = await show(api, hooks);
+    await user.click(await screen.findByRole("button", { name: `Remove ${WT}…` }));
+    let dialog = await screen.findByRole("dialog", { name: `Remove ${WT}` });
+    await within(dialog).findByText(/Hermes is working in it now, in "Refactor auth" \(work\)/);
+    expect((within(dialog).getByRole("button", { name: "Keep changes and remove" }) as HTMLButtonElement).disabled).toBe(true);
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    chats = [{ id: "s1", title: "Refactor auth", profile: "work", cwd: `${WT}/src`, active: false }];
+    await user.click(screen.getByRole("button", { name: `Remove ${WT}…` }));
+    dialog = await screen.findByRole("dialog", { name: `Remove ${WT}` });
+    await within(dialog).findByText(/A quiet chat may still be needed/);
+    const remove = within(dialog).getByRole("button", { name: "Keep changes and remove" }) as HTMLButtonElement;
+    expect(remove.disabled).toBe(true);
+    await user.click(within(dialog).getByRole("checkbox", { name: /none of them needs this folder/ }));
+    expect(remove.disabled).toBe(false);
+    await user.click(remove);
+    await waitFor(() => expect(ops("worktreeRemove")).toHaveLength(1));
+  });
+
+  it("says Hermes couldn't be asked when it isn't connected, and needs the owner's word", async () => {
+    const { api, hooks } = setup({}, { hermesChatsIn: undefined });
+    const user = await show(api, hooks);
+    await user.click(await screen.findByRole("button", { name: `Remove ${WT}…` }));
+    const dialog = await screen.findByRole("dialog", { name: `Remove ${WT}` });
+    await within(dialog).findByText(/Hermes isn't connected, so it couldn't be asked/);
+    expect((within(dialog).getByRole("button", { name: "Keep changes and remove" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("refuses when the files changed since the preview, and offers to check again", async () => {
     let n = 0;
-    const user = userEvent.setup();
-    show(api, { chatsIn: async () => ({ chats: ++n > 1 ? [{ id: "s2", title: "Another task", archived: false }] : [], more: false }) });
-    await user.click(await screen.findByRole("button", { name: "Remove the worktree fix/login…" }));
-    await user.click(await within(dialog()).findByRole("button", { name: "Keep changes and remove" }));
-    expect((await within(dialog()).findByRole("alert")).textContent).toContain("“Another task”");
-    expect(ops(calls, "worktreeRemove")).toEqual([]);
+    const { api, ops, hooks } = setup({
+      worktreeRemovePlan: () => removal({ stamp: `stamp-${++n}` }),
+      worktreeRemove: () => Promise.reject(new RepoFailure("stale", "Its files, commits or chats changed since the preview. Nothing was removed. Check the new preview.")),
+    });
+    const user = await show(api, hooks);
+    await user.click(await screen.findByRole("button", { name: `Remove ${WT}…` }));
+    const dialog = await screen.findByRole("dialog", { name: `Remove ${WT}` });
+    await user.click(await within(dialog).findByRole("button", { name: "Keep changes and remove" }));
+    expect((await within(dialog).findByRole("alert")).textContent).toContain("Nothing was removed");
+    expect(within(dialog).queryByRole("button", { name: "Keep changes and remove" })).toBeNull();
+    await user.click(within(dialog).getByRole("button", { name: /Check again/ }));
+    await user.click(await within(dialog).findByRole("button", { name: "Keep changes and remove" }));
+    // The second try sends the stamp of the preview read again, never the refused one.
+    await waitFor(() => expect(ops("worktreeRemove")).toHaveLength(2));
+    const [first, second] = ops("worktreeRemove").map((r) => Number((r as { expect: string }).expect.slice(6)));
+    expect(second).toBeGreaterThan(first);
+  });
+});
+
+describe("kept changes and records without a worktree", () => {
+  it("restores kept changes in a new worktree from their ref, and forgets a creation cut off before Git made it", async () => {
+    const kept = { ref: `refs/hermes-chat/kept/${ID}-20261104120000`, commit: "d".repeat(40), at: 1_762_257_600, subject: "Kept by Hermes Chat", id: ID, path: WT, branch: "feature/login", files: 2 };
+    const missing = record({ id: "fedcba9876543210", path: "/srv/app-never", branch: "never", state: "create-interrupted", exists: false });
+    let listed = listOf([mainTree()], { kept: [kept], missing: [missing] });
+    const { api, ops } = fakeApi({
+      worktreeList: () => listed,
+      worktreeForget: () => {
+        listed = listOf([mainTree()], { kept: [kept] });
+        return { forgotten: missing.id };
+      },
+      worktreePlan: () => plan({ base: kept.ref, baseRef: kept.ref, branch: "feature/login-restored" }),
+    });
+    const user = await show(api);
+    const section = await screen.findByRole("region", { name: "Recorded, but not on disk" });
+    expect(section.textContent).toContain("Making it on never was cut off before Git made it");
+    await user.click(within(section).getByRole("button", { name: "Forget it" }));
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Recorded, but not on disk" })).toBeNull());
+    expect(ops("worktreeForget")).toEqual([{ op: "worktreeForget", repo: MAIN, id: missing.id }]);
+
+    const keptSection = screen.getByRole("region", { name: "Changes kept from removed worktrees" });
+    await user.click(within(keptSection).getByRole("button", { name: /Restore in a new worktree/ }));
+    const dialog = screen.getByRole("dialog", { name: "New worktree" });
+    expect((within(dialog).getByLabelText(/Base/) as HTMLInputElement).value).toBe(kept.ref);
+    expect((within(dialog).getByLabelText("New branch name") as HTMLInputElement).value).toBe("feature/login-restored");
+    await user.click(within(dialog).getByRole("button", { name: "Preview" }));
+    await waitFor(() => expect(ops("worktreePlan")[0]).toMatchObject({ base: kept.ref, branch: "feature/login-restored", newBranch: true }));
+  });
+});
+
+describe("the Changes and Worktrees views", () => {
+  it("are tabs that arrow keys move between, and Open shows a worktree's changes", async () => {
+    const { api, ops } = fakeApi({ worktreeList: () => listOf([mainTree(), tree()]) });
+    const user = await show(api);
+    const worktrees = screen.getByRole("tab", { name: "Worktrees" });
+    expect(worktrees.getAttribute("aria-selected")).toBe("true");
+    worktrees.focus();
+    await user.keyboard("{ArrowLeft}");
+    expect(document.activeElement).toBe(screen.getByRole("tab", { name: "Changes" }));
+    expect(screen.getByRole("tab", { name: "Changes" }).getAttribute("aria-selected")).toBe("true");
+    await user.keyboard("{ArrowRight}");
+    await user.click(within(await waitFor(() => rowOf(WT))).getByRole("button", { name: "Open" }));
+    expect(screen.getByRole("tab", { name: "Changes" }).getAttribute("aria-selected")).toBe("true");
+    await waitFor(() => expect(ops("status").some((r) => r.repo === WT)).toBe(true));
+  });
+});
+
+describe("the removal dialog while the app around it changes", () => {
+  it("isn't reset by the app drawing again, before or during the removal", async () => {
+    let finish!: (v: unknown) => void;
+    const { api, ops } = fakeApi({
+      worktreeList: () => listOf([mainTree(), tree()]),
+      worktreeRemovePlan: () => removal(),
+      worktreeRemove: () => new Promise((r) => (finish = r)),
+    });
+    const user = await show(api);
+    await user.click(await screen.findByRole("button", { name: `Remove ${WT}…` }));
+    const dialog = await screen.findByRole("dialog", { name: `Remove ${WT}` });
+    await within(dialog).findByLabelText("Files that will be kept");
+    const reads = ops("worktreeRemovePlan").length;
+    rerenderWith(hooksOf());
+    rerenderWith(hooksOf());
+    expect(ops("worktreeRemovePlan")).toHaveLength(reads);
+    await user.click(within(dialog).getByRole("button", { name: "Keep changes and remove" }));
+    expect(within(dialog).getByRole("status").textContent).toContain("Keeping its changes, then removing it");
+    rerenderWith(hooksOf());
+    // Still removing: not read again, and it can't be closed while Git works.
+    expect(within(dialog).getByRole("status").textContent).toContain("Keeping its changes, then removing it");
+    expect(ops("worktreeRemovePlan")).toHaveLength(reads);
+    expect((within(dialog).getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => finish({ removed: WT, branch: "feature/login", unpublished: 0, kept: null }));
+    await within(dialog).findByText(new RegExp(`Removed ${WT}`));
   });
 
-  it("shows a refusal and offers Preview again; a lost answer is never sent again", async () => {
-    const user = userEvent.setup();
-    const { api } = removing(removal(), () => {
-      throw new RepoFailure("stale", "The worktree changed since the preview. Nothing was removed. Look at the preview again.");
-    });
-    show(api);
-    await user.click(await screen.findByRole("button", { name: "Remove the worktree fix/login…" }));
-    await user.click(await within(dialog()).findByRole("button", { name: "Keep changes and remove" }));
-    expect((await within(dialog()).findByRole("alert")).textContent).toContain("Nothing was removed");
-    expect(within(dialog()).getByRole("button", { name: "Preview again" })).toBeTruthy();
-    cleanup();
-
-    const lost = removing(removal(), () => {
-      throw new RepoFailure("timeout", "The server didn't answer within 660 s.");
-    });
-    show(lost.api);
-    await user.click(await screen.findByRole("button", { name: "Remove the worktree fix/login…" }));
-    await user.click(await within(dialog()).findByRole("button", { name: "Keep changes and remove" }));
-    await within(dialog()).findByText(/Whether it was removed isn't known yet/);
-    expect(within(dialog()).queryByRole("button", { name: /remove/i })).toBeNull();
-    expect(ops(lost.calls, "worktreeRemove")).toHaveLength(1);
-  });
-
-  it("offers Remove again for a removal that stopped before the folder went", async () => {
-    const r = record({ state: "removing" });
-    const { api, calls } = fakeApi((q) => {
-      if (q.op === "worktreeList") return listOf([managedRow(r)]);
-      if (q.op === "worktreeRemoval") return removal();
-      throw new Error(`unexpected ${q.op}`);
-    });
-    const user = userEvent.setup();
-    show(api);
-    const card = await screen.findByRole("group", { name: "Worktree fix/login" });
-    expect(card.textContent).toContain("Removing it stopped before the folder went");
-    await user.click(within(card).getByRole("button", { name: "Remove the worktree fix/login…" }));
-    await within(dialog()).findByRole("button", { name: "Keep changes and remove" });
-    expect(ops(calls, "worktreeRemoval")).not.toHaveLength(0);
-  });
-
-  it("lists removed worktrees with their kept changes, and restores", async () => {
-    const r = record({ state: "removed", removed: { at: 2, head: SHA, branch: "fix/login", kept: { ref: "refs/hermes-chat/recovery/x/2", commit: "c" }, files: 2, unpushed: 0 } });
-    const { api, calls } = fakeApi((q) => (q.op === "worktreeList" ? listOf([], { removed: [r] }) : { record: { ...r, state: "ready" } }));
-    const user = userEvent.setup();
-    show(api);
-    const removed = await screen.findByRole("list", { name: "Removed worktrees" });
-    expect(removed.textContent).toContain("its changes are kept in refs/hermes-chat/recovery/x/2");
-    expect(removed.textContent).toContain("the branch fix/login is kept");
-    await user.click(within(removed).getByRole("button", { name: "Restore" }));
-    await waitFor(() => expect(ops(calls, "worktreeRestore")).toEqual([{ op: "worktreeRestore", repo: TOP, id: r.id }]));
+  it("forgets that Hermes found no chats once Hermes goes away, and asks for the owner's word", async () => {
+    const { api, hooks } = { ...fakeApi({ worktreeList: () => listOf([mainTree(), tree()]), worktreeRemovePlan: () => removal() }), hooks: hooksOf() };
+    const user = await show(api, hooks);
+    await user.click(await screen.findByRole("button", { name: `Remove ${WT}…` }));
+    const dialog = await screen.findByRole("dialog", { name: `Remove ${WT}` });
+    const remove = await within(dialog).findByRole("button", { name: "Keep changes and remove" });
+    await waitFor(() => expect((remove as HTMLButtonElement).disabled).toBe(false));
+    rerenderWith(hooksOf({ hermesChatsIn: undefined }));
+    await within(dialog).findByText(/Hermes isn't connected, so it couldn't be asked/);
+    expect((within(dialog).getByRole("button", { name: "Keep changes and remove" }) as HTMLButtonElement).disabled).toBe(true);
+    // Back again: it is asked again, and finds a chat working there now.
+    rerenderWith(hooksOf({ hermesChatsIn: async () => [{ id: "s9", title: "Late chat", profile: "default", cwd: WT, active: true }] }));
+    await within(dialog).findByText(/Hermes is working in it now, in "Late chat"/);
   });
 });

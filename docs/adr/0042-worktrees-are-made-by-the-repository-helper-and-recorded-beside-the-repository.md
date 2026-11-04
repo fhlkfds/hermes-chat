@@ -1,5 +1,7 @@
 # Worktrees are made by the Repository helper and recorded beside the repository
 
+> **Superseded by [ADR 0043](0043-worktrees-are-made-on-the-server-by-the-repository-helper-and-recorded-in-the-repository.md)** (#159). Its helper and screen were replaced. Worktrees it made, its `hermes-chat/worktrees.json` record and its `refs/hermes-chat/recovery/*` refs are left on the server as they are; the Repository screen lists those worktrees as not made by this app.
+
 Parallel coding chats need their own working copies (#82). The Repository screen can now make a Git worktree of the server's repository on a branch of its own, run the repository's setup once, start a chat working in it, list the worktrees with their chats, changes and unpushed commits, and remove one only after a preview, with its changes kept first. Every Git operation runs on the server, in the repository the screen has open, through the Repository screen's helper over the owner's own ssh (ADR 0034). Nothing runs in a checkout on this computer.
 
 ## Why not the dashboard's worktree routes

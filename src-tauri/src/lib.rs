@@ -995,6 +995,20 @@ async fn repo_git(target: String, request: repo_git::Request) -> Result<serde_js
     repo_git::run_over_ssh(&target, &request).await
 }
 
+/// `repo_git`, for a request that reports progress as it goes (creating a worktree and running its setup, removing
+/// one): each progress line goes to `on_progress` as the helper prints it (ADR 0043).
+#[tauri::command]
+async fn repo_git_stream(
+    target: String,
+    request: repo_git::Request,
+    on_progress: Channel<serde_json::Value>,
+) -> Result<serde_json::Value, repo_git::RepoError> {
+    repo_git::run_over_ssh_streaming(&target, &request, move |line| {
+        let _ = on_progress.send(line);
+    })
+    .await
+}
+
 /// Starts the app. `screenshot`: it was started by `hermes-chat --screenshot`, with no other Hermes Chat to take it.
 /// `link`: it was started to open a chat link, with no other Hermes Chat to open it (links.rs).
 pub fn run(screenshot: bool, link: Option<String>) {
@@ -1131,6 +1145,7 @@ pub fn run(screenshot: bool, link: Option<String>) {
             summon::summon_pause,
             terminal_open,
             repo_git,
+            repo_git_stream,
             terminal_write,
             terminal_resize,
             terminal_close,

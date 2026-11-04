@@ -8,9 +8,8 @@ import { composing, useReturnFocus } from "./bits";
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-function originLabel(from: Origin, project?: string, worktree?: string) {
+function originLabel(from: Origin, project?: string) {
   if (from === "chat") return "chosen for this chat";
-  if (from === "worktree") return `the worktree for ${worktree ?? "its branch"}`;
   if (from === "project") return `project default${project ? ` (${project})` : ""}`;
   if (from === "pick") return "your model pick";
   return "profile default";
@@ -22,13 +21,26 @@ const modelText = (m?: ModelPick) => (m ? `${shortName(m.model)} (${m.provider})
  * What the next chat in this pane starts with. `where`: the connection, shown beside a folder's path. `problem`: why it
  * can't start on these, if it can't.
  */
-export function NewChatSettingsView({ settings, where, profile, problem }: { settings: NewChatSettings; where?: string; profile: string; problem?: string }) {
-  const { model, effort, instructions, folder, project, worktree } = settings;
+export function NewChatSettingsView({
+  settings,
+  where,
+  profile,
+  problem,
+  worktree,
+}: {
+  settings: NewChatSettings;
+  where?: string;
+  profile: string;
+  problem?: string;
+  /** The worktree the chat starts in (ADR 0043), and how to start it elsewhere instead. */
+  worktree?: { branch: string; path: string; onDrop: () => void };
+}) {
+  const { model, effort, instructions, folder, project } = settings;
   const row = (label: string, value: React.ReactNode, from: Origin) => (
     <div className="start-row">
       <dt>{label}</dt>
       <dd>
-        <span className="start-value">{value}</span> <span className="start-from">{originLabel(from, project, worktree)}</span>
+        <span className="start-value">{value}</span> <span className="start-from">{originLabel(from, project)}</span>
       </dd>
     </div>
   );
@@ -48,6 +60,19 @@ export function NewChatSettingsView({ settings, where, profile, problem }: { set
             <>Hermes's default folder for the {profile} profile</>
           ),
           folder.from,
+        )}
+        {worktree && (
+          <div className="start-row">
+            <dt>Worktree</dt>
+            <dd>
+              <span className="start-value">
+                <span className="mono">{worktree.branch}</span>, a worktree made in the Repository screen
+              </span>{" "}
+              <button type="button" className="btn small" onClick={worktree.onDrop}>
+                Don't start it there
+              </button>
+            </dd>
+          </div>
         )}
         {row(
           "Instructions",

@@ -1,250 +1,332 @@
-// Worktrees of a repository on the Hermes server, made and managed through the Repository screen's helper over the
-// owner's ssh (src-tauri/src/repo_worktrees_helper.py, ADR 0042). This file holds the requests, what the helper
-// answers, and the rules the screen applies on top: what stops a removal, and how far a setup has got. The screen is
-// src/ui/Worktrees.tsx.
-import { RepoFailure } from "./repo";
+// Worktrees on the server (ADR 0043): the Repository screen's Worktrees view and the chats started in one. Every Git
+// operation runs on the server, through the same helper and ssh as the rest of the Repository screen (repo.ts,
+// src-tauri/src/repo_worktree_helper.py). Which worktrees this app made, and which chats work in each, is recorded on
+// the server too, in the repository's own Git folder, so every desktop sees the same and a removal can't race an
+// attach. This computer keeps only a copy of which chats it started in a worktree, to label them in the chat.
 
-/** A chat recorded as working in a worktree: the connection and profile it's in, its stored id, and its title. */
-export type ChatRef = { scope: string; chat: string; title: string; at?: number };
+import { RepoFailure, type RepoApi } from "./repo";
 
-/** One `.worktreeinclude` entry: copied (a file) or linked (a folder) from the repository's own checkout, once. */
-export type SetupStep = {
+export type WorktreeState =
+  | "creating"
+  | "setup"
+  | "ready"
+  | "setup-failed"
+  | "removing"
+  | "create-interrupted"
+  | "setup-interrupted"
+  | "remove-interrupted";
+
+export type SetupEntry = {
   entry: string;
   action: "copy" | "link" | "skip";
-  state: "pending" | "done" | "failed" | "skipped";
-  message: string;
-  at?: number;
+  reason?: string | null;
+  size?: number | null;
+  target?: string;
+  /** After a run: what happened to it. */
+  result?: "copied" | "linked" | "present" | "kept" | "skipped" | "failed";
+  error?: string;
 };
 
-/** Hermes Chat's record of a worktree it made, kept beside the repository on the server. */
+/** A chat working in a worktree, as the record on the server has it. `starting`: its place is held, and Hermes was
+ * asked to start it, but the app hasn't confirmed it started (or couldn't). Both count: neither can be removed. */
+export type AttachedChat = { token: string; chat: string | null; profile: string; connection: string; state: "starting" | "attached"; at: number };
+
+/** What this app recorded about a worktree it made. */
 export type WorktreeRecord = {
   id: string;
   path: string;
   branch: string;
   newBranch: boolean;
   base: string;
-  baseSha: string;
-  setup: SetupStep[];
-  state: "creating" | "ready" | "removing" | "removed" | "restoring";
-  protected: boolean;
-  chats: ChatRef[];
+  baseOid: string;
+  source: string;
   createdAt: number;
-  createdBy: string;
-  removed?: {
-    at: number;
-    head: string | null;
-    branch: string | null;
-    /** The recovery ref the changes were kept in, if there were any. `staged`: the commit holding what was staged,
-     * when it differed from HEAD; `commit` (the working tree) is on top of it. */
-    kept: { ref: string; commit: string; staged?: string | null } | null;
-    files: number;
-    unpushed: number;
-  } | null;
+  protected: boolean;
+  state: WorktreeState;
+  /** A creation, setup or removal is running right now (not cut off). */
+  running: boolean;
+  setup: { state: "pending" | "skipped" | "running" | "done" | "failed"; entries: SetupEntry[]; log: string; startedAt?: number; finishedAt?: number | null };
+  chats: AttachedChat[];
+  createOutput?: string;
+  /** For a record without a worktree (`missing`): whether something is at its path. */
+  exists?: boolean;
 };
 
-export type Counts = { staged: number; changed: number; untracked: number; conflicts: number };
+export type Protection = { kind: "main" | "unmanaged" | "marked" | "locked"; message: string };
 
-/** One worktree, as `git worktree list` reports it, with what the helper found in it. */
-export type WorktreeRow = {
+export type Worktree = {
   path: string;
   head: string | null;
   branch: string | null;
   detached: boolean;
-  /** Its lock reason ("" for none given), or null when it isn't locked. */
+  bare: boolean;
+  /** Git's lock reason ("" for a lock without one), or null when unlocked. */
   locked: string | null;
-  prunable: boolean;
+  prunable: string | null;
   main: boolean;
-  /** The checkout the screen has open. */
-  current: boolean;
-  missing: boolean;
-  record: WorktreeRecord | null;
-  changes?: Counts;
-  /** Commits no remote-tracking branch has; null without a remote. */
-  unpushed?: number | null;
+  exists: boolean;
+  managed: WorktreeRecord | null;
+  /** Null when not read (more worktrees than the list reads in detail). */
+  dirty: { staged: number; unstaged: number; untracked: number; conflicts: number } | null;
+  /** Commits no remote has. */
+  unpublished: number | null;
+  /** For a detached HEAD: commits no branch, tag or remote has. */
+  lost: number | null;
+  upstream: string | null;
+  ahead: number | null;
+  behind: number | null;
+  submodules: number | null;
+  protected: Protection[];
   error?: string;
 };
+
+export type Kept = { ref: string; commit: string; at: number; subject: string; id?: string; path?: string; branch?: string | null; files?: number };
 
 export type WorktreeList = {
   top: string;
   main: string;
-  hasRemote: boolean;
-  /** A newer Hermes Chat keeps the record: it's shown, never changed. */
-  newer: boolean;
-  worktrees: WorktreeRow[];
-  unfinished: WorktreeRecord[];
-  removed: WorktreeRecord[];
-  /** The record's path on the server, which Hermes reads to show it's on the same server. */
-  registry: string;
+  commonDir: string;
+  worktrees: Worktree[];
+  missing: WorktreeRecord[];
+  kept: Kept[];
+  detailLimit: number;
+  git: string;
 };
 
 export type WorktreePlan = {
   repo: string;
-  path: string;
+  main: string;
+  source: string;
+  base: string;
+  baseOid: string;
+  baseRef: string | null;
+  baseSubject: string;
   branch: string;
   newBranch: boolean;
-  base: string;
-  baseSha: string;
-  subject: string;
-  setup: SetupStep[];
-  stamp: string;
-  source: Counts & { path: string };
+  path: string;
+  suggested: boolean;
+  sourceDirty: { staged: number; unstaged: number; untracked: number; conflicts: number };
   submodules: string[];
-  submoduleCount: number;
+  setup: SetupEntry[];
+  /** Repository setup commands (an install script): no Hermes contract for them, so never run (ADR 0043). */
+  setupCommands: "unsupported";
+  stamp: string;
 };
 
+/** `hidden`: a change Git's status doesn't show, because the file is marked assume-unchanged or skip-worktree. */
+export type RemovalFile = { path: string; from?: string | null; kind: "change" | "conflict" | "untracked"; xy: string; sub: boolean; size: number | null; hidden?: boolean };
 export type Blocker = { kind: string; message: string };
 
-export type RemovalFacts = {
+export type RemovalPlan = {
   path: string;
-  blockers: Blocker[];
-  files: { status: "staged" | "changed" | "both" | "conflict" | "untracked"; path: string }[];
-  fileCount?: number;
-  ignored: string[];
-  unpushed: { sha: string; subject: string }[];
-  hasRemote?: boolean;
-  head: string | null;
   branch: string | null;
-  keepHead: boolean;
+  head: string | null;
+  detached: boolean;
+  files: RemovalFile[];
+  fileCount: number;
+  filesCut: boolean;
+  ignored: string[];
+  /** More ignored files than the stamp reads one by one: later changes to the rest aren't noticed. */
+  ignoredUnchecked?: boolean;
+  /** Files whose changes an index flag hides, kept too. */
+  hidden?: string[];
+  unpublished: { sha: string; subject: string }[];
+  unpublishedCount: number;
+  lost: number;
+  submodules: { path: string; dirty: number; unpublished: number }[];
+  processes: { pid: number; name: string; cwd: string }[];
+  blockers: Blocker[];
+  operation: string | null;
+  /** Changes or commits that only the worktree holds: they're kept first, under refs/hermes-chat/kept/. */
+  keep: boolean;
   stamp: string;
+  worktree: WorktreeRecord;
 };
 
-/** What the screen can ask about worktrees. Mirrors the `Worktree*` requests in repo_git.rs. */
+export type Removed = { removed: string; branch: string | null; unpublished: number; kept: { ref: string; commit: string; files: number } | null };
+
+export type Progress = { step: string; message: string; at: number; entry?: string; result?: string; output?: string };
+
+/** What the Worktrees view asks the helper for. Mirrors the worktree variants of `Request` in repo_git.rs. */
 export type WorktreeRequest =
   | { op: "worktreeList"; repo: string }
-  | { op: "worktreePlan"; repo: string; branch: string; newBranch: boolean; base?: string }
-  | { op: "worktreeCreate"; repo: string; id: string; branch: string; newBranch: boolean; base?: string; stamp: string; by: string }
-  | { op: "worktreeSetup"; repo: string; id: string; step: number }
-  | { op: "worktreeAttach"; repo: string; id: string; chat: ChatRef }
-  | { op: "worktreeDetach"; repo: string; id: string; scope: string; chat: string }
+  | { op: "worktreePlan"; repo: string; base: string; branch: string; newBranch: boolean; path: string; setup: boolean }
+  | { op: "worktreeCreate"; repo: string; id: string; base: string; branch: string; newBranch: boolean; path: string; setup: boolean; expect: string }
+  | { op: "worktreeSetup"; repo: string; id: string }
+  | { op: "worktreeAttach"; repo: string; id: string; token: string; profile: string; connection: string }
+  | { op: "worktreeAttachConfirm"; repo: string; id: string; token: string; chat: string }
+  | { op: "worktreeDetach"; repo: string; id: string; token: string }
   | { op: "worktreeProtect"; repo: string; id: string; protected: boolean }
-  | { op: "worktreeForget"; repo: string; id: string }
-  | { op: "worktreeRemoval"; repo: string; id: string }
-  | { op: "worktreeRemove"; repo: string; id: string; stamp: string }
-  | { op: "worktreeRestore"; repo: string; id: string };
+  | { op: "worktreeRemovePlan"; repo: string; id: string }
+  | { op: "worktreeRemove"; repo: string; id: string; expect: string }
+  | { op: "worktreeForget"; repo: string; id: string };
 
-const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+/** The Rust commands (repo.ts `RepoApi`): `run`, and `stream`, which passes on each progress line as the helper prints
+ * it (creating, setup, removing). Without `stream` the same request runs without progress. */
+export type WorktreeApi = RepoApi;
 
-/** The helper's answer, if it has the fields named: an older helper or something else answering is `bad-reply`. */
-function shaped<T>(v: unknown, ...fields: string[]): T {
-  if (!isObj(v) || fields.some((f) => !(f in v))) throw new RepoFailure("bad-reply", "The server's answer about worktrees wasn't one this app understands.");
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+function need<T>(v: unknown, check: (o: Record<string, unknown>) => boolean, what: string): T {
+  if (!isObj(v) || !check(v)) throw new RepoFailure("bad-reply", `The server's answer wasn't ${what} this app understands.`);
   return v as T;
 }
 
-export const asList = (v: unknown) => shaped<WorktreeList>(v, "top", "main", "worktrees", "unfinished", "removed", "registry");
-export const asPlan = (v: unknown) => shaped<WorktreePlan>(v, "path", "branch", "baseSha", "stamp", "setup", "source");
-export const asRemoval = (v: unknown) => shaped<RemovalFacts>(v, "path", "blockers", "files", "ignored", "unpushed", "stamp");
-export const asRecord = (v: unknown) => shaped<{ record: WorktreeRecord; output?: string }>(v, "record");
+export const asWorktreeList = (v: unknown) =>
+  need<WorktreeList>(v, (o) => typeof o.top === "string" && Array.isArray(o.worktrees) && Array.isArray(o.missing) && Array.isArray(o.kept), "a worktree list");
+export const asWorktreePlan = (v: unknown) =>
+  need<WorktreePlan>(v, (o) => typeof o.path === "string" && typeof o.stamp === "string" && typeof o.baseOid === "string" && Array.isArray(o.setup), "a worktree preview");
+export const asRemovalPlan = (v: unknown) =>
+  need<RemovalPlan>(v, (o) => typeof o.stamp === "string" && Array.isArray(o.files) && Array.isArray(o.blockers), "a removal preview");
+export const asCreated = (v: unknown) =>
+  need<{ worktree: WorktreeRecord; output?: string }>(v, (o) => isObj(o.worktree) && typeof (o.worktree as Record<string, unknown>).id === "string", "a new worktree");
+export const asRemoved = (v: unknown) => need<Removed>(v, (o) => typeof o.removed === "string", "a removal");
 
-/** A lost answer: whether the server did it isn't known until it's read again. Writes are never sent again on their own. */
-export const answerLost = (f: RepoFailure) => f.kind === "timeout" || f.kind === "bad-reply" || f.kind === "spawn" || f.kind.startsWith("ssh");
-
-/** The steps still to run, in order: pending ones, and failed ones being tried again. */
-export const stepsToRun = (r: WorktreeRecord) => r.setup.flatMap((s, i) => (s.state === "pending" || s.state === "failed" ? [i] : []));
-
-export function setupSummary(r: WorktreeRecord): { done: number; total: number; failed: SetupStep[]; pending: number } {
-  const real = r.setup.filter((s) => s.action !== "skip");
-  return {
-    done: real.filter((s) => s.state === "done").length,
-    total: real.length,
-    failed: real.filter((s) => s.state === "failed"),
-    pending: real.filter((s) => s.state === "pending").length,
-  };
+/** A new id for a worktree or a chat's place in one: 16 random hex digits, as the helper accepts. */
+export function newWorktreeId(): string {
+  const bytes = new Uint8Array(8);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-export function countsLabel(c?: Counts): string {
-  if (!c) return "";
+export const STATE_LABEL: Record<WorktreeState, string> = {
+  creating: "Being created",
+  setup: "Setting up",
+  ready: "Ready",
+  "setup-failed": "Setup failed",
+  removing: "Being removed",
+  "create-interrupted": "Creation was cut off",
+  "setup-interrupted": "Setup was cut off",
+  "remove-interrupted": "Removal was cut off",
+};
+
+/** Whether a chat can be started in a worktree in this state. A failed or cut-off setup still can (the Open choice). */
+export const canStartIn = (w: Worktree) =>
+  !!w.managed && w.exists && !w.bare && !["creating", "setup", "removing", "create-interrupted", "remove-interrupted"].includes(w.managed.state);
+
+/** Retry is offered for a failed or cut-off setup, and for a creation cut off after Git made the worktree. */
+export const canRetrySetup = (w: Worktree) =>
+  !!w.managed && !w.managed.running && (["setup-failed", "setup-interrupted"].includes(w.managed.state) || (w.managed.state === "create-interrupted" && w.locked !== "initializing"));
+
+/** The dirty counts in words, or undefined when clean. */
+export function dirtyText(d: Worktree["dirty"]): string | undefined {
+  if (!d) return undefined;
   const parts = [
-    c.conflicts && `${c.conflicts} conflicted`,
-    c.staged && `${c.staged} staged`,
-    c.changed && `${c.changed} changed`,
-    c.untracked && `${c.untracked} untracked`,
+    d.conflicts && `${d.conflicts} in conflict`,
+    d.staged && `${d.staged} staged`,
+    d.unstaged && `${d.unstaged} changed`,
+    d.untracked && `${d.untracked} untracked`,
   ].filter(Boolean);
-  return parts.length ? parts.join(" · ") : "No changes";
+  return parts.length ? parts.join(", ") : undefined;
 }
 
-export const dirty = (c?: Counts) => !!c && c.staged + c.changed + c.untracked + c.conflicts > 0;
+export const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-/**
- * Everything that stops a removal: the helper's own blockers (protected, chats recorded, another tool's lock, a
- * submodule, an operation in progress), and the chats Hermes says work in the folder, from any client. Archived chats
- * are listed but don't block. A Hermes that can't be asked blocks too: a chat working there can't be ruled out.
- */
-export function removalBlockers(facts: RemovalFacts, hermes: { chats: { id: string; title: string; archived: boolean }[]; more: boolean } | Error | undefined): Blocker[] {
-  const out = [...facts.blockers];
-  if (hermes === undefined) out.push({ kind: "hermes", message: "Hermes isn't connected, so the chats working in this folder can't be checked. Connect first." });
-  else if (hermes instanceof Error) out.push({ kind: "hermes", message: `Couldn't ask Hermes which chats work in this folder: ${hermes.message}` });
-  else {
-    const live = hermes.chats.filter((c) => !c.archived);
-    if (live.length || hermes.more)
-      out.push({
-        kind: "hermes-chats",
-        message: `Hermes has ${hermes.more ? "100 or more" : live.length} chat${live.length === 1 && !hermes.more ? "" : "s"} working in this folder: ${live
-          .slice(0, 5)
-          .map((c) => `“${c.title}”`)
-          .join(", ")}${live.length > 5 ? "…" : ""}. Archive or delete them first, or keep the worktree.`,
-      });
-  }
-  return out;
+/** The folder a worktree for `branch` would get by default, as the helper suggests it; shown before the first preview. */
+export function slug(name: string): string {
+  const s = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/, "");
+  return s || "work";
 }
 
-/** The branch name as a folder name, as the helper makes it (`folder_name`), for the preview before it's asked. */
-export const folderName = (branch: string) =>
-  branch
-    .replace(/[^A-Za-z0-9._-]+/g, "-")
-    .replace(/^[.-]+|[.-]+$/g, "")
-    .slice(0, 80)
-    .replace(/[.-]+$/, "");
+/** Whether `cwd` is `root` or inside it. */
+export const inside = (cwd: string, root: string) => cwd === root || cwd.startsWith(`${root.replace(/\/+$/, "")}/`);
 
-/** A managed worktree as the server's record has it: its folder, the record's path, and its id there. */
-export type ServerWorktree = { path: string; registry: string; id: string };
+/** A chat Hermes has working in a folder: from `GET /api/sessions?cwd_prefix=` in one profile. */
+export type HermesChatIn = { id: string; title: string; profile: string; cwd: string; active: boolean };
 
-/** Where a chat was started in a worktree: the SSH target and repository to reach its record, and what to show. */
-export type WorktreeLaunch = ServerWorktree & { target: string; repo: string; branch: string };
+// ── which chats this computer started in a worktree ─────────────────────────
 
-/**
- * Checks that Hermes is on the same server as the worktree: it reads the worktree's record, at the path the helper
- * gave, and finds this worktree in it under its random id. The Repository screen's SSH target can name another
- * computer than the one Hermes runs on, and the same folder can exist on both. Throws when Hermes can't read it, or
- * reads another record.
- */
-export async function sameServer(readText: (path: string) => Promise<string>, w: ServerWorktree): Promise<void> {
-  const elsewhere = `Hermes can't see this worktree's record (${w.registry}), so it may be running on another computer than the Repository screen's SSH target`;
-  let text: string;
+export const WORKTREE_CHATS_KEY = "hermes-chat.worktree-chats";
+
+/** A chat started in a worktree from this computer: where, and the token holding its place in the server's record. */
+export type WorktreeChat = { target: string; repo: string; id: string; path: string; branch: string; token: string };
+
+type ChatsDoc = { v: 1; scopes: Record<string, Record<string, WorktreeChat>> };
+
+function readChats(): ChatsDoc {
   try {
-    text = await readText(w.registry);
+    const doc = JSON.parse(localStorage.getItem(WORKTREE_CHATS_KEY) ?? "null") as unknown;
+    if (isObj(doc) && doc.v === 1 && isObj(doc.scopes)) return doc as ChatsDoc;
+  } catch {
+    // An unreadable copy is no copy: the server's record is the authority.
+  }
+  return { v: 1, scopes: {} };
+}
+
+const chatListeners = new Set<() => void>();
+
+/** This computer's copy of which chat runs in which worktree, for each connection and profile (`scope`). The record on
+ * the server is what removal checks; this copy only labels the chat and lets it be detached from its own header. */
+export const worktreeChats = {
+  get(scope: string, chatId: string): WorktreeChat | undefined {
+    return readChats().scopes[scope]?.[chatId];
+  },
+  set(scope: string, chatId: string, chat: WorktreeChat) {
+    const doc = readChats();
+    doc.scopes[scope] = { ...(doc.scopes[scope] ?? {}), [chatId]: chat };
+    localStorage.setItem(WORKTREE_CHATS_KEY, JSON.stringify(doc));
+    chatListeners.forEach((f) => f());
+  },
+  remove(scope: string, chatId: string) {
+    const doc = readChats();
+    if (!doc.scopes[scope]?.[chatId]) return;
+    delete doc.scopes[scope][chatId];
+    localStorage.setItem(WORKTREE_CHATS_KEY, JSON.stringify(doc));
+    chatListeners.forEach((f) => f());
+  },
+  /** Drops every copy that names a token the server no longer holds for that worktree. */
+  forgetToken(token: string) {
+    const doc = readChats();
+    let changed = false;
+    for (const chats of Object.values(doc.scopes))
+      for (const [id, c] of Object.entries(chats))
+        if (c.token === token) {
+          delete chats[id];
+          changed = true;
+        }
+    if (!changed) return;
+    localStorage.setItem(WORKTREE_CHATS_KEY, JSON.stringify(doc));
+    chatListeners.forEach((f) => f());
+  },
+  subscribe(f: () => void) {
+    chatListeners.add(f);
+    return () => void chatListeners.delete(f);
+  },
+};
+
+/** A worktree the New chat pane will start its chat in. `scope`: the connection and profile it was picked under. */
+export type WorktreeStart = { target: string; repo: string; id: string; path: string; branch: string; scope: string };
+
+/**
+ * Starts a chat in a worktree: holds its place in the server's record first (so the worktree can't be removed while
+ * Hermes starts it), then `start` (Hermes's `session.create` with the worktree as its `cwd`), then confirms the place
+ * with the chat's id. If the chat doesn't start, the place is let go. If it started but the confirm fails, the place
+ * stays held (`starting`) and still blocks removal; `warning` says so.
+ */
+export async function startInWorktree(
+  api: WorktreeApi,
+  w: WorktreeStart,
+  who: { profile: string; connection: string },
+  start: () => Promise<string>,
+): Promise<{ chatId: string; token: string; warning?: string }> {
+  const token = newWorktreeId();
+  await api.run(w.target, { op: "worktreeAttach", repo: w.repo, id: w.id, token, profile: who.profile, connection: who.connection });
+  let chatId: string;
+  try {
+    chatId = await start();
   } catch (e) {
-    throw new Error(`${elsewhere}: ${e instanceof Error ? e.message : String(e)}`);
+    void api.run(w.target, { op: "worktreeDetach", repo: w.repo, id: w.id, token }).catch(() => undefined);
+    throw e;
   }
-  let rec: unknown;
   try {
-    rec = (JSON.parse(text) as { worktrees?: Record<string, unknown> }).worktrees?.[w.id];
-  } catch {
-    rec = undefined;
-  }
-  if (!isObj(rec) || rec.path !== w.path) throw new Error(`${elsewhere}. Nothing was done.`);
-}
-
-// Which chats this computer started in a worktree, so a chat can show its branch and folder (`hermes-chat.chat-
-// worktrees`, per connection and profile). The server's record is what counts; this is only for showing.
-const CHAT_WORKTREES = "hermes-chat.chat-worktrees";
-type Shown = { path: string; branch: string };
-
-function readShown(): Record<string, Shown> {
-  try {
-    const v = JSON.parse(localStorage.getItem(CHAT_WORKTREES) ?? "null");
-    return isObj(v) && v.v === 1 && isObj(v.chats) ? (v.chats as Record<string, Shown>) : {};
-  } catch {
-    return {};
+    await api.run(w.target, { op: "worktreeAttachConfirm", repo: w.repo, id: w.id, token, chat: chatId });
+    return { chatId, token };
+  } catch (e) {
+    const why = e instanceof Error ? e.message : String(e);
+    return {
+      chatId,
+      token,
+      warning: `The chat started in ${w.path}, but the server's worktree record couldn't be updated with it (${why}). The worktree still counts it as a chat starting there, so it can't be removed until you detach it.`,
+    };
   }
 }
-
-export function rememberChatWorktree(scope: string, chatId: string, w: Shown) {
-  const chats = { ...readShown(), [`${scope}\n${chatId}`]: { path: w.path, branch: w.branch } };
-  try {
-    localStorage.setItem(CHAT_WORKTREES, JSON.stringify({ v: 1, chats }));
-  } catch {
-    // Only for showing: the server's record still has it.
-  }
-}
-
-export const chatWorktree = (scope: string, chatId: string): Shown | undefined => readShown()[`${scope}\n${chatId}`];

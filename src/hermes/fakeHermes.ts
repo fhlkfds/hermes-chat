@@ -36,7 +36,7 @@ export type SessionRow = {
   runtime_revision?: number;
   /** The session a branch was made from (`session.branch` stores it). */
   parent_session_id?: string | null;
-  /** The folder it works in (`sessions.cwd`), stored with the first prompt. */
+  /** The folder the session works in (`sessions.cwd`). */
   cwd?: string | null;
   /**
    * Hermes's stored usage for every model call in the session (`sessions` columns at the deployed `bf0203a`; both list
@@ -591,7 +591,7 @@ export class FakeHermes {
       const created = this.created.get(runtimeId);
       if (created) {
         this.created.delete(runtimeId);
-        const stored = row(this.runtime.get(runtimeId)!, 0, { source: created.source, title: null, preview: String(r.params.text), message_count: 1, cwd: this.sessionCwd.get(runtimeId) ?? null });
+        const stored = row(this.runtime.get(runtimeId)!, 0, { source: created.source, title: null, preview: String(r.params.text), message_count: 1 });
         this.store(created.profile)?.push(stored);
       }
       const stored = this.runtime.get(runtimeId);
@@ -905,13 +905,10 @@ export class FakeHermes {
       const excluded = (query.get("exclude_sources") ?? "").split(",").filter(Boolean);
       const only = (query.get("sources") ?? query.get("source") ?? "").split(",").filter(Boolean);
       // `cwd_prefix` (`_cwd_prefix_clause`): the folder itself or anything under it, never a sibling that shares a prefix.
-      const under = query.get("cwd_prefix")?.replace(/\/+$/, "");
+      const prefix = (query.get("cwd_prefix") ?? "").replace(/\/+$/, "");
+      const inFolder = (s: SessionRow) => !prefix || (!!s.cwd && (s.cwd === prefix || s.cwd.startsWith(`${prefix}/`)));
       const visible = this.storeOrFail(query.get("profile")).filter(
-        (s) =>
-          !excluded.includes(s.source) &&
-          !s.unlisted &&
-          (!only.length || only.includes(s.source)) &&
-          (!under || (!!s.cwd && (s.cwd === under || s.cwd.startsWith(`${under}/`)))),
+        (s) => !excluded.includes(s.source) && !s.unlisted && (!only.length || only.includes(s.source)) && inFolder(s),
       );
       const archived = query.get("archived") ?? "exclude";
       // order=created (the default): newest started first; order=recent: latest activity first.

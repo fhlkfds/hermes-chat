@@ -104,7 +104,7 @@ Which chats are in which project, one link per chat and project. Kept by Hermes 
 _Avoid_: sync conflict (for a change that is only waiting), assignment
 
 **Folder** (of a project):
-A path on the server that a project refers to, shown with the connection it is on. The project screen adds only a folder that is already there, and never creates, moves or deletes one. A folder in a git repository shows its branch, and the repository's other worktrees that already exist can be added as folders too. Worktrees are made only from the Repository screen (see **Worktree**).
+A path on the server that a project refers to, shown with the connection it is on. Hermes Chat adds only a folder that is already there, and never creates, moves or deletes one from the project screen. A folder in a git repository shows its branch, and the repository's other worktrees can be added as folders too. Worktrees are made and removed only in the Repository screen's Worktrees view.
 _Avoid_: directory, workspace, repo (unless it is one)
 
 **Project defaults**:
@@ -286,6 +286,18 @@ _Avoid_: patch, sync, overwrite
 The rail's screen for a Git checkout on the Hermes server: its folder, branch, upstream, and changed files with their diffs. It reads through the owner's own ssh, the Terminal's target or the sign-in's, not through the dashboard, so it works while Hermes is away. Git runs there as the SSH user, with that user's config, hooks and credentials (ADR 0034).
 _Avoid_: repo (in the interface), project (a Project is Hermes's group of chats and folders), workspace
 
+**Worktree**:
+A separate working folder of a repository on the server, with its own branch, made by Git (`git worktree add`). The Repository screen's Worktrees view lists them all. A **managed** worktree is one Hermes Chat made: it is recorded in the repository with its setup and the chats working in it, and only it can be removed from here. A chat started in a worktree works only there. A worktree with a chat **attached** can't be removed until the owner detaches it: a quiet chat still counts. A **Protected** worktree, the main checkout, and one Hermes Chat didn't make are never removed (ADR 0043).
+_Avoid_: workspace, sandbox, clone (a clone has its own `.git`), checkout (for a worktree that isn't the main one)
+
+**Setup** (of a worktree):
+What runs once in a new worktree before a chat works there: the files and folders the repository's `.worktreeinclude` names, copied or linked from the checkout it was made from, as Hermes does for its own worktrees. Setup commands, such as an install script, aren't run. A failed or cut-off setup leaves the worktree, with Retry.
+_Avoid_: bootstrap, provisioning, install
+
+**Kept changes**:
+What a worktree's removal saved first: every changed and untracked file, as a commit on top of its HEAD (or HEAD itself, for commits no branch had), under `refs/hermes-chat/kept/` in the repository. Restore in a new worktree starts one from it. Nothing here deletes them.
+_Avoid_: stash (it isn't one), backup, archive (Hermes's own sweep uses `refs/hermes/archive/`)
+
 **Staged** / **Not staged** / **Untracked**:
 Where a change in the Repository screen is. Staged changes are in Git's index, what the next commit would hold. Not staged changes are in the working tree only. An Untracked file isn't in Git yet. One file can have changes in both of the first two, and the screen shows each side's diff on its own.
 _Avoid_: cached, added (for staged), dirty, unversioned
@@ -297,18 +309,6 @@ _Avoid_: dry run, summary
 **Push** / **Create pull request**:
 The Repository screen's two separate ways to publish a branch. Push sends the commit shown to the remote branch shown, with the server's own credentials, and never forces. Create pull request asks GitHub, through `gh` on the server, for a pull request from a branch the remote already has. It never pushes. Each goes only where it showed: if the branch, its commit, the remote's URL or its GitHub repository changed meanwhile, it's refused and nothing is sent.
 _Avoid_: publish (for either one alone), sync, ship
-
-**Worktree**:
-A second working copy of a repository on the server, on a branch of its own, so a chat can work without touching the repository's own checkout or another chat's. Hermes Chat makes one from the Repository screen, beside the repository (`<repo>.worktrees/<branch>`), from a base and branch the owner saw first. It runs the repository's **setup** once and records which chats work in it. Worktrees made elsewhere are listed but never removed from here. A worktree Hermes Chat made can be **protected**. A chat is **attached** when the record names it. Detach removes it from the record, and the chat keeps its folder. Its record is on the server, beside the repository (ADR 0042).
-_Avoid_: checkout (the repository's own), clone, sandbox, workspace
-
-**Setup** (of a worktree):
-What a new worktree gets once, from the repository's `.worktreeinclude`: each ignored file listed is copied from the repository's own checkout, and each folder is linked. A file Git tracks is never copied, so source changes reach a worktree only through a commit. A failed step keeps its error and can be retried; a step that's done never runs again. Running commands isn't part of it.
-_Avoid_: bootstrap, install, init
-
-**Remove** / **Restore** (a worktree):
-Remove deletes a worktree's folder after a preview of everything it affects: changed and untracked files, ignored files, and commits no remote has. Nothing is removed while it's protected, any chat is attached, Hermes has a chat (not archived) working in its folder, another tool locked it, or another Git repository is nested in it. Its staged and unstaged changes are first kept in a **recovery ref** (`refs/hermes-chat/recovery/…`), and its branch is never deleted. Restore makes it again on that branch and puts the kept changes back, staged ones staged, if the branch hasn't moved.
-_Avoid_: delete, clean up, prune (Hermes's own sweep), discard
 
 **Terminal**:
 The Side panel's tab with the owner's own shells: one on the Hermes server, through their ssh to the sign-in's SSH target or one typed for it, and one on this computer, their login shell. ssh asks there for anything it needs, such as a passphrase or a new host key. Each session runs on while the other is shown or the panel is closed, and the rail shows it; signing out ends both. They are the owner's shells, not Hermes's: nothing typed there reaches a chat, an Approval or the agent (ADR 0022, ADR 0039).

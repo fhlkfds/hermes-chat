@@ -1,43 +1,47 @@
-# Worktrees screenshots (#82)
+# Worktrees screenshots (#82, ADR 0043)
 
-Captured on 2026-11-04 from the running Tauri debug build of this branch (`tauri build --debug --no-bundle`, WebKitGTK) on an Xvfb display, 1280 × 820, driven with xdotool. `17-narrow.png` is the window at 760 × 820, cropped to it. These are framebuffer captures, not mockups. Nothing was composited or retouched.
+Captured on 2026-11-04 from the running Tauri debug build (WebKitGTK, frontend built in) on an Xvfb display with openbox. They're framebuffer captures of the 1280 × 820 window, or the 760-pixel window for `18` and `19`. They aren't mockups, and nothing was composited or retouched.
 
-Everything in them is synthetic, and every action really ran:
+The chat list comes from a stand-in dashboard with synthetic chats (`bridge.ts` here, the tests' `FakeHermes`), signed in by URL. That stand-in answered `session.create`, `GET /api/fs/list` and `GET /api/sessions?cwd_prefix=`. Everything in the Repository screen is real. The app ran the system `ssh` to the real Hermes server (`liam@hermes`, Hermes `f0d9488`, git 2.47.3, Python 3.13.5), which ran the helper against a synthetic repository made for this, `~/hc-repo-demo/wt-demo/forecast`, with a bare remote beside it. Each result was checked afterwards with plain Git over ssh.
 
-- **Hermes**: a real `hermes dashboard` from the deployed checkout (Hermes 0.22.6, `f0d9488`), with a throwaway `HOME` and `HERMES_HOME` under `/tmp/hc82/run` and a throwaway basic-auth login, bound to `127.0.0.2:19482` (`setup/dash.sh`). The app signed in to it by URL. Its model is a loopback stub that answers every completion with one fixed synthetic reply (`setup/llm.py`). No real model, chat or file was used, and the owner's `~/.hermes` wasn't opened.
-- **The server's Git**: the Repository screen's helper ran over real `ssh`, through a throwaway `sshd` on `127.0.0.1:22822`, as the same user on this machine, with its own host key and client key. The app's `ssh` was the system one, reached through a wrapper on `PATH` that adds only `-F /tmp/hc82/ssh/config` (`setup/start-app.sh`). That is the one difference from a real server; every argument the app passes is unchanged.
-- **The repositories**: `/tmp/hc82/srv/weather-api`, with a bare `origin`, an existing branch `feature/forecast-cache`, a `.worktreeinclude`, ignored `.env`, `node_modules/` and `config/local.toml`, and a dirty checkout (an edited `README.md` and an untracked `scratch.md`). `/tmp/hc82/srv/field-notes` has no worktrees (`setup/repo.sh`).
+1. `1-empty.png`: the Worktrees view of a repository with only its main checkout. The checkout has a changed file and an untracked file.
+2. `2-preview.png`: New worktree on a new branch `feature/hourly` from `main`. The preview shows:
+   - the folder beside the repository and the base commit;
+   - that the source checkout's changes stay there;
+   - the two `.worktreeinclude` entries setup will copy and link;
+   - that setup commands aren't run.
+3. `3-created.png`: the streamed progress log. Afterwards on the server:
+   - `git worktree list` showed it locked as `hermes-chat: managed worktree …`;
+   - `.env` was copied and `node_modules` was a link to the main checkout's;
+   - the main checkout's own changes were untouched;
+   - `.git/hermes-chat/worktrees.json` said `ready` (the record has since been renamed `managed-worktrees.json`, so it stays apart from ADR 0042's).
+4. `4-new-chat-in-worktree.png`: Start a chat in it. The New chat pane shows the worktree as the chat's folder, chosen for this chat, and its branch, with Don't start it there.
+5. `5-chat-shows-its-branch.png`: the chat, started with `cwd` set to the worktree, shows its branch in its header. The record on the server then had the chat attached, with its profile and connection.
+6. `6-list-chat-attached.png`: the list, opened from that header label. The chat is named by its title, and Remove is disabled: "Chats work in it: detach them first".
+7. `7-existing-branch-preview.png`: New worktree on the existing branch `release/2026.11`. A third `.worktreeinclude` entry, `secrets.local`, was made unreadable on the server.
+8. `8-setup-failed.png`: the worktree is made, setup fails on that entry, and the worktree is kept with Open and Start a chat in it. This was captured again after the review fixes, with a third worktree, `feature/radar`.
+9. `9-list-retry-setup.png`: the list shows Setup failed, the log, and Retry setup.
+10. `10-setup-retried.png`: after `chmod 600` on the server, Retry setup finished it. The copied file shows as untracked, because `.gitignore` doesn't ignore it.
+11. `11-detach-confirm.png`: a second ssh session made a commit and changed and added files in the worktree, standing in for the agent. The counts update, and Detach says the chat keeps working in the folder.
+12. `12-remove-preview.png`: Remove's preview lists:
+    - both changed files, which will be kept;
+    - the commit no remote has, which stays on `feature/hourly`;
+    - `.env`, which is ignored and goes with the folder;
+    - a quiet chat that another Hermes app started in the folder, which needs the owner's tick.
+13. `13-removed.png`: removed. On the server:
+    - the folder and Git's entry were gone, and `feature/hourly` still had its commit;
+    - `refs/hermes-chat/kept/…` held `NOTES.md` and the `src/forecast.ts` edit on top of it;
+    - the main checkout's `node_modules`, which setup had linked to, was untouched.
+14. `14-kept-changes.png`: the kept changes, with Restore in a new worktree.
+15. `15-protected.png`: Protect on a worktree: Remove is disabled, and the list says why.
+16. `16-removed-result-stays.png`: removing the release worktree, 15 seconds after it finished. Before the review fix (Codex round 1, finding 8), the app drawing again re-read the preview and replaced this result with "no record of that worktree". That happened in this same session, with the earlier build.
+17. `17-restore-preview.png`: Restore in a new worktree: the base is the kept ref, with its subject.
+18. `18-narrow-dialog.png` and `19-narrow-list.png`: a 760-pixel window. `19` is from the build before the last wording fix, so it still says "1 file that weren't committed".
 
-Each result below was checked on the "server" afterwards with `git worktree list`, `git for-each-ref`, the record in `.git/hermes-chat/worktrees.json`, and Hermes's `state.db`.
+Not pictured:
 
-1. `1-empty.png`: a repository with no worktrees from Hermes Chat. The heading counts only those; the repository's own checkout is under Other worktrees.
-2. `2-preview.png`: **New worktree…** → Preview for a new branch `docs/readme-units` from `main`. The exact folder (`…/weather-api.worktrees/docs-readme-units`), the branch (new, not tracking anything), the commit and subject it starts at, and the setup steps from `.worktreeinclude`. `config/defaults.toml` is skipped because Git tracks it. The open checkout's uncommitted changes are named, and they stay there.
-3. `3-setup-failed.png`: making `fix/timeout` with the source `.env` made unreadable (`chmod 000`) first. The worktree was made, and Git's output is shown. The first step failed with the server's own `Permission denied`, the steps after it waited, and **Retry** and **Open** are offered. On the server: the worktree existed on `fix/timeout` at `1f592bd`, locked `hermes-chat <id>`, with no upstream, and the record had `.env: failed`, the others `pending`.
-4. `4-setup-retried.png`: after `chmod 600`, **Retry** ran the failed step and the two after it. The link's step says Git lists it as untracked, because `.gitignore` has `node_modules/`.
-5. `5-new-chat-in-worktree.png`: **Start chat here**. The New chat pane says the chat works in the worktree's folder, and why.
-6. `6-chat-shows-worktree.png`: the chat after its first message, with the worktree's branch and folder above it. Hermes's `state.db` had the session's `cwd` as the worktree, and the record named the chat (its connection and profile, id and first message).
-7. `7-list.png`: the agent's work simulated in the worktree (a commit, an edit, an untracked file). The card shows the changes, the commit no remote has, the setup, and the chat.
-8. `8-remove-blocked-by-chat.png`: **Remove…** while the chat is recorded, and Hermes has it working in the folder. Both block. The preview still lists the files that would be kept, the unpushed commit that stays on the branch, and the ignored files that would be deleted.
-9. `9-quiet-chat-still-blocks.png`: after **Detach** (the record then had no chats) and settling the chat, Hermes still has a chat working in that folder, so removal stays blocked. A quiet chat doesn't make the worktree disposable.
-10. `10-remove-preview.png`: after archiving the chat, it's listed as archived and no longer blocks.
-11. `11-removed.png`: **Keep changes and remove**. On the server: the folder was gone, `refs/hermes-chat/recovery/<id>/<time>` held `src/retry.ts`, `NOTES.md` and the `node_modules` link as one commit whose parent was the branch's unpushed commit, `fix/timeout` was still at that commit, and the source checkout's `node_modules` (the link's target) was untouched.
-12. `12-removed-list.png`: the Removed list, with the recovery ref and the kept branch, and **Restore** and **Forget**.
-13. `13-existing-branch-preview.png`: Existing branch `feature/forecast-cache`, checked out as it is.
-14. `14-create-answer-lost.png`: the preview was read, then the `sshd` was stopped and **Create worktree** pressed. ssh couldn't reach the server, so the screen couldn't ask whether anything was made, and says so. Nothing is sent again on its own.
-15. `15-created-after-try-again.png`: the `sshd` started again, then **Try again**, which sent the same request with the same id. The server then had exactly one `docs/readme-units` worktree and one record for it.
-16. `16-protected.png`: **Protect**, then **Remove…**: blocked until unprotected.
-17. `17-narrow.png`: a 760-pixel window. The cards' facts and buttons wrap, and nothing is cut off.
-18. `18-restored.png`: `fix/timeout` removed again and **Restored**. On the server, the worktree was back on `fix/timeout` at its commit, with `src/retry.ts` changed and `NOTES.md` untracked, and locked again. Its setup shows 0 of 3 done: the ignored copies were deleted with the folder, so the steps are to run again.
-19. `19-setup-after-restore.png`: **Run setup** copied `.env` and `config/local.toml` again. The link the kept changes brought back was already there and was left alone.
-20. `20-ssh-unreachable.png`: a mistyped SSH target (`h`). ssh's own message is shown under the app's.
+- The unsupported state (Git older than 2.36) and a Hermes that can't be asked about chats: the server has Git 2.47, so these are covered only by `src/ui/worktrees.test.tsx`.
+- A dropped connection during creation: covered by killing the helper in `src-tauri/tests/repo_worktree.rs`, and by a fake in the UI tests. ssh wasn't cut by hand.
+- The chat ran on the stand-in, so no model did any work in the worktree. The agent's work was simulated with Git over ssh.
 
-Shots 3 to 12 were taken with the first build of this branch. Before shots 1, 2 and 13 to 20, these were changed: the heading's count (it counted the repository's own checkout too, so `7-list.png` says 2 for one managed worktree), the empty list's wording (`12-removed-list.png` still says "yet"), the dirty-checkout note's wording, the lost-answer button (Try again, unless a create is known to have stopped part way), restore marking done setup steps to run again, and **Run setup** / **Retry setup** on a card running the steps when the dialog opens. Before that last fix, the dialog opened and ran nothing, which this run found.
-
-Not pictured, covered by tests: a stale preview refused (`src-tauri/tests/worktrees.rs`, `src/ui/worktrees.test.tsx`), a chat attached by another task after the preview stopping the removal, another tool's lock, a checked-out submodule, an operation in progress, a record from a newer app, the panel's unsupported state, and an older read's late answer being dropped.
-
-## After Codex review round 1
-
-Captured the same way with the build that has the round 1 fixes.
-
-21. `21-chat-after-same-server-check.png`: **Start chat here** on `docs/readme-units`. Before anything was sent, Hermes read the worktree's record on the server (`GET /api/fs/read-text` of `.git/hermes-chat/worktrees.json`) and found the worktree in it, and the record then named the chat. Hermes's `state.db` had the session's `cwd` as the worktree. The reply is the stub model's fixed text, which names another worktree; it's the same text for every chat.
-22. `22-remove-blocked-after-same-server-check.png`: **Remove…** on it. Both the record and Hermes (asked once it had read the record) say a chat works there.
+The demo repository and the `feature/radar` worktree are left on the server, in `~/hc-repo-demo/wt-demo`.

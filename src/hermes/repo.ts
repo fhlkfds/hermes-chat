@@ -1,7 +1,8 @@
 // The Repository screen's model: a Git checkout on the Hermes server, read through the owner's own ssh by a helper
 // the app sends there (src-tauri/src/repo_git.rs, repo_git_helper.py, ADR 0034). This file holds what the helper
 // answers, how its changes are grouped for the screen, and how a diff is read. The screen is src/ui/Repository.tsx.
-import type { WorktreeRequest } from "./worktrees";
+
+import type { Progress, WorktreeRequest } from "./worktrees";
 
 /** One line of `git status --porcelain=v2`, as the helper reports it. Paths are relative to the checkout's top. */
 export type Entry = {
@@ -144,8 +145,14 @@ export type RepoRequest =
   | { op: "remoteHead"; repo: string; remote: string; remoteBranch: string }
   | WorktreeRequest;
 
-/** Rust's one command: send `request` to the helper through ssh to `target`. Rejects with a `RepoFailure`. */
-export type RepoApi = { run(target: string, request: RepoRequest): Promise<unknown> };
+/**
+ * Rust's command: send `request` to the helper through ssh to `target`. Rejects with a `RepoFailure`. `stream`: the
+ * same, passing on each progress line as the helper prints it (worktrees.ts); without it, requests run without progress.
+ */
+export type RepoApi = {
+  run(target: string, request: RepoRequest): Promise<unknown>;
+  stream?(target: string, request: RepoRequest, onProgress: (p: Progress) => void): Promise<unknown>;
+};
 
 /**
  * A failure the screen tells apart by `kind`:
