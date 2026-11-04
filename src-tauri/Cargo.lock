@@ -1698,6 +1698,7 @@ dependencies = [
  "webkit2gtk",
  "x11",
  "x11rb",
+ "zip",
 ]
 
 [[package]]

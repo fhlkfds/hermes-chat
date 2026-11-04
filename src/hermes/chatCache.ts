@@ -197,7 +197,7 @@ function toOutgoing(v: unknown): OutgoingItem | undefined {
 }
 
 /** A kept queue, rebuilt from its fields, or undefined if it isn't one. Messages that aren't one are left out. */
-function toQueue(v: unknown): ChatQueue | undefined {
+export function toQueue(v: unknown): ChatQueue | undefined {
   const q = v as { items?: unknown; paused?: unknown } | null;
   if (!q || !Array.isArray(q.items)) return undefined;
   const items = q.items.flatMap((i): Queued[] => {
@@ -210,7 +210,7 @@ function toQueue(v: unknown): ChatQueue | undefined {
 }
 
 /** A kept branch store, rebuilt from its fields; links and attempts that aren't one are left out. */
-function toBranches(v: unknown): BranchStore {
+export function toBranches(v: unknown): BranchStore {
   const o = v as { links?: unknown; attempts?: unknown } | null;
   if (!o || typeof o !== "object") return NO_BRANCHES;
   const point = (p: unknown): BranchPoint | undefined => {
