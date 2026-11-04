@@ -70,14 +70,17 @@ export type DiffReply = {
   index?: string;
 };
 
-/** What a write expects to find. `rawSha` (a commit only): the stamp of the staged changes the preview showed. */
-export type Expect = { head: string | null; index: string; rawSha?: string };
+/** What a write expects to find. `rawSha` and `headRef` (a commit only): the stamp of the staged changes the preview
+ * showed, and the ref HEAD pointed at then, so a commit can't land on another branch at the same commit. */
+export type Expect = { head: string | null; index: string; rawSha?: string; headRef?: string };
 
 /** What a commit now would hold (the helper's `preview`). */
 export type Preview = {
   head: string | null;
   index: string;
   branch: string | null;
+  /** The ref HEAD points at (`refs/heads/<branch>`), or `HEAD` when detached. A commit sends it back. */
+  headRef: string;
   /** Each staged file, renames shown as a deletion and an addition; `renames` pairs them up. */
   files: { status: string; path: string; oldMode: string; newMode: string }[];
   renames: Record<string, { from: string; score: string }>;
@@ -123,6 +126,8 @@ export type RepoRequest =
   | {
       op: "prCreate";
       repo: string;
+      /** The local branch the form was written for: refused if it's no longer checked out at `expect.head`. */
+      branch: string;
       remote: string;
       remoteBranch: string;
       base: string;
@@ -486,7 +491,7 @@ export function asStatus(v: unknown): Status {
 
 export function asPreview(v: unknown): Preview {
   const p = v as Preview;
-  if (!p || typeof p.index !== "string" || !Array.isArray(p.files) || typeof p.rawSha !== "string") throw new RepoFailure("bad-reply", "The server's answer wasn't a commit preview.");
+  if (!p || typeof p.index !== "string" || !Array.isArray(p.files) || typeof p.rawSha !== "string" || typeof p.headRef !== "string") throw new RepoFailure("bad-reply", "The server's answer wasn't a commit preview.");
   return { ...p, renames: p.renames ?? {}, hooks: Array.isArray(p.hooks) ? p.hooks : [], recent: Array.isArray(p.recent) ? p.recent : [] };
 }
 

@@ -72,6 +72,7 @@ export function RepositoryScreen({
   onOpened,
   onTarget,
   suggest,
+  suggestScope = "",
   openUrl,
   onClose,
 }: {
@@ -90,6 +91,9 @@ export function RepositoryScreen({
   onTarget: (target: string) => void;
   /** Asks Hermes for a commit message from `input` (llm.oneshot); absent while Hermes isn't connected. */
   suggest?: (instructions: string, input: string) => Promise<string>;
+  /** Who `suggest` asks: the connection and profile. A suggestion asked under one never fills the box under another:
+   * the ask stops before Hermes is called, and a late answer or failure is dropped. */
+  suggestScope?: string;
   /** Opens a pull request's or a check's page in the owner's browser. */
   openUrl?: (url: string) => void;
   onClose: () => void;
@@ -110,6 +114,8 @@ export function RepositoryScreen({
   const [writeError, setWriteError] = useState<{ what: string; error: RepoFailure }>();
   const [done, setDone] = useState<string>();
   const [message, setMessage] = useState("");
+  const scopeNow = useRef(suggestScope);
+  scopeNow.current = suggestScope;
   const [reviewing, setReviewing] = useState(false);
   const statusRun = useRef(0);
   const diffRun = useRef(0);
@@ -163,10 +169,11 @@ export function RepositoryScreen({
 
   /**
    * Runs one write, then reads the repository again whatever happened: the list afterwards is Git's, not a guess.
-   * A late answer for another folder or target is dropped.
+   * A late answer for another folder or target is dropped. Resolves true when the screen still shows the folder and
+   * target the write was for, so a caller's follow-up (clearing ticks) can't touch another folder's state.
    */
-  const write = async (what: string, request: RepoRequest, after?: string) => {
-    if (writing) return;
+  const write = async (what: string, request: RepoRequest, after?: string): Promise<boolean> => {
+    if (writing) return false;
     const at = place.current;
     setWriting(what);
     setWriteError(undefined);
@@ -182,6 +189,7 @@ export function RepositoryScreen({
         read(repo, target);
       }
     }
+    return at === place.current;
   };
 
   // A different folder or target: what was shown belonged to the other one.
@@ -247,8 +255,8 @@ export function RepositoryScreen({
     if (!shown || !changes.length) return;
     const files = changes.map((c) => ({ path: c.path, worktree: entryOf(c.path)?.worktree ?? null }));
     const n = files.length;
-    void write(`Staging ${n === 1 ? files[0].path : `${n} files`}…`, { op: "stage", repo: shown.top, files, expect: expectOf(shown) }, `Staged ${n === 1 ? files[0].path : `${n} files`}.`).then(() =>
-      setChecked(new Set()),
+    void write(`Staging ${n === 1 ? files[0].path : `${n} files`}…`, { op: "stage", repo: shown.top, files, expect: expectOf(shown) }, `Staged ${n === 1 ? files[0].path : `${n} files`}.`).then(
+      (here) => here && setChecked(new Set()),
     );
   };
 
@@ -257,8 +265,8 @@ export function RepositoryScreen({
     if (!shown || !changes.length) return;
     const paths = changes.flatMap((c) => (c.origPath ? [c.path, c.origPath] : [c.path]));
     const n = changes.length;
-    void write(`Unstaging ${n === 1 ? changes[0].path : `${n} files`}…`, { op: "unstage", repo: shown.top, paths, expect: expectOf(shown) }, `Unstaged ${n === 1 ? changes[0].path : `${n} files`}.`).then(() =>
-      setChecked(new Set()),
+    void write(`Unstaging ${n === 1 ? changes[0].path : `${n} files`}…`, { op: "unstage", repo: shown.top, paths, expect: expectOf(shown) }, `Unstaged ${n === 1 ? changes[0].path : `${n} files`}.`).then(
+      (here) => here && setChecked(new Set()),
     );
   };
 
@@ -536,6 +544,7 @@ export function RepositoryScreen({
                 })}
               {all.length > 0 && (
                 <CommitBox
+                  key={suggestScope}
                   message={message}
                   onMessage={setMessage}
                   staged={groups.staged.length}
@@ -545,9 +554,15 @@ export function RepositoryScreen({
                   suggest={
                     suggest &&
                     (async () => {
+                      const asked = scopeNow.current;
+                      const moved = () => new Error("the profile or connection changed while it was being asked, so it wasn't used");
                       const p = asPreview(await api.run(target, { op: "preview", repo: shown.top }));
+                      // The staged diff goes only to the profile the owner asked under.
+                      if (scopeNow.current !== asked) throw moved();
                       if (!p.files.length) throw new Error("Nothing is staged, so there's nothing to describe.");
-                      return cleanSuggestion(await suggest(SUGGEST_INSTRUCTIONS, suggestInput(p)));
+                      const m = cleanSuggestion(await suggest(SUGGEST_INSTRUCTIONS, suggestInput(p)));
+                      if (scopeNow.current !== asked) throw moved();
+                      return m;
                     })
                   }
                   onReview={() => setReviewing(true)}
@@ -745,7 +760,7 @@ function CommitDialog({
 
   const commit = (p: Preview) => {
     setReview({ phase: "committing", preview: p });
-    api.run(target, { op: "commit", repo: top, message: text, expect: { head: p.head, index: p.index, rawSha: p.rawSha } }).then(
+    api.run(target, { op: "commit", repo: top, message: text, expect: { head: p.head, index: p.index, rawSha: p.rawSha, headRef: p.headRef } }).then(
       (v) => {
         if (!alive.current) return;
         try {
@@ -1304,7 +1319,7 @@ function PrCard({
     setCreating(true);
     setError(undefined);
     api
-      .run(target, { op: "prCreate", repo: top, remote: p.remote, remoteBranch: p.remoteBranch, base, title, body, draft: isDraft, expect: { head: p.head } })
+      .run(target, { op: "prCreate", repo: top, branch: p.branch ?? "", remote: p.remote, remoteBranch: p.remoteBranch, base, title, body, draft: isDraft, expect: { head: p.head } })
       .then(
         (v) => {
           if (!alive.current) return;

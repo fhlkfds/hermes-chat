@@ -245,6 +245,7 @@ const PREVIEW = {
   head: "1e6a7627084ab1d090745282b589f5d3de623b23",
   index: "i1",
   branch: "feature/login",
+  headRef: "refs/heads/feature/login",
   files: [
     { status: "D", path: "docs/auth.md", oldMode: "100644", newMode: "000000" },
     { status: "A", path: "docs/login.md", oldMode: "000000", newMode: "100644" },
@@ -400,7 +401,7 @@ describe("Repository screen, committing", () => {
       op: "commit",
       repo: TOP,
       message: "Lengthen sessions\n",
-      expect: { head: PREVIEW.head, index: "i1", rawSha: "raw1" },
+      expect: { head: PREVIEW.head, index: "i1", rawSha: "raw1", headRef: "refs/heads/feature/login" },
     });
     expect(document.activeElement).toBe(dialog.getByRole("button", { name: "Close" }));
     await user.keyboard("{Escape}");
@@ -511,6 +512,79 @@ describe("Repository screen, a late suggestion", () => {
     await act(async () => answer("Hermes's words"));
     expect((screen.getByLabelText(/Commit message/) as HTMLTextAreaElement).value).toBe("My own words");
     expect(screen.getByRole("alert").textContent).toMatch(/suggestion wasn't used/);
+  });
+});
+
+describe("Repository screen, late answers from another place", () => {
+  it("keeps the ticks in a folder opened while another folder's write was still running", async () => {
+    const user = userEvent.setup();
+    let finish: () => void = () => {};
+    const { api } = fakeApi((_t, r) => {
+      if (r.op === "status") return r.repo === "/other" ? { ...STAMPED(), top: "/other", gitDir: "/other/.git" } : STAMPED();
+      if (r.op === "stage") return new Promise<void>((res) => (finish = () => res()));
+      if (r.op === "publishInfo") return NO_REMOTE;
+      return diffOf("");
+    });
+    show(api);
+    await screen.findByText(TOP);
+    await user.click(screen.getByRole("checkbox", { name: "Tick notes.txt to stage it" }));
+    await user.click(within(screen.getByRole("region", { name: "Untracked" })).getByRole("button", { name: /Stage 1 ticked/ }));
+    // While the stage in TOP is running, open /other and tick a file there.
+    const input = screen.getByLabelText(/Folder on the server/);
+    await user.clear(input);
+    await user.type(input, "/other");
+    await user.click(screen.getByRole("button", { name: "Open" }));
+    expect(await screen.findByText("/other")).toBeTruthy();
+    const box = screen.getByRole("checkbox", { name: "Tick notes.txt to stage it" }) as HTMLInputElement;
+    await user.click(box);
+    expect(box.checked).toBe(true);
+    // TOP's stage answers late: /other's ticks stay.
+    await act(async () => finish());
+    expect((screen.getByRole("checkbox", { name: "Tick notes.txt to stage it" }) as HTMLInputElement).checked).toBe(true);
+  });
+
+  const scoped = (suggest: (i: string, input: string) => Promise<string>, suggestScope: string, api: RepoApi) => (
+    <StrictMode>
+      <RepositoryScreen api={api} initialTarget="liam@hermes" initialPath={TOP} recent={[]} suggestions={[]} onOpened={() => {}} onTarget={() => {}} onClose={() => {}} suggest={suggest} suggestScope={suggestScope} />
+    </StrictMode>
+  );
+
+  it("drops a suggestion that comes back after the profile changed", async () => {
+    const user = userEvent.setup();
+    let answer: (m: string) => void = () => {};
+    const work = vi.fn(() => new Promise<string>((res) => (answer = res)));
+    const personal = vi.fn(async () => "never asked");
+    const { api } = fakeApi((_t, r) => (r.op === "status" ? STAMPED() : r.op === "preview" ? PREVIEW : r.op === "publishInfo" ? NO_REMOTE : diffOf("")));
+    const { rerender } = render(scoped(work, "hermes\nwork", api));
+    await screen.findByText(TOP);
+    await user.click(screen.getByRole("button", { name: "Suggest a message" }));
+    await waitFor(() => expect(work).toHaveBeenCalled());
+    rerender(scoped(personal, "hermes\npersonal", api));
+    await act(async () => answer("The work profile's words"));
+    expect((screen.getByLabelText(/Commit message/) as HTMLTextAreaElement).value).toBe("");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(personal).not.toHaveBeenCalled();
+  });
+
+  it("doesn't send the staged diff to the old profile when the profile changes while the preview is read", async () => {
+    const user = userEvent.setup();
+    let previewed: () => void = () => {};
+    const work = vi.fn(async () => "The work profile's words");
+    const personal = vi.fn(async () => "never asked");
+    const { api } = fakeApi((_t, r) => {
+      if (r.op === "status") return STAMPED();
+      if (r.op === "preview") return new Promise((res) => (previewed = () => res(PREVIEW)));
+      if (r.op === "publishInfo") return NO_REMOTE;
+      return diffOf("");
+    });
+    const { rerender } = render(scoped(work, "hermes\nwork", api));
+    await screen.findByText(TOP);
+    await user.click(screen.getByRole("button", { name: "Suggest a message" }));
+    rerender(scoped(personal, "hermes\npersonal", api));
+    await act(async () => previewed());
+    expect(work).not.toHaveBeenCalled();
+    expect(personal).not.toHaveBeenCalled();
+    expect((screen.getByLabelText(/Commit message/) as HTMLTextAreaElement).value).toBe("");
   });
 });
 
@@ -638,7 +712,7 @@ describe("Repository screen, publishing", () => {
     await user.click(screen.getByRole("button", { name: /Create pull request/ }));
     expect(await screen.findByText("https://github.com/acme/weather/pull/7", { selector: ".files-banner .mono" })).toBeTruthy();
     expect(calls.find((c) => c.request.op === "prCreate")?.request).toEqual({
-      op: "prCreate", repo: TOP, remote: "origin", remoteBranch: "feature/login", base: "release",
+      op: "prCreate", repo: TOP, branch: "feature/login", remote: "origin", remoteBranch: "feature/login", base: "release",
       title: "Require a user name to sign in", body: "Fixes the empty-user bug.", draft: true, expect: { head: HEAD },
     });
     expect(await screen.findByText("1 running or waiting, 1 passed.")).toBeTruthy();

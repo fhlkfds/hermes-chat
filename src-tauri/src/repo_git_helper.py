@@ -225,7 +225,8 @@ def op_status(req):
 
 
 def status_once(top, git_dir):
-    code, out, err = git(["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"], top)
+    # --ignore-submodules=none: the owner's ignore settings can't hide a changed or staged submodule from the list.
+    code, out, err = git(["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all", "--ignore-submodules=none"], top)
     if code != 0:
         raise Refusal("git", text(err).strip() or "git status failed.", text(err))
     branch = {"oid": None, "head": None, "detached": False, "upstream": None, "ahead": None, "behind": None}
@@ -382,6 +383,13 @@ def op_diff(req):
 def head_oid(top):
     code, out, _ = git(["rev-parse", "-q", "--verify", "HEAD^{commit}"], top)
     return text(out).strip() if code == 0 else None
+
+
+def head_ref(top):
+    """The ref HEAD points at (refs/heads/<branch>, before the first commit too), or "HEAD" when detached. Two branches
+    can be at the same commit: a commit checks this as well as HEAD's commit, so it lands on the branch previewed."""
+    code, out, _ = git(["symbolic-ref", "-q", "HEAD"], top)
+    return text(out).strip() if code == 0 and text(out).strip() else "HEAD"
 
 
 def index_stamp(top):
@@ -644,7 +652,9 @@ def ident(top, role):
 
 def staged_raw(top):
     """The staged changes as `git diff --raw` lists them, with full object names: what a commit of the index adds."""
-    return git_ok(["diff", "--cached", "--raw", "--no-abbrev", "--no-renames", "-z"], top)
+    # --ignore-submodules=none overrides diff.ignoreSubmodules and each submodule's own `ignore` (.gitmodules or
+    # config), so a staged gitlink is never left out of the preview while the commit takes it.
+    return git_ok(["diff", "--cached", "--ignore-submodules=none", "--raw", "--no-abbrev", "--no-renames", "-z"], top)
 
 
 def name_status(raw):
@@ -668,11 +678,11 @@ def op_preview(req):
     top, git_dir = checkout(req.get("repo"))
     head = head_oid(top)
     raw = staged_raw(top)
-    code, out, err = git(["diff", "--cached", "-M", "--no-color", "--no-ext-diff", "--no-textconv", "--stat=200", "--patch"], top)
+    code, out, err = git(["diff", "--cached", "--ignore-submodules=none", "-M", "--no-color", "--no-ext-diff", "--no-textconv", "--stat=200", "--patch"], top)
     if code != 0:
         raise Refusal("git", text(err).strip() or "git diff failed.", text(err))
     diff, cut, lossy = capped(out)
-    code, ns, _ = git(["diff", "--cached", "-M", "--name-status", "-z"], top)
+    code, ns, _ = git(["diff", "--cached", "--ignore-submodules=none", "-M", "--name-status", "-z"], top)
     renames = {}
     fields = text(ns).split("\0")
     i = 0
@@ -691,6 +701,7 @@ def op_preview(req):
         "head": head,
         "index": index_stamp(top),
         "branch": text(branch).strip() if code == 0 else None,
+        "headRef": head_ref(top),
         "files": name_status(raw),
         "renames": renames,
         "rawSha": hashlib.sha256(raw).hexdigest(),
@@ -751,6 +762,10 @@ def classify_commit_failure(output, failed):
     return "git", "Git refused the commit. Its output is below. Nothing was committed."
 
 
+def short_ref(ref):
+    return "detached HEAD" if ref == "HEAD" else ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else ref
+
+
 def op_commit(req):
     """Commits the index, only if HEAD and the index are exactly what the preview showed. Hooks run as Git runs them;
     nothing is bypassed. The message is committed verbatim, as previewed. Afterwards the new commit is read back and
@@ -766,6 +781,15 @@ def op_commit(req):
     # nothing staged after the checks can get in. Git takes the ref's lock for HEAD itself, against its old value.
     with LockedIndex(top) as idx:
         head, _ = check_stamps(top, expect)
+        wanted_ref = (expect or {}).get("headRef")
+        if not isinstance(wanted_ref, str):
+            raise Refusal("internal", "The commit request didn't say which branch it was previewed on.")
+        now_ref = head_ref(top)
+        if now_ref != wanted_ref:
+            raise Refusal(
+                "stale",
+                "The checked-out branch changed since the preview (%s, now %s). Nothing was committed. Preview again." % (short_ref(wanted_ref), short_ref(now_ref)),
+            )
         raw = staged_raw(top)
         if hashlib.sha256(raw).hexdigest() != (expect or {}).get("rawSha"):
             raise Refusal("stale", "The staged changes aren't the ones previewed. Nothing was committed. Preview again.")
@@ -793,7 +817,7 @@ def op_commit(req):
     parents = text(git_ok(["rev-list", "--parents", "-n", "1", after], top)).split()[1:]
     if parents != ([head] if head else []):
         raise Refusal("lost", "A commit was made, but not on top of the HEAD that was checked. Refresh and look at the history in the Terminal.", output)
-    tree_args = ["diff-tree", "-r", "--raw", "--no-abbrev", "--no-renames", "--no-commit-id", "-z"] + (["--root"] if head is None else [])
+    tree_args = ["diff-tree", "-r", "--ignore-submodules=none", "--raw", "--no-abbrev", "--no-renames", "--no-commit-id", "-z"] + (["--root"] if head is None else [])
     committed = git_ok(tree_args + [after], top)
     return {
         "head": after,
@@ -1093,6 +1117,12 @@ def op_pr_create(req):
     top, _ = checkout(req.get("repo"))
     remote = req.get("remote")
     check_remote(remote, top)
+    expect = (req.get("expect") or {}).get("head")
+    # The form was written for this branch at this commit. If another process committed or switched branches here
+    # since, the screen is out of date: refuse, as Push does, rather than open a pull request from a stale form.
+    branch = check_branch_name(req.get("branch"), top)
+    if git_line(["symbolic-ref", "-q", "--short", "HEAD"], top) != branch or head_oid(top) != expect:
+        raise Refusal("stale", "The branch or its commit changed here since this screen read it. No pull request was made. Look again.")
     gh_repo = github_repo(configured_push_url(remote, top))
     if not gh_repo:
         raise Refusal("unsupported", "Pull requests are made with gh, for GitHub remotes only, and %s isn't one." % remote)
@@ -1102,7 +1132,6 @@ def op_pr_create(req):
     body = req.get("body") if isinstance(req.get("body"), str) else ""
     if not isinstance(title, str) or not title.strip():
         raise Refusal("empty-title", "Write a title first.")
-    expect = (req.get("expect") or {}).get("head")
     on_remote = remote_sha(top, remote, head_branch)
     if on_remote != expect:
         raise Refusal("not-pushed", "The remote doesn't have this branch at the commit shown%s. Push first; creating a pull request never pushes." % (" (it has %s)" % on_remote[:12] if on_remote else ""))

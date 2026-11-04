@@ -1727,6 +1727,7 @@ export function Main({
                 ? (instructions, input) => hermes.askForEdit({ profile, instructions, input, maxTokens: 400 }).then((r) => r.text)
                 : undefined
             }
+            suggestScope={scope}
             openUrl={(url) => void webPages.openInBrowser(url).catch(() => undefined)}
             onClose={() => {
               flushSync(() => setRepoOpen(false));

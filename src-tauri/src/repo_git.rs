@@ -73,11 +73,14 @@ pub enum Request {
     /// Pushes HEAD, if it is still `expect.head` on `branch`, to `remote_branch` on `remote`. Never forced.
     #[serde(rename_all = "camelCase")]
     Push { repo: String, remote: String, branch: String, remote_branch: String, expect: HeadExpect },
-    /// Opens a pull request from `remote_branch` into `base`, only if the remote has that branch at `expect.head`.
+    /// Opens a pull request from `remote_branch` into `base`, only if `branch` is still checked out at `expect.head`
+    /// and the remote has that branch at `expect.head`.
     /// It never pushes.
     #[serde(rename_all = "camelCase")]
     PrCreate {
         repo: String,
+        /// The local branch the form was written for: refused if it's no longer checked out at `expect.head`.
+        branch: String,
         remote: String,
         remote_branch: String,
         base: String,
@@ -115,6 +118,10 @@ pub struct Expect {
     pub index: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_sha: Option<String>,
+    /// For a commit: the ref HEAD pointed at in the preview (`refs/heads/<branch>`, or `HEAD` when detached). Two
+    /// branches can share a commit, so this keeps a commit on the branch it was previewed on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_ref: Option<String>,
 }
 
 impl Request {
@@ -369,7 +376,7 @@ mod tests {
         assert!(Request::PublishInfo { repo: "/r".into() }.reads_only());
         let push = Request::Push { repo: "/r".into(), remote: "o".into(), branch: "b".into(), remote_branch: "b".into(), expect: HeadExpect { head: None } };
         assert!(!push.reads_only());
-        let commit = Request::Commit { repo: "/r".into(), message: "m".into(), expect: Expect { head: None, index: "i".into(), raw_sha: None } };
+        let commit = Request::Commit { repo: "/r".into(), message: "m".into(), expect: Expect { head: None, index: "i".into(), raw_sha: None, head_ref: None } };
         assert!(!commit.reads_only());
     }
 

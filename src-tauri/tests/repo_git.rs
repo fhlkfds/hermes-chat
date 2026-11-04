@@ -280,7 +280,7 @@ async fn the_owners_diff_settings_dont_change_what_is_shown() {
 use hermes_chat::repo_git::{Expect, FileStamp};
 
 fn expect_of(v: &Value) -> Expect {
-    Expect { head: v["head"].as_str().map(Into::into), index: v["index"].as_str().unwrap().into(), raw_sha: None }
+    Expect { head: v["head"].as_str().map(Into::into), index: v["index"].as_str().unwrap().into(), raw_sha: None, head_ref: None }
 }
 
 fn stamp_of(s: &Value, path: &str) -> FileStamp {
@@ -296,7 +296,7 @@ async fn preview(d: &Dir) -> Value {
 }
 
 async fn commit(d: &Dir, p: &Value, message: &str) -> Result<Value, RepoError> {
-    let expect = Expect { raw_sha: p["rawSha"].as_str().map(Into::into), ..expect_of(p) };
+    let expect = Expect { raw_sha: p["rawSha"].as_str().map(Into::into), head_ref: p["headRef"].as_str().map(Into::into), ..expect_of(p) };
     ask(Request::Commit { repo: d.s(), message: message.into(), expect }).await
 }
 
@@ -717,7 +717,7 @@ async fn an_interrupted_commit_that_landed_leaves_the_index_matching_it() {
     let req = Request::Commit {
         repo: d.s(),
         message: "Interrupted".into(),
-        expect: Expect { raw_sha: p["rawSha"].as_str().map(Into::into), ..expect_of(&p) },
+        expect: Expect { raw_sha: p["rawSha"].as_str().map(Into::into), head_ref: p["headRef"].as_str().map(Into::into), ..expect_of(&p) },
     };
     let mut child = helper().stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap();
     let mut stdin = child.stdin.take().unwrap();
@@ -905,7 +905,7 @@ async fn names_that_could_be_options_are_refused() {
 async fn pull_requests_need_a_github_remote_and_never_push() {
     let (d, remote) = with_remote("pr-local");
     let e = ask(Request::PrCreate {
-        repo: d.s(), remote: "origin".into(), remote_branch: "feature".into(), base: "main".into(),
+        repo: d.s(), branch: "feature".into(), remote: "origin".into(), remote_branch: "feature".into(), base: "main".into(),
         title: "Feature".into(), body: String::new(), draft: false, expect: HeadExpect { head: Some(head(&d)) },
     })
     .await
@@ -1042,7 +1042,7 @@ async fn a_pull_request_made_but_slow_to_read_back_keeps_its_link() {
     let mut c = helper();
     c.env("PATH", format!("{}:{}", bin.s(), std::env::var("PATH").unwrap())).env("HERMES_REPO_READBACK_TIMEOUT", "1");
     let r = repo_git::run(c, &Request::PrCreate {
-        repo: d.s(), remote: "origin".into(), remote_branch: "feature".into(), base: "main".into(),
+        repo: d.s(), branch: "feature".into(), remote: "origin".into(), remote_branch: "feature".into(), base: "main".into(),
         title: "Feature".into(), body: "Body".into(), draft: false, expect: HeadExpect { head: Some(head(&d)) },
     })
     .await
@@ -1050,4 +1050,81 @@ async fn a_pull_request_made_but_slow_to_read_back_keeps_its_link() {
     assert_eq!(r["pr"]["url"], "https://github.com/acme/widgets/pull/5");
     assert_eq!(r["readBack"], false);
     assert!(r["readBackError"].as_str().unwrap().contains("longer than"), "{r}");
+}
+
+// ── Codex review round 1 (consolidation for #66) ────────────────────────────
+
+#[tokio::test]
+async fn a_commit_is_refused_when_another_branch_was_checked_out_at_the_same_commit() {
+    // Another process switches to a branch at the same commit, carrying the staged change along: HEAD's commit, the
+    // index and the staged diff all still match the preview, but the commit would land on the other branch.
+    let d = repo("commit-branch-switch");
+    git(d.path(), &["checkout", "-qb", "feature"]);
+    git(d.path(), &["branch", "-q", "release"]);
+    write(d.path(), "notes.txt", b"feature work\n");
+    git(d.path(), &["add", "notes.txt"]);
+    let p = preview(&d).await;
+    assert_eq!(p["headRef"], "refs/heads/feature");
+    let before = head(&d);
+    git(d.path(), &["switch", "-q", "release"]);
+    let e = commit(&d, &p, "Feature work").await.unwrap_err();
+    let v = serde_json::to_value(&e).unwrap();
+    assert_eq!(v["kind"], "stale", "{v}");
+    assert!(v["message"].as_str().unwrap().contains("feature, now release"), "{v}");
+    assert_eq!(git(d.path(), &["rev-parse", "refs/heads/release"]), before, "nothing landed on release");
+    assert_eq!(git(d.path(), &["rev-parse", "refs/heads/feature"]), before);
+    assert_eq!(staged_names(&d), "notes.txt", "the staged change is still staged");
+}
+
+#[tokio::test]
+async fn a_commit_without_the_previewed_branch_is_refused() {
+    let d = repo("commit-no-head-ref");
+    write(d.path(), "notes.txt", b"changed\n");
+    git(d.path(), &["add", "notes.txt"]);
+    let p = preview(&d).await;
+    let expect = Expect { raw_sha: p["rawSha"].as_str().map(Into::into), ..expect_of(&p) };
+    let e = ask(Request::Commit { repo: d.s(), message: "No branch said".into(), expect }).await.unwrap_err();
+    assert_eq!(kind(e), "internal");
+    assert_eq!(git(d.path(), &["rev-list", "--count", "HEAD"]), "1");
+}
+
+#[tokio::test]
+async fn a_staged_submodule_is_previewed_even_when_config_says_to_ignore_submodules() {
+    // A gitlink (a submodule's commit) staged beside an ordinary file, with the owner's config told to ignore
+    // submodules in diffs, both globally and for this submodule. Git still commits the gitlink, so the preview,
+    // the status list and the read-back must all show it.
+    let d = repo("submodule-hidden");
+    let pinned = head(&d);
+    git(d.path(), &["update-index", "--add", "--cacheinfo", &format!("160000,{pinned},vendor/lib")]);
+    git(d.path(), &["config", "diff.ignoreSubmodules", "all"]);
+    git(d.path(), &["config", "submodule.vendor/lib.ignore", "all"]);
+    write(d.path(), "notes.txt", b"ordinary change\n");
+    git(d.path(), &["add", "notes.txt"]);
+    let s = status(&d).await;
+    assert!(s["entries"].as_array().unwrap().iter().any(|e| e["path"] == "vendor/lib"), "status lists the gitlink: {s}");
+    let p = preview(&d).await;
+    let files: Vec<&str> = p["files"].as_array().unwrap().iter().map(|f| f["path"].as_str().unwrap()).collect();
+    assert!(files.contains(&"vendor/lib") && files.contains(&"notes.txt"), "{files:?}");
+    let r = commit(&d, &p, "Pin the library").await.unwrap();
+    assert_eq!(r["matches"], true, "the commit holds exactly what was previewed: {r}");
+    assert_eq!(git(d.path(), &["ls-tree", "HEAD", "vendor/lib"]).split_whitespace().nth(2), Some(pinned.as_str()));
+}
+
+#[tokio::test]
+async fn a_pull_request_is_refused_when_the_local_branch_or_commit_moved() {
+    let (d, remote) = with_remote("pr-stale-local");
+    push(&d, Some(head(&d))).await.unwrap();
+    let shown = head(&d);
+    let pr = |branch: &str, h: &str| Request::PrCreate {
+        repo: d.s(), branch: branch.into(), remote: "origin".into(), remote_branch: "feature".into(), base: "main".into(),
+        title: "Feature".into(), body: String::new(), draft: false, expect: HeadExpect { head: Some(h.into()) },
+    };
+    // An agent committed here after the form was read.
+    write(d.path(), "notes.txt", b"an agent's later work\n");
+    git(d.path(), &["commit", "-qam", "Later"]);
+    assert_eq!(kind(ask(pr("feature", &shown)).await.unwrap_err()), "stale");
+    // Or switched to another branch at the commit shown.
+    git(d.path(), &["switch", "-qc", "other", &shown]);
+    assert_eq!(kind(ask(pr("feature", &shown)).await.unwrap_err()), "stale");
+    assert_eq!(git(remote.path(), &["rev-parse", "refs/heads/feature"]), shown, "nothing was pushed");
 }
