@@ -2396,6 +2396,37 @@ p.logs-status { margin: 0 0 8px; line-height: 1.5; }
 .repo-pr-draft { display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); margin-top: 4px; }
 .repo-pr-draft input { accent-color: var(--accent); }
 .repo-pr-status { display: flex; flex-direction: column; gap: 6px; }
+
+/* ---------- worktrees (Worktrees.tsx, ADR 0039) ---------- */
+.repo-worktrees .repo-section-head { flex-wrap: wrap; }
+.wt-list, .wt-plain, .wt-chats, .wt-files, .wt-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.wt-plain li, .wt-chats li { overflow-wrap: anywhere; }
+.wt-path, .wt-plain .mono { overflow-wrap: anywhere; }
+.wt-facts { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.wt-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.wt-inline { margin-left: 6px; padding: 1px 8px; }
+.wt-confirm { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.wt-others summary { cursor: pointer; color: var(--text-2); font-size: calc(12.5rem / 14); }
+.wt-others[open] summary { margin-bottom: 6px; }
+.chip-tag { display: inline-flex; align-items: center; gap: 3px; font-size: calc(11rem / 14); font-weight: 500; color: var(--text-2); border: 1px solid var(--line-2); border-radius: 999px; padding: 0 7px; }
+.chip-tag.warn { color: var(--warn); border-color: var(--warn); }
+.wt-setup.err, .wt-facts .err { color: var(--bad); }
+.wt-dialog .wt-form { display: flex; flex-direction: column; gap: 6px; }
+.wt-kind { border: 0; margin: 0 0 4px; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.wt-kind legend { color: var(--muted); font-size: calc(11.5rem / 14); text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; margin-bottom: 4px; }
+.wt-kind label { display: inline-flex; align-items: center; gap: 6px; }
+.wt-kind input { accent-color: var(--accent); }
+.wt-plan { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.wt-step { display: grid; grid-template-columns: 18px 1fr; align-items: start; column-gap: 4px; }
+.wt-step > svg, .wt-step > .spinner { margin-top: 3px; }
+.wt-step.done > svg { color: var(--ok); }
+.wt-step.failed > svg { color: var(--bad); }
+.wt-step-msg { grid-column: 2; overflow-wrap: anywhere; }
+.wt-files { gap: 2px; max-height: 180px; overflow: auto; font-size: calc(12.5rem / 14); }
+.wt-files li { overflow-wrap: anywhere; }
+.files-banner ul { margin: 4px 0 0; padding-left: 18px; }
+.wt-chat-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: calc(12.5rem / 14); color: var(--text-2); overflow-wrap: anywhere; }
+.wt-chat-strip .mono { overflow-wrap: anywhere; }
 .repo-pr-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .repo-pr-head .btn { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; font-size: calc(12rem / 14); }
 .repo-pr-title-text { flex: 1; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }

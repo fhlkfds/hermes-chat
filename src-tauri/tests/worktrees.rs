@@ -294,8 +294,8 @@ async fn setup_copies_ignored_files_once_skips_source_files_and_a_failed_step_ca
     assert_eq!((steps[0]["action"].as_str().unwrap(), state(0)), ("copy", "pending".into()));
     assert_eq!((steps[1]["action"].as_str().unwrap(), state(1)), ("link", "pending".into()));
     // Not ignored, so part of the source: never copied.
-    for i in 2..6 {
-        assert_eq!(state(i), "skipped", "{}", steps[i]);
+    for s in &steps[2..6] {
+        assert_eq!(s["state"], "skipped", "{s}");
     }
     let tree = d.tree("setup");
     // A step that fails (its source can't be read) stays failed, with why, until it's tried again.

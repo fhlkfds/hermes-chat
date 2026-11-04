@@ -1226,6 +1226,18 @@ export class Hermes {
   };
 
   /**
+   * The profile's chats that Hermes keeps as working in `folder` or under it, archived ones too, from any Hermes
+   * client (`GET /api/sessions?cwd_prefix=`). Hermes stores a chat's folder with its first prompt. At most 100: `more`
+   * says there are others.
+   */
+  async chatsIn(folder: string, profile = this.profile): Promise<{ chats: { id: string; title: string; archived: boolean }[]; more: boolean }> {
+    const query = new URLSearchParams({ profile, cwd_prefix: folder, archived: "include", limit: "100", offset: "0" });
+    const res = (await this.rest("GET", `api/sessions?${query}`)) as SessionPage;
+    const chats = res.sessions.map((r) => ({ id: r.id, title: listTitle(r), archived: !!r.archived }));
+    return { chats, more: res.total > res.sessions.length };
+  }
+
+  /**
    * Starts a Chat in this app. It is Active from the start, and pinned once Hermes has stored it (ADR 0002). `model`:
    * what it runs on, for this chat only; left out, it runs on the profile's model. `folder`: the server folder it
    * works in (its session `cwd`), checked by the caller first; Hermes quietly runs a chat in its own folder when it

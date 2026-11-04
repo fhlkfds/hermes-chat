@@ -80,7 +80,7 @@ export class NewerDefaultsError extends Error {
 }
 
 /** Where a new chat's value comes from: chosen for it, the project's default, the owner's model pick, or the profile. */
-export type Origin = "chat" | "project" | "pick" | "profile";
+export type Origin = "chat" | "project" | "pick" | "profile" | "worktree";
 /** A value and where it comes from. `value` undefined: Hermes's own for the profile, which this app doesn't read. */
 export type Resolved<T> = { value?: T; from: Origin };
 
@@ -92,6 +92,8 @@ export type NewChatSettings = {
   folder: Resolved<string>;
   /** The project whose defaults apply, if any. */
   project?: string;
+  /** The branch of the worktree the chat starts in, if it starts in one (ADR 0039). */
+  worktree?: string;
 };
 
 /**
