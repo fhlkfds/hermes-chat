@@ -3,6 +3,7 @@
 // and Read aloud. In the app it is the Rust side (tauriPipe.ts); in tests it is FakeHermes.
 import type { Downloaded, PickedUpload, TransferProgress } from "./remoteFiles";
 import type { SavedKey } from "./setup";
+import type { OpenScreenSocket } from "./screen";
 
 /** A local file as `statFiles` finds it: its size, or why it can't be attached (e.g. "it's a folder"). */
 export type LocalFile = { path: string; name: string; size?: number; error?: string };
@@ -93,6 +94,11 @@ export interface Pipe {
    */
   fsSaveText(id: number, profile: string, path: string, text: string): Promise<string>;
   cancelTransfer(id: number): Promise<void>;
+  /**
+   * Opens the Screen's RFB stream with a ticket from `display.observe` (src-tauri `display_open`, ADR 0039). Rust closes
+   * it with the connection. Optional: a pipe without it has no Screen.
+   */
+  openDisplay?: OpenScreenSocket;
   close(): Promise<void>;
 }
 
