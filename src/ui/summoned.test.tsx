@@ -78,11 +78,12 @@ describe("Being brought forward", () => {
   it("leaves Settings open as it was, focus included", async () => {
     const { rust, user } = await signedIn();
     await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(await screen.findByRole("button", { name: "Voice & screenshots" }));
     const heading = await screen.findByRole("heading", { name: "Screenshots" });
-    const reopen = screen.getByRole("switch", { name: /Reopen last chat on launch/ });
-    reopen.focus();
+    const key = screen.getByRole("button", { name: "Screenshot shortcut" });
+    key.focus();
     await rust.summon();
     expect(heading.isConnected).toBe(true);
-    expect(document.activeElement).toBe(reopen);
+    expect(document.activeElement).toBe(key);
   }, 30_000);
 });
