@@ -7,7 +7,7 @@
 //! The running app owns the bus name `net.l0cky12.HermesChat` and answers two methods. `Screenshot` only opens the
 //! picker: nothing is captured until the owner picks, and nothing is sent until they send the message. `Show` brings
 //! back the window already open, hidden to the tray or not: launching Hermes Chat again calls it and exits, so a second
-//! launch restores the first instead of starting another copy (tray.rs, ADR 0033). Only this user's own programs can
+//! launch restores the first instead of starting another copy (tray.rs, ADR 0034). Only this user's own programs can
 //! reach their session bus.
 
 use dbus::blocking::Connection;

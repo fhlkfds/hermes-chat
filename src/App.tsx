@@ -422,7 +422,7 @@ export function Main({
   guardClose?: CloseGuard;
   onSignOut: () => Promise<void>;
   updates?: Updater;
-  /** The tray icon and Close to tray (tray.rs, ADR 0033). */
+  /** The tray icon and Close to tray (tray.rs, ADR 0034). */
   tray?: TrayWiring;
 }) {
   const { profile, chats, olderPulled, archivedListed, status, route, unsecure, closedReason, syncError, others, live, models, switching, branchNews } = useSyncExternalStore(
@@ -1046,7 +1046,7 @@ export function Main({
     if (catalog?.defaultPick && pick?.profile !== profile) setUIPrefs({ modelPicker: { ...catalog.defaultPick, profile } });
   }, [catalog, profile]);
 
-  // The tray (ADR 0033). Its New chat and Open Inbox come here once Rust has shown the window; New chat asks first
+  // The tray (ADR 0034). Its New chat and Open Inbox come here once Rust has shown the window; New chat asks first
   // about an unsaved edit, as the app's own New chat does. While a modal dialog is open (a Server file being edited,
   // a question), they only bring the window forward, as the app's shortcuts stop at a modal: the owner sees the dialog
   // and decides. The tray is told only how many Inbox entries need the owner, for its menu and the dot on its icon,

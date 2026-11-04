@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Following the window's visibility from Rust (windowState.ts, ADR 0033).
+// Following the window's visibility from Rust (windowState.ts, ADR 0034).
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const rust = vi.hoisted(() => ({

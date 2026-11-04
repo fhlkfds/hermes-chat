@@ -961,7 +961,7 @@ pub fn run(screenshot: bool) {
                     handle.state::<Screenshots>().requests.ask();
                     let _ = handle.emit(remote::EVENT, ());
                 },
-                // A second launch: bring back this window, hidden to the tray or not (ADR 0033).
+                // A second launch: bring back this window, hidden to the tray or not (ADR 0034).
                 move || tray::show(&shower),
             );
             tray::start(app.handle());

@@ -128,7 +128,7 @@ The owner's action that has Hermes speak one reply with the profile's text-to-sp
 _Avoid_: TTS, playback, voice mode
 
 **Close to tray**:
-The owner's setting that has closing the window hide it in the tray instead of quitting. It is off unless the owner turns it on, and works only while the desktop shows the tray icon; otherwise closing quits. A hidden window keeps its chats, drafts and replies coming in, but drops a Dictation recording and stops Read aloud, and the chat it shows doesn't count as on screen, so new replies leave it Unread. The tray menu, or launching Hermes Chat again, brings back the same window. Quit in the tray menu always exits. The setting is kept on this computer (ADR 0033).
+The owner's setting that has closing the window hide it in the tray instead of quitting. It is off unless the owner turns it on, and works only while the desktop shows the tray icon; otherwise closing quits. A hidden window keeps its chats, drafts and replies coming in, but drops a Dictation recording and stops Read aloud, and the chat it shows doesn't count as on screen, so new replies leave it Unread. The tray menu, or launching Hermes Chat again, brings back the same window. Quit in the tray menu always exits. The setting is kept on this computer (ADR 0034).
 _Avoid_: minimize to tray, background mode, run in background
 
 **Failed message**:

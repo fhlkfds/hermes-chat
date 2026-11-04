@@ -1,4 +1,4 @@
-// The tray icon and Close to tray, from Rust (tray.rs, ADR 0033). Outside the desktop app there is no tray: the status
+// The tray icon and Close to tray, from Rust (tray.rs, ADR 0034). Outside the desktop app there is no tray: the status
 // call fails, and Settings says the tray works only in the desktop app.
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";

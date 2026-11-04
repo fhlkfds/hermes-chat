@@ -1,4 +1,4 @@
-// Settings → General → Tray: Close to tray, and whether this desktop shows the tray icon (tray.rs, ADR 0033). The
+// Settings → General → Tray: Close to tray, and whether this desktop shows the tray icon (tray.rs, ADR 0034). The
 // setting is kept by Rust in the app's config folder, for this computer, and what shows is what Rust read back.
 import { useEffect, useState } from "react";
 import type { TrayStatus, TrayWiring } from "../hermes/tauriTray";

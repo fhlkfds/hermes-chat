@@ -4,7 +4,7 @@
 // With Close to tray on, Rust hides the window instead of closing it (tray.rs), and the edit stays on screen, so a
 // guard asks nothing when the window is already hidden by the time it hears of the close. While any guard is
 // registered, Rust is told there is an unsaved edit, so the tray's Quit brings the window forward and closes through
-// the guard's question instead of exiting under it (ADR 0033).
+// the guard's question instead of exiting under it (ADR 0034).
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 

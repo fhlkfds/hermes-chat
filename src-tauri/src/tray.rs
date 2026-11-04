@@ -1,4 +1,4 @@
-//! The tray icon and Close to tray (issue #77, ADR 0033).
+//! The tray icon and Close to tray (issue #77, ADR 0034).
 //!
 //! The tray icon offers Show/Hide, New chat, Open Inbox (with how many entries need the owner, never chat text) and
 //! Quit. Its icon gets a dot while the Inbox has something. Closing the window quits, as it always has, unless the owner

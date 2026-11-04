@@ -1,4 +1,4 @@
-// Whether the window is hidden to the tray (tray.rs, ADR 0033). While it is, chats on screen aren't marked read,
+// Whether the window is hidden to the tray (tray.rs, ADR 0034). While it is, chats on screen aren't marked read,
 // Dictation's recording is dropped and Read aloud stops; replies, queued messages and drafts carry on as they were.
 // When it comes back, focus goes back where it was, or to the active pane's composer.
 import { useSyncExternalStore } from "react";

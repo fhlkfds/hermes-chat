@@ -10,7 +10,7 @@ fn main() {
     if screenshot && hermes_chat::remote::forward().is_ok() {
         return;
     }
-    // Launching it again brings back the window already open, hidden to the tray or not (ADR 0033).
+    // Launching it again brings back the window already open, hidden to the tray or not (ADR 0034).
     if !screenshot && !restarted && hermes_chat::remote::show().is_ok() {
         return;
     }

@@ -25,7 +25,7 @@ function RecoveryFailed({ reason }: { reason: string }) {
   );
 }
 
-// Whether the window is hidden to the tray, for the whole app's life (ADR 0033).
+// Whether the window is hidden to the tray, for the whole app's life (ADR 0034).
 void followWindowVisibility();
 
 void restoreDraftsAfterRestart().then((failed) => {

@@ -191,7 +191,7 @@ Hermes Chat puts an icon in the desktop's tray. Its menu has **Show/Hide Hermes 
 
 Launching Hermes Chat again while it's running brings back the window already open, hidden or not, instead of starting a second copy.
 
-The tray needs libayatana-appindicator (an optional dependency of the package: `pacman -S libayatana-appindicator`) and a desktop that shows tray icons: KDE Plasma, Xfce, waybar, i3bar, or GNOME with the AppIndicator extension. Where there's none, closing the window quits even with Close to tray on, and Settings says why. If the tray goes away while the window is hidden, the window comes back. See [ADR 0033](docs/adr/0033-close-to-tray-is-opt-in-and-a-second-launch-restores-the-window.md).
+The tray needs libayatana-appindicator (an optional dependency of the package: `pacman -S libayatana-appindicator`) and a desktop that shows tray icons: KDE Plasma, Xfce, waybar, i3bar, or GNOME with the AppIndicator extension. Where there's none, closing the window quits even with Close to tray on, and Settings says why. If the tray goes away while the window is hidden, the window comes back. See [ADR 0034](docs/adr/0034-close-to-tray-is-opt-in-and-a-second-launch-restores-the-window.md).
 
 ### The inbox
 

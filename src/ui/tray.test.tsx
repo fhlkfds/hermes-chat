@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// The tray and Close to tray in the signed-in app (tray.rs, ADR 0033), against a fake Hermes. The tray itself is a
+// The tray and Close to tray in the signed-in app (tray.rs, ADR 0034), against a fake Hermes. The tray itself is a
 // stand-in for what Rust sends and answers; the app, Settings and the chats are the real code.
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";

@@ -217,7 +217,7 @@ export function ChatPane({
   }, [!voice]);
   const listen = speaker && { speaker, blocked: listenBlocked(status, voiceSetup) };
   useEffect(() => { if (!active) speaker?.stop(); }, [active, speaker]);
-  // Hidden to the tray, nothing is read aloud (ADR 0033).
+  // Hidden to the tray, nothing is read aloud (ADR 0034).
   const windowHidden = useWindowHidden();
   useEffect(() => { if (windowHidden) speaker?.stop(); }, [windowHidden, speaker]);
   // The blocks are memoized, so they get one answer handler for the life of the pane.
@@ -946,7 +946,7 @@ function Composer({
   }, [dictation.active]);
   // Leaving a pane (including Settings or the narrow switcher) releases its microphone and drops late transcripts.
   useEffect(() => { if (!autoFocus) dictation.cancel(); }, [autoFocus]);
-  // So does hiding the window to the tray: the microphone never stays open behind a hidden window (ADR 0033). The
+  // So does hiding the window to the tray: the microphone never stays open behind a hidden window (ADR 0034). The
   // recording is dropped, as Cancel drops it; nothing is sent to Hermes to transcribe.
   const windowHidden = useWindowHidden();
   useEffect(() => { if (windowHidden) dictation.cancel(); }, [windowHidden]);
