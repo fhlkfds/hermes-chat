@@ -46,3 +46,12 @@ Captured the same way on 2026-11-03, against `~/hc-repo-demo/sandbox` on the rea
 - `25-existing-pr.png`: after a restart, the pull request already open for the branch is found and shown with its status, in place of the form. Its head is the other clone's commit.
 
 Also checked, not pictured: a push to a GitHub repository the server's credentials can't reach was reported as `auth`, with GitHub's own `Repository not found` (run through the helper over ssh from a throwaway clone). Escape and Enter work in both dialogs, and focus moves to the dialog's button once Git finishes.
+
+## Consolidation fixes (#66)
+
+Captured on 2026-11-04 the same way: a build of the app with its frontend built in, on an Xvfb display with openbox, signed in by URL to the synthetic stand-in dashboard. Everything in the Repository screen came from the real server (`liam@hermes`, Hermes `f0d9488`, git 2.47.3, Python 3.13.5), in two synthetic repositories made for this in `~/hc-repo-demo`. Each result was checked over ssh afterwards.
+
+- `26-new-branch-push.png`: `issue66-newbranch` on `review/forecast-copy`, a new branch made at `57a1fb6`. Its bare remote already has that commit as `feature/forecast`, but has no `review/forecast-copy`. The card says so, and Push is offered. Before this fix, the branch counted as zero commits ahead, so the card said "Nothing to push" and Push was disabled, which blocked the branch and any pull request for it.
+- `27-new-branch-pushed.png`: the push. On the server afterwards, `git ls-remote origin` listed `refs/heads/review/forecast-copy` at `57a1fb6`, and the branch tracked `origin/review/forecast-copy`.
+- `28-after-push.png`: once the remote has the branch at this commit, the card says "Nothing to push" and Push is disabled.
+- `29-unborn-staged-and-edited.png` and `30-unborn-unstaged.png`: `issue66-unborn` has no commits yet. `settings.toml` was staged and then edited again, so it shows as both Staged and Changed. Unstaging it used to fail with Git's "staged content different from both the file and the HEAD". Now it's unstaged, and on the server `git status --short` gave `?? settings.toml` with the edited contents unchanged.
