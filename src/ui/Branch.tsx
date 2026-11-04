@@ -265,7 +265,7 @@ export function BranchDialog({
 
 /**
  * At the top of a branch made here: where it came from, and a way back to that point. A branch Edit or Regenerate made
- * (ADR 0032) says which message of the owner's it sends again, and that the later messages stay in the original.
+ * (ADR 0034) says which message of the owner's it sends again, and that the later messages stay in the original.
  */
 export function BranchedFrom({ link, parentListed, onOpen }: { link: BranchLink; parentListed: boolean; onOpen: () => void }) {
   const parent = parentListed ? (

@@ -20,8 +20,8 @@ export const BUILTIN_THEMES: Theme[] = [
   {
     id: "hermes",
     name: "Hermes",
-    dark: { background: "#161618", surface: "#1e1e21", text: "#e7e7ea", accent: "#d97757" },
-    light: { background: "#faf9f7", surface: "#ffffff", text: "#1f1e1d", accent: "#b4532f" },
+    dark: { background: "#1b1c20", surface: "#222328", text: "#d6d7dc", accent: "#d08b6e" },
+    light: { background: "#f6f5f2", surface: "#fcfbf9", text: "#22211e", accent: "#a6563a" },
   },
   {
     id: "ocean",
@@ -102,7 +102,7 @@ export function themeVars(p: Palette, mode: Mode, contrast = DEFAULT_CONTRAST): 
   const onAccent = mix(p.accent, "#000000", 0.88);
   return {
     "--bg": bg,
-    "--sidebar": dark ? mix(bg, "#000000", 0.22) : mix(bg, "#000000", 0.03),
+    "--sidebar": dark ? mix(bg, "#000000", 0.1) : mix(bg, "#000000", 0.03),
     "--raised": p.surface,
     "--raised-2": mix(p.surface, text, 0.04 + lift),
     "--raised-3": mix(p.surface, text, 0.09 + lift),
@@ -113,14 +113,14 @@ export function themeVars(p: Palette, mode: Mode, contrast = DEFAULT_CONTRAST): 
     "--hover-2": alpha(text, 0.07 + lift / 2),
     "--text": text,
     "--text-2": shade(0.89 + 0.08 * k),
-    "--text-strong": mix(text, extreme, dark ? 1 : 0.6),
-    "--muted": shade((dark ? 0.57 : 0.64) + spread(0.18, 0.1)),
+    "--text-strong": mix(text, extreme, dark ? 0.45 : 0.6),
+    "--muted": shade((dark ? 0.57 : 0.67) + spread(0.18, 0.1)),
     "--faint": shade((dark ? 0.335 : 0.42) + spread(0.2, 0.08)),
     "--accent": p.accent,
     "--accent-soft": alpha(p.accent, dark ? 0.16 : 0.12),
     "--on-accent": contrastRatio(onAccent, p.accent) >= contrastRatio("#ffffff", p.accent) ? onAccent : "#ffffff",
     "--on-text": dark ? mix(bg, "#000000", 0.25) : p.surface,
-    "--code-bg": dark ? mix(bg, "#000000", 0.4) : mix(bg, text, 0.035),
+    "--code-bg": dark ? mix(bg, "#000000", 0.2) : mix(bg, text, 0.035),
     "--code-inline": mix(text, p.accent, dark ? 0.3 : 0.75),
     "--overlay": alpha(bg, 0.85),
   };

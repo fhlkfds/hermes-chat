@@ -32,7 +32,7 @@ export type AttachCheck = { attachments: Attachment[]; refused: string[] };
  * why, for `failed` and `unknown`. `attachments`: the files sent with it, so Retry sends them again. `sent`: set as it
  * goes out, to find it in the history: the prompt as sent, and the newest stored row the chat had then (`after`).
  * `cut`: the message replaces the stored row `rowId` and everything after it, in a branch made by Edit or Regenerate
- * (ADR 0032); `prompt` is what goes, `@file:` refs included, and `empty` says nothing is left before it. Retry sends
+ * (ADR 0034); `prompt` is what goes, `@file:` refs included, and `empty` says nothing is left before it. Retry sends
  * it the same way.
  */
 export type Outgoing = {

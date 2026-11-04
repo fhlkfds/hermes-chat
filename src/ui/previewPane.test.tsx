@@ -448,6 +448,28 @@ describe("Closing and resizing", () => {
     expect(screen.getByRole("button", { name: "Show the preview" })).toBeTruthy();
   });
 
+  it("keeps Alt+arrows from switching the chat hidden under a covering preview", async () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(private cb: ResizeObserverCallback) {}
+        observe() {
+          this.cb([{ contentRect: { width: 600 } } as ResizeObserverEntry], this as unknown as ResizeObserver);
+        }
+        disconnect() {}
+      },
+    );
+    const { user, server, hermes } = await signedIn();
+    const resumes = () => server.requests.filter((r) => r.method === "session.resume").length;
+    await user.click(screen.getByRole("link", { name: "the docs" }));
+    expect(pane().className).toContain("overlay");
+    const before = resumes();
+    await user.keyboard("{Alt>}{ArrowDown}{/Alt}");
+    await settle(hermes);
+    expect(paneOpen()).toBe(true);
+    expect(resumes()).toBe(before);
+  });
+
   it.each(["chat", "new", "search", "split"])("shows the destination after %s navigation while the preview covers the chat", async (destination) => {
     vi.stubGlobal(
       "ResizeObserver",

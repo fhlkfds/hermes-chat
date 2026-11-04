@@ -1,4 +1,4 @@
-// Edit and Regenerate (issue #63, ADR 0032): both make a new branch and leave the chat they came from as it was. Hermes
+// Edit and Regenerate (issue #63, ADR 0034): both make a new branch and leave the chat they came from as it was. Hermes
 // does the copy and the cut. Legacy `session.branch {count}` (ADR 0027) forks the chat through the owner's message,
 // then `prompt.submit {truncate_before_row_id, confirm_truncate}` in that fresh branch replaces the branch's copy of the
 // message with the edited words (Edit), or with the same words (Regenerate), and the agent answers again. The original

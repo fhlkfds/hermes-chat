@@ -254,7 +254,7 @@ type TranscriptMessage = {
 /** Legacy `prompt.submit` result. `user_row_id`: the stored row of the message, when its turn started at once
  * (`tui_gateway/methods_prompt.py` at `bf0203a`). */
 /** `status` `queued`: Hermes holds the message until a turn it is running ends (research doc). */
-/** `survivor_*`: after a cut (ADR 0032), the rows kept before it; a Hermes that ignored the cut sends neither. */
+/** `survivor_*`: after a cut (ADR 0034), the rows kept before it; a Hermes that ignored the cut sends neither. */
 type Submitted = { status?: string; user_row_id?: number | null; survivor_user_row_ids?: unknown; survivor_row_id_map?: unknown };
 
 /** `message.complete` `persisted_turn`: the stored rows of the turn that ended (`agent/persisted_turn_receipt.py` at
@@ -441,7 +441,7 @@ export type Snapshot = {
    * `at` tells one from the next.
    */
   branchNews?: { text: string; chatId?: string; at: number };
-  /** This connection's Hermes answered `session.branch` "method not found": Edit and Regenerate can't be offered (ADR 0032). */
+  /** This connection's Hermes answered `session.branch` "method not found": Edit and Regenerate can't be offered (ADR 0034). */
   cannotBranch?: boolean;
 };
 
@@ -549,7 +549,7 @@ export class Hermes {
   private noApprovalReceived = false;
   /** Messages Hermes hasn't accepted yet, so a Stop waits for the turn it stops. */
   private submitting = new Map<string, Promise<unknown>>();
-  /** Chats whose replayed message is being checked before a Retry sends it again in place of its copy (ADR 0032). */
+  /** Chats whose replayed message is being checked before a Retry sends it again in place of its copy (ADR 0034). */
   private checkingCut = new Set<string>();
   /** Each chat's last message sent from here, until a turn ends, with the stored row Hermes gave it, if any. */
   private turns = new Map<string, { userId: string; rowId: Promise<number | undefined> }>();
@@ -1387,7 +1387,7 @@ export class Hermes {
     const profile = this.profile;
     const { chat, rows, spine, index } = await this.branchBoundary(preview.chatId, preview.itemId, profile);
     const count = index + 1;
-    // Edit and Regenerate: the whole chat as the owner saw it, later turns too (ADR 0032).
+    // Edit and Regenerate: the whole chat as the owner saw it, later turns too (ADR 0034).
     if (whole !== undefined && wholeKey(rows, spine) !== whole) throw new Error(CHANGED_SINCE_REPLAY);
     // Every row the preview showed, as it showed it: a message changed or removed anywhere before the point counts.
     if (count !== preview.count || spineKey(spine.slice(0, count)) !== preview.fingerprint)
@@ -1395,7 +1395,7 @@ export class Hermes {
     // An earlier branch from this same point whose answer was lost: if Hermes made it, it's the one. Lost attempts
     // from other messages of the chat are left as they are.
     const lost = this.snapshot.branches.attempts.find((a) => a.parentId === chat.id && a.count === count && a.fingerprint === preview.fingerprint);
-    // Found, it is kept as what is asked for now: an Edit or Regenerate takes it over (ADR 0032).
+    // Found, it is kept as what is asked for now: an Edit or Regenerate takes it over (ADR 0034).
     const earlier = lost && { ...lost, replay };
     if (earlier) {
       const { found } = await this.findBranch(earlier, profile);
@@ -1513,7 +1513,7 @@ export class Hermes {
   }
 
   /**
-   * What Edit or Regenerate of the message `itemId` would do (ADR 0032), read from the chat's stored rows: the history
+   * What Edit or Regenerate of the message `itemId` would do (ADR 0034), read from the chat's stored rows: the history
    * the new branch starts with, the later messages and tool calls it leaves out, the files the message names and
    * whether each is still there, and the model. For Regenerate, `itemId` is the reply and the owner's message before
    * it is sent again. Rejects with why it can't be done from there now.
@@ -1528,7 +1528,7 @@ export class Hermes {
   }
 
   /**
-   * Edit or Regenerate as `preview` showed it (ADR 0032). Hermes branches the chat through the owner's message
+   * Edit or Regenerate as `preview` showed it (ADR 0034). Hermes branches the chat through the owner's message
    * (`session.branch`, as Branch from here does), then the message goes in the branch in place of its copy: `text` for
    * Edit, the message as stored for Regenerate (`prompt.submit {truncate_before_row_id, confirm_truncate}`). The chat it
    * came from isn't written at all. Rejects, with nothing made, when the chat changed since the preview, anywhere: a
@@ -1572,7 +1572,7 @@ export class Hermes {
 
   /**
    * Keeps with a replay branch's link what its message went with, once Hermes took it: the model and settings the
-   * branch runs on now, and the message's stored row there, so the answers name what wrote them (ADR 0032).
+   * branch runs on now, and the message's stored row there, so the answers name what wrote them (ADR 0034).
    */
   private noteReplaySent(profile: string, chatId: string, rowId?: number) {
     if (this.profile !== profile) return;
@@ -1860,7 +1860,7 @@ export class Hermes {
     const profile = this.profile;
     const cut = first.outgoing.cut;
     if (cut) {
-      // A replay goes again only in place of the copy it replaces, while nothing has come after it (ADR 0032).
+      // A replay goes again only in place of the copy it replaces, while nothing has come after it (ADR 0034).
       this.checkingCut.add(chatId);
       const why = await this.storedRows(chatId, profile).then(
         (rows) => cutStale(rows, cut.rowId),
@@ -2093,7 +2093,7 @@ export class Hermes {
       this.noteRows(chatId, [res.user_row_id]);
       // Hermes replaced the copy: it goes from the screen too, as after a restart and a Retry it would show again.
       if (cut) this.patchChat(chatId, (c) => ({ ...c, items: withoutCopy(c.items, cut.rowId, user.id) }));
-      // A Hermes that ignores the cut adds the message after the one it should have replaced (ADR 0032).
+      // A Hermes that ignores the cut adds the message after the one it should have replaced (ADR 0034).
       if (cut && !Array.isArray(res.survivor_user_row_ids) && !res.survivor_row_id_map)
         this.update({
           branchNews: {
@@ -2903,7 +2903,7 @@ export class Hermes {
       }
       const prompt = cut ? cut.prompt : [refs.join("\n"), text].filter(Boolean).join("\n\n") || (queued.length ? IMAGE_ONLY_PROMPT : "");
       goingOut(prompt);
-      // A replay replaces the branch's copy of the owner's message, which Hermes keeps archived (ADR 0032).
+      // A replay replaces the branch's copy of the owner's message, which Hermes keeps archived (ADR 0034).
       const replace = cut && { truncate_before_row_id: cut.rowId, confirm_truncate: true, ...(cut.empty && { confirm_empty_truncate: true }) };
       return (await this.request("prompt.submit", { session_id: runtimeId, profile: this.profile, text: prompt, ...(hold && { queued: true }), ...replace }).catch((e) => {
         throw e instanceof ConnectionLostError ? new PromptUnconfirmedError(e.message) : e;
@@ -3461,6 +3461,14 @@ export class Hermes {
   }
 
   /**
+   * The last `lines` lines of one of `profile`'s Hermes log files (`GET /api/logs`, logs.ts, ADR 0033), as Hermes
+   * answers it: `{file, lines}`. Only while connected; refused past `LIST_MAX_BYTES`.
+   */
+  async readLog(profile: string, file: string, lines: number): Promise<unknown> {
+    return JSON.parse(await this.restGet(`api/logs?${new URLSearchParams({ file, lines: String(lines), profile })}`, LIST_MAX_BYTES));
+  }
+
+  /**
    * How Usage analytics reads Hermes (usageAnalytics.ts, ADR 0026): the stored session rows, every source and archived
    * ones too, newest started first; one stored session by id; and Hermes's own sums for a rolling period. Every request
    * names its profile, and reads only while connected.
@@ -3748,7 +3756,7 @@ const withRows = (items: Item[], rows: OutgoingItem[]): Item[] => [...items, ...
 
 const withOutgoing = (r: OutgoingItem, patch: Partial<Outgoing>): OutgoingItem => ({ ...r, outgoing: { ...r.outgoing, ...patch } });
 
-/** Why Edit or Regenerate refused: the chat isn't what the owner saw when the dialog opened (ADR 0032). */
+/** Why Edit or Regenerate refused: the chat isn't what the owner saw when the dialog opened (ADR 0034). */
 const CHANGED_SINCE_REPLAY =
   "This chat changed since this opened: a message was added or changed, perhaps in another Hermes client. Nothing was made. Open it again to see the chat as it is now.";
 

@@ -53,8 +53,10 @@ import { tauriCloseGuard, type CloseGuard } from "./ui/tauriWindow";
 import { FileBrowser } from "./ui/FileBrowser";
 import { OutputsScreen, type OutputsScope } from "./ui/Outputs";
 import { UsageAnalytics } from "./ui/UsageAnalytics";
+import { LogsScreen } from "./ui/Logs";
+import { note } from "./hermes/logs";
 import { OutputsIndex, outputsIn, splitPath, type Output } from "./hermes/outputs";
-import { composing, routeLabel } from "./ui/bits";
+import { STATUS_LABEL, composing, routeLabel } from "./ui/bits";
 import { ProjectScreen, ProjectSwitcher, type ProjectUnread } from "./ui/Projects";
 import { ScheduledJobs } from "./ui/ScheduledJobs";
 import { tauriTerminal } from "./ui/tauriTerminal";
@@ -514,6 +516,8 @@ export function Main({
   // Usage analytics covers the chat panes too (ADR 0026). It reads Hermes afresh each time it opens.
   const [usageOpen, setUsageOpen] = useState(false);
   const usageIo = useMemo(() => hermes.usageIo(), [hermes]);
+  // Logs covers the chat panes too (ADR 0033). What it read goes when it closes; this app's own diagnostics stay.
+  const [logsOpen, setLogsOpen] = useState(false);
   const listProfiles = useCallback(() => hermes.profiles(), [hermes]);
   const update = useSyncExternalStore(updates.subscribe, updates.getSnapshot);
   const updateWaiting = needsAttention(update);
@@ -538,6 +542,16 @@ export function Main({
   const split = panes.length > 1;
   const [listOpen, setListOpen] = useState(true);
   const [toast, setToast] = useState<Toast | null>(notSaved ? { text: notSaved, at: Date.now() } : null);
+  // This app's diagnostics for the Logs screen (ADR 0033): the connection's changes, and the failures the app showed.
+  useEffect(() => {
+    note(status === "connected" ? "INFO" : "WARNING", `Connection to ${routeLabel(route) ?? "Hermes"}, profile ${profile}: ${STATUS_LABEL[status]}${status !== "connected" && closedReason ? ` (${closedReason})` : ""}`);
+  }, [status, closedReason, profile]);
+  useEffect(() => {
+    if (syncError) note("WARNING", `Chat list: ${syncError}`);
+  }, [syncError]);
+  useEffect(() => {
+    if (toast) note("WARNING", `Shown: ${toast.text}`);
+  }, [toast]);
   // What became of a branch whose answer was lost, once the chat list settled it (ADR 0027).
   useEffect(() => {
     if (branchNews) setToast({ text: branchNews.text, at: branchNews.at });
@@ -628,6 +642,18 @@ export function Main({
   const openSearch = (start?: SavedFilter) => {
     setSearchStart(start);
     setSearchOpen(true);
+  };
+  const openSettings = () => {
+    setProjectOpen(false);
+    setFilesOpen(false);
+    setJobsOpen(false);
+    setTerminalOpen(false);
+    setOutputsOpen(false);
+    setUsageOpen(false);
+    setLogsOpen(false);
+    setShowTextGeneration(undefined);
+    setShowMemory(undefined);
+    setSettingsOpen(true);
   };
   const listable = proj.projects.filter((p) => !p.archived);
   const shownProject = listable.find((p) => p.id === proj.selectedId);
@@ -723,6 +749,7 @@ export function Main({
       setTerminalOpen(false);
       setOutputsOpen(false);
       setUsageOpen(false);
+      setLogsOpen(false);
       if (remember) rememberOpenChat(profile, id);
     };
     if (keepSettings) go();
@@ -745,6 +772,7 @@ export function Main({
     setTerminalOpen(false);
     setOutputsOpen(false);
     setUsageOpen(false);
+    setLogsOpen(false);
   });
 
   // A second pane opens to the right and becomes the active one. Both panes may show the same chat: they are two views
@@ -764,6 +792,7 @@ export function Main({
     setTerminalOpen(false);
     setOutputsOpen(false);
     setUsageOpen(false);
+    setLogsOpen(false);
     rememberOpenChat(profile, chatId);
   });
 
@@ -795,6 +824,7 @@ export function Main({
       setTerminalOpen(false);
       setOutputsOpen(false);
       setUsageOpen(false);
+      setLogsOpen(false);
       setSearchOpen(false);
       if (!previewFits) setPreviewHidden(true);
     });
@@ -1035,13 +1065,27 @@ export function Main({
   };
 
   useEffect(() => {
-    // Only Ctrl/Cmd chords, and never mid-composition. No bare key does anything app-wide, so nothing typed
-    // with focus outside an input can answer an Approval or stop a reply.
+    // Only Ctrl/Cmd chords and Alt+Up/Down, never mid-composition. No bare key does anything app-wide, so nothing
+    // typed with focus outside an input can answer an Approval or stop a reply.
     const onKey = (e: KeyboardEvent) => {
       if (covered || composing(e)) return;
       if (screenshotShortcut && shortcutOf(e) === screenshotShortcut && !checkShortcut(screenshotShortcut).error) {
         e.preventDefault();
         if (!e.repeat) takeScreenshot();
+        return;
+      }
+      // Alt+Up/Down: the Active chat above or below the one showing, as the list orders them. Only while the chat is
+      // on screen; a list that uses the same keys (the queue) takes them first, and a select keeps Alt+Down to open.
+      const onChat = !covering && !previewCovers && !projectScreenOpen && !searchOpen;
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+        if (!onChat || e.defaultPrevented || (e.target as Element | null)?.tagName === "SELECT") return;
+        const order = listed.filter((c) => !c.settled && !c.archived).sort((a, b) => b.updatedAt - a.updatedAt);
+        const at = order.findIndex((c) => c.id === active.chatId);
+        const next = order[at < 0 ? 0 : at + (e.key === "ArrowDown" ? 1 : -1)];
+        if (next) {
+          e.preventDefault();
+          openChat(next.id);
+        }
         return;
       }
       if (!(e.ctrlKey || e.metaKey)) return;
@@ -1056,6 +1100,9 @@ export function Main({
       } else if (k === "b") {
         e.preventDefault();
         setListOpen((o) => !o);
+      } else if (k === ",") {
+        e.preventDefault();
+        openSettings();
       } else if (e.code === "Backslash" || k === "\\") {
         e.preventDefault();
         toggleSplit();
@@ -1076,7 +1123,7 @@ export function Main({
   // Settings covers the chat, and the pane with it; so do the project screen, Server files, Scheduled jobs and the
   // Terminal.
   // Outputs covers the chat panes but keeps the preview pane beside it, since its files open there.
-  const screenCovering = settingsOpen || projectScreenOpen || filesOpen || jobsOpen || terminalOpen || usageOpen;
+  const screenCovering = settingsOpen || projectScreenOpen || filesOpen || jobsOpen || terminalOpen || usageOpen || logsOpen;
   const covering = screenCovering || outputsOpen;
   const previewShown = !!preview && !screenCovering && (previewFits || !previewHidden);
   const previewCovers = previewShown && !previewFits;
@@ -1141,6 +1188,7 @@ export function Main({
                   setTerminalOpen(false);
                   setOutputsOpen(false);
                   setUsageOpen(false);
+                  setLogsOpen(false);
                   setShowTextGeneration(undefined);
                   setShowMemory({});
                   setSettingsOpen(true);
@@ -1204,6 +1252,7 @@ export function Main({
             setTerminalOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
+            setLogsOpen(false);
             setFilesOpen((o) => !o);
           })
         }
@@ -1215,6 +1264,7 @@ export function Main({
             setJobsOpen(false);
             setTerminalOpen(false);
             setUsageOpen(false);
+            setLogsOpen(false);
             setOutputsOpen((o) => !o);
           })
         }
@@ -1223,7 +1273,8 @@ export function Main({
         onInbox={() => setInboxOpen((o) => !o)}
         inboxOpen={inboxOpen}
         inboxCount={inboxCount}
-        onSettings={() => { setProjectOpen(false); setFilesOpen(false); setJobsOpen(false); setTerminalOpen(false); setOutputsOpen(false); setUsageOpen(false); setShowTextGeneration(undefined); setShowMemory(undefined); setSettingsOpen(true); }}
+        onSettings={openSettings}
+        settingsOpen={settingsOpen}
         onJobs={() =>
           guard(() => {
             setProjectOpen(false);
@@ -1231,6 +1282,7 @@ export function Main({
             setFilesOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
+            setLogsOpen(false);
             setTerminalOpen(false);
             setJobsOpen(true);
           })
@@ -1244,6 +1296,7 @@ export function Main({
             setJobsOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
+            setLogsOpen(false);
             setTerminalMounted(true);
             setTerminalOpen((o) => !o);
           })
@@ -1256,10 +1309,24 @@ export function Main({
             setJobsOpen(false);
             setTerminalOpen(false);
             setOutputsOpen(false);
+            setLogsOpen(false);
             setUsageOpen((o) => !o);
           })
         }
         usageOpen={usageOpen && !settingsOpen && !projectScreenOpen && !filesOpen && !jobsOpen}
+        onLogs={() =>
+          guard(() => {
+            setProjectOpen(false);
+            setSettingsOpen(false);
+            setFilesOpen(false);
+            setJobsOpen(false);
+            setTerminalOpen(false);
+            setOutputsOpen(false);
+            setUsageOpen(false);
+            setLogsOpen((o) => !o);
+          })
+        }
+        logsOpen={logsOpen && !settingsOpen && !projectScreenOpen && !filesOpen && !jobsOpen && !usageOpen}
         terminalOpen={terminalOpen && !settingsOpen}
         terminalRunning={terminalRunning}
         updateWaiting={updateWaiting}
@@ -1289,6 +1356,7 @@ export function Main({
                     setTerminalOpen(false);
                     setOutputsOpen(false);
                     setUsageOpen(false);
+                    setLogsOpen(false);
                     setProjectOpen(true);
                   });
                 }}
@@ -1300,6 +1368,7 @@ export function Main({
                     setTerminalOpen(false);
                     setOutputsOpen(false);
                     setUsageOpen(false);
+                    setLogsOpen(false);
                     setProjectOpen(true);
                     void projects.readDefaults();
                   })
@@ -1344,6 +1413,7 @@ export function Main({
             setTerminalOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
+            setLogsOpen(false);
             // One destination at a time: an earlier Memory shortcut mustn't switch Settings away from this one.
             setShowMemory(undefined);
             setShowTextGeneration({});
@@ -1353,6 +1423,8 @@ export function Main({
           onCheckOthers={() => void hermes.checkOtherProfiles()}
           onSwitchProfile={switchProfile}
           onRetrySwitch={() => void (status === "connected" ? hermes.sync() : hermes.reconnect())}
+          onNew={() => newChat()}
+          onSearch={() => openSearch()}
         />
       )}
       {inboxOpen && (
@@ -1520,6 +1592,19 @@ export function Main({
               focusPane(active.key);
             }}
           />
+        ) : logsOpen ? (
+          <LogsScreen
+            key={profile}
+            profile={profile}
+            connected={status === "connected"}
+            connection={route?.kind === "ssh" ? "SSH tunnel" : "dashboard URL"}
+            read={(file, lines) => hermes.readLog(profile, file, lines)}
+            save={(text, fileName) => invoke<string | null>("logs_export", { text, fileName })}
+            onClose={() => {
+              flushSync(() => setLogsOpen(false));
+              focusPane(active.key);
+            }}
+          />
         ) : outputsOpen ? (
           <OutputsScreen
             snapshot={outSnap}
@@ -1555,6 +1640,7 @@ export function Main({
               setFilesPath(splitPath(o.path).dir);
               setOutputsOpen(false);
               setUsageOpen(false);
+              setLogsOpen(false);
               setFilesOpen(true);
             }}
             onClose={() => {
@@ -1921,7 +2007,7 @@ function ChatView({
   const link = useSyncExternalStore(hermes.subscribe, () => hermes.getSnapshot().branches.links[chat.id]);
   const parentListed = useSyncExternalStore(hermes.subscribe, () => !!link && hermes.getSnapshot().chats.some((c) => c.id === link.parentId));
 
-  // Edit and Regenerate (ADR 0032): the message the dialog is open for, if any, and the branches made from this chat's
+  // Edit and Regenerate (ADR 0034): the message the dialog is open for, if any, and the branches made from this chat's
   // messages by either, by the owner's message's stored row.
   const [replayFor, setReplayFor] = useState<{ itemId: string; kind: ReplayKind }>();
   const [freshAnswer, setFreshAnswer] = useState<string>();

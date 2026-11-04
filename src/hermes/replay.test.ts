@@ -1,4 +1,4 @@
-// Edit and Regenerate (issue #63, ADR 0032), run through the real transport against FakeHermes: each makes a branch
+// Edit and Regenerate (issue #63, ADR 0034), run through the real transport against FakeHermes: each makes a branch
 // through the owner's message and sends the message again in place of its copy there, and the chat it came from is
 // never written.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

@@ -1,4 +1,4 @@
-// Edit and Regenerate (issue #63, ADR 0032): the buttons under a message, the dialog that says what the new branch
+// Edit and Regenerate (issue #63, ADR 0034): the buttons under a message, the dialog that says what the new branch
 // will hold and leave out before anything is sent, the other answers a reply has, and the chats an owner's message was
 // edited in. Both make a branch through Branch from here's contract (ADR 0027); the chat they come from stays as it is.
 import { createContext, useContext, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";

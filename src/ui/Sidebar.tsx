@@ -1,7 +1,7 @@
 // Icon rail beside a chat list (ADR 0001), ported from the prototype's variants C and A. The list's header is the
 // profile switcher. Settings opens from the rail's foot. Right-clicking a chat opens its menu (ChatMenu.tsx).
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { BarChart3, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, EyeOff, FileOutput, FolderOpen, Inbox as InboxIcon, LockOpen, Search, Settings, SquarePen, SquareTerminal, Trash2 } from "lucide-react";
+import { BarChart3, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, EyeOff, FileOutput, FolderOpen, Inbox as InboxIcon, LockOpen, ScrollText, Search, Settings, SquarePen, SquareTerminal, Trash2 } from "lucide-react";
 import type { Chat, ConnectionStatus, OtherProfile, OtherProfiles } from "../hermes/model";
 import { SOURCE_LABEL, isWaiting } from "../hermes/model";
 import { CHECK_EVERY_MS, totalUnread } from "../hermes/otherProfiles";
@@ -30,10 +30,13 @@ export function Rail({
   onOutputs,
   outputsOpen = false,
   onSettings,
+  settingsOpen = false,
   onJobs,
   jobsOpen = false,
   onUsage,
   usageOpen = false,
+  onLogs,
+  logsOpen = false,
   onTerminal,
   terminalOpen = false,
   terminalRunning = false,
@@ -58,12 +61,16 @@ export function Rail({
   onOutputs?: () => void;
   outputsOpen?: boolean;
   onSettings: () => void;
+  settingsOpen?: boolean;
   /** Opens Scheduled jobs: Hermes's jobs for the profile, which it runs on the server. */
   onJobs?: () => void;
   jobsOpen?: boolean;
   /** Opens Usage analytics: tokens and recorded cost across chats, models, projects and profiles (UsageAnalytics.tsx). */
   onUsage?: () => void;
   usageOpen?: boolean;
+  /** Opens Logs: this app's diagnostics and the profile's Hermes logs (Logs.tsx). */
+  onLogs?: () => void;
+  logsOpen?: boolean;
   /** Opens or closes the Terminal: a shell on the server through the owner's ssh (Terminal.tsx). */
   onTerminal?: () => void;
   terminalOpen?: boolean;
@@ -107,6 +114,8 @@ export function Rail({
             {inboxCount > 0 && <span className="badge" aria-hidden>{inboxCount > 99 ? "99+" : inboxCount}</span>}
           </button>
         )}
+        {/* Chats above, the profile's tools below. */}
+        <span className="rail-sep" aria-hidden />
         {onFiles && (
           <button className={`icon-btn ${filesOpen ? "on" : ""}`} title="Server files" aria-pressed={filesOpen} onClick={onFiles}>
             <FolderOpen size={18} />
@@ -127,6 +136,11 @@ export function Rail({
             <BarChart3 size={18} />
           </button>
         )}
+        {onLogs && (
+          <button className={`icon-btn ${logsOpen ? "on" : ""}`} title="Logs: diagnostics and Hermes's logs" aria-label="Logs" aria-pressed={logsOpen} onClick={onLogs}>
+            <ScrollText size={18} />
+          </button>
+        )}
         {onTerminal && (
           <button
             className={`icon-btn terminal-btn ${terminalOpen ? "on" : ""}`}
@@ -145,7 +159,12 @@ export function Rail({
           <span className={`conn-dot ${status} ${unsecure ? "unsecure" : ""}`} />
           {unsecure && <LockOpen className="conn-lock" size={9} strokeWidth={2.8} />}
         </button>
-        <button className="icon-btn settings-btn" title={updateWaiting ? "Settings: an update is ready" : "Settings"} onClick={onSettings}>
+        <button
+          className={`icon-btn settings-btn ${settingsOpen ? "on" : ""}`}
+          title={updateWaiting ? "Settings: an update is ready" : "Settings"}
+          aria-pressed={settingsOpen}
+          onClick={onSettings}
+        >
           <Settings size={18} />
           {updateWaiting && <span className="dot update-dot" />}
         </button>
@@ -663,7 +682,8 @@ function ProfileMenu({
 
 /** Up and Down move focus between the chats in the list, Active then Settled, without opening them. */
 function moveBetweenChats(e: KeyboardEvent<HTMLElement>) {
-  if ((e.key !== "ArrowDown" && e.key !== "ArrowUp") || !(e.target as Element).classList.contains("row-open")) return;
+  // Alt+arrows open the chat above or below instead (App.tsx), so they pass.
+  if ((e.key !== "ArrowDown" && e.key !== "ArrowUp") || e.altKey || !(e.target as Element).classList.contains("row-open")) return;
   e.preventDefault();
   const rows = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>(".row-open"));
   rows[rows.indexOf(e.target as HTMLButtonElement) + (e.key === "ArrowDown" ? 1 : -1)]?.focus();
@@ -702,6 +722,8 @@ export function ChatList({
   onCheckOthers,
   onSwitchProfile,
   onRetrySwitch,
+  onNew,
+  onSearch,
 }: {
   profile: string;
   projectSwitcher?: ReactNode;
@@ -735,6 +757,9 @@ export function ChatList({
   onCheckOthers: () => void;
   onSwitchProfile: (name: string) => void;
   onRetrySwitch: () => void;
+  /** The list's own New chat and Search buttons, labeled with their keys; the rail keeps icons for both. */
+  onNew?: () => void;
+  onSearch?: () => void;
 }) {
   const [settledOpen, setSettledOpen] = useState(false);
   // Opening a Settled chat, say from a search, shows it in the list; settling the chat on screen doesn't.
@@ -785,6 +810,24 @@ export function ChatList({
           <EyeOff size={16} />
         </button>
       </div>
+      {(onNew || onSearch) && (
+        <div className="sb-actions">
+          {onNew && (
+            <button className="sb-action primary" onClick={onNew}>
+              <SquarePen size={15} />
+              <span>New chat</span>
+              <kbd aria-hidden>Ctrl N</kbd>
+            </button>
+          )}
+          {onSearch && (
+            <button className="sb-action" onClick={onSearch}>
+              <Search size={15} />
+              <span>Search chats</span>
+              <kbd aria-hidden>Ctrl K</kbd>
+            </button>
+          )}
+        </div>
+      )}
       {projectSwitcher && <div className="sb-project">{projectSwitcher}</div>}
       <div className="sb-scroll">
         {switching && (

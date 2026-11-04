@@ -112,7 +112,7 @@ const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateS
  * chat's queue of messages waiting to go after its reply, and `queueApi` changes it; it is left out for a chat not
  * started yet, which can't queue. `branch` offers Branch from here under each message with text (ADR 0027): `blocked`
  * says why none can be made now. `branchedFrom` is shown at the top of a branch, where it came from. `replay` offers
- * Edit under the owner's messages and Regenerate under the last reply of each turn (ADR 0032), and shows the other
+ * Edit under the owner's messages and Regenerate under the last reply of each turn (ADR 0034), and shows the other
  * answers a reply has (`variants`) and the branches a message was edited in (`edits`), by the message's stored row.
  */
 export function ChatPane({
@@ -375,7 +375,7 @@ export function ChatPane({
 
   // Rebuilt only when the chat changes, so a reply streaming in the other pane costs this one little.
   const blocks = useMemo(() => toBlocks(chat.items), [chat.items]);
-  // The last reply of each turn, and the owner's message it answers: Regenerate goes under it (ADR 0032).
+  // The last reply of each turn, and the owner's message it answers: Regenerate goes under it (ADR 0034).
   const turnEnds = useMemo(() => {
     const ends = new Map<string, Extract<Block, { kind: "user" }>>();
     let source: Extract<Block, { kind: "user" }> | undefined;
@@ -521,7 +521,17 @@ export function ChatPane({
             </div>
           )}
           {notice}
-          {!chat.loading && !notLoaded && blocks.length === 0 && <div className="empty-chat">What should Hermes work on?</div>}
+          {!chat.loading && !notLoaded && blocks.length === 0 && (
+            <div className="empty-state">
+              <div className="empty-chat">What should Hermes work on?</div>
+              <ul className="empty-keys" aria-label="Keyboard shortcuts">
+                <li><kbd>Ctrl N</kbd> New chat</li>
+                <li><kbd>Ctrl K</kbd> Search chats</li>
+                <li><kbd>Alt ↑↓</kbd> Switch chats</li>
+                <li><kbd>Ctrl ,</kbd> Settings</li>
+              </ul>
+            </div>
+          )}
           {blocks.map((b) => (
             <BlockView
               key={b.id}
@@ -641,7 +651,7 @@ const BlockView = memo(
     onOutgoing: (itemId: string, action: OutgoingAction) => void;
     onBranch?: (itemId: string) => void;
     branchBlocked?: string;
-    /** Edit under an owner's message, Regenerate under the last reply of a turn (ADR 0032). */
+    /** Edit under an owner's message, Regenerate under the last reply of a turn (ADR 0034). */
     editable?: boolean;
     regenerate?: boolean;
     variants?: ReplayRef[];

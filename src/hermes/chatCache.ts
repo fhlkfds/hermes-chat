@@ -199,7 +199,7 @@ function toOutgoing(v: unknown): OutgoingItem | undefined {
   return { ...item, outgoing };
 }
 
-/** A kept replay cut (ADR 0032), or undefined if it isn't one. */
+/** A kept replay cut (ADR 0034), or undefined if it isn't one. */
 function toCut(v: unknown): Outgoing["cut"] {
   const c = v as Record<string, unknown> | null;
   if (!c || typeof c !== "object" || !Number.isSafeInteger(c.rowId) || typeof c.prompt !== "string") return undefined;
@@ -263,7 +263,7 @@ function toBranches(v: unknown): BranchStore {
   return { links, attempts };
 }
 
-/** What an Edit or Regenerate branch replays, rebuilt from its kept fields (ADR 0032), or undefined if it isn't one. */
+/** What an Edit or Regenerate branch replays, rebuilt from its kept fields (ADR 0034), or undefined if it isn't one. */
 function toReplay(v: unknown): ReplayInfo | undefined {
   const r = v as Record<string, unknown> | null;
   if (!r || typeof r !== "object" || (r.kind !== "edit" && r.kind !== "regenerate") || !Number.isSafeInteger(r.sourceRowId) || !Number.isSafeInteger(r.count) || typeof r.excerpt !== "string") return undefined;

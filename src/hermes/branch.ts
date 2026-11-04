@@ -25,7 +25,7 @@ export type BranchPoint = { role: "user" | "assistant"; excerpt: string; rowId?:
 
 /**
  * A branch this app made, kept on this computer per connection and profile (Hermes keeps only the parent's id). `at`:
- * when it was made, Unix ms. `replay`: made by Edit or Regenerate of the owner's message `point` (ADR 0032).
+ * when it was made, Unix ms. `replay`: made by Edit or Regenerate of the owner's message `point` (ADR 0034).
  */
 export type BranchLink = { parentId: string; parentTitle: string; point: BranchPoint; at: number; replay?: ReplayInfo };
 
@@ -46,7 +46,7 @@ export type BranchAttempt = {
   startedAt: number;
   title?: string;
   model?: ModelPick;
-  /** Made for Edit or Regenerate (ADR 0032): kept with the branch's link. */
+  /** Made for Edit or Regenerate (ADR 0034): kept with the branch's link. */
   replay?: ReplayInfo;
 };
 

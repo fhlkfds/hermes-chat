@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Edit and Regenerate on screen (issue #63, ADR 0032): Edit opens the message's words with Save as branch and Cancel
+// Edit and Regenerate on screen (issue #63, ADR 0034): Edit opens the message's words with Save as branch and Cancel
 // and says which later messages the branch leaves out; Regenerate keeps the reply and switches between the answers;
 // neither is done while a reply runs; and each chat keeps its own Draft.
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
