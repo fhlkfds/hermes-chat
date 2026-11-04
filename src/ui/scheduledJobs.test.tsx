@@ -43,7 +43,7 @@ async function launch(s = server()) {
   await act(async () => void (await hermes.idle()));
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: "Scheduled jobs" }));
-  // The screen, or the note in its place on a server without cron routes (ADR 0039).
+  // The screen, or the note in its place on a server without cron routes (ADR 0041).
   await waitFor(() => expect(document.querySelector(".jobs-screen, .capability-missing")?.textContent ?? "").not.toMatch(/^$|Loading the jobs/));
   return { hermes, user, s };
 }
@@ -73,7 +73,7 @@ describe("the Scheduled jobs screen", () => {
     const old = server();
     old.cron.missing = true;
     await launch(old);
-    // The screen's own read finds no route, so the note saying what is missing takes its place (ADR 0039).
+    // The screen's own read finds no route, so the note saying what is missing takes its place (ADR 0041).
     expect(await screen.findByRole("region", { name: /This Hermes server doesn't support Scheduled jobs/ })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /New job/ })).toBeNull();
   });

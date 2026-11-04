@@ -51,7 +51,7 @@ class FakeXTerm {
 vi.mock("@xterm/xterm", () => ({ Terminal: FakeXTerm }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
 
-const { TerminalScreen } = await import("./Terminal");
+const { TerminalScreen, TerminalTab } = await import("./Terminal");
 
 class FakeTerminals implements TerminalApi {
   opened: { target: string; cols: number; rows: number; emit: (e: TerminalEvent) => void }[] = [];
@@ -83,12 +83,11 @@ afterEach(() => {
 function show(initialTarget: string, api = new FakeTerminals()) {
   const onTarget = vi.fn();
   const onRunning = vi.fn();
-  const onClose = vi.fn();
-  const r = render(<TerminalScreen api={api} initialTarget={initialTarget} shown onTarget={onTarget} onRunning={onRunning} onClose={onClose} />);
-  return { api, onTarget, onRunning, onClose, ...r };
+  const r = render(<TerminalScreen api={api} initialTarget={initialTarget} shown onTarget={onTarget} onRunning={onRunning} />);
+  return { api, onTarget, onRunning, ...r };
 }
 
-describe("Terminal screen", () => {
+describe("Terminal on the server", () => {
   it("connects straight away to the sign-in's SSH target, at the terminal's size", async () => {
     const { api, onRunning } = show("liam@hermes");
     await act(async () => {});
@@ -124,7 +123,7 @@ describe("Terminal screen", () => {
       fireEvent.keyDown(xterms[0].el!.querySelector("textarea")!, { key: "k", ctrlKey: true });
       expect(appShortcut).not.toHaveBeenCalled();
       // Outside the terminal itself, the app's keys still work.
-      fireEvent.keyDown(screen.getByRole("button", { name: /back to chat/i }), { key: "k", ctrlKey: true });
+      fireEvent.keyDown(screen.getByRole("button", { name: /end session/i }), { key: "k", ctrlKey: true });
       expect(appShortcut).toHaveBeenCalledTimes(1);
     } finally {
       window.removeEventListener("keydown", appShortcut);
@@ -160,5 +159,49 @@ describe("Terminal screen", () => {
     unmount();
     expect(api.closed).toEqual([1]);
     expect(xterms[0].disposed).toBe(true);
+  });
+});
+
+describe("Terminal on this computer", () => {
+  it("starts the owner's own shell at once, with no target to ask for, and starts again once it ends", async () => {
+    const api = new FakeTerminals();
+    render(<TerminalScreen kind="local" api={api} initialTarget="" shown />);
+    await act(async () => {});
+    expect(api.opened).toHaveLength(1);
+    expect(screen.queryByLabelText("SSH target")).toBeNull();
+    act(() => api.opened[0].emit(out("liam@laptop:~$ ")));
+    expect(screen.getByRole("status").textContent).toBe("Connected");
+    act(() => api.opened[0].emit({ kind: "exit", code: 255 }));
+    // 255 is ssh's own failure; for a local shell it is only an exit status.
+    expect(screen.getByText("The session ended with exit status 255.")).toBeTruthy();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /start again/i })));
+    expect(api.opened).toHaveLength(2);
+  });
+});
+
+describe("The Terminal tab", () => {
+  it("keeps the server's and this computer's sessions both running while one is shown", async () => {
+    const server = new FakeTerminals();
+    const local = new FakeTerminals();
+    const onRunning = vi.fn();
+    const tab = (kind: "server" | "local") => (
+      <TerminalTab server={{ api: server, initialTarget: "liam@hermes", onTarget: () => {} }} local={{ api: local }} shown kind={kind} onKind={() => {}} onRunning={onRunning} />
+    );
+    const { rerender } = render(tab("server"));
+    await act(async () => {});
+    expect(server.opened).toHaveLength(1);
+    // This computer's shell isn't started until its tab is picked.
+    expect(local.opened).toHaveLength(0);
+    act(() => server.opened[0].emit(out("$ ")));
+    rerender(tab("local"));
+    await act(async () => {});
+    expect(local.opened).toHaveLength(1);
+    act(() => local.opened[0].emit(out("% ")));
+    expect(onRunning).toHaveBeenLastCalledWith({ server: true, local: true });
+    rerender(tab("server"));
+    expect(server.closed).toEqual([]);
+    expect(local.closed).toEqual([]);
+    expect(screen.getByRole("button", { name: /This computer/ }).getAttribute("aria-pressed")).toBe("false");
+    expect(xterms).toHaveLength(2);
   });
 });

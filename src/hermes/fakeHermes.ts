@@ -308,6 +308,11 @@ export class FakeHermes {
   dropOnPrompt?: "stored" | "lost";
   /** What the model answers every `llm.oneshot` call with, unless `oneshotFailure` says why it failed. */
   oneshotAnswer = "A new title";
+  /**
+   * The profile's Bot Desktop (`display.*`, tui_gateway/methods_display.py at v2026.9.24; ADR 0039): its status and who
+   * holds it. Undefined: a Hermes without it, which answers "method not found".
+   */
+  display?: { status: Record<string, unknown>; lease: { holder: "agent" | "human"; viewer_hash: string | null; since: number; epoch: number }; minted: Set<string> };
   /** The server commands `commands.catalog` lists; undefined for a Hermes without the method. */
   commandCatalog: string[] | undefined = ["steer", "context", "compress", "help"];
   /** The profile's quick commands (`quick_commands` in config.yaml), by name, with their description. */
@@ -637,6 +642,37 @@ export class FakeHermes {
       const name = String(r.params.name);
       const refPath = `attachments/${name}`;
       this.respond(r.id, { attached: true, name, path: `/hermes/workspace/${refPath}`, ref_path: refPath, ref_text: `@file:${formatRefValue(refPath)}`, uploaded: true });
+    },
+    "display.status": (r) => this.displayAnswer(r.id),
+    "display.start": (r) => {
+      if (this.display) this.display.status.running = true;
+      this.displayAnswer(r.id);
+    },
+    "display.observe": (r) => {
+      const d = this.display;
+      if (!d) return this.fail(r.id, -32601, "unknown method: display.observe");
+      if (!d.status.running) return this.fail(r.id, 5300, "this profile's Bot Desktop is not running; call display.start first");
+      const asked = String(r.params.viewer_id ?? "");
+      const viewer = d.minted.has(asked) ? asked : `viewer-${d.minted.size + 1}`;
+      d.minted.add(viewer);
+      this.respond(r.id, { ...d.status, lease: d.lease, profile_key: "/home/liam/.hermes", ticket: `ticket-${viewer}`, path: "/api/display/ws", viewer_id: viewer });
+    },
+    "display.lease.acquire": async (r) => {
+      const d = this.display;
+      const viewer = String(r.params.viewer_id ?? "");
+      if (!d) return this.fail(r.id, -32601, "unknown method: display.lease.acquire");
+      if (!d.minted.has(viewer)) return this.fail(r.id, 5300, "viewer_id was not minted for this connection; call display.observe first");
+      const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(viewer))), (b) => b.toString(16).padStart(2, "0")).join("").slice(0, 12);
+      d.lease = { holder: "human", viewer_hash: hash, since: 2, epoch: d.lease.epoch + 1 };
+      this.broadcast("display.lease", { profile_key: "/home/liam/.hermes", lease: d.lease });
+      this.respond(r.id, { lease: d.lease });
+    },
+    "display.lease.release": (r) => {
+      const d = this.display;
+      if (!d) return this.fail(r.id, -32601, "unknown method: display.lease.release");
+      d.lease = { holder: "agent", viewer_hash: null, since: 3, epoch: d.lease.epoch + 1 };
+      this.broadcast("display.lease", { profile_key: "/home/liam/.hermes", lease: d.lease });
+      this.respond(r.id, { lease: d.lease });
     },
     "image.detach": (r) => {
       this.imagesStaged--;
@@ -1507,6 +1543,11 @@ export class FakeHermes {
 
   event(sessionId: string, type: string, payload: Record<string, unknown> = {}) {
     this.frame({ jsonrpc: "2.0", method: "event", params: { type, session_id: sessionId, payload } });
+  }
+
+  private displayAnswer(id: number) {
+    if (!this.display) return this.fail(id, -32601, "unknown method: display.status");
+    this.respond(id, { ...this.display.status, lease: this.display.lease, profile_key: "/home/liam/.hermes" });
   }
 
   /** A session-less broadcast such as `sessions.changed` (tui_gateway `_broadcast_global_event`). */

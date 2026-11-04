@@ -298,6 +298,16 @@ describe("in the app", () => {
     expect(screen.getByRole("tab", { name: /Diagnostics/, selected: true })).toBeTruthy();
   });
 
+  it("shows a note in the side panel's Files tab on a server without the managed-files routes", { timeout: 15_000 }, async () => {
+    const s = new FakeHermes();
+    s.asOlderHermes();
+    const { hermes, user } = await launch(s);
+    await act(() => settledChecks(hermes));
+    await user.click(screen.getByRole("button", { name: "Server files" }));
+    expect(await screen.findByRole("region", { name: /doesn't support Server files/ })).toBeTruthy();
+    expect(s.restRequests.filter((r) => r.method !== "GET" && r.path.startsWith("/api/files"))).toEqual([]);
+  });
+
   it("says in the project menu that Hermes has no projects, with no New project to send", { timeout: 15_000 }, async () => {
     const s = new FakeHermes();
     s.asOlderHermes();
