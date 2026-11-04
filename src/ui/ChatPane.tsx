@@ -17,6 +17,10 @@ import { AttachmentChip, Previews, readPreview } from "./previews";
 import { Speaker } from "./speaker";
 import { DictationNoteView, DictationStrip, ListenButton, MicButton, type VoiceApi, listenBlocked, micBlocked, useDictation, useVoiceSetup } from "./Voice";
 import { withTranscript } from "../hermes/voice";
+import { turnSettings } from "../hermes/voiceTurns";
+import type { Delivery } from "../hermes/transport";
+import { ConversationPanel, StartConversationButton, conversationAway, startBlocked, usePageHidden, useVoiceConversation } from "./VoiceConversation";
+import type { ConversationState, VoiceConversation } from "./conversation";
 import type { VoiceSetup } from "../hermes/pipe";
 import { ChatUsageButton, ReplyUsageLine } from "./Usage";
 import { useOpenPreview } from "./previewContext";
@@ -115,7 +119,8 @@ const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateS
  * contains the model picker; `footer` contains the status bar. Only the active pane answers Ctrl+F and takes focus as
  * it opens. Native drops attach to the pane under the pointer. `paneControls` follows the chat's own buttons.
  * `screenshots` attaches captures; `screenshotKeys` names the shortcut.
- * `voice` supplies Dictation and Read aloud. `commands` runs the slash commands typed in the composer. `queue` is the
+ * `voice` supplies Dictation and Read aloud. `voiceSend` puts a Voice conversation's turn in the chat as the owner's
+ * message; it is left out for a chat not started yet, where a conversation can't start (ADR 0040). `commands` runs the slash commands typed in the composer. `queue` is the
  * chat's queue of messages waiting to go after its reply, and `queueApi` changes it; it is left out for a chat not
  * started yet, which can't queue. `branch` offers Branch from here under each message with text (ADR 0027): `blocked`
  * says why none can be made now. `branchedFrom` is shown at the top of a branch, where it came from. `replay` offers
@@ -149,6 +154,7 @@ export function ChatPane({
   split = false,
   paneControls,
   voice,
+  voiceSend,
   screenshots,
   screenshotKeys,
   projects,
@@ -196,6 +202,7 @@ export function ChatPane({
   split?: boolean;
   paneControls?: ReactNode;
   voice?: VoiceApi;
+  voiceSend?: (text: string) => Promise<Delivery>;
   screenshots?: ScreenshotDesk;
   screenshotKeys?: string;
   /** The names of the projects the chat is in, or a new chat will be put in. */
@@ -239,6 +246,16 @@ export function ChatPane({
   // Hidden to the tray, nothing is read aloud (ADR 0034).
   const windowHidden = useWindowHidden();
   useEffect(() => { if (windowHidden) speaker?.stop(); }, [windowHidden, speaker]);
+  // A Voice conversation runs through the same speaker, and pauses whenever the owner can't see it (ADR 0040).
+  const minimized = usePageHidden();
+  const conversation = useVoiceConversation({
+    voice,
+    speaker,
+    send: voiceSend,
+    stopReply: onStop,
+    chat,
+    away: conversationAway({ status, windowHidden, pageHidden: minimized, active }),
+  });
   // The blocks are memoized, so they get one answer handler for the life of the pane.
   const onAnswerRef = useRef(onAnswer);
   onAnswerRef.current = onAnswer;
@@ -633,6 +650,8 @@ export function ChatPane({
         }}
         voice={voice}
         voiceSetup={voiceSetup}
+        conversation={conversation}
+        started={!!voiceSend}
         status={status}
         screenshots={screenshots}
         screenshotKeys={screenshotKeys}
@@ -956,6 +975,8 @@ function Composer({
   dropHere,
   voice,
   voiceSetup,
+  conversation,
+  started = false,
   status,
   screenshots,
   screenshotKeys,
@@ -983,6 +1004,9 @@ function Composer({
   dropHere?: (x: number, y: number) => boolean;
   voice?: VoiceApi;
   voiceSetup?: VoiceSetup;
+  /** The pane's Voice conversation, and whether the chat has started, which one needs. */
+  conversation?: VoiceConversation;
+  started?: boolean;
   status: ConnectionStatus;
   /** Screenshots come from here, and staged ones go back to it to be deleted once sent, removed or left behind. */
   screenshots?: ScreenshotDesk;
@@ -1012,6 +1036,11 @@ function Composer({
   const [refused, setRefused] = useState<string[]>([]);
   const [dragging, setDragging] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const talk = useSyncExternalStore(conversation?.subscribe ?? noDesk, conversation?.getSnapshot ?? (() => NOT_TALKING));
+  const talking = talk.phase !== "off";
+  const startTalkRef = useRef<HTMLButtonElement>(null);
+  // Why the conversation couldn't start, after a click on the Start button while it can't.
+  const [talkBlocked, setTalkBlocked] = useState<string>();
   const previews = useRef<Previews>(null);
   const [, previewed] = useReducer((n: number) => n + 1, 0);
 
@@ -1174,6 +1203,25 @@ function Composer({
         </div>
       )}
       <DictationNoteView dictation={dictation} />
+      {talkBlocked && !talking && (
+        <div className="voice-note" role="alert">
+          <span>{talkBlocked}</span>
+          <button className="link-btn" onClick={() => setTalkBlocked(undefined)}>
+            Dismiss
+          </button>
+        </div>
+      )}
+      {conversation && talking && (
+        <ConversationPanel
+          conversation={conversation}
+          setup={voiceSetup}
+          onEnd={() => {
+            conversation.end();
+            // Back to the button that started it, once it is shown again.
+            requestAnimationFrame(() => (startTalkRef.current ?? taRef.current)?.focus());
+          }}
+        />
+      )}
       {shot.capturing && (
         <div className="capture-note" role="status">
           Taking a screenshot: select a region or window, or press Esc to cancel.
@@ -1233,7 +1281,18 @@ function Composer({
           <button className="icon-btn" title="Attach files" onClick={() => void pick()}>
             <Paperclip size={16} />
           </button>
-          {voice && !dictation.active && <MicButton dictation={dictation} blocked={micBlocked(status, voiceSetup)} />}
+          {voice && !dictation.active && !talking && <MicButton dictation={dictation} blocked={micBlocked(status, voiceSetup)} />}
+          {conversation && !dictation.active && !talking && (
+            <StartConversationButton
+              ref={startTalkRef}
+              blocked={startBlocked(status, voiceSetup, started, dictation.active)}
+              onBlocked={setTalkBlocked}
+              onStart={() => {
+                setTalkBlocked(undefined);
+                conversation.start(turnSettings(voiceSetup));
+              }}
+            />
+          )}
           {screenshots && (
             <button
               className="icon-btn"
@@ -1287,3 +1346,4 @@ function Composer({
 }
 
 const NO_PROJECTS: TemplateHere = { scope: "", projects: [], here: [] };
+const NOT_TALKING: ConversationState = { phase: "off", muted: false, hearing: false, playing: false, heard: [], devices: [] };

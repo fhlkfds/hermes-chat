@@ -16,9 +16,20 @@ export type Speech = { mime: string; audio: Uint8Array; provider?: string };
 /**
  * A profile's voice set-up as far as the app can tell: whether the server has the transcription and speech routes, and
  * which providers the profile's config names. `sttEnabled` and the providers are missing when the config couldn't be
- * read. The config itself never reaches the webview, since its provider sections can hold API keys.
+ * read. The config itself never reaches the webview, since its provider sections can hold API keys. `silenceThreshold`,
+ * `silenceDuration` and `maxRecordingSeconds` are the profile's `voice.*` turn settings, when it sets them to numbers;
+ * a Voice conversation ends a turn with them as Hermes's own voice mode does (voiceTurns.ts).
  */
-export type VoiceSetup = { transcribe: boolean; speak: boolean; sttEnabled?: boolean; sttProvider?: string; ttsProvider?: string };
+export type VoiceSetup = {
+  transcribe: boolean;
+  speak: boolean;
+  sttEnabled?: boolean;
+  sttProvider?: string;
+  ttsProvider?: string;
+  silenceThreshold?: number;
+  silenceDuration?: number;
+  maxRecordingSeconds?: number;
+};
 
 /**
  * What Settings → Toolsets needs from a profile's config besides the toolset list, read in Rust since the config can

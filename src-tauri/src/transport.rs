@@ -209,6 +209,16 @@ pub struct VoiceSetup {
     pub stt_provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tts_provider: Option<String>,
+    /// `voice.silence_threshold`: the loudness, as the RMS of 16-bit samples, below which a voice conversation counts
+    /// a moment as quiet. Hermes's own voice mode ends a turn with the same three `voice.*` settings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub silence_threshold: Option<f64>,
+    /// `voice.silence_duration`: seconds of quiet after speech that end a turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub silence_duration: Option<f64>,
+    /// `voice.max_recording_seconds`: the longest one turn may be; 0 or less means Hermes sets no limit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_recording_seconds: Option<f64>,
 }
 
 /// How an audio route answered: its JSON, no such route, or a refusal and Hermes's reason.
@@ -243,6 +253,11 @@ fn refusal_reason(status: StatusCode, body: &str, headers: &HeaderMap) -> String
 /// A config value as a short display string, or `None` if it isn't a non-empty string.
 fn config_word(v: &serde_json::Value) -> Option<String> {
     v.as_str().map(str::trim).filter(|s| !s.is_empty()).map(|s| s.chars().take(64).collect())
+}
+
+/// A `voice.*` number as Hermes's `_numeric_or` takes it: a real int or float (YAML `true` isn't one), else `None`.
+fn config_number(v: &serde_json::Value) -> Option<f64> {
+    v.as_f64().filter(|n| n.is_finite())
 }
 
 /// `stt.enabled` as Hermes reads it (`is_truthy_value(cfg.get("enabled", True), default=True)` in
@@ -777,7 +792,8 @@ impl Dashboard {
 
     /// Reads whether the server has the two audio routes, and which providers `profile`'s config names. The routes
     /// are asked with bodies they refuse before doing any work (an empty recording, no text), so nothing is
-    /// transcribed or spoken. Only the provider names and `stt.enabled` are kept from the config.
+    /// transcribed or spoken. Only the provider names, `stt.enabled` and the three `voice.*` turn settings are kept
+    /// from the config.
     pub async fn voice_setup(&self, profile: &str) -> Result<VoiceSetup, TransportError> {
         let has = |a: AudioAnswer| !matches!(a, AudioAnswer::NoRoute);
         let transcribe = has(self.post_audio("api/audio/transcribe", profile, &json!({"data_url": ""})).await?);
@@ -792,7 +808,17 @@ impl Dashboard {
             Some(c) => (Some(truthy(&c["stt"]["enabled"])), config_word(&c["stt"]["provider"]), config_word(&c["tts"]["provider"])),
             None => (None, None, None),
         };
-        Ok(VoiceSetup { transcribe, speak, stt_enabled, stt_provider, tts_provider })
+        let voice = |key: &str| config.as_ref().and_then(|c| config_number(&c["voice"][key]));
+        Ok(VoiceSetup {
+            transcribe,
+            speak,
+            stt_enabled,
+            stt_provider,
+            tts_provider,
+            silence_threshold: voice("silence_threshold"),
+            silence_duration: voice("silence_duration"),
+            max_recording_seconds: voice("max_recording_seconds"),
+        })
     }
 
     /// `ToolsetGuards` for `profile`, from `GET /api/config`; nothing else of the config is kept.
