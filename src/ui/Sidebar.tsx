@@ -1,7 +1,8 @@
 // Icon rail beside a chat list (ADR 0001), ported from the prototype's variants C and A, with its tools grouped into Work
 // and Server and tips that show at once (ADR 0049). The list's header is the profile switcher. Settings opens from the
 // rail's foot. Right-clicking a chat opens its menu (ChatMenu.tsx).
-import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { BarChart3, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, EyeOff, FileOutput, FolderOpen, Inbox as InboxIcon, LockOpen, ScrollText, Search, Settings, SquarePen, SquareTerminal, Trash2, Webhook, FolderGit2 } from "lucide-react";
 import type { Chat, ConnectionStatus, OtherProfile, OtherProfiles } from "../hermes/model";
 import { SOURCE_LABEL, isWaiting } from "../hermes/model";
@@ -104,7 +105,7 @@ export function Rail({
     .filter(Boolean)
     .join(" · ");
   const connLabel = [STATUS_LABEL[status], connNote].filter(Boolean).join(" · ");
-  const { shown, bind, hide } = useRailTip();
+  const { shown, bind, hide, tipProps, descriptions } = useRailTip();
   const needs = inboxCount ? `${inboxCount} need${inboxCount === 1 ? "s" : ""} you` : undefined;
   const work = [
     onFiles && (
@@ -177,7 +178,7 @@ export function Rail({
             aria-label={needs ? `Inbox, ${needs}` : "Inbox"}
             aria-expanded={inboxOpen}
             onClick={onInbox}
-            {...bind("inbox", { label: "Inbox", note: needs ?? "What needs you in any profile" })}
+            {...bind("inbox", { label: "Inbox", note: needs ?? "What needs you in any profile", describe: !needs })}
           >
             <InboxIcon size={18} />
             {inboxCount > 0 && <span className="badge" aria-hidden>{inboxCount > 99 ? "99+" : inboxCount}</span>}
@@ -199,14 +200,14 @@ export function Rail({
         )}
       </div>
       <div className="rail-bottom">
-        <button className="conn-btn" aria-label={connLabel} onClick={() => status !== "connected" && onReconnect()} {...bind("conn", { label: STATUS_LABEL[status], note: connNote || undefined })}>
+        <button className="conn-btn" aria-label={connLabel} onClick={() => status !== "connected" && onReconnect()} {...bind("conn", { label: STATUS_LABEL[status], note: connNote || undefined, describe: false })}>
           <span className={`conn-dot ${status} ${unsecure ? "unsecure" : ""}`} />
           {unsecure && <LockOpen className="conn-lock" size={9} strokeWidth={2.8} />}
         </button>
         <button
           className={`icon-btn settings-btn ${settingsOpen ? "on" : ""}`}
           aria-label={updateWaiting ? "Settings: an update is ready" : "Settings"}
-          aria-keyshortcuts="Control+Comma"
+          aria-keyshortcuts="Control+,"
           aria-pressed={settingsOpen}
           onClick={onSettings}
           {...bind("settings", { label: "Settings", keys: "Ctrl+,", note: updateWaiting ? "An update is ready" : "Import, backup and more" })}
@@ -221,26 +222,35 @@ export function Rail({
   return (
     <aside className="rail">
       {parts}
-      {tip && (
-        <div className="rail-tip" role="tooltip" aria-hidden style={{ top: tip.top }}>
-          <span className="rail-tip-label">{tip.label}</span>
-          {tip.keys && <kbd>{tip.keys}</kbd>}
-          {tip.note && <span className="rail-tip-note">{tip.note}</span>}
-        </div>
-      )}
+      {descriptions()}
+      {/* On the page itself, so a screen the rail sits under (the Inbox) can't cover it. */}
+      {tip &&
+        createPortal(
+          <div className="rail-tip" role="tooltip" aria-hidden style={{ top: tip.top }} {...tipProps}>
+            <span className="rail-tip-label">{tip.label}</span>
+            {tip.keys && <kbd>{tip.keys}</kbd>}
+            {tip.note && <span className="rail-tip-note">{tip.note}</span>}
+          </div>,
+          document.body,
+        )}
     </aside>
   );
 }
 
-type RailTip = { label: string; keys?: string; note?: string };
+/** `describe` false: the button's own name already says what `note` does. */
+type RailTip = { label: string; keys?: string; note?: string; describe?: boolean };
 
 /**
  * The rail's one tip: it shows at once beside the button under the pointer or keyboard focus, with the button's name,
- * its shortcut and a line about it, and goes on leaving, blurring, scrolling or Escape. Everything in it is also in the
- * button's own name or `aria-keyshortcuts`, so it is hidden from screen readers.
+ * its shortcut and a line about it. It stays while the pointer is on the button or the tip, and goes on leaving both,
+ * blurring, scrolling or Escape. Screen readers get the same from the button: its name, `aria-keyshortcuts`, and the
+ * line as its description, so the tip itself is hidden from them.
  */
 function useRailTip() {
+  const id = useId();
   const [at, setAt] = useState<{ key: string; top: number }>();
+  const tipRef = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLElement | null>(null);
   const hide = useCallback(() => setAt(undefined), []);
   useEffect(() => {
     if (!at) return;
@@ -252,19 +262,40 @@ function useRailTip() {
       window.removeEventListener("blur", hide);
     };
   }, [at, hide]);
+  /** Leaving for `into` (the tip, or its button) keeps the tip. */
+  const leave = (into: () => Element | null | undefined) => (e: ReactMouseEvent) => {
+    const to = e.relatedTarget;
+    if (to instanceof Node && into()?.contains(to)) return;
+    hide();
+  };
   // Rebuilt each render, so a tip that stays up shows the button's wording as it is now (an Inbox count, a session).
   const tips: Record<string, RailTip> = {};
+  const noteId = (key: string) => `${id}-tip-${key}`;
   const bind = (key: string, t: RailTip) => {
     tips[key] = t;
     const show = (e: { currentTarget: HTMLElement }) => {
+      trigger.current = e.currentTarget;
       const r = e.currentTarget.getBoundingClientRect();
       setAt({ key, top: r.top + r.height / 2 });
     };
-    return { onMouseEnter: show, onFocus: show, onMouseLeave: hide, onBlur: hide };
+    return {
+      onMouseEnter: show,
+      onFocus: show,
+      onMouseLeave: leave(() => tipRef.current),
+      onBlur: hide,
+      "aria-describedby": t.note && t.describe !== false ? noteId(key) : undefined,
+    };
   };
   /** The tip showing, read after every `bind` of the render. */
   const shown = () => (at && tips[at.key] ? { ...tips[at.key], top: at.top } : undefined);
-  return { shown, bind, hide };
+  /** The buttons' descriptions, out of sight; read after every `bind` of the render. */
+  const descriptions = () => (
+    <div hidden>
+      {Object.entries(tips).map(([key, t]) => t.note && t.describe !== false && <span key={key} id={noteId(key)}>{t.note}</span>)}
+    </div>
+  );
+  const tipProps = { ref: tipRef, onMouseLeave: leave(() => trigger.current) };
+  return { shown, bind, hide, tipProps, descriptions };
 }
 
 /**

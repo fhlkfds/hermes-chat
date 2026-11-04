@@ -9,5 +9,7 @@ Captured on 2026-11-04 from the running Hermes Chat debug build (WebKitGTK, fron
 - `5-logs-open.png`: Logs open, marked by the accent bar at the rail's edge.
 - `6-min-size.png`: the window at its minimum, 760 × 500. The group labels give way to their rules, the buttons close up, and every button still fits without scrolling.
 - `7-min-size-tip.png`: a tip at the minimum size.
+- `8-tip-over-inbox.png`: with the Inbox open, a rail tip still draws above it (it is drawn on the page, outside the rail).
+- `9-pointer-on-tip.png`: the pointer moved from Automations across the gap onto its tip (x 120); the tip stays. Xvfb's capture doesn't draw the pointer. Moving it away to the chat then hid the tip.
 
 The Inbox badge and the Terminal's running dot weren't captured: the stub has no inbox entries and no ssh target.

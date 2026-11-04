@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // The rail's layout and its tips (ADR 0049): the daily tools first, then the Work and Server groups, and a tip that
 // shows at once, with the button's name and shortcut, on hover or keyboard focus.
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Rail } from "./Sidebar";
@@ -60,7 +60,7 @@ describe("the rail", () => {
     expect(screen.getByRole("button", { name: "New chat (Ctrl+N)" }).getAttribute("aria-keyshortcuts")).toBe("Control+N");
     expect(screen.getByRole("button", { name: "Search all chats (Ctrl+K)" }).getAttribute("aria-keyshortcuts")).toBe("Control+K");
     expect(screen.getByRole("button", { name: "Hide or show chats" }).getAttribute("aria-keyshortcuts")).toBe("Control+B");
-    expect(screen.getByRole("button", { name: "Settings" }).getAttribute("aria-keyshortcuts")).toBe("Control+Comma");
+    expect(screen.getByRole("button", { name: "Settings" }).getAttribute("aria-keyshortcuts")).toBe("Control+,");
   });
 
   it("shows a tip at once on hover, with the name and shortcut, and hides it on leaving", async () => {
@@ -72,6 +72,51 @@ describe("the rail", () => {
     expect(tip()?.querySelector("kbd")?.textContent).toBe("Ctrl+N");
     await user.unhover(btn);
     expect(tip()).toBeNull();
+  });
+
+  it("keeps the tip while the pointer moves onto it, and hides it once the pointer leaves both", async () => {
+    // user-event leaves `relatedTarget` unset, so the moves are dispatched as a browser does, with where the pointer went.
+    const { user } = rail();
+    const btn = screen.getByRole("button", { name: "Logs" });
+    await user.hover(btn);
+    const shownTip = tip() as HTMLElement;
+    fireEvent.mouseOut(btn, { relatedTarget: shownTip });
+    expect(tip()?.textContent).toContain("Logs");
+    fireEvent.mouseOut(shownTip, { relatedTarget: btn });
+    expect(tip()?.textContent).toContain("Logs");
+    fireEvent.mouseOut(btn, { relatedTarget: shownTip });
+    fireEvent.mouseOut(shownTip, { relatedTarget: document.body });
+    expect(tip()).toBeNull();
+  });
+
+  it("hides the tip when the pointer leaves the button for anywhere else", async () => {
+    const { user } = rail();
+    const btn = screen.getByRole("button", { name: "Logs" });
+    await user.hover(btn);
+    fireEvent.mouseOut(btn, { relatedTarget: document.body });
+    expect(tip()).toBeNull();
+  });
+
+  it("puts the tip on the page itself, outside the rail, so a screen over the rail can't cover it", async () => {
+    const { user, container } = rail();
+    await user.hover(screen.getByRole("button", { name: "Usage" }));
+    expect(tip()?.parentElement).toBe(document.body);
+    expect(container.querySelector(".rail-tip")).toBeNull();
+  });
+
+  it("gives each button its tip's line as its description", () => {
+    rail({ inboxCount: 2, updateWaiting: true });
+    expect(screen.getByRole("button", { name: "Automations", description: "Tasks started by GitHub events" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Server files", description: "Browse the files on the server" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Settings: an update is ready", description: "An update is ready" })).toBeTruthy();
+    // A line the name already says isn't said twice.
+    expect(screen.getByRole("button", { name: "Inbox, 2 need you", description: "" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^Connected/, description: "" })).toBeTruthy();
+  });
+
+  it("describes Settings as where Import lives", () => {
+    rail();
+    expect(screen.getByRole("button", { name: "Settings", description: "Import, backup and more" })).toBeTruthy();
   });
 
   it("shows a line about a tool without a shortcut", async () => {
