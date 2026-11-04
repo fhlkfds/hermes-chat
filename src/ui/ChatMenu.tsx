@@ -10,7 +10,13 @@ import type { Tag } from "../hermes/tags";
 import { useReturnFocus } from "./bits";
 
 /** The profile's projects, for the chat menu: which ones the chat is in, and putting it in one or taking it out. */
-export type ChatProjects = { list: Project[]; of: Set<string>; onToggle: (projectId: string, inProject: boolean) => void };
+export type ChatProjects = {
+  list: Project[];
+  of: Set<string>;
+  /** Projects whose change for this chat waits for Hermes, or conflicts with another computer's (ADR 0033). */
+  waiting?: Set<string>;
+  onToggle: (projectId: string, inProject: boolean) => void;
+};
 
 /** The profile's tags, for the chat menu: which ones the chat has, putting one on or taking it off, and the tag editor. */
 export type ChatTags = { list: Tag[]; of: readonly string[]; onToggle: (tagId: string, on: boolean) => void; onManage: () => void };
@@ -175,6 +181,7 @@ export function ChatMenu({
               >
                 <span className="menu-icon">{on && <Check size={15} />}</span>
                 <span className="menu-label">{p.name}</span>
+                {projects.waiting?.has(p.id) && <span className="menu-hint">waiting to sync</span>}
               </button>
             );
           })}

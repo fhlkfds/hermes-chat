@@ -35,6 +35,7 @@ import { Inbox } from "./ui/Inbox";
 import { inboxAcks, inboxEntries, inboxScope, needsOwner, type InboxEntry } from "./hermes/inbox";
 import { ChatPane, type JumpTarget } from "./ui/ChatPane";
 import { BranchDialog, BranchedFrom } from "./ui/Branch";
+import { MembershipDialog, MembershipStatus, needsOwner as membershipNeedsOwner } from "./ui/MembershipSync";
 import { ReplayDialog } from "./ui/Replay";
 import { replayBlocked, variantsIn, type ReplayKind } from "./hermes/replay";
 import { branchBlocked, type BranchLink } from "./hermes/branch";
@@ -512,6 +513,8 @@ export function Main({
   );
   // The project screen covers the chat pane, as Settings does.
   const [projectOpen, setProjectOpen] = useState(false);
+  // The membership sync's dialog: the move to Hermes, and conflicts with another computer (ADR 0033).
+  const [membershipOpen, setMembershipOpen] = useState(false);
   /** The Scheduled jobs screen covers the chat, as Settings does. */
   const [jobsOpen, setJobsOpen] = useState(false);
   /** Automations (webhook routes, ADR 0036) cover the chat too. */
@@ -983,7 +986,8 @@ export function Main({
     setToast({ text: `${until ? `Snoozed until ${wakeFull(until)}` : "Unsnoozed"}: ${title}`, undo: () => put(before), at: Date.now() });
   };
 
-  // Putting a chat in a project, or taking it out, is kept on this computer only; Undo puts it back.
+  // Putting a chat in a project, or taking it out: Hermes's once it keeps membership, waiting here until it confirms,
+  // and this computer's otherwise (ADR 0033). Undo puts it back.
   const setInProject = (chatId: string, p: Project, inProject: boolean) => {
     const title = chats.find((c) => c.id === chatId)?.title ?? "";
     projects.setChat(p.id, chatId, inProject);
@@ -1479,6 +1483,14 @@ export function Main({
                     void projects.readDefaults();
                   })
                 }
+                attention={
+                  !membershipNeedsOwner(proj.membership)
+                    ? undefined
+                    : proj.membership.state === "preview"
+                      ? "Hermes can keep which chats are in each project"
+                      : "A project change conflicts with another computer's"
+                }
+                onReview={() => setMembershipOpen(true)}
               />
             }
             savedFilters={
@@ -1493,7 +1505,8 @@ export function Main({
             projectsOf={(chatId) => {
               if (!listable.length) return undefined;
               const of = projects.projectsOf(chatId);
-              return { list: listable, of, onToggle: (id, on) => setInProject(chatId, listable.find((p) => p.id === id)!, on) };
+              const waiting = new Set(proj.membership.pending.filter((o) => o.chatId === chatId).map((o) => o.projectId));
+              return { list: listable, of, waiting, onToggle: (id, on) => setInProject(chatId, listable.find((p) => p.id === id)!, on) };
             }}
           switching={switching}
           status={status}
@@ -1601,6 +1614,14 @@ export function Main({
                   return { problem, worktrees };
                 }}
                 onClose={() => { flushSync(() => setProjectOpen(false)); focusPane(active.key); }}
+                membership={
+                  <MembershipStatus
+                    membership={proj.membership}
+                    connected={status === "connected"}
+                    onSync={() => void projects.syncNow()}
+                    onReview={() => setMembershipOpen(true)}
+                  />
+                }
                 defaults={{
                   saved: proj.defaults[shownProject.id],
                   catalog,
@@ -1831,6 +1852,20 @@ export function Main({
         />
       )}
       {tagsOpen && <TagManager key={scope} store={tagsStore} profile={profile} returnTo={tagsReturn} onClose={() => setTagsOpen(false)} />}
+      {membershipOpen && (
+        <MembershipDialog
+          key={scope}
+          membership={proj.membership}
+          projects={proj.projects}
+          titleOf={(id) => chats.find((c) => c.id === id)?.title}
+          connected={status === "connected"}
+          onMigrate={() => projects.migrate()}
+          onLater={() => projects.postponeMigration()}
+          onKeepMine={(id) => projects.keepMine(id)}
+          onUseHermes={(id) => projects.useHermes(id)}
+          onClose={() => setMembershipOpen(false)}
+        />
+      )}
       {toast && (
         <div className="toast" key={toast.at} role="status">
           <span>{toast.text}</span>
