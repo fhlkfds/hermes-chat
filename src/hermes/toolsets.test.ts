@@ -445,7 +445,7 @@ describe("what one open chat has (tools.show)", () => {
     const { server, hermes, api } = await connected();
     const rid = await started(hermes);
     server.enabledToolsets("default").delete("web");
-    const read = await api.chatTools(rid);
+    const read = await api.chatTools("default", rid);
     // Built before the change: the chat keeps web.
     expect(read.kind === "read" && [...read.tools].sort()).toEqual(["patch", "process", "read_file", "search_files", "terminal", "web_extract", "web_search", "write_file"]);
     const asked = server.requests.filter((r) => r.method === "tools.show" || r.method === "session.status").map((r) => [r.method, r.params.session_id]);
@@ -458,15 +458,26 @@ describe("what one open chat has (tools.show)", () => {
     expect(server.requests.some((r) => r.method === "tools.configure")).toBe(false);
   });
 
-  it("each profile's chat has its own profile's tools", async () => {
+  it("reads a chat only in the profile the dashboard runs as, whose requirements Hermes checks", async () => {
     const server = new FakeHermes();
     server.otherProfiles = { work: [] };
     server.enabledToolsets("work").delete("file");
     const work = await connect(server.openPipe, "work");
-    const read = await work.toolsets.chatTools(await started(work));
+    const rid = await started(work);
+    // Hermes checks tool requirements as the served profile, not the chat's: not read, and nothing asked over the socket.
+    const asked = server.requests.length;
+    expect(await work.toolsets.chatTools("work", rid)).toEqual({
+      kind: "unsupported",
+      reason: "Hermes checks what a chat is offered as the profile its dashboard runs as, default, so it can't say for certain for a chat in the work profile.",
+    });
+    expect(server.requests.slice(asked).map((r) => r.method)).toEqual([]);
+    // A dashboard running as `work` answers for work's own chat.
+    server.servedProfile = "work";
+    const read = await work.toolsets.chatTools("work", rid);
     expect(read.kind === "read" && read.tools.has("read_file")).toBe(false);
+    server.servedProfile = "default";
     const home = await connect(server.openPipe, "default");
-    const mine = await home.toolsets.chatTools(await started(home));
+    const mine = await home.toolsets.chatTools("default", await started(home));
     expect(mine.kind === "read" && mine.tools.has("read_file")).toBe(true);
   });
 
@@ -474,16 +485,16 @@ describe("what one open chat has (tools.show)", () => {
     const { server, hermes, api } = await connected();
     const rid = await started(hermes);
     server.runtime.delete(rid);
-    expect(await api.chatTools(rid)).toEqual({ kind: "closed" });
+    expect(await api.chatTools("default", rid)).toEqual({ kind: "closed" });
   });
 
   it("an older server without tools.show is unsupported; other errors are thrown", async () => {
     const { server, hermes, api } = await connected();
     const rid = await started(hermes);
     server.toolsShowMethod = false;
-    expect(await api.chatTools(rid)).toMatchObject({ kind: "unsupported" });
+    expect(await api.chatTools("default", rid)).toMatchObject({ kind: "unsupported" });
     server.toolsShowMethod = true;
     server.handlers["tools.show"] = (r) => server.fail(r.id, 5034, "tools.show failed: boom");
-    await expect(api.chatTools(rid)).rejects.toThrow(/boom/);
+    await expect(api.chatTools("default", rid)).rejects.toThrow(/boom/);
   });
 });

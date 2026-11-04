@@ -271,13 +271,18 @@ export function ToolsetSettings({
     const mine = ++chatSeq.current;
     if (!runtimeId) return setChatRead(undefined);
     setChatRead((c) => (c?.runtimeId === runtimeId ? c : { runtimeId }));
-    const out = await api.chatTools(runtimeId).then(
+    const out = await api.chatTools(profile, runtimeId).then(
       (read) => ({ runtimeId, read }),
       (e) => ({ runtimeId, error: messageOf(e) }),
     );
     if (live.current && mine === chatSeq.current) setChatRead(out);
-  }, [api, runtimeId]);
+  }, [api, profile, runtimeId]);
   useEffect(() => void readChat(), [readChat]);
+  // Called after an await (a save, a focus), when the chat's live session may have changed: always the current one.
+  const readChatNow = useRef(readChat);
+  readChatNow.current = readChat;
+  // The chat read shown, only while it is for the session open now.
+  const chatShown = chatRead?.runtimeId === runtimeId ? chatRead : undefined;
 
   /**
    * Reads the list for this component's profile, and with `full` whether Hermes takes changes, the config guards and
@@ -376,10 +381,17 @@ export function ToolsetSettings({
   }, [connected, reread, read]);
   // Coming back to the window reads it again, for changes made elsewhere meanwhile.
   useEffect(() => {
-    const onFocus = () => connected && list && (void read(false), void readChat());
+    // Another client may have saved the profile's own list, or forced a toolset off: the config is read again too.
+    const onFocus = () => connected && list && (void read(false), void readChatNow.current(), readGuards());
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
-  }, [connected, list, read, readChat]);
+  }, [connected, list, read]);
+
+  /** The config facts (inherited, forced off, no_mcp) read again; only the latest read's answer is shown. */
+  const readGuards = () => {
+    const mine = ++guardsRead.current;
+    void api.guards(profile).then((g) => g && live.current && mine === guardsRead.current && setGuards(g));
+  };
 
   const commit = async (t: Toolset, enabled: boolean, accepted: Caution[] = []) => {
     let note: Note;
@@ -404,9 +416,8 @@ export function ToolsetSettings({
     }
     setNotes((n) => ({ ...n, [t.name]: note }));
     // Whether the change reached the open chat is read, not assumed; so is whether the profile now has its own list.
-    void readChat();
-    const mine = ++guardsRead.current;
-    void api.guards(profile).then((g) => g && live.current && mine === guardsRead.current && setGuards(g));
+    void readChatNow.current();
+    readGuards();
   };
 
   const toggle = async (t: Toolset) => {
@@ -528,7 +539,7 @@ export function ToolsetSettings({
         problem={problems[t.name]}
         offEverywhere={guards?.disabledEverywhere.includes(t.name)}
         inherited={guards && !guards.noMcpUnclear.includes(t.platform) ? !guards.savedLists.includes(t.platform) : undefined}
-        chat={chatRead?.runtimeId === runtimeId ? chatHas(t, chatRead?.read) : undefined}
+        chat={chatHas(t, chatShown?.read)}
         note={notes[t.name]}
         onToggle={(x) => void toggle(x)}
       />
@@ -604,15 +615,15 @@ export function ToolsetSettings({
             ? `“${chat.title}”: what it has is read when Hermes is back.`
             : !chat.runtimeId
               ? `“${chat.title}” isn't open on Hermes yet, so it has no tools of its own: it gets the profile's list when Hermes opens it.`
-              : !chatRead?.read && !chatRead?.error
+              : !chatShown?.read && !chatShown?.error
                 ? `Reading what “${chat.title}” has…`
-                : chatRead.error
-                  ? <span className="sign-in-error">Couldn't read what “{chat.title}” has: {chatRead.error}</span>
-                  : chatRead.read!.kind === "closed"
+                : chatShown.error
+                  ? <span className="sign-in-error">Couldn't read what “{chat.title}” has: {chatShown.error}</span>
+                  : chatShown.read!.kind === "closed"
                     ? `Hermes no longer has “${chat.title}” open: it gets the profile's list when it's opened again.`
-                    : chatRead.read!.kind === "unsupported"
-                      ? `${chatRead.read!.reason} Each toolset shows the profile's setting only.`
-                      : `“${chat.title}”: what Hermes offers it, read at ${timeOf(chatRead.read!.readAt)}, is under each toolset.`}
+                    : chatShown.read!.kind === "unsupported"
+                      ? `${chatShown.read!.reason} Each toolset shows the profile's setting only.`
+                      : `“${chat.title}”: what Hermes offers it, read at ${timeOf(chatShown.read!.readAt)}, is under each toolset.`}
         {chat?.running && connected && " A reply is running in it now; nothing here changes the tools it's using."}
       </div>
       {pending && pending.profile !== profile && (

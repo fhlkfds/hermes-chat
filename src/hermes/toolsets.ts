@@ -216,12 +216,22 @@ export class ToolsetsApi {
   ) {}
 
   /**
-   * The tools Hermes offers the chat whose live session is `runtimeId`, from `tools.show`. Hermes answers an id it no
-   * longer holds with its launch profile's list instead of an error, so the answer counts only when `session.status`
-   * still finds the session after it: then it was there while `tools.show` read it.
+   * The tools Hermes offers `profile`'s chat whose live session is `runtimeId`, from `tools.show`. Two limits of that
+   * call are checked first:
+   * - It picks the session's own toolsets, but checks each tool's requirements (keys, packages, plugins) as the profile
+   *   the dashboard runs as (`get_tool_definitions` runs outside the session's profile scope). So it is read only for a
+   *   chat of that profile (`GET /api/profiles/active` → `current`).
+   * - It answers an id Hermes no longer holds with its launch profile's list instead of an error, so the answer counts
+   *   only when `session.status` still finds the session after it: then it was there while `tools.show` read it.
    */
-  async chatTools(runtimeId: string): Promise<ChatTools> {
+  async chatTools(profile: string, runtimeId: string): Promise<ChatTools> {
     if (!this.rpc) return { kind: "unsupported", reason: "This app can't ask Hermes about one chat here." };
+    const served = str(obj(await this.rest("GET", "api/profiles/active")).current);
+    if (served !== profile)
+      return {
+        kind: "unsupported",
+        reason: `Hermes checks what a chat is offered as the profile its dashboard runs as${served && served !== "custom" ? `, ${served}` : ""}, so it can't say for certain for a chat in the ${profile} profile.`,
+      };
     let shown: Json;
     try {
       shown = obj(await this.rpc("tools.show", { session_id: runtimeId }));

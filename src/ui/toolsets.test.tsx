@@ -484,6 +484,17 @@ describe("Settings → Toolsets", () => {
       expect([...server.toolsetSavedLists.default]).toEqual(["cli"]);
     });
 
+    it("reads whether the profile saved its own list again when the window is focused, for a save made elsewhere", async () => {
+      const { server } = await shown();
+      expect(await screen.findByText(/Inherited: the profile hasn't saved a list of its own/)).toBeTruthy();
+      server.toolsetSavedLists.default = new Set(["cli"]);
+      server.toolsetDisabledEverywhere.default = ["terminal"];
+      window.dispatchEvent(new Event("focus"));
+      expect(await screen.findByText(/Saved in profile: the profile has its own list/)).toBeTruthy();
+      expect(within(rowOf("Web Search & Scraping")).queryByText("Inherited")).toBeNull();
+      expect(await within(rowOf("Terminal & Processes")).findByText("Forced off on every platform")).toBeTruthy();
+    });
+
     it("says nothing about inheritance when the saved list can't be read for certain", async () => {
       const server = new FakeHermes();
       server.toolsetNoMcpUnclear.default = ["cli"];
@@ -523,7 +534,7 @@ describe("Settings → Toolsets", () => {
       expect(within(rowOf("Web Search & Scraping")).getByText(/This chat: has it\./)).toBeTruthy();
       // A chat started now, its first turn included, is built without it.
       const next = await hermes.newChat();
-      const fresh = await hermes.toolsets.chatTools(openChat(hermes, next).runtimeId!);
+      const fresh = await hermes.toolsets.chatTools("default", openChat(hermes, next).runtimeId!);
       expect(fresh.kind === "read" && fresh.tools.has("web_search")).toBe(false);
     });
 
@@ -623,6 +634,46 @@ describe("Settings → Toolsets", () => {
       act(() => release());
       await new Promise((res) => setTimeout(res, 20));
       expect(within(rowOf("Web Search & Scraping")).getByText(/This chat: doesn't have it\./)).toBeTruthy();
+    });
+
+    it("a save that finishes after the chat's session changed reads the session open now, not the one before", async () => {
+      const server = new FakeHermes();
+      const hermes = await connect(server.openPipe, "default");
+      const first = await startedChat(hermes);
+      const second = await startedChat(hermes);
+      for (const t of ["web_search", "web_extract"]) server.agentTools.get(second.runtimeId!)!.delete(t);
+      const user = userEvent.setup();
+      const view = (c: OpenChat) => <ToolsetSettings api={hermes.toolsets} profile="default" connected chat={c} />;
+      const r = render(view(first));
+      await screen.findByText(/Read from Hermes at/);
+      await within(rowOf("Web Search & Scraping")).findByText(/This chat: has it\./);
+      let release!: () => void;
+      server.toolsetGate = new Promise((res) => (release = res));
+      await user.click(toggle("Web Search & Scraping"));
+      await screen.findByText(/Saving: turning Web Search & Scraping off/);
+      // The chat's live session changes while the save waits (a reconnect and reopen).
+      r.rerender(view(second));
+      await within(rowOf("Web Search & Scraping")).findByText(/This chat: doesn't have it\./);
+      const shows = () => server.requests.filter((q) => q.method === "tools.show").map((q) => q.params.session_id);
+      act(() => release());
+      await screen.findByText(/Saved: Hermes reads Web Search & Scraping back as off/);
+      await waitFor(() => expect(shows().at(-1)).toBe(second.runtimeId));
+      await new Promise((res) => setTimeout(res, 20));
+      expect(shows().slice(-1)).toEqual([second.runtimeId]);
+      expect(within(rowOf("Web Search & Scraping")).getByText(/This chat: doesn't have it\./)).toBeTruthy();
+      expect(screen.getByRole("status", { name: "This chat" }).textContent).toMatch(/what Hermes offers it, read at/);
+    });
+
+    it("doesn't read a chat in a profile other than the one the dashboard runs as", async () => {
+      const server = new FakeHermes();
+      server.otherProfiles = { work: [] };
+      const hermes = await connect(server.openPipe, "work");
+      const chat = await startedChat(hermes);
+      render(<ToolsetSettings api={hermes.toolsets} profile="work" connected chat={chat} />);
+      await screen.findByText(/Read from Hermes at/);
+      expect(await screen.findByText(/as the profile its dashboard runs as, default, so it can't say for certain for a chat in the work profile/)).toBeTruthy();
+      expect(screen.queryByText(/This chat:/)).toBeNull();
+      expect(server.requests.some((q) => q.method === "tools.show")).toBe(false);
     });
   });
 });
