@@ -62,7 +62,8 @@ function fix() {
   server.event(rt, "tool.start", { tool_id: "t1", name: "cronjob", args: { action: "list" } });
   server.event(rt, "tool.complete", { tool_id: "t1", duration_s: 0.2, summary: "3 jobs" });
   server.event(rt, "message.delta", { text: "I'll switch delivery to Telegram and ask for the list in a plain numbered form.\n\n" });
-  const prompt = `${String(job.prompt)} Reply as a numbered list, and say "No alerts" when there are none.`;
+  const suffix = ' Reply as a numbered list, and say "No alerts" when there are none.';
+  const prompt = String(job.prompt).endsWith(suffix) ? String(job.prompt) : `${String(job.prompt)}${suffix}`;
   server.event(rt, "tool.start", { tool_id: "t2", name: "cronjob", args: { action: "update", job_id: digest.id, deliver: "telegram", prompt } });
   job.deliver = "telegram";
   job.prompt = prompt;

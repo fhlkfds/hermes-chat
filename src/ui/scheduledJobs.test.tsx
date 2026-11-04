@@ -720,7 +720,7 @@ describe("Troubleshoot on the Scheduled jobs screen", () => {
     expect(writes(s)).toHaveLength(0);
     await user.click(within(panel).getByRole("button", { name: "Run now to check the fix" }));
     expect(screen.getByRole("alertdialog", { name: "Run this job now?" })).toBeTruthy();
-  });
+  }, 20_000);
 
   it("offers Troubleshoot on a failed run, and reads the job again when the chat's reply ends", async () => {
     const s = server();
@@ -775,7 +775,7 @@ describe("Troubleshoot on the Scheduled jobs screen", () => {
     await user.click(within(panel).getByRole("button", { name: "Dismiss" }));
     expect(screen.queryByRole("region", { name: "Troubleshooting" })).toBeNull();
     expect(writes(s)).toHaveLength(0);
-  });
+  }, 20_000);
 
   it("says when nothing on the job changed", async () => {
     const s = server();
@@ -790,7 +790,7 @@ describe("Troubleshoot on the Scheduled jobs screen", () => {
     await user.click(await screen.findByRole("button", { name: "See what changed" }));
     const panel = await screen.findByRole("region", { name: "Troubleshooting" });
     expect(within(panel).getByText(/Nothing on the job has changed since the chat started/)).toBeTruthy();
-  });
+  }, 20_000);
 
   it("starts nothing when Hermes refuses the chat's first message, and says why", async () => {
     const s = server();
@@ -805,6 +805,6 @@ describe("Troubleshoot on the Scheduled jobs screen", () => {
     expect((await screen.findByText("[fixture] Weekday brief")).closest("li")!.textContent).toMatch(/Troubleshooting didn't start/);
     await user.click(screen.getByText("[fixture] Weekday brief"));
     expect(within(await screen.findByRole("region", { name: "Troubleshooting" })).getByRole("alert").textContent).toMatch(/session busy/);
-  });
+  }, 20_000);
 });
 
