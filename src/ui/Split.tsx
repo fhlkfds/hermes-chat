@@ -1,12 +1,14 @@
-// Two chats side by side: the panes, the divider between them, and which pane is active. The divider drags, or moves
-// with the arrow keys; a double click puts it back in the middle. Where the window is too narrow for two panes, only the
-// active one shows, with a switcher above it; the other stays mounted, hidden, so its scroll, find bar and attachments
-// are as they were when it comes back.
+// Two chats side by side, or one above the other: the panes, the divider between them, and which pane is active. The
+// divider drags, or moves with the arrow keys; a double click puts it back in the middle. Where there is no room for two
+// panes, only the active one shows, with a switcher above it; the other stays mounted, hidden, so its scroll, find bar
+// and attachments are as they were when it comes back.
 import { createContext, useContext, Fragment, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 
 /** The narrowest a pane gets beside another. Narrower than two of these, the panes take turns. */
 export const MIN_PANE_PX = 320;
+/** The shortest a pane gets above or below another. */
+export const MIN_PANE_HEIGHT_PX = 200;
 const DIVIDER_PX = 6;
 /** How far an arrow key moves the divider, as a share of the width. */
 const KEY_STEP = 0.05;
@@ -25,6 +27,10 @@ const PaneVisibility = createContext(true);
 export const usePaneVisible = () => useContext(PaneVisibility);
 
 export const PANE_NAMES = ["Left", "Right"] as const;
+export const STACKED_PANE_NAMES = ["Top", "Bottom"] as const;
+/** "row": side by side; "column": one above the other. */
+export type SplitDir = "row" | "column";
+export const paneNames = (dir: SplitDir) => (dir === "row" ? PANE_NAMES : STACKED_PANE_NAMES);
 
 const clamp = (r: number, min: number) => Math.min(1 - min, Math.max(min, r));
 
@@ -32,7 +38,10 @@ const clamp = (r: number, min: number) => Math.min(1 - min, Math.max(min, r));
  * The panes in order, one or two. `activeKey`: the pane keyboard shortcuts, the chat list and Search act on.
  * `onActivate`: the owner clicked, tabbed or switched into a pane.
  */
-export function Split({ panes, activeKey, onActivate, covered = false }: { panes: PaneSlot[]; activeKey: string; onActivate: (key: string) => void; covered?: boolean }) {
+export function Split({ panes, activeKey, onActivate, covered = false, dir = "row" }: { panes: PaneSlot[]; activeKey: string; onActivate: (key: string) => void; covered?: boolean; dir?: SplitDir }) {
+  const row = dir === "row";
+  const minPx = row ? MIN_PANE_PX : MIN_PANE_HEIGHT_PX;
+  const names = paneNames(dir);
   const box = useRef<HTMLDivElement>(null);
   // The left pane's share of the width. Kept here, so dragging re-renders the divider and not the chats.
   const [ratio, setRatio] = useState(0.5);
@@ -43,23 +52,26 @@ export function Split({ panes, activeKey, onActivate, covered = false }: { panes
   useLayoutEffect(() => {
     const el = box.current;
     if (!el || typeof ResizeObserver === "undefined") return;
-    setWidth(el.getBoundingClientRect().width);
-    const ro = new ResizeObserver(([e]) => setWidth(e.contentRect.width));
+    const r = el.getBoundingClientRect();
+    setWidth(row ? r.width : r.height);
+    const ro = new ResizeObserver(([e]) => setWidth(row ? e.contentRect.width : e.contentRect.height));
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [row]);
 
   // Unmeasured (as in tests), the panes are taken to fit.
-  const narrow = split && width !== undefined && width < 2 * MIN_PANE_PX + DIVIDER_PX;
-  const min = width ? Math.min(0.5, MIN_PANE_PX / (width - DIVIDER_PX)) : 0.2;
+  // `width` is the length along the split: the height when the panes are stacked.
+  const narrow = split && width !== undefined && width < 2 * minPx + DIVIDER_PX;
+  const min = width ? Math.min(0.5, minPx / (width - DIVIDER_PX)) : 0.2;
   const shown = clamp(ratio, min);
 
   const dragging = useRef<{ frame?: number; x: number; slow: boolean } | null>(null);
   // Where the guide line is, while a slow drag is under way.
   const [ghost, setGhost] = useState<number | null>(null);
-  const ratioAt = (clientX: number) => {
+  const ratioAt = (client: number) => {
     const r = box.current?.getBoundingClientRect();
-    return r?.width ? clamp((clientX - r.left - DIVIDER_PX / 2) / (r.width - DIVIDER_PX), Math.min(0.5, MIN_PANE_PX / (r.width - DIVIDER_PX))) : undefined;
+    const [start, len] = r ? (row ? [r.left, r.width] : [r.top, r.height]) : [0, 0];
+    return len ? clamp((client - start - DIVIDER_PX / 2) / (len - DIVIDER_PX), Math.min(0.5, minPx / (len - DIVIDER_PX))) : undefined;
   };
   // Live while the panes keep up; once a step is slow, the guide line stands in for the rest of the drag.
   const dragTo = (d: NonNullable<typeof dragging.current>) => {
@@ -84,7 +96,7 @@ export function Split({ panes, activeKey, onActivate, covered = false }: { panes
   useEffect(() => () => void (dragging.current?.frame && cancelAnimationFrame(dragging.current.frame)), []);
 
   return (
-    <div ref={box} aria-hidden={covered || undefined} inert={covered || undefined} className={`panes ${covered ? "covered" : ""} ${split ? "split" : ""} ${narrow ? "narrow" : ""} ${resizing ? "resizing" : ""}`}>
+    <div ref={box} aria-hidden={covered || undefined} inert={covered || undefined} className={`panes ${covered ? "covered" : ""} ${split ? "split" : ""} ${row ? "" : "stacked"} ${narrow ? "narrow" : ""} ${resizing ? "resizing" : ""}`}>
       {narrow && (
         <div className="pane-switch" role="tablist" aria-label="Panes">
           {panes.map((p, i) => (
@@ -94,7 +106,7 @@ export function Split({ panes, activeKey, onActivate, covered = false }: { panes
               aria-selected={p.key === activeKey}
               tabIndex={p.key === activeKey ? 0 : -1}
               className={`pane-tab ${p.key === activeKey ? "on" : ""}`}
-              title={`${PANE_NAMES[i]} pane: ${p.title} (Ctrl+${i + 1})`}
+              title={`${names[i]} pane: ${p.title} (Ctrl+${i + 1})`}
               onClick={() => onActivate(p.key)}
               onKeyDown={(e) => {
                 const next = e.key === "ArrowLeft" || e.key === "ArrowRight" ? 1 - i : e.key === "Home" ? 0 : e.key === "End" ? 1 : undefined;
@@ -104,7 +116,7 @@ export function Split({ panes, activeKey, onActivate, covered = false }: { panes
                 (e.currentTarget.parentElement?.children[next] as HTMLElement)?.focus();
               }}
             >
-              <span className="pane-tab-side">{PANE_NAMES[i]}</span>
+              <span className="pane-tab-side">{names[i]}</span>
               <span className="pane-tab-title">{p.title}</span>
             </button>
           ))}
@@ -120,7 +132,7 @@ export function Split({ panes, activeKey, onActivate, covered = false }: { panes
                 <div
                   className="divider"
                   role="separator"
-                  aria-orientation="vertical"
+                  aria-orientation={row ? "vertical" : "horizontal"}
                   aria-label="Resize the panes"
                   aria-valuemin={Math.round(min * 100)}
                   aria-valuemax={Math.round((1 - min) * 100)}
@@ -131,26 +143,26 @@ export function Split({ panes, activeKey, onActivate, covered = false }: { panes
                     if (e.button !== 0) return;
                     e.preventDefault();
                     e.currentTarget.setPointerCapture(e.pointerId);
-                    dragging.current = { x: e.clientX, slow: false };
+                    dragging.current = { x: row ? e.clientX : e.clientY, slow: false };
                     setResizing(true);
                   }}
                   onPointerMove={(e) => {
                     const d = dragging.current;
                     if (!d) return;
-                    d.x = e.clientX;
+                    d.x = row ? e.clientX : e.clientY;
                     // One layout per frame: a long chat reflows each time its width changes.
                     d.frame ??= requestAnimationFrame(() => {
                       d.frame = undefined;
                       dragTo(d);
                     });
                   }}
-                  onPointerUp={(e) => endDrag(e.clientX)}
+                  onPointerUp={(e) => endDrag(row ? e.clientX : e.clientY)}
                   // Cancelled, the panes stay where the last live step left them.
                   onPointerCancel={() => endDrag()}
                   onDoubleClick={() => setRatio(0.5)}
                   onKeyDown={(e) => {
                     const to =
-                      e.key === "ArrowLeft" ? shown - KEY_STEP : e.key === "ArrowRight" ? shown + KEY_STEP : e.key === "Home" ? min : e.key === "End" ? 1 - min : undefined;
+                      e.key === (row ? "ArrowLeft" : "ArrowUp") ? shown - KEY_STEP : e.key === (row ? "ArrowRight" : "ArrowDown") ? shown + KEY_STEP : e.key === "Home" ? min : e.key === "End" ? 1 - min : undefined;
                     if (to === undefined) return;
                     e.preventDefault();
                     setRatio(clamp(to, min));
@@ -160,7 +172,7 @@ export function Split({ panes, activeKey, onActivate, covered = false }: { panes
               <section
                 className={`pane ${split && active ? "active" : ""} ${hidden ? "hidden" : ""}`}
                 data-pane={p.key}
-                aria-label={split ? `${PANE_NAMES[i]} pane: ${p.title}${active ? " (active)" : ""}` : undefined}
+                aria-label={split ? `${names[i]} pane: ${p.title}${active ? " (active)" : ""}` : undefined}
                 aria-hidden={hidden || undefined}
                 inert={hidden || undefined}
                 style={split && !narrow ? { flexGrow: i === 0 ? shown : 1 - shown } : undefined}
@@ -173,7 +185,7 @@ export function Split({ panes, activeKey, onActivate, covered = false }: { panes
             </Fragment>
           );
         })}
-        {ghost !== null && <div className="divider-ghost" style={{ left: `calc(${ghost * 100}% - 1px)` }} />}
+        {ghost !== null && <div className="divider-ghost" style={{ [row ? "left" : "top"]: `calc(${ghost * 100}% - 1px)` }} />}
       </div>
     </div>
   );

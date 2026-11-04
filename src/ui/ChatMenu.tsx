@@ -2,7 +2,7 @@
 // menu uses too. Escape or a click elsewhere closes one, and focus goes back to what had it. The arrow keys move
 // between a menu's items.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { AlarmClock, AlarmClockOff, CalendarClock, Check, Columns2, Link2, PanelLeft, PanelRight, Pencil, Sparkles, Tag as TagIcon } from "lucide-react";
+import { AlarmClock, AlarmClockOff, AppWindow, CalendarClock, Check, Columns2, Link2, PanelLeft, PanelRight, Pencil, Sparkles, Tag as TagIcon } from "lucide-react";
 import type { Chat } from "../hermes/model";
 import type { Project } from "../hermes/projects";
 import { snoozePresets, wakeFull } from "../hermes/snooze";
@@ -38,6 +38,7 @@ export function ChatMenu({
   y,
   split = false,
   onOpenIn,
+  onOpenTab,
   onRename,
   onRegenTitle,
   onCopyLink,
@@ -51,6 +52,8 @@ export function ChatMenu({
   y: number;
   split?: boolean;
   onOpenIn?: (side: number) => void;
+  /** Opens the chat in a new tab of the active pane. */
+  onOpenTab?: () => void;
   onRename: () => void;
   onRegenTitle: () => void;
   onCopyLink?: () => void;
@@ -103,6 +106,21 @@ export function ChatMenu({
             <Link2 size={15} />
           </span>
           <span className="menu-label">Copy chat link</span>
+        </button>
+      )}
+      {onOpenTab && (
+        <button
+          role="menuitem"
+          className="menu-item"
+          onClick={() => {
+            onClose();
+            onOpenTab();
+          }}
+        >
+          <span className="menu-icon">
+            <AppWindow size={15} />
+          </span>
+          <span className="menu-label">Open in a new tab</span>
         </button>
       )}
       {onOpenIn &&

@@ -11,6 +11,7 @@ import { chatSections, wakeFull, wakeLabel, type Snoozes } from "../hermes/snooz
 import { ChatMenu, type ChatProjects, type ChatSnooze, type ChatTags } from "./ChatMenu";
 import { SnoozeDialog, useSnoozeClock } from "./Snooze";
 import { ArchiveButton, STATUS_LABEL, SettleButton, SourceIcon, Spinner, composing, relTime, routeLabel, useReturnFocus } from "./bits";
+import { dragChat } from "./Tabs";
 
 
 
@@ -272,6 +273,7 @@ function ChatRow({
   split,
   onOpen,
   onOpenIn,
+  onOpenTab,
   onSettle,
   onArchive,
   onDelete,
@@ -293,6 +295,8 @@ function ChatRow({
   onOpen: () => void;
   /** Opens the chat in the left (0) or right (1) pane. */
   onOpenIn: (side: number) => void;
+  /** Opens the chat in a new tab of the active pane. */
+  onOpenTab: () => void;
   onSettle: (settled: boolean) => void;
   onArchive: (archived: boolean) => void;
   onDelete: () => void;
@@ -378,6 +382,9 @@ function ChatRow({
         className="row-open"
         data-chat={chat.id}
         aria-current={selected || undefined}
+        // Dragged onto a pane's tabs or edge, the chat opens in a new tab or a split there (Tabs.tsx).
+        draggable
+        onDragStart={(e) => dragChat(e, chat.id)}
         title={`${retitling ? "Writing a new title…" : chat.source !== "app" ? `${chat.title} (from ${SOURCE_LABEL[chat.source]})` : chat.title}${alsoShown ? " (in the other pane)" : ""}${sleepsUntil ? ` (snoozed until ${wakeFull(sleepsUntil)})` : ""}`}
         onClick={() => {
           setRetitleError(undefined);
@@ -429,6 +436,7 @@ function ChatRow({
           split={split}
           snooze={snooze}
           onOpenIn={onOpenIn}
+          onOpenTab={onOpenTab}
           onRename={() => setRenaming(true)}
           onRegenTitle={regenTitle}
           onCopyLink={onCopyLink}
@@ -762,6 +770,7 @@ export function ChatList({
   split = false,
   onOpen,
   onOpenIn = () => {},
+  onOpenTab = () => {},
   onSettle,
   snoozes = {},
   attentionSince,
@@ -801,6 +810,8 @@ export function ChatList({
   onOpen: (id: string) => void;
   /** Opens a chat in the left (0) or right (1) pane, opening the right one if there is one pane. */
   onOpenIn?: (id: string, side: number) => void;
+  /** Opens a chat in a new tab of the active pane. */
+  onOpenTab?: (id: string) => void;
   onSettle: (id: string, settled: boolean) => void;
   /** When each snoozed chat wakes (snooze.ts). */
   snoozes?: Snoozes;
@@ -858,6 +869,7 @@ export function ChatList({
       split={split}
       onOpen={() => onOpen(c.id)}
       onOpenIn={(side) => onOpenIn(c.id, side)}
+      onOpenTab={() => onOpenTab(c.id)}
       onSettle={(s) => onSettle(c.id, s)}
       onArchive={(a) => onArchive(c.id, a)}
       onDelete={() => onDelete(c.id)}
