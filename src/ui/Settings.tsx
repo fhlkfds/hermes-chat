@@ -1,14 +1,15 @@
-// The Settings screen, in six tabs. General, ported from the prototype: the connection and Sign out, what shows on
+// The Settings screen, in eight tabs. General, ported from the prototype: the connection and Sign out, what shows on
 // launch, voice, screenshots, updates, the local cache, older history, importing transcripts, and backups. Appearance: how the app looks on this
 // computer (AppearanceSettings.tsx). Model: the profile's models on Hermes (ModelSettings.tsx). Toolsets: which tools
 // Hermes offers the model in the profile (ToolsetSettings.tsx). Persona: the profile's SOUL.md on Hermes
 // (PersonaSettings.tsx). Memory: what Hermes remembers for the profile (MemorySettings.tsx). Skills: the profile's
-// skills, switched and edited on Hermes (SkillSettings.tsx).
+// skills, switched and edited on Hermes (SkillSettings.tsx). Diagnostics: what the connected Hermes is and what it
+// supports (Diagnostics.tsx); a tab whose feature Hermes lacks says so in its place.
 // Profiles are switched in the list's header, not here (ADR 0001). The search box (Ctrl+F) shows the sections of every
 // tab whose text holds what was typed (settingsSearch.ts).
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { getUIPrefs, subscribe as subscribeUIPrefs } from "../hermes/uiPrefs";
-import { ArrowLeft, Brain, Cpu, Download, KeyRound, Lock, LogOut, Palette, PlugZap, Puzzle, Search, Settings2, ShieldCheck, Sparkles, Trash2, Wrench, X } from "lucide-react";
+import { ArrowLeft, Brain, Cpu, Download, KeyRound, Lock, LogOut, Palette, PlugZap, Puzzle, Search, Settings2, ShieldCheck, Sparkles, Stethoscope, Trash2, Wrench, X } from "lucide-react";
 import type { Chat, ConnectionStatus } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
 import { TRANSCRIPT_LIMIT_BYTES } from "../hermes/chatCache";
@@ -21,6 +22,8 @@ import type { ToolsetsApi } from "../hermes/toolsets";
 import { ToolsetSettings, type OpenChat } from "./ToolsetSettings";
 import type { MemoryApi } from "../hermes/memory";
 import { MemorySettings } from "./MemorySettings";
+import type { MemoryProvidersApi } from "../hermes/memoryProviders";
+import { MemoryProviderSettings } from "./MemoryProviderSettings";
 import type { SkillsApi } from "../hermes/skills";
 import { SkillSettings } from "./SkillSettings";
 import { PersonaSettings, type PersonaWhere } from "./PersonaSettings";
@@ -38,9 +41,11 @@ import type { ScreenshotSupport } from "../hermes/tauriScreenshot";
 import { UpdateSettings } from "./UpdateSettings";
 import { ImportSection, type ImportWiring } from "./ImportTranscripts";
 import { BackupSection, type BackupWiring } from "./Backup";
+import { guideUrl, type CapabilityId, type CapabilityStore } from "../hermes/capabilities";
+import { CapabilityGate, DiagnosticsSettings, type OpenGuide } from "./Diagnostics";
 import { NAMED, applySearch, clearMarks, queryWords, textMatches } from "./settingsSearch";
 
-type Tab = "general" | "appearance" | "model" | "toolsets" | "persona" | "memory" | "skills";
+type Tab = "general" | "appearance" | "model" | "toolsets" | "persona" | "memory" | "skills" | "diagnostics";
 const TABS = [
   { id: "general", label: "General", Icon: Settings2 },
   { id: "appearance", label: "Appearance", Icon: Palette },
@@ -49,6 +54,7 @@ const TABS = [
   { id: "persona", label: "Persona", Icon: Sparkles },
   { id: "memory", label: "Memory", Icon: Brain },
   { id: "skills", label: "Skills", Icon: Puzzle },
+  { id: "diagnostics", label: "Diagnostics", Icon: Stethoscope },
 ] as const;
 
 /** The tabs whose sections a search shows in place. */
@@ -61,7 +67,16 @@ const ABOUT: Partial<Record<Tab, string>> = {
   persona: "Who Hermes is and how it speaks in this profile's chats: the profile's SOUL.md, edited on the server.",
   memory: "What Hermes remembers about you and your work between chats, changed or removed entry by entry.",
   skills: "Instructions Hermes can load for a kind of task: turn each skill on or off for the profile, and edit its SKILL.md.",
+  diagnostics: "The connected Hermes's version, protocol and sign-in, and which features this server supports.",
 };
+
+/** How the connection signs in, in words, for diagnostics: this app signs in only with the dashboard's username and password. */
+export const signInText = (route?: Route) =>
+  route?.kind === "ssh"
+    ? "Dashboard username and password, through an SSH tunnel"
+    : route
+      ? "Dashboard username and password, at the dashboard's URL"
+      : "Dashboard username and password";
 
 /** Settings → Persona's wiring: the API, where its edits are kept on this computer, and what it edits. */
 export type PersonaWiring = { api: PersonaApi; store: PersonaStore; storeKey: string; where: PersonaWhere };
@@ -100,6 +115,7 @@ export function SettingsScreen({
   runningReplies = 0,
   openChat,
   memory,
+  memoryProviders,
   onMemoryDirty = () => {},
   memoryDiscards = 0,
   skills,
@@ -118,6 +134,9 @@ export function SettingsScreen({
   importer,
   backup,
   showMemory,
+  capabilities,
+  openGuide = () => {},
+  showDiagnostics,
 }: {
   status: ConnectionStatus;
   route?: Route;
@@ -152,6 +171,8 @@ export function SettingsScreen({
   openChat?: OpenChat;
   /** The profile's memory on Hermes; the Memory tab shows only with it. */
   memory?: MemoryApi;
+  /** Each profile's external memory provider on Hermes, shown in the Memory tab under the profile's own memory. */
+  memoryProviders?: MemoryProvidersApi;
   /** Called with whether the Memory tab has an unsaved edit. */
   onMemoryDirty?: (dirty: boolean) => void;
   /** Changes each time the owner discards the unsaved memory edit from App's question. */
@@ -185,6 +206,12 @@ export function SettingsScreen({
   showTextGeneration?: object;
   /** Set (to a new object each time) to show the Memory tab. */
   showMemory?: object;
+  /** What the connected Hermes supports; without it there is no Diagnostics tab and no tab is held back. */
+  capabilities?: CapabilityStore;
+  /** Opens a compatibility guide page in the browser. */
+  openGuide?: OpenGuide;
+  /** Set, each time anew, to show the Diagnostics tab, at a capability if it names one: from a screen's note. */
+  showDiagnostics?: { id?: CapabilityId };
 }) {
   const [bytes, setBytes] = useState(cacheBytes);
   const [confirmClear, setConfirmClear] = useState(false);
@@ -196,9 +223,26 @@ export function SettingsScreen({
   const [query, setQuery] = useState("");
   const summonStatus = useSummonStatus(summon);
   const { screenshotShortcut } = useSyncExternalStore(subscribeUIPrefs, getUIPrefs);
-  const [tab, setTabNow] = useState<Tab>(showTextGeneration ? "model" : showMemory && memory ? "memory" : "general");
+  // The Memory tab's two parts each say whether they hold an unsaved change; the tab has one while either does.
+  const memoryParts = useRef({ entries: false, providers: false });
+  const memoryPart = (part: "entries" | "providers") => (dirty: boolean) => {
+    memoryParts.current[part] = dirty;
+    onMemoryDirty(memoryParts.current.entries || memoryParts.current.providers);
+  };
+  const onEntriesDirty = useCallback(memoryPart("entries"), [onMemoryDirty]);
+  const onProvidersDirty = useCallback(memoryPart("providers"), [onMemoryDirty]);
+  const [tab, setTabNow] = useState<Tab>(
+    showTextGeneration ? "model" : showMemory && memory ? "memory" : showDiagnostics && capabilities ? "diagnostics" : "general",
+  );
+  // A new object each time a note asks for a capability, so the row is focused again even for the same one.
+  const [diagFocus, setDiagFocus] = useState<{ id: CapabilityId } | undefined>(showDiagnostics?.id ? { id: showDiagnostics.id } : undefined);
   const tabs = TABS.filter(
-    (t) => (t.id !== "toolsets" || toolsets) && (t.id !== "persona" || persona) && (t.id !== "memory" || memory) && (t.id !== "skills" || skills),
+    (t) =>
+      (t.id !== "toolsets" || toolsets) &&
+      (t.id !== "persona" || persona) &&
+      (t.id !== "memory" || memory) &&
+      (t.id !== "skills" || skills) &&
+      (t.id !== "diagnostics" || capabilities),
   );
   // Leaving the Persona, Memory or Skills tab asks first while it holds an unsaved edit.
   const setTab = (t: Tab) => t !== tab && guard(() => setTabNow(t));
@@ -213,6 +257,28 @@ export function SettingsScreen({
     setQuery("");
     setTab("memory");
   }, [showMemory]);
+  useEffect(() => {
+    if (!showDiagnostics || !capabilities) return;
+    setQuery("");
+    setDiagFocus(showDiagnostics.id ? { id: showDiagnostics.id } : undefined);
+    setTab("diagnostics");
+  }, [showDiagnostics]);
+  /** A tab's note about a feature Hermes lacks opens Diagnostics at it. */
+  const toDiagnostics = (id: CapabilityId) =>
+    guard(() => {
+      setQuery("");
+      setDiagFocus({ id });
+      setTabNow("diagnostics");
+    });
+  /** `body`, unless the connected Hermes lacks capability `id`; then the note saying so, and nothing of `body` runs. */
+  const gated = (id: CapabilityId, body: ReactNode) =>
+    capabilities ? (
+      <CapabilityGate store={capabilities} id={id} openGuide={openGuide} onDiagnostics={toDiagnostics}>
+        {body}
+      </CapabilityGate>
+    ) : (
+      body
+    );
 
   const pull = async () => {
     setPulling(true);
@@ -326,6 +392,14 @@ export function SettingsScreen({
           Signing out deletes the saved password from the keyring. You type it again at the next sign-in.
           {headers.length > 0 && headersSaved && " The extra request headers stay saved, to change or remove on the sign-in screen."}
         </p>
+        {capabilities && (
+          <div className="settings-row settings-setup">
+            <div className="muted small">See the Hermes version, protocol and sign-in, and which features this server supports.</div>
+            <button className="btn" onClick={() => pick("diagnostics")}>
+              <Stethoscope size={14} aria-hidden /> Connection diagnostics
+            </button>
+          </div>
+        )}
         {onSetUp && (
           <div className="settings-row settings-setup">
             <div className="muted small">
@@ -420,8 +494,10 @@ export function SettingsScreen({
     switch (id) {
       case "persona":
         return (
-          persona && (
-            // An edit is for one connection and profile: another profile is another editor.
+          persona &&
+          // An edit is for one connection and profile: another profile is another editor.
+          gated(
+            "persona",
             <PersonaSettings
               key={`${persona.storeKey}`}
               api={persona.api}
@@ -430,15 +506,33 @@ export function SettingsScreen({
               where={persona.where}
               connected={status === "connected"}
               onDirty={onPersonaDirty}
-            />
+            />,
           )
         );
       case "memory":
         // An edit lives only while this tab is open, and for one profile; leaving with one asks first.
-        return memory && <MemorySettings key={profile} api={memory} profile={profile} status={status} server={routeLabel(route) ?? "not known until connected"} onDirtyChange={onMemoryDirty} discardSignal={memoryDiscards} />;
+        return (
+          memory && (
+            <>
+              {gated(
+                "memory",
+                <MemorySettings key={profile} api={memory} profile={profile} status={status} server={routeLabel(route) ?? "not known until connected"} onDirtyChange={onEntriesDirty} discardSignal={memoryDiscards} />,
+              )}
+              {memoryProviders && (
+                <MemoryProviderSettings key={`providers-${profile}`} api={memoryProviders} profile={profile} connected={status === "connected"} onDirtyChange={onProvidersDirty} discardSignal={memoryDiscards} />
+              )}
+            </>
+          )
+        );
       case "skills":
         // An edit lives only while this tab is open, and for one profile; leaving with one asks first.
-        return skills && <SkillSettings key={profile} api={skills} profile={profile} status={status} server={routeLabel(route) ?? "not known until connected"} onDirtyChange={onSkillDirty} discardSignal={skillDiscards} />;
+        return (
+          skills &&
+          gated(
+            "skills",
+            <SkillSettings key={profile} api={skills} profile={profile} status={status} server={routeLabel(route) ?? "not known until connected"} onDirtyChange={onSkillDirty} discardSignal={skillDiscards} />,
+          )
+        );
       case "appearance":
         return <AppearanceSettings store={appearance} listFonts={listFonts} />;
       case "model":
@@ -446,7 +540,26 @@ export function SettingsScreen({
         return <ModelSettings key={profile} api={modelSettings} profile={profile} connected={status === "connected"} showTextGeneration={searching ? undefined : showTextGeneration} />;
       case "toolsets":
         // Read for one profile; switching profile reads the new one's afresh.
-        return toolsets && <ToolsetSettings key={profile} api={toolsets} profile={profile} connected={status === "connected"} runningReplies={runningReplies} chat={openChat} />;
+        return (
+          toolsets &&
+          gated("toolsets", <ToolsetSettings key={profile} api={toolsets} profile={profile} connected={status === "connected"} runningReplies={runningReplies} chat={openChat} onGuide={() => openGuide(guideUrl("toolsetSwitches"))} />)
+        );
+      case "diagnostics":
+        return (
+          capabilities && (
+            <DiagnosticsSettings
+              store={capabilities}
+              connected={status === "connected"}
+              server={routeLabel(route)}
+              signIn={signInText(route)}
+              headers={headers.length}
+              unsecure={unsecure}
+              profile={profile}
+              openGuide={openGuide}
+              focus={diagFocus}
+            />
+          )
+        );
       case "general":
         return general;
     }

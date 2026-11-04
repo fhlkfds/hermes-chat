@@ -12,6 +12,7 @@
 //   the owner opened it (`update`). Fields this app doesn't show are never sent, so Hermes keeps them.
 import { rowText } from "./branch";
 import type { RestMethod } from "./pipe";
+import { CapabilityUnsupportedError } from "./capabilities";
 import { type Schedule, type Zone, knownZone, offsetAt, offsetLabel, parseSchedule, storedSchedule } from "./schedule";
 
 /** How Hermes last ran a job, from its execution ledger (`cron/executions.py`). */
@@ -319,6 +320,7 @@ export function cronError(e: unknown): CronError {
   if (message === "Not connected to Hermes." || message === "The chat connection is closed.")
     return new CronError("offline", "Hermes Chat isn't connected to Hermes, so nothing was sent. Jobs keep running on the server.");
   if (/sign-in has expired/.test(message)) return new CronError("forbidden", "The dashboard sign-in has expired, so nothing was changed. Sign in again.");
+  if (e instanceof CapabilityUnsupportedError) return new CronError("unsupported", "This Hermes server has no scheduled jobs, so nothing was sent. Updating Hermes adds them.");
   if (/doesn't relay/.test(message)) return new CronError("unsupported", "This version of Hermes Chat can't send that to Hermes.");
   const m = /^The dashboard answered (\d{3}): ([\s\S]*)$/.exec(message);
   if (!m) return new CronError("unknown", `Hermes didn't answer: ${message}`);

@@ -1,7 +1,8 @@
 // A fake Hermes dashboard for tests: it sits where the Rust pipe does and speaks wire-shaped legacy
 // JSON-RPC frames and dashboard REST bodies (shapes from the deployed contracts, see the research doc).
-import type { LocalFile, OpenPipe, PipeEvent, Route, Speech, ToolsetGuards, VoiceSetup } from "./pipe";
+import type { LocalFile, OpenPipe, PipeEvent, RestMethod, Route, Speech, ToolsetGuards, VoiceSetup } from "./pipe";
 import type { SavedKey } from "./setup";
+import { FakeMemoryProviders } from "./fakeMemoryProviders";
 import { FakeSkills } from "./fakeSkills";
 import { FakeServerFiles } from "./fakeServerFiles";
 import { ScheduleError, isoIn, parseSchedule, upcomingRuns } from "./schedule";
@@ -377,6 +378,8 @@ export class FakeHermes {
   readonly managedFiles = new FakeServerFiles();
   /** The profiles' skills, as Settings → Skills reads and writes them (fakeSkills.ts). */
   readonly skills = new FakeSkills(this.managedFiles);
+  /** The profiles' external memory providers, as Settings → Memory → External memory reads and writes them. */
+  readonly memoryProviders = new FakeMemoryProviders((p) => p === "default" || p in this.otherProfiles || p in this.memory);
   /** Whether this connection sent `client.capabilities {server_requests: true}`. */
   answersRequests = false;
   /** Server→client requests nobody has answered yet, by id. */
@@ -483,8 +486,42 @@ export class FakeHermes {
    */
   liveSessions: { id: string; session_key: string; status: string; last_active: number; started_at?: number; title?: string; preview?: string }[] = [];
 
+  /**
+   * What `GET /api/health` answers (`hermes_cli/web_routers/status.py` at upstream `74b2ed6`). Hermes 0.16.0 has no such
+   * route; `asOlderHermes` removes it.
+   */
+  health: Record<string, unknown> = { ok: true, version: "0.17.0", displayVersion: "0.17.0", commit: "74b2ed65e6c1d2a3b4c5d6e7f8091a2b3c4d5e6f", auth_required: true };
+  /**
+   * What `GET /api/status` answers, trimmed. Like Hermes's, it carries a path, a process id and an install id that the
+   * app must not keep.
+   */
+  status: Record<string, unknown> = {
+    version: "0.17.0",
+    release_date: "2026-11-01",
+    hermes_home: "/home/fixture/.hermes",
+    gateway_pid: 4242,
+    install_id: "install-1f2e3d4c5b6a",
+    auth_required: true,
+    auth_providers: ["basic"],
+    auth_flows: ["cookie"],
+  };
+
+  /**
+   * Makes this server answer as Hermes 0.16.0 (`3705625`, 2026-06-08) does, as read from its source: no `/api/health`,
+   * no `client.capabilities` or `gateway.capabilities`, no `projects.*` or `learning.*`, and no managed-files or agent
+   * fs routes. Its `/api/status` has the version and the sign-in gate.
+   */
+  asOlderHermes() {
+    const noMethod = (name: string) => (this.handlers[name] = (r) => this.fail(r.id, -32601, `unknown method: ${name}`));
+    for (const m of ["client.capabilities", "gateway.capabilities", "projects.list", "projects.create", "learning.frames", "learning.detail", "learning.edit", "learning.delete"]) noMethod(m);
+    for (const r of ["GET /api/health", "GET /api/files", "GET /api/files/read", "GET /api/fs/list"]) delete this.rest[r];
+    this.status = { version: "0.16.0", release_date: "2026.6.8", auth_required: true, auth_providers: ["basic"] };
+  }
+
   /** Per-method behaviour; tests override entries. Unhandled methods get no answer. */
   readonly handlers: Record<string, Handler> = {
+    // `tui_gateway/contracts/liveness.py` at upstream `74b2ed6`: what this build enforces, as flags.
+    "gateway.capabilities": (r) => this.respond(r.id, { per_session_exclusive_submit: true }),
     "session.active_list": (r) => this.respond(r.id, { sessions: this.liveSessions.map((l) => ({ current: false, message_count: 0, model: "", preview: "", title: "", started_at: l.last_active, ...l })) }),
     "session.create": (r) => {
       const n = this.requests.filter((q) => q.method === "session.create").length;
@@ -882,6 +919,8 @@ export class FakeHermes {
 
   /** Per-route REST behaviour, keyed `METHOD /path`. A handler throws to fail the request. */
   readonly rest: Record<string, RestHandler> = {
+    "GET /api/health": () => this.health,
+    "GET /api/status": () => this.status,
     // `fs_list` (`hermes_cli/web_routers/files.py` at the deployed `bf0203a`): a folder's entries, or none and why.
     "GET /api/fs/list": ({ query }) => {
       const path = query.get("path") ?? "";
@@ -1018,7 +1057,8 @@ export class FakeHermes {
         throw new Error(`The dashboard answered 404: {"detail":"Profile '${profile}' does not exist."}`);
       const m = this.memory[profile] ?? { memory: [], profile: [] };
       const bytes = (entries: string[]) => new TextEncoder().encode(entries.join("\n§\n")).length;
-      return { active: this.memoryProvider, providers: [], builtin_files: { memory: bytes(m.memory), user: bytes(m.profile) } };
+      if (!this.memoryProviders.routes) throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
+      return { ...this.memoryProviders.memory(profile, this.memoryProvider), builtin_files: { memory: bytes(m.memory), user: bytes(m.profile) } };
     },
     "GET /api/files": ({ query }) => this.managedFiles.list(query),
     "GET /api/files/read": ({ query }) => this.managedFiles.read(query),
@@ -1202,6 +1242,7 @@ export class FakeHermes {
     this.frame({ jsonrpc: "2.0", method: "event", params: { type: "gateway.ready", payload: this.readyPayload } });
     // A new connection hasn't said yet whether it answers server→client requests.
     this.answersRequests = false;
+    const restCall = (method: RestMethod, pathAndQuery: string, body?: string) => this.restCall(method, pathAndQuery, body);
     const send = async (text: string) => {
       if (this.failSend !== undefined) throw new Error(this.failSend);
       const req = JSON.parse(text) as Request | Response;
@@ -1261,44 +1302,12 @@ export class FakeHermes {
           disabledUnclear: !!this.toolsetDisabledUnclear[profile],
         };
       },
-      request: async (method, pathAndQuery, body) => {
-        const url = new URL(pathAndQuery, "http://dashboard/");
-        const req: RestRequest = { method, path: url.pathname, query: url.searchParams, body: body === undefined ? undefined : JSON.parse(body) };
-        this.restRequests.push(req);
-        const patch = /^\/api\/sessions\/([^/]+)$/.exec(req.path);
-        const snapshot = /^\/api\/sessions\/([^/]+)\/mutation-snapshot$/.exec(req.path);
-        const messages = /^\/api\/sessions\/([^/]+)\/messages$/.exec(req.path);
-        const soul = /^\/api\/profiles\/([^/]+)\/soul$/.exec(req.path);
-        const handler =
-          this.rest[`${method} ${req.path}`] ??
-          (method === "POST" && req.path === "/api/sessions/import" ? () => this.importSessions(req.body!) : undefined) ??
-          (method === "PATCH" && patch ? () => this.patchSession(patch[1], req.body!) : undefined) ??
-          (method === "GET" && patch ? () => this.sessionDetail(decodeURIComponent(patch[1]), req.query.get("profile")) : undefined) ??
-          (method === "DELETE" && patch ? () => this.deleteSession(decodeURIComponent(patch[1]), req.query.get("profile")) : undefined) ??
-          (method === "GET" && snapshot ? () => this.mutationSnapshot(snapshot[1], req.query.get("profile")) : undefined) ??
-          (method === "GET" && messages ? () => this.storedMessages(decodeURIComponent(messages[1]), req.query) : undefined) ??
-          (soul && this.soulRoutes && (method === "GET" || method === "PUT") ? () => this.soul(method, decodeURIComponent(soul[1]), req.body) : undefined) ??
-          this.webhooks.route(req) ??
-          this.cron.route(req) ??
-          this.skills.route(req);
-        const toolset = /^\/api\/tools\/toolsets(?:\/([^/]+)(\/config)?)?$/.exec(req.path);
-        if (!handler && toolset) return JSON.stringify(await this.toolsetRoute(req, toolset[1], !!toolset[2]));
-        if (soul && this.soulRoutes && method !== "GET" && method !== "PUT") throw new Error(`The dashboard answered 405: {"detail":"Method Not Allowed"}`);
-        if (soul && !this.soulRoutes) throw new Error(`The dashboard answered 404: {"detail":"No such API endpoint: ${req.path}"}`);
-        if (!handler) throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
-        return JSON.stringify(await handler(req));
-      },
+      request: (method, pathAndQuery, body) => restCall(method, pathAndQuery, body),
       // Mirrors the Rust side's `Dashboard::save_provider_key`: only a listed provider secret, checked, then saved.
       saveProviderKey: async (profile, envVar, key) => this.saveProviderKey(profile, envVar, key),
-      // Mirrors `Dashboard::get_limited`: refused once the answer passes the limit.
+      // Mirrors `Dashboard::get_limited`: any GET the relay takes, refused once the answer passes the limit.
       getLimited: async (pathAndQuery, maxBytes) => {
-        const url = new URL(pathAndQuery, "http://dashboard/");
-        const req: RestRequest = { method: "GET", path: url.pathname, query: url.searchParams };
-        this.restRequests.push(req);
-        const messages = /^\/api\/sessions\/([^/]+)\/messages$/.exec(req.path);
-        const handler = this.rest[`GET ${req.path}`] ?? (messages ? () => this.storedMessages(decodeURIComponent(messages[1]), req.query) : undefined);
-        if (!handler) throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
-        const body = JSON.stringify(await handler(req));
+        const body = await restCall("GET", pathAndQuery);
         if (body.length > maxBytes) throw new Error(`it's ${(body.length / MiB).toFixed(1)} MB now, over the ${Math.floor(maxBytes / MiB)} MB limit`);
         return body;
       },
@@ -1308,6 +1317,36 @@ export class FakeHermes {
       },
     };
   };
+
+  /** One dashboard REST call as the Rust relay makes it: the answer's body on 2xx, or an error worded as Rust words it. */
+  private async restCall(method: RestMethod, pathAndQuery: string, body?: string): Promise<string> {
+    const url = new URL(pathAndQuery, "http://dashboard/");
+    const req: RestRequest = { method, path: url.pathname, query: url.searchParams, body: body === undefined ? undefined : JSON.parse(body) };
+    this.restRequests.push(req);
+    const patch = /^\/api\/sessions\/([^/]+)$/.exec(req.path);
+    const snapshot = /^\/api\/sessions\/([^/]+)\/mutation-snapshot$/.exec(req.path);
+    const messages = /^\/api\/sessions\/([^/]+)\/messages$/.exec(req.path);
+    const soul = /^\/api\/profiles\/([^/]+)\/soul$/.exec(req.path);
+    const handler =
+      this.rest[`${method} ${req.path}`] ??
+      (method === "POST" && req.path === "/api/sessions/import" ? () => this.importSessions(req.body!) : undefined) ??
+      (method === "PATCH" && patch ? () => this.patchSession(patch[1], req.body!) : undefined) ??
+      (method === "GET" && patch ? () => this.sessionDetail(decodeURIComponent(patch[1]), req.query.get("profile")) : undefined) ??
+      (method === "DELETE" && patch ? () => this.deleteSession(decodeURIComponent(patch[1]), req.query.get("profile")) : undefined) ??
+      (method === "GET" && snapshot ? () => this.mutationSnapshot(snapshot[1], req.query.get("profile")) : undefined) ??
+      (method === "GET" && messages ? () => this.storedMessages(decodeURIComponent(messages[1]), req.query) : undefined) ??
+      (soul && this.soulRoutes && (method === "GET" || method === "PUT") ? () => this.soul(method, decodeURIComponent(soul[1]), req.body) : undefined) ??
+      this.webhooks.route(req) ??
+      this.cron.route(req) ??
+      this.skills.route(req) ??
+      this.memoryProviders.route(req);
+    const toolset = /^\/api\/tools\/toolsets(?:\/([^/]+)(\/config)?)?$/.exec(req.path);
+    if (!handler && toolset) return JSON.stringify(await this.toolsetRoute(req, toolset[1], !!toolset[2]));
+    if (soul && this.soulRoutes && method !== "GET" && method !== "PUT") throw new Error(`The dashboard answered 405: {"detail":"Method Not Allowed"}`);
+    if (soul && !this.soulRoutes) throw new Error(`The dashboard answered 404: {"detail":"No such API endpoint: ${req.path}"}`);
+    if (!handler) throw new Error(`The dashboard answered 404: {"detail":"Not Found"}`);
+    return JSON.stringify(await handler(req));
+  }
 
   /** A profile's enabled toolsets, its defaults when it has saved none: every listed one but `discord` and `image_gen`. */
   enabledToolsets(profile: string): Set<string> {

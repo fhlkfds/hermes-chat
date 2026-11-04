@@ -61,6 +61,7 @@ function Shell({ hermes, guard }: { hermes: Hermes; guard?: (go: () => void) => 
       listFonts={async () => ({ all: [], mono: [] })}
       modelSettings={hermes.modelSettings}
       memory={hermes.memory}
+      capabilities={hermes.capabilities}
       guard={guard}
       onClearCache={() => {}}
       onPullOlder={async () => []}
@@ -160,6 +161,17 @@ describe("Searching Settings", () => {
     expect(box().value).toBe("");
     expect(screen.getByRole("tab", { name: /Memory/ }).getAttribute("aria-selected")).toBe("true");
     expect(document.getElementById("settings-panel-memory")).not.toBeNull();
+  });
+
+  it("names the Diagnostics tab, and opening it ends the search there", async () => {
+    const { user } = await shown();
+    await user.type(box(), "protocol");
+    // General's Connection section holds the button that also says so, and stays in the results.
+    expect(showing("Connection")).toBe(true);
+    await user.click(screen.getByRole("button", { name: "Open Diagnostics" }));
+    expect(box().value).toBe("");
+    expect(screen.getByRole("tab", { name: /Diagnostics/ }).getAttribute("aria-selected")).toBe("true");
+    expect(document.getElementById("settings-panel-diagnostics")).not.toBeNull();
   });
 
   it("says when nothing matches", async () => {

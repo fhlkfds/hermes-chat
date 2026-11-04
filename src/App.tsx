@@ -1,6 +1,6 @@
 import { type ReactNode, type RefObject, Suspense, lazy, useCallback, useLayoutEffect, useMemo, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal, flushSync } from "react-dom";
-import { Columns2, FolderCog, GitBranch, PanelRight, X } from "lucide-react";
+import { Columns2, FolderCog, GitBranch, PanelRight, Rows2, X } from "lucide-react";
 import { RenameConflict, connect, readSaved, toSource, type Delivery, type Hermes } from "./hermes/transport";
 import { invoke } from "@tauri-apps/api/core";
 import type { CommandHost } from "./ui/SlashCommands";
@@ -44,7 +44,8 @@ import { ReplayDialog } from "./ui/Replay";
 import { replayBlocked, variantsIn, type ReplayKind } from "./hermes/replay";
 import { branchBlocked, type BranchLink } from "./hermes/branch";
 import type { QueueApi } from "./ui/Queue";
-import { PANE_NAMES, Split, usePaneVisible, type PaneSlot } from "./ui/Split";
+import { paneNames, Split, usePaneVisible, type PaneSlot, type SplitDir } from "./ui/Split";
+import { closeTabIn, navigateTabs, PaneDrop, TabStrip, type DropZone } from "./ui/Tabs";
 import type { VoiceApi } from "./ui/Voice";
 import { SearchPalette } from "./ui/Search";
 import { SavedFilters, TagManager } from "./ui/Tags";
@@ -67,6 +68,9 @@ import { OutputsIndex, outputsIn, splitPath, type Output } from "./hermes/output
 import { STATUS_LABEL, composing, routeLabel } from "./ui/bits";
 import { ProjectScreen, ProjectSwitcher, type ProjectUnread } from "./ui/Projects";
 import { ScheduledJobs } from "./ui/ScheduledJobs";
+import { CapabilityGate } from "./ui/Diagnostics";
+import { guideUrl, type CapabilityId } from "./hermes/capabilities";
+import { useCapabilities } from "./ui/Diagnostics";
 import { Automations } from "./ui/Automations";
 import { tauriLocalTerminal, tauriTerminal } from "./ui/tauriTerminal";
 import { TERMINAL_TARGET_KEY, terminalTarget, type TerminalKind } from "./hermes/terminal";
@@ -416,12 +420,15 @@ export default function App({ links = desktopLinks }: { links?: LinkInbox } = {}
 }
 
 /**
- * One pane of the chat area. `chatId` null: the New chat pane. `draftError`: why the New chat pane couldn't start a
- * chat. `picked`: the search result its chat was opened from; `at` tells one pick from the next.
+ * One pane of the chat area. `chatId` null: the New chat pane. `tabs`: the chats open in the pane's tabs, `chatId`'s
+ * among them (Tabs.tsx). `draftError`: why the New chat pane couldn't start a chat. `picked`: the search result its chat
+ * was opened from; `at` tells one pick from the next.
  */
 type Pane = {
   key: string;
+  view: number;
   chatId: string | null;
+  tabs: (string | null)[];
   draftError?: string;
   picked?: { found: Found; at: number };
   jump?: JumpTarget;
@@ -432,6 +439,10 @@ type Pane = {
 let panesMade = 0;
 /** A pane's key, which is also its name to Hermes for what is on screen (transport.ts `open`). */
 const newPaneKey = () => `pane-${++panesMade}`;
+let viewsMade = 0;
+/** A pane's `view`: new each time what the pane shows changes, but not when only its tabs do, so a chat starting in the
+ * pane can tell the owner went elsewhere from a tab closing beside it. */
+const newView = () => ++viewsMade;
 
 /** The chat a pane on the New chat pane shows: nothing yet, or why the chat couldn't start. */
 const draftChat = (draftError?: string): Chat => ({
@@ -599,6 +610,10 @@ export function Main({
   const [showTextGeneration, setShowTextGeneration] = useState<object>();
   /** Set to open Settings on its Memory tab, from the context inspector. */
   const [showMemory, setShowMemory] = useState<object>();
+  /** Set, each time anew, to open Settings → Diagnostics, at the capability a screen's note named. */
+  const [showDiagnostics, setShowDiagnostics] = useState<{ id?: CapabilityId }>();
+  /** What the connected Hermes supports, for the menus that say what it lacks (capabilities.ts). */
+  const caps = useCapabilities(hermes.capabilities);
   const voice = useMemo<VoiceApi>(
     () => ({ setup: () => hermes.voiceSetup(), transcribe: (audio, mime) => hermes.transcribe(audio, mime), speak: (text) => hermes.speak(text) }),
     [hermes],
@@ -641,9 +656,12 @@ export function Main({
   const [reopening, setReopening] = useState(() => (reopenLast ? chatToReopen(profile) : undefined));
   // One pane, or two side by side. The chat to reopen opens at once when the list saved on this computer has it, so the
   // New chat pane doesn't show first.
-  const [panes, setPanes] = useState<Pane[]>(() => [
-    { key: newPaneKey(), chatId: reopening && chats.some((c) => c.id === reopening) ? reopening : null },
-  ]);
+  const [panes, setPanes] = useState<Pane[]>(() => {
+    const chatId = reopening && chats.some((c) => c.id === reopening) ? reopening : null;
+    return [{ key: newPaneKey(), view: newView(), chatId, tabs: [chatId] }];
+  });
+  // Side by side ("row") or one above the other ("column"), when there are two panes.
+  const [splitDir, setSplitDir] = useState<SplitDir>("row");
   // The pane the chat list, Search, New chat and the keyboard shortcuts act on.
   const [activeKey, setActiveKey] = useState(() => panes[0].key);
   const activeKeyRef = useRef(activeKey);
@@ -799,8 +817,17 @@ export function Main({
     setLogsOpen(false);
     setShowTextGeneration(undefined);
     setShowMemory(undefined);
+    setShowDiagnostics(undefined);
     setSettingsOpen(true);
   };
+  /** Opens Settings → Diagnostics at capability `id`, from the note a screen shows when Hermes lacks it. */
+  const openDiagnostics = (id: CapabilityId) => {
+    openSettings();
+    setShowDiagnostics({ id });
+  };
+  /** Opens a page of the compatibility guide in the owner's browser. */
+  const openGuide = (url: string) =>
+    void webPages.openInBrowser(url).catch((e: unknown) => setToast({ text: `Couldn't open the compatibility guide: ${messageOf(e)}`, at: Date.now() }));
   const listable = proj.projects.filter((p) => !p.archived);
   const shownProject = listable.find((p) => p.id === proj.selectedId);
   const projectScreenOpen = projectOpen && !!shownProject;
@@ -872,7 +899,11 @@ export function Main({
 
   const stillIn = (p: string) => hermes.profile === p;
 
-  const patchPane = (key: string, patch: Partial<Pane>) => setPanes((ps) => ps.map((p) => (p.key === key ? { ...p, ...patch } : p)));
+  // A pane moving to another chat keeps its tabs in step (Tabs.tsx `navigateTabs`).
+  const patchPane = (key: string, patch: Partial<Pane>) =>
+    setPanes((ps) =>
+      ps.map((p) => (p.key !== key ? p : { ...p, ...patch, view: newView(), ...(patch.chatId !== undefined && { tabs: navigateTabs(p.tabs, p.chatId, patch.chatId) }) })),
+    );
 
   // The active pane's chat is the one kept as the profile's last open chat, so it reopens at the next launch.
   // Counts every move between chats, panes and profiles. A chat link that waited on Hermes checks it afterwards, so a
@@ -892,14 +923,23 @@ export function Main({
   // Every move between chats is kept as the profile's last open chat, so it reopens at the next launch whether or not
   // the app closes cleanly. Going somewhere also ends the wait to reopen the last one. A chat opens in the active pane
   // unless another is named, and the pane it opens in becomes the active one.
-  // `keepSettings`: the move isn't the owner's, so Settings stays on screen.
+  // `keepSettings`: the move isn't the owner's, so Settings stays on screen. `newTab`: the chat opens in a tab of its
+  // own, rather than in place of the one showing.
   const openChat = (
     id: string | null,
-    { pane = active.key, remember = true, fresh = false, keepSettings = false, worktree }: { pane?: string; remember?: boolean; fresh?: boolean; keepSettings?: boolean; worktree?: WorktreeStart } = {},
+    {
+      pane = active.key,
+      remember = true,
+      fresh = false,
+      keepSettings = false,
+      newTab = false,
+      worktree,
+    }: { pane?: string; remember?: boolean; fresh?: boolean; keepSettings?: boolean; newTab?: boolean; worktree?: WorktreeStart } = {},
   ) => {
     const go = () => {
       navGen.current++;
       setPanelHidden(true);
+      if (newTab) setPanes((ps) => ps.map((p) => (p.key === pane && !p.tabs.includes(id) ? { ...p, tabs: [...p.tabs, id] } : p)));
       patchPane(pane, { chatId: id, picked: undefined, jump: undefined, worktree, ...(fresh && { draftError: undefined }) });
       activeKeyRef.current = pane;
       setActiveKey(pane);
@@ -951,12 +991,14 @@ export function Main({
 
   // A second pane opens to the right and becomes the active one. Both panes may show the same chat: they are two views
   // of it, with one transcript, one draft and one reply, each scrolled and searched on its own.
-  const splitWith = (chatId: string | null) => guard(() => {
+  // `dir`: beside the first pane ("row") or below it ("column").
+  const splitWith = (chatId: string | null, dir: SplitDir = splitDir) => guard(() => {
     if (split) return;
     navGen.current++;
     setPanelHidden(true);
+    setSplitDir(dir);
     const key = newPaneKey();
-    setPanes((ps) => (ps.length > 1 ? ps : [...ps, { key, chatId }]));
+    setPanes((ps) => (ps.length > 1 ? ps : [...ps, { key, view: newView(), chatId, tabs: [chatId] }]));
     activeKeyRef.current = key;
     setActiveKey(key);
     setReopening(undefined);
@@ -1020,14 +1062,48 @@ export function Main({
     requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(`[data-pane="${CSS.escape(rest[0].key)}"] .composer textarea`)?.focus());
   };
 
+  // A tab closing shows the one beside it. The last tab of a second pane closes the pane; the last of one pane leaves a
+  // New chat tab.
+  const closeTab = (key: string, id: string | null) => {
+    const pane = panes.find((p) => p.key === key);
+    if (!pane) return;
+    const { rest, next } = closeTabIn(pane.tabs, id);
+    if (!rest.length && split) return closePane(key);
+    setPanes((ps) => ps.map((p) => (p.key === key ? { ...p, tabs: rest } : p)));
+    if (pane.chatId === id) openChat(next ?? null, { pane: key, fresh: next === undefined });
+  };
+
+  /** Ctrl+Tab and Ctrl+Shift+Tab: the next or previous tab in the active pane. */
+  const cycleTab = (step: number) => {
+    const n = active.tabs.length;
+    if (n < 2) return;
+    openChat(active.tabs[(active.tabs.indexOf(active.chatId) + step + n) % n]);
+  };
+
+  // A chat dragged onto a pane: onto its tab strip or middle, it opens in a new tab there; onto its right or bottom
+  // edge, the chat area splits that way with the chat in the second pane, or turns that way if it is split already.
+  const dropChat = (key: string, id: string, zone: DropZone) => {
+    if (zone === "tab") return openChat(id, { pane: key, newTab: true });
+    const dir: SplitDir = zone === "right" ? "row" : "column";
+    if (!split) return splitWith(id, dir);
+    setSplitDir(dir);
+    openChat(id, { pane: panes[1].key, newTab: true });
+  };
+
   /** Ctrl+\: splits the chat on screen into a second pane, or closes the pane the owner isn't in. */
   const toggleSplit = () => (other ? closePane(other.key) : splitWith(active.chatId));
 
   // The panes showing a chat that leaves the list give way to the New chat pane. The active one does as New chat does.
   const clearChat = (id: string) => {
-    if (!panes.some((p) => p.chatId === id)) return;
+    if (!panes.some((p) => p.tabs.includes(id))) return;
     if (active.chatId === id) openChat(null, { fresh: true, keepSettings: true });
-    setPanes((ps) => ps.map((p) => (p.chatId === id ? { ...p, chatId: null, picked: undefined, draftError: undefined } : p)));
+    setPanes((ps) =>
+      ps.map((p) =>
+        p.chatId === id
+          ? { ...p, view: newView(), chatId: null, tabs: navigateTabs(p.tabs, id, null).filter((t) => t !== id), picked: undefined, draftError: undefined }
+          : { ...p, tabs: p.tabs.filter((t) => t !== id) },
+      ),
+    );
   };
 
   // The other profile's chats replace the list, so one pane stays, on a fresh draft. The profile left keeps its last
@@ -1037,7 +1113,7 @@ export function Main({
     const keep = activeKeyRef.current;
     setGoTo(undefined);
     setFocusItem(undefined);
-    setPanes([{ key: keep, chatId: null }]);
+    setPanes([{ key: keep, view: newView(), chatId: null, tabs: [null] }]);
     activeKeyRef.current = keep;
     setActiveKey(keep);
     setReopening(undefined);
@@ -1508,6 +1584,9 @@ export function Main({
       } else if (k === "n") {
         e.preventDefault();
         newChat();
+      } else if (e.key === "Tab" && onChat) {
+        e.preventDefault();
+        cycleTab(e.shiftKey ? -1 : 1);
       } else if (k === "b") {
         e.preventDefault();
         setListOpen((o) => !o);
@@ -1562,6 +1641,25 @@ export function Main({
   useEffect(() => summon?.onSummoned(() => onSummonedRef.current()), [summon]);
 
 
+  // Each pane's tab strip above its chat, and the pane as a place to drop a chat dragged from the list or a tab.
+  const withTabs = (p: Pane, chatNode: ReactNode) => (
+    <>
+      <TabStrip
+        tabs={p.tabs.map((id) => {
+          const c = id === null ? undefined : chats.find((c) => c.id === id);
+          return { id, title: c?.title ?? "New chat", running: c?.running, unread: c?.unread };
+        })}
+        current={p.chatId}
+        onPick={(id) => openChat(id, { pane: p.key })}
+        onClose={(id) => closeTab(p.key, id)}
+        onNew={() => openChat(null, { pane: p.key, fresh: true, newTab: true })}
+        onDropChat={(id) => dropChat(p.key, id, "tab")}
+        lastClosable={split}
+      />
+      <PaneDrop onDropChat={(id, zone) => dropChat(p.key, id, zone)}>{chatNode}</PaneDrop>
+    </>
+  );
+
   const slots: PaneSlot[] = panes.map((p, i) => {
     const listed = p.chatId === null ? undefined : chats.find((c) => c.id === p.chatId);
     const chat = listed ?? draftChat(p.draftError);
@@ -1569,8 +1667,10 @@ export function Main({
     return {
       key: p.key,
       title: chat.title,
-      node: (
+      node: withTabs(
+        p,
         <ChatView
+          openGuide={openGuide}
           hermes={hermes}
           connection={connection}
           profile={profile}
@@ -1609,14 +1709,14 @@ export function Main({
           onStarted={(id) => {
             // The chat started from this pane's New chat pane replaces it here, without taking the owner from the
             // other pane if they went there meanwhile.
-            if (panesRef.current.find((now) => now.key === p.key) !== p) return;
+            if (panesRef.current.find((now) => now.key === p.key)?.view !== p.view) return;
             const stillActive = activeKeyRef.current === p.key;
             patchPane(p.key, { chatId: id, picked: undefined, worktree: undefined });
             setReopening(undefined);
             if (stillActive) rememberOpenChat(profile, id);
           }}
           onDraftError={(reason) => {
-            if (panesRef.current.find((now) => now.key === p.key) === p) patchPane(p.key, { draftError: reason });
+            if (panesRef.current.find((now) => now.key === p.key)?.view === p.view) patchPane(p.key, { draftError: reason });
           }}
           onToast={(text) => setToast({ text, at: Date.now() })}
           onMemorySettings={
@@ -1629,6 +1729,7 @@ export function Main({
                   setUsageOpen(false);
                   setLogsOpen(false);
                   setShowTextGeneration(undefined);
+                  setShowDiagnostics(undefined);
                   setShowMemory({});
                   setSettingsOpen(true);
                 }
@@ -1665,13 +1766,18 @@ export function Main({
           }
           paneControls={
             split ? (
-              <button className="icon-btn" title={`Close the ${PANE_NAMES[i].toLowerCase()} pane`} aria-label={`Close the ${PANE_NAMES[i].toLowerCase()} pane`} onClick={() => closePane(p.key)}>
+              <button className="icon-btn" title={`Close the ${paneNames(splitDir)[i].toLowerCase()} pane`} aria-label={`Close the ${paneNames(splitDir)[i].toLowerCase()} pane`} onClick={() => closePane(p.key)}>
                 <X size={16} />
               </button>
             ) : (
-              <button className="icon-btn" title="Split: open this chat in a second pane (Ctrl+\)" aria-label="Split into two panes" onClick={() => splitWith(p.chatId)}>
-                <Columns2 size={16} />
-              </button>
+              <>
+                <button className="icon-btn" title="Split right: open this chat in a second pane beside it (Ctrl+\)" aria-label="Split into two panes" onClick={() => splitWith(p.chatId, "row")}>
+                  <Columns2 size={16} />
+                </button>
+                <button className="icon-btn" title="Split down: open this chat in a second pane below it" aria-label="Split into two panes, one above the other" onClick={() => splitWith(p.chatId, "column")}>
+                  <Rows2 size={16} />
+                </button>
+              </>
             )
           }
         />
@@ -1789,6 +1895,7 @@ export function Main({
                 unread={projectUnread}
                 loading={proj.loading}
                 error={proj.error}
+                unsupported={caps.caps.projects.state === "unsupported" ? { onGuide: () => openGuide(guideUrl("projects")) } : undefined}
                 connected={status === "connected"}
                 onOpen={() => status === "connected" && void projects.load()}
                 onSelect={(id) => {
@@ -1855,6 +1962,7 @@ export function Main({
           split={split}
           onOpen={(id) => openChat(id)}
           onOpenIn={openIn}
+          onOpenTab={(id) => openChat(id, { newTab: true })}
           onSettle={setSettled}
           snoozes={snoozes}
           attentionSince={attention.since}
@@ -1875,6 +1983,7 @@ export function Main({
             setLogsOpen(false);
             // One destination at a time: an earlier Memory shortcut mustn't switch Settings away from this one.
             setShowMemory(undefined);
+            setShowDiagnostics(undefined);
             setShowTextGeneration({});
             setSettingsOpen(true);
           }}
@@ -1900,27 +2009,44 @@ export function Main({
           onDismiss={(e) => acks.dismiss(e, inbox.entries)}
           onRefresh={() => void hermes.checkOtherProfiles()}
           onClose={() => setInboxOpen(false)}
+          onGuide={() => openGuide(guideUrl("liveSessions"))}
         />
       )}
       <main className="main" ref={mainRef}>
         <div className="main-chat" inert={previewCovers || undefined}>
             {automationsOpen && !settingsOpen ? (
-              <Automations
-                key={profile}
-                api={hermes.automations}
-                profile={profile}
-                connected={status === "connected"}
+              <CapabilityGate
+                store={hermes.capabilities}
+                id="automations"
+                openGuide={openGuide}
+                onDiagnostics={openDiagnostics}
                 onClose={() => { flushSync(() => setAutomationsOpen(false)); focusPane(active.key); }}
-                onOpenChat={(id) => openChat(id)}
-              />
+              >
+                <Automations
+                  key={profile}
+                  api={hermes.automations}
+                  profile={profile}
+                  connected={status === "connected"}
+                  onClose={() => { flushSync(() => setAutomationsOpen(false)); focusPane(active.key); }}
+                  onOpenChat={(id) => openChat(id)}
+                />
+              </CapabilityGate>
             ) : jobsOpen && !settingsOpen ? (
-              <ScheduledJobs
-                key={profile}
-                api={hermes.cron}
-                profile={profile}
-                connected={status === "connected"}
+              <CapabilityGate
+                store={hermes.capabilities}
+                id="scheduledJobs"
+                openGuide={openGuide}
+                onDiagnostics={openDiagnostics}
                 onClose={() => { flushSync(() => setJobsOpen(false)); focusPane(active.key); }}
-              />
+              >
+                <ScheduledJobs
+                  key={profile}
+                  api={hermes.cron}
+                  profile={profile}
+                  connected={status === "connected"}
+                  onClose={() => { flushSync(() => setJobsOpen(false)); focusPane(active.key); }}
+                />
+              </CapabilityGate>
             ) : projectScreenOpen && shownProject && !settingsOpen ? (
               <ProjectScreen
                 key={shownProject.id}
@@ -1994,6 +2120,7 @@ export function Main({
               return c && { id: c.id, title: c.title, runtimeId: c.runtimeId, running: c.running };
             })()}
             memory={hermes.memory}
+            memoryProviders={hermes.memoryProviders}
             onMemoryDirty={onMemoryDirty}
             memoryDiscards={memoryDiscards}
             skills={hermes.skills}
@@ -2005,6 +2132,9 @@ export function Main({
             voiceSetup={voice.setup}
             showTextGeneration={showTextGeneration}
             showMemory={showMemory}
+            capabilities={hermes.capabilities}
+            openGuide={openGuide}
+            showDiagnostics={showDiagnostics}
             onClearCache={() => hermes.clearCache()}
             importer={{
               imports: hermes.imports,
@@ -2084,6 +2214,16 @@ export function Main({
             }}
           />
         ) : outputsOpen ? (
+          <CapabilityGate
+            store={hermes.capabilities}
+            id="outputs"
+            openGuide={openGuide}
+            onDiagnostics={openDiagnostics}
+            onClose={() => {
+              flushSync(() => setOutputsOpen(false));
+              focusPane(active.key);
+            }}
+          >
           <OutputsScreen
             snapshot={outSnap}
             outputs={shownOutputs}
@@ -2124,6 +2264,7 @@ export function Main({
               focusPane(active.key);
             }}
           />
+          </CapabilityGate>
         ) : repoOpen ? (
           <RepositoryScreen
             key={repoAt ? `at-${repoAt.n}` : "repo"}
@@ -2161,7 +2302,7 @@ export function Main({
             }}
           />
         ) : null}
-        <Split panes={slots} activeKey={active.key} onActivate={activate} covered={covered || covering || previewCovers || windowHidden} />
+        <Split panes={slots} dir={splitDir} activeKey={active.key} onActivate={activate} covered={covered || covering || previewCovers || windowHidden} />
         </div>
           {panelMounted && (
             <SidePanel
@@ -2211,7 +2352,12 @@ export function Main({
                     />
                   </Suspense>
                 ),
-                files: () => <FileBrowser key={filesKey} files={hermes.files} status={status} route={route} path={filesPath} onPath={setFilesPath} />,
+                // On a server without the managed-files routes, a note takes the browser's place (ADR 0044).
+                files: () => (
+                  <CapabilityGate store={hermes.capabilities} id="serverFiles" openGuide={openGuide} onDiagnostics={openDiagnostics}>
+                    <FileBrowser key={filesKey} files={hermes.files} status={status} route={route} path={filesPath} onPath={setFilesPath} />
+                  </CapabilityGate>
+                ),
                 // A profile's screen is its own; switching profile starts the tab again.
                 screen: (shown) => <ScreenTab key={profile} api={hermes.screen} shown={shown} connected={status === "connected"} onHeld={setScreenHeld} />,
               }}
@@ -2340,6 +2486,7 @@ export function Main({
  * `paneKey` tells Hermes which pane has the chat on screen, so a chat shown in both stays read until both leave it.
  */
 function ChatView({
+  openGuide,
   hermes,
   connection,
   profile,
@@ -2425,6 +2572,8 @@ function ChatView({
   onOpenWorktree: (w: WorktreeChat) => void;
   onStarted: (id: string) => void;
   onDraftError: (reason: string) => void;
+  /** Opens a page of the compatibility guide in the owner's browser. */
+  openGuide: (url: string) => void;
   onToast: (text: string) => void;
   /** Opens Settings → Memory, when this Hermes can edit memory from here. */
   onMemorySettings?: () => void;
@@ -2612,7 +2761,9 @@ function ChatView({
   // that does nothing: its Draft stays as typed. One command at a time per Draft, so two panes on one chat can't run it
   // twice.
   const serverCommands = useServerCommands(hermes, status === "connected", profile);
+  const caps = useCapabilities(hermes.capabilities);
   const commands: CommandHost = {
+    guide: caps.caps.commands.state === "unsupported" ? () => openGuide(guideUrl("commands")) : undefined,
     why: (def) => {
       if (def.name === "help" || def.name === "new") return undefined;
       if (!started) return "This chat hasn't started yet. Send a message first.";

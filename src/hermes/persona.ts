@@ -91,7 +91,8 @@ export function personaError(e: unknown, profile: string, writing: boolean): Per
     return new PersonaError("disconnected", "Not connected to Hermes.", undefined, true);
   if (/^Can't reach the Hermes dashboard/.test(message)) return new PersonaError("disconnected", message);
   if (/^The dashboard sign-in has expired/.test(message)) return new PersonaError("signed-out", message);
-  if (/^Hermes Chat doesn't relay/.test(message)) return new PersonaError("unsupported", message);
+  // Refused before it was sent, by the relay or because Hermes lacks the route (capabilities.ts).
+  if (/^Hermes Chat doesn't relay/.test(message)) return new PersonaError("unsupported", message, undefined, true);
   const a = answered(message);
   if (!a) return new PersonaError("error", `Couldn't ${verb} SOUL.md: ${message}`);
   const said = a.detail ? ` Hermes said: ${a.detail}` : "";

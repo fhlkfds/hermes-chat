@@ -13,6 +13,7 @@
 // Every write is read back; the list decides what the screen shows. Payload text is untrusted: it is only ever shown
 // as text, and the preview renders the prompt exactly as Hermes's `_render_prompt` would.
 import type { RestMethod } from "./pipe";
+import { CapabilityUnsupportedError } from "./capabilities";
 
 export type RestFn = (method: RestMethod, pathAndQuery: string, body?: unknown) => Promise<unknown>;
 
@@ -285,6 +286,7 @@ export function automationError(e: unknown): AutomationError {
   if (message === "Not connected to Hermes." || message === "The chat connection is closed.")
     return new AutomationError("offline", "Hermes Chat isn't connected to Hermes, so nothing was sent. Automations keep running on the server.");
   if (/sign-in has expired/.test(message)) return new AutomationError("forbidden", "The dashboard sign-in has expired, so nothing was changed. Sign in again.");
+  if (e instanceof CapabilityUnsupportedError) return new AutomationError("unsupported", "This Hermes server has no webhook routes, so nothing was sent. Updating Hermes adds them.");
   if (/doesn't relay/.test(message)) return new AutomationError("unsupported", "This version of Hermes Chat can't send that to Hermes.");
   const m = /^The dashboard answered (\d{3}): ([\s\S]*)$/.exec(message);
   if (!m) return new AutomationError("unknown", `Hermes didn't answer: ${message}`);
