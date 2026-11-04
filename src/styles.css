@@ -418,8 +418,10 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 @keyframes blink { 50% { opacity: 0; } }
 .stopped { font-size: calc(12rem / 14); color: var(--faint); margin-top: 4px; }
 .msg-time { display: block; font-size: calc(11.5rem / 14); color: var(--faint); margin-top: 4px; }
-/* Read aloud under a reply (Voice.tsx): faint until the reply is hovered or focused, and while it loads, plays or failed. */
-.msg-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 6px; opacity: 0; transition: opacity 0.15s; }
+/* Copy, Edit, Regenerate and Read aloud under a message (CopyMessage.tsx, Replay.tsx, Voice.tsx): faint until the message is
+   hovered or focused, and while Read aloud loads, plays or failed. Not selectable, so selecting a message and pressing
+   Ctrl+C copies only its words. */
+.msg-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 6px; opacity: 0; transition: opacity 0.15s; user-select: none; -webkit-user-select: none; }
 .msg.assistant:hover .msg-actions, .msg.user:hover .msg-actions, .msg-actions:focus-within, .msg-actions.active { opacity: 1; }
 .msg-actions-row { display: flex; flex-wrap: wrap; gap: 0 8px; }
 .msg.user .msg-actions { margin-top: 0; }
@@ -1128,12 +1130,10 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 .shortcut-controls { display: flex; gap: 8px; flex-shrink: 0; }
 .shortcut-key { min-width: 132px; justify-content: center; font-family: var(--mono); }
 .shortcut-key.recording { border-color: var(--accent, var(--text)); color: var(--text); }
-.screenshot-settings h3, .global-shortcut-settings h3 { font-size: calc(13rem / 14); margin: 22px 0 6px; }
-.screenshot-settings p.settings-note, .global-shortcut-settings p.settings-note { margin: 8px 0 0; }
-.shortcut-failure { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
-.shortcut-failure p { margin: 0; }
+.screenshot-settings h3 { font-size: calc(13rem / 14); margin: 22px 0 6px; }
+.screenshot-settings p.settings-note { margin: 8px 0 0; }
 .shortcut-examples { margin: 6px 0 8px; padding-left: 18px; line-height: 1.7; }
-.screenshot-settings code, .global-shortcut-settings code { font-family: var(--mono); font-size: calc(11.5rem / 14); background: var(--raised-2); padding: 1px 5px; border-radius: 4px; }
+.screenshot-settings code { font-family: var(--mono); font-size: calc(11.5rem / 14); background: var(--raised-2); padding: 1px 5px; border-radius: 4px; }
 .warn-note { color: var(--warn); }
 /* projects (Projects.tsx, ADR 0007): the switcher under the profile's name, and the project screen */
 .sb-project { display: flex; padding: 0 12px 6px 14px; margin-top: -4px; }

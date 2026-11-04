@@ -135,6 +135,17 @@ describe("Searching Settings", () => {
     expect(screen.getByRole("group", { name: "Appearance" }).hasAttribute("data-search-miss")).toBe(false);
   });
 
+  it("has no global shortcut section, and a search finds where to bind hermes-chat --toggle instead (#169)", async () => {
+    const { user } = await shown();
+    expect(screen.queryByRole("heading", { name: "Show Hermes Chat from anywhere" })).toBeNull();
+    expect(screen.queryByText(/Global shortcut/i)).toBeNull();
+    await user.click(box());
+    await user.paste("toggle");
+    await waitFor(() => expect(showing("Screenshots")).toBe(true));
+    expect(showing("Tray")).toBe(false);
+    expect(screen.getAllByText("hermes-chat --toggle").length).toBeGreaterThan(0);
+  });
+
   it("finds a section by a control's name that shows only to assistive technology", async () => {
     const { user } = await shown();
     // "Interface font size" is the size picker's aria-label; the section's text says neither "size" nor the pair.

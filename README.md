@@ -75,7 +75,7 @@ A screen whose feature the server doesn't have shows a note in its place instead
 - **Queued messages.** While Hermes replies, the composer stays editable. Enter or the Queue button, beside Stop, queues the message to go after the reply. The queue above the composer shows each message's words, file count, position and state. Edit a message in place, reorder it with its buttons or Alt+↑/↓, remove it with its button or Delete, and pause or resume the whole queue. Hermes Chat sends the next message only after the reply ends, and only while the app is open, connected and showing that profile. See [Queued messages](#queued-messages).
 - **Failed messages.** A message that Hermes didn't take, or might not have taken, stays in the chat with **Retry**, **Edit**, and **Dismiss**. Nothing resends it automatically.
 - **Attachments.** Drag files into the composer or paste them. Hermes accepts images up to 25 MB and other files up to 256 MB.
-- **Global shortcut.** A shortcut you choose brings Hermes Chat forward from any app, and can hide it again. Off until you turn it on. See [Global shortcut](#global-shortcut).
+- **One window.** Launching Hermes Chat again, `hermes-chat --show` or `hermes-chat --toggle` brings the window already open forward. Bind a key to `hermes-chat --toggle` in your desktop to show it from any app. See [Show Hermes Chat from any app](#show-hermes-chat-from-any-app).
 - **Screenshots.** Press Ctrl+Shift+S, or click the camera button, to attach a region or window. See [Screenshots](#screenshots).
 - **Voice.** Use **Dictation** to speak a message into the composer, and **Read aloud** to have Hermes speak a reply. **Start voice conversation** talks with Hermes hands-free until you end it. Hermes does the transcription and speech on the server. See [Voice conversations](#voice-conversations).
 - **Two panes.** Ctrl+\\ opens a second chat beside the first.
@@ -245,23 +245,24 @@ Only then does it switch profile, asking first if a reply is running or an Appro
 
 A link naming a connection this computer doesn't know, such as one copied on another computer, isn't opened with the connection signed in until you choose **Open it here**. The app then remembers that reference for this connection. A link for another connection this computer knows asks you to connect to it in Setup first; the app never connects anywhere for a link. See [ADR 0037](docs/adr/0037-chat-links-name-ids-only-and-open-after-checks.md).
 
-### Global shortcut
+### Show Hermes Chat from any app
 
-Settings → General → **Show Hermes Chat from anywhere** sets a shortcut that brings the window forward from any other app. The cursor goes to the composer of the pane you had selected, and drafts stay as they were. If Settings or another screen was open, it stays open. With **Hide when already in front** on, pressing the shortcut while Hermes Chat is the window you're using hides it. **Reset** sets Ctrl+Alt+H, and **Turn off** releases the key.
+Hermes Chat has no global shortcut setting of its own. To bring it forward from any app, bind a key in your desktop's own config to one of these commands:
 
-How the shortcut is registered depends on the desktop, and Settings shows what actually registered:
+- `hermes-chat --show` brings the window forward.
+- `hermes-chat --toggle` brings it forward, or hides it when it's already the window you're using.
 
-- **X11:** Hermes Chat grabs the key itself. If another app already has it, Settings says so and keeps your previous shortcut working. **Retry** tries the key again.
-- **Wayland with the GlobalShortcuts portal (KDE Plasma, GNOME 48+, Hyprland):** Hermes Chat asks the desktop, which may ask you to confirm. Settings shows the key the desktop says it set. Hyprland never sets one: Settings gives the `bind = …, global, …` line to add to `hyprland.conf`.
-- **Wayland without it (Sway, older desktops):** nothing can be registered. Bind a key in your desktop to the command instead.
+If Hermes Chat isn't running, either one starts it. The cursor goes to the composer of the pane you had selected, and drafts stay as they were. If Settings or another screen was open, it stays open.
 
-`hermes-chat --show` brings Hermes Chat forward, and `hermes-chat --toggle` also hides it when it's already in front. If Hermes Chat isn't running, either one starts it. Settings shows bind lines for your keys. On Hyprland, for example:
+On Hyprland, for example, add this to `hyprland.conf`:
 
+```ini
+bind = SUPER, H, exec, env WEBKIT_DISABLE_DMABUF_RENDERER=1 hermes-chat --toggle
 ```
-bind = CTRL ALT, H, exec, env WEBKIT_DISABLE_DMABUF_RENDERER=1 hermes-chat --show
-```
 
-Only one Hermes Chat runs at a time: starting it again brings the running one forward. The setting is kept on this computer, for every server and profile (see [What is stored where](#what-is-stored-where)). [ADR 0033](docs/adr/0033-the-global-shortcut-is-registered-by-the-desktop-it-runs-on.md) records why it works this way.
+On Sway: `bindsym $mod+h exec hermes-chat --toggle`. On GNOME or KDE Plasma, add a custom shortcut in the Keyboard settings with that command. Pick keys your desktop doesn't already use.
+
+Only one Hermes Chat runs at a time: starting it again brings the running one forward. The app's earlier built-in global shortcut was removed in #169 (it didn't work on every desktop), and [ADR 0033](docs/adr/0033-the-global-shortcut-is-registered-by-the-desktop-it-runs-on.md) is superseded. An older version's `global-shortcut.json` in the config folder is deleted at startup.
 
 ### Tray and Close to tray
 
@@ -269,7 +270,7 @@ Hermes Chat puts an icon in the desktop's tray. Its menu has **Show/Hide Hermes 
 
 **Settings → General → Tray → Close to tray** is off by default, so closing the window quits as it always has. Turned on, closing the window hides it instead. Replies keep arriving, drafts and the open chats stay, and the tray menu brings the same window back. Hiding the window drops a Dictation recording, stops Read aloud, and pauses a Voice conversation. Quit always exits; with an unsaved edit open it asks first, as closing the window does.
 
-Launching Hermes Chat again, `hermes-chat --show` and the global shortcut all bring back the window already open, hidden to the tray or not.
+Launching Hermes Chat again, `hermes-chat --show` and `hermes-chat --toggle` all bring back the window already open, hidden to the tray or not.
 
 The tray needs libayatana-appindicator (an optional dependency of the package: `pacman -S libayatana-appindicator`) and a desktop that shows tray icons: KDE Plasma, Xfce, waybar, i3bar, or GNOME with the AppIndicator extension. Where there's none, closing the window quits even with Close to tray on, and Settings says why. If the tray goes away while the window is hidden, the window comes back. See [ADR 0034](docs/adr/0034-close-to-tray-is-opt-in-and-a-second-launch-restores-the-window.md).
 
@@ -368,7 +369,7 @@ WEBKIT_DISABLE_DMABUF_RENDERER=1 hermes-chat
 
 ### Chat links and the desktop
 
-The launcher registers Hermes Chat as the handler for `hermes-chat://` links. The desktop runs `hermes-chat <link>`. If Hermes Chat is already running, the new process hands the link to it over the session bus (the `net.l0cky12.HermesChat` name the screenshot and global shortcuts use, method `OpenLink`) and exits, so one window opens it. Otherwise the new process starts and opens it once you're signed in.
+The launcher registers Hermes Chat as the handler for `hermes-chat://` links. The desktop runs `hermes-chat <link>`. If Hermes Chat is already running, the new process hands the link to it over the session bus (the `net.l0cky12.HermesChat` name that `--screenshot`, `--show` and `--toggle` use, method `OpenLink`) and exits, so one window opens it. Otherwise the new process starts and opens it once you're signed in.
 
 To check the registration:
 
@@ -562,7 +563,6 @@ Hermes stores the chats and their history, imported chats included, titles, Arch
 | **Templates**, at most 300, each message up to 20,000 characters | Webview local storage, in the display preferences (`hermes-ui-prefs`), for every connection and profile; a project-scoped one names its connection, profile and project | Deleting them. Clear local cache keeps them. |
 | Exported templates | The file you chose in the Save dialog | You |
 | Drafts, Failed messages and Queued messages saved for an update's restart | `$XDG_DATA_HOME/net.l0cky12.hermes-chat/restart-drafts.json`, readable only by you | Putting them back at the next launch. A copy that couldn't be put back is renamed `restart-drafts-<time>.json` and stays until you move or delete it; Settings says where. |
-| The global shortcut and whether it hides the window when already in front. Only the keys are stored, never a command. | `$XDG_CONFIG_HOME/net.l0cky12.hermes-chat/global-shortcut.json` (usually `~/.config/...`) | Turning the shortcut off clears the keys |
 | Screenshots waiting to send | `$XDG_CACHE_HOME/hermes-chat/captures/`, readable only by you | Confirmed delivery, removing them from the composer, or leaving the composer without sending. A queued message keeps its screenshots until it goes or you remove it. A Failed message keeps its screenshots until delivery is confirmed, history reconciles it, or you Dismiss it. Startup cleanup removes only leftovers that no message needs. |
 | Pasted files | A private folder under `$TMPDIR/hermes-chat/` (usually `/tmp/hermes-chat/`) | Not removed by the app |
 | Exported chats | The file you chose in the Save dialog | You |
@@ -587,8 +587,7 @@ Webview local storage is in `$XDG_DATA_HOME/net.l0cky12.hermes-chat/localstorage
 | The password isn't remembered | Start a Secret Service provider, such as GNOME Keyring or KWallet, and sign in again. Settings shows whether the password was saved. |
 | The connection is labelled Unsecure | Use `https://`, SSH, or a Tailscale address. Plain `http://` to a public or LAN address isn't encrypted. |
 | A page in the preview pane stays blank | The site forbids framing (`X-Frame-Options` or `frame-ancestors`), or it is on the server's loopback address, which this computer can't reach. Open it in a browser instead. |
-| The global shortcut says another app uses it | Pick other keys, or free them in the other app and press Retry. Your previous shortcut keeps working meanwhile. |
-| The global shortcut does nothing on Hyprland | Hyprland doesn't set keys for apps. Add the `global` line Settings shows to `hyprland.conf`, or bind a key to `hermes-chat --show`. |
+| A key bound to `hermes-chat --toggle` does nothing | Run the command in a terminal to see its error. If Hermes Chat might not be open yet, run it as `env WEBKIT_DISABLE_DMABUF_RENDERER=1 hermes-chat --toggle`, as the launcher does. |
 | Screenshots do nothing on Hyprland or Sway | Install `slurp` and `grim`. |
 | A `hermes-chat://` link does nothing, or opens another app | Run `xdg-mime query default x-scheme-handler/hermes-chat`. It should print `hermes-chat.desktop`; if not, run `xdg-mime default hermes-chat.desktop x-scheme-handler/hermes-chat`. |
 | A chat link says the connection isn't known | The link was copied on another computer, or before this computer's local storage was cleared. Choose Open it here if the chat is on the server signed in now. |
@@ -637,7 +636,6 @@ Webview local storage is in `$XDG_DATA_HOME/net.l0cky12.hermes-chat/localstorage
 - Connection diagnostics can check a route only by reading it. Toolset switches have no read to check them by, so they show as Unknown until Settings → Toolsets opens. Hermes has no single list of its routes and methods, so the app checks each one; ADR 0044 proposes one. A note that a feature is missing stays until the next reconnect, Check again, or a read that finds the route.
 - The automated tests use a fake Hermes. Native Wayland screenshot pickers and real audio devices aren't covered.
 - Voice conversations are half-duplex: you interrupt Hermes's speech with Stop speaking or Esc, not by talking over it. Replies are spoken once complete, not while they stream. The turn settings are Hermes's, but the webview applies its own gain control and noise suppression first, so a threshold can behave differently here than in Hermes's CLI. The automated tests use a stand-in microphone and audio element. The running app was checked opening, using and releasing a real built-in microphone and audio output, but with the card muted, so speech recognition and room echo through real speakers weren't verified. See ADR 0041, "Gaps", and `docs/screenshots/voice-conversation/README.md`.
-- The global shortcut's Wayland path was tested against a stand-in GlobalShortcuts portal (`cargo run --example fake_portal`), not against KDE, GNOME or xdg-desktop-portal-hyprland. Its X11 path was tested on Xvfb with Openbox. A shortcut used inside one other program (not grabbed globally) isn't reported as a conflict: the global shortcut wins there. See ADR 0033, "Gaps".
 
 ## Project documents
 

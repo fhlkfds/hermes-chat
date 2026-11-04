@@ -211,7 +211,7 @@ pub fn hide<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
-/// The window was just shown or hidden, here or by the global shortcut (summon.rs): the tray's Show/Hide line and the
+/// The window was just shown or hidden, here or by `--show`/`--toggle` (summon.rs): the tray's Show/Hide line and the
 /// webview, which stops Dictation and Read aloud while hidden, follow it.
 pub fn seen<R: Runtime>(app: &AppHandle<R>, hidden: bool) {
     let Some(tray) = app.try_state::<Tray>() else { return };
