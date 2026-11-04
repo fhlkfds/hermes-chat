@@ -1,7 +1,7 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
 // Dictation and Read aloud come from Voice.tsx.
 import { createContext, memo, type ReactNode, useCallback, useContext, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
-import { ArrowUp, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, FileDown, FileInput, FileText, Globe, HardDrive, Link2, ListPlus, Paperclip, RotateCcw, Search, Server, Square, Wrench, X } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowUp, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, EyeOff, FileDown, FileInput, FileText, Globe, HardDrive, Link2, ListPlus, Ellipsis, Paperclip, RotateCcw, Search, Server, Square, Wrench, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
@@ -9,9 +9,10 @@ import type { ApprovalChoice, AttachCheck, Attachment, Chat, ChatQueue, Connecti
 import { SOURCE_LABEL, isOutgoing, isWaiting } from "../hermes/model";
 import type { DeskState, ScreenshotDesk } from "../hermes/screenshots";
 import { ApprovalCard } from "./ApprovalCard";
+import { Menu } from "./ChatMenu";
 import { QueuePanel, type QueueApi } from "./Queue";
 import { Markdown } from "./Markdown";
-import { ArchiveButton, SettleButton, SourceIcon, Spinner, StoredTime, composing, highlight } from "./bits";
+import { SourceIcon, Spinner, StoredTime, composing, highlight } from "./bits";
 import { wakeFull } from "../hermes/snooze";
 import { AttachmentChip, Previews, readPreview } from "./previews";
 import { Speaker } from "./speaker";
@@ -108,6 +109,75 @@ async function clipboardImages(): Promise<File[]> {
   }
 }
 
+/**
+ * The header's More (⋯) menu: the chat's less-used actions, each with its name. It opens below its button, at the
+ * button's right edge, and the arrow keys move between its items (ChatMenu.tsx's Menu).
+ */
+function MoreMenu({
+  chat,
+  onExport,
+  onCopyLink,
+  onSettle,
+  onArchive,
+}: {
+  chat: Chat;
+  onExport?: () => void;
+  onCopyLink?: () => void;
+  onSettle?: (settled: boolean) => void;
+  onArchive?: (archived: boolean) => void;
+}) {
+  const [at, setAt] = useState<{ x: number; y: number }>();
+  const close = useCallback(() => setAt(undefined), []);
+  const item = (label: string, icon: ReactNode, run: () => void, title?: string) => (
+    <button
+      role="menuitem"
+      className="menu-item"
+      title={title}
+      onClick={() => {
+        close();
+        run();
+      }}
+    >
+      <span className="menu-icon">{icon}</span>
+      <span className="menu-label">{label}</span>
+    </button>
+  );
+  return (
+    <>
+      <button
+        className={`icon-btn ${at ? "on" : ""}`}
+        title="More actions: export, copy link, settle, archive"
+        aria-label="More"
+        aria-haspopup="menu"
+        aria-expanded={!!at}
+        // Its open menu closes on a press outside it; a press here is the toggle's, so it doesn't reopen what it
+        // closed. Only then: a press while closed must still reach another pane's open menu, to close it.
+        onMouseDown={(e) => at && e.stopPropagation()}
+        onClick={(e) => {
+          if (at) return close();
+          const r = e.currentTarget.getBoundingClientRect();
+          // ponytail: 180px is .menu's min-width; a wider menu sits a little right of the button's edge.
+          setAt({ x: r.right - 180, y: r.bottom + 4 });
+        }}
+      >
+        <Ellipsis size={16} />
+      </button>
+      {at && (
+        <Menu label={`More actions for ${chat.title}`} x={at.x} y={at.y} onClose={close}>
+          {onExport && item("Export as Markdown", <FileDown size={15} />, onExport)}
+          {onCopyLink && item("Copy chat link", <Link2 size={15} />, onCopyLink, "Copy a link that opens this chat in Hermes Chat on this computer")}
+          {onSettle && !chat.archived && item(chat.settled ? "Unsettle" : "Settle", chat.settled ? <ArchiveRestore size={15} /> : <Archive size={15} />, () => onSettle(!chat.settled))}
+          {onArchive &&
+            !chat.running &&
+            (chat.archived
+              ? item("Restore", <RotateCcw size={15} />, () => onArchive(false))
+              : item("Archive", <EyeOff size={15} />, () => onArchive(true), "Hide in every Hermes client, keeping its history"))}
+        </Menu>
+      )}
+    </>
+  );
+}
+
 /** When a Saved copy was taken, as the note above it says it. */
 const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 
@@ -117,7 +187,7 @@ const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateS
  * `onExport` and `onCopyLink` are left out for a chat not started yet. `notLoaded`: the chat has no Saved copy and can't load until
  * Hermes is connected. `onRetry`, `onEdit` and `onDismiss` act on failed or unconfirmed messages. `modelControls`
  * contains the model picker; `footer` contains the status bar. Only the active pane answers Ctrl+F and takes focus as
- * it opens. Native drops attach to the pane under the pointer. `paneControls` follows the chat's own buttons.
+ * it opens. Native drops attach to the pane under the pointer. Export, Copy chat link, Settle and Archive are in the header's More menu.
  * `screenshots` attaches captures; `screenshotKeys` names the shortcut.
  * `voice` supplies Dictation and Read aloud. `voiceSend` puts a Voice conversation's turn in the chat as the owner's
  * message; it is left out for a chat not started yet, where a conversation can't start (ADR 0041). `commands` runs the slash commands typed in the composer. `queue` is the
@@ -152,7 +222,6 @@ export function ChatPane({
   active = true,
   visible = true,
   split = false,
-  paneControls,
   voice,
   voiceSend,
   screenshots,
@@ -200,7 +269,6 @@ export function ChatPane({
   active?: boolean;
   visible?: boolean;
   split?: boolean;
-  paneControls?: ReactNode;
   voice?: VoiceApi;
   voiceSend?: (text: string) => Promise<{ delivery: Delivery; itemId?: string }>;
   screenshots?: ScreenshotDesk;
@@ -469,23 +537,15 @@ export function ChatPane({
             <button
               className="icon-btn"
               title="Find in chat (Ctrl+F)"
+              aria-label="Find in chat"
+              aria-keyshortcuts="Control+F"
               onClick={openFind}
             >
               <Search size={16} />
             </button>
-            {onExport && (
-              <button className="icon-btn" title="Export as Markdown" onClick={onExport}>
-                <FileDown size={16} />
-              </button>
+            {(onExport || onCopyLink || (onSettle && !chat.archived) || (onArchive && !chat.running)) && (
+              <MoreMenu chat={chat} onExport={onExport} onCopyLink={onCopyLink} onSettle={onSettle} onArchive={onArchive} />
             )}
-            {onCopyLink && (
-              <button className="icon-btn" title="Copy chat link" aria-label="Copy chat link" onClick={onCopyLink}>
-                <Link2 size={16} />
-              </button>
-            )}
-            {onSettle && !chat.archived && <SettleButton settled={chat.settled} size={16} className="icon-btn" onSettle={onSettle} />}
-            {onArchive && !chat.running && <ArchiveButton archived={!!chat.archived} size={16} className="icon-btn" onArchive={onArchive} />}
-            {paneControls}
           </div>
         </div>
         {findOpen && (
