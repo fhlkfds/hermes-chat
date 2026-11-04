@@ -10,6 +10,7 @@ use axum::{Json, Router};
 use axum::extract::{Request, State};
 use axum::middleware::{self, Next};
 use axum::response::Redirect;
+use hermes_chat::display;
 use hermes_chat::transport::{self, Dashboard, ExtraHeader, LocalFile, PipeEvent, SignIn, TransportError};
 use std::sync::{Arc, Mutex};
 use serde_json::{json, Value};
@@ -270,6 +271,8 @@ async fn config(headers: HeaderMap, Query(q): Query<HashMap<String, String>>) ->
         "model": {"default": "glm-5.3-flash", "api_key": "sk-model-SECRET"},
         "stt": {"enabled": false, "provider": "groq", "groq": {"api_key": "gsk-SECRET"}},
         "tts": {"provider": "openai", "openai": {"api_key": "sk-tts-SECRET", "voice": "alloy"}},
+        // `true` is YAML for a typo'd number: Hermes's `_numeric_or` drops it, and so does the app.
+        "voice": {"silence_threshold": 350, "silence_duration": 1.5, "max_recording_seconds": true, "gpt_live": {"api_key": "sk-live-SECRET"}},
     }))
     .into_response()
 }
@@ -310,6 +313,99 @@ async fn session(mut ws: WebSocket, profile: Option<String>) {
             _ => {}
         }
     }
+}
+
+/// The Bot Desktop bridge: `SCREEN-1` echoes each binary frame back reversed and, once the viewer goes, reports the
+/// close code it got on `closes`, or None for none; `TAKEN-1` closes at once with Hermes's 4000 `control-taken`; anything else is 4401.
+async fn display_ws(ws: WebSocketUpgrade, Query(q): Query<HashMap<String, String>>, State(closes): State<Closes>) -> Response {
+    let ticket = q.get("display_ticket").cloned().unwrap_or_default();
+    ws.on_upgrade(move |mut ws| async move {
+        let close = |code: u16, reason: &'static str| Message::Close(Some(axum::extract::ws::CloseFrame { code, reason: reason.into() }));
+        match ticket.as_str() {
+            "SCREEN-1" => {
+                ws.send(Message::Binary(b"RFB 003.008\n".to_vec().into())).await.unwrap();
+                while let Some(Ok(m)) = ws.recv().await {
+                    match m {
+                        Message::Binary(b) => ws.send(Message::Binary(b.iter().rev().copied().collect::<Vec<u8>>().into())).await.unwrap(),
+                        Message::Close(f) => {
+                            let _ = closes.send(f.map(|f| f.code));
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+                // Gone with no close frame.
+                let _ = closes.send(None);
+            }
+            "TAKEN-1" => drop(ws.send(close(4000, "control-taken")).await),
+            _ => drop(ws.send(close(4401, "display ticket missing, expired or used")).await),
+        }
+    })
+}
+
+type Closes = mpsc::UnboundedSender<Option<u16>>;
+
+async fn screen_stub() -> (Arc<Dashboard>, mpsc::UnboundedReceiver<Option<u16>>) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let app = Router::new()
+        .route("/auth/password-login", post(login))
+        .route("/api/display/ws", get(display_ws))
+        .with_state(tx);
+    let dashboard = Dashboard::sign_in(&serve(app).await, &sign_in("hunter2")).await.expect("signed in");
+    (Arc::new(dashboard), rx)
+}
+
+async fn next_display(rx: &mut mpsc::UnboundedReceiver<display::DisplayEvent>) -> display::DisplayEvent {
+    tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.expect("event in time").expect("socket open")
+}
+
+#[tokio::test]
+async fn the_screen_relays_rfb_bytes_both_ways_and_closing_it_is_a_normal_close() {
+    let (dashboard, mut closes) = screen_stub().await;
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let socket = display::open(dashboard, "SCREEN-1", move |e| drop(tx.send(e))).await.expect("open");
+    assert_eq!(next_display(&mut rx).await, display::DisplayEvent::Data(b"RFB 003.008\n".to_vec()));
+    socket.send(vec![1, 2, 3]).unwrap();
+    assert_eq!(next_display(&mut rx).await, display::DisplayEvent::Data(vec![3, 2, 1]));
+    // Hermes hands control back only on a normal close.
+    drop(socket);
+    let got = tokio::time::timeout(Duration::from_secs(5), closes.recv()).await.unwrap().unwrap();
+    assert_eq!(got, Some(1000));
+}
+
+#[tokio::test]
+async fn the_connection_going_drops_each_screen_without_a_close_so_hermes_keeps_the_owner_in_control() {
+    let (dashboard, mut closes) = screen_stub().await;
+    let displays = display::Displays::default();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let socket = display::open(dashboard, "SCREEN-1", move |e| drop(tx.send(e))).await.expect("open");
+    next_display(&mut rx).await;
+    displays.keep(displays.epoch(), socket).unwrap();
+    displays.close_all();
+    // Hermes gets no close frame: a dropped link, not a viewer leaving.
+    let got = tokio::time::timeout(Duration::from_secs(5), closes.recv()).await.unwrap().unwrap();
+    assert_eq!(got, None);
+    match next_display(&mut rx).await {
+        display::DisplayEvent::Closed { code, .. } => assert_eq!(code, 1006),
+        other => panic!("expected a close, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn the_screen_reports_hermess_own_close_code() {
+    let (dashboard, _closes) = screen_stub().await;
+    for (ticket, code) in [("TAKEN-1", 4000), ("SPENT", 4401)] {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let _socket = display::open(dashboard.clone(), ticket, move |e| drop(tx.send(e))).await.expect("open");
+        match next_display(&mut rx).await {
+            display::DisplayEvent::Closed { code: got, reason } => {
+                assert_eq!(got, code, "{reason}");
+                assert!(!reason.is_empty());
+            }
+            other => panic!("expected a close, got {other:?}"),
+        }
+    }
+    assert!(display::open(dashboard, "two words", |_| {}).await.is_err(), "a ticket with a space isn't one");
 }
 
 async fn stub() -> Url {
@@ -585,6 +681,7 @@ fn toolset_guards_keep_only_no_mcp_platforms_coding_focus_and_disabled_names() {
     let none = || transport::ToolsetGuards {
         no_mcp: vec![],
         no_mcp_unclear: vec![],
+        saved_lists: vec![],
         coding_focus: false,
         disabled_everywhere: vec![],
         disabled_unclear: false,
@@ -594,6 +691,8 @@ fn toolset_guards_keep_only_no_mcp_platforms_coding_focus_and_disabled_names() {
         transport::ToolsetGuards {
             no_mcp: vec!["cli".into(), "irc".into(), "telegram".into()],
             no_mcp_unclear: vec!["line".into(), "matrix".into(), "slack".into()],
+            // `signal` holds a string Hermes doesn't read as a list, so it inherits Hermes's default like an absent one.
+            saved_lists: vec!["cli".into(), "discord".into(), "irc".into(), "telegram".into()],
             coding_focus: true,
             disabled_everywhere: vec!["web".into(), "debugging".into()],
             disabled_unclear: false,
@@ -605,6 +704,7 @@ fn toolset_guards_keep_only_no_mcp_platforms_coding_focus_and_disabled_names() {
         json!({
             "noMcp": ["cli", "irc", "telegram"],
             "noMcpUnclear": ["line", "matrix", "slack"],
+            "savedLists": ["cli", "discord", "irc", "telegram"],
             "codingFocus": true,
             "disabledEverywhere": ["web", "debugging"],
             "disabledUnclear": false
@@ -612,6 +712,9 @@ fn toolset_guards_keep_only_no_mcp_platforms_coding_focus_and_disabled_names() {
     );
     assert!(!out.to_string().contains("sk-secret"));
     assert_eq!(transport::toolset_guards(&json!({})), none());
+    // Null, an empty saved list, and a string list literal: inherited, saved (even empty), saved.
+    let saved = transport::toolset_guards(&json!({"platform_toolsets": {"cli": null, "discord": [], "slack": "['web']"}})).saved_lists;
+    assert_eq!(saved, vec!["discord".to_string(), "slack".to_string()]);
     assert!(!transport::toolset_guards(&json!({"agent": {"coding_context": "auto"}})).coding_focus);
     // As `hermes config set` stores a list, and a single name, both as Hermes's parse_config_string_list reads them.
     let listed = |v: serde_json::Value| {
@@ -1258,18 +1361,40 @@ async fn reads_the_voice_setup_without_passing_on_any_key() {
     let setup = signed_in().await.voice_setup("default").await.unwrap();
     assert_eq!(
         setup,
-        transport::VoiceSetup { transcribe: true, speak: true, stt_enabled: Some(false), stt_provider: Some("groq".into()), tts_provider: Some("openai".into()) }
+        transport::VoiceSetup {
+            transcribe: true,
+            speak: true,
+            stt_enabled: Some(false),
+            stt_provider: Some("groq".into()),
+            tts_provider: Some("openai".into()),
+            silence_threshold: Some(350.0),
+            silence_duration: Some(1.5),
+            max_recording_seconds: None,
+        }
     );
     let json = serde_json::to_string(&setup).unwrap();
     assert!(!json.contains("SECRET"), "{json}");
-    assert_eq!(json, r#"{"transcribe":true,"speak":true,"sttEnabled":false,"sttProvider":"groq","ttsProvider":"openai"}"#);
+    assert_eq!(
+        json,
+        r#"{"transcribe":true,"speak":true,"sttEnabled":false,"sttProvider":"groq","ttsProvider":"openai","silenceThreshold":350.0,"silenceDuration":1.5}"#
+    );
 }
 
 #[tokio::test]
 async fn a_server_without_voice_has_neither_route() {
     for profile in ["old", "older"] {
         let setup = signed_in().await.voice_setup(profile).await.unwrap();
-        assert_eq!(setup, transport::VoiceSetup { transcribe: false, speak: false, stt_enabled: None, stt_provider: None, tts_provider: None }, "{profile}");
+        let none = transport::VoiceSetup {
+            transcribe: false,
+            speak: false,
+            stt_enabled: None,
+            stt_provider: None,
+            tts_provider: None,
+            silence_threshold: None,
+            silence_duration: None,
+            max_recording_seconds: None,
+        };
+        assert_eq!(setup, none, "{profile}");
     }
 }
 

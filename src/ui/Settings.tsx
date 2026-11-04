@@ -17,7 +17,7 @@ import { AppearanceSettings } from "./AppearanceSettings";
 import type { ModelSettingsApi } from "../hermes/modelSettings";
 import { ModelSettings } from "./ModelSettings";
 import type { ToolsetsApi } from "../hermes/toolsets";
-import { ToolsetSettings } from "./ToolsetSettings";
+import { ToolsetSettings, type OpenChat } from "./ToolsetSettings";
 import type { MemoryApi } from "../hermes/memory";
 import { MemorySettings } from "./MemorySettings";
 import type { SkillsApi } from "../hermes/skills";
@@ -84,6 +84,7 @@ export function SettingsScreen({
   modelSettings,
   toolsets,
   runningReplies = 0,
+  openChat,
   memory,
   onMemoryDirty = () => {},
   memoryDiscards = 0,
@@ -133,6 +134,8 @@ export function SettingsScreen({
   toolsets?: ToolsetsApi;
   /** Chats of the shown profile with a reply running now. */
   runningReplies?: number;
+  /** The chat in the active pane, for Toolsets' read of what it has. */
+  openChat?: OpenChat;
   /** The profile's memory on Hermes; the Memory tab shows only with it. */
   memory?: MemoryApi;
   /** Called with whether the Memory tab has an unsaved edit. */
@@ -266,7 +269,7 @@ export function SettingsScreen({
         ) : tab === "toolsets" && toolsets ? (
           <div id="settings-panel-toolsets" role="tabpanel" aria-labelledby="settings-tab-toolsets">
             {/* Read for one profile; switching profile reads the new one's afresh. */}
-            <ToolsetSettings key={profile} api={toolsets} profile={profile} connected={status === "connected"} runningReplies={runningReplies} />
+            <ToolsetSettings key={profile} api={toolsets} profile={profile} connected={status === "connected"} runningReplies={runningReplies} chat={openChat} />
           </div>
         ) : (
           <div id="settings-panel-general" role="tabpanel" aria-labelledby="settings-tab-general">

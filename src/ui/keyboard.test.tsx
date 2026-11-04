@@ -231,6 +231,8 @@ describe("Interrupting by keyboard", () => {
     await s.user.tab();
     expect(focused()).toBe(button("Dictate"));
     await s.user.tab();
+    expect(focused()).toBe(button("Start voice conversation"));
+    await s.user.tab();
     expect(focused()).toBe(button("Attach a screenshot"));
     await s.user.tab();
     expect(focused()).toBe(button("Templates"));
@@ -410,11 +412,11 @@ describe("Chat list by keyboard", () => {
 
   it("leaves Alt+arrows alone while another screen covers the chat", async () => {
     const s = await signedIn();
-    await s.user.click(button("Server files"));
-    await screen.findByRole("heading", { name: "Server files" });
+    await s.user.click(button("Settings"));
+    await screen.findByRole("heading", { name: "Settings" });
     await s.user.keyboard("{Alt>}{ArrowDown}{/Alt}");
     await settle(s.hermes);
-    expect(screen.getByRole("heading", { name: "Server files" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Settings" })).toBeTruthy();
     expect(s.server.requests.filter((r) => r.method === "session.resume")).toEqual([]);
   });
 

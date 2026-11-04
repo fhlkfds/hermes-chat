@@ -308,6 +308,11 @@ export class FakeHermes {
   dropOnPrompt?: "stored" | "lost";
   /** What the model answers every `llm.oneshot` call with, unless `oneshotFailure` says why it failed. */
   oneshotAnswer = "A new title";
+  /**
+   * The profile's Bot Desktop (`display.*`, tui_gateway/methods_display.py at v2026.9.24; ADR 0039): its status and who
+   * holds it. Undefined: a Hermes without it, which answers "method not found".
+   */
+  display?: { status: Record<string, unknown>; lease: { holder: "agent" | "human"; viewer_hash: string | null; since: number; epoch: number }; minted: Set<string> };
   /** The server commands `commands.catalog` lists; undefined for a Hermes without the method. */
   commandCatalog: string[] | undefined = ["steer", "context", "compress", "help"];
   /** The profile's quick commands (`quick_commands` in config.yaml), by name, with their description. */
@@ -485,6 +490,7 @@ export class FakeHermes {
       const stored = `20261031_12000${n}_abc123`;
       this.runtime.set(runtimeId, stored);
       this.created.set(runtimeId, { source: String(r.params.source ?? "tui"), profile: r.params.profile as string | undefined });
+      this.agentTools.set(runtimeId, this.offeredTools((r.params.profile as string | undefined) ?? "default"));
       // `SessionCreateParams` `model` / `provider` / `reasoning_effort` / `fast`: the session's own overrides.
       const base = this.defaultModel(r.params.profile as string | undefined);
       const p = r.params;
@@ -514,6 +520,7 @@ export class FakeHermes {
       }
       const runtimeId = `rt-r${++this.resumed}`;
       this.runtime.set(runtimeId, stored);
+      this.agentTools.set(runtimeId, this.offeredTools((r.params.profile as string | undefined) ?? "default"));
       const messages = shownHistory(this.transcripts[stored] ?? []);
       const info = { ...this.sessionInfo, ...this.sessionModel.get(stored) };
       this.respond(r.id, { session_id: runtimeId, stored_session_id: stored, message_count: messages.length, messages, info, running: false });
@@ -603,6 +610,37 @@ export class FakeHermes {
       const name = String(r.params.name);
       const refPath = `attachments/${name}`;
       this.respond(r.id, { attached: true, name, path: `/hermes/workspace/${refPath}`, ref_path: refPath, ref_text: `@file:${formatRefValue(refPath)}`, uploaded: true });
+    },
+    "display.status": (r) => this.displayAnswer(r.id),
+    "display.start": (r) => {
+      if (this.display) this.display.status.running = true;
+      this.displayAnswer(r.id);
+    },
+    "display.observe": (r) => {
+      const d = this.display;
+      if (!d) return this.fail(r.id, -32601, "unknown method: display.observe");
+      if (!d.status.running) return this.fail(r.id, 5300, "this profile's Bot Desktop is not running; call display.start first");
+      const asked = String(r.params.viewer_id ?? "");
+      const viewer = d.minted.has(asked) ? asked : `viewer-${d.minted.size + 1}`;
+      d.minted.add(viewer);
+      this.respond(r.id, { ...d.status, lease: d.lease, profile_key: "/home/liam/.hermes", ticket: `ticket-${viewer}`, path: "/api/display/ws", viewer_id: viewer });
+    },
+    "display.lease.acquire": async (r) => {
+      const d = this.display;
+      const viewer = String(r.params.viewer_id ?? "");
+      if (!d) return this.fail(r.id, -32601, "unknown method: display.lease.acquire");
+      if (!d.minted.has(viewer)) return this.fail(r.id, 5300, "viewer_id was not minted for this connection; call display.observe first");
+      const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(viewer))), (b) => b.toString(16).padStart(2, "0")).join("").slice(0, 12);
+      d.lease = { holder: "human", viewer_hash: hash, since: 2, epoch: d.lease.epoch + 1 };
+      this.broadcast("display.lease", { profile_key: "/home/liam/.hermes", lease: d.lease });
+      this.respond(r.id, { lease: d.lease });
+    },
+    "display.lease.release": (r) => {
+      const d = this.display;
+      if (!d) return this.fail(r.id, -32601, "unknown method: display.lease.release");
+      d.lease = { holder: "agent", viewer_hash: null, since: 3, epoch: d.lease.epoch + 1 };
+      this.broadcast("display.lease", { profile_key: "/home/liam/.hermes", lease: d.lease });
+      this.respond(r.id, { lease: d.lease });
     },
     "image.detach": (r) => {
       this.imagesStaged--;
@@ -826,6 +864,18 @@ export class FakeHermes {
       this.respond(r.id, { ...this.sessionInfo, cwd });
     },
     "session.close": (r) => this.respond(r.id, { closed: true }),
+    // `tui_gateway/methods_tools.py` `tools.show`: the session's agent's tools grouped by toolset. An id it doesn't hold
+    // falls back to the launch profile's config (`_session_toolsets(None)`), with no error.
+    "tools.show": (r) => {
+      if (!this.toolsShowMethod) return this.fail(r.id, -32601, "Method not found: tools.show");
+      const tools = this.agentTools.get(String(r.params.session_id ?? "")) ?? this.offeredTools("default");
+      const sections = this.toolsetCatalog
+        .map((t) => ({ name: t.name, tools: t.tools.filter((n) => tools.has(n)).map((name) => ({ name, description: "" })) }))
+        .filter((x) => x.tools.length);
+      this.respond(r.id, { sections, total: tools.size });
+    },
+    // `_session_method`: 4001 for a runtime id the gateway doesn't hold (`_sess_nowait`).
+    "session.status": (r) => (this.runtime.has(String(r.params.session_id ?? "")) ? this.respond(r.id, { output: "Hermes TUI Status" }) : this.fail(r.id, 4001, "session not found")),
   };
 
   /** Per-route REST behaviour, keyed `METHOD /path`. A handler throws to fail the request. */
@@ -1034,6 +1084,19 @@ export class FakeHermes {
   /** The profile's model setup, as `config.yaml` holds it, and the catalog `model.options` lists. */
   modelConfig: FakeModelConfig = fakeModelConfig();
 
+  /** Runtime session id -> the tool names its agent was built with, from its profile's list then (`tools.show`). */
+  readonly agentTools = new Map<string, Set<string>>();
+  /** Whether the socket has `tools.show`. */
+  toolsShowMethod = true;
+  /** Platforms whose toolset list each profile has saved; any other inherits Hermes's default. A change saves it. */
+  toolsetSavedLists: Record<string, Set<string>> = {};
+  /** The tool names a chat built now in `profile` is offered: its enabled toolsets' tools, `cli` platform only. */
+  offeredTools(profile: string): Set<string> {
+    const on = this.enabledToolsets(profile);
+    const off = (n: string) => this.toolsetSuppressed.has(n) || !!this.toolsetDisabledEverywhere[profile]?.includes(n);
+    return new Set(this.toolsetCatalog.filter((t) => t.platform === "cli" && on.has(t.name) && !off(t.name)).flatMap((t) => t.tools));
+  }
+
   /** The toolsets every profile lists (plugins aside, the catalog is the same for each). */
   toolsetCatalog: FakeToolset[] = fakeToolsets();
   /** Each profile's enabled toolsets, as its config.yaml resolves them; a profile not here has the defaults. */
@@ -1187,6 +1250,7 @@ export class FakeHermes {
         return {
           noMcp: [...(this.toolsetNoMcp[profile] ?? [])].sort(),
           noMcpUnclear: [...(this.toolsetNoMcpUnclear[profile] ?? [])],
+          savedLists: [...(this.toolsetSavedLists[profile] ?? [])].sort(),
           codingFocus: !!this.codingFocus[profile],
           disabledEverywhere: [...(this.toolsetDisabledEverywhere[profile] ?? [])],
           disabledUnclear: !!this.toolsetDisabledUnclear[profile],
@@ -1298,8 +1362,10 @@ export class FakeHermes {
       this.toolsetWrites.push({ profile, name, enabled });
       if (enabled) on.add(name);
       else on.delete(name);
-      // `_save_platform_tools` drops the `no_mcp` sentinel from the platform's list; `stt` writes its own section.
+      // `_save_platform_tools` drops the `no_mcp` sentinel from the platform's list, and saves the whole list into the
+      // profile; `stt` writes its own section.
       if (name !== "stt") this.toolsetNoMcp[profile]?.delete(known(name)!.platform);
+      if (name !== "stt") (this.toolsetSavedLists[profile] ??= new Set()).add(known(name)!.platform);
       // And clears a toolset just turned on from `agent.disabled_toolsets`, on every platform (#49995).
       const everywhere = this.toolsetDisabledEverywhere[profile];
       if (enabled && name !== "stt" && everywhere) this.toolsetDisabledEverywhere[profile] = everywhere.filter((n) => n !== name);
@@ -1473,6 +1539,11 @@ export class FakeHermes {
 
   event(sessionId: string, type: string, payload: Record<string, unknown> = {}) {
     this.frame({ jsonrpc: "2.0", method: "event", params: { type, session_id: sessionId, payload } });
+  }
+
+  private displayAnswer(id: number) {
+    if (!this.display) return this.fail(id, -32601, "unknown method: display.status");
+    this.respond(id, { ...this.display.status, lease: this.display.lease, profile_key: "/home/liam/.hermes" });
   }
 
   /** A session-less broadcast such as `sessions.changed` (tui_gateway `_broadcast_global_event`). */
