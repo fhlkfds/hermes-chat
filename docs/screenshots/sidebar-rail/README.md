@@ -11,5 +11,6 @@ Captured on 2026-11-04 from the running Hermes Chat debug build (WebKitGTK, fron
 - `7-min-size-tip.png`: a tip at the minimum size.
 - `8-tip-over-inbox.png`: with the Inbox open, a rail tip still draws above it (it is drawn on the page, outside the rail).
 - `9-pointer-on-tip.png`: the pointer moved from Automations across the gap onto its tip (x 120); the tip stays. Xvfb's capture doesn't draw the pointer. Moving it away to the chat then hid the tip.
+- `10-min-size-slow-move-onto-tip.png`: at 760 × 500 the tip sits 10 px past the 28 px button's edge; the pointer was moved 1 px at a time from Automations onto the tip (x 30 → 90) and the tip stayed. Moving it off the tip upward then hid it.
 
 The Inbox badge and the Terminal's running dot weren't captured: the stub has no inbox entries and no ssh target.
