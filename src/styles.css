@@ -1748,7 +1748,7 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .start-value { color: var(--text); overflow-wrap: anywhere; }
 .start-from { font-size: calc(10.5rem / 14); padding: 1px 7px; border-radius: 999px; background: var(--raised-2); color: var(--muted); white-space: nowrap; }
 .start-settings .field-hint { margin: 10px 0 0; }
-.start-settings + .empty-chat { margin-top: 12vh; }
+.start-settings + .empty-state { margin-top: 12vh; }
 .project-defaults .field { margin-top: 16px; }
 .defaults-instructions, .defaults-folder {
   font: inherit; color: var(--text); background: var(--input, var(--raised)); border: 1px solid var(--line-2); border-radius: 8px; padding: 8px 10px;
