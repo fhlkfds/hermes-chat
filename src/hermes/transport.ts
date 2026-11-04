@@ -1294,15 +1294,35 @@ export class Hermes {
   };
 
   /**
+   * The profile's chats that Hermes keeps as working in `folder` or under it, archived ones too, from any Hermes
+   * client (`GET /api/sessions?cwd_prefix=`). Hermes stores a chat's folder with its first prompt. At most 100: `more`
+   * says there are others.
+   */
+  async chatsIn(folder: string, profile = this.profile): Promise<{ chats: { id: string; title: string; archived: boolean }[]; more: boolean }> {
+    const query = new URLSearchParams({ profile, cwd_prefix: folder, archived: "include", limit: "100", offset: "0" });
+    const res = (await this.rest("GET", `api/sessions?${query}`)) as SessionPage;
+    const chats = res.sessions.map((r) => ({ id: r.id, title: listTitle(r), archived: !!r.archived }));
+    return { chats, more: res.total > res.sessions.length };
+  }
+
+  /** A text file on the server, as Hermes reads it (`GET /api/fs/read-text`), for the profile shown. */
+  async readServerText(path: string): Promise<string> {
+    const res = (await this.rest("GET", `api/fs/read-text?${new URLSearchParams({ path, profile: this.profile })}`)) as { text?: unknown; truncated?: unknown };
+    if (typeof res?.text !== "string" || res.truncated) throw new Error(`Hermes didn't read all of ${path}.`);
+    return res.text;
+  }
+
+  /**
    * Starts a Chat in this app. It is Active from the start, and pinned once Hermes has stored it (ADR 0002). `model`:
    * what it runs on, for this chat only; left out, it runs on the profile's model. `folder`: the server folder it
    * works in (its session `cwd`), checked by the caller first; Hermes quietly runs a chat in its own folder when it
    * can't use the one asked for, so the chat is refused unless Hermes says it took it. `instructions`: one hidden
    * message seeded before the owner's first, which the model reads and no Hermes client shows (ADR 0017).
    */
-  async newChat(model?: ModelPick, start: { folder?: string; instructions?: string } = {}): Promise<string> {
-    const { folder, instructions } = start;
+  async newChat(model?: ModelPick, start: { folder?: string; instructions?: string; confirm?: (id: string) => Promise<void> } = {}): Promise<string> {
+    const { folder, instructions, confirm } = start;
     const profile = this.profile;
+    const generation = this.generation;
     const res = (await this.request("session.create", {
       profile,
       source: APP_SOURCE,
@@ -1322,12 +1342,27 @@ export class Hermes {
       info?: unknown;
     };
     const cwd = (res.info as { cwd?: unknown } | undefined)?.cwd;
-    if (folder && cwd !== folder) {
-      // Not this chat: drop the session, and the hidden message Hermes stored with it, so nothing is left behind.
+    // Not this chat: drop the session, and the hidden message Hermes stored with it, so nothing is left behind.
+    const drop = () => {
       void this.request("session.close", { session_id: res.session_id }).catch(() => {});
       if (instructions)
         void this.rest("DELETE", `api/sessions/${encodeURIComponent(res.stored_session_id)}?${new URLSearchParams({ profile })}`).catch(() => {});
+    };
+    if (folder && cwd !== folder) {
+      drop();
       throw new Error(`Hermes didn't start it in ${folder}${typeof cwd === "string" && cwd ? `: it would have worked in ${cwd}` : ""}. Nothing was sent.`);
+    }
+    // `confirm`: what must hold before anything is sent, such as the worktree recording this chat (ADR 0042).
+    if (confirm) {
+      await confirm(res.stored_session_id).catch((e: unknown) => {
+        drop();
+        throw new Error(`${e instanceof Error ? e.message : String(e)} Nothing was sent.`);
+      });
+      // Confirming took a while: a chat started for one profile or connection never lands in another.
+      if (this.profile !== profile || this.generation !== generation) {
+        drop();
+        throw new Error("The profile or the connection changed while the chat was starting. Nothing was sent.");
+      }
     }
     const chat: Chat = {
       model: pickFromInfo(res.info) ?? model,

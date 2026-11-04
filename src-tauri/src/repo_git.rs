@@ -15,8 +15,8 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
-/// The helper program, sent unchanged every time.
-pub const HELPER: &str = include_str!("repo_git_helper.py");
+/// The helper program, sent unchanged every time: the Repository screen's operations, then the worktrees' (ADR 0042).
+pub const HELPER: &str = concat!(include_str!("repo_git_helper.py"), include_str!("repo_worktrees_helper.py"), "\n\nmain()\n");
 
 /// What the helper prints before its answer, so anything a login script prints first can't be mistaken for it.
 const MARK: &str = "\u{1e}hermes-repo\u{1e}";
@@ -97,6 +97,55 @@ pub enum Request {
     /// What `remote_branch` is on `remote` now, asked of the remote itself. Settles a push whose answer was lost.
     #[serde(rename_all = "camelCase")]
     RemoteHead { repo: String, remote: String, remote_branch: String },
+    /// The repository's worktrees, which of them Hermes Chat manages and which chats use each, their changes and
+    /// unpushed commits, and those removed with their kept changes (ADR 0042).
+    WorktreeList { repo: String },
+    /// Exactly what a create would do: the branch, the commit it starts at, the folder, the setup steps, and a stamp.
+    #[serde(rename_all = "camelCase")]
+    WorktreePlan {
+        repo: String,
+        branch: String,
+        new_branch: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base: Option<String>,
+    },
+    /// Makes the worktree the plan with `stamp` showed. `id` is made by the screen, so the same request sent again
+    /// after its answer was lost finishes that worktree instead of making a second.
+    #[serde(rename_all = "camelCase")]
+    WorktreeCreate {
+        repo: String,
+        id: String,
+        branch: String,
+        new_branch: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base: Option<String>,
+        stamp: String,
+        /// Who made it, kept in the record: "Hermes Chat on <computer>".
+        by: String,
+    },
+    /// Runs one setup step of a managed worktree, if it hasn't run yet.
+    WorktreeSetup { repo: String, id: String, step: u32 },
+    /// Records that a chat works in the worktree; it can't be removed while any chat is recorded.
+    WorktreeAttach { repo: String, id: String, chat: ChatRef },
+    WorktreeDetach { repo: String, id: String, scope: String, chat: String },
+    WorktreeProtect { repo: String, id: String, protected: bool },
+    /// Drops the record of a worktree that isn't there: a create that didn't finish, or one removed.
+    WorktreeForget { repo: String, id: String },
+    /// What removing a managed worktree would affect and what stops it.
+    WorktreeRemoval { repo: String, id: String },
+    /// Removes it, if it's still as the preview with `stamp` showed, keeping its changes in a recovery ref first.
+    WorktreeRemove { repo: String, id: String, stamp: String },
+    /// Makes a removed worktree again and puts its kept changes back.
+    WorktreeRestore { repo: String, id: String },
+}
+
+/// A chat, as the worktree record names it: the connection and profile it's in, its stored id, and its title.
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+pub struct ChatRef {
+    pub scope: String,
+    pub chat: String,
+    #[serde(default)]
+    pub title: String,
 }
 
 /// What a push or a pull request expects HEAD to be.
@@ -138,6 +187,9 @@ impl Request {
                 | Request::PublishInfo { .. }
                 | Request::PrStatus { .. }
                 | Request::RemoteHead { .. }
+                | Request::WorktreeList { .. }
+                | Request::WorktreePlan { .. }
+                | Request::WorktreeRemoval { .. }
         )
     }
 
@@ -152,6 +204,11 @@ impl Request {
             Request::PublishInfo { .. } | Request::PrStatus { .. } | Request::RemoteHead { .. } => Duration::from_secs(240),
             // ls-remote, a list, the create and the read-back: the helper's own limits add up to five minutes.
             Request::PrCreate { .. } => Duration::from_secs(360),
+            // `git worktree add` checks out a whole tree and runs post-checkout hooks; a removal may first keep every
+            // change. The helper gives each git call ten minutes.
+            Request::WorktreeCreate { .. } | Request::WorktreeSetup { .. } | Request::WorktreeRemove { .. } | Request::WorktreeRestore { .. } => {
+                Duration::from_secs(660)
+            }
             _ => Duration::from_secs(60),
         }
     }
@@ -218,10 +275,20 @@ impl Serialize for RepoError {
     }
 }
 
-/// The command ssh runs on the server. It is the same string every time: nothing in it comes from the owner.
+/// The command ssh runs on the server. It is the same string every time: nothing in it comes from the owner. The
+/// program is zlib-compressed: one argument can't be longer than 128 KiB on Linux (MAX_ARG_STRLEN), on this computer
+/// or in the server's shell, and the plain program in base64 would be.
 pub fn remote_command() -> String {
-    let program = base64::engine::general_purpose::STANDARD.encode(HELPER);
-    format!("exec python3 -I -c 'import base64;exec(base64.b64decode(\"{program}\"))'")
+    static COMMAND: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    COMMAND
+        .get_or_init(|| {
+            use std::io::Write;
+            let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+            z.write_all(HELPER.as_bytes()).expect("compress in memory");
+            let program = base64::engine::general_purpose::STANDARD.encode(z.finish().expect("compress in memory"));
+            format!("exec python3 -I -c 'import base64,zlib;exec(zlib.decompress(base64.b64decode(\"{program}\")))'")
+        })
+        .clone()
 }
 
 /// `ssh` to `target`, running the helper. The target is checked as the tunnel checks it: no leading '-', no whitespace.
@@ -352,7 +419,12 @@ mod tests {
         assert_eq!(c, remote_command());
         let program = c.split('"').nth(1).unwrap();
         assert!(program.chars().all(|ch| ch.is_ascii_alphanumeric() || "+/=".contains(ch)));
-        assert_eq!(base64::engine::general_purpose::STANDARD.decode(program).unwrap(), HELPER.as_bytes());
+        let packed = base64::engine::general_purpose::STANDARD.decode(program).unwrap();
+        let mut unpacked = String::new();
+        std::io::Read::read_to_string(&mut flate2::read::ZlibDecoder::new(&packed[..]), &mut unpacked).unwrap();
+        assert_eq!(unpacked, HELPER);
+        // Under Linux's limit for one argument, with room to grow.
+        assert!(c.len() < 96 * 1024, "{} bytes", c.len());
     }
 
     #[test]
