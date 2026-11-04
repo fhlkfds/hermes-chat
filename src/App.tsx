@@ -960,7 +960,7 @@ export function Main({
   // Projects are Hermes's, one store for each connection and profile; which chats are in each is kept on this computer.
   // A project picked in the switcher narrows the list to its chats. Active, Settled and Unread work as before inside it.
   const scope = projectScope(connection, profile);
-  // Troubleshooting chats started from the Jobs screen, for this app run (troubleshoot.ts, ADR 0051). The store sees
+  // Troubleshooting chats started from the Jobs screen, for this app run (troubleshoot.ts, ADR 0053). The store sees
   // every change in the chats, to tell when a troubleshooting reply has ended.
   const troubleshoots = useMemo(() => new TroubleshootStore(), [hermes]);
   useEffect(() => hermes.subscribe(() => troubleshoots.observe(hermes.getSnapshot())), [hermes, troubleshoots]);
@@ -1173,7 +1173,7 @@ export function Main({
 
   const newChat = (remember = true) => openChat(null, { remember, fresh: true });
 
-  /** Opens the Scheduled jobs screen on one job, as a troubleshooting chat's toast does (ADR 0051). */
+  /** Opens the Scheduled jobs screen on one job, as a troubleshooting chat's toast does (ADR 0053). */
   const openJobAt = (id: string) =>
     guard(() => {
       setProjectOpen(false);

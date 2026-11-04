@@ -40,7 +40,7 @@ type Loaded = { jobs: CronJob[]; zone: JobsZone; targets?: DeliveryTarget[]; cat
 type View = { kind: "list" } | { kind: "job"; id: string; ask?: boolean } | { kind: "edit"; id?: string };
 
 /**
- * Handing a job to Hermes in a new chat (ADR 0051). `start` starts the chat in this profile with the message, which
+ * Handing a job to Hermes in a new chat (ADR 0053). `start` starts the chat in this profile with the message, which
  * the app shows; `openChat` shows an earlier one. Left out, the screen has no Troubleshoot buttons.
  */
 export type TroubleshootWiring = {

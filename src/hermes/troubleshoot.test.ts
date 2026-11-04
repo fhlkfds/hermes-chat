@@ -1,4 +1,4 @@
-// The Troubleshoot hand-off (ADR 0051): the first message built from what the Jobs screen reads, the change list shown
+// The Troubleshoot hand-off (ADR 0053): the first message built from what the Jobs screen reads, the change list shown
 // afterwards, and the store that tells when the chat's reply has ended. Jobs and runs are fixtures.
 import { describe, expect, it, vi } from "vitest";
 import { type CronJob, type JobRun, type JobsZone, toJob } from "./cronJobs";

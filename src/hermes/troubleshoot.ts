@@ -1,4 +1,4 @@
-// Troubleshooting a scheduled job (GLOSSARY.md "Troubleshoot", ADR 0051): the Jobs screen hands a job to Hermes in a
+// Troubleshooting a scheduled job (GLOSSARY.md "Troubleshoot", ADR 0053): the Jobs screen hands a job to Hermes in a
 // new chat in the job's profile. The first message is built here from what the Jobs screen reads anyway (the job, its
 // newest runs and their results, the delivery problems and scheduler warnings it flags), with long text cut and
 // recognisable secrets hidden. Hermes then works on the job with its own cron tools; this app changes nothing itself.

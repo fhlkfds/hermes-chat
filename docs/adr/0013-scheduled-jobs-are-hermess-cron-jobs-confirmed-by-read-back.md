@@ -28,7 +28,7 @@ Scheduled jobs are the profile's own Hermes cron jobs. Hermes stores them in the
 - **Overlapping runs.** Hermes runs one execution of a job at a time: a Run now while one is under way is answered 409 (checked live: a second trigger of a 45 s script four seconds into the first). The app shows a job whose ledger has a claimed or running execution as Running, says so in the Run now confirmation, and words the 409 as "running already". Two rows can show as running at once, when a manual run was claimed while a scheduled one went on.
 - The app offers only Hermes's delivery targets (`GET /api/cron/delivery-targets`), marking a platform with no home channel; a job's current target it doesn't list is kept. It creates prompt jobs only; script jobs and other options come from other Hermes clients and are shown as kept.
 
-- **Troubleshoot** hands a job to Hermes in a new chat in its profile, and shows what changed once the reply ends: ADR 0051.
+- **Troubleshoot** hands a job to Hermes in a new chat in its profile, and shows what changed once the reply ends: ADR 0053.
 
 ## Capability gaps, and the server changes that would close them
 

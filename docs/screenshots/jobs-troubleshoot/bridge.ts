@@ -1,4 +1,4 @@
-// A stand-in Hermes dashboard for the Troubleshoot screenshots (#175, ADR 0051): sign-in, the WS ticket, `/api/ws` and
+// A stand-in Hermes dashboard for the Troubleshoot screenshots (#175, ADR 0053): sign-in, the WS ticket, `/api/ws` and
 // dashboard REST, all answered by the tests' FakeHermes with synthetic `[fixture]` jobs and runs. Loopback only. Build
 // and run:
 //   npx rolldown docs/screenshots/jobs-troubleshoot/bridge.ts --platform node -o /tmp/bridge.mjs && node /tmp/bridge.mjs 47875

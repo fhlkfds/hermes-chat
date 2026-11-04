@@ -375,7 +375,7 @@ One run of a Scheduled job, as Hermes recorded it: an agent session, or the outp
 _Avoid_: execution (Hermes's ledger word, fine in server-side talk), attempt, chat (an agent run is a Hermes session, but not one of the chats)
 
 **Troubleshoot** (a Scheduled job):
-The owner's action, on a job or on one of its failed Job runs, that hands the job to Hermes in a new Chat in the job's profile. The first message carries the job, its newest runs with their errors and results, and the problems the Scheduled jobs screen flags, with long text cut and recognisable secrets hidden; the owner sees and can edit it before it is sent. Hermes finds the cause and changes the job with its own cron tools, saying what it changed. When its reply ends, the Scheduled jobs screen reads the job again, shows what changed since the chat started, and offers Run now (ADR 0051).
+The owner's action, on a job or on one of its failed Job runs, that hands the job to Hermes in a new Chat in the job's profile. The first message carries the job, its newest runs with their errors and results, and the problems the Scheduled jobs screen flags, with long text cut and recognisable secrets hidden; the owner sees and can edit it before it is sent. Hermes finds the cause and changes the job with its own cron tools, saying what it changed. When its reply ends, the Scheduled jobs screen reads the job again, shows what changed since the chat started, and offers Run now (ADR 0053).
 _Avoid_: diagnose, debug, fix (Hermes fixes; the owner troubleshoots), repair
 
 **Schedule time zone**:
