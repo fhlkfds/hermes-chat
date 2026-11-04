@@ -233,7 +233,7 @@ kbd {
 }
 .rail-brand.big { width: 44px; height: 44px; font-size: calc(20rem / 14); border-radius: 12px; margin: 0 auto 14px; }
 .rail-chats { flex: 1; overflow-y: auto; display: flex; flex-direction: column; align-items: center; gap: 8px; width: 100%; padding: 2px 0; scrollbar-width: none; }
-/* Daily tools at the top in full strength; the profile's tools below in labeled groups, a step quieter (ADR 0049). */
+/* Daily tools at the top in full strength; the profile's tools below in labeled groups, a step quieter (ADR 0050). */
 .rail-top { flex: none; }
 .rail .rail-primary { color: var(--text-2); }
 .rail .icon-btn.on::before {

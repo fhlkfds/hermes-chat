@@ -1,5 +1,5 @@
 // Icon rail beside a chat list (ADR 0001), ported from the prototype's variants C and A, with its tools grouped into Work
-// and Server and tips that show at once (ADR 0049). The list's header is the profile switcher. Settings opens from the
+// and Server and tips that show at once (ADR 0050). The list's header is the profile switcher. Settings opens from the
 // rail's foot. Right-clicking a chat opens its menu (ChatMenu.tsx).
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -159,7 +159,7 @@ export function Rail({
       </button>
     ),
   ].filter(Boolean);
-  // Daily tools first, then the profile's tools in two labeled groups (ADR 0049).
+  // Daily tools first, then the profile's tools in two labeled groups (ADR 0050).
   const parts = (
     <>
       <div className="rail-top">
