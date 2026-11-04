@@ -34,6 +34,12 @@ describe("A reply's words to copy", () => {
     expect(replyMarkdown("<think>short</think> Yes.")).toBe("Yes.");
   });
 
+  it("leaves out thinking sections one straight after another", () => {
+    expect(replyMarkdown("<think>first</think><think>second</think>Yes.")).toBe("Yes.");
+    expect(replyMarkdown("<think>first</think>\n<reasoning>second</reasoning>\n\nYes.")).toBe("Yes.");
+    expect(replyMarkdown("<think>first</think> <think>never closed")).toBe("");
+  });
+
   it("leaves out thinking never closed, at the start or after the reply's words", () => {
     expect(replyMarkdown("<reasoning>still going")).toBe("");
     expect(replyMarkdown("Let me check.\n<think>private reasoning\nmore of it")).toBe("Let me check.");
@@ -45,6 +51,9 @@ describe("A reply's words to copy", () => {
     const xml = "The format:\n\n```xml\n<think>example</think>\n<answer>42</answer>\n```\n\n~~~\n<reasoning>\nopen\n~~~";
     expect(replyMarkdown(xml)).toBe(xml);
     expect(replyMarkdown("    <think>indented code</think>")).toBe("    <think>indented code</think>");
+    const listed = "- The format:\n\n  ```xml\n  <think>example</think>\n  ```\n\n<think>real</think>\nDone.";
+    expect(replyMarkdown(listed)).toBe("- The format:\n\n  ```xml\n  <think>example</think>\n  ```\n\nDone.");
+    expect(replyMarkdown("Type `a\n<think>` and the rest stays.")).toBe("Type `a\n<think>` and the rest stays.");
   });
 
   it("keeps blank lines and indentation, dropping only blank lines at the start and end", () => {

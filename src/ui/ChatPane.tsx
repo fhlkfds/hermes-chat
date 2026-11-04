@@ -738,7 +738,7 @@ const BlockView = memo(
           )}
           {!block.outgoing && block.text.trim() && (
             <div className="msg-actions">
-              <CopyButton text={block.text} what="message" />
+              <CopyButton words={() => block.text} what="message" />
               {onReplay && <EditButton blocked={replayBlocked} onEdit={() => onReplay(block.id, "edit")} />}
               {onBranch && <BranchButton blocked={branchBlocked} onBranch={() => onBranch(block.id)} />}
             </div>
@@ -756,7 +756,7 @@ const BlockView = memo(
             <div className="msg-actions-row">
               {listen && <ListenButton speaker={listen.speaker} itemId={block.id} text={block.text} blocked={listen.blocked} />}
               <div className="msg-actions">
-                <CopyButton text={replyMarkdown(block.text)} what="reply" />
+                <CopyButton words={() => replyMarkdown(block.text)} what="reply" />
                 {onReplay && <RegenerateButton blocked={replayBlocked} onRegenerate={() => onReplay(block.id, "regenerate")} />}
                 {onBranch && <BranchButton blocked={branchBlocked} onBranch={() => onBranch(block.id)} />}
               </div>
