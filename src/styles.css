@@ -324,7 +324,7 @@ kbd {
 .tab-strip { flex: none; display: flex; align-items: flex-end; gap: 2px; padding: 4px 6px 0; border-bottom: 1px solid var(--line); min-width: 0; }
 .tab-strip.drop { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .tabs { flex: 0 1 auto; display: flex; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
-.tab { flex: none; max-width: 220px; display: flex; align-items: center; border-radius: 7px 7px 0 0; color: var(--muted); }
+.tab { position: relative; flex: none; max-width: 220px; display: flex; align-items: center; border-radius: 7px 7px 0 0; color: var(--muted); }
 .tab:hover { background: var(--hover); color: var(--text-2); }
 .tab.on { background: var(--raised); color: var(--text); box-shadow: inset 0 2px 0 var(--accent); }
 .tab-open { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; padding: 6px 4px 6px 10px; font-size: calc(12.5rem / 14); text-align: left; }
@@ -333,17 +333,27 @@ kbd {
 .tab-close { flex: none; display: grid; place-items: center; width: 20px; height: 20px; margin-right: 4px; border-radius: 5px; color: var(--muted); opacity: 0; }
 .tab:hover .tab-close, .tab.on .tab-close { opacity: 1; }
 .tab-close:hover { background: var(--hover); color: var(--text); }
+/* Where a tab dragged onto the strip will land: a bar at the start of the tab it goes in front of, or the end of the
+   last. Inside the tab, since the strip clips what sticks out. */
+.tab.insert-before::before, .tab.insert-after::after {
+  content: ""; position: absolute; top: 3px; bottom: 3px; width: 3px; border-radius: 2px; background: var(--accent); pointer-events: none;
+}
+.tab.insert-before::before { left: 0; }
+.tab.insert-after::after { right: 0; }
 .tab-new { flex: none; margin: 0 0 3px 2px; }
 .tab-strip-end { flex: none; display: flex; gap: 2px; margin: 0 0 3px auto; padding-left: 6px; }
 .pane-drop { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
 .pane-drop > .chat { flex: 1; min-height: 0; }
-/* Where a dragged chat would land: the whole pane for a new tab, its right or bottom half for a split. */
+/* Where a dragged chat would land: the whole pane for a new tab, the half of it on an edge's side for that edge. The
+   zone is a data attribute, not a class: a class "tab" would pick up the tab rule above. */
 .drop-hint {
   position: absolute; inset: 0; z-index: 8; pointer-events: none; display: grid; place-items: center;
   background: color-mix(in srgb, var(--accent) 14%, transparent); border: 2px solid var(--accent); border-radius: 6px;
 }
-.drop-hint.right { left: 50%; }
-.drop-hint.bottom { top: 50%; }
+.drop-hint[data-zone="right"] { left: 50%; }
+.drop-hint[data-zone="left"] { right: 50%; }
+.drop-hint[data-zone="bottom"] { top: 50%; }
+.drop-hint[data-zone="top"] { bottom: 50%; }
 .drop-hint span { background: var(--raised-2); border: 1px solid var(--line-2); padding: 5px 10px; border-radius: 7px; font-size: calc(12.5rem / 14); }
 /* ---------- chat pane ---------- */
 .chat { display: flex; flex-direction: column; height: 100%; position: relative; }

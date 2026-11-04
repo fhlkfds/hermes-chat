@@ -68,19 +68,44 @@ async function signedIn() {
 const tabsIn = (i: number) => Array.from(pane(i).querySelectorAll('[role="tab"]')).map((t) => t.textContent);
 const shownTab = (i: number) => pane(i).querySelector('[role="tab"][aria-selected="true"]')?.textContent;
 
-/** Drags the chat list's row for `id` onto `target`, at `at` within it as a share of its width and height. */
-function dragOnto(target: Element, id: string, at?: { x: number; y: number }) {
-  const row = document.querySelector(`.row-open[data-chat="${id}"]`)!;
-  expect(row.getAttribute("draggable")).toBe("true");
+const rect = (left: number, top: number, width: number, height: number) => ({ left, top, width, height, right: left + width, bottom: top + height, x: left, y: top, toJSON: () => {} });
+
+/**
+ * Drags `source` onto `target`: at `at` within it as a share of its width and height, or at `clientX` on a tab strip
+ * whose tabs are laid out 100 pixels wide each. `drop` false stops over the target, to see the hint.
+ */
+function drag(source: Element, target: Element, { at, clientX, drop = true }: { at?: { x: number; y: number }; clientX?: number; drop?: boolean } = {}) {
+  expect(source.getAttribute("draggable")).toBe("true");
   const data = new Map<string, string>();
-  const dataTransfer = { types: [] as string[], setData: (k: string, v: string) => (data.set(k, v), dataTransfer.types.push(k)), getData: (k: string) => data.get(k) ?? "", effectAllowed: "", dropEffect: "" };
-  if (at) vi.spyOn(target, "getBoundingClientRect").mockReturnValue({ left: 0, top: 0, width: 1000, height: 800, right: 1000, bottom: 800, x: 0, y: 0, toJSON: () => {} });
+  // As in a browser, the data can be read only on drop; before, only its types.
+  let readable = false;
+  const dataTransfer = {
+    types: [] as string[],
+    setData: (k: string, v: string) => (data.set(k, v), dataTransfer.types.push(k)),
+    getData: (k: string) => (readable ? (data.get(k) ?? "") : ""),
+    effectAllowed: "",
+    dropEffect: "",
+  };
+  if (at) vi.spyOn(target, "getBoundingClientRect").mockReturnValue(rect(0, 0, 1000, 800));
+  if (clientX !== undefined) target.querySelectorAll(".tab").forEach((t, i) => vi.spyOn(t, "getBoundingClientRect").mockReturnValue(rect(i * 100, 0, 100, 30)));
   // jsdom has no DragEvent, so the pointer's place is put on the event by hand.
-  const at_ = (e: Event) => (at && Object.defineProperties(e, { clientX: { value: at.x * 1000 }, clientY: { value: at.y * 800 } }), e);
-  fireEvent.dragStart(row, { dataTransfer });
-  fireEvent(target, at_(createEvent.dragOver(target, { dataTransfer })));
-  fireEvent(target, at_(createEvent.drop(target, { dataTransfer })));
+  const place = (e: Event) => {
+    if (at) Object.defineProperties(e, { clientX: { value: at.x * 1000 }, clientY: { value: at.y * 800 } });
+    if (clientX !== undefined) Object.defineProperties(e, { clientX: { value: clientX }, clientY: { value: 10 } });
+    return e;
+  };
+  fireEvent.dragStart(source, { dataTransfer });
+  fireEvent(target, place(createEvent.dragOver(target, { dataTransfer })));
+  if (!drop) return;
+  readable = true;
+  fireEvent(target, place(createEvent.drop(target, { dataTransfer })));
+  fireEvent.dragEnd(source, { dataTransfer });
 }
+
+/** Drags the chat list's row for `id` onto `target`, at `at` within it as a share of its width and height. */
+const dragOnto = (target: Element, id: string, at?: { x: number; y: number }) => drag(document.querySelector(`.row-open[data-chat="${id}"]`)!, target, { at });
+const tabIn = (i: number, title: string) => within(pane(i)).getByRole("tab", { name: title });
+const stacked = () => document.querySelector(".panes")?.classList.contains("stacked");
 
 describe("tab bookkeeping", () => {
   it("switches to a chat that has a tab, else replaces the tab left", () => {
@@ -230,4 +255,239 @@ describe("chat tabs", () => {
     await waitFor(() => expect(tabsIn(0)).not.toContain("New chat"));
     expect(tabsIn(0)).toHaveLength(2);
   });
+});
+
+describe("dragging tabs", () => {
+  /** One pane with tabs for the three chats, NAS disks shown. */
+  async function threeTabs() {
+    const signed = await signedIn();
+    await signed.user.click(rowButton("Nightly backup"));
+    dragOnto(pane(0).querySelector(".tab-strip")!, "nas");
+    dragOnto(pane(0).querySelector(".tab-strip")!, "vpn");
+    await signed.user.click(tabIn(0, "NAS disks"));
+    await settle(signed.hermes);
+    expect(tabsIn(0)).toEqual(["Nightly backup", "NAS disks", "VPN tunnel"]);
+    return signed;
+  }
+
+  it.each([
+    ["right", { x: 0.95, y: 0.5 }, false, ["Nightly backup, VPN tunnel", "NAS disks"], "Right pane"],
+    ["left", { x: 0.05, y: 0.5 }, false, ["NAS disks", "Nightly backup, VPN tunnel"], "Left pane"],
+    ["bottom", { x: 0.5, y: 0.95 }, true, ["Nightly backup, VPN tunnel", "NAS disks"], "Bottom pane"],
+    ["top", { x: 0.5, y: 0.05 }, true, ["NAS disks", "Nightly backup, VPN tunnel"], "Top pane"],
+  ] as const)("splits for a tab dropped on the pane's %s edge, and moves the tab there", async (zone, at, isStacked, tabs, name) => {
+    const { hermes } = await threeTabs();
+    const body = pane(0).querySelector(".pane-drop")!;
+    // While over the edge, the hint covers that half of the pane and says what the drop does.
+    drag(tabIn(0, "NAS disks"), body, { at, drop: false });
+    const hint = pane(0).querySelector(".drop-hint")!;
+    expect(hint.getAttribute("data-zone")).toBe(zone);
+    expect(hint.textContent).toBe({ right: "Split right", left: "Split left", bottom: "Split down", top: "Split up" }[zone]);
+    fireEvent.drop(body, { dataTransfer: { types: [], getData: () => "" } });
+
+    drag(tabIn(0, "NAS disks"), body, { at });
+    await settle(hermes);
+    expect(panes()).toHaveLength(2);
+    expect(stacked()).toBe(isStacked);
+    // Moved, not copied: the pane it left no longer has it.
+    expect([tabsIn(0).join(", "), tabsIn(1).join(", ")]).toEqual(tabs);
+    const moved = panes().findIndex((p) => p.querySelector(".chat-title span")?.textContent === "NAS disks");
+    expect(pane(moved).getAttribute("aria-label")).toMatch(new RegExp(`^${name}: NAS disks`));
+    expect(activeIndex()).toBe(moved);
+    expect(lastOpen()).toBe("nas");
+  });
+
+  it("splits for the only tab, leaving a New chat tab where it was", async () => {
+    const { hermes, user } = await signedIn();
+    await user.click(rowButton("Nightly backup"));
+    await settle(hermes);
+    drag(tabIn(0, "Nightly backup"), pane(0).querySelector(".pane-drop")!, { at: { x: 0.95, y: 0.5 } });
+    await settle(hermes);
+    expect([tabsIn(0), tabsIn(1)]).toEqual([["New chat"], ["Nightly backup"]]);
+  });
+
+  it("shows no hint for a tab over its own pane's middle, and drops nothing there", async () => {
+    const { hermes } = await threeTabs();
+    const body = pane(0).querySelector(".pane-drop")!;
+    drag(tabIn(0, "VPN tunnel"), body, { at: { x: 0.5, y: 0.5 } });
+    await settle(hermes);
+    expect(pane(0).querySelector(".drop-hint")).toBeNull();
+    expect(panes()).toHaveLength(1);
+    expect(tabsIn(0)).toEqual(["Nightly backup", "NAS disks", "VPN tunnel"]);
+    expect(shownTab(0)).toBe("NAS disks");
+  });
+
+  it("moves a tab along its strip to where it is dropped, marking the place first", async () => {
+    const { hermes } = await threeTabs();
+    const strip = pane(0).querySelector(".tab-strip")!;
+    // Before the first tab's middle: in front of it.
+    drag(tabIn(0, "VPN tunnel"), strip, { clientX: 30, drop: false });
+    expect(tabIn(0, "Nightly backup").parentElement!.classList.contains("insert-before")).toBe(true);
+    expect(strip.classList.contains("drop")).toBe(true);
+    fireEvent.dragEnd(tabIn(0, "VPN tunnel"));
+    drag(tabIn(0, "VPN tunnel"), strip, { clientX: 30 });
+    await settle(hermes);
+    expect(tabsIn(0)).toEqual(["VPN tunnel", "Nightly backup", "NAS disks"]);
+    expect(shownTab(0)).toBe("VPN tunnel");
+    // Past the last tab: to the end, with the mark after it.
+    drag(tabIn(0, "VPN tunnel"), strip, { clientX: 290, drop: false });
+    expect(tabIn(0, "NAS disks").parentElement!.classList.contains("insert-after")).toBe(true);
+    fireEvent.dragEnd(tabIn(0, "VPN tunnel"));
+    drag(tabIn(0, "VPN tunnel"), strip, { clientX: 290 });
+    await settle(hermes);
+    expect(tabsIn(0)).toEqual(["Nightly backup", "NAS disks", "VPN tunnel"]);
+    // Dropped where it is, nothing is marked and nothing moves.
+    drag(tabIn(0, "NAS disks"), strip, { clientX: 130, drop: false });
+    expect(strip.classList.contains("drop")).toBe(false);
+    expect(pane(0).querySelector(".insert-before, .insert-after")).toBeNull();
+  });
+
+  it("shows no hint for a chat from the list that is shown in the pane already, though its id is read only on drop", async () => {
+    const { hermes, user } = await signedIn();
+    await user.click(rowButton("Nightly backup"));
+    await settle(hermes);
+    const row = document.querySelector('.row-open[data-chat="backup"]')!;
+    drag(row, pane(0).querySelector(".pane-drop")!, { at: { x: 0.5, y: 0.5 }, drop: false });
+    expect(pane(0).querySelector(".drop-hint")).toBeNull();
+    // Over an edge it would split, which shows the chat twice, as ADR 0010 allows.
+    drag(row, pane(0).querySelector(".pane-drop")!, { at: { x: 0.95, y: 0.5 }, drop: false });
+    expect(pane(0).querySelector(".drop-hint")?.textContent).toBe("Split right");
+    fireEvent.dragEnd(row);
+  });
+
+  it("opens a chat from the list where it is dropped along the strip", async () => {
+    const { hermes, user } = await signedIn();
+    await user.click(rowButton("Nightly backup"));
+    dragOnto(pane(0).querySelector(".tab-strip")!, "nas");
+    await settle(hermes);
+    drag(document.querySelector('.row-open[data-chat="vpn"]')!, pane(0).querySelector(".tab-strip")!, { clientX: 20 });
+    await settle(hermes);
+    expect(tabsIn(0)).toEqual(["VPN tunnel", "Nightly backup", "NAS disks"]);
+  });
+
+  it("moves a tab to the other pane, closing the pane it leaves empty", async () => {
+    const { hermes } = await threeTabs();
+    drag(tabIn(0, "NAS disks"), pane(0).querySelector(".pane-drop")!, { at: { x: 0.95, y: 0.5 } });
+    await settle(hermes);
+    expect([tabsIn(0), tabsIn(1)]).toEqual([["Nightly backup", "VPN tunnel"], ["NAS disks"]]);
+
+    // Onto the other pane's strip: it leaves the first pane.
+    drag(tabIn(0, "VPN tunnel"), pane(1).querySelector(".tab-strip")!);
+    await settle(hermes);
+    expect([tabsIn(0), tabsIn(1)]).toEqual([["Nightly backup"], ["NAS disks", "VPN tunnel"]]);
+    expect(titleIn(1)).toBe("VPN tunnel");
+
+    // A pane's last tab dragged into the other pane: the pane closes, and the chat merges into the one left.
+    drag(tabIn(0, "Nightly backup"), pane(1).querySelector(".pane-drop")!, { at: { x: 0.5, y: 0.5 } });
+    await settle(hermes);
+    expect(panes()).toHaveLength(1);
+    expect(tabsIn(0)).toEqual(["NAS disks", "VPN tunnel", "Nightly backup"]);
+    expect(titleIn(0)).toBe("Nightly backup");
+  });
+
+  it("leaves no copy when the other pane has a tab for the chat already", async () => {
+    const { hermes } = await threeTabs();
+    drag(tabIn(0, "NAS disks"), pane(0).querySelector(".pane-drop")!, { at: { x: 0.95, y: 0.5 } });
+    await settle(hermes);
+    // The right pane gets a tab for Nightly backup too, from the list: two views of one chat, as before.
+    dragOnto(pane(1).querySelector(".tab-strip")!, "backup");
+    await settle(hermes);
+    expect([tabsIn(0), tabsIn(1)]).toEqual([["Nightly backup", "VPN tunnel"], ["NAS disks", "Nightly backup"]]);
+    drag(tabIn(0, "Nightly backup"), pane(1).querySelector(".tab-strip")!);
+    await settle(hermes);
+    expect([tabsIn(0), tabsIn(1)]).toEqual([["VPN tunnel"], ["NAS disks", "Nightly backup"]]);
+  });
+
+  it("moves a pane's only tab to an edge by moving its pane there", async () => {
+    const { hermes } = await threeTabs();
+    drag(tabIn(0, "NAS disks"), pane(0).querySelector(".pane-drop")!, { at: { x: 0.95, y: 0.5 } });
+    await settle(hermes);
+    drag(tabIn(1, "NAS disks"), pane(1).querySelector(".pane-drop")!, { at: { x: 0.5, y: 0.05 }, drop: false });
+    expect(pane(1).querySelector(".drop-hint")?.textContent).toBe("Move this pane up");
+    fireEvent.dragEnd(tabIn(1, "NAS disks"));
+    drag(tabIn(1, "NAS disks"), pane(1).querySelector(".pane-drop")!, { at: { x: 0.5, y: 0.05 } });
+    await settle(hermes);
+    expect(stacked()).toBe(true);
+    expect([tabsIn(0), tabsIn(1)]).toEqual([["NAS disks"], ["Nightly backup", "VPN tunnel"]]);
+    expect(pane(0).getAttribute("aria-label")).toMatch(/^Top pane: NAS disks/);
+  });
+
+  it("moves the shown tab along the strip with Ctrl+Shift+PageUp and PageDown, focus following", async () => {
+    const { hermes, user } = await threeTabs();
+    tabIn(0, "NAS disks").focus();
+    await user.keyboard("{Control>}{Shift>}{PageUp}{/Shift}{/Control}");
+    await settle(hermes);
+    expect(tabsIn(0)).toEqual(["NAS disks", "Nightly backup", "VPN tunnel"]);
+    await waitFor(() => expect(document.activeElement?.textContent).toBe("NAS disks"));
+    // At the start already: nothing moves.
+    await user.keyboard("{Control>}{Shift>}{PageUp}{/Shift}{/Control}");
+    expect(tabsIn(0)).toEqual(["NAS disks", "Nightly backup", "VPN tunnel"]);
+    await user.keyboard("{Control>}{Shift>}{PageDown}{/Shift}{/Control}{Control>}{Shift>}{PageDown}{/Shift}{/Control}");
+    await settle(hermes);
+    expect(tabsIn(0)).toEqual(["Nightly backup", "VPN tunnel", "NAS disks"]);
+    expect(shownTab(0)).toBe("NAS disks");
+  });
+
+  it("does every drag from the tab's menu, opened from the keyboard", async () => {
+    const { hermes, user } = await threeTabs();
+    const menuFor = (i: number, title: string) => {
+      tabIn(i, title).focus();
+      // The Menu key and Shift+F10 fire a contextmenu with no pointer position.
+      fireEvent.contextMenu(tabIn(i, title));
+      return screen.getByRole("menu", { name: `Actions for the tab ${title}` });
+    };
+    let menu = menuFor(0, "VPN tunnel");
+    expect(within(menu).getAllByRole("menuitem").map((m) => m.textContent)).toEqual([
+      "Move tab left",
+      "Split right",
+      "Split down",
+      "Split left",
+      "Split up",
+      "Close tab",
+    ]);
+    await user.click(within(menu).getByRole("menuitem", { name: "Move tab left" }));
+    await settle(hermes);
+    expect(tabsIn(0)).toEqual(["Nightly backup", "VPN tunnel", "NAS disks"]);
+
+    menu = menuFor(0, "VPN tunnel");
+    await user.click(within(menu).getByRole("menuitem", { name: "Split down" }));
+    await settle(hermes);
+    expect(stacked()).toBe(true);
+    expect([tabsIn(0), tabsIn(1)]).toEqual([["Nightly backup", "NAS disks"], ["VPN tunnel"]]);
+
+    // With two panes: the other pane's tabs, then the edges, said from the tab's own pane. An edge that does what the
+    // first item does (below the top pane is the bottom pane) isn't offered twice.
+    menu = menuFor(0, "NAS disks");
+    expect(within(menu).getAllByRole("menuitem").map((m) => m.textContent)).toEqual([
+      "Move tab leftCtrl+Shift+PgUp",
+      "Move to the bottom pane",
+      "Move right of this pane",
+      "Move left of this pane",
+      "Move above this pane",
+      // The other pane's edges, as a drag onto them does: the tab stays in its pane, which goes to that side.
+      "Move this pane right of the bottom pane",
+      "Move this pane below the bottom pane",
+      "Move this pane left of the bottom pane",
+      "Close tab",
+    ]);
+    await user.click(within(menu).getByRole("menuitem", { name: "Move right of this pane" }));
+    await settle(hermes);
+    expect(stacked()).toBe(false);
+    expect([tabsIn(0), tabsIn(1)]).toEqual([["Nightly backup"], ["VPN tunnel", "NAS disks"]]);
+
+    // Onto the other pane's edge, a tab of a pane with more tabs keeps its pane, which goes below the other one.
+    menu = menuFor(1, "VPN tunnel");
+    await user.click(within(menu).getByRole("menuitem", { name: "Move this pane below the left pane" }));
+    await settle(hermes);
+    expect(stacked()).toBe(true);
+    expect([tabsIn(0), tabsIn(1)]).toEqual([["Nightly backup"], ["VPN tunnel", "NAS disks"]]);
+    expect(shownTab(1)).toBe("VPN tunnel");
+
+    // A pane's only tab can merge into the other pane.
+    menu = menuFor(0, "Nightly backup");
+    await user.click(within(menu).getByRole("menuitem", { name: "Merge into the bottom pane" }));
+    await settle(hermes);
+    expect(panes()).toHaveLength(1);
+    expect(tabsIn(0)).toEqual(["VPN tunnel", "NAS disks", "Nightly backup"]);
+  }, 20_000);
 });

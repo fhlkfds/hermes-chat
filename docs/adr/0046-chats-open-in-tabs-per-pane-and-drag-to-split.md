@@ -15,7 +15,8 @@ a pane opens in a new tab there, or splits the chat area, side by side or one ab
 - **Where a dragged chat lands.** The pane's tab strip and its middle add a tab. Its right quarter splits the chat area
   side by side, its bottom quarter one above the other, with the chat in the second pane. Dropped on an edge when there
   are two panes already, the panes turn that way and the chat gets a tab in the second pane. There are still at most two
-  panes. A hint over the pane says where the chat will land.
+  panes. A hint over the pane says where the chat will land. ADR 0051 replaces this for tabs: a dragged tab moves rather
+  than copies, all four edges split, and tabs move along their strip.
 - **HTML5 drag and drop, not pointer events.** Rows and tabs carry the chat id as `application/x-hermes-chat`. Tauri's
   native drop handler on Linux (wry's WebKitGTK `drag_drop.rs`) only takes drags carrying file URIs, so in-page drags
   reach the webview, and file drops still attach to the composer as before.

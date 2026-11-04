@@ -379,7 +379,8 @@ The time zone Hermes reads a profile's schedules in and runs its jobs on: the pr
 _Avoid_: local time (ambiguous between the server and this computer), display time zone (this computer's)
 
 **Pane**:
-One view of a chat, its transcript and composer. The app can show two side by side. The focused pane is the one the
+One view of a chat, its transcript and composer. The app can show two, side by side or one above the other. Each pane
+has its own tabs; a tab dragged to the other pane or to a pane's edge moves there (ADR 0051). The focused pane is the one the
 chat list, Search and keyboard shortcuts target. This focus does not change whether a chat is Active or Settled.
 Two panes of one chat share its Draft, Queued messages and running reply; each has its own scroll, Find and pending
 Attachments.
