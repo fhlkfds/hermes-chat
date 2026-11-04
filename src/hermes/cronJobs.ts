@@ -255,7 +255,8 @@ function toRun(v: unknown): JobRun | undefined {
   else if (!titled) outcome = { state: "unknown", note: "Hermes kept this run's output, but no record of how it ended." };
   else {
     const word = titled[1].toLowerCase().replace(/ /g, "_");
-    const known = SCRIPT_STATES[word];
+    // Own keys only: a status such as `CONSTRUCTOR` must not reach the object's prototype.
+    const known = Object.prototype.hasOwnProperty.call(SCRIPT_STATES, word) ? SCRIPT_STATES[word] : undefined;
     const said = (lead: string) => (detail ? `${lead.replace(/\.$/, "")}: ${detail}` : lead);
     outcome = !known
       ? { state: "unknown", note: `Hermes recorded “${sentence(titled[1].toLowerCase()).replace(/\.$/, "")}”.` }

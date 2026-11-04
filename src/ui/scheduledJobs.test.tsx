@@ -547,6 +547,90 @@ describe("the Scheduled jobs screen", () => {
     expect(screen.getByRole("region", { name: "Summary" }).textContent).toMatch(/can't confirm the work profile's own time zone/);
   });
 
+  it("doesn't let a list read from before a change undo it", async () => {
+    const { user, s } = await launch();
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const route = s.cron.route.bind(s.cron);
+    let arm = true;
+    s.cron.route = (req) => {
+      const handle = route(req);
+      if (!handle || !arm || req.method !== "GET" || req.path !== "/api/cron/jobs") return handle;
+      arm = false;
+      // Hermes read the list before the pause below; its answer arrives after it.
+      return async () => {
+        const answer = await handle();
+        await held;
+        return answer;
+      };
+    };
+    await user.click(screen.getByRole("button", { name: /Refresh/ }));
+    await user.click(screen.getByText("[fixture] Weekday brief"));
+    await user.click(screen.getByRole("button", { name: /Pause/ }));
+    await screen.findByRole("button", { name: /Resume/ });
+    release();
+    await act(async () => void (await new Promise((r) => setTimeout(r, 30))));
+    expect(screen.getByRole("button", { name: /Resume/ })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /Back to the jobs/ }));
+    expect(within(screen.getByText("[fixture] Weekday brief").closest("button")!).getByText("Paused")).toBeTruthy();
+  });
+
+  it("reads a run's result again once the run has changed, and drops a read the owner hid", async () => {
+    const s = server();
+    const id = s.cron.jobs.default[0].id;
+    s.cron.runs[id] = [{ id: "local-r", source: "cron", started_at: 1_793_800_000, ended_at: null, is_active: true, scheduler_owned: true, profile: "default" }];
+    s.transcripts["local-r"] = [{ role: "user", text: "Fixture only.", row_id: 1 }];
+    let release!: () => void;
+    let held: Promise<void> | undefined = new Promise<void>((r) => (release = r));
+    const { user } = await launch(s);
+    // Hold the first read of the run's messages: it answers with the run as it was, after the run has finished.
+    const realStored = (s as unknown as { storedMessages: (id: string, q: URLSearchParams) => unknown }).storedMessages.bind(s);
+    (s as unknown as { storedMessages: (id: string, q: URLSearchParams) => unknown }).storedMessages = (mid, q) => {
+      const answer = realStored(mid, q);
+      const wait = held;
+      held = undefined;
+      return wait ? wait.then(() => answer) : answer;
+    };
+    await user.click(screen.getByText("[fixture] Weekday brief"));
+    const history = await screen.findByRole("list", { name: "Run history, newest first" });
+    await user.click(within(history).getByRole("button", { name: "Show the result" }));
+    s.cron.runs[id] = [{ id: "local-r", source: "cron", started_at: 1_793_800_000, ended_at: 1_793_800_030, end_reason: "cron_complete", profile: "default" }];
+    s.transcripts["local-r"].push({ role: "assistant", text: "[fixture] The finished reply.", row_id: 2 });
+    await user.click(screen.getByRole("button", { name: /Refresh runs/ }));
+    expect(await screen.findByText("[fixture] The finished reply.")).toBeTruthy();
+    release();
+    await act(async () => void (await new Promise((r) => setTimeout(r, 30))));
+    expect(screen.getByText("[fixture] The finished reply.")).toBeTruthy();
+    expect(screen.queryByText(/has no reply from the agent/)).toBeNull();
+    // Hidden while still reading: the answer, when it comes, doesn't open it again.
+    await user.click(screen.getByRole("button", { name: "Hide the result" }));
+    held = new Promise<void>((r) => (release = r));
+    await user.click(screen.getByRole("button", { name: "Show the result" }));
+    await user.click(screen.getByRole("button", { name: "Hide the result" }));
+    release();
+    await act(async () => void (await new Promise((r) => setTimeout(r, 30))));
+    expect(screen.queryByText("[fixture] The finished reply.")).toBeNull();
+    expect(screen.getByRole("button", { name: "Show the result" })).toBeTruthy();
+  });
+
+  it("doesn't call a zone Hermes doesn't name the one it runs the jobs in", async () => {
+    const s = server();
+    s.cron.timezone = "";
+    s.cron.jobs.default = [];
+    await launch(s);
+    expect(screen.getByText(/Times are shown in this computer's time zone, .*, which may not be the zone Hermes runs this profile's jobs in\./)).toBeTruthy();
+    expect(screen.queryByText(/the schedule time zone Hermes runs/)).toBeNull();
+    expect(screen.getByText(/Hermes uses the server's own time zone and doesn't name it/)).toBeTruthy();
+  });
+
+  it("gives focus back to New job when a new job is cancelled", async () => {
+    const { user } = await launch();
+    await user.click(screen.getByRole("button", { name: /New job/ }));
+    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "New scheduled job" }));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: /New job/ })));
+  });
+
   it("never shows a profile's jobs once another profile is current", async () => {
     const s = server();
     s.cron.add("work", { name: "[fixture] Work job", prompt: "Fixture only.", schedule: "0 8 * * *" });

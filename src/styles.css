@@ -1767,8 +1767,9 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .job-section-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
 .job-section-head h2 { margin: 0; }
 .job-section-head .btn.small { height: 28px; padding: 0 10px; font-size: calc(12.5rem / 14); }
-.job-summary { padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); }
+.settings section.job-summary { padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); }
 .job-summary .job-sub { margin-top: 0; }
+.job-summary .job-kept dd { font-family: inherit; }
 .jobs-screen h1:focus { outline: none; }
 .jobs-screen h1:focus-visible { outline: 2px solid var(--line-2); outline-offset: 2px; border-radius: 6px; }
 @media (max-width: 520px) {

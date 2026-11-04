@@ -30,6 +30,8 @@ const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const HERE = Intl.DateTimeFormat().resolvedOptions().timeZone;
 /** A scheduler that hasn't checked the jobs for this long is likely not running (it checks about every minute). */
 const STALE_SCHEDULER_S = 300;
+/** `returnTo` for the editor of a new job, which has no id. */
+const NEW = "\u0000new";
 
 /** A profile's jobs and what scheduling them needs. `targets` is undefined when Hermes's list of them couldn't be read. */
 type Loaded = { jobs: CronJob[]; zone: JobsZone; targets?: DeliveryTarget[]; catchUp: boolean };
@@ -72,6 +74,8 @@ function When({ at, zone }: { at: number; zone: JobsZone }) {
 
 /** Which clock the times on this screen are on: the schedule's, and this computer's beside it when they differ. */
 function zoneSentence(zone: JobsZone): string {
+  // A zone Hermes doesn't name is only how times are shown here; the banner below says what is unknown.
+  if (!zone.named) return `Times are shown in ${zone.label}, which may not be the zone Hermes runs this profile's jobs in.`;
   const differs = zone.zone !== HERE && offsetAt(zone.zone, Date.now()) !== offsetAt(HERE, Date.now());
   return `Times are in ${zone.label}, the schedule time zone Hermes runs this profile's jobs in.${differs ? ` Where this computer's time zone, ${HERE}, reads differently, its time is shown too, marked “here”.` : ""}`;
 }
@@ -172,13 +176,17 @@ export function ScheduledJobs({ api, profile, connected, onClose }: { api: CronA
   /** What happened to a job that has left the list, or went to another profile, said on the list. */
   const [notice, setNotice] = useState<string>();
   const loads = useSequence();
+  /** Whether a list read is under way, so a write landing meanwhile can supersede it. */
+  const listing = useRef(false);
   /** The job whose row to focus when the list shows again. */
   const returnTo = useRef<string | undefined>(undefined);
   const heading = useRef<HTMLHeadingElement>(null);
   const listHeading = useRef<HTMLHeadingElement>(null);
+  const newJob = useRef<HTMLButtonElement>(null);
 
   const load = async () => {
     const n = loads.next();
+    listing.current = true;
     setLoading(true);
     setError(undefined);
     try {
@@ -187,7 +195,10 @@ export function ScheduledJobs({ api, profile, connected, onClose }: { api: CronA
     } catch (e) {
       if (loads.current(n)) setError(e as Error);
     } finally {
-      if (loads.current(n)) setLoading(false);
+      if (loads.current(n)) {
+        listing.current = false;
+        setLoading(false);
+      }
     }
   };
 
@@ -196,13 +207,14 @@ export function ScheduledJobs({ api, profile, connected, onClose }: { api: CronA
     else {
       // A read under way when the connection went is superseded: its answer, if one comes, is dropped.
       loads.next();
+      listing.current = false;
       setLoading(false);
     }
   }, [connected]);
 
   /** Moves to another view, putting focus where the owner can carry on with the keyboard. */
   const go = (next: View) => {
-    if (view.kind !== "list" && next.kind === "list" && view.id) returnTo.current = view.id;
+    if (view.kind !== "list" && next.kind === "list") returnTo.current = view.id ?? NEW;
     setView(next);
   };
   useEffect(() => {
@@ -212,13 +224,19 @@ export function ScheduledJobs({ api, profile, connected, onClose }: { api: CronA
     }
     const id = returnTo.current;
     returnTo.current = undefined;
-    // Back from a job: its row, or the heading when the job has left the list.
-    if (id) (document.querySelector<HTMLElement>(`.job-row[data-job-id="${CSS.escape(id)}"]`) ?? listHeading.current)?.focus();
+    // Back from a job: its row, or the heading when the job has left the list. Back from a new one: New job.
+    const to = id === NEW ? newJob.current : id ? document.querySelector<HTMLElement>(`.job-row[data-job-id="${CSS.escape(id)}"]`) : undefined;
+    if (id) (to ?? listHeading.current)?.focus();
   }, [view]);
 
-  /** A job as Hermes read it back after a change, put in the list. `null` takes it out. */
-  const apply = (id: string, job: CronJob | null) =>
+  /**
+   * A job as Hermes read it back after a change, put in the list. `null` takes it out. A list read that started before
+   * the change could answer with the job as it was, so it is superseded and the list is read again, after the change.
+   */
+  const apply = (id: string, job: CronJob | null) => {
     setLoaded((l) => l && { ...l, jobs: job ? (l.jobs.some((j) => j.id === id) ? l.jobs.map((j) => (j.id === id ? job : j)) : [...l.jobs, job]) : l.jobs.filter((j) => j.id !== id) });
+    if (listing.current && loads.live()) void load();
+  };
 
   const unsupported = error instanceof CronError && (error.kind === "unsupported" || error.kind === "forbidden");
   const jobs = loaded?.jobs ?? [];
@@ -270,7 +288,7 @@ export function ScheduledJobs({ api, profile, connected, onClose }: { api: CronA
           <>
             {!unsupported && (
               <div className="jobs-actions">
-                <button className="btn primary" disabled={!connected || !loaded} onClick={() => go({ kind: "edit" })}>
+                <button ref={newJob} className="btn primary" disabled={!connected || !loaded} onClick={() => go({ kind: "edit" })}>
                   <Plus size={14} /> New job
                 </button>
                 <button className="btn" disabled={!connected || loading} onClick={() => void load()}>
@@ -506,21 +524,37 @@ function JobDetail({
     else historyReads.next();
   }, [connected, job.lastRunAt, runLimit]);
 
-  const showResult = (run: JobRun) => {
-    const had = results[run.id];
-    if (had === "loading") return;
-    if (had !== undefined)
-      return setResults((r) => {
-        const rest = { ...r };
-        delete rest[run.id];
-        return rest;
-      });
+  /** Each run's latest result read: a newer read, a Hide, or the run changing supersedes an older one. */
+  const resultReads = useRef<Record<string, number>>({});
+  const readResult = (run: JobRun) => {
+    const n = (resultReads.current[run.id] = (resultReads.current[run.id] ?? 0) + 1);
+    const mine = () => life.live() && resultReads.current[run.id] === n;
     setResults((r) => ({ ...r, [run.id]: "loading" }));
     void api.runResult(profile, run).then(
-      (res) => life.live() && setResults((r) => (run.id in r ? { ...r, [run.id]: res } : r)),
-      (e) => life.live() && setResults((r) => (run.id in r ? { ...r, [run.id]: messageOf(e) } : r)),
+      (res) => mine() && setResults((r) => ({ ...r, [run.id]: res })),
+      (e) => mine() && setResults((r) => ({ ...r, [run.id]: messageOf(e) })),
     );
   };
+  const showResult = (run: JobRun) => {
+    if (results[run.id] === undefined) return readResult(run);
+    resultReads.current[run.id] = (resultReads.current[run.id] ?? 0) + 1;
+    setResults((r) => {
+      const rest = { ...r };
+      delete rest[run.id];
+      return rest;
+    });
+  };
+  // A run whose state or end changed since its result was read (it was running) is read again.
+  const seen = useRef<Record<string, string>>({});
+  useEffect(() => {
+    if (typeof runs !== "object") return;
+    for (const r of runs.rows) {
+      const now = `${r.state}:${r.endedAt ?? ""}`;
+      const was = seen.current[r.id];
+      seen.current[r.id] = now;
+      if (was !== undefined && was !== now && results[r.id] !== undefined && connected) readResult(r);
+    }
+  }, [runs]);
 
   const act = async (what: NonNullable<typeof busy>, fn: () => Promise<void>) => {
     setBusy(what);
@@ -676,7 +710,10 @@ function JobDetail({
         <p>
           {job.schedule ? explainSchedule(job.schedule, zone.zone) : "Hermes Chat can't read this schedule."} <span className="mono faint">{job.scheduleText}</span>
         </p>
-        <p className="muted small">Schedule time zone: {zone.label}. {zone.zone !== HERE && `Shown beside it where it differs: this computer's, ${HERE}.`}</p>
+        <p className="muted small">
+          {zone.named ? `Schedule time zone: ${zone.label}. ` : `Schedule time zone: not named by Hermes. Times are shown in ${zone.label}. `}
+          {zone.named && zone.zone !== HERE && `Shown beside it where it differs: this computer's, ${HERE}.`}
+        </p>
         <p>
           <NextRun job={job} zone={zone} />
         </p>

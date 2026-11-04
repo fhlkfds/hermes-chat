@@ -212,6 +212,8 @@ describe("run history", () => {
     expect(await one(latest("ERROR"))).toMatchObject({ state: "failed", error: "Hermes recorded the run as failed, with no reason." });
     expect(await one(latest("BLOCKED CONFIG · Missing API key", "Missing API key"))).toMatchObject({ state: "failed", error: "Blocked by the job's settings: Missing API key" });
     expect(await one(latest("Script-only run"))).toMatchObject({ state: "unknown" });
+    // A status named like an object's own machinery is just a status this app doesn't know.
+    for (const odd of ["CONSTRUCTOR", "TO STRING", "HAS OWN PROPERTY · x", "PROTO"]) expect(await one(latest(odd))).toMatchObject({ state: "unknown" });
     // An output doc's title is what the script printed, so a shout there isn't a status.
     expect(await one({ id: `cron_output:${job.id}:2026-11-04_09-35-34`, title: "OK", preview: "OK", source: "cron_output", started_at: 1_793_800_000 })).toMatchObject({ state: "unknown", preview: "OK" });
   });
