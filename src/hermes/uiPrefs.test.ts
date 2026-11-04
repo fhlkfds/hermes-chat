@@ -42,7 +42,7 @@ afterEach(() => {
 
 describe("reading", () => {
   it("is the defaults when nothing is stored", () => {
-    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, checkUpdatesOnLaunch: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, modelPicks: {}, modelFavorites: [], statusBar: ["context", "yolo", "model", "status"], previewWidth: null, screenshotShortcut: "Ctrl+Shift+S", templates: [] });
+    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, checkUpdatesOnLaunch: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, modelPicks: {}, modelFavorites: [], statusBar: ["context", "yolo", "model", "status"], previewWidth: null, screenshotShortcut: "Ctrl+Shift+S", templates: [], terminalKind: "server" });
     expect(getUIPrefs()).toEqual(DEFAULT_UI_PREFS);
   });
 
@@ -67,6 +67,7 @@ describe("reading", () => {
         statusBar: ["model", 3, "", "tokens", "model"],
         lastOpenChat: { default: "c1", work: 7, "": "c2", home: "" },
         previewWidth: 12.5,
+        terminalKind: "laptop",
       }),
     );
     expect(getUIPrefs()).toEqual({
@@ -79,7 +80,7 @@ describe("reading", () => {
       modelPicks: {},
       modelFavorites: ["openai/gpt-5", "anthropic/claude-opus-5-5"],
       statusBar: ["model", "tokens"],
-      previewWidth: null, screenshotShortcut: "Ctrl+Shift+S", templates: [],
+      previewWidth: null, screenshotShortcut: "Ctrl+Shift+S", templates: [], terminalKind: "server",
     });
   });
 
@@ -98,6 +99,19 @@ describe("reading", () => {
     vi.restoreAllMocks();
     expect(setUIPrefs({ templates: [] })).toBe(true);
     expect(stored().templates).toEqual([]);
+  });
+
+  it("keeps which computer the Terminal was on last, the Hermes server's until one is picked", () => {
+    expect(getUIPrefs().terminalKind).toBe("server");
+    setUIPrefs({ terminalKind: "local" });
+    expect(stored().terminalKind).toBe("local");
+    localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ v: 1, terminalKind: "local" }));
+    expect(getUIPrefs().terminalKind).toBe("local");
+    // Something this version doesn't know isn't a pick: the server's again.
+    for (const bad of ["laptop", 1, null]) {
+      localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ v: 1, terminalKind: bad }));
+      expect(getUIPrefs().terminalKind).toBe("server");
+    }
   });
 
   it("keeps the preview pane's width, and drops one no window could have", () => {
