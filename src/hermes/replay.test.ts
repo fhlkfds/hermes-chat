@@ -107,6 +107,24 @@ describe("Edit and Regenerate: what they work out", () => {
   });
 });
 
+describe("the fake Hermes's session.undo", () => {
+  it("takes back the last turn of the owner's, a /steer row included, but not a marker or hidden row on its own", () => {
+    const server = new FakeHermes();
+    server.runtime.set("rt", "s1");
+    server.transcripts.s1 = [
+      { role: "user", text: "Original prompt" },
+      { role: "assistant", text: "Original answer" },
+      { role: "user", text: "Use shorter answers", display_kind: "steer" },
+      { role: "user", text: "[System: The active model for this chat has changed to x.]", display_kind: "model_switch" },
+    ];
+    server.handlers["session.undo"]({ jsonrpc: "2.0", id: 1, method: "session.undo", params: { session_id: "rt" } });
+    expect(server.transcripts.s1.map((m) => m.text)).toEqual(["Original prompt", "Original answer"]);
+    server.transcripts.s1.push({ role: "user", text: "[System: The active model for this chat has changed to y.]", display_kind: "model_switch" });
+    server.handlers["session.undo"]({ jsonrpc: "2.0", id: 2, method: "session.undo", params: { session_id: "rt" } });
+    expect(server.transcripts.s1.map((m) => m.text)).toEqual([]);
+  });
+});
+
 describe("Edit", () => {
   it("edits an early turn into a branch, and the original chat with its later messages stays as it was", async () => {
     const { server, hermes, chat, itemWith, submits } = await chatWithHistory();
@@ -152,7 +170,21 @@ describe("Edit", () => {
       // An earlier model switch in c1, between its first and second turns: a user row no client shows.
       const at = s.transcripts.c1.findIndex((m) => m.text === "It's 81% full.");
       s.transcripts.c1.splice(at + 1, 0, { role: "user", text: "[System: The active model for this chat has changed to gpt-5.2.]", display_kind: "model_switch", row_id: 900 });
+      // And a later one, after the last turn's message: not a message the branch leaves out either.
+      const last = s.transcripts.c1.findIndex((m) => m.text === "Clean up old snapshots");
+      s.transcripts.c1.splice(last + 1, 0, { role: "user", text: "[System: The active model for this chat has changed to gpt-5.3.]", display_kind: "model_switch", row_id: 901 });
     });
+    const early = await hermes.previewReplay("c1", itemWith("How full"), "edit");
+    expect(early.turn).toBe(0);
+    expect(early.later.map((m) => m.excerpt)).toEqual([
+      "How full is the NAS?",
+      "Let me look.",
+      "It's 81% full.",
+      "[1 file] Compare with this",
+      "The report says 79% last week.",
+      "Clean up old snapshots",
+      "Deleted 3 snapshots.",
+    ]);
     const p = await hermes.previewReplay("c1", itemWith("Clean up"), "edit");
     // The marker isn't a turn, and isn't listed as left out.
     expect(p.turn).toBe(2);

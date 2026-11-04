@@ -555,9 +555,9 @@ export class FakeHermes {
     },
     // `session.undo` (`tui_gateway/methods_session.py` at the deployed `bf0203a`, probed live on 2026-11-03): takes the
     // session's last user turn and everything after it out of its history, and answers how many rows went (0 when
-    // there's no user turn). A row with a `display_kind`, such as a project's hidden instructions or a model-switch marker,
-    // isn't a user turn (`user_originated_turn_view`, `agent/context_compressor.py`): a marker after the turn goes with
-    // it. Refused with 4009 while a turn runs. The rows are soft-deleted: stored rows read back without them.
+    // there's no user turn). A row with a `display_kind` other than `steer`, such as a project's hidden instructions or a
+    // model-switch marker, isn't a user turn; a `/steer` row is (`split_user_originated_turn`,
+    // `agent/context_compressor.py`). A marker after the turn goes with it. Refused with 4009 while a turn runs. The rows are soft-deleted: stored rows read back without them.
     "session.undo": (r) => {
       if (!this.undoMethod) return this.fail(r.id, -32601, "Method not found: session.undo");
       const stored = this.runtime.get(String(r.params.session_id ?? ""));
@@ -566,7 +566,7 @@ export class FakeHermes {
       if (this.undoBusy) return this.fail(r.id, 4009, "session busy — Hermes is still replying. Stop the current reply first (Stop button, or Ctrl+C in a terminal), then run /undo.");
       if (this.undoError) return this.fail(r.id, this.undoError.code, this.undoError.message);
       const rows = this.transcripts[stored] ?? [];
-      const at = rows.map((m) => m.role === "user" && !m.display_kind).lastIndexOf(true);
+      const at = rows.map((m) => m.role === "user" && (!m.display_kind || m.display_kind === "steer")).lastIndexOf(true);
       if (at < 0) return this.respond(r.id, { removed: 0 });
       const removed = rows.length - at - (this.undoShort ? 1 : 0);
       this.transcripts[stored] = rows.slice(0, rows.length - removed);
