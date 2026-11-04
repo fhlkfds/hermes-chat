@@ -34,6 +34,7 @@ import { failureMark } from "./inbox";
 import { projectsApi, type ProjectsApi } from "./projects";
 import { listServerCommands, runServerCommand, type CommandDef, type CommandResult, type ServerCommandList } from "./commands";
 import { CronApi } from "./cronJobs";
+import { AutomationsApi } from "./automations";
 import { ModelSettingsApi } from "./modelSettings";
 import { ToolsetsApi } from "./toolsets";
 import { readBack, sendImport, type ImportRest, type PlannedChat } from "./importTranscripts";
@@ -679,6 +680,9 @@ export class Hermes {
 
   /** Hermes's scheduled jobs, each call naming its profile (cronJobs.ts). Hermes runs them; this only manages them. */
   readonly cron = new CronApi((method, pathAndQuery, body) => this.rest(method, pathAndQuery, body));
+
+  /** Hermes's webhook routes, each call naming its profile (automations.ts). Hermes receives and runs the events. */
+  readonly automations = new AutomationsApi((method, pathAndQuery, body) => this.rest(method, pathAndQuery, body));
 
   /** Settings → Model's reads and writes, for the profile shown (modelSettings.ts). */
   readonly modelSettings = new ModelSettingsApi(

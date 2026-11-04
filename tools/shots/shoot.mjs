@@ -14,6 +14,7 @@ const out = fileURLToPath(new URL("./out/", import.meta.url));
 const click = (sel, text) =>
   `(() => { const el = [...document.querySelectorAll(${JSON.stringify(sel)})].find(e => e.textContent.includes(${JSON.stringify(text ?? "")}));
      if (!el) throw new Error("no " + ${JSON.stringify(sel + " " + (text ?? ""))}); el.click(); })()`;
+const scrollTo = (sel) => `document.querySelector(${JSON.stringify(sel)}).scrollIntoView({ block: "start" })`;
 const key = (k, mods = {}) => `document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: ${JSON.stringify(k)}, bubbles: true, ...${JSON.stringify(mods)} }))`;
 // The chat list's sections (ADR 0036): three chats moved out of Settled, two of them snoozed (as another window would
 // leave them), and a reply running in "NAS disk usage" so it shows in Working.
@@ -50,6 +51,12 @@ const scenes = {
   "new-chat-light": { query: "?mode=light", steps: [] },
   search: { query: "", steps: [click("button", "Nightly backup"), key("k", { ctrlKey: true })] },
   settings: { query: "", steps: [key(",", { ctrlKey: true })] },
+  // Automations (ADR 0036). Tall pages: the screenshot covers the whole screen, scrolled to the part named.
+  automations: { query: "", steps: [click("button[aria-label='Automations']")] },
+  "automation-editor": { query: "", height: 1700, steps: [click("button[aria-label='Automations']"), click("button", "New automation")] },
+  "automation-preview": { query: "", height: 1100, steps: [click("button[aria-label='Automations']"), click("button", "New automation"), scrollTo(".automation-preview")] },
+  "automation-history": { query: "", height: 1400, steps: [click("button[aria-label='Automations']"), click("button", "triage-issues"), scrollTo(".delivery-list")] },
+  "automation-history-light": { query: "?mode=light", height: 1400, steps: [click("button[aria-label='Automations']"), click("button", "triage-issues"), scrollTo(".delivery-list")] },
 };
 const wanted = process.argv.slice(2).length ? process.argv.slice(2) : Object.keys(scenes);
 
@@ -99,7 +106,7 @@ try {
       return result.result.value;
     };
     await send("Runtime.enable");
-    await send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+    await send("Emulation.setDeviceMetricsOverride", { width: 1440, height: scene.height ?? 900, deviceScaleFactor: 1, mobile: false });
     await send("Page.navigate", { url: url + scene.query });
     for (let i = 0; !(await evaluate("!!document.querySelector('.sidebar, nav, aside') && document.body.innerText.includes('Nightly backup')")); i++) {
       if (i > 100) throw new Error(`${name}: app never showed. ${logs.join("\n")}`);

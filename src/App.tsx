@@ -62,6 +62,7 @@ import { OutputsIndex, outputsIn, splitPath, type Output } from "./hermes/output
 import { STATUS_LABEL, composing, routeLabel } from "./ui/bits";
 import { ProjectScreen, ProjectSwitcher, type ProjectUnread } from "./ui/Projects";
 import { ScheduledJobs } from "./ui/ScheduledJobs";
+import { Automations } from "./ui/Automations";
 import { tauriTerminal } from "./ui/tauriTerminal";
 import { TERMINAL_TARGET_KEY, terminalTarget } from "./hermes/terminal";
 import { ApplyDefaults, NewChatSettingsView } from "./ui/ProjectDefaultsNotes";
@@ -508,6 +509,8 @@ export function Main({
   const [projectOpen, setProjectOpen] = useState(false);
   /** The Scheduled jobs screen covers the chat, as Settings does. */
   const [jobsOpen, setJobsOpen] = useState(false);
+  /** Automations (webhook routes, ADR 0036) cover the chat too. */
+  const [automationsOpen, setAutomationsOpen] = useState(false);
   // The Terminal screen covers the chat too. Once opened it stays mounted for this sign-in, hidden while the owner is
   // elsewhere, so its ssh session keeps running (ADR 0022).
   const [terminalOpen, setTerminalOpen] = useState(false);
@@ -671,7 +674,7 @@ export function Main({
   const openSettings = () => {
     setProjectOpen(false);
     setFilesOpen(false);
-    setJobsOpen(false);
+    setJobsOpen(false); setAutomationsOpen(false);
     setTerminalOpen(false);
     setOutputsOpen(false);
     setUsageOpen(false);
@@ -770,7 +773,7 @@ export function Main({
       if (!keepSettings) setSettingsOpen(false);
       setProjectOpen(false);
       setFilesOpen(false);
-      setJobsOpen(false);
+      setJobsOpen(false); setAutomationsOpen(false);
       setTerminalOpen(false);
       setOutputsOpen(false);
       setUsageOpen(false);
@@ -793,7 +796,7 @@ export function Main({
     setSettingsOpen(false);
     setProjectOpen(false);
     setFilesOpen(false);
-    setJobsOpen(false);
+    setJobsOpen(false); setAutomationsOpen(false);
     setTerminalOpen(false);
     setOutputsOpen(false);
     setUsageOpen(false);
@@ -813,7 +816,7 @@ export function Main({
     setSettingsOpen(false);
     setProjectOpen(false);
     setFilesOpen(false);
-    setJobsOpen(false);
+    setJobsOpen(false); setAutomationsOpen(false);
     setTerminalOpen(false);
     setOutputsOpen(false);
     setUsageOpen(false);
@@ -845,7 +848,7 @@ export function Main({
       setSettingsOpen(false);
       setProjectOpen(false);
       setFilesOpen(false);
-      setJobsOpen(false);
+      setJobsOpen(false); setAutomationsOpen(false);
       setTerminalOpen(false);
       setOutputsOpen(false);
       setUsageOpen(false);
@@ -1154,7 +1157,7 @@ export function Main({
       } else if (e.code === "Backslash" || k === "\\") {
         e.preventDefault();
         toggleSplit();
-      } else if ((k === "1" || k === "2") && !e.shiftKey && !e.altKey && split && !settingsOpen && !filesOpen && !jobsOpen && !outputsOpen && !terminalOpen) {
+      } else if ((k === "1" || k === "2") && !e.shiftKey && !e.altKey && split && !settingsOpen && !filesOpen && !jobsOpen && !automationsOpen && !outputsOpen && !terminalOpen) {
         e.preventDefault();
         focusPane(panes[Number(k) - 1].key);
       }
@@ -1171,7 +1174,7 @@ export function Main({
   // Settings covers the chat, and the pane with it; so do the project screen, Server files, Scheduled jobs and the
   // Terminal.
   // Outputs covers the chat panes but keeps the preview pane beside it, since its files open there.
-  const screenCovering = settingsOpen || projectScreenOpen || filesOpen || jobsOpen || terminalOpen || usageOpen || logsOpen;
+  const screenCovering = settingsOpen || projectScreenOpen || filesOpen || jobsOpen || automationsOpen || terminalOpen || usageOpen || logsOpen;
   const covering = screenCovering || outputsOpen;
   const previewShown = !!preview && !screenCovering && (previewFits || !previewHidden);
   const previewCovers = previewShown && !previewFits;
@@ -1242,7 +1245,7 @@ export function Main({
               ? () => {
                   setProjectOpen(false);
                   setFilesOpen(false);
-                  setJobsOpen(false);
+                  setJobsOpen(false); setAutomationsOpen(false);
                   setTerminalOpen(false);
                   setOutputsOpen(false);
                   setUsageOpen(false);
@@ -1313,7 +1316,7 @@ export function Main({
           guard(() => {
             setSettingsOpen(false);
             setProjectOpen(false);
-            setJobsOpen(false);
+            setJobsOpen(false); setAutomationsOpen(false);
             setTerminalOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
@@ -1326,7 +1329,7 @@ export function Main({
             setSettingsOpen(false);
             setProjectOpen(false);
             setFilesOpen(false);
-            setJobsOpen(false);
+            setJobsOpen(false); setAutomationsOpen(false);
             setTerminalOpen(false);
             setUsageOpen(false);
             setLogsOpen(false);
@@ -1349,16 +1352,31 @@ export function Main({
             setUsageOpen(false);
             setLogsOpen(false);
             setTerminalOpen(false);
+            setAutomationsOpen(false);
             setJobsOpen(true);
           })
         }
         jobsOpen={jobsOpen && !settingsOpen}
+        onAutomations={() =>
+          guard(() => {
+            setProjectOpen(false);
+            setSettingsOpen(false);
+            setFilesOpen(false);
+            setOutputsOpen(false);
+            setUsageOpen(false);
+            setLogsOpen(false);
+            setTerminalOpen(false);
+            setJobsOpen(false);
+            setAutomationsOpen(true);
+          })
+        }
+        automationsOpen={automationsOpen && !settingsOpen}
         onTerminal={() =>
           guard(() => {
             setProjectOpen(false);
             setSettingsOpen(false);
             setFilesOpen(false);
-            setJobsOpen(false);
+            setJobsOpen(false); setAutomationsOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
             setLogsOpen(false);
@@ -1371,27 +1389,28 @@ export function Main({
             setProjectOpen(false);
             setSettingsOpen(false);
             setFilesOpen(false);
-            setJobsOpen(false);
+            setJobsOpen(false); setAutomationsOpen(false);
             setTerminalOpen(false);
             setOutputsOpen(false);
             setLogsOpen(false);
             setUsageOpen((o) => !o);
           })
         }
-        usageOpen={usageOpen && !settingsOpen && !projectScreenOpen && !filesOpen && !jobsOpen}
+        usageOpen={usageOpen && !settingsOpen && !projectScreenOpen && !filesOpen && !jobsOpen && !automationsOpen}
         onLogs={() =>
           guard(() => {
             setProjectOpen(false);
             setSettingsOpen(false);
             setFilesOpen(false);
             setJobsOpen(false);
+            setAutomationsOpen(false);
             setTerminalOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
             setLogsOpen((o) => !o);
           })
         }
-        logsOpen={logsOpen && !settingsOpen && !projectScreenOpen && !filesOpen && !jobsOpen && !usageOpen}
+        logsOpen={logsOpen && !settingsOpen && !projectScreenOpen && !filesOpen && !jobsOpen && !automationsOpen && !usageOpen}
         terminalOpen={terminalOpen && !settingsOpen}
         terminalRunning={terminalRunning}
         updateWaiting={updateWaiting}
@@ -1417,7 +1436,7 @@ export function Main({
                   guard(() => {
                     setSettingsOpen(false);
                     setFilesOpen(false);
-                    setJobsOpen(false);
+                    setJobsOpen(false); setAutomationsOpen(false);
                     setTerminalOpen(false);
                     setOutputsOpen(false);
                     setUsageOpen(false);
@@ -1429,7 +1448,7 @@ export function Main({
                   guard(() => {
                     setSettingsOpen(false);
                     setFilesOpen(false);
-                    setJobsOpen(false);
+                    setJobsOpen(false); setAutomationsOpen(false);
                     setTerminalOpen(false);
                     setOutputsOpen(false);
                     setUsageOpen(false);
@@ -1478,7 +1497,7 @@ export function Main({
           onTextGenerationSettings={() => {
             setProjectOpen(false);
             setFilesOpen(false);
-            setJobsOpen(false);
+            setJobsOpen(false); setAutomationsOpen(false);
             setTerminalOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
@@ -1514,7 +1533,16 @@ export function Main({
       )}
       <main className="main" ref={mainRef}>
         <div className="main-chat" inert={previewCovers || undefined}>
-            {jobsOpen && !settingsOpen ? (
+            {automationsOpen && !settingsOpen ? (
+              <Automations
+                key={profile}
+                api={hermes.automations}
+                profile={profile}
+                connected={status === "connected"}
+                onClose={() => { flushSync(() => setAutomationsOpen(false)); focusPane(active.key); }}
+                onOpenChat={(id) => openChat(id)}
+              />
+            ) : jobsOpen && !settingsOpen ? (
               <ScheduledJobs
                 key={profile}
                 api={hermes.cron}
