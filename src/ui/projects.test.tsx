@@ -184,6 +184,7 @@ describe("a chat's menu", () => {
       "Next week",
       "Custom…",
       "Add a tag…",
+      "Delete chat…",
     ]);
     expect(screen.queryByRole("menuitemcheckbox")).toBeNull();
   });

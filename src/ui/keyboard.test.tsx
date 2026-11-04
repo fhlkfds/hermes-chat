@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // Keyboard paths through the signed-in app, driven the way the owner would drive them, against a fake Hermes. Each
 // test checks what reached Hermes (answers, interrupts, deletes), not which handler ran.
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row } from "../hermes/fakeHermes";
@@ -462,24 +462,120 @@ describe("Chat list by keyboard", () => {
     expect(focused()).toBe(trash);
 
     await s.user.keyboard("{Enter}");
+    expect(screen.getByRole("alertdialog", { name: "Delete “Nightly backup”?" })).toHaveProperty(
+      "textContent",
+      expect.stringContaining("in every Hermes client, on every computer. It can't be undone."),
+    );
     expect(focused()).toBe(button("Cancel"));
     await s.user.keyboard("{Escape}");
-    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
-    expect(focused()).toBe(screen.getAllByRole("button", { name: "Delete" })[0]);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(focused()).toBe(trash);
     await settle(s.hermes);
     expect(deletes(s.server)).toEqual([]);
 
     await s.user.keyboard("{Enter}");
     await s.user.keyboard("{Enter}"); // on the focused Cancel
-    expect(focused()).toBe(screen.getAllByRole("button", { name: "Delete" })[0]);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(focused()).toBe(trash);
     await settle(s.hermes);
     expect(deletes(s.server)).toEqual([]);
 
     await s.user.keyboard("{Enter}");
-    await s.user.tab({ shift: true });
+    await s.user.tab();
+    expect(focused()).toBe(button("Delete chat"));
     await s.user.keyboard("{Enter}");
     await settle(s.hermes);
     expect(deletes(s.server).map((r) => r.path)).toEqual(["/api/sessions/backup"]);
+  });
+
+  it("asks before deleting when Delete or Backspace is pressed on a focused chat, and Cancel keeps it", async () => {
+    const s = await signedIn();
+    rowButton("Nightly backup").focus();
+    await s.user.keyboard("{Delete}");
+    expect(screen.getByRole("alertdialog", { name: "Delete “Nightly backup”?" })).toBeTruthy();
+    expect(focused()).toBe(button("Cancel"));
+    await s.user.keyboard("{Enter}");
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(focused()).toBe(rowButton("Nightly backup"));
+    await settle(s.hermes);
+    expect(deletes(s.server)).toEqual([]);
+
+    rowButton("NAS disks").focus();
+    await s.user.keyboard("{Backspace}");
+    await s.user.click(button("Delete chat"));
+    await settle(s.hermes);
+    expect(deletes(s.server).map((r) => r.path)).toEqual(["/api/sessions/nas"]);
+    expect(screen.queryByRole("button", { name: /^NAS disks/ })).toBeNull();
+  });
+
+  it("doesn't ask to delete a chat whose reply is running", async () => {
+    const s = await replying();
+    const running = document.querySelector<HTMLButtonElement>(".row-open[aria-current]")!;
+    running.focus();
+    await s.user.keyboard("{Delete}");
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    fireEvent.contextMenu(running);
+    expect(screen.queryByRole("menuitem", { name: "Delete chat…" })).toBeNull();
+  });
+
+  it("offers Delete chat… in a chat's right-click menu; it asks first, then deletes", async () => {
+    const s = await signedIn();
+    rowButton("Nightly backup").focus();
+    fireEvent.contextMenu(rowButton("Nightly backup"));
+    await s.user.click(screen.getByRole("menuitem", { name: "Delete chat…" }));
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(focused()).toBe(button("Cancel"));
+    await s.user.keyboard("{Escape}");
+    expect(focused()).toBe(rowButton("Nightly backup"));
+    await settle(s.hermes);
+    expect(deletes(s.server)).toEqual([]);
+
+    fireEvent.contextMenu(rowButton("Nightly backup"));
+    await s.user.click(screen.getByRole("menuitem", { name: "Delete chat…" }));
+    await s.user.click(button("Delete chat"));
+    await settle(s.hermes);
+    expect(deletes(s.server).map((r) => r.path)).toEqual(["/api/sessions/backup"]);
+  });
+
+  it("takes the header's Delete question away when a reply starts, and doesn't bring it back when the reply ends", async () => {
+    const s = await signedIn();
+    await s.user.click(rowButton("Nightly backup"));
+    await settle(s.hermes);
+    const runtime = s.server.runtimeIdOf("backup")!;
+    await s.user.click(within(document.querySelector<HTMLElement>(".chat-head")!).getByRole("button", { name: "More" }));
+    await s.user.click(screen.getByRole("menuitem", { name: "Delete chat…" }));
+    expect(screen.getByRole("alertdialog")).toBeTruthy();
+    act(() => s.server.event(runtime, "message.start"));
+    await settle(s.hermes);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    act(() => s.server.event(runtime, "message.complete", { text: "Done" }));
+    await settle(s.hermes);
+    expect(screen.getByRole("button", { name: "More" })).toBeTruthy();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(deletes(s.server)).toEqual([]);
+  });
+
+  it("offers Delete chat… in the open chat's header menu; it asks first, then deletes", async () => {
+    const s = await signedIn();
+    await s.user.click(rowButton("Nightly backup"));
+    await settle(s.hermes);
+    const more = within(document.querySelector<HTMLElement>(".chat-head")!).getByRole("button", { name: "More" });
+    await s.user.click(more);
+    await s.user.click(screen.getByRole("menuitem", { name: "Delete chat…" }));
+    expect(screen.getByRole("alertdialog", { name: "Delete “Nightly backup”?" })).toBeTruthy();
+    await s.user.click(button("Cancel"));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(focused()).toBe(more);
+    await settle(s.hermes);
+    expect(deletes(s.server)).toEqual([]);
+
+    await s.user.click(more);
+    await s.user.click(screen.getByRole("menuitem", { name: "Delete chat…" }));
+    await s.user.click(button("Delete chat"));
+    await settle(s.hermes);
+    expect(deletes(s.server).map((r) => r.path)).toEqual(["/api/sessions/backup"]);
+    expect(screen.queryByRole("button", { name: /^Nightly backup/ })).toBeNull();
   });
 
   it("opens a chat's menu from the keyboard; Escape closes it, and renaming from it, with focus back on the chat", async () => {

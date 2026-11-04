@@ -188,7 +188,7 @@ describe("Each pane on its own", () => {
     const s = await sideBySide();
     // Delete the left pane's chat from its row while the right pane is active.
     await s.user.click(within(rowButton("Nightly backup").closest(".row") as HTMLElement).getByRole("button", { name: "Delete" }));
-    await s.user.click(within(document.querySelector<HTMLElement>(".row.confirming")!).getByRole("button", { name: "Delete" }));
+    await s.user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete chat" }));
     await settle(s.hermes);
     expect([titleIn(0), titleIn(1)]).toEqual(["New chat", "NAS disks"]);
     expect(activeIndex()).toBe(1);

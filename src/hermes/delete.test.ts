@@ -1,4 +1,11 @@
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
+// Deleting a chat: what reaches Hermes, and the chat menu's Delete chat… and the question it asks first.
+import { createElement } from "react";
+import { cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ChatMenu } from "../ui/ChatMenu";
+import { DeleteChatDialog } from "../ui/DeleteChat";
 import { FakeHermes, row, type RestRequest } from "./fakeHermes";
 import { memoryCache } from "./memoryCache";
 import { connect } from "./transport";
@@ -143,5 +150,59 @@ describe("Deleting a chat", () => {
     await deleting;
     expect(deletes(server)).toEqual(["/api/sessions/a?profile=default"]);
     expect(hermes.getSnapshot().chats.map((c) => c.id)).toEqual(["w"]);
+  });
+});
+
+afterEach(cleanup);
+
+describe("Delete chat… in the chat menu", () => {
+  const chat = { id: "a", title: "Nightly backup" } as Parameters<typeof ChatMenu>[0]["chat"];
+  const menu = (onDelete?: () => void, onClose = vi.fn()) =>
+    render(createElement(ChatMenu, { chat, x: 0, y: 0, onRename: vi.fn(), onRegenTitle: vi.fn(), onDelete, onClose }));
+
+  it("is offered when the chat can be deleted, and closes the menu before asking", async () => {
+    const onDelete = vi.fn();
+    const onClose = vi.fn();
+    menu(onDelete, onClose);
+    await userEvent.click(screen.getByRole("menuitem", { name: "Delete chat…" }));
+    expect(onClose).toHaveBeenCalled();
+    expect(onDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it("isn't offered without a way to delete, as while a reply runs", () => {
+    menu();
+    expect(screen.getByRole("menuitem", { name: "Rename…" })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: "Delete chat…" })).toBeNull();
+  });
+});
+
+describe("The Delete question", () => {
+  const ask = () => {
+    const onDelete = vi.fn();
+    const onClose = vi.fn();
+    render(createElement(DeleteChatDialog, { title: "Nightly backup", onDelete, onClose }));
+    return { onDelete, onClose, dialog: screen.getByRole("alertdialog", { name: "Delete “Nightly backup”?" }) };
+  };
+
+  it("says it deletes the chat everywhere for good, with Cancel focused", () => {
+    const { dialog } = ask();
+    expect(dialog.textContent).toContain("This deletes the chat in every Hermes client, on every computer. It can't be undone.");
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Cancel" }));
+  });
+
+  it("keeps the chat on Cancel, Escape, or a click outside", async () => {
+    const { onDelete, onClose, dialog } = ask();
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await userEvent.keyboard("{Escape}");
+    await userEvent.pointer({ keys: "[MouseLeft]", target: dialog.parentElement! });
+    expect(onClose).toHaveBeenCalledTimes(3);
+    expect(onDelete).not.toHaveBeenCalled();
+  });
+
+  it("deletes on Delete chat", async () => {
+    const { onDelete, onClose } = ask();
+    await userEvent.click(screen.getByRole("button", { name: "Delete chat" }));
+    expect(onDelete).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
   });
 });

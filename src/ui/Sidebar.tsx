@@ -11,6 +11,7 @@ import { RenameConflict, TitleModelUnavailable, type Snapshot } from "../hermes/
 import { chatSections, wakeFull, wakeLabel, type Snoozes } from "../hermes/snooze";
 import { ChatMenu, type ChatProjects, type ChatSnooze, type ChatTags } from "./ChatMenu";
 import { SnoozeDialog, useSnoozeClock } from "./Snooze";
+import { DeleteChatDialog } from "./DeleteChat";
 import { ArchiveButton, STATUS_LABEL, SettleButton, SourceIcon, Spinner, composing, relTime, routeLabel, useReturnFocus } from "./bits";
 import { dragChat } from "./Tabs";
 
@@ -329,9 +330,9 @@ function RenameRow({
 
 /**
  * One chat in the list: a button that opens it, then its Settle, Archive and Delete buttons. Right-clicking it, or the
- * Menu key or Shift+F10 on it, opens its menu. The trash button asks before deleting, in the row itself: Escape,
- * Cancel or clicking away keeps the chat. Cancel and the trash button share a key, so React keeps the one button, and
- * focus with it, when the row goes back. An archived chat has Restore in place of Settle and Archive. A chat with
+ * Menu key or Shift+F10 on it, opens its menu. The trash button, Delete chat… in the menu, and Delete or Backspace on
+ * the focused row all ask before deleting (`onAskDelete`, with what focus goes back to if the owner keeps the chat).
+ * An archived chat has Restore in place of Settle and Archive. A chat with
  * a reply running can't be archived, restored or deleted. `snooze`: the chat can be snoozed from its menu. A snoozed
  * chat shows when it wakes in place of its age. `section`: where the list shows it, for styling. Regenerate title in the menu shows a spinner until the new
  * title is saved, and why underneath if it isn't. When Hermes can't use the Text generation model's provider, that
@@ -347,7 +348,7 @@ function ChatRow({
   onOpenTab,
   onSettle,
   onArchive,
-  onDelete,
+  onAskDelete,
   onRename,
   onRegenTitle,
   onCopyLink,
@@ -370,7 +371,7 @@ function ChatRow({
   onOpenTab: () => void;
   onSettle: (settled: boolean) => void;
   onArchive: (archived: boolean) => void;
-  onDelete: () => void;
+  onAskDelete: (returnTo: HTMLElement | null) => void;
   onRename: (title: string, from: string) => Promise<unknown>;
   onRegenTitle: () => Promise<unknown>;
   /** Copies the chat's link (chatLinks.ts). */
@@ -384,7 +385,6 @@ function ChatRow({
   /** In a collapsed section: kept, with its rename box or menu, but out of sight. */
   hidden?: boolean;
 }) {
-  const [confirming, setConfirming] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [retitling, setRetitling] = useState(false);
   /** Why the title wasn't regenerated. `detail`: Hermes's own words; `settings`: the fix is the Text generation model. */
@@ -418,23 +418,6 @@ function ChatRow({
   const now = Date.now();
   const sleepsUntil = snooze?.until !== undefined && snooze.until > now ? snooze.until : undefined;
   if (renaming) return <RenameRow chat={chat} selected={selected} hidden={hidden} onRename={onRename} onDone={() => setRenaming(false)} />;
-  if (confirming)
-    return (
-      <div
-        className={`row confirming ${selected ? "sel" : ""}`}
-        hidden={hidden}
-        onKeyDown={(e) => e.key === "Escape" && setConfirming(false)}
-        onBlur={(e) => e.currentTarget.contains(e.relatedTarget) || setConfirming(false)}
-      >
-        <span className="row-title">{chat.title}</span>
-        <button className="row-confirm danger" title="Delete this chat in every Hermes client. This can't be undone." onClick={onDelete}>
-          Delete
-        </button>
-        <button key="trash" className="row-confirm" autoFocus onClick={() => setConfirming(false)}>
-          Cancel
-        </button>
-      </div>
-    );
   return (
     <div
       className={`row ${selected ? "sel" : ""} ${alsoShown ? "shown" : ""} ${chat.unread ? "unread" : ""} ${menu ? "menu-open" : ""} ${retitleError ? "retitle-failed" : ""} ${retitling ? "retitling" : ""}`}
@@ -461,6 +444,12 @@ function ChatRow({
           setRetitleError(undefined);
           onOpen();
         }}
+        onKeyDown={(e) => {
+          if ((e.key === "Delete" || e.key === "Backspace") && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && !chat.running) {
+            e.preventDefault();
+            onAskDelete(e.currentTarget);
+          }
+        }}
       >
         {chat.source !== "app" && <SourceIcon source={chat.source} />}
         <span className="row-title">{chat.title}</span>
@@ -486,12 +475,11 @@ function ChatRow({
       {!chat.running && <ArchiveButton archived={!!chat.archived} size={14} className="row-action" onArchive={onArchive} />}
       {!chat.running && (
         <button
-          key="trash"
           className="row-action"
           title="Delete"
           onClick={(e) => {
             e.stopPropagation();
-            setConfirming(true);
+            onAskDelete(e.currentTarget);
           }}
         >
           <Trash2 size={14} />
@@ -511,6 +499,7 @@ function ChatRow({
           onRename={() => setRenaming(true)}
           onRegenTitle={regenTitle}
           onCopyLink={onCopyLink}
+          onDelete={chat.running ? undefined : () => onAskDelete(openButton.current)}
           onClose={closeMenu}
         />
       )}
@@ -911,6 +900,9 @@ export function ChatList({
   const [snoozedOpen, setSnoozedOpen] = useState(false);
   // The chat whose Custom snooze dialog is open.
   const [customFor, setCustomFor] = useState<Chat>();
+  // The chat the Delete question is open for, and what had focus when it was asked.
+  const [deleting, setDeleting] = useState<{ chat: Chat; from: HTMLElement | null }>();
+  const deletingGone = !!deleting && !chats.some((c) => c.id === deleting.chat.id && !c.running);
   // Re-sorts the list when the next snooze wakes.
   const now = useSnoozeClock(snoozes);
   const { top, working, snoozed, settled, archived } = chatSections(chats, snoozes, now, attentionSince);
@@ -919,6 +911,9 @@ export function ChatList({
   useEffect(() => {
     if (customGone) setCustomFor(undefined);
   }, [customGone]);
+  useEffect(() => {
+    if (deletingGone) setDeleting(undefined);
+  }, [deletingGone]);
   // Opening a Settled or Snoozed chat, say from a search, shows it in the list; settling or snoozing the chat on
   // screen doesn't.
   const selectedSettled = settled.some((c) => c.id === selectedId);
@@ -943,7 +938,7 @@ export function ChatList({
       onOpenTab={() => onOpenTab(c.id)}
       onSettle={(s) => onSettle(c.id, s)}
       onArchive={(a) => onArchive(c.id, a)}
-      onDelete={() => onDelete(c.id)}
+      onAskDelete={(from) => setDeleting({ chat: c, from })}
       onRename={(title, from) => onRename(c.id, title, from)}
       onRegenTitle={() => onRegenTitle(c.id)}
       onCopyLink={onCopyLink && (() => onCopyLink(c))}
@@ -1063,6 +1058,21 @@ export function ChatList({
           onSnooze={(until) => {
             setCustomFor(undefined);
             onSnooze?.(customFor.id, until);
+          }}
+        />
+      )}
+      {deleting && !deletingGone && (
+        <DeleteChatDialog
+          title={deleting.chat.title}
+          returnTo={{
+            get current() {
+              return deleting.from?.isConnected ? deleting.from : document.querySelector<HTMLElement>(`.row-open[data-chat="${CSS.escape(deleting.chat.id)}"]`);
+            },
+          }}
+          onClose={() => setDeleting(undefined)}
+          onDelete={() => {
+            setDeleting(undefined);
+            onDelete(deleting.chat.id);
           }}
         />
       )}
