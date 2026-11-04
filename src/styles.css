@@ -2102,3 +2102,14 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
   .usage-status-actions { margin-left: 0; }
   .usage-filters select, .usage-filters input { max-width: 100%; }
 }
+
+/* Edit and Regenerate (ADR 0035). */
+.leave-overlay .leave-dialog.replay-dialog { max-width: min(640px, 100%); }
+.replay-text { width: 100%; resize: vertical; min-height: 72px; font: inherit; line-height: 1.5; }
+.replay-later li:last-child { color: var(--text-2); }
+.variant-nav { display: flex; align-items: center; gap: 4px; margin-top: 6px; font-size: calc(12rem / 14); color: var(--muted); flex-wrap: wrap; }
+.variant-nav .icon-btn { width: 24px; height: 24px; }
+.variant-count { font-variant-numeric: tabular-nums; color: var(--text-2); min-width: 3ch; text-align: center; }
+.variant-what { margin-left: 4px; overflow-wrap: anywhere; }
+.msg.user .variant-nav { justify-content: flex-end; }
+.branch-unfinished .btn { margin-left: 4px; padding: 2px 8px; font-size: calc(12rem / 14); }
