@@ -627,6 +627,17 @@ export function Main({
     setSearchStart(start);
     setSearchOpen(true);
   };
+  const openSettings = () => {
+    setProjectOpen(false);
+    setFilesOpen(false);
+    setJobsOpen(false);
+    setTerminalOpen(false);
+    setOutputsOpen(false);
+    setUsageOpen(false);
+    setShowTextGeneration(undefined);
+    setShowMemory(undefined);
+    setSettingsOpen(true);
+  };
   const listable = proj.projects.filter((p) => !p.archived);
   const shownProject = listable.find((p) => p.id === proj.selectedId);
   const projectScreenOpen = projectOpen && !!shownProject;
@@ -1033,13 +1044,27 @@ export function Main({
   };
 
   useEffect(() => {
-    // Only Ctrl/Cmd chords, and never mid-composition. No bare key does anything app-wide, so nothing typed
-    // with focus outside an input can answer an Approval or stop a reply.
+    // Only Ctrl/Cmd chords and Alt+Up/Down, never mid-composition. No bare key does anything app-wide, so nothing
+    // typed with focus outside an input can answer an Approval or stop a reply.
     const onKey = (e: KeyboardEvent) => {
       if (covered || composing(e)) return;
       if (screenshotShortcut && shortcutOf(e) === screenshotShortcut && !checkShortcut(screenshotShortcut).error) {
         e.preventDefault();
         if (!e.repeat) takeScreenshot();
+        return;
+      }
+      // Alt+Up/Down: the Active chat above or below the one showing, as the list orders them. Only while the chat is
+      // on screen; a list that uses the same keys (the queue) takes them first, and a select keeps Alt+Down to open.
+      const onChat = !covering && !previewCovers && !projectScreenOpen && !searchOpen;
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+        if (!onChat || e.defaultPrevented || (e.target as Element | null)?.tagName === "SELECT") return;
+        const order = listed.filter((c) => !c.settled && !c.archived).sort((a, b) => b.updatedAt - a.updatedAt);
+        const at = order.findIndex((c) => c.id === active.chatId);
+        const next = order[at < 0 ? 0 : at + (e.key === "ArrowDown" ? 1 : -1)];
+        if (next) {
+          e.preventDefault();
+          openChat(next.id);
+        }
         return;
       }
       if (!(e.ctrlKey || e.metaKey)) return;
@@ -1054,6 +1079,9 @@ export function Main({
       } else if (k === "b") {
         e.preventDefault();
         setListOpen((o) => !o);
+      } else if (k === ",") {
+        e.preventDefault();
+        openSettings();
       } else if (e.code === "Backslash" || k === "\\") {
         e.preventDefault();
         toggleSplit();
@@ -1221,7 +1249,8 @@ export function Main({
         onInbox={() => setInboxOpen((o) => !o)}
         inboxOpen={inboxOpen}
         inboxCount={inboxCount}
-        onSettings={() => { setProjectOpen(false); setFilesOpen(false); setJobsOpen(false); setTerminalOpen(false); setOutputsOpen(false); setUsageOpen(false); setShowTextGeneration(undefined); setShowMemory(undefined); setSettingsOpen(true); }}
+        onSettings={openSettings}
+        settingsOpen={settingsOpen}
         onJobs={() =>
           guard(() => {
             setProjectOpen(false);
@@ -1351,6 +1380,8 @@ export function Main({
           onCheckOthers={() => void hermes.checkOtherProfiles()}
           onSwitchProfile={switchProfile}
           onRetrySwitch={() => void (status === "connected" ? hermes.sync() : hermes.reconnect())}
+          onNew={() => newChat()}
+          onSearch={() => openSearch()}
         />
       )}
       {inboxOpen && (

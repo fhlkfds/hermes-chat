@@ -1,5 +1,7 @@
 // Themes: the colors worked out from a theme's four, what contrast does to them, and reading a pasted theme.
 import { describe, expect, it } from "vitest";
+// @ts-expect-error The app has no Node types; the tests run in Node. (Vitest empties a CSS import, ?raw included.)
+import { readFileSync } from "node:fs";
 import { BUILTIN_THEMES, contrastRatio, freeName, parseTheme, readThemeJson, resolveMode, themeJson, themeVars } from "./themes";
 
 const newId = () => "custom-new";
@@ -8,15 +10,15 @@ const hermes = BUILTIN_THEMES[0];
 describe("Theme colors", () => {
   it("are the stylesheet's original colors for Hermes in dark at the default contrast", () => {
     expect(themeVars(hermes.dark, "dark")).toMatchObject({
-      "--bg": "#161618",
-      "--sidebar": "#111113",
-      "--raised": "#1e1e21",
-      "--text": "#e7e7ea",
-      "--muted": "#8d8d90",
-      "--faint": "#5c5c5e",
-      "--accent": "#d97757",
-      "--code-bg": "#0d0d0e",
-      "--text-strong": "#ffffff",
+      "--bg": "#1b1c20",
+      "--sidebar": "#18191d",
+      "--raised": "#222328",
+      "--text": "#d6d7dc",
+      "--muted": "#86878b",
+      "--faint": "#5a5b5f",
+      "--accent": "#d08b6e",
+      "--code-bg": "#16161a",
+      "--text-strong": "#e8e9ec",
     });
   });
 
@@ -26,6 +28,8 @@ describe("Theme colors", () => {
         const v = themeVars(theme[mode], mode);
         expect(contrastRatio(v["--text"], v["--bg"]), `${theme.name} ${mode} text`).toBeGreaterThan(10);
         expect(contrastRatio(v["--muted"], v["--bg"]), `${theme.name} ${mode} muted`).toBeGreaterThan(4.5);
+        // Section labels and shortcut hints are muted text on the list panel.
+        expect(contrastRatio(v["--muted"], v["--sidebar"]), `${theme.name} ${mode} muted on the list`).toBeGreaterThan(4.5);
         expect(contrastRatio(v["--accent"], v["--bg"]), `${theme.name} ${mode} accent`).toBeGreaterThan(4.5);
         expect(contrastRatio(v["--on-accent"], v["--accent"]), `${theme.name} ${mode} on accent`).toBeGreaterThan(4.5);
       }
@@ -40,6 +44,16 @@ describe("Theme colors", () => {
         expect(ratio(50, key)).toBeLessThan(ratio(100, key));
       }
       expect(ratio(0, "--muted")).toBeGreaterThan(2.8);
+    }
+  });
+
+  it("color shortcut hints and section labels with muted text, which the checks above keep readable", () => {
+    // A later rule of the same selector would win in the browser; jsdom doesn't apply the stylesheet, so read it.
+    const css: string = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
+    for (const selector of ["kbd", ".section-label"]) {
+      const rules = [...css.matchAll(/^([^{}\n]+)\{([^}]*)\}/gm)].filter((m) => m[1].split(",").map((s: string) => s.trim()).includes(selector));
+      const colors = rules.flatMap((m) => [...m[2].matchAll(/(?:^|[;\s])color:\s*([^;]+)/g)].map((c) => c[1].trim()));
+      expect(colors, selector).toEqual(["var(--muted)"]);
     }
   });
 
