@@ -456,6 +456,25 @@ describe("Interrupting", () => {
     expect(s.server.spoken.map((x) => x.text)).toEqual(["First, the lock."]);
   });
 
+  it("doesn't speak a reply stopped during a tool call, though it said something before the tool", async () => {
+    const s = await opened();
+    await start(s);
+    await say(s, "Clean the cache");
+    act(() => {
+      s.server.event(s.runtime(), "message.start");
+      s.server.event(s.runtime(), "message.delta", { text: "Cleaning it now." });
+      s.server.event(s.runtime(), "tool.start", { tool_id: "t1", name: "terminal", args: { command: "rm -rf ~/.cache/x" } });
+    });
+    await settle(s.hermes);
+    await s.user.click(within(panel()).getByRole("button", { name: /Stop reply/ }));
+    await waitFor(() => expect(s.server.requests.some((r) => r.method === "session.interrupt")).toBe(true));
+    act(() => s.server.event(s.runtime(), "message.complete", { text: "", status: "interrupted" }));
+    await settle(s.hermes);
+    await waitFor(() => expect(status()).toMatch(/^Listening/));
+    expect(panel().textContent).toMatch(/The reply was stopped, so it isn't spoken/);
+    expect(s.server.spoken).toEqual([]);
+  });
+
   it("waits on an Approval without listening, and carries on once it's answered", async () => {
     const s = await opened();
     await start(s);

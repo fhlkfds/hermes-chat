@@ -498,6 +498,12 @@ export class VoiceConversation {
     }
     if (!over && !a.seenRunning && !after.some((i) => i.kind === "assistant" || i.kind === "error")) return;
     this.awaiting = undefined;
+    // A stopped reply is marked on its last reply, which is empty when it was stopped during a tool call: checked
+    // before empty replies are skipped, so the words from before the tool aren't spoken as if it had finished.
+    if (after.some((i) => i.kind === "assistant" && i.interrupted)) {
+      this.set({ note: "The reply was stopped, so it isn't spoken. What it said so far is in the chat." });
+      return this.enterListening();
+    }
     const last = [...after].reverse().find((i) => i.kind === "error" || (i.kind === "assistant" && i.text.trim()));
     if (!last) {
       this.set({ note: "Hermes's reply had no words to speak." });
@@ -505,10 +511,6 @@ export class VoiceConversation {
     }
     if (last.kind === "error") {
       this.set({ note: `Hermes's reply failed: ${last.text}` });
-      return this.enterListening();
-    }
-    if (last.kind === "assistant" && last.interrupted) {
-      this.set({ note: "The reply was stopped, so it isn't spoken. What it said so far is in the chat." });
       return this.enterListening();
     }
     if (last.kind !== "assistant") return this.enterListening();
