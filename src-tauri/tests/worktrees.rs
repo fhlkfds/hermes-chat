@@ -652,3 +652,82 @@ async fn a_restore_cut_off_part_way_is_finished_by_restoring_again() {
     assert_eq!(read(&tree, "wip.txt"), "wip\n");
     assert_eq!(row(&list(&d).await, &tree)["locked"], format!("hermes-chat {ID}"));
 }
+
+#[tokio::test]
+async fn restore_never_takes_over_another_worktree_at_its_folder() {
+    let d = repo("occupied");
+    git(&d.repo(), &["branch", "shared"]);
+    let p = plan(&d, "shared", false, None).await;
+    ask(create_req(&d, ID, "shared", false, None, p["stamp"].as_str().unwrap())).await.unwrap();
+    let tree = d.tree("shared");
+    write(&tree, "a.txt", "A's work\n");
+    remove(&d, ID).await.unwrap();
+    // Another worktree is made on the same branch, at the same folder, and worked in.
+    let p = plan(&d, "shared", false, None).await;
+    ask(create_req(&d, ID2, "shared", false, None, p["stamp"].as_str().unwrap())).await.unwrap();
+    write(&tree, "b.txt", "B's work\n");
+    let e = ask(Request::WorktreeRestore { repo: d.s(), id: ID.into() }).await.unwrap_err();
+    assert_eq!(kind(e), "path-exists");
+    assert_eq!(read(&tree, "b.txt"), "B's work\n");
+    assert!(!tree.join("a.txt").exists());
+    let reg = registry(&d);
+    assert_eq!(reg["worktrees"][ID]["state"], "removed");
+    assert_eq!(reg["worktrees"][ID2]["state"], "ready");
+    // Even as a resumed restore, a folder another record holds isn't taken.
+    let mut reg = reg;
+    let mut gone = reg["worktrees"][ID]["removed"].clone();
+    gone["applied"] = false.into();
+    reg["worktrees"][ID]["state"] = "restoring".into();
+    reg["worktrees"][ID]["restoring"] = gone;
+    set_registry(&d, &reg);
+    assert_eq!(kind(ask(Request::WorktreeRestore { repo: d.s(), id: ID.into() }).await.unwrap_err()), "path-exists");
+    assert_eq!(read(&tree, "b.txt"), "B's work\n");
+}
+
+#[tokio::test]
+async fn an_index_only_change_while_the_changes_are_kept_stops_the_removal() {
+    let d = repo("index-only");
+    made(&d, ID, "idx").await;
+    let tree = d.tree("idx");
+    write(&tree, "app.txt", "staged v1\n");
+    git(&tree, &["add", "app.txt"]);
+    write(&tree, "app.txt", "working v2\n");
+    let facts = removal(&d, ID).await;
+    let mut cmd = helper();
+    cmd.env("HERMES_REPO_TEST_PAUSE_AFTER_KEEP", "1.5");
+    let req = Request::WorktreeRemove { repo: d.s(), id: ID.into(), stamp: facts["stamp"].as_str().unwrap().into() };
+    let removing = tokio::spawn(async move { repo_git::run(cmd, &req).await });
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    // As `git add -p` would: only the index changes; the status and the working file stay as they were.
+    let blob = {
+        let out = StdCommand::new("git").args(["hash-object", "-w", "--stdin"]).current_dir(&tree).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap();
+        use std::io::Write;
+        out.stdin.as_ref().unwrap().write_all(b"staged v3\n").unwrap();
+        String::from_utf8(out.wait_with_output().unwrap().stdout).unwrap().trim().to_owned()
+    };
+    git(&tree, &["update-index", "--cacheinfo", &format!("100644,{blob},app.txt")]);
+    assert_eq!(kind(removing.await.unwrap().unwrap_err()), "stale");
+    assert_eq!(git(&tree, &["show", ":app.txt"]), "staged v3");
+    assert!(tree.exists());
+}
+
+#[tokio::test]
+async fn a_bare_repository_or_an_edit_inside_an_ignored_folder_is_never_deleted_unseen() {
+    let d = repo("ignored-deep");
+    made(&d, ID, "deep").await;
+    let tree = d.tree("deep");
+    std::fs::create_dir_all(tree.join("node_modules/pkg")).unwrap();
+    write(&tree, "node_modules/pkg/index.js", "module.exports = 1;\n");
+    let facts = removal(&d, ID).await;
+    assert!(facts["blockers"].as_array().unwrap().is_empty(), "{facts}");
+    // An edit inside the ignored folder: the folder's own metadata doesn't change.
+    write(&tree, "node_modules/pkg/index.js", "module.exports = 2; // edited after the preview\n");
+    let e = ask(Request::WorktreeRemove { repo: d.s(), id: ID.into(), stamp: facts["stamp"].as_str().unwrap().into() }).await.unwrap_err();
+    assert_eq!(kind(e), "stale");
+    // A bare repository in an ignored folder.
+    git(&d.0, &["init", "-q", "--bare", tree.join("node_modules/cache.git").to_str().unwrap()]);
+    let f = removal(&d, ID).await;
+    assert_eq!(f["blockers"][0]["kind"], "nested");
+    assert!(f["blockers"][0]["message"].as_str().unwrap().contains("node_modules/cache.git"));
+    assert!(tree.join("node_modules/cache.git/HEAD").exists());
+}

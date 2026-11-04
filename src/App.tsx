@@ -2458,18 +2458,29 @@ function ChatView({
       if (problem) throw new Error(problem);
       // Hermes would run a chat in a folder it can't list, or quietly in its own; check it is there and allowed first.
       if (s.folder.value) await hermes.projects.checkFolder(profile, s.folder.value);
+      // A worktree's chat starts only on the server that has the worktree (ADR 0040).
+      if (worktree) await sameServer((path) => hermes.readServerText(path), worktree);
       // The owner may have switched profile, or another window the project shown, meanwhile: these were that one's.
       if (!stillIn()) throw new Error(`The profile changed to ${hermes.profile} before the chat started. Nothing was sent.`);
       projects.reread();
       if (projects.getSnapshot().selectedId !== into) throw new Error("The project shown changed before the chat started. Nothing was sent.");
       const instructions = s.instructions.value && instructionsMessage(s.project ?? "", s.instructions.value);
-      // A worktree's chat starts only on the server that has the worktree, and only once the worktree records it.
-      if (worktree) await sameServer((path) => hermes.readServerText(path), worktree);
-      const id = await hermes.newChat(s.model.value, {
-        folder: s.folder.value,
-        instructions,
-        ...(worktree && { confirm: (chatId: string) => recordInWorktree(worktree, chatId, first) }),
-      });
+      // ...and only once the worktree records it. A chat recorded and then not kept (the profile changed meanwhile)
+      // is taken off the record again.
+      let recorded: string | undefined;
+      const id = await hermes
+        .newChat(s.model.value, {
+          folder: s.folder.value,
+          instructions,
+          ...(worktree && { confirm: (chatId: string) => recordInWorktree(worktree, chatId, first).then(() => void (recorded = chatId)) }),
+        })
+        .catch((e: unknown) => {
+          if (worktree && recorded)
+            void tauriRepo
+              .run(worktree.target, { op: "worktreeDetach", repo: worktree.repo, id: worktree.id, scope: projectScope(connection, profile), chat: recorded })
+              .catch(() => {});
+          throw e;
+        });
       if (into && projects.getSnapshot().projects.some((p) => p.id === into)) projects.setChat(into, id, true);
       if (stillIn()) onStarted(id);
       return { id };

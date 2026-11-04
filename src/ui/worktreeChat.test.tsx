@@ -37,6 +37,8 @@ const REGISTRY = `${TOP}/.git/hermes-chat/worktrees.json`;
 const repoCalls: { target: string; request: RepoRequest }[] = [];
 /** Set to make the server refuse to record a chat. */
 let attachFails = false;
+/** Set to hold the server's answer to recording a chat until it's called. */
+let attachHeld: Promise<void> | undefined;
 vi.mock("./tauriRepo", () => ({
   tauriRepo: {
     run: async (target: string, request: RepoRequest) => {
@@ -62,7 +64,10 @@ vi.mock("./tauriRepo", () => ({
           };
         case "worktreeAttach":
           if (attachFails) throw { kind: "ssh-unreachable", message: "ssh couldn't reach the server.", output: "" };
+          if (attachHeld) await attachHeld;
           return { record: { ...RECORD, chats: [request.chat] } };
+        case "worktreeDetach":
+          return { record: RECORD };
         default:
           throw new Error(`unexpected ${request.op}`);
       }
@@ -82,6 +87,7 @@ afterEach(async () => {
   localStorage.clear();
   repoCalls.length = 0;
   attachFails = false;
+  attachHeld = undefined;
 });
 
 /** A Hermes on the worktree's server: it has the folder, and can read the worktree's record. */
@@ -117,6 +123,24 @@ it("doesn't start a chat when Hermes can't see the worktree's record: it may be 
   expect((await screen.findByRole("alert")).textContent).toMatch(/may be running on another computer/);
   expect(s.requests.filter((r) => r.method === "session.create" || r.method === "prompt.submit")).toEqual([]);
   expect(screen.getByPlaceholderText<HTMLTextAreaElement>("Message Hermes").value).toBe("Fix the login timeout");
+});
+
+it("drops a chat whose profile changed while the worktree was recording it, and takes it off the record", async () => {
+  let release!: () => void;
+  attachHeld = new Promise((r) => (release = r));
+  const s = server();
+  s.otherProfiles = { work: [] };
+  const { hermes } = await startFromWorktree(s);
+  await waitFor(() => expect(repoCalls.some((c) => c.request.op === "worktreeAttach")).toBe(true));
+  await act(async () => void (await hermes.switchProfile("work")));
+  await act(async () => release());
+  await waitFor(() => expect(repoCalls.some((c) => c.request.op === "worktreeDetach")).toBe(true));
+  const chatId = (repoCalls.find((c) => c.request.op === "worktreeAttach")!.request as { chat: { chat: string } }).chat.chat;
+  expect(repoCalls.find((c) => c.request.op === "worktreeDetach")!.request).toMatchObject({ op: "worktreeDetach", id: RECORD.id, chat: chatId });
+  expect(s.requests.some((r) => r.method === "prompt.submit")).toBe(false);
+  expect(s.requests.some((r) => r.method === "session.close")).toBe(true);
+  // Nothing of the default profile's chat shows up under work.
+  expect(hermes.getSnapshot().chats.some((c) => c.id === chatId)).toBe(false);
 });
 
 it("doesn't send anything when the worktree can't record the chat, and drops the session", async () => {

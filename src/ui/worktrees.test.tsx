@@ -285,6 +285,21 @@ describe("making one", () => {
     expect(ops(calls, "worktreeSetup").map((c) => (c as { step: number }).step)).toEqual([0, 1]);
   });
 
+  it("starts a chat from the setup dialog on the branch the worktree has now", async () => {
+    let rec = record({ setup: [{ entry: ".env", action: "copy", state: "pending", message: "" }] });
+    const { api } = fakeApi((q) => {
+      if (q.op === "worktreeList") return listOf([managedRow(rec, { branch: "fix/login-v2" })]);
+      if (q.op === "worktreeSetup") return { record: (rec = { ...rec, setup: [{ ...rec.setup[0], state: "done" }] }) };
+      throw new Error(`unexpected ${q.op}`);
+    });
+    const user = userEvent.setup();
+    const { onStartChat } = show(api);
+    await user.click(await screen.findByRole("button", { name: "Run setup" }));
+    await within(dialog()).findByText("The worktree is ready.");
+    await user.click(within(dialog()).getByRole("button", { name: "Start chat here" }));
+    expect(onStartChat).toHaveBeenCalledWith(expect.objectContaining({ branch: "fix/login-v2" }));
+  });
+
   it("makes an edit stale: it must be previewed again", async () => {
     const { api, calls } = making();
     const user = userEvent.setup();
@@ -501,6 +516,22 @@ describe("removing one", () => {
     await within(dialog()).findByText(/Whether it was removed isn't known yet/);
     expect(within(dialog()).queryByRole("button", { name: /remove/i })).toBeNull();
     expect(ops(lost.calls, "worktreeRemove")).toHaveLength(1);
+  });
+
+  it("offers Remove again for a removal that stopped before the folder went", async () => {
+    const r = record({ state: "removing" });
+    const { api, calls } = fakeApi((q) => {
+      if (q.op === "worktreeList") return listOf([managedRow(r)]);
+      if (q.op === "worktreeRemoval") return removal();
+      throw new Error(`unexpected ${q.op}`);
+    });
+    const user = userEvent.setup();
+    show(api);
+    const card = await screen.findByRole("group", { name: "Worktree fix/login" });
+    expect(card.textContent).toContain("Removing it stopped before the folder went");
+    await user.click(within(card).getByRole("button", { name: "Remove the worktree fix/login…" }));
+    await within(dialog()).findByRole("button", { name: "Keep changes and remove" });
+    expect(ops(calls, "worktreeRemoval")).not.toHaveLength(0);
   });
 
   it("lists removed worktrees with their kept changes, and restores", async () => {

@@ -1254,6 +1254,7 @@ export class Hermes {
   async newChat(model?: ModelPick, start: { folder?: string; instructions?: string; confirm?: (id: string) => Promise<void> } = {}): Promise<string> {
     const { folder, instructions, confirm } = start;
     const profile = this.profile;
+    const generation = this.generation;
     const res = (await this.request("session.create", {
       profile,
       source: APP_SOURCE,
@@ -1284,11 +1285,17 @@ export class Hermes {
       throw new Error(`Hermes didn't start it in ${folder}${typeof cwd === "string" && cwd ? `: it would have worked in ${cwd}` : ""}. Nothing was sent.`);
     }
     // `confirm`: what must hold before anything is sent, such as the worktree recording this chat (ADR 0040).
-    if (confirm)
+    if (confirm) {
       await confirm(res.stored_session_id).catch((e: unknown) => {
         drop();
         throw new Error(`${e instanceof Error ? e.message : String(e)} Nothing was sent.`);
       });
+      // Confirming took a while: a chat started for one profile or connection never lands in another.
+      if (this.profile !== profile || this.generation !== generation) {
+        drop();
+        throw new Error("The profile or the connection changed while the chat was starting. Nothing was sent.");
+      }
+    }
     const chat: Chat = {
       model: pickFromInfo(res.info) ?? model,
       id: res.stored_session_id,

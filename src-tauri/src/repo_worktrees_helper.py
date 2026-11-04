@@ -399,7 +399,7 @@ def add_tree(main, trees, rec, detach_at=None):
         output = text(out)
         if code != 0:
             raise Refusal("git", output.strip().splitlines()[-1] if output.strip() else "git worktree add failed.", output)
-    elif not detach_at and tree["branch"] != rec["branch"]:
+    elif tree["locked"] not in (None, LOCK_REASON + rec["id"]) or (not detach_at and tree["branch"] != rec["branch"]):
         raise Refusal("stale", "Another worktree is at %s now. Nothing was changed." % rec["path"])
     lock_tree(main, rec)
     return output
@@ -607,22 +607,31 @@ def initialized_submodules(path):
 MAX_WALK = 200000
 
 
-def nested_repositories(path):
-    """Folders in the worktree that are Git repositories of their own (a clone inside it, tracked as a submodule or
-    not, ignored or not), and whether the look was cut short. Their objects and changes aren't in this repository,
-    so nothing here could keep them. Links aren't followed."""
-    found, seen = [], 0
+def walk_tree(path):
+    """One look at everything in the worktree folder but its `.git` file, links not followed: the folders in it that
+    are Git repositories of their own (a clone or a bare repository, tracked as a submodule or not, ignored or not,
+    whose objects and changes aren't in this repository, so nothing here could keep them), a digest of every entry's
+    path, size, modification time and mode (ignored files inside ignored folders included), and whether the look was
+    cut short."""
+    found, seen, digest = [], 0, hashlib.sha256()
     for top, dirs, files in os.walk(path):
+        dirs.sort()
+        rel_top = os.path.relpath(top, path)
         if top == path:
             dirs[:] = [d for d in dirs if d != ".git"]
-            continue
+            files = [f for f in files if f != ".git"]
+        else:
+            if ".git" in dirs or ".git" in files or ("HEAD" in files and "objects" in dirs and "refs" in dirs):
+                found.append(rel_top)
+                dirs[:] = []
+                continue
         seen += len(dirs) + len(files)
         if seen > MAX_WALK:
-            return found, True
-        if ".git" in dirs or ".git" in files:
-            found.append(os.path.relpath(top, path))
-            dirs[:] = []
-    return found, False
+            return found, True, None
+        for name in sorted(files) + dirs:
+            rel = os.path.normpath(os.path.join(rel_top, name))
+            digest.update(json.dumps([rel, fingerprint(path, rel)]).encode("utf-8", "surrogateescape"))
+    return found, False, digest.hexdigest()
 
 
 def ignored(path):
@@ -664,7 +673,7 @@ def removal_facts(trees, rec):
     subs = initialized_submodules(rec["path"])
     for sub in subs:
         blockers.append({"kind": "submodule", "message": "The submodule %s is checked out in it. Its own changes and commits can't be kept here, so check it and remove it by hand first (git submodule deinit)." % sub})
-    nested, cut = nested_repositories(rec["path"])
+    nested, cut, contents = walk_tree(rec["path"])
     for rel in nested:
         if rel not in subs:
             blockers.append({"kind": "nested", "message": "%s is a Git repository of its own inside it. Its commits and changes can't be kept here, so move or remove it by hand first." % rel})
@@ -688,8 +697,10 @@ def removal_facts(trees, rec):
         # Detached, with commits no branch or remote has: they'd be lost, so a recovery ref keeps them.
         keepHead=bool(head and not tree["branch"] and text(git_ok(["rev-list", "-n", "1", "HEAD", "--not", "--branches", "--remotes"], rec["path"])).strip()),
     )
-    inventory = [[f["status"], f["path"], fingerprint(rec["path"], f["path"])] for f in files] + [["ignored", p, fingerprint(rec["path"], p)] for p in every_ignored]
-    facts["stamp"] = hashlib.sha256(json.dumps([head, tree["branch"], tree["locked"], inventory], sort_keys=True).encode("utf-8")).hexdigest()
+    # The index's own entries (a `git add -p` changes them and nothing else), and every file in the folder.
+    staged_now = index_stamp(rec["path"])
+    inventory = [[f["status"], f["path"]] for f in files] + [["ignored", p] for p in every_ignored]
+    facts["stamp"] = hashlib.sha256(json.dumps([head, tree["branch"], tree["locked"], staged_now, contents, inventory], sort_keys=True).encode("utf-8")).hexdigest()
     return facts
 
 
@@ -798,7 +809,10 @@ def op_worktree_remove(req):
                 time.sleep(pause)
             # Anything written since the preview, while the changes were kept included, changes the stamp: then
             # nothing is removed (what was kept stays in its ref).
-            if removal_facts(trees, rec)["stamp"] != facts["stamp"]:
+            again = removal_facts(trees, rec)
+            if again["blockers"]:
+                raise Refusal("blocked", "Nothing was removed: " + " ".join(b["message"] for b in again["blockers"]))
+            if again["stamp"] != facts["stamp"]:
                 raise Refusal("stale", "A file in the worktree changed while its changes were being kept. Nothing was removed.%s Look at the preview again." % (
                     " What was kept so far is in %s." % kept["ref"] if kept else ""))
             # Where the changes went is recorded before the folder goes, so a removal cut off now still says so.
@@ -838,6 +852,12 @@ def op_worktree_restore(req):
         gone = rec["restoring"]
         branch = gone["branch"]
         made = tree_at(trees, rec["path"])
+        claimed = next((r for r in reg.data["worktrees"].values() if r["id"] != wid and r["state"] != "removed" and same_path(r["path"], rec["path"])), None)
+        if claimed or (made is not None and (rec["state"] != "restoring" or made["locked"] not in (None, LOCK_REASON + wid))):
+            raise Refusal("path-exists", "Another worktree is at %s now. Nothing was made; the kept changes are still in %s." % (
+                rec["path"], gone["kept"]["ref"] if gone["kept"] else "no ref (there were none)"))
+        if made is None and os.path.lexists(rec["path"]):
+            raise Refusal("path-exists", "%s exists on the server but isn't a worktree. Nothing was made over it." % rec["path"])
         if branch and made is None:
             holder = next((t for t in trees if t["branch"] == branch), None)
             if holder:

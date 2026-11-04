@@ -300,7 +300,7 @@ export function WorktreesPanel({
           by={by}
           resume={creating.record}
           onOpen={onOpen}
-          onStartChat={onStartChat && data && ((r) => onStartChat(launch(r)!))}
+          onStartChat={onStartChat && data && ((r) => onStartChat(launch(r, data.worktrees.find((w) => w.record?.id === r.id))!))}
           onClose={() => {
             setCreating(undefined);
             load();
@@ -395,6 +395,11 @@ function ManagedRow({
           from {r.base} at {short(r.baseSha)} · made by {r.createdBy}
         </span>
       </div>
+      {r.state === "removing" && (
+        <div className="files-banner warn" role="status">
+          <CircleAlert size={14} aria-hidden /> Removing it stopped before the folder went. Remove… previews it again and carries on.
+        </div>
+      )}
       {onFinish && (
         <div className="files-banner warn" role="status">
           <CircleAlert size={14} aria-hidden /> Restoring it stopped before its kept changes were all back.
@@ -456,7 +461,7 @@ function ManagedRow({
         <button className="btn" disabled={busy || r.state !== "ready"} onClick={() => onProtect(!r.protected)}>
           {r.protected ? <ShieldOff size={13} aria-hidden /> : <Shield size={13} aria-hidden />} {r.protected ? "Unprotect" : "Protect"}
         </button>
-        <button className="btn danger" disabled={busy || r.state !== "ready"} onClick={onRemove} aria-label={`Remove the worktree ${name}…`}>
+        <button className="btn danger" disabled={busy || (r.state !== "ready" && r.state !== "removing")} onClick={onRemove} aria-label={`Remove the worktree ${name}…`}>
           <Trash2 size={13} aria-hidden /> Remove…
         </button>
       </div>
