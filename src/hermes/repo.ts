@@ -131,7 +131,8 @@ export type RepoRequest =
       draft: boolean;
       expect: { head: string | null };
     }
-  | { op: "prStatus"; repo: string; remote: string; number: number };
+  | { op: "prStatus"; repo: string; remote: string; number: number }
+  | { op: "remoteHead"; repo: string; remote: string; remoteBranch: string };
 
 /** Rust's one command: send `request` to the helper through ssh to `target`. Rejects with a `RepoFailure`. */
 export type RepoApi = { run(target: string, request: RepoRequest): Promise<unknown> };
@@ -612,15 +613,21 @@ export type PublishInfo = {
   head: string | null;
   branch: string | null;
   /** Remotes with push URLs, any user name and password taken out. */
-  remotes: { name: string; url: string }[];
+  remotes: { name: string; url: string; pushUrls?: string[] }[];
   upstream: { ref: string | null; remote: string; branch: string } | null;
   /** The remote a push goes to: the upstream's, else origin, else the only one. */
   remote: string | null;
   remoteUrl: string;
+  /** Every URL a push to `remote` goes to, without credentials. More than one, and Push is refused. */
+  remotePushUrls?: string[];
   /** The branch on the remote: the upstream's, else the same name. */
   remoteBranch: string | null;
-  /** What this checkout last saw the remote branch at (its tracking ref), not asked of the remote. */
+  /** What this checkout last saw the remote branch at (its tracking ref). For a remote that pushes somewhere other
+   * than it fetches from (`remoteAsked`), what the push destination itself answered. */
   remoteHead: string | null;
+  remoteAsked?: boolean;
+  /** Why the push destination couldn't be asked. */
+  remoteError?: string | null;
   ahead: number | null;
   behind: number | null;
   /** Up to 50 commits a push would send, newest first. */
@@ -633,9 +640,12 @@ export type PublishInfo = {
   github: { repo: string; url: string | null; defaultBranch: string | null; prs: PrSummary[]; error: string | null } | null;
 };
 
-export type Pushed = { pushed: string; remoteHead: string | null; matches: boolean; upstreamSet: boolean; output: string };
+/** A push that happened. `matches`: the remote, asked afterwards, has the commit; null when that check itself failed
+ * (`verifyError`), which says nothing against the push. */
+export type Pushed = { pushed: string; remoteHead: string | null; matches: boolean | null; verifyError?: string | null; upstreamSet: boolean; output: string };
 
-export type PrCreated = { pr: PrSummary; existing: boolean; output: string; readBack?: boolean; readBackError?: string | null };
+/** A pull request made (or found open). When reading it back failed, `pr` holds only its `url`. */
+export type PrCreated = { pr: Partial<PrSummary> & { url: string }; existing: boolean; output: string; readBack?: boolean; readBackError?: string | null };
 
 type RawCheck =
   | { __typename: "CheckRun"; name?: string; workflowName?: string; status?: string; conclusion?: string; detailsUrl?: string }

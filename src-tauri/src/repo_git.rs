@@ -88,6 +88,9 @@ pub enum Request {
     },
     /// A pull request's state, review and checks, read from GitHub now.
     PrStatus { repo: String, remote: String, number: u64 },
+    /// What `remote_branch` is on `remote` now, asked of the remote itself. Settles a push whose answer was lost.
+    #[serde(rename_all = "camelCase")]
+    RemoteHead { repo: String, remote: String, remote_branch: String },
 }
 
 /// What a push or a pull request expects HEAD to be.
@@ -117,7 +120,15 @@ pub struct Expect {
 impl Request {
     /// Reads only: nothing on the server changes. Only these are tried again after a dropped connection.
     pub fn reads_only(&self) -> bool {
-        matches!(self, Request::Status { .. } | Request::Diff { .. } | Request::Preview { .. } | Request::PublishInfo { .. } | Request::PrStatus { .. })
+        matches!(
+            self,
+            Request::Status { .. }
+                | Request::Diff { .. }
+                | Request::Preview { .. }
+                | Request::PublishInfo { .. }
+                | Request::PrStatus { .. }
+                | Request::RemoteHead { .. }
+        )
     }
 
     /// How long the whole round trip may take, ssh's connection included. A commit runs the repository's hooks,
@@ -128,7 +139,9 @@ impl Request {
             // A push runs a pre-push hook and talks to the remote; the helper gives it five minutes.
             Request::Push { .. } => Duration::from_secs(400),
             // gh talks to GitHub, more than once.
-            Request::PublishInfo { .. } | Request::PrCreate { .. } | Request::PrStatus { .. } => Duration::from_secs(240),
+            Request::PublishInfo { .. } | Request::PrStatus { .. } | Request::RemoteHead { .. } => Duration::from_secs(240),
+            // ls-remote, a list, the create and the read-back: the helper's own limits add up to five minutes.
+            Request::PrCreate { .. } => Duration::from_secs(360),
             _ => Duration::from_secs(60),
         }
     }

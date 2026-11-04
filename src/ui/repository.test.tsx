@@ -502,7 +502,7 @@ describe("Repository screen, a late suggestion", () => {
     const user = userEvent.setup();
     let answer: (m: string) => void = () => {};
     const suggest = vi.fn(() => new Promise<string>((res) => (answer = res)));
-    const { api } = fakeApi((_t, r) => (r.op === "status" ? STAMPED() : r.op === "preview" ? PREVIEW : diffOf("")));
+    const { api } = fakeApi((_t, r) => (r.op === "status" ? STAMPED() : r.op === "preview" ? PREVIEW : r.op === "publishInfo" ? NO_REMOTE : diffOf("")));
     show(api, { suggest });
     await screen.findByText(TOP);
     await user.click(screen.getByRole("button", { name: "Suggest a message" }));
@@ -545,7 +545,7 @@ const STATUS_PR = {
   ],
 };
 
-function publishing(over: (r: RepoRequest) => unknown, info: () => typeof INFO = () => INFO) {
+function publishing(over: (r: RepoRequest) => unknown, info: () => object = () => INFO) {
   return fakeApi((_t, r) => {
     if (r.op === "status") return statusOf({ head: HEAD, entries: [] });
     if (r.op === "publishInfo") return info();
@@ -654,5 +654,65 @@ describe("Repository screen, publishing", () => {
     await user.click(screen.getByRole("button", { name: /Open on GitHub/ }));
     expect(openUrl).toHaveBeenCalledWith("https://github.com/acme/weather/pull/7");
     expect(screen.queryByRole("button", { name: /Create pull request/ })).toBeNull();
+  });
+});
+
+describe("Repository screen, publishing when things half work", () => {
+  it("says a push happened even when checking the remote afterwards failed", async () => {
+    const user = userEvent.setup();
+    const { api } = publishing(() => ({ pushed: HEAD, remoteHead: null, matches: null, verifyError: "ssh couldn't reach the server.", upstreamSet: true, output: "Done" }));
+    show(api);
+    await user.click(await screen.findByRole("button", { name: /Push 2 commits/ }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Push" }));
+    expect(await screen.findByText(/Pushed \(Git reported success\), but checking origin afterwards failed: ssh couldn't reach the server/)).toBeTruthy();
+    expect(screen.queryByText(/The push was refused/)).toBeNull();
+  });
+
+  it("asks the remote itself when a push's answer is lost", async () => {
+    const user = userEvent.setup();
+    const { api, calls } = publishing((r) => {
+      if (r.op === "push") throw new RepoFailure("timeout", "The server didn't answer within 400 s.");
+      if (r.op === "remoteHead") return { remoteHead: HEAD, head: HEAD };
+      return {};
+    });
+    show(api);
+    await user.click(await screen.findByRole("button", { name: /Push 2 commits/ }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Push" }));
+    expect(await screen.findByText(/origin has feature\/login at .*: the push happened/)).toBeTruthy();
+    expect(calls.find((c) => c.request.op === "remoteHead")?.request).toEqual({ op: "remoteHead", repo: TOP, remote: "origin", remoteBranch: "feature/login" });
+    expect(count(calls, "push")).toBe(1);
+  });
+
+  it("shows a created pull request it couldn't read back by its link, and reads it again on Refresh", async () => {
+    const user = userEvent.setup();
+    let listed = false;
+    const { api, calls } = publishing(
+      (r) => (r.op === "prCreate" ? { pr: { url: "https://github.com/acme/weather/pull/9" }, existing: false, output: "", readBack: false, readBackError: "HTTP 502" } : STATUS_PR),
+      () => ({ ...INFO, remoteHead: HEAD, ahead: 0, commits: [], github: { ...INFO.github, prs: listed ? [STATUS_PR] : [] } }),
+    );
+    show(api);
+    await user.click(await screen.findByRole("button", { name: /Create pull request/ }));
+    expect(await screen.findByText(/reading it back failed: HTTP 502/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Create pull request/ })).toBeNull();
+    expect(calls.some((c) => c.request.op === "prStatus" && (c.request as { number?: unknown }).number === undefined)).toBe(false);
+    listed = true;
+    await user.click(screen.getByRole("button", { name: "Refresh push and pull request" }));
+    expect(await screen.findByText(/#7 Login/)).toBeTruthy();
+  });
+
+  it("won't push to a remote with two push URLs", async () => {
+    const { api } = publishing(() => ({}), () => ({ ...INFO, remotePushUrls: ["https://github.com/acme/weather.git", "https://mirror.example/weather.git"] }));
+    show(api);
+    expect(await screen.findByText(/origin pushes to 2 places/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Push 2 commits/ })).toBeNull();
+  });
+});
+
+describe("Repository screen, a separate push destination", () => {
+  it("offers Push when it can't tell what the push destination has", async () => {
+    const { api } = publishing(() => ({}), () => ({ ...INFO, remoteAsked: true, remoteError: null, ahead: null, behind: null, commits: [], remoteHead: null }));
+    show(api);
+    expect(await screen.findByText(/apart from where it fetches from/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: /^Push…/ }) as HTMLButtonElement).disabled).toBe(false);
   });
 });

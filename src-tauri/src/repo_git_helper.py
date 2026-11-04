@@ -807,6 +807,33 @@ def op_commit(req):
 GITHUB = re.compile(r"^(?:https?://(?:[^@/]+@)?github\.com/|ssh://(?:[^@/]+@)?github\.com/|[^@/:]+@github\.com:)([^/]+)/([^/]+?)(?:\.git)?/?$")
 
 
+def check_remote(remote, top):
+    """A remote this repository has, whose name can't be read as an option."""
+    if not isinstance(remote, str) or not remote or remote.startswith("-") or remote not in git_line(["remote"], top).splitlines():
+        raise Refusal("bad-remote", "There's no remote %r in this repository that can be used here." % (remote,))
+    return remote
+
+
+def push_urls(remote, top):
+    """Every URL a push to `remote` goes to (remote.<name>.pushurl, else its url). Git pushes to all of them."""
+    return [u for u in git_line(["remote", "get-url", "--push", "--all", remote], top).splitlines() if u]
+
+
+def push_url(remote, top):
+    """The one URL a push to `remote` goes to. A remote that pushes to several isn't pushed to from here."""
+    urls = push_urls(remote, top)
+    if len(urls) != 1:
+        raise Refusal("unsupported", "%s pushes to %d places (%s). This screen pushes to one place only; use the Terminal." % (remote, len(urls), ", ".join(redact(u) for u in urls)))
+    if urls[0].startswith("-"):
+        raise Refusal("bad-remote", "%s's push URL can't be used here." % remote)
+    return urls[0]
+
+
+def redact_text(output):
+    """Command output with any user name and password taken out of URLs in it."""
+    return re.sub(r"(https?://)[^/@\s]+@", r"\1", output or "")
+
+
 def redact(url):
     """A remote URL safe to show: any user name and password in an http(s) URL taken out."""
     return re.sub(r"^(https?://)[^@/]+@", r"\1", url or "")
@@ -821,6 +848,12 @@ def check_branch_name(name, top):
     if not isinstance(name, str) or not name or name.startswith("-") or git(["check-ref-format", "--branch", name], top)[0] != 0:
         raise Refusal("bad-branch", "%r isn't a branch name Git accepts." % (name,))
     return name
+
+
+def configured_push_url(remote, top):
+    """The push URL as written in the config (remote.<name>.pushurl, else .url), before any insteadOf rewriting:
+    what says which GitHub repository a remote is."""
+    return git_line(["config", "--get", "remote.%s.pushurl" % remote], top) or git_line(["config", "--get", "remote.%s.url" % remote], top)
 
 
 def github_repo(url):
@@ -838,7 +871,16 @@ def gh_json(args, top, timeout=60):
         return None, "gh answered with something that isn't JSON."
 
 
-PR_FIELDS = "number,url,state,isDraft,title,baseRefName,headRefName,headRefOid"
+# How long reading a new pull request back may take. A test makes it short to check that a slow read-back keeps the
+# pull request that was made.
+READBACK_TIMEOUT = int(os.environ.get("HERMES_REPO_READBACK_TIMEOUT") or 60)
+
+PR_FIELDS = "number,url,state,isDraft,title,baseRefName,headRefName,headRefOid,isCrossRepository"
+
+
+def own_prs(prs):
+    """Pull requests from this repository's own branch, not a fork's branch that happens to share its name."""
+    return [p for p in (prs or []) if not p.get("isCrossRepository")]
 STATUS_FIELDS = PR_FIELDS + ",mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,updatedAt"
 
 
@@ -851,7 +893,10 @@ def op_publish_info(req):
     branch = git_line(["symbolic-ref", "-q", "--short", "HEAD"], top) or None
     remotes = []
     for name in git_line(["remote"], top).splitlines():
-        remotes.append({"name": name, "url": redact(git_line(["remote", "get-url", "--push", name], top))})
+        if name.startswith("-"):
+            continue  # a name that would read as an option is never offered
+        urls = push_urls(name, top)
+        remotes.append({"name": name, "url": redact(urls[0] if urls else ""), "pushUrls": [redact(u) for u in urls]})
     upstream = None
     if branch:
         u = git_line(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "%s@{upstream}" % branch], top)
@@ -860,13 +905,38 @@ def op_publish_info(req):
         if remote and merge.startswith("refs/heads/"):
             upstream = {"ref": u or None, "remote": remote, "branch": merge[len("refs/heads/"):]}
     names = [r["name"] for r in remotes]
-    remote = (upstream or {}).get("remote") or ("origin" if "origin" in names else (names[0] if len(names) == 1 else None))
-    remote_branch = (upstream or {}).get("branch") or branch
+    # Where Git itself would push: the branch's pushRemote, the repository's pushDefault, the upstream's remote, then
+    # origin, then the only remote.
+    configured = [git_line(["config", "--get", "branch.%s.pushRemote" % branch], top) if branch else "", git_line(["config", "--get", "remote.pushDefault"], top)]
+    remote = next((r for r in configured if r in names), None) or (upstream or {}).get("remote") or ("origin" if "origin" in names else (names[0] if len(names) == 1 else None))
+    # The upstream's branch only when it has this branch's name on that remote, as Git's `simple` push does. A branch
+    # made with `git switch -c fix origin/main` tracks main, and must never push there unasked.
+    if upstream and upstream["remote"] == remote and upstream["branch"] == branch:
+        remote_branch = upstream["branch"]
+    else:
+        remote_branch = branch
     tracking = "refs/remotes/%s/%s" % (remote, remote_branch) if remote and remote_branch else None
     has_tracking = bool(tracking) and git(["rev-parse", "-q", "--verify", tracking], top)[0] == 0
     commits = []
     ahead = behind = None
-    if head:
+    # A remote that pushes somewhere other than it fetches from: its tracking refs say nothing about the push
+    # destination, so that destination is asked what it has.
+    separate = bool(remote) and push_urls(remote, top) != [u for u in git_line(["remote", "get-url", "--all", remote], top).splitlines() if u]
+    asked_head, remote_error = None, None
+    if separate and head and remote_branch:
+        try:
+            asked_head = remote_sha(top, remote, remote_branch)
+        except Refusal as r:
+            remote_error = r.message
+    if separate:
+        if head and asked_head and git(["cat-file", "-e", asked_head + "^{commit}"], top)[0] == 0:
+            rng = ["%s..HEAD" % asked_head]
+            ahead = int(git_line(["rev-list", "--count"] + rng, top) or 0)
+            behind = int(git_line(["rev-list", "--count", "HEAD..%s" % asked_head], top) or 0)
+            log = git_line(["log", "--format=%H%x1f%s", "-n", "50"] + rng, top)
+            commits = [dict(zip(("sha", "subject"), l.split("\x1f", 1))) for l in log.splitlines() if "\x1f" in l]
+        # Otherwise how far ahead it is can't be told from here: ahead stays None, and Push stays offered.
+    elif head:
         if has_tracking:
             rng = ["%s..HEAD" % tracking]
             counts = git_line(["rev-list", "--left-right", "--count", "%s...HEAD" % tracking], top).split()
@@ -878,14 +948,15 @@ def op_publish_info(req):
         log = git_line(["log", "--format=%H%x1f%s", "-n", "50"] + rng, top)
         commits = [dict(zip(("sha", "subject"), l.split("\x1f", 1))) for l in log.splitlines() if "\x1f" in l]
     remote_url = next((r["url"] for r in remotes if r["name"] == remote), "")
-    gh_repo = github_repo(git_line(["remote", "get-url", "--push", remote], top)) if remote else None
+    remote_push_urls = next((r["pushUrls"] for r in remotes if r["name"] == remote), [])
+    gh_repo = github_repo(configured_push_url(remote, top)) if remote else None
     github = None
     if gh_repo:
         repo_info, why = gh_json(["repo", "view", gh_repo, "--json", "nameWithOwner,url,defaultBranchRef"], top)
         prs = []
         if repo_info and remote_branch:
-            found, _ = gh_json(["pr", "list", "--repo", gh_repo, "--head", remote_branch, "--state", "all", "--limit", "5", "--json", PR_FIELDS], top)
-            prs = found or []
+            found, _ = gh_json(["pr", "list", "--repo", gh_repo, "--head", remote_branch, "--state", "all", "--limit", "10", "--json", PR_FIELDS], top)
+            prs = own_prs(found)[:5]
         github = {
             "repo": gh_repo,
             "url": (repo_info or {}).get("url"),
@@ -912,8 +983,11 @@ def op_publish_info(req):
         "upstream": upstream,
         "remote": remote,
         "remoteUrl": remote_url,
+        "remotePushUrls": remote_push_urls,
         "remoteBranch": remote_branch,
-        "remoteHead": git_line(["rev-parse", "-q", "--verify", tracking], top) or None if has_tracking else None,
+        "remoteHead": asked_head if separate else (git_line(["rev-parse", "-q", "--verify", tracking], top) or None if has_tracking else None),
+        "remoteAsked": separate,
+        "remoteError": remote_error,
         "ahead": ahead,
         "behind": behind,
         "commits": commits,
@@ -923,8 +997,13 @@ def op_publish_info(req):
     }
 
 
-def classify_push_failure(output, has_hook):
-    o = output.lower()
+def classify_push_failure(output, failed_hooks):
+    """What a failed push means. A hook's refusal is known from Git's trace; the rest is read from Git's own lines
+    (`fatal:`, `error:`, `remote:` and the porcelain ref lines), never from whatever a hook printed."""
+    if failed_hooks:
+        return "hook", "The %s hook refused the push. Its output is below. Nothing was pushed." % ", ".join(failed_hooks)
+    own = "\n".join(l for l in output.lower().splitlines() if l.startswith(("fatal:", "error:", "remote:", "!", "to ", "hint:")))
+    o = own
     # `--porcelain` puts a tab between the flag and the ref, so match the bracketed reason alone.
     if "[remote rejected]" in o:
         return "remote-rejected", "The remote refused the push (a protected branch or a server-side hook, as its message says). Nothing was pushed."
@@ -934,17 +1013,16 @@ def classify_push_failure(output, has_hook):
         return "auth", "The remote refused the server's credentials. Nothing was pushed. Sign Git in on the server (for GitHub, gh auth login and gh auth setup-git), then push again."
     if any(s in o for s in ("could not resolve host", "unable to access", "connection timed out", "connection refused", "network is unreachable")):
         return "network", "The server couldn't reach the remote. Nothing was pushed."
-    if has_hook:
-        return "hook", "The pre-push hook refused the push. Its output is below. Nothing was pushed."
     return "git", "Git couldn't push. Its output is below."
 
 
 def remote_sha(top, remote, branch, timeout=60):
-    """The commit the remote has for the branch, asked of the remote itself; None when it has no such branch."""
-    code, out, err = run(["git", "ls-remote", "--heads", remote, "refs/heads/%s" % branch], top, read_only=True, timeout=timeout)
+    """The commit the remote has for the branch, asked of the place a push goes (its push URL, which may differ
+    from where it fetches); None when it has no such branch."""
+    code, out, err = run(["git", "ls-remote", "--heads", push_url(remote, top), "refs/heads/%s" % branch], top, read_only=True, timeout=timeout)
     if code != 0:
-        kind, why = classify_push_failure(text(err), False)
-        raise Refusal(kind if kind in ("auth", "network") else "git", why.replace(" Nothing was pushed.", ""), text(err))
+        kind, why = classify_push_failure(text(err), [])
+        raise Refusal(kind if kind in ("auth", "network") else "git", why.replace(" Nothing was pushed.", ""), redact_text(text(err)))
     line = text(out).strip().split("\t")
     return line[0] if line and line[0] else None
 
@@ -955,37 +1033,37 @@ def op_push(req):
     top, _ = checkout(req.get("repo"))
     branch = check_branch_name(req.get("branch"), top)
     remote = req.get("remote")
-    if remote not in git_line(["remote"], top).splitlines():
-        raise Refusal("bad-remote", "There's no remote %r in this repository." % (remote,))
+    check_remote(remote, top)
     remote_branch = check_branch_name(req.get("remoteBranch"), top)
     head = head_oid(top)
     if git_line(["symbolic-ref", "-q", "--short", "HEAD"], top) != branch or head != (req.get("expect") or {}).get("head"):
         raise Refusal("stale", "The branch or its commit changed since this screen read it. Nothing was pushed. Look again.")
-    has_hook = "pre-push" in hooks_named(top, ("pre-push",))
-    code, out, _ = git(["push", "--porcelain", remote, "%s:refs/heads/%s" % (head, remote_branch)], top, read_only=False, timeout=300, merge_output=True)
-    output = text(out)
+    push_url(remote, top)  # refuses a remote that would push to several places
+    code, out, failed = traced(["push", "--porcelain", "--no-follow-tags", remote, "%s:refs/heads/%s" % (head, remote_branch)], top, timeout=300)
+    output = redact_text(text(out))
     if code != 0:
-        kind, why = classify_push_failure(output, has_hook)
+        kind, why = classify_push_failure(output, failed)
         raise Refusal(kind, why, output)
-    upstream_set = False
-    if not git_line(["config", "--get", "branch.%s.merge" % branch], top):
-        git_ok(["config", "branch.%s.remote" % branch, remote], top, read_only=False)
-        git_ok(["config", "branch.%s.merge" % branch, "refs/heads/%s" % remote_branch], top, read_only=False)
-        upstream_set = True
-    after = remote_sha(top, remote, remote_branch)
-    return {"pushed": head, "remoteHead": after, "matches": after == head, "upstreamSet": upstream_set, "output": output}
+    # The push happened. Anything failing from here on is reported beside it, never as a refused push.
+    upstream_set, verify_error, after = False, None, None
+    try:
+        if not git_line(["config", "--get", "branch.%s.merge" % branch], top):
+            git_ok(["config", "branch.%s.remote" % branch, remote], top, read_only=False)
+            git_ok(["config", "branch.%s.merge" % branch, "refs/heads/%s" % remote_branch], top, read_only=False)
+            upstream_set = True
+        after = remote_sha(top, remote, remote_branch)
+    except Refusal as r:
+        verify_error = r.message + ((" " + r.output.strip()) if r.output.strip() else "")
+    return {"pushed": head, "remoteHead": after, "matches": None if verify_error else after == head,
+            "verifyError": verify_error, "upstreamSet": upstream_set, "output": output}
 
 
-def hooks_named(top, names):
-    code, out, _ = git(["config", "--get", "core.hooksPath"], top)
-    folder = text(out).strip() if code == 0 else ""
-    if folder:
-        folder = os.path.expanduser(folder)
-        if not os.path.isabs(folder):
-            folder = os.path.join(top, folder)
-    else:
-        folder = text(git_ok(["rev-parse", "--path-format=absolute", "--git-path", "hooks"], top)).strip()
-    return [n for n in names if os.path.isfile(os.path.join(folder, n)) and os.access(os.path.join(folder, n), os.X_OK)]
+def op_remote_head(req):
+    """What the remote branch is now, asked of the remote (its push URL). Settles a push whose answer was lost."""
+    top, _ = checkout(req.get("repo"))
+    remote = check_remote(req.get("remote"), top)
+    branch = check_branch_name(req.get("remoteBranch"), top)
+    return {"remoteHead": remote_sha(top, remote, branch), "head": head_oid(top)}
 
 
 def classify_gh_failure(output):
@@ -1007,9 +1085,8 @@ def op_pr_create(req):
     commit shown. It never pushes: if the remote doesn't have that commit, it refuses."""
     top, _ = checkout(req.get("repo"))
     remote = req.get("remote")
-    if remote not in git_line(["remote"], top).splitlines():
-        raise Refusal("bad-remote", "There's no remote %r in this repository." % (remote,))
-    gh_repo = github_repo(git_line(["remote", "get-url", "--push", remote], top))
+    check_remote(remote, top)
+    gh_repo = github_repo(configured_push_url(remote, top))
     if not gh_repo:
         raise Refusal("unsupported", "Pull requests are made with gh, for GitHub remotes only, and %s isn't one." % remote)
     head_branch = check_branch_name(req.get("remoteBranch"), top)
@@ -1022,9 +1099,10 @@ def op_pr_create(req):
     on_remote = remote_sha(top, remote, head_branch)
     if on_remote != expect:
         raise Refusal("not-pushed", "The remote doesn't have this branch at the commit shown%s. Push first; creating a pull request never pushes." % (" (it has %s)" % on_remote[:12] if on_remote else ""))
-    existing, _ = gh_json(["pr", "list", "--repo", gh_repo, "--head", head_branch, "--state", "open", "--limit", "1", "--json", PR_FIELDS], top)
-    if existing:
-        return {"pr": existing[0], "existing": True, "output": ""}
+    existing, _ = gh_json(["pr", "list", "--repo", gh_repo, "--head", head_branch, "--state", "open", "--limit", "10", "--json", PR_FIELDS], top)
+    mine = own_prs(existing)
+    if mine:
+        return {"pr": mine[0], "existing": True, "output": ""}
     args = ["pr", "create", "--repo", gh_repo, "--base", base, "--head", head_branch, "--title", title.strip(), "--body-file", "-"]
     if req.get("draft") is True:
         args.append("--draft")
@@ -1034,7 +1112,11 @@ def op_pr_create(req):
     if code != 0 or not url:
         kind, why = classify_gh_failure(output)
         raise Refusal(kind, why, output)
-    pr, why = gh_json(["pr", "view", url, "--repo", gh_repo, "--json", PR_FIELDS], top)
+    # The pull request exists now. Reading it back is extra: if that fails, even by timing out, its URL is kept.
+    try:
+        pr, why = gh_json(["pr", "view", url, "--repo", gh_repo, "--json", PR_FIELDS], top, timeout=READBACK_TIMEOUT)
+    except Refusal as r:
+        pr, why = None, r.message
     return {"pr": pr or {"url": url}, "existing": False, "output": output, "readBack": pr is not None, "readBackError": why or None}
 
 
@@ -1042,9 +1124,8 @@ def op_pr_status(req):
     """A pull request's state, review and checks, read from GitHub now."""
     top, _ = checkout(req.get("repo"))
     remote = req.get("remote")
-    if remote not in git_line(["remote"], top).splitlines():
-        raise Refusal("bad-remote", "There's no remote %r in this repository." % (remote,))
-    gh_repo = github_repo(git_line(["remote", "get-url", "--push", remote], top))
+    check_remote(remote, top)
+    gh_repo = github_repo(configured_push_url(remote, top))
     number = req.get("number")
     if not gh_repo or not isinstance(number, int) or number <= 0:
         raise Refusal("internal", "No pull request was named.")
@@ -1067,6 +1148,7 @@ OPS = {
     "push": op_push,
     "prCreate": op_pr_create,
     "prStatus": op_pr_status,
+    "remoteHead": op_remote_head,
 }
 
 

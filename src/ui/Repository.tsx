@@ -1017,7 +1017,16 @@ function PublishPanel({
 }
 
 function PushCard({ info: p, onPush }: { info: PublishInfo; onPush: () => void }) {
-  const why = !p.branch ? "HEAD is detached: check out a branch to push." : !p.remote ? "This repository has no remote to push to." : !p.head ? "There's no commit to push yet." : undefined;
+  const many = (p.remotePushUrls?.length ?? 0) > 1;
+  const why = !p.branch
+    ? "HEAD is detached: check out a branch to push."
+    : !p.remote
+      ? "This repository has no remote to push to."
+      : !p.head
+        ? "There's no commit to push yet."
+        : many
+          ? `${p.remote} pushes to ${p.remotePushUrls!.length} places (${p.remotePushUrls!.join(", ")}). This screen pushes to one place only; use the Terminal.`
+          : undefined;
   const nothing = !!p.remote && p.ahead === 0;
   return (
     <div className="repo-card">
@@ -1036,6 +1045,14 @@ function PushCard({ info: p, onPush }: { info: PublishInfo; onPush: () => void }
               {p.branch} → {p.remote}/{p.remoteBranch}
               {!p.upstream && <span className="muted"> (new upstream)</span>}
             </dd>
+            {p.upstream && (p.upstream.remote !== p.remote || p.upstream.branch !== p.remoteBranch) && (
+              <>
+                <dt>Upstream</dt>
+                <dd className="mono">
+                  {p.upstream.remote}/{p.upstream.branch} <span className="muted">(not where a push goes: Git pushes a branch only to its own name)</span>
+                </dd>
+              </>
+            )}
           </dl>
           {p.behind ? (
             <p className="repo-notice warn">
@@ -1043,6 +1060,13 @@ function PushCard({ info: p, onPush }: { info: PublishInfo; onPush: () => void }
               force-pushed.
             </p>
           ) : null}
+          {p.remoteAsked && p.ahead === null && (
+            <p className="repo-notice">
+              {p.remote} pushes to {p.remoteUrl}, apart from where it fetches from.{" "}
+              {p.remoteError ? `Asking it failed (${p.remoteError}), so` : "That destination doesn't have this commit's history here, so"} what a push sends can't be
+              listed: Push sends {p.branch} at {p.head?.slice(0, 12)}.
+            </p>
+          )}
           {nothing ? (
             <p className="small muted">
               {p.remoteHead
@@ -1070,7 +1094,12 @@ function PushCard({ info: p, onPush }: { info: PublishInfo; onPush: () => void }
   );
 }
 
-type PushState = { phase: "ready"; error?: RepoFailure } | { phase: "pushing" } | { phase: "pushed"; result: Pushed } | { phase: "unknown" };
+type PushState =
+  | { phase: "ready"; error?: RepoFailure }
+  | { phase: "pushing" }
+  | { phase: "pushed"; result: Pushed }
+  /** No answer: the remote is asked what it has now. `remoteHead` undefined while asking; `askError` if that failed. */
+  | { phase: "unknown"; remoteHead?: string | null; askError?: string };
 
 /** Exactly what Push sends, then the push and what the remote has afterwards. */
 function PushDialog({ api, target, top, info: p, onClose }: { api: RepoApi; target: string; top: string; info: PublishInfo; onClose: () => void }) {
@@ -1095,7 +1124,13 @@ function PushDialog({ api, target, top, info: p, onClose }: { api: RepoApi; targ
       (e: unknown) => {
         if (!alive.current) return;
         const error = asRepoFailure(e);
-        setState(error.kind === "timeout" || error.kind.startsWith("ssh") || error.kind === "spawn" ? { phase: "unknown" } : { phase: "ready", error });
+        if (!(error.kind === "timeout" || error.kind.startsWith("ssh") || error.kind === "spawn")) return setState({ phase: "ready", error });
+        // Whether it was pushed isn't known: ask the remote itself, never the cached tracking ref.
+        setState({ phase: "unknown" });
+        api.run(target, { op: "remoteHead", repo: top, remote: p.remote!, remoteBranch: p.remoteBranch! }).then(
+          (v) => alive.current && setState({ phase: "unknown", remoteHead: (v as { remoteHead: string | null }).remoteHead }),
+          (e2: unknown) => alive.current && setState({ phase: "unknown", askError: asRepoFailure(e2).message }),
+        );
       },
     );
   };
@@ -1155,7 +1190,17 @@ function PushDialog({ api, target, top, info: p, onClose }: { api: RepoApi; targ
         {state.phase === "ready" && state.error && <Failure failure={state.error} what="The push was refused" />}
         {state.phase === "unknown" && (
           <p className="files-banner warn" role="alert">
-            <CircleAlert size={14} aria-hidden /> <span>The server didn't answer, so whether the push happened isn't known. Close this, and the remote branch is read again.</span>
+            <CircleAlert size={14} aria-hidden />{" "}
+            <span>
+              The server didn't answer, so whether the push happened wasn't known.{" "}
+              {state.askError
+                ? `Asking ${p.remote} failed too (${state.askError}); check it in the Terminal before pushing again.`
+                : state.remoteHead === undefined
+                  ? `Asking ${p.remote}…`
+                  : state.remoteHead === p.head
+                    ? `${p.remote} has ${p.remoteBranch} at ${p.head?.slice(0, 12)}: the push happened.`
+                    : `${p.remote} has ${p.remoteBranch} at ${state.remoteHead?.slice(0, 12) ?? "nothing"}, not this commit: it wasn't pushed.`}
+            </span>
           </p>
         )}
         {state.phase === "pushed" && (
@@ -1165,7 +1210,9 @@ function PushDialog({ api, target, top, info: p, onClose }: { api: RepoApi; targ
               <span>
                 {state.result.matches
                   ? `Pushed. ${p.remote} now has ${p.remoteBranch} at ${state.result.pushed.slice(0, 12)}.`
-                  : `Git pushed, but ${p.remote} now has ${p.remoteBranch} at ${state.result.remoteHead?.slice(0, 12) ?? "nothing"}, not ${state.result.pushed.slice(0, 12)}.`}
+                  : state.result.matches === null
+                    ? `Pushed (Git reported success), but checking ${p.remote} afterwards failed: ${state.result.verifyError ?? "no reason given"}.`
+                    : `Git pushed, but ${p.remote} now has ${p.remoteBranch} at ${state.result.remoteHead?.slice(0, 12) ?? "nothing"}, not ${state.result.pushed.slice(0, 12)}.`}
                 {state.result.upstreamSet ? ` ${p.branch} now tracks ${p.remote}/${p.remoteBranch}.` : ""}
               </span>
             </p>
@@ -1239,7 +1286,9 @@ function PrCard({
     );
   }
   const gh = p.github;
-  const open = created?.pr ?? gh.prs.find((x) => x.state === "OPEN");
+  // A pull request made here but not read back has only its URL. The list, read again, has the whole of it.
+  const createdWhole = created && typeof created.pr.number === "number" ? (created.pr as PrSummary) : undefined;
+  const open = createdWhole ?? gh.prs.find((x) => x.state === "OPEN");
   const past = gh.prs.filter((x) => x.state !== "OPEN" && x.number !== open?.number);
   const create = () => {
     if (!p.remote || !p.remoteBranch) return;
@@ -1273,6 +1322,15 @@ function PrCard({
         </span>
       </h3>
       {gh.error && <Failure failure={new RepoFailure("pr-api", "gh couldn't read this repository", gh.error)} what="GitHub" />}
+      {created && !createdWhole && !open && (
+        <div className="files-banner warn" role="status">
+          <CircleAlert size={14} aria-hidden />
+          <span>
+            Created <span className="mono">{created.pr.url}</span>, but reading it back failed{created.readBackError ? `: ${created.readBackError}` : ""}. Refresh to read it from
+            GitHub.
+          </span>
+        </div>
+      )}
       {open ? (
         <>
           {created && (
@@ -1287,7 +1345,7 @@ function PrCard({
           <PrStatusView key={open.number} api={api} target={target} top={top} remote={p.remote ?? ""} pr={open} openUrl={openUrl} />
         </>
       ) : (
-        !gh.error && (
+        !gh.error && !created && (
           <div className="repo-pr-form">
             <dl className="repo-review-facts">
               <dt>Repository</dt>
