@@ -33,7 +33,10 @@ const RECORD: WorktreeRecord = {
   createdBy: "Hermes Chat (test)",
 };
 
+const REGISTRY = `${TOP}/.git/hermes-chat/worktrees.json`;
 const repoCalls: { target: string; request: RepoRequest }[] = [];
+/** Set to make the server refuse to record a chat. */
+let attachFails = false;
 vi.mock("./tauriRepo", () => ({
   tauriRepo: {
     run: async (target: string, request: RepoRequest) => {
@@ -55,8 +58,10 @@ vi.mock("./tauriRepo", () => ({
             ],
             unfinished: [],
             removed: [],
+            registry: REGISTRY,
           };
         case "worktreeAttach":
+          if (attachFails) throw { kind: "ssh-unreachable", message: "ssh couldn't reach the server.", output: "" };
           return { record: { ...RECORD, chats: [request.chat] } };
         default:
           throw new Error(`unexpected ${request.op}`);
@@ -76,12 +81,56 @@ afterEach(async () => {
   await Promise.all(running.splice(0).map((h) => h.close()));
   localStorage.clear();
   repoCalls.length = 0;
+  attachFails = false;
 });
 
-it("starts a chat working in the worktree, records it there, and shows its branch and folder", async () => {
+/** A Hermes on the worktree's server: it has the folder, and can read the worktree's record. */
+function server(registry: string | null = JSON.stringify({ v: 1, worktrees: { [RECORD.id]: RECORD } })) {
   const s = new FakeHermes();
   s.sessions = [row("older", 1, { pinned: true, title: "Nightly backup" })];
   s.serverDirs = new Set(["/srv", TOP, PATH]);
+  if (registry !== null) s.serverFiles = { [REGISTRY]: registry };
+  return s;
+}
+
+async function startFromWorktree(s: FakeHermes) {
+  localStorage.setItem(REPO_PATH_KEY, TOP);
+  const hermes = await connect(s.openPipe);
+  running.push(hermes);
+  const connection = { mode: "ssh" as const, sshTarget: "liam@hermes", url: "", username: "liam" };
+  render(<Main hermes={hermes} connection={connection} onSignOut={async () => {}} />);
+  await waitFor(() => expect(hermes.hasListed()).toBe(true));
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Repository" }));
+  const card = await screen.findByRole("group", { name: "Worktree fix/login" });
+  await user.click(within(card).getByRole("button", { name: "Start chat here" }));
+  await screen.findByRole("region", { name: "What this chat starts with" });
+  // Drafts live on for the app's whole run, here across tests: start from an empty composer.
+  await user.clear(screen.getByPlaceholderText("Message Hermes"));
+  await user.type(screen.getByPlaceholderText("Message Hermes"), "Fix the login timeout{Enter}");
+  return { hermes, user, connection };
+}
+
+it("doesn't start a chat when Hermes can't see the worktree's record: it may be another computer", async () => {
+  const s = server(null);
+  await startFromWorktree(s);
+  expect((await screen.findByRole("alert")).textContent).toMatch(/may be running on another computer/);
+  expect(s.requests.filter((r) => r.method === "session.create" || r.method === "prompt.submit")).toEqual([]);
+  expect(screen.getByPlaceholderText<HTMLTextAreaElement>("Message Hermes").value).toBe("Fix the login timeout");
+});
+
+it("doesn't send anything when the worktree can't record the chat, and drops the session", async () => {
+  attachFails = true;
+  const s = server();
+  await startFromWorktree(s);
+  expect((await screen.findByRole("alert")).textContent).toMatch(/couldn't record this chat.*Nothing was sent/);
+  expect(s.requests.some((r) => r.method === "prompt.submit")).toBe(false);
+  expect(s.requests.some((r) => r.method === "session.close")).toBe(true);
+  expect(screen.getByPlaceholderText<HTMLTextAreaElement>("Message Hermes").value).toBe("Fix the login timeout");
+});
+
+it("starts a chat working in the worktree, records it there, and shows its branch and folder", async () => {
+  const s = server();
   localStorage.setItem(REPO_PATH_KEY, TOP);
   const hermes = await connect(s.openPipe);
   running.push(hermes);
@@ -98,6 +147,7 @@ it("starts a chat working in the worktree, records it there, and shows its branc
   const panel = await screen.findByRole("region", { name: "What this chat starts with" });
   expect(panel.textContent).toContain(`${PATH} on ssh://liam@hermes the worktree for fix/login`);
 
+  await user.clear(screen.getByPlaceholderText("Message Hermes"));
   await user.type(screen.getByPlaceholderText("Message Hermes"), "Fix the login timeout{Enter}");
   await waitFor(() => expect(s.requests.some((r) => r.method === "prompt.submit")).toBe(true));
   await act(async () => void (await hermes.idle()));

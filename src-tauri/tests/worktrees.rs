@@ -521,3 +521,134 @@ async fn a_record_from_a_newer_app_is_read_but_never_written() {
     assert_eq!(kind(e), "unsupported");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), reg.to_string());
 }
+
+fn registry(d: &Dir) -> Value {
+    serde_json::from_str(&std::fs::read_to_string(d.repo().join(".git/hermes-chat/worktrees.json")).unwrap()).unwrap()
+}
+
+fn set_registry(d: &Dir, reg: &Value) {
+    std::fs::write(d.repo().join(".git/hermes-chat/worktrees.json"), reg.to_string()).unwrap();
+}
+
+#[tokio::test]
+async fn a_file_written_while_the_changes_are_kept_stops_the_removal() {
+    let d = repo("writer");
+    made(&d, ID, "busy").await;
+    let tree = d.tree("busy");
+    write(&tree, "wip.txt", "before\n");
+    let facts = removal(&d, ID).await;
+    // The helper pauses between keeping the changes and checking them again; an editor writes meanwhile.
+    let mut cmd = helper();
+    cmd.env("HERMES_REPO_TEST_PAUSE_AFTER_KEEP", "1.5");
+    let req = Request::WorktreeRemove { repo: d.s(), id: ID.into(), stamp: facts["stamp"].as_str().unwrap().into() };
+    let removing = tokio::spawn(async move { repo_git::run(cmd, &req).await });
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    write(&tree, "late.txt", "written while the changes were kept\n");
+    let e = removing.await.unwrap().unwrap_err();
+    assert_eq!(kind(e), "stale");
+    assert_eq!(read(&tree, "late.txt"), "written while the changes were kept\n");
+    assert_eq!(read(&tree, "wip.txt"), "before\n");
+    let rec = &registry(&d)["worktrees"][ID];
+    assert_eq!(rec["state"], "ready");
+    // What was kept before the write is still named, and still there.
+    let kept = rec["keptRefs"][0].as_str().unwrap();
+    assert_eq!(git(&d.repo(), &["show", &format!("{kept}:wip.txt")]), "before");
+    assert_eq!(row(&list(&d).await, &tree)["locked"], format!("hermes-chat {ID}"));
+}
+
+#[tokio::test]
+async fn staged_content_unlike_the_working_file_is_kept_and_restored_to_the_index() {
+    let d = repo("staged");
+    made(&d, ID, "stage").await;
+    let tree = d.tree("stage");
+    write(&tree, "app.txt", "staged version\n");
+    git(&tree, &["add", "app.txt"]);
+    // The working file goes back to HEAD's content: only the index has the staged version.
+    write(&tree, "app.txt", "one\n");
+    let done = remove(&d, ID).await.unwrap();
+    let kept = &done["record"]["removed"]["kept"];
+    let staged = kept["staged"].as_str().unwrap();
+    assert_eq!(git(&d.repo(), &["show", &format!("{staged}:app.txt")]), "staged version");
+    assert_eq!(git(&d.repo(), &["rev-parse", &format!("{}^", kept["commit"].as_str().unwrap())]), staged);
+    ask(Request::WorktreeRestore { repo: d.s(), id: ID.into() }).await.unwrap();
+    assert_eq!(read(&tree, "app.txt"), "one\n");
+    assert_eq!(git(&tree, &["show", ":app.txt"]), "staged version");
+}
+
+#[tokio::test]
+async fn repositories_nested_in_a_worktree_stop_its_removal() {
+    let d = repo("nested");
+    made(&d, ID, "nest").await;
+    let tree = d.tree("nest");
+    let blockers = |f: &Value| f["blockers"].as_array().unwrap().iter().map(|b| b["kind"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
+    // An untracked clone.
+    std::fs::create_dir_all(tree.join("vendor/lib")).unwrap();
+    git(&tree.join("vendor/lib"), &["init", "-q"]);
+    assert_eq!(blockers(&removal(&d, ID).await), ["nested"]);
+    std::fs::remove_dir_all(tree.join("vendor")).unwrap();
+    // One inside an ignored folder.
+    std::fs::create_dir_all(tree.join("node_modules/pkg")).unwrap();
+    git(&tree.join("node_modules/pkg"), &["init", "-q"]);
+    let f = removal(&d, ID).await;
+    assert_eq!(blockers(&f), ["nested"]);
+    assert!(f["blockers"][0]["message"].as_str().unwrap().contains("node_modules/pkg"));
+    assert_eq!(kind(remove(&d, ID).await.unwrap_err()), "blocked");
+    assert!(tree.join("node_modules/pkg/.git").exists());
+}
+
+#[tokio::test]
+async fn an_ignored_file_made_after_the_preview_is_never_deleted_unseen() {
+    let d = repo("ignored-late");
+    made(&d, ID, "late").await;
+    let facts = removal(&d, ID).await;
+    write(&d.tree("late"), ".env", "SECRET=written after the preview\n");
+    let e = ask(Request::WorktreeRemove { repo: d.s(), id: ID.into(), stamp: facts["stamp"].as_str().unwrap().into() }).await.unwrap_err();
+    assert_eq!(kind(e), "stale");
+    assert!(d.tree("late").join(".env").exists());
+    assert_eq!(removal(&d, ID).await["ignored"], serde_json::json!([".env"]));
+}
+
+#[tokio::test]
+async fn a_removal_cut_off_after_the_folder_went_is_finished_with_what_it_kept() {
+    let d = repo("cut-removal");
+    made(&d, ID, "cut").await;
+    let tree = d.tree("cut");
+    write(&tree, "wip.txt", "wip\n");
+    // As if the helper died right after recording what it kept and removing the folder.
+    git(&d.repo(), &["worktree", "unlock", tree.to_str().unwrap()]);
+    git(&d.repo(), &["update-ref", "refs/hermes-chat/recovery/x/1", "HEAD"]);
+    git(&d.repo(), &["worktree", "remove", "--force", tree.to_str().unwrap()]);
+    let mut reg = registry(&d);
+    reg["worktrees"][ID]["state"] = "removing".into();
+    reg["worktrees"][ID]["removing"] = serde_json::json!({"at": 5, "head": null, "branch": "cut", "kept": {"ref": "refs/hermes-chat/recovery/x/1", "commit": "c", "staged": null}, "files": 1, "unpushed": 0});
+    set_registry(&d, &reg);
+    let l = list(&d).await;
+    assert_eq!(l["unfinished"][0]["state"], "removing");
+    let done = ask(Request::WorktreeRemove { repo: d.s(), id: ID.into(), stamp: String::new() }).await.unwrap();
+    assert_eq!(done["record"]["state"], "removed");
+    assert_eq!(done["record"]["removed"]["kept"]["ref"], "refs/hermes-chat/recovery/x/1");
+    assert_eq!(list(&d).await["removed"][0]["id"], ID);
+}
+
+#[tokio::test]
+async fn a_restore_cut_off_part_way_is_finished_by_restoring_again() {
+    let d = repo("cut-restore");
+    made(&d, ID, "back").await;
+    let tree = d.tree("back");
+    write(&tree, "wip.txt", "wip\n");
+    remove(&d, ID).await.unwrap();
+    // As if the helper died after making the worktree again and before putting the changes back.
+    let mut reg = registry(&d);
+    let mut gone = reg["worktrees"][ID]["removed"].clone();
+    gone["applied"] = false.into();
+    reg["worktrees"][ID]["state"] = "restoring".into();
+    reg["worktrees"][ID]["restoring"] = gone;
+    set_registry(&d, &reg);
+    git(&d.repo(), &["worktree", "add", "-q", tree.to_str().unwrap(), "back"]);
+    assert!(!tree.join("wip.txt").exists());
+    assert_eq!(row(&list(&d).await, &tree)["record"]["state"], "restoring");
+    let back = ask(Request::WorktreeRestore { repo: d.s(), id: ID.into() }).await.unwrap();
+    assert_eq!(back["record"]["state"], "ready");
+    assert_eq!(read(&tree, "wip.txt"), "wip\n");
+    assert_eq!(row(&list(&d).await, &tree)["locked"], format!("hermes-chat {ID}"));
+}

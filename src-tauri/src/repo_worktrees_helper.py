@@ -543,12 +543,12 @@ def op_worktree_protect(req):
 
 
 def op_worktree_forget(req):
-    """Drops a record that has no worktree: a create that didn't finish, or one removed. Nothing on disk, no branch and
-    no recovery ref is touched."""
+    """Drops a record that has no worktree: one removed, or a create, removal or restore that didn't finish. Nothing on
+    disk, no branch and no recovery ref is touched."""
     _, common, trees = repo_trees(req.get("repo"))
     wid = check_id(req.get("id"))
     with Registry(common) as reg:
-        rec = reg.get(wid, ("creating", "removed"))
+        rec = reg.get(wid, ("creating", "removed", "removing", "restoring"))
         if tree_at(trees, rec["path"]) is not None:
             raise Refusal("stale", "%s is a worktree now. Refresh the list." % rec["path"])
         del reg.data["worktrees"][wid]
@@ -582,7 +582,9 @@ def op_worktree_list(req):
         "newer": data["v"] > REGISTRY_VERSION,
         "worktrees": rows,
         # A create or removal whose answer was lost, or that stopped part way, with no worktree to show for it.
-        "unfinished": [r for r in records if r["state"] in ("creating", "removing", "ready") and tree_at(trees, r["path"]) is None],
+        "unfinished": [r for r in records if r["state"] in ("creating", "removing", "restoring", "ready") and tree_at(trees, r["path"]) is None],
+        # Read by Hermes too, to check it's on the same server as this repository (ADR 0040).
+        "registry": Registry(common).file,
         "removed": sorted((r for r in records if r["state"] == "removed"), key=lambda r: -r["removed"]["at"]),
     }
 
@@ -601,13 +603,45 @@ def initialized_submodules(path):
     return found
 
 
+# The most entries looked at for repositories nested in a worktree. More, and it isn't removed from here.
+MAX_WALK = 200000
+
+
+def nested_repositories(path):
+    """Folders in the worktree that are Git repositories of their own (a clone inside it, tracked as a submodule or
+    not, ignored or not), and whether the look was cut short. Their objects and changes aren't in this repository,
+    so nothing here could keep them. Links aren't followed."""
+    found, seen = [], 0
+    for top, dirs, files in os.walk(path):
+        if top == path:
+            dirs[:] = [d for d in dirs if d != ".git"]
+            continue
+        seen += len(dirs) + len(files)
+        if seen > MAX_WALK:
+            return found, True
+        if ".git" in dirs or ".git" in files:
+            found.append(os.path.relpath(top, path))
+            dirs[:] = []
+    return found, False
+
+
 def ignored(path):
     out = git_ok(["status", "--porcelain=v2", "-z", "--ignored=matching", "--untracked-files=normal"], path)
     return [text(r[2:]) for r in out.split(b"\0") if r.startswith(b"! ")]
 
 
+def fingerprint(path, rel):
+    """Size, modification time and mode of a file or folder, so the stamp changes when its content does."""
+    try:
+        st = os.lstat(os.path.join(path, rel.rstrip("/")))
+    except OSError:
+        return None
+    return [st.st_size, st.st_mtime_ns, st.st_mode]
+
+
 def removal_facts(trees, rec):
-    """What removing would affect, and what stops it. The stamp covers what the preview shows."""
+    """What removing would affect, and what stops it. The stamp covers everything the preview shows and everything
+    that would be deleted: HEAD, the branch, the lock, each changed, untracked and ignored file and its fingerprint."""
     tree = tree_at(trees, rec["path"])
     blockers = []
     if rec["protected"]:
@@ -627,15 +661,26 @@ def removal_facts(trees, rec):
     op = in_progress(git_dir)
     if op:
         blockers.append({"kind": "operation", "message": "A %s is in progress in it. Finish or abort it first." % op})
-    for sub in initialized_submodules(rec["path"]):
+    subs = initialized_submodules(rec["path"])
+    for sub in subs:
         blockers.append({"kind": "submodule", "message": "The submodule %s is checked out in it. Its own changes and commits can't be kept here, so check it and remove it by hand first (git submodule deinit)." % sub})
+    nested, cut = nested_repositories(rec["path"])
+    for rel in nested:
+        if rel not in subs:
+            blockers.append({"kind": "nested", "message": "%s is a Git repository of its own inside it. Its commits and changes can't be kept here, so move or remove it by hand first." % rel})
+    if cut:
+        blockers.append({"kind": "nested", "message": "It holds more than %d files and folders, too many to check for repositories nested in it. Remove it by hand." % MAX_WALK})
     files = changes(rec["path"])
+    if any(f["status"] == "conflict" for f in files):
+        blockers.append({"kind": "conflict", "message": "It has conflicted files. Resolve them first: a conflict can't be kept."})
+    every_ignored = ignored(rec["path"])
     head = head_oid(rec["path"])
     commits = unpushed(rec["path"]) if head else []
     facts.update(
         files=files[:MAX_LISTED],
         fileCount=len(files),
-        ignored=ignored(rec["path"])[:MAX_LISTED],
+        ignored=every_ignored[:MAX_LISTED],
+        ignoredCount=len(every_ignored),
         unpushed=commits[:MAX_LISTED],
         hasRemote=has_remote(rec["path"]),
         head=head,
@@ -643,7 +688,8 @@ def removal_facts(trees, rec):
         # Detached, with commits no branch or remote has: they'd be lost, so a recovery ref keeps them.
         keepHead=bool(head and not tree["branch"] and text(git_ok(["rev-list", "-n", "1", "HEAD", "--not", "--branches", "--remotes"], rec["path"])).strip()),
     )
-    facts["stamp"] = hashlib.sha256(json.dumps([head, tree["branch"], tree["locked"], files], sort_keys=True).encode("utf-8")).hexdigest()
+    inventory = [[f["status"], f["path"], fingerprint(rec["path"], f["path"])] for f in files] + [["ignored", p, fingerprint(rec["path"], p)] for p in every_ignored]
+    facts["stamp"] = hashlib.sha256(json.dumps([head, tree["branch"], tree["locked"], inventory], sort_keys=True).encode("utf-8")).hexdigest()
     return facts
 
 
@@ -668,16 +714,12 @@ def keep_ref(path, rec, commit):
     git_ok(["update-ref", ref, commit, ZERO], path, read_only=False)
     if resolve(path, ref) != commit:
         raise Refusal("internal", "%s couldn't be read back, so nothing was removed." % ref)
-    return {"ref": ref, "commit": commit}
+    return ref
 
 
-def keep_changes(rec, head, branch, files):
-    """Every change in the worktree that Git doesn't ignore, untracked files included, as one commit on top of HEAD,
-    kept at refs/hermes-chat/recovery/<id>/<time>. Written through a copy of the index, so the worktree's own index is
-    never touched. Read back before anything is removed. With no changes (a detached HEAD only), the ref is HEAD."""
-    path = rec["path"]
-    if not files:
-        return keep_ref(path, rec, head)
+def tree_of(path, env, stage_all):
+    """The tree of a copy of the worktree's index, as it is (`stage_all` false) or with every change and untracked
+    file Git doesn't ignore added to it. The worktree's own index is never touched."""
     git_dir = text(git_ok(["rev-parse", "--absolute-git-dir"], path)).strip()
     index = text(git_ok(["rev-parse", "--path-format=absolute", "--git-path", "index"], path)).strip()
     fd, copy = tempfile.mkstemp(dir=git_dir, prefix="hermes-chat-keep.")
@@ -687,21 +729,46 @@ def keep_changes(rec, head, branch, files):
             shutil.copyfile(index, copy)
         else:
             os.unlink(copy)
-        env = {"GIT_INDEX_FILE": copy}
-        git_ok(["add", "-A", "--", "."], path, read_only=False, extra_env=env, timeout=600)
-        tree = text(git_ok(["write-tree"], path, read_only=False, extra_env=env)).strip()
-        message = "Kept by Hermes Chat before removing the worktree %s (%s)\n" % (path, "branch " + branch if branch else "detached HEAD")
-        commit = text(git_ok(["commit-tree", tree] + (["-p", head] if head else []), path, stdin=message.encode("utf-8"), extra_env=KEEPER)).strip()
-        kept = keep_ref(path, rec, commit)
-        if text(git_ok(["rev-parse", kept["ref"] + "^{tree}"], path)).strip() != tree:
-            raise Refusal("internal", "The kept changes couldn't be read back from %s, so nothing was removed." % kept["ref"])
+        env = dict(env, GIT_INDEX_FILE=copy)
+        if stage_all:
+            git_ok(["add", "-A", "--", "."], path, read_only=False, extra_env=env, timeout=600)
+        return text(git_ok(["write-tree"], path, read_only=False, extra_env=env)).strip()
     finally:
         for p in (copy, copy + ".lock"):
             try:
                 os.unlink(p)
             except OSError:
                 pass
-    return kept
+
+
+def keep_changes(rec, head, branch, files):
+    """The worktree's changes, kept at refs/hermes-chat/recovery/<id>/<time> before anything is removed. What's staged
+    is one commit on top of HEAD (only when it differs from HEAD), and everything Git doesn't ignore, untracked files
+    included, is one more on top of that, so both the index and the working tree can be put back. Read back. With no
+    changes (a detached HEAD only), the ref is HEAD."""
+    path = rec["path"]
+    if not files:
+        return {"ref": keep_ref(path, rec, head), "commit": head, "staged": None}
+    message = "Kept by Hermes Chat before removing the worktree %s (%s)" % (path, "branch " + branch if branch else "detached HEAD")
+    staged_tree = tree_of(path, {}, False)
+    head_tree = text(git_ok(["rev-parse", head + "^{tree}"], path)).strip() if head else None
+    staged = None
+    parent = head
+    if staged_tree != head_tree:
+        staged = text(git_ok(["commit-tree", staged_tree] + (["-p", head] if head else []), path, stdin=(message + ": what was staged\n").encode("utf-8"), extra_env=KEEPER)).strip()
+        parent = staged
+    work_tree = tree_of(path, {}, True)
+    commit = text(git_ok(["commit-tree", work_tree] + (["-p", parent] if parent else []), path, stdin=(message + ": the working tree\n").encode("utf-8"), extra_env=KEEPER)).strip()
+    ref = keep_ref(path, rec, commit)
+    if text(git_ok(["rev-parse", ref + "^{tree}"], path)).strip() != work_tree:
+        raise Refusal("internal", "The kept changes couldn't be read back from %s, so nothing was removed." % ref)
+    return {"ref": ref, "commit": commit, "staged": staged}
+
+
+def finish_removal(rec, gone):
+    rec["state"] = "removed"
+    rec["removed"] = gone
+    rec.pop("removing", None)
 
 
 def op_worktree_remove(req):
@@ -710,6 +777,11 @@ def op_worktree_remove(req):
     main = trees[0]["path"]
     with Registry(common) as reg:
         rec = reg.get(wid, ("ready", "removing"))
+        if rec["state"] == "removing" and tree_at(trees, rec["path"]) is None and not os.path.lexists(rec["path"]):
+            # A removal that stopped after the folder went: what it kept was recorded before, so it's finished now.
+            finish_removal(rec, rec.get("removing") or {"at": now(), "head": None, "branch": rec["branch"], "kept": None, "files": 0, "unpushed": 0})
+            reg.save()
+            return {"record": rec, "output": ""}
         facts = removal_facts(trees, rec)
         if facts["blockers"]:
             raise Refusal("blocked", "Nothing was removed: " + " ".join(b["message"] for b in facts["blockers"]))
@@ -717,14 +789,25 @@ def op_worktree_remove(req):
             raise Refusal("stale", "The worktree changed since the preview. Nothing was removed. Look at the preview again.")
         rec["state"] = "removing"
         reg.save()
-        kept = None
         try:
-            if facts["files"] or facts["keepHead"]:
-                kept = keep_changes(rec, facts["head"], facts["branch"], facts["files"])
+            kept = keep_changes(rec, facts["head"], facts["branch"], facts["files"]) if facts["files"] or facts["keepHead"] else None
+            if kept:
+                rec.setdefault("keptRefs", []).append(kept["ref"])
+            pause = float(os.environ.get("HERMES_REPO_TEST_PAUSE_AFTER_KEEP") or 0)
+            if pause:
+                time.sleep(pause)
+            # Anything written since the preview, while the changes were kept included, changes the stamp: then
+            # nothing is removed (what was kept stays in its ref).
+            if removal_facts(trees, rec)["stamp"] != facts["stamp"]:
+                raise Refusal("stale", "A file in the worktree changed while its changes were being kept. Nothing was removed.%s Look at the preview again." % (
+                    " What was kept so far is in %s." % kept["ref"] if kept else ""))
+            # Where the changes went is recorded before the folder goes, so a removal cut off now still says so.
+            rec["removing"] = {"at": now(), "head": facts["head"], "branch": facts["branch"], "kept": kept, "files": facts["fileCount"], "unpushed": len(facts["unpushed"])}
+            reg.save()
             if tree_at(trees, rec["path"])["locked"] is not None:
                 git_ok(["worktree", "unlock", "--", rec["path"]], main, read_only=False)
-            # --force only when there were changes, and only after they were kept and read back. A single --force
-            # never overrides another tool's lock.
+            # --force only when there were changes, and only after they were kept, read back and checked again. A
+            # single --force never overrides another tool's lock.
             args = ["worktree", "remove"] + (["--force"] if facts["files"] else []) + ["--", rec["path"]]
             code, out, _ = git(args, main, read_only=False, timeout=600, merge_output=True)
             if code != 0:
@@ -732,26 +815,30 @@ def op_worktree_remove(req):
         except BaseException:
             if os.path.isdir(rec["path"]):
                 lock_tree(main, rec)
-            rec["state"] = "ready"
+                rec["state"] = "ready"
+                rec.pop("removing", None)
             reg.save()
             raise
-        rec["state"] = "removed"
-        rec["removed"] = {"at": now(), "head": facts["head"], "branch": facts["branch"], "kept": kept, "files": facts["fileCount"], "unpushed": len(facts["unpushed"])}
+        finish_removal(rec, rec["removing"])
         reg.save()
         return {"record": rec, "output": text(out)}
 
 
 def op_worktree_restore(req):
-    """Makes a removed worktree again at its folder, on the branch it was on, and puts the kept changes back in its
-    working tree. Only if the branch is still where it was: otherwise the kept changes stay in their ref."""
+    """Makes a removed worktree again at its folder, on the branch it was on, and puts the kept changes back: the
+    staged ones in its index and the rest in its working tree. Only if the branch is still where it was: otherwise the
+    kept changes stay in their ref. A restore cut off part way is `restoring`, and sending it again finishes it."""
     _, common, trees = repo_trees(req.get("repo"))
     wid = check_id(req.get("id"))
     main = trees[0]["path"]
     with Registry(common) as reg:
-        rec = reg.get(wid, ("removed",))
-        gone = rec["removed"]
+        rec = reg.get(wid, ("removed", "restoring"))
+        if rec["state"] == "removed":
+            rec["restoring"] = dict(rec["removed"], applied=False)
+        gone = rec["restoring"]
         branch = gone["branch"]
-        if branch:
+        made = tree_at(trees, rec["path"])
+        if branch and made is None:
             holder = next((t for t in trees if t["branch"] == branch), None)
             if holder:
                 raise Refusal("checked-out", "%s is checked out in %s now. Nothing was made." % (branch, holder["path"]))
@@ -760,20 +847,22 @@ def op_worktree_restore(req):
                 raise Refusal("moved", "%s isn't at %s any more%s. Nothing was made.%s" % (
                     branch, (gone["head"] or "")[:12], ", it's at %s" % tip[:12] if tip else ": it's gone",
                     " The kept changes are still in %s." % gone["kept"]["ref"] if gone["kept"] else ""))
-        rec.update(state="creating", branch=branch or rec["branch"], newBranch=False)
+        rec.update(state="restoring", branch=branch or rec["branch"], newBranch=False)
         reg.save()
         try:
             output = add_tree(main, trees, rec, detach_at=None if branch else gone["head"])
-            if gone["kept"]:
-                code, out, _ = git(["restore", "--source", gone["kept"]["commit"], "--worktree", "--", "."], rec["path"], read_only=False, timeout=600, merge_output=True)
+            kept = gone["kept"]
+            if kept and not gone["applied"]:
+                code, out, _ = git(["restore", "--source", kept["commit"], "--worktree", "--", "."], rec["path"], read_only=False, timeout=600, merge_output=True)
                 output += text(out)
+                if code == 0 and kept.get("staged"):
+                    code, out, _ = git(["read-tree", kept["staged"]], rec["path"], read_only=False, timeout=600, merge_output=True)
+                    output += text(out)
                 if code != 0:
-                    raise Refusal("git", "The worktree was made, but the kept changes couldn't be put back: %s They're still in %s." % (text(out).strip(), gone["kept"]["ref"]), text(out))
-        except Refusal:
-            if tree_at(parse_worktrees(git_ok(["worktree", "list", "--porcelain"], main)), rec["path"]) is None:
-                rec["state"] = "removed"
-            else:
-                rec["state"] = "ready"
+                    raise Refusal("git", "The worktree was made, but the kept changes couldn't be put back: %s They're still in %s. Restore again to retry." % (text(out).strip(), kept["ref"]), text(out))
+                gone["applied"] = True
+                reg.save()
+        except BaseException:
             reg.save()
             raise
         # The setup's copies were ignored files, deleted with the folder: its steps run again (a link the kept
@@ -781,7 +870,9 @@ def op_worktree_restore(req):
         for step in rec["setup"]:
             if step["state"] == "done":
                 step.update(state="pending", message="")
+        gone.pop("applied", None)
         rec.update(state="ready", restoredAt=now(), restoredFrom=gone, removed=None, chats=[])
+        rec.pop("restoring", None)
         reg.save()
         return {"record": rec, "output": output}
 

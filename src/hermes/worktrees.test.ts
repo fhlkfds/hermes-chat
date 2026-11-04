@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { FakeHermes, row } from "./fakeHermes";
 import { connect, type Hermes } from "./transport";
-import { folderName, removalBlockers, setupSummary, stepsToRun, type RemovalFacts, type WorktreeRecord } from "./worktrees";
+import { folderName, removalBlockers, sameServer, setupSummary, stepsToRun, type RemovalFacts, type WorktreeRecord } from "./worktrees";
 
 const facts = (over: Partial<RemovalFacts> = {}): RemovalFacts => ({
   path: "/srv/app.worktrees/fix",
@@ -60,6 +60,22 @@ describe("setup", () => {
   });
 });
 
+describe("the same server", () => {
+  const w = { path: "/srv/app.worktrees/fix", registry: "/srv/app/.git/hermes-chat/worktrees.json", id: "0b5c1f3e-7a2d-4c61-9e0f-1a2b3c4d5e6f" };
+  const record = (path: string) => JSON.stringify({ v: 1, worktrees: { [w.id]: { id: w.id, path } } });
+
+  it("is shown by Hermes reading the worktree's record with this worktree in it", async () => {
+    await expect(sameServer(async () => record(w.path), w)).resolves.toBeUndefined();
+  });
+
+  it("isn't, when Hermes can't read the record, or reads another one", async () => {
+    await expect(sameServer(async () => Promise.reject(new Error("404 Not Found")), w)).rejects.toThrow(/another computer.*404/);
+    await expect(sameServer(async () => record("/elsewhere"), w)).rejects.toThrow(/another computer/);
+    await expect(sameServer(async () => JSON.stringify({ v: 1, worktrees: {} }), w)).rejects.toThrow(/another computer/);
+    await expect(sameServer(async () => "not json", w)).rejects.toThrow(/another computer/);
+  });
+});
+
 it("names the folder as the helper does", () => {
   expect(folderName("fix/login")).toBe("fix-login");
   expect(folderName("feature/ünï code..x")).toBe("feature-n-code..x");
@@ -81,9 +97,9 @@ describe("the chats Hermes has working in a folder", () => {
     const hermes = await connect(s.openPipe);
     running.push(hermes);
     const got = await hermes.chatsIn("/srv/app.worktrees/fix");
-    expect(got.chats.map((c) => [c.id, c.archived])).toEqual([
-      ["in", false],
+    expect(got.chats.map((c) => [c.id, c.archived]).sort()).toEqual([
       ["below", true],
+      ["in", false],
     ]);
     expect(got.more).toBe(false);
     const asked = s.restRequests.find((r) => r.query.has("cwd_prefix"))!;

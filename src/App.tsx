@@ -73,7 +73,7 @@ import { TERMINAL_TARGET_KEY, terminalTarget } from "./hermes/terminal";
 import { REPO_PATH_KEY, REPO_RECENT_KEY, REPO_TARGET_KEY, readRecent, remember, repoTarget } from "./hermes/repo";
 import { RepositoryScreen } from "./ui/Repository";
 import { tauriRepo } from "./ui/tauriRepo";
-import { chatWorktree, rememberChatWorktree, type WorktreeLaunch } from "./hermes/worktrees";
+import { chatWorktree, rememberChatWorktree, sameServer, type WorktreeLaunch } from "./hermes/worktrees";
 import { ApplyDefaults, NewChatSettingsView } from "./ui/ProjectDefaultsNotes";
 import { appearanceStore } from "./ui/appearance";
 import { StatusBar } from "./ui/StatusBar";
@@ -2141,7 +2141,13 @@ export function Main({
             openUrl={(url) => void webPages.openInBrowser(url).catch(() => undefined)}
             worktrees={{
               by: `Hermes Chat (${profile} via ${where ?? "no connection"})`,
-              chatsIn: status === "connected" ? (folder) => hermes.chatsIn(folder) : undefined,
+              chatsIn:
+                status === "connected"
+                  ? async (w) => {
+                      await sameServer((path) => hermes.readServerText(path), w);
+                      return hermes.chatsIn(w.path);
+                    }
+                  : undefined,
               onStartChat: status === "connected" ? (w) => openChat(null, { fresh: true, worktree: w }) : undefined,
             }}
             onClose={() => {
@@ -2457,9 +2463,14 @@ function ChatView({
       projects.reread();
       if (projects.getSnapshot().selectedId !== into) throw new Error("The project shown changed before the chat started. Nothing was sent.");
       const instructions = s.instructions.value && instructionsMessage(s.project ?? "", s.instructions.value);
-      const id = await hermes.newChat(s.model.value, { folder: s.folder.value, instructions });
+      // A worktree's chat starts only on the server that has the worktree, and only once the worktree records it.
+      if (worktree) await sameServer((path) => hermes.readServerText(path), worktree);
+      const id = await hermes.newChat(s.model.value, {
+        folder: s.folder.value,
+        instructions,
+        ...(worktree && { confirm: (chatId: string) => recordInWorktree(worktree, chatId, first) }),
+      });
       if (into && projects.getSnapshot().projects.some((p) => p.id === into)) projects.setChat(into, id, true);
-      if (worktree) void recordInWorktree(worktree, id, first);
       if (stillIn()) onStarted(id);
       return { id };
     } catch (e) {
@@ -2470,19 +2481,19 @@ function ChatView({
   };
 
   /**
-   * Records on the server that the chat works in the worktree, so the worktree can't be removed under it (ADR 0040).
-   * Hermes keeps the chat's folder too, which a removal also checks, so a failure here is said but doesn't stop it.
+   * Records on the server that the chat works in the worktree, so no other task, profile or computer can remove the
+   * worktree under it (ADR 0040). It happens before anything is sent: if it fails, the chat isn't kept.
    */
   const recordInWorktree = async (w: WorktreeLaunch, id: string, first: string) => {
     const scope = projectScope(connection, profile);
-    rememberChatWorktree(scope, id, w);
     // The chat's title isn't known yet: its first message stands in, as the list shows it until Hermes names it.
     const title = first.trim().split("\n")[0].slice(0, 80) || "New chat";
     try {
       await tauriRepo.run(w.target, { op: "worktreeAttach", repo: w.repo, id: w.id, chat: { scope, chat: id, title } });
     } catch (e) {
-      if (stillIn()) onToast(`The chat works in ${w.path}, but couldn't be recorded as using the worktree: ${messageOf(e)}`);
+      throw new Error(`The worktree couldn't record this chat as working in it, so the chat wasn't kept: ${messageOf(e)}`);
     }
+    rememberChatWorktree(scope, id, w);
   };
 
   // A failed send stays in its chat's outbox. A failure to start a chat restores the New chat draft.

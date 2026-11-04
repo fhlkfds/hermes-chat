@@ -299,7 +299,7 @@ What a new worktree gets once, from the repository's `.worktreeinclude`: each ig
 _Avoid_: bootstrap, install, init
 
 **Remove** / **Restore** (a worktree):
-Remove deletes a worktree's folder after a preview of everything it affects: changed and untracked files, ignored files, and commits no remote has. Nothing is removed while it's protected, any chat is attached, Hermes has a chat (not archived) working in its folder, another tool locked it, or a submodule is checked out in it. Its changes are first kept as one commit in a **recovery ref** (`refs/hermes-chat/recovery/…`), and its branch is never deleted. Restore makes it again on that branch and puts the kept changes back, if the branch hasn't moved.
+Remove deletes a worktree's folder after a preview of everything it affects: changed and untracked files, ignored files, and commits no remote has. Nothing is removed while it's protected, any chat is attached, Hermes has a chat (not archived) working in its folder, another tool locked it, or another Git repository is nested in it. Its staged and unstaged changes are first kept in a **recovery ref** (`refs/hermes-chat/recovery/…`), and its branch is never deleted. Restore makes it again on that branch and puts the kept changes back, staged ones staged, if the branch hasn't moved.
 _Avoid_: delete, clean up, prune (Hermes's own sweep), discard
 
 **Terminal**:

@@ -25,7 +25,7 @@ export type WorktreeRecord = {
   base: string;
   baseSha: string;
   setup: SetupStep[];
-  state: "creating" | "ready" | "removing" | "removed";
+  state: "creating" | "ready" | "removing" | "removed" | "restoring";
   protected: boolean;
   chats: ChatRef[];
   createdAt: number;
@@ -34,8 +34,9 @@ export type WorktreeRecord = {
     at: number;
     head: string | null;
     branch: string | null;
-    /** The recovery ref the changes were kept in, if there were any. */
-    kept: { ref: string; commit: string } | null;
+    /** The recovery ref the changes were kept in, if there were any. `staged`: the commit holding what was staged,
+     * when it differed from HEAD; `commit` (the working tree) is on top of it. */
+    kept: { ref: string; commit: string; staged?: string | null } | null;
     files: number;
     unpushed: number;
   } | null;
@@ -72,6 +73,8 @@ export type WorktreeList = {
   worktrees: WorktreeRow[];
   unfinished: WorktreeRecord[];
   removed: WorktreeRecord[];
+  /** The record's path on the server, which Hermes reads to show it's on the same server. */
+  registry: string;
 };
 
 export type WorktreePlan = {
@@ -127,7 +130,7 @@ function shaped<T>(v: unknown, ...fields: string[]): T {
   return v as T;
 }
 
-export const asList = (v: unknown) => shaped<WorktreeList>(v, "top", "main", "worktrees", "unfinished", "removed");
+export const asList = (v: unknown) => shaped<WorktreeList>(v, "top", "main", "worktrees", "unfinished", "removed", "registry");
 export const asPlan = (v: unknown) => shaped<WorktreePlan>(v, "path", "branch", "baseSha", "stamp", "setup", "source");
 export const asRemoval = (v: unknown) => shaped<RemovalFacts>(v, "path", "blockers", "files", "ignored", "unpushed", "stamp");
 export const asRecord = (v: unknown) => shaped<{ record: WorktreeRecord; output?: string }>(v, "record");
@@ -192,8 +195,34 @@ export const folderName = (branch: string) =>
     .slice(0, 80)
     .replace(/[.-]+$/, "");
 
+/** A managed worktree as the server's record has it: its folder, the record's path, and its id there. */
+export type ServerWorktree = { path: string; registry: string; id: string };
+
 /** Where a chat was started in a worktree: the SSH target and repository to reach its record, and what to show. */
-export type WorktreeLaunch = { target: string; repo: string; id: string; path: string; branch: string };
+export type WorktreeLaunch = ServerWorktree & { target: string; repo: string; branch: string };
+
+/**
+ * Checks that Hermes is on the same server as the worktree: it reads the worktree's record, at the path the helper
+ * gave, and finds this worktree in it under its random id. The Repository screen's SSH target can name another
+ * computer than the one Hermes runs on, and the same folder can exist on both. Throws when Hermes can't read it, or
+ * reads another record.
+ */
+export async function sameServer(readText: (path: string) => Promise<string>, w: ServerWorktree): Promise<void> {
+  const elsewhere = `Hermes can't see this worktree's record (${w.registry}), so it may be running on another computer than the Repository screen's SSH target`;
+  let text: string;
+  try {
+    text = await readText(w.registry);
+  } catch (e) {
+    throw new Error(`${elsewhere}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  let rec: unknown;
+  try {
+    rec = (JSON.parse(text) as { worktrees?: Record<string, unknown> }).worktrees?.[w.id];
+  } catch {
+    rec = undefined;
+  }
+  if (!isObj(rec) || rec.path !== w.path) throw new Error(`${elsewhere}. Nothing was done.`);
+}
 
 // Which chats this computer started in a worktree, so a chat can show its branch and folder (`hermes-chat.chat-
 // worktrees`, per connection and profile). The server's record is what counts; this is only for showing.

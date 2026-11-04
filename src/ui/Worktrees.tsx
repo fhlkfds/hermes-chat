@@ -16,6 +16,7 @@ import {
   setupSummary,
   stepsToRun,
   type RemovalFacts,
+  type ServerWorktree,
   type SetupStep,
   type WorktreeLaunch,
   type WorktreeList,
@@ -53,8 +54,9 @@ export function WorktreesPanel({
   scope: string;
   /** Who makes a worktree, kept in its record. */
   by: string;
-  /** The profile's chats Hermes keeps as working in a folder; absent while Hermes isn't connected. */
-  chatsIn?: (folder: string) => Promise<HermesChats>;
+  /** The profile's chats Hermes keeps as working in a worktree's folder, once Hermes is shown to be on the same server
+   * (it reads the worktree's record); absent while Hermes isn't connected. */
+  chatsIn?: (w: ServerWorktree) => Promise<HermesChats>;
   /** Opens a folder in the Repository screen. */
   onOpen: (path: string) => void;
   /** Starts a new chat working in the worktree; absent while Hermes isn't connected. */
@@ -103,8 +105,16 @@ export function WorktreesPanel({
     );
   };
 
-  const launch = (r: WorktreeRecord): WorktreeLaunch | undefined =>
-    data && { target, repo: data.main, id: r.id, path: r.path, branch: r.branch };
+  /** What a chat started in the worktree needs: where its record is, and its branch as Git has it now. */
+  const launch = (r: WorktreeRecord, row?: WorktreeRow): WorktreeLaunch | undefined =>
+    data && {
+      target,
+      repo: data.main,
+      registry: data.registry,
+      id: r.id,
+      path: r.path,
+      branch: row ? (row.branch ?? `detached at ${short(row.head)}`) : r.branch,
+    };
 
   const managed = data?.worktrees.filter((w) => w.record) ?? [];
   const others = data?.worktrees.filter((w) => !w.record) ?? [];
@@ -161,7 +171,8 @@ export function WorktreesPanel({
                     hasRemote={data.hasRemote}
                     busy={!!busy || data.newer}
                     onOpen={() => onOpen(w.path)}
-                    onStartChat={onStartChat && w.record!.state === "ready" && !w.missing ? () => onStartChat(launch(w.record!)!) : undefined}
+                    onStartChat={onStartChat && w.record!.state === "ready" && !w.missing ? () => onStartChat(launch(w.record!, w)!) : undefined}
+                    onFinish={w.record!.state === "restoring" ? () => write("Restore", { op: "worktreeRestore", repo: top, id: w.record!.id }) : undefined}
                     onSetup={() => setCreating({ record: w.record! })}
                     onProtect={(on) => write(on ? "Protect" : "Unprotect", { op: "worktreeProtect", repo: top, id: w.record!.id, protected: on })}
                     onDetach={(c) => write("Detach", { op: "worktreeDetach", repo: top, id: w.record!.id, scope: c.scope, chat: c.chat })}
@@ -185,13 +196,25 @@ export function WorktreesPanel({
                       {r.state === "creating"
                         ? "Making it stopped before the worktree was there."
                         : r.state === "removing"
-                          ? "Its removal stopped part way; the worktree is gone."
-                          : "The worktree isn't there any more: it was removed outside Hermes Chat."}
+                          ? "Its removal stopped after the folder went. Finish records it as removed, with what it kept."
+                          : r.state === "restoring"
+                            ? "Restoring it stopped before the worktree was there. Finish restoring tries again."
+                            : "The worktree isn't there any more: it was removed outside Hermes Chat."}
                     </span>
                     <div className="wt-actions">
                       {r.state === "creating" && (
                         <button className="btn" disabled={!!busy} onClick={() => setCreating({ record: r })}>
                           Finish making it
+                        </button>
+                      )}
+                      {r.state === "removing" && (
+                        <button className="btn" disabled={!!busy || data.newer} onClick={() => write("Finish removal", { op: "worktreeRemove", repo: top, id: r.id, stamp: "" })}>
+                          Finish removal
+                        </button>
+                      )}
+                      {r.state === "restoring" && (
+                        <button className="btn" disabled={!!busy || data.newer} onClick={() => write("Restore", { op: "worktreeRestore", repo: top, id: r.id })}>
+                          Finish restoring
                         </button>
                       )}
                       <button className="btn" disabled={!!busy || data.newer} onClick={() => write("Forget", { op: "worktreeForget", repo: top, id: r.id })}>
@@ -277,7 +300,7 @@ export function WorktreesPanel({
           by={by}
           resume={creating.record}
           onOpen={onOpen}
-          onStartChat={onStartChat && ((r) => onStartChat(launch(r) ?? { target, repo: top, id: r.id, path: r.path, branch: r.branch }))}
+          onStartChat={onStartChat && data && ((r) => onStartChat(launch(r)!))}
           onClose={() => {
             setCreating(undefined);
             load();
@@ -290,6 +313,7 @@ export function WorktreesPanel({
           target={target}
           top={top}
           record={removing}
+          registry={data?.registry ?? ""}
           chatsIn={chatsIn}
           onClose={() => {
             setRemoving(undefined);
@@ -308,12 +332,15 @@ function ManagedRow({
   scope,
   onOpen,
   onStartChat,
+  onFinish,
   onSetup,
   onProtect,
   onDetach,
   onRemove,
 }: {
   row: WorktreeRow;
+  /** A restore that stopped part way: finish it. */
+  onFinish?: () => void;
   hasRemote: boolean;
   busy: boolean;
   scope: string;
@@ -368,6 +395,14 @@ function ManagedRow({
           from {r.base} at {short(r.baseSha)} · made by {r.createdBy}
         </span>
       </div>
+      {onFinish && (
+        <div className="files-banner warn" role="status">
+          <CircleAlert size={14} aria-hidden /> Restoring it stopped before its kept changes were all back.
+          <button className="btn" disabled={busy} onClick={onFinish}>
+            Finish restoring
+          </button>
+        </div>
+      )}
       {setup.total > 0 && (
         <div className={`small wt-setup ${setup.failed.length ? "err" : ""}`}>
           Setup: {setup.done} of {setup.total} done
@@ -418,10 +453,10 @@ function ManagedRow({
             <RotateCcw size={13} aria-hidden /> {setup.failed.length ? "Retry setup" : "Run setup"}
           </button>
         )}
-        <button className="btn" disabled={busy} onClick={() => onProtect(!r.protected)}>
+        <button className="btn" disabled={busy || r.state !== "ready"} onClick={() => onProtect(!r.protected)}>
           {r.protected ? <ShieldOff size={13} aria-hidden /> : <Shield size={13} aria-hidden />} {r.protected ? "Unprotect" : "Protect"}
         </button>
-        <button className="btn danger" disabled={busy} onClick={onRemove} aria-label={`Remove the worktree ${name}…`}>
+        <button className="btn danger" disabled={busy || r.state !== "ready"} onClick={onRemove} aria-label={`Remove the worktree ${name}…`}>
           <Trash2 size={13} aria-hidden /> Remove…
         </button>
       </div>
@@ -832,6 +867,7 @@ function RemoveDialog({
   target,
   top,
   record,
+  registry,
   chatsIn,
   onClose,
 }: {
@@ -839,7 +875,9 @@ function RemoveDialog({
   target: string;
   top: string;
   record: WorktreeRecord;
-  chatsIn?: (folder: string) => Promise<HermesChats>;
+  /** The server's record of the repository's worktrees, which Hermes reads to show it's on the same server. */
+  registry: string;
+  chatsIn?: (w: ServerWorktree) => Promise<HermesChats>;
   onClose: () => void;
 }) {
   const box = useRef<HTMLDivElement>(null);
@@ -860,21 +898,30 @@ function RemoveDialog({
     | { phase: "lost"; facts: RemovalFacts; error: RepoFailure };
   const [state, setState] = useState<State>({ phase: "loading" });
 
-  const ask = useCallback(async () => {
-    const hermes = chatsIn ? await chatsIn(record.path).catch((e: unknown) => (e instanceof Error ? e : new Error(String(e)))) : undefined;
-    return hermes;
-  }, [chatsIn, record.path]);
+  // Read when asked, not a dependency: the app makes a new one on every render, and that must not start the preview
+  // again, least of all while removing.
+  const chatsRef = useRef(chatsIn);
+  chatsRef.current = chatsIn;
+  const ask = async () => {
+    const asking = chatsRef.current;
+    return asking ? asking({ path: record.path, registry, id: record.id }).catch((e: unknown) => (e instanceof Error ? e : new Error(String(e)))) : undefined;
+  };
 
-  const load = useCallback(() => {
+  // Only the newest preview's answer is shown, and none once Remove is under way.
+  const previewGen = useRef(0);
+  const load = () => {
+    const n = ++previewGen.current;
     setState({ phase: "loading" });
     Promise.all([api.run(target, { op: "worktreeRemoval", repo: top, id: record.id }).then(asRemoval), ask()]).then(
-      ([facts, hermes]) => alive.current && setState({ phase: "ready", facts, hermes }),
-      (e: unknown) => alive.current && setState({ phase: "failed", error: asRepoFailure(e) }),
+      ([facts, hermes]) => alive.current && n === previewGen.current && setState({ phase: "ready", facts, hermes }),
+      (e: unknown) => alive.current && n === previewGen.current && setState({ phase: "failed", error: asRepoFailure(e) }),
     );
-  }, [api, target, top, record.id, ask]);
-  useEffect(load, [load]);
+  };
+  // Once per dialog: StrictMode's second mount starts a newer preview, whose answer is the one shown.
+  useEffect(load, []);
 
   const remove = async (facts: RemovalFacts) => {
+    previewGen.current++;
     setState({ phase: "removing", facts });
     // Asked again right before: a chat may have started working there since the preview.
     const hermes = await ask();

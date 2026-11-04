@@ -47,7 +47,18 @@ const managedRow = (r: WorktreeRecord, over: Partial<WorktreeRow> = {}): Worktre
   unpushed: 3,
   ...over,
 });
-const listOf = (rows: WorktreeRow[], over: Partial<WorktreeList> = {}): WorktreeList => ({ top: TOP, main: TOP, hasRemote: true, newer: false, worktrees: [mainRow, ...rows], unfinished: [], removed: [], ...over });
+const REGISTRY = `${TOP}/.git/hermes-chat/worktrees.json`;
+const listOf = (rows: WorktreeRow[], over: Partial<WorktreeList> = {}): WorktreeList => ({
+  top: TOP,
+  main: TOP,
+  hasRemote: true,
+  newer: false,
+  worktrees: [mainRow, ...rows],
+  unfinished: [],
+  removed: [],
+  registry: REGISTRY,
+  ...over,
+});
 
 const plan = (over: Partial<WorktreePlan> = {}): WorktreePlan => ({
   repo: TOP,
@@ -178,13 +189,22 @@ describe("the list", () => {
     await waitFor(() => expect(ops(calls, "worktreeProtect")).toEqual([{ op: "worktreeProtect", repo: TOP, id: r.id, protected: true }]));
   });
 
+  it("starts a chat on the branch the worktree has now, not the one it was made on", async () => {
+    const r = record();
+    const { api } = fakeApi(() => listOf([managedRow(r, { branch: "fix/login-v2" })]));
+    const user = userEvent.setup();
+    const { onStartChat } = show(api);
+    await user.click(await screen.findByRole("button", { name: "Start chat here" }));
+    expect(onStartChat).toHaveBeenCalledWith(expect.objectContaining({ branch: "fix/login-v2" }));
+  });
+
   it("offers Start chat only while Hermes is connected", async () => {
     const r = record();
     const { api } = fakeApi(() => listOf([managedRow(r)]));
     const user = userEvent.setup();
     const { onStartChat } = show(api);
     await user.click(await screen.findByRole("button", { name: "Start chat here" }));
-    expect(onStartChat).toHaveBeenCalledWith({ target: "liam@hermes", repo: TOP, id: r.id, path: PATH, branch: "fix/login" });
+    expect(onStartChat).toHaveBeenCalledWith({ target: "liam@hermes", repo: TOP, registry: REGISTRY, id: r.id, path: PATH, branch: "fix/login" });
     cleanup();
     show(api, { onStartChat: undefined });
     expect(await screen.findByRole("button", { name: "Start chat here" })).toHaveProperty("disabled", true);
@@ -381,7 +401,7 @@ describe("removing one", () => {
     expect(within(d).getByRole("list", { name: "Commits not on a remote" }).textContent).toContain("Fix the timeout");
     expect(d.textContent).toContain("They stay on the branch fix/login.");
     expect(within(d).getByRole("list", { name: "Ignored files deleted with the folder" }).textContent).toBe(".env");
-    expect(chatsIn).toHaveBeenCalledWith(PATH);
+    expect(chatsIn).toHaveBeenCalledWith({ path: PATH, registry: REGISTRY, id: record().id });
     const asked = chatsIn.mock.calls.length;
     await user.click(within(d).getByRole("button", { name: "Keep changes and remove" }));
     await within(d).findByText(/was removed/);
@@ -409,6 +429,44 @@ describe("removing one", () => {
     await user.click(await screen.findByRole("button", { name: "Remove the worktree fix/login…" }));
     expect((await within(dialog()).findByRole("alert")).textContent).toContain("Hermes isn't connected");
     expect(ops(calls, "worktreeRemove")).toEqual([]);
+  });
+
+  it("isn't started again, or overwritten, when the app draws a new chatsIn while removing", async () => {
+    let finish!: (v: unknown) => void;
+    const r = record();
+    const { api, calls } = fakeApi((q) => {
+      if (q.op === "worktreeList") return listOf([managedRow(r)]);
+      if (q.op === "worktreeRemoval") return removal();
+      if (q.op === "worktreeRemove") return new Promise((res) => (finish = res));
+      throw new Error(`unexpected ${q.op}`);
+    });
+    const user = userEvent.setup();
+    const props = { api, target: "liam@hermes", top: TOP, branch: "main", scope: "scope-a", by: "t", onOpen: () => {}, onStartChat: () => {} };
+    const fresh = () => async () => ({ chats: [] as { id: string; title: string; archived: boolean }[], more: false });
+    const { rerender } = render(<WorktreesPanel {...props} chatsIn={fresh()} />);
+    await user.click(await screen.findByRole("button", { name: "Remove the worktree fix/login…" }));
+    await user.click(await within(dialog()).findByRole("button", { name: "Keep changes and remove" }));
+    await waitFor(() => expect(ops(calls, "worktreeRemove")).toHaveLength(1));
+    const previews = ops(calls, "worktreeRemoval").length;
+    // Another chat's update redraws the app, which hands over a new function.
+    rerender(<WorktreesPanel {...props} chatsIn={fresh()} />);
+    rerender(<WorktreesPanel {...props} chatsIn={fresh()} />);
+    expect(ops(calls, "worktreeRemoval")).toHaveLength(previews);
+    expect(within(dialog()).getByRole("status").textContent).toContain("Keeping the changes, then removing");
+    await act(async () => finish({ record: { ...r, state: "removed", removed: { at: 2, head: SHA, branch: "fix/login", kept: null, files: 0, unpushed: 0 } } }));
+    expect(within(dialog()).getByRole("status").textContent).toContain("was removed");
+  });
+
+  it("can't remove when Hermes isn't on the worktree's server", async () => {
+    const user = userEvent.setup();
+    show(removing(removal()).api, {
+      chatsIn: async () => {
+        throw new Error("Hermes can't see this worktree's record, so it may be running on another computer");
+      },
+    });
+    await user.click(await screen.findByRole("button", { name: "Remove the worktree fix/login…" }));
+    expect((await within(dialog()).findByRole("alert")).textContent).toContain("may be running on another computer");
+    expect(within(dialog()).getByRole("button", { name: "Keep changes and remove" })).toHaveProperty("disabled", true);
   });
 
   it("stops if a chat started working there after the preview", async () => {

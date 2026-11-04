@@ -34,3 +34,10 @@ Each result below was checked on the "server" afterwards with `git worktree list
 Shots 3 to 12 were taken with the first build of this branch. Before shots 1, 2 and 13 to 20, these were changed: the heading's count (it counted the repository's own checkout too, so `7-list.png` says 2 for one managed worktree), the empty list's wording (`12-removed-list.png` still says "yet"), the dirty-checkout note's wording, the lost-answer button (Try again, unless a create is known to have stopped part way), restore marking done setup steps to run again, and **Run setup** / **Retry setup** on a card running the steps when the dialog opens. Before that last fix, the dialog opened and ran nothing, which this run found.
 
 Not pictured, covered by tests: a stale preview refused (`src-tauri/tests/worktrees.rs`, `src/ui/worktrees.test.tsx`), a chat attached by another task after the preview stopping the removal, another tool's lock, a checked-out submodule, an operation in progress, a record from a newer app, the panel's unsupported state, and an older read's late answer being dropped.
+
+## After Codex review round 1
+
+Captured the same way with the build that has the round 1 fixes.
+
+21. `21-chat-after-same-server-check.png`: **Start chat here** on `docs/readme-units`. Before anything was sent, Hermes read the worktree's record on the server (`GET /api/fs/read-text` of `.git/hermes-chat/worktrees.json`) and found the worktree in it, and the record then named the chat. Hermes's `state.db` had the session's `cwd` as the worktree. The reply is the stub model's fixed text, which names another worktree; it's the same text for every chat.
+22. `22-remove-blocked-after-same-server-check.png`: **Remove…** on it. Both the record and Hermes (asked once it had read the record) say a chat works there.
