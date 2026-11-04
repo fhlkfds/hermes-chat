@@ -551,8 +551,11 @@ def op_unstage(req):
     with LockedIndex(top) as idx:
         head, _ = check_stamps(top, req.get("expect"))
         if head is None:
-            # Before the first commit there's no HEAD to go back to: unstaging takes the file out of the index.
-            git_ok(["rm", "--cached", "--quiet", "--"] + paths, top, read_only=False, extra_env=idx.env)
+            # Before the first commit there's no HEAD to go back to: unstaging takes the file out of the index. Only
+            # the index entry goes; the working tree isn't touched. `git rm --cached` would refuse a file staged and
+            # then edited again (its index differs from both the file and HEAD) without -f; update-index has no such
+            # check and takes each path literally.
+            git_ok(["update-index", "--force-remove", "--"] + paths, top, read_only=False, extra_env=idx.env)
         else:
             git_ok(["restore", "--staged", "--"] + paths, top, read_only=False, extra_env=idx.env)
         idx.install()
@@ -988,6 +991,10 @@ def op_publish_info(req):
         "remoteHead": asked_head if separate else (git_line(["rev-parse", "-q", "--verify", tracking], top) or None if has_tracking else None),
         "remoteAsked": separate,
         "remoteError": remote_error,
+        # Whether the push destination has a branch of this name: as of the last fetch, or as it answered when asked.
+        # None when that couldn't be told. A new branch whose commits the remote already has is ahead by 0, yet
+        # still has something to push: the branch itself.
+        "remoteBranchExists": (None if remote_error or not remote_branch else asked_head is not None) if separate else (has_tracking if remote_branch else None),
         "ahead": ahead,
         "behind": behind,
         "commits": commits,

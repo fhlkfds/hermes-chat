@@ -1027,7 +1027,10 @@ function PushCard({ info: p, onPush }: { info: PublishInfo; onPush: () => void }
         : many
           ? `${p.remote} pushes to ${p.remotePushUrls!.length} places (${p.remotePushUrls!.join(", ")}). This screen pushes to one place only; use the Terminal.`
           : undefined;
-  const nothing = !!p.remote && p.ahead === 0;
+  // Ahead by 0 is "nothing to push" only when the remote has the branch: a new branch made at a commit the remote
+  // already has (under another name) sends no commits, but the push creates the branch, which a pull request needs.
+  const newBranchOnly = !!p.remote && p.ahead === 0 && p.remoteBranchExists === false;
+  const nothing = !!p.remote && p.ahead === 0 && !newBranchOnly;
   return (
     <div className="repo-card">
       <h3>Push</h3>
@@ -1065,6 +1068,12 @@ function PushCard({ info: p, onPush }: { info: PublishInfo; onPush: () => void }
               {p.remote} pushes to {p.remoteUrl}, apart from where it fetches from.{" "}
               {p.remoteError ? `Asking it failed (${p.remoteError}), so` : "That destination doesn't have this commit's history here, so"} what a push sends can't be
               listed: Push sends {p.branch} at {p.head?.slice(0, 12)}.
+            </p>
+          )}
+          {newBranchOnly && (
+            <p className="small muted">
+              {p.remote} has no branch {p.remoteBranch} yet, as of the last fetch, but already has every commit on it. Push creates {p.remote}/{p.remoteBranch} at{" "}
+              {p.head?.slice(0, 12)} and sends no new commits.
             </p>
           )}
           {nothing ? (

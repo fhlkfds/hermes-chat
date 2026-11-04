@@ -628,6 +628,10 @@ export type PublishInfo = {
   remoteAsked?: boolean;
   /** Why the push destination couldn't be asked. */
   remoteError?: string | null;
+  /** Whether the push destination has a branch called `remoteBranch`: as of the last fetch, or as it answered when
+   * asked (`remoteAsked`). Null when that couldn't be told. False with `ahead` 0 means a new branch on commits the
+   * remote already has: Push still creates the branch. */
+  remoteBranchExists?: boolean | null;
   ahead: number | null;
   behind: number | null;
   /** Up to 50 commits a push would send, newest first. */

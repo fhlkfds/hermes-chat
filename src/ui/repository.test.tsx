@@ -586,6 +586,33 @@ describe("Repository screen, publishing", () => {
     expect(alert.textContent).toContain("Fetch and merge or rebase in the Terminal");
   });
 
+  it("offers Push for a new branch whose commits the remote already has, and creates the branch", async () => {
+    const user = userEvent.setup();
+    const { api, calls } = publishing(
+      () => ({ pushed: HEAD, remoteHead: HEAD, matches: true, upstreamSet: true, output: "*\trefs/heads/feature/login\t[new branch]\n" }),
+      () => ({ ...INFO, ahead: 0, behind: 0, commits: [], remoteHead: null, remoteBranchExists: false }),
+    );
+    show(api);
+    const panel = within(await screen.findByRole("region", { name: "Publish" }));
+    expect(await panel.findByText(/origin has no branch feature\/login yet/)).toBeTruthy();
+    expect(panel.queryByText(/Nothing to push/)).toBeNull();
+    const button = panel.getByRole("button", { name: /^Push…$/ }) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    expect((panel.getByRole("button", { name: /Create pull request/ }) as HTMLButtonElement).disabled).toBe(true);
+    await user.click(button);
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Push" }));
+    await within(screen.getByRole("dialog")).findByText(/Pushed\./);
+    expect(calls.find((c) => c.request.op === "push")?.request).toEqual({ op: "push", repo: TOP, remote: "origin", branch: "feature/login", remoteBranch: "feature/login", expect: { head: HEAD } });
+  });
+
+  it("has nothing to push when the remote has the branch at this commit", async () => {
+    const { api } = publishing(() => ({}), () => ({ ...INFO, ahead: 0, behind: 0, commits: [], remoteHead: HEAD, remoteBranchExists: true, upstream: { ref: "origin/feature/login", remote: "origin", branch: "feature/login" } }));
+    show(api);
+    const panel = within(await screen.findByRole("region", { name: "Publish" }));
+    expect(await panel.findByText(/Nothing to push: origin\/feature\/login has this commit/)).toBeTruthy();
+    expect((panel.getByRole("button", { name: /^Push…$/ }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it("won't create a pull request before the branch is pushed", async () => {
     const { api } = publishing(() => ({}));
     show(api);

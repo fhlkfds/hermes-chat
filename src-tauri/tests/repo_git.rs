@@ -380,6 +380,18 @@ async fn unstaging_works_before_the_first_commit() {
     ask(Request::Unstage { repo: d.s(), paths: vec!["a.txt".into()], expect: expect_of(&s) }).await.unwrap();
     assert_eq!(staged_names(&d), "");
     assert!(d.path().join("a.txt").exists());
+
+    // Staged, then edited again: the index and the file now differ, and `git rm --cached` would refuse without -f.
+    // Unstaging still takes it out of the index, and the edited file stays as it is.
+    write(d.path(), "b.txt", b"first\n");
+    git(d.path(), &["add", "b.txt"]);
+    write(d.path(), "b.txt", b"second\n");
+    let s = status(&d).await;
+    assert_eq!(s["head"], Value::Null);
+    ask(Request::Unstage { repo: d.s(), paths: vec!["b.txt".into()], expect: expect_of(&s) }).await.unwrap();
+    assert_eq!(staged_names(&d), "");
+    assert_eq!(std::fs::read(d.path().join("b.txt")).unwrap(), b"second\n");
+    assert_eq!(git(d.path(), &["ls-files", "--others", "--exclude-standard"]).trim(), "a.txt\nb.txt");
 }
 
 /// notes.txt with changes at its top and its bottom: two hunks with one line of context.
@@ -801,7 +813,29 @@ async fn a_push_sends_exactly_the_commit_shown_and_reads_the_remote_back() {
     assert_eq!(git(d.path(), &["rev-parse", "--abbrev-ref", "feature@{upstream}"]), "origin/feature");
     let p = ask(Request::PublishInfo { repo: d.s() }).await.unwrap();
     assert_eq!(p["ahead"], 0);
+    assert_eq!(p["remoteBranchExists"], true, "{p}");
     assert_eq!(p["upstream"]["branch"], "feature");
+}
+
+#[tokio::test]
+async fn a_new_branch_on_commits_the_remote_has_can_still_be_pushed() {
+    // A branch made at a commit the remote already has under another name: nothing new to send, but the remote has
+    // no branch of this name. That's not "nothing to push": a push creates the branch, so a pull request can follow.
+    let (d, remote) = with_remote("push-new-at-known");
+    push(&d, Some(head(&d))).await.unwrap();
+    git(d.path(), &["switch", "-qc", "fresh"]);
+    let p = ask(Request::PublishInfo { repo: d.s() }).await.unwrap();
+    assert_eq!(p["branch"], "fresh");
+    assert_eq!(p["remoteBranch"], "fresh");
+    assert_eq!(p["ahead"], 0, "every commit is already on the remote: {p}");
+    assert_eq!(p["remoteBranchExists"], false, "but the remote has no branch called fresh: {p}");
+    ask(Request::Push { repo: d.s(), remote: "origin".into(), branch: "fresh".into(), remote_branch: "fresh".into(), expect: HeadExpect { head: Some(head(&d)) } })
+        .await
+        .unwrap();
+    assert_eq!(git(remote.path(), &["rev-parse", "refs/heads/fresh"]), head(&d));
+    let p = ask(Request::PublishInfo { repo: d.s() }).await.unwrap();
+    assert_eq!(p["ahead"], 0);
+    assert_eq!(p["remoteBranchExists"], true, "{p}");
 }
 
 #[tokio::test]
@@ -987,6 +1021,7 @@ async fn a_separate_push_destination_is_asked_not_assumed() {
     let p = ask(Request::PublishInfo { repo: d.s() }).await.unwrap();
     assert_eq!(p["remoteAsked"], true);
     assert_eq!(p["remoteHead"], Value::Null, "the push destination doesn't have the branch");
+    assert_eq!(p["remoteBranchExists"], false, "{p}");
     assert_ne!(p["ahead"], 0, "{p}");
     assert_eq!(git(fetch_from.path(), &["rev-parse", "refs/heads/feature"]), head(&d));
 }
