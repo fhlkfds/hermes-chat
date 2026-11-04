@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// A chat link that starts Hermes Chat (ADR 0036), through the whole App with the Rust side replaced by FakeHermes and
+// A chat link that starts Hermes Chat (ADR 0037), through the whole App with the Rust side replaced by FakeHermes and
 // an in-memory keyring behind `invoke`. With no password saved, the sign-in screen says the link is waiting, and the
 // chat opens once the owner signs in. A link that isn't one says so on the sign-in screen and is dropped.
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";

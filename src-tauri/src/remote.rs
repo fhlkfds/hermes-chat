@@ -9,7 +9,7 @@
 //! when it is already in front). With none running, the app starts. A plain `hermes-chat` with one already running
 //! shows that one too, so there is only ever one Hermes Chat.
 //!
-//! `hermes-chat <link>` is how the desktop opens a chat link (links.rs, ADR 0036): with Hermes Chat running, the link
+//! `hermes-chat <link>` is how the desktop opens a chat link (links.rs, ADR 0037): with Hermes Chat running, the link
 //! goes to it and its window comes forward; with none running, the app starts and keeps the link for its window.
 //!
 //! The running app owns the bus name `net.l0cky12.HermesChat` and answers `Screenshot`, `Show`, `Toggle` and

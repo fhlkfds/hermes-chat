@@ -12,6 +12,7 @@ import { ApprovalCard } from "./ApprovalCard";
 import { QueuePanel, type QueueApi } from "./Queue";
 import { Markdown } from "./Markdown";
 import { ArchiveButton, SettleButton, SourceIcon, Spinner, StoredTime, composing, highlight } from "./bits";
+import { wakeFull } from "../hermes/snooze";
 import { AttachmentChip, Previews, readPreview } from "./previews";
 import { Speaker } from "./speaker";
 import { DictationNoteView, DictationStrip, ListenButton, MicButton, type VoiceApi, listenBlocked, micBlocked, useDictation, useVoiceSetup } from "./Voice";
@@ -150,6 +151,7 @@ export function ChatPane({
   screenshots,
   screenshotKeys,
   projects,
+  snoozedUntil,
   notice,
   banner,
   footer,
@@ -197,6 +199,8 @@ export function ChatPane({
   screenshotKeys?: string;
   /** The names of the projects the chat is in, or a new chat will be put in. */
   projects?: string[];
+  /** When the chat wakes, if the owner snoozed it and it hasn't woken yet (snooze.ts). */
+  snoozedUntil?: number;
   /** Shown at the top of the transcript: what a new chat starts with. */
   notice?: ReactNode;
   /** Shown under the header, outside the transcript's scroll: a question about this chat. */
@@ -424,8 +428,10 @@ export function ChatPane({
           {chat.source !== "app" && <SourceIcon source={chat.source} size={13} />}
           <span>{chat.title}</span>
           {chat.settled && <span className="badge">Settled</span>}
-          {chat.settled && onSettle && !chat.archived && (
-            <SettleButton settled size={12} className="unsettle-btn" labeled onSettle={onSettle} />
+          {!chat.settled && !chat.archived && snoozedUntil !== undefined && (
+            <span className="badge" title={`Snoozed until ${wakeFull(snoozedUntil)}`}>
+              Snoozed
+            </span>
           )}
           {chat.archived && <span className="badge">Archived</span>}
           {projects?.map((name) => (

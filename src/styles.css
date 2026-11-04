@@ -156,6 +156,12 @@ kbd {
 .settled-section.open { border-top: 1px solid var(--line); }
 .settled-list { overflow-y: auto; min-height: 0; }
 .settled-list .row-title { color: var(--muted); }
+/* Working and Snoozed sit under the chats that need the owner, in the list's scroll. */
+.row[data-section="snoozed"] .row-title { color: var(--muted); }
+/* A collapsed section's rows stay mounted, hidden; .row's own display would otherwise show them. */
+.row[hidden] { display: none; }
+.row-wake { font-variant-numeric: tabular-nums; }
+.row-meta .row-wake + * { margin-left: 6px; }
 .sync-error { color: var(--warn); font-size: calc(12rem / 14); padding: 6px 10px 10px; }
 .empty-hint { color: var(--faint); font-size: calc(12.5rem / 14); padding: 6px 10px 10px; }
 
@@ -185,10 +191,6 @@ kbd {
 /* Keyboard focus anywhere in the row shows its actions, so Tab can reach them. */
 .row:hover .row-action, .row:focus-within .row-action { display: grid; }
 .row-action:focus-visible { outline: 2px solid var(--line-2); outline-offset: -2px; }
-/* A Settled chat's way back to Active says "Unsettle" and shows without hovering. */
-.row-action.row-unsettle {
-  display: grid; grid-auto-flow: column; gap: 4px; width: auto; padding: 0 6px; font-size: calc(11.5rem / 14);
-}
 .row.confirming { padding-left: 10px; background: rgba(248, 113, 113, 0.08); }
 .row.confirming .row-title { color: var(--muted); }
 .row-confirm { flex: none; font-size: calc(12rem / 14); padding: 3px 8px; border-radius: 6px; color: var(--muted); }
@@ -276,12 +278,6 @@ kbd {
 }
 .chat-title { display: flex; align-items: center; gap: 8px; font-size: calc(14rem / 14); font-weight: 500; color: var(--text); min-width: 0; }
 .chat-title > span:not(.badge):not(.src) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.unsettle-btn {
-  display: inline-flex; align-items: center; gap: 4px; flex: none; padding: 1px 7px; border-radius: 999px;
-  font-size: calc(11rem / 14); color: var(--muted); border: 1px solid var(--line-2);
-}
-.unsettle-btn:hover { background: var(--raised-2); color: var(--text); }
-.unsettle-btn:focus-visible { outline: 2px solid var(--line-2); outline-offset: 1px; }
 .chat-head-actions { display: flex; gap: 4px; opacity: 0.75; }
 .chat-head:hover .chat-head-actions { opacity: 1; }
 
@@ -2118,6 +2114,66 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
   .usage-status-actions { margin-left: 0; }
   .usage-filters select, .usage-filters input { max-width: 100%; }
 }
+/* Automations (ADR 0036): webhook routes, the example-event preview, and the delivery history. */
+.automations-screen .automation-fieldset { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.automations-screen .automation-fieldset legend { padding: 0; margin-bottom: 4px; }
+.automation-events { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 6px 14px; }
+.automation-filter { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1.2fr) auto; gap: 6px; align-items: center; }
+.automation-filter input, .automation-coalesce input, .automation-event-name, .automation-preview select {
+  background: var(--raised); border: 1px solid var(--line-2); border-radius: 9px; padding: 7px 10px; color: var(--text); font: inherit; font-size: calc(13rem / 14); min-width: 0;
+}
+.automation-coalesce { display: grid; grid-template-columns: minmax(0, 2fr) repeat(2, minmax(0, 1fr)); gap: 8px; }
+.automation-insert { gap: 4px; }
+.automation-preview { display: flex; flex-direction: column; gap: 8px; }
+.automation-preview-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.automation-paste { min-height: 90px; font-family: var(--mono); font-size: calc(12rem / 14); }
+.automation-event { max-height: 220px; }
+.automation-checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: calc(12.5rem / 14); }
+.automation-checks li { display: flex; align-items: center; gap: 6px; overflow-wrap: anywhere; }
+.automation-checks li.pass svg { color: var(--ok); flex: none; }
+.automation-checks li.fail { color: var(--muted); }
+.automation-checks li.fail svg { color: var(--bad); flex: none; }
+.automation-verdict { margin: 4px 0 0; font-weight: 600; }
+.automation-verdict.good { color: var(--ok); }
+.automation-rendered { margin: 0; }
+.automation-setup dd { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.icon-btn.inline { width: 22px; height: 22px; }
+.secret-once { margin: 0 0 16px; padding: 12px 14px; border-radius: 12px; border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); background: color-mix(in srgb, var(--warn) 8%, transparent); display: flex; flex-direction: column; gap: 10px; font-size: calc(13rem / 14); }
+.secret-once p { margin: 0; line-height: 1.5; }
+.secret-value { font-family: var(--mono); font-size: calc(12.5rem / 14); padding: 8px 10px; border-radius: 8px; background: var(--raised-2); overflow-wrap: anywhere; user-select: all; }
+.delivery-list { margin-bottom: 12px; }
+.automation-setup { margin-bottom: 10px; }
+.delivery-list li.delivery { display: flex; flex-direction: column; gap: 4px; }
+.delivery.tone-bad { border-left-color: var(--bad); }
+.delivery.tone-good { border-left-color: var(--ok); }
+.delivery-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.delivery-head .badge { margin-left: 0; }
+.job-history .delivery-head .badge { margin-left: 0; }
+.badge.delivery-state.good { color: var(--ok); }
+.badge.delivery-state.bad { color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, transparent); }
+.badge.delivery-state.muted { color: var(--muted); }
+.delivery-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.btn.small-btn { padding: 3px 9px; font-size: calc(12rem / 14); }
+@media (max-width: 640px) {
+  .automation-filter { grid-template-columns: 1fr 1fr; }
+  .automation-coalesce { grid-template-columns: 1fr; }
+}
+
+/* Custom snooze (Snooze.tsx, ADR 0036) */
+.leave-overlay .leave-dialog.snooze-dialog { max-width: 400px; width: calc(100% - 40px); }
+.snooze-dialog h2 { font-size: calc(14rem / 14); margin: 0; display: flex; align-items: center; gap: 8px; }
+.snooze-dialog .leave-title svg { color: var(--muted); }
+.snooze-dialog .segmented { align-self: flex-start; }
+.snooze-form { display: flex; flex-direction: column; gap: 8px; }
+.snooze-field { display: flex; align-items: center; gap: 8px; }
+.snooze-field > span, .snooze-field > label { color: var(--muted); flex: none; }
+.snooze-field input, .snooze-field select {
+  background: var(--raised-2); border: 1px solid var(--line-2); border-radius: 8px; padding: 6px 9px; outline: none; color: var(--text);
+}
+.snooze-field input { flex: 1; min-width: 0; }
+.snooze-field input:focus, .snooze-field select:focus { border-color: var(--line-3); }
+.snooze-field input[type="number"] { max-width: 90px; }
+.snooze-dialog p.snooze-when { margin: 0; }
 
 /* Edit and Regenerate (ADR 0035). */
 .leave-overlay .leave-dialog.replay-dialog { max-width: min(640px, 100%); }

@@ -1,4 +1,4 @@
-// A stand-in Hermes dashboard for checking chat links (ADR 0036) in the real Tauri app: the tags bridge with synthetic
+// A stand-in Hermes dashboard for checking chat links (ADR 0037) in the real Tauri app: the tags bridge with synthetic
 // chats in two profiles, one older than the list's month. Loopback only. Build and run:
 //   npx rolldown docs/screenshots/chat-links/bridge.ts --platform node -o /tmp/links-bridge.mjs && node /tmp/links-bridge.mjs 47810
 import { createHash } from "node:crypto";

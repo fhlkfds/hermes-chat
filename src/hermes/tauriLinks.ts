@@ -12,7 +12,7 @@ export type LinkInbox = {
   getSnapshot(): ArrivedLink | undefined;
   /**
    * The link the app was started with, if any, has been read. Until then an empty inbox doesn't mean there is no
-   * link, so the app doesn't reopen the last chat yet (ADR 0036).
+   * link, so the app doesn't reopen the last chat yet (ADR 0037).
    */
   isReady(): boolean;
   /** The app has dealt with the link that arrived `at`; a newer one stays. */

@@ -1,4 +1,4 @@
-// Chat links (ADR 0036): reading them strictly, the opaque connection references they carry, and looking a linked
+// Chat links (ADR 0037): reading them strictly, the opaque connection references they carry, and looking a linked
 // chat up before anything moves.
 import { describe, expect, it } from "vitest";
 import type { SavedSignIn } from "./account";
