@@ -56,16 +56,16 @@ function fenced(text: string): string {
 
 const RUN_WORDS: Record<JobRun["state"], string> = { running: "Running", succeeded: "Succeeded", failed: "Failed", unknown: "Unknown" };
 
-/** Whether Hermes runs the job on its schedule, in words. */
-function stateWords(j: CronJob): string {
+/** Whether Hermes runs the job on its schedule, in words. `safe` hides secrets in Hermes's own text. */
+function stateWords(j: CronJob, safe: (t: string) => string): string {
   if (j.state === "completed") return "finished (no more runs)";
-  if (!j.enabled || j.state === "paused") return `paused${j.pausedReason ? ` (${j.pausedReason})` : ""}`;
+  if (!j.enabled || j.state === "paused") return `paused${j.pausedReason ? ` (${safe(j.pausedReason)})` : ""}`;
   if (j.state === "error") return "error: Hermes can't work out its next run";
   return "scheduled (not paused)";
 }
 
 /**
- * The first message of a troubleshooting chat. Every free text from the server (prompt, errors, output, names) goes
+ * The first message of a troubleshooting chat. Every text from the server (prompt, errors, output, names, settings) goes
  * through `redact` (the support bundle's patterns) and is cut to its limit; what was hidden or cut is listed, and the
  * message asks Hermes to read the job itself rather than write a marker back.
  */
@@ -84,6 +84,7 @@ export function troubleshootMessage(input: TroubleshootInput): TroubleshootMessa
     return fenced(c.text);
   };
   const at = (ms: number) => isoIn(zone.zone, ms);
+  // Hermes's own labels and ids go through `safe` too: anything the server sent may hold a secret.
   const atIso = (iso: string) => (Number.isNaN(Date.parse(iso)) ? iso : at(Date.parse(iso)));
   const name = safe(job.name);
   const out: string[] = [];
@@ -102,18 +103,18 @@ export function troubleshootMessage(input: TroubleshootInput): TroubleshootMessa
     `- Profile: ${profile}`,
     `- Schedule: \`${safe(job.scheduleText)}\`${job.schedule ? ` (${explainSchedule(job.schedule, zone.zone)})` : ""}`,
     `- Time zone: ${zone.named ? zone.zone : `not named by Hermes; times below are in ${zone.label}`}`,
-    `- State: ${stateWords(job)}`,
+    `- State: ${stateWords(job, safe)}`,
   );
   if (job.nextRunAt) out.push(`- Next run: ${atIso(job.nextRunAt)}`);
   if (job.repeat.times !== null) out.push(`- Repeat: ${job.repeat.times} ${job.repeat.times === 1 ? "time" : "times"} in all, ${job.repeat.completed} done`);
-  out.push(`- Delivers to: \`${safe(job.deliver)}\`${job.originPlatform ? ` (made from ${job.originPlatform})` : ""}`);
+  out.push(`- Delivers to: \`${safe(job.deliver)}\`${job.originPlatform ? ` (made from ${safe(job.originPlatform)})` : ""}`);
   if (job.lastRunAt) out.push(`- Last run: ${atIso(job.lastRunAt)}${job.lastStatus ? `, ${statusLabel(job.lastStatus).text.toLowerCase()} (\`${job.lastStatus}\`)` : ""}`);
   else out.push("- Last run: it hasn't run yet");
-  if (job.model) out.push(`- Model: ${[job.provider, job.model].filter(Boolean).join(" / ")}`);
-  if (job.skills.length) out.push(`- Skills: ${job.skills.join(", ")}`);
-  if (job.toolsets.length) out.push(`- Toolsets: ${job.toolsets.join(", ")}`);
+  if (job.model) out.push(`- Model: ${safe([job.provider, job.model].filter(Boolean).join(" / "))}`);
+  if (job.skills.length) out.push(`- Skills: ${safe(job.skills.join(", "))}`);
+  if (job.toolsets.length) out.push(`- Toolsets: ${safe(job.toolsets.join(", "))}`);
   if (job.workdir) out.push(`- Folder: ${safe(job.workdir)}`);
-  if (job.contextFrom.length) out.push(`- Uses the output of: ${job.contextFrom.join(", ")}`);
+  if (job.contextFrom.length) out.push(`- Uses the output of: ${safe(job.contextFrom.join(", "))}`);
   if (job.lastError) out.push("", "Last error Hermes recorded:", block(job.lastError, OUTPUT_LIMIT, "the job's last error"));
   if (job.lastDeliveryError) out.push("", "Last delivery error Hermes recorded:", block(job.lastDeliveryError, OUTPUT_LIMIT, "the job's last delivery error"));
 
@@ -145,7 +146,7 @@ export function troubleshootMessage(input: TroubleshootInput): TroubleshootMessa
         `### ${i + 1}. ${RUN_WORDS[r.state]}${r.id === input.picked ? " (the run I picked)" : ""}`,
         `- ${r.script ? "Script run" : "Agent run"}, ${r.script ? "finished" : "started"} ${at(r.startedAt)}${!r.script && r.endedAt !== undefined ? `, ended ${at(r.endedAt)}` : ""}`,
       );
-      if (!r.script && r.sessionId) out.push(`- Session: \`${r.sessionId}\``);
+      if (!r.script && r.sessionId) out.push(`- Session: \`${safe(r.sessionId)}\``);
       if (r.error) out.push("- Error:", block(r.error, OUTPUT_LIMIT, `run ${i + 1}'s error`));
       if (r.note) out.push(`- Note: ${safe(r.note)}`);
       if (r.script && r.preview) out.push("- Output (Hermes serves only the start of it):", block(r.preview, OUTPUT_LIMIT, `run ${i + 1}'s output`));
@@ -196,12 +197,26 @@ export async function gatherTroubleshoot(
 /** One change to a job, as the owner reads it. `before` and `after` are undefined for a value that isn't set. */
 export type JobChange = { field: string; before?: string; after?: string; long?: boolean };
 
-/** What differs between the job as it was when troubleshooting started and as the list has it now. */
-export function jobChanges(before: CronJob, after: CronJob): JobChange[] {
+/**
+ * The schedule as the owner reads it, with what Hermes's label leaves out: the expression, the interval, or the
+ * instant of a one-shot (whose label, such as `once in 30m`, stays the same when it is moved).
+ */
+function scheduleWords(j: CronJob, zone?: string): string {
+  const s = j.schedule;
+  if (!s) return j.scheduleText;
+  const what = s.kind === "cron" ? s.expr : s.kind === "interval" ? `every ${s.minutes} min` : zone ? isoIn(zone, s.runAt) : new Date(s.runAt).toISOString();
+  return what === j.scheduleText ? what : `${j.scheduleText} (${what})`;
+}
+
+/**
+ * What differs between the job as it was when troubleshooting started and as the list has it now. `zone` is the
+ * schedule time zone, to show a one-shot's instant in.
+ */
+export function jobChanges(before: CronJob, after: CronJob, zone?: string): JobChange[] {
   const paused = (j: CronJob) => (j.state === "completed" ? "finished" : !j.enabled || j.state === "paused" ? "paused" : "scheduled");
   const fields: [string, (j: CronJob) => string | undefined, boolean?][] = [
     ["Name", (j) => j.name],
-    ["Schedule", (j) => j.scheduleText],
+    ["Schedule", (j) => scheduleWords(j, zone)],
     ["State", paused],
     ["Prompt", (j) => j.prompt.trim() || undefined, true],
     ["Script", (j) => j.script],
@@ -240,12 +255,18 @@ export type Troubleshoot = {
   chatId?: string;
   phase: TroublePhase;
   reason?: string;
+  /** Hermes didn't confirm the first message (the connection dropped): it may have it, and be working on it. */
+  unconfirmed?: string;
   startedAt: number;
   endedAt?: number;
 };
 
-/** What the store watches in the chat store: which profile shows, whether it is connected, and its chats. */
-export type ChatsView = { profile: string; status: string; chats: readonly { id: string; running?: boolean }[] };
+/**
+ * What the store watches in the chat store: which profile shows, whether it is connected, and its chats. A chat's
+ * `runtimeId` is set while it is attached on this connection; a dropped connection clears it and `running`, and a
+ * reconnect's resume sets both again, so only an attached chat's `running` says whether its reply is still going.
+ */
+export type ChatsView = { profile: string; status: string; chats: readonly { id: string; running?: boolean; runtimeId?: string }[] };
 
 /**
  * The troubleshooting chats started in this app run, kept in memory only: the newest for each job. The chat itself is
@@ -285,23 +306,35 @@ export class TroubleshootStore {
     this.patch(id, (t) => (t.phase === "starting" ? { ...t, phase: "failed", reason } : t));
   }
 
-  /** What became of the first message. `running`: whether the chat's reply is still running as it answered. */
+  /**
+   * What became of the first message. `running`: whether the chat's reply is still running as it answered. A message
+   * Hermes may have (`unknown`) is followed like one it took, and said to be unconfirmed: it may be changing the job.
+   */
   sent(id: string, delivery: Delivery, running: boolean) {
     this.patch(id, (t) => {
       if (t.phase !== "starting") return t;
-      if (delivery.delivery !== "accepted") return { ...t, phase: "failed", reason: delivery.reason };
+      if (delivery.delivery === "unsent") return { ...t, phase: "failed", reason: delivery.reason };
+      if (delivery.delivery === "unknown") return { ...t, phase: "working", unconfirmed: delivery.reason };
       return running ? { ...t, phase: "working" } : { ...t, phase: "ended", endedAt: this.now() };
     });
   }
 
+  /** The owner says the reply has ended (or wants the job read again as it is): the Jobs screen reads it again. */
+  end(id: string) {
+    this.patch(id, (t) => (t.phase === "working" ? { ...t, phase: "ended", endedAt: this.now() } : t));
+  }
+
   /**
-   * Called with the chat store on every change: a working chat of the profile showing, connected, whose reply is no
-   * longer running, has ended. A dropped connection isn't an end; a reply still running on the server after a
-   * reconnect that this app no longer follows shows as ended, and the Jobs screen's own Refresh shows later changes.
+   * Called with the chat store on every change: a working chat of the profile showing, connected and attached, whose
+   * reply is no longer running, has ended. A dropped connection isn't an end, nor is the moment after a reconnect
+   * before the chat is resumed. A chat that isn't resumed (say, after a profile switch) stays working until the
+   * owner reads the job again from the Jobs screen.
    */
   observe(view: ChatsView) {
     if (view.status !== "connected") return;
-    const ended = this.list.filter((t) => t.phase === "working" && t.profile === view.profile && view.chats.some((c) => c.id === t.chatId && !c.running));
+    const ended = this.list.filter(
+      (t) => t.phase === "working" && t.profile === view.profile && view.chats.some((c) => c.id === t.chatId && !!c.runtimeId && !c.running),
+    );
     if (!ended.length) return;
     const at = this.now();
     this.set(this.list.map((t) => (ended.includes(t) ? { ...t, phase: "ended", endedAt: at } : t)));

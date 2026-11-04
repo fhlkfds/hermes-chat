@@ -777,6 +777,41 @@ describe("Troubleshoot on the Scheduled jobs screen", () => {
     expect(writes(s)).toHaveLength(0);
   }, 20_000);
 
+  it("says what changed only once the job was read after the reply ended, and offers to try again when it couldn't be", async () => {
+    const s = server();
+    const id = s.cron.jobs.default[0].id;
+    const { hermes, user } = await launch(s);
+    await user.click(screen.getByRole("button", { name: "Troubleshoot [fixture] Weekday brief" }));
+    await user.click(await screen.findByRole("button", { name: "Start the chat" }));
+    await waitFor(() => expect(submitted(s)).toHaveLength(1));
+    const chat = hermes.getSnapshot().chats.find((c) => c.running)!;
+    await user.click(screen.getByRole("button", { name: "Scheduled jobs" }));
+    await user.click(await screen.findByText("[fixture] Weekday brief"));
+    const panel = await screen.findByRole("region", { name: "Troubleshooting" });
+    s.cron.jobs.default.find((j) => j.id === id)!.deliver = "local";
+
+    // A slow read: until it answers, the panel says nothing about what changed and offers no Run now.
+    let answer!: () => void;
+    s.cron.listGate = new Promise((r) => (answer = r));
+    act(() => s.event(s.runtimeIdOf(chat.id)!, "message.complete", { text: "Done." }));
+    expect(await within(panel).findByText(/Reading the job again/)).toBeTruthy();
+    expect(within(panel).queryByRole("list", { name: "What changed" })).toBeNull();
+    expect(within(panel).queryByRole("button", { name: "Run now to check the fix" })).toBeNull();
+
+    // It fails.
+    s.cron.failLists = 99;
+    s.cron.listGate = undefined;
+    act(() => answer());
+    expect(await within(panel).findByText(/couldn't be read again: .*connection reset/)).toBeTruthy();
+    expect(within(panel).queryByRole("list", { name: "What changed" })).toBeNull();
+    expect(within(panel).queryByRole("button", { name: "Run now to check the fix" })).toBeNull();
+
+    s.cron.failLists = 0;
+    await user.click(within(panel).getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(within(panel).getByRole("list", { name: "What changed" }).textContent).toMatch(/Delivers to: telegram → local/));
+    expect(within(panel).getByRole("button", { name: "Run now to check the fix" })).toBeTruthy();
+  }, 20_000);
+
   it("says when nothing on the job changed", async () => {
     const s = server();
     const { hermes, user } = await launch(s);

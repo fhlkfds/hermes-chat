@@ -139,6 +139,20 @@ describe("the Troubleshoot message", () => {
     expect(m.text).toMatch(/never write a marker back into the job/);
   });
 
+  it("hides secrets in Hermes's own fields too: the paused reason, model, skills, toolsets and ids", () => {
+    const m = troubleshootMessage({
+      profile: "work",
+      job: job({ enabled: false, state: "paused", paused_reason: "paused: api_key=abc123secret", model: "token=modelsecret99", skills: ["password=hunter22"], enabled_toolsets: ["secret=toolsecret"] }),
+      zone,
+      targets,
+      runs: [{ ...okAgent, sessionId: "session_token=sesssecret1" }],
+      results: {},
+    });
+    expect(m.text).not.toMatch(/abc123secret|modelsecret99|hunter22|toolsecret|sesssecret1/);
+    expect(m.text).toMatch(/- State: paused \(paused: api_key=\[redacted\]\)/);
+    expect(m.hidden).toContain("secret value");
+  });
+
   it("keeps a fence that output with backticks can't close", () => {
     const m = troubleshootMessage({ profile: "work", job: job({ prompt: "Use ```code``` blocks" }), zone, targets, runs: [], results: {} });
     expect(m.text).toMatch(/````text\nUse ```code``` blocks\n````/);
@@ -159,6 +173,15 @@ describe("what changed on the job", () => {
   });
 });
 
+describe("a one-shot moved to another time", () => {
+  it("counts as a schedule change though Hermes's label stays the same", () => {
+    const once = (runAt: string) => job({ schedule: { kind: "once", run_at: runAt, display: "once in 30m" }, schedule_display: "once in 30m" });
+    const changes = jobChanges(once("2026-11-04T15:30:00-06:00"), once("2026-11-04T16:10:00-06:00"), "America/Chicago");
+    expect(changes).toEqual([{ field: "Schedule", before: "once in 30m (2026-11-04T15:30:00-06:00)", after: "once in 30m (2026-11-04T16:10:00-06:00)" }]);
+    expect(jobChanges(once("2026-11-04T15:30:00-06:00"), once("2026-11-04T15:30:00-06:00"), "America/Chicago")).toEqual([]);
+  });
+});
+
 describe("the troubleshooting store", () => {
   const view = (chats: ChatsView["chats"], profile = "work", status = "connected"): ChatsView => ({ profile, status, chats });
 
@@ -171,11 +194,60 @@ describe("the troubleshooting store", () => {
     store.observe(view([{ id: "chat-1", running: true }]));
     expect(store.forJob("scope", "work", "abc123")?.phase).toBe("working");
     // Another profile showing, or no connection, says nothing about the chat.
-    store.observe(view([{ id: "chat-1", running: false }], "default"));
-    store.observe(view([{ id: "chat-1", running: false }], "work", "reconnecting"));
+    store.observe(view([{ id: "chat-1", running: false, runtimeId: "rt-1" }], "default"));
+    store.observe(view([{ id: "chat-1", running: false, runtimeId: "rt-1" }], "work", "reconnecting"));
     expect(store.forJob("scope", "work", "abc123")?.phase).toBe("working");
-    store.observe(view([{ id: "chat-1", running: false }]));
+    store.observe(view([{ id: "chat-1", running: false, runtimeId: "rt-1" }]));
     expect(store.forJob("scope", "work", "abc123")).toMatchObject({ phase: "ended", endedAt: 1000, chatId: "chat-1" });
+  });
+
+  it("doesn't end on a dropped connection, nor after the reconnect until the chat is resumed", () => {
+    const store = new TroubleshootStore(() => 7);
+    const t = store.start("scope", "work", job());
+    store.opened(t.id, "chat-1");
+    store.sent(t.id, { delivery: "accepted" }, true);
+    const phase = () => store.forJob("scope", "work", "abc123")?.phase;
+    store.observe(view([{ id: "chat-1", running: true, runtimeId: "rt-1" }]));
+    // The drop clears the chat's runtime and running flag, while the status says so.
+    store.observe(view([{ id: "chat-1", running: false }], "work", "reconnecting"));
+    // Connected again, before the resume: running is false only because the chat isn't attached yet.
+    store.observe(view([{ id: "chat-1", running: false }]));
+    expect(phase()).toBe("working");
+    // Resumed with the reply still going (or an Approval waiting, which keeps the turn running).
+    store.observe(view([{ id: "chat-1", running: true, runtimeId: "rt-2" }]));
+    expect(phase()).toBe("working");
+    store.observe(view([{ id: "chat-1", running: false, runtimeId: "rt-2" }]));
+    expect(store.forJob("scope", "work", "abc123")).toMatchObject({ phase: "ended", endedAt: 7 });
+  });
+
+  it("ends once a reply that finished during the drop is resumed as finished", () => {
+    const store = new TroubleshootStore();
+    const t = store.start("scope", "work", job());
+    store.opened(t.id, "chat-1");
+    store.sent(t.id, { delivery: "accepted" }, true);
+    store.observe(view([{ id: "chat-1", running: false }]));
+    expect(store.forJob("scope", "work", "abc123")?.phase).toBe("working");
+    store.observe(view([{ id: "chat-1", running: false, runtimeId: "rt-2" }]));
+    expect(store.forJob("scope", "work", "abc123")?.phase).toBe("ended");
+  });
+
+  it("follows a first message Hermes may have, as unconfirmed, until its reply ends", () => {
+    const store = new TroubleshootStore();
+    const t = store.start("scope", "work", job());
+    store.opened(t.id, "chat-1");
+    store.sent(t.id, { delivery: "unknown", reason: "The connection dropped before Hermes confirmed it." }, false);
+    expect(store.forJob("scope", "work", "abc123")).toMatchObject({ phase: "working", unconfirmed: "The connection dropped before Hermes confirmed it." });
+    store.observe(view([{ id: "chat-1", running: true, runtimeId: "rt-2" }]));
+    store.observe(view([{ id: "chat-1", running: false, runtimeId: "rt-2" }]));
+    expect(store.forJob("scope", "work", "abc123")?.phase).toBe("ended");
+  });
+
+  it("ends when the owner asks for the job to be read again", () => {
+    const store = new TroubleshootStore();
+    const t = store.start("scope", "work", job());
+    store.sent(t.id, { delivery: "accepted" }, true);
+    store.end(t.id);
+    expect(store.forJob("scope", "work", "abc123")?.phase).toBe("ended");
   });
 
   it("ends at once when the reply ended before the message's answer, and fails when the message didn't go", () => {

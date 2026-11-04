@@ -203,6 +203,8 @@ export function ScheduledJobs({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<CronError | Error>();
   const [view, setView] = useState<View>(openJob ? { kind: "job", id: openJob } : { kind: "list" });
+  /** When the newest list read that worked started: a change Hermes made before then is in the list. */
+  const [readAt, setReadAt] = useState<number>();
   /** What happened to a job that has left the list, or went to another profile, said on the list. */
   const [notice, setNotice] = useState<string>();
   const loads = useSequence();
@@ -219,9 +221,13 @@ export function ScheduledJobs({
     listing.current = true;
     setLoading(true);
     setError(undefined);
+    const started = Date.now();
     try {
       const got = await readProfile(api, profile);
-      if (loads.current(n)) setLoaded(got);
+      if (loads.current(n)) {
+        setLoaded(got);
+        setReadAt(started);
+      }
     } catch (e) {
       if (loads.current(n)) setError(e as Error);
     } finally {
@@ -388,7 +394,7 @@ export function ScheduledJobs({
                           <span className="faint"> · {deliveryLabel(j.deliver, loaded.targets)}</span>
                         </div>
                         {problem && <div className="job-row-line small job-status warn">{problem}</div>}
-                        {trouble && <div className="job-row-line small job-trouble-line">{troubleLine(trouble, j)}</div>}
+                        {trouble && <div className="job-row-line small job-trouble-line">{troubleLine(trouble, j, loaded.zone, readAt)}</div>}
                       </button>
                       {troubleshoot && (
                         <button
@@ -421,6 +427,7 @@ export function ScheduledJobs({
             troubleshoot={troubleshoot}
             trouble={troubleOf(shown.id)}
             ask={view.ask}
+            reading={{ at: readAt, loading, error: error && messageOf(error), reload: () => void load() }}
             onChanged={apply}
             onEdit={() => go({ kind: "edit", id: shown.id })}
             onDeleted={() => go({ kind: "list" })}
@@ -548,6 +555,7 @@ function JobDetail({
   troubleshoot,
   trouble,
   ask,
+  reading,
 }: {
   api: CronApi;
   profile: string;
@@ -565,6 +573,8 @@ function JobDetail({
   trouble?: Troubleshoot;
   /** Start the Troubleshoot preview at once. */
   ask?: boolean;
+  /** The screen's list reads: when the newest that worked started, whether one is under way, and why the last failed. */
+  reading?: ListReading;
 }) {
   const [busy, setBusy] = useState<"pause" | "resume" | "run" | "delete">();
   const [confirm, setConfirm] = useState<"run" | "delete">();
@@ -788,11 +798,14 @@ function JobDetail({
         <TroublePanel
           trouble={trouble}
           job={job}
+          zone={zone.zone}
+          reading={reading}
           connected={connected}
           busy={!!busy}
           onOpenChat={troubleshoot.openChat}
           onRunNow={() => setConfirm("run")}
           onDismiss={() => troubleshoot.store.dismiss(trouble.id)}
+          onEnd={() => troubleshoot.store.end(trouble.id)}
         />
       )}
       {copyNote && (
@@ -971,11 +984,18 @@ function JobDetail({
   );
 }
 
+/** The screen's list reads, as the Troubleshooting panel needs them. */
+type ListReading = { at?: number; loading: boolean; error?: string; reload: () => void };
+
+/** Whether the list was read after the troubleshooting reply ended, so the job shown has Hermes's changes. */
+const readSince = (t: Troubleshoot, at?: number) => t.endedAt !== undefined && at !== undefined && at >= t.endedAt;
+
 /** A troubleshooting chat's state in a line, for the job's row in the list. */
-function troubleLine(t: Troubleshoot, job: CronJob): string {
+function troubleLine(t: Troubleshoot, job: CronJob, zone: JobsZone, readAt?: number): string {
   if (t.phase === "failed") return "Troubleshooting didn't start.";
   if (t.phase !== "ended") return "Hermes is troubleshooting this job in a chat.";
-  const n = jobChanges(t.before, job).length;
+  if (!readSince(t, readAt)) return "Troubleshooting chat ended: reading the job again…";
+  const n = jobChanges(t.before, job, zone.zone).length;
   return n ? `Troubleshooting chat ended: ${n} ${n === 1 ? "change" : "changes"} to this job. Open it to see what changed.` : "Troubleshooting chat ended: nothing on this job changed.";
 }
 
@@ -1070,21 +1090,33 @@ function TroublePreview({
 function TroublePanel({
   trouble,
   job,
+  zone,
+  reading,
   connected,
   busy,
   onOpenChat,
   onRunNow,
   onDismiss,
+  onEnd,
 }: {
   trouble: Troubleshoot;
   job: CronJob;
+  zone: string;
+  reading?: ListReading;
   connected: boolean;
   busy: boolean;
   onOpenChat: (chatId: string) => void;
   onRunNow: () => void;
   onDismiss: () => void;
+  /** Reads the job again as it is now, ending the wait for the reply. */
+  onEnd: () => void;
 }) {
-  const changes = trouble.phase === "failed" ? [] : jobChanges(trouble.before, job);
+  const ended = trouble.phase === "ended";
+  // What changed is said only from a list read that started after the reply ended (or, while Hermes works, after the
+  // chat started, as changes so far): never from a read that could predate Hermes's change.
+  const confirmed = ended && readSince(trouble, reading?.at);
+  const sofar = trouble.phase === "working" && reading?.at !== undefined && reading.at >= trouble.startedAt;
+  const changes = confirmed || sofar ? jobChanges(trouble.before, job, zone) : [];
   return (
     <section className="job-trouble" aria-label="Troubleshooting">
       <h2>
@@ -1094,15 +1126,34 @@ function TroublePanel({
         <p className="sign-in-error small" role="alert">
           {trouble.reason}
         </p>
-      ) : trouble.phase === "ended" ? (
+      ) : confirmed ? (
         <p className="small" role="status">
           Hermes's reply in the troubleshooting chat has ended, and this job was read again.{" "}
           {changes.length ? "What changed on the job since the chat started:" : "Nothing on the job has changed since the chat started."}
         </p>
+      ) : ended ? (
+        reading?.loading || (!reading?.error && connected) ? (
+          <p className="small" role="status">
+            <Spinner /> Hermes's reply in the troubleshooting chat has ended. Reading the job again…
+          </p>
+        ) : (
+          <p className="sign-in-error small" role="alert">
+            Hermes's reply in the troubleshooting chat has ended, but the job couldn't be read again
+            {reading?.error ? `: ${reading.error}` : ", since Hermes Chat isn't connected"}. What changed shows once it has been read.
+          </p>
+        )
       ) : (
-        <p className="small" role="status">
-          <Spinner /> {trouble.phase === "starting" ? "Starting the chat…" : "Hermes is working on this job in a chat. This screen reads the job again when its reply ends."}
-        </p>
+        <>
+          <p className="small" role="status">
+            <Spinner /> {trouble.phase === "starting" ? "Starting the chat…" : "Hermes is working on this job in a chat. This screen reads the job again when its reply ends."}
+          </p>
+          {trouble.unconfirmed && (
+            <p className="muted small">
+              Hermes didn't confirm the first message ({trouble.unconfirmed}), so it may or may not have it. Open the chat to see.
+            </p>
+          )}
+          {changes.length > 0 && <p className="small">Changes so far, as the job was last read:</p>}
+        </>
       )}
       {changes.length > 0 && (
         <ul className="job-changes" aria-label="What changed">
@@ -1126,9 +1177,19 @@ function TroublePanel({
         </ul>
       )}
       <div className="jobs-actions">
-        {trouble.phase === "ended" && (
+        {confirmed && (
           <button className="btn primary" disabled={!connected || busy} onClick={onRunNow}>
             <Zap size={14} /> Run now to check the fix
+          </button>
+        )}
+        {ended && !confirmed && !reading?.loading && reading && (
+          <button className="btn" disabled={!connected} onClick={reading.reload}>
+            <RefreshCw size={14} /> Try again
+          </button>
+        )}
+        {trouble.phase === "working" && (
+          <button className="btn" disabled={!connected} title="If the reply has ended and this screen didn't notice, read the job as it is now" onClick={onEnd}>
+            <RefreshCw size={14} /> Read the job again
           </button>
         )}
         {trouble.chatId && (
@@ -1136,14 +1197,14 @@ function TroublePanel({
             <MessageSquare size={14} /> Open the chat
           </button>
         )}
-        {(trouble.phase === "ended" || trouble.phase === "failed") && (
+        {(ended || trouble.phase === "failed") && (
           <button className="btn" onClick={onDismiss}>
             Dismiss
           </button>
         )}
       </div>
-      {trouble.phase === "ended" && <p className="faint small">Run now is a real run, with the job's real delivery: it asks first. The chat stays in your chat list.</p>}
-      {job.state === "completed" && trouble.phase === "ended" && <p className="faint small">The job has no more runs on its schedule.</p>}
+      {confirmed && <p className="faint small">Run now is a real run, with the job's real delivery: it asks first. The chat stays in your chat list.</p>}
+      {job.state === "completed" && confirmed && <p className="faint small">The job has no more runs on its schedule.</p>}
     </section>
   );
 }
