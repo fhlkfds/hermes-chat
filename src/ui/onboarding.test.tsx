@@ -858,3 +858,52 @@ describe("Run setup again while the keyring is slow", () => {
     expect(screen.queryByRole("heading", { name: "Edit hermes" })).toBeNull();
   });
 });
+
+describe("Stopping a Save and connect that waits its turn", () => {
+  it("stops at once, never dials, and leaves the change before it to finish", async () => {
+    alreadySetUp({ signedOut: true });
+    const user = await start();
+    await screen.findByRole("heading", { name: "Connect to hermes" });
+    // Run setup again reads the keyring, and that change holds the queue.
+    backend.holdHeadersLoad = true;
+    await user.click(screen.getByRole("button", { name: "Run setup again…" }));
+    await waitFor(() => expect(backend.letKeyring).toBeTruthy());
+    await user.click(screen.getByRole("button", { name: "Set up a new connection…" }));
+    await toSignInStep(user);
+    await user.type(screen.getByLabelText("Dashboard username"), "liam");
+    await user.type(screen.getByLabelText("Dashboard password"), "hunter2");
+    await user.click(screen.getByRole("button", { name: "Test connection" }));
+    await screen.findByText(/Connected to Hermes/);
+
+    await user.click(screen.getByRole("button", { name: "Save and connect" }));
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+    // Stopped while still queued: no wait for the change ahead of it.
+    expect((await screen.findByText(/Connecting was stopped/)).textContent?.trim()).toBe("Connecting was stopped. Nothing was saved.");
+    backend.holdHeadersLoad = false;
+    await act(async () => backend.letKeyring!());
+    await act(async () => {});
+    expect([home.opened, backend.connectsStopped, backend.keyring]).toEqual([0, 0, undefined]);
+    // The change ahead of it gave way to the setup opened meanwhile; setup is still there, and can connect.
+    expect(screen.getByRole("heading", { name: "Sign in to the dashboard" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Save and connect" }));
+    await screen.findByRole("heading", { name: "Model providers" });
+    expect([home.opened, savedPassword()]).toEqual([1, "hunter2"]);
+  });
+});
+
+describe("The app closing while Save and connect dials", () => {
+  it("stops the dial through the real sign-in chain, and saves nothing even when the server answers later", async () => {
+    backend.holdConnect = true;
+    const user = await start();
+    await testedFirstRun(user);
+    await user.click(screen.getByRole("button", { name: "Save and connect" }));
+    await waitFor(() => expect(backend.letConnect).toBeTruthy());
+    const late = backend.letConnect!;
+    cleanup();
+    expect(backend.connectsStopped).toBe(1);
+    // The server answering after all changes nothing: the dial was already stopped.
+    await act(async () => late());
+    await act(async () => {});
+    expect([home.opened, backend.keyring, savedSignIn()]).toEqual([0, undefined, null]);
+  });
+});

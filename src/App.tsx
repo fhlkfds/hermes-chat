@@ -9,7 +9,7 @@ import { CHECK_EVERY_MS } from "./hermes/otherProfiles";
 import { type Account, type Kept, type SavedSignIn, launchSignIn, removeConnection, savedSignIn, signIn, signInForm, signOutToSignIn } from "./hermes/account";
 import { CONNECTIONS_KEY, Connections, type SavedConnection, addressLabel, defaultName, prefScope } from "./hermes/connections";
 import { forgetConnectionData } from "./hermes/forgetConnection";
-import { serial as makeSerial, stoppable } from "./hermes/serial";
+import { serial as makeSerial } from "./hermes/serial";
 import { localChatCache } from "./hermes/chatCache";
 import { draftKey, drafts } from "./hermes/drafts";
 import { PersonaStore, personaKey } from "./hermes/personaStore";
@@ -394,7 +394,7 @@ export default function App({ links = desktopLinks }: { links?: LinkInbox } = {}
       }
     }
     // Stopped while it waits its turn: it never starts, and the connection in use isn't touched.
-    return stoppable(serial, signal, () => new Error(CONNECT_STOPPED), async (stale) => {
+    return serial.stoppable(signal, () => new Error(CONNECT_STOPPED), async (stale) => {
       if (stale()) throw new Error("A newer connection was selected.");
       const before = current.current;
       const beforeConnection = connectionRef.current;
