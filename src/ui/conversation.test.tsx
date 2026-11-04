@@ -706,7 +706,7 @@ describe("Split panes and Settings", () => {
     const server = new FakeHermes();
     server.voice = { ...server.voice, silenceThreshold: 350, silenceDuration: 1.5 };
     const s = await opened(server);
-    await s.user.click(screen.getByTitle("Settings"));
+    await s.user.click(screen.getByRole("button", { name: "Settings" }));
     const section = (await screen.findByRole("heading", { name: "Voice" })).closest("section")!;
     await within(section).findByText("Ends a turn after 1.5 s of quiet");
     expect(section.textContent).toMatch(/1\.5 s of quiet \(voice\.silence_duration, the profile's\)/);

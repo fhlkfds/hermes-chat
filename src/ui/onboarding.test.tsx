@@ -298,7 +298,7 @@ describe("Setup from Settings", () => {
     alreadySetUp();
     const user = await start();
     await screen.findByText("New chat", { selector: ".chat-title span" });
-    await user.click(screen.getByTitle("Settings"));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(screen.getByRole("button", { name: "Run setup again" }));
     expect(await screen.findByRole("heading", { name: "Set up Hermes Chat" })).toBeTruthy();
     return user;
@@ -401,7 +401,7 @@ describe("Setup from Settings", () => {
     await user.click(await screen.findByRole("button", { name: "Finish" }));
     expect(backend.keyring).toBeUndefined();
 
-    await user.click(screen.getByTitle("Settings"));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(screen.getByRole("button", { name: "Run setup again" }));
     await user.click(await screen.findByRole("button", { name: "Change connection" }));
     await user.click(screen.getByRole("button", { name: "URL" }));

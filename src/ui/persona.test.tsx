@@ -501,12 +501,12 @@ describe("leaving an unsaved persona edit", () => {
     expect((await editor()).value).toBe("# Mine\n");
 
     // The Server files button on the rail asks too.
-    await user.click(screen.getByTitle("Server files"));
+    await user.click(screen.getByRole("button", { name: "Server files" }));
     await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Keep editing" }));
     expect((await editor()).value).toBe("# Mine\n");
 
     // So does Scheduled jobs.
-    await user.click(screen.getByTitle("Scheduled jobs"));
+    await user.click(screen.getByRole("button", { name: "Scheduled jobs" }));
     await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Keep editing" }));
     expect((await editor()).value).toBe("# Mine\n");
 

@@ -228,7 +228,6 @@ kbd {
 }
 .rail-top, .rail-bottom { display: flex; flex-direction: column; align-items: center; gap: 6px; }
 .rail .icon-btn { width: 34px; height: 34px; border-radius: 9px; }
-.rail-sep { width: 20px; height: 1px; background: var(--line-2); margin: 6px 0; }
 .rail-bottom { gap: 10px; }
 .rail-brand {
   width: 30px; height: 30px; border-radius: 9px; background: var(--accent); color: var(--on-accent); font-weight: 700;
@@ -236,10 +235,53 @@ kbd {
 }
 .rail-brand.big { width: 44px; height: 44px; font-size: calc(20rem / 14); border-radius: 12px; margin: 0 auto 14px; }
 .rail-chats { flex: 1; overflow-y: auto; display: flex; flex-direction: column; align-items: center; gap: 8px; width: 100%; padding: 2px 0; scrollbar-width: none; }
+/* Daily tools at the top in full strength; the profile's tools below in labeled groups, a step quieter (ADR 0048). */
+.rail-top { flex: none; }
+.rail .rail-primary { color: var(--text-2); }
+.rail .icon-btn.on::before {
+  content: ""; position: absolute; left: -11px; top: 9px; bottom: 9px; width: 3px; border-radius: 0 3px 3px 0; background: var(--accent);
+}
+.rail-mid {
+  flex: 1 1 auto; min-height: 0; width: 100%; overflow-y: auto; overflow-x: hidden; scrollbar-width: none;
+  display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 0 8px;
+}
+.rail-mid::-webkit-scrollbar { display: none; }
+.rail-group { display: flex; flex-direction: column; align-items: center; gap: 2px; width: 40px; padding-top: 8px; border-top: 1px solid var(--line); }
+.rail-group + .rail-group { margin-top: 6px; }
+.rail-group-label {
+  font-size: calc(9rem / 14); line-height: 1; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint);
+  margin-bottom: 4px; user-select: none;
+}
+.rail-group .icon-btn { width: 32px; height: 32px; }
+.rail-group .icon-btn.on::before { left: -12px; top: 8px; bottom: 8px; }
 .rail-tip {
-  position: fixed; left: 66px; transform: translateY(-50%); background: var(--raised-2); border: 1px solid var(--line-2);
-  padding: 5px 9px; border-radius: 7px; font-size: calc(12.5rem / 14); white-space: nowrap; pointer-events: none; z-index: 60;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+  position: fixed; left: 62px; transform: translateY(-50%); background: var(--raised-2); border: 1px solid var(--line-2);
+  padding: 6px 9px; border-radius: 8px; font-size: calc(12.5rem / 14); white-space: nowrap; pointer-events: none; z-index: 60;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4); display: grid; grid-template-columns: auto auto; align-items: center; column-gap: 10px; row-gap: 2px;
+}
+.rail-tip-label { color: var(--text-strong); font-weight: 600; }
+.rail-tip kbd {
+  justify-self: end; font: inherit; font-size: calc(11rem / 14); color: var(--muted); background: var(--raised-3); border: 1px solid var(--line-2);
+  border-radius: 5px; padding: 1px 5px;
+}
+.rail-tip-note { grid-column: 1 / -1; color: var(--muted); font-size: calc(12rem / 14); }
+/* A short window: the groups keep their rules but drop their labels, and the gaps close up; past that the middle scrolls. */
+@media (max-height: 620px) {
+  .rail { padding: 10px 0 8px; }
+  .rail-top { gap: 4px; }
+  .rail-mid { padding: 6px 0 4px; gap: 2px; }
+  .rail-group { padding-top: 4px; }
+  .rail-group + .rail-group { margin-top: 2px; }
+  .rail-group-label { display: none; }
+  .rail-group .icon-btn { width: 30px; height: 30px; }
+  .rail-bottom { gap: 6px; }
+}
+/* The window's minimum height (500 px) still fits every button without scrolling. */
+@media (max-height: 540px) {
+  .rail-top { gap: 2px; }
+  .rail .rail-primary { width: 32px; height: 32px; }
+  .rail-group .icon-btn { width: 28px; height: 28px; }
+  .rail-group .icon-btn.on::before { left: -14px; top: 7px; bottom: 7px; }
 }
 /* ---------- split panes (Split.tsx) ---------- */
 .panes { flex: 1; min-height: 0; display: flex; flex-direction: column; }

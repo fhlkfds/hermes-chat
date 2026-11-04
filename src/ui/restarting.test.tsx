@@ -48,7 +48,7 @@ it("makes the window inert, and says so, while it restarts", async () => {
   await launch(s);
   const app = document.querySelector(".app")!;
   expect(app.hasAttribute("inert")).toBe(false);
-  expect(screen.getByTitle(/an update is ready/)).toBeTruthy();
+  expect(screen.getByRole("button", { name: /an update is ready/ })).toBeTruthy();
 
   act(() => {
     state = { state: "restarting", from: "r1.ef433a2-1", to: "r2.4444444-1" };
