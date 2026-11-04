@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// The Repository screen's Worktrees view (ADR 0041) against a fake of Rust's `repo_git` and `repo_git_stream`
+// The Repository screen's Worktrees view (ADR 0042) against a fake of Rust's `repo_git` and `repo_git_stream`
 // commands. Its answers have the shapes repo_worktree_helper.py gives for real repositories
 // (src-tauri/tests/repo_worktree.rs, which runs the helper itself).
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";

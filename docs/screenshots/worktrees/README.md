@@ -1,4 +1,4 @@
-# Worktrees screenshots (#82, ADR 0041)
+# Worktrees screenshots (#82, ADR 0042)
 
 Captured on 2026-11-04 from the running Tauri debug build (WebKitGTK, frontend built in) on an Xvfb display with openbox. They're framebuffer captures of the 1280 × 820 window, or the 760-pixel window for `18` and `19`. They aren't mockups, and nothing was composited or retouched.
 

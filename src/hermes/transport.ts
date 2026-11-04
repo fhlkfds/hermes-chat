@@ -778,6 +778,7 @@ export class Hermes {
     (_profile, name) => {
       if (name === "stt") this.voiceRead = undefined;
     },
+    (method, params) => this.request(method, params),
   );
   /** Settings → Memory's reads and writes (memory.ts). Each call names the profile it is for. */
   readonly memory: MemoryApi = memoryApi({
@@ -1241,7 +1242,7 @@ export class Hermes {
   /**
    * The chats Hermes has working in `path` or a folder inside it, in every profile, from any Hermes client
    * (`GET /api/sessions?cwd_prefix=`, archived ones included). Only rows whose own `cwd` is inside `path` count. Rejects
-   * when a profile can't be asked: a removal must not go ahead on a partial answer (ADR 0041).
+   * when a profile can't be asked: a removal must not go ahead on a partial answer (ADR 0042).
    */
   async chatsWorkingIn(path: string): Promise<{ id: string; title: string; profile: string; cwd: string; active: boolean }[]> {
     const root = path.replace(/\/+$/, "");
@@ -2051,6 +2052,14 @@ export class Hermes {
    */
   async send(chatId: string, text: string, attachments: Attachment[] = []): Promise<Delivery> {
     return (await this.deliver(chatId, text, attachments)).delivery;
+  }
+
+  /**
+   * Sends a message as `send` does, and also says which item in the chat it is, so a Voice conversation can follow the
+   * reply to that message and no other (ADR 0041). `itemId` is missing only when the chat isn't in the list.
+   */
+  sendTracked(chatId: string, text: string): Promise<{ delivery: Delivery; itemId?: string }> {
+    return this.deliver(chatId, text, []);
   }
 
   /**

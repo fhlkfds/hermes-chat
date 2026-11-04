@@ -425,7 +425,7 @@ type Pane = {
   draftError?: string;
   picked?: { found: Found; at: number };
   jump?: JumpTarget;
-  /** The worktree a New chat pane starts its chat in, picked in the Repository screen (ADR 0041). */
+  /** The worktree a New chat pane starts its chat in, picked in the Repository screen (ADR 0042). */
   worktree?: WorktreeStart;
 };
 
@@ -507,7 +507,7 @@ export function Main({
   localFiles?: LocalFiles;
   webPages?: WebPages;
   screenshots?: Screenshots;
-  /** The Repository screen's helper over ssh, and worktrees' (ADR 0034, 0041). */
+  /** The Repository screen's helper over ssh, and worktrees' (ADR 0034, 0042). */
   repoApi?: RepoApi;
   /** The global shortcut (ADR 0033); none outside the desktop app. */
   summon?: SummonApi;
@@ -919,7 +919,7 @@ export function Main({
 
   const newChat = (remember = true) => openChat(null, { remember, fresh: true });
 
-  /** Opens the Repository screen on a worktree's Worktrees view, as a chat's worktree label does (ADR 0041). */
+  /** Opens the Repository screen on a worktree's Worktrees view, as a chat's worktree label does (ADR 0042). */
   const openRepository = (at: { target: string; path: string; view: "worktrees" }) =>
     guard(() => {
       setProjectOpen(false);
@@ -1989,6 +1989,10 @@ export function Main({
             modelSettings={hermes.modelSettings}
             toolsets={hermes.toolsets}
             runningReplies={chats.filter((c) => c.running).length}
+            openChat={(() => {
+              const c = chats.find((x) => x.id === active.chatId);
+              return c && { id: c.id, title: c.title, runtimeId: c.runtimeId, running: c.running };
+            })()}
             memory={hermes.memory}
             onMemoryDirty={onMemoryDirty}
             memoryDiscards={memoryDiscards}
@@ -2414,7 +2418,7 @@ function ChatView({
   repoApi: RepoApi;
   /** The connection and profile, as this computer keys what it keeps for each. */
   scope: string;
-  /** The worktree this New chat pane starts its chat in (ADR 0041). */
+  /** The worktree this New chat pane starts its chat in (ADR 0042). */
   worktree?: WorktreeStart;
   onDropWorktree: () => void;
   /** Opens the Repository screen's Worktrees view on the worktree a chat works in. */
@@ -2463,7 +2467,7 @@ function ChatView({
   useEffect(() => setApplying(false), [chatId]);
 
   const shownModel = (started && chat.model) || startSettings.model.value;
-  // The worktree this chat was started in from this computer, if it was (ADR 0041).
+  // The worktree this chat was started in from this computer, if it was (ADR 0042).
   const inWorktreeKey = useSyncExternalStore(worktreeChats.subscribe, () => JSON.stringify(started ? (worktreeChats.get(scope, chat.id) ?? null) : null));
   const inWorktree = useMemo(() => JSON.parse(inWorktreeKey) as WorktreeChat | null, [inWorktreeKey]);
   const pickModel = (pick: ModelPick) => {
@@ -2742,6 +2746,9 @@ function ChatView({
       screenshots={screenshots}
       screenshotKeys={screenshotKeys}
       voice={voice}
+      // A Voice conversation's turn goes straight to the chat, as a slash command's message does: what the owner has
+      // typed stays in the composer, and a failure is a Failed message (ADR 0041).
+      voiceSend={started ? (text) => hermes.sendTracked(chat.id, text) : undefined}
       commands={commands}
       paneControls={paneControls}
       headActions={

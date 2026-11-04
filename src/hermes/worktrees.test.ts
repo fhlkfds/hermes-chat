@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Starting a chat in a worktree, and asking Hermes which chats work in a folder (ADR 0041).
+// Starting a chat in a worktree, and asking Hermes which chats work in a folder (ADR 0042).
 import { afterEach, describe, expect, it } from "vitest";
 import { FakeHermes, row } from "./fakeHermes";
 import { connect, type Hermes } from "./transport";

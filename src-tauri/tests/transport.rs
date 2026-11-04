@@ -271,6 +271,8 @@ async fn config(headers: HeaderMap, Query(q): Query<HashMap<String, String>>) ->
         "model": {"default": "glm-5.3-flash", "api_key": "sk-model-SECRET"},
         "stt": {"enabled": false, "provider": "groq", "groq": {"api_key": "gsk-SECRET"}},
         "tts": {"provider": "openai", "openai": {"api_key": "sk-tts-SECRET", "voice": "alloy"}},
+        // `true` is YAML for a typo'd number: Hermes's `_numeric_or` drops it, and so does the app.
+        "voice": {"silence_threshold": 350, "silence_duration": 1.5, "max_recording_seconds": true, "gpt_live": {"api_key": "sk-live-SECRET"}},
     }))
     .into_response()
 }
@@ -679,6 +681,7 @@ fn toolset_guards_keep_only_no_mcp_platforms_coding_focus_and_disabled_names() {
     let none = || transport::ToolsetGuards {
         no_mcp: vec![],
         no_mcp_unclear: vec![],
+        saved_lists: vec![],
         coding_focus: false,
         disabled_everywhere: vec![],
         disabled_unclear: false,
@@ -688,6 +691,8 @@ fn toolset_guards_keep_only_no_mcp_platforms_coding_focus_and_disabled_names() {
         transport::ToolsetGuards {
             no_mcp: vec!["cli".into(), "irc".into(), "telegram".into()],
             no_mcp_unclear: vec!["line".into(), "matrix".into(), "slack".into()],
+            // `signal` holds a string Hermes doesn't read as a list, so it inherits Hermes's default like an absent one.
+            saved_lists: vec!["cli".into(), "discord".into(), "irc".into(), "telegram".into()],
             coding_focus: true,
             disabled_everywhere: vec!["web".into(), "debugging".into()],
             disabled_unclear: false,
@@ -699,6 +704,7 @@ fn toolset_guards_keep_only_no_mcp_platforms_coding_focus_and_disabled_names() {
         json!({
             "noMcp": ["cli", "irc", "telegram"],
             "noMcpUnclear": ["line", "matrix", "slack"],
+            "savedLists": ["cli", "discord", "irc", "telegram"],
             "codingFocus": true,
             "disabledEverywhere": ["web", "debugging"],
             "disabledUnclear": false
@@ -706,6 +712,9 @@ fn toolset_guards_keep_only_no_mcp_platforms_coding_focus_and_disabled_names() {
     );
     assert!(!out.to_string().contains("sk-secret"));
     assert_eq!(transport::toolset_guards(&json!({})), none());
+    // Null, an empty saved list, and a string list literal: inherited, saved (even empty), saved.
+    let saved = transport::toolset_guards(&json!({"platform_toolsets": {"cli": null, "discord": [], "slack": "['web']"}})).saved_lists;
+    assert_eq!(saved, vec!["discord".to_string(), "slack".to_string()]);
     assert!(!transport::toolset_guards(&json!({"agent": {"coding_context": "auto"}})).coding_focus);
     // As `hermes config set` stores a list, and a single name, both as Hermes's parse_config_string_list reads them.
     let listed = |v: serde_json::Value| {
@@ -1352,18 +1361,40 @@ async fn reads_the_voice_setup_without_passing_on_any_key() {
     let setup = signed_in().await.voice_setup("default").await.unwrap();
     assert_eq!(
         setup,
-        transport::VoiceSetup { transcribe: true, speak: true, stt_enabled: Some(false), stt_provider: Some("groq".into()), tts_provider: Some("openai".into()) }
+        transport::VoiceSetup {
+            transcribe: true,
+            speak: true,
+            stt_enabled: Some(false),
+            stt_provider: Some("groq".into()),
+            tts_provider: Some("openai".into()),
+            silence_threshold: Some(350.0),
+            silence_duration: Some(1.5),
+            max_recording_seconds: None,
+        }
     );
     let json = serde_json::to_string(&setup).unwrap();
     assert!(!json.contains("SECRET"), "{json}");
-    assert_eq!(json, r#"{"transcribe":true,"speak":true,"sttEnabled":false,"sttProvider":"groq","ttsProvider":"openai"}"#);
+    assert_eq!(
+        json,
+        r#"{"transcribe":true,"speak":true,"sttEnabled":false,"sttProvider":"groq","ttsProvider":"openai","silenceThreshold":350.0,"silenceDuration":1.5}"#
+    );
 }
 
 #[tokio::test]
 async fn a_server_without_voice_has_neither_route() {
     for profile in ["old", "older"] {
         let setup = signed_in().await.voice_setup(profile).await.unwrap();
-        assert_eq!(setup, transport::VoiceSetup { transcribe: false, speak: false, stt_enabled: None, stt_provider: None, tts_provider: None }, "{profile}");
+        let none = transport::VoiceSetup {
+            transcribe: false,
+            speak: false,
+            stt_enabled: None,
+            stt_provider: None,
+            tts_provider: None,
+            silence_threshold: None,
+            silence_duration: None,
+            max_recording_seconds: None,
+        };
+        assert_eq!(setup, none, "{profile}");
     }
 }
 

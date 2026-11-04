@@ -587,7 +587,8 @@ describe("Settings, Voice", () => {
     const { user } = await signedIn(server);
     await user.click(screen.getByTitle("Settings"));
     const section = (await screen.findByRole("heading", { name: "Voice" })).closest("section")!;
-    await waitFor(() => expect(within(section).getAllByText("Unavailable")).toHaveLength(2));
+    // Dictation, Read aloud, and the Voice conversation that needs them both.
+    await waitFor(() => expect(within(section).getAllByText("Unavailable")).toHaveLength(3));
     expect(section.textContent).toMatch(/can't transcribe recordings/);
     expect(section.textContent).toMatch(/can't read replies aloud/);
   });

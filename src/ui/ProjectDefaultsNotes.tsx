@@ -32,7 +32,7 @@ export function NewChatSettingsView({
   where?: string;
   profile: string;
   problem?: string;
-  /** The worktree the chat starts in (ADR 0041), and how to start it elsewhere instead. */
+  /** The worktree the chat starts in (ADR 0042), and how to start it elsewhere instead. */
   worktree?: { branch: string; path: string; onDrop: () => void };
 }) {
   const { model, effort, instructions, folder, project } = settings;

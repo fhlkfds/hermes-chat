@@ -1,5 +1,5 @@
 
-# ── worktrees (ADR 0041) ────────────────────────────────────────────────────
+# ── worktrees (ADR 0042) ────────────────────────────────────────────────────
 #
 # The second half of the helper: creating, listing, setting up and removing worktrees of the repository on the
 # server. Rust sends this file after repo_git_helper.py as one program, so everything above is in scope here: `git`,

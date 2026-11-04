@@ -1,4 +1,4 @@
-//! Worktrees on the server (ADR 0041): the helper's worktree operations, run as the server runs them (the exact remote
+//! Worktrees on the server (ADR 0042): the helper's worktree operations, run as the server runs them (the exact remote
 //! command string through `sh -c`), against real Git repositories in a temporary folder. Only ssh itself is left out.
 
 use hermes_chat::repo_git::{self, RepoError, Request};

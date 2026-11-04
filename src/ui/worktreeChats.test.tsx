@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Chats started in a worktree (ADR 0041), in the app: from the Repository screen's Worktrees view to the New chat pane,
+// Chats started in a worktree (ADR 0042), in the app: from the Repository screen's Worktrees view to the New chat pane,
 // against a fake Hermes (session.create, /api/fs/list) and a fake of the Repository helper's Rust command.
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
