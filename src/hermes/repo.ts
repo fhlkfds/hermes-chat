@@ -122,13 +122,16 @@ export type RepoRequest =
   | { op: "preview"; repo: string }
   | { op: "commit"; repo: string; message: string; expect: Expect }
   | { op: "publishInfo"; repo: string }
-  | { op: "push"; repo: string; remote: string; branch: string; remoteBranch: string; expect: { head: string | null } }
+  /** `pushUrl`: the push URL the confirmation showed (no credentials); refused if the remote now pushes elsewhere. */
+  | { op: "push"; repo: string; remote: string; pushUrl: string; branch: string; remoteBranch: string; expect: { head: string | null } }
   | {
       op: "prCreate";
       repo: string;
       /** The local branch the form was written for: refused if it's no longer checked out at `expect.head`. */
       branch: string;
       remote: string;
+      /** The GitHub repository (`owner/name`) the form showed: refused if the remote now names another. */
+      githubRepo: string;
       remoteBranch: string;
       base: string;
       title: string;

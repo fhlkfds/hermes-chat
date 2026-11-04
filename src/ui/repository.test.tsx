@@ -643,7 +643,7 @@ describe("Repository screen, publishing", () => {
     await user.click(dialog.getByRole("button", { name: "Push" }));
     expect(await dialog.findByText(/Pushed\. origin now has feature\/login at/)).toBeTruthy();
     expect(dialog.getByText(/now tracks origin\/feature\/login/)).toBeTruthy();
-    expect(calls.find((c) => c.request.op === "push")?.request).toEqual({ op: "push", repo: TOP, remote: "origin", branch: "feature/login", remoteBranch: "feature/login", expect: { head: HEAD } });
+    expect(calls.find((c) => c.request.op === "push")?.request).toEqual({ op: "push", repo: TOP, remote: "origin", pushUrl: "https://github.com/acme/weather.git", branch: "feature/login", remoteBranch: "feature/login", expect: { head: HEAD } });
   });
 
   it("says a rejected push wasn't forced, and what to do", async () => {
@@ -676,7 +676,7 @@ describe("Repository screen, publishing", () => {
     await user.click(button);
     await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Push" }));
     await within(screen.getByRole("dialog")).findByText(/Pushed\./);
-    expect(calls.find((c) => c.request.op === "push")?.request).toEqual({ op: "push", repo: TOP, remote: "origin", branch: "feature/login", remoteBranch: "feature/login", expect: { head: HEAD } });
+    expect(calls.find((c) => c.request.op === "push")?.request).toEqual({ op: "push", repo: TOP, remote: "origin", pushUrl: "https://github.com/acme/weather.git", branch: "feature/login", remoteBranch: "feature/login", expect: { head: HEAD } });
   });
 
   it("has nothing to push when the remote has the branch at this commit", async () => {
@@ -685,6 +685,14 @@ describe("Repository screen, publishing", () => {
     const panel = within(await screen.findByRole("region", { name: "Publish" }));
     expect(await panel.findByText(/Nothing to push: origin\/feature\/login has this commit/)).toBeTruthy();
     expect((panel.getByRole("button", { name: /^Push…$/ }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("still offers Push when gh couldn't read GitHub, and says so in the pull request card", async () => {
+    const { api } = publishing(() => ({}), () => ({ ...INFO, github: { ...INFO.github, url: null, defaultBranch: null, error: "gh isn't installed on the server, or isn't on the PATH ssh gives it." } }));
+    show(api);
+    const panel = within(await screen.findByRole("region", { name: "Publish" }));
+    expect((await panel.findByRole("button", { name: /Push 2 commits/ }) as HTMLButtonElement).disabled).toBe(false);
+    expect(panel.getByText(/gh isn't installed on the server/)).toBeTruthy();
   });
 
   it("won't create a pull request before the branch is pushed", async () => {
@@ -712,7 +720,7 @@ describe("Repository screen, publishing", () => {
     await user.click(screen.getByRole("button", { name: /Create pull request/ }));
     expect(await screen.findByText("https://github.com/acme/weather/pull/7", { selector: ".files-banner .mono" })).toBeTruthy();
     expect(calls.find((c) => c.request.op === "prCreate")?.request).toEqual({
-      op: "prCreate", repo: TOP, branch: "feature/login", remote: "origin", remoteBranch: "feature/login", base: "release",
+      op: "prCreate", repo: TOP, branch: "feature/login", remote: "origin", githubRepo: "acme/weather", remoteBranch: "feature/login", base: "release",
       title: "Require a user name to sign in", body: "Fixes the empty-user bug.", draft: true, expect: { head: HEAD },
     });
     expect(await screen.findByText("1 running or waiting, 1 passed.")).toBeTruthy();

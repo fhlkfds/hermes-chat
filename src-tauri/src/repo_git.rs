@@ -70,9 +70,10 @@ pub enum Request {
     Commit { repo: String, message: String, expect: Expect },
     /// Where a push and a pull request would go: branch, upstream, remotes, unpushed commits, the GitHub repository.
     PublishInfo { repo: String },
-    /// Pushes HEAD, if it is still `expect.head` on `branch`, to `remote_branch` on `remote`. Never forced.
+    /// Pushes HEAD, if it is still `expect.head` on `branch`, to `remote_branch` on `remote`, if `remote` still pushes
+    /// to `push_url` (as shown, without credentials). Never forced.
     #[serde(rename_all = "camelCase")]
-    Push { repo: String, remote: String, branch: String, remote_branch: String, expect: HeadExpect },
+    Push { repo: String, remote: String, push_url: String, branch: String, remote_branch: String, expect: HeadExpect },
     /// Opens a pull request from `remote_branch` into `base`, only if `branch` is still checked out at `expect.head`
     /// and the remote has that branch at `expect.head`.
     /// It never pushes.
@@ -82,6 +83,8 @@ pub enum Request {
         /// The local branch the form was written for: refused if it's no longer checked out at `expect.head`.
         branch: String,
         remote: String,
+        /// The GitHub repository (`owner/name`) the form showed: refused if `remote` now names another.
+        github_repo: String,
         remote_branch: String,
         base: String,
         title: String,
@@ -374,7 +377,7 @@ mod tests {
         assert!(!dropped_before_login(&RepoError::Timeout(60)));
         assert!(Request::Status { repo: "/r".into() }.reads_only());
         assert!(Request::PublishInfo { repo: "/r".into() }.reads_only());
-        let push = Request::Push { repo: "/r".into(), remote: "o".into(), branch: "b".into(), remote_branch: "b".into(), expect: HeadExpect { head: None } };
+        let push = Request::Push { repo: "/r".into(), remote: "o".into(), push_url: "u".into(), branch: "b".into(), remote_branch: "b".into(), expect: HeadExpect { head: None } };
         assert!(!push.reads_only());
         let commit = Request::Commit { repo: "/r".into(), message: "m".into(), expect: Expect { head: None, index: "i".into(), raw_sha: None, head_ref: None } };
         assert!(!commit.reads_only());

@@ -1143,7 +1143,7 @@ function PushDialog({ api, target, top, info: p, onClose }: { api: RepoApi; targ
   const push = () => {
     if (!p.remote || !p.branch || !p.remoteBranch) return;
     setState({ phase: "pushing" });
-    api.run(target, { op: "push", repo: top, remote: p.remote, branch: p.branch, remoteBranch: p.remoteBranch, expect: { head: p.head } }).then(
+    api.run(target, { op: "push", repo: top, remote: p.remote, pushUrl: p.remoteUrl, branch: p.branch, remoteBranch: p.remoteBranch, expect: { head: p.head } }).then(
       (v) => alive.current && setState({ phase: "pushed", result: v as Pushed }),
       (e: unknown) => {
         if (!alive.current) return;
@@ -1319,7 +1319,7 @@ function PrCard({
     setCreating(true);
     setError(undefined);
     api
-      .run(target, { op: "prCreate", repo: top, branch: p.branch ?? "", remote: p.remote, remoteBranch: p.remoteBranch, base, title, body, draft: isDraft, expect: { head: p.head } })
+      .run(target, { op: "prCreate", repo: top, branch: p.branch ?? "", remote: p.remote, githubRepo: p.github?.repo ?? "", remoteBranch: p.remoteBranch, base, title, body, draft: isDraft, expect: { head: p.head } })
       .then(
         (v) => {
           if (!alive.current) return;

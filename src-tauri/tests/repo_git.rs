@@ -774,12 +774,25 @@ fn with_remote(name: &str) -> (Dir, Dir) {
     (d, remote)
 }
 
+/// The push URL Push's confirmation shows for `remote`: credentials in an http(s) URL taken out, as the helper does.
+fn shown_url(d: &Dir, remote: &str) -> String {
+    let url = git(d.path(), &["remote", "get-url", "--push", remote]);
+    for scheme in ["https://", "http://"] {
+        if let Some(rest) = url.strip_prefix(scheme) {
+            if let Some(at) = rest.find('@').filter(|&at| !rest[..at].contains('/')) {
+                return format!("{scheme}{}", &rest[at + 1..]);
+            }
+        }
+    }
+    url
+}
+
 fn head(d: &Dir) -> String {
     git(d.path(), &["rev-parse", "HEAD"])
 }
 
 async fn push(d: &Dir, expect: Option<String>) -> Result<Value, RepoError> {
-    ask(Request::Push { repo: d.s(), remote: "origin".into(), branch: "feature".into(), remote_branch: "feature".into(), expect: HeadExpect { head: expect } }).await
+    ask(Request::Push { repo: d.s(), remote: "origin".into(), push_url: shown_url(&d, "origin"), branch: "feature".into(), remote_branch: "feature".into(), expect: HeadExpect { head: expect } }).await
 }
 
 #[tokio::test]
@@ -829,7 +842,7 @@ async fn a_new_branch_on_commits_the_remote_has_can_still_be_pushed() {
     assert_eq!(p["remoteBranch"], "fresh");
     assert_eq!(p["ahead"], 0, "every commit is already on the remote: {p}");
     assert_eq!(p["remoteBranchExists"], false, "but the remote has no branch called fresh: {p}");
-    ask(Request::Push { repo: d.s(), remote: "origin".into(), branch: "fresh".into(), remote_branch: "fresh".into(), expect: HeadExpect { head: Some(head(&d)) } })
+    ask(Request::Push { repo: d.s(), remote: "origin".into(), push_url: shown_url(&d, "origin"), branch: "fresh".into(), remote_branch: "fresh".into(), expect: HeadExpect { head: Some(head(&d)) } })
         .await
         .unwrap();
     assert_eq!(git(remote.path(), &["rev-parse", "refs/heads/fresh"]), head(&d));
@@ -895,9 +908,9 @@ async fn a_push_to_an_unreachable_remote_is_a_network_failure() {
 #[tokio::test]
 async fn names_that_could_be_options_are_refused() {
     let (d, _remote) = with_remote("push-names");
-    let e = ask(Request::Push { repo: d.s(), remote: "origin".into(), branch: "feature".into(), remote_branch: "--force".into(), expect: HeadExpect { head: Some(head(&d)) } }).await.unwrap_err();
+    let e = ask(Request::Push { repo: d.s(), remote: "origin".into(), push_url: shown_url(&d, "origin"), branch: "feature".into(), remote_branch: "--force".into(), expect: HeadExpect { head: Some(head(&d)) } }).await.unwrap_err();
     assert_eq!(kind(e), "bad-branch");
-    let e = ask(Request::Push { repo: d.s(), remote: "--mirror".into(), branch: "feature".into(), remote_branch: "feature".into(), expect: HeadExpect { head: Some(head(&d)) } }).await.unwrap_err();
+    let e = ask(Request::Push { repo: d.s(), remote: "--mirror".into(), push_url: String::new(), branch: "feature".into(), remote_branch: "feature".into(), expect: HeadExpect { head: Some(head(&d)) } }).await.unwrap_err();
     assert_eq!(kind(e), "bad-remote");
 }
 
@@ -905,7 +918,7 @@ async fn names_that_could_be_options_are_refused() {
 async fn pull_requests_need_a_github_remote_and_never_push() {
     let (d, remote) = with_remote("pr-local");
     let e = ask(Request::PrCreate {
-        repo: d.s(), branch: "feature".into(), remote: "origin".into(), remote_branch: "feature".into(), base: "main".into(),
+        repo: d.s(), branch: "feature".into(), remote: "origin".into(), github_repo: "acme/widgets".into(), remote_branch: "feature".into(), base: "main".into(),
         title: "Feature".into(), body: String::new(), draft: false, expect: HeadExpect { head: Some(head(&d)) },
     })
     .await
@@ -926,7 +939,7 @@ async fn a_branch_tracking_main_is_never_pushed_to_main() {
     let p = ask(Request::PublishInfo { repo: d.s() }).await.unwrap();
     assert_eq!(p["upstream"]["branch"], "main");
     assert_eq!(p["remoteBranch"], "fix", "{p}");
-    ask(Request::Push { repo: d.s(), remote: "origin".into(), branch: "fix".into(), remote_branch: "fix".into(), expect: HeadExpect { head: Some(head(&d)) } }).await.unwrap();
+    ask(Request::Push { repo: d.s(), remote: "origin".into(), push_url: shown_url(&d, "origin"), branch: "fix".into(), remote_branch: "fix".into(), expect: HeadExpect { head: Some(head(&d)) } }).await.unwrap();
     assert_eq!(git(remote.path(), &["rev-parse", "refs/heads/main"]), main_before);
     assert_eq!(git(remote.path(), &["rev-parse", "refs/heads/fix"]), head(&d));
 }
@@ -960,7 +973,7 @@ async fn a_configured_remote_named_like_an_option_is_refused() {
     git(d.path(), &["config", "remote.--no-verify.url", &remote.s()]);
     let p = ask(Request::PublishInfo { repo: d.s() }).await.unwrap();
     assert!(p["remotes"].as_array().unwrap().iter().all(|r| r["name"] != "--no-verify"));
-    let e = ask(Request::Push { repo: d.s(), remote: "--no-verify".into(), branch: "feature".into(), remote_branch: "feature".into(), expect: HeadExpect { head: Some(head(&d)) } }).await.unwrap_err();
+    let e = ask(Request::Push { repo: d.s(), remote: "--no-verify".into(), push_url: String::new(), branch: "feature".into(), remote_branch: "feature".into(), expect: HeadExpect { head: Some(head(&d)) } }).await.unwrap_err();
     assert_eq!(kind(e), "bad-remote");
 }
 
@@ -1042,7 +1055,7 @@ async fn a_pull_request_made_but_slow_to_read_back_keeps_its_link() {
     let mut c = helper();
     c.env("PATH", format!("{}:{}", bin.s(), std::env::var("PATH").unwrap())).env("HERMES_REPO_READBACK_TIMEOUT", "1");
     let r = repo_git::run(c, &Request::PrCreate {
-        repo: d.s(), branch: "feature".into(), remote: "origin".into(), remote_branch: "feature".into(), base: "main".into(),
+        repo: d.s(), branch: "feature".into(), remote: "origin".into(), github_repo: "acme/widgets".into(), remote_branch: "feature".into(), base: "main".into(),
         title: "Feature".into(), body: "Body".into(), draft: false, expect: HeadExpect { head: Some(head(&d)) },
     })
     .await
@@ -1105,6 +1118,8 @@ async fn a_staged_submodule_is_previewed_even_when_config_says_to_ignore_submodu
     let p = preview(&d).await;
     let files: Vec<&str> = p["files"].as_array().unwrap().iter().map(|f| f["path"].as_str().unwrap()).collect();
     assert!(files.contains(&"vendor/lib") && files.contains(&"notes.txt"), "{files:?}");
+    let shown = diff(&d, "vendor/lib", None, DiffSide::Staged, 3).await;
+    assert!(shown["diff"].as_str().unwrap().contains(&format!("+Subproject commit {pinned}")), "the gitlink's diff shows its commit: {shown}");
     let r = commit(&d, &p, "Pin the library").await.unwrap();
     assert_eq!(r["matches"], true, "the commit holds exactly what was previewed: {r}");
     assert_eq!(git(d.path(), &["ls-tree", "HEAD", "vendor/lib"]).split_whitespace().nth(2), Some(pinned.as_str()));
@@ -1116,7 +1131,7 @@ async fn a_pull_request_is_refused_when_the_local_branch_or_commit_moved() {
     push(&d, Some(head(&d))).await.unwrap();
     let shown = head(&d);
     let pr = |branch: &str, h: &str| Request::PrCreate {
-        repo: d.s(), branch: branch.into(), remote: "origin".into(), remote_branch: "feature".into(), base: "main".into(),
+        repo: d.s(), branch: branch.into(), remote: "origin".into(), github_repo: "acme/widgets".into(), remote_branch: "feature".into(), base: "main".into(),
         title: "Feature".into(), body: String::new(), draft: false, expect: HeadExpect { head: Some(h.into()) },
     };
     // An agent committed here after the form was read.
@@ -1127,4 +1142,88 @@ async fn a_pull_request_is_refused_when_the_local_branch_or_commit_moved() {
     git(d.path(), &["switch", "-qc", "other", &shown]);
     assert_eq!(kind(ask(pr("feature", &shown)).await.unwrap_err()), "stale");
     assert_eq!(git(remote.path(), &["rev-parse", "refs/heads/feature"]), shown, "nothing was pushed");
+}
+
+// ── Codex review round 2 (consolidation for #66) ────────────────────────────
+
+#[tokio::test]
+async fn a_push_is_refused_when_the_remote_now_points_somewhere_else() {
+    // The confirmation showed origin's URL; then origin was pointed at another repository.
+    let (d, first) = with_remote("push-url-moved");
+    let shown = shown_url(&d, "origin");
+    let second = Dir::new("push-url-moved-other");
+    git(second.path(), &["init", "-q", "--bare", "-b", "main"]);
+    git(d.path(), &["remote", "set-url", "origin", &second.s()]);
+    let e = ask(Request::Push { repo: d.s(), remote: "origin".into(), push_url: shown, branch: "feature".into(), remote_branch: "feature".into(), expect: HeadExpect { head: Some(head(&d)) } })
+        .await
+        .unwrap_err();
+    assert_eq!(kind(e), "stale");
+    assert_eq!(git(first.path(), &["branch", "--list", "feature"]), "");
+    assert_eq!(git(second.path(), &["branch", "--list", "feature"]), "", "nothing went to the new URL");
+}
+
+#[tokio::test]
+async fn a_pull_request_is_refused_when_the_remote_now_names_another_github_repository() {
+    let (d, _remote) = with_remote("pr-repo-moved");
+    git(d.path(), &["remote", "set-url", "origin", "https://github.com/acme/other.git"]);
+    let e = ask(Request::PrCreate {
+        repo: d.s(), branch: "feature".into(), remote: "origin".into(), github_repo: "acme/widgets".into(), remote_branch: "feature".into(), base: "main".into(),
+        title: "Feature".into(), body: String::new(), draft: false, expect: HeadExpect { head: Some(head(&d)) },
+    })
+    .await
+    .unwrap_err();
+    let v = serde_json::to_value(&e).unwrap();
+    assert_eq!(v["kind"], "stale", "{v}");
+    assert!(v["message"].as_str().unwrap().contains("acme/other"), "{v}");
+}
+
+#[tokio::test]
+async fn push_recurse_submodules_config_neither_replaces_nor_adds_to_the_push() {
+    let (d, remote) = with_remote("push-recurse");
+    git(d.path(), &["config", "push.recurseSubmodules", "only"]);
+    let r = push(&d, Some(head(&d))).await.unwrap();
+    assert_eq!(r["matches"], true, "{r}");
+    assert_eq!(git(remote.path(), &["rev-parse", "refs/heads/feature"]), head(&d), "the confirmed branch itself was pushed");
+}
+
+/// A repository whose origin is written as a GitHub URL and rewritten to its local bare remote for Git.
+fn github_written(name: &str) -> (Dir, Dir) {
+    let (d, remote) = with_remote(name);
+    git(d.path(), &["remote", "set-url", "origin", "https://github.com/acme/widgets.git"]);
+    git(d.path(), &["config", &format!("url.{}.insteadOf", remote.s()), "https://github.com/acme/widgets.git"]);
+    (d, remote)
+}
+
+#[tokio::test]
+async fn publish_info_still_offers_push_when_gh_is_missing() {
+    let (d, _remote) = github_written("publish-no-gh");
+    // A PATH with sh, python3 and git, and no gh.
+    let bin = Dir::new("publish-no-gh-bin");
+    for tool in ["sh", "python3", "git"] {
+        let found = std::process::Command::new("sh").arg("-c").arg(format!("command -v {tool}")).output().unwrap();
+        std::os::unix::fs::symlink(String::from_utf8(found.stdout).unwrap().trim(), bin.path().join(tool)).unwrap();
+    }
+    let mut c = helper();
+    c.env("PATH", bin.s());
+    let p = repo_git::run(c, &Request::PublishInfo { repo: d.s() }).await.unwrap();
+    assert_eq!(p["remote"], "origin", "{p}");
+    assert_eq!(p["ahead"], 1);
+    assert_eq!(p["commits"][0]["subject"], "Feature work");
+    assert_eq!(p["github"]["repo"], "acme/widgets");
+    assert!(p["github"]["error"].as_str().unwrap().contains("gh"), "the failure goes to the pull request card: {p}");
+}
+
+#[tokio::test]
+async fn publish_info_still_offers_push_when_gh_is_too_slow() {
+    use std::os::unix::fs::PermissionsExt;
+    let (d, _remote) = github_written("publish-slow-gh");
+    let bin = Dir::new("publish-slow-gh-bin");
+    let gh = bin.path().join("gh");
+    std::fs::write(&gh, "#!/bin/sh\nsleep 5\n").unwrap();
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut c = helper();
+    c.env("PATH", format!("{}:{}", bin.s(), std::env::var("PATH").unwrap())).env("HERMES_REPO_GH_TIMEOUT", "1");
+    let p = repo_git::run(c, &Request::PublishInfo { repo: d.s() }).await.unwrap();
+    assert_eq!(p["ahead"], 1, "{p}");
+    assert!(p["github"]["error"].as_str().unwrap().contains("longer than"), "{p}");
 }

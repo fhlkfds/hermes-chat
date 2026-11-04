@@ -336,7 +336,8 @@ def op_diff(req):
     if not isinstance(context, int) or context < 0:
         context = 3
     context = min(context, MAX_CONTEXT)
-    common = ["--no-color", "--no-ext-diff", "--no-textconv", "-U%d" % context]
+    # --ignore-submodules=none, as for status: a submodule the list shows always has its old and new commits here.
+    common = ["--no-color", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", "-U%d" % context]
     if side == "staged":
         paths = [path] + ([safe_rel(orig, top)] if orig else [])
         renames = ["-M"] if orig else ["--no-renames"]
@@ -888,8 +889,12 @@ def github_repo(url):
     return "%s/%s" % (m.group(1), m.group(2)) if m else None
 
 
-def gh_json(args, top, timeout=60):
-    code, out, err = run(["gh"] + args, top, timeout=timeout)
+# How long one of gh's reads may take. A test makes it short to check that a slow gh doesn't hide Push.
+GH_READ_TIMEOUT = int(os.environ.get("HERMES_REPO_GH_TIMEOUT") or 60)
+
+
+def gh_json(args, top, timeout=None):
+    code, out, err = run(["gh"] + args, top, timeout=timeout or GH_READ_TIMEOUT)
     if code != 0:
         return None, text(err).strip() or text(out).strip()
     try:
@@ -979,10 +984,17 @@ def op_publish_info(req):
     gh_repo = github_repo(configured_push_url(remote, top)) if remote else None
     github = None
     if gh_repo:
-        repo_info, why = gh_json(["repo", "view", gh_repo, "--json", "nameWithOwner,url,defaultBranchRef"], top)
+        # gh missing, signed out or slow says nothing against Git: Push still works with Git's credentials, so the
+        # failure goes to the pull request card and the rest of this answer stands.
+        def gh_read(args):
+            try:
+                return gh_json(args, top)
+            except Refusal as r:
+                return None, r.message
+        repo_info, why = gh_read(["repo", "view", gh_repo, "--json", "nameWithOwner,url,defaultBranchRef"])
         prs = []
         if repo_info and remote_branch:
-            found, _ = gh_json(["pr", "list", "--repo", gh_repo, "--head", remote_branch, "--state", "all", "--limit", "10", "--json", PR_FIELDS], top)
+            found, _ = gh_read(["pr", "list", "--repo", gh_repo, "--head", remote_branch, "--state", "all", "--limit", "10", "--json", PR_FIELDS])
             prs = own_prs(found)[:5]
         github = {
             "repo": gh_repo,
@@ -1069,8 +1081,14 @@ def op_push(req):
     head = head_oid(top)
     if git_line(["symbolic-ref", "-q", "--short", "HEAD"], top) != branch or head != (req.get("expect") or {}).get("head"):
         raise Refusal("stale", "The branch or its commit changed since this screen read it. Nothing was pushed. Look again.")
-    push_url(remote, top)  # refuses a remote that would push to several places
-    code, out, failed = traced(["push", "--porcelain", "--no-follow-tags", remote, "%s:refs/heads/%s" % (head, remote_branch)], top, timeout=300)
+    # The confirmation showed where the push goes. If the remote's push URL changed since (`git remote set-url`),
+    # refuse rather than send the commit somewhere the owner didn't see. URLs are compared without credentials.
+    url = push_url(remote, top)  # also refuses a remote that would push to several places
+    if not isinstance(req.get("pushUrl"), str) or redact(url) != req.get("pushUrl"):
+        raise Refusal("stale", "%s now pushes to %s, not where this screen showed. Nothing was pushed. Look again." % (remote, redact(url)))
+    # --no-follow-tags and --recurse-submodules=no: push.followTags and push.recurseSubmodules can neither add to
+    # the confirmed push nor (with `only`) push submodules in its place.
+    code, out, failed = traced(["push", "--porcelain", "--no-follow-tags", "--recurse-submodules=no", remote, "%s:refs/heads/%s" % (head, remote_branch)], top, timeout=300)
     output = redact_text(text(out))
     if code != 0:
         kind, why = classify_push_failure(output, failed)
@@ -1126,6 +1144,8 @@ def op_pr_create(req):
     gh_repo = github_repo(configured_push_url(remote, top))
     if not gh_repo:
         raise Refusal("unsupported", "Pull requests are made with gh, for GitHub remotes only, and %s isn't one." % remote)
+    if gh_repo != req.get("githubRepo"):
+        raise Refusal("stale", "%s is now %s on GitHub, not the repository this screen showed. No pull request was made. Look again." % (remote, gh_repo))
     head_branch = check_branch_name(req.get("remoteBranch"), top)
     base = check_branch_name(req.get("base"), top)
     title = req.get("title")
