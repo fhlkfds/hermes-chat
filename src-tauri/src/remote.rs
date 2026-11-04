@@ -4,9 +4,11 @@
 //! and takes one once it is signed in. Either way the request waits in Rust until a signed-in window takes it, so one
 //! made at the sign-in screen isn't lost (lib.rs, `screenshot_pending_request`).
 //!
-//! The running app owns the bus name `net.l0cky12.HermesChat` and answers one method, `Screenshot`. Only this user's
-//! own programs can reach their session bus, and a request only opens the picker: nothing is captured until the owner
-//! picks, and nothing is sent until they send the message.
+//! The running app owns the bus name `net.l0cky12.HermesChat` and answers two methods. `Screenshot` only opens the
+//! picker: nothing is captured until the owner picks, and nothing is sent until they send the message. `Show` brings
+//! back the window already open, hidden to the tray or not: launching Hermes Chat again calls it and exits, so a second
+//! launch restores the first instead of starting another copy (tray.rs, ADR 0033). Only this user's own programs can
+//! reach their session bus.
 
 use dbus::blocking::Connection;
 use dbus::channel::MatchingReceiver;
@@ -69,9 +71,20 @@ pub fn forward() -> Result<(), dbus::Error> {
         .method_call(IFACE, "Screenshot", ())
 }
 
-/// Takes the bus name and answers `Screenshot` calls with `asked`, on a thread of its own. If another Hermes Chat
+/// Set by an update's restart (update.rs `relaunch`), whose new copy starts while the old one still has the bus name:
+/// that copy must not hand itself to the one exiting.
+pub const RESTARTED: &str = "HERMES_CHAT_RESTARTED";
+
+/// Asks the running app to show its window. An error when no Hermes Chat is running (or the bus can't be reached).
+pub fn show() -> Result<(), dbus::Error> {
+    let conn = Connection::new_session()?;
+    conn.with_proxy(NAME, PATH, Duration::from_secs(5))
+        .method_call(IFACE, "Show", ())
+}
+
+/// Takes the bus name and answers `Screenshot` calls with `asked` and `Show` calls with `shown`, on a thread of its own. If another Hermes Chat
 /// already has the name, the desktop shortcut goes to that one, and this one takes over once it exits.
-pub fn serve(asked: impl Fn() + Send + 'static) {
+pub fn serve(asked: impl Fn() + Send + 'static, shown: impl Fn() + Send + 'static) {
     std::thread::spawn(move || {
         let conn = match Connection::new_session() {
             Ok(c) => c,
@@ -102,10 +115,14 @@ pub fn serve(asked: impl Fn() + Send + 'static) {
                         asked();
                         msg.method_return()
                     }
+                    (Some(IFACE) | None, Some("Show"), Some(PATH)) => {
+                        shown();
+                        msg.method_return()
+                    }
                     (Some("org.freedesktop.DBus.Peer"), Some("Ping"), _) => msg.method_return(),
                     _ => msg.error(
                         &"org.freedesktop.DBus.Error.UnknownMethod".into(),
-                        &std::ffi::CString::new("Hermes Chat only answers Screenshot.").unwrap(),
+                        &std::ffi::CString::new("Hermes Chat only answers Screenshot and Show.").unwrap(),
                     ),
                 };
                 use dbus::channel::Sender;

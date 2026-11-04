@@ -71,6 +71,8 @@ import { PreviewContext } from "./ui/previewContext";
 import { tauriLocalFiles, tauriWebPages, type LocalFiles, type WebPages } from "./ui/tauriPreview";
 import type { PreviewTarget } from "./hermes/preview";
 import type { Route } from "./hermes/pipe";
+import { tauriTray, type TrayWiring } from "./hermes/tauriTray";
+import { useWindowHidden } from "./ui/windowState";
 import { getUIPrefs, setUIPrefs, subscribe as subscribeUIPrefs, toggleModelFavorite, type StickyModelPick } from "./hermes/uiPrefs";
 
 // xterm.js is loaded only once the Terminal is first opened.
@@ -396,6 +398,7 @@ export function Main({
   guardClose = tauriCloseGuard,
   onSignOut,
   updates = appUpdates,
+  tray = tauriTray,
 }: {
   hermes: Hermes;
   connection: SavedSignIn;
@@ -419,6 +422,8 @@ export function Main({
   guardClose?: CloseGuard;
   onSignOut: () => Promise<void>;
   updates?: Updater;
+  /** The tray icon and Close to tray (tray.rs, ADR 0033). */
+  tray?: TrayWiring;
 }) {
   const { profile, chats, olderPulled, archivedListed, status, route, unsecure, closedReason, syncError, others, live, models, switching, branchNews } = useSyncExternalStore(
     hermes.subscribe,
@@ -1041,6 +1046,18 @@ export function Main({
     if (catalog?.defaultPick && pick?.profile !== profile) setUIPrefs({ modelPicker: { ...catalog.defaultPick, profile } });
   }, [catalog, profile]);
 
+  // The tray (ADR 0033). Its New chat and Open Inbox come here once Rust has shown the window; New chat asks first
+  // about an unsaved edit, as the app's own New chat does. It is told only how many Inbox entries need the owner, for
+  // its menu and the dot on its icon, never what they say; signing out clears it.
+  const trayNewChat = useRef(() => {});
+  trayNewChat.current = () => covered || newChat();
+  useEffect(() => tray.onNewChat(() => trayNewChat.current()), [tray]);
+  useEffect(() => tray.onOpenInbox(() => !covered && setInboxOpen(true)), [tray, covered]);
+  useEffect(() => tray.reportInbox(inboxCount), [tray, inboxCount]);
+  useEffect(() => () => tray.reportInbox(0), [tray]);
+  // Hidden to the tray, the window shows no chat: replies arriving meanwhile leave their chats Unread.
+  const windowHidden = useWindowHidden();
+
   // The inbox asks for fresh checks as it opens, and keeps asking while it is open.
   useEffect(() => {
     if (!inboxOpen) return;
@@ -1518,6 +1535,7 @@ export function Main({
             onSkillDirty={onSkillDirty}
             skillDiscards={skillDiscards}
             checkScreenshots={screenshots.support}
+            tray={tray}
             voiceSetup={voice.setup}
             showTextGeneration={showTextGeneration}
             showMemory={showMemory}
@@ -1662,7 +1680,7 @@ export function Main({
           />
           </Suspense>
         )}
-        <Split panes={slots} activeKey={active.key} onActivate={activate} covered={covered || covering || previewCovers} />
+        <Split panes={slots} activeKey={active.key} onActivate={activate} covered={covered || covering || previewCovers || windowHidden} />
         </div>
           {preview && previewShown && (
             <PreviewPane

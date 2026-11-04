@@ -4,6 +4,7 @@ import App from "./App";
 import { restoreDraftsAfterRestart } from "./hermes/tauriUpdates";
 import { syncScreenshotOutbox } from "./hermes/tauriScreenshot";
 import { captureAppDiagnostics } from "./hermes/logs";
+import { followWindowVisibility } from "./ui/windowState";
 import "./styles.css";
 
 // Console warnings and errors, uncaught errors and unhandled rejections, for Logs → This app (ADR 0033).
@@ -23,6 +24,9 @@ function RecoveryFailed({ reason }: { reason: string }) {
     </div>
   );
 }
+
+// Whether the window is hidden to the tray, for the whole app's life (ADR 0033).
+void followWindowVisibility();
 
 void restoreDraftsAfterRestart().then((failed) => {
   const root = createRoot(document.getElementById("root")!);

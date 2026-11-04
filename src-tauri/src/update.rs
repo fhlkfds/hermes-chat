@@ -196,7 +196,7 @@ pub fn relaunch(app: &AppHandle) {
     let env = app.env();
     match tauri::process::current_binary(&env) {
         Ok(exe) => {
-            if let Err(e) = std::process::Command::new(exe).args(relaunch_args(env.args_os)).spawn() {
+            if let Err(e) = std::process::Command::new(exe).args(relaunch_args(env.args_os)).env(crate::remote::RESTARTED, "1").spawn() {
                 eprintln!("hermes-chat: couldn't start again after the update: {e}");
             }
         }

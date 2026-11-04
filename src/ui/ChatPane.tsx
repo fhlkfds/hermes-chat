@@ -24,6 +24,7 @@ import { previewName, toolTargets, withoutBidi } from "../hermes/preview";
 import { type CommandHost, useSlashCommands } from "./SlashCommands";
 import { Templates, type TemplateHere } from "./Templates";
 import { BranchButton } from "./Branch";
+import { useWindowHidden } from "./windowState";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type ThinkingItem = Extract<Item, { kind: "thinking" }>;
@@ -216,6 +217,9 @@ export function ChatPane({
   }, [!voice]);
   const listen = speaker && { speaker, blocked: listenBlocked(status, voiceSetup) };
   useEffect(() => { if (!active) speaker?.stop(); }, [active, speaker]);
+  // Hidden to the tray, nothing is read aloud (ADR 0033).
+  const windowHidden = useWindowHidden();
+  useEffect(() => { if (windowHidden) speaker?.stop(); }, [windowHidden, speaker]);
   // The blocks are memoized, so they get one answer handler for the life of the pane.
   const onAnswerRef = useRef(onAnswer);
   onAnswerRef.current = onAnswer;
@@ -942,6 +946,10 @@ function Composer({
   }, [dictation.active]);
   // Leaving a pane (including Settings or the narrow switcher) releases its microphone and drops late transcripts.
   useEffect(() => { if (!autoFocus) dictation.cancel(); }, [autoFocus]);
+  // So does hiding the window to the tray: the microphone never stays open behind a hidden window (ADR 0033). The
+  // recording is dropped, as Cancel drops it; nothing is sent to Hermes to transcribe.
+  const windowHidden = useWindowHidden();
+  useEffect(() => { if (windowHidden) dictation.cancel(); }, [windowHidden]);
 
   // Files still being read, saved or checked: sending waits for them, so none misses the message it was added for.
   const [attaching, setAttaching] = useState(0);
@@ -1114,6 +1122,7 @@ function Composer({
         )}
         <textarea
           ref={taRef}
+          data-composer
           rows={1}
           autoFocus={autoFocus}
           placeholder="Message Hermes"
