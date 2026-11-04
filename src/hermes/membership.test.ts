@@ -336,7 +336,7 @@ describe("deleted projects, missing chats and retries", () => {
     const a = computer(hermes);
     await a.store.load();
     // Deleted in Hermes (here, the fake's own `DELETE /api/sessions/{id}`), then forgotten here as App.tsx does.
-    s["deleteSession"]("nas", "default");
+    s["deleteSession"]("nas", new URLSearchParams({ profile: "default", request_id: "r-1", expected_revision: "0", expected_generation: "0" }));
     a.store.forgetChat("nas");
     expect(shown(a)).toEqual([]);
     await a.store.load();

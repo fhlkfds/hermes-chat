@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#df9d80"/><stop offset="1" stop-color="#c27859"/></linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="1" stdDeviation="1" flood-color="#000" flood-opacity=".2"/></filter>
+  </defs>
+  <rect x="3" y="2" width="42" height="42" rx="12.5" fill="url(#tile)" filter="url(#shadow)"/>
+  <path d="M15 12h5v9h8v-9h5v22h-5v-9h-8v9h-5z" fill="#19110d"/>
+</svg>
