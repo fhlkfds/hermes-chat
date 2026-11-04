@@ -5,6 +5,7 @@ import { Main } from "../../src/App";
 import { FakeHermes, row } from "../../src/hermes/fakeHermes";
 import { connect } from "../../src/hermes/transport";
 import { appearanceStore } from "../../src/ui/appearance";
+import { captureAppDiagnostics } from "../../src/hermes/logs";
 
 const mode = new URLSearchParams(location.search).get("mode") ?? "dark";
 localStorage.setItem("hermes-chat.appearance", JSON.stringify({ scheme: mode }));
@@ -35,6 +36,38 @@ server.transcripts = {
   ],
   nas: [{ role: "user", text: "How full is the NAS?" }, { role: "assistant", text: "The `tank` pool is at **71%** (5.1 TiB of 7.2 TiB)." }],
 };
+
+// `?relay=http://127.0.0.1:PORT`: `GET /api/logs` goes to a real Hermes dashboard through that relay (logs-live.mjs), as
+// it would through the Rust side, and Logs' Save writes through it too. Everything else stays the fake Hermes.
+const relay = new URLSearchParams(location.search).get("relay");
+if (relay) {
+  captureAppDiagnostics();
+  const viaRelay = async (pathAndQuery: string) => {
+    const res = await fetch(`${relay}/${pathAndQuery}`).catch((e: Error) => {
+      throw new Error(`Couldn't reach the relay: ${e.message}`);
+    });
+    const body = await res.text();
+    if (res.status === 599) throw new Error(JSON.parse(body).unreachable);
+    if (!res.ok) throw new Error(`The dashboard answered ${res.status}: ${body}`);
+    return body;
+  };
+  (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
+    invoke: async (cmd: string, args: { text: string; fileName: string }) => {
+      if (cmd !== "logs_export") throw new Error(`${cmd} isn't in the browser harness`);
+      const res = await fetch(`${relay}/save?${new URLSearchParams({ name: args.fileName })}`, { method: "POST", body: args.text });
+      return res.text();
+    },
+  };
+  const open = server.openPipe;
+  server.openPipe = async (...a: Parameters<typeof open>) => {
+    const pipe = await open(...a);
+    const request = pipe.request.bind(pipe);
+    const getLimited = pipe.getLimited.bind(pipe);
+    pipe.request = (method, path, body) => (path.startsWith("api/logs?") ? viaRelay(path) : request(method, path, body));
+    pipe.getLimited = (path, max) => (path.startsWith("api/logs?") ? viaRelay(path) : getLimited(path, max));
+    return pipe;
+  };
+}
 
 const hermes = await connect(server.openPipe);
 (window as unknown as { shots: unknown }).shots = { server, hermes };

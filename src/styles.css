@@ -2102,3 +2102,44 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
   .usage-status-actions { margin-left: 0; }
   .usage-filters select, .usage-filters input { max-width: 100%; }
 }
+
+/* ---------- Logs (Logs.tsx, ADR 0033) ---------- */
+/* A screen tall enough for the list: the list scrolls, the controls above it stay. */
+.logs-screen { display: flex; overflow: hidden; }
+.settings-inner.logs-inner { max-width: 1240px; width: 100%; box-sizing: border-box; display: flex; flex-direction: column; min-height: 0; padding-bottom: 20px; }
+.logs-inner > * { flex-shrink: 0; }
+.logs-search input { min-width: 220px; }
+.logs-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 8px; }
+.logs-actions .btn { display: inline-flex; align-items: center; gap: 6px; }
+.logs-actions .btn[aria-pressed="true"] { border-color: var(--warn); }
+p.logs-status { margin: 0 0 8px; line-height: 1.5; }
+.logs-problem, .logs-paused { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 8px; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line-2); font-size: calc(13rem / 14); }
+.logs-problem { border-color: var(--bad); }
+.logs-problem svg { color: var(--bad); flex: none; }
+.logs-paused { border-color: var(--warn); }
+.logs-paused svg { color: var(--warn); }
+.logs-list {
+  flex: 1 1 auto; min-height: 200px; overflow-y: auto; overflow-x: hidden; border: 1px solid var(--line-2); border-radius: var(--radius);
+  background: var(--code-bg); font-family: var(--mono); font-size: calc(var(--mono-size) * 0.92); line-height: 1.5; padding: 6px 0;
+}
+.logs-list:focus-visible { outline: 2px solid var(--line-3); outline-offset: 1px; }
+/* Rows off screen skip layout and paint, so thousands of them stay cheap. */
+.log-row { display: flex; gap: 12px; padding: 0 12px; content-visibility: auto; contain-intrinsic-size: auto 1.5em; }
+.log-time { flex: none; color: var(--muted); user-select: none; }
+.log-text { flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.log-row.lvl-warning .log-text { color: var(--warn); }
+.log-row.lvl-error .log-text, .log-row.lvl-critical .log-text { color: var(--bad); }
+.log-row.lvl-debug .log-text { color: var(--muted); }
+.log-row.log-mark { margin: 4px 0; padding: 3px 12px; background: var(--raised); border-block: 1px dashed var(--warn); }
+.log-row.log-mark .log-text { color: var(--text); font-style: italic; }
+.logs-empty { padding: 10px 12px; margin: 0; }
+.leave-overlay .leave-dialog.logs-bundle { max-width: min(760px, 100%); width: 100%; max-height: calc(100vh - 32px); overflow-y: auto; }
+.logs-bundle-sources { border: 0; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.logs-bundle-sources legend { color: var(--faint); margin-bottom: 4px; }
+.logs-bundle-sources label { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
+.logs-bundle-sources input { margin-top: 3px; }
+.logs-bundle-preview { margin: 0; max-height: 280px; overflow: auto; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--code-bg); font-family: var(--mono); font-size: calc(var(--mono-size) * 0.85); white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 720px) {
+  .logs-search input { min-width: 0; }
+  .log-row { flex-direction: column; gap: 0; }
+}
