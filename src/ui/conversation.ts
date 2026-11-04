@@ -410,7 +410,9 @@ export class VoiceConversation {
       got = await this.deps.transcribe(turn.recording.audio, turn.recording.mime);
     } catch (e) {
       if (session !== this.session) return;
-      this.pause(`Hermes couldn't transcribe what you said: ${messageOf(e)}`);
+      // The transport's own errors already say what failed; others ("Not connected to Hermes.") get it said.
+      const why = messageOf(e);
+      this.pause(/^Hermes couldn't transcribe/.test(why) ? why : `Hermes couldn't transcribe what you said: ${why}`);
       return;
     }
     if (session !== this.session || this.transcribing !== turn) return;

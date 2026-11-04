@@ -65,7 +65,7 @@ export function TraySettings({ tray }: { tray?: TrayWiring }) {
           </div>
           <div className="muted small" id="close-to-tray-help">
             Closing the window hides it in the tray instead of quitting. Replies keep arriving, drafts stay, and the tray icon or opening Hermes Chat
-            again brings the same window back. Hiding it stops Dictation and Read aloud. Quit in the tray menu always exits. Off: closing the window
+            again brings the same window back. Hiding it stops Dictation and Read aloud, and pauses a voice conversation. Quit in the tray menu always exits. Off: closing the window
             quits.
           </div>
         </div>

@@ -502,7 +502,7 @@ describe("Failures", () => {
     s.server.heard = new Error("Hermes couldn't transcribe the recording: No STT provider available.");
     mic.loud(1);
     mic.quiet(1.3);
-    expect((await within(panel()).findByRole("alert")).textContent).toMatch(/couldn't transcribe what you said.*No STT provider available/);
+    expect((await within(panel()).findByRole("alert")).textContent).toMatch(/^Hermes couldn't transcribe the recording: No STT provider available\.\s*Try again\s*Resume listening$/);
     expect(mic.allClosed).toBe(true);
     s.server.heard = "Held turn";
     await s.user.click(within(panel()).getByRole("button", { name: /Try again/ }));
