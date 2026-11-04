@@ -413,7 +413,7 @@ describe("a project's defaults for new chats", () => {
     const { user, hermes } = await launch(s);
     for (const [name, text] of [["Budget Tracker", "one"], ["Lab", "two"], ["All chats", "three"]]) {
       await pick(user, name);
-      await user.click(screen.getAllByTitle(/New chat/)[0]);
+      await user.click(screen.getByRole("button", { name: "New chat (Ctrl+N)" }));
       await send(user, text);
       await waitFor(() => expect(creates(s).length).toBeGreaterThan(0));
       await act(async () => void (await hermes.idle()));

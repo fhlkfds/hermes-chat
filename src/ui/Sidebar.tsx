@@ -1,6 +1,8 @@
-// Icon rail beside a chat list (ADR 0001), ported from the prototype's variants C and A. The list's header is the
-// profile switcher. Settings opens from the rail's foot. Right-clicking a chat opens its menu (ChatMenu.tsx).
-import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+// Icon rail beside a chat list (ADR 0001), ported from the prototype's variants C and A, with its tools grouped into Work
+// and Server and tips that show at once (ADR 0050). The list's header is the profile switcher. Settings opens from the
+// rail's foot. Right-clicking a chat opens its menu (ChatMenu.tsx).
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { BarChart3, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, EyeOff, FileOutput, FolderOpen, Inbox as InboxIcon, LockOpen, ScrollText, Search, Settings, SquarePen, SquareTerminal, Trash2, Webhook, FolderGit2 } from "lucide-react";
 import type { Chat, ConnectionStatus, OtherProfile, OtherProfiles } from "../hermes/model";
 import { SOURCE_LABEL, isWaiting } from "../hermes/model";
@@ -96,9 +98,8 @@ export function Rail({
   connectionsMenu?: ReactNode;
 }) {
   const where = routeLabel(route);
-  // The full wording lives only in the tooltip (ADR 0001).
-  const tip = [
-    STATUS_LABEL[status],
+  // The connection's full wording lives only in its tip (ADR 0001).
+  const connNote = [
     where,
     unsecure && "Unsecure: traffic to the server isn't encrypted",
     status !== "connected" && closedReason,
@@ -106,98 +107,204 @@ export function Rail({
   ]
     .filter(Boolean)
     .join(" · ");
-  return (
-    <aside className="rail">
+  const connLabel = [STATUS_LABEL[status], connNote].filter(Boolean).join(" · ");
+  const { shown, bind, hide, tipProps, descriptions } = useRailTip();
+  const needs = inboxCount ? `${inboxCount} need${inboxCount === 1 ? "s" : ""} you` : undefined;
+  const work = [
+    onFiles && (
+      <button key="files" className={`icon-btn ${filesOpen ? "on" : ""}`} aria-label="Server files" aria-pressed={filesOpen} onClick={onFiles} {...bind("files", { label: "Server files", note: "Browse the files on the server" })}>
+        <FolderOpen size={18} />
+      </button>
+    ),
+    onOutputs && (
+      <button key="outputs" className={`icon-btn ${outputsOpen ? "on" : ""}`} aria-label="Outputs" aria-pressed={outputsOpen} onClick={onOutputs} {...bind("outputs", { label: "Outputs", note: "Files Hermes made" })}>
+        <FileOutput size={18} />
+      </button>
+    ),
+    onRepo && (
+      <button key="repo" className={`icon-btn ${repoOpen ? "on" : ""}`} aria-label="Repository" aria-pressed={repoOpen} onClick={onRepo} {...bind("repo", { label: "Repository", note: "Git changes on the server" })}>
+        <FolderGit2 size={18} />
+      </button>
+    ),
+    onTerminal && (
+      <button
+        key="terminal"
+        className={`icon-btn terminal-btn ${terminalOpen ? "on" : ""}`}
+        aria-label={terminalRunning ? "Terminal, session running" : "Terminal"}
+        aria-pressed={terminalOpen}
+        onClick={onTerminal}
+        {...bind("terminal", { label: "Terminal", note: terminalRunning && !terminalOpen ? "On the server: a session is running" : "A shell on the server" })}
+      >
+        <SquareTerminal size={18} />
+        {terminalRunning && !terminalOpen && <span className="dot terminal-dot" aria-hidden />}
+      </button>
+    ),
+  ].filter(Boolean);
+  const server = [
+    onJobs && (
+      <button key="jobs" className={`icon-btn ${jobsOpen ? "on" : ""}`} aria-label="Scheduled jobs" aria-pressed={jobsOpen} onClick={onJobs} {...bind("jobs", { label: "Scheduled jobs", note: "Tasks Hermes runs on a schedule" })}>
+        <CalendarClock size={18} />
+      </button>
+    ),
+    onAutomations && (
+      <button key="automations" className={`icon-btn ${automationsOpen ? "on" : ""}`} aria-label="Automations" aria-pressed={automationsOpen} onClick={onAutomations} {...bind("automations", { label: "Automations", note: "Tasks started by GitHub events" })}>
+        <Webhook size={18} />
+      </button>
+    ),
+    onLogs && (
+      <button key="logs" className={`icon-btn ${logsOpen ? "on" : ""}`} aria-label="Logs" aria-pressed={logsOpen} onClick={onLogs} {...bind("logs", { label: "Logs", note: "Diagnostics and Hermes's logs" })}>
+        <ScrollText size={18} />
+      </button>
+    ),
+    onUsage && (
+      <button key="usage" className={`icon-btn ${usageOpen ? "on" : ""}`} aria-label="Usage" aria-pressed={usageOpen} onClick={onUsage} {...bind("usage", { label: "Usage", note: "Tokens and recorded cost" })}>
+        <BarChart3 size={18} />
+      </button>
+    ),
+  ].filter(Boolean);
+  // Daily tools first, then the profile's tools in two labeled groups (ADR 0050).
+  const parts = (
+    <>
       <div className="rail-top">
-        <button className="rail-brand" title="Hide or show chats (Ctrl+B)" onClick={onToggleList}>
+        <button className="rail-brand" aria-label="Hide or show chats" aria-keyshortcuts="Control+B" onClick={onToggleList} {...bind("brand", { label: "Hide or show chats", keys: "Ctrl+B" })}>
           H
         </button>
-        <button className="icon-btn" title="New chat (Ctrl+N)" onClick={onNew}>
+        <button className="icon-btn rail-primary" aria-label="New chat (Ctrl+N)" aria-keyshortcuts="Control+N" onClick={onNew} {...bind("new", { label: "New chat", keys: "Ctrl+N" })}>
           <SquarePen size={18} />
         </button>
-        <button className="icon-btn" title="Search all chats (Ctrl+K)" onClick={onSearch}>
+        <button className="icon-btn rail-primary" aria-label="Search all chats (Ctrl+K)" aria-keyshortcuts="Control+K" onClick={onSearch} {...bind("search", { label: "Search all chats", keys: "Ctrl+K" })}>
           <Search size={18} />
         </button>
         {onInbox && (
           <button
-            className={`icon-btn inbox-btn ${inboxOpen ? "on" : ""}`}
-            title={inboxCount ? `Inbox: ${inboxCount} need${inboxCount === 1 ? "s" : ""} you` : "Inbox"}
-            aria-label={inboxCount ? `Inbox, ${inboxCount} need${inboxCount === 1 ? "s" : ""} you` : "Inbox"}
+            className={`icon-btn rail-primary inbox-btn ${inboxOpen ? "on" : ""}`}
+            aria-label={needs ? `Inbox, ${needs}` : "Inbox"}
             aria-expanded={inboxOpen}
             onClick={onInbox}
+            {...bind("inbox", { label: "Inbox", note: needs ?? "What needs you in any profile", describe: !needs })}
           >
             <InboxIcon size={18} />
             {inboxCount > 0 && <span className="badge" aria-hidden>{inboxCount > 99 ? "99+" : inboxCount}</span>}
           </button>
         )}
-        {/* Chats above, the profile's tools below. */}
-        <span className="rail-sep" aria-hidden />
-        {onFiles && (
-          <button className={`icon-btn ${filesOpen ? "on" : ""}`} title="Server files" aria-pressed={filesOpen} onClick={onFiles}>
-            <FolderOpen size={18} />
-          </button>
+      </div>
+      <div className="rail-mid" onScroll={hide}>
+        {work.length > 0 && (
+          <div className="rail-group" role="group" aria-label="Work">
+            <span className="rail-group-label" aria-hidden>Work</span>
+            {work}
+          </div>
         )}
-        {onJobs && (
-          <button className={`icon-btn ${jobsOpen ? "on" : ""}`} title="Scheduled jobs" aria-label="Scheduled jobs" aria-pressed={jobsOpen} onClick={onJobs}>
-            <CalendarClock size={18} />
-          </button>
-        )}
-        {onAutomations && (
-          <button className={`icon-btn ${automationsOpen ? "on" : ""}`} title="Automations: tasks started by GitHub events" aria-label="Automations" aria-pressed={automationsOpen} onClick={onAutomations}>
-            <Webhook size={18} />
-          </button>
-        )}
-        {onOutputs && (
-          <button className={`icon-btn ${outputsOpen ? "on" : ""}`} title="Outputs: files Hermes made" aria-label="Outputs" aria-pressed={outputsOpen} onClick={onOutputs}>
-            <FileOutput size={18} />
-          </button>
-        )}
-        {onUsage && (
-          <button className={`icon-btn ${usageOpen ? "on" : ""}`} title="Usage: tokens and recorded cost" aria-label="Usage" aria-pressed={usageOpen} onClick={onUsage}>
-            <BarChart3 size={18} />
-          </button>
-        )}
-        {onLogs && (
-          <button className={`icon-btn ${logsOpen ? "on" : ""}`} title="Logs: diagnostics and Hermes's logs" aria-label="Logs" aria-pressed={logsOpen} onClick={onLogs}>
-            <ScrollText size={18} />
-          </button>
-        )}
-        {onRepo && (
-          <button className={`icon-btn ${repoOpen ? "on" : ""}`} title="Repository: Git changes on the server" aria-label="Repository" aria-pressed={repoOpen} onClick={onRepo}>
-            <FolderGit2 size={18} />
-          </button>
-        )}
-        {onTerminal && (
-          <button
-            className={`icon-btn terminal-btn ${terminalOpen ? "on" : ""}`}
-            title={terminalRunning && !terminalOpen ? "Terminal on the server: a session is running" : "Terminal on the server"}
-            aria-label={terminalRunning ? "Terminal, session running" : "Terminal"}
-            aria-pressed={terminalOpen}
-            onClick={onTerminal}
-          >
-            <SquareTerminal size={18} />
-            {terminalRunning && !terminalOpen && <span className="dot terminal-dot" aria-hidden />}
-          </button>
+        {server.length > 0 && (
+          <div className="rail-group" role="group" aria-label="Server">
+            <span className="rail-group-label" aria-hidden>Server</span>
+            {server}
+          </div>
         )}
       </div>
       <div className="rail-bottom">
         {connectionsMenu}
-        <button className="conn-btn" title={tip} aria-label={tip} onClick={() => status !== "connected" && onReconnect()}>
+        <button className="conn-btn" aria-label={connLabel} onClick={() => status !== "connected" && onReconnect()} {...bind("conn", { label: STATUS_LABEL[status], note: connNote || undefined, describe: false })}>
           <span className={`conn-dot ${status} ${unsecure ? "unsecure" : ""}`} />
           {unsecure && <LockOpen className="conn-lock" size={9} strokeWidth={2.8} />}
         </button>
         <button
           className={`icon-btn settings-btn ${settingsOpen ? "on" : ""}`}
-          title={updateWaiting ? "Settings: an update is ready" : "Settings"}
+          aria-label={updateWaiting ? "Settings: an update is ready" : "Settings"}
+          aria-keyshortcuts="Control+,"
           aria-pressed={settingsOpen}
           onClick={onSettings}
+          {...bind("settings", { label: "Settings", keys: "Ctrl+,", note: updateWaiting ? "An update is ready" : "Import, backup and more" })}
         >
           <Settings size={18} />
           {updateWaiting && <span className="dot update-dot" />}
         </button>
       </div>
+    </>
+  );
+  const tip = shown();
+  return (
+    <aside className="rail">
+      {parts}
+      {descriptions()}
+      {/* On the page itself, so a screen the rail sits under (the Inbox) can't cover it. */}
+      {tip &&
+        createPortal(
+          <div className="rail-tip" role="tooltip" aria-hidden style={{ top: tip.top, left: tip.left }} {...tipProps}>
+            <span className="rail-tip-label">{tip.label}</span>
+            {tip.keys && <kbd>{tip.keys}</kbd>}
+            {tip.note && <span className="rail-tip-note">{tip.note}</span>}
+          </div>,
+          document.body,
+        )}
     </aside>
   );
+}
+
+/** Between a rail button and its tip; the tip's `::before` bridges it (styles.css). */
+const TIP_GAP = 10;
+
+/** `describe` false: the button's own name already says what `note` does. */
+type RailTip = { label: string; keys?: string; note?: string; describe?: boolean };
+
+/**
+ * The rail's one tip: it shows at once beside the button under the pointer or keyboard focus, with the button's name,
+ * its shortcut and a line about it. It stays while the pointer is on the button or the tip, and goes on leaving both,
+ * blurring, scrolling or Escape. Screen readers get the same from the button: its name, `aria-keyshortcuts`, and the
+ * line as its description, so the tip itself is hidden from them.
+ */
+function useRailTip() {
+  const id = useId();
+  const [at, setAt] = useState<{ key: string; top: number; left: number }>();
+  const tipRef = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLElement | null>(null);
+  const hide = useCallback(() => setAt(undefined), []);
+  useEffect(() => {
+    if (!at) return;
+    // Captured, so a focused element that keeps its keys to itself (the Terminal) can't keep the tip up.
+    const onKey = (e: globalThis.KeyboardEvent) => e.key === "Escape" && hide();
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("blur", hide);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("blur", hide);
+    };
+  }, [at, hide]);
+  /** Leaving for `into` (the tip, or its button) keeps the tip. */
+  const leave = (into: () => Element | null | undefined) => (e: ReactMouseEvent) => {
+    const to = e.relatedTarget;
+    if (to instanceof Node && into()?.contains(to)) return;
+    hide();
+  };
+  // Rebuilt each render, so a tip that stays up shows the button's wording as it is now (an Inbox count, a session).
+  const tips: Record<string, RailTip> = {};
+  const noteId = (key: string) => `${id}-tip-${key}`;
+  const bind = (key: string, t: RailTip) => {
+    tips[key] = t;
+    const show = (e: { currentTarget: HTMLElement }) => {
+      trigger.current = e.currentTarget;
+      const r = e.currentTarget.getBoundingClientRect();
+      // Beside the button's own edge, whatever size the window gives it, so the tip's bridge always reaches it.
+      setAt({ key, top: r.top + r.height / 2, left: r.right + TIP_GAP });
+    };
+    return {
+      onMouseEnter: show,
+      onFocus: show,
+      onMouseLeave: leave(() => tipRef.current),
+      onBlur: hide,
+      "aria-describedby": t.note && t.describe !== false ? noteId(key) : undefined,
+    };
+  };
+  /** The tip showing, read after every `bind` of the render. */
+  const shown = () => (at && tips[at.key] ? { ...tips[at.key], top: at.top, left: at.left } : undefined);
+  /** The buttons' descriptions, out of sight; read after every `bind` of the render. */
+  const descriptions = () => (
+    <div hidden>
+      {Object.entries(tips).map(([key, t]) => t.note && t.describe !== false && <span key={key} id={noteId(key)}>{t.note}</span>)}
+    </div>
+  );
+  const tipProps = { ref: tipRef, onMouseLeave: leave(() => trigger.current) };
+  return { shown, bind, hide, tipProps, descriptions };
 }
 
 /**

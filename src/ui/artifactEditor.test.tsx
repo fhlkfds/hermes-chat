@@ -270,7 +270,7 @@ describe("The artifact editor", () => {
     await user.click(within(row0()).getByRole("button", { name: "Edit plan.md" }));
     await user.type(await editor(), "!!");
     await user.click(screen.getByRole("button", { name: "Close the side panel" }));
-    await user.click(await screen.findByTitle("Settings"));
+    await user.click(await screen.findByRole("button", { name: "Settings" }));
     await user.click(screen.getByRole("button", { name: /Sign out/ }));
     const ask = await screen.findByRole("alertdialog", { name: "Sign out and discard your edit?" });
     expect(ask.textContent).toContain("plan.md");

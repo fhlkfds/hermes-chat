@@ -95,7 +95,7 @@ describe("Regenerate title when Hermes isn't signed in to the Text generation mo
 
   it("switches an open Settings screen to the Model tab", async () => {
     const { user } = await launch();
-    await user.click(screen.getByTitle("Settings"));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
     expect(screen.getByRole("tab", { name: /General/ }).getAttribute("aria-selected")).toBe("true");
 
     const alert = await regenerate(user, "Lisbon trip");
@@ -111,7 +111,7 @@ describe("Regenerate title when Hermes isn't signed in to the Text generation mo
     await user.click(within(alert).getByRole("button", { name: "Text generation settings" }));
     await user.click(screen.getByRole("button", { name: /Back to chat/ }));
 
-    await user.click(screen.getByTitle("Settings"));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
 
     expect(screen.getByRole("tab", { name: /General/ }).getAttribute("aria-selected")).toBe("true");
   });

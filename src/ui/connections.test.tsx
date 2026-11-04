@@ -179,7 +179,7 @@ describe("Saved connections", () => {
     await openRail();
     await userEvent.click(within(screen.getByRole("dialog", { name: "Switch connection" })).getByText("alpha.example.com"));
     await screen.findAllByText("Alpha backups");
-    await userEvent.click(screen.getByTitle("Settings"));
+    await userEvent.click(screen.getByRole("button", { name: "Settings" }));
     await userEvent.click(await screen.findByRole("button", { name: "Edit Home" }));
     await userEvent.click(screen.getByRole("button", { name: "Next" }));
     await userEvent.type(await screen.findByLabelText(/^Dashboard password/), "bravo-pass");
@@ -189,7 +189,7 @@ describe("Saved connections", () => {
     await waitFor(() => expect(screen.getAllByText("Bravo notes").some(el => el.closest(".row")?.classList.contains("sel"))).toBe(true));
 
     // Remove alpha from Settings: it says what goes, and the server's chats stay.
-    await userEvent.click(screen.getByTitle("Settings"));
+    await userEvent.click(screen.getByRole("button", { name: "Settings" }));
     await userEvent.click(await screen.findByRole("button", { name: "Remove alpha.example.com" }));
     const remove = await screen.findByRole("alertdialog", { name: "Remove alpha.example.com?" });
     expect(within(remove).getByText(/Nothing on the Hermes server is changed/)).toBeTruthy();

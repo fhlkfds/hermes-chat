@@ -573,7 +573,7 @@ describe("the speaker", () => {
 describe("Settings, Voice", () => {
   it("names the profile's providers and what they need", async () => {
     const { user } = await signedIn();
-    await user.click(screen.getByTitle("Settings"));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
     const section = (await screen.findByRole("heading", { name: "Voice" })).closest("section")!;
     await within(section).findByText("Local Whisper");
     expect(within(section).getByText("Microsoft Edge TTS")).toBeTruthy();
@@ -585,7 +585,7 @@ describe("Settings, Voice", () => {
     const server = new FakeHermes();
     server.voice = { transcribe: false, speak: false };
     const { user } = await signedIn(server);
-    await user.click(screen.getByTitle("Settings"));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
     const section = (await screen.findByRole("heading", { name: "Voice" })).closest("section")!;
     // Dictation, Read aloud, and the Voice conversation that needs them both.
     await waitFor(() => expect(within(section).getAllByText("Unavailable")).toHaveLength(3));

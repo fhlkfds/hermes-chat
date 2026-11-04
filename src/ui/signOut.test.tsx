@@ -91,7 +91,7 @@ describe("Signing out with extra request headers", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Save and connect" }));
     await userEvent.click(await screen.findByRole("button", { name: "Finish" }));
 
-    await userEvent.click(await screen.findByTitle("Settings"));
+    await userEvent.click(await screen.findByRole("button", { name: "Settings" }));
     expect(screen.getByText("CF-Access-Client-Secret")).toBeTruthy();
     const sent = { kind: "url", url: "https://hermes.example.com", headers: [{ name: "CF-Access-Client-Secret", value: "s3cret" }] };
     expect(probes).toEqual([sent]);
