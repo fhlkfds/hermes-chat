@@ -140,12 +140,20 @@ describe("Settings → Voice → Speech providers", () => {
   it("sends nothing when another client changed it meanwhile, and shows what Hermes has now", async () => {
     const { user, fake } = await shown();
     await screen.findByRole("group", { name: "Text-to-speech" });
+    await user.selectOptions(within(side("Speech-to-text")).getByLabelText(/Model size/), "small");
     await user.clear(within(side("Text-to-speech")).getByLabelText(/^Voice/));
     await user.type(within(side("Text-to-speech")).getByLabelText(/^Voice/), "en-US-JennyNeural");
     fake.set("default", "tts.edge.voice", "en-GB-SoniaNeural");
     await user.click(saveButton());
     expect((await screen.findByRole("alert")).textContent).toMatch(/Not saved: Microsoft Edge TTS's voice changed on Hermes since you opened this/);
     expect(fake.writes).toEqual([]);
+    expect(fake.config("default").tts.edge).toMatchObject({ voice: "en-GB-SoniaNeural" });
+    // The field shows Hermes's voice now; the change nobody else made stays, to save again.
+    expect(within(side("Text-to-speech")).getByLabelText<HTMLInputElement>(/^Voice/).value).toBe("en-GB-SoniaNeural");
+    expect(within(side("Speech-to-text")).getByLabelText<HTMLSelectElement>(/Model size/).value).toBe("small");
+    await user.click(saveButton());
+    await screen.findByText(/Saved on Hermes, and read back/);
+    expect(fake.config("default").stt.local).toMatchObject({ model: "small" });
     expect(fake.config("default").tts.edge).toMatchObject({ voice: "en-GB-SoniaNeural" });
   });
 

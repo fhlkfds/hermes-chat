@@ -138,8 +138,17 @@ export function VoiceProviderSettings({
     setSaving(false);
     setOutcome(outcomeText(r));
     if ("read" in r && r.read) setRead(r.read);
-    // A typed key is sent once and never kept. Picks and settings stay for another try unless they were saved.
-    setDraft((d) => (r.kind === "saved" ? emptyDraft() : { ...d, keys: {} }));
+    // A typed key is sent once and never kept. Picks and settings stay for another try unless they were saved, or another
+    // client changed them meanwhile: then Hermes's value is shown instead.
+    setDraft((d) => {
+      if (r.kind === "saved") return emptyDraft();
+      const next: VoiceDraft = { provider: { ...d.provider }, settings: { ...d.settings }, keys: {} };
+      if (r.kind === "conflict") {
+        for (const kind of r.kinds) delete next.provider[kind];
+        for (const path of r.paths) delete next.settings[path];
+      }
+      return next;
+    });
   };
 
   const setProvider = (kind: VoiceKind, name: string) =>

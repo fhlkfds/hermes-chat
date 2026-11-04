@@ -132,8 +132,11 @@ export const draftChanges = (d: VoiceDraft) =>
 export type VoiceSave =
   /** Read back as sent. `warning`: Hermes answered with this error, yet the read shows it all. */
   | { kind: "saved"; read: VoiceRead; warning?: string }
-  /** Not sent: another client changed these since the owner read them. */
-  | { kind: "conflict"; read: VoiceRead; what: string[] }
+  /**
+   * Not sent: another client changed these since the owner read them. `kinds` and `paths`: the picks and settings that
+   * changed, which the screen drops from the draft so it shows Hermes's values.
+   */
+  | { kind: "conflict"; read: VoiceRead; what: string[]; kinds: VoiceKind[]; paths: string[] }
   /** Sent, but the read afterwards doesn't show these. */
   | { kind: "mismatch"; read: VoiceRead; what: string[] }
   /**
@@ -329,12 +332,13 @@ export class VoiceSettingsApi {
   private async write(profile: string, base: VoiceRead, draft: VoiceDraft): Promise<VoiceSave> {
     // Checked first: another client may have picked another provider or changed a setting since the owner read them.
     const before = await this.read(profile);
-    const what: string[] = [];
-    for (const kind of KINDS)
-      if (draft.provider[kind] !== undefined && activeOf(before, kind)?.name !== activeOf(base, kind)?.name)
-        what.push(`the ${KIND_LABEL[kind].toLowerCase()} provider (now ${activeOf(before, kind)?.name ?? "none"})`);
-    for (const path of Object.keys(draft.settings)) if (before.values[path] !== base.values[path]) what.push(settingLabel(before, path));
-    if (what.length) return { kind: "conflict", read: before, what };
+    const kinds = KINDS.filter((kind) => draft.provider[kind] !== undefined && activeOf(before, kind)?.name !== activeOf(base, kind)?.name);
+    const paths = Object.keys(draft.settings).filter((path) => before.values[path] !== base.values[path]);
+    const what = [
+      ...kinds.map((kind) => `the ${KIND_LABEL[kind].toLowerCase()} provider (now ${activeOf(before, kind)?.name ?? "none"})`),
+      ...paths.map((path) => settingLabel(before, path)),
+    ];
+    if (what.length) return { kind: "conflict", read: before, what, kinds, paths };
 
     const keys = KINDS.map((kind) => [kind, Object.fromEntries(Object.entries(draft.keys[kind] ?? {}).filter(([, v]) => v.trim()))] as const).filter(
       ([, env]) => Object.keys(env).length,

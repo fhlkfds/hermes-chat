@@ -101,6 +101,8 @@ describe("Settings → Voice: saving", () => {
     expect(r.kind).toBe("conflict");
     if (r.kind !== "conflict") return;
     expect(r.what).toEqual(["the speech-to-text provider (now Groq)", "Microsoft Edge TTS's voice"]);
+    expect(r.kinds).toEqual(["stt"]);
+    expect(r.paths).toEqual(["tts.edge.voice"]);
     expect(r.read.values["tts.edge.voice"]).toBe("en-GB-SoniaNeural");
     expect(fake.writes).toEqual([]);
   });
