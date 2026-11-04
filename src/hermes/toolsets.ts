@@ -213,6 +213,12 @@ export class ToolsetsApi {
     private readonly changed: (profile: string, name: string) => void = () => {},
     /** The WS socket, for what one open chat has (`chatTools`). */
     private readonly rpc?: Rpc,
+    /**
+     * Called as the write check starts, for where to say what it found: whether Hermes has the switch's route
+     * (capabilities.ts `toolsetSwitches`). Asked at the start, so an answer that comes after a reconnect or profile
+     * switch is told to the connection it went out on.
+     */
+    private readonly checkingWrites: () => (found: "supported" | "unsupported" | "unknown", why: string) => void = () => () => {},
   ) {}
 
   /**
@@ -290,18 +296,23 @@ export class ToolsetsApi {
    * server that took the body would still refuse the unknown name (400) before reading the config.
    */
   async writeSupport(profile: string): Promise<WriteSupport> {
+    const tell = this.checkingWrites();
+    const found = (state: "supported" | "unsupported" | "unknown", support: WriteSupport): WriteSupport => {
+      tell(state, support.ok ? "Hermes refused the write check before changing anything, as it does when it has the route." : support.reason);
+      return support;
+    };
     try {
       await this.rest("PUT", this.path(profile, PROBE_NAME), { enabled: "probe" });
       // Nothing should take that body; say so rather than guess.
-      return { ok: false, reason: "Hermes answered the write check in a way this app doesn't expect, so it won't change toolsets." };
+      return found("unknown", { ok: false, reason: "Hermes answered the write check in a way this app doesn't expect, so it won't change toolsets." });
     } catch (e) {
       const f = failureOf(e);
       if (f.signedOut) throw e;
-      if (f.status === 422 || f.status === 400) return { ok: true };
-      if (noRoute(f)) return { ok: false, reason: "This Hermes server lists toolsets but has no route to change them. Updating Hermes adds it." };
-      if (f.status === 403) return { ok: false, reason: `Hermes doesn't let this sign-in change toolsets: ${f.reason}` };
+      if (f.status === 422 || f.status === 400) return found("supported", { ok: true });
+      if (noRoute(f)) return found("unsupported", { ok: false, reason: "This Hermes server lists toolsets but has no route to change them. Updating Hermes adds it." });
+      if (f.status === 403) return found("unknown", { ok: false, reason: `Hermes doesn't let this sign-in change toolsets: ${f.reason}` });
       if (f.status === undefined && !f.notRelayed) throw new Error(f.reason);
-      return { ok: false, reason: `Hermes didn't take the write check: ${f.reason}` };
+      return found("unknown", { ok: false, reason: `Hermes didn't take the write check: ${f.reason}` });
     }
   }
 

@@ -1,6 +1,6 @@
 // Settings → Memory → External memory: which memory provider each profile uses, and each provider's settings, read
 // from and written to dashboard REST on the deployed checkout (`f0d94882e8`, v0.22.6; research doc "Memory providers",
-// ADR 0042):
+// ADR 0045):
 //
 // - `GET /api/memory?profile=` → `{active, providers: [{name, description, status, setup}]}`. `active` is the profile's
 //   `memory.provider` ("" for built-in memory only). The providers are the ones Hermes finds for that profile: bundled

@@ -625,7 +625,8 @@ describe("Chat beside a memory screen that can't save", () => {
   it("still sends after a server without the memory calls", async () => {
     await chatAfter(
       (s) => void (s.learningMethods = false),
-      async () => void expect((await screen.findByRole("alert")).textContent).toMatch(/This Hermes server can't edit memory/),
+      // The tab's own read finds no learning.* methods, so the note saying what is missing takes the editor's place (ADR 0044).
+      async () => void expect(await screen.findByRole("region", { name: /This Hermes server doesn't support Memory/ })).toBeTruthy(),
     );
   });
 

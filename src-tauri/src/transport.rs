@@ -713,7 +713,7 @@ impl Dashboard {
     /// `PUT api/skills/content` with exactly their fields (`skill_write_allowed`), and Import transcripts'
     /// `POST api/sessions/import` whose every session is marked `source: "import"` (`import_body_allowed`, ADR 0031),
     /// the Automations writes (`webhook_write`, ADR 0036), and Settings → Memory's external memory writes
-    /// (`memory_provider_write`, ADR 0042).
+    /// (`memory_provider_write`, ADR 0045).
     /// Returns the response body on 2xx.
     pub async fn request(&self, method: &str, path_and_query: &str, body: Option<String>) -> Result<String, TransportError> {
         let (path, query) = path_and_query.split_once('?').unwrap_or((path_and_query, ""));
@@ -1455,7 +1455,7 @@ pub fn skill_write_allowed(path: &str, body: Option<&str>) -> bool {
     name_ok && value_ok
 }
 
-/// Settings → Memory's external memory writes (ADR 0042, Hermes's `/api/memory` routes): `PUT api/memory/provider`
+/// Settings → Memory's external memory writes (ADR 0045, Hermes's `/api/memory` routes): `PUT api/memory/provider`
 /// `{"provider": name}` picks a profile's provider ("" for built-in memory only), `PUT
 /// api/memory/providers/{name}/config` `{"values": {key: text}}`, never empty, saves its settings, and `POST
 /// api/memory/providers/{name}/setup` with exactly `{"values": {}}` installs what its manifest declares. Names are one

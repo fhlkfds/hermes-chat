@@ -41,6 +41,7 @@ import { readBack, sendImport, type PlannedChat } from "./importTranscripts";
 import { memoryApi, type MemoryApi } from "./memory";
 import { MemoryProvidersApi } from "./memoryProviders";
 import { SkillsApi } from "./skills";
+import { CapabilityStore, CapabilityUnsupportedError } from "./capabilities";
 import type { OpenPipe, Pipe, PipeEvent, RestMethod, Route, Speech, Transcript, VoiceSetup } from "./pipe";
 import { RemoteFilesError, previewSupport, remoteFiles, type EditIo, type RemoteFiles } from "./remoteFiles";
 import { isUnsecure } from "./unsecure";
@@ -205,6 +206,10 @@ type SessionRow = {
   /** The session it was branched (or compressed) from. */
   parent_session_id?: string | null;
   message_count?: number;
+  /** The folder it works in, as Hermes stored it. */
+  cwd?: string | null;
+  /** Running now, or active lately, as the dashboard decides (`_is_active`). */
+  is_active?: boolean;
 };
 type SessionPage = { sessions: SessionRow[]; total: number };
 /** Dashboard REST `GET /api/sessions/{id}`, as far as this app reads it. Flags come as stored, 0 or 1. */
@@ -676,11 +681,15 @@ export class Hermes {
     upload: (id, token, path, overwrite, onProgress) => {
       const pipe = this.pipe;
       if (!pipe || this.closing || this.snapshot.status !== "connected") return Promise.reject(new Error("Not connected to Hermes."));
+      const refused = this.capabilities.refuses({ rest: "POST", path: "api/files/upload-stream" });
+      if (refused) return Promise.reject(new CapabilityUnsupportedError(refused));
       return pipe.upload(id, token, path, overwrite, onProgress);
     },
     saveText: (id, path, text, overwrite) => {
       const pipe = this.pipe;
       if (!pipe || this.closing || this.snapshot.status !== "connected") return Promise.reject(new Error("Not connected to Hermes."));
+      const refused = this.capabilities.refuses({ rest: "POST", path: "api/files/write" });
+      if (refused) return Promise.reject(new CapabilityUnsupportedError(refused));
       return pipe.saveText(id, path, text, overwrite);
     },
     cancel: (id) => this.pipe?.cancelTransfer(id) ?? Promise.resolve(),
@@ -765,7 +774,7 @@ export class Hermes {
     async (method, pathAndQuery, body) => {
       const pipe = this.closing ? undefined : this.connectedPipe();
       if (!pipe) throw new Error("Not connected to Hermes.");
-      return JSON.parse(await pipe.request(method, pathAndQuery, body === undefined ? undefined : JSON.stringify(body)));
+      return JSON.parse(await this.relay(pipe, method, pathAndQuery, body));
     },
     async (profile) => {
       const pipe = this.closing ? undefined : this.connectedPipe();
@@ -776,6 +785,11 @@ export class Hermes {
       if (name === "stt") this.voiceRead = undefined;
     },
     (method, params) => this.request(method, params),
+    // What its write check found, which only Settings → Toolsets can learn (capabilities.ts `toolsetSwitches`).
+    () => {
+      const gen = this.generation;
+      return (state, why) => this.capabilities.report(gen, "toolsetSwitches", state, why);
+    },
   );
   /** Settings → Memory's reads and writes (memory.ts). Each call names the profile it is for. */
   readonly memory: MemoryApi = memoryApi({
@@ -783,7 +797,7 @@ export class Hermes {
     get: (pathAndQuery) => this.rest("GET", pathAndQuery),
   });
   /**
-   * Settings → Memory's external memory (memoryProviders.ts, ADR 0042). Each call names its profile, and goes only over a
+   * Settings → Memory's external memory (memoryProviders.ts, ADR 0045). Each call names its profile, and goes only over a
    * connection that is up.
    */
   readonly memoryProviders = new MemoryProvidersApi((method, pathAndQuery, body) => this.connectedRest(method, pathAndQuery, body));
@@ -799,7 +813,7 @@ export class Hermes {
   private connectedRest = async (method: "GET" | "POST" | "PUT", pathAndQuery: string, body?: unknown): Promise<unknown> => {
     const pipe = this.closing ? undefined : this.connectedPipe();
     if (!pipe) throw new Error("Not connected to Hermes.");
-    return JSON.parse(await pipe.request(method, pathAndQuery, body === undefined ? undefined : JSON.stringify(body)));
+    return JSON.parse(await this.relay(pipe, method, pathAndQuery, body));
   };
 
   /**
@@ -816,6 +830,19 @@ export class Hermes {
   readonly persona = new PersonaApi((method, pathAndQuery, body) => this.rest(method, pathAndQuery, body));
   /** Settings → Skills' reads and writes of a profile's skills (skills.ts). Each call names its profile. */
   readonly skills = new SkillsApi((method, pathAndQuery, body) => this.rest(method, pathAndQuery, body));
+
+  /**
+   * What this Hermes server can do, for Connection diagnostics and the screens that depend on it (capabilities.ts,
+   * ADR 0044). Its checks only read, through the connection in use, and it is kept in memory for this sign-in only. A
+   * write whose capability Hermes lacks is refused here, before it is sent.
+   */
+  readonly capabilities = new CapabilityStore(
+    {
+      get: (pathAndQuery, maxBytes) => this.restGet(pathAndQuery, maxBytes, false),
+      rpc: (method, params) => this.request(method, params, undefined, false),
+    },
+    () => this.generation,
+  );
 
   /** The profile whose chats are shown. */
   get profile(): string {
@@ -847,6 +874,7 @@ export class Hermes {
     let up = false;
     let pipe: Pipe | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let readyPayload: Record<string, unknown> = {};
     const profile = this.profile;
     try {
       pipe = await this.openPipe((e) => {
@@ -863,6 +891,7 @@ export class Hermes {
       ]);
       if (failure) throw failure;
       if (payload.session_authority) throw new ProtocolMismatchError();
+      readyPayload = payload;
     } catch (e) {
       this.generation++;
       await pipe?.close().catch(() => {});
@@ -877,8 +906,12 @@ export class Hermes {
     this.lastHeard = Date.now();
     this.heartbeat = setInterval(() => this.beat(), PING_EVERY_MS);
     this.update({ status: "connected", closedReason: undefined, route: pipe.route, unsecure: isUnsecure(pipe.route) });
-    // Without this, Hermes never sends this connection an Approval (research doc §6).
-    this.track(this.request("client.capabilities", { server_requests: true }));
+    // Without this, Hermes never sends this connection an Approval (research doc §6). Its answer lists the requests
+    // Hermes may send, which is how diagnostics knows Approvals are there.
+    const told = this.request("client.capabilities", { server_requests: true });
+    this.track(told);
+    // Checks start a little later, once the chat list has loaded (capabilities.ts).
+    this.capabilities.connected(gen, profile, readyPayload, told);
   }
 
   /** Tries to connect again now, after a drop or from Offline, and keeps retrying on its own if that fails. */
@@ -1018,6 +1051,8 @@ export class Hermes {
     if (this.pipe && this.pipeProfile !== name) {
       this.generation++;
       this.pipeProfile = undefined;
+      // Nothing checked for the old profile's connection lands now; the new one checks again.
+      this.capabilities.disconnected();
     }
     const unread = this.snapshot.chats.filter((c) => c.unread).length;
     const chats = this.snapshot.chats.filter((c) => !c.archived).map((c): ListedChat => ({ id: c.id, title: c.title, at: c.updatedAt, unread: !!c.unread, source: c.source }));
@@ -1239,6 +1274,38 @@ export class Hermes {
     if (row?.id !== chatId) return null;
     const listed = profile === this.profile ? this.snapshot.chats.find((c) => c.id === chatId) : undefined;
     return { ...this.toFound({ ...row, archived: !!row.archived } as SearchRow, listed, !row.pinned), snippet: [] };
+  }
+
+  /**
+   * The chats Hermes has working in `path` or a folder inside it, in every profile, from any Hermes client
+   * (`GET /api/sessions?cwd_prefix=`, archived ones included). Only rows whose own `cwd` is inside `path` count. Rejects
+   * when a profile can't be asked: a removal must not go ahead on a partial answer (ADR 0043).
+   */
+  async chatsWorkingIn(path: string): Promise<{ id: string; title: string; profile: string; cwd: string; active: boolean }[]> {
+    const root = path.replace(/\/+$/, "");
+    const within = (cwd: string) => cwd === root || cwd.startsWith(`${root}/`);
+    const PAGE = 100;
+    // A removal must not go ahead on part of the list: every page is read, and too many to read is a refusal.
+    const MAX_PAGES = 50;
+    const profiles = await this.profiles();
+    const pages = await Promise.all(
+      profiles.map(async (profile) => {
+        const rows = new Map<string, SessionRow>();
+        for (let offset = 0, n = 0; ; offset += PAGE, n++) {
+          if (n >= MAX_PAGES) throw new Error(`The ${profile} profile has more than ${MAX_PAGES * PAGE} chats in this folder, too many to check.`);
+          const q = new URLSearchParams({ cwd_prefix: root, archived: "include", limit: String(PAGE), offset: String(offset), profile });
+          const page = (await this.rest("GET", `api/sessions?${q}`)) as SessionPage;
+          if (!Array.isArray(page?.sessions) || typeof page.total !== "number") throw new Error(`Hermes's answer for the ${profile} profile wasn't a list of chats.`);
+          // Pinned rows come with every page: each chat counts once.
+          for (const r of page.sessions) rows.set(r.id, r);
+          if (offset + PAGE >= page.total) break;
+        }
+        return [...rows.values()].flatMap((r) =>
+          typeof r.cwd === "string" && within(r.cwd) ? [{ id: r.id, title: r.title || r.preview || "Untitled chat", profile, cwd: r.cwd, active: !!r.is_active }] : [],
+        );
+      }),
+    );
+    return pages.flat();
   }
 
   /** Puts a found chat in the list, if it isn't there yet, so it can be opened (`open`). */
@@ -2701,6 +2768,7 @@ export class Hermes {
     this.closing = true;
     this.abortDial?.(new Error("Closed by the app."));
     this.generation++;
+    this.capabilities.disconnected();
     clearTimeout(this.retryTimer);
     clearInterval(this.heartbeat);
     const pipe = this.takePipe();
@@ -2968,6 +3036,7 @@ export class Hermes {
     this.pipe = undefined;
     this.heldScreen = undefined;
     this.generation++;
+    this.capabilities.disconnected();
     clearInterval(this.heartbeat);
     // Lets the Rust side end the tunnel.
     if (pipe) this.droppedClosing = pipe.close().catch(() => {}).finally(() => (this.droppedClosing = undefined));
@@ -3652,14 +3721,48 @@ export class Hermes {
     // Once closed (signed out), nothing more goes out: the Rust side relays through whichever sign-in is current, which
     // may be another server's by then.
     if (!this.pipe || this.closing) throw new Error("Not connected to Hermes.");
-    return JSON.parse(await this.pipe.request(method, pathAndQuery, body === undefined ? undefined : JSON.stringify(body)));
+    return JSON.parse(await this.relay(this.pipe, method, pathAndQuery, body));
   }
 
-  /** A REST GET's raw answer, refused past `maxBytes` when that is given. Only while connected. */
-  private restGet(pathAndQuery: string, maxBytes?: number): Promise<string> {
+  /**
+   * One dashboard REST call through `pipe`. A write whose capability Hermes lacks is refused before it is sent
+   * (`CapabilityUnsupportedError`), and a GET's answer tells diagnostics about its route, for the connection it went
+   * out on.
+   */
+  private relay(pipe: Pipe, method: RestMethod, pathAndQuery: string, body?: unknown): Promise<string> {
+    const refused = this.capabilities.refuses({ rest: method, path: pathAndQuery });
+    if (refused) return Promise.reject(new CapabilityUnsupportedError(refused));
+    const answer = pipe.request(method, pathAndQuery, body === undefined ? undefined : JSON.stringify(body));
+    if (method === "GET") this.observe({ route: pathAndQuery }, answer);
+    else this.observeWrite({ route: pathAndQuery }, answer);
+    return answer;
+  }
+
+  /**
+   * A REST GET's raw answer, refused past `maxBytes` when that is given. Only while connected. `observe`: whether its
+   * answer tells diagnostics about the route; not for the checks diagnostics makes itself.
+   */
+  private restGet(pathAndQuery: string, maxBytes?: number, observe = true): Promise<string> {
     const pipe = this.pipe;
     if (!pipe || this.snapshot.status !== "connected") return Promise.reject(new Error("Not connected to Hermes."));
-    return maxBytes === undefined ? pipe.request("GET", pathAndQuery) : pipe.getLimited(pathAndQuery, maxBytes);
+    const answer = maxBytes === undefined ? pipe.request("GET", pathAndQuery) : pipe.getLimited(pathAndQuery, maxBytes);
+    if (observe) this.observe({ route: pathAndQuery }, answer);
+    return answer;
+  }
+
+  /** Tells diagnostics how a request the screens made was answered, with the answer, for the connection it went out on. */
+  private observe(call: { route: string } | { method: string }, answer: Promise<unknown>) {
+    const gen = this.generation;
+    answer.then(
+      (value) => this.capabilities.observe(gen, call, undefined, value),
+      (e: unknown) => this.capabilities.observe(gen, call, e),
+    );
+  }
+
+  /** Tells diagnostics when a change the screens sent failed, so a route or method Hermes lacks isn't sent to again. */
+  private observeWrite(call: { route: string } | { method: string }, answer: Promise<unknown>) {
+    const gen = this.generation;
+    answer.catch((e: unknown) => this.capabilities.observeWrite(gen, call, e));
   }
 
   private track(p: Promise<unknown>) {
@@ -3668,11 +3771,19 @@ export class Hermes {
   }
 
   /** One JSON-RPC request. With a `file`, the pipe swaps its base64 in for the `FILE_MARK` in `params`. */
-  private request(method: string, params: Record<string, unknown>, file?: { path: string; maxBytes: number }): Promise<unknown> {
+  private request(method: string, params: Record<string, unknown>, file?: { path: string; maxBytes: number }, observe = true): Promise<unknown> {
     const pipe = this.pipe;
     if (!pipe || this.snapshot.status !== "connected") return Promise.reject(new Error("Not connected to Hermes."));
+    // A method that changes something, for a capability Hermes lacks, isn't sent.
+    const refused = this.capabilities.refuses({ rpc: method });
+    if (refused) return Promise.reject(new CapabilityUnsupportedError(refused));
     const id = this.nextId++;
     const done = new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
+    // Diagnostics learns from the screens' own requests (not its own checks), for the connection each went out on.
+    if (observe) {
+      this.observe({ method }, done);
+      this.observeWrite({ method }, done);
+    }
     const frame = JSON.stringify({ jsonrpc: "2.0", id, method, params });
     const [head, tail, ...rest] = frame.split(JSON.stringify(FILE_MARK).slice(1, -1));
     const sent = !file

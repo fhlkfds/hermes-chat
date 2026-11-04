@@ -1,4 +1,4 @@
-# External memory screenshots (ADR 0042)
+# External memory screenshots (ADR 0045)
 
 Captured on 2026-11-04 from the running Tauri debug build of this branch (WebKitGTK) on an Xvfb display. These are framebuffer captures of the window, not mockups, and nothing was composited or retouched. Images are 1280 × 900; image 9 is 760 × 900, the app's minimum width.
 

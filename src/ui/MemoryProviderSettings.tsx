@@ -1,5 +1,5 @@
 // Settings → Memory → External memory: which memory provider each profile uses, and each provider's settings, as Hermes
-// has them on the server (memoryProviders.ts, ADR 0042). The table shows every profile's provider and, for Honcho, which
+// has them on the server (memoryProviders.ts, ADR 0045). The table shows every profile's provider and, for Honcho, which
 // profiles share a store. Below it one profile at a time, which needn't be the one the app shows, can switch provider,
 // change its settings, copy another profile's to share its memory, and install what a provider needs. Nothing is
 // written until the owner saves; every write is checked against a fresh read and read back. Typed secrets live only in
