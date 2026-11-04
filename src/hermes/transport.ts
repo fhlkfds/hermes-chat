@@ -1246,12 +1246,23 @@ export class Hermes {
   async chatsWorkingIn(path: string): Promise<{ id: string; title: string; profile: string; cwd: string; active: boolean }[]> {
     const root = path.replace(/\/+$/, "");
     const within = (cwd: string) => cwd === root || cwd.startsWith(`${root}/`);
+    const PAGE = 100;
+    // A removal must not go ahead on part of the list: every page is read, and too many to read is a refusal.
+    const MAX_PAGES = 50;
     const profiles = await this.profiles();
     const pages = await Promise.all(
       profiles.map(async (profile) => {
-        const q = new URLSearchParams({ cwd_prefix: root, archived: "include", limit: "100", profile });
-        const page = (await this.rest("GET", `api/sessions?${q}`)) as SessionPage;
-        return (page.sessions ?? []).flatMap((r) =>
+        const rows = new Map<string, SessionRow>();
+        for (let offset = 0, n = 0; ; offset += PAGE, n++) {
+          if (n >= MAX_PAGES) throw new Error(`The ${profile} profile has more than ${MAX_PAGES * PAGE} chats in this folder, too many to check.`);
+          const q = new URLSearchParams({ cwd_prefix: root, archived: "include", limit: String(PAGE), offset: String(offset), profile });
+          const page = (await this.rest("GET", `api/sessions?${q}`)) as SessionPage;
+          if (!Array.isArray(page?.sessions) || typeof page.total !== "number") throw new Error(`Hermes's answer for the ${profile} profile wasn't a list of chats.`);
+          // Pinned rows come with every page: each chat counts once.
+          for (const r of page.sessions) rows.set(r.id, r);
+          if (offset + PAGE >= page.total) break;
+        }
+        return [...rows.values()].flatMap((r) =>
           typeof r.cwd === "string" && within(r.cwd) ? [{ id: r.id, title: r.title || r.preview || "Untitled chat", profile, cwd: r.cwd, active: !!r.is_active }] : [],
         );
       }),

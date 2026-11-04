@@ -751,7 +751,8 @@ function CreateDialog({
                     : `${finished.path}: ${STATE_LABEL[finished.state] ?? finished.state}.`}
               </span>
             </p>
-            {finished.setup.log && finished.state !== "ready" && <pre className="repo-output mono">{finished.setup.log}</pre>}
+            {/* The progress log above already says what setup did; the record's log is for an answer that came without it. */}
+            {finished.setup.log && finished.state !== "ready" && !("log" in state && state.log.length) && <pre className="repo-output mono">{finished.setup.log}</pre>}
           </>
         )}
         {state.phase !== "editing" && (
@@ -900,10 +901,25 @@ function RemoveDialog({
     return () => void (alive.current = false);
   }, []);
 
+  // Hermes is asked through a ref: the app around the dialog draws again whenever a chat streams, and that must not
+  // read the preview again, clear the owner's tick, or (during a removal) take the dialog out of `removing`.
+  const chatsIn = useRef(hooks.hermesChatsIn);
+  chatsIn.current = hooks.hermesChatsIn;
+  const asked = useRef(0);
+  const askHermes = useCallback(() => {
+    const n = ++asked.current;
+    setAck(false);
+    const ask = chatsIn.current;
+    if (!ask) return setHermes({ state: "unavailable", chats: [] });
+    setHermes({ state: "reading", chats: [] });
+    ask(record.path).then(
+      (chats) => n === asked.current && alive.current && setHermes({ state: "ready", chats }),
+      (e: unknown) => n === asked.current && alive.current && setHermes({ state: "failed", chats: [], error: e instanceof Error ? e.message : String(e) }),
+    );
+  }, [record.path]);
   const load = useCallback(() => {
     const n = ++read.current;
     setState({ phase: "reading" });
-    setAck(false);
     api.run(target, { op: "worktreeRemovePlan", repo: top, id: record.id }).then(
       (v) => {
         if (n !== read.current || !alive.current) return;
@@ -915,15 +931,18 @@ function RemoveDialog({
       },
       (e: unknown) => n === read.current && alive.current && setState({ phase: "failed", error: asRepoFailure(e) }),
     );
-    if (hooks.hermesChatsIn) {
-      setHermes({ state: "reading", chats: [] });
-      hooks.hermesChatsIn(record.path).then(
-        (chats) => n === read.current && alive.current && setHermes({ state: "ready", chats }),
-        (e: unknown) => n === read.current && alive.current && setHermes({ state: "failed", chats: [], error: e instanceof Error ? e.message : String(e) }),
-      );
-    }
-  }, [api, target, top, record.id, record.path, hooks]);
+    askHermes();
+  }, [api, target, top, record.id, askHermes]);
   useEffect(load, [load]);
+  // Hermes connecting or going away makes the last answer about its chats an old one: ask again (or say it can't be
+  // asked), and the owner's tick goes with it.
+  const available = !!hooks.hermesChatsIn;
+  const seenAvailable = useRef(available);
+  useEffect(() => {
+    if (seenAvailable.current === available) return;
+    seenAvailable.current = available;
+    askHermes();
+  }, [available, askHermes]);
   useEffect(() => {
     if (state.phase !== "reading" && state.phase !== "removing") primary.current?.focus();
   }, [state.phase]);

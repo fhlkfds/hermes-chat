@@ -166,17 +166,23 @@ const hooksOf = (over: Partial<WorktreeHooks> = {}): WorktreeHooks => ({
   ...over,
 });
 
+const screenWith = (api: RepoApi, hooks: WorktreeHooks) => (
+  <StrictMode>
+    <RepositoryScreen api={api} initialTarget="liam@hermes" initialPath={MAIN} recent={[]} suggestions={[]} onOpened={() => {}} onTarget={() => {}} worktrees={hooks} onClose={() => {}} />
+  </StrictMode>
+);
+
 async function show(api: RepoApi, hooks: WorktreeHooks = hooksOf()) {
   const user = userEvent.setup();
-  render(
-    <StrictMode>
-      <RepositoryScreen api={api} initialTarget="liam@hermes" initialPath={MAIN} recent={[]} suggestions={[]} onOpened={() => {}} onTarget={() => {}} worktrees={hooks} onClose={() => {}} />
-    </StrictMode>,
-  );
+  const view = render(screenWith(api, hooks));
+  rerenderWith = (h) => view.rerender(screenWith(api, h));
   await screen.findByRole("tab", { name: "Worktrees" });
   await user.click(screen.getByRole("tab", { name: "Worktrees" }));
   return user;
 }
+
+/** Draws the screen again with new hooks, as the app does whenever a chat streams. */
+let rerenderWith: (hooks: WorktreeHooks) => void = () => {};
 
 const rowOf = (path: string) => screen.getByText(path, { selector: ".wt-path" }).closest(".wt-row") as HTMLElement;
 
@@ -579,5 +585,48 @@ describe("the Changes and Worktrees views", () => {
     await user.click(within(await waitFor(() => rowOf(WT))).getByRole("button", { name: "Open" }));
     expect(screen.getByRole("tab", { name: "Changes" }).getAttribute("aria-selected")).toBe("true");
     await waitFor(() => expect(ops("status").some((r) => r.repo === WT)).toBe(true));
+  });
+});
+
+describe("the removal dialog while the app around it changes", () => {
+  it("isn't reset by the app drawing again, before or during the removal", async () => {
+    let finish!: (v: unknown) => void;
+    const { api, ops } = fakeApi({
+      worktreeList: () => listOf([mainTree(), tree()]),
+      worktreeRemovePlan: () => removal(),
+      worktreeRemove: () => new Promise((r) => (finish = r)),
+    });
+    const user = await show(api);
+    await user.click(await screen.findByRole("button", { name: `Remove ${WT}…` }));
+    const dialog = await screen.findByRole("dialog", { name: `Remove ${WT}` });
+    await within(dialog).findByLabelText("Files that will be kept");
+    const reads = ops("worktreeRemovePlan").length;
+    rerenderWith(hooksOf());
+    rerenderWith(hooksOf());
+    expect(ops("worktreeRemovePlan")).toHaveLength(reads);
+    await user.click(within(dialog).getByRole("button", { name: "Keep changes and remove" }));
+    expect(within(dialog).getByRole("status").textContent).toContain("Keeping its changes, then removing it");
+    rerenderWith(hooksOf());
+    // Still removing: not read again, and it can't be closed while Git works.
+    expect(within(dialog).getByRole("status").textContent).toContain("Keeping its changes, then removing it");
+    expect(ops("worktreeRemovePlan")).toHaveLength(reads);
+    expect((within(dialog).getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => finish({ removed: WT, branch: "feature/login", unpublished: 0, kept: null }));
+    await within(dialog).findByText(new RegExp(`Removed ${WT}`));
+  });
+
+  it("forgets that Hermes found no chats once Hermes goes away, and asks for the owner's word", async () => {
+    const { api, hooks } = { ...fakeApi({ worktreeList: () => listOf([mainTree(), tree()]), worktreeRemovePlan: () => removal() }), hooks: hooksOf() };
+    const user = await show(api, hooks);
+    await user.click(await screen.findByRole("button", { name: `Remove ${WT}…` }));
+    const dialog = await screen.findByRole("dialog", { name: `Remove ${WT}` });
+    const remove = await within(dialog).findByRole("button", { name: "Keep changes and remove" });
+    await waitFor(() => expect((remove as HTMLButtonElement).disabled).toBe(false));
+    rerenderWith(hooksOf({ hermesChatsIn: undefined }));
+    await within(dialog).findByText(/Hermes isn't connected, so it couldn't be asked/);
+    expect((within(dialog).getByRole("button", { name: "Keep changes and remove" }) as HTMLButtonElement).disabled).toBe(true);
+    // Back again: it is asked again, and finds a chat working there now.
+    rerenderWith(hooksOf({ hermesChatsIn: async () => [{ id: "s9", title: "Late chat", profile: "default", cwd: WT, active: true }] }));
+    await within(dialog).findByText(/Hermes is working in it now, in "Late chat"/);
   });
 });

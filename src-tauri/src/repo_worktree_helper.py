@@ -647,14 +647,24 @@ def op_worktree_plan(req):
     return make_plan(req)
 
 
-def run_setup(top, rec_id):
+SETUP_FROM = ("ready", "setup-failed", "setup-interrupted", "create-interrupted")
+
+
+def run_setup(top, rec_id, allowed):
     """Runs setup for a worktree: each `.worktreeinclude` entry once, logged. Re-running it (Retry) leaves what an
-    earlier run did, and never overwrites a file that differs: that could be the owner's own edit."""
+    earlier run did, and never overwrites a file that differs: that could be the owner's own edit. It's claimed under
+    the record's lock, only from a state in `allowed` and only while no other run holds it, and only the run that
+    claimed it writes its outcome: two Retries can't both run."""
+    runner = me()
     with Records(top) as R:
         rec = R.doc["worktrees"].get(rec_id)
         if not rec:
             raise Refusal("not-found", "This app has no record of that worktree.")
-        rec["state"], rec["run"] = "setup", me()
+        if rec.get("state") in INTERRUPTED and alive(rec.get("run")):
+            raise Refusal("busy", "Setup or another change is already running in this worktree.")
+        if state_of(rec) not in allowed:
+            raise Refusal("not-needed", "Setup has already run for this worktree." if state_of(rec) == "ready" else "Setup can't run now: the worktree is %s." % state_of(rec))
+        rec["state"], rec["run"] = "setup", runner
         rec["setup"] = dict(rec.get("setup") or {}, state="running", startedAt=time.time(), finishedAt=None)
         R.save()
         source, path = rec["source"], rec["path"]
@@ -700,6 +710,8 @@ def run_setup(top, rec_id):
         log.append("No .worktreeinclude in %s: nothing to set up." % source)
     with Records(top) as R:
         rec = R.doc["worktrees"].get(rec_id)
+        if rec and rec.get("run") != runner:
+            raise Refusal("busy", "Another run took over this worktree's setup meanwhile; its outcome is in the list.")
         if rec:
             ok = failed == 0
             rec["setup"] = dict(rec.get("setup") or {}, state="done" if ok else "failed", finishedAt=time.time(), entries=entries, log="\n".join(log)[-MAX_LOG:])
@@ -749,6 +761,20 @@ def op_worktree_create(req):
         args = ["worktree", "add", plan["path"], plan["branch"]]
     code, out, err = git(args, top, read_only=False, timeout=900)
     output = (text(out) + text(err)).strip()
+    made = tree_at(list_trees(top), plan["path"])
+    if code != 0 and made and made.get("locked") != "initializing" and os.path.isdir(plan["path"]):
+        # Git made the worktree and checked it out, then something after (a post-checkout hook) failed. It's kept,
+        # recorded, as a setup that failed: Retry, Open, or Remove it from the list.
+        git(["worktree", "lock", "--reason", LOCK_REASON + rec_id, plan["path"]], top, read_only=False)
+        with Records(top) as R:
+            rec = R.doc["worktrees"].get(rec_id)
+            rec["state"] = "setup-failed"
+            rec.pop("run", None)
+            rec["createOutput"] = output[-MAX_LOG:]
+            rec["setup"] = dict(rec.get("setup") or {}, state="failed", finishedAt=time.time(),
+                                log=("Git made the worktree, but what ran after it failed (a post-checkout hook):\n%s" % output)[-MAX_LOG:])
+            R.save()
+            return {"worktree": rec_view(rec), "output": output}
     if code != 0:
         with Records(top) as R:
             R.doc["worktrees"].pop(rec_id, None)
@@ -767,7 +793,7 @@ def op_worktree_create(req):
             R.save()
             return {"worktree": rec_view(rec), "output": output}
         R.save()
-    return {"worktree": run_setup(top, rec_id), "output": output}
+    return {"worktree": run_setup(top, rec_id, ("ready",)), "output": output}
 
 
 def op_worktree_setup(req):
@@ -781,22 +807,23 @@ def op_worktree_setup(req):
         raise Refusal("not-found", "This app has no record of that worktree.")
     state = state_of(rec)
     tree = tree_at(list_trees(top), rec["path"])
+    if not tree:
+        raise Refusal("not-found", "The worktree at %s isn't there any more." % rec["path"])
     if state == "create-interrupted":
-        if not tree or tree.get("locked") == "initializing":
+        if tree.get("locked") == "initializing":
             raise Refusal("unfinished", "Git didn't finish making this worktree, so setup can't run in it. Remove it, or forget it if its folder isn't there.")
-        git(["worktree", "lock", "--reason", LOCK_REASON + rec_id, rec["path"]], top, read_only=False)
+        if tree.get("locked") is None:
+            git(["worktree", "lock", "--reason", LOCK_REASON + rec_id, rec["path"]], top, read_only=False)
         if (rec.get("setup") or {}).get("state") == "skipped":
             with Records(top) as R:
                 rec = R.doc["worktrees"][rec_id]
+                if state_of(rec) != "create-interrupted":
+                    raise Refusal("busy", "Another run took over this worktree meanwhile; its outcome is in the list.")
                 rec["state"] = "ready"
                 rec.pop("run", None)
                 R.save()
                 return {"worktree": rec_view(rec)}
-    elif state not in ("setup-failed", "setup-interrupted"):
-        raise Refusal("not-needed", "Setup has already run for this worktree." if state == "ready" else "Setup can't run now: the worktree is %s." % state)
-    if not tree:
-        raise Refusal("not-found", "The worktree at %s isn't there any more." % rec["path"])
-    return {"worktree": run_setup(top, rec_id)}
+    return {"worktree": run_setup(top, rec_id, ("setup-failed", "setup-interrupted", "create-interrupted"))}
 
 
 # ── chats ───────────────────────────────────────────────────────────────────
@@ -910,8 +937,18 @@ def removal_facts(top, rec):
         facts["files"], facts["filesCut"] = facts["files"][:MAX_LISTED], True
     facts["fileCount"] = len(rows)
     code, out, _ = git(["status", "--porcelain=v2", "-z", "--ignored=matching", "--untracked-files=normal"], path)
-    if code == 0:
-        facts["ignored"] = [text(f)[2:] for f in out.split(b"\0") if text(f).startswith("! ") and text(f)[2:] not in links][:200]
+    ignored = sorted(text(f)[2:] for f in out.split(b"\0") if text(f).startswith("! ") and text(f)[2:].rstrip("/") not in links) if code == 0 else []
+    facts["ignored"] = ignored[:200]
+    # An ignored file that appears, or changes, after the preview makes it stale: it would go with the folder unseen.
+    ignored_stamp = []
+    for rel in ignored:
+        try:
+            st = os.lstat(os.path.join(path, rel))
+            ignored_stamp.append([rel, st.st_mode, st.st_size, st.st_mtime_ns])
+        except OSError:
+            ignored_stamp.append([rel, None])
+    if os.path.exists(text(git_ok(["rev-parse", "--path-format=absolute", "--git-path", "index.lock"], path)).strip()):
+        block.append({"kind": "locked", "message": "Another Git process is changing its index (index.lock exists). Wait for it, then check again."})
     unpublished, facts["lost"] = commits_only_here(path, tree["detached"])
     facts["unpublishedCount"] = unpublished
     if unpublished:
@@ -932,7 +969,9 @@ def removal_facts(top, rec):
         block.append({"kind": "processes", "message": "%d process%s work%s in the folder (%s)." % (
             len(procs), "" if len(procs) == 1 else "es", "s" if len(procs) == 1 else "", ", ".join("%s %d" % (p["name"], p["pid"]) for p in procs[:5]))})
     facts["keep"] = bool(rows) or facts["lost"] > 0
-    facts["stamp"] = hashlib.sha256(json.dumps([tree["head"], tree["branch"], sorted(stamped, key=lambda s: s[0]), state, sorted(links)]).encode()).hexdigest()
+    facts["stamp"] = hashlib.sha256(json.dumps([
+        tree["head"], tree["branch"], sorted(stamped, key=lambda s: s[0]), state, sorted(links), index_stamp(path), ignored_stamp,
+    ]).encode()).hexdigest()
     return facts, tree
 
 
@@ -949,27 +988,49 @@ def op_worktree_remove_plan(req):
 
 
 def keep_changes(top, rec, facts):
-    """A commit on top of the worktree's HEAD holding every changed and untracked file as it is now, made with a
-    separate index (the worktree's own index and files aren't touched), under refs/hermes-chat/kept/. Git then
-    confirms the snapshot holds everything: nothing differs from it and nothing is left untracked."""
+    """Keeps what only the worktree holds, as `git stash` would but without touching it: a commit of its index (what
+    was staged, an ignored file added with -f included) on top of HEAD, then a commit of every changed and untracked
+    file on top of that, made with a copy of the index (GIT_INDEX_FILE). Git then confirms the copy holds everything:
+    nothing differs from it and nothing is left untracked but setup's own links. The ref under refs/hermes-chat/kept/
+    names the second commit; its parent is the staged state."""
     path = rec["path"]
     head = git_line(["rev-parse", "-q", "--verify", "HEAD^{commit}"], path)
     if not facts["fileCount"]:
         # Only commits no branch has (a detached HEAD): keeping HEAD itself keeps them.
         return keep_ref(top, rec, head, None, 0)
-    links = sorted(setup_links(rec))
+    links = set(setup_links(rec))
+    real_index = text(git_ok(["rev-parse", "--path-format=absolute", "--git-path", "index"], path)).strip()
     index = os.path.join(common_dir(top), RECORD_DIR, "keep-%d.index" % os.getpid())
     env = {"GIT_INDEX_FILE": index}
+    who = {"GIT_AUTHOR_NAME": "Hermes Chat", "GIT_AUTHOR_EMAIL": "hermes-chat@localhost", "GIT_COMMITTER_NAME": "Hermes Chat", "GIT_COMMITTER_EMAIL": "hermes-chat@localhost"}
+    parents = ["-p", head] if head else []
+
+    def commit(tree, parent_args, message):
+        return text(git_ok(["commit-tree", tree] + parent_args, path, read_only=False, stdin=message.encode(), extra_env=who)).strip()
+
     try:
-        git_ok(["read-tree", head] if head else ["read-tree", "--empty"], path, read_only=False, extra_env=env)
+        if os.path.exists(real_index):
+            shutil.copyfile(real_index, index)
+        else:
+            git_ok(["read-tree", head] if head else ["read-tree", "--empty"], path, read_only=False, extra_env=env)
+        # The staged state, as its own commit. An index with conflicts has no tree; the working files are kept then.
+        code, out, _ = git(["write-tree"], path, extra_env=env, read_only=False)
+        staged_note = ""
+        if code == 0:
+            staged_tree = text(out).strip()
+            head_tree = git_line(["rev-parse", "-q", "--verify", "HEAD^{tree}"], path) if head else ""
+            if staged_tree != head_tree:
+                parents = ["-p", commit(staged_tree, parents, "Staged in %s when Hermes Chat removed it\n" % path)]
+        else:
+            staged_note = "The index had conflicts, so only the working files are kept.\n"
         git_ok(["add", "-A"], path, read_only=False, extra_env=env, timeout=600)
-        for link in links:
+        for link in sorted(links):
             git_ok(["rm", "-q", "--cached", "--ignore-unmatch", "--", link], path, read_only=False, extra_env=env)
         git(["update-index", "-q", "--refresh"], path, read_only=False, extra_env=env, timeout=600)
         if git(["diff-files", "--quiet", "--ignore-submodules=none"], path, extra_env=env, timeout=600)[0] != 0:
             raise Refusal("stale", "Files changed while they were being kept. Nothing was removed. Check the new preview.")
-        left = [text(p) for p in git_ok(["ls-files", "-z", "--others", "--exclude-standard"], path, extra_env=env).split(b"\0") if p]
-        if sorted(left) != links:
+        left = {text(p).rstrip("/") for p in git_ok(["ls-files", "-z", "--others", "--exclude-standard"], path, extra_env=env).split(b"\0") if p}
+        if left - links:
             raise Refusal("stale", "Files appeared while they were being kept. Nothing was removed. Check the new preview.")
         tree = text(git_ok(["write-tree"], path, read_only=False, extra_env=env)).strip()
     finally:
@@ -977,11 +1038,9 @@ def keep_changes(top, rec, facts):
             os.unlink(index)
         except OSError:
             pass
-    message = "Kept by Hermes Chat before removing the worktree %s\n\nBranch: %s\nHEAD: %s\nFiles: %d\n" % (
-        path, facts["branch"] or "(detached)", head or "(none)", facts["fileCount"])
-    who = {"GIT_AUTHOR_NAME": "Hermes Chat", "GIT_AUTHOR_EMAIL": "hermes-chat@localhost", "GIT_COMMITTER_NAME": "Hermes Chat", "GIT_COMMITTER_EMAIL": "hermes-chat@localhost"}
-    commit = text(git_ok(["commit-tree", tree] + (["-p", head] if head else []), path, read_only=False, stdin=message.encode(), extra_env=who)).strip()
-    return keep_ref(top, rec, commit, tree, facts["fileCount"])
+    message = "Kept by Hermes Chat before removing the worktree %s\n\nBranch: %s\nHEAD: %s\nFiles: %d\n%s" % (
+        path, facts["branch"] or "(detached)", head or "(none)", facts["fileCount"], staged_note)
+    return keep_ref(top, rec, commit(tree, parents, message), tree, facts["fileCount"])
 
 
 def keep_ref(top, rec, commit, tree, files):

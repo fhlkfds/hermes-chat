@@ -386,7 +386,10 @@ async fn removal_keeps_dirty_untracked_files_and_unpushed_commits_and_never_dele
     // Every change is in the kept commit, on top of the branch's HEAD.
     let kept = done["kept"]["ref"].as_str().unwrap();
     assert!(kept.starts_with(&format!("refs/hermes-chat/kept/{ID}-")));
-    assert_eq!(git(&app, &["rev-parse", &format!("{kept}^")]), git(&app, &["rev-parse", "feature/work"]));
+    // `staged.txt` was staged: the staged state is a commit of its own between HEAD and the kept files.
+    assert_eq!(git(&app, &["rev-parse", &format!("{kept}^^")]), git(&app, &["rev-parse", "feature/work"]));
+    assert_eq!(git(&app, &["show", &format!("{kept}^:staged.txt")]), "staged");
+    assert_eq!(git(&app, &["show", &format!("{kept}^:README.md")]), "hello", "README.md wasn't staged");
     assert_eq!(git(&app, &["show", &format!("{kept}:README.md")]), "hello\nedited");
     assert_eq!(git(&app, &["show", &format!("{kept}:staged.txt")]), "staged");
     assert_eq!(git(&app, &["show", &format!("{kept}:notes/new.txt")]), "untracked, edited again");
@@ -563,4 +566,115 @@ async fn ids_and_tokens_from_the_webview_are_checked() {
     }
     assert_eq!(kind(ask(req).await.unwrap_err()), "stale");
     assert!(!Path::new(p["path"].as_str().unwrap()).exists());
+}
+
+#[tokio::test]
+async fn removal_keeps_what_was_staged_apart_from_the_working_files_and_ignored_files_added_with_force() {
+    let (d, app) = repo("staged");
+    create(&app, ID, "feature/s", false).await;
+    let wt = d.path().join("app-feature-s");
+    write(&wt, "README.md", "hello\nstaged version\n");
+    git(&wt, &["add", "README.md"]);
+    write(&wt, "README.md", "hello\nworking version\n");
+    write(&wt, ".env", "SECRET=staged\n");
+    git(&wt, &["add", "-f", ".env"]);
+    let p = remove_plan(&app, ID).await;
+    let done = remove(&app, ID, &p["stamp"]).await.unwrap();
+    let kept = done["kept"]["ref"].as_str().unwrap();
+    // The kept commit holds the working files; its parent holds what was staged, on top of HEAD.
+    assert_eq!(git(&app, &["show", &format!("{kept}:README.md")]), "hello\nworking version");
+    assert_eq!(git(&app, &["show", &format!("{kept}^:README.md")]), "hello\nstaged version");
+    assert_eq!(git(&app, &["show", &format!("{kept}:.env")]), "SECRET=staged");
+    assert_eq!(git(&app, &["show", &format!("{kept}^:.env")]), "SECRET=staged");
+    assert_eq!(git(&app, &["rev-parse", &format!("{kept}^^")]), git(&app, &["rev-parse", "feature/s"]));
+}
+
+#[tokio::test]
+async fn an_ignored_file_or_a_staging_after_the_preview_makes_it_stale() {
+    let (d, app) = repo("ignored-late");
+    create(&app, ID, "feature/i", false).await;
+    let wt = d.path().join("app-feature-i");
+    let p = remove_plan(&app, ID).await;
+    write(&wt, ".env", "appeared after the preview\n");
+    assert_eq!(kind(remove(&app, ID, &p["stamp"]).await.unwrap_err()), "stale");
+    assert!(wt.join(".env").is_file());
+    let p = remove_plan(&app, ID).await;
+    assert_eq!(p["ignored"], serde_json::json!([".env"]));
+    git(&wt, &["add", "-f", ".env"]);
+    assert_eq!(kind(remove(&app, ID, &p["stamp"]).await.unwrap_err()), "stale", "staging after the preview counts too");
+}
+
+#[tokio::test]
+async fn two_retries_of_setup_cant_both_run() {
+    let (d, app) = repo("retries");
+    write(&app, "data", "a file\n");
+    write(&app, ".worktreeinclude", "data/seed.db\n");
+    git(&app, &["add", "."]);
+    git(&app, &["commit", "-qm", "data"]);
+    std::fs::remove_file(app.join("data")).unwrap();
+    write(&app, "data/seed.db", "rows\n");
+    let made = create(&app, ID, "feature/r", true).await;
+    assert_eq!(made["worktree"]["state"], "setup-failed");
+    std::fs::remove_file(d.path().join("app-feature-r/data")).unwrap();
+
+    let started = Arc::new(Mutex::new(false));
+    let flag = started.clone();
+    let repo_path = s(&app);
+    let first = tokio::spawn(async move {
+        let req = Request::WorktreeSetup { repo: repo_path, id: ID.into() };
+        repo_git::run_streaming(helper(&[("HERMES_REPO_TEST_SETUP_DELAY", "2")]), &req, &move |l| {
+            if l["step"] == "setup" {
+                *flag.lock().unwrap() = true;
+            }
+        })
+        .await
+    });
+    while !*started.lock().unwrap() {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(kind(ask(Request::WorktreeSetup { repo: s(&app), id: ID.into() }).await.unwrap_err()), "busy");
+    // Nor can it be removed, or a chat start there, while setup runs.
+    assert!(blockers(&remove_plan(&app, ID).await).contains(&"busy".to_string()));
+    assert_eq!(first.await.unwrap().unwrap()["worktree"]["state"], "ready");
+}
+
+#[tokio::test]
+async fn an_ignored_setup_link_doesnt_stop_changes_being_kept() {
+    let (d, app) = repo("ignored-link");
+    // `node_modules` without a slash ignores the link too, so Git doesn't list it at all.
+    write(&app, ".gitignore", ".env\nnode_modules\n");
+    write(&app, ".worktreeinclude", "node_modules\n");
+    git(&app, &["add", "."]);
+    git(&app, &["commit", "-qm", "ignore the link"]);
+    write(&app, "node_modules/pkg/index.js", "x\n");
+    create(&app, ID, "feature/l", true).await;
+    let wt = d.path().join("app-feature-l");
+    assert!(std::fs::symlink_metadata(wt.join("node_modules")).unwrap().file_type().is_symlink());
+    write(&wt, "README.md", "hello\nedited\n");
+    let p = remove_plan(&app, ID).await;
+    assert_eq!(blockers(&p), Vec::<String>::new());
+    let done = remove(&app, ID, &p["stamp"]).await.unwrap();
+    let kept = done["kept"]["ref"].as_str().unwrap();
+    assert_eq!(git(&app, &["show", &format!("{kept}:README.md")]), "hello\nedited");
+    assert!(!git(&app, &["ls-tree", "--name-only", kept]).lines().any(|f| f == "node_modules"));
+    // The link was removed, never what it pointed at.
+    assert!(app.join("node_modules/pkg/index.js").is_file());
+}
+
+#[tokio::test]
+async fn a_failing_post_checkout_hook_leaves_the_worktree_recorded_with_retry() {
+    let (d, app) = repo("hook");
+    let hook = app.join(".git/hooks/post-checkout");
+    std::fs::write(&hook, "#!/bin/sh\necho 'post-checkout: npm ci failed' >&2\nexit 1\n").unwrap();
+    std::fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let made = create(&app, ID, "feature/h", false).await;
+    assert_eq!(made["worktree"]["state"], "setup-failed");
+    assert!(made["worktree"]["setup"]["log"].as_str().unwrap().contains("npm ci failed"));
+    let wt = d.join("app-feature-h");
+    let l = list(&app).await;
+    let t = tree(&l, &wt);
+    assert_eq!(t["managed"]["id"], ID, "still this app's, so it can be retried or removed");
+    assert_eq!(t["locked"], format!("hermes-chat: managed worktree {ID}"));
+    std::fs::remove_file(&hook).unwrap();
+    assert_eq!(ask(Request::WorktreeSetup { repo: s(&app), id: ID.into() }).await.unwrap()["worktree"]["state"], "ready");
 }

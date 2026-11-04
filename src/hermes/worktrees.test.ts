@@ -109,6 +109,18 @@ describe("chats Hermes has working in a folder", () => {
     expect(s.restRequests.filter((r) => r.path === "/api/sessions" && r.query.get("cwd_prefix") === "/srv/app-feature").map((r) => r.query.get("profile")).sort()).toEqual(["default", "work"]);
   });
 
+  it("reads every page, so an active chat older than the first hundred still counts", async () => {
+    const s = new FakeHermes();
+    s.sessions = Array.from({ length: 150 }, (_, i) =>
+      row(`c${i}`, i + 1, { title: `Chat ${i}`, cwd: "/srv/app-feature", is_active: i === 149, pinned: i < 3 }),
+    );
+    const hermes = await connect(s.openPipe);
+    running.push(hermes);
+    const found = await hermes.chatsWorkingIn("/srv/app-feature");
+    expect(found).toHaveLength(150);
+    expect(found.find((c) => c.id === "c149")?.active).toBe(true);
+  });
+
   it("rejects, rather than answering for some profiles, when one can't be asked", async () => {
     const s = new FakeHermes();
     s.otherProfiles = { work: [] };

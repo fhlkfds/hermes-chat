@@ -2494,17 +2494,23 @@ function ChatView({
       projects.reread();
       if (projects.getSnapshot().selectedId !== into) throw new Error("The project shown changed before the chat started. Nothing was sent.");
       const instructions = s.instructions.value && instructionsMessage(s.project ?? "", s.instructions.value);
-      const begin = () => hermes.newChat(s.model.value, { folder: s.folder.value, instructions });
       let id: string;
       if (worktree) {
         // Its place in the worktree is held on the server before Hermes starts it, so the worktree can't be removed
-        // meanwhile; the chat runs there only if Hermes says it took the folder (newChat).
+        // meanwhile; the chat runs there only if Hermes says it took the folder (newChat). Each wait on the server is
+        // a chance for the owner to switch profile: the chat must start in the profile it was written in, or not at all.
         const w = worktree;
+        const begin = () => {
+          if (!stillIn()) return Promise.reject(new Error(`The profile changed to ${hermes.profile} before the chat started. Nothing was sent.`));
+          return hermes.newChat(s.model.value, { folder: s.folder.value, instructions });
+        };
         const started = await startInWorktree(repoApi, w, { profile, connection: connectionName }, begin);
         id = started.chatId;
         worktreeChats.set(scope, id, { target: w.target, repo: w.repo, id: w.id, path: w.path, branch: w.branch, token: started.token });
-        if (started.warning && stillIn()) onToast(started.warning);
-      } else id = await begin();
+        if (!stillIn())
+          throw new Error(`The profile changed to ${hermes.profile} while the chat was starting in ${w.path}. It started empty in the ${profile} profile; your message wasn't sent.`);
+        if (started.warning) onToast(started.warning);
+      } else id = await hermes.newChat(s.model.value, { folder: s.folder.value, instructions });
       if (into && projects.getSnapshot().projects.some((p) => p.id === into)) projects.setChat(into, id, true);
       if (stillIn()) onStarted(id);
       return { id };

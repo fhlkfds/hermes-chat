@@ -86,11 +86,12 @@ const list = (): WorktreeList => ({
   git: "2.47",
 });
 
-function repoApi(refuse?: Partial<Record<RepoRequest["op"], RepoFailure>>) {
+function repoApi(refuse?: Partial<Record<RepoRequest["op"], RepoFailure>>, hold?: Partial<Record<RepoRequest["op"], Promise<void>>>) {
   const calls: RepoRequest[] = [];
   const api: RepoApi = {
     run: async (_target, request) => {
       calls.push(request);
+      await hold?.[request.op];
       const no = refuse?.[request.op];
       if (no) throw no;
       switch (request.op) {
@@ -209,5 +210,43 @@ describe("a chat started in a worktree", () => {
     await waitFor(() => expect(creates(s)).toHaveLength(1));
     expect(creates(s)[0].cwd).toBeUndefined();
     expect(calls.some((c) => c.op === "worktreeAttach")).toBe(false);
+  });
+
+  it("never starts the chat in another profile when the owner switches while the worktree is held, and keeps the message", async () => {
+    const s = server();
+    s.otherProfiles = { work: [] };
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const { api, calls } = repoApi(undefined, { worktreeAttach: held });
+    const { user, hermes } = await launch(s, api);
+    await startHere(user);
+    await send(user, "Fix the login page");
+    await waitFor(() => expect(calls.some((c) => c.op === "worktreeAttach")).toBe(true));
+    await act(async () => void (await hermes.switchProfile("work")));
+    await act(async () => release());
+    await act(async () => void (await hermes.idle()));
+    // Nothing started anywhere, the place was let go, and the message is kept for the profile it was written in.
+    expect(creates(s)).toEqual([]);
+    await waitFor(() => expect(calls.map((c) => c.op)).toContain("worktreeDetach"));
+    expect(Object.values(localStorage).some((v) => typeof v === "string" && v.includes("Fix the login page"))).toBe(true);
+  });
+
+  it("doesn't send into a chat whose profile was left while its start was confirmed, and keeps the message", async () => {
+    const s = server();
+    s.otherProfiles = { work: [] };
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const { api, calls } = repoApi(undefined, { worktreeAttachConfirm: held });
+    const { user, hermes } = await launch(s, api);
+    await startHere(user);
+    await send(user, "Fix the login page");
+    await waitFor(() => expect(calls.some((c) => c.op === "worktreeAttachConfirm")).toBe(true));
+    expect(creates(s)).toHaveLength(1);
+    expect(creates(s)[0]).toMatchObject({ profile: "default", cwd: WT });
+    await act(async () => void (await hermes.switchProfile("work")));
+    await act(async () => release());
+    await act(async () => void (await hermes.idle()));
+    expect(s.requests.filter((r) => r.method === "prompt.submit")).toEqual([]);
+    expect(Object.values(localStorage).some((v) => typeof v === "string" && v.includes("Fix the login page"))).toBe(true);
   });
 });
