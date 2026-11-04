@@ -1,5 +1,7 @@
 # The global shortcut is registered the way the desktop allows, and only what registered is shown
 
+> **Superseded** (#169). The global shortcut was removed: it didn't work on every desktop (Hyprland with Quickshell among them), and a key the owner binds in their desktop to `hermes-chat --toggle` does the same job. `x11_grab.rs`, `portal.rs`, the `fake_portal` example, the shortcut's commands and its Settings section are gone, as is the `x11rb` dependency. What stays is the single window over the session bus name `net.l0cky12.HermesChat` (`remote.rs`): a second launch, `hermes-chat --show` and `hermes-chat --toggle` bring the running window forward, as the tray (ADR 0034) and chat links (ADR 0037) rely on. An older version's `global-shortcut.json` is deleted at startup (`summon::forget_old_shortcut`).
+
 Issue #78 asks for a shortcut that brings Hermes Chat forward from any other app. A global shortcut doesn't work the same way on every Linux desktop. X11 lets an app grab a key, and the X server refuses with `BadAccess` when another app already has it. Wayland lets no app grab keys. A Wayland desktop either offers the XDG desktop portal's GlobalShortcuts interface (KDE Plasma, GNOME 48 and later, and Hyprland through xdg-desktop-portal-hyprland) or offers nothing (Sway, and older desktops). Under XWayland, an X11 grab sees keys only while an X window is focused. It would look registered and never fire from a Wayland app.
 
 ## Decisions

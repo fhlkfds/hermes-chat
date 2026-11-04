@@ -5,7 +5,6 @@ pub mod fonts;
 pub mod links;
 pub mod media;
 pub mod notify;
-pub mod portal;
 pub mod remote;
 pub mod repo_git;
 pub mod saved_password;
@@ -16,7 +15,6 @@ pub mod tray;
 pub mod transport;
 pub mod tunnel;
 pub mod web_page;
-pub mod x11_grab;
 pub mod update;
 
 use serde::{Deserialize, Serialize};
@@ -1049,18 +1047,8 @@ pub fn run(screenshot: bool, link: Option<String>) {
             // Which package the binary came from, read before anything can upgrade it.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move { handle.state::<update::Updates>().start().await });
-            // The global shortcut registers off the main thread: the desktop may ask the owner first.
-            app.manage(summon::Summon::new(app.handle()));
-            if let Some(window) = app.get_webview_window("main") {
-                let handle = app.handle().clone();
-                window.on_window_event(move |e| {
-                    if let tauri::WindowEvent::Focused(f) = e {
-                        handle.state::<summon::Summon>().focus_changed(*f);
-                    }
-                });
-            }
-            let handle = app.handle().clone();
-            std::thread::spawn(move || handle.state::<summon::Summon>().start(&handle));
+            // The global shortcut was removed (ADR 0033 is superseded); an older version's setting file goes too.
+            summon::forget_old_shortcut(app.handle());
             let handle = app.handle().clone();
             // Requests that came while the app started (main.rs took the bus name first) are handled now.
             remote::set_handler(move |request| match request {
@@ -1069,13 +1057,13 @@ pub fn run(screenshot: bool, link: Option<String>) {
                     let _ = handle.emit(remote::EVENT, ());
                 }
                 // A second launch or `--show` brings back this window, hidden to the tray or not (ADR 0034).
-                remote::Request::Show { token } => summon::activate(&handle, false, token, false),
-                remote::Request::Toggle { token } => summon::activate(&handle, true, token, false),
+                remote::Request::Show { token } => summon::activate(&handle, false, token),
+                remote::Request::Toggle { token } => summon::activate(&handle, true, token),
                 // A chat link opened while the app runs: kept for the window, which comes forward to show it.
                 remote::Request::OpenLink { link, token } => {
                     if handle.state::<links::Links>().put(link) {
                         let _ = handle.emit(links::EVENT, ());
-                        summon::activate(&handle, false, token, false);
+                        summon::activate(&handle, false, token);
                     }
                 }
             });
@@ -1138,11 +1126,6 @@ pub fn run(screenshot: bool, link: Option<String>) {
             screenshot_ack_request,
             screenshot_show_window,
             chat_link_take,
-            summon::summon_status,
-            summon::summon_set,
-            summon::summon_retry,
-            summon::summon_set_hide,
-            summon::summon_pause,
             terminal_open,
             repo_git,
             repo_git_stream,
@@ -1179,10 +1162,6 @@ pub fn run(screenshot: bool, link: Option<String>) {
         // for the next startup's sweep, after persisted references are known, rather than risk deleting Retry bytes.
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
-                // Let go of the global shortcut before a restart's new app registers it again.
-                if let Some(summon) = app.try_state::<summon::Summon>() {
-                    summon.shutdown();
-                }
                 update::relaunch(app);
             }
         });
