@@ -76,8 +76,16 @@ export function replayBlocked(chat: Chat, connected: boolean): string | undefine
   return branchBlocked(chat, connected);
 }
 
+/**
+ * A spine without its model-switch markers. Switching a branch's model, as ADR 0027 does as it's made, makes Hermes
+ * deactivate every marker the branch copied and store a new one after the copy; `session.undo` takes that one back
+ * with the copy. So a branch's rows are compared with its parent's, and its turns counted, without them.
+ */
+export const withoutMarkers = <R extends { marker?: boolean }>(spine: R[]) => spine.filter((r) => !r.marker);
+
 /** Which turn a message at `index` of a branch spine is: the owner's shown messages before it. */
-export const turnAt = (spine: { role: string; hidden: boolean }[], index: number) => spine.slice(0, index).filter((r) => r.role === "user" && !r.hidden).length;
+export const turnAt = (spine: { role: string; hidden: boolean; marker?: boolean }[], index: number) =>
+  spine.slice(0, index).filter((r) => r.role === "user" && !r.hidden && !r.marker).length;
 
 /** Each owner's message of `items` that Hermes has, by turn, from 0: the same numbering as `turnAt`. */
 export function turnsOf(items: Item[]): Map<string, number> {
@@ -159,5 +167,5 @@ export type ReplayPreview = {
 };
 
 /** The messages after the owner's message, as the preview lists what the branch leaves out. */
-export const laterOf = (spine: { role: "user" | "assistant"; text: string; hidden: boolean }[], index: number): IncludedMessage[] =>
-  spine.slice(index).filter((r) => !r.hidden).map((r) => ({ role: r.role, excerpt: excerpt(r.text) }));
+export const laterOf = (spine: { role: "user" | "assistant"; text: string; hidden: boolean; marker?: boolean }[], index: number): IncludedMessage[] =>
+  spine.slice(index).filter((r) => !r.hidden && !r.marker).map((r) => ({ role: r.role, excerpt: excerpt(r.text) }));

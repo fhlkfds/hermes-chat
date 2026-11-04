@@ -107,6 +107,24 @@ describe("Edit and Regenerate: what they work out", () => {
   });
 });
 
+describe("the fake Hermes's session.undo", () => {
+  it("takes back the last turn of the owner's, a /steer row included, but not a marker or hidden row on its own", () => {
+    const server = new FakeHermes();
+    server.runtime.set("rt", "s1");
+    server.transcripts.s1 = [
+      { role: "user", text: "Original prompt" },
+      { role: "assistant", text: "Original answer" },
+      { role: "user", text: "Use shorter answers", display_kind: "steer" },
+      { role: "user", text: "[System: The active model for this chat has changed to x.]", display_kind: "model_switch" },
+    ];
+    server.handlers["session.undo"]({ jsonrpc: "2.0", id: 1, method: "session.undo", params: { session_id: "rt" } });
+    expect(server.transcripts.s1.map((m) => m.text)).toEqual(["Original prompt", "Original answer"]);
+    server.transcripts.s1.push({ role: "user", text: "[System: The active model for this chat has changed to y.]", display_kind: "model_switch" });
+    server.handlers["session.undo"]({ jsonrpc: "2.0", id: 2, method: "session.undo", params: { session_id: "rt" } });
+    expect(server.transcripts.s1.map((m) => m.text)).toEqual([]);
+  });
+});
+
 describe("Edit", () => {
   it("edits an early turn into a branch, and the original chat with its later messages stays as it was", async () => {
     const { server, hermes, chat, itemWith, submits } = await chatWithHistory();
@@ -145,6 +163,45 @@ describe("Edit", () => {
     expect(chat("c1").model).toMatchObject({ model: "gpt-5.2", provider: "openai", effort: "high" });
     expect(link.variant?.model).toEqual(chat("c1").model);
     expect(chat(chatId).model).toEqual(chat("c1").model);
+  });
+
+  it("edits past model-switch markers: one the chat had, and the one Hermes stores as the branch switches model", async () => {
+    const { server, hermes, chat, itemWith, submits } = await chatWithHistory((s) => {
+      // An earlier model switch in c1, between its first and second turns: a user row no client shows.
+      const at = s.transcripts.c1.findIndex((m) => m.text === "It's 81% full.");
+      s.transcripts.c1.splice(at + 1, 0, { role: "user", text: "[System: The active model for this chat has changed to gpt-5.2.]", display_kind: "model_switch", row_id: 900 });
+      // And a later one, after the last turn's message: not a message the branch leaves out either.
+      const last = s.transcripts.c1.findIndex((m) => m.text === "Clean up old snapshots");
+      s.transcripts.c1.splice(last + 1, 0, { role: "user", text: "[System: The active model for this chat has changed to gpt-5.3.]", display_kind: "model_switch", row_id: 901 });
+    });
+    const early = await hermes.previewReplay("c1", itemWith("How full"), "edit");
+    expect(early.turn).toBe(0);
+    expect(early.later.map((m) => m.excerpt)).toEqual([
+      "How full is the NAS?",
+      "Let me look.",
+      "It's 81% full.",
+      "[1 file] Compare with this",
+      "The report says 79% last week.",
+      "Clean up old snapshots",
+      "Deleted 3 snapshots.",
+    ]);
+    const p = await hermes.previewReplay("c1", itemWith("Clean up"), "edit");
+    // The marker isn't a turn, and isn't listed as left out.
+    expect(p.turn).toBe(2);
+    expect(p.later.map((m) => m.excerpt)).toEqual(["Clean up old snapshots", "Deleted 3 snapshots."]);
+    const { chatId, warnings } = await hermes.replay(p, "Clean up snapshots older than 90 days");
+    expect(warnings).toEqual([]);
+    expect(submits().at(-1)!.params).toMatchObject({ session_id: chat(chatId).runtimeId, text: "Clean up snapshots older than 90 days" });
+    expect(hermes.getSnapshot().branches.links[chatId].variant?.pending).toBeUndefined();
+    // Taken back with the copy: the marker the switch stored after it. The copied one was deactivated by the switch.
+    const rows = server.transcripts[chatId];
+    expect(rows.some((m) => m.display_kind === "model_switch")).toBe(false);
+    expect(rows.filter((m) => m.role === "user" && !m.display_kind).map((m) => m.text)).toEqual([
+      "How full is the NAS?",
+      "@file:/srv/uploads/report.pdf\n\nCompare with this",
+      "Clean up snapshots older than 90 days",
+    ]);
+    expect(texts(chat(chatId).items).at(-1)).toBe("user: Clean up snapshots older than 90 days");
   });
 
   it("edits a chat's very first message, which Hermes can't branch before, by taking the branch's copy back", async () => {
@@ -270,6 +327,21 @@ describe("Edit and Regenerate: when they can't be made", () => {
     expect(server.requests.some((r) => r.method === "session.branch")).toBe(false);
   });
 
+  it("makes nothing when another client adds to the chat between the dialog's check and the branch's own last read", async () => {
+    const { server, hermes, itemWith } = await chatWithHistory();
+    const p = await hermes.previewReplay("c1", itemWith("How full"), "edit");
+    // The first read of c1 after Save is the dialog's check; the phone's message lands just after it.
+    let reads = 0;
+    server.rest["GET /api/sessions/c1/messages"] = (req) => {
+      const out = (server as unknown as { storedMessages: (id: string, q: URLSearchParams) => unknown }).storedMessages("c1", req.query);
+      if (++reads === 1) server.storeMessage("c1", { role: "user", text: "Sent from the phone" });
+      return out;
+    };
+    await expect(hermes.replay(p, "Edited")).rejects.toThrow("This chat changed since this opened");
+    expect(reads).toBeGreaterThan(1);
+    expect(server.requests.some((r) => r.method === "session.branch")).toBe(false);
+  });
+
   it("says a Hermes without session.branch can't do it, and makes nothing", async () => {
     const { server, hermes, itemWith } = await chatWithHistory();
     server.branchMethod = false;
@@ -311,6 +383,9 @@ describe("Edit and Regenerate: when they can't be made", () => {
   });
 
   /** A branch whose message couldn't go yet: Hermes refused the undo, so it still holds its copy of the original. */
+  /** The branch's copy of the owner's message: its last user row that isn't a model-switch marker. */
+  const copyIn = (server: FakeHermes, chatId: string) => server.transcripts[chatId].filter((m) => m.role === "user" && !m.display_kind).at(-1)!;
+
   async function unfinished() {
     const t = await chatWithHistory();
     t.server.undoBusy = true;
@@ -331,17 +406,19 @@ describe("Edit and Regenerate: when they can't be made", () => {
 
   it("takes nothing back when another client changed the branch's last message meanwhile", async () => {
     const { server, hermes, chatId, submits, sent, undone } = await unfinished();
-    server.transcripts[chatId].at(-1)!.text = "Changed on the phone";
+    copyIn(server, chatId).text = "Changed on the phone";
     await expect(hermes.finishReplay(chatId)).rejects.toThrow("isn't the one it was made with");
     expect(server.undoCalls).toHaveLength(undone);
     expect(submits()).toHaveLength(sent);
-    expect(server.transcripts[chatId].at(-1)!.text).toBe("Changed on the phone");
+    expect(copyIn(server, chatId).text).toBe("Changed on the phone");
   });
 
   it("shows the branch right when an earlier try took the copy back but its answer was lost", async () => {
     const { server, hermes, chat, chatId, submits, sent } = await unfinished();
-    // Hermes took it back, and the answer never arrived.
-    server.transcripts[chatId] = server.transcripts[chatId].slice(0, -1);
+    // Hermes took it back, with the model-switch marker after it, and the answer never arrived.
+    const copy = server.transcripts[chatId].indexOf(copyIn(server, chatId));
+    expect(server.transcripts[chatId].slice(copy + 1).map((m) => m.display_kind)).toEqual(["model_switch"]);
+    server.transcripts[chatId] = server.transcripts[chatId].slice(0, copy);
     expect(texts(chat(chatId).items).at(-1)).toBe("user: Clean up old snapshots");
     expect(await hermes.finishReplay(chatId)).toEqual([]);
     expect(submits()).toHaveLength(sent + 1);

@@ -21,6 +21,12 @@ Branching through the message and taking it back is needed because `session.bran
 - `session.undo` during a running turn was refused with 4009 `session busy`.
 - The parent's 8 rows were unchanged afterwards.
 
+### Model-switch markers
+
+ADR 0027 switches a new branch to its parent's model. Hermes records each live switch as a `role = user` row with `display_kind = model_switch` (`_append_model_switch_marker`, `tui_gateway/server.py`). It deactivates every marker the session had, so a marker the branch copied from its parent drops out of its stored rows, and it stores a new one after the branch's copy of the owner's message. `session.resume` doesn't show these rows, and `session.undo` doesn't count one as a user turn (`user_originated_turn_view`), so the undo takes the new marker back along with the copy.
+
+So the fingerprints the branch is checked against while its message is pending leave model-switch markers out. Without that, the branch would never match once the switch happened, and its message would not be sent. Turn numbers and the list of what the branch leaves out skip markers too. This was found in the review of #137, which used the same switch, and was checked against the deployed `bf0203a` source.
+
 After `session.undo`, the app reads the branch's stored rows back. They must be exactly the rows before the message, by the same fingerprint as ADR 0027. If they aren't, nothing is sent, and the owner is told to look at the branch. A Hermes without `session.undo` (−32601) gets the branch deleted again, with "This Hermes server can't take a message back". A Hermes without `session.branch` is refused before anything is made, as in ADR 0027.
 
 ## What can't be sent again
@@ -34,7 +40,7 @@ After `session.undo`, the app reads the branch's stored rows back. They must be 
 Edit and Regenerate are refused, with the reason on the button and in the dialog, whenever Branch from here is (ADR 0027). Two cases get their own wording:
 
 - **A reply or its tools are running.** The owner stops it or waits. Edit and Regenerate work again once Hermes says the turn ended. While a stop is on its way, they say so.
-- **Another client changed the chat.** The preview keeps a fingerprint of the chat's whole spine, not only the copied part. If another client added or changed a message before the owner confirms, nothing is made, and the owner is asked to look again.
+- **Another client changed the chat.** The preview keeps a fingerprint of the chat's whole spine, not only the copied part. If another client added or changed a message before the owner confirms, nothing is made, and the owner is asked to look again. That whole-chat fingerprint is checked at Save, and again at `session.branch`'s own last read of the chat, just before the branch is asked for.
 
 ## The dialog
 

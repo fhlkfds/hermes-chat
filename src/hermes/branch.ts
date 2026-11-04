@@ -13,8 +13,12 @@ import type { ModelPick } from "./models";
 /** A stored row of dashboard REST `GET /api/sessions/{id}/messages`, as far as branching reads it. */
 export type StoredBranchRow = { id: number; role?: string; content?: unknown; display_kind?: unknown };
 
-/** A row of the parent's branch spine. `hidden`: model-facing, such as a project's instructions; no client shows it. */
-export type SpineRow = { id: number; role: "user" | "assistant"; text: string; hidden: boolean };
+/**
+ * A row of the parent's branch spine. `hidden`: model-facing, such as a project's instructions; no client shows it.
+ * `marker`: a timeline note Hermes stores as a user row, such as a model switch (`_append_model_switch_marker`,
+ * `tui_gateway/server.py`); `session.resume` doesn't show it, and it isn't a turn of the owner's.
+ */
+export type SpineRow = { id: number; role: "user" | "assistant"; text: string; hidden: boolean; marker?: boolean };
 
 /** The message a branch ends with: whose it was, its first words, and its stored row in the parent. */
 export type BranchPoint = { role: "user" | "assistant"; excerpt: string; rowId?: number };
@@ -86,7 +90,7 @@ export function spineOf(rows: StoredBranchRow[]): SpineRow[] {
   return rows.flatMap((r): SpineRow[] => {
     if (r.role !== "user" && r.role !== "assistant") return [];
     const text = rowText(r.content);
-    return text.trim() ? [{ id: r.id, role: r.role, text, hidden: r.display_kind === "hidden" }] : [];
+    return text.trim() ? [{ id: r.id, role: r.role, text, hidden: r.display_kind === "hidden", ...(r.display_kind === "model_switch" && { marker: true }) }] : [];
   });
 }
 

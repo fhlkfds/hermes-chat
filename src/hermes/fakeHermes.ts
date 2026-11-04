@@ -223,7 +223,12 @@ function setPrimary(p: FakeProject, path: string) {
 const EDITABLE_SOURCES = new Set(["cli", "tui", "gui", "desktop", "oneshot", "tool", "acp", "import", "telegram", "discord", "slack", "whatsapp", "signal", "matrix"]);
 
 /** A history as `session.resume` shows it: hidden rows, such as a project's instructions, aren't shown (`_history_to_messages`). */
-const shownHistory = (messages: TranscriptMessage[]) => messages.filter((m) => m.display_kind !== "hidden");
+/**
+ * What `session.resume` shows: no hidden rows, and no model-switch marker, a `[System: …]` user row its
+ * `_is_display_hidden_marker` sniff drops though REST still lists it.
+ */
+const shownHistory = (messages: TranscriptMessage[]) =>
+  messages.filter((m) => m.display_kind !== "hidden" && !(m.role === "user" && m.display_kind === "model_switch"));
 
 /** A stored session `daysAgo` days old, unpinned and from this app unless overridden. */
 export function row(id: string, daysAgo: number, over: Partial<SessionRow> = {}): SessionRow {
@@ -550,7 +555,9 @@ export class FakeHermes {
     },
     // `session.undo` (`tui_gateway/methods_session.py` at the deployed `bf0203a`, probed live on 2026-11-03): takes the
     // session's last user turn and everything after it out of its history, and answers how many rows went (0 when
-    // there's no user turn). Refused with 4009 while a turn runs. The rows are soft-deleted: stored rows read back without them.
+    // there's no user turn). A row with a `display_kind` other than `steer`, such as a project's hidden instructions or a
+    // model-switch marker, isn't a user turn; a `/steer` row is (`split_user_originated_turn`,
+    // `agent/context_compressor.py`). A marker after the turn goes with it. Refused with 4009 while a turn runs. The rows are soft-deleted: stored rows read back without them.
     "session.undo": (r) => {
       if (!this.undoMethod) return this.fail(r.id, -32601, "Method not found: session.undo");
       const stored = this.runtime.get(String(r.params.session_id ?? ""));
@@ -559,7 +566,7 @@ export class FakeHermes {
       if (this.undoBusy) return this.fail(r.id, 4009, "session busy — Hermes is still replying. Stop the current reply first (Stop button, or Ctrl+C in a terminal), then run /undo.");
       if (this.undoError) return this.fail(r.id, this.undoError.code, this.undoError.message);
       const rows = this.transcripts[stored] ?? [];
-      const at = rows.map((m) => m.role === "user" && m.display_kind !== "hidden").lastIndexOf(true);
+      const at = rows.map((m) => m.role === "user" && (!m.display_kind || m.display_kind === "steer")).lastIndexOf(true);
       if (at < 0) return this.respond(r.id, { removed: 0 });
       const removed = rows.length - at - (this.undoShort ? 1 : 0);
       this.transcripts[stored] = rows.slice(0, rows.length - removed);
@@ -691,6 +698,12 @@ export class FakeHermes {
       else info.fast = value === "fast";
       if (stored) {
         this.sessionModel.set(stored, info);
+        // A live model switch stores a marker row for the model at once, keeping only the newest
+        // (`_append_model_switch_marker`, `tui_gateway/server.py` at the deployed `bf0203a`).
+        if (key === "model" && this.transcripts[stored]?.length) {
+          this.transcripts[stored] = this.transcripts[stored].filter((m) => m.display_kind !== "model_switch");
+          this.storeMessage(stored, { role: "user", text: `[System: The active model for this chat has changed to ${info.model}.]`, display_kind: "model_switch" });
+        }
         this.event(sid!, "session.info", { ...info });
       } else this.profileModel[profile] = info;
       this.respond(r.id, { key, value });
