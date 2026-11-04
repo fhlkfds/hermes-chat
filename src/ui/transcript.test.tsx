@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 // The transcript renders each block memoized, so a streamed delta re-renders only what it changed, and marks find
 // matches in the background. These check what that must not change.
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApprovalChoice, Chat, Item } from "../hermes/model";
 import { ChatPane, type FindTarget } from "./ChatPane";
 
@@ -119,5 +119,78 @@ describe("The transcript", () => {
     vi.setSystemTime(Date.now() + 1000);
     fireEvent.click(screen.getByRole("button", { name: "Approve once" }));
     expect(answered).toHaveBeenCalledWith("ap-1", "once", undefined);
+  });
+
+  describe("Copy", () => {
+    const writeText = vi.fn<(text: string) => Promise<void>>();
+    beforeEach(() => {
+      writeText.mockReset().mockResolvedValue();
+      Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    });
+    const copyIn = (id: string) => within(item(id) as HTMLElement).getByRole("button", { name: "Copy" });
+    const click = (b: HTMLElement) => act(async () => void fireEvent.click(b));
+
+    it("copies the owner's message as they typed it", async () => {
+      pane(chatOf([{ kind: "user", id: "u-0", text: "Rename **every** `*.log`\n\n  file" }]));
+      await click(copyIn("u-0"));
+      expect(writeText).toHaveBeenCalledWith("Rename **every** `*.log`\n\n  file");
+    });
+
+    it("copies a reply as Markdown, without the turn's thinking or tool calls", async () => {
+      pane(
+        chatOf([
+          { kind: "user", id: "u-0", text: "Is the dashboard up?" },
+          { kind: "thinking", id: "r-1", text: "Check the port first." },
+          { kind: "tool", id: "t-2", name: "terminal", status: "done" },
+          { kind: "assistant", id: "a-3", text: "<think>HTTPS failed.</think>\nIt's **up**, over plain HTTP:\n\n- `http://nas:9119/`" },
+        ]),
+      );
+      expect(within(item("r-1") as HTMLElement).queryByRole("button", { name: "Copy" })).toBeNull();
+      await click(copyIn("a-3"));
+      expect(writeText).toHaveBeenCalledWith("It's **up**, over plain HTTP:\n\n- `http://nas:9119/`");
+    });
+
+    it("says Copied for a moment, then Copy again", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      pane(chatOf([{ kind: "assistant", id: "a-0", text: "Done." }]));
+      await click(copyIn("a-0"));
+      const button = within(item("a-0") as HTMLElement).getByRole("button", { name: "Copied" });
+      expect(button.textContent).toBe("Copied");
+      expect(button.title).toBe("Copied");
+      expect(document.activeElement).toBe(button);
+      act(() => void vi.advanceTimersByTime(1499));
+      expect(button.textContent).toBe("Copied");
+      act(() => void vi.advanceTimersByTime(1));
+      expect(button.textContent).toBe("Copy");
+      expect(button.title).toBe("Copy this reply");
+    });
+
+    it("says so when the clipboard can't be written", async () => {
+      writeText.mockRejectedValue(new Error("denied"));
+      pane(chatOf([{ kind: "user", id: "u-0", text: "Hello" }]));
+      await click(copyIn("u-0"));
+      expect(screen.getByRole("status").textContent).toBe("Couldn't copy");
+    });
+
+    it("isn't offered while a reply streams, or on a message Hermes didn't take", () => {
+      pane(
+        chatOf(
+          [
+            { kind: "user", id: "u-0", text: "Retry me", outgoing: { state: "failed", reason: "offline" } },
+            { kind: "assistant", id: "a-1", text: "Removing" },
+          ],
+          { running: true },
+        ),
+      );
+      expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
+    });
+
+    it("leaves Ctrl+C on a selection to the browser", () => {
+      pane(chatOf([{ kind: "assistant", id: "a-0", text: "Done." }]));
+      const copy = new Event("copy", { bubbles: true, cancelable: true });
+      item("a-0")!.querySelector("p")!.dispatchEvent(copy);
+      expect(copy.defaultPrevented).toBe(false);
+      expect(writeText).not.toHaveBeenCalled();
+    });
   });
 });

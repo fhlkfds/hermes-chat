@@ -33,6 +33,7 @@ import { Templates, type TemplateHere } from "./Templates";
 import { BranchButton } from "./Branch";
 import { useWindowHidden } from "./windowState";
 import { EditButton, RegenerateButton, VariantNav } from "./Replay";
+import { CopyButton, replyMarkdown } from "./CopyMessage";
 import { turnsOf, type ReplayKind, type Variant } from "../hermes/replay";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
@@ -223,7 +224,8 @@ const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateS
  * started yet, which can't queue. `branch` offers Branch from here under each message with text (ADR 0027): `blocked`
  * says why none can be made now. `branchedFrom` is shown at the top of a branch, where it came from. `replay` offers
  * Edit under the owner's messages and Regenerate under each turn's last reply (ADR 0035); `blocked` says why neither
- * can be used now. `variants` are the versions of this chat's turns, shown under each turn's last reply.
+ * can be used now. `variants` are the versions of this chat's turns, shown under each turn's last reply. Copy is under
+ * every sent message and finished reply with text, whatever else is offered.
  */
 export function ChatPane({
   chat,
@@ -827,8 +829,9 @@ const BlockView = memo(
           {isOutgoing(block) && block.outgoing.state !== "sending" && (
             <SendFailed item={block} canRetry={canRetry} act={(action) => onOutgoing(block.id, action)} />
           )}
-          {(onBranch || onReplay) && !block.outgoing && block.text.trim() && (
+          {!block.outgoing && block.text.trim() && (
             <div className="msg-actions">
+              <CopyButton words={() => block.text} what="message" />
               {onReplay && <EditButton blocked={replayBlocked} onEdit={() => onReplay(block.id, "edit")} />}
               {onBranch && <BranchButton blocked={branchBlocked} onBranch={() => onBranch(block.id)} />}
             </div>
@@ -842,15 +845,14 @@ const BlockView = memo(
           <Markdown text={block.text} query={query} />
           {live && <span className="cursor" />}
           {block.interrupted && <div className="stopped">Stopped</div>}
-          {!live && block.text.trim() && (listen || onBranch || onReplay) && (
+          {!live && block.text.trim() && (
             <div className="msg-actions-row">
               {listen && <ListenButton speaker={listen.speaker} itemId={block.id} text={block.text} blocked={listen.blocked} />}
-              {(onBranch || onReplay) && (
-                <div className="msg-actions">
-                  {onReplay && <RegenerateButton blocked={replayBlocked} onRegenerate={() => onReplay(block.id, "regenerate")} />}
-                  {onBranch && <BranchButton blocked={branchBlocked} onBranch={() => onBranch(block.id)} />}
-                </div>
-              )}
+              <div className="msg-actions">
+                <CopyButton words={() => replyMarkdown(block.text)} what="reply" />
+                {onReplay && <RegenerateButton blocked={replayBlocked} onRegenerate={() => onReplay(block.id, "regenerate")} />}
+                {onBranch && <BranchButton blocked={branchBlocked} onBranch={() => onBranch(block.id)} />}
+              </div>
             </div>
           )}
           {!live && nav}
