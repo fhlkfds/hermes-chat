@@ -42,7 +42,7 @@ export function conversationAway(o: { status: ConnectionStatus; windowHidden: bo
 export function useVoiceConversation(o: {
   voice?: VoiceApi;
   speaker?: Speaker;
-  send?: (text: string) => Promise<Delivery>;
+  send?: (text: string) => Promise<{ delivery: Delivery; itemId?: string }>;
   stopReply: () => void;
   chat: { running?: boolean; items: Item[] };
   away?: string;
@@ -55,7 +55,8 @@ export function useVoiceConversation(o: {
     if (!o.speaker || !o.voice) return;
     const c = new VoiceConversation({
       transcribe: (audio, mime) => latest.current.voice!.transcribe(audio, mime),
-      send: (text) => (latest.current.send ? latest.current.send(text) : Promise.resolve({ delivery: "unsent", reason: "This chat can't take messages now." })),
+      send: (text) =>
+        latest.current.send ? latest.current.send(text) : Promise.resolve({ delivery: { delivery: "unsent", reason: "This chat can't take messages now." } }),
       stopReply: () => latest.current.stopReply(),
       speaker: o.speaker,
       env: o.env,
@@ -286,8 +287,9 @@ export function ConversationPanel({ conversation, setup, onEnd }: { conversation
           While the conversation is on, the microphone on this computer is open. Only what you say while it's listening is kept, in memory, one turn
           at a time; it's thrown away while Hermes speaks, while muted, and once sent. Each turn goes to Hermes, which transcribes it with{" "}
           {stt?.label ?? "the profile's speech-to-text provider"} and puts the text in this chat as your message. Replies are spoken with{" "}
-          {tts?.label ?? "the profile's text-to-speech provider"}. A cloud provider gets the audio or text from the Hermes server. Nothing is saved on
-          this computer.
+          {tts?.label ?? "the profile's text-to-speech provider"}. A cloud provider gets the audio or text from the Hermes server. The audio is never
+          saved on this computer. The text sent is a chat message like any other, kept on this computer as typed messages are: in the chat's Saved
+          copy, and as a Failed message if Hermes didn't take it.
         </p>
         <p>
           A turn ends after {settings.silenceSeconds} s of quiet{settings.fromProfile.silence ? "" : " (Hermes's default)"} and lasts at most{" "}

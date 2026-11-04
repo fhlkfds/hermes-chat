@@ -228,7 +228,8 @@ describe("Starting a voice conversation", () => {
     expect(panel().textContent).toMatch(/Nothing said yet/);
     // What is recorded and where it goes, without any key.
     const about = panel().querySelector(".conv-about")!.textContent!;
-    expect(about).toMatch(/Nothing is saved on this computer/);
+    expect(about).toMatch(/The audio is never saved on this computer/);
+    expect(about).toMatch(/text sent is a chat message like any other, kept on this computer as typed messages are/);
     expect(about).toMatch(/Local Whisper/);
     expect(about).not.toMatch(/sk-|api_key/i);
     // Dictation's button gives way while the conversation is on.
@@ -378,6 +379,30 @@ describe("A turn", () => {
     mic.loud(3);
     await waitFor(() => expect(prompts(s.server)).toEqual(["A very long ramble"]));
     expect(panel().textContent).toMatch(/reached the 2-second limit, so it was sent as it was/);
+  });
+
+  it("speaks only its own turn's reply, even when a queued message with the same words goes straight after it", async () => {
+    const s = await opened();
+    await start(s);
+    await say(s, "Check it again");
+    act(() => {
+      s.server.event(s.runtime(), "message.start");
+      s.server.event(s.runtime(), "message.delta", { text: "Voice answer." });
+    });
+    await settle(s.hermes);
+    // While Hermes replies, the owner queues the very same words by typing.
+    await s.user.type(composer(), "Check it again{Enter}");
+    await waitFor(() => expect(s.hermes.getSnapshot().queues.backup?.items).toHaveLength(1));
+    // The voice reply ends; the queue sends its message at once, so the chat is running again before anything renders.
+    act(() => s.server.event(s.runtime(), "message.complete", { text: "Voice answer." }));
+    await settle(s.hermes);
+    await waitFor(() => expect(prompts(s.server)).toEqual(["Check it again", "Check it again"]));
+    await waitFor(() => expect(s.server.spoken.map((x) => x.text)).toEqual(["Voice answer."]));
+    finishPlaying();
+    await reply(s, "Queued answer.");
+    await waitFor(() => expect(status()).toMatch(/^Listening/));
+    expect(s.server.spoken.map((x) => x.text)).toEqual(["Voice answer."]);
+    expect(heard()).toEqual(["“Check it again”Sent"]);
   });
 
   it("leaves the typed draft alone, and doesn't listen while another message's reply runs", async () => {

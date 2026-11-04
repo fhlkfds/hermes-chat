@@ -2018,6 +2018,14 @@ export class Hermes {
   }
 
   /**
+   * Sends a message as `send` does, and also says which item in the chat it is, so a Voice conversation can follow the
+   * reply to that message and no other (ADR 0041). `itemId` is missing only when the chat isn't in the list.
+   */
+  sendTracked(chatId: string, text: string): Promise<{ delivery: Delivery; itemId?: string }> {
+    return this.deliver(chatId, text, []);
+  }
+
+  /**
    * Sends a message Hermes didn't take, or may not have, again: the same text and attachments, as a new message, never
    * as a continuation of the first. The first goes from the chat. If the retry can't go out at all, a first that Hermes
    * may have stays as it was. Does nothing while the chat has a reply running, or for a message still sending.

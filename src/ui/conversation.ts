@@ -74,7 +74,7 @@ export type ConversationState = {
 /** What a conversation needs from the chat pane. `send` puts text in the chat as the owner's message. */
 export type ConversationDeps = {
   transcribe: (audio: Uint8Array, mime: string) => Promise<Transcript>;
-  send: (text: string) => Promise<Delivery>;
+  send: (text: string) => Promise<{ delivery: Delivery; itemId?: string }>;
   /** Stops Hermes's reply (the composer's Stop), not just its audio. */
   stopReply: () => void;
   speaker: Speaker;
@@ -118,7 +118,8 @@ export class VoiceConversation {
   private readonly sentSeqs = new Set<number>();
   private transcribing?: Turn;
   private held?: Turn;
-  private awaiting?: { text: string; seenRunning: boolean };
+  /** The message a turn became, while its reply is followed: its item in the chat, once Hermes took it. */
+  private awaiting?: { itemId?: string; seenRunning: boolean };
   private speakingItem?: string;
   private chat: ChatView = { running: false, items: [] };
   private heardId = 0;
@@ -439,11 +440,14 @@ export class VoiceConversation {
   private async deliver(text: string) {
     const session = this.session;
     const id = this.addHeard({ text, state: "sending" });
-    this.awaiting = { text, seenRunning: false };
+    const awaiting: { itemId?: string; seenRunning: boolean } = { seenRunning: false };
+    this.awaiting = awaiting;
     this.set({ phase: "sending", waitingOn: "reply" });
     let delivery: Delivery;
     try {
-      delivery = await this.deps.send(text);
+      const sent = await this.deps.send(text);
+      delivery = sent.delivery;
+      awaiting.itemId = sent.itemId;
     } catch (e) {
       delivery = { delivery: "unsent", reason: messageOf(e) };
     }
@@ -460,31 +464,39 @@ export class VoiceConversation {
       );
       return;
     }
-    if (this.chat.running) this.awaiting.seenRunning = true;
+    if (this.chat.running) awaiting.seenRunning = true;
     this.set({ phase: "thinking" });
     this.followReply();
   }
 
-  /** While thinking: has Hermes finished replying to the turn, and what is there to speak? */
+  /**
+   * While thinking: has Hermes finished replying to the turn's own message, and what is there to speak? Only the items
+   * between that message and the next one from the owner (a typed or queued message that went after it) are its
+   * reply, so another message's reply is never spoken in its place, whatever the texts.
+   */
   private followReply() {
     const a = this.awaiting;
-    if (!a) return;
+    if (!a?.itemId) return;
     const items = this.chat.items;
-    let from = -1;
-    for (let i = items.length - 1; i >= 0; i--) {
-      const it = items[i];
-      if (it.kind === "user" && it.text === a.text) {
-        from = i;
-        break;
-      }
+    const from = items.findIndex((i) => i.id === a.itemId);
+    if (from < 0) {
+      // The chat was read again and the message isn't where it was: nothing here can tell which reply is its.
+      if (this.chat.running) return;
+      this.awaiting = undefined;
+      this.set({ note: "Couldn't tell which reply was to what you said, so it isn't spoken. It's in the chat above." });
+      return this.enterListening();
     }
-    const after = from >= 0 ? items.slice(from + 1) : [];
-    if (this.chat.running) {
+    let to = items.findIndex((i, n) => n > from && i.kind === "user");
+    if (to < 0) to = items.length;
+    const after = items.slice(from + 1, to);
+    // Another message from the owner has gone since: this turn's reply is over, whether or not the chat still runs.
+    const over = to < items.length;
+    if (this.chat.running && !over) {
       const waitingOn = after.some(isWaiting) ? "approval" : "reply";
       if (waitingOn !== this.state.waitingOn) this.set({ waitingOn });
       return;
     }
-    if (!a.seenRunning && !after.some((i) => i.kind === "assistant" || i.kind === "error")) return;
+    if (!over && !a.seenRunning && !after.some((i) => i.kind === "assistant" || i.kind === "error")) return;
     this.awaiting = undefined;
     const last = [...after].reverse().find((i) => i.kind === "error" || (i.kind === "assistant" && i.text.trim()));
     if (!last) {

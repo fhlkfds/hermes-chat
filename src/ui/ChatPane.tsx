@@ -202,7 +202,7 @@ export function ChatPane({
   split?: boolean;
   paneControls?: ReactNode;
   voice?: VoiceApi;
-  voiceSend?: (text: string) => Promise<Delivery>;
+  voiceSend?: (text: string) => Promise<{ delivery: Delivery; itemId?: string }>;
   screenshots?: ScreenshotDesk;
   screenshotKeys?: string;
   /** The names of the projects the chat is in, or a new chat will be put in. */
