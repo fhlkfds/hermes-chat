@@ -7,7 +7,7 @@ import { localChatCache } from "./chatCache";
 import { FakeHermes, row } from "./fakeHermes";
 import { memoryCache } from "./memoryCache";
 import type { Item } from "./model";
-import { replaySource, replaysOf, replyAfter, splitRefs } from "./replay";
+import { branchPreviewOf, replayPrompt, replaySource, replaysOf, replyAfter, splitRefs } from "./replay";
 import { connect, type Hermes } from "./transport";
 
 /**
@@ -184,6 +184,36 @@ describe("Edit", () => {
     expect(stored(server, "h1")).toEqual(["user: Suggest a short hike", "assistant: Try the cliff path."]);
   });
 
+  it("keeps a file-only message's ref apart from the words it's edited to", () => {
+    const only = { kind: "edit" as const, stored: "@file:/srv/uploads/policy.md", ...splitRefs("@file:/srv/uploads/policy.md") };
+    expect(only.words).toBe("");
+    expect(replayPrompt({ ...only, refsPrefix: only.refs }, "Summarize this file")).toBe("@file:/srv/uploads/policy.md\n\nSummarize this file");
+  });
+
+  it("replaces the copy though Hermes stored a model-switch marker after it", async () => {
+    const { server, hermes, chat, itemWith } = await chatWithHistory();
+    // The parent runs on another model than the profile's, so the branch is switched, and Hermes stores the marker.
+    await hermes.setModel("c1", { provider: "openrouter", model: "deepseek/deepseek-v4" });
+    const p = await hermes.previewReplay("c1", itemWith("How long should we keep"), "edit");
+    // The marker the switch stored in the parent isn't a message the branch leaves out.
+    expect(p.later.messages.map((m) => m.role)).toEqual(["assistant", "user", "assistant"]);
+    const { chatId, delivery } = await hermes.replay(p, "Weekly?");
+    expect(delivery.delivery).toBe("accepted");
+    expect(server.archived.filter((m) => m.session === chatId).map((m) => m.display_kind ?? "message")).toEqual(["message", "model_switch"]);
+    expect(stored(server, chatId).at(-1)).toBe("user: Weekly?");
+    expect(texts(chat(chatId).items).at(-1)).toBe("user: Weekly?");
+  });
+
+  it("refuses at the branch's own last read when a later turn arrived after the dialog's check", async () => {
+    const { server, hermes, itemWith, branches } = await chatWithHistory();
+    const p = await hermes.previewReplay("c1", itemWith("How long should we keep"), "edit");
+    server.storeMessage("c1", { role: "user", text: "Also back up /etc" });
+    const info = { kind: "edit" as const, sourceRowId: p.sourceRowId, count: p.count, excerpt: "How long" };
+    await expect(hermes.branch(branchPreviewOf(p), undefined, info, p.whole)).rejects.toThrow("This chat changed since this opened");
+    expect(branches()).toHaveLength(0);
+    expect(server.requests.some((r) => r.method === "session.branch")).toBe(false);
+  });
+
   it("refuses an empty edit without asking Hermes", async () => {
     const { server, hermes, itemWith } = await chatWithHistory();
     const p = await hermes.previewReplay("c1", itemWith("How long should we keep"), "edit");
@@ -349,5 +379,19 @@ describe("Edit and Regenerate: kept on this computer", () => {
     expect(kept.loadBranches("default").links[chatId].replay).toMatchObject({ kind: "regenerate", sourceRowId: 6, count: 5 });
     expect(kept.loadBranches("default").links[edited.chatId].replay).toMatchObject({ kind: "edit", sourceRowId: 2, count: 2 });
     expect(kept.loadOutbox("default")[edited.chatId][0].outgoing).toMatchObject({ state: "failed", cut: { prompt: "Which folders, besides /etc?" } });
+
+    // After the restart the branch loads with its copy of the original showing again; Retry replaces it, there too.
+    server.rejectPrompt = undefined;
+    const again = await connect(server.openPipe, undefined, localChatCache(nas));
+    await again.sync();
+    await again.open(edited.chatId);
+    await again.idle();
+    const branch = () => again.getSnapshot().chats.find((c) => c.id === edited.chatId)!;
+    expect(texts(branch().items)).toEqual(["user: Which folders should the backup cover?", "user: Which folders, besides /etc?"]);
+    await again.retry(edited.chatId, branch().items.at(-1)!.id);
+    await again.idle();
+    expect(texts(branch().items)).toEqual(["user: Which folders, besides /etc?"]);
+    expect(stored(server, edited.chatId)).toEqual(['user (hidden): Instructions for this chat from the project "Homelab".', "user: Which folders, besides /etc?"]);
+    await again.close();
   });
 });

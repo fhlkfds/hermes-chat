@@ -8,7 +8,7 @@
 // This module holds what the app works out around those calls: which message a reply answers, what the new branch
 // will hold and leave out, the words that go to Hermes, whether the chat changed since the owner looked, and which
 // branches are the other answers to a message.
-import { branchBlocked, excerpt, fileRefs, imageCount, spineKey, type BranchLink, type BranchPreview, type IncludedMessage, type SpineRow, type StoredBranchRow } from "./branch";
+import { branchBlocked, excerpt, fileRefs, imageCount, spineKey, spineOf, type BranchLink, type BranchPreview, type IncludedMessage, type SpineRow, type StoredBranchRow } from "./branch";
 import type { Chat, Item } from "./model";
 import type { ModelPick } from "./models";
 
@@ -22,6 +22,9 @@ export type ReplayKind = "edit" | "regenerate";
  * `model`: what the branch ran on when the message went, as Hermes reported it.
  */
 export type ReplayInfo = { kind: ReplayKind; sourceRowId: number; count: number; excerpt: string; edited?: string; branchRowId?: number; model?: ModelPick };
+
+/** A spine row that is a message someone sees: not hidden, and not a timeline marker such as a model switch. */
+const isMessage = (r: SpineRow) => !r.hidden && !r.marker;
 
 /** A message of the owner's that Edit can open: one Hermes has, with words. */
 const ownerMessage = (i: Item): i is Extract<Item, { kind: "user" }> => i.kind === "user" && !i.outgoing && !!i.text.trim();
@@ -124,7 +127,7 @@ export function replayPreviewOf(
     );
   const { refs: refsPrefix, words } = splitRefs(row.text);
   const kept = spine.slice(0, index);
-  let after = spine.slice(index + 1).filter((r) => !r.hidden);
+  let after = spine.slice(index + 1).filter(isMessage);
   // Regenerate replaces the reply itself, which stays in the original: only what came after that turn is left out.
   if (kind === "regenerate") {
     const next = after.findIndex((r) => r.role === "user");
@@ -141,7 +144,7 @@ export function replayPreviewOf(
     original: refsPrefix ? words : source.text,
     stored: row.text,
     refsPrefix,
-    before: kept.filter((r) => !r.hidden).length,
+    before: kept.filter(isMessage).length,
     hidden: kept.filter((r) => r.hidden).length,
     later: {
       messages: after.map((r) => ({ role: r.role, excerpt: excerpt(r.text) })),
@@ -157,8 +160,25 @@ export function replayPreviewOf(
 }
 
 /** The words Hermes gets: Edit's new words after the original's file refs, or Regenerate's message as stored. */
-export const replayPrompt = (p: Pick<ReplayPreview, "kind" | "stored" | "refsPrefix">, text: string) =>
-  p.kind === "regenerate" ? p.stored : `${p.refsPrefix}${text.trim()}`;
+export function replayPrompt(p: Pick<ReplayPreview, "kind" | "stored" | "refsPrefix">, text: string): string {
+  if (p.kind === "regenerate") return p.stored;
+  // A message that was only files has no space after its last ref: the words mustn't run into its path.
+  const gap = p.refsPrefix && !/\s$/.test(p.refsPrefix) ? "\n\n" : "";
+  return `${p.refsPrefix}${gap}${text.trim()}`;
+}
+
+/**
+ * The branch's copy of the owner's message, read back from its stored rows: the last of the `count` spine rows it was
+ * made with, when they are the rows the preview showed. Only Hermes's model-switch marker may come after it, which ADR
+ * 0027's switch to the original's model stores at once (`_append_model_switch_marker`); the cut archives it with the
+ * copy. Anything else after it, and the copy isn't replaced.
+ */
+export function replayedCopy(rows: StoredBranchRow[], count: number, fingerprint: string): SpineRow | undefined {
+  const spine = spineOf(rows);
+  const copy = spine[count - 1];
+  if (!copy || copy.role !== "user" || spineKey(spine.slice(0, count)) !== fingerprint) return undefined;
+  return rows.every((r) => r.id <= copy.id || r.display_kind === "model_switch") ? copy : undefined;
+}
 
 /** The Branch from here preview the branch is made with: through the owner's message. */
 export const branchPreviewOf = (p: ReplayPreview): BranchPreview => ({
@@ -196,11 +216,11 @@ export function replaysOf(links: Record<string, BranchLink>, parentId: string, s
  * copied rows (`count`). Undefined when it isn't there.
  */
 export function replyAfter(spine: SpineRow[], rowId: number | undefined, count: number): string | undefined {
-  const at = rowId !== undefined ? spine.findIndex((r) => r.id === rowId) : spine.findIndex((r, i) => i >= count - 1 && r.role === "user" && !r.hidden);
+  const at = rowId !== undefined ? spine.findIndex((r) => r.id === rowId) : spine.findIndex((r, i) => i >= count - 1 && r.role === "user" && isMessage(r));
   if (at < 0) return undefined;
   const parts: string[] = [];
   for (const r of spine.slice(at + 1)) {
-    if (r.role === "user" && !r.hidden) break;
+    if (r.role === "user" && isMessage(r)) break;
     if (r.role === "assistant") parts.push(r.text.trim());
   }
   return parts.length ? parts.join("\n\n") : undefined;

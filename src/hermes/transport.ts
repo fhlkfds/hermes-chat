@@ -69,6 +69,7 @@ import {
 import {
   branchPreviewOf,
   replayBlocked,
+  replayedCopy,
   replayPreviewOf,
   replayPrompt,
   replaySource,
@@ -1379,10 +1380,12 @@ export class Hermes {
    * `BranchUnconfirmed`, and the chat list read once connected again settles it, by the idempotency key it went
    * with; branching from the same message again meanwhile returns the same branch.
    */
-  async branch(preview: BranchPreview, title?: string, replay?: ReplayInfo): Promise<{ chatId: string; warnings: string[] }> {
+  async branch(preview: BranchPreview, title?: string, replay?: ReplayInfo, whole?: string): Promise<{ chatId: string; warnings: string[] }> {
     const profile = this.profile;
-    const { chat, spine, index } = await this.branchBoundary(preview.chatId, preview.itemId, profile);
+    const { chat, rows, spine, index } = await this.branchBoundary(preview.chatId, preview.itemId, profile);
     const count = index + 1;
+    // Edit and Regenerate: the whole chat as the owner saw it, later turns too (ADR 0032).
+    if (whole !== undefined && wholeKey(rows, spine) !== whole) throw new Error(CHANGED_SINCE_REPLAY);
     // Every row the preview showed, as it showed it: a message changed or removed anywhere before the point counts.
     if (count !== preview.count || spineKey(spine.slice(0, count)) !== preview.fingerprint)
       throw new Error("This chat changed since the preview opened. Open it again to see what the branch would hold.");
@@ -1533,8 +1536,7 @@ export class Hermes {
     const profile = this.profile;
     if (preview.kind === "edit" && !text.trim()) throw new Error("Type the message to send.");
     const { rows, spine, index } = await this.replayBoundary(preview.chatId, preview.replyItemId ?? preview.sourceItemId, preview.kind, profile);
-    if (index + 1 !== preview.count || wholeKey(rows, spine) !== preview.whole)
-      throw new Error("This chat changed since this opened: a message was added or changed, perhaps in another Hermes client. Nothing was made. Open it again to see the chat as it is now.");
+    if (index + 1 !== preview.count || wholeKey(rows, spine) !== preview.whole) throw new Error(CHANGED_SINCE_REPLAY);
     const prompt = replayPrompt(preview, text);
     const info: ReplayInfo = {
       kind: preview.kind,
@@ -1543,13 +1545,13 @@ export class Hermes {
       excerpt: excerpt(preview.stored, 120),
       ...(preview.kind === "edit" && { edited: excerpt(prompt, 120) }),
     };
-    const { chatId, warnings } = await this.branch(branchPreviewOf(preview), undefined, info);
+    // `whole` goes along: the branch's own last read of the chat must find it unchanged too, later turns included.
+    const { chatId, warnings } = await this.branch(branchPreviewOf(preview), undefined, info, preview.whole);
     const unsent = (reason: string) => ({ chatId, warnings, delivery: { delivery: "unsent", reason } as Delivery });
     // The branch's copy of the owner's message, by its stored row there: what the message replaces.
     let copy: SpineRow | undefined;
     try {
-      const made = spineOf(await this.storedRows(chatId, profile));
-      if (made.length === preview.count && made.at(-1)?.role === "user") copy = made.at(-1);
+      copy = replayedCopy(await this.storedRows(chatId, profile), preview.count, preview.fingerprint);
     } catch {
       // Not read back: nothing goes, so nothing can land after the copy instead of in its place.
     }
@@ -1557,7 +1559,7 @@ export class Hermes {
     if (!copy) return unsent("Hermes Chat couldn't read the branch back to find your message in it, so it sent nothing. The branch ends with your original message.");
     // Loaded first, so the copy can come off the screen: the message takes its place.
     await this.resume(chatId).catch(() => {});
-    this.patchChat(chatId, (c) => ({ ...c, items: withoutLastMessage(c.items) }));
+    this.patchChat(chatId, (c) => ({ ...c, items: withoutCopy(c.items, copy.id) }));
     const shown = preview.kind === "edit" ? text.trim() : preview.original;
     const sent = await this.deliver(chatId, shown, [], undefined, { rowId: copy.id, prompt, ...(preview.count === 1 && { empty: true }) });
     if (this.profile === profile) {
@@ -2062,6 +2064,8 @@ export class Hermes {
       }
       this.setOutgoing(profile, chatId, user.id, confirmed);
       this.noteRows(chatId, [res.user_row_id]);
+      // Hermes replaced the copy: it goes from the screen too, as after a restart and a Retry it would show again.
+      if (cut) this.patchChat(chatId, (c) => ({ ...c, items: withoutCopy(c.items, cut.rowId, user.id) }));
       // A Hermes that ignores the cut adds the message after the one it should have replaced (ADR 0032).
       if (cut && !Array.isArray(res.survivor_user_row_ids) && !res.survivor_row_id_map)
         this.update({
@@ -3717,10 +3721,24 @@ const withRows = (items: Item[], rows: OutgoingItem[]): Item[] => [...items, ...
 
 const withOutgoing = (r: OutgoingItem, patch: Partial<Outgoing>): OutgoingItem => ({ ...r, outgoing: { ...r.outgoing, ...patch } });
 
+/** Why Edit or Regenerate refused: the chat isn't what the owner saw when the dialog opened (ADR 0032). */
+const CHANGED_SINCE_REPLAY =
+  "This chat changed since this opened: a message was added or changed, perhaps in another Hermes client. Nothing was made. Open it again to see the chat as it is now.";
+
 /**
- * The items of a branch just made by Edit or Regenerate, less the copy of the owner's message the replay replaces: its
- * last message of the owner's that Hermes has, and what came after it. Nothing goes if that isn't the last message.
+ * A branch's items less the copy of the owner's message a replay replaces (stored row `rowId`) and what came after it,
+ * up to the replayed message `upTo` if given. Messages not yet confirmed stay. Without an item for that row, as when the
+ * history read had no row ids, the branch's last message of the owner's that Hermes has goes instead, and what followed.
  */
+function withoutCopy(items: Item[], rowId: number, upTo?: string): Item[] {
+  const from = items.findIndex((i) => (i.kind === "user" || i.kind === "assistant") && i.rowId === rowId);
+  if (from < 0) return upTo === undefined ? withoutLastMessage(items) : items;
+  const to = upTo === undefined ? items.length : items.findIndex((i) => i.id === upTo);
+  if (to < from) return items;
+  return items.filter((i, k) => k < from || k >= to || isOutgoing(i));
+}
+
+/** A branch's items less its last message of the owner's that Hermes has, and what came after it. */
 function withoutLastMessage(items: Item[]): Item[] {
   let at = items.length - 1;
   while (at >= 0 && !(items[at].kind === "user" && !(items[at] as OutgoingItem).outgoing)) at--;

@@ -218,7 +218,12 @@ function setPrimary(p: FakeProject, path: string) {
 const EDITABLE_SOURCES = new Set(["cli", "tui", "gui", "desktop", "oneshot", "tool", "acp", "import", "telegram", "discord", "slack", "whatsapp", "signal", "matrix"]);
 
 /** A history as `session.resume` shows it: hidden rows, such as a project's instructions, aren't shown (`_history_to_messages`). */
-const shownHistory = (messages: TranscriptMessage[]) => messages.filter((m) => m.display_kind !== "hidden");
+/**
+ * What `session.resume` shows: no hidden rows, and no model-switch marker, a `[System: …]` user row its
+ * `_is_display_hidden_marker` sniff drops though REST still lists it.
+ */
+const shownHistory = (messages: TranscriptMessage[]) =>
+  messages.filter((m) => m.display_kind !== "hidden" && !(m.role === "user" && m.display_kind === "model_switch"));
 
 /** A stored session `daysAgo` days old, unpinned and from this app unless overridden. */
 export function row(id: string, daysAgo: number, over: Partial<SessionRow> = {}): SessionRow {
@@ -669,6 +674,12 @@ export class FakeHermes {
       else info.fast = value === "fast";
       if (stored) {
         this.sessionModel.set(stored, info);
+        // A live model switch stores a marker row for the model at once, keeping only the newest
+        // (`_append_model_switch_marker`, `tui_gateway/server.py` at the deployed `bf0203a`).
+        if (key === "model" && this.transcripts[stored]?.length) {
+          this.transcripts[stored] = this.transcripts[stored].filter((m) => m.display_kind !== "model_switch");
+          this.storeMessage(stored, { role: "user", text: `[System: The active model for this chat has changed to ${info.model}.]`, display_kind: "model_switch" });
+        }
         this.event(sid!, "session.info", { ...info });
       } else this.profileModel[profile] = info;
       this.respond(r.id, { key, value });
