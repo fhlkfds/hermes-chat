@@ -1,5 +1,5 @@
-// Server files: a browser for the files on the machine the Hermes dashboard runs on (remoteFiles.ts). It opens from the
-// rail and takes the chat pane's place, as Settings does. Folders open in place, with the path above them as a trail
+// Server files: a browser for the files on the machine the Hermes dashboard runs on (remoteFiles.ts). It is the side
+// panel's Files tab (ADR 0039), and opens from the rail there too. Folders open in place, with the path above them as a trail
 // of folders; a file opens in the preview beside the list, where it can be downloaded to this computer. Upload… sends
 // a file the owner picks into the folder on screen, after showing where it goes and what is in the way (ADR 0023). A
 // text file in the preview can be edited and saved back, checked against what the server has (ADR 0024). Nothing else
@@ -65,7 +65,8 @@ export function FileBrowser({
   path?: string;
   /** Each folder listed, so it opens there next time. */
   onPath: (path: string) => void;
-  onClose: () => void;
+  /** Back to the chat; without it, the browser is a tab of the side panel and has no Back button. */
+  onClose?: () => void;
 }) {
   const connected = status === "connected";
   const [listing, setListing] = useState<RemoteListing>();
@@ -195,9 +196,11 @@ export function FileBrowser({
   return (
     <div className="files" onKeyDown={onListKey}>
       <div className="files-head">
-        <button className="back" onClick={onClose}>
-          <ArrowLeft size={15} /> Back to chat
-        </button>
+        {onClose && (
+          <button className="back" onClick={onClose}>
+            <ArrowLeft size={15} /> Back to chat
+          </button>
+        )}
         <div className="files-title">
           <h1>Server files</h1>
           <span className="files-server" title="The machine the Hermes dashboard runs on">

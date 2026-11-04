@@ -75,6 +75,21 @@ pub fn ssh_command(target: &str) -> Result<Command, TerminalError> {
     Ok(command)
 }
 
+/// The owner's own login shell on this computer, started in their home folder (ADR 0039): `$SHELL` when it names a
+/// program by its full path, else `/bin/sh`. Nothing the webview sends picks the program or its arguments.
+pub fn local_shell_command() -> Command {
+    let shell = std::env::var_os("SHELL")
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_absolute() && p.is_file())
+        .unwrap_or_else(|| "/bin/sh".into());
+    let mut command = Command::new(shell);
+    command.arg("-l");
+    if let Some(home) = std::env::var_os("HOME").filter(|h| std::path::Path::new(h).is_dir()) {
+        command.current_dir(home);
+    }
+    command
+}
+
 impl Terminals {
     /// Starts `command` in a new PTY of `cols` × `rows`, sending what it prints, then how it ended, to `on_event`.
     pub fn open(
@@ -283,6 +298,29 @@ mod tests {
         assert_eq!(end, None, "a signal ended it");
         assert!(matches!(t.write(id, b"x"), Err(TerminalError::Gone)));
         t.close(id);
+    }
+
+    #[tokio::test]
+    async fn the_local_shell_is_a_login_shell_in_the_home_folder() {
+        let c = local_shell_command();
+        let args: Vec<_> = c.as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(args, ["-l"]);
+        assert!(std::path::Path::new(c.as_std().get_program()).is_absolute());
+        // It runs, in a terminal, where it was started.
+        let t = Terminals::default();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let id = t.open(local_shell_command(), 80, 24, move |e| drop(tx.send(e))).unwrap();
+        t.write(id, b"echo \"at:$PWD\"; exit 4\r").unwrap();
+        let mut out = String::new();
+        let code = loop {
+            match tokio::time::timeout(Duration::from_secs(10), rx.recv()).await.unwrap() {
+                Some(TerminalEvent::Output { data }) => out.push_str(&String::from_utf8_lossy(&base64::engine::general_purpose::STANDARD.decode(data).unwrap())),
+                Some(TerminalEvent::Exit { code }) => break code,
+                None => panic!("no exit"),
+            }
+        };
+        assert!(out.contains(&format!("at:{}", std::env::var("HOME").unwrap())), "{out:?}");
+        assert_eq!(code, Some(4));
     }
 
     #[test]
