@@ -1,4 +1,4 @@
-// Chat links (ADR 0033): `hermes-chat://chat?v=1&connection=<ref>&profile=<name>&id=<chat id>`. A link names a chat
+// Chat links (ADR 0036): `hermes-chat://chat?v=1&connection=<ref>&profile=<name>&id=<chat id>`. A link names a chat
 // only by ids: the connection by an opaque reference this computer made up for it, never its address, username,
 // password or headers. Opening a link only shows the chat; it never sends, runs, approves or signs in to anything.
 //

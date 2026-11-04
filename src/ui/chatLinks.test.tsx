@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Chat links in the running app (ADR 0033), against a fake Hermes: a link opens its chat in its profile, says what
+// Chat links in the running app (ADR 0036), against a fake Hermes: a link opens its chat in its profile, says what
 // it is doing meanwhile, asks before leaving a reply running, and when it can't open changes nothing on screen. Links
 // never send anything, and Copy chat link copies only ids.
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";

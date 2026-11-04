@@ -23,7 +23,24 @@ export type BranchPoint = { role: "user" | "assistant"; excerpt: string; rowId?:
  * A branch this app made, kept on this computer per connection and profile (Hermes keeps only the parent's id). `at`:
  * when it was made, Unix ms.
  */
-export type BranchLink = { parentId: string; parentTitle: string; point: BranchPoint; at: number };
+export type BranchLink = { parentId: string; parentTitle: string; point: BranchPoint; at: number; variant?: BranchVariant };
+
+/**
+ * What an Edit or Regenerate made a branch for (ADR 0035): another version of one turn of a chat. `rootId` is the chat
+ * whose turn this is another version of, and `turn` which turn: the owner's shown messages before it, from 0. That
+ * number is the same in the root and in every branch copied from it, since a branch copies every message before it.
+ * `model`: what the branch ran on once it was made, as Hermes reported it. `pending`: set until the message has gone
+ * into the branch, the words to send and `spineKey` of the rows the branch keeps once its copy of the original message
+ * is taken back; `through` is `spineKey` of the rows through the original message, which must be the branch's rows
+ * before that message is taken back. Those words are kept on this computer only until they go, as a Draft is.
+ */
+export type BranchVariant = {
+  kind: "edit" | "regenerate";
+  rootId: string;
+  turn: number;
+  model?: ModelPick;
+  pending?: { text: string; prefix: string; through: string };
+};
 
 /**
  * A branch asked of Hermes whose answer hasn't come back. `key` is the idempotency key it went with, so asking again
@@ -42,6 +59,8 @@ export type BranchAttempt = {
   startedAt: number;
   title?: string;
   model?: ModelPick;
+  /** Set for an Edit or Regenerate: the branch is made through the owner's message, which it then replaces. */
+  variant?: BranchVariant;
 };
 
 /** What this computer keeps about branches for one connection and profile. */
@@ -106,10 +125,18 @@ export function locate(items: Item[], itemId: string, spine: SpineRow[]): { inde
   return { error: "Hermes hasn't stored this message yet. Wait a moment, or open the chat again, then branch." };
 }
 
+/**
+ * A stored message as the owner typed it: without the footer Hermes's @-reference expander appends below the typed
+ * text when it stores the message (`agent/context_references.py`), "--- Context Warnings ---" and "--- Attached
+ * Context ---" with the files' contents. Hermes strips it with the same rule for titles (`_CONTEXT_FOOTER_RE`,
+ * `agent/title_generator.py` at the deployed checkout). A ref named in the footer isn't one the owner sent again.
+ */
+export const typedText = (text: string) => text.replace(/\n+--- (?:Context Warnings|Attached Context) ---\n[\s\S]*$/, "");
+
 /** The `@file:` refs a message names (`file.attach` `ref_text`, quoted with `` ` ``, `"` or `'` when needed). */
 export function fileRefs(text: string): string[] {
   const refs: string[] = [];
-  for (const m of text.matchAll(/@file:(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)/g)) refs.push(m[1].replace(/^([`"'])(.*)\1$/, "$2"));
+  for (const m of typedText(text).matchAll(/@file:(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)/g)) refs.push(m[1].replace(/^([`"'])(.*)\1$/, "$2"));
   return refs;
 }
 
@@ -148,7 +175,7 @@ export type BranchPreview = {
  */
 export const excerpt = (text: string, max = 90) => {
   const refs = fileRefs(text).length;
-  const words = norm(text.replace(/@file:(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)/g, "").replace(/\*\*|__|`/g, ""));
+  const words = norm(typedText(text).replace(/@file:(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)/g, "").replace(/\*\*|__|`/g, ""));
   const t = refs ? `[${refs} ${refs === 1 ? "file" : "files"}] ${words}`.trim() : words;
   return t.length > max ? `${t.slice(0, max - 1).replace(/\s+\S*$/, "")}…` : t;
 };

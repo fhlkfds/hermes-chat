@@ -3,13 +3,16 @@ pub mod fonts;
 pub mod links;
 pub mod media;
 pub mod notify;
+pub mod portal;
 pub mod remote;
 pub mod saved_password;
 pub mod screenshot;
+pub mod summon;
 pub mod terminal;
 pub mod transport;
 pub mod tunnel;
 pub mod web_page;
+pub mod x11_grab;
 pub mod update;
 
 use serde::{Deserialize, Serialize};
@@ -807,6 +810,12 @@ async fn usage_export(app: tauri::AppHandle, csv: String, file_name: String) -> 
     save_with_dialog(&app, "Export usage — chat titles are in the file", file_name, ("CSV", &["csv"]), csv).await
 }
 
+/// Saves Logs' export or support bundle (src/hermes/logs.ts, ADR 0033) where the owner picks. `None`: cancelled.
+#[tauri::command]
+async fn logs_export(app: tauri::AppHandle, text: String, file_name: String) -> Result<Option<String>, String> {
+    save_with_dialog(&app, "Save logs — read the file before sharing it", file_name, ("Text", &["txt", "log"]), text).await
+}
+
 /// A local file the owner picked for the preview pane.
 #[derive(Serialize)]
 struct PickedFile {
@@ -958,27 +967,35 @@ pub fn run(screenshot: bool, link: Option<String>) {
             // Which package the binary came from, read before anything can upgrade it.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move { handle.state::<update::Updates>().start().await });
+            // The global shortcut registers off the main thread: the desktop may ask the owner first.
+            app.manage(summon::Summon::new(app.handle()));
+            if let Some(window) = app.get_webview_window("main") {
+                let handle = app.handle().clone();
+                window.on_window_event(move |e| {
+                    if let tauri::WindowEvent::Focused(f) = e {
+                        handle.state::<summon::Summon>().focus_changed(*f);
+                    }
+                });
+            }
             let handle = app.handle().clone();
-            let linking = app.handle().clone();
-            remote::serve(
-                move || {
+            std::thread::spawn(move || handle.state::<summon::Summon>().start(&handle));
+            let handle = app.handle().clone();
+            // Requests that came while the app started (main.rs took the bus name first) are handled now.
+            remote::set_handler(move |request| match request {
+                remote::Request::Screenshot => {
                     handle.state::<Screenshots>().requests.ask();
                     let _ = handle.emit(remote::EVENT, ());
-                },
-                // A link opened while the app runs: kept for the window, which is brought forward to show it.
-                move |link| {
-                    if !linking.state::<links::Links>().put(link) {
-                        return false;
+                }
+                remote::Request::Show { token } => summon::activate(&handle, false, token, false),
+                remote::Request::Toggle { token } => summon::activate(&handle, true, token, false),
+                // A chat link opened while the app runs: kept for the window, which comes forward to show it.
+                remote::Request::OpenLink { link, token } => {
+                    if handle.state::<links::Links>().put(link) {
+                        let _ = handle.emit(links::EVENT, ());
+                        summon::activate(&handle, false, token, false);
                     }
-                    let _ = linking.emit(links::EVENT, ());
-                    if let Some(window) = linking.get_webview_window("main") {
-                        let _ = window.unminimize();
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                    }
-                    true
-                },
-            );
+                }
+            });
             Ok(())
         })
         .manage(PickedFiles::default())
@@ -1020,6 +1037,7 @@ pub fn run(screenshot: bool, link: Option<String>) {
             import_pick_file,
             templates_export,
             usage_export,
+            logs_export,
             preview_pick_local,
             preview_read_local,
             preview_read_local_image,
@@ -1035,6 +1053,11 @@ pub fn run(screenshot: bool, link: Option<String>) {
             screenshot_ack_request,
             screenshot_show_window,
             chat_link_take,
+            summon::summon_status,
+            summon::summon_set,
+            summon::summon_retry,
+            summon::summon_set_hide,
+            summon::summon_pause,
             terminal_open,
             terminal_write,
             terminal_resize,
@@ -1057,6 +1080,10 @@ pub fn run(screenshot: bool, link: Option<String>) {
         // for the next startup's sweep, after persisted references are known, rather than risk deleting Retry bytes.
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
+                // Let go of the global shortcut before a restart's new app registers it again.
+                if let Some(summon) = app.try_state::<summon::Summon>() {
+                    summon.shutdown();
+                }
                 update::relaunch(app);
             }
         });

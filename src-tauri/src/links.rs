@@ -1,4 +1,4 @@
-//! Chat links (ADR 0033): `hermes-chat://chat?v=1&connection=…&profile=…&id=…`. The desktop starts Hermes Chat with
+//! Chat links (ADR 0036): `hermes-chat://chat?v=1&connection=…&profile=…&id=…`. The desktop starts Hermes Chat with
 //! the link as its argument (`%u` in the .desktop file). A Hermes Chat already running is handed the link over the
 //! session bus (remote.rs, `OpenLink`) and this process exits; otherwise this one keeps it until the window takes it.
 //!

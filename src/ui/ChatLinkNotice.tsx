@@ -1,4 +1,4 @@
-// The notice a chat link shows while it is being opened, and why it couldn't be (ADR 0033). It sits over the top of
+// The notice a chat link shows while it is being opened, and why it couldn't be (ADR 0036). It sits over the top of
 // the window and never takes focus, so typing in the composer carries on; nothing in it sends anything.
 import { Link2, Loader2, TriangleAlert } from "lucide-react";
 

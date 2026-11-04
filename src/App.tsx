@@ -22,6 +22,7 @@ import { appUpdates } from "./hermes/tauriUpdates";
 import { needsAttention, type Updater } from "./hermes/updates";
 import { desktopNotify } from "./hermes/tauriNotify";
 import { ScreenshotDesk, type ScreenshotApi } from "./hermes/screenshots";
+import { desktopSummon, type SummonApi } from "./hermes/summon";
 import { onDesktopScreenshot, screenshotSupport, showWindow, syncScreenshotOutbox, tauriScreenshots, type ScreenshotSupport } from "./hermes/tauriScreenshot";
 import { checkShortcut, shortcutLabel, shortcutOf } from "./ui/shortcut";
 
@@ -37,6 +38,8 @@ import { Inbox } from "./ui/Inbox";
 import { inboxAcks, inboxEntries, inboxScope, needsOwner, type InboxEntry } from "./hermes/inbox";
 import { ChatPane, type JumpTarget } from "./ui/ChatPane";
 import { BranchDialog, BranchedFrom } from "./ui/Branch";
+import { ReplayDialog } from "./ui/Replay";
+import { replayBlocked, variantsIn, type ReplayKind } from "./hermes/replay";
 import { branchBlocked, type BranchLink } from "./hermes/branch";
 import type { QueueApi } from "./ui/Queue";
 import { PANE_NAMES, Split, usePaneVisible, type PaneSlot } from "./ui/Split";
@@ -54,8 +57,10 @@ import { tauriCloseGuard, type CloseGuard } from "./ui/tauriWindow";
 import { FileBrowser } from "./ui/FileBrowser";
 import { OutputsScreen, type OutputsScope } from "./ui/Outputs";
 import { UsageAnalytics } from "./ui/UsageAnalytics";
+import { LogsScreen } from "./ui/Logs";
+import { note } from "./hermes/logs";
 import { OutputsIndex, outputsIn, splitPath, type Output } from "./hermes/outputs";
-import { composing, routeLabel } from "./ui/bits";
+import { STATUS_LABEL, composing, routeLabel } from "./ui/bits";
 import { ProjectScreen, ProjectSwitcher, type ProjectUnread } from "./ui/Projects";
 import { ScheduledJobs } from "./ui/ScheduledJobs";
 import { tauriTerminal } from "./ui/tauriTerminal";
@@ -180,7 +185,7 @@ function launch(): Promise<Launch> {
 
 export default function App({ links = desktopLinks }: { links?: LinkInbox } = {}) {
   const [hermes, setHermes] = useState<Hermes | null>(null);
-  // A chat link the desktop opened (ADR 0033). One that isn't a chat link says why at once, on any screen. A good one
+  // A chat link the desktop opened (ADR 0036). One that isn't a chat link says why at once, on any screen. A good one
   // waits here until Main takes it, so it opens once signed in.
   const arrived = useSyncExternalStore(links.subscribe, links.getSnapshot);
   // Until the link the app was started with has been read, an empty inbox doesn't mean there's none, so Main, which
@@ -439,6 +444,7 @@ export function Main({
   localFiles = tauriLocalFiles,
   webPages = tauriWebPages,
   screenshots = tauriScreenshotWiring,
+  summon = desktopSummon,
   personaStore = savedPersona,
   guardClose = tauriCloseGuard,
   onSignOut,
@@ -464,13 +470,15 @@ export function Main({
   localFiles?: LocalFiles;
   webPages?: WebPages;
   screenshots?: Screenshots;
+  /** The global shortcut (ADR 0033); none outside the desktop app. */
+  summon?: SummonApi;
   /** Where Settings → Persona keeps unsaved edits and replaced versions on this computer. */
   personaStore?: PersonaStore;
   /** Asks before the window closes; registered only while Settings → Persona holds an unsaved edit. */
   guardClose?: CloseGuard;
   onSignOut: () => Promise<void>;
   updates?: Updater;
-  /** A chat link to open (ADR 0033); `at` tells one from the next. Main takes it with `onLinkTaken`. */
+  /** A chat link to open (ADR 0036); `at` tells one from the next. Main takes it with `onLinkTaken`. */
   link?: { link: ChatLink; at: number };
   onLinkTaken?: (at: number) => void;
   /** When a newer link that can't open arrived: it replaces whatever an older link was doing, notice and all. */
@@ -572,6 +580,8 @@ export function Main({
   // Usage analytics covers the chat panes too (ADR 0026). It reads Hermes afresh each time it opens.
   const [usageOpen, setUsageOpen] = useState(false);
   const usageIo = useMemo(() => hermes.usageIo(), [hermes]);
+  // Logs covers the chat panes too (ADR 0033). What it read goes when it closes; this app's own diagnostics stay.
+  const [logsOpen, setLogsOpen] = useState(false);
   const listProfiles = useCallback(() => hermes.profiles(), [hermes]);
   const update = useSyncExternalStore(updates.subscribe, updates.getSnapshot);
   const updateWaiting = needsAttention(update);
@@ -596,6 +606,16 @@ export function Main({
   const split = panes.length > 1;
   const [listOpen, setListOpen] = useState(true);
   const [toast, setToast] = useState<Toast | null>(notSaved ? { text: notSaved, at: Date.now() } : null);
+  // This app's diagnostics for the Logs screen (ADR 0033): the connection's changes, and the failures the app showed.
+  useEffect(() => {
+    note(status === "connected" ? "INFO" : "WARNING", `Connection to ${routeLabel(route) ?? "Hermes"}, profile ${profile}: ${STATUS_LABEL[status]}${status !== "connected" && closedReason ? ` (${closedReason})` : ""}`);
+  }, [status, closedReason, profile]);
+  useEffect(() => {
+    if (syncError) note("WARNING", `Chat list: ${syncError}`);
+  }, [syncError]);
+  useEffect(() => {
+    if (toast) note("WARNING", `Shown: ${toast.text}`);
+  }, [toast]);
   // What became of a branch whose answer was lost, once the chat list settled it (ADR 0027).
   useEffect(() => {
     if (branchNews) setToast({ text: branchNews.text, at: branchNews.at });
@@ -694,6 +714,7 @@ export function Main({
     setTerminalOpen(false);
     setOutputsOpen(false);
     setUsageOpen(false);
+    setLogsOpen(false);
     setShowTextGeneration(undefined);
     setShowMemory(undefined);
     setSettingsOpen(true);
@@ -766,7 +787,7 @@ export function Main({
 
   // The active pane's chat is the one kept as the profile's last open chat, so it reopens at the next launch.
   // Counts every move between chats, panes and profiles. A chat link that waited on Hermes checks it afterwards, so a
-  // move made meanwhile, even one that came back to the same chat, wins over the link (ADR 0033).
+  // move made meanwhile, even one that came back to the same chat, wins over the link (ADR 0036).
   const navGen = useRef(0);
 
   const activate = (key: string) => {
@@ -798,6 +819,7 @@ export function Main({
       setTerminalOpen(false);
       setOutputsOpen(false);
       setUsageOpen(false);
+      setLogsOpen(false);
       if (remember) rememberOpenChat(profile, id);
     };
     if (keepSettings) go();
@@ -821,6 +843,7 @@ export function Main({
     setTerminalOpen(false);
     setOutputsOpen(false);
     setUsageOpen(false);
+    setLogsOpen(false);
   });
 
   // A second pane opens to the right and becomes the active one. Both panes may show the same chat: they are two views
@@ -841,6 +864,7 @@ export function Main({
     setTerminalOpen(false);
     setOutputsOpen(false);
     setUsageOpen(false);
+    setLogsOpen(false);
     rememberOpenChat(profile, chatId);
   });
 
@@ -872,6 +896,7 @@ export function Main({
       setTerminalOpen(false);
       setOutputsOpen(false);
       setUsageOpen(false);
+      setLogsOpen(false);
       setSearchOpen(false);
       if (!previewFits) setPreviewHidden(true);
     });
@@ -1114,7 +1139,7 @@ export function Main({
     document.querySelector<HTMLTextAreaElement>(`[data-pane="${CSS.escape(key)}"] .composer textarea`)?.focus();
   };
 
-  // Chat links (ADR 0033). Everything is checked before anything moves: the link's connection is this one, Hermes is
+  // Chat links (ADR 0036). Everything is checked before anything moves: the link's connection is this one, Hermes is
   // connected, the server has the profile and the profile has the chat. Only then does the app switch profile, asking
   // first as the switcher does, and open the chat. A link that can't open changes nothing on screen, so the composer
   // and its draft stay as they were. Nothing is ever sent. `attempt` tells a retry from the try it replaces, so an
@@ -1365,10 +1390,19 @@ export function Main({
   // Settings covers the chat, and the pane with it; so do the project screen, Server files, Scheduled jobs and the
   // Terminal.
   // Outputs covers the chat panes but keeps the preview pane beside it, since its files open there.
-  const screenCovering = settingsOpen || projectScreenOpen || filesOpen || jobsOpen || terminalOpen || usageOpen;
+  const screenCovering = settingsOpen || projectScreenOpen || filesOpen || jobsOpen || terminalOpen || usageOpen || logsOpen;
   const covering = screenCovering || outputsOpen;
   const previewShown = !!preview && !screenCovering && (previewFits || !previewHidden);
   const previewCovers = previewShown && !previewFits;
+
+  // The global shortcut or `hermes-chat --show` brought the window forward: the cursor goes back in the selected pane's
+  // composer, its draft as it was. Settings or another screen over the chat stays as it was left, unsaved edits and all.
+  const onSummonedRef = useRef(() => {});
+  onSummonedRef.current = () => {
+    if (covered || covering || previewCovers || searchOpen) return;
+    focusPane(active.key);
+  };
+  useEffect(() => summon?.onSummoned(() => onSummonedRef.current()), [summon]);
 
 
   const slots: PaneSlot[] = panes.map((p, i) => {
@@ -1430,6 +1464,7 @@ export function Main({
                   setTerminalOpen(false);
                   setOutputsOpen(false);
                   setUsageOpen(false);
+                  setLogsOpen(false);
                   setShowTextGeneration(undefined);
                   setShowMemory({});
                   setSettingsOpen(true);
@@ -1443,6 +1478,13 @@ export function Main({
           onNew={() => newChat()}
           onDelete={() => deleteChat(chat.id)}
           onOpenChat={(id) => openChat(id, { pane: p.key })}
+          onOpenTurn={(id, turn) => {
+            if (!chats.some((c) => c.id === id)) return setToast({ text: "That chat isn't in the chat list now.", at: Date.now() });
+            guard(() => {
+              openChat(id, { pane: p.key, keepSettings: true });
+              patchPane(p.key, { jump: { turn, at: Date.now() } });
+            });
+          }}
           onShowAt={(link) => {
             if (!chats.some((c) => c.id === link.parentId)) return setToast({ text: "That chat isn't in the chat list now.", at: Date.now() });
             // Opened at the message's stored row, the one the branch ends with, whatever its words.
@@ -1494,6 +1536,7 @@ export function Main({
             setTerminalOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
+            setLogsOpen(false);
             setFilesOpen((o) => !o);
           })
         }
@@ -1505,6 +1548,7 @@ export function Main({
             setJobsOpen(false);
             setTerminalOpen(false);
             setUsageOpen(false);
+            setLogsOpen(false);
             setOutputsOpen((o) => !o);
           })
         }
@@ -1522,6 +1566,7 @@ export function Main({
             setFilesOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
+            setLogsOpen(false);
             setTerminalOpen(false);
             setJobsOpen(true);
           })
@@ -1535,6 +1580,7 @@ export function Main({
             setJobsOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
+            setLogsOpen(false);
             setTerminalMounted(true);
             setTerminalOpen((o) => !o);
           })
@@ -1547,10 +1593,24 @@ export function Main({
             setJobsOpen(false);
             setTerminalOpen(false);
             setOutputsOpen(false);
+            setLogsOpen(false);
             setUsageOpen((o) => !o);
           })
         }
         usageOpen={usageOpen && !settingsOpen && !projectScreenOpen && !filesOpen && !jobsOpen}
+        onLogs={() =>
+          guard(() => {
+            setProjectOpen(false);
+            setSettingsOpen(false);
+            setFilesOpen(false);
+            setJobsOpen(false);
+            setTerminalOpen(false);
+            setOutputsOpen(false);
+            setUsageOpen(false);
+            setLogsOpen((o) => !o);
+          })
+        }
+        logsOpen={logsOpen && !settingsOpen && !projectScreenOpen && !filesOpen && !jobsOpen && !usageOpen}
         terminalOpen={terminalOpen && !settingsOpen}
         terminalRunning={terminalRunning}
         updateWaiting={updateWaiting}
@@ -1580,6 +1640,7 @@ export function Main({
                     setTerminalOpen(false);
                     setOutputsOpen(false);
                     setUsageOpen(false);
+                    setLogsOpen(false);
                     setProjectOpen(true);
                   });
                 }}
@@ -1591,6 +1652,7 @@ export function Main({
                     setTerminalOpen(false);
                     setOutputsOpen(false);
                     setUsageOpen(false);
+                    setLogsOpen(false);
                     setProjectOpen(true);
                     void projects.readDefaults();
                   })
@@ -1636,6 +1698,7 @@ export function Main({
             setTerminalOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
+            setLogsOpen(false);
             // One destination at a time: an earlier Memory shortcut mustn't switch Settings away from this one.
             setShowMemory(undefined);
             setShowTextGeneration({});
@@ -1742,6 +1805,7 @@ export function Main({
             onSkillDirty={onSkillDirty}
             skillDiscards={skillDiscards}
             checkScreenshots={screenshots.support}
+            summon={summon}
             voiceSetup={voice.setup}
             showTextGeneration={showTextGeneration}
             showMemory={showMemory}
@@ -1814,6 +1878,19 @@ export function Main({
               focusPane(active.key);
             }}
           />
+        ) : logsOpen ? (
+          <LogsScreen
+            key={profile}
+            profile={profile}
+            connected={status === "connected"}
+            connection={route?.kind === "ssh" ? "SSH tunnel" : "dashboard URL"}
+            read={(file, lines) => hermes.readLog(profile, file, lines)}
+            save={(text, fileName) => invoke<string | null>("logs_export", { text, fileName })}
+            onClose={() => {
+              flushSync(() => setLogsOpen(false));
+              focusPane(active.key);
+            }}
+          />
         ) : outputsOpen ? (
           <OutputsScreen
             snapshot={outSnap}
@@ -1849,6 +1926,7 @@ export function Main({
               setFilesPath(splitPath(o.path).dir);
               setOutputsOpen(false);
               setUsageOpen(false);
+              setLogsOpen(false);
               setFilesOpen(true);
             }}
             onClose={() => {
@@ -2037,6 +2115,7 @@ function ChatView({
   onDelete,
   onOpenChat,
   onShowAt,
+  onOpenTurn,
   paneControls,
   previewControls,
   screenshots,
@@ -2084,6 +2163,8 @@ function ChatView({
   onOpenChat: (id: string) => void;
   /** Opens the chat a branch came from, at the message it was branched after. */
   onShowAt: (link: BranchLink) => void;
+  /** Opens another version of a turn in this pane, at that turn (ADR 0035). */
+  onOpenTurn: (chatId: string, turn: number) => void;
   paneControls: ReactNode;
   previewControls: ReactNode;
   screenshots?: ScreenshotDesk;
@@ -2216,6 +2297,19 @@ function ChatView({
   const [branchFrom, setBranchFrom] = useState<string>();
   useEffect(() => setBranchFrom(undefined), [chatId, profile]);
   const link = useSyncExternalStore(hermes.subscribe, () => hermes.getSnapshot().branches.links[chat.id]);
+  // Edit and Regenerate (ADR 0035): the message the dialog is open for, and the versions of this chat's turns.
+  const [replayFrom, setReplayFrom] = useState<{ itemId: string; kind: ReplayKind }>();
+  useEffect(() => setReplayFrom(undefined), [chatId, profile]);
+  const links = useSyncExternalStore(hermes.subscribe, () => hermes.getSnapshot().branches.links);
+  const listedChats = useSyncExternalStore(hermes.subscribe, () => hermes.getSnapshot().chats);
+  const variants = useMemo(() => {
+    const byTurn = variantsIn(links, chat.id, (id) => listedChats.some((c) => c.id === id));
+    // Hermes keeps no model per reply: the original shows what its chat runs on now, when that's known here.
+    for (const versions of byTurn.values())
+      for (const v of versions) if (v.kind === "original") v.model = listedChats.find((c) => c.id === v.chatId)?.model;
+    return byTurn;
+  }, [links, listedChats, chat.id]);
+  const [finishing, setFinishing] = useState(false);
   const parentListed = useSyncExternalStore(hermes.subscribe, () => !!link && hermes.getSnapshot().chats.some((c) => c.id === link.parentId));
 
   // Slash commands (commands.ts). Each empties the Draft it was typed in only once it has run, only if the owner hasn't
@@ -2365,7 +2459,36 @@ function ChatView({
       queue={queue}
       queueApi={queueApi}
       branch={started ? { blocked: branchBlocked(chat, status === "connected"), onBranch: setBranchFrom } : undefined}
-      branchedFrom={link && <BranchedFrom link={link} parentListed={parentListed} onOpen={() => onShowAt(link)} />}
+      branchedFrom={
+        link && (
+          <BranchedFrom
+            link={link}
+            parentListed={parentListed}
+            onOpen={() => onShowAt(link)}
+            finish={
+              link.variant?.pending
+                ? {
+                    busy: finishing,
+                    blocked: replayBlocked(chat, status === "connected"),
+                    run: () => {
+                      setFinishing(true);
+                      hermes.finishReplay(chat.id).then(
+                        (warnings) => warnings.length && onToast(warnings.join(" ")),
+                        (e) => onToast((e as Error).message),
+                      ).finally(() => setFinishing(false));
+                    },
+                  }
+                : undefined
+            }
+          />
+        )
+      }
+      replay={
+        started && chat.source !== "import"
+          ? { blocked: replayBlocked(chat, status === "connected"), onReplay: (itemId, kind) => setReplayFrom({ itemId, kind }) }
+          : undefined
+      }
+      variants={variants.size ? { byTurn: variants, onPick: (id, turn) => id !== chat.id && onOpenTurn(id, turn) } : undefined}
       footer={
         <StatusBar
           chat={chat}
@@ -2391,6 +2514,21 @@ function ChatView({
         />
       }
     />
+    {replayFrom && (
+      <ReplayDialog
+        key={`${chat.id}/${replayFrom.itemId}/${replayFrom.kind}`}
+        kind={replayFrom.kind}
+        api={{ preview: () => hermes.previewReplay(chat.id, replayFrom.itemId, replayFrom.kind), make: (p, words) => hermes.replay(p, words) }}
+        onClose={() => setReplayFrom(undefined)}
+        done={(id, warnings) => {
+          setReplayFrom(undefined);
+          if (!stillIn()) return;
+          // The new version opens here; this chat, its Draft and its answer stay as they were.
+          onOpenChat(id);
+          if (warnings.length) onToast(warnings.join(" "));
+        }}
+      />
+    )}
     {branchFrom && (
       <BranchDialog
         key={`${chat.id}/${branchFrom}`}

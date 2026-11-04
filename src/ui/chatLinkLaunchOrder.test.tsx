@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// A chat link that starts Hermes Chat (ADR 0033), through the whole App with the Rust side replaced by FakeHermes and
+// A chat link that starts Hermes Chat (ADR 0036), through the whole App with the Rust side replaced by FakeHermes and
 // an in-memory keyring behind `invoke`. Here the password is saved, so signing in is quick, and reading the link the
 // app was started with is slow: the last open chat must not be reopened in the meantime.
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
