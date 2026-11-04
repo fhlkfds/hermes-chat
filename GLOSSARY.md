@@ -187,6 +187,14 @@ _Avoid_: notifications, activity, feed
 A `hermes-chat://` link that opens one chat in its profile, made with Copy chat link. It holds only ids: a random reference this computer made for the connection, the profile's name and the chat's id, never an address or sign-in. Opening one checks everything first (the connection is the one signed in, Hermes is connected, the server has the profile and the profile has the chat), then switches profile if it must, asking first as the switcher does, and opens the chat. If a check fails, nothing on screen changes and a notice says why. A link only ever opens a chat: it never sends, runs, answers or signs in to anything. It opens on the computer it was copied on; one from elsewhere opens only when the owner says it is for the connection signed in (ADR 0037).
 _Avoid_: deep link (fine in conversation), share link (nothing is shared with anyone), URL (for the link itself)
 
+**Capability**:
+A feature of this app that needs something from the Hermes server, such as a route or a method, and whether the connected server has it: Supported, Not supported, Unknown (Hermes answered, but that settles nothing) or Couldn't check (no answer, which may pass). Learnt from what Hermes says about itself, from the app's own requests, or from one request that only reads; never from a version number alone. Kept in memory for the current sign-in only (ADR 0044).
+_Avoid_: feature flag (Hermes's own advertised switches, which diagnostics lists separately), permission, support (alone)
+
+**Connection diagnostics**:
+The Settings tab that shows what the connected Hermes says it is (version, protocol, sign-in, feature flags) and each Capability, with how and when it was learnt. Check again checks everything; Copy report copies it with secrets taken out. A screen whose Capability is Not supported shows a note linking here and to the compatibility guide, in its place.
+_Avoid_: health check, status page, Logs (the app's and Hermes's log lines)
+
 **Logs**:
 The screen, opened from the rail, that shows one source at a time: this app's own diagnostics (connection changes, failures it showed, uncaught errors), or one of the profile's Hermes logs (agent, errors, gateway, MCP servers). Following reads a Hermes log's last 500 lines every 2 seconds while it is on screen. Notes in the list mark where reading stopped and started again, and where lines may be missing. Pausing keeps the view still while reading carries on. Every line is redacted before the app keeps it. Nothing is kept after Logs closes, except this app's diagnostics, which last until the app quits (ADR 0033).
 _Avoid_: console, debug log, activity

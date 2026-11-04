@@ -53,7 +53,10 @@ export function Inbox({
   onDismiss,
   onRefresh,
   onClose,
+  onGuide,
 }: {
+  /** Opens the compatibility guide at what the inbox can't see without, when Hermes lacks it. */
+  onGuide?: () => void;
   entries: InboxEntry[];
   unmatched: number;
   server: string;
@@ -136,7 +139,7 @@ export function Inbox({
           </button>
         ))}
       </div>
-      <Freshness connected={connected} others={others} live={live} unmatched={unmatched} />
+      <Freshness connected={connected} others={others} live={live} unmatched={unmatched} onGuide={onGuide} />
       {asking && (
         <div className="confirm inbox-leave" role="alertdialog" aria-label={`Switch to ${asking.profile}?`}>
           <span>{leaving}</span>
@@ -212,7 +215,19 @@ function Row({ entry: e, server, onOpen, onDismiss }: { entry: InboxEntry; serve
 }
 
 /** How fresh the inbox is, and which of its sources couldn't be read. */
-function Freshness({ connected, others, live, unmatched }: { connected: boolean; others: OtherProfiles; live?: LiveSessions; unmatched: number }) {
+function Freshness({
+  connected,
+  others,
+  live,
+  unmatched,
+  onGuide,
+}: {
+  connected: boolean;
+  others: OtherProfiles;
+  live?: LiveSessions;
+  unmatched: number;
+  onGuide?: () => void;
+}) {
   const failed = Object.entries(others.byName).filter(([, p]) => p.error);
   const partial = Object.entries(others.byName).filter(([, p]) => p.more).map(([n]) => n);
   const notes = [
@@ -237,6 +252,11 @@ function Freshness({ connected, others, live, unmatched }: { connected: boolean;
           {n.text}
         </div>
       ))}
+      {live?.unsupported && onGuide && (
+        <button className="link-btn inbox-note" onClick={onGuide} aria-label="Compatibility guide: Work in other profiles">
+          Compatibility guide
+        </button>
+      )}
     </div>
   );
 }

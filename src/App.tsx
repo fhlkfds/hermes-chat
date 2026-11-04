@@ -67,6 +67,9 @@ import { OutputsIndex, outputsIn, splitPath, type Output } from "./hermes/output
 import { STATUS_LABEL, composing, routeLabel } from "./ui/bits";
 import { ProjectScreen, ProjectSwitcher, type ProjectUnread } from "./ui/Projects";
 import { ScheduledJobs } from "./ui/ScheduledJobs";
+import { CapabilityGate } from "./ui/Diagnostics";
+import { guideUrl, type CapabilityId } from "./hermes/capabilities";
+import { useCapabilities } from "./ui/Diagnostics";
 import { Automations } from "./ui/Automations";
 import { tauriLocalTerminal, tauriTerminal } from "./ui/tauriTerminal";
 import { TERMINAL_TARGET_KEY, terminalTarget, type TerminalKind } from "./hermes/terminal";
@@ -599,6 +602,10 @@ export function Main({
   const [showTextGeneration, setShowTextGeneration] = useState<object>();
   /** Set to open Settings on its Memory tab, from the context inspector. */
   const [showMemory, setShowMemory] = useState<object>();
+  /** Set, each time anew, to open Settings → Diagnostics, at the capability a screen's note named. */
+  const [showDiagnostics, setShowDiagnostics] = useState<{ id?: CapabilityId }>();
+  /** What the connected Hermes supports, for the menus that say what it lacks (capabilities.ts). */
+  const caps = useCapabilities(hermes.capabilities);
   const voice = useMemo<VoiceApi>(
     () => ({ setup: () => hermes.voiceSetup(), transcribe: (audio, mime) => hermes.transcribe(audio, mime), speak: (text) => hermes.speak(text) }),
     [hermes],
@@ -799,8 +806,17 @@ export function Main({
     setLogsOpen(false);
     setShowTextGeneration(undefined);
     setShowMemory(undefined);
+    setShowDiagnostics(undefined);
     setSettingsOpen(true);
   };
+  /** Opens Settings → Diagnostics at capability `id`, from the note a screen shows when Hermes lacks it. */
+  const openDiagnostics = (id: CapabilityId) => {
+    openSettings();
+    setShowDiagnostics({ id });
+  };
+  /** Opens a page of the compatibility guide in the owner's browser. */
+  const openGuide = (url: string) =>
+    void webPages.openInBrowser(url).catch((e: unknown) => setToast({ text: `Couldn't open the compatibility guide: ${messageOf(e)}`, at: Date.now() }));
   const listable = proj.projects.filter((p) => !p.archived);
   const shownProject = listable.find((p) => p.id === proj.selectedId);
   const projectScreenOpen = projectOpen && !!shownProject;
@@ -1571,6 +1587,7 @@ export function Main({
       title: chat.title,
       node: (
         <ChatView
+          openGuide={openGuide}
           hermes={hermes}
           connection={connection}
           profile={profile}
@@ -1629,6 +1646,7 @@ export function Main({
                   setUsageOpen(false);
                   setLogsOpen(false);
                   setShowTextGeneration(undefined);
+                  setShowDiagnostics(undefined);
                   setShowMemory({});
                   setSettingsOpen(true);
                 }
@@ -1789,6 +1807,7 @@ export function Main({
                 unread={projectUnread}
                 loading={proj.loading}
                 error={proj.error}
+                unsupported={caps.caps.projects.state === "unsupported" ? { onGuide: () => openGuide(guideUrl("projects")) } : undefined}
                 connected={status === "connected"}
                 onOpen={() => status === "connected" && void projects.load()}
                 onSelect={(id) => {
@@ -1875,6 +1894,7 @@ export function Main({
             setLogsOpen(false);
             // One destination at a time: an earlier Memory shortcut mustn't switch Settings away from this one.
             setShowMemory(undefined);
+            setShowDiagnostics(undefined);
             setShowTextGeneration({});
             setSettingsOpen(true);
           }}
@@ -1900,27 +1920,44 @@ export function Main({
           onDismiss={(e) => acks.dismiss(e, inbox.entries)}
           onRefresh={() => void hermes.checkOtherProfiles()}
           onClose={() => setInboxOpen(false)}
+          onGuide={() => openGuide(guideUrl("liveSessions"))}
         />
       )}
       <main className="main" ref={mainRef}>
         <div className="main-chat" inert={previewCovers || undefined}>
             {automationsOpen && !settingsOpen ? (
-              <Automations
-                key={profile}
-                api={hermes.automations}
-                profile={profile}
-                connected={status === "connected"}
+              <CapabilityGate
+                store={hermes.capabilities}
+                id="automations"
+                openGuide={openGuide}
+                onDiagnostics={openDiagnostics}
                 onClose={() => { flushSync(() => setAutomationsOpen(false)); focusPane(active.key); }}
-                onOpenChat={(id) => openChat(id)}
-              />
+              >
+                <Automations
+                  key={profile}
+                  api={hermes.automations}
+                  profile={profile}
+                  connected={status === "connected"}
+                  onClose={() => { flushSync(() => setAutomationsOpen(false)); focusPane(active.key); }}
+                  onOpenChat={(id) => openChat(id)}
+                />
+              </CapabilityGate>
             ) : jobsOpen && !settingsOpen ? (
-              <ScheduledJobs
-                key={profile}
-                api={hermes.cron}
-                profile={profile}
-                connected={status === "connected"}
+              <CapabilityGate
+                store={hermes.capabilities}
+                id="scheduledJobs"
+                openGuide={openGuide}
+                onDiagnostics={openDiagnostics}
                 onClose={() => { flushSync(() => setJobsOpen(false)); focusPane(active.key); }}
-              />
+              >
+                <ScheduledJobs
+                  key={profile}
+                  api={hermes.cron}
+                  profile={profile}
+                  connected={status === "connected"}
+                  onClose={() => { flushSync(() => setJobsOpen(false)); focusPane(active.key); }}
+                />
+              </CapabilityGate>
             ) : projectScreenOpen && shownProject && !settingsOpen ? (
               <ProjectScreen
                 key={shownProject.id}
@@ -2005,6 +2042,9 @@ export function Main({
             voiceSetup={voice.setup}
             showTextGeneration={showTextGeneration}
             showMemory={showMemory}
+            capabilities={hermes.capabilities}
+            openGuide={openGuide}
+            showDiagnostics={showDiagnostics}
             onClearCache={() => hermes.clearCache()}
             importer={{
               imports: hermes.imports,
@@ -2084,6 +2124,16 @@ export function Main({
             }}
           />
         ) : outputsOpen ? (
+          <CapabilityGate
+            store={hermes.capabilities}
+            id="outputs"
+            openGuide={openGuide}
+            onDiagnostics={openDiagnostics}
+            onClose={() => {
+              flushSync(() => setOutputsOpen(false));
+              focusPane(active.key);
+            }}
+          >
           <OutputsScreen
             snapshot={outSnap}
             outputs={shownOutputs}
@@ -2124,6 +2174,7 @@ export function Main({
               focusPane(active.key);
             }}
           />
+          </CapabilityGate>
         ) : repoOpen ? (
           <RepositoryScreen
             key={repoAt ? `at-${repoAt.n}` : "repo"}
@@ -2211,7 +2262,12 @@ export function Main({
                     />
                   </Suspense>
                 ),
-                files: () => <FileBrowser key={filesKey} files={hermes.files} status={status} route={route} path={filesPath} onPath={setFilesPath} />,
+                // On a server without the managed-files routes, a note takes the browser's place (ADR 0044).
+                files: () => (
+                  <CapabilityGate store={hermes.capabilities} id="serverFiles" openGuide={openGuide} onDiagnostics={openDiagnostics}>
+                    <FileBrowser key={filesKey} files={hermes.files} status={status} route={route} path={filesPath} onPath={setFilesPath} />
+                  </CapabilityGate>
+                ),
                 // A profile's screen is its own; switching profile starts the tab again.
                 screen: (shown) => <ScreenTab key={profile} api={hermes.screen} shown={shown} connected={status === "connected"} onHeld={setScreenHeld} />,
               }}
@@ -2340,6 +2396,7 @@ export function Main({
  * `paneKey` tells Hermes which pane has the chat on screen, so a chat shown in both stays read until both leave it.
  */
 function ChatView({
+  openGuide,
   hermes,
   connection,
   profile,
@@ -2425,6 +2482,8 @@ function ChatView({
   onOpenWorktree: (w: WorktreeChat) => void;
   onStarted: (id: string) => void;
   onDraftError: (reason: string) => void;
+  /** Opens a page of the compatibility guide in the owner's browser. */
+  openGuide: (url: string) => void;
   onToast: (text: string) => void;
   /** Opens Settings → Memory, when this Hermes can edit memory from here. */
   onMemorySettings?: () => void;
@@ -2612,7 +2671,9 @@ function ChatView({
   // that does nothing: its Draft stays as typed. One command at a time per Draft, so two panes on one chat can't run it
   // twice.
   const serverCommands = useServerCommands(hermes, status === "connected", profile);
+  const caps = useCapabilities(hermes.capabilities);
   const commands: CommandHost = {
+    guide: caps.caps.commands.state === "unsupported" ? () => openGuide(guideUrl("commands")) : undefined,
     why: (def) => {
       if (def.name === "help" || def.name === "new") return undefined;
       if (!started) return "This chat hasn't started yet. Send a message first.";

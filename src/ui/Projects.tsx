@@ -35,7 +35,13 @@ export function ProjectSwitcher({
   onManage,
   attention,
   onReview,
+  unsupported,
 }: {
+  /**
+   * The connected Hermes has no projects (capabilities.ts): the menu says so with a link to the compatibility guide,
+   * and offers no New project, so nothing is sent that Hermes can't take.
+   */
+  unsupported?: { onGuide: () => void };
   /** What the membership sync wants of the owner, if anything: shown as a dot, and a line in the menu. */
   attention?: string;
   onReview?: () => void;
@@ -102,6 +108,7 @@ export function ProjectSwitcher({
             setOpen(false);
           }}
           onClose={() => setOpen(false)}
+          unsupported={unsupported}
           attention={attention}
           onReview={
             onReview &&
@@ -139,7 +146,9 @@ function ProjectMenu({
   onClose,
   attention,
   onReview,
+  unsupported,
 }: {
+  unsupported?: { onGuide: () => void };
   attention?: string;
   onReview?: () => void;
   projects: Project[];
@@ -190,14 +199,22 @@ function ProjectMenu({
       </div>
       {!projects.length && !loading && !error && <div className="profile-hint">No projects in this profile yet.</div>}
       {loading && !projects.length && <div className="profile-hint">Loading projects…</div>}
-      {error && <div className="profile-hint err">{error}</div>}
+      {error && !unsupported && <div className="profile-hint err">{error}</div>}
+      {unsupported && (
+        <div className="profile-hint">
+          This Hermes server doesn't support projects.{" "}
+          <button className="link-btn" onClick={unsupported.onGuide} aria-label="Compatibility guide: Projects">
+            Compatibility guide
+          </button>
+        </div>
+      )}
       {attention && onReview && (
         <button className="profile-option project-attention" onClick={onReview}>
           <span className="row-title">{attention}</span>
           <span className="muted small">Review…</span>
         </button>
       )}
-      {naming ? (
+      {unsupported ? null : naming ? (
         <div className="project-new">
           <input
             className="profile-filter"
