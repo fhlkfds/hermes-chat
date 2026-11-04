@@ -1,4 +1,4 @@
-//! The tray icon and Close to tray (issue #77, ADR 0034).
+//! The tray icon and Close to tray (issue #77, ADR 0034; the icon's design: issue #177, ADR 0049).
 //!
 //! The tray icon offers Show/Hide, New chat, Open Inbox (with how many entries need the owner, never chat text) and
 //! Quit. Its icon gets a dot while the Inbox has something. Closing the window quits, as it always has, unless the owner
@@ -140,28 +140,11 @@ pub fn inbox_label(count: u32) -> String {
     }
 }
 
-/// The app icon with a dot in its top-right corner, for an Inbox with something in it.
-pub fn with_dot(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
-    let mut out = rgba.to_vec();
-    let size = width.min(height) as f32;
-    let r = size * 0.2;
-    let ring = size * 0.06;
-    let (cx, cy) = (width as f32 - r - ring, r + ring);
-    for y in 0..height {
-        for x in 0..width {
-            let d = ((x as f32 + 0.5 - cx).powi(2) + (y as f32 + 0.5 - cy).powi(2)).sqrt();
-            let px = ((y * width + x) * 4) as usize;
-            if d <= r {
-                // Hermes's accent clay, opaque.
-                out[px..px + 4].copy_from_slice(&[0xd0, 0x5a, 0x3c, 0xff]);
-            } else if d <= r + ring {
-                // A clear ring, so the dot stands apart from the icon on any panel colour.
-                out[px..px + 4].copy_from_slice(&[0, 0, 0, 0]);
-            }
-        }
-    }
-    out
-}
+/// The tray icon, drawn for panels (assets/icons/tray.svg, ADR 0049): the app's clay tile and H, full-bleed, with a
+/// darker rim so it stands apart from light and dark panels alike. One 64px image, which the panel scales to its size.
+const TRAY_ICON: &[u8] = include_bytes!("../icons/tray.png");
+/// The same icon with the Inbox dot (assets/icons/tray-inbox.svg): a red dot top-right, ringed clear of the tile.
+const TRAY_INBOX_ICON: &[u8] = include_bytes!("../icons/tray-inbox.png");
 
 fn read_settings(path: &PathBuf) -> Settings {
     match std::fs::read_to_string(path) {
@@ -324,8 +307,8 @@ pub fn start(app: &AppHandle) {
 }
 
 fn make(app: &AppHandle) -> tauri::Result<Parts> {
-    let plain = Image::from_bytes(include_bytes!("../icons/128x128.png"))?.to_owned();
-    let dotted = Image::new_owned(with_dot(plain.rgba(), plain.width(), plain.height()), plain.width(), plain.height());
+    let plain = Image::from_bytes(TRAY_ICON)?.to_owned();
+    let dotted = Image::from_bytes(TRAY_INBOX_ICON)?.to_owned();
     let show_item = MenuItem::with_id(app, "show", "Hide Hermes Chat", true, None::<&str>)?;
     let new_chat = MenuItem::with_id(app, "new-chat", "New chat", true, None::<&str>)?;
     let inbox = MenuItem::with_id(app, "inbox", inbox_label(0), true, None::<&str>)?;
@@ -575,13 +558,26 @@ mod tests {
     }
 
     #[test]
-    fn the_dot_is_drawn_top_right_and_leaves_the_rest_alone() {
-        let (w, h) = (20u32, 20u32);
-        let rgba = vec![7u8; (w * h * 4) as usize];
-        let out = with_dot(&rgba, w, h);
-        let at = |x: u32, y: u32| &out[((y * w + x) * 4) as usize..((y * w + x) * 4 + 4) as usize];
-        assert_eq!(at(15, 4), &[0xd0, 0x5a, 0x3c, 0xff]);
-        assert_eq!(at(2, 17), &[7, 7, 7, 7]);
+    fn the_inbox_icon_is_the_tray_icon_with_a_dot_top_right() {
+        let plain = Image::from_bytes(TRAY_ICON).unwrap();
+        let dotted = Image::from_bytes(TRAY_INBOX_ICON).unwrap();
+        assert_eq!((plain.width(), plain.height()), (64, 64));
+        assert_eq!((dotted.width(), dotted.height()), (64, 64));
+        let at = |img: &Image, x: u32, y: u32| {
+            let i = ((y * img.width() + x) * 4) as usize;
+            img.rgba()[i..i + 4].to_vec()
+        };
+        // The dot's centre (52, 12): red in the Inbox icon, the clay tile in the plain one.
+        assert_eq!(at(&dotted, 52, 12), [0xe5, 0x48, 0x3a, 0xff]);
+        assert_eq!(at(&plain, 52, 12), [0xd0, 0x8b, 0x6e, 0xff]);
+        // The clear ring between dot and tile.
+        assert_eq!(at(&dotted, 52, 26)[3], 0);
+        // Away from the corner the two are the same picture: the H doesn't move when the Inbox fills.
+        for (x, y) in [(20, 40), (32, 32), (8, 56), (44, 48)] {
+            assert_eq!(at(&plain, x, y), at(&dotted, x, y), "({x}, {y})");
+        }
+        // The H is dark on the tile.
+        assert_eq!(at(&plain, 20, 40), [0x19, 0x11, 0x0d, 0xff]);
     }
 
     #[test]
