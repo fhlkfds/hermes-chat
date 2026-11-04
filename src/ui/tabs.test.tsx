@@ -212,4 +212,22 @@ describe("chat tabs", () => {
     expect(lastOpen()).toBeTruthy();
     expect(lastOpen()).not.toBe("backup");
   });
+
+  it("keeps a chat starting in its New chat tab when End is pressed on that tab", async () => {
+    const { server, hermes, user } = await signedIn();
+    await user.click(rowButton("Nightly backup"));
+    await user.click(within(pane(0)).getByRole("button", { name: "New tab" }));
+    const create = server.handlers["session.create"];
+    let held: Parameters<typeof create>[0] | undefined;
+    server.handlers["session.create"] = (r) => void (held = r);
+    await user.type(composerIn(0), "Plan the migration{Enter}");
+    await waitFor(() => expect(held).toBeTruthy());
+    within(pane(0)).getByRole("tab", { name: "New chat" }).focus();
+    await user.keyboard("{End}");
+    await act(async () => create(held!));
+    await settle(hermes);
+    await waitFor(() => expect(prompts(server)).toHaveLength(1));
+    await waitFor(() => expect(tabsIn(0)).not.toContain("New chat"));
+    expect(tabsIn(0)).toHaveLength(2);
+  });
 });

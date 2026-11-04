@@ -91,7 +91,9 @@ export function TabStrip({
                   if (e.key === "Delete") return onClose(t.id);
                   if (to === undefined || !tabs[to]) return;
                   e.preventDefault();
-                  onPick(tabs[to].id);
+                  // Home on the first tab, or End on the last, stays put: picking the tab shown again would count as
+                  // the owner moving, and drop a chat still starting there.
+                  if (tabs[to].id !== current) onPick(tabs[to].id);
                   // React clears `currentTarget` once the handler returns.
                   const strip = e.currentTarget.closest(".tabs");
                   requestAnimationFrame(() => strip?.querySelectorAll<HTMLElement>(".tab-open")[to]?.focus());
