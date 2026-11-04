@@ -61,6 +61,7 @@ These features are on the `main` branch.
 - **Queued messages.** While Hermes replies, the composer stays editable. Enter or the Queue button, beside Stop, queues the message to go after the reply. The queue above the composer shows each message's words, file count, position and state. Edit a message in place, reorder it with its buttons or Alt+↑/↓, remove it with its button or Delete, and pause or resume the whole queue. Hermes Chat sends the next message only after the reply ends, and only while the app is open, connected and showing that profile. See [Queued messages](#queued-messages).
 - **Failed messages.** A message that Hermes didn't take, or might not have taken, stays in the chat with **Retry**, **Edit**, and **Dismiss**. Nothing resends it automatically.
 - **Attachments.** Drag files into the composer or paste them. Hermes accepts images up to 25 MB and other files up to 256 MB.
+- **Global shortcut.** A shortcut you choose brings Hermes Chat forward from any app, and can hide it again. Off until you turn it on. See [Global shortcut](#global-shortcut).
 - **Screenshots.** Press Ctrl+Shift+S, or click the camera button, to attach a region or window. See [Screenshots](#screenshots).
 - **Voice.** Use **Dictation** to speak a message into the composer, and **Read aloud** to have Hermes speak a reply. Hermes does the transcription and speech on the server.
 - **Two panes.** Ctrl+\\ opens a second chat beside the first.
@@ -97,6 +98,7 @@ These features are on the `main` branch.
 | Ctrl+\\ | Open a second pane, or close the inactive one |
 | Ctrl+1, Ctrl+2 | Focus the left or right composer |
 | Ctrl+Shift+S | Take a screenshot (configurable in Settings → General) |
+| Your choice, such as Ctrl+Alt+H | Bring Hermes Chat forward from any app (Settings → General, off by default) |
 
 ### Slash commands
 
@@ -182,6 +184,24 @@ bind = SUPER SHIFT, S, exec, env WEBKIT_DISABLE_DMABUF_RENDERER=1 hermes-chat --
 ```
 
 If Hermes Chat is running, the screenshot goes to the chat on screen. If it isn't running, or is on the sign-in screen, the screenshot is taken once you sign in, if you sign in within two minutes.
+
+### Global shortcut
+
+Settings → General → **Show Hermes Chat from anywhere** sets a shortcut that brings the window forward from any other app. The cursor goes to the composer of the pane you had selected, and drafts stay as they were. If Settings or another screen was open, it stays open. With **Hide when already in front** on, pressing the shortcut while Hermes Chat is the window you're using hides it. **Reset** sets Ctrl+Alt+H, and **Turn off** releases the key.
+
+How the shortcut is registered depends on the desktop, and Settings shows what actually registered:
+
+- **X11:** Hermes Chat grabs the key itself. If another app already has it, Settings says so and keeps your previous shortcut working. **Retry** tries the key again.
+- **Wayland with the GlobalShortcuts portal (KDE Plasma, GNOME 48+, Hyprland):** Hermes Chat asks the desktop, which may ask you to confirm. Settings shows the key the desktop says it set. Hyprland never sets one: Settings gives the `bind = …, global, …` line to add to `hyprland.conf`.
+- **Wayland without it (Sway, older desktops):** nothing can be registered. Bind a key in your desktop to the command instead.
+
+`hermes-chat --show` brings Hermes Chat forward, and `hermes-chat --toggle` also hides it when it's already in front. If Hermes Chat isn't running, either one starts it. Settings shows bind lines for your keys. On Hyprland, for example:
+
+```
+bind = CTRL ALT, H, exec, env WEBKIT_DISABLE_DMABUF_RENDERER=1 hermes-chat --show
+```
+
+Only one Hermes Chat runs at a time: starting it again brings the running one forward. The setting is kept on this computer, for every server and profile (see [What is stored where](#what-is-stored-where)). [ADR 0033](docs/adr/0033-the-global-shortcut-is-registered-by-the-desktop-it-runs-on.md) records why it works this way.
 
 ### The inbox
 
@@ -291,7 +311,7 @@ npm ci          # install the exact versions in package-lock.json
 npm run app     # run the desktop app in development mode
 ```
 
-`npm run app` runs `tauri dev` with `WEBKIT_DISABLE_DMABUF_RENDERER=1`. This variable prevents a blank window on some Wayland setups. Tauri starts the Vite dev server on port 1420 itself.
+`npm run app` runs `tauri dev` with `WEBKIT_DISABLE_DMABUF_RENDERER=1`. This variable prevents a blank window on some Wayland setups. It also sets `HERMES_CHAT_NEW_INSTANCE=1`, so the development build starts beside an installed Hermes Chat instead of bringing that one forward. Tauri starts the Vite dev server on port 1420 itself.
 
 | Command | What it does |
 | --- | --- |
@@ -417,6 +437,7 @@ Hermes stores the chats and their history, imported chats included, titles, Arch
 | **Templates**, at most 300, each message up to 20,000 characters | Webview local storage, in the display preferences (`hermes-ui-prefs`), for every connection and profile; a project-scoped one names its connection, profile and project | Deleting them. Clear local cache keeps them. |
 | Exported templates | The file you chose in the Save dialog | You |
 | Drafts, Failed messages and Queued messages saved for an update's restart | `$XDG_DATA_HOME/net.l0cky12.hermes-chat/restart-drafts.json`, readable only by you | Putting them back at the next launch. A copy that couldn't be put back is renamed `restart-drafts-<time>.json` and stays until you move or delete it; Settings says where. |
+| The global shortcut and whether it hides the window when already in front. Only the keys are stored, never a command. | `$XDG_CONFIG_HOME/net.l0cky12.hermes-chat/global-shortcut.json` (usually `~/.config/...`) | Turning the shortcut off clears the keys |
 | Screenshots waiting to send | `$XDG_CACHE_HOME/hermes-chat/captures/`, readable only by you | Confirmed delivery, removing them from the composer, or leaving the composer without sending. A queued message keeps its screenshots until it goes or you remove it. A Failed message keeps its screenshots until delivery is confirmed, history reconciles it, or you Dismiss it. Startup cleanup removes only leftovers that no message needs. |
 | Pasted files | A private folder under `$TMPDIR/hermes-chat/` (usually `/tmp/hermes-chat/`) | Not removed by the app |
 | Exported chats | The file you chose in the Save dialog | You |
@@ -439,6 +460,8 @@ Webview local storage is in `$XDG_DATA_HOME/net.l0cky12.hermes-chat/localstorage
 | The password isn't remembered | Start a Secret Service provider, such as GNOME Keyring or KWallet, and sign in again. Settings shows whether the password was saved. |
 | The connection is labelled Unsecure | Use `https://`, SSH, or a Tailscale address. Plain `http://` to a public or LAN address isn't encrypted. |
 | A page in the preview pane stays blank | The site forbids framing (`X-Frame-Options` or `frame-ancestors`), or it is on the server's loopback address, which this computer can't reach. Open it in a browser instead. |
+| The global shortcut says another app uses it | Pick other keys, or free them in the other app and press Retry. Your previous shortcut keeps working meanwhile. |
+| The global shortcut does nothing on Hyprland | Hyprland doesn't set keys for apps. Add the `global` line Settings shows to `hyprland.conf`, or bind a key to `hermes-chat --show`. |
 | Screenshots do nothing on Hyprland or Sway | Install `slurp` and `grim`. |
 | Dictation can't record | Check the microphone and the PipeWire or PulseAudio sound server. Settings → General → Voice shows which providers the profile uses. |
 | No desktop notifications | Install and run a notification daemon. Notifications appear only while the window isn't focused. |
@@ -475,6 +498,7 @@ Webview local storage is in `$XDG_DATA_HOME/net.l0cky12.hermes-chat/localstorage
 - Templates stay on this computer: they don't sync, and only Export and Import move them. Two windows editing templates at the same moment can lose one window's change. If local storage is full, the library says the change lasts only until the app closes.
 - Logs can read only what Hermes's `/api/logs` gives: the last 500 lines of a file, with no position. More than 500 lines between two reads (250 lines a second), or a rotation between reads, means lines are missed; the list says so but can't get them back. Lines are matched by their text, so a run of identical lines can hide a repeat. Only the log on screen is read, and only while connected. Redaction covers known shapes and can miss a secret written another way. Logs was checked live against Hermes at `f0d9488` (whose `/api/logs` is the same as `bf0203a`'s) on a throwaway home, through a browser harness that stands in for the Rust relay (`tools/shots/logs-live.mjs`), not the Tauri window. Other versions weren't tested.
 - The automated tests use a fake Hermes. Native Wayland screenshot pickers and real audio devices aren't covered.
+- The global shortcut's Wayland path was tested against a stand-in GlobalShortcuts portal (`cargo run --example fake_portal`), not against KDE, GNOME or xdg-desktop-portal-hyprland. Its X11 path was tested on Xvfb with Openbox. A shortcut used inside one other program (not grabbed globally) isn't reported as a conflict: the global shortcut wins there. See ADR 0033, "Gaps".
 
 ## Project documents
 

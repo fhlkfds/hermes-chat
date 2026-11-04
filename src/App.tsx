@@ -22,6 +22,7 @@ import { appUpdates } from "./hermes/tauriUpdates";
 import { needsAttention, type Updater } from "./hermes/updates";
 import { desktopNotify } from "./hermes/tauriNotify";
 import { ScreenshotDesk, type ScreenshotApi } from "./hermes/screenshots";
+import { desktopSummon, type SummonApi } from "./hermes/summon";
 import { onDesktopScreenshot, screenshotSupport, showWindow, syncScreenshotOutbox, tauriScreenshots, type ScreenshotSupport } from "./hermes/tauriScreenshot";
 import { checkShortcut, shortcutLabel, shortcutOf } from "./ui/shortcut";
 
@@ -392,6 +393,7 @@ export function Main({
   localFiles = tauriLocalFiles,
   webPages = tauriWebPages,
   screenshots = tauriScreenshotWiring,
+  summon = desktopSummon,
   personaStore = savedPersona,
   guardClose = tauriCloseGuard,
   onSignOut,
@@ -413,6 +415,8 @@ export function Main({
   localFiles?: LocalFiles;
   webPages?: WebPages;
   screenshots?: Screenshots;
+  /** The global shortcut (ADR 0033); none outside the desktop app. */
+  summon?: SummonApi;
   /** Where Settings → Persona keeps unsaved edits and replaced versions on this computer. */
   personaStore?: PersonaStore;
   /** Asks before the window closes; registered only while Settings → Persona holds an unsaved edit. */
@@ -1126,6 +1130,15 @@ export function Main({
   const previewShown = !!preview && !screenCovering && (previewFits || !previewHidden);
   const previewCovers = previewShown && !previewFits;
 
+  // The global shortcut or `hermes-chat --show` brought the window forward: the cursor goes back in the selected pane's
+  // composer, its draft as it was. Settings or another screen over the chat stays as it was left, unsaved edits and all.
+  const onSummonedRef = useRef(() => {});
+  onSummonedRef.current = () => {
+    if (covered || covering || previewCovers || searchOpen) return;
+    focusPane(active.key);
+  };
+  useEffect(() => summon?.onSummoned(() => onSummonedRef.current()), [summon]);
+
 
   const slots: PaneSlot[] = panes.map((p, i) => {
     const listed = p.chatId === null ? undefined : chats.find((c) => c.id === p.chatId);
@@ -1518,6 +1531,7 @@ export function Main({
             onSkillDirty={onSkillDirty}
             skillDiscards={skillDiscards}
             checkScreenshots={screenshots.support}
+            summon={summon}
             voiceSetup={voice.setup}
             showTextGeneration={showTextGeneration}
             showMemory={showMemory}
