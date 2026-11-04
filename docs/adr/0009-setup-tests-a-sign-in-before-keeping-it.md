@@ -1,6 +1,6 @@
 # Setup tests a sign-in before keeping it, and provider keys go only to the server
 
-> **Extended by [ADR 0051](0051-setup-can-stop-a-sign-in-and-runs-again-from-the-sign-in-screen.md)** (#101): Save and connect can be stopped, the sign-in screen offers Run setup again for its connection, the provider step can be skipped, and late answers are dropped.
+> **Extended by [ADR 0052](0052-setup-can-stop-a-sign-in-and-runs-again-from-the-sign-in-screen.md)** (#101): Save and connect can be stopped, the sign-in screen offers Run setup again for its connection, the provider step can be skipped, and late answers are dropped.
 
 On a computer with nothing set up, the app opens **Setup** instead of the bare sign-in screen. Setup asks for the server (SSH target or dashboard URL), then the dashboard username and password, and tests them with `hermes_probe` before anything is saved. The test runs the same steps as a real sign-in (ADR 0003, ADR 0004): open the tunnel or resolve the URL, read the public `GET /api/status`, sign in, open `/api/ws` and wait for the first frame. Then it drops everything. It reports the stage that failed (`address`, `reach`, `sign-in`, `chat`), and the webview turns that and the error text into what to fix (`src/hermes/setup.ts`). Only **Save and connect** signs in for real and saves the password in the keyring, as the sign-in screen does.
 
