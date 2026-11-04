@@ -23,6 +23,7 @@ pkgbase = hermes-chat-git
 	optdepends = slurp: pick a region or window for screenshots on Hyprland and Sway
 	optdepends = grim: take screenshots on Hyprland and Sway
 	optdepends = xdg-desktop-portal: take screenshots on GNOME and KDE Plasma
+	optdepends = libayatana-appindicator: show the tray icon and use Close to tray
 	provides = hermes-chat
 	conflicts = hermes-chat
 	options = !debug

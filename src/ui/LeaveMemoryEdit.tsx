@@ -1,7 +1,7 @@
 // Asking before an unsaved edit in Settings → Memory or Settings → Skills is dropped: by leaving Settings, opening a chat, switching
 // profile, signing out, or closing the window (MemorySettings.tsx). The edit lives only on screen, so it would be lost.
 import { useEffect, useId } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { guardWindowClose } from "./tauriWindow";
 import { AlertTriangle } from "lucide-react";
 
 /** The question, over the whole window. Keep editing has focus, so a stray Enter keeps the edit; Escape keeps it too. */
@@ -66,15 +66,7 @@ export function useCloseGuard(unsaved: boolean, ask: (close: () => void) => void
     window.addEventListener("beforeunload", onUnload);
     let unlisten: (() => void) | undefined;
     let gone = false;
-    if (inTauri()) {
-      const win = getCurrentWindow();
-      void win
-        .onCloseRequested((e) => {
-          e.preventDefault();
-          ask(() => void win.destroy());
-        })
-        .then((stop) => (gone ? stop() : (unlisten = stop)));
-    }
+    if (inTauri()) void guardWindowClose(ask).then((stop) => (gone ? stop() : (unlisten = stop)));
     return () => {
       gone = true;
       window.removeEventListener("beforeunload", onUnload);

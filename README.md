@@ -219,6 +219,16 @@ bind = CTRL ALT, H, exec, env WEBKIT_DISABLE_DMABUF_RENDERER=1 hermes-chat --sho
 
 Only one Hermes Chat runs at a time: starting it again brings the running one forward. The setting is kept on this computer, for every server and profile (see [What is stored where](#what-is-stored-where)). [ADR 0033](docs/adr/0033-the-global-shortcut-is-registered-by-the-desktop-it-runs-on.md) records why it works this way.
 
+### Tray and Close to tray
+
+Hermes Chat puts an icon in the desktop's tray. Its menu has **Show/Hide Hermes Chat**, **New chat**, **Open Inbox** (with how many entries need you, never what they say) and **Quit Hermes Chat**. The icon gets a dot while the Inbox has something in it.
+
+**Settings → General → Tray → Close to tray** is off by default, so closing the window quits as it always has. Turned on, closing the window hides it instead. Replies keep arriving, drafts and the open chats stay, and the tray menu brings the same window back. Hiding the window drops a Dictation recording and stops Read aloud. Quit always exits; with an unsaved edit open it asks first, as closing the window does.
+
+Launching Hermes Chat again, `hermes-chat --show` and the global shortcut all bring back the window already open, hidden to the tray or not.
+
+The tray needs libayatana-appindicator (an optional dependency of the package: `pacman -S libayatana-appindicator`) and a desktop that shows tray icons: KDE Plasma, Xfce, waybar, i3bar, or GNOME with the AppIndicator extension. Where there's none, closing the window quits even with Close to tray on, and Settings says why. If the tray goes away while the window is hidden, the window comes back. See [ADR 0034](docs/adr/0034-close-to-tray-is-opt-in-and-a-second-launch-restores-the-window.md).
+
 ### The inbox
 
 The inbox opens beside the rail and leaves the chat panes as they are, so a chat open in either pane stays read and leaves the inbox. Up and Down move between entries, Enter opens one, and Escape closes the inbox. It reads:
@@ -449,6 +459,7 @@ Hermes stores the chats and their history, imported chats included, titles, Arch
 | The Outputs index: each Output's path, tool, call, stored time, reported size and last availability check, per connection and profile. No file contents or chat text. | Webview local storage (`hermes-chat.outputs`), at most 1,000 Outputs per chat, 3,000 per profile, 200 added files per profile, and 8 profiles | The oldest-read chats when over the limit. Clear local cache keeps it; Refresh rebuilds it. |
 | Artifact edits not yet saved, their undo history, and the versions kept of each edited Output (the file as opened, what each save replaced and wrote) | This app's memory only, never on disk. At most 20 versions per file and 16 M characters in all | Cancel for an edit; quitting the app or signing out for everything. Signing out and closing the window ask first while an edit isn't saved. |
 | Unsaved persona edits, and the last five versions of `SOUL.md` that saves from this app replaced | Webview local storage, per connection and profile | Saving or discarding the edit; a newer save pushes out the oldest version. Clear local cache keeps them. |
+| Close to tray | `$XDG_CONFIG_HOME/net.l0cky12.hermes-chat/window.json` (usually `~/.config/...`) | Not removed by the app |
 | Display preferences, model pick, starred models, and reopen-last-chat | Webview local storage | Not removed by Clear local cache |
 | **Templates**, at most 300, each message up to 20,000 characters | Webview local storage, in the display preferences (`hermes-ui-prefs`), for every connection and profile; a project-scoped one names its connection, profile and project | Deleting them. Clear local cache keeps them. |
 | Exported templates | The file you chose in the Save dialog | You |
@@ -515,6 +526,7 @@ Webview local storage is in `$XDG_DATA_HOME/net.l0cky12.hermes-chat/localstorage
 - Slash commands are a short list. The app doesn't offer Hermes's other commands, skills, or quick commands, and sends any other `/` text as a message. Command answers aren't kept in the chat's history or Saved copy.
 - Templates stay on this computer: they don't sync, and only Export and Import move them. Two windows editing templates at the same moment can lose one window's change. If local storage is full, the library says the change lasts only until the app closes.
 - Logs can read only what Hermes's `/api/logs` gives: the last 500 lines of a file, with no position. More than 500 lines between two reads (250 lines a second), or a rotation between reads, means lines are missed; the list says so but can't get them back. Lines are matched by their text, so a run of identical lines can hide a repeat. Only the log on screen is read, and only while connected. Redaction covers known shapes and can miss a secret written another way. Logs was checked live against Hermes at `f0d9488` (whose `/api/logs` is the same as `bf0203a`'s) on a throwaway home, through a browser harness that stands in for the Rust relay (`tools/shots/logs-live.mjs`), not the Tauri window. Other versions weren't tested.
+- The tray needs a desktop that shows tray icons; GNOME needs the AppIndicator extension. Clicking the icon opens its menu rather than toggling the window, since libayatana-appindicator reports no clicks. With no session bus, launching it again starts a second copy instead of bringing the first one back.
 - The automated tests use a fake Hermes. Native Wayland screenshot pickers and real audio devices aren't covered.
 - The global shortcut's Wayland path was tested against a stand-in GlobalShortcuts portal (`cargo run --example fake_portal`), not against KDE, GNOME or xdg-desktop-portal-hyprland. Its X11 path was tested on Xvfb with Openbox. A shortcut used inside one other program (not grabbed globally) isn't reported as a conflict: the global shortcut wins there. See ADR 0033, "Gaps".
 

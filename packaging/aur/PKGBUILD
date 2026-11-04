@@ -15,7 +15,8 @@ optdepends=('openssh: sign in through an SSH tunnel'
             'org.freedesktop.secrets: remember the dashboard password'
             'slurp: pick a region or window for screenshots on Hyprland and Sway'
             'grim: take screenshots on Hyprland and Sway'
-            'xdg-desktop-portal: take screenshots on GNOME and KDE Plasma')
+            'xdg-desktop-portal: take screenshots on GNOME and KDE Plasma'
+            'libayatana-appindicator: show the tray icon and use Close to tray')
 provides=("$_pkgname")
 conflicts=("$_pkgname")
 # The -debug package makepkg splits off comes out empty for this build, so skip it.

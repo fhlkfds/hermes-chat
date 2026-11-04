@@ -717,11 +717,15 @@ pub fn activate<R: Runtime>(app: &AppHandle<R>, hide_if_active: bool, token: Opt
         let focused = was_focused || w.is_focused().unwrap_or(false);
         let in_front = w.is_visible().unwrap_or(false) && !w.is_minimized().unwrap_or(false) && focused;
         if in_front && hide_if_active {
-            let _ = w.hide();
+            if w.hide().is_ok() {
+                crate::tray::seen(&app, true);
+            }
             return;
         }
         let _ = w.unminimize();
         let _ = w.show();
+        // Hidden to the tray or not, the tray and the webview learn it is back (tray.rs, ADR 0034).
+        crate::tray::seen(&app, false);
         match (token, w.gtk_window()) {
             (Some(token), Ok(gtk)) => {
                 use gtk::prelude::GtkWindowExt;

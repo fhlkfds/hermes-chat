@@ -147,6 +147,10 @@ _Avoid_: voice message, voice mode (Hermes's own hands-free voice chat), speech 
 The owner's action that has Hermes speak one reply with the profile's text-to-speech provider, played on this computer. One reply plays at a time, and opening another chat stops it. The audio isn't saved.
 _Avoid_: TTS, playback, voice mode
 
+**Close to tray**:
+The owner's setting that has closing the window hide it in the tray instead of quitting. It is off unless the owner turns it on, and works only while the desktop shows the tray icon; otherwise closing quits. A hidden window keeps its chats, drafts and replies coming in, but drops a Dictation recording and stops Read aloud, and the chat it shows doesn't count as on screen, so new replies leave it Unread. The tray menu, the global shortcut, or launching Hermes Chat again brings back the same window. Quit in the tray menu always exits. The setting is kept on this computer (ADR 0034).
+_Avoid_: minimize to tray, background mode, run in background
+
 **Failed message**:
 A message sent from this app that Hermes didn't take, or may not have. Either the connection dropped, or the app closed, before Hermes confirmed it. It stays in its chat with its words and files, says why, and offers Retry, Edit and Dismiss. Retry sends the same words and files again as a new message. Edit takes the words back into the composer. Nothing sends it again on its own. For one Hermes may have, the chat's history is read back once Hermes is connected. If the history has it, the message shows from the history. If not, it is marked failed (ADR 0006). Failed messages are kept on this computer, and Clear local cache keeps them.
 _Avoid_: undelivered, pending, unsent message
