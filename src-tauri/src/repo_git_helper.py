@@ -11,6 +11,7 @@
 import hashlib
 import json
 import os
+import re
 import shutil
 import signal
 import stat
@@ -801,6 +802,259 @@ def op_commit(req):
     }
 
 
+# ── publish: push, pull requests, status ────────────────────────────────────
+
+GITHUB = re.compile(r"^(?:https?://(?:[^@/]+@)?github\.com/|ssh://(?:[^@/]+@)?github\.com/|[^@/:]+@github\.com:)([^/]+)/([^/]+?)(?:\.git)?/?$")
+
+
+def redact(url):
+    """A remote URL safe to show: any user name and password in an http(s) URL taken out."""
+    return re.sub(r"^(https?://)[^@/]+@", r"\1", url or "")
+
+
+def git_line(args, top):
+    code, out, _ = git(args, top)
+    return text(out).strip() if code == 0 else ""
+
+
+def check_branch_name(name, top):
+    if not isinstance(name, str) or not name or name.startswith("-") or git(["check-ref-format", "--branch", name], top)[0] != 0:
+        raise Refusal("bad-branch", "%r isn't a branch name Git accepts." % (name,))
+    return name
+
+
+def github_repo(url):
+    m = GITHUB.match(url or "")
+    return "%s/%s" % (m.group(1), m.group(2)) if m else None
+
+
+def gh_json(args, top, timeout=60):
+    code, out, err = run(["gh"] + args, top, timeout=timeout)
+    if code != 0:
+        return None, text(err).strip() or text(out).strip()
+    try:
+        return json.loads(text(out)), ""
+    except ValueError:
+        return None, "gh answered with something that isn't JSON."
+
+
+PR_FIELDS = "number,url,state,isDraft,title,baseRefName,headRefName,headRefOid"
+STATUS_FIELDS = PR_FIELDS + ",mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,updatedAt"
+
+
+def op_publish_info(req):
+    """Where a push and a pull request would go: the branch, its upstream, the remotes (URLs without credentials),
+    the commits not on the remote yet, and, for a GitHub remote, the repository, its default branch and any pull
+    request for the branch. Nothing here talks to the remote except gh's read-only queries."""
+    top, _ = checkout(req.get("repo"))
+    head = head_oid(top)
+    branch = git_line(["symbolic-ref", "-q", "--short", "HEAD"], top) or None
+    remotes = []
+    for name in git_line(["remote"], top).splitlines():
+        remotes.append({"name": name, "url": redact(git_line(["remote", "get-url", "--push", name], top))})
+    upstream = None
+    if branch:
+        u = git_line(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "%s@{upstream}" % branch], top)
+        remote = git_line(["config", "--get", "branch.%s.remote" % branch], top)
+        merge = git_line(["config", "--get", "branch.%s.merge" % branch], top)
+        if remote and merge.startswith("refs/heads/"):
+            upstream = {"ref": u or None, "remote": remote, "branch": merge[len("refs/heads/"):]}
+    names = [r["name"] for r in remotes]
+    remote = (upstream or {}).get("remote") or ("origin" if "origin" in names else (names[0] if len(names) == 1 else None))
+    remote_branch = (upstream or {}).get("branch") or branch
+    tracking = "refs/remotes/%s/%s" % (remote, remote_branch) if remote and remote_branch else None
+    has_tracking = bool(tracking) and git(["rev-parse", "-q", "--verify", tracking], top)[0] == 0
+    commits = []
+    ahead = behind = None
+    if head:
+        if has_tracking:
+            rng = ["%s..HEAD" % tracking]
+            counts = git_line(["rev-list", "--left-right", "--count", "%s...HEAD" % tracking], top).split()
+            if len(counts) == 2:
+                behind, ahead = int(counts[0]), int(counts[1])
+        else:
+            rng = ["HEAD", "--not", "--remotes=%s" % remote] if remote else ["HEAD"]
+            ahead = int(git_line(["rev-list", "--count"] + rng, top) or 0)
+        log = git_line(["log", "--format=%H%x1f%s", "-n", "50"] + rng, top)
+        commits = [dict(zip(("sha", "subject"), l.split("\x1f", 1))) for l in log.splitlines() if "\x1f" in l]
+    remote_url = next((r["url"] for r in remotes if r["name"] == remote), "")
+    gh_repo = github_repo(git_line(["remote", "get-url", "--push", remote], top)) if remote else None
+    github = None
+    if gh_repo:
+        repo_info, why = gh_json(["repo", "view", gh_repo, "--json", "nameWithOwner,url,defaultBranchRef"], top)
+        prs = []
+        if repo_info and remote_branch:
+            found, _ = gh_json(["pr", "list", "--repo", gh_repo, "--head", remote_branch, "--state", "all", "--limit", "5", "--json", PR_FIELDS], top)
+            prs = found or []
+        github = {
+            "repo": gh_repo,
+            "url": (repo_info or {}).get("url"),
+            "defaultBranch": ((repo_info or {}).get("defaultBranchRef") or {}).get("name"),
+            "prs": prs,
+            "error": None if repo_info else (why or "gh couldn't read the repository."),
+        }
+    # The commits a pull request into the default branch would hold, for drafting its title and body.
+    pr_commits = []
+    default = (github or {}).get("defaultBranch")
+    if head and remote and default and git(["rev-parse", "-q", "--verify", "refs/remotes/%s/%s" % (remote, default)], top)[0] == 0:
+        log = git_line(["log", "--format=%H%x1f%s", "-n", "50", "refs/remotes/%s/%s..HEAD" % (remote, default)], top)
+        pr_commits = [dict(zip(("sha", "subject"), l.split("\x1f", 1))) for l in log.splitlines() if "\x1f" in l]
+    bases = []
+    if remote:
+        for ref in git_line(["for-each-ref", "--format=%(refname:short)", "refs/remotes/%s/" % remote], top).splitlines():
+            short = ref[len(remote) + 1:]
+            if short and short != "HEAD" and ref != remote:
+                bases.append(short)
+    return {
+        "head": head,
+        "branch": branch,
+        "remotes": remotes,
+        "upstream": upstream,
+        "remote": remote,
+        "remoteUrl": remote_url,
+        "remoteBranch": remote_branch,
+        "remoteHead": git_line(["rev-parse", "-q", "--verify", tracking], top) or None if has_tracking else None,
+        "ahead": ahead,
+        "behind": behind,
+        "commits": commits,
+        "prCommits": pr_commits,
+        "bases": bases,
+        "github": github,
+    }
+
+
+def classify_push_failure(output, has_hook):
+    o = output.lower()
+    # `--porcelain` puts a tab between the flag and the ref, so match the bracketed reason alone.
+    if "[remote rejected]" in o:
+        return "remote-rejected", "The remote refused the push (a protected branch or a server-side hook, as its message says). Nothing was pushed."
+    if "[rejected]" in o or "non-fast-forward" in o or "fetch first" in o:
+        return "rejected", "The remote has commits this branch doesn't. Nothing was pushed, and nothing is ever force-pushed: bring them in first (pull or rebase in the Terminal), then push again."
+    if any(s in o for s in ("authentication failed", "permission denied", "could not read username", "terminal prompts disabled", "403", "repository not found", "invalid username or password")):
+        return "auth", "The remote refused the server's credentials. Nothing was pushed. Sign Git in on the server (for GitHub, gh auth login and gh auth setup-git), then push again."
+    if any(s in o for s in ("could not resolve host", "unable to access", "connection timed out", "connection refused", "network is unreachable")):
+        return "network", "The server couldn't reach the remote. Nothing was pushed."
+    if has_hook:
+        return "hook", "The pre-push hook refused the push. Its output is below. Nothing was pushed."
+    return "git", "Git couldn't push. Its output is below."
+
+
+def remote_sha(top, remote, branch, timeout=60):
+    """The commit the remote has for the branch, asked of the remote itself; None when it has no such branch."""
+    code, out, err = run(["git", "ls-remote", "--heads", remote, "refs/heads/%s" % branch], top, read_only=True, timeout=timeout)
+    if code != 0:
+        kind, why = classify_push_failure(text(err), False)
+        raise Refusal(kind if kind in ("auth", "network") else "git", why.replace(" Nothing was pushed.", ""), text(err))
+    line = text(out).strip().split("\t")
+    return line[0] if line and line[0] else None
+
+
+def op_push(req):
+    """Pushes exactly the commit shown to exactly the remote branch shown. Never --force, never a + refspec, and only
+    if the branch is still checked out at that commit. Afterwards the remote is asked what it has."""
+    top, _ = checkout(req.get("repo"))
+    branch = check_branch_name(req.get("branch"), top)
+    remote = req.get("remote")
+    if remote not in git_line(["remote"], top).splitlines():
+        raise Refusal("bad-remote", "There's no remote %r in this repository." % (remote,))
+    remote_branch = check_branch_name(req.get("remoteBranch"), top)
+    head = head_oid(top)
+    if git_line(["symbolic-ref", "-q", "--short", "HEAD"], top) != branch or head != (req.get("expect") or {}).get("head"):
+        raise Refusal("stale", "The branch or its commit changed since this screen read it. Nothing was pushed. Look again.")
+    has_hook = "pre-push" in hooks_named(top, ("pre-push",))
+    code, out, _ = git(["push", "--porcelain", remote, "%s:refs/heads/%s" % (head, remote_branch)], top, read_only=False, timeout=300, merge_output=True)
+    output = text(out)
+    if code != 0:
+        kind, why = classify_push_failure(output, has_hook)
+        raise Refusal(kind, why, output)
+    upstream_set = False
+    if not git_line(["config", "--get", "branch.%s.merge" % branch], top):
+        git_ok(["config", "branch.%s.remote" % branch, remote], top, read_only=False)
+        git_ok(["config", "branch.%s.merge" % branch, "refs/heads/%s" % remote_branch], top, read_only=False)
+        upstream_set = True
+    after = remote_sha(top, remote, remote_branch)
+    return {"pushed": head, "remoteHead": after, "matches": after == head, "upstreamSet": upstream_set, "output": output}
+
+
+def hooks_named(top, names):
+    code, out, _ = git(["config", "--get", "core.hooksPath"], top)
+    folder = text(out).strip() if code == 0 else ""
+    if folder:
+        folder = os.path.expanduser(folder)
+        if not os.path.isabs(folder):
+            folder = os.path.join(top, folder)
+    else:
+        folder = text(git_ok(["rev-parse", "--path-format=absolute", "--git-path", "hooks"], top)).strip()
+    return [n for n in names if os.path.isfile(os.path.join(folder, n)) and os.access(os.path.join(folder, n), os.X_OK)]
+
+
+def classify_gh_failure(output):
+    o = output.lower()
+    if "gh auth login" in o or "authentication" in o or "http 401" in o or "bad credentials" in o:
+        return "auth", "gh on the server isn't signed in to GitHub, or its sign-in was refused. Run gh auth login there."
+    # GitHub lists every reason at once; a base that isn't a branch there explains the others, so it comes first.
+    if "base ref must be a branch" in o or "base sha can't be blank" in o:
+        return "bad-base", "GitHub has no branch by that name to merge into. It may have been deleted there while this checkout still remembers it. Pick another base."
+    if "no commits between" in o:
+        return "no-commits", "There are no commits between the base and this branch, so there's nothing for a pull request."
+    if "http 403" in o or "must have" in o or "permission" in o:
+        return "auth", "GitHub refused: the server's gh sign-in can't open pull requests in this repository."
+    return "pr-api", "GitHub refused it. What gh said is below. The branch is pushed, and nothing here will push it again."
+
+
+def op_pr_create(req):
+    """Opens a pull request with the title, body and base the owner wrote, for a branch the remote already has at the
+    commit shown. It never pushes: if the remote doesn't have that commit, it refuses."""
+    top, _ = checkout(req.get("repo"))
+    remote = req.get("remote")
+    if remote not in git_line(["remote"], top).splitlines():
+        raise Refusal("bad-remote", "There's no remote %r in this repository." % (remote,))
+    gh_repo = github_repo(git_line(["remote", "get-url", "--push", remote], top))
+    if not gh_repo:
+        raise Refusal("unsupported", "Pull requests are made with gh, for GitHub remotes only, and %s isn't one." % remote)
+    head_branch = check_branch_name(req.get("remoteBranch"), top)
+    base = check_branch_name(req.get("base"), top)
+    title = req.get("title")
+    body = req.get("body") if isinstance(req.get("body"), str) else ""
+    if not isinstance(title, str) or not title.strip():
+        raise Refusal("empty-title", "Write a title first.")
+    expect = (req.get("expect") or {}).get("head")
+    on_remote = remote_sha(top, remote, head_branch)
+    if on_remote != expect:
+        raise Refusal("not-pushed", "The remote doesn't have this branch at the commit shown%s. Push first; creating a pull request never pushes." % (" (it has %s)" % on_remote[:12] if on_remote else ""))
+    existing, _ = gh_json(["pr", "list", "--repo", gh_repo, "--head", head_branch, "--state", "open", "--limit", "1", "--json", PR_FIELDS], top)
+    if existing:
+        return {"pr": existing[0], "existing": True, "output": ""}
+    args = ["pr", "create", "--repo", gh_repo, "--base", base, "--head", head_branch, "--title", title.strip(), "--body-file", "-"]
+    if req.get("draft") is True:
+        args.append("--draft")
+    code, out, _ = run(["gh"] + args, top, stdin=body.encode("utf-8"), timeout=120, merge_output=True)
+    output = text(out)
+    url = next((l.strip() for l in reversed(output.splitlines()) if l.strip().startswith("https://")), None)
+    if code != 0 or not url:
+        kind, why = classify_gh_failure(output)
+        raise Refusal(kind, why, output)
+    pr, why = gh_json(["pr", "view", url, "--repo", gh_repo, "--json", PR_FIELDS], top)
+    return {"pr": pr or {"url": url}, "existing": False, "output": output, "readBack": pr is not None, "readBackError": why or None}
+
+
+def op_pr_status(req):
+    """A pull request's state, review and checks, read from GitHub now."""
+    top, _ = checkout(req.get("repo"))
+    remote = req.get("remote")
+    if remote not in git_line(["remote"], top).splitlines():
+        raise Refusal("bad-remote", "There's no remote %r in this repository." % (remote,))
+    gh_repo = github_repo(git_line(["remote", "get-url", "--push", remote], top))
+    number = req.get("number")
+    if not gh_repo or not isinstance(number, int) or number <= 0:
+        raise Refusal("internal", "No pull request was named.")
+    pr, why = gh_json(["pr", "view", str(number), "--repo", gh_repo, "--json", STATUS_FIELDS], top)
+    if pr is None:
+        kind, message = classify_gh_failure(why)
+        raise Refusal(kind if kind == "auth" else "pr-api", "gh couldn't read pull request #%d." % number if kind != "auth" else message, why)
+    return pr
+
+
 OPS = {
     "status": op_status,
     "diff": op_diff,
@@ -809,6 +1063,10 @@ OPS = {
     "apply": op_apply,
     "preview": op_preview,
     "commit": op_commit,
+    "publishInfo": op_publish_info,
+    "push": op_push,
+    "prCreate": op_pr_create,
+    "prStatus": op_pr_status,
 }
 
 

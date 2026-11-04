@@ -56,9 +56,13 @@ const DIFFS: Record<string, string> = {
   "untracked:notes.txt": "diff --git a/notes.txt b/notes.txt\nnew file mode 100644\n--- /dev/null\n+++ b/notes.txt\n@@ -0,0 +1 @@\n+remember\n",
 };
 
+/** Where a push would go, for a repository with no remote. */
+const NO_REMOTE = { head: null, branch: "feature/login", remotes: [], upstream: null, remote: null, remoteUrl: "", remoteBranch: "feature/login", remoteHead: null, ahead: null, behind: null, commits: [], bases: [], github: null };
+
 function standard(s: () => Status = () => statusOf()) {
   return fakeApi((_t, r) => {
     if (r.op === "status") return s();
+    if (r.op === "publishInfo") return NO_REMOTE;
     if (r.op === "diff") return diffOf(DIFFS[`${r.side}:${r.path}`] ?? "");
     throw new Error(`unexpected ${r.op}`);
   });
@@ -269,6 +273,7 @@ function writable(onWrite: (r: RepoRequest) => unknown, diffs: Record<string, Pa
       return diffOf(d.diff, { head: PREVIEW.head, index: "i1", worktree: r.side === "staged" ? null : `w-${r.path.includes("notes") ? "notes" : "auth"}`, ...d });
     }
     if (r.op === "preview") return PREVIEW;
+    if (r.op === "publishInfo") return NO_REMOTE;
     return onWrite(r);
   });
 }
@@ -397,7 +402,9 @@ describe("Repository screen, committing", () => {
       message: "Lengthen sessions\n",
       expect: { head: PREVIEW.head, index: "i1", rawSha: "raw1" },
     });
-    await user.click(dialog.getByRole("button", { name: "Close" }));
+    expect(document.activeElement).toBe(dialog.getByRole("button", { name: "Close" }));
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.getByText("Committed abcdef1 on feature/login: Lengthen sessions")).toBeTruthy();
     expect((screen.getByLabelText(/Commit message/) as HTMLTextAreaElement).value).toBe("");
   });
@@ -504,5 +511,148 @@ describe("Repository screen, a late suggestion", () => {
     await act(async () => answer("Hermes's words"));
     expect((screen.getByLabelText(/Commit message/) as HTMLTextAreaElement).value).toBe("My own words");
     expect(screen.getByRole("alert").textContent).toMatch(/suggestion wasn't used/);
+  });
+});
+
+// ── stage 3: push and pull requests ─────────────────────────────────────────
+
+const HEAD = PREVIEW.head;
+const INFO = {
+  head: HEAD,
+  branch: "feature/login",
+  remotes: [{ name: "origin", url: "https://github.com/acme/weather.git" }],
+  upstream: null,
+  remote: "origin",
+  remoteUrl: "https://github.com/acme/weather.git",
+  remoteBranch: "feature/login",
+  remoteHead: null as string | null,
+  ahead: 2,
+  behind: 0,
+  commits: [
+    { sha: "b".repeat(40), subject: "Require a user name" },
+    { sha: "a".repeat(40), subject: "Lengthen sessions" },
+  ],
+  bases: ["main", "release"],
+  github: { repo: "acme/weather", url: "https://github.com/acme/weather", defaultBranch: "main", prs: [] as unknown[], error: null },
+};
+
+const STATUS_PR = {
+  number: 7, url: "https://github.com/acme/weather/pull/7", state: "OPEN", isDraft: false, title: "Login", baseRefName: "main", headRefName: "feature/login", headRefOid: HEAD,
+  mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED", reviewDecision: "REVIEW_REQUIRED",
+  statusCheckRollup: [
+    { __typename: "CheckRun", workflowName: "CI", name: "build", status: "COMPLETED", conclusion: "SUCCESS", detailsUrl: "https://github.com/acme/weather/actions/runs/1" },
+    { __typename: "CheckRun", workflowName: "CI", name: "whitespace", status: "QUEUED", conclusion: "" },
+  ],
+};
+
+function publishing(over: (r: RepoRequest) => unknown, info: () => typeof INFO = () => INFO) {
+  return fakeApi((_t, r) => {
+    if (r.op === "status") return statusOf({ head: HEAD, entries: [] });
+    if (r.op === "publishInfo") return info();
+    if (r.op === "diff") return diffOf("");
+    return over(r);
+  });
+}
+
+describe("Repository screen, publishing", () => {
+  it("shows where a push goes, and pushes exactly that after showing it again", async () => {
+    const user = userEvent.setup();
+    const { api, calls } = publishing(() => ({ pushed: HEAD, remoteHead: HEAD, matches: true, upstreamSet: true, output: "To github.com:acme/weather.git\n*\trefs/heads/feature/login\t[new branch]\n" }));
+    show(api);
+    const panel = within(await screen.findByRole("region", { name: "Publish" }));
+    expect(await panel.findByText(/feature\/login → origin\/feature\/login/)).toBeTruthy();
+    expect(panel.getByText("Require a user name")).toBeTruthy();
+    await user.click(panel.getByRole("button", { name: /Push 2 commits/ }));
+    const dialog = within(screen.getByRole("dialog"));
+    expect(dialog.getByText(/Never forced/)).toBeTruthy();
+    expect(dialog.getByText(/new on the remote/)).toBeTruthy();
+    await user.click(dialog.getByRole("button", { name: "Push" }));
+    expect(await dialog.findByText(/Pushed\. origin now has feature\/login at/)).toBeTruthy();
+    expect(dialog.getByText(/now tracks origin\/feature\/login/)).toBeTruthy();
+    expect(calls.find((c) => c.request.op === "push")?.request).toEqual({ op: "push", repo: TOP, remote: "origin", branch: "feature/login", remoteBranch: "feature/login", expect: { head: HEAD } });
+  });
+
+  it("says a rejected push wasn't forced, and what to do", async () => {
+    const user = userEvent.setup();
+    const { api } = publishing(() => {
+      throw new RepoFailure("rejected", "The remote has commits this branch doesn't. Nothing was pushed, and nothing is ever force-pushed.", "!\trefs/heads/feature/login\t[rejected] (fetch first)");
+    });
+    show(api);
+    await user.click(await screen.findByRole("button", { name: /Push 2 commits/ }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Push" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("The push was refused: The remote has commits this branch doesn't");
+    expect(alert.textContent).toContain("[rejected] (fetch first)");
+    expect(alert.textContent).toContain("Fetch and merge or rebase in the Terminal");
+  });
+
+  it("won't create a pull request before the branch is pushed", async () => {
+    const { api } = publishing(() => ({}));
+    show(api);
+    const button = await screen.findByRole("button", { name: /Create pull request/ });
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/Push this branch first/)).toBeTruthy();
+  });
+
+  it("creates a pull request with the title, body, base and draft written, then shows its status", async () => {
+    const user = userEvent.setup();
+    const { api, calls } = publishing(
+      (r) => (r.op === "prCreate" ? { pr: { ...STATUS_PR, statusCheckRollup: undefined }, existing: false, output: "https://github.com/acme/weather/pull/7\n" } : STATUS_PR),
+      () => ({ ...INFO, remoteHead: HEAD, ahead: 0, commits: [] }),
+    );
+    show(api);
+    const title = (await screen.findByLabelText("Title")) as HTMLInputElement;
+    expect(title.value).toBe("Login");
+    await user.clear(title);
+    await user.type(title, "Require a user name to sign in");
+    await user.type(screen.getByLabelText("Description"), "Fixes the empty-user bug.");
+    await user.selectOptions(screen.getByLabelText("Into (base)"), "release");
+    await user.click(screen.getByLabelText("Open as a draft"));
+    await user.click(screen.getByRole("button", { name: /Create pull request/ }));
+    expect(await screen.findByText("https://github.com/acme/weather/pull/7", { selector: ".files-banner .mono" })).toBeTruthy();
+    expect(calls.find((c) => c.request.op === "prCreate")?.request).toEqual({
+      op: "prCreate", repo: TOP, remote: "origin", remoteBranch: "feature/login", base: "release",
+      title: "Require a user name to sign in", body: "Fixes the empty-user bug.", draft: true, expect: { head: HEAD },
+    });
+    expect(await screen.findByText("1 running or waiting, 1 passed.")).toBeTruthy();
+    expect(screen.getByText("Review required")).toBeTruthy();
+    expect(calls.some((c) => c.request.op === "push")).toBe(false);
+  });
+
+  it("keeps the form after a pull request API failure, and never pushes again", async () => {
+    const user = userEvent.setup();
+    const { api, calls } = publishing(
+      () => {
+        throw new RepoFailure("pr-api", "GitHub refused it. What gh said is below. The branch is pushed, and nothing here will push it again.", "GraphQL: something went wrong (createPullRequest)");
+      },
+      () => ({ ...INFO, remoteHead: HEAD, ahead: 0, commits: [] }),
+    );
+    show(api);
+    await user.click(await screen.findByRole("button", { name: /Create pull request/ }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("No pull request was created: GitHub refused it.");
+    expect(alert.textContent).toContain("GraphQL: something went wrong");
+    expect(calls.filter((c) => c.request.op === "push")).toHaveLength(0);
+    expect((screen.getByRole("button", { name: /Create pull request/ }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("shows an open pull request's checks, refreshes them on demand, and opens links in the browser", async () => {
+    const user = userEvent.setup();
+    const openUrl = vi.fn();
+    let queued = true;
+    const { api, calls } = publishing(
+      () => ({ ...STATUS_PR, statusCheckRollup: queued ? STATUS_PR.statusCheckRollup : STATUS_PR.statusCheckRollup.map((c) => ({ ...c, status: "COMPLETED", conclusion: "SUCCESS" })) }),
+      () => ({ ...INFO, remoteHead: HEAD, ahead: 0, commits: [], github: { ...INFO.github, prs: [STATUS_PR] } }),
+    );
+    show(api, { openUrl });
+    expect(await screen.findByText("1 running or waiting, 1 passed.")).toBeTruthy();
+    queued = false;
+    const before = count(calls, "prStatus");
+    await user.click(screen.getByRole("button", { name: /Refresh status/ }));
+    expect(await screen.findByText("2 passed.")).toBeTruthy();
+    expect(count(calls, "prStatus")).toBe(before + 1);
+    await user.click(screen.getByRole("button", { name: /Open on GitHub/ }));
+    expect(openUrl).toHaveBeenCalledWith("https://github.com/acme/weather/pull/7");
+    expect(screen.queryByRole("button", { name: /Create pull request/ })).toBeNull();
   });
 });

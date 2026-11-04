@@ -2255,3 +2255,28 @@ p.logs-status { margin: 0 0 8px; line-height: 1.5; }
 .repo-review-done { display: flex; flex-direction: column; gap: 6px; }
 .repo-review-done .files-banner { margin: 0; }
 .repo-review-file .repo-notice { padding: 4px 10px; color: var(--muted); }
+/* Repository, stage 3: push and pull requests. */
+.repo-publish { margin-top: 18px; padding: 10px 6px 0; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; }
+.repo-publish .repo-section-head h2 { margin: 0; }
+.repo-card { border: 1px solid var(--line-2); border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; background: var(--raised); }
+.repo-card h3 { margin: 0; font-size: calc(12.5rem / 14); font-weight: 600; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.repo-commits { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: calc(12.5rem / 14); }
+.repo-commits li { overflow-wrap: anywhere; }
+.repo-pr-form { display: flex; flex-direction: column; gap: 4px; }
+.repo-pr-form select, .repo-pr-title {
+  background: var(--raised-2); border: 1px solid var(--line-2); border-radius: 7px; padding: 5px 8px; color: var(--text); font-size: calc(12.5rem / 14);
+}
+.repo-pr-title:focus, .repo-pr-form select:focus { border-color: var(--line-3); outline: none; }
+.repo-pr-draft { display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); margin-top: 4px; }
+.repo-pr-draft input { accent-color: var(--accent); }
+.repo-pr-status { display: flex; flex-direction: column; gap: 6px; }
+.repo-pr-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.repo-pr-head .btn { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; font-size: calc(12rem / 14); }
+.repo-pr-title-text { flex: 1; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.repo-pr-url { margin: 0; overflow-wrap: anywhere; }
+.repo-checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: calc(12.5rem / 14); }
+.repo-checks li { display: flex; align-items: center; gap: 6px; }
+.repo-check-pass { color: var(--ok); }
+.repo-check-fail { color: var(--bad); }
+.repo-check-pending { color: var(--warn); }
+.repo-link { width: 20px; height: 20px; }

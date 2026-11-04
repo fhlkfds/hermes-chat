@@ -744,3 +744,138 @@ async fn the_mode_staged_is_the_one_read_even_if_a_filter_changes_it() {
     use std::os::unix::fs::PermissionsExt;
     assert!(std::fs::metadata(d.path().join("notes.txt")).unwrap().permissions().mode() & 0o111 != 0, "the filter did run");
 }
+
+// ── stage 3: pushing and pull requests ──────────────────────────────────────
+
+use hermes_chat::repo_git::HeadExpect;
+
+/// A repository on branch `feature` with one commit its bare remote doesn't have yet.
+fn with_remote(name: &str) -> (Dir, Dir) {
+    let remote = Dir::new(&format!("{name}-bare"));
+    git(remote.path(), &["init", "-q", "--bare", "-b", "main"]);
+    let d = repo(name);
+    git(d.path(), &["remote", "add", "origin", &remote.s()]);
+    git(d.path(), &["push", "-qu", "origin", "main"]);
+    git(d.path(), &["checkout", "-qb", "feature"]);
+    write(d.path(), "notes.txt", b"feature work\n");
+    git(d.path(), &["commit", "-qam", "Feature work"]);
+    (d, remote)
+}
+
+fn head(d: &Dir) -> String {
+    git(d.path(), &["rev-parse", "HEAD"])
+}
+
+async fn push(d: &Dir, expect: Option<String>) -> Result<Value, RepoError> {
+    ask(Request::Push { repo: d.s(), remote: "origin".into(), branch: "feature".into(), remote_branch: "feature".into(), expect: HeadExpect { head: expect } }).await
+}
+
+#[tokio::test]
+async fn publish_info_names_the_remote_branch_and_the_commits_to_push() {
+    let (d, _remote) = with_remote("publish-info");
+    git(d.path(), &["remote", "add", "mirror", "https://someone:s3cret-token@example.com/team/app.git"]);
+    let p = ask(Request::PublishInfo { repo: d.s() }).await.unwrap();
+    assert_eq!(p["branch"], "feature");
+    assert_eq!(p["upstream"], Value::Null);
+    assert_eq!(p["remote"], "origin", "with no upstream, origin is where a push goes");
+    assert_eq!(p["remoteBranch"], "feature");
+    assert_eq!(p["ahead"], 1);
+    assert_eq!(p["commits"][0]["subject"], "Feature work");
+    assert_eq!(p["bases"], serde_json::json!(["main"]));
+    assert_eq!(p["github"], Value::Null, "a remote that isn't GitHub has no pull requests");
+    let mirror = p["remotes"].as_array().unwrap().iter().find(|r| r["name"] == "mirror").unwrap();
+    assert_eq!(mirror["url"], "https://example.com/team/app.git", "credentials in a URL are never shown");
+    assert!(!p.to_string().contains("s3cret-token"));
+}
+
+#[tokio::test]
+async fn a_push_sends_exactly_the_commit_shown_and_reads_the_remote_back() {
+    let (d, remote) = with_remote("push");
+    let h = head(&d);
+    let r = push(&d, Some(h.clone())).await.unwrap();
+    assert_eq!(r["pushed"], Value::String(h.clone()));
+    assert_eq!(r["remoteHead"], Value::String(h.clone()));
+    assert_eq!(r["matches"], true);
+    assert_eq!(r["upstreamSet"], true);
+    assert_eq!(git(remote.path(), &["rev-parse", "refs/heads/feature"]), h);
+    assert_eq!(git(d.path(), &["rev-parse", "--abbrev-ref", "feature@{upstream}"]), "origin/feature");
+    let p = ask(Request::PublishInfo { repo: d.s() }).await.unwrap();
+    assert_eq!(p["ahead"], 0);
+    assert_eq!(p["upstream"]["branch"], "feature");
+}
+
+#[tokio::test]
+async fn a_push_from_a_moved_head_is_refused() {
+    let (d, remote) = with_remote("push-stale");
+    let shown = head(&d);
+    write(d.path(), "notes.txt", b"an agent committed more\n");
+    git(d.path(), &["commit", "-qam", "More"]);
+    assert_eq!(kind(push(&d, Some(shown)).await.unwrap_err()), "stale");
+    assert_eq!(git(remote.path(), &["branch", "--list", "feature"]), "");
+}
+
+#[tokio::test]
+async fn a_rejected_push_is_never_forced() {
+    let (d, remote) = with_remote("push-rejected");
+    push(&d, Some(head(&d))).await.unwrap();
+    // Someone else pushes to the branch from another clone.
+    let other = Dir::new("push-rejected-other");
+    git(other.path(), &["clone", "-q", "-b", "feature", &remote.s(), "."]);
+    git(other.path(), &["-c", "user.name=O", "-c", "user.email=o@e", "commit", "-q", "--allow-empty", "-m", "theirs"]);
+    git(other.path(), &["push", "-q"]);
+    let theirs = git(other.path(), &["rev-parse", "HEAD"]);
+    write(d.path(), "notes.txt", b"mine\n");
+    git(d.path(), &["commit", "-qam", "Mine"]);
+    let e = push(&d, Some(head(&d))).await.unwrap_err();
+    let v = serde_json::to_value(&e).unwrap();
+    assert_eq!(v["kind"], "rejected", "{v}");
+    assert!(v["output"].as_str().unwrap().contains("[rejected]"));
+    assert_eq!(git(remote.path(), &["rev-parse", "refs/heads/feature"]), theirs, "their commit is still there");
+}
+
+#[tokio::test]
+async fn a_server_side_refusal_and_a_pre_push_hook_are_told_apart() {
+    let (d, remote) = with_remote("push-hooks");
+    hook(&d, "pre-push", "echo 'pre-push: tests must pass first' >&2\nexit 1");
+    let e = serde_json::to_value(push(&d, Some(head(&d))).await.unwrap_err()).unwrap();
+    assert_eq!(e["kind"], "hook");
+    assert!(e["output"].as_str().unwrap().contains("tests must pass first"));
+    std::fs::remove_file(d.path().join(".git/hooks/pre-push")).unwrap();
+
+    let p = remote.path().join("hooks/pre-receive");
+    std::fs::write(&p, "#!/bin/sh\necho 'feature is protected' >&2\nexit 1\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let e = serde_json::to_value(push(&d, Some(head(&d))).await.unwrap_err()).unwrap();
+    assert_eq!(e["kind"], "remote-rejected", "{e}");
+    assert!(e["output"].as_str().unwrap().contains("feature is protected"));
+}
+
+#[tokio::test]
+async fn a_push_to_an_unreachable_remote_is_a_network_failure() {
+    let (d, _remote) = with_remote("push-network");
+    git(d.path(), &["remote", "set-url", "origin", "https://nohost.invalid/team/app.git"]);
+    assert_eq!(kind(push(&d, Some(head(&d))).await.unwrap_err()), "network");
+}
+
+#[tokio::test]
+async fn names_that_could_be_options_are_refused() {
+    let (d, _remote) = with_remote("push-names");
+    let e = ask(Request::Push { repo: d.s(), remote: "origin".into(), branch: "feature".into(), remote_branch: "--force".into(), expect: HeadExpect { head: Some(head(&d)) } }).await.unwrap_err();
+    assert_eq!(kind(e), "bad-branch");
+    let e = ask(Request::Push { repo: d.s(), remote: "--mirror".into(), branch: "feature".into(), remote_branch: "feature".into(), expect: HeadExpect { head: Some(head(&d)) } }).await.unwrap_err();
+    assert_eq!(kind(e), "bad-remote");
+}
+
+#[tokio::test]
+async fn pull_requests_need_a_github_remote_and_never_push() {
+    let (d, remote) = with_remote("pr-local");
+    let e = ask(Request::PrCreate {
+        repo: d.s(), remote: "origin".into(), remote_branch: "feature".into(), base: "main".into(),
+        title: "Feature".into(), body: String::new(), draft: false, expect: HeadExpect { head: Some(head(&d)) },
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(kind(e), "unsupported");
+    assert_eq!(git(remote.path(), &["branch", "--list", "feature"]), "", "nothing was pushed");
+}

@@ -117,7 +117,21 @@ export type RepoRequest =
   | { op: "unstage"; repo: string; paths: string[]; expect: Expect }
   | { op: "apply"; repo: string; path: string; hunks: number[]; reverse: boolean; context: number; diffSha: string; expect: Expect }
   | { op: "preview"; repo: string }
-  | { op: "commit"; repo: string; message: string; expect: Expect };
+  | { op: "commit"; repo: string; message: string; expect: Expect }
+  | { op: "publishInfo"; repo: string }
+  | { op: "push"; repo: string; remote: string; branch: string; remoteBranch: string; expect: { head: string | null } }
+  | {
+      op: "prCreate";
+      repo: string;
+      remote: string;
+      remoteBranch: string;
+      base: string;
+      title: string;
+      body: string;
+      draft: boolean;
+      expect: { head: string | null };
+    }
+  | { op: "prStatus"; repo: string; remote: string; number: number };
 
 /** Rust's one command: send `request` to the helper through ssh to `target`. Rejects with a `RepoFailure`. */
 export type RepoApi = { run(target: string, request: RepoRequest): Promise<unknown> };
@@ -128,6 +142,8 @@ export type RepoApi = { run(target: string, request: RepoRequest): Promise<unkno
  * - the server: "unsupported" (no python3 or git), "timeout", "bad-reply"
  * - the repository: "bad-path", "not-found", "not-repo", "stale", "busy", "git", "internal"
  * - a commit: "hook", "identity", "locked", "conflict", "operation", "nothing-staged", "empty-message", "lost"
+ * - a push: "rejected", "remote-rejected", "auth", "network", "hook", "bad-branch", "bad-remote"
+ * - a pull request: "not-pushed", "no-commits", "bad-base", "empty-title", "pr-api", "auth", "unsupported"
  * `output` is what ssh or Git printed, shown as it is.
  */
 export class RepoFailure extends Error {
@@ -178,6 +194,20 @@ export function failureHint(f: RepoFailure): string | undefined {
       return "This screen doesn't finish merges, rebases, cherry-picks or reverts. Use the Terminal, or ask Hermes to.";
     case "lost":
       return "Look at the history in the Terminal (git log) before doing anything else.";
+    case "rejected":
+      return "Fetch and merge or rebase in the Terminal (or ask Hermes to), check the result here, then push again.";
+    case "remote-rejected":
+      return "The remote's own rules refused it; its reason is in the output. Change what it asks for, or push to another branch.";
+    case "auth":
+      return "The server's credentials are used as they are; this app adds none. Fix them on the server, then try again.";
+    case "network":
+      return "Check the server's network and the remote's address, then try again.";
+    case "bad-base":
+      return "To forget branches deleted on the remote, run git fetch --prune in the Terminal.";
+    case "not-pushed":
+      return "Push the branch first, here, then create the pull request.";
+    case "pr-api":
+      return "The push isn't repeated. Try again, or open the pull request on GitHub.";
     default:
       return undefined;
   }
@@ -561,4 +591,115 @@ export function previewRows(p: Preview): { code: string; path: string; from?: st
     else rows.push({ code: f.status, path: f.path });
   }
   return rows;
+}
+
+// ── publishing: push, pull requests, status ─────────────────────────────────
+
+/** A pull request as gh lists it. `state` is GitHub's: OPEN, CLOSED or MERGED. */
+export type PrSummary = {
+  number: number;
+  url: string;
+  state: string;
+  isDraft: boolean;
+  title: string;
+  baseRefName: string;
+  headRefName: string;
+  headRefOid: string;
+};
+
+/** Where a push and a pull request would go (the helper's `publishInfo`). */
+export type PublishInfo = {
+  head: string | null;
+  branch: string | null;
+  /** Remotes with push URLs, any user name and password taken out. */
+  remotes: { name: string; url: string }[];
+  upstream: { ref: string | null; remote: string; branch: string } | null;
+  /** The remote a push goes to: the upstream's, else origin, else the only one. */
+  remote: string | null;
+  remoteUrl: string;
+  /** The branch on the remote: the upstream's, else the same name. */
+  remoteBranch: string | null;
+  /** What this checkout last saw the remote branch at (its tracking ref), not asked of the remote. */
+  remoteHead: string | null;
+  ahead: number | null;
+  behind: number | null;
+  /** Up to 50 commits a push would send, newest first. */
+  commits: { sha: string; subject: string }[];
+  /** Up to 50 commits on HEAD that the remote's default branch doesn't have, newest first: what a pull request holds. */
+  prCommits?: { sha: string; subject: string }[];
+  /** The remote's branches, as last fetched: bases a pull request can go into. */
+  bases: string[];
+  /** For a GitHub remote: the repository, its default branch, and pull requests from this branch. */
+  github: { repo: string; url: string | null; defaultBranch: string | null; prs: PrSummary[]; error: string | null } | null;
+};
+
+export type Pushed = { pushed: string; remoteHead: string | null; matches: boolean; upstreamSet: boolean; output: string };
+
+export type PrCreated = { pr: PrSummary; existing: boolean; output: string; readBack?: boolean; readBackError?: string | null };
+
+type RawCheck =
+  | { __typename: "CheckRun"; name?: string; workflowName?: string; status?: string; conclusion?: string; detailsUrl?: string }
+  | { __typename: "StatusContext"; context?: string; state?: string; targetUrl?: string };
+
+export type PrStatus = PrSummary & {
+  mergeable?: string;
+  mergeStateStatus?: string;
+  reviewDecision?: string;
+  statusCheckRollup?: RawCheck[];
+  updatedAt?: string;
+};
+
+export type CheckState = "pass" | "fail" | "pending" | "skipped" | "neutral";
+export type Check = { name: string; state: CheckState; url?: string };
+
+/** A pull request's checks, from GitHub's rollup of check runs and commit statuses. */
+export function checksOf(p: PrStatus): Check[] {
+  return (p.statusCheckRollup ?? []).map((c): Check => {
+    if (c.__typename === "StatusContext") {
+      const st = (c.state ?? "").toUpperCase();
+      return { name: c.context ?? "status", state: st === "SUCCESS" ? "pass" : st === "FAILURE" || st === "ERROR" ? "fail" : "pending", ...(c.targetUrl && { url: c.targetUrl }) };
+    }
+    const name = c.workflowName && c.name ? `${c.workflowName} / ${c.name}` : (c.name ?? "check");
+    const url = c.detailsUrl ? { url: c.detailsUrl } : {};
+    if ((c.status ?? "").toUpperCase() !== "COMPLETED") return { name, state: "pending", ...url };
+    const conclusion = (c.conclusion ?? "").toUpperCase();
+    const state: CheckState =
+      conclusion === "SUCCESS" ? "pass" : conclusion === "SKIPPED" ? "skipped" : conclusion === "NEUTRAL" ? "neutral" : conclusion === "" ? "pending" : "fail";
+    return { name, state, ...url };
+  });
+}
+
+/** One line for a set of checks: "2 passed, 1 failed, 1 running". */
+export function checksSummary(checks: Check[]): string {
+  if (!checks.length) return "No checks reported.";
+  const n = (s: CheckState) => checks.filter((c) => c.state === s).length;
+  const parts = [
+    n("fail") && `${n("fail")} failed`,
+    n("pending") && `${n("pending")} running or waiting`,
+    n("pass") && `${n("pass")} passed`,
+    n("skipped") && `${n("skipped")} skipped`,
+    n("neutral") && `${n("neutral")} neutral`,
+  ].filter(Boolean);
+  return parts.join(", ") + ".";
+}
+
+const REVIEW: Record<string, string> = { APPROVED: "Approved", CHANGES_REQUESTED: "Changes requested", REVIEW_REQUIRED: "Review required" };
+export const reviewLabel = (d?: string) => (d ? (REVIEW[d] ?? d.toLowerCase().replace(/_/g, " ")) : "No review yet");
+export const stateLabel = (p: Pick<PrSummary, "state" | "isDraft">) => (p.state === "OPEN" ? (p.isDraft ? "Open, draft" : "Open") : p.state === "MERGED" ? "Merged" : "Closed");
+
+/** A title and body to start a pull request from: the one commit's own words, or the branch name and the commits. */
+export function prDraft(info: PublishInfo, log: { sha: string; subject: string }[] = info.prCommits?.length ? info.prCommits : info.commits): { title: string; body: string } {
+  if (log.length === 1) return { title: log[0].subject, body: "" };
+  const words = (info.remoteBranch ?? info.branch ?? "").replace(/^.*\//, "").replace(/[-_]+/g, " ").trim();
+  const title = words ? words[0].toUpperCase() + words.slice(1) : "";
+  return { title, body: log.length ? log.slice().reverse().map((c) => `- ${c.subject}`).join("\n") : "" };
+}
+
+/** Whether the remote has this branch at HEAD, as this checkout last saw it. A pull request asks the remote itself. */
+export const pushedHere = (info: PublishInfo) => !!info.head && info.remoteHead === info.head;
+
+export function asPublishInfo(v: unknown): PublishInfo {
+  const p = v as PublishInfo;
+  if (!p || !Array.isArray(p.remotes) || !Array.isArray(p.commits)) throw new RepoFailure("bad-reply", "The server's answer didn't say where a push would go.");
+  return { ...p, bases: Array.isArray(p.bases) ? p.bases : [] };
 }
