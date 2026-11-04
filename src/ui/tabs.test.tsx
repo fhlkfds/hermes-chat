@@ -175,7 +175,7 @@ describe("chat tabs", () => {
     await settle(hermes);
     const row = rowButton("NAS disks").closest(".row") as HTMLElement;
     await user.click(within(row).getByTitle("Delete"));
-    await user.click(within(document.querySelector(".row.confirming")!).getByRole("button", { name: "Delete" }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete chat" }));
     await settle(hermes);
     await waitFor(() => expect(tabsIn(0)).toEqual(["Nightly backup"]));
     expect(server.sessions.some((s) => s.id === "nas")).toBe(false);

@@ -2890,6 +2890,7 @@ function ChatView({
       onSettle={started ? onSettle : undefined}
       onExport={started ? onExport : undefined}
       onCopyLink={started ? onCopyLink : undefined}
+      onDelete={started ? () => void onDelete() : undefined}
       onArchive={started ? onArchive : undefined}
       active={active}
       visible={visible}

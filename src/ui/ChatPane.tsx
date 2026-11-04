@@ -1,7 +1,7 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
 // Dictation and Read aloud come from Voice.tsx.
 import { createContext, memo, type ReactNode, useCallback, useContext, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
-import { ArrowUp, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, FileDown, FileInput, FileText, Globe, HardDrive, Link2, ListPlus, Paperclip, RotateCcw, Search, Server, Square, Wrench, X } from "lucide-react";
+import { ArrowUp, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, FileDown, FileInput, FileText, Globe, HardDrive, Link2, ListPlus, MoreHorizontal, Paperclip, RotateCcw, Search, Server, Square, Trash2, Wrench, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
@@ -9,6 +9,8 @@ import type { ApprovalChoice, AttachCheck, Attachment, Chat, ChatQueue, Connecti
 import { SOURCE_LABEL, isOutgoing, isWaiting } from "../hermes/model";
 import type { DeskState, ScreenshotDesk } from "../hermes/screenshots";
 import { ApprovalCard } from "./ApprovalCard";
+import { Menu } from "./ChatMenu";
+import { DeleteChatDialog } from "./DeleteChat";
 import { QueuePanel, type QueueApi } from "./Queue";
 import { Markdown } from "./Markdown";
 import { ArchiveButton, SettleButton, SourceIcon, Spinner, StoredTime, composing, highlight } from "./bits";
@@ -148,6 +150,7 @@ export function ChatPane({
   onArchive,
   onExport,
   onCopyLink,
+  onDelete,
   modelControls,
   active = true,
   visible = true,
@@ -196,6 +199,8 @@ export function ChatPane({
   onExport?: () => void;
   /** Copies the chat's link (chatLinks.ts). */
   onCopyLink?: () => void;
+  /** Deletes the chat, once the owner has said yes in the header menu's question. */
+  onDelete?: () => void;
   modelControls?: ReactNode;
   active?: boolean;
   visible?: boolean;
@@ -307,6 +312,18 @@ export function ChatPane({
     return true;
   }, []);
   const [findOpen, setFindOpen] = useState(false);
+  // The header's More menu, under its button, and the Delete question it asks.
+  const moreRef = useRef<HTMLButtonElement>(null);
+  const [moreMenu, setMoreMenu] = useState<{ x: number; y: number } | null>(null);
+  const closeMoreMenu = useCallback(() => setMoreMenu(null), []);
+  const [askDelete, setAskDelete] = useState(false);
+  const canDelete = !!onDelete && !chat.running;
+  // A reply starting meanwhile, here or in another client, takes the question away for good, not until it ends.
+  useEffect(() => {
+    if (canDelete) return;
+    setMoreMenu(null);
+    setAskDelete(false);
+  }, [canDelete]);
   const [query, setQuery] = useState("");
   // Which match is the current one, counting from the top of the chat.
   const [matchIndex, setMatchIndex] = useState(0);
@@ -485,9 +502,56 @@ export function ChatPane({
             )}
             {onSettle && !chat.archived && <SettleButton settled={chat.settled} size={16} className="icon-btn" onSettle={onSettle} />}
             {onArchive && !chat.running && <ArchiveButton archived={!!chat.archived} size={16} className="icon-btn" onArchive={onArchive} />}
+            {canDelete && (
+              <button
+                ref={moreRef}
+                className="icon-btn"
+                title="More actions"
+                aria-label="More actions"
+                aria-haspopup="menu"
+                aria-expanded={!!moreMenu}
+                // Clicking it again closes the menu, rather than the menu closing on the press and the click reopening it.
+                onMouseDown={(e) => moreMenu && e.stopPropagation()}
+                onClick={(e) => {
+                  const r = e.currentTarget.getBoundingClientRect();
+                  setMoreMenu(moreMenu ? null : { x: r.left, y: r.bottom + 4 });
+                }}
+              >
+                <MoreHorizontal size={16} />
+              </button>
+            )}
             {paneControls}
           </div>
         </div>
+        {moreMenu && canDelete && (
+          <Menu label={`More actions for ${chat.title}`} x={moreMenu.x} y={moreMenu.y} onClose={closeMoreMenu}>
+            <button
+              role="menuitem"
+              className="menu-item danger"
+              title="Delete this chat in every Hermes client. This can't be undone."
+              onClick={() => {
+                closeMoreMenu();
+                setAskDelete(true);
+              }}
+            >
+              <span className="menu-icon">
+                <Trash2 size={15} />
+              </span>
+              <span className="menu-label">Delete chat…</span>
+            </button>
+          </Menu>
+        )}
+        {askDelete && canDelete && (
+          <DeleteChatDialog
+            title={chat.title}
+            returnTo={moreRef}
+            onClose={() => setAskDelete(false)}
+            onDelete={() => {
+              setAskDelete(false);
+              onDelete?.();
+            }}
+          />
+        )}
         {findOpen && (
           <div className="find" role="search">
             <input
