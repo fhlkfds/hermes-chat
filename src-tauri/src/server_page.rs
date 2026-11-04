@@ -542,9 +542,12 @@ impl ServerPages {
     /// Closes the tunnel `key`, starting or open. The webview asked, so it isn't told. A key not seen yet is kept, so
     /// the `open` the webview sent before it is refused when it arrives.
     pub fn close(&self, key: &str) {
-        let removed = self.open.lock().unwrap().remove(key);
-        match removed {
+        // `open` stays locked until the key is kept, in the order `begin` locks them, so a `begin` for the same key can't
+        // slip in between finding nothing and keeping it.
+        let mut open = self.open.lock().unwrap();
+        match open.remove(key) {
             Some(o) => {
+                drop(open);
                 let _ = o.stop.send(None);
             }
             None if key_ok(key) => {
@@ -1159,6 +1162,31 @@ while True:
             assert!(matches!(pages.begin(bad, "hermes"), Err(ServerPageError::Io(_))), "{bad:?}");
         }
         assert!(pages.is_empty());
+    }
+
+    #[test]
+    fn a_close_racing_its_own_open_always_ends_it() {
+        // Whichever runs first, a page closed while it begins either never registers or is told to stop.
+        let pages = Arc::new(ServerPages::default());
+        for i in 0..3000 {
+            let key = format!("race-{i}");
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let (p, b, k) = (Arc::clone(&pages), Arc::clone(&barrier), key.clone());
+            let closer = std::thread::spawn(move || {
+                b.wait();
+                p.close(&k);
+            });
+            barrier.wait();
+            let began = pages.begin(&key, "hermes");
+            closer.join().unwrap();
+            match began {
+                Err(e) => assert_eq!(e, ServerPageError::Closed(None)),
+                Ok(mut starting) => {
+                    assert_eq!(starting.stopped.try_recv(), Ok(None), "{key} was registered and never stopped");
+                }
+            }
+            assert!(pages.is_empty(), "{key} is still registered");
+        }
     }
 
     /// A stand-in for a TLS server: it says nothing until spoken to, and drops plain text without a word, as
