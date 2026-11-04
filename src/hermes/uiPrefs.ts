@@ -1,11 +1,12 @@
 // Display preferences for this computer: the theme, whether the last chat reopens at launch and which chat each profile
 // had open, whether reasoning shows, the model last picked and the starred models, which items the status bar shows,
-// and the screenshot shortcut and preview pane width. All preferences live in one versioned localStorage document.
+// the screenshot shortcut and preview pane width, and which computer the Terminal opens on. All preferences live in one versioned localStorage document.
 // it (chatCache.ts) and later settings add fields here rather than new keys. Nothing here goes to Hermes. Every
 // settings feature reads and writes through this module.
 
 import { fromKey, isEffort, type ModelPick } from "./models";
 import { toTemplates, type Template } from "./templates";
+import type { TerminalKind } from "./terminal";
 
 export const UI_PREFS_KEY = "hermes-ui-prefs";
 /** The shape the document has now. Bump it, and add a step to UI_PREFS_MIGRATIONS, when a field changes meaning. */
@@ -44,6 +45,8 @@ export type UIPrefs = {
   previewWidth: number | null;
   /** The owner's message templates (templates.ts, ADR 0028). */
   templates: Template[];
+  /** The Terminal's shell picked last: the Hermes server's, through ssh, or this computer's (ADR 0051). */
+  terminalKind: TerminalKind;
 };
 
 /** The shape of a stored shortcut: modifiers in order, then one key (ui/shortcut.ts writes them). */
@@ -65,6 +68,7 @@ export const DEFAULT_UI_PREFS: Readonly<UIPrefs> = Object.freeze({
   screenshotShortcut: "Ctrl+Shift+S",
   previewWidth: null,
   templates: [],
+  terminalKind: "server",
 });
 
 /** A stored document as read, before its fields are checked. */
@@ -169,6 +173,7 @@ export function readUIPrefs(doc: UIPrefsDoc, d: Readonly<UIPrefs> = DEFAULT_UI_P
     screenshotShortcut: doc.screenshotShortcut === null || isShortcut(doc.screenshotShortcut) ? doc.screenshotShortcut : d.screenshotShortcut,
     previewWidth: previewWidth === undefined ? d.previewWidth : previewWidth,
     templates: toTemplates(doc.templates) ?? [...d.templates],
+    terminalKind: doc.terminalKind === "server" || doc.terminalKind === "local" ? doc.terminalKind : d.terminalKind,
   };
 }
 

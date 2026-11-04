@@ -2095,6 +2095,8 @@ button.provider-row:hover:not(:disabled) { background: var(--hover); }
 }
 .terminal-connect-row input:focus { border-color: var(--line-3); }
 .terminal-connect-row .btn { display: inline-flex; align-items: center; gap: 6px; }
+.terminal-no-target p:first-child { margin-bottom: 4px; }
+.terminal-no-target strong { font-weight: 600; }
 .terminal-body {
   flex: 1; min-height: 0; margin: 0 16px; padding: 10px 4px 6px 12px; background: var(--code-bg);
   border: 1px solid var(--line); border-radius: 10px; display: flex;
