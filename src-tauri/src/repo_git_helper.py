@@ -73,9 +73,25 @@ def run(argv, cwd, read_only=True, stdin=None, timeout=60):
     return proc.returncode, proc.stdout, proc.stderr
 
 
+# Settings the owner's config could change that would make a diff read, or a patch apply, differently from what the
+# screen shows. The owner's hooks, identity and credentials are left alone.
+PINNED = [
+    "core.quotepath=false",
+    "color.ui=never",
+    "diff.noprefix=false",
+    "diff.mnemonicPrefix=false",
+    "diff.srcPrefix=a/",
+    "diff.dstPrefix=b/",
+    "diff.relative=false",
+    "diff.external=",
+    "apply.whitespace=nowarn",
+]
+
+
 def git(args, cwd, **kw):
     # Every path given to git is literal: `*.ts` names a file called `*.ts`, not every TypeScript file.
-    return run(["git", "--literal-pathspecs", "-c", "core.quotepath=false", "-c", "color.ui=never"] + args, cwd, **kw)
+    pinned = [a for kv in PINNED for a in ("-c", kv)]
+    return run(["git", "--literal-pathspecs"] + pinned + args, cwd, **kw)
 
 
 def text(raw):
@@ -131,10 +147,18 @@ def in_progress(git_dir):
     return None
 
 
-def safe_rel(path):
-    """A path relative to the top of the working tree, as status reported it."""
+def safe_rel(path, top):
+    """A path relative to the top of the working tree, as status reported it. It must name something inside the
+    checkout: no absolute path, no `..`, and no folder on the way that is a link out of it. The file itself may be a
+    link; Git shows a link as its target's name, never what it points at."""
     if not isinstance(path, str) or not path or "\0" in path or path.startswith("/"):
         raise Refusal("bad-path", "That isn't a path inside the repository.")
+    if any(part in ("", ".", "..") for part in path.split("/")):
+        raise Refusal("bad-path", "That isn't a path inside the repository.")
+    root = os.path.realpath(top)
+    parent = os.path.realpath(os.path.join(top, os.path.dirname(path)))
+    if parent != root and not parent.startswith(root + os.sep):
+        raise Refusal("bad-path", "%s is outside the repository, through a link." % path)
     return path
 
 
@@ -281,7 +305,7 @@ def capped(raw):
 
 def op_diff(req):
     top, _ = checkout(req.get("repo"))
-    path = safe_rel(req.get("path"))
+    path = safe_rel(req.get("path"), top)
     orig = req.get("origPath")
     side = req.get("side")
     context = req.get("context", 3)
@@ -290,7 +314,7 @@ def op_diff(req):
     context = min(context, MAX_CONTEXT)
     common = ["--no-color", "--no-ext-diff", "--no-textconv", "-U%d" % context]
     if side == "staged":
-        paths = [path] + ([safe_rel(orig)] if orig else [])
+        paths = [path] + ([safe_rel(orig, top)] if orig else [])
         code, out, err = git(["diff", "--cached", "-M"] + common + ["--"] + paths, top)
     elif side == "unstaged":
         code, out, err = git(["diff", "--no-renames"] + common + ["--", path], top)

@@ -244,3 +244,33 @@ async fn a_server_without_python_is_unsupported() {
     let e = repo_git::run(c, &Request::Status { repo: d.s() }).await.unwrap_err();
     assert_eq!(kind(e), "unsupported");
 }
+
+#[tokio::test]
+async fn paths_outside_the_checkout_are_refused() {
+    let d = repo("outside");
+    let elsewhere = Dir::new("outside-secret");
+    write(elsewhere.path(), "secret.txt", b"not yours\n");
+    std::os::unix::fs::symlink(elsewhere.path(), d.path().join("link")).unwrap();
+    for path in ["../outside-secret/secret.txt", "link/secret.txt", "./notes.txt", "a//b", "/etc/passwd"] {
+        let e = ask(Request::Diff { repo: d.s(), path: path.into(), orig_path: None, side: DiffSide::Untracked, context: 3 }).await.unwrap_err();
+        assert_eq!(kind(e), "bad-path", "{path}");
+    }
+    // A link inside the checkout is still diffed, as a link: its target's name, never what it points at.
+    let link = diff(&d, "link", None, DiffSide::Untracked, 3).await;
+    assert!(!link["diff"].as_str().unwrap().contains("not yours"));
+}
+
+#[tokio::test]
+async fn the_owners_diff_settings_dont_change_what_is_shown() {
+    let d = repo("noprefix");
+    git(d.path(), &["config", "diff.noprefix", "true"]);
+    git(d.path(), &["config", "diff.external", "false"]);
+    let t = diff(&d, "notes.txt", None, DiffSide::Unstaged, 3).await;
+    assert_eq!(t["diff"], "", "no change yet");
+    git(d.path(), &["config", "--unset", "diff.noprefix"]);
+    git(d.path(), &["config", "diff.srcPrefix", "x/nested/"]);
+    git(d.path(), &["config", "diff.dstPrefix", "y/nested/"]);
+    write(d.path(), "notes.txt", b"changed\n");
+    let t = diff(&d, "notes.txt", None, DiffSide::Unstaged, 3).await;
+    assert!(t["diff"].as_str().unwrap().contains("--- a/notes.txt\n+++ b/notes.txt"), "{}", t["diff"]);
+}

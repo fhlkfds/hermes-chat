@@ -104,7 +104,7 @@ export function failureHint(f: RepoFailure): string | undefined {
     case "unsupported":
       return "The server needs OpenSSH, python3 (3.8 or newer) and git on the PATH a non-interactive ssh gets.";
     case "timeout":
-      return "Nothing was changed by reading. Refresh to try again.";
+      return "A read changes nothing. A write may or may not have happened, so look at the repository again before trying it again.";
     case "stale":
       return "Refresh to see the repository as it is now.";
     default:
