@@ -1,5 +1,7 @@
 // Themes: the colors worked out from a theme's four, what contrast does to them, and reading a pasted theme.
 import { describe, expect, it } from "vitest";
+// @ts-expect-error The app has no Node types; the tests run in Node. (Vitest empties a CSS import, ?raw included.)
+import { readFileSync } from "node:fs";
 import { BUILTIN_THEMES, contrastRatio, freeName, parseTheme, readThemeJson, resolveMode, themeJson, themeVars } from "./themes";
 
 const newId = () => "custom-new";
@@ -42,6 +44,16 @@ describe("Theme colors", () => {
         expect(ratio(50, key)).toBeLessThan(ratio(100, key));
       }
       expect(ratio(0, "--muted")).toBeGreaterThan(2.8);
+    }
+  });
+
+  it("color shortcut hints and section labels with muted text, which the checks above keep readable", () => {
+    // A later rule of the same selector would win in the browser; jsdom doesn't apply the stylesheet, so read it.
+    const css: string = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
+    for (const selector of ["kbd", ".section-label"]) {
+      const rules = [...css.matchAll(/^([^{}\n]+)\{([^}]*)\}/gm)].filter((m) => m[1].split(",").map((s: string) => s.trim()).includes(selector));
+      const colors = rules.flatMap((m) => [...m[2].matchAll(/(?:^|[;\s])color:\s*([^;]+)/g)].map((c) => c[1].trim()));
+      expect(colors, selector).toEqual(["var(--muted)"]);
     }
   });
 

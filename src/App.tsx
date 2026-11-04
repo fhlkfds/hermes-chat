@@ -1055,7 +1055,7 @@ export function Main({
       }
       // Alt+Up/Down: the Active chat above or below the one showing, as the list orders them. Only while the chat is
       // on screen; a list that uses the same keys (the queue) takes them first, and a select keeps Alt+Down to open.
-      const onChat = !settingsOpen && !filesOpen && !jobsOpen && !outputsOpen && !terminalOpen && !usageOpen && !projectScreenOpen && !searchOpen;
+      const onChat = !covering && !previewCovers && !projectScreenOpen && !searchOpen;
       if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
         if (!onChat || e.defaultPrevented || (e.target as Element | null)?.tagName === "SELECT") return;
         const order = listed.filter((c) => !c.settled && !c.archived).sort((a, b) => b.updatedAt - a.updatedAt);

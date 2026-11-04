@@ -88,7 +88,9 @@ try {
     ws.close();
   }
 } finally {
+  const exited = new Promise((r) => proc.once("exit", r));
   proc.kill();
+  await exited;
   await server.close();
   rmSync(profile, { recursive: true, force: true });
 }
