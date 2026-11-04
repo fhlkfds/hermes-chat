@@ -313,8 +313,8 @@ async fn session(mut ws: WebSocket, profile: Option<String>) {
     }
 }
 
-/// The Bot Desktop bridge: `SCREEN-1` echoes each binary frame back reversed and, once the viewer closes, reports the
-/// close code it got on `closes`; `TAKEN-1` closes at once with Hermes's 4000 `control-taken`; anything else is 4401.
+/// The Bot Desktop bridge: `SCREEN-1` echoes each binary frame back reversed and, once the viewer goes, reports the
+/// close code it got on `closes`, or None for none; `TAKEN-1` closes at once with Hermes's 4000 `control-taken`; anything else is 4401.
 async fn display_ws(ws: WebSocketUpgrade, Query(q): Query<HashMap<String, String>>, State(closes): State<Closes>) -> Response {
     let ticket = q.get("display_ticket").cloned().unwrap_or_default();
     ws.on_upgrade(move |mut ws| async move {
@@ -332,6 +332,8 @@ async fn display_ws(ws: WebSocketUpgrade, Query(q): Query<HashMap<String, String
                         _ => {}
                     }
                 }
+                // Gone with no close frame.
+                let _ = closes.send(None);
             }
             "TAKEN-1" => drop(ws.send(close(4000, "control-taken")).await),
             _ => drop(ws.send(close(4401, "display ticket missing, expired or used")).await),
@@ -370,17 +372,21 @@ async fn the_screen_relays_rfb_bytes_both_ways_and_closing_it_is_a_normal_close(
 }
 
 #[tokio::test]
-async fn closing_every_screen_waits_until_its_normal_close_has_gone_out() {
+async fn the_connection_going_drops_each_screen_without_a_close_so_hermes_keeps_the_owner_in_control() {
     let (dashboard, mut closes) = screen_stub().await;
     let displays = display::Displays::default();
     let (tx, mut rx) = mpsc::unbounded_channel();
     let socket = display::open(dashboard, "SCREEN-1", move |e| drop(tx.send(e))).await.expect("open");
     next_display(&mut rx).await;
     displays.keep(displays.epoch(), socket).unwrap();
-    // As at sign-out: once this returns, the connection (and an SSH tunnel) may go.
-    display::closed(displays.close_all()).await;
-    let got = tokio::time::timeout(Duration::from_secs(2), closes.recv()).await.unwrap().unwrap();
-    assert_eq!(got, Some(1000));
+    displays.close_all();
+    // Hermes gets no close frame: a dropped link, not a viewer leaving.
+    let got = tokio::time::timeout(Duration::from_secs(5), closes.recv()).await.unwrap().unwrap();
+    assert_eq!(got, None);
+    match next_display(&mut rx).await {
+        display::DisplayEvent::Closed { code, .. } => assert_eq!(code, 1006),
+        other => panic!("expected a close, got {other:?}"),
+    }
 }
 
 #[tokio::test]

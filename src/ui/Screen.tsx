@@ -180,16 +180,17 @@ export function ScreenTab({
     }
   }, [api, detach, loadRfb, noteStatus, refresh]);
 
-  // What the screen is doing: asked on first show and after each reconnect to Hermes.
+  // What the screen is doing: asked on first show and after each reconnect to Hermes, which watches again a stream
+  // the drop ended. The stream isn't let go here: a normal close would tell Hermes the owner left, and hand control
+  // they hold back to the agent mid-sign-in. Rust drops it with the connection, which Hermes reads as a dropped link.
   useEffect(() => {
-    if (connected) void refresh();
-    else {
-      detach();
-      setConn({ kind: "idle" });
-      // A viewer id is good only on the connection that minted it.
-      setViewer(undefined);
+    if (connected) {
+      setConn((c) => (c.kind === "lost" ? { kind: "idle" } : c));
+      void refresh();
     }
-  }, [connected, refresh, detach]);
+    // A viewer id is good only on the connection that minted it.
+    else setViewer(undefined);
+  }, [connected, refresh]);
 
   useEffect(() => api.onLease((key, l) => key === status?.profile_key && noteLease(l)), [api, status?.profile_key, noteLease]);
 

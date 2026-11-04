@@ -147,6 +147,48 @@ describe("display.* over the connection", () => {
     expect(release.params).toMatchObject({ viewer_id, profile: "default" });
   });
 
+  it("lands on the profile picked last when one is picked while the screen is still being handed back", async () => {
+    const server = new FakeHermes();
+    server.otherProfiles = { work: [], home: [] };
+    server.display = { status: { supported: true, installed: true, missing: [], running: true }, lease: { holder: "agent", viewer_hash: null, since: 1, epoch: 0 }, minted: new Set() };
+    const hermes = await connect(server.openPipe);
+    const { viewer_id } = await hermes.screen.observe();
+    await hermes.screen.takeOver(viewer_id);
+    hermes.screen.noteHeld(viewer_id);
+    const first = hermes.switchProfile("work");
+    const second = hermes.switchProfile("home");
+    await Promise.all([first, second]);
+    await vi.waitFor(() => expect(hermes.getSnapshot()).toMatchObject({ profile: "home", status: "connected" }));
+    expect(server.display.lease.holder).toBe("agent");
+  });
+
+  it("stays on the profile shown when the owner picks it again while the screen is being handed back", async () => {
+    const server = new FakeHermes();
+    server.otherProfiles = { work: [] };
+    server.display = { status: { supported: true, installed: true, missing: [], running: true }, lease: { holder: "agent", viewer_hash: null, since: 1, epoch: 0 }, minted: new Set() };
+    const hermes = await connect(server.openPipe);
+    const { viewer_id } = await hermes.screen.observe();
+    await hermes.screen.takeOver(viewer_id);
+    hermes.screen.noteHeld(viewer_id);
+    await Promise.all([hermes.switchProfile("work"), hermes.switchProfile("default")]);
+    expect(hermes.getSnapshot()).toMatchObject({ profile: "default", status: "connected" });
+    expect(server.display.lease.holder).toBe("agent");
+  });
+
+  it("waits for a hand-back under way before signing out", async () => {
+    const server = new FakeHermes();
+    server.otherProfiles = { work: [] };
+    server.display = { status: { supported: true, installed: true, missing: [], running: true }, lease: { holder: "agent", viewer_hash: null, since: 1, epoch: 0 }, minted: new Set() };
+    const hermes = await connect(server.openPipe);
+    const { viewer_id } = await hermes.screen.observe();
+    await hermes.screen.takeOver(viewer_id);
+    hermes.screen.noteHeld(viewer_id);
+    const switching = hermes.switchProfile("work");
+    await hermes.close();
+    await switching;
+    expect(server.display.lease.holder).toBe("agent");
+  });
+
   it("leaves the screen alone when the owner doesn't hold it", async () => {
     const server = new FakeHermes();
     server.display = { status: { supported: true, installed: true, missing: [], running: true }, lease: { holder: "agent", viewer_hash: null, since: 1, epoch: 0 }, minted: new Set() };

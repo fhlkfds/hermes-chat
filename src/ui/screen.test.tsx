@@ -153,6 +153,26 @@ describe("The Screen tab", () => {
     expect(screen.getByText("Someone else has taken over this screen.")).toBeTruthy();
   });
 
+  it("keeps the owner in control when the connection to Hermes drops, and watches again once it is back", async () => {
+    const api = new FakeScreen();
+    api.state.running = true;
+    FakeRfb.made = [];
+    const load = async () => FakeRfb as unknown as RfbConstructor;
+    const { rerender } = render(<ScreenTab api={api} shown connected loadRfb={load} />);
+    await connected();
+    fireEvent.click(screen.getByRole("button", { name: /Take over/ }));
+    await screen.findByText(/You're in control/);
+    rerender(<ScreenTab api={api} shown connected={false} loadRfb={load} />);
+    // No normal close from here: Hermes would take that as the owner leaving and hand control back.
+    expect(FakeRfb.made[0].disconnected).toBe(false);
+    // Rust drops the stream with the connection.
+    act(() => api.closes[0](1006, "the connection to Hermes closed"));
+    act(() => FakeRfb.made[0].fire("disconnect", { clean: false }));
+    rerender(<ScreenTab api={api} shown connected loadRfb={load} />);
+    await waitFor(() => expect(FakeRfb.made).toHaveLength(2));
+    expect(api.sockets).toBe(2);
+  });
+
   it("offers to reconnect when the stream is lost, rather than trying for ever", async () => {
     const api = new FakeScreen();
     api.state.running = true;

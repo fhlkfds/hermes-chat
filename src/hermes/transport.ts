@@ -596,6 +596,10 @@ export class Hermes {
   private leaseListeners = new Set<(profileKey: string, lease: DisplayLease) => void>();
   /** The viewer the owner holds the screen as, with the connection that minted it (`releaseScreen`). */
   private heldScreen: { viewerId: string; pipe: Pipe } | undefined;
+  /** Counts profile picks, so the latest wins over one still handing back the screen. */
+  private switchPick = 0;
+  /** The hand-back under way, if any. */
+  private screenRelease: Promise<void> | undefined;
 
   /**
    * The profile's Bot Desktop, the side panel's Screen (screen.ts, ADR 0033). `display.*` is scoped to the profile
@@ -627,15 +631,24 @@ export class Hermes {
    * stream may already be gone, and with it the normal close that would have done this. Only the connection that
    * minted the viewer can, so a dropped connection keeps the owner in control, as Hermes intends (ADR 0033).
    */
-  /** Undefined when nothing is held, so leaving waits for nothing then. */
+  /** Undefined when nothing is held or being handed back, so leaving waits for nothing then. */
   private releaseScreen(): Promise<void> | undefined {
     const held = this.heldScreen;
     this.heldScreen = undefined;
-    if (!held || held.pipe !== this.pipe) return undefined;
-    return Promise.race([this.screen.handBack(held.viewerId).then(
-      () => {},
-      () => {},
-    ), new Promise<void>((done) => setTimeout(done, SCREEN_RELEASE_MS))]);
+    if (held && held.pipe === this.pipe) {
+      const releasing: Promise<void> = Promise.race([
+        this.screen.handBack(held.viewerId).then(
+          () => {},
+          () => {},
+        ),
+        new Promise<void>((done) => setTimeout(done, SCREEN_RELEASE_MS)),
+      ]).finally(() => {
+        if (this.screenRelease === releasing) this.screenRelease = undefined;
+      });
+      this.screenRelease = releasing;
+    }
+    // A leave that comes while an earlier one hands back waits for it too, rather than closing the connection under it.
+    return this.screenRelease;
   }
 
   /**
@@ -967,10 +980,12 @@ export class Hermes {
    * to it.
    */
   async switchProfile(name: string): Promise<void> {
+    // Handing back the screen may take a moment; a profile picked meanwhile wins, even the one already shown.
+    const pick = ++this.switchPick;
     if (name === this.profile) return;
     const releasing = this.releaseScreen();
     if (releasing) await releasing;
-    if (name === this.profile) return;
+    if (pick !== this.switchPick || name === this.profile) return;
     const from = this.profile;
     // Busy now, still to be resumed after a drop or an earlier switch back, or being resumed.
     const busy = new Set([
