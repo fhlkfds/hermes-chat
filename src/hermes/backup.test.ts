@@ -1,4 +1,4 @@
-// Backup and restore (backup.ts, ADR 0033): real-shaped data round-trips with its scope; damaged, cut-short and
+// Backup and restore (backup.ts, ADR 0038): real-shaped data round-trips with its scope; damaged, cut-short and
 // newer backups are refused before anything is written; places are mapped, never guessed; merge keeps this
 // computer's on a conflict and replace takes the backup's; a category is written whole or not at all; and nothing
 // is written without a recovery backup.
@@ -315,6 +315,38 @@ describe("a backup", () => {
     expect(drafts(here.storage).get(draftKey(conn, "default", "chat-a"))).toBe("Typed meanwhile");
     expect(drafts(here.storage).get(draftKey(conn, "default", null))).toBe("");
     expect(here.tags.text).toBe(JSON.stringify({ v: 1, scopes: {} }));
+  });
+
+  it("restores membership into this version's projects document and keeps its sync state, but not into one Hermes keeps", async () => {
+    const entries = await makeBackup(await populated(), CATEGORY_IDS);
+    const here = env();
+    const scope = projectScope(conn, "default");
+    const work = projectScope(conn, "work");
+    const pending = [{ opId: "op-1", projectId: "proj-1", chatId: "chat-c", member: true, base: 0, at: 5 }];
+    const recovery = { at: 4, chats: { "proj-1": ["chat-old"] } };
+    here.storage.setItem(
+      "hermes-chat.projects",
+      JSON.stringify({ v: 2, scopes: { [scope]: { chats: { "proj-1": ["chat-c"] }, known: [], postponed: 3, pending, recovery } } }),
+    );
+    const merged = await restore(entries, here);
+    expect(merged.report.outcomes.find((o) => o.id === "projects")!.state).toBe("restored");
+    const doc = JSON.parse(here.storage.getItem("hermes-chat.projects")!);
+    expect(doc.v).toBe(2);
+    expect(doc.scopes[scope]).toMatchObject({ selected: "proj-1", chats: { "proj-1": ["chat-c", "chat-a", "chat-b"] }, postponed: 3, pending, recovery });
+
+    // A backup holds the owner's grouping only, never the sync's bookkeeping.
+    const again = await makeBackup(here, ["projects"]);
+    const file = again.find((e) => e.name === "projects.json")!;
+    expect(file.text).not.toMatch(/pending|recovery|postponed/);
+
+    // Once membership is Hermes's, its chats here are Hermes's copy: a restore can't change them.
+    const synced = { synced: { v: 1, at: 6 }, revision: 3, chats: { "proj-1": ["chat-h"] }, known: [] };
+    const stored = JSON.stringify({ v: 2, scopes: { [scope]: synced, [work]: { chats: {}, known: [] } } });
+    here.storage.setItem("hermes-chat.projects", stored);
+    const refused = await restore(entries, here);
+    const p = refused.report.outcomes.find((o) => o.id === "projects")!;
+    expect(p.state === "failed" && p.reason).toMatch(/Hermes keeps/);
+    expect(here.storage.getItem("hermes-chat.projects")).toBe(stored);
   });
 
   it("leaves a document a newer app wrote alone", async () => {

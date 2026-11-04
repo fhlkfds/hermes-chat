@@ -5,6 +5,7 @@ import { Main } from "../../src/App";
 import { FakeHermes, row } from "../../src/hermes/fakeHermes";
 import { connect } from "../../src/hermes/transport";
 import { appearanceStore } from "../../src/ui/appearance";
+import { captureAppDiagnostics } from "../../src/hermes/logs";
 
 const mode = new URLSearchParams(location.search).get("mode") ?? "dark";
 localStorage.setItem("hermes-chat.appearance", JSON.stringify({ scheme: mode }));
@@ -35,6 +36,60 @@ server.transcripts = {
   ],
   nas: [{ role: "user", text: "How full is the NAS?" }, { role: "assistant", text: "The `tank` pool is at **71%** (5.1 TiB of 7.2 TiB)." }],
 };
+
+// Automations (ADR 0036): one GitHub route on a webhooks/1 server, with a made-up delivery history.
+server.sessions.push(row("hook-41", 0.05, { source: "webhook", title: "Triage example/fixture#41" }));
+server.webhooks.baseUrl = "https://hooks.example.net";
+server.webhooks.add("default", "triage-issues", {
+  provider: "github",
+  events: ["issues"],
+  filters: [{ field: "action", equals: "opened" }],
+  coalesce: { key: "{repository.full_name}#{issue.number}", window_seconds: 30, max_wait_seconds: 300 },
+  prompt: "New issue #{issue.number} on {repository.full_name}: {issue.title}\n\nRead it and suggest labels and a first reply.",
+});
+server.webhooks.rejections = { default: { "triage-issues": { bad_signature: { count: 3, last_at: Date.now() / 1000 - 5400 } } } };
+const ago = (min: number) => Date.now() / 1000 - min * 60;
+const issue = (n: number, title: string) => ({ "repository.full_name": "example/fixture", "issue.number": n, "issue.title": title });
+for (const d of [
+  { delivery_id: "4f1c2a90-0000-4000-8000-000000000001", received_at: ago(180), state: "filtered", reason: "event:push", event: "push", action: null, excerpt: { ref: "refs/heads/main" } },
+  { delivery_id: "4f1c2a90-0000-4000-8000-000000000002", received_at: ago(150), state: "filtered", reason: "filter", action: "closed", excerpt: issue(38, "[fixture] Typo in the README") },
+  { delivery_id: "4f1c2a90-0000-4000-8000-000000000003", received_at: ago(95), state: "completed", outcome: "completed", session_id: "hook-41", duplicates: 1, excerpt: issue(41, "[fixture] Sync stalls on a slow link") },
+  { delivery_id: "4f1c2a90-0000-4000-8000-000000000004", received_at: ago(40), state: "failed", reason: "failed", outcome: "failed", session_id: "hook-41", retryable: true, retry_needs_confirmation: true, excerpt: issue(42, "[fixture] Crash when the list is empty") },
+  { delivery_id: "4f1c2a90-0000-4000-8000-000000000005", received_at: ago(3), state: "superseded", superseded_by: "4f1c2a90-0000-4000-8000-000000000006", coalesce_key: "example/fixture#43", action: "opened", excerpt: issue(43, "[fixture] Dark mode contrast") },
+  { delivery_id: "4f1c2a90-0000-4000-8000-000000000006", received_at: ago(2), state: "running", session_id: "hook-41", action: "edited", excerpt: issue(43, "[fixture] Dark mode contrast") },
+])
+  server.webhooks.addDelivery("default", "triage-issues", { updated_at: d.received_at, ...d });
+// `?relay=http://127.0.0.1:PORT`: `GET /api/logs` goes to a real Hermes dashboard through that relay (logs-live.mjs), as
+// it would through the Rust side, and Logs' Save writes through it too. Everything else stays the fake Hermes.
+const relay = new URLSearchParams(location.search).get("relay");
+if (relay) {
+  captureAppDiagnostics();
+  const viaRelay = async (pathAndQuery: string) => {
+    const res = await fetch(`${relay}/${pathAndQuery}`).catch((e: Error) => {
+      throw new Error(`Couldn't reach the relay: ${e.message}`);
+    });
+    const body = await res.text();
+    if (res.status === 599) throw new Error(JSON.parse(body).unreachable);
+    if (!res.ok) throw new Error(`The dashboard answered ${res.status}: ${body}`);
+    return body;
+  };
+  (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
+    invoke: async (cmd: string, args: { text: string; fileName: string }) => {
+      if (cmd !== "logs_export") throw new Error(`${cmd} isn't in the browser harness`);
+      const res = await fetch(`${relay}/save?${new URLSearchParams({ name: args.fileName })}`, { method: "POST", body: args.text });
+      return res.text();
+    },
+  };
+  const open = server.openPipe;
+  server.openPipe = async (...a: Parameters<typeof open>) => {
+    const pipe = await open(...a);
+    const request = pipe.request.bind(pipe);
+    const getLimited = pipe.getLimited.bind(pipe);
+    pipe.request = (method, path, body) => (path.startsWith("api/logs?") ? viaRelay(path) : request(method, path, body));
+    pipe.getLimited = (path, max) => (path.startsWith("api/logs?") ? viaRelay(path) : getLimited(path, max));
+    return pipe;
+  };
+}
 
 const hermes = await connect(server.openPipe);
 (window as unknown as { shots: unknown }).shots = { server, hermes };

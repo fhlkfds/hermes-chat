@@ -1,4 +1,4 @@
-// Settings → General → Backup (backup.ts, ADR 0033). Export shows what a backup holds, what personal data is in it
+// Settings → General → Backup (backup.ts, ADR 0038). Export shows what a backup holds, what personal data is in it
 // and what never is, then saves it where the owner picks. Restore reads a backup whole and checks it, shows what it
 // holds and where each part goes, lets the owner choose merge or replace for each category, and writes only on
 // Restore, after a recovery backup. The report says what was restored, skipped or failed; once anything was written,

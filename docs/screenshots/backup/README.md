@@ -1,4 +1,4 @@
-# Backup and restore screenshots (issue #75, ADR 0033)
+# Backup and restore screenshots (issue #75, ADR 0038)
 
 Captured on 2026-11-04 from the running Tauri debug build of this branch (`tauri build --debug --no-bundle`,
 WebKitGTK) on an Xvfb display, 1280 × 820, driven with xdotool. These are framebuffer captures; image 5 stacks crops of

@@ -1,4 +1,4 @@
-// Backup and restore of what Hermes Chat keeps on this computer (GLOSSARY.md Backup, ADR 0033). Hermes keeps the
+// Backup and restore of what Hermes Chat keeps on this computer (GLOSSARY.md Backup, ADR 0038). Hermes keeps the
 // chats, projects, memory and the rest on the server; none of that is in a backup. What is: settings, templates, and,
 // for each connection and profile, drafts, queued messages, project membership and defaults, tags and Saved filters,
 // and where branches came from. Never a password, an extra header's value or any other credential: those stay in the
@@ -16,7 +16,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { SavedSignIn } from "./account";
 import { sha256 } from "./importTranscripts";
 import { toBranches, toQueue } from "./chatCache";
-import { PROJECTS_KEY, readLinks, type ScopeLinks } from "./projectLinks";
+import { PROJECTS_KEY, PROJECTS_VERSION, readLinks, type ScopeLinks } from "./projectLinks";
 import { savedDefaultsFile, storageDefaultsFile, toDefaults, type DefaultsFile, type ProjectDefaults } from "./projectDefaults";
 import { readTags, savedTagsFile } from "./tags";
 import { toTemplates, type Template } from "./templates";
@@ -233,7 +233,8 @@ function perDoc(
   file: (env: BackupEnv) => DefaultsFile,
   version: number,
   split: (scope: string, part: unknown) => Rec[],
-  join: (recs: Rec[]) => unknown,
+  /** One scope's records as stored, given what is stored there now; undefined removes the scope. */
+  join: (recs: Rec[], prior: unknown) => unknown,
 ): Pick<Category, "load" | "save"> {
   const parse = (raw: string | null) => {
     try {
@@ -262,7 +263,7 @@ function perDoc(
       const scopes: Record<string, unknown> = { ...(isObj(doc.scopes) ? doc.scopes : {}) };
       for (const scope of new Set([...before.recs, ...recs].map((r) => r.scope))) {
         if (of(before.recs, scope) === of(recs, scope)) continue;
-        const part = recs.some((r) => r.scope === scope) ? join(recs.filter((r) => r.scope === scope)) : undefined;
+        const part = join(recs.filter((r) => r.scope === scope), scopes[scope]);
         if (part === undefined) delete scopes[scope];
         else scopes[scope] = part;
       }
@@ -272,6 +273,12 @@ function perDoc(
     },
   };
 }
+
+/** The owner's grouping in one scope of the projects document: which chats are in each project, and what the list shows. */
+const grouping = (part: unknown): ScopeLinks | undefined => {
+  const v = readLinks({ v: PROJECTS_VERSION, scopes: { x: part } }).x;
+  return v && { ...(v.selected && { selected: v.selected }), chats: v.chats, known: v.known };
+};
 
 /** The display and startup settings a backup holds. Each profile's chat to reopen isn't: it's a copy of the server's list. */
 const SETTINGS_FIELDS = ["theme", "reopenLastChat", "checkUpdatesOnLaunch", "reasoningBlocks", "modelPicker", "modelFavorites", "statusBar", "screenshotShortcut", "previewWidth"];
@@ -394,14 +401,23 @@ export const CATEGORIES = {
     scoped: true,
     ...perDoc(
       (env) => storageDefaultsFile(() => env.storage, PROJECTS_KEY),
-      1,
+      PROJECTS_VERSION,
       (scope, part) => {
-        const v = readLinks({ v: 1, scopes: { [scope]: part } })[scope];
+        const v = grouping(part);
         return v ? [{ scope, key: "", value: v }] : [];
       },
-      (recs) => recs[0]?.value,
+      (recs, prior) => {
+        // The membership sync's own fields (projectLinks.ts) stay as stored: they're this computer's bookkeeping with
+        // Hermes, never in a backup. Once membership is Hermes's (`synced`), its chats here are Hermes's copy.
+        const { selected: _s, chats, known: _k, ...sync } = isObj(prior) ? prior : {};
+        const v = recs[0]?.value as ScopeLinks | undefined;
+        if (sync.synced && stable(v?.chats ?? {}) !== stable(grouping(prior)?.chats ?? {}))
+          throw new Error("Hermes keeps this profile's project membership now, so it wasn't changed here.");
+        if (!v) return Object.keys(sync).length ? { ...sync, chats: sync.synced ? chats : {}, known: [] } : undefined;
+        return { ...sync, ...v };
+      },
     ),
-    check: (_, v) => readLinks({ v: 1, scopes: { x: v } }).x,
+    check: (_, v) => grouping(v),
     merge(mine, theirs) {
       const a = mine as ScopeLinks;
       const b = theirs as ScopeLinks;
@@ -418,7 +434,7 @@ export const CATEGORIES = {
       (env) => env.defaults,
       1,
       (scope, part) => (isObj(part) ? Object.entries(part).flatMap(([key, v]) => (toDefaults(v) ? [{ scope, key, value: toDefaults(v) }] : [])) : []),
-      (recs) => Object.fromEntries(recs.map((r) => [r.key, r.value])),
+      (recs) => (recs.length ? Object.fromEntries(recs.map((r) => [r.key, r.value])) : undefined),
     ),
     check: (_, v) => toDefaults(v),
     // A new revision past both, so a project's screen open in another window sees the change and doesn't save over it.

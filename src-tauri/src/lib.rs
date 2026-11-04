@@ -1,15 +1,21 @@
 pub mod backup;
 pub mod defaults_file;
 pub mod fonts;
+pub mod links;
 pub mod media;
 pub mod notify;
+pub mod portal;
 pub mod remote;
+pub mod repo_git;
 pub mod saved_password;
 pub mod screenshot;
+pub mod summon;
 pub mod terminal;
+pub mod tray;
 pub mod transport;
 pub mod tunnel;
 pub mod web_page;
+pub mod x11_grab;
 pub mod update;
 
 use serde::{Deserialize, Serialize};
@@ -314,14 +320,16 @@ fn screenshot_ack_request(state: State<'_, Screenshots>, id: u64) {
     state.requests.acknowledge(id);
 }
 
+/// The chat link waiting for the window, from the command line or a later launch (links.rs); handed out once.
+#[tauri::command]
+fn chat_link_take(links: State<'_, links::Links>) -> Option<String> {
+    links.take()
+}
+
 /// Brings the window forward after a desktop shortcut's screenshot was attached, so the owner can review it.
 #[tauri::command]
 fn screenshot_show_window(app: tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
-    }
+    tray::show(&app);
 }
 
 /// Saves a file pasted into the composer to a temp file and returns its path. Its bytes come as the raw body, not
@@ -801,6 +809,12 @@ async fn usage_export(app: tauri::AppHandle, csv: String, file_name: String) -> 
     save_with_dialog(&app, "Export usage — chat titles are in the file", file_name, ("CSV", &["csv"]), csv).await
 }
 
+/// Saves Logs' export or support bundle (src/hermes/logs.ts, ADR 0033) where the owner picks. `None`: cancelled.
+#[tauri::command]
+async fn logs_export(app: tauri::AppHandle, text: String, file_name: String) -> Result<Option<String>, String> {
+    save_with_dialog(&app, "Save logs — read the file before sharing it", file_name, ("Text", &["txt", "log"]), text).await
+}
+
 /// A local file the owner picked for the preview pane.
 #[derive(Serialize)]
 struct PickedFile {
@@ -914,8 +928,16 @@ fn terminal_close(terminals: State<'_, terminal::Terminals>, id: u64) {
     terminals.close(id);
 }
 
+/// One Git operation on the server for the Repository screen: the helper run through `ssh` to `target` (the sign-in's
+/// SSH target, or one the owner gave), with `request` on its stdin (repo_git.rs, ADR 0034).
+#[tauri::command]
+async fn repo_git(target: String, request: repo_git::Request) -> Result<serde_json::Value, repo_git::RepoError> {
+    repo_git::run_over_ssh(&target, &request).await
+}
+
 /// Starts the app. `screenshot`: it was started by `hermes-chat --screenshot`, with no other Hermes Chat to take it.
-pub fn run(screenshot: bool) {
+/// `link`: it was started to open a chat link, with no other Hermes Chat to open it (links.rs).
+pub fn run(screenshot: bool, link: Option<String>) {
     let screenshots = Screenshots::default();
     if screenshot {
         screenshots.requests.ask();
@@ -930,7 +952,10 @@ pub fn run(screenshot: bool) {
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .manage(screenshots)
+        .manage(links::Links::new(link))
         .manage(update::Updates::default())
+        .manage(tray::Tray::default())
+        .on_window_event(tray::on_window_event)
         .on_permission_request(|webview, kind| permission(&webview, kind))
         .setup(|app| {
             use tauri::Emitter;
@@ -950,11 +975,37 @@ pub fn run(screenshot: bool) {
             // Which package the binary came from, read before anything can upgrade it.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move { handle.state::<update::Updates>().start().await });
+            // The global shortcut registers off the main thread: the desktop may ask the owner first.
+            app.manage(summon::Summon::new(app.handle()));
+            if let Some(window) = app.get_webview_window("main") {
+                let handle = app.handle().clone();
+                window.on_window_event(move |e| {
+                    if let tauri::WindowEvent::Focused(f) = e {
+                        handle.state::<summon::Summon>().focus_changed(*f);
+                    }
+                });
+            }
             let handle = app.handle().clone();
-            remote::serve(move || {
-                handle.state::<Screenshots>().requests.ask();
-                let _ = handle.emit(remote::EVENT, ());
+            std::thread::spawn(move || handle.state::<summon::Summon>().start(&handle));
+            let handle = app.handle().clone();
+            // Requests that came while the app started (main.rs took the bus name first) are handled now.
+            remote::set_handler(move |request| match request {
+                remote::Request::Screenshot => {
+                    handle.state::<Screenshots>().requests.ask();
+                    let _ = handle.emit(remote::EVENT, ());
+                }
+                // A second launch or `--show` brings back this window, hidden to the tray or not (ADR 0034).
+                remote::Request::Show { token } => summon::activate(&handle, false, token, false),
+                remote::Request::Toggle { token } => summon::activate(&handle, true, token, false),
+                // A chat link opened while the app runs: kept for the window, which comes forward to show it.
+                remote::Request::OpenLink { link, token } => {
+                    if handle.state::<links::Links>().put(link) {
+                        let _ = handle.emit(links::EVENT, ());
+                        summon::activate(&handle, false, token, false);
+                    }
+                }
             });
+            tray::start(app.handle());
             Ok(())
         })
         .manage(PickedFiles::default())
@@ -996,6 +1047,7 @@ pub fn run(screenshot: bool) {
             import_pick_file,
             templates_export,
             usage_export,
+            logs_export,
             preview_pick_local,
             preview_read_local,
             preview_read_local_image,
@@ -1010,7 +1062,14 @@ pub fn run(screenshot: bool) {
             screenshot_pending_request,
             screenshot_ack_request,
             screenshot_show_window,
+            chat_link_take,
+            summon::summon_status,
+            summon::summon_set,
+            summon::summon_retry,
+            summon::summon_set_hide,
+            summon::summon_pause,
             terminal_open,
+            repo_git,
             terminal_write,
             terminal_resize,
             terminal_close,
@@ -1027,7 +1086,12 @@ pub fn run(screenshot: bool) {
             defaults_file::project_defaults_swap,
             defaults_file::tags_read,
             defaults_file::tags_swap,
-            update::restart_drafts_set_aside
+            update::restart_drafts_set_aside,
+            tray::tray_status,
+            tray::tray_set_close_to_tray,
+            tray::tray_inbox,
+            tray::window_unsaved,
+            tray::window_hidden
         ])
         .build(context)
         .expect("error while building tauri application")
@@ -1035,6 +1099,10 @@ pub fn run(screenshot: bool) {
         // for the next startup's sweep, after persisted references are known, rather than risk deleting Retry bytes.
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
+                // Let go of the global shortcut before a restart's new app registers it again.
+                if let Some(summon) = app.try_state::<summon::Summon>() {
+                    summon.shutdown();
+                }
                 update::relaunch(app);
             }
         });

@@ -1,4 +1,4 @@
-//! Backups of what this computer keeps (src/hermes/backup.ts, ADR 0033): a plain zip of JSON files, one of them a
+//! Backups of what this computer keeps (src/hermes/backup.ts, ADR 0038): a plain zip of JSON files, one of them a
 //! manifest with each other file's SHA-256. The webview builds and checks the JSON; this side only writes the zip where
 //! the owner picks, or into the app's own recovery folder, and reads a zip the owner picked, refusing anything that
 //! isn't a small, flat archive of JSON files: entries are stored, never compressed, named without folders, and read
