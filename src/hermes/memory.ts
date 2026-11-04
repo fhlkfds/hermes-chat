@@ -16,7 +16,8 @@
 //   /api/profiles/active` → `current`, is the profile shown, and checks it again before every write.
 //
 // Memory text comes from the agent and whatever it read, so it is shown as plain text, never rendered, and never kept
-// on this computer.
+// on this computer. The one exception to "never kept": what a save from here replaced, held in this app's memory (never
+// on disk) until sign-out or quit, so the owner can put it back (ADR 0040).
 
 /** Which of the profile's memory files an entry is in, by the name `learning.*` gives it. */
 export type MemorySource = "memory" | "profile";
@@ -92,6 +93,12 @@ export class MemoryUnverifiedError extends Error {
   }
 }
 
+/**
+ * What a save from this app replaced: `text` was the entry before it, `saved` the entry the save left, at `savedAt`
+ * (ms). Kept in this app's memory only, per profile and file, the most recent `KEEP_REPLACED` (ADR 0040).
+ */
+export type MemoryReplaced = { text: string; saved: string; savedAt: number };
+
 /** How the memory calls reach Hermes: a legacy JSON-RPC request on `/api/ws`, and a dashboard REST read. */
 export type MemoryIO = {
   rpc(method: string, params: Record<string, unknown>): Promise<unknown>;
@@ -108,6 +115,11 @@ export type MemoryApi = {
   save(profile: string, entry: MemoryEntry, text: string): Promise<{ view: MemoryView; entry: MemoryEntry }>;
   /** Removes `entry`, as last read, then reads memory back to check it's gone. */
   remove(profile: string, entry: MemoryEntry): Promise<MemoryView>;
+  /**
+   * What this app's latest confirmed save to `entry`'s text replaced, while the entry still holds what that save left.
+   * Undefined once the entry changed since, or when no save from here made it.
+   */
+  replacedBy(profile: string, entry: MemoryEntry): MemoryReplaced | undefined;
 };
 
 // JSON-RPC codes the deployed `bf0203a` answers: method not found (an older server), and params its contract refuses
@@ -119,6 +131,8 @@ const BAD_PARAMS = 4000;
 const FRAMES_PARAMS = { cols: 20, rows: 10, frames: 2 };
 /** How often a read starts over when an entry changes between being listed and being read. */
 const READ_TRIES = 3;
+/** How many replaced texts are kept per profile and file. */
+const KEEP_REPLACED = 10;
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -153,6 +167,16 @@ export function entryProblem(text: string): string | undefined {
   const t = pyStrip(text);
   if (!t) return "An entry can't be empty. To remove it, use Delete.";
   if (/(^|\n)§(\n|$)/.test(t)) return "A line holding only “§” separates entries in Hermes's memory file, so this would be saved as several entries. Change or remove that line.";
+}
+
+/**
+ * Why `text` can't replace `entry` in a file holding `entries`: another entry already says exactly that. Hermes keeps
+ * one copy of identical entries when it next reads the file, so the save would merge the two and drop one.
+ */
+export function duplicateProblem(text: string, entry: MemoryEntry, entries: readonly MemoryEntry[]): string | undefined {
+  const t = pyStrip(text);
+  if (t !== entry.text && entries.some((e) => e.id !== entry.id && e.text === t))
+    return `Another entry in ${resourceOf(entry.source).file} already says exactly this. Hermes would keep only one of them; to drop this entry, use Delete.`;
 }
 
 /** `memory:<source>:<index>:<fingerprint>` → its parts; anything else isn't a memory node. */
@@ -211,7 +235,9 @@ async function extras(io: MemoryIO, profile: string): Promise<Pick<MemoryView, "
   };
 }
 
-export function memoryApi(io: MemoryIO): MemoryApi {
+export function memoryApi(io: MemoryIO, now = () => Date.now()): MemoryApi {
+  // What saves from here replaced, by profile and file, most recent first. Lives as long as this connection's client.
+  const replaced = new Map<string, MemoryReplaced[]>();
   const rpc = (method: string, params: Record<string, unknown>) => io.rpc(method, params).catch((e) => Promise.reject(classify(e)));
 
   /** Rejects unless the dashboard runs as `profile`, whose memory `learning.*` reach. */
@@ -298,10 +324,19 @@ export function memoryApi(io: MemoryIO): MemoryApi {
       const next = pyStrip(text);
       await checkServed(profile);
       await checkUnchanged(profile, entry);
-      if (next !== entry.text) await write(profile, "learning.edit", { id: entry.id, content: next });
+      if (next !== entry.text) {
+        // ponytail: checked on a fresh read, not under Hermes's lock; an identical entry written in between still merges.
+        const dup = duplicateProblem(next, entry, (await read(profile)).resources[entry.source].entries);
+        if (dup) throw new MemoryRefusedError(dup);
+        await write(profile, "learning.edit", { id: entry.id, content: next });
+      }
       const view = await read(profile);
       const saved = view.resources[entry.source].entries.find((e) => e.text === next);
       if (!saved) throw new MemoryUnverifiedError(`Hermes said it saved the entry, but ${entry.source === "memory" ? "MEMORY.md" : "USER.md"} doesn't have it when read back. It may have been changed again meanwhile.`, view);
+      if (next !== entry.text) {
+        const key = `${profile}\n${entry.source}`;
+        replaced.set(key, [{ text: entry.text, saved: next, savedAt: now() }, ...(replaced.get(key) ?? [])].slice(0, KEEP_REPLACED));
+      }
       return { view, entry: saved };
     },
     async remove(profile, entry) {
@@ -312,6 +347,9 @@ export function memoryApi(io: MemoryIO): MemoryApi {
       if (view.resources[entry.source].entries.some((e) => e.text === entry.text))
         throw new MemoryUnverifiedError("Hermes said it removed the entry, but it is still there when read back.", view);
       return view;
+    },
+    replacedBy(profile, entry) {
+      return replaced.get(`${profile}\n${entry.source}`)?.find((r) => r.saved === entry.text);
     },
   };
 }

@@ -200,7 +200,7 @@ The model, reasoning effort and fast mode the composer starts new chats on. It i
 _Avoid_: default model (that is the profile's, in Hermes), current model
 
 **Memory**:
-What Hermes remembers about the owner and their work between chats, for one profile. Hermes keeps it on the server in two files: its own notes, and what it knows about the owner. Each is a list of entries. The agent adds, changes and removes entries during chats; the owner can change or remove one in Settings → Memory, which saves to the server and reads it back. Hermes reads memory into a chat when the chat starts, so an edit reaches chats started after it. Only the profile the Hermes dashboard runs as can be edited from this app.
+What Hermes remembers about the owner and their work between chats, for one profile. Hermes keeps it on the server in two files: its own notes, and what it knows about the owner. Each is a list of entries. The agent adds, changes and removes entries during chats; the owner can change or remove one in Settings → Memory, which saves to the server and reads it back. Hermes reads memory into a chat when the chat starts, so an edit reaches chats started after it. Only the profile the Hermes dashboard runs as can be edited from this app. What a save from here replaced can be put back with Restore previous version until sign-out or quit, while the entry still holds what was saved; it's kept in the app's memory only (ADR 0040).
 _Avoid_: notes, knowledge, context (for memory), cache (a Saved copy is not memory)
 
 **Skill**:
