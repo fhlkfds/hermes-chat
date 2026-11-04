@@ -118,11 +118,12 @@ impl Displays {
         self.epoch.load(Ordering::SeqCst)
     }
 
-    /// Keeps `socket` under a new id, unless every socket was closed since `epoch`: then it is dropped (and so
-    /// closed) and the answer is None.
+    /// Keeps `socket` under a new id, unless every socket was closed since `epoch`: then it is abandoned, as
+    /// `close_all` would have, and the answer is None.
     pub fn keep(&self, epoch: u64, socket: DisplaySocket) -> Option<u64> {
         let mut open = self.open.lock().unwrap();
         if self.epoch() != epoch {
+            socket.abandon();
             return None;
         }
         let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
@@ -169,8 +170,8 @@ mod tests {
         let epoch = displays.epoch();
         displays.close_all();
         assert_eq!(displays.keep(epoch, DisplaySocket { outgoing: tx }), None);
-        // Dropped, so its task would see the end and close.
-        assert!(rx.try_recv().is_err() && rx.is_closed());
+        // Abandoned, as the connection it was opened on went: no normal close for Hermes to take as leaving.
+        assert!(matches!(rx.try_recv(), Ok(Out::Abandon)));
 
         let (tx, mut rx) = mpsc::unbounded_channel();
         let id = displays.keep(displays.epoch(), DisplaySocket { outgoing: tx }).unwrap();
