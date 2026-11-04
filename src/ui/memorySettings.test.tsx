@@ -138,6 +138,50 @@ describe("Settings → Memory", () => {
     expect(entry("Owner prefers short answers.")).toBeTruthy();
   });
 
+  it("restores what a save replaced, asking first over an unsaved edit, and saves it only on Save", async () => {
+    const { s, hermes, user } = await shown();
+    await user.click(entry(SHORT));
+    expect(screen.queryByRole("button", { name: /Restore previous version/ })).toBeNull();
+    await user.clear(editor());
+    await user.type(editor(), "Owner prefers short answers.");
+    await user.click(button("Save"));
+    await screen.findByText(/Saved, and read back/);
+    await user.type(editor(), " Typing.");
+    await user.click(button(/Restore previous version/));
+    const ask = screen.getByRole("alertdialog", { name: "Discard your edit?" });
+    await user.click(within(ask).getByRole("button", { name: "Keep editing" }));
+    expect(editor().value).toBe("Owner prefers short answers. Typing.");
+    await user.click(button(/Restore previous version/));
+    await user.click(button("Discard edit"));
+    expect(editor().value).toBe(SHORT);
+    expect((await screen.findByRole("status")).textContent).toMatch(/replaced is in the editor\. Save to put it back on Hermes; nothing has changed there yet/);
+    expect(s.memory.default.memory[1]).toBe("Owner prefers short answers.");
+    await user.click(button("Save"));
+    await screen.findByText(/Saved, and read back/);
+    expect(s.memory.default.memory[1]).toBe(SHORT);
+    // Settings closed and opened again: the replaced text is still offered (it's the connection's, not the screen's).
+    cleanup();
+    render(<Shell hermes={hermes} profile="default" status="connected" />);
+    await user.click(screen.getByRole("tab", { name: /Memory/ }));
+    await user.click(await screen.findByRole("button", { name: named(SHORT) }));
+    await user.click(button(/Restore previous version/));
+    expect(editor().value).toBe("Owner prefers short answers.");
+  });
+
+  it("doesn't offer to restore once the entry changed after the save", async () => {
+    const { s, user } = await shown();
+    await user.click(entry(SHORT));
+    await user.clear(editor());
+    await user.type(editor(), "Owner prefers short answers.");
+    await user.click(button("Save"));
+    await screen.findByText(/Saved, and read back/);
+    expect(button(/Restore previous version/)).toBeTruthy();
+    s.memory.default.memory[1] = "Owner prefers long answers (agent).";
+    await user.click(button(/Reload/));
+    await user.click(await screen.findByRole("button", { name: named("Owner prefers long answers (agent).") }));
+    expect(screen.queryByRole("button", { name: /Restore previous version/ })).toBeNull();
+  });
+
   it("drops an edit on Cancel and writes nothing", async () => {
     const { s, user } = await shown();
     await user.click(entry(SHORT));
@@ -545,6 +589,47 @@ async function launchApp({ openChat = false } = {}) {
 }
 
 const leaveDialog = () => screen.getByRole("alertdialog", { name: "Discard your memory edit?" });
+
+describe("Chat beside a memory screen that can't save", () => {
+  async function chatAfter(prepare: (s: FakeHermes) => void, onMemory: (user: ReturnType<typeof userEvent.setup>) => Promise<void>) {
+    const s = server();
+    prepare(s);
+    const hermes = await connect(s.openPipe, undefined, memoryCache());
+    running.push(hermes);
+    render(<Main hermes={hermes} connection={{ mode: "ssh", sshTarget: `liam@hermes-mem-${++launches}`, url: "", username: "liam" }} onSignOut={async () => {}} />);
+    await waitFor(() => expect(hermes.hasListed()).toBe(true));
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /Settings/ }));
+    await user.click(screen.getByRole("tab", { name: /Memory/ }));
+    await onMemory(user);
+    await user.click(button(/Back to chat/));
+    await user.type(screen.getByPlaceholderText<HTMLTextAreaElement>("Message Hermes"), "Still here?{Enter}");
+    await waitFor(() => expect(s.requests.some((r) => r.method === "prompt.submit" && r.params.text === "Still here?")).toBe(true));
+  }
+
+  it("still sends after a server without the memory calls", async () => {
+    await chatAfter(
+      (s) => void (s.learningMethods = false),
+      async () => void expect((await screen.findByRole("alert")).textContent).toMatch(/This Hermes server can't edit memory/),
+    );
+  });
+
+  it("still sends after Hermes refused an oversized entry, once the edit is discarded", async () => {
+    await chatAfter(
+      () => {},
+      async (user) => {
+        await user.click(await screen.findByRole("button", { name: named(SHORT) }));
+        await user.click(editor());
+        await user.paste("x".repeat(2300));
+        await user.click(button("Save"));
+        expect((await screen.findByRole("alert")).textContent).toMatch(/2,200 chars/);
+        await user.click(button(/Back to chat/));
+        await user.click(within(leaveDialog()).getByRole("button", { name: "Discard edit" }));
+        await user.click(screen.getByRole("button", { name: /Settings/ }));
+      },
+    );
+  });
+});
 
 describe("An unsaved memory edit in the app", () => {
   it("asks before Back to chat, and stays on Keep editing", async () => {
