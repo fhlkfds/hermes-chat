@@ -1678,6 +1678,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "dbus",
+ "flate2",
  "futures-util",
  "gdkx11",
  "gtk",

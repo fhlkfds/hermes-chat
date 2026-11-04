@@ -36,6 +36,8 @@ export type SessionRow = {
   runtime_revision?: number;
   /** The session a branch was made from (`session.branch` stores it). */
   parent_session_id?: string | null;
+  /** The folder the session works in (`sessions.cwd`). */
+  cwd?: string | null;
   /**
    * Hermes's stored usage for every model call in the session (`sessions` columns at the deployed `bf0203a`; both list
    * and detail rows carry them). Hermes's helper tasks are kept apart and aren't counted here.
@@ -938,8 +940,11 @@ export class FakeHermes {
       // (list_sessions_rich).
       const excluded = (query.get("exclude_sources") ?? "").split(",").filter(Boolean);
       const only = (query.get("sources") ?? query.get("source") ?? "").split(",").filter(Boolean);
+      // `cwd_prefix` (`_cwd_prefix_clause`): the folder itself or anything under it, never a sibling that shares a prefix.
+      const prefix = (query.get("cwd_prefix") ?? "").replace(/\/+$/, "");
+      const inFolder = (s: SessionRow) => !prefix || (!!s.cwd && (s.cwd === prefix || s.cwd.startsWith(`${prefix}/`)));
       const visible = this.storeOrFail(query.get("profile")).filter(
-        (s) => !excluded.includes(s.source) && !s.unlisted && (!only.length || only.includes(s.source)),
+        (s) => !excluded.includes(s.source) && !s.unlisted && (!only.length || only.includes(s.source)) && inFolder(s),
       );
       const archived = query.get("archived") ?? "exclude";
       // order=created (the default): newest started first; order=recent: latest activity first.
@@ -1094,7 +1099,7 @@ export class FakeHermes {
       skills: this.skills.config(query.get("profile") || "default"),
       agent: { ...this.modelConfig.agent },
       delegation: { ...this.modelConfig.delegation },
-      ...(this.cron.timezone && { timezone: this.cron.timezone }),
+      ...(this.cron.zoneSetting(query.get("profile") || "default") && { timezone: this.cron.zoneSetting(query.get("profile") || "default") }),
     }),
     "GET /api/delegation/routing": () => ({
       configured: "default",
@@ -2022,6 +2027,8 @@ export class FakeCron {
     { id: "discord", name: "Discord", home_target_set: false, home_env_var: "DISCORD_HOME_CHANNEL" },
   ];
   runs: Record<string, Record<string, unknown>[]> = {};
+  /** The newest `executions` row per job id, which the list stamps as `latest_execution` (null when none). */
+  executions: Record<string, Record<string, unknown>> = {};
   /** No session store yet: the runs route answers 503, as on a profile whose gateway never started. */
   runsUnavailable = false;
   heartbeat: number | null = 14;
@@ -2081,8 +2088,16 @@ export class FakeCron {
     return row;
   }
 
-  private zoneOf(_profile: string) {
-    return this.timezone || "UTC";
+  /** A profile's own `timezone` setting, where it differs from `timezone` ("" for none). */
+  timezones: Record<string, string> = {};
+
+  /** The profile's `timezone` in its config.yaml, "" when it has none. */
+  zoneSetting(profile: string): string {
+    return profile in this.timezones ? this.timezones[profile] : this.timezone;
+  }
+
+  private zoneOf(profile: string) {
+    return this.zoneSetting(profile) || "UTC";
   }
 
   private next(s: ReturnType<typeof parseSchedule>, zone: string, from: number): string | null {
@@ -2091,7 +2106,7 @@ export class FakeCron {
   }
 
   private stamp(profile: string, row: CronRow) {
-    return { ...structuredClone(row), profile, profile_name: profile, hermes_home: `/home/liam/.hermes${profile === "default" ? "" : `/profiles/${profile}`}`, is_default_profile: profile === "default", scheduler_heartbeat_age_s: this.heartbeat, latest_execution: null };
+    return { ...structuredClone(row), profile, profile_name: profile, hermes_home: `/home/liam/.hermes${profile === "default" ? "" : `/profiles/${profile}`}`, is_default_profile: profile === "default", scheduler_heartbeat_age_s: this.heartbeat, latest_execution: this.executions[row.id] ?? null };
   }
 
   private refuse(status: number, detail: unknown): never {
@@ -2164,7 +2179,12 @@ export class FakeCron {
         return this.stamp(owner, row);
       case "GET jobs/:id/runs":
         if (this.runsUnavailable) this.refuse(503, "Session store is not initialized. Start this profile's gateway to initialize it.");
-        return { runs: this.runs[row.id] ?? [], limit: Number(req.query.get("limit") ?? 20) };
+      {
+        // `_list_cron_job_runs_sync`: the newest `limit` (1 to 100, else 20), and no offset.
+        const asked = Number(req.query.get("limit") ?? 20);
+        const limit = Number.isFinite(asked) ? Math.max(1, Math.min(Math.trunc(asked), 100)) : 20;
+        return { runs: (this.runs[row.id] ?? []).slice(0, limit), limit };
+      }
       case "PUT jobs/:id": {
         const updates = (req.body?.updates ?? {}) as Record<string, unknown>;
         if ("schedule" in updates) {

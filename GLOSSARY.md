@@ -104,7 +104,7 @@ Which chats are in which project, one link per chat and project. Kept by Hermes 
 _Avoid_: sync conflict (for a change that is only waiting), assignment
 
 **Folder** (of a project):
-A path on the server that a project refers to, shown with the connection it is on. Hermes Chat adds only a folder that is already there, and never creates, moves or deletes one. A folder in a git repository shows its branch, and the repository's other worktrees that already exist can be added as folders too; Hermes Chat never creates a worktree.
+A path on the server that a project refers to, shown with the connection it is on. Hermes Chat adds only a folder that is already there, and never creates, moves or deletes one from the project screen. A folder in a git repository shows its branch, and the repository's other worktrees can be added as folders too. Worktrees are made and removed only in the Repository screen's Worktrees view.
 _Avoid_: directory, workspace, repo (unless it is one)
 
 **Project defaults**:
@@ -188,7 +188,7 @@ A `hermes-chat://` link that opens one chat in its profile, made with Copy chat 
 _Avoid_: deep link (fine in conversation), share link (nothing is shared with anyone), URL (for the link itself)
 
 **Capability**:
-A feature of this app that needs something from the Hermes server, such as a route or a method, and whether the connected server has it: Supported, Not supported, Unknown (Hermes answered, but that settles nothing) or Couldn't check (no answer, which may pass). Learnt from what Hermes says about itself, from the app's own requests, or from one request that only reads; never from a version number alone. Kept in memory for the current sign-in only (ADR 0042).
+A feature of this app that needs something from the Hermes server, such as a route or a method, and whether the connected server has it: Supported, Not supported, Unknown (Hermes answered, but that settles nothing) or Couldn't check (no answer, which may pass). Learnt from what Hermes says about itself, from the app's own requests, or from one request that only reads; never from a version number alone. Kept in memory for the current sign-in only (ADR 0044).
 _Avoid_: feature flag (Hermes's own advertised switches, which diagnostics lists separately), permission, support (alone)
 
 **Connection diagnostics**:
@@ -294,6 +294,18 @@ _Avoid_: patch, sync, overwrite
 The rail's screen for a Git checkout on the Hermes server: its folder, branch, upstream, and changed files with their diffs. It reads through the owner's own ssh, the Terminal's target or the sign-in's, not through the dashboard, so it works while Hermes is away. Git runs there as the SSH user, with that user's config, hooks and credentials (ADR 0034).
 _Avoid_: repo (in the interface), project (a Project is Hermes's group of chats and folders), workspace
 
+**Worktree**:
+A separate working folder of a repository on the server, with its own branch, made by Git (`git worktree add`). The Repository screen's Worktrees view lists them all. A **managed** worktree is one Hermes Chat made: it is recorded in the repository with its setup and the chats working in it, and only it can be removed from here. A chat started in a worktree works only there. A worktree with a chat **attached** can't be removed until the owner detaches it: a quiet chat still counts. A **Protected** worktree, the main checkout, and one Hermes Chat didn't make are never removed (ADR 0043).
+_Avoid_: workspace, sandbox, clone (a clone has its own `.git`), checkout (for a worktree that isn't the main one)
+
+**Setup** (of a worktree):
+What runs once in a new worktree before a chat works there: the files and folders the repository's `.worktreeinclude` names, copied or linked from the checkout it was made from, as Hermes does for its own worktrees. Setup commands, such as an install script, aren't run. A failed or cut-off setup leaves the worktree, with Retry.
+_Avoid_: bootstrap, provisioning, install
+
+**Kept changes**:
+What a worktree's removal saved first: every changed and untracked file, as a commit on top of its HEAD (or HEAD itself, for commits no branch had), under `refs/hermes-chat/kept/` in the repository. Restore in a new worktree starts one from it. Nothing here deletes them.
+_Avoid_: stash (it isn't one), backup, archive (Hermes's own sweep uses `refs/hermes/archive/`)
+
 **Staged** / **Not staged** / **Untracked**:
 Where a change in the Repository screen is. Staged changes are in Git's index, what the next commit would hold. Not staged changes are in the working tree only. An Untracked file isn't in Git yet. One file can have changes in both of the first two, and the screen shows each side's diff on its own.
 _Avoid_: cached, added (for staged), dirty, unversioned
@@ -335,7 +347,7 @@ A profile's SOUL.md on the Hermes server: who Hermes is and how it speaks in tha
 _Avoid_: soul, personality (Hermes's `/personality` presets are another thing), system prompt
 
 **Scheduled job**:
-A Hermes cron job in one profile: a prompt Hermes runs at the times its schedule sets, delivering the reply where the job says. Hermes keeps the job on the server and its gateway runs it there, so it runs while Hermes Chat is closed. The Scheduled jobs screen lists the profile's jobs with their schedule, time zone, next run and last result, and creates, edits, pauses, resumes, runs and deletes them through Hermes. A change shows only once Hermes, read back, has it. Deleting a job, or running it now, asks first (ADR 0013).
+A Hermes cron job in one profile: a prompt Hermes runs at the times its schedule sets, delivering the reply where the job says. Hermes keeps the job on the server and its gateway runs it there, so it runs while Hermes Chat is closed. The Scheduled jobs screen lists the profile's jobs with their schedule, Schedule time zone, next run, last result and delivery, and creates (in any profile), edits, pauses, resumes, runs and deletes them through Hermes, with each job's Job runs. A change shows only once Hermes, read back, has it. Deleting a job, or running it now, asks first (ADR 0013).
 _Avoid_: cron (Hermes's name, fine in server-side talk), task, automation, reminder
 
 **Automation**:
@@ -347,8 +359,16 @@ One event a provider sent to an Automation, identified by the provider's deliver
 _Avoid_: event (the provider's word for what's inside), request, hit
 
 **Run now**:
-The owner's action that has Hermes run a Scheduled job at once, on the server, as its schedule would: a real run with the job's real delivery. Hermes answers when the run has finished, and resumes the job if it was paused.
+The owner's action that has Hermes run a Scheduled job at once, on the server, as its schedule would: a real run with the job's real delivery. Hermes answers when the run has finished, and resumes the job if it was paused. Hermes refuses it while a run of the job is under way.
 _Avoid_: trigger, test run
+
+**Job run**:
+One run of a Scheduled job, as Hermes recorded it: an agent session, or the output a script job printed. Its state is running, succeeded, failed, or unknown, when Hermes recorded no outcome (the run's process stopped, or Hermes went on in a session it doesn't list). Its result is the agent's last reply, read from the session, or the script's output.
+_Avoid_: execution (Hermes's ledger word, fine in server-side talk), attempt, chat (an agent run is a Hermes session, but not one of the chats)
+
+**Schedule time zone**:
+The time zone Hermes reads a profile's schedules in and runs its jobs on: the profile's `timezone` setting, else the server's own zone. Times on the Scheduled jobs screen are on it, with this computer's time beside them when it reads differently; daylight-saving changes follow it.
+_Avoid_: local time (ambiguous between the server and this computer), display time zone (this computer's)
 
 **Pane**:
 One view of a chat, its transcript and composer. The app can show two side by side. The focused pane is the one the
@@ -390,7 +410,7 @@ _Avoid_: upgrade (pacman's word, for the package step only)
 - **Stop speaking** vs **Stop reply** (in a Voice conversation): Stop speaking stops the reply's audio and leaves the reply as it is; Stop reply is the composer's Stop, which has Hermes stop the reply itself.
 - **Automation** vs **Scheduled job**: both start Hermes tasks on the server, an automation when an event arrives, a scheduled job at set times. A route can also start a scheduled job on each event (`cron_job`); Hermes Chat shows such a route but doesn't set it up. An automation's tasks are `webhook` sessions, listed among the chats as from another Hermes platform.
 - **Retry** (of a Delivery) vs **Retry** (of a Failed message): retrying a delivery has Hermes run the stored event again as a new task on the server, through the automation's rules as they are now; it never undoes what the failed attempt did.
-- **Scheduled job** vs its runs: each run of an agent job is a Hermes session with source `cron`. The chat list leaves those out; the job's runs show on the Scheduled jobs screen.
+- **Scheduled job** vs its **Job runs**: each run of an agent job is a Hermes session with source `cron`. The chat list leaves those out; the job's runs show on the Scheduled jobs screen, where Show the result reads a run's reply without opening it as a chat.
 - **Branch** vs Hermes's other children of a session: Hermes also gives `parent_session_id` to a chat it compressed onto a new session, and to subagent and tool sessions. Only one made with Branch from here is shown as a Branch, with where it came from. Hermes stores a branch made here with source `tui`, because of how the legacy resume records the live session; the app shows it as this app's chat (ADR 0027).
 - **Edit** (of a message) vs **Edit** of a Failed message vs **Edit** of a Server file: Edit under a message Hermes has makes a Version in a new branch and never changes the chat. Edit on a Failed message takes its words back into the composer. Edit of a Server file changes that file. **Regenerate** (a reply) makes a Version too; **Regenerate title** only renames the chat.
 - **Source** vs the `source` field on a Hermes session: the app derives a chat's Source from that field, but the field has more values than the app shows. `gui` (what this app stamps on chats it starts) and `hermes-chat` (what it stamped before; Hermes won't edit those) count as this app, and `cli` and `tui` as the command line. `cron` chats aren't listed, and any other value (for example `api_server`, `webhook`) shows as "another Hermes platform".

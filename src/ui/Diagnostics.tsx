@@ -1,6 +1,6 @@
 // Connection diagnostics (Settings → Diagnostics), and the note a screen shows in place of itself when the connected
 // Hermes lacks what it needs (`CapabilityGate`). Both read the one capability store the transport keeps
-// (src/hermes/capabilities.ts, ADR 0042).
+// (src/hermes/capabilities.ts, ADR 0044).
 import { type ReactNode, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { AlertTriangle, ArrowLeft, BookOpen, Check, ClipboardCopy, RefreshCw, Stethoscope } from "lucide-react";
 import {

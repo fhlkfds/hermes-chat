@@ -240,7 +240,7 @@ describe("Settings → Persona", () => {
     const { server, hermes, user } = await launch();
     server.soulRoutes = false;
     await openPersona(user);
-    // The tab's own read finds no route, so the note saying what is missing takes the editor's place (ADR 0042).
+    // The tab's own read finds no route, so the note saying what is missing takes the editor's place (ADR 0044).
     expect(await screen.findByRole("region", { name: /This Hermes server doesn't support Persona/ })).toBeTruthy();
     expect(screen.queryByRole("textbox", { name: /SOUL.md for/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /Create SOUL.md/ })).toBeNull();
