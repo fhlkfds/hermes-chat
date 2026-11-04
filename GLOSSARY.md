@@ -35,6 +35,10 @@ _Avoid_: remove, archive
 Saving one chat as a Markdown file, in a place the owner picks in the Save dialog. The file holds only what Hermes Chat has loaded for the chat. It names attachments but never includes their contents. It also warns that the chat itself may contain sensitive information.
 _Avoid_: download, backup
 
+**Backup**:
+A zip file of what Hermes Chat keeps on this computer, saved where the owner picks: settings and templates, and for each connection and profile, drafts, queued messages, project membership and defaults, tags and Saved filters, and branch origins. It never holds a password or other credential, the sign-in, or anything Hermes keeps on the server. **Restore a backup** checks all of it first, previews it, maps each of its connections and profiles to a profile here (only an identical one on its own), and writes each category by the owner's choice, Merge or Replace, after saving a recovery backup. Nothing restored is sent: queued messages come back paused (ADR 0033).
+_Avoid_: export (that is one chat as Markdown), sync, restore (alone: that brings back an Archived chat), snapshot
+
 **Rename**:
 The owner's action that changes a chat's title, in every Hermes client. If the chat was renamed or edited elsewhere since the owner started, nothing is overwritten: the app shows the newer title and the owner chooses whether to save again.
 _Avoid_: retitle
@@ -286,6 +290,7 @@ _Avoid_: upgrade (pacman's word, for the package step only)
 - **Queued message** vs **Draft** vs **Failed message**: a Draft hasn't been sent or queued; a Queued message waits in the chat's queue to be sent by this app; a Failed message was sent, and Hermes didn't take it or may not have. A queued message that goes leaves the queue, and becomes a Failed message only if Hermes doesn't take it.
 - **Imported chat** vs pulling older history: the list holds the past month's chats until the owner pulls older history in Settings, after which it holds all of the profile's chats. Pulled chats come in Settled unless pinned, but they are Imported chats only if their Source isn't this app.
 - **Imported chat** vs **Imported transcript**: an Imported chat is any chat started outside this app, which the owner can carry on here. An Imported transcript was made from an export file, has the Source `import`, and is read-only here.
+- **Restore** (an Archived chat) vs **Restore a backup**: the first is Hermes's, for one chat; the second writes this computer's own data from a Backup file, and changes nothing on the server.
 - **Import** vs **Export** and **Upload**: Export saves one chat as a file on this computer; Import makes chats in Hermes from such a file; Upload puts a file on the server's disk, not in a chat.
 - **Draft** vs the New chat pane: the code also calls the pane for a chat not started yet "the draft". In this glossary a Draft is only the composer's unsent text.
 - **Toolset** vs **Approval** and YOLO: a toolset decides which tools the model is offered at all; an Approval, and YOLO, decide whether a command Hermes counts as dangerous runs without asking. Turning a toolset on or off changes neither. Speech-to-text is listed among the toolsets because Hermes lists it there, but it has no tools: its switch is the profile's `stt.enabled`, which Dictation uses.

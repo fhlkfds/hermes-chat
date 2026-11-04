@@ -1475,6 +1475,25 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .import-chat-title { font-weight: 600; overflow-wrap: anywhere; }
 .import-chats .btn { margin-left: auto; }
 .import-warnings ul { margin: 6px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; color: var(--text-2); line-height: 1.45; }
+/* ---------- backup and restore (Backup.tsx) ---------- */
+.leave-overlay .leave-dialog.backup-dialog { max-width: min(720px, 100%); }
+.backup-categories { border: 0; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 8px 16px; }
+.backup-categories legend { color: var(--faint); margin-bottom: 4px; grid-column: 1 / -1; }
+.backup-categories label { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
+.backup-categories label > span { display: flex; flex-direction: column; gap: 2px; }
+.backup-categories input { margin-top: 3px; accent-color: var(--accent); }
+.backup-table { width: 100%; border-collapse: collapse; font-size: calc(12.5rem / 14); }
+.backup-table th { text-align: left; font-weight: 500; color: var(--faint); padding: 4px 8px 4px 0; border-bottom: 1px solid var(--line-2); }
+.backup-table td { padding: 6px 8px 6px 0; border-bottom: 1px solid var(--line-2); vertical-align: top; overflow-wrap: anywhere; color: var(--text-2); }
+.backup-table td b { color: var(--text); }
+.backup-table select { max-width: 100%; }
+.import-warnings b svg { vertical-align: -2px; color: var(--ok); }
+@media (max-width: 560px) {
+  .backup-table, .backup-table tbody, .backup-table tr, .backup-table td { display: block; }
+  .backup-table thead { display: none; }
+  .backup-table tr { border-bottom: 1px solid var(--line-2); padding: 4px 0; }
+  .backup-table td { border: 0; padding: 2px 0; }
+}
 .composer-wrap.read-only-note { display: flex; gap: 8px; align-items: flex-start; color: var(--text-2); line-height: 1.5; font-size: calc(13rem / 14); }
 .read-only-note svg { flex: none; margin-top: 3px; }
 

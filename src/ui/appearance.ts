@@ -50,7 +50,8 @@ export const MAX_CUSTOM_THEMES = 50;
 export const UI_SIZES = [12, 13, 14, 15, 16, 17, 18, 20];
 export const MONO_SIZES = [10, 11, 12, 13, 14, 15, 16, 18, 20];
 
-const KEY = "hermes-chat.appearance";
+export const APPEARANCE_KEY = "hermes-chat.appearance";
+const KEY = APPEARANCE_KEY;
 /** Longer than any real family name; anything past it is not a font. */
 const MAX_FONT = 120;
 

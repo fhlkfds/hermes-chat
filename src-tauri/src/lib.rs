@@ -1,3 +1,4 @@
+pub mod backup;
 pub mod defaults_file;
 pub mod fonts;
 pub mod media;
@@ -1019,6 +1020,9 @@ pub fn run(screenshot: bool) {
             update::app_restart,
             update::restart_drafts_read,
             update::restart_drafts_clear,
+            backup::backup_export,
+            backup::backup_pick,
+            backup::backup_save_recovery,
             defaults_file::project_defaults_read,
             defaults_file::project_defaults_swap,
             defaults_file::tags_read,

@@ -1,5 +1,5 @@
 // The Settings screen, in six tabs. General, ported from the prototype: the connection and Sign out, what shows on
-// launch, voice, screenshots, updates, the local cache, and older history. Appearance: how the app looks on this
+// launch, voice, screenshots, updates, the local cache, older history, importing transcripts, and backups. Appearance: how the app looks on this
 // computer (AppearanceSettings.tsx). Model: the profile's models on Hermes (ModelSettings.tsx). Toolsets: which tools
 // Hermes offers the model in the profile (ToolsetSettings.tsx). Persona: the profile's SOUL.md on Hermes
 // (PersonaSettings.tsx). Memory: what Hermes remembers for the profile (MemorySettings.tsx). Skills: the profile's
@@ -31,6 +31,7 @@ import { ScreenshotSettings } from "./ScreenshotSettings";
 import type { ScreenshotSupport } from "../hermes/tauriScreenshot";
 import { UpdateSettings } from "./UpdateSettings";
 import { ImportSection, type ImportWiring } from "./ImportTranscripts";
+import { BackupSection, type BackupWiring } from "./Backup";
 
 type Tab = "general" | "appearance" | "model" | "toolsets" | "persona" | "memory" | "skills";
 const TABS = [
@@ -93,6 +94,7 @@ export function SettingsScreen({
   guard = allow,
   showTextGeneration,
   importer,
+  backup,
   showMemory,
 }: {
   status: ConnectionStatus;
@@ -135,6 +137,8 @@ export function SettingsScreen({
   onClearCache: () => void;
   /** Importing transcripts into the profile shown; without it there is no Import section. */
   importer?: ImportWiring;
+  /** Export and restore of what this computer keeps; without it there is no Backup section. */
+  backup?: BackupWiring;
   /** Resolves to the older chats added. */
   onPullOlder: () => Promise<Chat[]>;
   onSignOut: () => Promise<void>;
@@ -374,6 +378,7 @@ export function SettingsScreen({
               </div>
             </section>
             {importer && <ImportSection wiring={importer} connected={status === "connected"} />}
+            {backup && <BackupSection wiring={backup} />}
           </div>
         )}
       </div>

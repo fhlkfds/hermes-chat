@@ -10,7 +10,8 @@ import { type Account, type Kept, type SavedSignIn, launchSignIn, savedSignIn, s
 import { localChatCache } from "./hermes/chatCache";
 import { draftKey, drafts } from "./hermes/drafts";
 import { PersonaStore, personaKey } from "./hermes/personaStore";
-import { sending, type Sending } from "./hermes/unsaved";
+import { sending, unsaved, type Sending } from "./hermes/unsaved";
+import { connOf, restoreBlocked, savedBackupEnv } from "./hermes/backup";
 import { chatToReopen, forgetOpenChat, rememberOpenChat } from "./hermes/uiPrefs";
 import { exportChat } from "./hermes/exportChat";
 import { PROJECTS_KEY, projectLinks, projectScope } from "./hermes/projectLinks";
@@ -27,7 +28,7 @@ import { checkShortcut, shortcutLabel, shortcutOf } from "./ui/shortcut";
 
 import { tauriPipe, tauriProbe, type SignInDetails } from "./hermes/tauriPipe";
 import { isSetUp } from "./hermes/setup";
-import { isOutgoing, type Attachment, type Chat, type ConnectionStatus, type Found } from "./hermes/model";
+import { isOutgoing, isWaiting, type Attachment, type Chat, type ConnectionStatus, type Found } from "./hermes/model";
 import type { ModelCatalog, ModelPick } from "./hermes/models";
 import { ChatList, Rail, leavingNote } from "./ui/Sidebar";
 import { Inbox } from "./ui/Inbox";
@@ -139,6 +140,7 @@ const savedProjects = projectLinks(localStorage);
 const savedPersona = new PersonaStore(localStorage);
 // Applied as the app loads, so the chosen fonts show from the first screen.
 const appearance = appearanceStore(localStorage, document.documentElement);
+const backupEnv = savedBackupEnv();
 
 /** The names of the extra request headers a sign-in sends; only a URL sends them. */
 const headerNames = (d: SignInDetails) => (d.mode === "url" ? (d.headers ?? []).map((h) => h.name.trim()) : []);
@@ -692,6 +694,13 @@ export function Main({
   // Writes only when a resumed chat shows cards a dismissed waiting session covered.
   useEffect(() => acks.keepCovered(inbox.entries));
   const inboxCount = inboxShown.filter(needsOwner).length;
+  // A restore reloads the app on what it wrote, so it waits for replies and Approvals, here or in another profile, and
+  // for any draft or queue this computer couldn't keep (ADR 0033).
+  const workingRef = useRef(false);
+  const working = chats.some((c) => c.running || c.items.some(isWaiting)) || inbox.entries.some((e) => e.kind === "running" || (e.kind === "approval" && !e.ended));
+  workingRef.current = working;
+  // Read when the restore dialog renders and again just before it writes: sends and refused writes aren't React state.
+  const restoreBusy = () => restoreBlocked({ working: workingRef.current, unsaved: unsaved.size, sending: sending.size });
   // Settings → Persona edits this connection and profile's SOUL.md; its edits are kept apart per connection and profile.
   const persona: PersonaWiring = {
     api: hermes.persona,
@@ -1493,6 +1502,14 @@ export function Main({
                 if (projectId) for (const c of imported) projects.setChat(projectId, c.id, true);
               },
               onOpen: (id) => openChat(id),
+            }}
+            backup={{
+              env: backupEnv,
+              connection: connOf(connection),
+              profiles: listProfiles,
+              profile,
+              busy: restoreBusy,
+              reload: () => location.reload(),
             }}
             onPullOlder={() => hermes.pullOlderHistory()}
             onSignOut={() =>
