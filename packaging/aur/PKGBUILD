@@ -16,6 +16,7 @@ optdepends=('openssh: sign in through an SSH tunnel'
             'slurp: pick a region or window for screenshots on Hyprland and Sway'
             'grim: take screenshots on Hyprland and Sway'
             'xdg-desktop-portal: take screenshots on GNOME and KDE Plasma'
+            'desktop-file-utils: let other apps open hermes-chat:// chat links'
             'libayatana-appindicator: show the tray icon and use Close to tray')
 provides=("$_pkgname")
 conflicts=("$_pkgname")
@@ -27,7 +28,7 @@ options=('!debug' '!lto')
 source=("$_pkgname::git+$url.git"
         "$_pkgname.desktop")
 sha256sums=('SKIP'
-            '4e69886b7eeca1e9ceb1cc528d7fb6f202708d74e1590b7a166534a35d4304d9')
+            'e1bbcd9b872d66015782fe4afce508d0259c1c7521dd5f63bc6fc331cdba64ca')
 
 pkgver() {
   cd "$_pkgname"

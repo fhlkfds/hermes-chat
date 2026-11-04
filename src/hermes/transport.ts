@@ -1146,6 +1146,24 @@ export class Hermes {
     };
   }
 
+  /**
+   * A chat in `profile` by its id, as Hermes stores it now (`GET /api/sessions/{id}?profile=`), to open from a chat
+   * link (chatLinks.ts); the list's own copy says what it is called and whether it is Settled. Null when Hermes
+   * answers that the profile has no such chat (deleted, or never there). Rejects when Hermes can't be asked.
+   */
+  async findChat(chatId: string, profile: string): Promise<Found | null> {
+    let row: SessionRow & { pinned?: boolean | number; archived?: boolean | number };
+    try {
+      row = (await this.rest("GET", `${sessionPath(chatId)}?${new URLSearchParams({ profile })}`)) as typeof row;
+    } catch (e) {
+      if ((e as Error).message.includes("answered 404")) return null;
+      throw e;
+    }
+    if (row?.id !== chatId) return null;
+    const listed = profile === this.profile ? this.snapshot.chats.find((c) => c.id === chatId) : undefined;
+    return { ...this.toFound({ ...row, archived: !!row.archived } as SearchRow, listed, !row.pinned), snippet: [] };
+  }
+
   /** Puts a found chat in the list, if it isn't there yet, so it can be opened (`open`). */
   reveal(found: Found) {
     if (this.snapshot.chats.some((c) => c.id === found.chatId)) return;

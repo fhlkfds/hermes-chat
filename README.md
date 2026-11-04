@@ -201,6 +201,27 @@ bind = SUPER SHIFT, S, exec, env WEBKIT_DISABLE_DMABUF_RENDERER=1 hermes-chat --
 
 If Hermes Chat is running, the screenshot goes to the chat on screen. If it isn't running, or is on the sign-in screen, the screenshot is taken once you sign in, if you sign in within two minutes.
 
+### Chat links
+
+**Copy chat link**, in a chat's header and in its right-click menu, copies a link like this:
+
+```text
+hermes-chat://chat?v=1&connection=k2m7q4x9b3r5t6w8y2za&profile=default&id=20261103_101500_ab12cd
+```
+
+The link holds only ids: a random reference for the connection, the profile's name, and the chat's id. It never holds the server's address, the username, the password, extra request headers or a command. The connection reference is made on this computer the first time you copy a link, so a link opens the chat on this computer, in the connection it was copied from.
+
+Opening the link (from a browser, a note, or `xdg-open`) starts Hermes Chat, or brings the running one forward, and opens the chat. Before anything on screen changes, the app checks that:
+
+1. the link is a chat link and nothing else: the right scheme, at most 1,024 characters, exactly these four parts, and ids that can only be ids;
+2. its connection is the one signed in;
+3. Hermes is connected (the link waits, and says so, until it is);
+4. the server has the profile, and the profile has the chat (`GET /api/profiles`, then `GET /api/sessions/{id}?profile=`).
+
+Only then does it switch profile, asking first if a reply is running or an Approval waiting, as the profile switcher does, and open the chat. If a check fails, a notice says why and what to do, and nothing on screen changes: the chat you were in and its draft stay. A link never sends a message, runs a command, answers an Approval or signs in. On the sign-in screen, a link waits until you sign in.
+
+A link naming a connection this computer doesn't know, such as one copied on another computer, isn't opened with the connection signed in until you choose **Open it here**. The app then remembers that reference for this connection. A link for another connection this computer knows asks you to connect to it in Setup first; the app never connects anywhere for a link. See [ADR 0037](docs/adr/0037-chat-links-name-ids-only-and-open-after-checks.md).
+
 ### Global shortcut
 
 Settings → General → **Show Hermes Chat from anywhere** sets a shortcut that brings the window forward from any other app. The cursor goes to the composer of the pane you had selected, and drafts stay as they were. If Settings or another screen was open, it stays open. With **Hide when already in front** on, pressing the shortcut while Hermes Chat is the window you're using hides it. **Reset** sets Ctrl+Alt+H, and **Turn off** releases the key.
@@ -272,7 +293,7 @@ The package installs:
 
 - `/usr/bin/hermes-chat`
 - the icons
-- a desktop launcher that sets `WEBKIT_DISABLE_DMABUF_RENDERER=1`
+- a desktop launcher that sets `WEBKIT_DISABLE_DMABUF_RENDERER=1`, and registers Hermes Chat for `hermes-chat://` [chat links](#chat-links) (`MimeType=x-scheme-handler/hermes-chat`)
 
 Optional dependencies:
 
@@ -282,12 +303,30 @@ Optional dependencies:
 | A Secret Service provider (`gnome-keyring` or `kwallet`) | Remembering the password and extra request headers |
 | `slurp` and `grim` | Screenshots on Hyprland and Sway |
 | `xdg-desktop-portal` and the desktop's backend | Screenshots on GNOME and KDE Plasma |
+| `desktop-file-utils` | Other apps finding Hermes Chat for `hermes-chat://` links. Its pacman hook updates the desktop's handler list when the package is installed or removed. |
 
 To start the app from a terminal, set the WebKit variable yourself:
 
 ```sh
 WEBKIT_DISABLE_DMABUF_RENDERER=1 hermes-chat
 ```
+
+### Chat links and the desktop
+
+The launcher registers Hermes Chat as the handler for `hermes-chat://` links. The desktop runs `hermes-chat <link>`. If Hermes Chat is already running, the new process hands the link to it over the session bus (the `net.l0cky12.HermesChat` name the screenshot and global shortcuts use, method `OpenLink`) and exits, so one window opens it. Otherwise the new process starts and opens it once you're signed in.
+
+To check the registration:
+
+```sh
+xdg-mime query default x-scheme-handler/hermes-chat   # hermes-chat.desktop
+xdg-open 'hermes-chat://chat?v=1&connection=…&profile=default&id=…'
+```
+
+If another app has claimed the scheme, run `xdg-mime default hermes-chat.desktop x-scheme-handler/hermes-chat`. That writes a line to `~/.config/mimeapps.list`.
+
+Uninstalling the package (`pacman -R hermes-chat-git`) removes the launcher, and with it the registration; `desktop-file-utils`'s hook updates the handler list. A line you added with `xdg-mime default` stays in `~/.config/mimeapps.list`, pointing at a launcher that's gone, until you delete it; links then do nothing. The connection references the app made stay in its local storage (`hermes-chat.connection-refs`) until you delete `~/.local/share/net.l0cky12.hermes-chat/`.
+
+A development build (`npm run app`) or an AppImage registers nothing. To try a link with one, run the binary with the link as its argument, for example `src-tauri/target/debug/hermes-chat 'hermes-chat://chat?…'`.
 
 ## Updates
 
@@ -454,6 +493,7 @@ Hermes stores the chats and their history, imported chats included, titles, Arch
 | **Queued messages**, with the paths of their attachments | Webview local storage (`hermes-chat.queue.…`), per connection, profile, and chat | The message going, removing it, or deleting the chat. Clear local cache keeps them. |
 | Which chats are in each project | Webview local storage (`hermes-chat.projects`). On a Hermes with a membership store (none yet, ADR 0033), Hermes keeps it, and this computer keeps the last copy read, changes waiting to sync, and a recovery copy of its own grouping from before the move | Deleting the project. Clear local cache keeps it, and the recovery copy too. |
 | Branches made here: each branch's parent id and title, and whose message it was branched after with its first words; for an Edit or Regenerate, its kind, root chat, turn and model, and its words until they've gone; and branches asked for whose answer was lost, with their idempotency key | Webview local storage (`hermes-chat.branches.…`), per connection and profile | Deleting the branch; a lost attempt goes once the chat list settles it. Clear local cache keeps them. |
+| Chat link connection references: a random 20-character reference for each connection a link was copied from, and the references from other computers you chose to open here (at most 50), each with the connection's mode, SSH target or URL, and username. No password, headers or chat text. | Webview local storage (`hermes-chat.connection-refs`) | Not removed by the app. Clear local cache keeps them, so links already copied keep working. |
 | Inbox dismissals: each dismissed entry's key (profile, chat id, and Approval request or message id) and times, per connection. No chat text. | Webview local storage (`hermes-chat.inbox-dismissed.*`) | Kept 30 days, at most 1000; the oldest go first. Clear local cache keeps them. |
 | Each project's defaults for new chats | `$XDG_DATA_HOME/net.l0cky12.hermes-chat/project-defaults.json`, readable only by you | Deleting the project in Hermes Chat. Clear local cache keeps them. |
 | The Outputs index: each Output's path, tool, call, stored time, reported size and last availability check, per connection and profile. No file contents or chat text. | Webview local storage (`hermes-chat.outputs`), at most 1,000 Outputs per chat, 3,000 per profile, 200 added files per profile, and 8 profiles | The oldest-read chats when over the limit. Clear local cache keeps it; Refresh rebuilds it. |
@@ -490,6 +530,8 @@ Webview local storage is in `$XDG_DATA_HOME/net.l0cky12.hermes-chat/localstorage
 | The global shortcut says another app uses it | Pick other keys, or free them in the other app and press Retry. Your previous shortcut keeps working meanwhile. |
 | The global shortcut does nothing on Hyprland | Hyprland doesn't set keys for apps. Add the `global` line Settings shows to `hyprland.conf`, or bind a key to `hermes-chat --show`. |
 | Screenshots do nothing on Hyprland or Sway | Install `slurp` and `grim`. |
+| A `hermes-chat://` link does nothing, or opens another app | Run `xdg-mime query default x-scheme-handler/hermes-chat`. It should print `hermes-chat.desktop`; if not, run `xdg-mime default hermes-chat.desktop x-scheme-handler/hermes-chat`. |
+| A chat link says the connection isn't known | The link was copied on another computer, or before this computer's local storage was cleared. Choose Open it here if the chat is on the server signed in now. |
 | Dictation can't record | Check the microphone and the PipeWire or PulseAudio sound server. Settings → General → Voice shows which providers the profile uses. |
 | No desktop notifications | Install and run a notification daemon. Notifications appear only while the window isn't focused. |
 | Settings → Toolsets shows Web Search & Scraping as Needs setup | The provider it uses has no API key on the server. Brave Search and Firecrawl need one. Exa's free tier needs no key and does both search and page extraction. On the server, run `hermes config set web.search_backend exa`, `hermes config set web.extract_backend exa`, and `hermes config set web.provider_tier.exa free`. Add `-p <profile>` after `hermes` for another profile. Then press Refresh. |
@@ -520,6 +562,7 @@ Webview local storage is in `$XDG_DATA_HOME/net.l0cky12.hermes-chat/localstorage
 - The app doesn't install pacman updates itself: you run the PKGBUILD, and it offers the restart. In-app installation works only for an AppImage you build and sign yourself, since the repo publishes no releases or update server. Checking a package build asks GitHub without signing in, which allows 60 checks an hour.
 - The inbox sees running and waiting work in other profiles only for sessions live in the dashboard's own process, such as chats run from this app or the official desktop app. Hermes doesn't say which profile such a session is in: the app knows it for chats it started or resumed in this run, and otherwise looks the chat up by id in every profile, listing it only when exactly one profile has it. A failure seen in a profile is kept only until you are back in it. Work running in the CLI, a messaging gateway or cron shows once its chat is Unread. A background chat waiting on you shows as waiting, without what it asks, until you open it. Approval and error entries show when the app first noticed them, since Hermes gives no time for them. The inbox covers the one server signed in to.
 - Slash commands are a short list. The app doesn't offer Hermes's other commands, skill commands, or quick commands, and sends any other `/` text as a message. Command answers aren't kept in the chat's history or Saved copy.
+- Chat links open only on the computer they were copied on, unless you choose Open it here for a link from elsewhere. A link for another saved connection can't switch to it: with one connection at a time, you connect to it in Setup first. Links rely on the dashboard's `GET /api/sessions/{id}?profile=` and `GET /api/profiles`, checked against Hermes at `bf0203a` and the tests' fake Hermes; a Hermes without them can't open links, and says why. Registration was checked with the launcher on Debian's `xdg-mime`; GNOME, KDE and browsers each ask before opening an app for a link in their own way, which wasn't tested.
 - A branch copies messages, not tool outputs, and is made only between replies. Which message a branch came from is kept on this computer; other computers and Hermes clients see only its parent, and show a branch made here with Hermes's `tui` source. Chats with more than 10,000 stored rows can't be branched from here. Branching was checked live against `bf0203a` with synthetic sessions in a throwaway home, and against the tests' fake Hermes; other versions and the canonical protocol weren't tested.
 - Edit and Regenerate never rewrite a chat's stored messages: each version is a new branch, so the chat list gets a chat per version. Which turn a version is of is kept on this computer only, and other Hermes clients show versions as plain branches. A message sent with an image can't be edited or regenerated. Hermes keeps no model per reply, so the original's model is the one its chat runs on now. Checked live against the deployed checkout with a synthetic chat in a throwaway home, and against the tests' fake Hermes; the canonical protocol and other Hermes versions weren't tested.
 - The context inspector's categories are Hermes's estimates, and Hermes doesn't measure tool output on its own. Its compaction history reads a chat's first 10,000 stored rows, and knows a compaction only by the summary row Hermes stored, so compacted messages with no summary row after them show without a summary or a time. Show where it happened lands on the first message stored after the compaction, which can be below messages Hermes kept from before it. Its compaction reading was checked against the live `bf0203a` server's stored chats, and the rest against Hermes's source at `bf0203a` and the automated tests' fake Hermes. Other versions weren't tested.

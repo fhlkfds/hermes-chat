@@ -174,6 +174,7 @@ describe("a chat's menu", () => {
     expect(screen.getAllByRole("menuitem").map((m) => m.textContent)).toEqual([
       "Rename…",
       "Regenerate title",
+      "Copy chat link",
       "Open in a second pane",
       // Snooze (ADR 0036)
       "1 hour",

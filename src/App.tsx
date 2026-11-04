@@ -31,6 +31,9 @@ import { isSetUp } from "./hermes/setup";
 import { isOutgoing, type Attachment, type Chat, type ConnectionStatus, type Found } from "./hermes/model";
 import type { ModelCatalog, ModelPick } from "./hermes/models";
 import { ChatList, Rail, leavingNote } from "./ui/Sidebar";
+import { type ChatLink, type ConnectionRefs, checkConnection, connectionKey, connectionLabel, connectionRefs, formatChatLink, locateChat, parseChatLink } from "./hermes/chatLinks";
+import { desktopLinks, type LinkInbox } from "./hermes/tauriLinks";
+import { ChatLinkNotice, type LinkNoticeView } from "./ui/ChatLinkNotice";
 import { Inbox } from "./ui/Inbox";
 import { inboxAcks, inboxEntries, inboxScope, needsOwner, type InboxEntry } from "./hermes/inbox";
 import { ChatPane, type JumpTarget } from "./ui/ChatPane";
@@ -146,6 +149,7 @@ const account: Account = {
 };
 
 const savedDrafts = drafts(localStorage);
+const savedConnectionRefs = connectionRefs(localStorage);
 const savedProjects = projectLinks(localStorage);
 const savedPersona = new PersonaStore(localStorage);
 // Applied as the app loads, so the chosen fonts show from the first screen.
@@ -185,8 +189,39 @@ function launch(): Promise<Launch> {
   })());
 }
 
-export default function App() {
+export default function App({ links = desktopLinks }: { links?: LinkInbox } = {}) {
   const [hermes, setHermes] = useState<Hermes | null>(null);
+  // A chat link the desktop opened (ADR 0037). One that isn't a chat link says why at once, on any screen. A good one
+  // waits here until Main takes it, so it opens once signed in.
+  const arrived = useSyncExternalStore(links.subscribe, links.getSnapshot);
+  // Until the link the app was started with has been read, an empty inbox doesn't mean there's none, so Main, which
+  // decides at once whether to reopen the last chat, waits.
+  const linksReady = useSyncExternalStore(links.subscribe, links.isReady);
+  // `at` tells Main a newer link, one that can't open, replaced whatever an older link was doing.
+  const [badLink, setBadLink] = useState<{ reason: string; at: number }>();
+  const goodLink = useMemo(() => {
+    if (!arrived) return undefined;
+    const parsed = parseChatLink(arrived.raw);
+    return parsed.ok ? { link: parsed.link, at: arrived.at } : undefined;
+  }, [arrived]);
+  useEffect(() => {
+    if (!arrived) return;
+    const parsed = parseChatLink(arrived.raw);
+    if (parsed.ok) return setBadLink(undefined);
+    setBadLink({ reason: parsed.reason, at: arrived.at });
+    links.clear(arrived.at);
+  }, [arrived]);
+  const linkNotice = badLink ? (
+    <ChatLinkNotice view={{ kind: "error", text: `Hermes Chat didn't open that link. ${badLink.reason}` }} onClose={() => setBadLink(undefined)} />
+  ) : (
+    goodLink &&
+    !hermes && (
+      <ChatLinkNotice
+        view={{ kind: "pending", text: `A chat link is waiting. It opens the chat in the ${goodLink.link.profile} profile once you're signed in. Nothing is sent.` }}
+        onClose={() => links.clear(goodLink.at)}
+      />
+    )
+  );
   // The sign-in screen's details; none while launch is signing in with the saved password.
   const [initial, setInitial] = useState<SignInDetails>();
   const [error, setError] = useState<string>();
@@ -280,7 +315,7 @@ export default function App() {
     return () => window.removeEventListener("focus", onFocus);
   }, []);
 
-  if (hermes)
+  if (hermes && linksReady)
     return (
       <>
         <Main
@@ -290,8 +325,11 @@ export default function App() {
           headers={headers}
           notSaved={notSaved}
           kept={kept}
-          reopenLast={coldStart}
+          reopenLast={coldStart && !goodLink}
           covered={!!setup}
+          link={goodLink}
+          linkSuperseded={badLink?.at}
+          onLinkTaken={(at) => links.clear(at)}
           onSetUp={async () => {
             // The connection in use, header values and all but the password; ServerFields clears the header values
             // if the URL changes, so they never go to another server.
@@ -311,19 +349,29 @@ export default function App() {
         }}
         />
         {setupLayer}
+        {linkNotice}
       </>
     );
-  if (setupLayer) return setupLayer;
-  if (!initial)
+  if (setupLayer)
+    return (
+      <>
+        {setupLayer}
+        {linkNotice}
+      </>
+    );
+  if (!initial || hermes)
     return (
       <div className="first-run">
         <div className="first-run-card">
           <div className="rail-brand big">H</div>
           <p className="muted">Signing in…</p>
         </div>
+        {linkNotice}
       </div>
     );
   return (
+    <>
+    {linkNotice}
     <SignIn
       initial={initial}
       error={error}
@@ -342,6 +390,7 @@ export default function App() {
         }
       }}
     />
+    </>
   );
 }
 
@@ -406,6 +455,10 @@ export function Main({
   guardClose = tauriCloseGuard,
   onSignOut,
   updates = appUpdates,
+  link,
+  linkSuperseded,
+  onLinkTaken,
+  refs = savedConnectionRefs,
   tray = tauriTray,
 }: {
   hermes: Hermes;
@@ -432,6 +485,13 @@ export function Main({
   guardClose?: CloseGuard;
   onSignOut: () => Promise<void>;
   updates?: Updater;
+  /** A chat link to open (ADR 0037); `at` tells one from the next. Main takes it with `onLinkTaken`. */
+  link?: { link: ChatLink; at: number };
+  onLinkTaken?: (at: number) => void;
+  /** When a newer link that can't open arrived: it replaces whatever an older link was doing, notice and all. */
+  linkSuperseded?: number;
+  /** The connection references chat links name (chatLinks.ts). */
+  refs?: ConnectionRefs;
   /** The tray icon and Close to tray (tray.rs, ADR 0034). */
   tray?: TrayWiring;
 }) {
@@ -758,10 +818,15 @@ export function Main({
   const patchPane = (key: string, patch: Partial<Pane>) => setPanes((ps) => ps.map((p) => (p.key === key ? { ...p, ...patch } : p)));
 
   // The active pane's chat is the one kept as the profile's last open chat, so it reopens at the next launch.
+  // Counts every move between chats, panes and profiles. A chat link that waited on Hermes checks it afterwards, so a
+  // move made meanwhile, even one that came back to the same chat, wins over the link (ADR 0037).
+  const navGen = useRef(0);
+
   const activate = (key: string) => {
     if (key === activeKeyRef.current) return;
     const pane = panes.find((p) => p.key === key);
     if (!pane) return;
+    navGen.current++;
     activeKeyRef.current = key;
     setActiveKey(key);
     rememberOpenChat(profile, pane.chatId);
@@ -773,6 +838,7 @@ export function Main({
   // `keepSettings`: the move isn't the owner's, so Settings stays on screen.
   const openChat = (id: string | null, { pane = active.key, remember = true, fresh = false, keepSettings = false } = {}) => {
     const go = () => {
+      navGen.current++;
       setPreviewHidden(true);
       patchPane(pane, { chatId: id, picked: undefined, jump: undefined, ...(fresh && { draftError: undefined }) });
       activeKeyRef.current = pane;
@@ -795,6 +861,7 @@ export function Main({
   const newChat = (remember = true) => openChat(null, { remember, fresh: true });
 
   const pick = (found: Found) => guard(() => {
+    navGen.current++;
     setPreviewHidden(true);
     hermes.reveal(found);
     patchPane(active.key, { chatId: found.chatId, picked: { found, at: Date.now() }, jump: undefined });
@@ -815,6 +882,7 @@ export function Main({
   // of it, with one transcript, one draft and one reply, each scrolled and searched on its own.
   const splitWith = (chatId: string | null) => guard(() => {
     if (split) return;
+    navGen.current++;
     setPreviewHidden(true);
     const key = newPaneKey();
     setPanes((ps) => (ps.length > 1 ? ps : [...ps, { key, chatId }]));
@@ -875,6 +943,7 @@ export function Main({
   const closePane = (key: string) => {
     const rest = panes.filter((p) => p.key !== key);
     if (!rest.length || rest.length === panes.length) return;
+    navGen.current++;
     setPanes(rest);
     activeKeyRef.current = rest[0].key;
     setActiveKey(rest[0].key);
@@ -894,8 +963,9 @@ export function Main({
 
   // The other profile's chats replace the list, so one pane stays, on a fresh draft. The profile left keeps its last
   // open chat for the next launch.
-  const switchProfile = (name: string) => guard(() => {
-    const keep = active.key;
+  const switchProfileNow = (name: string) => {
+    navGen.current++;
+    const keep = activeKeyRef.current;
     setGoTo(undefined);
     setFocusItem(undefined);
     setPanes([{ key: keep, chatId: null }]);
@@ -907,7 +977,8 @@ export function Main({
     setToast(null);
     setPreview(null);
     void hermes.switchProfile(name);
-  }, "profile");
+  };
+  const switchProfile = (name: string) => guard(() => switchProfileNow(name), "profile");
 
   // An inbox entry opens its chat, in its own profile, in the pane already showing it or else the active one. Another
   // profile is switched to first, the way the switcher does, and the chat opens once that profile's list has it.
@@ -1139,6 +1210,198 @@ export function Main({
     document.querySelector<HTMLTextAreaElement>(`[data-pane="${CSS.escape(key)}"] .composer textarea`)?.focus();
   };
 
+  // Chat links (ADR 0037). Everything is checked before anything moves: the link's connection is this one, Hermes is
+  // connected, the server has the profile and the profile has the chat. Only then does the app switch profile, asking
+  // first as the switcher does, and open the chat. A link that can't open changes nothing on screen, so the composer
+  // and its draft stay as they were. Nothing is ever sent. `attempt` tells a retry from the try it replaces, so an
+  // answer that comes back late, or after Cancel, is dropped.
+  type LinkJob = { link: ChatLink; at: number; attempt: number; stage: "check" | "wait" | "locate" | "confirm" | "switch"; found?: Found; from?: string; gen?: number };
+  const [linkJob, setLinkJob] = useState<LinkJob>();
+  const [linkError, setLinkError] = useState<LinkNoticeView>();
+  const linkJobRef = useRef(linkJob);
+  linkJobRef.current = linkJob;
+  const linkRan = useRef("");
+  const isCurrent = (job: LinkJob) => linkJobRef.current?.at === job.at && linkJobRef.current.attempt === job.attempt;
+  const hereLabel = connectionLabel(connectionKey(connection));
+  const failLink = (text: string, actions?: LinkNoticeView["actions"]) => {
+    linkJobRef.current = undefined;
+    setLinkJob(undefined);
+    setLinkError({ kind: "error", text, actions });
+  };
+  const retryLink = (job: LinkJob) => {
+    setLinkError(undefined);
+    const next: LinkJob = { link: job.link, at: job.at, attempt: job.attempt + 1, stage: "check" };
+    linkJobRef.current = next;
+    setLinkJob(next);
+  };
+
+  useEffect(() => {
+    if (!link) return;
+    onLinkTaken?.(link.at);
+    if (linkJobRef.current?.at === link.at) return;
+    setLinkError(undefined);
+    const job: LinkJob = { link: link.link, at: link.at, attempt: 0, stage: "check" };
+    linkJobRef.current = job;
+    setLinkJob(job);
+  }, [link?.at]);
+
+  // An unsaved edit in Settings asks first. Its answer may come after the link was cancelled or replaced, so the link
+  // is checked again then; Keep editing drops the link.
+  const stayed = (job: LinkJob) => () => {
+    if (isCurrent(job)) closeLinkNotice();
+  };
+
+  useEffect(() => {
+    if (linkSuperseded !== undefined) closeLinkNotice();
+  }, [linkSuperseded]);
+
+  const openLinked = (job: LinkJob, found: Found) => {
+    if (!isCurrent(job)) return;
+    guard(
+      () => {
+        if (!isCurrent(job) || hermes.profile !== job.link.profile) return;
+        linkJobRef.current = undefined;
+        setLinkJob(undefined);
+        hermes.reveal(found);
+        const pane = panesRef.current.find((p) => p.chatId === found.chatId)?.key ?? activeKeyRef.current;
+        // Already asked, just above.
+        openChat(found.chatId, { pane, keepSettings: true });
+        setSettingsOpen(false);
+        requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(`[data-pane="${CSS.escape(pane)}"] .composer textarea`)?.focus());
+      },
+      "leave",
+      stayed(job),
+    );
+  };
+
+  const switchForLink = (job: LinkJob, found: Found) => {
+    if (!isCurrent(job)) return;
+    const next: LinkJob = { ...job, stage: "switch", found, from: hermes.profile };
+    linkJobRef.current = next;
+    setLinkJob(next);
+    guard(
+      () => {
+        if (!isCurrent(next) || hermes.profile !== next.from) return;
+        switchProfileNow(job.link.profile);
+        // The switch itself is a move; only the owner's moves after it drop the link.
+        const switched: LinkJob = { ...next, gen: navGen.current };
+        linkJobRef.current = switched;
+        setLinkJob(switched);
+      },
+      "profile",
+      stayed(next),
+    );
+  };
+
+  const runLink = async (job: LinkJob) => {
+    const key = `${job.at}/${job.attempt}`;
+    if (linkRan.current === key || !isCurrent(job)) return;
+    linkRan.current = key;
+    const p = job.link.profile;
+    const conn = checkConnection(job.link, connection, refs);
+    if (conn.kind === "other")
+      return failLink(
+        `This link is for ${conn.label}, not the connection signed in now (${hereLabel}). To open it, connect to ${conn.label} in Setup, then open the link again.`,
+        onSetUp ? [{ label: "Open Setup", onClick: () => (setLinkError(undefined), guard(onSetUp)) }] : undefined,
+      );
+    if (conn.kind === "unknown")
+      return failLink(
+        `This link is for a connection this computer doesn't know, perhaps one from another computer. Links carry no server address or sign-in, so Hermes Chat won't connect anywhere for it. If the chat is on ${hereLabel}, you can open it here.`,
+        [{ label: "Open it here", onClick: () => (refs.alias(job.link.connection, connection), retryLink(job)) }],
+      );
+    if (hermes.getSnapshot().status !== "connected") {
+      const next: LinkJob = { ...job, stage: "wait" };
+      linkJobRef.current = next;
+      return setLinkJob(next);
+    }
+    const looking: LinkJob = { ...job, stage: "locate" };
+    linkJobRef.current = looking;
+    setLinkJob(looking);
+    // Going anywhere while the lookup runs, to another profile or chat, even back again, is newer than the link, so
+    // its answer is dropped.
+    const startedAt = navGen.current;
+    const startedIn = hermes.profile;
+    const movedOn = () => {
+      if (navGen.current === startedAt && hermes.profile === startedIn) return false;
+      if (isCurrent(job)) closeLinkNotice();
+      return true;
+    };
+    let located: Awaited<ReturnType<typeof locateChat<Found>>>;
+    try {
+      located = await locateChat<Found>(job.link, hermes);
+    } catch (e) {
+      if (!isCurrent(job) || movedOn()) return;
+      return failLink(`Hermes Chat couldn't look the linked chat up: ${messageOf(e)}`, [{ label: "Try again", onClick: () => retryLink(job) }]);
+    }
+    if (!isCurrent(job) || movedOn()) return;
+    if (located.kind === "no-profile")
+      return failLink(`This server has no profile named ${p} now. It may have been renamed or deleted, so the linked chat wasn't opened.`);
+    if (located.kind === "no-chat")
+      return failLink(`The ${p} profile has no chat with this link's id. It may have been deleted, so there's nothing to open.`);
+    const found = located.found;
+    if (p === hermes.profile) return openLinked(job, found);
+    const snap = hermes.getSnapshot();
+    if (leavingNote(snap.profile, snap.chats)) {
+      const next: LinkJob = { ...job, stage: "confirm", found };
+      linkJobRef.current = next;
+      return setLinkJob(next);
+    }
+    switchForLink(job, found);
+  };
+
+  useEffect(() => {
+    if (linkJob?.stage === "check") void runLink(linkJob);
+    // Hermes connected (or came back) while the link waited.
+    else if (linkJob?.stage === "wait" && status === "connected") retryLink(linkJob);
+  }, [linkJob, status]);
+
+  // The switch to the linked chat's profile: it opens once that profile's list has been read. The owner going to
+  // a third profile meanwhile drops it; still in the first one, the switch may be waiting on an unsaved edit's question.
+  useEffect(() => {
+    if (linkJob?.stage !== "switch" || !linkJob.found) return;
+    // The owner went somewhere while the profile loaded.
+    if (linkJob.gen !== undefined && navGen.current !== linkJob.gen) return closeLinkNotice();
+    if (profile !== linkJob.link.profile) {
+      if (profile !== linkJob.from) closeLinkNotice();
+      return;
+    }
+    if (switching?.error) return failLink(`Hermes Chat switched to ${profile} but couldn't load its chats: ${switching.error}`);
+    if (!switching) openLinked(linkJob, linkJob.found);
+  }, [linkJob, profile, switching]);
+
+  const linkView: LinkNoticeView | undefined =
+    linkError ??
+    (linkJob &&
+      (linkJob.stage === "confirm" && linkJob.found
+        ? {
+            kind: "confirm",
+            text: `${leavingNote(profile, chats) ?? ""} Switch to ${linkJob.link.profile} to open the linked chat?`.trim(),
+            actions: [{ label: `Switch to ${linkJob.link.profile}`, onClick: () => switchForLink(linkJob, linkJob.found!) }],
+          }
+        : {
+            kind: "pending",
+            text:
+              linkJob.stage === "wait"
+                ? `The linked chat opens once Hermes is connected. Nothing is sent.`
+                : linkJob.stage === "switch"
+                  ? `Switching to ${linkJob.link.profile} to open the linked chat…`
+                  : `Opening the linked chat in ${linkJob.link.profile}…`,
+          }));
+  const closeLinkNotice = () => {
+    linkJobRef.current = undefined;
+    setLinkJob(undefined);
+    setLinkError(undefined);
+  };
+
+  /** Copies a link that opens `chat`, in this connection and profile, in Hermes Chat on this computer. */
+  const copyChatLink = (chat: Chat) => {
+    const url = formatChatLink({ connection: refs.refFor(connection), profile, chatId: chat.id });
+    const done = () => setToast({ text: "Chat link copied. It opens this chat in Hermes Chat on this computer.", at: Date.now() });
+    const failed = (e?: unknown) => setToast({ text: `Couldn't copy the chat link${e ? `: ${messageOf(e)}` : "."}`, at: Date.now() });
+    if (!navigator.clipboard?.writeText) return failed();
+    navigator.clipboard.writeText(url).then(done, failed);
+  };
+
   useEffect(() => {
     // Only Ctrl/Cmd chords and Alt+Up/Down, never mid-composition. No bare key does anything app-wide, so nothing
     // typed with focus outside an input can answer an Approval or stop a reply.
@@ -1284,6 +1547,7 @@ export function Main({
           }
           onSettle={(s) => setSettled(chat.id, s)}
           onExport={() => exportChatOnScreen(chat)}
+          onCopyLink={() => copyChatLink(chat)}
           onArchive={(a) => setArchived(chat.id, a)}
           onNew={() => newChat()}
           onDelete={() => deleteChat(chat.id)}
@@ -1529,6 +1793,7 @@ export function Main({
           onDelete={deleteChat}
           onRename={(id, title, from) => hermes.rename(id, title, from)}
           onRegenTitle={(id) => hermes.regenerateTitle(id)}
+          onCopyLink={copyChatLink}
           onTextGenerationSettings={() => {
             setProjectOpen(false);
             setFilesOpen(false);
@@ -1866,6 +2131,7 @@ export function Main({
           onClose={() => setMembershipOpen(false)}
         />
       )}
+      {linkView && <ChatLinkNotice view={linkView} onClose={closeLinkNotice} />}
       {toast && (
         <div className="toast" key={toast.at} role="status">
           <span>{toast.text}</span>
@@ -1979,6 +2245,7 @@ function ChatView({
   onMemorySettings,
   onSettle,
   onExport,
+  onCopyLink,
   onArchive,
   onNew,
   onDelete,
@@ -2025,6 +2292,7 @@ function ChatView({
   onMemorySettings?: () => void;
   onSettle: (settled: boolean) => void;
   onExport: () => void;
+  onCopyLink: () => void;
   onArchive: (archived: boolean) => void;
   onNew: () => void;
   /** Deletes the chat once the owner has confirmed it; resolves with whether Hermes deleted it. */
@@ -2307,6 +2575,7 @@ function ChatView({
       onAnswer={(approvalId, choice, confirmed) => void hermes.answerApproval(chat.id, approvalId, choice, confirmed)}
       onSettle={started ? onSettle : undefined}
       onExport={started ? onExport : undefined}
+      onCopyLink={started ? onCopyLink : undefined}
       onArchive={started ? onArchive : undefined}
       active={active}
       visible={visible}
