@@ -696,7 +696,8 @@ impl Dashboard {
     /// `PUT api/profiles/{name}/soul`, and Settings → Toolsets' switch, `PUT api/tools/toolsets/<name>` with exactly
     /// `{"enabled": true|false}` (`toolset_toggle_allowed`), Settings → Skills' two writes, `PUT api/skills/toggle` and
     /// `PUT api/skills/content` with exactly their fields (`skill_write_allowed`), and Import transcripts'
-    /// `POST api/sessions/import` whose every session is marked `source: "import"` (`import_body_allowed`, ADR 0031).
+    /// `POST api/sessions/import` whose every session is marked `source: "import"` (`import_body_allowed`, ADR 0031),
+    /// and the Automations writes (`webhook_write`, ADR 0036).
     /// Returns the response body on 2xx.
     pub async fn request(&self, method: &str, path_and_query: &str, body: Option<String>) -> Result<String, TransportError> {
         let (path, query) = path_and_query.split_once('?').unwrap_or((path_and_query, ""));
@@ -710,6 +711,8 @@ impl Dashboard {
             ("PUT", _) if cron_write("PUT", path) => Method::PUT,
             ("PUT", _) if toolset_toggle_allowed(path, body.as_deref()) => Method::PUT,
             ("PUT", _) if skill_write_allowed(path, body.as_deref()) => Method::PUT,
+            ("POST", _) if webhook_write("POST", path, body.as_deref()) => Method::POST,
+            ("PUT", _) if webhook_write("PUT", path, body.as_deref()) => Method::PUT,
             ("PUT", p) if is_profile_soul(p) => Method::PUT,
             ("POST", "api/sessions/import") if import_body_allowed(body.as_deref()) => Method::POST,
             ("POST" | "PUT", _) => return Err(TransportError::NotRelayed(format!("{method} {path}"))),
@@ -1345,6 +1348,42 @@ pub fn toolset_toggle_allowed(path: &str, body: Option<&str>) -> bool {
     }
 }
 
+/// The Automations writes (ADR 0036, Hermes's `/api/webhooks` routes and the `webhooks/1` contract): `POST
+/// api/webhooks` creates a route, `PUT api/webhooks/{name}` edits one, `PUT api/webhooks/{name}/enabled` pauses or
+/// resumes one, and `POST api/webhooks/{name}/deliveries/{id}/retry` retries a failed delivery. The route name is one
+/// segment as Hermes names routes, the delivery id one unreserved segment. Each body is a JSON object with only the
+/// keys the app sends: never a `secret` (Hermes makes secrets, or reads them from its own environment), never
+/// `deliver_only`, and nothing reaches `POST api/webhooks/enable`, which rewrites the config and restarts the gateway.
+fn webhook_write(method: &str, path: &str, body: Option<&str>) -> bool {
+    let Some(rest) = path.strip_prefix("api/webhooks") else { return false };
+    let name_ok = |n: &str| {
+        // Hermes's route-name rule (`^[a-z0-9][a-z0-9_-]*$`, no length limit); 200 covers any route it lists.
+        (1..=200).contains(&n.len())
+            && (n.as_bytes()[0].is_ascii_lowercase() || n.as_bytes()[0].is_ascii_digit())
+            && n.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+    };
+    let id_ok = |i: &str| (1..=200).contains(&i.len()) && i != "." && i != ".." && i.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~'));
+    let keys: &[&str] = match (method, rest.strip_prefix('/').map(|r| r.split('/').collect::<Vec<_>>()).as_deref()) {
+        ("POST", None) if rest.is_empty() => &[
+            "name", "description", "events", "prompt", "skills", "deliver", "deliver_chat_id", "script", "provider", "filters", "coalesce",
+            "secret_env", "enabled", "create_only",
+        ],
+        ("PUT", Some([name])) if name_ok(name) => &[
+            "revision", "description", "events", "prompt", "skills", "deliver", "deliver_chat_id", "provider", "filters", "coalesce", "secret_env",
+            "rotate_secret",
+        ],
+        ("PUT", Some([name, "enabled"])) if name_ok(name) => &["enabled"],
+        ("POST", Some([name, "deliveries", id, "retry"])) if name_ok(name) && id_ok(id) => &["idempotency_key", "confirm_side_effects"],
+        _ => return false,
+    };
+    let Some(fields) = body.and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok()).and_then(|v| v.as_object().cloned()) else {
+        return false;
+    };
+    let only_known = fields.keys().all(|k| keys.contains(&k.as_str()));
+    let enabled_ok = keys != ["enabled"] || matches!(fields.get("enabled"), Some(serde_json::Value::Bool(_)));
+    only_known && enabled_ok
+}
+
 /// Whether a `PUT` is one of Settings → Skills' two writes (`hermes_cli/web_routers/skills.py`): `api/skills/toggle`
 /// with exactly `{"name": <skill>, "enabled": true|false}`, or `api/skills/content` with exactly
 /// `{"name": <skill>, "content": <text>}`. The profile goes in the query, never the body. A skill name is one line of at
@@ -1730,7 +1769,49 @@ impl Dashboard {
 
 #[cfg(test)]
 mod tests {
-    use super::provider_key_name;
+    use super::{provider_key_name, webhook_write};
+
+    #[test]
+    fn only_the_automations_writes() {
+        for (method, path, body) in [
+            ("POST", "api/webhooks", r#"{"name":"triage","events":["issues"],"prompt":"p","filters":[],"create_only":true}"#),
+            ("PUT", "api/webhooks/triage", r#"{"revision":"abc","prompt":"p","rotate_secret":true}"#),
+            ("PUT", "api/webhooks/triage-2_x/enabled", r#"{"enabled":false}"#),
+            ("POST", "api/webhooks/triage/deliveries/7b1c0a10-0000-4000-8000-000000000001~retry~ab12/retry", r#"{"idempotency_key":"k","confirm_side_effects":true}"#),
+        ] {
+            assert!(webhook_write(method, path, Some(body)), "{method} {path} {body}");
+        }
+        // Every route Hermes lists stays manageable, the editor's longest new name (64) and beyond.
+        let long = |n: usize| format!("api/webhooks/{}/enabled", "a".repeat(n));
+        assert!(webhook_write("PUT", &long(65), Some(r#"{"enabled":false}"#)));
+        assert!(webhook_write("PUT", &long(200), Some(r#"{"enabled":false}"#)));
+        assert!(!webhook_write("PUT", &long(201), Some(r#"{"enabled":false}"#)));
+        for (method, path, body) in [
+            // A secret never goes through the webview, and direct delivery isn't set from here.
+            ("POST", "api/webhooks", r#"{"name":"triage","secret":"s"}"#),
+            ("POST", "api/webhooks", r#"{"name":"triage","deliver_only":true}"#),
+            ("PUT", "api/webhooks/triage", r#"{"revision":"r","secret":"s"}"#),
+            // The platform switch rewrites the config and restarts the gateway.
+            ("POST", "api/webhooks/enable", r#"{}"#),
+            ("PUT", "api/webhooks/triage/enabled", r#"{"enabled":"no"}"#),
+            ("PUT", "api/webhooks/triage/enabled", r#"{"enabled":true,"profile":"x"}"#),
+            ("PUT", "api/webhooks/Triage", r#"{"revision":"r"}"#),
+            ("PUT", "api/webhooks/-x", r#"{"revision":"r"}"#),
+            ("PUT", "api/webhooks/..", r#"{"revision":"r"}"#),
+            ("PUT", "api/webhooks/a%2Fb", r#"{"revision":"r"}"#),
+            ("PUT", "api/webhooks", r#"{"name":"x"}"#),
+            ("POST", "api/webhooks/triage", r#"{"name":"x"}"#),
+            ("POST", "api/webhooks/triage/deliveries/../retry", r#"{"idempotency_key":"k"}"#),
+            ("POST", "api/webhooks/triage/deliveries/a%2Fb/retry", r#"{"idempotency_key":"k"}"#),
+            ("POST", "api/webhooks/triage/deliveries/x/retry/now", r#"{"idempotency_key":"k"}"#),
+            ("POST", "api/webhooksx", r#"{"name":"x"}"#),
+            ("POST", "api/webhooks", "not json"),
+            ("POST", "api/webhooks", "[]"),
+        ] {
+            assert!(!webhook_write(method, path, Some(body)), "{method} {path} {body}");
+        }
+        assert!(!webhook_write("POST", "api/webhooks", None));
+    }
 
     #[test]
     fn only_provider_key_names() {

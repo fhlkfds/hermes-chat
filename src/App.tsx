@@ -10,7 +10,8 @@ import { type Account, type Kept, type SavedSignIn, launchSignIn, savedSignIn, s
 import { localChatCache } from "./hermes/chatCache";
 import { draftKey, drafts } from "./hermes/drafts";
 import { PersonaStore, personaKey } from "./hermes/personaStore";
-import { sending, type Sending } from "./hermes/unsaved";
+import { sending, unsaved, type Sending } from "./hermes/unsaved";
+import { connOf, restoreBlocked, savedBackupEnv } from "./hermes/backup";
 import { chatToReopen, forgetOpenChat, rememberOpenChat } from "./hermes/uiPrefs";
 import { exportChat } from "./hermes/exportChat";
 import { PROJECTS_KEY, projectLinks, projectScope } from "./hermes/projectLinks";
@@ -22,25 +23,34 @@ import { appUpdates } from "./hermes/tauriUpdates";
 import { needsAttention, type Updater } from "./hermes/updates";
 import { desktopNotify } from "./hermes/tauriNotify";
 import { ScreenshotDesk, type ScreenshotApi } from "./hermes/screenshots";
+import { desktopSummon, type SummonApi } from "./hermes/summon";
 import { onDesktopScreenshot, screenshotSupport, showWindow, syncScreenshotOutbox, tauriScreenshots, type ScreenshotSupport } from "./hermes/tauriScreenshot";
 import { checkShortcut, shortcutLabel, shortcutOf } from "./ui/shortcut";
 
 import { tauriPipe, tauriProbe, type SignInDetails } from "./hermes/tauriPipe";
 import { isSetUp } from "./hermes/setup";
-import { isOutgoing, type Attachment, type Chat, type ConnectionStatus, type Found } from "./hermes/model";
+import { isOutgoing, isWaiting, type Attachment, type Chat, type ConnectionStatus, type Found } from "./hermes/model";
 import type { ModelCatalog, ModelPick } from "./hermes/models";
 import { ChatList, Rail, leavingNote } from "./ui/Sidebar";
+import { type ChatLink, type ConnectionRefs, checkConnection, connectionKey, connectionLabel, connectionRefs, formatChatLink, locateChat, parseChatLink } from "./hermes/chatLinks";
+import { desktopLinks, type LinkInbox } from "./hermes/tauriLinks";
+import { ChatLinkNotice, type LinkNoticeView } from "./ui/ChatLinkNotice";
 import { Inbox } from "./ui/Inbox";
 import { inboxAcks, inboxEntries, inboxScope, needsOwner, type InboxEntry } from "./hermes/inbox";
 import { ChatPane, type JumpTarget } from "./ui/ChatPane";
 import { BranchDialog, BranchedFrom } from "./ui/Branch";
+import { MembershipDialog, MembershipStatus, needsOwner as membershipNeedsOwner } from "./ui/MembershipSync";
+import { ReplayDialog } from "./ui/Replay";
+import { replayBlocked, variantsIn, type ReplayKind } from "./hermes/replay";
 import { branchBlocked, type BranchLink } from "./hermes/branch";
 import type { QueueApi } from "./ui/Queue";
 import { PANE_NAMES, Split, usePaneVisible, type PaneSlot } from "./ui/Split";
 import type { VoiceApi } from "./ui/Voice";
 import { SearchPalette } from "./ui/Search";
 import { SavedFilters, TagManager } from "./ui/Tags";
+import { useSnoozeClock } from "./ui/Snooze";
 import { TagsStore, savedTagsFile, type SavedFilter } from "./hermes/tags";
+import { AttentionClock, SNOOZE_KEY, SnoozeStore, chatSections, wakeFull } from "./hermes/snooze";
 import { runFilter } from "./hermes/chatFilter";
 import { SettingsScreen, type PersonaWiring } from "./ui/Settings";
 import { LeavePersona, type LeaveWhat } from "./ui/LeavePersona";
@@ -51,12 +61,18 @@ import { tauriCloseGuard, type CloseGuard } from "./ui/tauriWindow";
 import { FileBrowser } from "./ui/FileBrowser";
 import { OutputsScreen, type OutputsScope } from "./ui/Outputs";
 import { UsageAnalytics } from "./ui/UsageAnalytics";
+import { LogsScreen } from "./ui/Logs";
+import { note } from "./hermes/logs";
 import { OutputsIndex, outputsIn, splitPath, type Output } from "./hermes/outputs";
-import { composing, routeLabel } from "./ui/bits";
+import { STATUS_LABEL, composing, routeLabel } from "./ui/bits";
 import { ProjectScreen, ProjectSwitcher, type ProjectUnread } from "./ui/Projects";
 import { ScheduledJobs } from "./ui/ScheduledJobs";
+import { Automations } from "./ui/Automations";
 import { tauriLocalTerminal, tauriTerminal } from "./ui/tauriTerminal";
 import { TERMINAL_TARGET_KEY, terminalTarget, type TerminalKind } from "./hermes/terminal";
+import { REPO_PATH_KEY, REPO_RECENT_KEY, REPO_TARGET_KEY, readRecent, remember, repoTarget } from "./hermes/repo";
+import { RepositoryScreen } from "./ui/Repository";
+import { tauriRepo } from "./ui/tauriRepo";
 import { ApplyDefaults, NewChatSettingsView } from "./ui/ProjectDefaultsNotes";
 import { appearanceStore } from "./ui/appearance";
 import { StatusBar } from "./ui/StatusBar";
@@ -71,7 +87,19 @@ import { PreviewContext } from "./ui/previewContext";
 import { tauriLocalFiles, tauriWebPages, type LocalFiles, type WebPages } from "./ui/tauriPreview";
 import type { PreviewTarget } from "./hermes/preview";
 import type { Route } from "./hermes/pipe";
+import { tauriTray, type TrayWiring } from "./hermes/tauriTray";
+import { useWindowHidden } from "./ui/windowState";
 import { getUIPrefs, setUIPrefs, subscribe as subscribeUIPrefs, toggleModelFavorite, type StickyModelPick } from "./hermes/uiPrefs";
+
+/** Keeps the repository folder opened last, and the recent ones, on this computer (Repository screen, ADR 0034). */
+function rememberRepo(top: string) {
+  try {
+    localStorage.setItem(REPO_PATH_KEY, top);
+    localStorage.setItem(REPO_RECENT_KEY, JSON.stringify(remember(readRecent(localStorage.getItem(REPO_RECENT_KEY)), top)));
+  } catch {
+    // A full or unavailable localStorage only loses the memory of the folder.
+  }
+}
 
 // xterm.js is loaded only once the Terminal is first opened.
 const TerminalTab = lazy(() => import("./ui/Terminal").then((m) => ({ default: m.TerminalTab })));
@@ -139,10 +167,12 @@ const account: Account = {
 };
 
 const savedDrafts = drafts(localStorage);
+const savedConnectionRefs = connectionRefs(localStorage);
 const savedProjects = projectLinks(localStorage);
 const savedPersona = new PersonaStore(localStorage);
 // Applied as the app loads, so the chosen fonts show from the first screen.
 const appearance = appearanceStore(localStorage, document.documentElement);
+const backupEnv = savedBackupEnv();
 
 /** The names of the extra request headers a sign-in sends; only a URL sends them. */
 const headerNames = (d: SignInDetails) => (d.mode === "url" ? (d.headers ?? []).map((h) => h.name.trim()) : []);
@@ -178,8 +208,39 @@ function launch(): Promise<Launch> {
   })());
 }
 
-export default function App() {
+export default function App({ links = desktopLinks }: { links?: LinkInbox } = {}) {
   const [hermes, setHermes] = useState<Hermes | null>(null);
+  // A chat link the desktop opened (ADR 0037). One that isn't a chat link says why at once, on any screen. A good one
+  // waits here until Main takes it, so it opens once signed in.
+  const arrived = useSyncExternalStore(links.subscribe, links.getSnapshot);
+  // Until the link the app was started with has been read, an empty inbox doesn't mean there's none, so Main, which
+  // decides at once whether to reopen the last chat, waits.
+  const linksReady = useSyncExternalStore(links.subscribe, links.isReady);
+  // `at` tells Main a newer link, one that can't open, replaced whatever an older link was doing.
+  const [badLink, setBadLink] = useState<{ reason: string; at: number }>();
+  const goodLink = useMemo(() => {
+    if (!arrived) return undefined;
+    const parsed = parseChatLink(arrived.raw);
+    return parsed.ok ? { link: parsed.link, at: arrived.at } : undefined;
+  }, [arrived]);
+  useEffect(() => {
+    if (!arrived) return;
+    const parsed = parseChatLink(arrived.raw);
+    if (parsed.ok) return setBadLink(undefined);
+    setBadLink({ reason: parsed.reason, at: arrived.at });
+    links.clear(arrived.at);
+  }, [arrived]);
+  const linkNotice = badLink ? (
+    <ChatLinkNotice view={{ kind: "error", text: `Hermes Chat didn't open that link. ${badLink.reason}` }} onClose={() => setBadLink(undefined)} />
+  ) : (
+    goodLink &&
+    !hermes && (
+      <ChatLinkNotice
+        view={{ kind: "pending", text: `A chat link is waiting. It opens the chat in the ${goodLink.link.profile} profile once you're signed in. Nothing is sent.` }}
+        onClose={() => links.clear(goodLink.at)}
+      />
+    )
+  );
   // The sign-in screen's details; none while launch is signing in with the saved password.
   const [initial, setInitial] = useState<SignInDetails>();
   const [error, setError] = useState<string>();
@@ -273,7 +334,7 @@ export default function App() {
     return () => window.removeEventListener("focus", onFocus);
   }, []);
 
-  if (hermes)
+  if (hermes && linksReady)
     return (
       <>
         <Main
@@ -283,8 +344,11 @@ export default function App() {
           headers={headers}
           notSaved={notSaved}
           kept={kept}
-          reopenLast={coldStart}
+          reopenLast={coldStart && !goodLink}
           covered={!!setup}
+          link={goodLink}
+          linkSuperseded={badLink?.at}
+          onLinkTaken={(at) => links.clear(at)}
           onSetUp={async () => {
             // The connection in use, header values and all but the password; ServerFields clears the header values
             // if the URL changes, so they never go to another server.
@@ -304,19 +368,29 @@ export default function App() {
         }}
         />
         {setupLayer}
+        {linkNotice}
       </>
     );
-  if (setupLayer) return setupLayer;
-  if (!initial)
+  if (setupLayer)
+    return (
+      <>
+        {setupLayer}
+        {linkNotice}
+      </>
+    );
+  if (!initial || hermes)
     return (
       <div className="first-run">
         <div className="first-run-card">
           <div className="rail-brand big">H</div>
           <p className="muted">Signing in…</p>
         </div>
+        {linkNotice}
       </div>
     );
   return (
+    <>
+    {linkNotice}
     <SignIn
       initial={initial}
       error={error}
@@ -335,6 +409,7 @@ export default function App() {
         }
       }}
     />
+    </>
   );
 }
 
@@ -394,10 +469,16 @@ export function Main({
   localFiles = tauriLocalFiles,
   webPages = tauriWebPages,
   screenshots = tauriScreenshotWiring,
+  summon = desktopSummon,
   personaStore = savedPersona,
   guardClose = tauriCloseGuard,
   onSignOut,
   updates = appUpdates,
+  link,
+  linkSuperseded,
+  onLinkTaken,
+  refs = savedConnectionRefs,
+  tray = tauriTray,
 }: {
   hermes: Hermes;
   connection: SavedSignIn;
@@ -415,12 +496,23 @@ export function Main({
   localFiles?: LocalFiles;
   webPages?: WebPages;
   screenshots?: Screenshots;
+  /** The global shortcut (ADR 0033); none outside the desktop app. */
+  summon?: SummonApi;
   /** Where Settings → Persona keeps unsaved edits and replaced versions on this computer. */
   personaStore?: PersonaStore;
   /** Asks before the window closes; registered only while Settings → Persona holds an unsaved edit. */
   guardClose?: CloseGuard;
   onSignOut: () => Promise<void>;
   updates?: Updater;
+  /** A chat link to open (ADR 0037); `at` tells one from the next. Main takes it with `onLinkTaken`. */
+  link?: { link: ChatLink; at: number };
+  onLinkTaken?: (at: number) => void;
+  /** When a newer link that can't open arrived: it replaces whatever an older link was doing, notice and all. */
+  linkSuperseded?: number;
+  /** The connection references chat links name (chatLinks.ts). */
+  refs?: ConnectionRefs;
+  /** The tray icon and Close to tray (tray.rs, ADR 0034). */
+  tray?: TrayWiring;
 }) {
   const { profile, chats, olderPulled, archivedListed, status, route, unsecure, closedReason, syncError, others, live, models, switching, branchNews } = useSyncExternalStore(
     hermes.subscribe,
@@ -500,14 +592,20 @@ export function Main({
   );
   // The project screen covers the chat pane, as Settings does.
   const [projectOpen, setProjectOpen] = useState(false);
+  // The membership sync's dialog: the move to Hermes, and conflicts with another computer (ADR 0033).
+  const [membershipOpen, setMembershipOpen] = useState(false);
   /** The Scheduled jobs screen covers the chat, as Settings does. */
   const [jobsOpen, setJobsOpen] = useState(false);
-  // The side panel's Terminal (ADR 0022, ADR 0033): which shell is shown, and which are running, for the rail's dot.
+  /** Automations (webhook routes, ADR 0036) cover the chat too. */
+  const [automationsOpen, setAutomationsOpen] = useState(false);
+  // The side panel's Terminal (ADR 0022, ADR 0039): which shell is shown, and which are running, for the rail's dot.
   const [termKind, setTermKind] = useState<TerminalKind>("server");
   const [termRunning, setTermRunning] = useState<Record<TerminalKind, boolean>>({ server: false, local: false });
   const terminalRunning = termRunning.server || termRunning.local;
   // The owner holds Hermes's screen: its computer use waits until they hand back, so the Screen tab says so.
   const [screenHeld, setScreenHeld] = useState(false);
+  // The Repository screen covers the chat panes too (ADR 0034).
+  const [repoOpen, setRepoOpen] = useState(false);
   // The side panel's Files: the folder open last stays for this sign-in. `filesKey` opens it at `filesPath` again.
   const [filesPath, setFilesPath] = useState<string>();
   const [filesKey, setFilesKey] = useState(0);
@@ -517,6 +615,8 @@ export function Main({
   // Usage analytics covers the chat panes too (ADR 0026). It reads Hermes afresh each time it opens.
   const [usageOpen, setUsageOpen] = useState(false);
   const usageIo = useMemo(() => hermes.usageIo(), [hermes]);
+  // Logs covers the chat panes too (ADR 0033). What it read goes when it closes; this app's own diagnostics stay.
+  const [logsOpen, setLogsOpen] = useState(false);
   const listProfiles = useCallback(() => hermes.profiles(), [hermes]);
   const update = useSyncExternalStore(updates.subscribe, updates.getSnapshot);
   const updateWaiting = needsAttention(update);
@@ -541,6 +641,16 @@ export function Main({
   const split = panes.length > 1;
   const [listOpen, setListOpen] = useState(true);
   const [toast, setToast] = useState<Toast | null>(notSaved ? { text: notSaved, at: Date.now() } : null);
+  // This app's diagnostics for the Logs screen (ADR 0033): the connection's changes, and the failures the app showed.
+  useEffect(() => {
+    note(status === "connected" ? "INFO" : "WARNING", `Connection to ${routeLabel(route) ?? "Hermes"}, profile ${profile}: ${STATUS_LABEL[status]}${status !== "connected" && closedReason ? ` (${closedReason})` : ""}`);
+  }, [status, closedReason, profile]);
+  useEffect(() => {
+    if (syncError) note("WARNING", `Chat list: ${syncError}`);
+  }, [syncError]);
+  useEffect(() => {
+    if (toast) note("WARNING", `Shown: ${toast.text}`);
+  }, [toast]);
   // What became of a branch whose answer was lost, once the chat list settled it (ADR 0027).
   useEffect(() => {
     if (branchNews) setToast({ text: branchNews.text, at: branchNews.at });
@@ -574,7 +684,7 @@ export function Main({
   const catalog = models?.profile === profile ? models : undefined;
   const sticky: ModelPick | undefined = modelPicker?.profile === profile ? withoutProfile(modelPicker) : catalog?.defaultPick;
 
-  // The side panel beside the chat (ADR 0033): its tab, and whether it is open. Once opened it stays mounted for this
+  // The side panel beside the chat (ADR 0039): its tab, and whether it is open. Once opened it stays mounted for this
   // sign-in, hidden while closed, so a shell or the screen in it keeps running. `panelHidden`: in a window too narrow
   // for both, the panel covers the chat, and the owner has gone back to the chat without closing it.
   const [panelTab, setPanelTab] = useState<PanelTab>("preview");
@@ -640,6 +750,25 @@ export function Main({
     window.addEventListener("focus", back);
     return () => window.removeEventListener("focus", back);
   }, [tagsStore]);
+  // Snoozes: kept on this computer for each connection and profile, never sent to Hermes (snooze.ts, ADR 0036).
+  const snoozeStore = useMemo(() => new SnoozeStore(localStorage, scope), [scope]);
+  const snoozes = useSyncExternalStore(snoozeStore.subscribe, snoozeStore.getSnapshot);
+  // Renders again when the next snooze wakes, so a chat's header stops saying Snoozed then.
+  const snoozeNow = useSnoozeClock(snoozes);
+  const snoozedNow = (chatId: string) => ((snoozes[chatId] ?? 0) > snoozeNow ? snoozes[chatId] : undefined);
+  useEffect(() => {
+    const changed = (e: StorageEvent) => e.key === SNOOZE_KEY && snoozeStore.reread();
+    window.addEventListener("storage", changed);
+    return () => window.removeEventListener("storage", changed);
+  }, [snoozeStore]);
+  // Sending a message from this app wakes a snoozed chat, as it makes a Settled one active again (ADR 0002).
+  useEffect(
+    () => hermes.onSend((sentIn, chatId) => sentIn === profile && snoozeStore.isSnoozed(chatId) && snoozeStore.wake(chatId)),
+    [hermes, profile, snoozeStore],
+  );
+  // When each chat last stopped working, so the list puts it at the top then (snooze.ts). Noted on every change.
+  const attention = useMemo(() => new AttentionClock(), [scope]);
+  attention.observe(chats, Date.now(), status === "connected");
   const tagChange = (fn: () => Promise<unknown>) =>
     fn().catch((e) => setToast({ text: (e as Error).message, at: Date.now() }));
   const openSearch = (start?: SavedFilter) => {
@@ -648,9 +777,11 @@ export function Main({
   };
   const openSettings = () => {
     setProjectOpen(false);
-    setJobsOpen(false);
+    setJobsOpen(false); setAutomationsOpen(false);
+    setRepoOpen(false);
     setOutputsOpen(false);
     setUsageOpen(false);
+    setLogsOpen(false);
     setShowTextGeneration(undefined);
     setShowMemory(undefined);
     setSettingsOpen(true);
@@ -709,6 +840,13 @@ export function Main({
   // Writes only when a resumed chat shows cards a dismissed waiting session covered.
   useEffect(() => acks.keepCovered(inbox.entries));
   const inboxCount = inboxShown.filter(needsOwner).length;
+  // A restore reloads the app on what it wrote, so it waits for replies and Approvals, here or in another profile, and
+  // for any draft or queue this computer couldn't keep (ADR 0038).
+  const workingRef = useRef(false);
+  const working = chats.some((c) => c.running || c.items.some(isWaiting)) || inbox.entries.some((e) => e.kind === "running" || (e.kind === "approval" && !e.ended));
+  workingRef.current = working;
+  // Read when the restore dialog renders and again just before it writes: sends and refused writes aren't React state.
+  const restoreBusy = () => restoreBlocked({ working: workingRef.current, unsaved: unsaved.size, sending: sending.size });
   // Settings → Persona edits this connection and profile's SOUL.md; its edits are kept apart per connection and profile.
   const persona: PersonaWiring = {
     api: hermes.persona,
@@ -722,10 +860,15 @@ export function Main({
   const patchPane = (key: string, patch: Partial<Pane>) => setPanes((ps) => ps.map((p) => (p.key === key ? { ...p, ...patch } : p)));
 
   // The active pane's chat is the one kept as the profile's last open chat, so it reopens at the next launch.
+  // Counts every move between chats, panes and profiles. A chat link that waited on Hermes checks it afterwards, so a
+  // move made meanwhile, even one that came back to the same chat, wins over the link (ADR 0037).
+  const navGen = useRef(0);
+
   const activate = (key: string) => {
     if (key === activeKeyRef.current) return;
     const pane = panes.find((p) => p.key === key);
     if (!pane) return;
+    navGen.current++;
     activeKeyRef.current = key;
     setActiveKey(key);
     rememberOpenChat(profile, pane.chatId);
@@ -737,6 +880,7 @@ export function Main({
   // `keepSettings`: the move isn't the owner's, so Settings stays on screen.
   const openChat = (id: string | null, { pane = active.key, remember = true, fresh = false, keepSettings = false } = {}) => {
     const go = () => {
+      navGen.current++;
       setPanelHidden(true);
       patchPane(pane, { chatId: id, picked: undefined, jump: undefined, ...(fresh && { draftError: undefined }) });
       activeKeyRef.current = pane;
@@ -744,9 +888,11 @@ export function Main({
       setReopening(undefined);
       if (!keepSettings) setSettingsOpen(false);
       setProjectOpen(false);
-      setJobsOpen(false);
+      setJobsOpen(false); setAutomationsOpen(false);
+      setRepoOpen(false);
       setOutputsOpen(false);
       setUsageOpen(false);
+      setLogsOpen(false);
       if (remember) rememberOpenChat(profile, id);
     };
     if (keepSettings) go();
@@ -756,6 +902,7 @@ export function Main({
   const newChat = (remember = true) => openChat(null, { remember, fresh: true });
 
   const pick = (found: Found) => guard(() => {
+    navGen.current++;
     setPanelHidden(true);
     hermes.reveal(found);
     patchPane(active.key, { chatId: found.chatId, picked: { found, at: Date.now() }, jump: undefined });
@@ -764,15 +911,18 @@ export function Main({
     setSearchOpen(false);
     setSettingsOpen(false);
     setProjectOpen(false);
-    setJobsOpen(false);
+    setJobsOpen(false); setAutomationsOpen(false);
+    setRepoOpen(false);
     setOutputsOpen(false);
     setUsageOpen(false);
+    setLogsOpen(false);
   });
 
   // A second pane opens to the right and becomes the active one. Both panes may show the same chat: they are two views
   // of it, with one transcript, one draft and one reply, each scrolled and searched on its own.
   const splitWith = (chatId: string | null) => guard(() => {
     if (split) return;
+    navGen.current++;
     setPanelHidden(true);
     const key = newPaneKey();
     setPanes((ps) => (ps.length > 1 ? ps : [...ps, { key, chatId }]));
@@ -781,9 +931,11 @@ export function Main({
     setReopening(undefined);
     setSettingsOpen(false);
     setProjectOpen(false);
-    setJobsOpen(false);
+    setJobsOpen(false); setAutomationsOpen(false);
+    setRepoOpen(false);
     setOutputsOpen(false);
     setUsageOpen(false);
+    setLogsOpen(false);
     rememberOpenChat(profile, chatId);
   });
 
@@ -810,9 +962,11 @@ export function Main({
     flushSync(() => {
       setSettingsOpen(false);
       setProjectOpen(false);
-      setJobsOpen(false);
+      setJobsOpen(false); setAutomationsOpen(false);
+      setRepoOpen(false);
       setOutputsOpen(false);
       setUsageOpen(false);
+      setLogsOpen(false);
       setSearchOpen(false);
       if (!previewFits) setPanelHidden(true);
     });
@@ -827,6 +981,7 @@ export function Main({
   const closePane = (key: string) => {
     const rest = panes.filter((p) => p.key !== key);
     if (!rest.length || rest.length === panes.length) return;
+    navGen.current++;
     setPanes(rest);
     activeKeyRef.current = rest[0].key;
     setActiveKey(rest[0].key);
@@ -846,8 +1001,9 @@ export function Main({
 
   // The other profile's chats replace the list, so one pane stays, on a fresh draft. The profile left keeps its last
   // open chat for the next launch.
-  const switchProfile = (name: string) => guard(() => {
-    const keep = active.key;
+  const switchProfileNow = (name: string) => {
+    navGen.current++;
+    const keep = activeKeyRef.current;
     setGoTo(undefined);
     setFocusItem(undefined);
     setPanes([{ key: keep, chatId: null }]);
@@ -861,7 +1017,8 @@ export function Main({
     setPreview(null);
     if (panelTab === "preview") setPanelOpen(false);
     void hermes.switchProfile(name);
-  }, "profile");
+  };
+  const switchProfile = (name: string) => guard(() => switchProfileNow(name), "profile");
 
   // An inbox entry opens its chat, in its own profile, in the pane already showing it or else the active one. Another
   // profile is switched to first, the way the switcher does, and the chat opens once that profile's list has it.
@@ -912,15 +1069,36 @@ export function Main({
     else if (chat?.runtimeId && !chat.loading) setFocusItem(undefined);
   }, [focusItem, chats]);
 
-  // Undo sends the opposite change, not a stored copy, so it also works once the list has refreshed.
+  // Undo sends the opposite change, not a stored copy, so it also works once the list has refreshed. Settling forgets
+  // a snooze, which Undo puts back.
   const setSettled = (id: string, settled: boolean) => {
     const title = chats.find((c) => c.id === id)?.title ?? "";
+    const snoozedUntil = settled && snoozeStore.isSnoozed(id) ? snoozes[id] : undefined;
     const move = (s: boolean) => void (s ? hermes.settle(id) : hermes.unsettle(id));
     move(settled);
-    setToast({ text: `${settled ? "Settled" : "Moved to Active"}: ${title}`, undo: () => move(!settled), at: Date.now() });
+    if (settled) snoozeStore.wake(id);
+    setToast({
+      text: `${settled ? "Settled" : "Unsettled"}: ${title}`,
+      undo: () => {
+        move(!settled);
+        if (snoozedUntil) snoozeStore.snooze(id, snoozedUntil);
+      },
+      at: Date.now(),
+    });
   };
 
-  // Putting a chat in a project, or taking it out, is kept on this computer only; Undo puts it back.
+  // Snoozing is kept on this computer only; Undo puts back what the chat had.
+  const snoozeChat = (id: string, until: number | undefined) => {
+    const title = chats.find((c) => c.id === id)?.title ?? "";
+    const before = snoozeStore.isSnoozed(id) ? snoozes[id] : undefined;
+    const put = (to: number | undefined) => (to ? snoozeStore.snooze(id, to) : snoozeStore.wake(id));
+    // Unsnoozing wakes it now, so it comes to the top as a snooze that ran out would.
+    put(until ?? Date.now());
+    setToast({ text: `${until ? `Snoozed until ${wakeFull(until)}` : "Unsnoozed"}: ${title}`, undo: () => put(before), at: Date.now() });
+  };
+
+  // Putting a chat in a project, or taking it out: Hermes's once it keeps membership, waiting here until it confirms,
+  // and this computer's otherwise (ADR 0033). Undo puts it back.
   const setInProject = (chatId: string, p: Project, inProject: boolean) => {
     const title = chats.find((c) => c.id === chatId)?.title ?? "";
     projects.setChat(p.id, chatId, inProject);
@@ -940,6 +1118,7 @@ export function Main({
       if (deleted) {
         projects.forgetChat(id);
         tagChange(() => tagsStore.forgetChat(id));
+        snoozeStore.wake(id);
         if (stillIn(profile)) setToast({ text: `Deleted: ${title}`, at: Date.now() });
       }
       return deleted;
@@ -1033,6 +1212,23 @@ export function Main({
     if (catalog?.defaultPick && pick?.profile !== profile) setUIPrefs({ modelPicker: { ...catalog.defaultPick, profile } });
   }, [catalog, profile]);
 
+  // The tray (ADR 0034). Its New chat and Open Inbox come here once Rust has shown the window; New chat asks first
+  // about an unsaved edit, as the app's own New chat does. While a modal dialog is open (a Server file being edited,
+  // a question), they only bring the window forward, as the app's shortcuts stop at a modal: the owner sees the dialog
+  // and decides. The tray is told only how many Inbox entries need the owner, for its menu and the dot on its icon,
+  // never what they say; signing out clears it.
+  const trayCovered = () => covered || !!document.querySelector('[aria-modal="true"]');
+  const trayNewChat = useRef(() => {});
+  trayNewChat.current = () => trayCovered() || newChat();
+  const trayInbox = useRef(() => {});
+  trayInbox.current = () => trayCovered() || setInboxOpen(true);
+  useEffect(() => tray.onNewChat(() => trayNewChat.current()), [tray]);
+  useEffect(() => tray.onOpenInbox(() => trayInbox.current()), [tray]);
+  useEffect(() => tray.reportInbox(inboxCount), [tray, inboxCount]);
+  useEffect(() => () => tray.reportInbox(0), [tray]);
+  // Hidden to the tray, the window shows no chat: replies arriving meanwhile leave their chats Unread.
+  const windowHidden = useWindowHidden();
+
   // The inbox asks for fresh checks as it opens, and keeps asking while it is open.
   useEffect(() => {
     if (!inboxOpen) return;
@@ -1054,6 +1250,198 @@ export function Main({
     document.querySelector<HTMLTextAreaElement>(`[data-pane="${CSS.escape(key)}"] .composer textarea`)?.focus();
   };
 
+  // Chat links (ADR 0037). Everything is checked before anything moves: the link's connection is this one, Hermes is
+  // connected, the server has the profile and the profile has the chat. Only then does the app switch profile, asking
+  // first as the switcher does, and open the chat. A link that can't open changes nothing on screen, so the composer
+  // and its draft stay as they were. Nothing is ever sent. `attempt` tells a retry from the try it replaces, so an
+  // answer that comes back late, or after Cancel, is dropped.
+  type LinkJob = { link: ChatLink; at: number; attempt: number; stage: "check" | "wait" | "locate" | "confirm" | "switch"; found?: Found; from?: string; gen?: number };
+  const [linkJob, setLinkJob] = useState<LinkJob>();
+  const [linkError, setLinkError] = useState<LinkNoticeView>();
+  const linkJobRef = useRef(linkJob);
+  linkJobRef.current = linkJob;
+  const linkRan = useRef("");
+  const isCurrent = (job: LinkJob) => linkJobRef.current?.at === job.at && linkJobRef.current.attempt === job.attempt;
+  const hereLabel = connectionLabel(connectionKey(connection));
+  const failLink = (text: string, actions?: LinkNoticeView["actions"]) => {
+    linkJobRef.current = undefined;
+    setLinkJob(undefined);
+    setLinkError({ kind: "error", text, actions });
+  };
+  const retryLink = (job: LinkJob) => {
+    setLinkError(undefined);
+    const next: LinkJob = { link: job.link, at: job.at, attempt: job.attempt + 1, stage: "check" };
+    linkJobRef.current = next;
+    setLinkJob(next);
+  };
+
+  useEffect(() => {
+    if (!link) return;
+    onLinkTaken?.(link.at);
+    if (linkJobRef.current?.at === link.at) return;
+    setLinkError(undefined);
+    const job: LinkJob = { link: link.link, at: link.at, attempt: 0, stage: "check" };
+    linkJobRef.current = job;
+    setLinkJob(job);
+  }, [link?.at]);
+
+  // An unsaved edit in Settings asks first. Its answer may come after the link was cancelled or replaced, so the link
+  // is checked again then; Keep editing drops the link.
+  const stayed = (job: LinkJob) => () => {
+    if (isCurrent(job)) closeLinkNotice();
+  };
+
+  useEffect(() => {
+    if (linkSuperseded !== undefined) closeLinkNotice();
+  }, [linkSuperseded]);
+
+  const openLinked = (job: LinkJob, found: Found) => {
+    if (!isCurrent(job)) return;
+    guard(
+      () => {
+        if (!isCurrent(job) || hermes.profile !== job.link.profile) return;
+        linkJobRef.current = undefined;
+        setLinkJob(undefined);
+        hermes.reveal(found);
+        const pane = panesRef.current.find((p) => p.chatId === found.chatId)?.key ?? activeKeyRef.current;
+        // Already asked, just above.
+        openChat(found.chatId, { pane, keepSettings: true });
+        setSettingsOpen(false);
+        requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(`[data-pane="${CSS.escape(pane)}"] .composer textarea`)?.focus());
+      },
+      "leave",
+      stayed(job),
+    );
+  };
+
+  const switchForLink = (job: LinkJob, found: Found) => {
+    if (!isCurrent(job)) return;
+    const next: LinkJob = { ...job, stage: "switch", found, from: hermes.profile };
+    linkJobRef.current = next;
+    setLinkJob(next);
+    guard(
+      () => {
+        if (!isCurrent(next) || hermes.profile !== next.from) return;
+        switchProfileNow(job.link.profile);
+        // The switch itself is a move; only the owner's moves after it drop the link.
+        const switched: LinkJob = { ...next, gen: navGen.current };
+        linkJobRef.current = switched;
+        setLinkJob(switched);
+      },
+      "profile",
+      stayed(next),
+    );
+  };
+
+  const runLink = async (job: LinkJob) => {
+    const key = `${job.at}/${job.attempt}`;
+    if (linkRan.current === key || !isCurrent(job)) return;
+    linkRan.current = key;
+    const p = job.link.profile;
+    const conn = checkConnection(job.link, connection, refs);
+    if (conn.kind === "other")
+      return failLink(
+        `This link is for ${conn.label}, not the connection signed in now (${hereLabel}). To open it, connect to ${conn.label} in Setup, then open the link again.`,
+        onSetUp ? [{ label: "Open Setup", onClick: () => (setLinkError(undefined), guard(onSetUp)) }] : undefined,
+      );
+    if (conn.kind === "unknown")
+      return failLink(
+        `This link is for a connection this computer doesn't know, perhaps one from another computer. Links carry no server address or sign-in, so Hermes Chat won't connect anywhere for it. If the chat is on ${hereLabel}, you can open it here.`,
+        [{ label: "Open it here", onClick: () => (refs.alias(job.link.connection, connection), retryLink(job)) }],
+      );
+    if (hermes.getSnapshot().status !== "connected") {
+      const next: LinkJob = { ...job, stage: "wait" };
+      linkJobRef.current = next;
+      return setLinkJob(next);
+    }
+    const looking: LinkJob = { ...job, stage: "locate" };
+    linkJobRef.current = looking;
+    setLinkJob(looking);
+    // Going anywhere while the lookup runs, to another profile or chat, even back again, is newer than the link, so
+    // its answer is dropped.
+    const startedAt = navGen.current;
+    const startedIn = hermes.profile;
+    const movedOn = () => {
+      if (navGen.current === startedAt && hermes.profile === startedIn) return false;
+      if (isCurrent(job)) closeLinkNotice();
+      return true;
+    };
+    let located: Awaited<ReturnType<typeof locateChat<Found>>>;
+    try {
+      located = await locateChat<Found>(job.link, hermes);
+    } catch (e) {
+      if (!isCurrent(job) || movedOn()) return;
+      return failLink(`Hermes Chat couldn't look the linked chat up: ${messageOf(e)}`, [{ label: "Try again", onClick: () => retryLink(job) }]);
+    }
+    if (!isCurrent(job) || movedOn()) return;
+    if (located.kind === "no-profile")
+      return failLink(`This server has no profile named ${p} now. It may have been renamed or deleted, so the linked chat wasn't opened.`);
+    if (located.kind === "no-chat")
+      return failLink(`The ${p} profile has no chat with this link's id. It may have been deleted, so there's nothing to open.`);
+    const found = located.found;
+    if (p === hermes.profile) return openLinked(job, found);
+    const snap = hermes.getSnapshot();
+    if (leavingNote(snap.profile, snap.chats)) {
+      const next: LinkJob = { ...job, stage: "confirm", found };
+      linkJobRef.current = next;
+      return setLinkJob(next);
+    }
+    switchForLink(job, found);
+  };
+
+  useEffect(() => {
+    if (linkJob?.stage === "check") void runLink(linkJob);
+    // Hermes connected (or came back) while the link waited.
+    else if (linkJob?.stage === "wait" && status === "connected") retryLink(linkJob);
+  }, [linkJob, status]);
+
+  // The switch to the linked chat's profile: it opens once that profile's list has been read. The owner going to
+  // a third profile meanwhile drops it; still in the first one, the switch may be waiting on an unsaved edit's question.
+  useEffect(() => {
+    if (linkJob?.stage !== "switch" || !linkJob.found) return;
+    // The owner went somewhere while the profile loaded.
+    if (linkJob.gen !== undefined && navGen.current !== linkJob.gen) return closeLinkNotice();
+    if (profile !== linkJob.link.profile) {
+      if (profile !== linkJob.from) closeLinkNotice();
+      return;
+    }
+    if (switching?.error) return failLink(`Hermes Chat switched to ${profile} but couldn't load its chats: ${switching.error}`);
+    if (!switching) openLinked(linkJob, linkJob.found);
+  }, [linkJob, profile, switching]);
+
+  const linkView: LinkNoticeView | undefined =
+    linkError ??
+    (linkJob &&
+      (linkJob.stage === "confirm" && linkJob.found
+        ? {
+            kind: "confirm",
+            text: `${leavingNote(profile, chats) ?? ""} Switch to ${linkJob.link.profile} to open the linked chat?`.trim(),
+            actions: [{ label: `Switch to ${linkJob.link.profile}`, onClick: () => switchForLink(linkJob, linkJob.found!) }],
+          }
+        : {
+            kind: "pending",
+            text:
+              linkJob.stage === "wait"
+                ? `The linked chat opens once Hermes is connected. Nothing is sent.`
+                : linkJob.stage === "switch"
+                  ? `Switching to ${linkJob.link.profile} to open the linked chat…`
+                  : `Opening the linked chat in ${linkJob.link.profile}…`,
+          }));
+  const closeLinkNotice = () => {
+    linkJobRef.current = undefined;
+    setLinkJob(undefined);
+    setLinkError(undefined);
+  };
+
+  /** Copies a link that opens `chat`, in this connection and profile, in Hermes Chat on this computer. */
+  const copyChatLink = (chat: Chat) => {
+    const url = formatChatLink({ connection: refs.refFor(connection), profile, chatId: chat.id });
+    const done = () => setToast({ text: "Chat link copied. It opens this chat in Hermes Chat on this computer.", at: Date.now() });
+    const failed = (e?: unknown) => setToast({ text: `Couldn't copy the chat link${e ? `: ${messageOf(e)}` : "."}`, at: Date.now() });
+    if (!navigator.clipboard?.writeText) return failed();
+    navigator.clipboard.writeText(url).then(done, failed);
+  };
+
   useEffect(() => {
     // Only Ctrl/Cmd chords and Alt+Up/Down, never mid-composition. No bare key does anything app-wide, so nothing
     // typed with focus outside an input can answer an Approval or stop a reply.
@@ -1064,12 +1452,14 @@ export function Main({
         if (!e.repeat) takeScreenshot();
         return;
       }
-      // Alt+Up/Down: the Active chat above or below the one showing, as the list orders them. Only while the chat is
-      // on screen; a list that uses the same keys (the queue) takes them first, and a select keeps Alt+Down to open.
+      // Alt+Up/Down: the chat above or below the one showing, at the top of the list or in Working, as the list orders
+      // them. Only while the chat is on screen; a list that uses the same keys (the queue) takes them first, and a
+      // select keeps Alt+Down to open.
       const onChat = !covering && !previewCovers && !projectScreenOpen && !searchOpen;
       if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
         if (!onChat || e.defaultPrevented || (e.target as Element | null)?.tagName === "SELECT") return;
-        const order = listed.filter((c) => !c.settled && !c.archived).sort((a, b) => b.updatedAt - a.updatedAt);
+        const { top, working } = chatSections(listed, snoozes, Date.now(), attention.since);
+        const order = [...top, ...working];
         const at = order.findIndex((c) => c.id === active.chatId);
         const next = order[at < 0 ? 0 : at + (e.key === "ArrowDown" ? 1 : -1)];
         if (next) {
@@ -1096,7 +1486,7 @@ export function Main({
       } else if (e.code === "Backslash" || k === "\\") {
         e.preventDefault();
         toggleSplit();
-      } else if ((k === "1" || k === "2") && !e.shiftKey && !e.altKey && split && !settingsOpen && !jobsOpen && !outputsOpen) {
+      } else if ((k === "1" || k === "2") && !e.shiftKey && !e.altKey && split && !settingsOpen && !jobsOpen && !automationsOpen && !outputsOpen && !repoOpen) {
         e.preventDefault();
         focusPane(panes[Number(k) - 1].key);
       }
@@ -1110,9 +1500,10 @@ export function Main({
   const previewFits = !mainWidth || mainWidth >= CHAT_MIN_WIDTH + PANE_MIN_WIDTH;
   const paneMax = mainWidth ? mainWidth - CHAT_MIN_WIDTH : 1200;
   const paneWidth = Math.min(Math.max(dragWidth ?? previewWidth ?? PREVIEW_DEFAULT_WIDTH, PANE_MIN_WIDTH), Math.max(PANE_MIN_WIDTH, paneMax));
-  // Settings covers the chat, and the side panel with it; so do the project screen, Scheduled jobs and Usage.
-  // Outputs covers the chat panes but keeps the side panel beside it, since its files open there.
-  const screenCovering = settingsOpen || projectScreenOpen || jobsOpen || usageOpen;
+  // Settings covers the chat, and the side panel with it; so do the project screen, Scheduled jobs, Automations, Usage,
+  // Logs and the Repository screen. Outputs covers the chat panes but keeps the side panel beside it, since its files
+  // open there.
+  const screenCovering = settingsOpen || projectScreenOpen || jobsOpen || automationsOpen || usageOpen || logsOpen || repoOpen;
   const covering = screenCovering || outputsOpen;
   const previewShown = panelOpen && !screenCovering && (previewFits || !panelHidden);
   const previewCovers = previewShown && !previewFits;
@@ -1122,10 +1513,22 @@ export function Main({
       setSettingsOpen(false);
       setProjectOpen(false);
       setJobsOpen(false);
+      setAutomationsOpen(false);
       setUsageOpen(false);
+      setLogsOpen(false);
+      setRepoOpen(false);
       if (previewShown && panelTab === tab) setPanelOpen(false);
       else openPanel(tab);
     });
+
+  // The global shortcut or `hermes-chat --show` brought the window forward: the cursor goes back in the selected pane's
+  // composer, its draft as it was. Settings or another screen over the chat stays as it was left, unsaved edits and all.
+  const onSummonedRef = useRef(() => {});
+  onSummonedRef.current = () => {
+    if (covered || covering || previewCovers || searchOpen) return;
+    focusPane(active.key);
+  };
+  useEffect(() => summon?.onSummoned(() => onSummonedRef.current()), [summon]);
 
 
   const slots: PaneSlot[] = panes.map((p, i) => {
@@ -1158,6 +1561,7 @@ export function Main({
           favorites={modelFavorites}
           projects={projects}
           projectNames={listed ? projectNames(chat.id) : shownProject ? [shownProject.name] : undefined}
+          snoozedUntil={snoozedNow(chat.id)}
           templates={{
             scope,
             projects: listable.map(({ id, name }) => ({ id, name })),
@@ -1182,9 +1586,11 @@ export function Main({
             hermes.memory
               ? () => {
                   setProjectOpen(false);
-                  setJobsOpen(false);
+                  setJobsOpen(false); setAutomationsOpen(false);
+                  setRepoOpen(false);
                   setOutputsOpen(false);
                   setUsageOpen(false);
+                  setLogsOpen(false);
                   setShowTextGeneration(undefined);
                   setShowMemory({});
                   setSettingsOpen(true);
@@ -1193,10 +1599,18 @@ export function Main({
           }
           onSettle={(s) => setSettled(chat.id, s)}
           onExport={() => exportChatOnScreen(chat)}
+          onCopyLink={() => copyChatLink(chat)}
           onArchive={(a) => setArchived(chat.id, a)}
           onNew={() => newChat()}
           onDelete={() => deleteChat(chat.id)}
           onOpenChat={(id) => openChat(id, { pane: p.key })}
+          onOpenTurn={(id, turn) => {
+            if (!chats.some((c) => c.id === id)) return setToast({ text: "That chat isn't in the chat list now.", at: Date.now() });
+            guard(() => {
+              openChat(id, { pane: p.key, keepSettings: true });
+              patchPane(p.key, { jump: { turn, at: Date.now() } });
+            });
+          }}
           onShowAt={(link) => {
             if (!chats.some((c) => c.id === link.parentId)) return setToast({ text: "That chat isn't in the chat list now.", at: Date.now() });
             // Opened at the message's stored row, the one the branch ends with, whatever its words.
@@ -1245,8 +1659,10 @@ export function Main({
           guard(() => {
             setSettingsOpen(false);
             setProjectOpen(false);
-            setJobsOpen(false);
+            setJobsOpen(false); setAutomationsOpen(false);
+            setRepoOpen(false);
             setUsageOpen(false);
+            setLogsOpen(false);
             setOutputsOpen((o) => !o);
           })
         }
@@ -1263,21 +1679,64 @@ export function Main({
             setSettingsOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
+            setLogsOpen(false);
+            setRepoOpen(false);
+            setAutomationsOpen(false);
             setJobsOpen(true);
           })
         }
         jobsOpen={jobsOpen && !settingsOpen}
+        onAutomations={() =>
+          guard(() => {
+            setProjectOpen(false);
+            setSettingsOpen(false);
+            setOutputsOpen(false);
+            setUsageOpen(false);
+            setLogsOpen(false);
+            setRepoOpen(false);
+            setJobsOpen(false);
+            setAutomationsOpen(true);
+          })
+        }
+        automationsOpen={automationsOpen && !settingsOpen}
         onTerminal={() => railPanel("terminal")}
+        onRepo={() =>
+          guard(() => {
+            setProjectOpen(false);
+            setSettingsOpen(false);
+            setJobsOpen(false); setAutomationsOpen(false);
+            setOutputsOpen(false);
+            setUsageOpen(false);
+            setLogsOpen(false);
+            setRepoOpen((o) => !o);
+          })
+        }
+        repoOpen={repoOpen && !settingsOpen && !projectScreenOpen}
         onUsage={() =>
           guard(() => {
             setProjectOpen(false);
             setSettingsOpen(false);
-            setJobsOpen(false);
+            setJobsOpen(false); setAutomationsOpen(false);
+            setRepoOpen(false);
             setOutputsOpen(false);
+            setLogsOpen(false);
             setUsageOpen((o) => !o);
           })
         }
-        usageOpen={usageOpen && !settingsOpen && !projectScreenOpen && !jobsOpen}
+        usageOpen={usageOpen && !settingsOpen && !projectScreenOpen && !jobsOpen && !automationsOpen}
+        onLogs={() =>
+          guard(() => {
+            setProjectOpen(false);
+            setSettingsOpen(false);
+            setJobsOpen(false);
+            setAutomationsOpen(false);
+            setOutputsOpen(false);
+            setUsageOpen(false);
+            setRepoOpen(false);
+            setLogsOpen((o) => !o);
+          })
+        }
+        logsOpen={logsOpen && !settingsOpen && !projectScreenOpen && !jobsOpen && !automationsOpen && !usageOpen}
         terminalOpen={previewShown && panelTab === "terminal"}
         terminalRunning={terminalRunning}
         updateWaiting={updateWaiting}
@@ -1302,22 +1761,34 @@ export function Main({
                   await projects.create(name);
                   guard(() => {
                     setSettingsOpen(false);
-                    setJobsOpen(false);
+                    setJobsOpen(false); setAutomationsOpen(false);
+                    setRepoOpen(false);
                     setOutputsOpen(false);
                     setUsageOpen(false);
+                    setLogsOpen(false);
                     setProjectOpen(true);
                   });
                 }}
                 onManage={() =>
                   guard(() => {
                     setSettingsOpen(false);
-                    setJobsOpen(false);
+                    setJobsOpen(false); setAutomationsOpen(false);
+                    setRepoOpen(false);
                     setOutputsOpen(false);
                     setUsageOpen(false);
+                    setLogsOpen(false);
                     setProjectOpen(true);
                     void projects.readDefaults();
                   })
                 }
+                attention={
+                  !membershipNeedsOwner(proj.membership)
+                    ? undefined
+                    : proj.membership.state === "preview"
+                      ? "Hermes can keep which chats are in each project"
+                      : "A project change conflicts with another computer's"
+                }
+                onReview={() => setMembershipOpen(true)}
               />
             }
             savedFilters={
@@ -1332,7 +1803,8 @@ export function Main({
             projectsOf={(chatId) => {
               if (!listable.length) return undefined;
               const of = projects.projectsOf(chatId);
-              return { list: listable, of, onToggle: (id, on) => setInProject(chatId, listable.find((p) => p.id === id)!, on) };
+              const waiting = new Set(proj.membership.pending.filter((o) => o.chatId === chatId).map((o) => o.projectId));
+              return { list: listable, of, waiting, onToggle: (id, on) => setInProject(chatId, listable.find((p) => p.id === id)!, on) };
             }}
           switching={switching}
           status={status}
@@ -1346,16 +1818,23 @@ export function Main({
           onOpen={(id) => openChat(id)}
           onOpenIn={openIn}
           onSettle={setSettled}
+          snoozes={snoozes}
+          attentionSince={attention.since}
+          onSnooze={(id, until) => snoozeChat(id, until)}
+          onWake={(id) => snoozeChat(id, undefined)}
           onArchive={setArchived}
           onListArchived={(on) => void hermes.listArchived(on)}
           onDelete={deleteChat}
           onRename={(id, title, from) => hermes.rename(id, title, from)}
           onRegenTitle={(id) => hermes.regenerateTitle(id)}
+          onCopyLink={copyChatLink}
           onTextGenerationSettings={() => {
             setProjectOpen(false);
-            setJobsOpen(false);
+            setJobsOpen(false); setAutomationsOpen(false);
+            setRepoOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
+            setLogsOpen(false);
             // One destination at a time: an earlier Memory shortcut mustn't switch Settings away from this one.
             setShowMemory(undefined);
             setShowTextGeneration({});
@@ -1387,7 +1866,16 @@ export function Main({
       )}
       <main className="main" ref={mainRef}>
         <div className="main-chat" inert={previewCovers || undefined}>
-            {jobsOpen && !settingsOpen ? (
+            {automationsOpen && !settingsOpen ? (
+              <Automations
+                key={profile}
+                api={hermes.automations}
+                profile={profile}
+                connected={status === "connected"}
+                onClose={() => { flushSync(() => setAutomationsOpen(false)); focusPane(active.key); }}
+                onOpenChat={(id) => openChat(id)}
+              />
+            ) : jobsOpen && !settingsOpen ? (
               <ScheduledJobs
                 key={profile}
                 api={hermes.cron}
@@ -1424,6 +1912,14 @@ export function Main({
                   return { problem, worktrees };
                 }}
                 onClose={() => { flushSync(() => setProjectOpen(false)); focusPane(active.key); }}
+                membership={
+                  <MembershipStatus
+                    membership={proj.membership}
+                    connected={status === "connected"}
+                    onSync={() => void projects.syncNow()}
+                    onReview={() => setMembershipOpen(true)}
+                  />
+                }
                 defaults={{
                   saved: proj.defaults[shownProject.id],
                   catalog,
@@ -1462,6 +1958,8 @@ export function Main({
             onSkillDirty={onSkillDirty}
             skillDiscards={skillDiscards}
             checkScreenshots={screenshots.support}
+            tray={tray}
+            summon={summon}
             voiceSetup={voice.setup}
             showTextGeneration={showTextGeneration}
             showMemory={showMemory}
@@ -1478,6 +1976,14 @@ export function Main({
                 if (projectId) for (const c of imported) projects.setChat(projectId, c.id, true);
               },
               onOpen: (id) => openChat(id),
+            }}
+            backup={{
+              env: backupEnv,
+              connection: connOf(connection),
+              profiles: listProfiles,
+              profile,
+              busy: restoreBusy,
+              reload: () => location.reload(),
             }}
             onPullOlder={() => hermes.pullOlderHistory()}
             onSignOut={() =>
@@ -1522,6 +2028,19 @@ export function Main({
               focusPane(active.key);
             }}
           />
+        ) : logsOpen ? (
+          <LogsScreen
+            key={profile}
+            profile={profile}
+            connected={status === "connected"}
+            connection={route?.kind === "ssh" ? "SSH tunnel" : "dashboard URL"}
+            read={(file, lines) => hermes.readLog(profile, file, lines)}
+            save={(text, fileName) => invoke<string | null>("logs_export", { text, fileName })}
+            onClose={() => {
+              flushSync(() => setLogsOpen(false));
+              focusPane(active.key);
+            }}
+          />
         ) : outputsOpen ? (
           <OutputsScreen
             snapshot={outSnap}
@@ -1563,8 +2082,29 @@ export function Main({
               focusPane(active.key);
             }}
           />
+        ) : repoOpen ? (
+          <RepositoryScreen
+            api={tauriRepo}
+            initialTarget={repoTarget(connection, localStorage.getItem(REPO_TARGET_KEY), localStorage.getItem(TERMINAL_TARGET_KEY))}
+            initialPath={localStorage.getItem(REPO_PATH_KEY) ?? ""}
+            recent={readRecent(localStorage.getItem(REPO_RECENT_KEY))}
+            suggestions={(shownProject?.folders ?? []).map((f) => ({ label: shownProject!.name, path: f.path }))}
+            onOpened={rememberRepo}
+            onTarget={(t) => localStorage.setItem(REPO_TARGET_KEY, t)}
+            suggest={
+              status === "connected"
+                ? (instructions, input) => hermes.askForEdit({ profile, instructions, input, maxTokens: 400 }).then((r) => r.text)
+                : undefined
+            }
+            suggestScope={scope}
+            openUrl={(url) => void webPages.openInBrowser(url).catch(() => undefined)}
+            onClose={() => {
+              flushSync(() => setRepoOpen(false));
+              focusPane(active.key);
+            }}
+          />
         ) : null}
-        <Split panes={slots} activeKey={active.key} onActivate={activate} covered={covered || covering || previewCovers} />
+        <Split panes={slots} activeKey={active.key} onActivate={activate} covered={covered || covering || previewCovers || windowHidden} />
         </div>
           {panelMounted && (
             <SidePanel
@@ -1642,6 +2182,21 @@ export function Main({
         />
       )}
       {tagsOpen && <TagManager key={scope} store={tagsStore} profile={profile} returnTo={tagsReturn} onClose={() => setTagsOpen(false)} />}
+      {membershipOpen && (
+        <MembershipDialog
+          key={scope}
+          membership={proj.membership}
+          projects={proj.projects}
+          titleOf={(id) => chats.find((c) => c.id === id)?.title}
+          connected={status === "connected"}
+          onMigrate={() => projects.migrate()}
+          onLater={() => projects.postponeMigration()}
+          onKeepMine={(id) => projects.keepMine(id)}
+          onUseHermes={(id) => projects.useHermes(id)}
+          onClose={() => setMembershipOpen(false)}
+        />
+      )}
+      {linkView && <ChatLinkNotice view={linkView} onClose={closeLinkNotice} />}
       {toast && (
         <div className="toast" key={toast.at} role="status">
           <span>{toast.text}</span>
@@ -1745,6 +2300,7 @@ function ChatView({
   favorites,
   projects,
   projectNames,
+  snoozedUntil,
   templates,
   shownProject,
   where,
@@ -1754,11 +2310,13 @@ function ChatView({
   onMemorySettings,
   onSettle,
   onExport,
+  onCopyLink,
   onArchive,
   onNew,
   onDelete,
   onOpenChat,
   onShowAt,
+  onOpenTurn,
   paneControls,
   previewControls,
   screenshots,
@@ -1784,6 +2342,8 @@ function ChatView({
   favorites: string[];
   projects: ProjectsStore;
   projectNames?: string[];
+  /** When the chat wakes, if it is snoozed. */
+  snoozedUntil?: number;
   /** The projects the composer's templates can be offered in, and the ones this chat is in or the list shows. */
   templates: TemplateHere;
   /** The project the list shows, its defaults for new chats, and whether this chat is in it. */
@@ -1797,6 +2357,7 @@ function ChatView({
   onMemorySettings?: () => void;
   onSettle: (settled: boolean) => void;
   onExport: () => void;
+  onCopyLink: () => void;
   onArchive: (archived: boolean) => void;
   onNew: () => void;
   /** Deletes the chat once the owner has confirmed it; resolves with whether Hermes deleted it. */
@@ -1805,6 +2366,8 @@ function ChatView({
   onOpenChat: (id: string) => void;
   /** Opens the chat a branch came from, at the message it was branched after. */
   onShowAt: (link: BranchLink) => void;
+  /** Opens another version of a turn in this pane, at that turn (ADR 0035). */
+  onOpenTurn: (chatId: string, turn: number) => void;
   paneControls: ReactNode;
   previewControls: ReactNode;
   screenshots?: ScreenshotDesk;
@@ -1937,6 +2500,19 @@ function ChatView({
   const [branchFrom, setBranchFrom] = useState<string>();
   useEffect(() => setBranchFrom(undefined), [chatId, profile]);
   const link = useSyncExternalStore(hermes.subscribe, () => hermes.getSnapshot().branches.links[chat.id]);
+  // Edit and Regenerate (ADR 0035): the message the dialog is open for, and the versions of this chat's turns.
+  const [replayFrom, setReplayFrom] = useState<{ itemId: string; kind: ReplayKind }>();
+  useEffect(() => setReplayFrom(undefined), [chatId, profile]);
+  const links = useSyncExternalStore(hermes.subscribe, () => hermes.getSnapshot().branches.links);
+  const listedChats = useSyncExternalStore(hermes.subscribe, () => hermes.getSnapshot().chats);
+  const variants = useMemo(() => {
+    const byTurn = variantsIn(links, chat.id, (id) => listedChats.some((c) => c.id === id));
+    // Hermes keeps no model per reply: the original shows what its chat runs on now, when that's known here.
+    for (const versions of byTurn.values())
+      for (const v of versions) if (v.kind === "original") v.model = listedChats.find((c) => c.id === v.chatId)?.model;
+    return byTurn;
+  }, [links, listedChats, chat.id]);
+  const [finishing, setFinishing] = useState(false);
   const parentListed = useSyncExternalStore(hermes.subscribe, () => !!link && hermes.getSnapshot().chats.some((c) => c.id === link.parentId));
 
   // Slash commands (commands.ts). Each empties the Draft it was typed in only once it has run, only if the owner hasn't
@@ -2018,6 +2594,7 @@ function ChatView({
       key={`${profile}/${chat.id}`}
       chat={chat}
       projects={projectNames}
+      snoozedUntil={snoozedUntil}
       templates={templates}
       notice={
         !started && shownProject ? (
@@ -2063,6 +2640,7 @@ function ChatView({
       onAnswer={(approvalId, choice, confirmed) => void hermes.answerApproval(chat.id, approvalId, choice, confirmed)}
       onSettle={started ? onSettle : undefined}
       onExport={started ? onExport : undefined}
+      onCopyLink={started ? onCopyLink : undefined}
       onArchive={started ? onArchive : undefined}
       active={active}
       visible={visible}
@@ -2085,7 +2663,36 @@ function ChatView({
       queue={queue}
       queueApi={queueApi}
       branch={started ? { blocked: branchBlocked(chat, status === "connected"), onBranch: setBranchFrom } : undefined}
-      branchedFrom={link && <BranchedFrom link={link} parentListed={parentListed} onOpen={() => onShowAt(link)} />}
+      branchedFrom={
+        link && (
+          <BranchedFrom
+            link={link}
+            parentListed={parentListed}
+            onOpen={() => onShowAt(link)}
+            finish={
+              link.variant?.pending
+                ? {
+                    busy: finishing,
+                    blocked: replayBlocked(chat, status === "connected"),
+                    run: () => {
+                      setFinishing(true);
+                      hermes.finishReplay(chat.id).then(
+                        (warnings) => warnings.length && onToast(warnings.join(" ")),
+                        (e) => onToast((e as Error).message),
+                      ).finally(() => setFinishing(false));
+                    },
+                  }
+                : undefined
+            }
+          />
+        )
+      }
+      replay={
+        started && chat.source !== "import"
+          ? { blocked: replayBlocked(chat, status === "connected"), onReplay: (itemId, kind) => setReplayFrom({ itemId, kind }) }
+          : undefined
+      }
+      variants={variants.size ? { byTurn: variants, onPick: (id, turn) => id !== chat.id && onOpenTurn(id, turn) } : undefined}
       footer={
         <StatusBar
           chat={chat}
@@ -2111,6 +2718,21 @@ function ChatView({
         />
       }
     />
+    {replayFrom && (
+      <ReplayDialog
+        key={`${chat.id}/${replayFrom.itemId}/${replayFrom.kind}`}
+        kind={replayFrom.kind}
+        api={{ preview: () => hermes.previewReplay(chat.id, replayFrom.itemId, replayFrom.kind), make: (p, words) => hermes.replay(p, words) }}
+        onClose={() => setReplayFrom(undefined)}
+        done={(id, warnings) => {
+          setReplayFrom(undefined);
+          if (!stillIn()) return;
+          // The new version opens here; this chat, its Draft and its answer stay as they were.
+          onOpenChat(id);
+          if (warnings.length) onToast(warnings.join(" "));
+        }}
+      />
+    )}
     {branchFrom && (
       <BranchDialog
         key={`${chat.id}/${branchFrom}`}

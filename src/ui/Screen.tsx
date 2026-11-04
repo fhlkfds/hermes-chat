@@ -1,4 +1,4 @@
-// The side panel's Screen (ADR 0033): Hermes's Bot Desktop for the profile shown, the screen on the server where the
+// The side panel's Screen (ADR 0039): Hermes's Bot Desktop for the profile shown, the screen on the server where the
 // agent's computer use and its browser run. The owner watches it live, takes over for something only they should type
 // (a sign-in, a 2FA code, a CAPTCHA) and hands back. Hermes keeps who may drive it (the lease): while the owner holds
 // it, Hermes's computer use waits, and only the holder's keys and pointer reach the screen. noVNC draws the stream.

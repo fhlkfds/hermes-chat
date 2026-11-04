@@ -1,7 +1,7 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
 // Dictation and Read aloud come from Voice.tsx.
 import { createContext, memo, type ReactNode, useCallback, useContext, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
-import { ArrowUp, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, FileDown, FileInput, FileText, Globe, HardDrive, ListPlus, Paperclip, RotateCcw, Search, Server, Square, Wrench, X } from "lucide-react";
+import { ArrowUp, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, FileDown, FileInput, FileText, Globe, HardDrive, Link2, ListPlus, Paperclip, RotateCcw, Search, Server, Square, Wrench, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
@@ -12,6 +12,7 @@ import { ApprovalCard } from "./ApprovalCard";
 import { QueuePanel, type QueueApi } from "./Queue";
 import { Markdown } from "./Markdown";
 import { ArchiveButton, SettleButton, SourceIcon, Spinner, StoredTime, composing, highlight } from "./bits";
+import { wakeFull } from "../hermes/snooze";
 import { AttachmentChip, Previews, readPreview } from "./previews";
 import { Speaker } from "./speaker";
 import { DictationNoteView, DictationStrip, ListenButton, MicButton, type VoiceApi, listenBlocked, micBlocked, useDictation, useVoiceSetup } from "./Voice";
@@ -24,6 +25,9 @@ import { previewName, toolTargets, withoutBidi } from "../hermes/preview";
 import { type CommandHost, useSlashCommands } from "./SlashCommands";
 import { Templates, type TemplateHere } from "./Templates";
 import { BranchButton } from "./Branch";
+import { useWindowHidden } from "./windowState";
+import { EditButton, RegenerateButton, VariantNav } from "./Replay";
+import { turnsOf, type ReplayKind, type Variant } from "../hermes/replay";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type ThinkingItem = Extract<Item, { kind: "thinking" }>;
@@ -56,7 +60,11 @@ export type FindTarget = { query: string; itemId?: string; at: number };
  * What to go to: a tool call, opened, by its call id (`Item.callId`), or a message by its stored row (`rowId`), as a
  * branch's link back does. `at` tells one request from the next.
  */
-export type JumpTarget = { callId: string; rowId?: undefined; at: number } | { rowId: number; callId?: undefined; at: number };
+export type JumpTarget =
+  | { callId: string; rowId?: undefined; turn?: undefined; at: number }
+  | { rowId: number; callId?: undefined; turn?: undefined; at: number }
+  /** The owner's message that starts turn `turn` (from 0), and its reply: where a version of that turn is opened. */
+  | { turn: number; callId?: undefined; rowId?: undefined; at: number };
 /** The tool call being gone to, for the tool rows and groups that hold it to open themselves. */
 const JumpContext = createContext<JumpTarget | undefined>(undefined);
 
@@ -101,8 +109,8 @@ const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateS
 
 /**
  * `alsoPostsIn`: the Telegram or Discord chat Hermes will also post its replies in. `draft`: the composer's text, kept
- * outside the pane so it survives switching chats. `onAnswer` answers an Approval card. `onSettle`, `onArchive` and
- * `onExport` are left out for a chat not started yet. `notLoaded`: the chat has no Saved copy and can't load until
+ * outside the pane so it survives switching chats. `onAnswer` answers an Approval card. `onSettle`, `onArchive`,
+ * `onExport` and `onCopyLink` are left out for a chat not started yet. `notLoaded`: the chat has no Saved copy and can't load until
  * Hermes is connected. `onRetry`, `onEdit` and `onDismiss` act on failed or unconfirmed messages. `modelControls`
  * contains the model picker; `footer` contains the status bar. Only the active pane answers Ctrl+F and takes focus as
  * it opens. Native drops attach to the pane under the pointer. `paneControls` follows the chat's own buttons.
@@ -110,7 +118,9 @@ const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateS
  * `voice` supplies Dictation and Read aloud. `commands` runs the slash commands typed in the composer. `queue` is the
  * chat's queue of messages waiting to go after its reply, and `queueApi` changes it; it is left out for a chat not
  * started yet, which can't queue. `branch` offers Branch from here under each message with text (ADR 0027): `blocked`
- * says why none can be made now. `branchedFrom` is shown at the top of a branch, where it came from.
+ * says why none can be made now. `branchedFrom` is shown at the top of a branch, where it came from. `replay` offers
+ * Edit under the owner's messages and Regenerate under each turn's last reply (ADR 0035); `blocked` says why neither
+ * can be used now. `variants` are the versions of this chat's turns, shown under each turn's last reply.
  */
 export function ChatPane({
   chat,
@@ -132,6 +142,7 @@ export function ChatPane({
   onSettle,
   onArchive,
   onExport,
+  onCopyLink,
   modelControls,
   active = true,
   visible = true,
@@ -141,6 +152,7 @@ export function ChatPane({
   screenshots,
   screenshotKeys,
   projects,
+  snoozedUntil,
   notice,
   banner,
   footer,
@@ -152,6 +164,8 @@ export function ChatPane({
   templates,
   branch,
   branchedFrom,
+  replay,
+  variants,
 }: {
   chat: Chat;
   notLoaded?: boolean;
@@ -174,6 +188,8 @@ export function ChatPane({
   onSettle?: (settled: boolean) => void;
   onArchive?: (archived: boolean) => void;
   onExport?: () => void;
+  /** Copies the chat's link (chatLinks.ts). */
+  onCopyLink?: () => void;
   modelControls?: ReactNode;
   active?: boolean;
   visible?: boolean;
@@ -184,6 +200,8 @@ export function ChatPane({
   screenshotKeys?: string;
   /** The names of the projects the chat is in, or a new chat will be put in. */
   projects?: string[];
+  /** When the chat wakes, if the owner snoozed it and it hasn't woken yet (snooze.ts). */
+  snoozedUntil?: number;
   /** Shown at the top of the transcript: what a new chat starts with. */
   notice?: ReactNode;
   /** Shown under the header, outside the transcript's scroll: a question about this chat. */
@@ -198,6 +216,8 @@ export function ChatPane({
   templates?: TemplateHere;
   branch?: { blocked?: string; onBranch: (itemId: string) => void };
   branchedFrom?: ReactNode;
+  replay?: { blocked?: string; onReplay: (itemId: string, kind: ReplayKind) => void };
+  variants?: { byTurn: Map<number, Variant[]>; onPick: (chatId: string, turn: number) => void };
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -216,6 +236,9 @@ export function ChatPane({
   }, [!voice]);
   const listen = speaker && { speaker, blocked: listenBlocked(status, voiceSetup) };
   useEffect(() => { if (!active) speaker?.stop(); }, [active, speaker]);
+  // Hidden to the tray, nothing is read aloud (ADR 0034).
+  const windowHidden = useWindowHidden();
+  useEffect(() => { if (windowHidden) speaker?.stop(); }, [windowHidden, speaker]);
   // The blocks are memoized, so they get one answer handler for the life of the pane.
   const onAnswerRef = useRef(onAnswer);
   onAnswerRef.current = onAnswer;
@@ -231,6 +254,26 @@ export function ChatPane({
   const branchRef = useRef(branch?.onBranch);
   branchRef.current = branch?.onBranch;
   const onBranch = useCallback((itemId: string) => branchRef.current?.(itemId), []);
+  // And Edit and Regenerate.
+  const replayRef = useRef(replay?.onReplay);
+  replayRef.current = replay?.onReplay;
+  const onReplay = useCallback((itemId: string, kind: ReplayKind) => replayRef.current?.(itemId, kind), []);
+  const pickRef = useRef(variants?.onPick);
+  pickRef.current = variants?.onPick;
+  const onPickVariant = useCallback((chatId: string, turn: number) => pickRef.current?.(chatId, turn), []);
+  // Each turn's owner's message, and its last reply with text: where Regenerate and the versions of the turn go.
+  const turns = useMemo(() => {
+    const ofUser = turnsOf(chat.items);
+    const lastReply = new Map<number, string>();
+    let turn = -1;
+    for (const i of chat.items) {
+      if (i.kind === "user" && !i.outgoing) turn = ofUser.get(i.id)!;
+      else if (i.kind === "assistant" && turn >= 0 && i.text.trim()) lastReply.set(turn, i.id);
+    }
+    const anchor = new Map<string, number>();
+    for (const [id, t] of ofUser) anchor.set(lastReply.get(t) ?? id, t);
+    return { ofUser, regenerable: new Set(lastReply.values()), anchor };
+  }, [chat.items]);
   // A failed message can be sent again once Hermes is connected and the chat has no reply running.
   const canRetry = status === "connected" && !chat.loading && !chat.running;
   const findRef = useRef<HTMLInputElement>(null);
@@ -320,6 +363,10 @@ export function ChatPane({
       const rowId = jumping.rowId;
       const item = chat.items.find((i) => (i.kind === "user" || i.kind === "assistant") && i.rowId === rowId);
       el = item && scrollRef.current?.querySelector<HTMLElement>(`[data-item="${CSS.escape(item.id)}"]`);
+    } else if (jumping.turn !== undefined) {
+      const turn = jumping.turn;
+      const id = [...turns.anchor].find(([, t]) => t === turn)?.[0];
+      el = id ? scrollRef.current?.querySelector<HTMLElement>(`[data-item="${CSS.escape(id)}"]`) : undefined;
     } else {
       const id = CSS.escape(jumping.callId);
       el = scrollRef.current?.querySelector<HTMLElement>(`[data-call="${id}"]`) ?? scrollRef.current?.querySelector<HTMLElement>(`[data-calls~="${id}"]`);
@@ -385,8 +432,10 @@ export function ChatPane({
           {chat.source !== "app" && <SourceIcon source={chat.source} size={13} />}
           <span>{chat.title}</span>
           {chat.settled && <span className="badge">Settled</span>}
-          {chat.settled && onSettle && !chat.archived && (
-            <SettleButton settled size={12} className="unsettle-btn" labeled onSettle={onSettle} />
+          {!chat.settled && !chat.archived && snoozedUntil !== undefined && (
+            <span className="badge" title={`Snoozed until ${wakeFull(snoozedUntil)}`}>
+              Snoozed
+            </span>
           )}
           {chat.archived && <span className="badge">Archived</span>}
           {projects?.map((name) => (
@@ -410,6 +459,11 @@ export function ChatPane({
             {onExport && (
               <button className="icon-btn" title="Export as Markdown" onClick={onExport}>
                 <FileDown size={16} />
+              </button>
+            )}
+            {onCopyLink && (
+              <button className="icon-btn" title="Copy chat link" aria-label="Copy chat link" onClick={onCopyLink}>
+                <Link2 size={16} />
               </button>
             )}
             {onSettle && !chat.archived && <SettleButton settled={chat.settled} size={16} className="icon-btn" onSettle={onSettle} />}
@@ -524,6 +578,12 @@ export function ChatPane({
               onOutgoing={onOutgoing}
               onBranch={branch && (b.kind === "user" || b.kind === "assistant") ? onBranch : undefined}
               branchBlocked={branch && (b.kind === "user" || b.kind === "assistant") ? branch.blocked : undefined}
+              onReplay={replay && ((b.kind === "user" && turns.ofUser.has(b.id)) || (b.kind === "assistant" && turns.regenerable.has(b.id))) ? onReplay : undefined}
+              replayBlocked={replay && (b.kind === "user" || b.kind === "assistant") ? replay.blocked : undefined}
+              versions={turns.anchor.has(b.id) ? variants?.byTurn.get(turns.anchor.get(b.id)!) : undefined}
+              chatId={chat.id}
+              turn={turns.anchor.get(b.id)}
+              onPickVariant={onPickVariant}
             />
           ))}
           {/* A reply waiting on the owner isn't thinking, and streamed thinking shows its own row. */}
@@ -608,6 +668,12 @@ const BlockView = memo(
     onOutgoing,
     onBranch,
     branchBlocked,
+    onReplay,
+    replayBlocked,
+    versions,
+    chatId,
+    turn,
+    onPickVariant,
   }: {
     block: Block;
     live: boolean;
@@ -620,7 +686,17 @@ const BlockView = memo(
     onOutgoing: (itemId: string, action: OutgoingAction) => void;
     onBranch?: (itemId: string) => void;
     branchBlocked?: string;
+    onReplay?: (itemId: string, kind: ReplayKind) => void;
+    replayBlocked?: string;
+    versions?: Variant[];
+    chatId: string;
+    turn?: number;
+    onPickVariant: (chatId: string, turn: number) => void;
   }) {
+    const current = versions ? versions.findIndex((v) => v.chatId === chatId) : -1;
+    const nav = versions && current >= 0 && turn !== undefined && (
+      <VariantNav versions={versions} current={current} onPick={(id) => onPickVariant(id, turn)} />
+    );
     if (block.kind === "user")
       return (
         <div className={`msg user${block.outgoing ? ` outgoing ${block.outgoing.state}` : ""}`} data-item={block.id} data-at={block.at}>
@@ -639,11 +715,13 @@ const BlockView = memo(
           {isOutgoing(block) && block.outgoing.state !== "sending" && (
             <SendFailed item={block} canRetry={canRetry} act={(action) => onOutgoing(block.id, action)} />
           )}
-          {onBranch && !block.outgoing && block.text.trim() && (
+          {(onBranch || onReplay) && !block.outgoing && block.text.trim() && (
             <div className="msg-actions">
-              <BranchButton blocked={branchBlocked} onBranch={() => onBranch(block.id)} />
+              {onReplay && <EditButton blocked={replayBlocked} onEdit={() => onReplay(block.id, "edit")} />}
+              {onBranch && <BranchButton blocked={branchBlocked} onBranch={() => onBranch(block.id)} />}
             </div>
           )}
+          {nav}
         </div>
       );
     if (block.kind === "assistant")
@@ -652,16 +730,18 @@ const BlockView = memo(
           <Markdown text={block.text} query={query} />
           {live && <span className="cursor" />}
           {block.interrupted && <div className="stopped">Stopped</div>}
-          {!live && block.text.trim() && (listen || onBranch) && (
+          {!live && block.text.trim() && (listen || onBranch || onReplay) && (
             <div className="msg-actions-row">
               {listen && <ListenButton speaker={listen.speaker} itemId={block.id} text={block.text} blocked={listen.blocked} />}
-              {onBranch && (
+              {(onBranch || onReplay) && (
                 <div className="msg-actions">
-                  <BranchButton blocked={branchBlocked} onBranch={() => onBranch(block.id)} />
+                  {onReplay && <RegenerateButton blocked={replayBlocked} onRegenerate={() => onReplay(block.id, "regenerate")} />}
+                  {onBranch && <BranchButton blocked={branchBlocked} onBranch={() => onBranch(block.id)} />}
                 </div>
               )}
             </div>
           )}
+          {!live && nav}
           <StoredTime at={block.at} />
           {block.usage && !live && <ReplyUsageLine usage={block.usage} />}
         </div>
@@ -690,7 +770,13 @@ const BlockView = memo(
     a.canRetry === b.canRetry &&
     a.onOutgoing === b.onOutgoing &&
     a.onBranch === b.onBranch &&
-    a.branchBlocked === b.branchBlocked,
+    a.branchBlocked === b.branchBlocked &&
+    a.onReplay === b.onReplay &&
+    a.replayBlocked === b.replayBlocked &&
+    a.versions === b.versions &&
+    a.chatId === b.chatId &&
+    a.turn === b.turn &&
+    a.onPickVariant === b.onPickVariant,
 );
 
 /**
@@ -942,6 +1028,10 @@ function Composer({
   }, [dictation.active]);
   // Leaving a pane (including Settings or the narrow switcher) releases its microphone and drops late transcripts.
   useEffect(() => { if (!autoFocus) dictation.cancel(); }, [autoFocus]);
+  // So does hiding the window to the tray: the microphone never stays open behind a hidden window (ADR 0034). The
+  // recording is dropped, as Cancel drops it; nothing is sent to Hermes to transcribe.
+  const windowHidden = useWindowHidden();
+  useEffect(() => { if (windowHidden) dictation.cancel(); }, [windowHidden]);
 
   // Files still being read, saved or checked: sending waits for them, so none misses the message it was added for.
   const [attaching, setAttaching] = useState(0);
@@ -1114,6 +1204,7 @@ function Composer({
         )}
         <textarea
           ref={taRef}
+          data-composer
           rows={1}
           autoFocus={autoFocus}
           placeholder="Message Hermes"

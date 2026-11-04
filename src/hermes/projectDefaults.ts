@@ -270,6 +270,6 @@ export function storageDefaultsFile(storage: () => Pick<Storage, "getItem" | "se
 }
 
 /** The defaults the app keeps: in the app's file, or in the webview's storage outside the app. */
-export const savedDefaults = defaultsDoc(
-  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window ? tauriDefaultsFile : storageDefaultsFile(() => globalThis.localStorage),
-);
+export const savedDefaultsFile: DefaultsFile =
+  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window ? tauriDefaultsFile : storageDefaultsFile(() => globalThis.localStorage);
+export const savedDefaults = defaultsDoc(savedDefaultsFile);

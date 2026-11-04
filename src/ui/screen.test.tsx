@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// The side panel's Screen (Screen.tsx, ADR 0033) against a fake of Hermes's `display.*` and a stand-in for noVNC, which
+// The side panel's Screen (Screen.tsx, ADR 0039) against a fake of Hermes's `display.*` and a stand-in for noVNC, which
 // jsdom can't draw: what it says for each state of the screen, watching, taking over and handing back, another viewer
 // taking over, and letting go of the stream when it goes.
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";

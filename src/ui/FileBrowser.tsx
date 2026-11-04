@@ -1,5 +1,5 @@
 // Server files: a browser for the files on the machine the Hermes dashboard runs on (remoteFiles.ts). It is the side
-// panel's Files tab (ADR 0033), and opens from the rail there too. Folders open in place, with the path above them as a trail
+// panel's Files tab (ADR 0039), and opens from the rail there too. Folders open in place, with the path above them as a trail
 // of folders; a file opens in the preview beside the list, where it can be downloaded to this computer. Upload… sends
 // a file the owner picks into the folder on screen, after showing where it goes and what is in the way (ADR 0023). A
 // text file in the preview can be edited and saved back, checked against what the server has (ADR 0024). Nothing else

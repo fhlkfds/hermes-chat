@@ -1,10 +1,10 @@
 //! The side panel's Screen: a profile's Bot Desktop on the Hermes server, streamed as raw RFB over
-//! `/api/display/ws` (ADR 0033). The webview asks Hermes for a single-use ticket over `/api/ws` (`display.observe`) and
+//! `/api/display/ws` (ADR 0039). The webview asks Hermes for a single-use ticket over `/api/ws` (`display.observe`) and
 //! hands it here. Rust opens the socket on the signed-in connection, with the owner's extra request headers, and moves
 //! bytes both ways; noVNC in the webview speaks RFB. What input reaches the screen is Hermes's call (its lease and its
 //! RFB filter), not this relay's.
 //!
-//! Two ways a socket ends, because Hermes reads them differently (ADR 0033). The Screen letting go (`close`) is a normal
+//! Two ways a socket ends, because Hermes reads them differently (ADR 0039). The Screen letting go (`close`) is a normal
 //! close (1000): the viewer left, so control the owner took goes back to the agent. The connection being replaced or
 //! closed (`close_all`, as transfers are stopped, ADR 0023) abandons every socket with no close frame: to Hermes that
 //! is a dropped link, which keeps the owner in control, since they may be part-way through a sign-in. Leaving on

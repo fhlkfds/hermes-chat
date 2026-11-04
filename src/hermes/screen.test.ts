@@ -1,4 +1,4 @@
-// The Screen's logic (screen.ts, ADR 0033): what to show for each `display.status`, how the lease is read, the
+// The Screen's logic (screen.ts, ADR 0039): what to show for each `display.status`, how the lease is read, the
 // WebSocket-shaped relay noVNC drives, and `display.*` over the transport against FakeHermes.
 import { describe, expect, it, vi } from "vitest";
 import { FakeHermes } from "./fakeHermes";

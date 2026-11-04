@@ -156,6 +156,12 @@ kbd {
 .settled-section.open { border-top: 1px solid var(--line); }
 .settled-list { overflow-y: auto; min-height: 0; }
 .settled-list .row-title { color: var(--muted); }
+/* Working and Snoozed sit under the chats that need the owner, in the list's scroll. */
+.row[data-section="snoozed"] .row-title { color: var(--muted); }
+/* A collapsed section's rows stay mounted, hidden; .row's own display would otherwise show them. */
+.row[hidden] { display: none; }
+.row-wake { font-variant-numeric: tabular-nums; }
+.row-meta .row-wake + * { margin-left: 6px; }
 .sync-error { color: var(--warn); font-size: calc(12rem / 14); padding: 6px 10px 10px; }
 .empty-hint { color: var(--faint); font-size: calc(12.5rem / 14); padding: 6px 10px 10px; }
 
@@ -185,10 +191,6 @@ kbd {
 /* Keyboard focus anywhere in the row shows its actions, so Tab can reach them. */
 .row:hover .row-action, .row:focus-within .row-action { display: grid; }
 .row-action:focus-visible { outline: 2px solid var(--line-2); outline-offset: -2px; }
-/* A Settled chat's way back to Active says "Unsettle" and shows without hovering. */
-.row-action.row-unsettle {
-  display: grid; grid-auto-flow: column; gap: 4px; width: auto; padding: 0 6px; font-size: calc(11.5rem / 14);
-}
 .row.confirming { padding-left: 10px; background: rgba(248, 113, 113, 0.08); }
 .row.confirming .row-title { color: var(--muted); }
 .row-confirm { flex: none; font-size: calc(12rem / 14); padding: 3px 8px; border-radius: 6px; color: var(--muted); }
@@ -276,12 +278,6 @@ kbd {
 }
 .chat-title { display: flex; align-items: center; gap: 8px; font-size: calc(14rem / 14); font-weight: 500; color: var(--text); min-width: 0; }
 .chat-title > span:not(.badge):not(.src) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.unsettle-btn {
-  display: inline-flex; align-items: center; gap: 4px; flex: none; padding: 1px 7px; border-radius: 999px;
-  font-size: calc(11rem / 14); color: var(--muted); border: 1px solid var(--line-2);
-}
-.unsettle-btn:hover { background: var(--raised-2); color: var(--text); }
-.unsettle-btn:focus-visible { outline: 2px solid var(--line-2); outline-offset: 1px; }
 .chat-head-actions { display: flex; gap: 4px; opacity: 0.75; }
 .chat-head:hover .chat-head-actions { opacity: 1; }
 
@@ -736,6 +732,20 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .toast button:hover { background: var(--accent-soft); }
 @keyframes rise { from { transform: translate(-50%, 6px); opacity: 0; } }
 
+/* chat link notice (ChatLinkNotice.tsx): just under the chat header, never taking focus */
+.link-notice {
+  position: fixed; left: 50%; top: 60px; transform: translateX(-50%); z-index: 31; display: flex; align-items: center; gap: 10px;
+  width: min(620px, calc(100vw - 32px)); padding: 9px 10px 9px 12px; border-radius: 10px; background: var(--raised-2);
+  border: 1px solid var(--line-2); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45); font-size: calc(13rem / 14); flex-wrap: wrap;
+}
+.link-notice.error { border-color: var(--warn); }
+.link-notice-icon { display: flex; color: var(--muted); flex: none; }
+.link-notice.error .link-notice-icon { color: var(--warn); }
+.link-notice-text { flex: 1 1 240px; min-width: 0; line-height: 1.4; }
+.link-notice-actions { display: flex; gap: 6px; flex: none; margin-left: auto; }
+.link-notice .btn.small { height: 28px; padding: 0 10px; }
+.link-notice .btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+
 /* search palette, ported from the prototype */
 .palette-scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); z-index: 40; display: flex; justify-content: center; padding-top: 12vh; }
 .palette {
@@ -991,10 +1001,12 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 .shortcut-controls { display: flex; gap: 8px; flex-shrink: 0; }
 .shortcut-key { min-width: 132px; justify-content: center; font-family: var(--mono); }
 .shortcut-key.recording { border-color: var(--accent, var(--text)); color: var(--text); }
-.screenshot-settings h3 { font-size: calc(13rem / 14); margin: 22px 0 6px; }
-.screenshot-settings p.settings-note { margin: 8px 0 0; }
+.screenshot-settings h3, .global-shortcut-settings h3 { font-size: calc(13rem / 14); margin: 22px 0 6px; }
+.screenshot-settings p.settings-note, .global-shortcut-settings p.settings-note { margin: 8px 0 0; }
+.shortcut-failure { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.shortcut-failure p { margin: 0; }
 .shortcut-examples { margin: 6px 0 8px; padding-left: 18px; line-height: 1.7; }
-.screenshot-settings code { font-family: var(--mono); font-size: calc(11.5rem / 14); background: var(--raised-2); padding: 1px 5px; border-radius: 4px; }
+.screenshot-settings code, .global-shortcut-settings code { font-family: var(--mono); font-size: calc(11.5rem / 14); background: var(--raised-2); padding: 1px 5px; border-radius: 4px; }
 .warn-note { color: var(--warn); }
 /* projects (Projects.tsx, ADR 0007): the switcher under the profile's name, and the project screen */
 .sb-project { display: flex; padding: 0 12px 6px 14px; margin-top: -4px; }
@@ -1475,6 +1487,25 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .import-chat-title { font-weight: 600; overflow-wrap: anywhere; }
 .import-chats .btn { margin-left: auto; }
 .import-warnings ul { margin: 6px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; color: var(--text-2); line-height: 1.45; }
+/* ---------- backup and restore (Backup.tsx) ---------- */
+.leave-overlay .leave-dialog.backup-dialog { max-width: min(720px, 100%); }
+.backup-categories { border: 0; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 8px 16px; }
+.backup-categories legend { color: var(--faint); margin-bottom: 4px; grid-column: 1 / -1; }
+.backup-categories label { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
+.backup-categories label > span { display: flex; flex-direction: column; gap: 2px; }
+.backup-categories input { margin-top: 3px; accent-color: var(--accent); }
+.backup-table { width: 100%; border-collapse: collapse; font-size: calc(12.5rem / 14); }
+.backup-table th { text-align: left; font-weight: 500; color: var(--faint); padding: 4px 8px 4px 0; border-bottom: 1px solid var(--line-2); }
+.backup-table td { padding: 6px 8px 6px 0; border-bottom: 1px solid var(--line-2); vertical-align: top; overflow-wrap: anywhere; color: var(--text-2); }
+.backup-table td b { color: var(--text); }
+.backup-table select { max-width: 100%; }
+.import-warnings b svg { vertical-align: -2px; color: var(--ok); }
+@media (max-width: 560px) {
+  .backup-table, .backup-table tbody, .backup-table tr, .backup-table td { display: block; }
+  .backup-table thead { display: none; }
+  .backup-table tr { border-bottom: 1px solid var(--line-2); padding: 4px 0; }
+  .backup-table td { border: 0; padding: 2px 0; }
+}
 .composer-wrap.read-only-note { display: flex; gap: 8px; align-items: flex-start; color: var(--text-2); line-height: 1.5; font-size: calc(13rem / 14); }
 .read-only-note svg { flex: none; margin-top: 3px; }
 
@@ -2103,7 +2134,7 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
   .usage-filters select, .usage-filters input { max-width: 100%; }
 }
 
-/* ---------- side panel (SidePanel.tsx, ADR 0033): Preview, Terminal, Files, Screen ---------- */
+/* ---------- side panel (SidePanel.tsx, ADR 0039): Preview, Terminal, Files, Screen ---------- */
 .side-panel[hidden] { display: none; }
 .panel-tabs { height: 44px; flex: none; display: flex; align-items: center; gap: 4px; padding: 0 6px 0 8px; border-bottom: 1px solid var(--line); }
 .panel-tablist { flex: 1; min-width: 0; display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; }
@@ -2169,3 +2200,276 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .screen-start .btn { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; }
 .screen-command { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
 .screen-command code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: calc(12rem / 14); background: var(--raised-2); padding: 6px 8px; border-radius: 6px; }
+/* Automations (ADR 0036): webhook routes, the example-event preview, and the delivery history. */
+.automations-screen .automation-fieldset { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.automations-screen .automation-fieldset legend { padding: 0; margin-bottom: 4px; }
+.automation-events { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 6px 14px; }
+.automation-filter { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1.2fr) auto; gap: 6px; align-items: center; }
+.automation-filter input, .automation-coalesce input, .automation-event-name, .automation-preview select {
+  background: var(--raised); border: 1px solid var(--line-2); border-radius: 9px; padding: 7px 10px; color: var(--text); font: inherit; font-size: calc(13rem / 14); min-width: 0;
+}
+.automation-coalesce { display: grid; grid-template-columns: minmax(0, 2fr) repeat(2, minmax(0, 1fr)); gap: 8px; }
+.automation-insert { gap: 4px; }
+.automation-preview { display: flex; flex-direction: column; gap: 8px; }
+.automation-preview-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.automation-paste { min-height: 90px; font-family: var(--mono); font-size: calc(12rem / 14); }
+.automation-event { max-height: 220px; }
+.automation-checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: calc(12.5rem / 14); }
+.automation-checks li { display: flex; align-items: center; gap: 6px; overflow-wrap: anywhere; }
+.automation-checks li.pass svg { color: var(--ok); flex: none; }
+.automation-checks li.fail { color: var(--muted); }
+.automation-checks li.fail svg { color: var(--bad); flex: none; }
+.automation-verdict { margin: 4px 0 0; font-weight: 600; }
+.automation-verdict.good { color: var(--ok); }
+.automation-rendered { margin: 0; }
+.automation-setup dd { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.icon-btn.inline { width: 22px; height: 22px; }
+.secret-once { margin: 0 0 16px; padding: 12px 14px; border-radius: 12px; border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); background: color-mix(in srgb, var(--warn) 8%, transparent); display: flex; flex-direction: column; gap: 10px; font-size: calc(13rem / 14); }
+.secret-once p { margin: 0; line-height: 1.5; }
+.secret-value { font-family: var(--mono); font-size: calc(12.5rem / 14); padding: 8px 10px; border-radius: 8px; background: var(--raised-2); overflow-wrap: anywhere; user-select: all; }
+.delivery-list { margin-bottom: 12px; }
+.automation-setup { margin-bottom: 10px; }
+.delivery-list li.delivery { display: flex; flex-direction: column; gap: 4px; }
+.delivery.tone-bad { border-left-color: var(--bad); }
+.delivery.tone-good { border-left-color: var(--ok); }
+.delivery-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.delivery-head .badge { margin-left: 0; }
+.job-history .delivery-head .badge { margin-left: 0; }
+.badge.delivery-state.good { color: var(--ok); }
+.badge.delivery-state.bad { color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, transparent); }
+.badge.delivery-state.muted { color: var(--muted); }
+.delivery-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.btn.small-btn { padding: 3px 9px; font-size: calc(12rem / 14); }
+@media (max-width: 640px) {
+  .automation-filter { grid-template-columns: 1fr 1fr; }
+  .automation-coalesce { grid-template-columns: 1fr; }
+}
+
+/* Custom snooze (Snooze.tsx, ADR 0036) */
+.leave-overlay .leave-dialog.snooze-dialog { max-width: 400px; width: calc(100% - 40px); }
+.snooze-dialog h2 { font-size: calc(14rem / 14); margin: 0; display: flex; align-items: center; gap: 8px; }
+.snooze-dialog .leave-title svg { color: var(--muted); }
+.snooze-dialog .segmented { align-self: flex-start; }
+.snooze-form { display: flex; flex-direction: column; gap: 8px; }
+.snooze-field { display: flex; align-items: center; gap: 8px; }
+.snooze-field > span, .snooze-field > label { color: var(--muted); flex: none; }
+.snooze-field input, .snooze-field select {
+  background: var(--raised-2); border: 1px solid var(--line-2); border-radius: 8px; padding: 6px 9px; outline: none; color: var(--text);
+}
+.snooze-field input { flex: 1; min-width: 0; }
+.snooze-field input:focus, .snooze-field select:focus { border-color: var(--line-3); }
+.snooze-field input[type="number"] { max-width: 90px; }
+.snooze-dialog p.snooze-when { margin: 0; }
+
+/* ---------- project membership sync (MembershipSync.tsx, ADR 0033) ---------- */
+.dot.warn { background: var(--warn); }
+.menu-hint { flex: none; margin-left: 8px; font-size: calc(11rem / 14); color: var(--warn); }
+.project-attention { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; border-top: 1px solid var(--line); }
+.project-attention .row-title { color: var(--warn); white-space: normal; }
+.membership-status {
+  display: flex; align-items: flex-start; flex-wrap: wrap; gap: 8px; margin-top: 10px; padding: 8px 10px;
+  border: 1px solid var(--line-2); border-radius: 10px; background: var(--raised-2); line-height: 1.5;
+}
+.membership-status.ms-pending, .membership-status.ms-stranded, .membership-status.ms-preview { border-color: rgba(245, 184, 74, 0.35); }
+.membership-icon { flex: none; display: inline-flex; margin-top: 3px; color: var(--muted); }
+.membership-status.ms-pending .membership-icon, .membership-status.ms-stranded .membership-icon { color: var(--warn); }
+.membership-text { flex: 1 1 240px; min-width: 0; }
+.membership-error { color: var(--bad); }
+.membership-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.leave-overlay .leave-dialog.membership-dialog { max-width: min(600px, calc(100% - 32px)); width: 100%; max-height: min(92vh, 860px); overflow-y: auto; }
+.membership-dialog > * { flex-shrink: 0; }
+.membership-title svg { color: var(--muted); }
+.membership-group h3 { margin: 4px 0; font-size: calc(12rem / 14); font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.membership-group ul { margin: 0; padding-left: 18px; line-height: 1.6; overflow-wrap: anywhere; }
+.membership-conflicts { list-style: none; padding-left: 0 !important; display: flex; flex-direction: column; gap: 8px; }
+.membership-conflicts li { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid rgba(245, 184, 74, 0.3); border-radius: 8px; }
+.membership-dialog .confirm-actions { flex-wrap: wrap; }
+
+/* Edit and Regenerate (ADR 0035). */
+.leave-overlay .leave-dialog.replay-dialog { max-width: min(640px, 100%); }
+.replay-text { width: 100%; resize: vertical; min-height: 72px; font: inherit; line-height: 1.5; }
+.replay-later li:last-child { color: var(--text-2); }
+.variant-nav { display: flex; align-items: center; gap: 4px; margin-top: 6px; font-size: calc(12rem / 14); color: var(--muted); flex-wrap: wrap; }
+.variant-nav .icon-btn { width: 24px; height: 24px; }
+.variant-count { font-variant-numeric: tabular-nums; color: var(--text-2); min-width: 3ch; text-align: center; }
+.variant-what { margin-left: 4px; overflow-wrap: anywhere; }
+.msg.user .variant-nav { justify-content: flex-end; }
+.branch-unfinished .btn { margin-left: 4px; padding: 2px 8px; font-size: calc(12rem / 14); }
+
+/* ---------- Logs (Logs.tsx, ADR 0033) ---------- */
+/* A screen tall enough for the list: the list scrolls, the controls above it stay. */
+.logs-screen { display: flex; overflow: hidden; }
+.settings-inner.logs-inner { max-width: 1240px; width: 100%; box-sizing: border-box; display: flex; flex-direction: column; min-height: 0; padding-bottom: 20px; }
+.logs-inner > * { flex-shrink: 0; }
+.logs-search input { min-width: 220px; }
+.logs-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 8px; }
+.logs-actions .btn { display: inline-flex; align-items: center; gap: 6px; }
+.logs-actions .btn[aria-pressed="true"] { border-color: var(--warn); }
+p.logs-status { margin: 0 0 8px; line-height: 1.5; }
+.logs-problem, .logs-paused { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 8px; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line-2); font-size: calc(13rem / 14); }
+.logs-problem { border-color: var(--bad); }
+.logs-problem svg { color: var(--bad); flex: none; }
+.logs-paused { border-color: var(--warn); }
+.logs-paused svg { color: var(--warn); }
+.logs-list {
+  flex: 1 1 auto; min-height: 200px; overflow-y: auto; overflow-x: hidden; border: 1px solid var(--line-2); border-radius: var(--radius);
+  background: var(--code-bg); font-family: var(--mono); font-size: calc(var(--mono-size) * 0.92); line-height: 1.5; padding: 6px 0;
+}
+.logs-list:focus-visible { outline: 2px solid var(--line-3); outline-offset: 1px; }
+/* Rows off screen skip layout and paint, so thousands of them stay cheap. */
+.log-row { display: flex; gap: 12px; padding: 0 12px; content-visibility: auto; contain-intrinsic-size: auto 1.5em; }
+.log-time { flex: none; color: var(--muted); user-select: none; }
+.log-text { flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.log-row.lvl-warning .log-text { color: var(--warn); }
+.log-row.lvl-error .log-text, .log-row.lvl-critical .log-text { color: var(--bad); }
+.log-row.lvl-debug .log-text { color: var(--muted); }
+.log-row.log-mark { margin: 4px 0; padding: 3px 12px; background: var(--raised); border-block: 1px dashed var(--warn); }
+.log-row.log-mark .log-text { color: var(--text); font-style: italic; }
+.logs-empty { padding: 10px 12px; margin: 0; }
+.leave-overlay .leave-dialog.logs-bundle { max-width: min(760px, 100%); width: 100%; max-height: calc(100vh - 32px); overflow-y: auto; }
+.logs-bundle-sources { border: 0; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.logs-bundle-sources legend { color: var(--faint); margin-bottom: 4px; }
+.logs-bundle-sources label { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
+.logs-bundle-sources input { margin-top: 3px; }
+.logs-bundle-preview { margin: 0; max-height: 280px; overflow: auto; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--code-bg); font-family: var(--mono); font-size: calc(var(--mono-size) * 0.85); white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 720px) {
+  .logs-search input { min-width: 0; }
+  .log-row { flex-direction: column; gap: 0; }
+}
+
+/* The Repository screen (Repository.tsx, ADR 0034). It borrows Server files' head, bar, banners and diff lines. */
+.repo-edit-target { width: 22px; height: 22px; }
+.repo-target { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 4px 22px 10px; }
+.repo-target label { font-size: calc(12.5rem / 14); color: var(--muted); }
+.repo-target input, .repo-path, .repo-diff-head select {
+  background: var(--raised); border: 1px solid var(--line-2); border-radius: 7px; padding: 5px 8px; color: var(--text); font-size: calc(12.5rem / 14);
+}
+.repo-target input { flex: 1; min-width: 220px; max-width: 420px; }
+.repo-target input:focus, .repo-path:focus { border-color: var(--line-3); outline: none; }
+.repo-bar { flex-wrap: wrap; row-gap: 6px; }
+.repo-path-label { display: inline-flex; align-items: center; gap: 6px; font-size: calc(12.5rem / 14); color: var(--muted); }
+.repo-path { flex: 1; min-width: 180px; max-width: 520px; }
+.repo-offers { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 22px 10px; }
+.repo-offers .chip { max-width: 100%; cursor: pointer; }
+.repo-offers .chip:hover:not(:disabled) { background: var(--raised-3); }
+.repo-empty { padding: 24px 22px; display: flex; align-items: center; gap: 8px; }
+.repo-failure { align-items: flex-start; }
+.repo-failure-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; overflow-wrap: anywhere; }
+.repo-hint { color: var(--text-2); }
+.repo-output {
+  margin: 2px 0 0; padding: 6px 8px; max-height: 220px; overflow: auto; white-space: pre-wrap; background: var(--code-bg); color: var(--text-2);
+  border-radius: 6px; font-size: calc(12rem / 14);
+}
+.repo-summary { padding: 4px 22px 8px; display: flex; flex-direction: column; gap: 6px; flex: none; }
+.repo-summary[data-stale] { opacity: 0.7; }
+.repo-summary-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; min-width: 0; }
+.repo-summary .files-banner { margin: 0; }
+.repo-top { color: var(--text-strong); overflow-wrap: anywhere; }
+.repo-branch { display: inline-flex; align-items: center; gap: 6px; color: var(--text); }
+.repo-branch svg { color: var(--muted); }
+.repo-body { flex: 1; min-height: 0; display: flex; border-top: 1px solid var(--line); }
+.repo-list { width: 100%; overflow: auto; padding: 8px 12px 40px 16px; }
+.repo-body.with-diff .repo-list { width: 340px; flex: none; border-right: 1px solid var(--line); }
+.repo-list[data-stale] { opacity: 0.7; }
+.repo-clean { padding: 8px 6px; }
+.repo-section + .repo-section { margin-top: 12px; }
+.repo-section h2 { font-size: calc(11.5rem / 14); text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); font-weight: 600; margin: 4px 6px 4px; }
+.repo-section ul { list-style: none; margin: 0; padding: 0; }
+.repo-none { margin: 2px 6px 4px; }
+.repo-file {
+  width: 100%; display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 6px; text-align: left; font-size: calc(12.5rem / 14);
+  color: var(--text-2); min-height: 28px;
+}
+.repo-file:hover { background: var(--hover-2); }
+.repo-file[aria-current] { background: var(--accent-soft); color: var(--text-strong); }
+.repo-file:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.repo-code { flex: none; width: 16px; text-align: center; font-family: var(--mono); font-size: calc(12rem / 14); font-weight: 600; color: var(--muted); }
+.repo-code.code-A, .repo-code.code-untracked { color: var(--ok); }
+.repo-code.code-D { color: var(--bad); }
+.repo-code.code-M, .repo-code.code-R, .repo-code.code-C, .repo-code.code-T { color: var(--warn); }
+.repo-code.code-U { color: var(--bad); }
+.repo-file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.repo-file-dir { margin-left: 8px; font-size: calc(11.5rem / 14); }
+.repo-counts { flex: none; font-variant-numeric: tabular-nums; }
+.repo-counts .add, .repo-diff .add { color: var(--ok); }
+.repo-counts .del, .repo-diff .del { color: var(--bad); }
+.repo-diff { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.repo-diff-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.repo-diff-title { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.repo-diff-path { overflow-wrap: anywhere; color: var(--text-strong); }
+.repo-diff-body { flex: 1; min-height: 0; overflow: auto; font-size: var(--mono-size); background: var(--raised); }
+.repo-diff-body[data-stale] { opacity: 0.7; }
+.repo-diff-body .files-diff-line.note { color: var(--muted); font-style: italic; }
+.repo-diff-body .files-diff-line.marker { background: rgba(245, 184, 74, 0.16); color: var(--warn); }
+.repo-diff-none { padding: 10px 12px; margin: 0; }
+.repo-notices { padding: 8px 12px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 4px; }
+.repo-notice { margin: 0; font-size: calc(12.5rem / 14); line-height: 1.5; color: var(--text-2); }
+.repo-notice.warn { color: var(--warn); }
+/* Narrow: the diff goes under the list. */
+@media (max-width: 860px) {
+  .repo-body.with-diff { flex-direction: column; }
+  .repo-body.with-diff .repo-list { width: 100%; max-height: 40%; border-right: 0; border-bottom: 1px solid var(--line); }
+}
+/* Repository, stage 2: staging and committing. */
+.repo-writing { color: var(--text-2); }
+.repo-row { display: flex; align-items: center; gap: 2px; }
+.repo-tick, .repo-tick-space { flex: none; width: 16px; margin: 0 2px 0 4px; }
+.repo-tick { accent-color: var(--accent); cursor: pointer; }
+.repo-section-head { display: flex; align-items: center; gap: 8px; margin: 0 0 2px; }
+.repo-section-head h2 { flex: 1; }
+.repo-section-act, .repo-stage-file, .repo-hunk-act { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; font-size: calc(12rem / 14); }
+.repo-hunk-head { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.repo-hunk-head > span { min-width: 0; overflow-wrap: anywhere; }
+.repo-hunk-act { flex: none; font-family: var(--ui-font, Inter), sans-serif; color: var(--text-2); }
+.repo-commit { margin-top: 16px; padding: 10px 6px 0; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; }
+.repo-commit-label { display: inline-flex; align-items: center; gap: 6px; font-size: calc(11.5rem / 14); text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); font-weight: 600; }
+.repo-commit-message {
+  width: 100%; resize: vertical; min-height: 72px; background: var(--raised); border: 1px solid var(--line-2); border-radius: 7px; padding: 6px 8px;
+  color: var(--text); font-size: calc(12.5rem / 14); line-height: 1.45;
+}
+.repo-commit-message:focus { border-color: var(--line-3); outline: none; }
+.repo-commit-note { margin: 0; }
+.repo-commit-error { margin: 0; color: var(--bad); display: flex; gap: 5px; align-items: center; }
+.repo-commit-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.repo-commit-actions .btn { display: inline-flex; align-items: center; gap: 5px; }
+.leave-overlay .leave-dialog.repo-review { max-width: min(860px, 100%); width: 100%; max-height: calc(100vh - 32px); display: flex; flex-direction: column; }
+.repo-review-body { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 6px; padding-right: 4px; }
+.repo-review h3 { font-size: calc(11.5rem / 14); text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); font-weight: 600; margin: 8px 0 2px; }
+.repo-review-status { display: flex; align-items: center; gap: 8px; color: var(--text-2); }
+.repo-review-facts { display: grid; grid-template-columns: max-content 1fr; gap: 3px 14px; margin: 0; font-size: calc(12.5rem / 14); }
+.repo-review-facts dt { color: var(--muted); }
+.repo-review-facts dd { margin: 0; overflow-wrap: anywhere; }
+.repo-review-message { margin: 0; padding: 8px 10px; background: var(--code-bg); border-radius: 6px; white-space: pre-wrap; font-size: calc(12.5rem / 14); }
+.repo-review-files { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: calc(12.5rem / 14); }
+.repo-review-files li { display: flex; gap: 6px; align-items: baseline; overflow-wrap: anywhere; }
+.repo-review-diff { border: 1px solid var(--line); border-radius: 8px; background: var(--raised); font-size: var(--mono-size); margin-top: 6px; }
+.repo-review-file + .repo-review-file { border-top: 1px solid var(--line-2); }
+.repo-review-file-head { padding: 6px 10px; color: var(--text-strong); background: var(--raised-2); font-size: calc(12.5rem / 14); }
+.repo-review-done { display: flex; flex-direction: column; gap: 6px; }
+.repo-review-done .files-banner { margin: 0; }
+.repo-review-file .repo-notice { padding: 4px 10px; color: var(--muted); }
+/* Repository, stage 3: push and pull requests. */
+.repo-publish { margin-top: 18px; padding: 10px 6px 0; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; }
+.repo-publish .repo-section-head h2 { margin: 0; }
+.repo-card { border: 1px solid var(--line-2); border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; background: var(--raised); }
+.repo-card h3 { margin: 0; font-size: calc(12.5rem / 14); font-weight: 600; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.repo-commits { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: calc(12.5rem / 14); }
+.repo-commits li { overflow-wrap: anywhere; }
+.repo-pr-form { display: flex; flex-direction: column; gap: 4px; }
+.repo-pr-form select, .repo-pr-title {
+  background: var(--raised-2); border: 1px solid var(--line-2); border-radius: 7px; padding: 5px 8px; color: var(--text); font-size: calc(12.5rem / 14);
+}
+.repo-pr-title:focus, .repo-pr-form select:focus { border-color: var(--line-3); outline: none; }
+.repo-pr-draft { display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); margin-top: 4px; }
+.repo-pr-draft input { accent-color: var(--accent); }
+.repo-pr-status { display: flex; flex-direction: column; gap: 6px; }
+.repo-pr-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.repo-pr-head .btn { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; font-size: calc(12rem / 14); }
+.repo-pr-title-text { flex: 1; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.repo-pr-url { margin: 0; overflow-wrap: anywhere; }
+.repo-checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: calc(12.5rem / 14); }
+.repo-checks li { display: flex; align-items: center; gap: 6px; }
+.repo-check-pass { color: var(--ok); }
+.repo-check-fail { color: var(--bad); }
+.repo-check-pending { color: var(--warn); }
+.repo-link { width: 20px; height: 20px; }

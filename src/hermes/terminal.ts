@@ -1,7 +1,7 @@
 // A terminal on the server: the owner's own `ssh` run in a pseudo-terminal by Rust (src-tauri/src/terminal.rs,
 // ADR 0022). This is the session's lifecycle, apart from the screen that draws it (src/ui/Terminal.tsx).
 
-/** Where a terminal's shell runs: on the Hermes server through ssh, or on this computer (ADR 0033). */
+/** Where a terminal's shell runs: on the Hermes server through ssh, or on this computer (ADR 0039). */
 export type TerminalKind = "server" | "local";
 
 /** What the terminal sends back: bytes ssh printed, then, once, how it ended. */

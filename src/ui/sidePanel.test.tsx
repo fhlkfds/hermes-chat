@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// The side panel's shell (SidePanel.tsx, ADR 0033): a tab is made when first opened and kept, so what runs in it
+// The side panel's shell (SidePanel.tsx, ADR 0039): a tab is made when first opened and kept, so what runs in it
 // survives the owner going to another tab or closing the panel; a tab with something running says so.
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useEffect, useState } from "react";

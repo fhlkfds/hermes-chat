@@ -1,4 +1,4 @@
-// The side panel's Terminal (ADR 0022, ADR 0033): a shell on the server through the owner's own ssh, and a shell on
+// The side panel's Terminal (ADR 0022, ADR 0039): a shell on the server through the owner's own ssh, and a shell on
 // this computer, each in a terminal of its own. Both stay alive while the owner is in another tab or the panel is
 // hidden. Ending a session, or its shell exiting, keeps what was printed, with a way to start again.
 import { useEffect, useRef, useState } from "react";

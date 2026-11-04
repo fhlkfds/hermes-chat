@@ -26,7 +26,7 @@ export const tauriTerminal: TerminalApi = {
   close: (id) => void invoke("terminal_close", { id }).catch(() => {}),
 };
 
-/** A shell on this computer: Rust starts the owner's own login shell; the target only labels it (ADR 0033). */
+/** A shell on this computer: Rust starts the owner's own login shell; the target only labels it (ADR 0039). */
 export const tauriLocalTerminal: TerminalApi = {
   ...tauriTerminal,
   open: (_target, cols, rows, onEvent) => invoke<number>("terminal_open_local", { cols, rows, onEvent: channelFor(onEvent) }).catch(asError),

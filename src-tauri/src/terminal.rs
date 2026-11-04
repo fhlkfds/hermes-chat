@@ -75,7 +75,7 @@ pub fn ssh_command(target: &str) -> Result<Command, TerminalError> {
     Ok(command)
 }
 
-/// The owner's own login shell on this computer, started in their home folder (ADR 0033): `$SHELL` when it names a
+/// The owner's own login shell on this computer, started in their home folder (ADR 0039): `$SHELL` when it names a
 /// program by its full path, else `/bin/sh`. Nothing the webview sends picks the program or its arguments.
 pub fn local_shell_command() -> Command {
     let shell = std::env::var_os("SHELL")

@@ -94,7 +94,7 @@ export interface Pipe {
   fsSaveText(id: number, profile: string, path: string, text: string): Promise<string>;
   cancelTransfer(id: number): Promise<void>;
   /**
-   * Opens the Screen's RFB stream with a ticket from `display.observe` (src-tauri `display_open`, ADR 0033). Rust closes
+   * Opens the Screen's RFB stream with a ticket from `display.observe` (src-tauri `display_open`, ADR 0039). Rust closes
    * it with the connection. Optional: a pipe without it has no Screen.
    */
   openDisplay?: OpenScreenSocket;

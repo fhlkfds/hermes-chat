@@ -1,4 +1,4 @@
-// The side panel's Screen: a profile's Bot Desktop on the Hermes server (ADR 0033). It is Hermes's own headless Xfce
+// The side panel's Screen: a profile's Bot Desktop on the Hermes server (ADR 0039). It is Hermes's own headless Xfce
 // screen, where the agent's `computer_use` and its browser run. The owner watches it live, and can take over (for a
 // sign-in, a 2FA code or a CAPTCHA) and hand back. Hermes owns all of it: whether the screen runs, and who may drive it
 // (the lease). This app asks with `display.*` over `/api/ws` and draws the RFB stream Rust relays from

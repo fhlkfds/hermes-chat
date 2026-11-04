@@ -1,4 +1,4 @@
-// The side panel beside the chat (ADR 0033): Preview, Terminal, Files and Screen, one shown at a time. Each tab is made
+// The side panel beside the chat (ADR 0039): Preview, Terminal, Files and Screen, one shown at a time. Each tab is made
 // the first time it is opened and kept from then on, so a shell or the screen keeps running while the owner is in
 // another tab, or the panel is hidden or closed. The panel is resizable from its left edge, and in a window too narrow
 // for both it covers the chat until the owner goes back.
