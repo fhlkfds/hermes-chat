@@ -35,6 +35,8 @@ export type SessionRow = {
   last_read_at: number | null;
   /** Bumped by every session edit; an edit must name the current one. Missing means 0. */
   runtime_revision?: number;
+  /** The session's runtime generation, which a delete must name (0 unless a test sets it). */
+  runtime_generation?: number;
   /** The session a branch was made from (`session.branch` stores it). */
   parent_session_id?: string | null;
   /** The folder the session works in (`sessions.cwd`). */
@@ -1332,7 +1334,7 @@ export class FakeHermes {
       (method === "POST" && req.path === "/api/sessions/import" ? () => this.importSessions(req.body!) : undefined) ??
       (method === "PATCH" && patch ? () => this.patchSession(patch[1], req.body!) : undefined) ??
       (method === "GET" && patch ? () => this.sessionDetail(decodeURIComponent(patch[1]), req.query.get("profile")) : undefined) ??
-      (method === "DELETE" && patch ? () => this.deleteSession(decodeURIComponent(patch[1]), req.query.get("profile")) : undefined) ??
+      (method === "DELETE" && patch ? () => this.deleteSession(decodeURIComponent(patch[1]), req.query) : undefined) ??
       (method === "GET" && snapshot ? () => this.mutationSnapshot(snapshot[1], req.query.get("profile")) : undefined) ??
       (method === "GET" && messages ? () => this.storedMessages(decodeURIComponent(messages[1]), req.query) : undefined) ??
       (soul && this.soulRoutes && (method === "GET" || method === "PUT") ? () => this.soul(method, decodeURIComponent(soul[1]), req.body) : undefined) ??
@@ -1749,7 +1751,7 @@ export class FakeHermes {
   /** `GET /api/sessions/{id}/mutation-snapshot` (`hermes_cli/web_routers/sessions.py` at the deployed `bf0203a`). */
   private mutationSnapshot(id: string, profile: string | null) {
     const s = this.storeOrFail(profile).find((r) => r.id === id);
-    return { session_id: id, exists: !!s, runtime_revision: s?.runtime_revision ?? 0, runtime_generation: s ? 0 : null };
+    return { session_id: id, exists: !!s, runtime_revision: s?.runtime_revision ?? 0, runtime_generation: s ? (s.runtime_generation ?? 0) : null };
   }
 
   /** `GET /api/sessions/{id}` (`get_session_detail` at the deployed `bf0203a`): the raw row, its flags stored as 0/1. */
@@ -1871,13 +1873,25 @@ export class FakeHermes {
   }
 
   /**
-   * `delete_session_endpoint` in `hermes_cli/web_routers/sessions.py` at upstream `c419cf7`: the row and its messages
-   * go for good. A session already gone counts as deleted.
+   * `DELETE /api/sessions/{id}` (`delete_session_endpoint`), fenced like the deployed v0.22.6 `f0d9488` and checked
+   * against a throwaway dashboard there: the query must name `request_id`, `expected_revision` and
+   * `expected_generation`, or it is refused, each way as that dashboard refuses it. The row and its messages go for
+   * good. A session already gone counts as deleted.
    */
-  private deleteSession(id: string, profile: string | null) {
+  private deleteSession(id: string, query: URLSearchParams) {
+    const [requestId, revision, generation] = ["request_id", "expected_revision", "expected_generation"].map((k) => query.get(k));
+    if (requestId === null && revision === null && generation === null)
+      throw new Error(
+        `The dashboard answered 409: {"detail":"client_upgrade_required: this app is out of sync (different versions) with the Hermes backend; update the app to edit sessions"}`,
+      );
+    if (requestId === null || revision === null) throw new Error(`The dashboard answered 409: {"detail":"mutation_identity_required"}`);
+    if (generation === null) throw new Error(`The dashboard answered 400: {"detail":"invalid_params"}`);
+    const profile = query.get("profile");
     const store = this.storeOrFail(profile);
     const i = store.findIndex((r) => r.id === id);
     if (i < 0) return { ok: true, already_absent: true };
+    if (Number(revision) !== (store[i].runtime_revision ?? 0)) throw new Error(`The dashboard answered 409: {"detail":"revision_conflict"}`);
+    if (Number(generation) !== (store[i].runtime_generation ?? 0)) throw new Error(`The dashboard answered 409: {"detail":"stale_generation"}`);
     store.splice(i, 1);
     delete this.transcripts[id];
     // The contract removes a deleted chat's project links with it.
