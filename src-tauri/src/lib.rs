@@ -924,7 +924,7 @@ fn terminal_close(terminals: State<'_, terminal::Terminals>, id: u64) {
 /// SSH target, or one the owner gave), with `request` on its stdin (repo_git.rs, ADR 0034).
 #[tauri::command]
 async fn repo_git(target: String, request: repo_git::Request) -> Result<serde_json::Value, repo_git::RepoError> {
-    repo_git::run(repo_git::ssh_command(&target)?, &request).await
+    repo_git::run_over_ssh(&target, &request).await
 }
 
 /// Starts the app. `screenshot`: it was started by `hermes-chat --screenshot`, with no other Hermes Chat to take it.

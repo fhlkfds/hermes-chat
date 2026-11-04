@@ -2,7 +2,7 @@
 // owner's own ssh, not through the dashboard, so it works while Hermes is away too. It covers the chat panes, as
 // Server files does.
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { ArrowLeft, Check, CircleAlert, FileWarning, FolderGit2, GitBranch, GitCommitHorizontal, GitMerge, Minus, Pencil, Plus, RefreshCw, Server, Sparkles, X } from "lucide-react";
+import { ArrowLeft, ArrowUpFromLine, Check, CircleAlert, CircleCheck, CircleDashed, CircleX, ExternalLink, GitPullRequest, FileWarning, FolderGit2, GitBranch, GitCommitHorizontal, GitMerge, Minus, Pencil, Plus, RefreshCw, Server, Sparkles, X } from "lucide-react";
 import {
   CONTEXT_CHOICES,
   OPERATION_LABEL,
@@ -32,9 +32,22 @@ import {
   type ParsedDiff,
   type Preview,
   type RepoApi,
-  type RepoFailure,
+  RepoFailure,
   type RepoRequest,
   type Status,
+  asPublishInfo,
+  checksOf,
+  checksSummary,
+  prDraft,
+  pushedHere,
+  reviewLabel,
+  stateLabel,
+  type Check as PrCheck,
+  type PrCreated,
+  type PrStatus,
+  type PrSummary,
+  type PublishInfo,
+  type Pushed,
 } from "../hermes/repo";
 import { Spinner } from "./bits";
 import { useModal } from "./modal";
@@ -59,6 +72,7 @@ export function RepositoryScreen({
   onOpened,
   onTarget,
   suggest,
+  openUrl,
   onClose,
 }: {
   api: RepoApi;
@@ -76,6 +90,8 @@ export function RepositoryScreen({
   onTarget: (target: string) => void;
   /** Asks Hermes for a commit message from `input` (llm.oneshot); absent while Hermes isn't connected. */
   suggest?: (instructions: string, input: string) => Promise<string>;
+  /** Opens a pull request's or a check's page in the owner's browser. */
+  openUrl?: (url: string) => void;
   onClose: () => void;
 }) {
   const [target, setTarget] = useState(initialTarget);
@@ -537,6 +553,16 @@ export function RepositoryScreen({
                   onReview={() => setReviewing(true)}
                 />
               )}
+              <PublishPanel
+                key={`${target}\n${shown.top}`}
+                api={api}
+                target={target}
+                top={shown.top}
+                head={shown.head}
+                branch={shown.branch.head}
+                openUrl={openUrl}
+                onPushed={() => read(repo, target)}
+              />
             </div>
             {change && (
               <DiffPanel
@@ -684,6 +710,9 @@ function CommitDialog({
 }) {
   const [review, setReview] = useState<Review>({ phase: "loading" });
   const box = useRef<HTMLDivElement>(null);
+  /** The dialog's main button (Commit, Try again, Preview again or Close), focused whenever a step ends: the button
+   * that had focus is disabled while Git runs, which drops focus out of the dialog. */
+  const primary = useRef<HTMLButtonElement>(null);
   const keys = useModal(box);
   const titleId = useId();
   const alive = useRef(true);
@@ -710,6 +739,9 @@ function CommitDialog({
     );
   }, [api, target, top]);
   useEffect(load, [load]);
+  useEffect(() => {
+    if (review.phase !== "loading" && review.phase !== "committing") primary.current?.focus();
+  }, [review.phase]);
 
   const commit = (p: Preview) => {
     setReview({ phase: "committing", preview: p });
@@ -868,7 +900,7 @@ function CommitDialog({
         )}
         <div className="confirm-actions">
           {review.phase === "committed" || review.phase === "unknown" ? (
-            <button className="btn primary" autoFocus onClick={onClose}>
+            <button ref={primary} className="btn primary" onClick={onClose}>
               Close
             </button>
           ) : (
@@ -877,11 +909,11 @@ function CommitDialog({
                 Cancel
               </button>
               {review.phase === "ready" && review.error?.kind === "stale" ? (
-                <button className="btn primary" onClick={load}>
+                <button ref={primary} className="btn primary" onClick={load}>
                   Preview again
                 </button>
               ) : (
-                <button className="btn primary" autoFocus disabled={!p || !!blocked || busy} title={blocked} onClick={() => p && commit(p)}>
+                <button ref={primary} className="btn primary" disabled={!p || !!blocked || busy} title={blocked} onClick={() => p && commit(p)}>
                   {review.phase === "ready" && review.error ? "Try again" : "Commit"}
                 </button>
               )}
@@ -902,6 +934,584 @@ function PatchFile({ diff }: { diff: string }) {
       <div className="repo-review-file-head mono">{parsed.rename ? `${parsed.rename.from} → ${parsed.rename.to}` : (title?.[2] ?? "")}</div>
       {parsed.binary && <p className="repo-notice">Binary file.</p>}
       <DiffLines parsed={parsed} />
+    </div>
+  );
+}
+
+/**
+ * Push and Create PR, separately (ADR 0034, stage 3). Both show where they go first: the repository, the remote and
+ * its URL, the local and remote branch, the commits, and for a pull request its base. Read again whenever HEAD or
+ * the branch moves, and on Refresh.
+ */
+function PublishPanel({
+  api,
+  target,
+  top,
+  head,
+  branch,
+  openUrl,
+  onPushed,
+}: {
+  api: RepoApi;
+  target: string;
+  top: string;
+  head: string | null;
+  branch: string | null;
+  openUrl?: (url: string) => void;
+  /** A push dialog closed: the upstream and ahead counts above may have changed. */
+  onPushed: () => void;
+}) {
+  const [info, setInfo] = useState<Load<PublishInfo>>({ state: "idle" });
+  const [pushing, setPushing] = useState(false);
+  const run = useRef(0);
+  const load = useCallback(() => {
+    const at = ++run.current;
+    setInfo((i) => ({ state: "loading", last: lastOf(i) }));
+    api.run(target, { op: "publishInfo", repo: top }).then(
+      (v) => {
+        if (at !== run.current) return;
+        try {
+          setInfo({ state: "ready", data: asPublishInfo(v) });
+        } catch (e) {
+          setInfo({ state: "failed", error: asRepoFailure(e) });
+        }
+      },
+      (e: unknown) => at === run.current && setInfo((i) => ({ state: "failed", error: asRepoFailure(e), last: lastOf(i) })),
+    );
+  }, [api, target, top]);
+  useEffect(load, [load, head, branch]);
+  const p = lastOf(info);
+  return (
+    <section className="repo-publish" aria-label="Publish" aria-busy={info.state === "loading"}>
+      <div className="repo-section-head">
+        <h2 className="repo-commit-label">
+          <ArrowUpFromLine size={14} aria-hidden /> Push and pull request
+        </h2>
+        <button className="icon-btn" title="Read the remote's branch and pull requests again" aria-label="Refresh push and pull request" disabled={info.state === "loading"} onClick={load}>
+          <RefreshCw size={14} className={info.state === "loading" ? "spin" : undefined} />
+        </button>
+      </div>
+      {info.state === "failed" && <Failure failure={info.error} what="Couldn't read where a push would go" />}
+      {!p && info.state === "loading" && (
+        <p className="muted small repo-review-status">
+          <Spinner /> Reading the remote and pull requests…
+        </p>
+      )}
+      {p && <PushCard info={p} onPush={() => setPushing(true)} />}
+      {p && <PrCard key={`${p.remote}\n${p.remoteBranch}`} api={api} target={target} top={top} info={p} openUrl={openUrl} onChanged={load} />}
+      {pushing && p && (
+        <PushDialog
+          api={api}
+          target={target}
+          top={top}
+          info={p}
+          onClose={() => {
+            setPushing(false);
+            load();
+            onPushed();
+          }}
+        />
+      )}
+    </section>
+  );
+}
+
+function PushCard({ info: p, onPush }: { info: PublishInfo; onPush: () => void }) {
+  const many = (p.remotePushUrls?.length ?? 0) > 1;
+  const why = !p.branch
+    ? "HEAD is detached: check out a branch to push."
+    : !p.remote
+      ? "This repository has no remote to push to."
+      : !p.head
+        ? "There's no commit to push yet."
+        : many
+          ? `${p.remote} pushes to ${p.remotePushUrls!.length} places (${p.remotePushUrls!.join(", ")}). This screen pushes to one place only; use the Terminal.`
+          : undefined;
+  const nothing = !!p.remote && p.ahead === 0;
+  return (
+    <div className="repo-card">
+      <h3>Push</h3>
+      {why ? (
+        <p className="small muted">{why}</p>
+      ) : (
+        <>
+          <dl className="repo-review-facts">
+            <dt>Remote</dt>
+            <dd className="mono">
+              {p.remote} <span className="muted">{p.remoteUrl}</span>
+            </dd>
+            <dt>Branch</dt>
+            <dd className="mono">
+              {p.branch} → {p.remote}/{p.remoteBranch}
+              {!p.upstream && <span className="muted"> (new upstream)</span>}
+            </dd>
+            {p.upstream && (p.upstream.remote !== p.remote || p.upstream.branch !== p.remoteBranch) && (
+              <>
+                <dt>Upstream</dt>
+                <dd className="mono">
+                  {p.upstream.remote}/{p.upstream.branch} <span className="muted">(not where a push goes: Git pushes a branch only to its own name)</span>
+                </dd>
+              </>
+            )}
+          </dl>
+          {p.behind ? (
+            <p className="repo-notice warn">
+              {p.remote}/{p.remoteBranch} has {p.behind} {p.behind === 1 ? "commit" : "commits"} this branch doesn't, as of the last fetch. The push will be rejected; nothing is ever
+              force-pushed.
+            </p>
+          ) : null}
+          {p.remoteAsked && p.ahead === null && (
+            <p className="repo-notice">
+              {p.remote} pushes to {p.remoteUrl}, apart from where it fetches from.{" "}
+              {p.remoteError ? `Asking it failed (${p.remoteError}), so` : "That destination doesn't have this commit's history here, so"} what a push sends can't be
+              listed: Push sends {p.branch} at {p.head?.slice(0, 12)}.
+            </p>
+          )}
+          {nothing ? (
+            <p className="small muted">
+              {p.remoteHead
+                ? `Nothing to push: ${p.remote}/${p.remoteBranch} has this commit, as of the last fetch.`
+                : `Nothing to push: every commit on this branch is already on ${p.remote}, as of the last fetch.`}
+            </p>
+          ) : (
+            <ul className="repo-commits">
+              {p.commits.slice(0, 10).map((c) => (
+                <li key={c.sha}>
+                  <span className="mono muted">{c.sha.slice(0, 7)}</span> {c.subject}
+                </li>
+              ))}
+              {(p.ahead ?? 0) > 10 && <li className="muted">and {(p.ahead ?? 0) - 10} more</li>}
+            </ul>
+          )}
+          <div className="repo-commit-actions">
+            <button className="btn primary" disabled={nothing} onClick={onPush}>
+              <ArrowUpFromLine size={13} aria-hidden /> Push{p.ahead ? ` ${p.ahead} ${p.ahead === 1 ? "commit" : "commits"}` : ""}…
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+type PushState =
+  | { phase: "ready"; error?: RepoFailure }
+  | { phase: "pushing" }
+  | { phase: "pushed"; result: Pushed }
+  /** No answer: the remote is asked what it has now. `remoteHead` undefined while asking; `askError` if that failed. */
+  | { phase: "unknown"; remoteHead?: string | null; askError?: string };
+
+/** Exactly what Push sends, then the push and what the remote has afterwards. */
+function PushDialog({ api, target, top, info: p, onClose }: { api: RepoApi; target: string; top: string; info: PublishInfo; onClose: () => void }) {
+  const [state, setState] = useState<PushState>({ phase: "ready" });
+  const box = useRef<HTMLDivElement>(null);
+  const primary = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (state.phase !== "pushing") primary.current?.focus();
+  }, [state.phase]);
+  const keys = useModal(box);
+  const titleId = useId();
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => void (alive.current = false);
+  }, []);
+  const push = () => {
+    if (!p.remote || !p.branch || !p.remoteBranch) return;
+    setState({ phase: "pushing" });
+    api.run(target, { op: "push", repo: top, remote: p.remote, branch: p.branch, remoteBranch: p.remoteBranch, expect: { head: p.head } }).then(
+      (v) => alive.current && setState({ phase: "pushed", result: v as Pushed }),
+      (e: unknown) => {
+        if (!alive.current) return;
+        const error = asRepoFailure(e);
+        if (!(error.kind === "timeout" || error.kind.startsWith("ssh") || error.kind === "spawn")) return setState({ phase: "ready", error });
+        // Whether it was pushed isn't known: ask the remote itself, never the cached tracking ref.
+        setState({ phase: "unknown" });
+        api.run(target, { op: "remoteHead", repo: top, remote: p.remote!, remoteBranch: p.remoteBranch! }).then(
+          (v) => alive.current && setState({ phase: "unknown", remoteHead: (v as { remoteHead: string | null }).remoteHead }),
+          (e2: unknown) => alive.current && setState({ phase: "unknown", askError: asRepoFailure(e2).message }),
+        );
+      },
+    );
+  };
+  const busy = state.phase === "pushing";
+  const close = () => !busy && onClose();
+  return (
+    <div className="leave-overlay" onMouseDown={(e) => e.target === e.currentTarget && close()}>
+      <div
+        ref={box}
+        className="leave-dialog repo-review"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-busy={busy}
+        onKeyDown={(e) => {
+          keys(e);
+          if (e.key === "Escape") {
+            e.preventDefault();
+            close();
+          }
+        }}
+      >
+        <h2 id={titleId} className="leave-title">
+          <ArrowUpFromLine size={15} aria-hidden /> {state.phase === "pushed" ? "Pushed" : `Push to ${p.remote}/${p.remoteBranch}`}
+        </h2>
+        <dl className="repo-review-facts">
+          <dt>Repository</dt>
+          <dd className="mono">{top}</dd>
+          <dt>Remote</dt>
+          <dd className="mono">
+            {p.remote} <span className="muted">{p.remoteUrl}</span>
+          </dd>
+          <dt>From</dt>
+          <dd className="mono">
+            {p.branch} at {p.head?.slice(0, 12)}
+          </dd>
+          <dt>To</dt>
+          <dd className="mono">
+            {p.remote}/{p.remoteBranch}
+            {p.remoteHead ? <span className="muted"> (last seen at {p.remoteHead.slice(0, 12)})</span> : <span className="muted"> (new on the remote)</span>}
+          </dd>
+          <dt>How</dt>
+          <dd>A plain push with the server's own credentials. Never forced; a pre-push hook runs as Git runs it.</dd>
+        </dl>
+        <ul className="repo-commits">
+          {p.commits.slice(0, 20).map((c) => (
+            <li key={c.sha}>
+              <span className="mono muted">{c.sha.slice(0, 7)}</span> {c.subject}
+            </li>
+          ))}
+        </ul>
+        {state.phase === "pushing" && (
+          <p role="status" className="repo-review-status">
+            <Spinner /> Pushing…
+          </p>
+        )}
+        {state.phase === "ready" && state.error && <Failure failure={state.error} what="The push was refused" />}
+        {state.phase === "unknown" && (
+          <p className="files-banner warn" role="alert">
+            <CircleAlert size={14} aria-hidden />{" "}
+            <span>
+              The server didn't answer, so whether the push happened wasn't known.{" "}
+              {state.askError
+                ? `Asking ${p.remote} failed too (${state.askError}); check it in the Terminal before pushing again.`
+                : state.remoteHead === undefined
+                  ? `Asking ${p.remote}…`
+                  : state.remoteHead === p.head
+                    ? `${p.remote} has ${p.remoteBranch} at ${p.head?.slice(0, 12)}: the push happened.`
+                    : `${p.remote} has ${p.remoteBranch} at ${state.remoteHead?.slice(0, 12) ?? "nothing"}, not this commit: it wasn't pushed.`}
+            </span>
+          </p>
+        )}
+        {state.phase === "pushed" && (
+          <>
+            <p className={`files-banner ${state.result.matches ? "ok" : "warn"}`} role="status">
+              {state.result.matches ? <Check size={14} aria-hidden /> : <CircleAlert size={14} aria-hidden />}
+              <span>
+                {state.result.matches
+                  ? `Pushed. ${p.remote} now has ${p.remoteBranch} at ${state.result.pushed.slice(0, 12)}.`
+                  : state.result.matches === null
+                    ? `Pushed (Git reported success), but checking ${p.remote} afterwards failed: ${state.result.verifyError ?? "no reason given"}.`
+                    : `Git pushed, but ${p.remote} now has ${p.remoteBranch} at ${state.result.remoteHead?.slice(0, 12) ?? "nothing"}, not ${state.result.pushed.slice(0, 12)}.`}
+                {state.result.upstreamSet ? ` ${p.branch} now tracks ${p.remote}/${p.remoteBranch}.` : ""}
+              </span>
+            </p>
+            {state.result.output.trim() && <pre className="repo-output mono">{state.result.output.trim()}</pre>}
+          </>
+        )}
+        <div className="confirm-actions">
+          {state.phase === "pushed" || state.phase === "unknown" ? (
+            <button ref={primary} className="btn primary" onClick={onClose}>
+              Close
+            </button>
+          ) : (
+            <>
+              <button className="btn" onClick={close} disabled={busy}>
+                Cancel
+              </button>
+              <button ref={primary} className="btn primary" disabled={busy} onClick={push}>
+                {state.phase === "ready" && state.error ? "Try again" : "Push"}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** A pull request for this branch: the form to create one, or the one there is, with its status and checks. */
+function PrCard({
+  api,
+  target,
+  top,
+  info: p,
+  openUrl,
+  onChanged,
+}: {
+  api: RepoApi;
+  target: string;
+  top: string;
+  info: PublishInfo;
+  openUrl?: (url: string) => void;
+  onChanged: () => void;
+}) {
+  const draft = useMemo(() => prDraft(p), [p]);
+  const [title, setTitle] = useState(draft.title);
+  const [body, setBody] = useState(draft.body);
+  // The suggested title and body follow new commits until the owner writes their own.
+  const [edited, setEdited] = useState(false);
+  useEffect(() => {
+    if (edited) return;
+    setTitle(draft.title);
+    setBody(draft.body);
+  }, [draft, edited]);
+  const [base, setBase] = useState(p.github?.defaultBranch ?? p.bases[0] ?? "");
+  const [isDraft, setIsDraft] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<RepoFailure>();
+  const [created, setCreated] = useState<PrCreated>();
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => void (alive.current = false);
+  }, []);
+  const ids = { title: useId(), body: useId(), base: useId() };
+  if (!p.github) {
+    return (
+      <div className="repo-card">
+        <h3>Pull request</h3>
+        <p className="small muted">{p.remote ? `Pull requests are made with gh, for GitHub remotes only, and ${p.remote} isn't one.` : "There's no remote."}</p>
+      </div>
+    );
+  }
+  const gh = p.github;
+  // A pull request made here but not read back has only its URL. The list, read again, has the whole of it.
+  const createdWhole = created && typeof created.pr.number === "number" ? (created.pr as PrSummary) : undefined;
+  const open = createdWhole ?? gh.prs.find((x) => x.state === "OPEN");
+  const past = gh.prs.filter((x) => x.state !== "OPEN" && x.number !== open?.number);
+  const create = () => {
+    if (!p.remote || !p.remoteBranch) return;
+    setCreating(true);
+    setError(undefined);
+    api
+      .run(target, { op: "prCreate", repo: top, remote: p.remote, remoteBranch: p.remoteBranch, base, title, body, draft: isDraft, expect: { head: p.head } })
+      .then(
+        (v) => {
+          if (!alive.current) return;
+          setCreated(v as PrCreated);
+          onChanged();
+        },
+        (e: unknown) => alive.current && setError(asRepoFailure(e)),
+      )
+      .finally(() => alive.current && setCreating(false));
+  };
+  const pushed = pushedHere(p);
+  const why = !p.branch || !p.remoteBranch ? "Check out a branch first." : !pushed ? "Push this branch first: the remote doesn't have its commit, as of the last fetch." : !title.trim() ? "Write a title." : !base ? "Pick a base branch." : base === p.remoteBranch ? "The base can't be the branch itself." : undefined;
+  return (
+    <div className="repo-card">
+      <h3>
+        Pull request{" "}
+        <span className="muted mono small">
+          {gh.repo}
+          {gh.url && openUrl && (
+            <button className="icon-btn repo-link" aria-label={`Open ${gh.repo} on GitHub`} title="Open on GitHub" onClick={() => openUrl(gh.url!)}>
+              <ExternalLink size={12} />
+            </button>
+          )}
+        </span>
+      </h3>
+      {gh.error && <Failure failure={new RepoFailure("pr-api", "gh couldn't read this repository", gh.error)} what="GitHub" />}
+      {created && !createdWhole && !open && (
+        <div className="files-banner warn" role="status">
+          <CircleAlert size={14} aria-hidden />
+          <span>
+            Created <span className="mono">{created.pr.url}</span>, but reading it back failed{created.readBackError ? `: ${created.readBackError}` : ""}. Refresh to read it from
+            GitHub.
+          </span>
+        </div>
+      )}
+      {open ? (
+        <>
+          {created && (
+            <p className="files-banner ok" role="status">
+              <Check size={14} aria-hidden />
+              <span>
+                {created.existing ? "A pull request for this branch was already open: " : "Created "}
+                <span className="mono">{created.pr.url}</span>
+              </span>
+            </p>
+          )}
+          <PrStatusView key={open.number} api={api} target={target} top={top} remote={p.remote ?? ""} pr={open} openUrl={openUrl} />
+        </>
+      ) : (
+        !gh.error && !created && (
+          <div className="repo-pr-form">
+            <dl className="repo-review-facts">
+              <dt>Repository</dt>
+              <dd className="mono">{gh.repo}</dd>
+              <dt>From</dt>
+              <dd className="mono">
+                {p.remote}/{p.remoteBranch}
+              </dd>
+            </dl>
+            <label htmlFor={ids.base} className="small muted">
+              Into (base)
+            </label>
+            <select id={ids.base} value={base} onChange={(e) => setBase(e.target.value)}>
+              {!p.bases.includes(base) && base && <option value={base}>{base}</option>}
+              {p.bases.filter((b) => b !== p.remoteBranch).map((b) => (
+                <option key={b} value={b}>
+                  {b}
+                  {b === gh.defaultBranch ? " (default)" : ""}
+                </option>
+              ))}
+            </select>
+            <label htmlFor={ids.title} className="small muted">
+              Title
+            </label>
+            <input
+              id={ids.title}
+              className="repo-pr-title"
+              value={title}
+              onChange={(e) => {
+                setEdited(true);
+                setTitle(e.target.value);
+              }}
+            />
+            <label htmlFor={ids.body} className="small muted">
+              Description
+            </label>
+            <textarea
+              id={ids.body}
+              className="repo-commit-message"
+              rows={5}
+              value={body}
+              onChange={(e) => {
+                setEdited(true);
+                setBody(e.target.value);
+              }}
+            />
+            <label className="repo-pr-draft small">
+              <input type="checkbox" checked={isDraft} onChange={(e) => setIsDraft(e.target.checked)} /> Open as a draft
+            </label>
+            {error && <Failure failure={error} what="No pull request was created" onDismiss={() => setError(undefined)} />}
+            <div className="repo-commit-actions">
+              <button className="btn primary" disabled={!!why || creating} title={why} onClick={create}>
+                {creating ? <Spinner /> : <GitPullRequest size={13} aria-hidden />} Create pull request
+              </button>
+            </div>
+            {why && <p className="small muted repo-commit-note">{why}</p>}
+          </div>
+        )
+      )}
+      {past.length > 0 && (
+        <ul className="repo-commits">
+          {past.map((x) => (
+            <li key={x.number}>
+              <span className="muted">
+                #{x.number} {stateLabel(x)}:
+              </span>{" "}
+              {x.title}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** GitHub's mergeability in words. UNKNOWN means GitHub hasn't worked it out yet; Refresh asks again. */
+function mergeLabel(s: PrStatus): string {
+  const m = (s.mergeable ?? "UNKNOWN").toUpperCase();
+  const base = m === "MERGEABLE" ? "Yes" : m === "CONFLICTING" ? "No: it conflicts with the base" : "Not worked out by GitHub yet";
+  const state = (s.mergeStateStatus ?? "").toUpperCase();
+  const why: Record<string, string> = { BLOCKED: "blocked by required reviews or checks", BEHIND: "behind the base", DIRTY: "conflicts", UNSTABLE: "some checks failing", DRAFT: "a draft", CLEAN: "" };
+  const extra = why[state];
+  return extra ? `${base} (${extra})` : base;
+}
+
+const CHECK_ICON: Record<PrCheck["state"], ReactNode> = {
+  pass: <CircleCheck size={13} aria-hidden className="repo-check-pass" />,
+  fail: <CircleX size={13} aria-hidden className="repo-check-fail" />,
+  pending: <CircleDashed size={13} aria-hidden className="repo-check-pending" />,
+  skipped: <CircleDashed size={13} aria-hidden className="muted" />,
+  neutral: <CircleDashed size={13} aria-hidden className="muted" />,
+};
+
+/** A pull request's state, review, mergeability and checks, read from GitHub on open and on Refresh. */
+function PrStatusView({ api, target, top, remote, pr, openUrl }: { api: RepoApi; target: string; top: string; remote: string; pr: PrSummary; openUrl?: (url: string) => void }) {
+  const [status, setStatus] = useState<Load<PrStatus>>({ state: "idle" });
+  const [readAt, setReadAt] = useState<Date>();
+  const run = useRef(0);
+  const load = useCallback(() => {
+    const at = ++run.current;
+    setStatus((s) => ({ state: "loading", last: lastOf(s) }));
+    api.run(target, { op: "prStatus", repo: top, remote, number: pr.number }).then(
+      (v) => {
+        if (at !== run.current) return;
+        setStatus({ state: "ready", data: v as PrStatus });
+        setReadAt(new Date());
+      },
+      (e: unknown) => at === run.current && setStatus((s) => ({ state: "failed", error: asRepoFailure(e), last: lastOf(s) })),
+    );
+  }, [api, target, top, remote, pr.number]);
+  useEffect(load, [load]);
+  const s = lastOf(status) ?? (pr as PrStatus);
+  const checks = checksOf(s);
+  return (
+    <div className="repo-pr-status">
+      <div className="repo-pr-head">
+        <GitPullRequest size={14} aria-hidden />
+        <span className="repo-pr-title-text">
+          #{s.number} {s.title}
+        </span>
+        {openUrl && (
+          <button className="btn repo-pr-open" onClick={() => openUrl(s.url)}>
+            <ExternalLink size={12} aria-hidden /> Open on GitHub
+          </button>
+        )}
+        <button className="btn" onClick={load} disabled={status.state === "loading"}>
+          <RefreshCw size={12} className={status.state === "loading" ? "spin" : undefined} aria-hidden /> Refresh status
+        </button>
+      </div>
+      <p className="mono small muted repo-pr-url">{s.url}</p>
+      <dl className="repo-review-facts">
+        <dt>State</dt>
+        <dd>{stateLabel(s)}</dd>
+        <dt>Into</dt>
+        <dd className="mono">
+          {s.baseRefName} ← {s.headRefName}
+        </dd>
+        <dt>Head</dt>
+        <dd className="mono">{s.headRefOid?.slice(0, 12)}</dd>
+        {status.state !== "idle" && lastOf(status) && (
+          <>
+            <dt>Review</dt>
+            <dd>{reviewLabel(s.reviewDecision)}</dd>
+            <dt>Mergeable</dt>
+            <dd>{mergeLabel(s)}</dd>
+            <dt>Checks</dt>
+            <dd>{checksSummary(checks)}</dd>
+          </>
+        )}
+      </dl>
+      {status.state === "failed" && <Failure failure={status.error} what="Couldn't read the pull request's status" />}
+      {checks.length > 0 && (
+        <ul className="repo-checks" aria-label="Checks">
+          {checks.map((c, i) => (
+            <li key={i}>
+              {CHECK_ICON[c.state]} <span>{c.name}</span> <span className="muted small">{c.state}</span>
+              {c.url && openUrl && (
+                <button className="icon-btn repo-link" aria-label={`Open ${c.name}`} title="Open on GitHub" onClick={() => openUrl(c.url!)}>
+                  <ExternalLink size={12} />
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {readAt && <p className="small muted">Read from GitHub at {readAt.toLocaleTimeString()}. It doesn't refresh by itself.</p>}
     </div>
   );
 }

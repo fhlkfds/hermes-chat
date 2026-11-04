@@ -209,3 +209,33 @@ describe("staging and committing", () => {
     expect(failureHint(new RepoFailure("locked", "x"))).toMatch(/index.lock/);
   });
 });
+
+describe("publishing", () => {
+  it("reads checks from runs and statuses alike", async () => {
+    const { checksOf, checksSummary } = await import("./repo");
+    const checks = checksOf({
+      number: 1, url: "u", state: "OPEN", isDraft: false, title: "t", baseRefName: "main", headRefName: "f", headRefOid: "h",
+      statusCheckRollup: [
+        { __typename: "CheckRun", workflowName: "CI", name: "build", status: "COMPLETED", conclusion: "SUCCESS", detailsUrl: "https://x/1" },
+        { __typename: "CheckRun", workflowName: "CI", name: "whitespace", status: "IN_PROGRESS", conclusion: "" },
+        { __typename: "CheckRun", name: "lint", status: "COMPLETED", conclusion: "FAILURE" },
+        { __typename: "StatusContext", context: "deploy", state: "SUCCESS", targetUrl: "https://x/2" },
+      ],
+    });
+    expect(checks).toEqual([
+      { name: "CI / build", state: "pass", url: "https://x/1" },
+      { name: "CI / whitespace", state: "pending" },
+      { name: "lint", state: "fail" },
+      { name: "deploy", state: "pass", url: "https://x/2" },
+    ]);
+    expect(checksSummary(checks)).toBe("1 failed, 1 running or waiting, 2 passed.");
+    expect(checksSummary([])).toBe("No checks reported.");
+  });
+
+  it("starts a pull request from the one commit, or from the branch and its commits", async () => {
+    const { prDraft } = await import("./repo");
+    const info = { remoteBranch: "feature/session-ttl", branch: "feature/session-ttl", commits: [{ sha: "b", subject: "Second" }, { sha: "a", subject: "First" }] } as never;
+    expect(prDraft(info)).toEqual({ title: "Session ttl", body: "- First\n- Second" });
+    expect(prDraft(info, [{ sha: "a", subject: "Lengthen sessions" }])).toEqual({ title: "Lengthen sessions", body: "" });
+  });
+});

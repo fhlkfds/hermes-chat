@@ -250,6 +250,10 @@ _Avoid_: cached, added (for staged), dirty, unversioned
 What the Repository screen shows before it commits: every staged file, the whole staged diff, the message exactly as it will be committed, the author, the commit it goes on top of, and the hooks that will run. Commit happens only if the repository still has exactly that; otherwise nothing is committed and the preview is read again.
 _Avoid_: dry run, summary
 
+**Push** / **Create pull request**:
+The Repository screen's two separate ways to publish a branch. Push sends the commit shown to the remote branch shown, with the server's own credentials, and never forces. Create pull request asks GitHub, through `gh` on the server, for a pull request from a branch the remote already has. It never pushes.
+_Avoid_: publish (for either one alone), sync, ship
+
 **Terminal**:
 The rail's screen with a shell on the Hermes server, through the owner's own ssh to the sign-in's SSH target, or one typed for it. ssh asks there for anything it needs, such as a passphrase or a new host key. Going back to a chat leaves the session running, and the rail shows it; signing out ends it. It is the owner's shell, not Hermes's: nothing typed there reaches a chat, an Approval or the agent (ADR 0022).
 _Avoid_: console, shell (for the screen), Hermes's terminal tool (the agent's, which runs in a chat)

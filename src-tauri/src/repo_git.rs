@@ -68,6 +68,35 @@ pub enum Request {
     Preview { repo: String },
     /// Commits the index with `message`, verbatim, only if it is still exactly what the preview showed.
     Commit { repo: String, message: String, expect: Expect },
+    /// Where a push and a pull request would go: branch, upstream, remotes, unpushed commits, the GitHub repository.
+    PublishInfo { repo: String },
+    /// Pushes HEAD, if it is still `expect.head` on `branch`, to `remote_branch` on `remote`. Never forced.
+    #[serde(rename_all = "camelCase")]
+    Push { repo: String, remote: String, branch: String, remote_branch: String, expect: HeadExpect },
+    /// Opens a pull request from `remote_branch` into `base`, only if the remote has that branch at `expect.head`.
+    /// It never pushes.
+    #[serde(rename_all = "camelCase")]
+    PrCreate {
+        repo: String,
+        remote: String,
+        remote_branch: String,
+        base: String,
+        title: String,
+        body: String,
+        draft: bool,
+        expect: HeadExpect,
+    },
+    /// A pull request's state, review and checks, read from GitHub now.
+    PrStatus { repo: String, remote: String, number: u64 },
+    /// What `remote_branch` is on `remote` now, asked of the remote itself. Settles a push whose answer was lost.
+    #[serde(rename_all = "camelCase")]
+    RemoteHead { repo: String, remote: String, remote_branch: String },
+}
+
+/// What a push or a pull request expects HEAD to be.
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+pub struct HeadExpect {
+    pub head: Option<String>,
 }
 
 /// A file to stage, and the SHA-256 of its working-tree bytes as the screen read them (none: deleted).
@@ -89,11 +118,30 @@ pub struct Expect {
 }
 
 impl Request {
+    /// Reads only: nothing on the server changes. Only these are tried again after a dropped connection.
+    pub fn reads_only(&self) -> bool {
+        matches!(
+            self,
+            Request::Status { .. }
+                | Request::Diff { .. }
+                | Request::Preview { .. }
+                | Request::PublishInfo { .. }
+                | Request::PrStatus { .. }
+                | Request::RemoteHead { .. }
+        )
+    }
+
     /// How long the whole round trip may take, ssh's connection included. A commit runs the repository's hooks,
     /// which the helper gives ten minutes.
     fn timeout(&self) -> Duration {
         match self {
             Request::Commit { .. } => Duration::from_secs(660),
+            // A push runs a pre-push hook and talks to the remote; the helper gives it five minutes.
+            Request::Push { .. } => Duration::from_secs(400),
+            // gh talks to GitHub, more than once.
+            Request::PublishInfo { .. } | Request::PrStatus { .. } | Request::RemoteHead { .. } => Duration::from_secs(240),
+            // ls-remote, a list, the create and the read-back: the helper's own limits add up to five minutes.
+            Request::PrCreate { .. } => Duration::from_secs(360),
             _ => Duration::from_secs(60),
         }
     }
@@ -185,6 +233,24 @@ pub fn ssh_command(target: &str) -> Result<Command, RepoError> {
     ]);
     command.arg(remote_command());
     Ok(command)
+}
+
+/// sshd dropped the connection during key exchange, before signing in, as it does when too many connections start at
+/// once (its MaxStartups). Nothing ran on the server.
+pub fn dropped_before_login(e: &RepoError) -> bool {
+    matches!(e, RepoError::Ssh { why: "ssh", detail } if detail.contains("kex_exchange_identification") || detail.contains("Connection reset by peer") || detail.contains("Connection closed by remote host"))
+}
+
+/// Runs `request` through ssh to `target`. A read whose connection sshd dropped before signing in is tried once more,
+/// half a second later; a write never is, so nothing is ever done twice.
+pub async fn run_over_ssh(target: &str, request: &Request) -> Result<serde_json::Value, RepoError> {
+    match run(ssh_command(target)?, request).await {
+        Err(e) if request.reads_only() && dropped_before_login(&e) => {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            run(ssh_command(target)?, request).await
+        }
+        other => other,
+    }
 }
 
 /// What ssh's own failure (exit status 255) was about, from what it printed.
@@ -291,6 +357,20 @@ mod tests {
         assert_eq!(args[dashdash + 2], remote_command());
         assert_eq!(args.len(), dashdash + 3);
         assert!(args.windows(2).any(|w| w == ["-o", "BatchMode=yes"]));
+    }
+
+    #[test]
+    fn only_reads_are_tried_again_and_only_after_a_drop_before_login() {
+        let drop = RepoError::Ssh { why: "ssh", detail: "kex_exchange_identification: read: Connection reset by peer".into() };
+        assert!(dropped_before_login(&drop));
+        assert!(!dropped_before_login(&RepoError::Ssh { why: "ssh-auth", detail: "Permission denied (publickey).".into() }));
+        assert!(!dropped_before_login(&RepoError::Timeout(60)));
+        assert!(Request::Status { repo: "/r".into() }.reads_only());
+        assert!(Request::PublishInfo { repo: "/r".into() }.reads_only());
+        let push = Request::Push { repo: "/r".into(), remote: "o".into(), branch: "b".into(), remote_branch: "b".into(), expect: HeadExpect { head: None } };
+        assert!(!push.reads_only());
+        let commit = Request::Commit { repo: "/r".into(), message: "m".into(), expect: Expect { head: None, index: "i".into(), raw_sha: None } };
+        assert!(!commit.reads_only());
     }
 
     #[test]
