@@ -46,6 +46,7 @@ import { isUnsecure } from "./unsecure";
 import { providerKeys, readyProviders, type ProviderSetup, type SavedKey } from "./setup";
 import { restartHold } from "./unsaved";
 import { hostFileView, readServerFile, type FileView } from "./preview";
+import type { DisplayLease, DisplayObserve, DisplayStatus, ScreenApi } from "./screen";
 import { agentFsEditIo } from "./artifacts";
 import { splitPath, type OutputsIo, type StoredRow as StoredOutputRow } from "./outputs";
 import type { UsageIo } from "./usageAnalytics";
@@ -79,6 +80,8 @@ export const APP_SOURCE = "gui";
 /** What this app stamped before, still shown as this app's. Hermes won't edit these chats. */
 const OLD_APP_SOURCE = "hermes-chat";
 const READY_TIMEOUT_MS = 15_000;
+/** How long leaving a connection waits for Hermes to take back the screen the owner held. */
+const SCREEN_RELEASE_MS = 1_500;
 /** Waits before each try to reconnect a dropped connection. When the last try fails the app is Offline until the
  * owner asks to reconnect, so a wrong password isn't retried for ever. */
 const RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 16_000];
@@ -597,6 +600,65 @@ export class Hermes {
     publish: (others) => this.update({ others }),
   });
 
+  /** Lease changes Hermes broadcasts for the Bot Desktop (`display.lease`). */
+  private leaseListeners = new Set<(profileKey: string, lease: DisplayLease) => void>();
+  /** The viewer the owner holds the screen as, with the connection that minted it (`releaseScreen`). */
+  private heldScreen: { viewerId: string; pipe: Pipe } | undefined;
+  /** Counts profile picks, so the latest wins over one still handing back the screen. */
+  private switchPick = 0;
+  /** The hand-back under way, if any. */
+  private screenRelease: Promise<void> | undefined;
+
+  /**
+   * The profile's Bot Desktop, the side panel's Screen (screen.ts, ADR 0039). `display.*` is scoped to the profile
+   * shown, and a viewer id is good only on the connection that minted it.
+   */
+  readonly screen: ScreenApi = {
+    status: () => this.request("display.status", { profile: this.profile }) as Promise<DisplayStatus>,
+    start: () => this.request("display.start", { profile: this.profile }) as Promise<DisplayStatus>,
+    observe: (viewerId) => this.request("display.observe", { profile: this.profile, ...(viewerId && { viewer_id: viewerId }) }) as Promise<DisplayObserve>,
+    takeOver: async (viewerId) => ((await this.request("display.lease.acquire", { profile: this.profile, viewer_id: viewerId })) as { lease: DisplayLease }).lease,
+    handBack: async (viewerId) => ((await this.request("display.lease.release", { profile: this.profile, viewer_id: viewerId })) as { lease: DisplayLease }).lease,
+    noteHeld: (viewerId) => {
+      this.heldScreen = viewerId && this.pipe ? { viewerId, pipe: this.pipe } : undefined;
+    },
+    onLease: (listener) => {
+      this.leaseListeners.add(listener);
+      return () => void this.leaseListeners.delete(listener);
+    },
+    openSocket: (ticket, onData, onClose) => {
+      const pipe = this.pipe;
+      if (!pipe || this.closing || this.snapshot.status !== "connected") return Promise.reject(new Error("Not connected to Hermes."));
+      if (!pipe.openDisplay) return Promise.reject(new Error("This connection can't show the screen."));
+      return pipe.openDisplay(ticket, onData, onClose);
+    },
+  };
+
+  /**
+   * Before leaving the connection on purpose, gives back the screen the owner holds, as a viewer that closes does. Its
+   * stream may already be gone, and with it the normal close that would have done this. Only the connection that
+   * minted the viewer can, so a dropped connection keeps the owner in control, as Hermes intends (ADR 0039).
+   */
+  /** Undefined when nothing is held or being handed back, so leaving waits for nothing then. */
+  private releaseScreen(): Promise<void> | undefined {
+    const held = this.heldScreen;
+    this.heldScreen = undefined;
+    if (held && held.pipe === this.pipe) {
+      const releasing: Promise<void> = Promise.race([
+        this.screen.handBack(held.viewerId).then(
+          () => {},
+          () => {},
+        ),
+        new Promise<void>((done) => setTimeout(done, SCREEN_RELEASE_MS)),
+      ]).finally(() => {
+        if (this.screenRelease === releasing) this.screenRelease = undefined;
+      });
+      this.screenRelease = releasing;
+    }
+    // A leave that comes while an earlier one hands back waits for it too, rather than closing the connection under it.
+    return this.screenRelease;
+  }
+
   /**
    * The files on the machine the dashboard runs on (remoteFiles.ts). They are the same for every profile, and can only
    * be read while connected. A transfer starts only while connected, and Rust stops it when the connection closes or
@@ -929,7 +991,12 @@ export class Hermes {
    * to it.
    */
   async switchProfile(name: string): Promise<void> {
+    // Handing back the screen may take a moment; a profile picked meanwhile wins, even the one already shown.
+    const pick = ++this.switchPick;
     if (name === this.profile) return;
+    const releasing = this.releaseScreen();
+    if (releasing) await releasing;
+    if (pick !== this.switchPick || name === this.profile) return;
     const from = this.profile;
     // Busy now, still to be resumed after a drop or an earlier switch back, or being resumed.
     const busy = new Set([
@@ -2614,6 +2681,8 @@ export class Hermes {
    * has closed, so no late close from this Hermes can end the replacement either.
    */
   async close() {
+    const releasing = this.releaseScreen();
+    if (releasing) await releasing;
     this.closing = true;
     this.abortDial?.(new Error("Closed by the app."));
     this.generation++;
@@ -2656,6 +2725,11 @@ export class Hermes {
     const { type, session_id, payload = {} } = frame.params;
     if (type === "gateway.ready") {
       this.onReady?.(payload);
+      return;
+    }
+    if (type === "display.lease") {
+      const { profile_key, lease } = payload as { profile_key?: unknown; lease?: DisplayLease };
+      if (typeof profile_key === "string" && lease && typeof lease.epoch === "number") for (const l of this.leaseListeners) l(profile_key, lease);
       return;
     }
     // Broadcast when any process changes the session store (tui_gateway/change_watcher.py).
@@ -2877,6 +2951,7 @@ export class Hermes {
   private detach(reason: string) {
     const pipe = this.pipe;
     this.pipe = undefined;
+    this.heldScreen = undefined;
     this.generation++;
     clearInterval(this.heartbeat);
     // Lets the Rust side end the tunnel.

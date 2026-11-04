@@ -16,3 +16,4 @@ The Server files screen lists and reads the machine the Hermes dashboard runs on
 - Folders aren't paged by the server, so a big folder comes whole; the browser shows 500 entries at a time and filters by name.
 - Links are shown as the server lists them: by their target. Opening a linked folder opens its target, and the trail shows the target's path.
 - The browser needs a connection. While Hermes is away, the folder last listed stays on screen, marked with when it was listed, and is listed again on reconnect.
+- Since ADR 0039 the browser is the side panel's Files tab, beside the chat rather than over it.
