@@ -487,34 +487,34 @@ export function SkillSettings({
                 ) : !filtered.length ? (
                   <div className="memory-empty muted small">No skills match “{query.trim()}”.</div>
                 ) : (
-                  <ul className="toolset-list skills-list" aria-label="Skills">
+                  <ul className="skills-list" aria-label="Skills">
                     {filtered.map((s) => {
                       const id = domId(s.name);
                       const essential = ESSENTIAL_SKILLS.has(s.name);
                       const offFor = Object.hasOwn(view.offFor, s.name) ? view.offFor[s.name] : undefined;
                       return (
-                        <li key={s.name} className="toolset-row">
-                          <div className="toolset-head">
-                            <div className="toolset-label">
-                              <div className="appearance-title">
-                                <span id={`${id}-label`} className="mono">
-                                  {s.name}
-                                </span>
-                                <span className="badge off">{sourceLabel(s.source)}</span>
-                                {s.scope === "shared" && <span className="badge">Shared folder</span>}
-                                {offFor && s.enabled && <span className="badge warn">Off in this app's chats</span>}
-                              </div>
-                              <div id={`${id}-desc`} className="muted small toolset-desc">
+                        <li key={s.name} className="skill-row">
+                          <div className="skill-row-main">
+                            <div className="skill-name">
+                              <span id={`${id}-label`} className="mono">
+                                {s.name}
+                              </span>
+                              <span className="badge off">{sourceLabel(s.source)}</span>
+                              {s.scope === "shared" && <span className="badge">Shared folder</span>}
+                              {offFor && s.enabled && <span className="badge warn">Off in this app's chats</span>}
+                            </div>
+                            {/* One line; the pointer resting on it shows the whole text (ADR 0051). The tip repeats the text, so it's hidden from readers. */}
+                            <div className="skill-desc">
+                              <div id={`${id}-desc`} className="muted small skill-desc-line">
                                 {s.description || "No description."}
                               </div>
-                              {s.category && <div className="muted small">Category: {s.category}</div>}
-                              {offFor && s.enabled && (
-                                <div className="muted small toolset-hint">
-                                  The profile's <span className="mono">skills.platform_disabled.{offFor.join("/")}</span> list keeps it off in the chats Hermes Chat
-                                  starts. This switch doesn't change that list.
+                              {s.description && (
+                                <div className="skill-desc-tip" aria-hidden>
+                                  {s.description}
                                 </div>
                               )}
                             </div>
+                            <div className="muted small skill-category">{s.category ?? ""}</div>
                             <div className="skills-row-actions">
                               <button className="btn" id={`${id}-edit`} disabled={!!opening || !!toggling} aria-describedby={`${id}-label`} onClick={() => void open(s)}>
                                 {opening === s.name ? "Opening…" : "Edit"}
@@ -538,6 +538,12 @@ export function SkillSettings({
                               )}
                             </div>
                           </div>
+                          {offFor && s.enabled && (
+                            <div className="muted small toolset-hint">
+                              The profile's <span className="mono">skills.platform_disabled.{offFor.join("/")}</span> list keeps it off in the chats Hermes Chat
+                              starts. This switch doesn't change that list.
+                            </div>
+                          )}
                           {toggling === s.name && (
                             <div className="switch-status" role="status">
                               Turning {s.enabled ? "off" : "on"}…

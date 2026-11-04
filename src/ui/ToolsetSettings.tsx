@@ -3,7 +3,7 @@
 // once Hermes reads it back that way. Beside each, read-only: whether the profile inherits Hermes's default list, what
 // forces it off, and what the open chat actually has. Reads and writes: toolsets.ts.
 import { Fragment, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { RefreshCw, ShieldCheck, TriangleAlert } from "lucide-react";
+import { RefreshCw, ShieldCheck, TriangleAlert, ChevronRight } from "lucide-react";
 import {
   UnsupportedServerError,
   changeableName,
@@ -475,6 +475,10 @@ export function ToolsetSettings({
         Which tools Hermes offers the model in the <span className="mono">{profile}</span> profile. Hermes keeps this list on the server, in the profile's
         settings, so the command line, the TUI and the Hermes desktop app use it too. It is the same for every chat in the profile.
       </p>
+      <details className="disc toolset-how">
+        <summary>
+          <ChevronRight size={13} className="disc-chev" aria-hidden /> How a change applies: this chat, the {profile} profile, the whole server
+        </summary>
       <dl className="toolset-scopes small" aria-label="What a change reaches">
         <dt>
           This chat <span className="badge off">Not changeable here</span>
@@ -502,6 +506,7 @@ export function ToolsetSettings({
       <p className="muted small toolset-scope">
         <ShieldCheck size={12} /> Toolsets aren't Approvals. Turning one on doesn't change which commands Hermes asks about before running them, or YOLO.
       </p>
+      </details>
     </>
   );
 

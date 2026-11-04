@@ -110,7 +110,7 @@ describe("Settings → Skills list", () => {
     const { s, user } = await shown();
     expect(within(list()).getAllByRole("listitem").map((li) => li.querySelector(".mono")?.textContent)).toEqual(["release-notes", "house-style", "github", "hermes-agent"]);
     expect(within(rowOf("release-notes")).getByText("Local")).toBeTruthy();
-    expect(within(rowOf("release-notes")).getByText("Category: writing")).toBeTruthy();
+    expect(within(rowOf("release-notes")).getByText("writing")).toBeTruthy();
     expect(within(rowOf("github")).getByText("Built in")).toBeTruthy();
     expect(within(rowOf("house-style")).getByText("Shared folder")).toBeTruthy();
     expect(within(rowOf("hermes-agent")).getByText("Always on")).toBeTruthy();
@@ -173,7 +173,8 @@ describe("Settings → Skills list", () => {
 
   it("renders skill text as inert text", async () => {
     const { user } = await shown();
-    expect(within(rowOf("house-style")).getByText("The team's <b>house</b> style.")).toBeTruthy();
+    // The description is on its line and again in the hover tip, both as text.
+    expect(within(rowOf("house-style")).getAllByText("The team's <b>house</b> style.")).toHaveLength(2);
     expect(document.querySelector("b, img")).toBeNull();
     await openSkill(user, "house-style");
     expect(editor().value).toContain("<img src=x onerror=alert(1)>");

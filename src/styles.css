@@ -877,7 +877,7 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 
 /* settings */
 .settings { flex: 1; overflow-y: auto; }
-.settings-inner { max-width: 760px; margin: 0 auto; padding: 28px 28px 120px; }
+.settings-inner { max-width: 1180px; margin: 0 auto; padding: 28px 28px 120px; container-type: inline-size; container-name: settings; }
 .settings h1 { font-size: calc(22rem / 14); font-weight: 600; margin: 14px 0 22px; letter-spacing: -0.01em; }
 .settings section { padding: 22px 0 26px; border-top: 1px solid var(--line); }
 .settings h2 { font-size: calc(14rem / 14); font-weight: 600; margin: 0 0 6px; }
@@ -968,6 +968,40 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 .settings-tab.on { background: var(--raised-2); color: var(--text); }
 .settings-tab:focus-visible { outline: 2px solid var(--line-2); outline-offset: 1px; }
 .settings h3 { font-size: calc(14rem / 14); font-weight: 600; margin: 0; }
+
+/* ---------- a tab's groups beside its content (ADR 0051) ---------- */
+.settings-split { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 0 28px; align-items: start; }
+.settings-split-body { min-width: 0; }
+.subnav { display: flex; flex-direction: column; gap: 2px; padding: 22px 10px 0 0; border-right: 1px solid var(--line); position: sticky; top: 0; }
+.subnav-cell { display: flex; flex-direction: column; gap: 2px; }
+.subnav-label { font-size: calc(11rem / 14); color: var(--faint); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; padding: 14px 10px 4px; }
+.subnav-cell:first-child .subnav-label { padding-top: 0; }
+.subnav-item { display: flex; align-items: center; gap: 8px; width: 100%; height: 32px; padding: 0 10px; border-radius: 8px; color: var(--muted); font-size: calc(13rem / 14); text-align: left; }
+.subnav-item svg { flex: none; }
+.subnav-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subnav-item:hover { background: var(--hover); color: var(--text); }
+.subnav-item.on { background: var(--raised-2); color: var(--text); }
+.subnav-item:focus-visible { outline: 2px solid var(--line-2); outline-offset: 1px; }
+.subnav-item.mono { font-family: var(--mono); font-size: calc(12.5rem / 14); }
+@container settings (max-width: 820px) {
+  .settings-split { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .subnav { flex-direction: row; flex-wrap: wrap; gap: 4px; padding: 0 0 8px; border-right: 0; border-bottom: 1px solid var(--line); position: static; }
+  .subnav-cell { flex-direction: row; align-items: center; }
+  .subnav-label { padding: 0 8px 0 4px; }
+  .subnav-item { width: auto; height: 28px; }
+}
+/* a line that opens the explanation under it */
+.disc { margin: 8px 0; }
+.disc > summary { list-style: none; display: flex; align-items: center; gap: 6px; font-size: calc(13rem / 14); color: var(--text-2); cursor: pointer; }
+.disc > summary::-webkit-details-marker { display: none; }
+.disc > summary:hover { color: var(--text); }
+.disc-chev { flex: none; transition: transform 0.12s; }
+.disc[open] > summary .disc-chev { transform: rotate(90deg); }
+.disc[open] > summary { margin-bottom: 8px; }
+.toolset-how { margin: 4px 0 12px; }
+.persona-how { margin: 6px 0 0; }
+.persona-how .persona-effect { margin-top: 0; }
+.provider-fold { margin: 0 0 12px; }
 .appearance-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
 
 /* color scheme cards (ThemePicker.tsx) */
@@ -1100,12 +1134,13 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 .settings p.model-note { margin: 12px 0 0; }
 .settings p.model-note svg { vertical-align: -2px; }
 .aux-list { margin-top: 6px; }
-.aux-row { padding: 12px 0; border-top: 1px solid var(--line); }
+.aux-row { display: flex; align-items: center; gap: 16px; padding: 8px 0; border-top: 1px solid var(--line); }
 .aux-row:first-child { border-top: 0; }
-.aux-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.aux-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: 1 1 300px; min-width: 0; }
 .aux-head > .select { flex: none; width: 230px; }
 .aux-label { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.aux-pickers { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr); gap: 8px; margin-top: 8px; }
+.aux-pickers { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr); gap: 8px; flex: 1 1 380px; }
+@container settings (max-width: 820px) { .aux-row { flex-wrap: wrap; } }
 .aux-pickers .select { width: 100%; min-width: 0; }
 .guard { margin-top: 14px; }
 .guard .appearance-title svg { color: var(--muted); margin-right: 3px; }
@@ -1587,8 +1622,26 @@ button.provider-row:hover:not(:disabled) { background: var(--hover); }
 .skills-search { flex: 1; min-width: 180px; display: flex; align-items: center; gap: 6px; color: var(--muted); }
 .skills-search input { flex: 1; min-width: 0; }
 .skills-row-actions { display: flex; align-items: center; gap: 10px; flex: none; }
-.skills-list { list-style: none; }
-.skills-list .toolset-head { flex-wrap: wrap; }
+.skills-list { list-style: none; margin: 8px 0 0; padding: 0; border: 1px solid var(--line); border-radius: var(--radius); }
+.skill-row { padding: 8px 12px; border-top: 1px solid var(--line); }
+.skill-row:first-child { border-top: 0; }
+.skill-row-main { display: grid; grid-template-columns: minmax(180px, 260px) minmax(0, 1fr) 90px auto; gap: 14px; align-items: center; }
+.skill-name { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
+.skill-desc { position: relative; min-width: 0; }
+.skill-desc-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The whole description, under the pointer resting on the line: for a mouse only, as the owner asked (ADR 0051). */
+.skill-desc-tip {
+  display: none; position: absolute; left: 0; top: calc(100% + 4px); z-index: 10; width: min(560px, 90cqw); padding: 10px 12px;
+  background: var(--raised-3); border: 1px solid var(--line-3); border-radius: 8px; font-size: calc(12.5rem / 14); line-height: 1.5; color: var(--text);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4); white-space: pre-line;
+}
+@media (hover: hover) { .skill-desc:hover .skill-desc-tip { display: block; } }
+.skill-category { white-space: nowrap; }
+.skill-row .toolset-hint { margin-top: 6px; }
+@container settings (max-width: 820px) {
+  .skill-row-main { grid-template-columns: minmax(0, 1fr) auto; }
+  .skill-desc, .skill-category { grid-column: 1 / -1; }
+}
 .skills-editor > .back { align-self: flex-start; }
 .skills-name { margin: 2px 0 0; font-size: calc(15rem / 14); font-weight: 500; overflow-wrap: anywhere; }
 .skills-text { min-height: 240px; }
@@ -1608,7 +1661,7 @@ button.provider-row:hover:not(:disabled) { background: var(--hover); }
 .settings p.persona-effect svg, .settings p.persona-note svg { vertical-align: -2px; }
 .settings p.persona-note { margin: 8px 0 0; }
 .persona-text {
-  width: 100%; box-sizing: border-box; resize: vertical; min-height: 160px; padding: 12px 14px; border-radius: var(--radius);
+  width: 100%; box-sizing: border-box; resize: vertical; min-height: max(160px, calc(100vh - 460px)); padding: 12px 14px; border-radius: var(--radius);
   background: var(--code-bg); border: 1px solid var(--line-2); color: var(--text); outline: none;
   font-family: var(--mono); font-size: var(--mono-size); line-height: 1.55; tab-size: 4; white-space: pre-wrap;
 }
@@ -2722,6 +2775,10 @@ p.logs-status { margin: 0 0 8px; line-height: 1.5; }
 /* Connection diagnostics and the note a screen shows when Hermes lacks what it needs (src/ui/Diagnostics.tsx). Sized
    by its own width, so a narrow window or a split pane stacks the table. */
 .diagnostics { container-type: inline-size; }
+@container settings (min-width: 1000px) {
+  .diagnostics { display: grid; grid-template-columns: 360px minmax(0, 1fr); gap: 0 32px; align-items: start; }
+  .diagnostics > section + section { border-top: 0; }
+}
 .diagnostics h2 { font-size: calc(15rem / 14); margin: 18px 0 6px; }
 .diag-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 18px; margin: 10px 0 0; font-size: calc(13rem / 14); }
 .diag-facts dt { color: var(--muted); }
