@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// The labeled Unsettle button on a Settled chat, in the Settled drawer and in the chat's header, against a fake Hermes.
+// The Unsettle button on a Settled chat, in the Settled drawer and in the chat's header, against a fake Hermes.
 // Each test checks what reached Hermes and what the toast says, not which handler ran.
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -43,19 +43,23 @@ async function signedIn() {
 }
 
 describe("Unsettle", () => {
-  it("is labeled in words on a Settled chat in the drawer, and moves it to Active with the usual toast and Undo", async () => {
+  it("is the same icon-only button as Settle on a Settled chat in the drawer, named on hover, and unsettles with Undo", async () => {
     const { server, hermes, user } = await signedIn();
     const drawer = document.querySelector<HTMLElement>(".settled-list")!;
     const unsettle = within(drawer).getByRole("button", { name: "Unsettle" });
-    expect(unsettle.textContent).toBe("Unsettle");
-    // Active chats keep the icon-only Settle button.
-    expect(within(screen.getByRole("button", { name: /Nightly backup/ }).parentElement!).queryByRole("button", { name: "Unsettle" })).toBeNull();
+    // No words in the button: just the icon, with its name in the tooltip, like Settle.
+    expect(unsettle.textContent).toBe("");
+    expect(unsettle.title).toBe("Unsettle");
+    expect(unsettle.querySelector("svg")).toBeTruthy();
+    const settle = within(screen.getByRole("button", { name: /Nightly backup/ }).parentElement!).getByRole("button", { name: "Settle" });
+    expect(unsettle.className).toBe(settle.className);
+    expect(settle.textContent).toBe("");
 
     await user.click(unsettle);
     await act(async () => void (await hermes.idle()));
     expect(pinnedWrites(server)).toEqual([true]);
     expect(server.sessions.find((s) => s.id === "old")!.pinned).toBe(true);
-    expect(toast().textContent).toContain("Moved to Active: Old notes");
+    expect(toast().textContent).toContain("Unsettled: Old notes");
 
     await user.click(within(toast()).getByRole("button", { name: "Undo" }));
     await act(async () => void (await hermes.idle()));
@@ -63,20 +67,21 @@ describe("Unsettle", () => {
     await waitFor(() => expect(within(drawer).getByRole("button", { name: /Old notes/ })).toBeTruthy());
   });
 
-  it("sits beside the Settled badge in the chat's header, next to the icon toggle, and moves the chat to Active", async () => {
+  it("is only the icon toggle in the chat's header, beside the Settled badge", async () => {
     const { server, hermes, user } = await signedIn();
     await user.click(screen.getByRole("button", { name: /Old notes/ }));
     await act(async () => void (await hermes.idle()));
     const title = document.querySelector<HTMLElement>(".chat-title")!;
     expect(within(title).getByText("Settled")).toBeTruthy();
-    // The icon toggle stays in the header's actions.
-    expect(within(document.querySelector<HTMLElement>(".chat-head-actions")!).getByTitle("Move to Active")).toBeTruthy();
+    expect(within(title).queryByRole("button", { name: "Unsettle" })).toBeNull();
+    const toggle = within(document.querySelector<HTMLElement>(".chat-head-actions")!).getByRole("button", { name: "Unsettle" });
+    expect(toggle.textContent).toBe("");
+    expect(toggle.title).toBe("Unsettle");
 
-    await user.click(within(title).getByRole("button", { name: "Unsettle" }));
+    await user.click(toggle);
     await act(async () => void (await hermes.idle()));
     expect(pinnedWrites(server)).toEqual([true]);
-    expect(toast().textContent).toContain("Moved to Active: Old notes");
+    expect(toast().textContent).toContain("Unsettled: Old notes");
     await waitFor(() => expect(within(title).queryByText("Settled")).toBeNull());
-    expect(within(title).queryByRole("button", { name: "Unsettle" })).toBeNull();
   });
 });

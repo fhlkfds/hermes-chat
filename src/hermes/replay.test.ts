@@ -1,461 +1,457 @@
-// Edit and Regenerate (issue #63, ADR 0034), run through the real transport against FakeHermes: each makes a branch
-// through the owner's message and sends the message again in place of its copy there, and the chat it came from is
-// never written.
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SavedSignIn } from "./account";
-import { localChatCache } from "./chatCache";
+// Edit and Regenerate (issue #63, ADR 0035): each makes a branch through the owner's message, takes the branch's copy
+// back with `session.undo` on the branch only, and sends the message again there. The chat they're asked from never
+// changes. Run against the fake Hermes, whose `session.branch` and `session.undo` follow the live probe of 2026-11-03.
+import { describe, expect, it } from "vitest";
+import type { BranchLink } from "./branch";
 import { FakeHermes, row } from "./fakeHermes";
 import { memoryCache } from "./memoryCache";
-import { isOutgoing, type Item, type OutgoingItem } from "./model";
-import { branchPreviewOf, replayPrompt, replaySource, replaysOf, replyAfter, splitRefs } from "./replay";
-import { connect, type Hermes } from "./transport";
+import type { Item } from "./model";
+import { cannotResend, replayTarget, splitRefs, turnAt, turnsOf, variantRoot, variantsIn, withRefs } from "./replay";
+import { connect } from "./transport";
 
-/**
- * A chat "c1" as Hermes stores it: a hidden project instruction, a question answered after a tool call, a message sent
- * with two files (one gone), and a last exchange.
- */
-async function chatWithHistory(over: { server?: FakeHermes; cache?: Parameters<typeof connect>[2] } = {}) {
-  const server = over.server ?? new FakeHermes();
-  server.sessions = [row("c1", 0.1, { title: "Backup plan", pinned: true }), row("c2", 0.4, { title: "Router photo", pinned: true })];
+/** Chat "c1" as Hermes stores it: a hidden project instruction, a tool call, a message sent with files, and a last turn. */
+async function chatWithHistory(more?: (s: FakeHermes) => void) {
+  const server = new FakeHermes();
+  server.sessions = [row("c1", 0.1, { title: "Disk check", pinned: true })];
   server.serverDirs.add("/srv/uploads");
-  server.serverFiles["/srv/uploads/policy.md"] = "# Policy";
-  server.storeMessage("c1", { role: "user", text: 'Instructions for this chat from the project "Homelab".', display_kind: "hidden" });
-  server.storeMessage("c1", { role: "user", text: "Which folders should the backup cover?" });
-  server.storeMessage("c1", { role: "assistant", text: "Let me look.", tool_calls: [{ id: "k1", type: "function", function: { name: "terminal", arguments: "{}" } }] });
-  server.storeMessage("c1", { role: "tool", name: "terminal", tool_call_id: "k1", context: "ls /srv", result: "photos documents" });
-  server.storeMessage("c1", { role: "assistant", text: "Cover /srv/photos and /srv/documents." });
-  server.storeMessage("c1", { role: "user", text: "How long should we keep snapshots?" });
-  server.storeMessage("c1", { role: "assistant", text: "Keep 14 daily snapshots." });
-  server.storeMessage("c1", { role: "user", text: "@file:/srv/uploads/policy.md @file:/srv/uploads/gone.csv\n\nDoes this policy match?" });
-  server.storeMessage("c1", { role: "assistant", text: "Mostly: it keeps 7 daily snapshots." });
-  server.storeMessage("c2", { role: "user", text: "[image] What router is this?" });
-  server.storeMessage("c2", { role: "assistant", text: "A four-port home router." });
-  const hermes = await connect(server.openPipe, undefined, over.cache ?? memoryCache());
+  server.serverFiles["/srv/uploads/report.pdf"] = "%PDF";
+  server.storeMessage("c1", { role: "user", text: 'Instructions for this chat from the project "Ops".', display_kind: "hidden" });
+  server.storeMessage("c1", { role: "user", text: "How full is the NAS?" });
+  server.storeMessage("c1", { role: "assistant", text: "Let me look.", tool_calls: [{ id: "call_1", type: "function", function: { name: "terminal", arguments: "{}" } }] });
+  server.storeMessage("c1", { role: "tool", name: "terminal", tool_call_id: "call_1", context: "df -h", result: "81%" });
+  server.storeMessage("c1", { role: "assistant", text: "It's 81% full." });
+  server.storeMessage("c1", { role: "user", text: "@file:/srv/uploads/report.pdf\n\nCompare with this" });
+  server.storeMessage("c1", { role: "assistant", text: "The report says 79% last week." });
+  server.storeMessage("c1", { role: "user", text: "Clean up old snapshots" });
+  server.storeMessage("c1", { role: "assistant", text: "Deleted 3 snapshots." });
+  // The chat runs on another model than the profile's, which Hermes starts a branch on.
+  server.sessionModel.set("c1", { model: "gpt-5.2", provider: "openai", reasoning_effort: "high", fast: false });
+  more?.(server);
+  const hermes = await connect(server.openPipe, undefined, memoryCache());
   await hermes.sync();
   await hermes.open("c1");
-  await hermes.idle();
   const chat = (id = "c1") => hermes.getSnapshot().chats.find((c) => c.id === id)!;
   const itemWith = (text: string, id = "c1") => chat(id).items.find((i) => (i.kind === "user" || i.kind === "assistant") && i.text.includes(text))!.id;
-  const branches = () => server.sessions.filter((s) => s.parent_session_id === "c1");
-  return { server, hermes, chat, itemWith, branches };
+  const submits = () => server.requests.filter((r) => r.method === "prompt.submit");
+  return { server, hermes, chat, itemWith, submits };
 }
 
 const texts = (items: Item[]) => items.flatMap((i) => (i.kind === "user" || i.kind === "assistant" ? [`${i.kind}: ${i.text}`] : []));
-const stored = (server: FakeHermes, id: string) => server.transcripts[id].map((m) => `${m.role}${m.display_kind === "hidden" ? " (hidden)" : ""}: ${m.text}`);
 
-/** Hermes ends the reply running in `chatId`'s branch with `text`, and stores it, as a real turn would. */
-async function answer(server: FakeHermes, hermes: Hermes, chatId: string, text: string) {
-  server.storeMessage(chatId, { role: "assistant", text });
-  server.event(server.runtimeIdOf(chatId)!, "message.complete", { text, status: "complete" });
-  await hermes.idle();
-}
+describe("Edit and Regenerate: what they work out", () => {
+  const items: Item[] = [
+    { kind: "user", id: "u1", text: "one" },
+    { kind: "assistant", id: "a1", text: "Looking." },
+    { kind: "assistant", id: "a2", text: "Answer one." },
+    { kind: "user", id: "u2", text: "two" },
+    { kind: "assistant", id: "a3", text: "Answer two." },
+    { kind: "user", id: "u3", text: "three", outgoing: { state: "failed" } },
+  ];
 
-describe("Edit and Regenerate: the pieces", () => {
-  it("finds the owner's message a reply answers, past the reply's earlier segments and tool calls", () => {
-    const items: Item[] = [
-      { kind: "user", id: "u1", text: "Check the disk" },
-      { kind: "assistant", id: "a1", text: "Let me look." },
-      { kind: "tool", id: "t1", name: "terminal", status: "done" },
-      { kind: "assistant", id: "a2", text: "It's 81% full." },
-      { kind: "user", id: "u2", text: "Thanks", outgoing: { state: "failed" } },
-    ];
-    expect(replaySource(items, "a2", "regenerate")).toEqual({ sourceId: "u1" });
-    expect(replaySource(items, "a1", "regenerate")).toEqual({ sourceId: "u1" });
-    expect(replaySource(items, "u1", "edit")).toEqual({ sourceId: "u1" });
-    // A failed send keeps its own Edit, which takes its words back into the composer.
-    expect(replaySource(items, "u2", "edit")).toHaveProperty("error");
-    expect(replaySource([{ kind: "assistant", id: "a", text: "Hello" }], "a", "regenerate")).toHaveProperty("error");
+  it("edits the owner's message, and regenerates a reply by the message it answers", () => {
+    expect(replayTarget(items, "u2", "edit")).toEqual({ userId: "u2" });
+    expect(replayTarget(items, "a2", "regenerate")).toEqual({ userId: "u1", replyId: "a2" });
+    expect(replayTarget(items, "a3", "regenerate")).toEqual({ userId: "u2", replyId: "a3" });
+    // A failed send keeps its own Edit, which puts its words back in the composer.
+    expect(replayTarget(items, "u3", "edit")).toHaveProperty("error");
+    expect(replayTarget([{ kind: "assistant", id: "a", text: "Hello" }], "a", "regenerate")).toHaveProperty("error");
   });
 
-  it("keeps the file refs a message starts with apart from its words", () => {
-    expect(splitRefs("@file:/a.md\n@file:`/b c.md`\n\nCompare")).toEqual({ refs: "@file:/a.md\n@file:`/b c.md`\n\n", words: "Compare" });
-    expect(splitRefs("Compare")).toEqual({ refs: "", words: "Compare" });
-    // A ref in the middle of the words is part of them.
-    expect(splitRefs("Compare @file:/a.md with last week")).toEqual({ refs: "", words: "Compare @file:/a.md with last week" });
-  });
-
-  it("reads the reply after the message sent again, up to the owner's next", () => {
+  it("numbers turns by the owner's shown messages, the same in a chat and its spine", () => {
+    expect([...turnsOf(items)]).toEqual([
+      ["u1", 0],
+      ["u2", 1],
+    ]);
     const spine = [
-      { id: 1, role: "user" as const, text: "Q", hidden: false },
-      { id: 9, role: "user" as const, text: "Q again", hidden: false },
-      { id: 10, role: "assistant" as const, text: "Part one.", hidden: false },
-      { id: 12, role: "assistant" as const, text: "Part two.", hidden: false },
-      { id: 13, role: "user" as const, text: "Next", hidden: false },
+      { role: "user", hidden: true },
+      { role: "user", hidden: false },
+      { role: "assistant", hidden: false },
+      { role: "user", hidden: false },
     ];
-    expect(replyAfter(spine, 9, 2)).toBe("Part one.\n\nPart two.");
-    expect(replyAfter(spine, undefined, 2)).toBe("Part one.\n\nPart two.");
-    expect(replyAfter(spine.slice(0, 2), 9, 2)).toBeUndefined();
+    expect(turnAt(spine, 1)).toBe(0);
+    expect(turnAt(spine, 3)).toBe(1);
+  });
+
+  it("keeps the files an edited message was sent with, and refuses to send an image again", () => {
+    const stored = "@file:/srv/a.csv @file:`/srv/b c.txt`\n\nCompare these";
+    expect(splitRefs(stored)).toEqual({ refs: "@file:/srv/a.csv @file:`/srv/b c.txt`", words: "Compare these" });
+    expect(withRefs("@file:/srv/a.csv", " Compare only this ")).toBe("@file:/srv/a.csv\n\nCompare only this");
+    expect(splitRefs("No files here")).toEqual({ refs: "", words: "No files here" });
+    expect(cannotResend("[image] What is this?", "regenerate")).toMatch(/sent with an image.*can't be regenerated/);
+    expect(cannotResend("Plain words", "edit")).toBeUndefined();
+  });
+
+  it("groups each turn's versions under the chat they're versions of", () => {
+    const link = (variant: BranchLink["variant"], at: number): BranchLink => ({ parentId: "x", parentTitle: "X", point: { role: "user", excerpt: "" }, at, variant });
+    const links: Record<string, BranchLink> = {
+      b1: link({ kind: "regenerate", rootId: "c1", turn: 1 }, 10),
+      b2: link({ kind: "edit", rootId: "c1", turn: 1 }, 20),
+      // A version of turn 3 of b1: its turn 1 is b1's.
+      b3: link({ kind: "edit", rootId: "b1", turn: 3 }, 30),
+      plain: { parentId: "c1", parentTitle: "X", point: { role: "user", excerpt: "" }, at: 5 },
+    };
+    expect(variantRoot(links, "b3", 1)).toBe("c1");
+    expect(variantRoot(links, "b3", 3)).toBe("b1");
+    expect(variantRoot(links, "b1", 2)).toBe("b1");
+    expect(variantRoot(links, "plain", 1)).toBe("plain");
+    const all = () => true;
+    expect(variantsIn(links, "c1", all).get(1)?.map((v) => [v.chatId, v.kind])).toEqual([
+      ["c1", "original"],
+      ["b1", "regenerate"],
+      ["b2", "edit"],
+    ]);
+    expect([...variantsIn(links, "b2", all).keys()]).toEqual([1]);
+    expect(variantsIn(links, "b1", all).get(3)?.map((v) => v.chatId)).toEqual(["b1", "b3"]);
+    // A deleted version is left out; a turn with one version left shows none.
+    expect(variantsIn(links, "b1", (id) => id !== "b3").has(3)).toBe(false);
   });
 });
 
 describe("Edit", () => {
-  it("previews what the branch keeps and leaves out before anything is sent", async () => {
-    const { server, hermes, itemWith } = await chatWithHistory();
-    const p = await hermes.previewReplay("c1", itemWith("How long should we keep"), "edit");
-    expect(p).toMatchObject({ kind: "edit", count: 5, before: 3, hidden: 1, original: "How long should we keep snapshots?", refsPrefix: "" });
-    expect(p.later).toEqual({
-      messages: [
-        { role: "assistant", excerpt: "Keep 14 daily snapshots." },
-        { role: "user", excerpt: "[2 files] Does this policy match?" },
-        { role: "assistant", excerpt: "Mostly: it keeps 7 daily snapshots." },
-      ],
-      yours: 1,
-      replies: 2,
-      toolCalls: 0,
-    });
-    // The tool call before the message ran already, and isn't left out.
-    expect((await hermes.previewReplay("c1", itemWith("Which folders"), "edit")).later.toolCalls).toBe(1);
-    expect(server.requests.some((r) => r.method === "session.branch" || r.method === "prompt.submit")).toBe(false);
-  });
-
-  it("edits an early turn in a new branch, and leaves the original and its later messages as they were", async () => {
-    const { server, hermes, chat, itemWith, branches } = await chatWithHistory();
+  it("edits an early turn into a branch, and the original chat with its later messages stays as it was", async () => {
+    const { server, hermes, chat, itemWith, submits } = await chatWithHistory();
     const before = JSON.stringify(server.transcripts.c1);
-    const p = await hermes.previewReplay("c1", itemWith("How long should we keep"), "edit");
-    const { chatId, warnings, delivery } = await hermes.replay(p, "How long should we keep the weekly snapshots?");
+    const p = await hermes.previewReplay("c1", itemWith("How full"), "edit");
+    expect(p).toMatchObject({ kind: "edit", words: "How full is the NAS?", refs: "", turn: 0, rootId: "c1", laterTools: 1 });
+    // The hidden row and the message itself: the branch goes through the message, then takes it back.
+    expect(p.branch.count).toBe(2);
+    expect(p.later.map((m) => m.excerpt)).toEqual([
+      "How full is the NAS?",
+      "Let me look.",
+      "It's 81% full.",
+      "[1 file] Compare with this",
+      "The report says 79% last week.",
+      "Clean up old snapshots",
+      "Deleted 3 snapshots.",
+    ]);
+
+    const { chatId, warnings } = await hermes.replay(p, "How full is the second NAS?");
     expect(warnings).toEqual([]);
-    expect(delivery).toEqual({ delivery: "accepted" });
-
-    // Hermes branches through the owner's message, then the edit replaces the branch's copy of it.
-    expect(server.last("session.branch")!.params).toMatchObject({ session_id: chat().runtimeId, count: 5 });
-    const submit = server.last("prompt.submit")!;
-    expect(submit.params).toMatchObject({ session_id: chat(chatId).runtimeId, text: "How long should we keep the weekly snapshots?", confirm_truncate: true });
-    expect(submit.params.confirm_empty_truncate).toBeUndefined();
-    expect(server.archived.map((m) => [m.session, m.text])).toEqual([[chatId, "How long should we keep snapshots?"]]);
-    expect(stored(server, chatId)).toEqual([
-      'user (hidden): Instructions for this chat from the project "Homelab".',
-      "user: Which folders should the backup cover?",
-      "assistant: Let me look.",
-      "assistant: Cover /srv/photos and /srv/documents.",
-      "user: How long should we keep the weekly snapshots?",
-    ]);
-    // The original is untouched, its later messages all there.
     expect(JSON.stringify(server.transcripts.c1)).toBe(before);
-    expect(texts(chat().items)).toContain("user: How long should we keep snapshots?");
-    expect(texts(chat().items)).toContain("assistant: Mostly: it keeps 7 daily snapshots.");
-    expect(branches()).toHaveLength(1);
-
-    // The branch shows the edit where the original was, once, and is Active and this app's.
-    expect(texts(chat(chatId).items)).toEqual([
-      "user: Which folders should the backup cover?",
-      "assistant: Let me look.",
-      "assistant: Cover /srv/photos and /srv/documents.",
-      "user: How long should we keep the weekly snapshots?",
+    expect(server.undoCalls).toEqual([chatId]);
+    const sent = submits().at(-1)!;
+    expect(sent.params).toMatchObject({ session_id: chat(chatId).runtimeId, text: "How full is the second NAS?" });
+    // The branch holds the hidden instruction, then the edited message: the original is in c1 only.
+    expect(server.transcripts[chatId].map((m) => [m.role, m.text, m.display_kind])).toEqual([
+      ["user", 'Instructions for this chat from the project "Ops".', "hidden"],
+      ["user", "How full is the second NAS?", undefined],
     ]);
-    expect(chat(chatId)).toMatchObject({ source: "app", settled: false, running: true });
-    expect(hermes.getSnapshot().branches.links[chatId]).toMatchObject({
-      parentId: "c1",
-      point: { role: "user", rowId: 6 },
-      replay: { kind: "edit", sourceRowId: 6, count: 5, excerpt: "How long should we keep snapshots?", edited: "How long should we keep the weekly snapshots?" },
+    expect(texts(chat(chatId).items)).toEqual(["user: How full is the second NAS?"]);
+    expect(texts(chat("c1").items)).toHaveLength(7);
+    expect(server.sessions.find((s) => s.id === chatId)?.parent_session_id).toBe("c1");
+    const link = hermes.getSnapshot().branches.links[chatId];
+    expect(link).toMatchObject({ parentId: "c1", point: { role: "user", excerpt: "How full is the NAS?" }, variant: { kind: "edit", rootId: "c1", turn: 0 } });
+    expect(link.variant?.pending).toBeUndefined();
+    expect(chat("c1").model).toMatchObject({ model: "gpt-5.2", provider: "openai", effort: "high" });
+    expect(link.variant?.model).toEqual(chat("c1").model);
+    expect(chat(chatId).model).toEqual(chat("c1").model);
+  });
+
+  it("edits past model-switch markers: one the chat had, and the one Hermes stores as the branch switches model", async () => {
+    const { server, hermes, chat, itemWith, submits } = await chatWithHistory((s) => {
+      // An earlier model switch in c1, between its first and second turns: a user row no client shows.
+      const at = s.transcripts.c1.findIndex((m) => m.text === "It's 81% full.");
+      s.transcripts.c1.splice(at + 1, 0, { role: "user", text: "[System: The active model for this chat has changed to gpt-5.2.]", display_kind: "model_switch", row_id: 900 });
     });
-  });
-
-  it("sends the original's files again with the edited words, and lists one that's gone", async () => {
-    const { server, hermes, chat, itemWith } = await chatWithHistory();
-    const p = await hermes.previewReplay("c1", itemWith("Does this policy match"), "edit");
-    expect(p.original).toBe("Does this policy match?");
-    expect(p.files).toEqual([
-      { path: "/srv/uploads/policy.md", state: "there" },
-      { path: "/srv/uploads/gone.csv", state: "missing" },
+    const p = await hermes.previewReplay("c1", itemWith("Clean up"), "edit");
+    // The marker isn't a turn, and isn't listed as left out.
+    expect(p.turn).toBe(2);
+    expect(p.later.map((m) => m.excerpt)).toEqual(["Clean up old snapshots", "Deleted 3 snapshots."]);
+    const { chatId, warnings } = await hermes.replay(p, "Clean up snapshots older than 90 days");
+    expect(warnings).toEqual([]);
+    expect(submits().at(-1)!.params).toMatchObject({ session_id: chat(chatId).runtimeId, text: "Clean up snapshots older than 90 days" });
+    expect(hermes.getSnapshot().branches.links[chatId].variant?.pending).toBeUndefined();
+    // Taken back with the copy: the marker the switch stored after it. The copied one was deactivated by the switch.
+    const rows = server.transcripts[chatId];
+    expect(rows.some((m) => m.display_kind === "model_switch")).toBe(false);
+    expect(rows.filter((m) => m.role === "user" && !m.display_kind).map((m) => m.text)).toEqual([
+      "How full is the NAS?",
+      "@file:/srv/uploads/report.pdf\n\nCompare with this",
+      "Clean up snapshots older than 90 days",
     ]);
-    const { chatId } = await hermes.replay(p, "Does this policy match the 14-day plan?");
-    expect(server.last("prompt.submit")!.params.text).toBe("@file:/srv/uploads/policy.md @file:/srv/uploads/gone.csv\n\nDoes this policy match the 14-day plan?");
-    // The transcript shows the words; the refs go to Hermes.
-    expect(texts(chat(chatId).items).at(-1)).toBe("user: Does this policy match the 14-day plan?");
+    expect(texts(chat(chatId).items).at(-1)).toBe("user: Clean up snapshots older than 90 days");
   });
 
-  it("edits the very first message, which leaves nothing before it", async () => {
-    const server = new FakeHermes();
-    server.sessions = [row("h1", 0.1, { title: "Weekend hike", pinned: true })];
-    server.storeMessage("h1", { role: "user", text: "Suggest a short hike" });
-    server.storeMessage("h1", { role: "assistant", text: "Try the cliff path." });
-    const hermes = await connect(server.openPipe, undefined, memoryCache());
-    await hermes.sync();
-    await hermes.open("h1");
-    await hermes.idle();
-    const first = hermes.getSnapshot().chats.find((c) => c.id === "h1")!.items[0].id;
-    const p = await hermes.previewReplay("h1", first, "edit");
-    expect(p).toMatchObject({ count: 1, before: 0, later: { replies: 1, yours: 0 } });
-    const { chatId, delivery } = await hermes.replay(p, "Suggest a short hike near the coast");
-    expect(delivery.delivery).toBe("accepted");
-    expect(server.last("session.branch")!.params.count).toBe(1);
-    expect(server.last("prompt.submit")!.params).toMatchObject({ confirm_truncate: true, confirm_empty_truncate: true });
-    expect(stored(server, chatId)).toEqual(["user: Suggest a short hike near the coast"]);
-    expect(stored(server, "h1")).toEqual(["user: Suggest a short hike", "assistant: Try the cliff path."]);
+  it("edits a chat's very first message, which Hermes can't branch before, by taking the branch's copy back", async () => {
+    const { server, hermes, itemWith, submits } = await chatWithHistory((s) => {
+      s.sessions.push(row("c2", 0.2, { title: "Trip" }));
+      s.storeMessage("c2", { role: "user", text: "Three days in Lisbon?" });
+      s.storeMessage("c2", { role: "assistant", text: "Alfama, Belém, Sintra." });
+    });
+    await hermes.open("c2");
+    const p = await hermes.previewReplay("c2", itemWith("Lisbon", "c2"), "edit");
+    expect(p.branch.count).toBe(1);
+    const { chatId } = await hermes.replay(p, "Four days in Porto?");
+    expect(server.transcripts[chatId].map((m) => m.text)).toEqual(["Four days in Porto?"]);
+    expect(submits().at(-1)!.params.text).toBe("Four days in Porto?");
+    expect(server.transcripts.c2.map((m) => m.text)).toEqual(["Three days in Lisbon?", "Alfama, Belém, Sintra."]);
   });
 
-  it("keeps a file-only message's ref apart from the words it's edited to", () => {
-    const only = { kind: "edit" as const, stored: "@file:/srv/uploads/policy.md", ...splitRefs("@file:/srv/uploads/policy.md") };
-    expect(only.words).toBe("");
-    expect(replayPrompt({ ...only, refsPrefix: only.refs }, "Summarize this file")).toBe("@file:/srv/uploads/policy.md\n\nSummarize this file");
+  it("keeps the files a message was sent with when its words are edited", async () => {
+    const { server, hermes, itemWith, submits } = await chatWithHistory();
+    const p = await hermes.previewReplay("c1", itemWith("Compare with this"), "edit");
+    expect(p).toMatchObject({ refs: "@file:/srv/uploads/report.pdf", words: "Compare with this", turn: 1 });
+    expect(p.branch.files).toEqual([{ path: "/srv/uploads/report.pdf", state: "there" }]);
+    const { chatId } = await hermes.replay(p, "Compare with this, by week");
+    expect(submits().at(-1)!.params.text).toBe("@file:/srv/uploads/report.pdf\n\nCompare with this, by week");
+    expect(server.transcripts[chatId].filter((m) => m.role === "user").map((m) => m.text)).toEqual([
+      'Instructions for this chat from the project "Ops".',
+      "How full is the NAS?",
+      "@file:/srv/uploads/report.pdf\n\nCompare with this, by week",
+    ]);
   });
 
-  it("replaces the copy though Hermes stored a model-switch marker after it", async () => {
-    const { server, hermes, chat, itemWith } = await chatWithHistory();
-    // The parent runs on another model than the profile's, so the branch is switched, and Hermes stores the marker.
-    await hermes.setModel("c1", { provider: "openrouter", model: "deepseek/deepseek-v4" });
-    const p = await hermes.previewReplay("c1", itemWith("How long should we keep"), "edit");
-    // The marker the switch stored in the parent isn't a message the branch leaves out.
-    expect(p.later.messages.map((m) => m.role)).toEqual(["assistant", "user", "assistant"]);
-    const { chatId, delivery } = await hermes.replay(p, "Weekly?");
-    expect(delivery.delivery).toBe("accepted");
-    expect(server.archived.filter((m) => m.session === chatId).map((m) => m.display_kind ?? "message")).toEqual(["message", "model_switch"]);
-    expect(stored(server, chatId).at(-1)).toBe("user: Weekly?");
-    expect(texts(chat(chatId).items).at(-1)).toBe("user: Weekly?");
-  });
-
-  it("finds the copy though the switch to the original's model took out a marker copied before it", async () => {
-    const { server, hermes, chat } = await chatWithHistory();
-    // The original was switched once already, so a marker sits in it; later turns come after it.
-    await hermes.setModel("c1", { provider: "openrouter", model: "deepseek/deepseek-v4" });
-    server.storeMessage("c1", { role: "user", text: "Should /tmp be backed up?" });
-    server.storeMessage("c1", { role: "assistant", text: "No, skip /tmp." });
-    await hermes.sync();
-    await hermes.close();
-    const again = await connect(server.openPipe, undefined, memoryCache());
-    await again.sync();
-    await again.open("c1");
-    await again.idle();
-    const target = again.getSnapshot().chats.find((c) => c.id === "c1")!.items.find((i) => i.kind === "user" && i.text.startsWith("Should /tmp"))!.id;
-    const p = await again.previewReplay("c1", target, "edit");
-    const { chatId, delivery } = await again.replay(p, "Should /var/tmp be backed up?");
-    expect(delivery.delivery).toBe("accepted");
-    // Hermes took out the copied marker when the branch was switched, and the cut archived the one it added.
-    expect(stored(server, chatId).at(-1)).toBe("user: Should /var/tmp be backed up?");
-    expect(stored(server, chatId).filter((t) => t.startsWith("user: Should /tmp"))).toEqual([]);
-    void chat;
-    await again.close();
-  });
-
-  it("refuses at the branch's own last read when a later turn arrived after the dialog's check", async () => {
-    const { server, hermes, itemWith, branches } = await chatWithHistory();
-    const p = await hermes.previewReplay("c1", itemWith("How long should we keep"), "edit");
-    server.storeMessage("c1", { role: "user", text: "Also back up /etc" });
-    const info = { kind: "edit" as const, sourceRowId: p.sourceRowId, count: p.count, excerpt: "How long" };
-    await expect(hermes.branch(branchPreviewOf(p), undefined, info, p.whole)).rejects.toThrow("This chat changed since this opened");
-    expect(branches()).toHaveLength(0);
-    expect(server.requests.some((r) => r.method === "session.branch")).toBe(false);
-  });
-
-  it("refuses an empty edit without asking Hermes", async () => {
+  it("refuses an empty edit and sends nothing", async () => {
     const { server, hermes, itemWith } = await chatWithHistory();
-    const p = await hermes.previewReplay("c1", itemWith("How long should we keep"), "edit");
-    await expect(hermes.replay(p, "   ")).rejects.toThrow("Type the message");
+    const p = await hermes.previewReplay("c1", itemWith("Clean up"), "edit");
+    await expect(hermes.replay(p, "   ")).rejects.toThrow("empty");
     expect(server.requests.some((r) => r.method === "session.branch")).toBe(false);
   });
 });
 
 describe("Regenerate", () => {
-  it("regenerates twice: each answer has its own branch, the message sent again as stored, and the model it ran on", async () => {
-    const { server, hermes, chat, itemWith } = await chatWithHistory();
-    await hermes.setModel("c1", { provider: "openrouter", model: "deepseek/deepseek-v4", effort: "high" });
+  it("regenerates twice: each answer is its own version, with the same source message and the chat's model", async () => {
+    const { server, hermes, chat, itemWith, submits } = await chatWithHistory();
     const before = JSON.stringify(server.transcripts.c1);
-    const reply = itemWith("Keep 14 daily");
-
-    const p1 = await hermes.previewReplay("c1", reply, "regenerate");
-    expect(p1).toMatchObject({ kind: "regenerate", replyItemId: reply, original: "How long should we keep snapshots?", count: 5 });
-    // The reply itself is what's replaced; the turn after it is what the branch leaves out.
-    expect(p1.later.messages.map((m) => m.excerpt)).toEqual(["[2 files] Does this policy match?", "Mostly: it keeps 7 daily snapshots."]);
-    const one = await hermes.replay(p1);
-    expect(server.last("prompt.submit")!.params.text).toBe("How long should we keep snapshots?");
-    await answer(server, hermes, one.chatId, "Keep 30 daily snapshots.");
-
-    const p2 = await hermes.previewReplay("c1", reply, "regenerate");
-    const two = await hermes.replay(p2);
-    await answer(server, hermes, two.chatId, "Keep 7 daily and 4 weekly snapshots.");
-
-    expect(one.chatId).not.toBe(two.chatId);
-    expect(JSON.stringify(server.transcripts.c1)).toBe(before);
-    const variants = replaysOf(hermes.getSnapshot().branches.links, "c1", 6, "regenerate");
-    expect(variants.map((v) => v.chatId)).toEqual([one.chatId, two.chatId]);
-    for (const v of variants) {
-      expect(v.link.replay).toMatchObject({ kind: "regenerate", sourceRowId: 6, excerpt: "How long should we keep snapshots?" });
-      // Both answer the same message, on the parent's model, which the branch was switched to before it went.
-      expect(v.link.replay.model).toMatchObject({ provider: "openrouter", model: "deepseek/deepseek-v4", effort: "high" });
-      expect(stored(server, v.chatId).slice(-2)[0]).toBe("user: How long should we keep snapshots?");
+    const made: string[] = [];
+    for (let i = 0; i < 2; i++) {
+      const p = await hermes.previewReplay("c1", itemWith("79% last week"), "regenerate");
+      expect(p).toMatchObject({ kind: "regenerate", turn: 1, rootId: "c1", answer: "The report says 79% last week." });
+      made.push((await hermes.replay(p)).chatId);
+      // The message as Hermes stored it, its file ref included, goes again.
+      expect(submits().at(-1)!.params).toMatchObject({ session_id: chat(made[i]).runtimeId, text: "@file:/srv/uploads/report.pdf\n\nCompare with this" });
     }
-    expect((await hermes.readVariant(one.chatId)).text).toBe("Keep 30 daily snapshots.");
-    expect((await hermes.readVariant(two.chatId)).text).toBe("Keep 7 daily and 4 weekly snapshots.");
-    // The original keeps its own answer.
-    expect(texts(chat().items)).toContain("assistant: Keep 14 daily snapshots.");
+    expect(new Set(made).size).toBe(2);
+    expect(JSON.stringify(server.transcripts.c1)).toBe(before);
+    for (const id of made) {
+      // What came before the message is copied; the message goes again; the old answer and later turns aren't there.
+      expect(server.transcripts[id].map((m) => m.text)).toEqual([
+        'Instructions for this chat from the project "Ops".',
+        "How full is the NAS?",
+        "Let me look.",
+        "It's 81% full.",
+        "@file:/srv/uploads/report.pdf\n\nCompare with this",
+      ]);
+    }
+    const { links } = hermes.getSnapshot().branches;
+    const versions = variantsIn(links, "c1", () => true).get(1)!;
+    expect(versions.map((v) => [v.chatId, v.kind])).toEqual([
+      ["c1", "original"],
+      [made[0], "regenerate"],
+      [made[1], "regenerate"],
+    ]);
+    for (const v of versions.slice(1)) expect(v.model).toEqual(chat("c1").model);
+    // Each version sees the same versions of the turn.
+    expect(variantsIn(links, made[1], () => true).get(1)!.map((v) => v.chatId)).toEqual(["c1", ...made]);
   });
 
-  it("regenerates the reply to a message sent with files, refs and all", async () => {
-    const { server, hermes, itemWith } = await chatWithHistory();
-    const p = await hermes.previewReplay("c1", itemWith("Mostly: it keeps"), "regenerate");
+  it("sends the message as typed, without the context footer Hermes stored below it", async () => {
+    // As the live server stored a message with an `@file:` ref outside its workspace (2026-11-03).
+    const stored =
+      "@file:/srv/uploads/report.pdf\n\nCompare again\n\n--- Context Warnings ---\n- @file:/srv/uploads/report.pdf: path is outside the allowed workspace" +
+      "\n\n--- Attached Context ---\n\n<file contents>";
+    const { hermes, itemWith, submits } = await chatWithHistory((s) => {
+      s.storeMessage("c1", { role: "user", text: stored });
+      s.storeMessage("c1", { role: "assistant", text: "Same as before." });
+    });
+    const p = await hermes.previewReplay("c1", itemWith("Same as before."), "regenerate");
+    expect(p.branch.files.map((f) => f.path)).toEqual(["/srv/uploads/report.pdf"]);
+    expect(p.later[0].excerpt).toBe("[1 file] Compare again");
+    const edit = await hermes.previewReplay("c1", itemWith("Compare again"), "edit");
+    expect(edit).toMatchObject({ refs: "@file:/srv/uploads/report.pdf", words: "Compare again" });
     await hermes.replay(p);
-    expect(server.last("prompt.submit")!.params.text).toBe("@file:/srv/uploads/policy.md @file:/srv/uploads/gone.csv\n\nDoes this policy match?");
+    expect(submits().at(-1)!.params.text).toBe("@file:/srv/uploads/report.pdf\n\nCompare again");
   });
 
-  it("can't regenerate a reply to a message sent with an image, and says why", async () => {
-    const { hermes, itemWith } = await chatWithHistory();
-    await hermes.open("c2");
-    await hermes.idle();
-    await expect(hermes.previewReplay("c2", itemWith("four-port", "c2"), "regenerate")).rejects.toThrow("sent with an image");
-    await expect(hermes.previewReplay("c2", itemWith("What router", "c2"), "edit")).rejects.toThrow("sent with an image");
+  it("refuses a message sent with an image, which can't be sent again from the history", async () => {
+    const { hermes, itemWith } = await chatWithHistory((s) => {
+      s.storeMessage("c1", { role: "user", text: "[image] What is in this picture?" });
+      s.storeMessage("c1", { role: "assistant", text: "A cat." });
+    });
+    await expect(hermes.previewReplay("c1", itemWith("A cat."), "regenerate")).rejects.toThrow(/sent with an image/);
   });
 });
 
-describe("Edit and Regenerate: when they can't be done", () => {
-  it("refuses, with nothing made, when another client added to the chat since the preview", async () => {
-    const { server, hermes, itemWith, branches } = await chatWithHistory();
-    const p = await hermes.previewReplay("c1", itemWith("How long should we keep"), "edit");
-    // A later turn, from another Hermes client: the prefix is the same, but the chat isn't what the owner saw.
-    server.storeMessage("c1", { role: "user", text: "Also back up /etc" });
-    await expect(hermes.replay(p, "How long for weekly?")).rejects.toThrow("This chat changed since this opened");
-    expect(branches()).toHaveLength(0);
-    expect(server.requests.some((r) => r.method === "session.branch")).toBe(false);
-  });
-
-  it("refuses when a message before it was edited in another client", async () => {
-    const { server, hermes, itemWith, branches } = await chatWithHistory();
-    const p = await hermes.previewReplay("c1", itemWith("Keep 14 daily"), "regenerate");
-    server.transcripts.c1[1].text = "Which folders should the nightly backup cover?";
-    await expect(hermes.replay(p)).rejects.toThrow("changed");
-    expect(branches()).toHaveLength(0);
-  });
-
-  it("isn't done while a reply or a tool runs, or an Approval waits, until it has ended", async () => {
+describe("Edit and Regenerate: when they can't be made", () => {
+  it("is blocked while a reply or its tools run, until Hermes says the turn ended", async () => {
     const { server, hermes, chat, itemWith } = await chatWithHistory();
     const sid = chat().runtimeId!;
-    const p = await hermes.previewReplay("c1", itemWith("How long should we keep"), "edit");
     server.event(sid, "message.start", {});
-    server.event(sid, "tool.start", { tool_id: "k9", name: "terminal", context: "sleep 25" });
     await hermes.idle();
-    await expect(hermes.previewReplay("c1", itemWith("How long should we keep"), "edit")).rejects.toThrow("Wait for the reply to finish");
-    await expect(hermes.replay(p, "Weekly?")).rejects.toThrow("Wait for the reply to finish");
-    // Stopping isn't enough: the turn must have ended.
-    void hermes.stop("c1");
+    await expect(hermes.previewReplay("c1", itemWith("81% full"), "regenerate")).rejects.toThrow("Stop the reply, or wait for it to end");
+    await hermes.stop("c1").catch(() => {});
     await hermes.idle();
-    await expect(hermes.previewReplay("c1", itemWith("Keep 14 daily"), "regenerate")).rejects.toThrow("Wait for the reply to finish");
-    server.event(sid, "message.complete", { text: "", status: "interrupted" });
+    if (chat().stopping) await expect(hermes.previewReplay("c1", itemWith("Clean up"), "edit")).rejects.toThrow("Hermes is stopping the reply");
+    server.event(sid, "message.complete", { text: "done", status: "interrupted" });
     await hermes.idle();
-    server.askApproval(sid);
-    await hermes.idle();
-    await expect(hermes.previewReplay("c1", itemWith("Keep 14 daily"), "regenerate")).rejects.toThrow("waiting for an Approval");
+    await expect(hermes.previewReplay("c1", itemWith("Clean up"), "edit")).resolves.toMatchObject({ kind: "edit" });
+  });
+
+  it("makes nothing when another client changed the chat after the preview was read", async () => {
+    const { server, hermes, itemWith } = await chatWithHistory();
+    const p = await hermes.previewReplay("c1", itemWith("How full"), "edit");
+    server.storeMessage("c1", { role: "user", text: "Sent from the phone" });
+    await expect(hermes.replay(p, "Edited")).rejects.toThrow("This chat changed since this opened");
     expect(server.requests.some((r) => r.method === "session.branch")).toBe(false);
   });
 
-  it("says this Hermes can't branch, then offers neither until it reconnects", async () => {
+  it("makes nothing when another client adds to the chat between the dialog's check and the branch's own last read", async () => {
+    const { server, hermes, itemWith } = await chatWithHistory();
+    const p = await hermes.previewReplay("c1", itemWith("How full"), "edit");
+    // The first read of c1 after Save is the dialog's check; the phone's message lands just after it.
+    let reads = 0;
+    server.rest["GET /api/sessions/c1/messages"] = (req) => {
+      const out = (server as unknown as { storedMessages: (id: string, q: URLSearchParams) => unknown }).storedMessages("c1", req.query);
+      if (++reads === 1) server.storeMessage("c1", { role: "user", text: "Sent from the phone" });
+      return out;
+    };
+    await expect(hermes.replay(p, "Edited")).rejects.toThrow("This chat changed since this opened");
+    expect(reads).toBeGreaterThan(1);
+    expect(server.requests.some((r) => r.method === "session.branch")).toBe(false);
+  });
+
+  it("says a Hermes without session.branch can't do it, and makes nothing", async () => {
     const { server, hermes, itemWith } = await chatWithHistory();
     server.branchMethod = false;
-    const p = await hermes.previewReplay("c1", itemWith("How long should we keep"), "edit");
-    await expect(hermes.replay(p, "Weekly?")).rejects.toThrow("can't branch chats");
-    expect(hermes.getSnapshot().cannotBranch).toBe(true);
-    await expect(hermes.previewReplay("c1", itemWith("Keep 14 daily"), "regenerate")).rejects.toThrow("can't keep this chat as it is");
-    expect(server.requests.some((r) => r.method === "prompt.submit")).toBe(false);
+    const p = await hermes.previewReplay("c1", itemWith("Clean up"), "edit");
+    await expect(hermes.replay(p, "Edited")).rejects.toThrow("can't branch chats");
+    expect(server.sessions.filter((s) => s.parent_session_id === "c1")).toHaveLength(0);
   });
 
-  it("tells the owner when Hermes ignored the cut and kept both messages", async () => {
-    const { server, hermes, itemWith } = await chatWithHistory();
-    server.ignoresCut = true;
-    const p = await hermes.previewReplay("c1", itemWith("Keep 14 daily"), "regenerate");
-    const { chatId } = await hermes.replay(p);
-    await hermes.idle();
-    expect(hermes.getSnapshot().branchNews).toMatchObject({ chatId, text: expect.stringContaining("didn't replace the message") });
+  it("deletes the branch again on a Hermes without session.undo, and sends nothing", async () => {
+    const { server, hermes, itemWith, submits } = await chatWithHistory();
+    server.undoMethod = false;
+    const sent = submits().length;
+    const p = await hermes.previewReplay("c1", itemWith("Clean up"), "edit");
+    const { chatId, warnings } = await hermes.replay(p, "Edited");
+    expect(warnings.join(" ")).toMatch(/can't take a message back.*deleted the branch/);
+    expect(server.sessions.some((s) => s.id === chatId)).toBe(false);
+    expect(hermes.getSnapshot().branches.links[chatId]).toBeUndefined();
+    expect(submits()).toHaveLength(sent);
   });
 
-  it("keeps a refused replay in the branch, and Retry sends it in the original's place again", async () => {
-    const { server, hermes, chat, itemWith } = await chatWithHistory();
-    server.rejectPrompt = { code: 4009, message: "session busy" };
-    const p = await hermes.previewReplay("c1", itemWith("How long should we keep"), "edit");
-    const { chatId, delivery } = await hermes.replay(p, "Weekly snapshots?");
-    expect(delivery).toEqual({ delivery: "unsent", reason: "session busy" });
-    const failed = chat(chatId).items.at(-1)!;
-    expect(failed).toMatchObject({ kind: "user", text: "Weekly snapshots?", outgoing: { state: "failed", cut: { prompt: "Weekly snapshots?" } } });
-    server.rejectPrompt = undefined;
-    await hermes.retry(chatId, failed.id);
-    expect(server.last("prompt.submit")!.params).toMatchObject({ text: "Weekly snapshots?", confirm_truncate: true });
-    expect(stored(server, chatId).at(-1)).toBe("user: Weekly snapshots?");
-    expect(stored(server, chatId).filter((t) => t.includes("How long should we keep"))).toEqual([]);
-  });
-});
+  it("keeps a branch whose message couldn't go yet, and Send it now finishes it once, without sending twice", async () => {
+    const { server, hermes, itemWith, submits } = await chatWithHistory();
+    server.undoBusy = true;
+    const sent = submits().length;
+    const p = await hermes.previewReplay("c1", itemWith("Clean up"), "edit");
+    const { chatId, warnings } = await hermes.replay(p, "Clean up snapshots older than 90 days");
+    expect(warnings.join(" ")).toMatch(/didn't take back.*session busy.*Nothing was sent/);
+    expect(submits()).toHaveLength(sent);
+    expect(hermes.getSnapshot().branches.links[chatId].variant?.pending?.text).toBe("Clean up snapshots older than 90 days");
 
-describe("Edit and Regenerate: Retry of a replay Hermes didn't take", () => {
-  async function failedReplay() {
-    const ctx = await chatWithHistory();
-    ctx.server.rejectPrompt = { code: 4009, message: "session busy" };
-    const p = await ctx.hermes.previewReplay("c1", ctx.itemWith("How long should we keep"), "edit");
-    const { chatId } = await ctx.hermes.replay(p, "Weekly snapshots?");
-    ctx.server.rejectPrompt = undefined;
-    const failed = () => ctx.chat(chatId).items.find((i): i is OutgoingItem => isOutgoing(i))!;
-    return { ...ctx, chatId, failed };
+    server.undoBusy = false;
+    expect(await hermes.finishReplay(chatId)).toEqual([]);
+    expect(submits().at(-1)!.params.text).toBe("Clean up snapshots older than 90 days");
+    expect(server.transcripts[chatId].filter((m) => m.role === "user").at(-1)?.text).toBe("Clean up snapshots older than 90 days");
+    expect(hermes.getSnapshot().branches.links[chatId].variant?.pending).toBeUndefined();
+    // Asked again: nothing is pending, so nothing goes.
+    expect(await hermes.finishReplay(chatId)).toEqual([]);
+    expect(submits()).toHaveLength(sent + 1);
+  });
+
+  /** A branch whose message couldn't go yet: Hermes refused the undo, so it still holds its copy of the original. */
+  /** The branch's copy of the owner's message: its last user row that isn't a model-switch marker. */
+  const copyIn = (server: FakeHermes, chatId: string) => server.transcripts[chatId].filter((m) => m.role === "user" && !m.display_kind).at(-1)!;
+
+  async function unfinished() {
+    const t = await chatWithHistory();
+    t.server.undoBusy = true;
+    const p = await t.hermes.previewReplay("c1", t.itemWith("Clean up"), "edit");
+    const { chatId } = await t.hermes.replay(p, "Clean up snapshots older than 90 days");
+    t.server.undoBusy = false;
+    return { ...t, chatId, sent: t.submits().length, undone: t.server.undoCalls.length };
   }
 
-  it("isn't sent in place of the original once the owner sent another message in the branch", async () => {
-    const { server, hermes, chatId, failed } = await failedReplay();
-    await hermes.send(chatId, "Something else first");
-    await answer(server, hermes, chatId, "Noted.");
-    const before = JSON.stringify(server.transcripts[chatId]);
-    const cuts = server.requests.filter((r) => r.method === "prompt.submit" && r.params.truncate_before_row_id !== undefined).length;
-    const res = await hermes.retry(chatId, failed().id);
-    expect(res).toMatchObject({ delivery: "unsent", reason: expect.stringContaining("Messages were added to this branch") });
-    expect(failed().outgoing).toMatchObject({ state: "failed", reason: expect.stringContaining("Messages were added") });
-    expect(server.requests.filter((r) => r.method === "prompt.submit" && r.params.truncate_before_row_id !== undefined)).toHaveLength(cuts);
-    expect(JSON.stringify(server.transcripts[chatId])).toBe(before);
+  it("finishes once when asked twice at the same time, as two panes can", async () => {
+    const { server, hermes, chatId, submits, sent, undone } = await unfinished();
+    await Promise.all([hermes.finishReplay(chatId), hermes.finishReplay(chatId)]);
+    expect(server.undoCalls.length - undone).toBe(1);
+    expect(submits()).toHaveLength(sent + 1);
+    // The copied history before the message is all still there.
+    expect(server.transcripts[chatId].filter((m) => m.role !== "user" || m.text !== "Clean up snapshots older than 90 days")).toHaveLength(6);
   });
 
-  it("isn't sent in place of the original once another client added to the branch", async () => {
-    const { server, hermes, chatId, failed } = await failedReplay();
-    server.storeMessage(chatId, { role: "user", text: "From another client" });
-    const res = await hermes.retry(chatId, failed().id);
-    expect(res).toMatchObject({ delivery: "unsent", reason: expect.stringContaining("Messages were added to this branch") });
-    expect(stored(server, chatId).at(-1)).toBe("user: From another client");
+  it("takes nothing back when another client changed the branch's last message meanwhile", async () => {
+    const { server, hermes, chatId, submits, sent, undone } = await unfinished();
+    copyIn(server, chatId).text = "Changed on the phone";
+    await expect(hermes.finishReplay(chatId)).rejects.toThrow("isn't the one it was made with");
+    expect(server.undoCalls).toHaveLength(undone);
+    expect(submits()).toHaveLength(sent);
+    expect(copyIn(server, chatId).text).toBe("Changed on the phone");
   });
 
-  it("names the model the Retry went on, and its stored row, under the answer", async () => {
-    const { server, hermes, chatId, failed } = await failedReplay();
-    await hermes.setModel(chatId, { provider: "openrouter", model: "qwen/qwen3-max", effort: "low" });
-    server.userRowId = 500;
-    expect(await hermes.retry(chatId, failed().id)).toEqual({ delivery: "accepted" });
-    expect(hermes.getSnapshot().branches.links[chatId].replay).toMatchObject({ branchRowId: 500, model: { provider: "openrouter", model: "qwen/qwen3-max", effort: "low" } });
+  it("shows the branch right when an earlier try took the copy back but its answer was lost", async () => {
+    const { server, hermes, chat, chatId, submits, sent } = await unfinished();
+    // Hermes took it back, with the model-switch marker after it, and the answer never arrived.
+    const copy = server.transcripts[chatId].indexOf(copyIn(server, chatId));
+    expect(server.transcripts[chatId].slice(copy + 1).map((m) => m.display_kind)).toEqual(["model_switch"]);
+    server.transcripts[chatId] = server.transcripts[chatId].slice(0, copy);
+    expect(texts(chat(chatId).items).at(-1)).toBe("user: Clean up old snapshots");
+    expect(await hermes.finishReplay(chatId)).toEqual([]);
+    expect(submits()).toHaveLength(sent + 1);
+    expect(texts(chat(chatId).items).filter((t) => t.startsWith("user:"))).toEqual([
+      "user: How full is the NAS?",
+      "user: @file:/srv/uploads/report.pdf\n\nCompare with this",
+      "user: Clean up snapshots older than 90 days",
+    ]);
   });
-});
 
-describe("Edit and Regenerate: kept on this computer", () => {
-  let store: Map<string, string>;
-  beforeEach(() => {
-    store = new Map();
-    vi.stubGlobal("localStorage", {
-      get length() {
-        return store.size;
-      },
-      key: (i: number) => [...store.keys()][i] ?? null,
-      getItem: (k: string) => store.get(k) ?? null,
-      setItem: (k: string, v: string) => void store.set(k, v),
-      removeItem: (k: string) => void store.delete(k),
-    });
+  it("keeps the words pending when the owner switches profile while it finishes, and sends nothing", async () => {
+    const t = await chatWithHistory((s) => (s.otherProfiles.work = [row("w1", 0.2, { title: "Work chat" })]));
+    t.server.undoBusy = true;
+    const p = await t.hermes.previewReplay("c1", t.itemWith("Clean up"), "edit");
+    const { chatId } = await t.hermes.replay(p, "Clean up snapshots older than 90 days");
+    t.server.undoBusy = false;
+    const sent = t.submits().length;
+    const finishing = t.hermes.finishReplay(chatId);
+    const switching = t.hermes.switchProfile("work");
+    await expect(finishing).rejects.toThrow("The profile changed meanwhile");
+    await switching;
+    expect(t.submits()).toHaveLength(sent);
+    await t.hermes.switchProfile("default");
+    await t.hermes.idle();
+    expect(t.hermes.getSnapshot().branches.links[chatId].variant?.pending?.text).toBe("Clean up snapshots older than 90 days");
   });
-  afterEach(() => vi.unstubAllGlobals());
 
-  it("keeps what each branch replays, and a failed replay's cut, across a restart", async () => {
-    const nas: SavedSignIn = { mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" };
-    const { server, hermes, itemWith } = await chatWithHistory({ cache: localChatCache(nas) });
-    const p = await hermes.previewReplay("c1", itemWith("Keep 14 daily"), "regenerate");
-    const { chatId } = await hermes.replay(p);
-    server.rejectPrompt = { code: 4009, message: "session busy" };
-    const e = await hermes.previewReplay("c1", itemWith("Which folders"), "edit");
-    const edited = await hermes.replay(e, "Which folders, besides /etc?");
-    await hermes.idle();
-    await hermes.close();
+  it("stops, and drops nothing from the branch, when another message goes to it while it finishes", async () => {
+    const { server, hermes, chat, chatId, submits, sent, undone } = await unfinished();
+    const finishing = hermes.finishReplay(chatId);
+    const other = hermes.send(chatId, "A message typed meanwhile");
+    await expect(finishing).rejects.toThrow(/on its way|still replying|isn.t confirmed/);
+    await other;
+    expect(server.undoCalls).toHaveLength(undone);
+    expect(submits().slice(sent).map((r) => r.params.text)).toEqual(["A message typed meanwhile"]);
+    expect(texts(chat(chatId).items)).toContain("user: A message typed meanwhile");
+  });
 
-    const kept = localChatCache(nas);
-    expect(kept.loadBranches("default").links[chatId].replay).toMatchObject({ kind: "regenerate", sourceRowId: 6, count: 5 });
-    expect(kept.loadBranches("default").links[edited.chatId].replay).toMatchObject({ kind: "edit", sourceRowId: 2, count: 2 });
-    expect(kept.loadOutbox("default")[edited.chatId][0].outgoing).toMatchObject({ state: "failed", cut: { prompt: "Which folders, besides /etc?" } });
+  it("leaves no Saved copy of a first message taken back, so it can't come back after a restart", async () => {
+    const cache = memoryCache();
+    const server = new FakeHermes();
+    server.sessions = [row("c2", 0.2, { title: "Trip" })];
+    server.storeMessage("c2", { role: "user", text: "Three days in Lisbon?" });
+    server.storeMessage("c2", { role: "assistant", text: "Alfama, Belém, Sintra." });
+    const hermes = await connect(server.openPipe, undefined, cache);
+    await hermes.sync();
+    await hermes.open("c2");
+    const user = hermes.getSnapshot().chats.find((c) => c.id === "c2")!.items.find((i) => i.kind === "user")!.id;
+    server.undoBusy = true;
+    const { chatId } = await hermes.replay(await hermes.previewReplay("c2", user, "edit"), "Four days in Porto?");
+    server.undoBusy = false;
+    cache.saveTranscript("default", chatId, [{ kind: "user", id: "h-0", text: "Three days in Lisbon?" }]);
+    server.rejectPrompt = { code: 5032, message: "no AI provider" };
+    await hermes.finishReplay(chatId);
+    expect(server.transcripts[chatId]).toEqual([]);
+    expect(cache.loadTranscript("default", chatId)).toBeUndefined();
+  });
 
-    // After the restart the branch loads with its copy of the original showing again; Retry replaces it, there too.
-    server.rejectPrompt = undefined;
-    const again = await connect(server.openPipe, undefined, localChatCache(nas));
-    await again.sync();
-    await again.open(edited.chatId);
-    await again.idle();
-    const branch = () => again.getSnapshot().chats.find((c) => c.id === edited.chatId)!;
-    expect(texts(branch().items)).toEqual(["user: Which folders should the backup cover?", "user: Which folders, besides /etc?"]);
-    await again.retry(edited.chatId, branch().items.at(-1)!.id);
-    await again.idle();
-    expect(texts(branch().items)).toEqual(["user: Which folders, besides /etc?"]);
-    expect(stored(server, edited.chatId)).toEqual(['user (hidden): Instructions for this chat from the project "Homelab".', "user: Which folders, besides /etc?"]);
-    await again.close();
+  it("sends nothing when Hermes took back a different part of the branch than asked", async () => {
+    const { server, hermes, itemWith, submits } = await chatWithHistory();
+    server.undoShort = true;
+    const sent = submits().length;
+    const p = await hermes.previewReplay("c1", itemWith("Clean up"), "edit");
+    const { warnings } = await hermes.replay(p, "Edited");
+    expect(warnings.join(" ")).toMatch(/took back a different part/);
+    expect(submits()).toHaveLength(sent);
   });
 });

@@ -9,14 +9,14 @@
 // live on 2026-11-03 against a throwaway HERMES_HOME (docs/research/hermes-gateway-api.md, "Branching").
 import type { Chat, Item } from "./model";
 import type { ModelPick } from "./models";
-import type { ReplayInfo } from "./replay";
 
 /** A stored row of dashboard REST `GET /api/sessions/{id}/messages`, as far as branching reads it. */
 export type StoredBranchRow = { id: number; role?: string; content?: unknown; display_kind?: unknown };
 
 /**
  * A row of the parent's branch spine. `hidden`: model-facing, such as a project's instructions; no client shows it.
- * `marker`: a timeline note Hermes stores as a user row, such as a model switch; it isn't a message either.
+ * `marker`: a timeline note Hermes stores as a user row, such as a model switch (`_append_model_switch_marker`,
+ * `tui_gateway/server.py`); `session.resume` doesn't show it, and it isn't a turn of the owner's.
  */
 export type SpineRow = { id: number; role: "user" | "assistant"; text: string; hidden: boolean; marker?: boolean };
 
@@ -25,9 +25,26 @@ export type BranchPoint = { role: "user" | "assistant"; excerpt: string; rowId?:
 
 /**
  * A branch this app made, kept on this computer per connection and profile (Hermes keeps only the parent's id). `at`:
- * when it was made, Unix ms. `replay`: made by Edit or Regenerate of the owner's message `point` (ADR 0034).
+ * when it was made, Unix ms.
  */
-export type BranchLink = { parentId: string; parentTitle: string; point: BranchPoint; at: number; replay?: ReplayInfo };
+export type BranchLink = { parentId: string; parentTitle: string; point: BranchPoint; at: number; variant?: BranchVariant };
+
+/**
+ * What an Edit or Regenerate made a branch for (ADR 0035): another version of one turn of a chat. `rootId` is the chat
+ * whose turn this is another version of, and `turn` which turn: the owner's shown messages before it, from 0. That
+ * number is the same in the root and in every branch copied from it, since a branch copies every message before it.
+ * `model`: what the branch ran on once it was made, as Hermes reported it. `pending`: set until the message has gone
+ * into the branch, the words to send and `spineKey` of the rows the branch keeps once its copy of the original message
+ * is taken back; `through` is `spineKey` of the rows through the original message, which must be the branch's rows
+ * before that message is taken back. Those words are kept on this computer only until they go, as a Draft is.
+ */
+export type BranchVariant = {
+  kind: "edit" | "regenerate";
+  rootId: string;
+  turn: number;
+  model?: ModelPick;
+  pending?: { text: string; prefix: string; through: string };
+};
 
 /**
  * A branch asked of Hermes whose answer hasn't come back. `key` is the idempotency key it went with, so asking again
@@ -46,8 +63,8 @@ export type BranchAttempt = {
   startedAt: number;
   title?: string;
   model?: ModelPick;
-  /** Made for Edit or Regenerate (ADR 0034): kept with the branch's link. */
-  replay?: ReplayInfo;
+  /** Set for an Edit or Regenerate: the branch is made through the owner's message, which it then replaces. */
+  variant?: BranchVariant;
 };
 
 /** What this computer keeps about branches for one connection and profile. */
@@ -112,10 +129,18 @@ export function locate(items: Item[], itemId: string, spine: SpineRow[]): { inde
   return { error: "Hermes hasn't stored this message yet. Wait a moment, or open the chat again, then branch." };
 }
 
+/**
+ * A stored message as the owner typed it: without the footer Hermes's @-reference expander appends below the typed
+ * text when it stores the message (`agent/context_references.py`), "--- Context Warnings ---" and "--- Attached
+ * Context ---" with the files' contents. Hermes strips it with the same rule for titles (`_CONTEXT_FOOTER_RE`,
+ * `agent/title_generator.py` at the deployed checkout). A ref named in the footer isn't one the owner sent again.
+ */
+export const typedText = (text: string) => text.replace(/\n+--- (?:Context Warnings|Attached Context) ---\n[\s\S]*$/, "");
+
 /** The `@file:` refs a message names (`file.attach` `ref_text`, quoted with `` ` ``, `"` or `'` when needed). */
 export function fileRefs(text: string): string[] {
   const refs: string[] = [];
-  for (const m of text.matchAll(/@file:(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)/g)) refs.push(m[1].replace(/^([`"'])(.*)\1$/, "$2"));
+  for (const m of typedText(text).matchAll(/@file:(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)/g)) refs.push(m[1].replace(/^([`"'])(.*)\1$/, "$2"));
   return refs;
 }
 
@@ -154,7 +179,7 @@ export type BranchPreview = {
  */
 export const excerpt = (text: string, max = 90) => {
   const refs = fileRefs(text).length;
-  const words = norm(text.replace(/@file:(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)/g, "").replace(/\*\*|__|`/g, ""));
+  const words = norm(typedText(text).replace(/@file:(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)/g, "").replace(/\*\*|__|`/g, ""));
   const t = refs ? `[${refs} ${refs === 1 ? "file" : "files"}] ${words}`.trim() : words;
   return t.length > max ? `${t.slice(0, max - 1).replace(/\s+\S*$/, "")}…` : t;
 };

@@ -1,7 +1,7 @@
 // Branch from here (ADR 0027): the button under a message, the preview that says what the branch will hold before
 // Hermes makes it, and the note at the top of a branch that links back to where it came from.
 import { useEffect, useId, useRef, useState, type RefObject } from "react";
-import { CircleAlert, FileText, GitBranch, Image as ImageIcon, Pencil, RefreshCw, Wrench } from "lucide-react";
+import { CircleAlert, FileText, GitBranch, Image as ImageIcon, Wrench } from "lucide-react";
 import type { BranchLink, BranchPreview } from "../hermes/branch";
 import { BranchUnconfirmed } from "../hermes/transport";
 import { Spinner } from "./bits";
@@ -264,10 +264,20 @@ export function BranchDialog({
 }
 
 /**
- * At the top of a branch made here: where it came from, and a way back to that point. A branch Edit or Regenerate made
- * (ADR 0034) says which message of the owner's it sends again, and that the later messages stay in the original.
+ * At the top of a branch made here: where it came from, and a way back to that point. A branch made by Edit or
+ * Regenerate says so (ADR 0035); one whose message hasn't gone into it yet offers `finish`, which sends it.
  */
-export function BranchedFrom({ link, parentListed, onOpen }: { link: BranchLink; parentListed: boolean; onOpen: () => void }) {
+export function BranchedFrom({
+  link,
+  parentListed,
+  onOpen,
+  finish,
+}: {
+  link: BranchLink;
+  parentListed: boolean;
+  onOpen: () => void;
+  finish?: { busy: boolean; blocked?: string; run: () => void };
+}) {
   const parent = parentListed ? (
     <button className="link-btn" onClick={onOpen} title="Open that chat at this point">
       {link.parentTitle}
@@ -275,24 +285,34 @@ export function BranchedFrom({ link, parentListed, onOpen }: { link: BranchLink;
   ) : (
     <b title="That chat isn't in the list now">{link.parentTitle}</b>
   );
-  const replay = link.replay;
+  const kind = link.variant?.kind;
   return (
     <div className="branch-note" role="note">
-      {replay?.kind === "edit" ? <Pencil size={13} aria-hidden /> : replay ? <RefreshCw size={13} aria-hidden /> : <GitBranch size={13} aria-hidden />}
-      {replay?.kind === "edit" ? (
-        <span>
-          Edited from {parent}: your message <q className="branch-quote">{replay.excerpt}</q> is replaced here by the one below. The messages after it stay in{" "}
-          {link.parentTitle}.
-        </span>
-      ) : replay ? (
-        <span>
-          Another answer to your message <q className="branch-quote">{replay.excerpt}</q> in {parent}. That chat keeps its own answer.
-        </span>
-      ) : (
-        <span>
-          Branched from {parent} after {whose(link.point.role)} <q className="branch-quote">{link.point.excerpt}</q>
-        </span>
-      )}
+      <GitBranch size={13} aria-hidden />
+      <span>
+        {kind === "edit" ? (
+          <>
+            Edited from {parent}, where your original message <q className="branch-quote">{link.point.excerpt}</q> and what came after it stay
+          </>
+        ) : kind === "regenerate" ? (
+          <>
+            Another answer to your message <q className="branch-quote">{link.point.excerpt}</q> in {parent}, where the first answer stays.
+          </>
+        ) : (
+          <>
+            Branched from {parent} after {whose(link.point.role)} <q className="branch-quote">{link.point.excerpt}</q>
+          </>
+        )}
+        {finish && (
+          <span className="branch-unfinished" role="status">
+            {" "}
+            Your message hasn't gone to this branch yet.{" "}
+            <button className="btn" disabled={finish.busy || !!finish.blocked} title={finish.blocked} onClick={finish.run}>
+              {finish.busy ? <Spinner /> : null} Send it now
+            </button>
+          </span>
+        )}
+      </span>
     </div>
   );
 }

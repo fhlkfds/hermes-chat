@@ -5,7 +5,8 @@
 // (PersonaSettings.tsx). Memory: what Hermes remembers for the profile (MemorySettings.tsx). Skills: the profile's
 // skills, switched and edited on Hermes (SkillSettings.tsx).
 // Profiles are switched in the list's header, not here (ADR 0001).
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
+import { getUIPrefs, subscribe as subscribeUIPrefs } from "../hermes/uiPrefs";
 import { ArrowLeft, Brain, Cpu, Download, KeyRound, Lock, LogOut, Palette, PlugZap, Puzzle, Settings2, ShieldCheck, Sparkles, Trash2, Wrench } from "lucide-react";
 import type { Chat, ConnectionStatus } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
@@ -28,6 +29,10 @@ import { StartupSettings } from "./StartupSettings";
 import { VoiceSettings } from "./Voice";
 import type { VoiceSetup } from "../hermes/pipe";
 import { ScreenshotSettings } from "./ScreenshotSettings";
+import { GlobalShortcutSettings, useSummonStatus } from "./GlobalShortcutSettings";
+import type { SummonApi } from "../hermes/summon";
+import { TraySettings } from "./TraySettings";
+import type { TrayWiring } from "../hermes/tauriTray";
 import type { ScreenshotSupport } from "../hermes/tauriScreenshot";
 import { UpdateSettings } from "./UpdateSettings";
 import { ImportSection, type ImportWiring } from "./ImportTranscripts";
@@ -73,6 +78,8 @@ export function SettingsScreen({
   appearance,
   listFonts,
   checkScreenshots,
+  summon,
+  tray,
   modelSettings,
   toolsets,
   runningReplies = 0,
@@ -114,6 +121,10 @@ export function SettingsScreen({
   listFonts: () => Promise<Fonts>;
   /** How screenshots are taken on this desktop; left out where there is no desktop app to ask. */
   checkScreenshots?: () => Promise<ScreenshotSupport>;
+  /** The global shortcut; left out where there is no desktop app. */
+  summon?: SummonApi;
+  /** The tray icon and Close to tray; left out where there is no desktop app to ask. */
+  tray?: TrayWiring;
   /** The profile's model setup on Hermes. */
   modelSettings: ModelSettingsApi;
   /** The profile's toolsets on Hermes; without it there is no Toolsets tab. */
@@ -160,6 +171,8 @@ export function SettingsScreen({
   const [pulled, setPulled] = useState<string>();
   const [pullError, setPullError] = useState<string>();
   const [signingOut, setSigningOut] = useState(false);
+  const summonStatus = useSummonStatus(summon);
+  const { screenshotShortcut } = useSyncExternalStore(subscribeUIPrefs, getUIPrefs);
   const [tab, setTabNow] = useState<Tab>(showTextGeneration ? "model" : showMemory && memory ? "memory" : "general");
   const tabs = TABS.filter(
     (t) => (t.id !== "toolsets" || toolsets) && (t.id !== "persona" || persona) && (t.id !== "memory" || memory) && (t.id !== "skills" || skills),
@@ -311,9 +324,17 @@ export function SettingsScreen({
             </section>
 
             <StartupSettings />
+            <TraySettings tray={tray} />
 
             <VoiceSettings status={status} profile={profile} setup={voiceSetup} />
-            <ScreenshotSettings checkSupport={checkScreenshots} />
+            <GlobalShortcutSettings
+              api={summon}
+              status={summonStatus.status}
+              setStatus={summonStatus.setStatus}
+              loadError={summonStatus.error}
+              screenshotShortcut={screenshotShortcut}
+            />
+            <ScreenshotSettings checkSupport={checkScreenshots} globalShortcut={summonStatus.status?.shortcut ?? null} />
             <UpdateSettings />
 
             <section>

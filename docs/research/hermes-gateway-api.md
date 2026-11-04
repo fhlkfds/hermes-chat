@@ -380,6 +380,11 @@ Dictation and Read aloud use two dashboard REST routes in `hermes_cli/web_router
 - **Live probe.** Over SSH, an isolated loopback `hermes dashboard --isolated --host 127.0.0.1 --port 0` was started with `HERMES_HOME` set to a fresh temp directory and a throwaway `HERMES_DASHBOARD_SESSION_TOKEN`, so the owner's `~/.hermes` was never opened. `gateway.ready` had no `session_authority` (legacy), and every method above that the app uses answered as described: `create` with a blank name was 5063; `update` with `name: ""` was 5063; `add_folder` of a path already there was a no-op (`INSERT OR IGNORE`); **`add_folder` takes a path that doesn't exist, and reads a relative one from the server's home** (`relative/dir` became `/home/liam/relative/dir`); removing the primary folder made the oldest remaining one primary; `get`/`delete` of a deleted id were 5062. After `projects.delete`, the git repository and worktree in the project's folders were still on disk. The probe then stopped the server and removed both temp directories.
 - **Folder checks** (dashboard REST, read-only). `GET /api/fs/list?path=&profile=` → `{entries: [{name, path, isDirectory}]}`, or `{entries: [], error: "ENOENT" | "ENOTDIR" | "EACCES" | <strerror>}` with status 200 (`hermes_cli/web_routers/files.py` `fs_list`); a managed-files deployment can answer 403 outside its boundary. `GET /api/git/worktrees?path=` → `{worktrees: [{path, branch, isMain, detached, locked}]}` from `git worktree list --porcelain` run in that path, the repository's own checkout first, `[]` outside a repository or for a missing path (`hermes_cli/web_routers/git.py`, `web_git.worktree_list`). Both were checked in the probe against a temp repository with one extra worktree. The same routers also have `POST /api/git/worktree/add` and `/remove`, `POST /api/files/mkdir` and `DELETE /api/files`. The app's Rust relay permits GET, PATCH and DELETE under `api/`, plus only `POST api/model/set` and `PUT api/config` for Settings → Model. Folder/worktree creation POST routes remain blocked. The projects code uses only the two GETs above for filesystem and git access; its project mutations use the legacy RPCs described above.
 
+### Project membership (2026-11-03, deployed `bf0203a` and upstream `9302ba9e`, source read)
+
+- No store. `projects.db` (`hermes_cli/projects_db.py`) has no table linking a project to a session, at the deployed `bf0203a` or at upstream `main` `9302ba9e` (cloned 2026-11-03). The official desktop's tree derives a project's sessions from each session's `cwd` (`projects.tree`, `projects.project_sessions` in `tui_gateway/methods_config.py`; `project_for_path`). `PATCH /api/sessions/{id}` takes only `title`, `archived`, `hidden`, `pinned`, `unread` (`hermes_cli/web_routers/sessions.py`). `tools/project_tools.py` scopes a session to a project by its registered `cwd` too.
+- An unknown legacy method is answered `-32601` ("unknown method: … the client and the Hermes backend are out of sync", `tui_gateway/rpc_dispatch.py`), which is how the app finds there is no store. ADR 0033 records the contract (`projects.membership.list` / `.apply`) Hermes would need.
+
 ### Preview pane: reading server files (2026-11-02, deployed `bf0203a`, probed over SSH)
 
 The deployed checkout is `bf0203a` (`git rev-parse` over SSH). The dashboard on :9119 mounts `hermes_cli/web_routers/files.py` (`app.include_router(_files_routes.router)`, `web_server.py:760-788`). The owner's dashboard password is in their keyring and wasn't read. Instead, a short-lived `hermes serve --isolated --skip-build --host 127.0.0.1 --port 0` ran with a throwaway `HERMES_DASHBOARD_SESSION_TOKEN`. That is the same FastAPI app and routers. It ran against files in a fresh `mktemp -d`, was then killed by its PID (never `hermes serve --stop`, which stops every server), and the directory was removed. Every call was a GET.
@@ -572,28 +577,22 @@ Read in the deployed checkout (`tui_gateway/methods_session_branch.py`, `tui_gat
 - **Errors.** 4008 `nothing to branch — send a message first` when the spine is empty. 5008 `branch failed: …` when the copy fails. 5000 `agent init failed on branch: …` comes after the row is stored. 5032 (no AI provider) came before anything was stored in the first probe run. An unknown method is JSON-RPC −32601.
 - **The official desktop app** counts its own copyable spine (`toBranchMessages`: user and assistant messages with text) and sends `count` plus `through_message_id`; its legacy client drops `through_message_id` (`apps/desktop/src/api/client.ts:66-70`). It sends no `name`.
 
-### Edit and Regenerate (2026-11-03, deployed `f0d9488`, probed over SSH)
+### Edit and Regenerate (2026-11-03, deployed checkout at `f0d94882e8`, a descendant of `bf0203a`, probed over SSH)
 
-`f0d9488` includes `bf0203a`. `tui_gateway/methods_prompt.py` changed between them only for hosted-room images, and `methods_session_branch.py` didn't change. The probe used a throwaway `HERMES_HOME`, synthetic chats seeded with `SessionDB`, a loopback stub model, and a second `/api/ws` client (`docs/screenshots/edit-regenerate/setup/`).
+Read in `tui_gateway/methods_session.py` (`session.undo`), `tui_gateway/methods_tools.py` (`_cmd_retry`, `_cmd_undo`) and `tui_gateway/methods_session_branch.py`, then probed live. The probe started an isolated `hermes_cli.main dashboard --isolated` on `127.0.0.1` with a fresh `HERMES_HOME` under `/tmp` and a throwaway `HERMES_DASHBOARD_SESSION_TOKEN`. Its model was a loopback stub, so no real model was called. Hermes's `SessionDB` seeded one synthetic `gui` chat: Q1, A1, Q2 with an `@file:` ref, an assistant row with `tool_calls`, its tool row, A2, Q3 and A3. The dashboard and stub were killed by PID, and the directory was removed. The owner's `~/.hermes` was never opened.
 
-- **The rewind lives in `prompt.submit`.** `prompt.submit.truncate` is only `host_supervisor`'s gate label. The params (`PromptSubmitParams`, `tui_gateway/contracts/prompt_voice.py`) are:
-  - `truncate_before_row_id` (preferred), `truncate_before_message_id`, or `truncate_before_user_ordinal`;
-  - `confirm_truncate`, `confirm_empty_truncate`, `confirm_deep_truncate`;
-  - `rebind_survivor_row_ids`.
-- **What it does.** `_truncate_history_for_submit` cuts the live history before the target user turn, then writes it with `replace_messages(active_only=True, archive_dropped=True)`. The dropped rows stay in `state.db` with `active = 0`, and REST `/messages` no longer lists them. The answer adds `survivor_user_row_ids`, or `survivor_row_id_map` when `rebind_survivor_row_ids` was sent, and the new message's `user_row_id`.
-- **Refusals:**
-  - a target without `confirm_truncate`: 4029;
-  - a target row not found: 4018 (`_STALE_TARGET_MSG`), with no fallback;
-  - an ordinal with a stale row: 4030;
-  - an ordinal alone on a durable session: 4004;
-  - a cut that leaves nothing: 4028, unless `confirm_empty_truncate`;
-  - a cut that archives more than one user turn: logged, and refused with 4033 only once `DEEP_TRUNCATE_ENFORCED` is set (it is `False` here).
-- **Why it isn't used on the chat itself.** It removes the later turns from the chat. That is how the official desktop app edits and regenerates, and why this app doesn't.
-- **`session.branch` with `count`.** `count <= 0`, or none, copies the whole spine (`if isinstance(count, int) and count > 0`). So no branch can end *before* the first message.
-- **Branch, then cut.** Probed: `session.branch {count: 4}` through the owner's message, then in the new branch `prompt.submit {text, truncate_before_row_id: <the branch's copy>, confirm_truncate: true}`. The parent's 11 rows were unchanged. The branch held the 3 copied rows, the copy archived, the new message and its reply. The model got the 3 rows (the hidden instruction merged into the first user turn) and the new message.
-- **The first message.** `session.branch {count: 1}`, then the cut without `confirm_empty_truncate`, is 4028. With it, the branch holds only the new message and its reply. Hermes's auto-titler then titles the branch on that first turn (`title_source = llm`).
-- **The model switch.** ADR 0027's `config.set model` on a fresh branch stores a `display_kind = model_switch` marker row after the copy. The cut archives it with the copy. The session's model setting is unaffected.
-- **Another client adding a turn** (a second WS connection's `session.resume`, then `prompt.submit`) doesn't touch the first client's runtime session. Only the stored rows show it.
+- **No replay call.** Nothing replays a session from a message boundary into a new session. `/retry` and `session.undo` rewind the session they're called on, in place. Canonical `session.mutate {operation: "rewind", target_message_id}` does too (`hermes_state_mutations.py:44`).
+- **`count = 0` copies everything.** `_branch_live` applies `count` only when `count > 0` (`methods_session_branch.py:108`). So a branch can't end before the first message.
+- **`session.undo {session_id}`** (live session) → `{removed}`. It truncates from the last user-originated turn. It is refused with 4009 `session busy — Hermes is still replying. Stop the current reply first …` while a turn runs. It also checks `running` under `history_lock`.
+- **Branch through a message, then undo, then resend.**
+  - `session.branch {count: 1}` copied Q1. `session.undo` on the branch answered `{removed: 1}`, and the branch's `GET /api/sessions/{id}/messages` was then empty. A second undo answered `{removed: 0}`.
+  - `prompt.submit` with edited text answered `{status: "streaming", user_row_id}`. The branch then held the edited message and its reply only. `parent_session_id` was the parent, `source` was `tui`.
+  - `session.branch {count: 3}` through Q2, then undo, left Q1 and A1. `prompt.submit` of Q2's stored text, `@file:` ref included, reached the model with Hermes's file context.
+- **The parent.** Its 8 rows were unchanged after all of it.
+- **The model switch.** ADR 0027's `config.set model` on a fresh branch stores a `display_kind = model_switch` user row after the copy, and deactivates any marker the branch copied (`_append_model_switch_marker`, `tui_gateway/server.py:1291`). `session.undo` counts only user-originated turns: a row with a `display_kind` other than `steer` isn't one (`split_user_originated_turn`, `agent/context_compressor.py`). So it rewinds from the copy and takes the marker with it. Read in the `bf0203a` source on 2026-11-04; not probed live.
+- **Per-reply model.** Stored rows have no model field. Their keys include `finish_reason`, `token_count` and `reasoning`, but not `model`. The session row has `model` and `model_config` only. So a reply's model isn't stored, only the session's latest.
+- **Images.** `_cmd_retry` refuses `attached_images` with 4018 `retry cannot safely reconstruct or combine attached media`.
+- What the app does: ADR 0035.
 
 ## Artifacts (editing Outputs, ADR 0029)
 

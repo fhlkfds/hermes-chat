@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row, type FakeProject } from "../hermes/fakeHermes";
 import { connect, type Hermes } from "../hermes/transport";
-import { PROJECTS_KEY, projectLinks, projectScope } from "../hermes/projectLinks";
+import { PROJECTS_KEY, PROJECTS_VERSION, projectLinks, projectScope } from "../hermes/projectLinks";
 import { savedDefaults, type DefaultsDraft } from "../hermes/projectDefaults";
 import { Main } from "../App";
 
@@ -141,7 +141,7 @@ describe("the project switcher", () => {
     await pick(first.user, "Budget Tracker");
     cleanup();
     await Promise.all(running.splice(0).map((h) => h.close()));
-    expect(JSON.parse(localStorage.getItem(PROJECTS_KEY)!).v).toBe(1);
+    expect(JSON.parse(localStorage.getItem(PROJECTS_KEY)!).v).toBe(PROJECTS_VERSION);
 
     await launch(s);
     expect(switcher().textContent).toContain("Budget Tracker");
@@ -171,7 +171,19 @@ describe("a chat's menu", () => {
     s.projects.default = [];
     const { user } = await launch(s);
     await user.pointer({ keys: "[MouseRight]", target: screen.getByRole("button", { name: /NAS disks/ }) });
-    expect(screen.getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["Rename…", "Regenerate title", "Open in a second pane", "Add a tag…"]);
+    expect(screen.getAllByRole("menuitem").map((m) => m.textContent)).toEqual([
+      "Rename…",
+      "Regenerate title",
+      "Copy chat link",
+      "Open in a second pane",
+      // Snooze (ADR 0036)
+      "1 hour",
+      "3 hours",
+      "Tomorrow",
+      "Next week",
+      "Custom…",
+      "Add a tag…",
+    ]);
     expect(screen.queryByRole("menuitemcheckbox")).toBeNull();
   });
 });

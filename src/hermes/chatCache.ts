@@ -13,8 +13,7 @@ import type { ChatCache, SavedTranscript } from "./transport";
 import { UI_PREFS_KEY } from "./uiPrefs";
 import { replyUsageOf } from "./usage";
 import { persist } from "./unsaved";
-import { NO_BRANCHES, type BranchAttempt, type BranchLink, type BranchPoint, type BranchStore } from "./branch";
-import type { ReplayInfo } from "./replay";
+import { NO_BRANCHES, type BranchAttempt, type BranchLink, type BranchPoint, type BranchStore, type BranchVariant } from "./branch";
 import { pickOf } from "./models";
 
 const LIST_PREFIX = "hermes-chat.chats.";
@@ -188,22 +187,13 @@ function toOutgoing(v: unknown): OutgoingItem | undefined {
   if (item?.kind !== "user" || !o || (o.state !== "sending" && o.state !== "failed" && o.state !== "unknown")) return undefined;
   const sent = o.sent as Record<string, unknown> | undefined;
   const attachments = Array.isArray(o.attachments) ? o.attachments.filter(isAttachment) : [];
-  const cut = toCut(o.cut);
   const outgoing: Outgoing = {
     state: o.state,
     ...(str(o.reason) !== undefined && { reason: str(o.reason) }),
     ...(attachments.length && { attachments }),
     ...(typeof sent?.prompt === "string" && { sent: { prompt: sent.prompt, ...(num(sent.after) !== undefined && { after: num(sent.after) }) } }),
-    ...(cut && { cut }),
   };
   return { ...item, outgoing };
-}
-
-/** A kept replay cut (ADR 0034), or undefined if it isn't one. */
-function toCut(v: unknown): Outgoing["cut"] {
-  const c = v as Record<string, unknown> | null;
-  if (!c || typeof c !== "object" || !Number.isSafeInteger(c.rowId) || typeof c.prompt !== "string") return undefined;
-  return { rowId: c.rowId as number, prompt: c.prompt, ...(c.empty === true && { empty: true }) };
 }
 
 /** A kept queue, rebuilt from its fields, or undefined if it isn't one. Messages that aren't one are left out. */
@@ -228,13 +218,24 @@ function toBranches(v: unknown): BranchStore {
     const rowId = Number.isSafeInteger((q as { rowId?: unknown } | null)?.rowId) ? ((q as { rowId: number }).rowId) : undefined;
     return q && (q.role === "user" || q.role === "assistant") && typeof q.excerpt === "string" ? { role: q.role, excerpt: q.excerpt, ...(rowId !== undefined && { rowId }) } : undefined;
   };
+  const variant = (v: unknown): BranchVariant | undefined => {
+    const q = v as Record<string, unknown> | null;
+    if (!q || typeof q !== "object" || (q.kind !== "edit" && q.kind !== "regenerate") || !str(q.rootId) || !Number.isSafeInteger(q.turn) || (q.turn as number) < 0) return undefined;
+    const model = pickOf(q.model);
+    const pending = q.pending as Record<string, unknown> | null | undefined;
+    const kept =
+      pending && typeof pending.text === "string" && str(pending.prefix) && str(pending.through)
+        ? { text: pending.text, prefix: str(pending.prefix)!, through: str(pending.through)! }
+        : undefined;
+    return { kind: q.kind, rootId: str(q.rootId)!, turn: q.turn as number, ...(model && { model }), ...(kept && { pending: kept }) };
+  };
   const links: Record<string, BranchLink> = {};
   for (const [id, l] of Object.entries(o.links && typeof o.links === "object" ? o.links : {})) {
     const r = l as Record<string, unknown>;
     const p = point(r?.point);
-    const replay = toReplay(r?.replay);
+    const v = variant(r?.variant);
     if (p && str(r.parentId) && str(r.parentTitle) !== undefined && num(r.at) !== undefined)
-      links[id] = { parentId: str(r.parentId)!, parentTitle: str(r.parentTitle)!, point: p, at: num(r.at)!, ...(replay && { replay }) };
+      links[id] = { parentId: str(r.parentId)!, parentTitle: str(r.parentTitle)!, point: p, at: num(r.at)!, ...(v && { variant: v }) };
   }
   const attempts = (Array.isArray(o.attempts) ? o.attempts : []).flatMap((a): BranchAttempt[] => {
     const r = a as Record<string, unknown>;
@@ -243,7 +244,7 @@ function toBranches(v: unknown): BranchStore {
     const startedAt = num(r?.startedAt);
     if (!p || !str(r.key) || !str(r.parentId) || !str(r.fingerprint) || count === undefined || startedAt === undefined || !Array.isArray(r.before)) return [];
     const model = pickOf(r.model);
-    const replay = toReplay(r.replay);
+    const v = variant(r.variant);
     return [
       {
         key: str(r.key)!,
@@ -256,27 +257,11 @@ function toBranches(v: unknown): BranchStore {
         startedAt,
         ...(str(r.title) && { title: str(r.title) }),
         ...(model && { model }),
-        ...(replay && { replay }),
+        ...(v && { variant: v }),
       },
     ];
   });
   return { links, attempts };
-}
-
-/** What an Edit or Regenerate branch replays, rebuilt from its kept fields (ADR 0034), or undefined if it isn't one. */
-function toReplay(v: unknown): ReplayInfo | undefined {
-  const r = v as Record<string, unknown> | null;
-  if (!r || typeof r !== "object" || (r.kind !== "edit" && r.kind !== "regenerate") || !Number.isSafeInteger(r.sourceRowId) || !Number.isSafeInteger(r.count) || typeof r.excerpt !== "string") return undefined;
-  const model = pickOf(r.model);
-  return {
-    kind: r.kind,
-    sourceRowId: r.sourceRowId as number,
-    count: r.count as number,
-    excerpt: r.excerpt,
-    ...(typeof r.edited === "string" && { edited: r.edited }),
-    ...(Number.isSafeInteger(r.branchRowId) && { branchRowId: r.branchRowId as number }),
-    ...(model && { model }),
-  };
 }
 
 /** A message drafts.ts held, as an outbox row. One Hermes may have got is found in the history by its words alone. */

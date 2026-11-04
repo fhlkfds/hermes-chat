@@ -6,7 +6,7 @@ ADR 0001 put New chat and Search only on the rail, as unlabeled icons, to keep t
 
 - **Labeled, with the key showing.** "New chat" stands out as the primary action and "Search chats" sits below it. The key is drawn as a `kbd`, hidden from screen readers so the button's name stays "New chat" or "Search chats".
 - **The rail splits chats from tools.** A short rule separates New chat, Search and the inbox from Server files, Scheduled jobs, Outputs, Usage and the Terminal.
-- **A key for each common action.** Ctrl+N starts a new chat, Ctrl+K searches, Ctrl+, opens Settings, and Alt+Up and Alt+Down open the Active chat above or below the one showing, in the list's order (most recent first, in the shown project). Alt+arrows stop at the first and last chat, start from the top when a new chat is showing, and leave the keys alone when a list that uses them (the queue, Server files) has already handled the press. A new chat lists these keys under its prompt.
+- **A key for each common action.** Ctrl+N starts a new chat, Ctrl+K searches, Ctrl+, opens Settings, and Alt+Up and Alt+Down open the Active chat above or below the one showing, in the list's order (most recent first, in the shown project). Since ADR 0036 that order is the top of the list then Working; Snoozed and Settled chats are skipped. Alt+arrows stop at the first and last chat, start from the top when a new chat is showing, and leave the keys alone when a list that uses them (the queue, Server files) has already handled the press. A new chat lists these keys under its prompt.
 
 ## Considered options
 

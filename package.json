@@ -6,7 +6,7 @@
   "license": "GPL-3.0-or-later",
   "type": "module",
   "scripts": {
-    "app": "WEBKIT_DISABLE_DMABUF_RENDERER=1 tauri dev",
+    "app": "HERMES_CHAT_NEW_INSTANCE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 tauri dev",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
