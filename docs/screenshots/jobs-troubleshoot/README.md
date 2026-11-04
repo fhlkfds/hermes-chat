@@ -22,3 +22,12 @@ fake key put there to show the redaction. No visual element was composited or re
 - `7-reloaded-job-what-changed.png`: the job read again. The Troubleshooting panel lists each changed field (the
   prompt in full, before and now; the delivery `discord → telegram`) and offers "Run now to check the fix".
 - `8-run-now-confirm.png`: "Run now to check the fix" opens the usual Run now confirmation. It wasn't run.
+
+Taken again at commit `1ac9eed`, after the Codex review fixes. Screenshots 1–8 above are from commit `1438795`; the fixes
+after it changed when the panel says what changed (only after a read that started once the reply had ended), not what
+these screens show.
+
+- `9-working-panel.png`: the job opened from the rail while Hermes works. The panel says Hermes is working, with
+  Read the job again (shows the changes so far without ending the wait) and Open the chat.
+- `10-reloaded-while-open.png`: the same screen after Hermes's reply ended, with no click in between. The screen read
+  the job again by itself and lists what changed.
