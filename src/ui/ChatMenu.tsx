@@ -2,9 +2,10 @@
 // menu uses too. Escape or a click elsewhere closes one, and focus goes back to what had it. The arrow keys move
 // between a menu's items.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { Check, Columns2, PanelLeft, PanelRight, Pencil, Sparkles, Tag as TagIcon } from "lucide-react";
+import { AlarmClock, AlarmClockOff, CalendarClock, Check, Columns2, PanelLeft, PanelRight, Pencil, Sparkles, Tag as TagIcon } from "lucide-react";
 import type { Chat } from "../hermes/model";
 import type { Project } from "../hermes/projects";
+import { snoozePresets, wakeFull } from "../hermes/snooze";
 import type { Tag } from "../hermes/tags";
 import { useReturnFocus } from "./bits";
 
@@ -21,6 +22,12 @@ export type ChatProjects = {
 export type ChatTags = { list: Tag[]; of: readonly string[]; onToggle: (tagId: string, on: boolean) => void; onManage: () => void };
 
 /**
+ * Snoozing the chat from its menu (snooze.ts): `until`, when a snoozed chat wakes; `onSnooze` snoozes it until a time,
+ * `onCustom` asks when, and `onWake` wakes it now.
+ */
+export type ChatSnooze = { until?: number; onSnooze: (until: number) => void; onCustom: () => void; onWake: () => void };
+
+/**
  * The right-click menu for one chat, at the pointer, kept inside the window. `onRename` and `onRegenTitle` hand back
  * to the row. `onOpenIn` opens the chat in the left (0) or right (1) pane; with one pane (`split` false) the menu offers
  * to open it in a second pane. The arrow keys move between its items.
@@ -35,6 +42,7 @@ export function ChatMenu({
   onRegenTitle,
   projects,
   tags,
+  snooze,
   onClose,
 }: {
   chat: Chat;
@@ -46,8 +54,10 @@ export function ChatMenu({
   onRegenTitle: () => void;
   projects?: ChatProjects;
   tags?: ChatTags;
+  snooze?: ChatSnooze;
   onClose: () => void;
 }) {
+  const now = Date.now();
   return (
     <Menu label={`Actions for ${chat.title}`} x={x} y={y} onClose={onClose}>
       <button
@@ -98,6 +108,58 @@ export function ChatMenu({
             <span className="menu-label">{o.label}</span>
           </button>
         ))}
+      {snooze && (
+        <div role="group" aria-label="Snooze" className="menu-group">
+          <div className="menu-heading" aria-hidden>
+            {snooze.until && snooze.until > now ? `Snoozed until ${wakeFull(snooze.until)}` : "Snooze"}
+          </div>
+          {snooze.until && snooze.until > now && (
+            <button
+              role="menuitem"
+              className="menu-item"
+              onClick={() => {
+                onClose();
+                snooze.onWake();
+              }}
+            >
+              <span className="menu-icon">
+                <AlarmClockOff size={15} />
+              </span>
+              <span className="menu-label">Unsnooze</span>
+            </button>
+          )}
+          {snoozePresets(now).map((p) => (
+            <button
+              key={p.key}
+              role="menuitem"
+              className="menu-item"
+              title={`Until ${wakeFull(p.until)}`}
+              onClick={() => {
+                onClose();
+                snooze.onSnooze(p.until);
+              }}
+            >
+              <span className="menu-icon">
+                <AlarmClock size={15} />
+              </span>
+              <span className="menu-label">{p.label}</span>
+            </button>
+          ))}
+          <button
+            role="menuitem"
+            className="menu-item"
+            onClick={() => {
+              onClose();
+              snooze.onCustom();
+            }}
+          >
+            <span className="menu-icon">
+              <CalendarClock size={15} />
+            </span>
+            <span className="menu-label">Custom…</span>
+          </button>
+        </div>
+      )}
       {!!projects?.list.length && (
         <div role="group" aria-label="Projects" className="menu-group">
           <div className="menu-heading" aria-hidden>
