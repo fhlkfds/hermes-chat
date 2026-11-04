@@ -702,11 +702,32 @@ describe("Split panes and Settings", () => {
     expect(mic.opened).toBe(1);
   });
 
+  it("Change voice settings opens Settings → Voice, pausing the conversation, and a save there reaches the panel", async () => {
+    const s = await opened();
+    await start(s);
+    expect(panel().textContent).toMatch(/Hearing you with Local Whisper, speaking with Microsoft Edge TTS/);
+    await s.user.click(within(panel()).getByRole("button", { name: "Change voice settings" }));
+    expect((await screen.findByRole("tab", { name: /Voice/ })).getAttribute("aria-selected")).toBe("true");
+    // Settings covers the pane, so the conversation paused and closed the microphone.
+    await waitFor(() => expect(mic.allClosed).toBe(true));
+    const tts = await screen.findByRole("combobox", { name: "Text-to-speech provider" });
+    await s.user.selectOptions(tts, "ElevenLabs");
+    await s.user.type(screen.getByLabelText("ElevenLabs ElevenLabs API key"), "el-123");
+    await s.user.click(screen.getByRole("button", { name: /Save to Hermes/ }));
+    await screen.findByText(/Saved on Hermes, and read back/);
+    expect(s.server.voiceProviders.provider("default", "tts")).toBe("elevenlabs");
+    await s.user.click(screen.getByRole("button", { name: /Back to chat/ }));
+    await waitFor(() => expect(panel().textContent).toMatch(/speaking with ElevenLabs/));
+    expect(status()).toMatch(/Paused/);
+    expect(mic.opened).toBe(1);
+  });
+
   it("Settings says how a turn ends, with the profile's own settings", async () => {
     const server = new FakeHermes();
     server.voice = { ...server.voice, silenceThreshold: 350, silenceDuration: 1.5 };
     const s = await opened(server);
     await s.user.click(screen.getByRole("button", { name: "Settings" }));
+    await s.user.click(await screen.findByRole("tab", { name: /Voice/ }));
     const section = (await screen.findByRole("heading", { name: "Voice" })).closest("section")!;
     await within(section).findByText("Ends a turn after 1.5 s of quiet");
     expect(section.textContent).toMatch(/1\.5 s of quiet \(voice\.silence_duration, the profile's\)/);

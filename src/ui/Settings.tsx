@@ -1,6 +1,7 @@
-// The Settings screen, in eight tabs. General, ported from the prototype: the connection and Sign out, what shows on
-// launch, voice, screenshots, updates, the local cache, older history, importing transcripts, and backups. Appearance: how the app looks on this
-// computer (AppearanceSettings.tsx). Model: the profile's models on Hermes (ModelSettings.tsx). Toolsets: which tools
+// The Settings screen, in nine tabs. General, ported from the prototype: the connection and Sign out, what shows on
+// launch, screenshots, updates, the local cache, older history, importing transcripts, and backups. Appearance: how the app looks on this
+// computer (AppearanceSettings.tsx). Model: the profile's models on Hermes (ModelSettings.tsx). Voice: Dictation, Read
+// aloud and voice conversations, and the profile's speech providers on Hermes (VoiceProviderSettings.tsx). Toolsets: which tools
 // Hermes offers the model in the profile (ToolsetSettings.tsx). Persona: the profile's SOUL.md on Hermes
 // (PersonaSettings.tsx). Memory: what Hermes remembers for the profile (MemorySettings.tsx). Skills: the profile's
 // skills, switched and edited on Hermes (SkillSettings.tsx). Diagnostics: what the connected Hermes is and what it
@@ -8,7 +9,7 @@
 // Profiles are switched in the list's header, not here (ADR 0001). The search box (Ctrl+F) shows the sections of every
 // tab whose text holds what was typed (settingsSearch.ts).
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowLeft, Brain, Cpu, Download, KeyRound, Lock, LogOut, Palette, PlugZap, Puzzle, Search, Settings2, ShieldCheck, Sparkles, Stethoscope, Trash2, Wrench, X } from "lucide-react";
+import { ArrowLeft, AudioLines, Brain, Cpu, Download, KeyRound, Lock, LogOut, Palette, PlugZap, Puzzle, Search, Settings2, ShieldCheck, Sparkles, Stethoscope, Trash2, Wrench, X } from "lucide-react";
 import type { Chat, ConnectionStatus } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
 import { TRANSCRIPT_LIMIT_BYTES } from "../hermes/chatCache";
@@ -29,8 +30,10 @@ import { PersonaSettings, type PersonaWhere } from "./PersonaSettings";
 import type { PersonaApi } from "../hermes/persona";
 import type { PersonaStore } from "../hermes/personaStore";
 import { StartupSettings } from "./StartupSettings";
-import { VoiceSettings } from "./Voice";
+import { VoiceSettings, useVoiceChanges } from "./Voice";
 import type { VoiceSetup } from "../hermes/pipe";
+import type { VoiceSettingsApi } from "../hermes/voiceSettings";
+import { VoiceProviderSettings } from "./VoiceProviderSettings";
 import { ScreenshotSettings } from "./ScreenshotSettings";
 import { TraySettings } from "./TraySettings";
 import type { TrayWiring } from "../hermes/tauriTray";
@@ -42,11 +45,12 @@ import { guideUrl, type CapabilityId, type CapabilityStore } from "../hermes/cap
 import { CapabilityGate, DiagnosticsSettings, type OpenGuide } from "./Diagnostics";
 import { NAMED, applySearch, clearMarks, queryWords, textMatches } from "./settingsSearch";
 
-type Tab = "general" | "appearance" | "model" | "toolsets" | "persona" | "memory" | "skills" | "diagnostics";
+type Tab = "general" | "appearance" | "model" | "voice" | "toolsets" | "persona" | "memory" | "skills" | "diagnostics";
 const TABS = [
   { id: "general", label: "General", Icon: Settings2 },
   { id: "appearance", label: "Appearance", Icon: Palette },
   { id: "model", label: "Model", Icon: Cpu },
+  { id: "voice", label: "Voice", Icon: AudioLines },
   { id: "toolsets", label: "Toolsets", Icon: Wrench },
   { id: "persona", label: "Persona", Icon: Sparkles },
   { id: "memory", label: "Memory", Icon: Brain },
@@ -55,7 +59,7 @@ const TABS = [
 ] as const;
 
 /** The tabs whose sections a search shows in place. */
-const SEARCHED: readonly Tab[] = ["general", "appearance", "model", "toolsets"];
+const SEARCHED: readonly Tab[] = ["general", "appearance", "model", "voice", "toolsets"];
 /**
  * The tabs a search names instead: each edits one thing Hermes keeps (a file, a list of entries), so it's opened to
  * search rather than mounted beside the others with its unsaved edit.
@@ -123,6 +127,9 @@ export function SettingsScreen({
   onSetUp,
   onClose,
   voiceSetup,
+  voiceSettings,
+  onVoiceChange,
+  showVoice,
   persona,
   onPersonaDirty = () => {},
   guard = allow,
@@ -189,8 +196,14 @@ export function SettingsScreen({
   /** Opens setup again, to change the connection or give Hermes a model provider's key. */
   onSetUp?: () => void;
   onClose: () => void;
-  /** The shown profile's voice set-up, for the Voice section. */
+  /** The shown profile's voice set-up, for the Voice tab. */
   voiceSetup?: () => Promise<VoiceSetup>;
+  /** The profile's speech providers on Hermes, picked and set up in the Voice tab. */
+  voiceSettings?: VoiceSettingsApi;
+  /** Calls `fn` whenever the voice set-up may have changed on Hermes; returns its unsubscribe. */
+  onVoiceChange?: (fn: () => void) => () => void;
+  /** Set, each time anew, to show the Voice tab: from a voice conversation's "Change voice settings". */
+  showVoice?: object;
   /** Settings → Persona; the tab is left out without it. */
   persona?: PersonaWiring;
   /** Says whether the Persona tab holds an edit Hermes doesn't have yet. */
@@ -227,13 +240,16 @@ export function SettingsScreen({
   const onEntriesDirty = useCallback(memoryPart("entries"), [onMemoryDirty]);
   const onProvidersDirty = useCallback(memoryPart("providers"), [onMemoryDirty]);
   const [tab, setTabNow] = useState<Tab>(
-    showTextGeneration ? "model" : showMemory && memory ? "memory" : showDiagnostics && capabilities ? "diagnostics" : "general",
+    showTextGeneration ? "model" : showMemory && memory ? "memory" : showDiagnostics && capabilities ? "diagnostics" : showVoice ? "voice" : "general",
   );
+  // The Voice tab's set-up rows read again after a save there (or a Toolsets speech-to-text switch).
+  const voiceChanges = useVoiceChanges(onVoiceChange ? { onChange: onVoiceChange } : undefined);
   // A new object each time a note asks for a capability, so the row is focused again even for the same one.
   const [diagFocus, setDiagFocus] = useState<{ id: CapabilityId } | undefined>(showDiagnostics?.id ? { id: showDiagnostics.id } : undefined);
   const tabs = TABS.filter(
     (t) =>
       (t.id !== "toolsets" || toolsets) &&
+      (t.id !== "voice" || voiceSetup || voiceSettings) &&
       (t.id !== "persona" || persona) &&
       (t.id !== "memory" || memory) &&
       (t.id !== "skills" || skills) &&
@@ -252,6 +268,11 @@ export function SettingsScreen({
     setQuery("");
     setTab("memory");
   }, [showMemory]);
+  useEffect(() => {
+    if (!showVoice) return;
+    setQuery("");
+    setTab("voice");
+  }, [showVoice]);
   useEffect(() => {
     if (!showDiagnostics || !capabilities) return;
     setQuery("");
@@ -412,7 +433,6 @@ export function SettingsScreen({
       <StartupSettings />
       <TraySettings tray={tray} />
 
-      <VoiceSettings status={status} profile={profile} setup={voiceSetup} />
       <ScreenshotSettings checkSupport={checkScreenshots} />
       <UpdateSettings />
 
@@ -527,6 +547,16 @@ export function SettingsScreen({
       case "model":
         // A draft lives only while this tab is open, and for one profile.
         return <ModelSettings key={profile} api={modelSettings} profile={profile} connected={status === "connected"} showTextGeneration={searching ? undefined : showTextGeneration} />;
+      case "voice":
+        return (
+          <>
+            <VoiceSettings status={status} profile={profile} setup={voiceSetup} changes={voiceChanges} />
+            {voiceSettings && (
+              // Read for one profile and connection; another starts afresh, with nothing typed kept.
+              <VoiceProviderSettings key={profile} api={voiceSettings} profile={profile} connected={status === "connected"} />
+            )}
+          </>
+        );
       case "toolsets":
         // Read for one profile; switching profile reads the new one's afresh.
         return (

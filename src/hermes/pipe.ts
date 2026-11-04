@@ -30,6 +30,14 @@ export type VoiceSetup = {
   silenceThreshold?: number;
   silenceDuration?: number;
   maxRecordingSeconds?: number;
+  /** `stt.language`: the language hint for every speech-to-text provider without its own. */
+  sttLanguage?: string;
+  /**
+   * Each provider's model, voice and language, by its config section (`stt.<section>.<key>`, `tts.<section>.<key>`), for
+   * Settings → Voice. Rust passes only those keys (`VOICE_SETTING_KEYS`), and only text: never an API key.
+   */
+  sttSettings?: Record<string, Record<string, string>>;
+  ttsSettings?: Record<string, Record<string, string>>;
 };
 
 /**
@@ -51,7 +59,7 @@ export type PipeEvent = { kind: "frame"; text: string } | { kind: "closed"; reas
  */
 export type Route = { kind: "ssh"; target: string } | { kind: "url"; url: string; addresses: string[] };
 
-/** The dashboard REST verbs the Rust side relays. POST and PUT reach only Settings → Model's two write routes, the scheduled-job writes, Settings → Toolsets' switch, Settings → Persona's save, and Settings → Skills' switch and save. */
+/** The dashboard REST verbs the Rust side relays. POST and PUT reach only Settings → Model's two write routes, the scheduled-job writes, Settings → Toolsets' switch, Settings → Persona's save, Settings → Skills' switch and save, and Settings → Voice's provider pick and key save (ADR 0051), among others listed at `Dashboard::request` in src-tauri/src/transport.rs. */
 export type RestMethod = "GET" | "PATCH" | "DELETE" | "POST" | "PUT";
 
 export interface Pipe {
