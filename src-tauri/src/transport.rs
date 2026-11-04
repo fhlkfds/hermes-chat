@@ -685,7 +685,7 @@ impl Dashboard {
     /// `{"enabled": true|false}` (`toolset_toggle_allowed`), Settings → Skills' two writes, `PUT api/skills/toggle` and
     /// `PUT api/skills/content` with exactly their fields (`skill_write_allowed`), and Import transcripts'
     /// `POST api/sessions/import` whose every session is marked `source: "import"` (`import_body_allowed`, ADR 0031),
-    /// and the Automations writes (`webhook_write`, ADR 0033).
+    /// and the Automations writes (`webhook_write`, ADR 0036).
     /// Returns the response body on 2xx.
     pub async fn request(&self, method: &str, path_and_query: &str, body: Option<String>) -> Result<String, TransportError> {
         let (path, query) = path_and_query.split_once('?').unwrap_or((path_and_query, ""));
@@ -1336,7 +1336,7 @@ pub fn toolset_toggle_allowed(path: &str, body: Option<&str>) -> bool {
     }
 }
 
-/// The Automations writes (ADR 0033, Hermes's `/api/webhooks` routes and the `webhooks/1` contract): `POST
+/// The Automations writes (ADR 0036, Hermes's `/api/webhooks` routes and the `webhooks/1` contract): `POST
 /// api/webhooks` creates a route, `PUT api/webhooks/{name}` edits one, `PUT api/webhooks/{name}/enabled` pauses or
 /// resumes one, and `POST api/webhooks/{name}/deliveries/{id}/retry` retries a failed delivery. The route name is one
 /// segment as Hermes names routes, the delivery id one unreserved segment. Each body is a JSON object with only the

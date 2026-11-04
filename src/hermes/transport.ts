@@ -55,6 +55,7 @@ import {
   BRANCH_KEY_TTL_MS,
   NO_BRANCHES,
   branchBlocked,
+  excerpt,
   locate,
   previewOf,
   spineKey,
@@ -63,9 +64,11 @@ import {
   type BranchLink,
   type BranchPreview,
   type BranchStore,
+  type BranchVariant,
   type SpineRow,
   type StoredBranchRow,
 } from "./branch";
+import { cannotResend, laterOf, replayBlocked, resendText, replayTarget, splitRefs, turnAt, variantRoot, withRefs, type ReplayKind, type ReplayPreview } from "./replay";
 
 /**
  * The `source` this app stamps on chats it starts. Legacy `session.create` stores any string as-is, but the gateway
@@ -1367,7 +1370,7 @@ export class Hermes {
    * `BranchUnconfirmed`, and the chat list read once connected again settles it, by the idempotency key it went
    * with; branching from the same message again meanwhile returns the same branch.
    */
-  async branch(preview: BranchPreview, title?: string): Promise<{ chatId: string; warnings: string[] }> {
+  async branch(preview: BranchPreview, title?: string, variant?: BranchVariant): Promise<{ chatId: string; warnings: string[] }> {
     const profile = this.profile;
     const { chat, spine, index } = await this.branchBoundary(preview.chatId, preview.itemId, profile);
     const count = index + 1;
@@ -1376,7 +1379,10 @@ export class Hermes {
       throw new Error("This chat changed since the preview opened. Open it again to see what the branch would hold.");
     // An earlier branch from this same point whose answer was lost: if Hermes made it, it's the one. Lost attempts
     // from other messages of the chat are left as they are.
-    const earlier = this.snapshot.branches.attempts.find((a) => a.parentId === chat.id && a.count === count && a.fingerprint === preview.fingerprint);
+    // An Edit or Regenerate is told apart from a plain branch from the same message, and from another edit of it.
+    const earlier = this.snapshot.branches.attempts.find(
+      (a) => a.parentId === chat.id && a.count === count && a.fingerprint === preview.fingerprint && a.variant?.kind === variant?.kind && a.variant?.pending?.text === variant?.pending?.text,
+    );
     if (earlier) {
       const { found } = await this.findBranch(earlier, profile);
       if (found) return { chatId: await this.adoptListed(found, earlier, profile), warnings: ["Hermes had made the branch asked for before the connection dropped, so that one is open now."] };
@@ -1396,6 +1402,7 @@ export class Hermes {
       startedAt: Date.now(),
       ...(title?.trim() && { title: title.trim() }),
       ...(chat.model && { model: chat.model }),
+      ...(variant && { variant }),
     };
     // Checked again just as the call goes: a reply may have started, or the connection or profile changed, while the
     // list was read. A runtime id means nothing on another connection.
@@ -1486,6 +1493,184 @@ export class Hermes {
     const at = locate(chat.items, itemId, spine);
     if ("error" in at) throw new Error(at.error);
     return { chat, rows, spine, index: at.index };
+  }
+
+  /**
+   * What an Edit or Regenerate under the message `itemId` would make (ADR 0035): a branch through the owner's message
+   * (the message itself for Edit, the one the reply answers for Regenerate), read as Branch from here reads it, with
+   * the words to start from and what the branch leaves out. Rejects with why it can't be made now.
+   */
+  async previewReplay(chatId: string, itemId: string, kind: ReplayKind): Promise<ReplayPreview> {
+    const profile = this.profile;
+    const chat = this.snapshot.chats.find((c) => c.id === chatId);
+    if (!chat) throw new Error("This chat isn't in the list.");
+    const blocked = replayBlocked(chat, this.snapshot.status === "connected");
+    if (blocked) throw new Error(blocked);
+    const target = replayTarget(chat.items, itemId, kind);
+    if ("error" in target) throw new Error(target.error);
+    const { chat: now, rows, spine, index } = await this.branchBoundary(chatId, target.userId, profile);
+    const stored = spine[index].text;
+    const cannot = cannotResend(stored, kind);
+    if (cannot) throw new Error(cannot);
+    const { refs, ...branch } = previewOf(now, target.userId, rows, spine, index);
+    const files = await Promise.all(refs.map(async (path) => ({ path, state: await this.serverFileState(path, profile) })));
+    if (this.profile !== profile) throw new Error("The profile changed before the preview was ready.");
+    const turn = turnAt(spine, index);
+    const answer = target.replyId && now.items.find((i) => i.id === target.replyId);
+    return {
+      kind,
+      branch: { ...branch, files },
+      stored,
+      ...splitRefs(stored),
+      later: laterOf(spine, index),
+      laterTools: rows.filter((r) => r.role === "tool" && r.id > spine[index].id).length,
+      ...(answer && answer.kind === "assistant" && { answer: excerpt(answer.text, 160) }),
+      spine: spineKey(spine),
+      turn,
+      rootId: variantRoot(this.snapshot.branches.links, chatId, turn),
+    };
+  }
+
+  /**
+   * Makes the Edit or Regenerate `preview` describes. The chat it was asked from stays as it is. Hermes branches it
+   * through the owner's message; the branch's copy of that message is taken back (`session.undo` on the branch), and
+   * the message goes into the branch again: `words` with the message's files for an Edit, the message as stored for a
+   * Regenerate. Rejects, and makes nothing, if the chat changed since the preview was read, here or in another client.
+   * Resolves to the branch and what went wrong after it was made; a branch whose message didn't go yet says so at its
+   * top, with a way to finish it.
+   */
+  async replay(preview: ReplayPreview, words?: string): Promise<{ chatId: string; warnings: string[] }> {
+    const profile = this.profile;
+    const text = preview.kind === "edit" ? withRefs(preview.refs, words ?? "") : resendText(preview.stored);
+    if (preview.kind === "edit" && !words?.trim()) throw new Error("The edited message is empty. Type what to send, or Cancel.");
+    const chat = this.snapshot.chats.find((c) => c.id === preview.branch.chatId);
+    if (!chat) throw new Error("This chat isn't in the list.");
+    const blocked = replayBlocked(chat, this.snapshot.status === "connected");
+    if (blocked) throw new Error(blocked);
+    // The whole chat, not only the part copied: a message added after it by another client changes what's left out.
+    const { spine } = await this.branchBoundary(chat.id, preview.branch.itemId, profile);
+    if (spineKey(spine) !== preview.spine)
+      throw new Error("This chat changed since this opened, here or in another Hermes client. Nothing was made; open it again to see the chat as it is now.");
+    const count = preview.branch.count;
+    const variant: BranchVariant = {
+      kind: preview.kind,
+      rootId: preview.rootId,
+      turn: preview.turn,
+      pending: { text, prefix: spineKey(spine.slice(0, count - 1)), through: preview.branch.fingerprint },
+    };
+    const made = await this.branch(preview.branch, undefined, variant);
+    if (this.profile !== profile) return made;
+    try {
+      made.warnings.push(...(await this.finishReplay(made.chatId)));
+    } catch (e) {
+      made.warnings.push((e as Error).message);
+    }
+    return made;
+  }
+
+  /**
+   * Sends the message an Edit or Regenerate is for into its branch, if it hasn't gone: the branch's copy of the
+   * original is taken back first, if it's still there. Read from Hermes each time, so it can be asked again after a
+   * dropped connection without sending twice. Resolves to what the owner should know; rejects with why it couldn't.
+   */
+  finishReplay(chatId: string): Promise<string[]> {
+    // One at a time per branch: two panes asking at once would otherwise both take a message back.
+    const running = this.finishing.get(chatId);
+    if (running) return running;
+    const p = this.finishReplayNow(chatId).finally(() => this.finishing.delete(chatId));
+    this.finishing.set(chatId, p);
+    return p;
+  }
+
+  private finishing = new Map<string, Promise<string[]>>();
+
+  private async finishReplayNow(chatId: string): Promise<string[]> {
+    const profile = this.profile;
+    const pending = this.snapshot.branches.links[chatId]?.variant?.pending;
+    if (!pending) return [];
+    const chat = this.snapshot.chats.find((c) => c.id === chatId);
+    if (!chat) throw new Error("This branch isn't in the list.");
+    const blocked = replayBlocked(chat, this.snapshot.status === "connected");
+    if (blocked) throw new Error(blocked);
+    const keep = Number.parseInt(pending.prefix, 10);
+    const sid = await this.resume(chatId);
+    const generation = this.generation;
+    const read = async () => spineOf(await this.storedRows(chatId, profile));
+    // Checked after every wait, before anything is changed: the owner may have switched profile, the connection may
+    // have changed, or a reply or another message may have started in the branch meanwhile. The words stay pending.
+    const stillMine = () => {
+      if (this.profile !== profile) throw new Error("The profile changed meanwhile. Nothing was sent; finish it from the top of the branch once you're back.");
+      const now = this.snapshot.chats.find((c) => c.id === chatId);
+      if (!now) throw new Error("This branch isn't in the list.");
+      if (this.generation !== generation || now.runtimeId !== sid) throw new Error("The connection to Hermes changed meanwhile. Nothing was sent; finish it from the top of the branch.");
+      const why =
+        replayBlocked(now, this.snapshot.status === "connected") ??
+        (this.submitting.has(chatId) ? "A message to this branch is on its way. Nothing else was sent; look at the branch before you finish it." : undefined);
+      if (why) throw new Error(why);
+    };
+    let spine = await read();
+    stillMine();
+    const kept = (s: SpineRow[]) => s.length === keep && spineKey(s) === pending.prefix;
+    if (spine.length === keep + 1 && spineKey(spine.slice(0, keep)) === pending.prefix) {
+      // Only the very message the branch was made through is taken back: one another client changed stays.
+      if (spineKey(spine) !== pending.through) {
+        this.setVariant(profile, chatId, ({ pending: _, ...v }) => v);
+        throw new Error("The branch's last message isn't the one it was made with any more, so Hermes Chat didn't take it back or send anything. Look at the branch before you go on.");
+      }
+      // The branch still holds its copy of the original message: take it back, in the branch only.
+      try {
+        await this.request("session.undo", { session_id: sid });
+      } catch (e) {
+        if (e instanceof RpcError && e.code === NO_SUCH_METHOD) {
+          // A Hermes that can branch but not take a message back: the branch isn't what the owner asked for.
+          const gone = await this.rest("DELETE", `${sessionPath(chatId)}?${new URLSearchParams({ profile })}`).then(
+            () => true,
+            () => false,
+          );
+          if (gone) {
+            this.updateBranches(profile, (b) => {
+              const { [chatId]: _, ...links } = b.links;
+              return { ...b, links };
+            });
+            this.update({ chats: this.snapshot.chats.filter((c) => c.id !== chatId) });
+            this.saveList(profile, this.snapshot.chats);
+          }
+          throw new Error(
+            `This Hermes server can't take a message back (it has no session.undo), so it can't edit or regenerate. ${gone ? "Hermes Chat deleted the branch it had made. Nothing else changed." : "Delete the branch it made from the list."}`,
+          );
+        }
+        throw new Error(`Hermes didn't take back the branch's copy of your message (${(e as Error).message}). Nothing was sent; finish it from the top of the branch.`);
+      }
+      spine = await read();
+      stillMine();
+      if (!kept(spine)) {
+        this.setVariant(profile, chatId, ({ pending: _, ...v }) => v);
+        throw new Error("Hermes took back a different part of the branch than the one asked for, so Hermes Chat didn't send anything. Look at the branch before you go on.");
+      }
+    } else if (!kept(spine)) {
+      // More is in it than when it was made: the message went already, or the owner went on in the branch.
+      this.setVariant(profile, chatId, ({ pending: _, ...v }) => v);
+      return ["The branch already has more in it than when it was made, so the message wasn't sent again."];
+    }
+    // Read once more just before it goes: nothing may have been added to the branch since it was checked.
+    spine = await read();
+    stillMine();
+    if (!kept(spine)) throw new Error("Something was added to the branch meanwhile, so Hermes Chat didn't send anything. Look at the branch before you finish it.");
+    // What the branch shows: its history before the message, whether the copy was taken back now or by an earlier try
+    // whose answer was lost. The owner's messages kept are the ones before it; the copy and anything after it go.
+    const shown = spine.filter((r) => r.role === "user" && !r.hidden).length;
+    this.patchChat(chatId, (c) => {
+      const at = c.items.map((i) => i.kind === "user" && !i.outgoing).reduce<number[]>((a, u, i) => (u ? [...a, i] : a), [])[shown];
+      return at === undefined ? c : { ...c, items: c.items.slice(0, at) };
+    });
+    // A branch left with no messages has no Saved copy: the one kept would show the message taken back.
+    const left = this.snapshot.chats.find((c) => c.id === chatId)?.items.some((i) => i.kind !== "error" && i.kind !== "approval" && !isOutgoing(i));
+    if (left) this.saveTranscript(chatId);
+    else this.cache.deleteTranscript(profile, chatId);
+    // From here the message is the outbox's: a failed send shows in the branch with Retry, as any message does.
+    this.setVariant(profile, chatId, ({ pending: _, ...v }) => v);
+    const sent = await this.send(chatId, pending.text);
+    return sent.delivery === "unsent" ? ["The message didn't go to the branch. It's in the branch, marked Not sent, with Retry."] : [];
   }
 
   /** Every stored row of a chat, oldest first, as dashboard REST pages them. */
@@ -1615,7 +1800,7 @@ export class Hermes {
 
   /** Lists a branch as made here and Active, then gives it the attempt's model and title. Resolves to what failed. */
   private async keepBranch(chat: Chat, a: BranchAttempt, profile: string): Promise<string[]> {
-    const link: BranchLink = { parentId: a.parentId, parentTitle: a.parentTitle, point: a.point, at: Date.now() };
+    const link: BranchLink = { parentId: a.parentId, parentTitle: a.parentTitle, point: a.point, at: Date.now(), ...(a.variant && { variant: a.variant }) };
     // The owner switched profile meanwhile: the branch is kept as made here, Active, and listed when they're back.
     if (this.profile !== profile) {
       this.keepElsewhere(chat.id, a, profile);
@@ -1638,15 +1823,26 @@ export class Hermes {
       await this.rename(chat.id, a.title, this.snapshot.chats.find((c) => c.id === chat.id)?.title ?? chat.title).catch((e) =>
         warnings.push(`It keeps the name Hermes gave it: renaming it failed (${(e as Error).message})`),
       );
+    // An Edit or Regenerate shows what its answer runs on: the model Hermes reports for the branch now.
+    const model = this.snapshot.chats.find((c) => c.id === chat.id)?.model;
+    if (a.variant && model && this.profile === profile) this.setVariant(profile, chat.id, (v) => ({ ...v, model }));
     return warnings;
   }
 
   /** A branch made for a profile no longer shown: kept as made here and Active, listed when the owner is back. */
   private keepElsewhere(chatId: string, a: BranchAttempt, profile: string) {
-    const link: BranchLink = { parentId: a.parentId, parentTitle: a.parentTitle, point: a.point, at: Date.now() };
+    const link: BranchLink = { parentId: a.parentId, parentTitle: a.parentTitle, point: a.point, at: Date.now(), ...(a.variant && { variant: a.variant }) };
     this.updateBranches(profile, (b) => ({ links: { ...b.links, [chatId]: link }, attempts: b.attempts.filter((x) => x.key !== a.key) }));
     this.pinWanted.set(chatId, true);
     this.track(this.writePin(chatId, profile));
+  }
+
+  /** Changes what a branch made by an Edit or Regenerate keeps about itself. */
+  private setVariant(profile: string, chatId: string, change: (v: BranchVariant) => BranchVariant) {
+    this.updateBranches(profile, (b) => {
+      const l = b.links[chatId];
+      return l?.variant ? { ...b, links: { ...b.links, [chatId]: { ...l, variant: change(l.variant) } } } : b;
+    });
   }
 
   private dropAttempt(profile: string, key: string) {
@@ -3296,6 +3492,14 @@ export class Hermes {
         return { entries, ...(typeof res.error === "string" && { error: res.error }) };
       },
     };
+  }
+
+  /**
+   * The last `lines` lines of one of `profile`'s Hermes log files (`GET /api/logs`, logs.ts, ADR 0033), as Hermes
+   * answers it: `{file, lines}`. Only while connected; refused past `LIST_MAX_BYTES`.
+   */
+  async readLog(profile: string, file: string, lines: number): Promise<unknown> {
+    return JSON.parse(await this.restGet(`api/logs?${new URLSearchParams({ file, lines: String(lines), profile })}`, LIST_MAX_BYTES));
   }
 
   /**

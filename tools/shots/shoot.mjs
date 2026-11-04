@@ -23,7 +23,7 @@ const scenes = {
   "new-chat-light": { query: "?mode=light", steps: [] },
   search: { query: "", steps: [click("button", "Nightly backup"), key("k", { ctrlKey: true })] },
   settings: { query: "", steps: [key(",", { ctrlKey: true })] },
-  // Automations (ADR 0033). Tall pages: the screenshot covers the whole screen, scrolled to the part named.
+  // Automations (ADR 0036). Tall pages: the screenshot covers the whole screen, scrolled to the part named.
   automations: { query: "", steps: [click("button[aria-label='Automations']")] },
   "automation-editor": { query: "", height: 1700, steps: [click("button[aria-label='Automations']"), click("button", "New automation")] },
   "automation-preview": { query: "", height: 1100, steps: [click("button[aria-label='Automations']"), click("button", "New automation"), scrollTo(".automation-preview")] },

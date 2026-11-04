@@ -99,9 +99,17 @@ _Avoid_: upload, file (when the attachment is meant)
 An image of a region or window of the owner's screen, taken from the composer by a shortcut or the camera button, and staged as an Attachment. It stays on this computer until the message is sent. Composer captures are deleted when removed or left behind; a failed or uncertain message keeps its Screenshot for Retry until confirmed, reconciled or dismissed.
 _Avoid_: screen capture, snapshot
 
+**Global shortcut**:
+A key the owner sets in Settings that brings Hermes Chat's one window forward from any app, with the cursor in the selected pane's composer, and optionally hides it when it's already in front. It's registered the way the desktop allows: grabbed on X11, asked of the desktop portal on Wayland, or bound by the owner in the desktop to `hermes-chat --show` or `--toggle` where neither is possible. Settings shows what registered, never only what was chosen (ADR 0033).
+_Avoid_: hotkey (fine in conversation), summon key, screenshot shortcut (that one works only inside the app, unless bound to `--screenshot`)
+
 **Branch**:
 A new chat that starts with another chat's history up to one message, made from that message with Branch from here. Hermes copies the history and keeps which chat the branch came from, so every Hermes client has it. Hermes copies what the owner and Hermes said, and Hermes's reasoning, but not tool outputs. A file a copied message refers to stays where it is on the server, for the branch to read while it's there. The chat it came from stays as it was. A branch has its own Draft and Queued messages, and what the owner sends goes to it alone. It is Active, runs on its parent's model in its parent's folder, and takes Hermes's name for it (the parent's title with a number) unless the owner gives one. Its top says where it came from. Which message that was is kept on this computer only. A branch can't be made while a reply is running or an Approval waits. Branching never undoes anything Hermes did on the server (ADR 0027).
 _Avoid_: fork, copy, clone, thread
+
+**Version** (of a turn):
+Another take on one turn of a chat, made with Edit under the owner's message or Regenerate under the turn's last reply. Each version is a Branch made through the owner's message. Hermes takes back the branch's copy of the message, then the message goes again in the branch: the owner's new words for Edit, the same words for Regenerate. The chat it was asked from keeps its message, its answer and everything after. Under the turn's last reply, a switcher shows which version this chat is (2 / 3), whether it is the Original, Edited or Regenerated, and the model and settings it ran on, and opens the others. A turn is numbered by the owner's messages before it, so it is the same in a chat and its branches. Which turn a version is of is kept on this computer only. A message sent with an image can't be sent again, so it has no versions (ADR 0035).
+_Avoid_: variant (in the UI), alternative, retry, rerun
 
 **Draft**:
 The text the owner has typed in a chat's composer and not sent. Each chat keeps its own draft, and so does the New chat pane, separately for each connection and profile. A draft is still there after switching chats or restarting the app. Sending or queuing it empties it. A message Hermes doesn't take becomes a Failed message, not a draft again. Only when a new chat can't be started does the text come back into the composer. Attachments aren't kept in a draft.
@@ -146,6 +154,14 @@ _Avoid_: tool permissions, capabilities, plugins (a plugin can bring a toolset, 
 **Inbox**:
 The list, opened from the rail, of what needs the owner or has finished in any profile on the server: a reply running, an Approval waiting, a failure or Failed message, or a chat with something new. Each entry names its profile and chat, says when, and opens the chat in its profile. Nothing is answered, retried or sent from it. Dismissing an entry takes it out of the inbox only, on this computer: the chat stays Unread, Active or Settled, and Archived or not, as it was. An entry shows again only for something newer. Running work in other profiles shows only for chats the dashboard itself runs (ADR 0019).
 _Avoid_: notifications, activity, feed
+
+**Logs**:
+The screen, opened from the rail, that shows one source at a time: this app's own diagnostics (connection changes, failures it showed, uncaught errors), or one of the profile's Hermes logs (agent, errors, gateway, MCP servers). Following reads a Hermes log's last 500 lines every 2 seconds while it is on screen. Notes in the list mark where reading stopped and started again, and where lines may be missing. Pausing keeps the view still while reading carries on. Every line is redacted before the app keeps it. Nothing is kept after Logs closes, except this app's diagnostics, which last until the app quits (ADR 0033).
+_Avoid_: console, debug log, activity
+
+**Support bundle**:
+One text file, saved where the owner picks, with every line kept of the sources they tick on the Logs screen. Before saving it shows what goes in, how many of each kind of secret were redacted, and that redaction can miss a secret written another way. It is never uploaded (ADR 0033).
+_Avoid_: debug report, debug share (Hermes's own, which uploads to a paste service)
 
 **Saved copy**:
 The transcript of a chat the owner opened lately, kept on this computer so it can be read while Hermes can't be reached, even after a restart. It shows with a note saying when it was saved, until the chat loads from Hermes again. Each connection and profile keeps its own, without the password. A copy never holds Approvals, errors or Failed messages. The least recently saved copies are deleted first once they pass the storage limit, deleting a chat deletes its copy, and Clear local cache deletes them all.
@@ -255,7 +271,7 @@ A Hermes cron job in one profile: a prompt Hermes runs at the times its schedule
 _Avoid_: cron (Hermes's name, fine in server-side talk), task, automation, reminder
 
 **Automation**:
-A Hermes webhook route in one profile: when GitHub sends an event to it, Hermes checks the event's signature, filters it, and starts a task with a prompt made from the event. Hermes keeps the route and runs the task on the server, so it works while Hermes Chat is closed. The Automations screen sets routes up, previews what an example event would do, and shows what became of the events that arrived (ADR 0033).
+A Hermes webhook route in one profile: when GitHub sends an event to it, Hermes checks the event's signature, filters it, and starts a task with a prompt made from the event. Hermes keeps the route and runs the task on the server, so it works while Hermes Chat is closed. The Automations screen sets routes up, previews what an example event would do, and shows what became of the events that arrived (ADR 0036).
 _Avoid_: webhook (fine for the transport), trigger, hook, scheduled job (that runs on a clock, not on an event)
 
 **Delivery**:
@@ -284,6 +300,7 @@ _Avoid_: upgrade (pacman's word, for the package step only)
 - An **Imported chat** becomes **Active** only when the owner sends a message in it from this app.
 - An **Imported transcript** is an **Imported chat** that stays **Settled** until the owner unsettles it: nothing can be sent in it from this app.
 - A **Branch** has exactly one parent chat, in the same **Profile**; a chat can have any number of branches.
+- Every **Version** of a turn is a **Branch**; a turn's versions share one root chat, whose own answer is the Original.
 - Every **Project** belongs to exactly one **Profile**. A **Chat** can be in any number of its profile's projects, or none; being in one doesn't change whether it is **Active**, **Settled**, **Archived** or **Unread**.
 
 ## Flagged ambiguities
@@ -302,6 +319,7 @@ _Avoid_: upgrade (pacman's word, for the package step only)
 - **Retry** (of a Delivery) vs **Retry** (of a Failed message): retrying a delivery has Hermes run the stored event again as a new task on the server, through the automation's rules as they are now; it never undoes what the failed attempt did.
 - **Scheduled job** vs its runs: each run of an agent job is a Hermes session with source `cron`. The chat list leaves those out; the job's runs show on the Scheduled jobs screen.
 - **Branch** vs Hermes's other children of a session: Hermes also gives `parent_session_id` to a chat it compressed onto a new session, and to subagent and tool sessions. Only one made with Branch from here is shown as a Branch, with where it came from. Hermes stores a branch made here with source `tui`, because of how the legacy resume records the live session; the app shows it as this app's chat (ADR 0027).
+- **Edit** (of a message) vs **Edit** of a Failed message vs **Edit** of a Server file: Edit under a message Hermes has makes a Version in a new branch and never changes the chat. Edit on a Failed message takes its words back into the composer. Edit of a Server file changes that file. **Regenerate** (a reply) makes a Version too; **Regenerate title** only renames the chat.
 - **Source** vs the `source` field on a Hermes session: the app derives a chat's Source from that field, but the field has more values than the app shows. `gui` (what this app stamps on chats it starts) and `hermes-chat` (what it stamped before; Hermes won't edit those) count as this app, and `cli` and `tui` as the command line. `cron` chats aren't listed, and any other value (for example `api_server`, `webhook`) shows as "another Hermes platform".
 - **Context window** vs **Usage**: the window is what the model reads on one call, now. Usage, cache reads included, adds up over every call in the chat, so a chat's cache reads can far exceed its window. The context inspector shows the cache as billing, apart from the window's size.
 - **Memory** vs a **Saved copy** and the local cache: memory is the agent's, on the server, and changes what Hermes knows. Saved copies and drafts are this computer's copies of chats and change nothing in Hermes. Memory vs a memory *provider*: a profile may also use an external provider (such as Honcho) whose memories live with that provider; Settings → Memory names it but doesn't show or edit what it stores.
