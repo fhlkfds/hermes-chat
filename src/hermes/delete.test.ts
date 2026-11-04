@@ -22,8 +22,9 @@ async function listed(...rows: ReturnType<typeof row>[]) {
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+/** Each delete's session and profile; the identity it names is checked on its own. */
 const deletes = (server: FakeHermes) =>
-  server.restRequests.filter((r) => r.method === "DELETE").map((r) => `${r.path}?${r.query}`);
+  server.restRequests.filter((r) => r.method === "DELETE").map((r) => `${r.path}?profile=${new URLSearchParams(r.query).get("profile")}`);
 
 /** Holds back the server's answers to `METHOD /path` until the returned function is called. */
 function hold(server: FakeHermes, key: string, answer: (req: RestRequest) => unknown = () => ({ ok: true })) {
@@ -43,6 +44,50 @@ describe("Deleting a chat", () => {
     expect(server.sessions.map((s) => s.id)).toEqual(["b"]);
     expect(ids()).toEqual(["b"]);
     expect(hermes.getSnapshot().syncError).toBeUndefined();
+  });
+
+  it("names a new request id, the session's revision and its generation, which Hermes refuses a delete without", async () => {
+    const { server, hermes, ids } = await listed(row("a", 1), row("b", 2));
+    // An edit elsewhere moved the revision on; the delete names the one Hermes has now.
+    Object.assign(server.sessions.find((s) => s.id === "a")!, { runtime_revision: 3, runtime_generation: 2 });
+    expect(await hermes.delete("a")).toBe(true);
+    expect(hermes.getSnapshot().syncError).toBeUndefined();
+    const sent = server.restRequests.filter((r) => r.method === "DELETE").map((r) => new URLSearchParams(r.query));
+    expect(sent).toHaveLength(1);
+    expect(sent[0].get("request_id")).toMatch(/^[0-9a-f-]{36}$/);
+    expect([sent[0].get("profile"), sent[0].get("expected_revision"), sent[0].get("expected_generation")]).toEqual(["default", "3", "2"]);
+    expect(ids()).toEqual(["b"]);
+  });
+
+  /** Answers the chat's next `count` revision reads with what it was before, as if it moved on just after each read. */
+  const readStale = (server: FakeHermes, id: string, count: number) => {
+    const key = `GET /api/sessions/${id}/mutation-snapshot`;
+    let left = count;
+    server.rest[key] = () => {
+      if (--left <= 0) delete server.rest[key];
+      const s = server.sessions.find((r) => r.id === id)!;
+      return { session_id: id, exists: true, runtime_revision: (s.runtime_revision ?? 0) - 1, runtime_generation: s.runtime_generation ?? 0 };
+    };
+  };
+
+  it("reads the session again and deletes it when it moved on between the read and the delete", async () => {
+    const { server, hermes, ids } = await listed(row("a", 1), row("b", 2));
+    server.sessions.find((s) => s.id === "a")!.runtime_revision = 1;
+    readStale(server, "a", 1);
+    expect(await hermes.delete("a")).toBe(true);
+    expect(deletes(server)).toEqual(["/api/sessions/a?profile=default", "/api/sessions/a?profile=default"]);
+    expect(ids()).toEqual(["b"]);
+    expect(hermes.getSnapshot().syncError).toBeUndefined();
+  });
+
+  it("tries again only once, then puts the chat back and says why", async () => {
+    const { server, hermes, ids } = await listed(row("a", 1, { title: "Nightly backup" }), row("b", 2));
+    server.sessions.find((s) => s.id === "a")!.runtime_revision = 1;
+    readStale(server, "a", 2);
+    expect(await hermes.delete("a")).toBe(false);
+    expect(deletes(server)).toHaveLength(2);
+    expect(ids().sort()).toEqual(["a", "b"]);
+    expect(hermes.getSnapshot().syncError).toBe('Couldn\'t delete "Nightly backup": The dashboard answered 409: {"detail":"revision_conflict"}');
   });
 
   it("takes the chat off the list at once, before the server has answered", async () => {

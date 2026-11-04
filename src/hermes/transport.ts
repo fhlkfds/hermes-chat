@@ -215,7 +215,7 @@ type SessionPage = { sessions: SessionRow[]; total: number };
 /** Dashboard REST `GET /api/sessions/{id}`, as far as this app reads it. Flags come as stored, 0 or 1. */
 type SessionDetail = { archived?: boolean | number };
 /** Dashboard REST `GET /api/sessions/{id}/mutation-snapshot`: the revision a session edit must name. */
-type MutationSnapshot = { exists: boolean; runtime_revision: number };
+type MutationSnapshot = { exists: boolean; runtime_revision: number; runtime_generation: number | null };
 /**
  * A row of dashboard REST `GET /api/sessions/search` (research doc "Searching chats"): one per chat, archived ones
  * too. `snippet` is FTS5's, with each matched word `>>>marked<<<`; `role` is the matched message's, and null when the
@@ -1399,7 +1399,7 @@ export class Hermes {
       // Not this chat: drop the session, and the hidden message Hermes stored with it, so nothing is left behind.
       void this.request("session.close", { session_id: res.session_id }).catch(() => {});
       if (instructions)
-        void this.rest("DELETE", `api/sessions/${encodeURIComponent(res.stored_session_id)}?${new URLSearchParams({ profile })}`).catch(() => {});
+        void this.fencedDelete(res.stored_session_id, profile).catch(() => {});
       throw new Error(`Hermes didn't start it in ${folder}${typeof cwd === "string" && cwd ? `: it would have worked in ${cwd}` : ""}. Nothing was sent.`);
     }
     const chat: Chat = {
@@ -1633,7 +1633,7 @@ export class Hermes {
       // Not the branch the owner looked at: it goes again, so nothing is left that the owner didn't ask for.
       this.dropAttempt(profile, attempt.key);
       void this.request("session.close", { session_id: res.session_id }).catch(() => {});
-      const gone = await this.rest("DELETE", `${sessionPath(res.stored_session_id)}?${new URLSearchParams({ profile })}`).then(
+      const gone = await this.fencedDelete(res.stored_session_id, profile).then(
         () => true,
         () => false,
       );
@@ -1801,7 +1801,7 @@ export class Hermes {
       } catch (e) {
         if (e instanceof RpcError && e.code === NO_SUCH_METHOD) {
           // A Hermes that can branch but not take a message back: the branch isn't what the owner asked for.
-          const gone = await this.rest("DELETE", `${sessionPath(chatId)}?${new URLSearchParams({ profile })}`).then(
+          const gone = await this.fencedDelete(chatId, profile).then(
             () => true,
             () => false,
           );
@@ -2401,7 +2401,7 @@ export class Hermes {
       // A pin or archive write still under way would otherwise land on a deleted session and report a failure.
       const writes = [this.pinWrites.get(chatId), this.archiveWrites.get(chatId)].filter((w) => w);
       if (writes.length) await Promise.all(writes);
-      await this.rest("DELETE", `api/sessions/${encodeURIComponent(chatId)}?${new URLSearchParams({ profile })}`);
+      await this.fencedDelete(chatId, profile);
       this.cache.saveOutbox(profile, chatId, []);
       // A branch's link back goes only once Hermes has deleted it.
       this.updateBranches(profile, (b) => {
@@ -3586,6 +3586,33 @@ export class Hermes {
   private async fencedPatch(chatId: string, profile: string, edit: Record<string, unknown>, revision: number): Promise<void> {
     if (!this.pipe) await this.redialing;
     await this.rest("PATCH", sessionPath(chatId), { ...edit, profile, request_id: crypto.randomUUID(), expected_revision: revision });
+  }
+
+  /**
+   * Deletes a session for good, fenced like an edit: Hermes (v0.22.6) refuses a DELETE that doesn't name a new
+   * request id, the session's revision and its generation, with `client_upgrade_required` when it names none. A session
+   * Hermes doesn't have has no generation; naming 0 then answers that it's already gone. The owner already said yes, so
+   * a session that moved on between the read and the delete (`revision_conflict`, `stale_generation`), say from this
+   * app's own read mark as the chat closed, is read again and deleted, once.
+   */
+  private async fencedDelete(chatId: string, profile: string): Promise<void> {
+    for (let attempt = 0; ; attempt++) {
+      const { runtime_revision, runtime_generation } = await this.mutationSnapshot(chatId, profile);
+      const query = new URLSearchParams({
+        profile,
+        request_id: crypto.randomUUID(),
+        expected_revision: String(runtime_revision),
+        expected_generation: String(runtime_generation ?? 0),
+      });
+      // As for an edit, a profile switch can redial between the read and the delete, which names its profile.
+      if (!this.pipe) await this.redialing;
+      try {
+        await this.rest("DELETE", `${sessionPath(chatId)}?${query}`);
+        return;
+      } catch (e) {
+        if (attempt > 0 || !/revision_conflict|stale_generation/.test((e as Error).message)) throw e;
+      }
+    }
   }
 
   /** The chat's title as Hermes stores it now (`GET /api/sessions/{id}`), shown the way the list shows it. */
