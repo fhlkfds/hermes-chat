@@ -2,9 +2,11 @@
 // The Terminal screen: it connects at once to a known target and asks for one otherwise, keeps the shell's keys from
 // the app's shortcuts, ends and reconnects, and closes ssh when it goes. xterm.js itself is stood in for: jsdom can't
 // draw it.
+import { useSyncExternalStore } from "react";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TerminalApi, TerminalEvent } from "../hermes/terminal";
+import { getUIPrefs, setUIPrefs, subscribe } from "../hermes/uiPrefs";
 
 const xterms: FakeXTerm[] = [];
 class FakeXTerm {
@@ -203,5 +205,112 @@ describe("The Terminal tab", () => {
     expect(local.closed).toEqual([]);
     expect(screen.getByRole("button", { name: /This computer/ }).getAttribute("aria-pressed")).toBe("false");
     expect(xterms).toHaveLength(2);
+  });
+});
+
+/** The Terminal tab as the app shows it: the computer picked is kept in the prefs (App.tsx does the same). */
+function Panel({ server, local, initialTarget, onTarget = () => {} }: { server: FakeTerminals; local: FakeTerminals; initialTarget: string; onTarget?: (t: string) => void }) {
+  const kind = useSyncExternalStore(subscribe, getUIPrefs).terminalKind;
+  return <TerminalTab server={{ api: server, initialTarget, onTarget }} local={{ api: local }} shown kind={kind} onKind={(k) => setUIPrefs({ terminalKind: k })} />;
+}
+const pressed = (name: RegExp) => screen.getByRole("button", { name }).getAttribute("aria-pressed");
+
+describe("Which computer the Terminal opens on", () => {
+  beforeEach(() => localStorage.clear());
+  afterEach(() => localStorage.clear());
+
+  it("opens on the Hermes server by default, over ssh to the sign-in's target, and starts nothing on this computer", async () => {
+    const server = new FakeTerminals();
+    const local = new FakeTerminals();
+    render(<Panel server={server} local={local} initialTarget="liam@hermes" />);
+    await act(async () => {});
+    expect(pressed(/Hermes server/)).toBe("true");
+    expect(pressed(/This computer/)).toBe("false");
+    expect(server.opened.map((o) => o.target)).toEqual(["liam@hermes"]);
+    expect(local.opened).toHaveLength(0);
+    expect(screen.getByRole("group", { name: "Which computer" })).toBeTruthy();
+  });
+
+  it("remembers the computer picked last, and opens on it next time", async () => {
+    const server = new FakeTerminals();
+    const local = new FakeTerminals();
+    const first = render(<Panel server={server} local={local} initialTarget="liam@hermes" />);
+    await act(async () => {});
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /This computer/ })));
+    expect(getUIPrefs().terminalKind).toBe("local");
+    expect(JSON.parse(localStorage.getItem("hermes-ui-prefs")!).terminalKind).toBe("local");
+    first.unmount();
+
+    // The app again, later: this computer's shell is the one shown and started; the server's waits to be picked.
+    const server2 = new FakeTerminals();
+    const local2 = new FakeTerminals();
+    render(<Panel server={server2} local={local2} initialTarget="liam@hermes" />);
+    await act(async () => {});
+    expect(pressed(/This computer/)).toBe("true");
+    expect(local2.opened).toHaveLength(1);
+    expect(server2.opened).toHaveLength(0);
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /Hermes server/ })));
+    expect(getUIPrefs().terminalKind).toBe("server");
+    expect(server2.opened.map((o) => o.target)).toEqual(["liam@hermes"]);
+  });
+
+  it("says plainly when there's no SSH target, and offers to set one", async () => {
+    const server = new FakeTerminals();
+    const local = new FakeTerminals();
+    const onTarget = vi.fn();
+    render(<Panel server={server} local={local} initialTarget="" onTarget={onTarget} />);
+    await act(async () => {});
+    expect(server.opened).toHaveLength(0);
+    expect(screen.getByText("No SSH target for the Hermes server.")).toBeTruthy();
+    expect(screen.getByText(/signs in with a web address/)).toBeTruthy();
+    const field = screen.getByLabelText("SSH target");
+    expect(document.activeElement).toBe(field);
+    const set = screen.getByRole("button", { name: /Set and connect/ }) as HTMLButtonElement;
+    expect(set.disabled).toBe(true);
+    fireEvent.change(field, { target: { value: "liam@hermes" } });
+    await act(async () => fireEvent.click(set));
+    expect(onTarget).toHaveBeenCalledWith("liam@hermes");
+    expect(server.opened.map((o) => o.target)).toEqual(["liam@hermes"]);
+    expect(screen.queryByText("No SSH target for the Hermes server.")).toBeNull();
+  });
+
+  it("offers this computer instead when there's no SSH target", async () => {
+    const server = new FakeTerminals();
+    const local = new FakeTerminals();
+    render(<Panel server={server} local={local} initialTarget="" />);
+    await act(async () => {});
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /Use this computer instead/ })));
+    expect(pressed(/This computer/)).toBe("true");
+    expect(local.opened).toHaveLength(1);
+    expect(getUIPrefs().terminalKind).toBe("local");
+  });
+
+  it("doesn't say there's no target when the sign-in has one", async () => {
+    render(<Panel server={new FakeTerminals()} local={new FakeTerminals()} initialTarget="liam@hermes" />);
+    await act(async () => {});
+    expect(screen.queryByText("No SSH target for the Hermes server.")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Use this computer instead/ })).toBeNull();
+  });
+
+  it("keeps the other computer's shell running when the switch is used", async () => {
+    const server = new FakeTerminals();
+    const local = new FakeTerminals();
+    render(<Panel server={server} local={local} initialTarget="liam@hermes" />);
+    await act(async () => {});
+    act(() => server.opened[0].emit(out("$ ")));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /This computer/ })));
+    act(() => local.opened[0].emit(out("% ")));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /Hermes server/ })));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /This computer/ })));
+    // One of each, both still open: switching shows and hides, it never ends or starts again.
+    expect(server.opened).toHaveLength(1);
+    expect(local.opened).toHaveLength(1);
+    expect(server.closed).toEqual([]);
+    expect(local.closed).toEqual([]);
+    expect(screen.getAllByRole("img", { name: "(running)" })).toHaveLength(2);
+    const [serverScreen, localScreen] = [...document.querySelectorAll<HTMLElement>(".terminal-screen")];
+    expect(serverScreen.dataset.kind).toBe("server");
+    expect(serverScreen.hidden).toBe(true);
+    expect(localScreen.hidden).toBe(false);
   });
 });
