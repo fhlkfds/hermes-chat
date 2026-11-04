@@ -246,6 +246,10 @@ _Avoid_: repo (in the interface), project (a Project is Hermes's group of chats 
 Where a change in the Repository screen is. Staged changes are in Git's index, what the next commit would hold. Not staged changes are in the working tree only. An Untracked file isn't in Git yet. One file can have changes in both of the first two, and the screen shows each side's diff on its own.
 _Avoid_: cached, added (for staged), dirty, unversioned
 
+**Commit preview**:
+What the Repository screen shows before it commits: every staged file, the whole staged diff, the message exactly as it will be committed, the author, the commit it goes on top of, and the hooks that will run. Commit happens only if the repository still has exactly that; otherwise nothing is committed and the preview is read again.
+_Avoid_: dry run, summary
+
 **Terminal**:
 The rail's screen with a shell on the Hermes server, through the owner's own ssh to the sign-in's SSH target, or one typed for it. ssh asks there for anything it needs, such as a passphrase or a new host key. Going back to a chat leaves the session running, and the rail shows it; signing out ends it. It is the owner's shell, not Hermes's: nothing typed there reaches a chat, an Approval or the agent (ADR 0022).
 _Avoid_: console, shell (for the screen), Hermes's terminal tool (the agent's, which runs in a chat)

@@ -2217,3 +2217,41 @@ p.logs-status { margin: 0 0 8px; line-height: 1.5; }
   .repo-body.with-diff { flex-direction: column; }
   .repo-body.with-diff .repo-list { width: 100%; max-height: 40%; border-right: 0; border-bottom: 1px solid var(--line); }
 }
+/* Repository, stage 2: staging and committing. */
+.repo-writing { color: var(--text-2); }
+.repo-row { display: flex; align-items: center; gap: 2px; }
+.repo-tick, .repo-tick-space { flex: none; width: 16px; margin: 0 2px 0 4px; }
+.repo-tick { accent-color: var(--accent); cursor: pointer; }
+.repo-section-head { display: flex; align-items: center; gap: 8px; margin: 0 0 2px; }
+.repo-section-head h2 { flex: 1; }
+.repo-section-act, .repo-stage-file, .repo-hunk-act { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; font-size: calc(12rem / 14); }
+.repo-hunk-head { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.repo-hunk-head > span { min-width: 0; overflow-wrap: anywhere; }
+.repo-hunk-act { flex: none; font-family: var(--ui-font, Inter), sans-serif; color: var(--text-2); }
+.repo-commit { margin-top: 16px; padding: 10px 6px 0; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; }
+.repo-commit-label { display: inline-flex; align-items: center; gap: 6px; font-size: calc(11.5rem / 14); text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); font-weight: 600; }
+.repo-commit-message {
+  width: 100%; resize: vertical; min-height: 72px; background: var(--raised); border: 1px solid var(--line-2); border-radius: 7px; padding: 6px 8px;
+  color: var(--text); font-size: calc(12.5rem / 14); line-height: 1.45;
+}
+.repo-commit-message:focus { border-color: var(--line-3); outline: none; }
+.repo-commit-note { margin: 0; }
+.repo-commit-error { margin: 0; color: var(--bad); display: flex; gap: 5px; align-items: center; }
+.repo-commit-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.repo-commit-actions .btn { display: inline-flex; align-items: center; gap: 5px; }
+.leave-overlay .leave-dialog.repo-review { max-width: min(860px, 100%); width: 100%; max-height: calc(100vh - 32px); display: flex; flex-direction: column; }
+.repo-review-body { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 6px; padding-right: 4px; }
+.repo-review h3 { font-size: calc(11.5rem / 14); text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); font-weight: 600; margin: 8px 0 2px; }
+.repo-review-status { display: flex; align-items: center; gap: 8px; color: var(--text-2); }
+.repo-review-facts { display: grid; grid-template-columns: max-content 1fr; gap: 3px 14px; margin: 0; font-size: calc(12.5rem / 14); }
+.repo-review-facts dt { color: var(--muted); }
+.repo-review-facts dd { margin: 0; overflow-wrap: anywhere; }
+.repo-review-message { margin: 0; padding: 8px 10px; background: var(--code-bg); border-radius: 6px; white-space: pre-wrap; font-size: calc(12.5rem / 14); }
+.repo-review-files { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: calc(12.5rem / 14); }
+.repo-review-files li { display: flex; gap: 6px; align-items: baseline; overflow-wrap: anywhere; }
+.repo-review-diff { border: 1px solid var(--line); border-radius: 8px; background: var(--raised); font-size: var(--mono-size); margin-top: 6px; }
+.repo-review-file + .repo-review-file { border-top: 1px solid var(--line-2); }
+.repo-review-file-head { padding: 6px 10px; color: var(--text-strong); background: var(--raised-2); font-size: calc(12.5rem / 14); }
+.repo-review-done { display: flex; flex-direction: column; gap: 6px; }
+.repo-review-done .files-banner { margin: 0; }
+.repo-review-file .repo-notice { padding: 4px 10px; color: var(--muted); }

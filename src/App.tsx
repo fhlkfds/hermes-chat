@@ -1699,6 +1699,11 @@ export function Main({
             suggestions={(shownProject?.folders ?? []).map((f) => ({ label: shownProject!.name, path: f.path }))}
             onOpened={rememberRepo}
             onTarget={(t) => localStorage.setItem(REPO_TARGET_KEY, t)}
+            suggest={
+              status === "connected"
+                ? (instructions, input) => hermes.askForEdit({ profile, instructions, input, maxTokens: 400 }).then((r) => r.text)
+                : undefined
+            }
             onClose={() => {
               flushSync(() => setRepoOpen(false));
               focusPane(active.key);

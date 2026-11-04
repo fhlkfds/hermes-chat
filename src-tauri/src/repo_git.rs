@@ -54,12 +54,47 @@ pub enum Request {
         side: DiffSide,
         context: u32,
     },
+    /// Stages exactly `files`, each only if its working-tree bytes still hash to the stamp the screen read, and only
+    /// if HEAD and the index are still `expect`.
+    Stage { repo: String, files: Vec<FileStamp>, expect: Expect },
+    /// Takes `paths` out of the index, back to HEAD's version; the working tree is left alone.
+    Unstage { repo: String, paths: Vec<String>, expect: Expect },
+    /// Stages hunks (or, `reverse`, unstages them): `patch` was built from the diff of `path` shown with `context`
+    /// lines, whose bytes hashed to `diff_sha`. The helper reads that diff again and refuses if it changed.
+    #[serde(rename_all = "camelCase")]
+    Apply { repo: String, path: String, patch: String, reverse: bool, context: u32, diff_sha: String, expect: Expect },
+    /// What a commit now would hold, and the stamps a commit must match.
+    Preview { repo: String },
+    /// Commits the index with `message`, verbatim, only if it is still exactly what the preview showed.
+    Commit { repo: String, message: String, expect: Expect },
+}
+
+/// A file to stage, and the SHA-256 of its working-tree bytes as the screen read them (none: deleted).
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+pub struct FileStamp {
+    pub path: String,
+    pub worktree: Option<String>,
+}
+
+/// What a write expects to find: HEAD's commit (none before the first commit), the index's stamp, and for a commit,
+/// the stamp of the staged changes the preview showed.
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Expect {
+    pub head: Option<String>,
+    pub index: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_sha: Option<String>,
 }
 
 impl Request {
-    /// How long the whole round trip may take, ssh's connection included.
+    /// How long the whole round trip may take, ssh's connection included. A commit runs the repository's hooks,
+    /// which the helper gives ten minutes.
     fn timeout(&self) -> Duration {
-        Duration::from_secs(60)
+        match self {
+            Request::Commit { .. } => Duration::from_secs(660),
+            _ => Duration::from_secs(60),
+        }
     }
 }
 
@@ -72,7 +107,8 @@ pub enum RepoError {
     Ssh { why: &'static str, detail: String },
     /// The server can't run the helper (no python3).
     Unsupported(String),
-    /// No answer in time. Whether a write happened isn't known, so the screen reads the repository again.
+    /// No answer in time. Whether a write happened isn't known, so the screen reads the repository again before
+    /// saying anything about it.
     Timeout(u64),
     /// Something answered, but not the helper.
     BadReply(String),

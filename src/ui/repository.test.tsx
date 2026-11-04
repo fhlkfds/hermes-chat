@@ -3,6 +3,7 @@
 // repo_git_helper.py gives for real repositories (src-tauri/tests/repo_git.rs).
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RepoFailure, type DiffReply, type RepoApi, type RepoRequest, type Status } from "../hermes/repo";
 import { RepositoryScreen } from "./Repository";
@@ -15,6 +16,8 @@ function statusOf(over: Partial<Status> = {}): Status {
   return {
     top: TOP,
     gitDir: `${TOP}/.git`,
+    head: "1e6a7627084ab1d090745282b589f5d3de623b23",
+    index: "i1",
     branch: { oid: "1e6a7627084ab1d090745282b589f5d3de623b23", head: "feature/login", detached: false, upstream: "origin/feature/login", ahead: 2, behind: 0 },
     operation: null,
     entries: [
@@ -29,6 +32,9 @@ function statusOf(over: Partial<Status> = {}): Status {
 }
 
 const diffOf = (diff: string, over: Partial<DiffReply> = {}): DiffReply => ({ diff, truncated: false, lossy: false, bytes: diff.length, sha: "x", stages: [], ...over });
+
+/** How many requests of `op` were made. */
+const count = (calls: { request: RepoRequest }[], op: RepoRequest["op"]) => calls.filter((c) => c.request.op === op).length;
 
 /** Answers each request with `answer`, and records them. */
 function fakeApi(answer: (target: string, r: RepoRequest) => unknown | Promise<unknown>) {
@@ -53,15 +59,19 @@ const DIFFS: Record<string, string> = {
 function standard(s: () => Status = () => statusOf()) {
   return fakeApi((_t, r) => {
     if (r.op === "status") return s();
-    return diffOf(DIFFS[`${r.side}:${r.path}`] ?? "");
+    if (r.op === "diff") return diffOf(DIFFS[`${r.side}:${r.path}`] ?? "");
+    throw new Error(`unexpected ${r.op}`);
   });
 }
 
 function show(api: RepoApi, props: Partial<Parameters<typeof RepositoryScreen>[0]> = {}) {
   const onOpened = vi.fn();
   const onTarget = vi.fn();
+  // StrictMode, as the app runs: effects mount, unmount and mount again.
   render(
-    <RepositoryScreen api={api} initialTarget="liam@hermes" initialPath={TOP} recent={[]} suggestions={[]} onOpened={onOpened} onTarget={onTarget} onClose={() => {}} {...props} />,
+    <StrictMode>
+      <RepositoryScreen api={api} initialTarget="liam@hermes" initialPath={TOP} recent={[]} suggestions={[]} onOpened={onOpened} onTarget={onTarget} onClose={() => {}} {...props} />
+    </StrictMode>,
   );
   return { onOpened, onTarget };
 }
@@ -210,5 +220,258 @@ describe("Repository screen", () => {
     await user.click(screen.getByRole("button", { name: "Refresh" }));
     expect(await screen.findByText("No changes: the working tree matches HEAD.")).toBeTruthy();
     expect(screen.queryByRole("region", { name: "Diff of notes.txt" })).toBeNull();
+  });
+});
+
+// ── stage 2: staging and committing ─────────────────────────────────────────
+
+const STAMPED = (): Status =>
+  statusOf({
+    entries: [
+      { kind: "ordinary", x: "M", y: "M", sub: false, path: "src/auth.ts", staged: [1, 1], unstaged: [3, 0], worktree: "w-auth" },
+      { kind: "renamed", x: "R", y: ".", sub: false, path: "docs/login.md", origPath: "docs/auth.md", staged: [0, 0] },
+      { kind: "untracked", x: "?", y: "?", sub: false, path: "notes.txt", binary: false, worktree: "w-notes" },
+    ],
+  });
+
+const TWO_HUNKS =
+  "diff --git a/src/auth.ts b/src/auth.ts\nindex 1..2 100644\n--- a/src/auth.ts\n+++ b/src/auth.ts\n@@ -1,2 +1,2 @@\n-a\n+A\n b\n@@ -9,2 +9,2 @@\n y\n-z\n+Z\n";
+
+const PREVIEW = {
+  head: "1e6a7627084ab1d090745282b589f5d3de623b23",
+  index: "i1",
+  branch: "feature/login",
+  files: [
+    { status: "D", path: "docs/auth.md", oldMode: "100644", newMode: "000000" },
+    { status: "A", path: "docs/login.md", oldMode: "000000", newMode: "100644" },
+    { status: "M", path: "src/auth.ts", oldMode: "100644", newMode: "100644" },
+  ],
+  renames: { "docs/login.md": { from: "docs/auth.md", score: "R100" } },
+  rawSha: "raw1",
+  diff: " src/auth.ts | 2 +-\n\ndiff --git a/src/auth.ts b/src/auth.ts\n--- a/src/auth.ts\n+++ b/src/auth.ts\n@@ -1 +1 @@\n-const a = 1\n+const a = 2\n",
+  truncated: false,
+  lossy: false,
+  unmerged: false,
+  operation: null,
+  author: "Demo Owner <demo@example.com>",
+  committer: "Demo Owner <demo@example.com>",
+  hooksPath: `${TOP}/.git/hooks`,
+  hooks: ["pre-commit"],
+  recent: ["Add sign-in sessions"],
+};
+
+/** A fake whose writes answer with `onWrite`, and whose diffs are the stamped ones. */
+function writable(onWrite: (r: RepoRequest) => unknown, diffs: Record<string, Partial<DiffReply> & { diff: string }> = {}) {
+  return fakeApi((_t, r) => {
+    if (r.op === "status") return STAMPED();
+    if (r.op === "diff") {
+      const d = diffs[`${r.side}:${r.path}`] ?? { diff: DIFFS[`${r.side}:${r.path}`] ?? "" };
+      return diffOf(d.diff, { head: PREVIEW.head, index: "i1", worktree: r.side === "staged" ? null : `w-${r.path.includes("notes") ? "notes" : "auth"}`, ...d });
+    }
+    if (r.op === "preview") return PREVIEW;
+    return onWrite(r);
+  });
+}
+
+describe("Repository screen, staging", () => {
+  it("stages only the ticked files, each with the stamp the list read, then reads the list again", async () => {
+    const user = userEvent.setup();
+    const { api, calls } = writable(() => ({ head: PREVIEW.head, index: "i2" }));
+    show(api);
+    await screen.findByText(TOP);
+    const untracked = within(screen.getByRole("region", { name: "Untracked" }));
+    expect((untracked.getByRole("button", { name: /Stage ticked/ }) as HTMLButtonElement).disabled).toBe(true);
+    await user.click(screen.getByRole("checkbox", { name: "Tick notes.txt to stage it" }));
+    const reads = count(calls, "status");
+    await user.click(untracked.getByRole("button", { name: /Stage 1 ticked/ }));
+    expect(await screen.findByText("Staged notes.txt.")).toBeTruthy();
+    const w = calls.find((c) => c.request.op === "stage");
+    expect(w?.request).toEqual({ op: "stage", repo: TOP, files: [{ path: "notes.txt", worktree: "w-notes" }], expect: { head: PREVIEW.head, index: "i1" } });
+    await waitFor(() => expect(count(calls, "status")).toBe(reads + 1));
+  });
+
+  it("unstages a rename with its old path, so both go back", async () => {
+    const user = userEvent.setup();
+    const { api, calls } = writable(() => ({ head: PREVIEW.head, index: "i2" }));
+    show(api);
+    await screen.findByText(TOP);
+    await user.click(screen.getByRole("checkbox", { name: "Tick docs/login.md to unstage it" }));
+    await user.click(within(screen.getByRole("region", { name: "Staged" })).getByRole("button", { name: /Unstage 1 ticked/ }));
+    await screen.findByText("Unstaged docs/login.md.");
+    expect(calls.find((c) => c.request.op === "unstage")?.request).toMatchObject({ paths: ["docs/login.md", "docs/auth.md"] });
+  });
+
+  it("stages one hunk, cut from the diff exactly as shown, against that diff's stamps", async () => {
+    const user = userEvent.setup();
+    const { api, calls } = writable(() => ({ head: PREVIEW.head, index: "i2" }), { "unstaged:src/auth.ts": { diff: TWO_HUNKS, sha: "d-sha", index: "i1" } });
+    show(api);
+    await screen.findByText(TOP);
+    await user.click(within(screen.getByRole("region", { name: "Changed, not staged" })).getByRole("button", { name: /auth\.ts/ }));
+    await user.click(await screen.findByRole("button", { name: "Stage hunk 2 of 2" }));
+    await screen.findByText("Staged a hunk of src/auth.ts.");
+    const apply = calls.find((c) => c.request.op === "apply")?.request;
+    expect(apply).toEqual({
+      op: "apply",
+      repo: TOP,
+      path: "src/auth.ts",
+      patch: "diff --git a/src/auth.ts b/src/auth.ts\nindex 1..2 100644\n--- a/src/auth.ts\n+++ b/src/auth.ts\n@@ -9,2 +9,2 @@\n y\n-z\n+Z\n",
+      reverse: false,
+      context: 3,
+      diffSha: "d-sha",
+      expect: { head: PREVIEW.head, index: "i1" },
+    });
+  });
+
+  it("offers whole files only for a rename or an untracked file", async () => {
+    const user = userEvent.setup();
+    const { api } = writable(() => ({}));
+    show(api);
+    await screen.findByText(TOP);
+    await user.click(screen.getByRole("button", { name: /notes\.txt/ }));
+    await screen.findByText("remember");
+    expect(screen.getByRole("button", { name: /Stage file/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Stage hunk/ })).toBeNull();
+  });
+
+  it("won't stage from a diff newer than the list", async () => {
+    const user = userEvent.setup();
+    const { api, calls } = writable(() => ({}), { "untracked:notes.txt": { diff: DIFFS["untracked:notes.txt"], worktree: "w-newer" } });
+    show(api);
+    await screen.findByText(TOP);
+    await user.click(screen.getByRole("button", { name: /notes\.txt/ }));
+    expect(await screen.findByText(/This file changed after the list was read/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: /Stage file/ }) as HTMLButtonElement).disabled).toBe(true);
+    const reads = count(calls, "status");
+    await user.click(within(screen.getByRole("region", { name: "Diff of notes.txt" })).getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(count(calls, "status")).toBe(reads + 1));
+  });
+
+  it("says why a write was refused, and reads the list again", async () => {
+    const user = userEvent.setup();
+    const { api, calls } = writable(() => {
+      throw new RepoFailure("stale", "notes.txt changed on the server since this screen read it. Nothing was staged.");
+    });
+    show(api);
+    await screen.findByText(TOP);
+    await user.click(screen.getByRole("checkbox", { name: "Tick notes.txt to stage it" }));
+    const reads = count(calls, "status");
+    await user.click(screen.getByRole("button", { name: /Stage 1 ticked/ }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Staging notes.txt didn't happen: notes.txt changed on the server");
+    expect(alert.textContent).toContain("Another agent or tool may be working in this checkout");
+    await waitFor(() => expect(count(calls, "status")).toBe(reads + 1));
+  });
+});
+
+describe("Repository screen, committing", () => {
+  async function review(api: RepoApi, user: ReturnType<typeof userEvent.setup>, message = "Lengthen sessions") {
+    show(api);
+    await screen.findByText(TOP);
+    await user.type(screen.getByLabelText(/Commit message/), message);
+    await user.click(screen.getByRole("button", { name: "Review commit…" }));
+    return screen.findByRole("dialog");
+  }
+
+  it("previews exactly what the commit holds, then commits it with the preview's stamps", async () => {
+    const user = userEvent.setup();
+    const { api, calls } = writable(() => ({
+      head: "abcdef1234567890",
+      subject: "Lengthen sessions",
+      output: "pre-commit: 3 files checked\n[feature/login abcdef1] Lengthen sessions",
+      matches: true,
+      files: PREVIEW.files,
+      branch: "feature/login",
+    }));
+    const dialog = within(await review(api, user));
+    await dialog.findByText("pre-commit will run, as Git runs them. Nothing skips them.");
+    expect(dialog.getByText("Demo Owner <demo@example.com>")).toBeTruthy();
+    expect(dialog.getByText("docs/auth.md → docs/login.md")).toBeTruthy();
+    expect(dialog.getByText("const a = 2")).toBeTruthy();
+    expect(dialog.getByText("Lengthen sessions", { selector: "pre" })).toBeTruthy();
+    await user.click(dialog.getByRole("button", { name: "Commit" }));
+    expect(await dialog.findByText(/pre-commit: 3 files checked/)).toBeTruthy();
+    expect(dialog.getByText("Lengthen sessions", { selector: "pre" })).toBeTruthy();
+    expect(calls.find((c) => c.request.op === "commit")?.request).toEqual({
+      op: "commit",
+      repo: TOP,
+      message: "Lengthen sessions\n",
+      expect: { head: PREVIEW.head, index: "i1", rawSha: "raw1" },
+    });
+    await user.click(dialog.getByRole("button", { name: "Close" }));
+    expect(screen.getByText("Committed abcdef1 on feature/login: Lengthen sessions")).toBeTruthy();
+    expect((screen.getByLabelText(/Commit message/) as HTMLTextAreaElement).value).toBe("");
+  });
+
+  it("shows a hook's refusal with its output, and keeps everything for another try", async () => {
+    const user = userEvent.setup();
+    const { api } = writable(() => {
+      throw new RepoFailure("hook", "A hook refused the commit (pre-commit). Its output is below. Nothing was committed.", "lint: src/auth.ts:3 shouting\n");
+    });
+    const dialog = within(await review(api, user));
+    await user.click(await dialog.findByRole("button", { name: "Commit" }));
+    expect(await dialog.findByText(/The commit was refused: A hook refused the commit/)).toBeTruthy();
+    expect(dialog.getAllByText(/lint: src\/auth.ts:3 shouting/).length).toBeGreaterThan(0);
+    expect(dialog.getByText(/Hooks are never skipped/)).toBeTruthy();
+    expect(dialog.getByRole("button", { name: "Try again" })).toBeTruthy();
+  });
+
+  it("says when a hook changed what was committed", async () => {
+    const user = userEvent.setup();
+    const { api } = writable(() => ({ head: "abcdef1234567890", subject: "x", output: "", matches: false, files: [{ status: "M", path: "src/auth.ts" }, { status: "M", path: "src/format.ts" }], branch: "main" }));
+    const dialog = within(await review(api, user));
+    await user.click(await dialog.findByRole("button", { name: "Commit" }));
+    expect(await dialog.findByText(/A hook changed what was committed/)).toBeTruthy();
+    expect(dialog.getByText("src/format.ts")).toBeTruthy();
+  });
+
+  it("refuses a stale preview and offers to preview again", async () => {
+    const user = userEvent.setup();
+    const { api, calls } = writable(() => {
+      throw new RepoFailure("stale", "Since this screen last read the repository, the staged changes changed. Nothing was changed.");
+    });
+    const dialog = within(await review(api, user));
+    await user.click(await dialog.findByRole("button", { name: "Commit" }));
+    const previews = count(calls, "preview");
+    await user.click(await dialog.findByRole("button", { name: "Preview again" }));
+    await waitFor(() => expect(count(calls, "preview")).toBe(previews + 1));
+  });
+
+  it("reads HEAD again when the commit's answer is lost", async () => {
+    const user = userEvent.setup();
+    let committed = false;
+    const { api } = fakeApi((_t, r) => {
+      if (r.op === "status") return committed ? statusOf({ head: "fedcba9876543210", entries: [] }) : STAMPED();
+      if (r.op === "preview") return PREVIEW;
+      if (r.op === "commit") {
+        committed = true;
+        throw new RepoFailure("timeout", "The server didn't answer within 660 s.");
+      }
+      return diffOf("");
+    });
+    const dialog = within(await review(api, user));
+    await user.click(await dialog.findByRole("button", { name: "Commit" }));
+    expect(await dialog.findByText(/HEAD is now fedcba987654: a commit was made/)).toBeTruthy();
+  });
+
+  it("can't be reviewed with nothing staged, and fills in Hermes's suggestion to edit", async () => {
+    const user = userEvent.setup();
+    const suggest = vi.fn(async () => "```\nLengthen sessions to an hour\n```");
+    const { api } = writable(() => ({}));
+    show(api, { suggest });
+    await screen.findByText(TOP);
+    await user.click(screen.getByRole("button", { name: "Suggest a message" }));
+    await waitFor(() => expect((screen.getByLabelText(/Commit message/) as HTMLTextAreaElement).value).toBe("Lengthen sessions to an hour"));
+    const [instructions, input] = suggest.mock.calls[0] as unknown as [string, string];
+    expect(instructions).toMatch(/commit message/);
+    expect(input).toContain("R docs/auth.md -> docs/login.md");
+    expect(input).toContain("+const a = 2");
+    cleanup();
+
+    const empty = fakeApi((_t, r) => (r.op === "status" ? statusOf({ entries: [{ kind: "untracked", x: "?", y: "?", sub: false, path: "n", worktree: "w" }] }) : diffOf("")));
+    show(empty.api);
+    await screen.findByText(TOP);
+    await user.type(screen.getByLabelText(/Commit message/), "x");
+    expect((screen.getByRole("button", { name: "Review commit…" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Replace with a suggestion" }) as HTMLButtonElement).disabled).toBe(true);
   });
 });

@@ -274,3 +274,306 @@ async fn the_owners_diff_settings_dont_change_what_is_shown() {
     let t = diff(&d, "notes.txt", None, DiffSide::Unstaged, 3).await;
     assert!(t["diff"].as_str().unwrap().contains("--- a/notes.txt\n+++ b/notes.txt"), "{}", t["diff"]);
 }
+
+// ── stage 2: staging and committing ─────────────────────────────────────────
+
+use hermes_chat::repo_git::{Expect, FileStamp};
+
+fn expect_of(v: &Value) -> Expect {
+    Expect { head: v["head"].as_str().map(Into::into), index: v["index"].as_str().unwrap().into(), raw_sha: None }
+}
+
+fn stamp_of(s: &Value, path: &str) -> FileStamp {
+    FileStamp { path: path.into(), worktree: entry(s, path)["worktree"].as_str().map(Into::into) }
+}
+
+fn staged_names(d: &Dir) -> String {
+    git(d.path(), &["diff", "--cached", "--name-only"])
+}
+
+async fn preview(d: &Dir) -> Value {
+    ask(Request::Preview { repo: d.s() }).await.unwrap()
+}
+
+async fn commit(d: &Dir, p: &Value, message: &str) -> Result<Value, RepoError> {
+    let expect = Expect { raw_sha: p["rawSha"].as_str().map(Into::into), ..expect_of(p) };
+    ask(Request::Commit { repo: d.s(), message: message.into(), expect }).await
+}
+
+fn hook(d: &Dir, name: &str, body: &str) {
+    let p = d.path().join(".git/hooks").join(name);
+    std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// A repository with two changed files and an untracked one.
+fn busy(name: &str) -> Dir {
+    let d = repo(name);
+    write(d.path(), "other.txt", b"a\n");
+    git(d.path(), &["add", "."]);
+    git(d.path(), &["commit", "-qm", "two files"]);
+    write(d.path(), "notes.txt", b"one\nTWO\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n");
+    write(d.path(), "other.txt", b"b\n");
+    write(d.path(), "new.txt", b"new\n");
+    d
+}
+
+#[tokio::test]
+async fn staging_takes_only_the_files_named() {
+    let d = busy("stage-one");
+    let s = status(&d).await;
+    let r = ask(Request::Stage { repo: d.s(), files: vec![stamp_of(&s, "notes.txt"), stamp_of(&s, "new.txt")], expect: expect_of(&s) }).await.unwrap();
+    assert_eq!(staged_names(&d), "new.txt\nnotes.txt");
+    assert_ne!(r["index"], s["index"], "the new index stamp comes back");
+}
+
+#[tokio::test]
+async fn a_file_changed_after_it_was_read_is_not_staged() {
+    let d = busy("stage-stale-file");
+    let s = status(&d).await;
+    // Another agent writes to the file after the screen read it.
+    write(d.path(), "notes.txt", b"rewritten by an agent\n");
+    let e = ask(Request::Stage { repo: d.s(), files: vec![stamp_of(&s, "notes.txt")], expect: expect_of(&s) }).await.unwrap_err();
+    assert_eq!(kind(e), "stale");
+    assert_eq!(staged_names(&d), "");
+}
+
+#[tokio::test]
+async fn nothing_is_staged_when_the_index_moved_meanwhile() {
+    let d = busy("stage-stale-index");
+    let s = status(&d).await;
+    git(d.path(), &["add", "other.txt"]);
+    let e = ask(Request::Stage { repo: d.s(), files: vec![stamp_of(&s, "notes.txt")], expect: expect_of(&s) }).await.unwrap_err();
+    assert_eq!(kind(e), "stale");
+    assert_eq!(staged_names(&d), "other.txt");
+}
+
+#[tokio::test]
+async fn a_deleted_file_is_staged_as_deleted() {
+    let d = busy("stage-delete");
+    std::fs::remove_file(d.path().join("other.txt")).unwrap();
+    let s = status(&d).await;
+    assert_eq!(entry(&s, "other.txt")["worktree"], Value::Null);
+    ask(Request::Stage { repo: d.s(), files: vec![stamp_of(&s, "other.txt")], expect: expect_of(&s) }).await.unwrap();
+    assert_eq!(git(d.path(), &["diff", "--cached", "--name-status"]), "D\tother.txt");
+}
+
+#[tokio::test]
+async fn unstaging_leaves_the_working_tree_alone() {
+    let d = busy("unstage");
+    git(d.path(), &["add", "notes.txt", "other.txt"]);
+    let s = status(&d).await;
+    ask(Request::Unstage { repo: d.s(), paths: vec!["notes.txt".into()], expect: expect_of(&s) }).await.unwrap();
+    assert_eq!(staged_names(&d), "other.txt");
+    assert!(std::fs::read_to_string(d.path().join("notes.txt")).unwrap().contains("TWO"));
+}
+
+#[tokio::test]
+async fn unstaging_works_before_the_first_commit() {
+    let d = Dir::new("unborn");
+    git(d.path(), &["init", "-q", "-b", "main"]);
+    write(d.path(), "a.txt", b"a\n");
+    git(d.path(), &["add", "a.txt"]);
+    let s = status(&d).await;
+    assert_eq!(s["head"], Value::Null);
+    ask(Request::Unstage { repo: d.s(), paths: vec!["a.txt".into()], expect: expect_of(&s) }).await.unwrap();
+    assert_eq!(staged_names(&d), "");
+    assert!(d.path().join("a.txt").exists());
+}
+
+/// notes.txt with changes at its top and its bottom: two hunks with one line of context.
+fn two_hunks(name: &str) -> Dir {
+    let d = repo(name);
+    write(d.path(), "notes.txt", b"ONE\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nTEN\n");
+    d
+}
+
+/// The patch the screen builds for the hunks at `keep` of `diff` (repo.ts `hunkPatch`), done the same way here.
+fn patch_of(diff: &str, keep: &[usize]) -> String {
+    let (head, rest) = diff.split_at(diff.find("\n@@").unwrap() + 1);
+    let hunks: Vec<&str> = rest.split_inclusive('\n').fold(Vec::<String>::new(), |mut acc, line| {
+        if line.starts_with("@@") || acc.is_empty() {
+            acc.push(String::new());
+        }
+        acc.last_mut().unwrap().push_str(line);
+        acc
+    }).iter().map(|h| &*Box::leak(h.clone().into_boxed_str())).collect();
+    let mut out = head.to_owned();
+    for i in keep {
+        out.push_str(hunks[*i]);
+    }
+    out
+}
+
+#[tokio::test]
+async fn one_hunk_can_be_staged_and_unstaged_on_its_own() {
+    let d = two_hunks("hunk");
+    let s = status(&d).await;
+    let shown = diff(&d, "notes.txt", None, DiffSide::Unstaged, 1).await;
+    let text = shown["diff"].as_str().unwrap();
+    assert_eq!(text.matches("\n@@").count(), 2, "{text}");
+    ask(Request::Apply {
+        repo: d.s(), path: "notes.txt".into(), patch: patch_of(text, &[1]), reverse: false, context: 1,
+        diff_sha: shown["sha"].as_str().unwrap().into(), expect: expect_of(&s),
+    })
+    .await
+    .unwrap();
+    let cached = git(d.path(), &["diff", "--cached"]);
+    assert!(cached.contains("+TEN") && !cached.contains("+ONE"), "{cached}");
+    let unstaged = git(d.path(), &["diff"]);
+    assert!(unstaged.contains("+ONE") && !unstaged.contains("+TEN"), "{unstaged}");
+
+    // And back out of the index, from the staged diff.
+    let s = status(&d).await;
+    let staged = diff(&d, "notes.txt", None, DiffSide::Staged, 1).await;
+    ask(Request::Apply {
+        repo: d.s(), path: "notes.txt".into(), patch: patch_of(staged["diff"].as_str().unwrap(), &[0]), reverse: true, context: 1,
+        diff_sha: staged["sha"].as_str().unwrap().into(), expect: expect_of(&s),
+    })
+    .await
+    .unwrap();
+    assert_eq!(staged_names(&d), "");
+    assert!(std::fs::read_to_string(d.path().join("notes.txt")).unwrap().contains("TEN"), "the working tree keeps it");
+}
+
+#[tokio::test]
+async fn a_hunk_from_a_diff_with_no_context_applies_too() {
+    let d = two_hunks("hunk-zero");
+    let s = status(&d).await;
+    let shown = diff(&d, "notes.txt", None, DiffSide::Unstaged, 0).await;
+    let text = shown["diff"].as_str().unwrap();
+    assert!(text.contains("@@ -1 +1 @@") && text.contains("@@ -10 +10 @@"), "{text}");
+    ask(Request::Apply {
+        repo: d.s(), path: "notes.txt".into(), patch: patch_of(text, &[0]), reverse: false, context: 0,
+        diff_sha: shown["sha"].as_str().unwrap().into(), expect: expect_of(&s),
+    })
+    .await
+    .unwrap();
+    let cached = git(d.path(), &["diff", "--cached"]);
+    assert!(cached.contains("+ONE") && !cached.contains("+TEN"), "{cached}");
+}
+
+#[tokio::test]
+async fn a_hunk_from_a_diff_that_changed_is_refused() {
+    let d = two_hunks("hunk-stale");
+    let s = status(&d).await;
+    let shown = diff(&d, "notes.txt", None, DiffSide::Unstaged, 1).await;
+    write(d.path(), "notes.txt", b"ONE\ntwo\nthree\nfour\nFIVE\nsix\nseven\neight\nnine\nTEN\n");
+    let e = ask(Request::Apply {
+        repo: d.s(), path: "notes.txt".into(), patch: patch_of(shown["diff"].as_str().unwrap(), &[1]), reverse: false, context: 1,
+        diff_sha: shown["sha"].as_str().unwrap().into(), expect: expect_of(&s),
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(kind(e), "stale");
+    assert_eq!(staged_names(&d), "");
+}
+
+#[tokio::test]
+async fn the_preview_is_exactly_what_the_commit_holds() {
+    let d = busy("commit");
+    git(d.path(), &["add", "notes.txt"]);
+    git(d.path(), &["mv", "other.txt", "renamed.txt"]);
+    let p = preview(&d).await;
+    let files: Vec<_> = p["files"].as_array().unwrap().iter().map(|f| format!("{} {}", f["status"].as_str().unwrap(), f["path"].as_str().unwrap())).collect();
+    assert_eq!(files, ["M notes.txt", "D other.txt", "A renamed.txt"]);
+    assert_eq!(p["renames"]["renamed.txt"]["from"], "other.txt");
+    assert!(p["diff"].as_str().unwrap().contains("+TWO"));
+    assert_eq!(p["author"], "Owner <owner@example.com>");
+    let before = git(d.path(), &["rev-parse", "HEAD"]);
+
+    let message = "Shout the second line\n\nAnd rename other.txt.\n# kept verbatim\n";
+    let c = commit(&d, &p, message).await.unwrap();
+    assert_eq!(c["matches"], true);
+    assert_eq!(git(d.path(), &["rev-parse", "HEAD^"]), before);
+    assert_eq!(git(d.path(), &["log", "-1", "--format=%B"]), message.trim_end());
+    // What wasn't staged stayed out: the moved file's unstaged edit, and the untracked file.
+    assert_eq!(git(d.path(), &["status", "--porcelain"]), "M renamed.txt\n?? new.txt");
+}
+
+#[tokio::test]
+async fn a_concurrent_change_to_the_index_stops_the_commit() {
+    let d = busy("commit-race-index");
+    git(d.path(), &["add", "notes.txt"]);
+    let p = preview(&d).await;
+    // Another agent stages a file between the preview and Commit.
+    git(d.path(), &["add", "new.txt"]);
+    let before = git(d.path(), &["rev-parse", "HEAD"]);
+    let e = commit(&d, &p, "Only notes").await.unwrap_err();
+    assert_eq!(kind(e), "stale");
+    assert_eq!(git(d.path(), &["rev-parse", "HEAD"]), before);
+}
+
+#[tokio::test]
+async fn a_concurrent_commit_stops_the_commit() {
+    let d = busy("commit-race-head");
+    git(d.path(), &["add", "notes.txt"]);
+    let p = preview(&d).await;
+    git(d.path(), &["commit", "-qm", "someone else"]);
+    git(d.path(), &["add", "other.txt"]);
+    let e = commit(&d, &p, "Mine").await.unwrap_err();
+    assert_eq!(kind(e), "stale");
+    assert_eq!(git(d.path(), &["log", "-1", "--format=%s"]), "someone else");
+}
+
+#[tokio::test]
+async fn a_failing_hook_refuses_the_commit_and_says_why() {
+    let d = busy("commit-hook");
+    hook(&d, "pre-commit", "echo 'lint: notes.txt has shouting' >&2\nexit 1");
+    git(d.path(), &["add", "notes.txt"]);
+    let p = preview(&d).await;
+    assert_eq!(p["hooks"], serde_json::json!(["pre-commit"]));
+    let before = git(d.path(), &["rev-parse", "HEAD"]);
+    let e = commit(&d, &p, "Shout").await.unwrap_err();
+    let v = serde_json::to_value(&e).unwrap();
+    assert_eq!(v["kind"], "hook");
+    assert!(v["output"].as_str().unwrap().contains("lint: notes.txt has shouting"), "{v}");
+    assert_eq!(git(d.path(), &["rev-parse", "HEAD"]), before);
+    assert_eq!(staged_names(&d), "notes.txt", "the staged change is still staged");
+}
+
+#[tokio::test]
+async fn hook_output_is_kept_and_a_hook_that_changes_the_commit_is_reported() {
+    let d = busy("commit-hook-adds");
+    hook(&d, "pre-commit", "echo 'formatting'\ngit add other.txt");
+    hook(&d, "post-commit", "echo 'post-commit ran'");
+    git(d.path(), &["add", "notes.txt"]);
+    let p = preview(&d).await;
+    let c = commit(&d, &p, "Shout").await.unwrap();
+    assert_eq!(c["matches"], false);
+    let files: Vec<_> = c["files"].as_array().unwrap().iter().map(|f| f["path"].as_str().unwrap().to_owned()).collect();
+    assert_eq!(files, ["notes.txt", "other.txt"]);
+    let out = c["output"].as_str().unwrap();
+    assert!(out.contains("formatting") && out.contains("post-commit ran"), "{out}");
+}
+
+#[tokio::test]
+async fn nothing_staged_commits_nothing_rather_than_everything() {
+    let d = busy("commit-empty");
+    let p = preview(&d).await;
+    assert_eq!(p["files"], serde_json::json!([]));
+    let e = commit(&d, &p, "Everything?").await.unwrap_err();
+    assert_eq!(kind(e), "nothing-staged");
+    assert_eq!(git(d.path(), &["log", "--format=%s"]).lines().count(), 2);
+}
+
+#[tokio::test]
+async fn a_missing_identity_is_its_own_failure() {
+    let d = busy("commit-ident");
+    git(d.path(), &["config", "--unset", "user.name"]);
+    git(d.path(), &["config", "--unset", "user.email"]);
+    git(d.path(), &["config", "user.useConfigOnly", "true"]);
+    git(d.path(), &["add", "notes.txt"]);
+    let p = preview(&d).await;
+    assert_eq!(p["author"], Value::Null);
+    assert_eq!(kind(commit(&d, &p, "Who?").await.unwrap_err()), "identity");
+}
+
+#[tokio::test]
+async fn an_empty_message_is_refused() {
+    let d = busy("commit-message");
+    git(d.path(), &["add", "notes.txt"]);
+    let p = preview(&d).await;
+    assert_eq!(kind(commit(&d, &p, "  \n").await.unwrap_err()), "empty-message");
+}

@@ -1,11 +1,37 @@
 // The Repository screen's model: grouping a status, reading diffs, and where the screen reads from (ADR 0034).
 // The statuses and diffs below are what repo_git_helper.py answered for real repositories (src-tauri/tests/repo_git.rs).
 import { describe, expect, it } from "vitest";
-import { asRepoFailure, branchLabel, diffCounts, failureHint, group, parseDiff, readRecent, remember, repoTarget, upstreamLabel, RepoFailure, type Status } from "./repo";
+import {
+  asRepoFailure,
+  branchLabel,
+  cleanSuggestion,
+  commitMessage,
+  diffCounts,
+  diffStale,
+  failureHint,
+  group,
+  hunkPatch,
+  hunksSupported,
+  parseDiff,
+  previewRows,
+  readRecent,
+  remember,
+  repoTarget,
+  splitPatch,
+  subjectNote,
+  upstreamLabel,
+  RepoFailure,
+  type Change,
+  type DiffReply,
+  type Preview,
+  type Status,
+} from "./repo";
 
 const status = (entries: Status["entries"], branch: Partial<Status["branch"]> = {}): Status => ({
   top: "/home/liam/app",
   gitDir: "/home/liam/app/.git",
+  head: "1e6a7627084ab1d090745282b589f5d3de623b23",
+  index: "i1",
   branch: { oid: "1e6a7627084ab1d090745282b589f5d3de623b23", head: "main", detached: false, upstream: null, ahead: null, behind: null, ...branch },
   operation: null,
   entries,
@@ -131,5 +157,62 @@ describe("failures", () => {
     expect(f.output).toBe("Host key verification failed.");
     expect(failureHint(f)).toMatch(/Terminal/);
     expect(asRepoFailure(new Error("boom")).kind).toBe("internal");
+  });
+});
+
+describe("staging and committing", () => {
+  const TWO = "diff --git a/f b/f\nindex 1..2 100644\n--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n-a\n+A\n b\n@@ -9,2 +9,2 @@ fn\n y\n-z\n+Z\n\\ No newline at end of file\n";
+
+  it("cuts a patch of the hunks picked, keeping Git's header and lines byte for byte", () => {
+    expect(hunkPatch(TWO, [1])).toBe("diff --git a/f b/f\nindex 1..2 100644\n--- a/f\n+++ b/f\n@@ -9,2 +9,2 @@ fn\n y\n-z\n+Z\n\\ No newline at end of file\n");
+    expect(hunkPatch(TWO, [0])).toBe("diff --git a/f b/f\nindex 1..2 100644\n--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n-a\n+A\n b\n");
+    expect(() => hunkPatch(TWO, [5])).toThrow();
+  });
+
+  const change = (over: Partial<Change> = {}): Change => ({ key: "unstaged:f", side: "unstaged", path: "f", code: "M", label: "Modified", binary: false, submodule: false, ...over });
+  const reply = (diff: string, over: Partial<DiffReply> = {}): DiffReply => ({ diff, truncated: false, lossy: false, bytes: diff.length, sha: "s", stages: [], ...over });
+
+  it("offers hunks only for a whole, byte-exact text change to a file on both sides", () => {
+    expect(hunksSupported(change(), reply(TWO), parseDiff(TWO))).toBe(true);
+    expect(hunksSupported(change({ side: "untracked", code: "?" }), reply(TWO), parseDiff(TWO))).toBe(false);
+    expect(hunksSupported(change({ origPath: "old" }), reply(TWO), parseDiff(TWO))).toBe(false);
+    expect(hunksSupported(change(), reply(TWO, { lossy: true }), parseDiff(TWO))).toBe(false);
+    expect(hunksSupported(change(), reply(TWO, { truncated: true }), parseDiff(TWO))).toBe(false);
+    const mode = "diff --git a/f b/f\nold mode 100644\nnew mode 100755\n" + TWO.slice(TWO.indexOf("--- a/f"));
+    expect(hunksSupported(change(), reply(mode), parseDiff(mode))).toBe(false);
+  });
+
+  it("calls a diff stale when it was read after the list changed", () => {
+    const s = status([{ kind: "ordinary", x: ".", y: "M", sub: false, path: "f", worktree: "w1" }]);
+    expect(diffStale(s, s.entries[0], reply(TWO, { head: s.head, index: s.index, worktree: "w1" }))).toBeUndefined();
+    expect(diffStale(s, s.entries[0], reply(TWO, { head: s.head, index: s.index, worktree: "w2" }))).toMatch(/This file changed/);
+    expect(diffStale(s, s.entries[0], reply(TWO, { head: s.head, index: "i2", worktree: "w1" }))).toMatch(/repository changed/);
+    expect(diffStale(s, s.entries[0], reply(TWO, { head: "other", index: s.index }))).toMatch(/repository changed/);
+  });
+
+  it("commits the message verbatim with one final new line, and notes a long first line", () => {
+    expect(commitMessage("Fix it\n\n# keep this\n\n\n")).toBe("Fix it\n\n# keep this\n");
+    expect(commitMessage("  \n ")).toBe("");
+    expect(subjectNote("x".repeat(73))).toMatch(/73 characters/);
+    expect(subjectNote("short\n" + "x".repeat(100))).toBeUndefined();
+  });
+
+  it("takes a fence or quotes off Hermes's suggestion, and nothing else", () => {
+    expect(cleanSuggestion("```text\nAdd refresh\n\nBody\n```")).toBe("Add refresh\n\nBody");
+    expect(cleanSuggestion('"Add refresh"')).toBe("Add refresh");
+    expect(cleanSuggestion("Add `refresh()`")).toBe("Add `refresh()`");
+  });
+
+  it("splits the preview's patch by file, and pairs renames", () => {
+    const parts = splitPatch(" a | 1 +\n 1 file changed\n\ndiff --git a/a b/a\n@@ -1 +1 @@\n-x\n+y\ndiff --git a/b b/c\nsimilarity index 100%\nrename from b\nrename to c\n");
+    expect(parts.map((p) => p.header)).toEqual(["diff --git a/a b/a", "diff --git a/b b/c"]);
+    const p = { files: [{ status: "D", path: "b" }, { status: "A", path: "c" }, { status: "M", path: "a" }], renames: { c: { from: "b", score: "R100" } } } as unknown as Preview;
+    expect(previewRows(p)).toEqual([{ code: "R", path: "c", from: "b" }, { code: "M", path: "a" }]);
+  });
+
+  it("explains commit failures", () => {
+    expect(failureHint(new RepoFailure("hook", "x"))).toMatch(/never skipped/);
+    expect(failureHint(new RepoFailure("identity", "x"))).toMatch(/user.name/);
+    expect(failureHint(new RepoFailure("locked", "x"))).toMatch(/index.lock/);
   });
 });

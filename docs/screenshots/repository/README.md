@@ -18,3 +18,17 @@ The screenshots:
 - `8-ssh-error.png`: a target that doesn't resolve. ssh's own message is shown under the app's.
 
 Also checked by hand in the same build, not pictured: changing the context to none and to the whole file, Refresh, and the screen opening the last folder again when reopened.
+
+## Stage 2: staging and committing
+
+Captured the same way, later on 2026-11-03, against the same `weather-api` repository on the real server. Every write, commit and refusal below really happened there, and was checked afterwards with `git log`, `git show` and `git status` over ssh. The repository has a real `pre-commit` hook, Git's own whitespace check (`git diff --cached --check`), which prints a line first.
+
+- `9-hunks.png`: `src/auth.ts` with two unstaged hunks, each with its own Stage hunk button. The first hunk (a comment with trailing spaces) was staged on its own; the server's index then held only that hunk.
+- `10-commit-preview.png`: Review commit… before the second commit: the branch, the commit it goes on top of, the author, the hook that will run, the message exactly as it will be committed, the paired rename, and the whole staged diff.
+- `11-commit-preview-binary.png`: a preview with a binary file and a new file.
+- `12-hook-refused.png`: committing the hunk with trailing spaces. The `pre-commit` hook refused it, and its own output is shown. HEAD on the server didn't move, and the staged changes were still staged.
+- `13-unstage-hunk.png` and `14-hunk-unstaged.png`: with no context lines, the staged diff splits into two hunks. Unstaging the first takes only it out of the index, back to Changed.
+- `15-stale-commit.png`: a concurrent agent, simulated by `git add src/version.ts` in another ssh session, staged a file after the preview was read. Commit was refused as stale, nothing was committed, and Preview again then listed both files. The extra file was unstaged before committing.
+- `16-committed.png`: a commit after the hook passed: the new commit, the hook that ran, and what Git and the hook printed. On the server, `git log` showed it on top of the commit the preview named, with the message verbatim and only the previewed file.
+
+Not pictured: **Suggest a message** was exercised only against the stand-in dashboard, whose `llm.oneshot` answers with fixed text. So no screenshot shows a suggestion, and none came from a real model.

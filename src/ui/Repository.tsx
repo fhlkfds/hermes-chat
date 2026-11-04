@@ -1,26 +1,44 @@
 // The Repository screen: a Git checkout on the Hermes server, reviewed from here (ADR 0034). It reads through the
 // owner's own ssh, not through the dashboard, so it works while Hermes is away too. It covers the chat panes, as
 // Server files does.
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { ArrowLeft, CircleAlert, FileWarning, FolderGit2, GitBranch, GitMerge, Pencil, RefreshCw, Server, X } from "lucide-react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { ArrowLeft, Check, CircleAlert, FileWarning, FolderGit2, GitBranch, GitCommitHorizontal, GitMerge, Minus, Pencil, Plus, RefreshCw, Server, Sparkles, X } from "lucide-react";
 import {
   CONTEXT_CHOICES,
   OPERATION_LABEL,
+  SUGGEST_INSTRUCTIONS,
+  asCommitted,
   asDiff,
+  asPreview,
   asRepoFailure,
   asStatus,
   branchLabel,
+  cleanSuggestion,
+  commitMessage,
+  diffStale,
+  expectOf,
   failureHint,
   group,
+  hunkPatch,
+  hunksSupported,
   parseDiff,
+  previewRows,
+  splitPatch,
+  subjectNote,
+  suggestInput,
   upstreamLabel,
   type Change,
+  type Committed,
   type DiffReply,
+  type ParsedDiff,
+  type Preview,
   type RepoApi,
   type RepoFailure,
+  type RepoRequest,
   type Status,
 } from "../hermes/repo";
 import { Spinner } from "./bits";
+import { useModal } from "./modal";
 
 type Load<T> = { state: "idle" } | { state: "loading"; last?: T } | { state: "ready"; data: T } | { state: "failed"; error: RepoFailure; last?: T };
 
@@ -41,6 +59,7 @@ export function RepositoryScreen({
   suggestions,
   onOpened,
   onTarget,
+  suggest,
   onClose,
 }: {
   api: RepoApi;
@@ -56,6 +75,8 @@ export function RepositoryScreen({
   onOpened: (top: string) => void;
   /** A target the owner set. */
   onTarget: (target: string) => void;
+  /** Asks Hermes for a commit message from `input` (llm.oneshot); absent while Hermes isn't connected. */
+  suggest?: (instructions: string, input: string) => Promise<string>;
   onClose: () => void;
 }) {
   const [target, setTarget] = useState(initialTarget);
@@ -67,8 +88,18 @@ export function RepositoryScreen({
   const [selected, setSelected] = useState<string>();
   const [context, setContext] = useState(3);
   const [diff, setDiff] = useState<Load<DiffReply>>({ state: "idle" });
+  /** Changes ticked for Stage or Unstage, by key. */
+  const [checked, setChecked] = useState<ReadonlySet<string>>(new Set());
+  /** A write running now, in words; every write button waits for it. */
+  const [writing, setWriting] = useState<string>();
+  const [writeError, setWriteError] = useState<{ what: string; error: RepoFailure }>();
+  const [done, setDone] = useState<string>();
+  const [message, setMessage] = useState("");
+  const [reviewing, setReviewing] = useState(false);
   const statusRun = useRef(0);
   const diffRun = useRef(0);
+  /** Bumped when the folder or target changes, so a write's late answer can't touch the one shown now. */
+  const place = useRef(0);
   const listRef = useRef<HTMLDivElement>(null);
   const pathId = useId();
 
@@ -106,9 +137,42 @@ export function RepositoryScreen({
     if (repo && target) read(repo, target);
   }, [repo, target, read]);
 
+  const forget = () => {
+    place.current++;
+    setChecked(new Set());
+    setWriteError(undefined);
+    setDone(undefined);
+    setWriting(undefined);
+    setReviewing(false);
+  };
+
+  /**
+   * Runs one write, then reads the repository again whatever happened: the list afterwards is Git's, not a guess.
+   * A late answer for another folder or target is dropped.
+   */
+  const write = async (what: string, request: RepoRequest, after?: string) => {
+    if (writing) return;
+    const at = place.current;
+    setWriting(what);
+    setWriteError(undefined);
+    setDone(undefined);
+    try {
+      await api.run(target, request);
+      if (at === place.current && after) setDone(after);
+    } catch (e) {
+      if (at === place.current) setWriteError({ what: what.replace(/…$/, ""), error: asRepoFailure(e) });
+    } finally {
+      if (at === place.current) {
+        setWriting(undefined);
+        read(repo, target);
+      }
+    }
+  };
+
   // A different folder or target: what was shown belonged to the other one.
   const open = (where: string) => {
     if (!where.trim()) return;
+    forget();
     statusRun.current++;
     diffRun.current++;
     setStatus({ state: "idle" });
@@ -145,10 +209,54 @@ export function RepositoryScreen({
     // `status` is a dependency through `shown`: a refresh reads the diff again.
   }, [api, target, top, change?.key, change?.origPath, context, shown, status.state]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // A change that's gone after a refresh can't stay selected.
+  // A change that's gone after a refresh can't stay selected, or ticked.
   useEffect(() => {
     if (selected && groups && !change) setSelected(undefined);
-  }, [selected, groups, change]);
+    setChecked((c) => {
+      const keep = [...c].filter((k) => all.some((x) => x.key === k));
+      return keep.length === c.size ? c : new Set(keep);
+    });
+  }, [selected, groups, change, all]);
+
+  const entryOf = (path: string) => shown?.entries.find((e) => e.path === path);
+  const tick = (key: string, on: boolean) =>
+    setChecked((c) => {
+      const n = new Set(c);
+      if (on) n.add(key);
+      else n.delete(key);
+      return n;
+    });
+
+  /** Stages these changes (from Changed or Untracked), each as the list read it. */
+  const stage = (changes: Change[]) => {
+    if (!shown || !changes.length) return;
+    const files = changes.map((c) => ({ path: c.path, worktree: entryOf(c.path)?.worktree ?? null }));
+    const n = files.length;
+    void write(`Staging ${n === 1 ? files[0].path : `${n} files`}…`, { op: "stage", repo: shown.top, files, expect: expectOf(shown) }, `Staged ${n === 1 ? files[0].path : `${n} files`}.`).then(() =>
+      setChecked(new Set()),
+    );
+  };
+
+  /** Takes these staged changes out of the index; a rename takes its old path back too. */
+  const unstage = (changes: Change[]) => {
+    if (!shown || !changes.length) return;
+    const paths = changes.flatMap((c) => (c.origPath ? [c.path, c.origPath] : [c.path]));
+    const n = changes.length;
+    void write(`Unstaging ${n === 1 ? changes[0].path : `${n} files`}…`, { op: "unstage", repo: shown.top, paths, expect: expectOf(shown) }, `Unstaged ${n === 1 ? changes[0].path : `${n} files`}.`).then(() =>
+      setChecked(new Set()),
+    );
+  };
+
+  /** Stages or unstages one hunk of the diff on screen, against the stamps that diff was read with. */
+  const hunk = (c: Change, d: DiffReply, i: number) => {
+    if (!shown || d.head === undefined || d.index === undefined) return;
+    const reverse = c.side === "staged";
+    void write(
+      `${reverse ? "Unstaging" : "Staging"} a hunk of ${c.path}…`,
+      { op: "apply", repo: shown.top, path: c.path, patch: hunkPatch(d.diff, [i]), reverse, context, diffSha: d.sha, expect: { head: d.head, index: d.index } },
+      `${reverse ? "Unstaged" : "Staged"} a hunk of ${c.path}.`,
+    );
+  };
 
   const onListKey = (e: KeyboardEvent) => {
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
@@ -168,6 +276,7 @@ export function RepositoryScreen({
     setEditingTarget(false);
     onTarget(v);
     if (v !== target) {
+      forget();
       statusRun.current++;
       diffRun.current++;
       setStatus({ state: "idle" });
@@ -304,6 +413,21 @@ export function RepositoryScreen({
       )}
 
       {failure && <Failure failure={failure} what={`Couldn't read ${repo}`} onDismiss={shown ? () => setStatus({ state: "ready", data: shown }) : undefined} />}
+      {writeError && <Failure failure={writeError.error} what={`${writeError.what} didn't happen`} onDismiss={() => setWriteError(undefined)} />}
+      {writing && (
+        <div className="files-banner repo-writing" role="status">
+          <Spinner /> <span>{writing}</span>
+        </div>
+      )}
+      {done && !writing && (
+        <div className="files-banner ok" role="status">
+          <Check size={14} aria-hidden />
+          <span>{done}</span>
+          <button className="icon-btn" aria-label="Dismiss" onClick={() => setDone(undefined)}>
+            <X size={14} />
+          </button>
+        </div>
+      )}
 
       {!shown && !failure && (
         <div className="repo-empty muted">
@@ -355,18 +479,39 @@ export function RepositoryScreen({
                 SECTIONS.map(({ key, title, empty }) => {
                   const items = groups[key];
                   if (!items.length && !empty) return null;
+                  const ticked = items.filter((c) => checked.has(c.key));
+                  const unstaging = key === "staged";
                   return (
                     <section key={key} className="repo-section" aria-label={title}>
-                      <h2>
-                        {title} <span className="count">{items.length}</span>
-                      </h2>
+                      <div className="repo-section-head">
+                        <h2>
+                          {title} <span className="count">{items.length}</span>
+                        </h2>
+                        {key !== "conflicts" && items.length > 0 && (
+                          <button
+                            className="btn repo-section-act"
+                            disabled={!ticked.length || !!writing || loading}
+                            title={ticked.length ? undefined : `Tick files to ${unstaging ? "unstage" : "stage"} them`}
+                            onClick={() => (unstaging ? unstage(ticked) : stage(ticked))}
+                          >
+                            {unstaging ? <Minus size={13} aria-hidden /> : <Plus size={13} aria-hidden />}
+                            {unstaging ? "Unstage" : "Stage"} {ticked.length ? `${ticked.length} ticked` : "ticked"}
+                          </button>
+                        )}
+                      </div>
                       {items.length === 0 ? (
                         <p className="muted small repo-none">{empty}</p>
                       ) : (
                         <ul>
                           {items.map((c) => (
                             <li key={c.key}>
-                              <FileRow change={c} selected={c.key === selected} onSelect={() => setSelected(c.key)} />
+                              <FileRow
+                                change={c}
+                                selected={c.key === selected}
+                                onSelect={() => setSelected(c.key)}
+                                checked={c.side === "conflict" ? undefined : checked.has(c.key)}
+                                onCheck={(on) => tick(c.key, on)}
+                              />
                             </li>
                           ))}
                         </ul>
@@ -374,11 +519,34 @@ export function RepositoryScreen({
                     </section>
                   );
                 })}
+              {all.length > 0 && (
+                <CommitBox
+                  message={message}
+                  onMessage={setMessage}
+                  staged={groups.staged.length}
+                  conflicts={groups.conflicts.length}
+                  busy={!!writing || loading}
+                  suggest={
+                    suggest &&
+                    (async () => {
+                      const p = asPreview(await api.run(target, { op: "preview", repo: shown.top }));
+                      if (!p.files.length) throw new Error("Nothing is staged, so there's nothing to describe.");
+                      return cleanSuggestion(await suggest(SUGGEST_INSTRUCTIONS, suggestInput(p)));
+                    })
+                  }
+                  onReview={() => setReviewing(true)}
+                />
+              )}
             </div>
             {change && (
               <DiffPanel
                 change={change}
                 diff={diff}
+                stale={diff.state === "ready" ? diffStale(shown, entryOf(change.path), diff.data) : undefined}
+                busy={!!writing || loading}
+                onStage={change.side === "conflict" ? undefined : () => (change.side === "staged" ? unstage([change]) : stage([change]))}
+                onHunk={(i) => diff.state === "ready" && hunk(change, diff.data, i)}
+                onRefresh={() => read(repo, target)}
                 context={context}
                 onContext={setContext}
                 onClose={() => {
@@ -390,14 +558,373 @@ export function RepositoryScreen({
           </div>
         </>
       )}
+      {reviewing && shown && (
+        <CommitDialog
+          api={api}
+          target={target}
+          top={shown.top}
+          message={message}
+          onCommitted={(c) => {
+            setMessage("");
+            setDone(`Committed ${c.head.slice(0, 7)}${c.branch ? ` on ${c.branch}` : ""}: ${c.subject}`);
+          }}
+          onClose={() => {
+            setReviewing(false);
+            read(repo, target);
+          }}
+        />
+      )}
     </div>
   );
 }
 
-function FileRow({ change: c, selected, onSelect }: { change: Change; selected: boolean; onSelect: () => void }) {
+/** The message box under the list: what to commit with, an optional suggestion from Hermes, and Review. */
+function CommitBox({
+  message,
+  onMessage,
+  staged,
+  conflicts,
+  busy,
+  suggest,
+  onReview,
+}: {
+  message: string;
+  onMessage: (m: string) => void;
+  staged: number;
+  conflicts: number;
+  busy: boolean;
+  suggest?: () => Promise<string>;
+  onReview: () => void;
+}) {
+  const id = useId();
+  const [asking, setAsking] = useState(false);
+  const [askError, setAskError] = useState<string>();
+  const alive = useRef(true);
+  useEffect(() => {
+    // Set again on every mount: StrictMode unmounts and mounts once more in development.
+    alive.current = true;
+    return () => void (alive.current = false);
+  }, []);
+  const note = subjectNote(message);
+  const why = conflicts ? "Resolve the conflicts first." : !staged ? "Stage something first." : !commitMessage(message) ? "Write a message first." : undefined;
+  return (
+    <section className="repo-commit" aria-label="Commit">
+      <label htmlFor={id} className="repo-commit-label">
+        <GitCommitHorizontal size={14} aria-hidden /> Commit message
+      </label>
+      <textarea id={id} className="repo-commit-message mono" rows={4} value={message} placeholder="Summary of the staged changes" onChange={(e) => onMessage(e.target.value)} />
+      {note && <p className="small muted repo-commit-note">{note}</p>}
+      {askError && (
+        <p className="small repo-commit-error" role="alert">
+          <CircleAlert size={12} aria-hidden /> Couldn't get a suggestion: {askError}
+        </p>
+      )}
+      <div className="repo-commit-actions">
+        <button
+          className="btn"
+          disabled={!suggest || !staged || asking || busy}
+          title={suggest ? "Hermes's Text generation model reads the staged diff and suggests a message, which you can edit" : "Hermes isn't connected"}
+          onClick={() => {
+            if (!suggest) return;
+            setAsking(true);
+            setAskError(undefined);
+            suggest().then(
+              (m) => alive.current && onMessage(m),
+              (e: unknown) => alive.current && setAskError(e instanceof Error ? e.message : String(e)),
+            ).finally(() => alive.current && setAsking(false));
+          }}
+        >
+          {asking ? <Spinner /> : <Sparkles size={13} aria-hidden />} {message.trim() ? "Replace with a suggestion" : "Suggest a message"}
+        </button>
+        <button className="btn primary" disabled={!!why || busy} title={why} onClick={onReview}>
+          Review commit…
+        </button>
+      </div>
+    </section>
+  );
+}
+
+type Review =
+  | { phase: "loading" }
+  | { phase: "refused"; error: RepoFailure }
+  | { phase: "ready"; preview: Preview; error?: RepoFailure }
+  | { phase: "committing"; preview: Preview }
+  | { phase: "committed"; preview: Preview; result: Committed }
+  /** No answer in time: the repository was read again to see whether HEAD moved. */
+  | { phase: "unknown"; preview: Preview; moved?: boolean; head?: string | null };
+
+/**
+ * The commit preview: exactly what Commit will hold (the files, the whole staged diff, the message, who, on top of
+ * which commit, and which hooks will run), then the commit itself and what Git and the hooks printed.
+ */
+function CommitDialog({
+  api,
+  target,
+  top,
+  message,
+  onCommitted,
+  onClose,
+}: {
+  api: RepoApi;
+  target: string;
+  top: string;
+  message: string;
+  onCommitted: (c: Committed) => void;
+  onClose: () => void;
+}) {
+  const [review, setReview] = useState<Review>({ phase: "loading" });
+  const box = useRef<HTMLDivElement>(null);
+  const keys = useModal(box);
+  const titleId = useId();
+  const alive = useRef(true);
+  useEffect(() => {
+    // Set again on every mount: StrictMode unmounts and mounts once more in development.
+    alive.current = true;
+    return () => void (alive.current = false);
+  }, []);
+  // The message as it was when the preview opened: the box behind is cleared once the commit lands.
+  const [text] = useState(() => commitMessage(message));
+
+  const load = useCallback(() => {
+    setReview({ phase: "loading" });
+    api.run(target, { op: "preview", repo: top }).then(
+      (v) => {
+        if (!alive.current) return;
+        try {
+          setReview({ phase: "ready", preview: asPreview(v) });
+        } catch (e) {
+          setReview({ phase: "refused", error: asRepoFailure(e) });
+        }
+      },
+      (e: unknown) => alive.current && setReview({ phase: "refused", error: asRepoFailure(e) }),
+    );
+  }, [api, target, top]);
+  useEffect(load, [load]);
+
+  const commit = (p: Preview) => {
+    setReview({ phase: "committing", preview: p });
+    api.run(target, { op: "commit", repo: top, message: text, expect: { head: p.head, index: p.index, rawSha: p.rawSha } }).then(
+      (v) => {
+        if (!alive.current) return;
+        try {
+          const result = asCommitted(v);
+          setReview({ phase: "committed", preview: p, result });
+          onCommitted(result);
+        } catch (e) {
+          setReview({ phase: "ready", preview: p, error: asRepoFailure(e) });
+        }
+      },
+      (e: unknown) => {
+        if (!alive.current) return;
+        const error = asRepoFailure(e);
+        if (error.kind !== "timeout" && error.kind !== "spawn" && !error.kind.startsWith("ssh")) return setReview({ phase: "ready", preview: p, error });
+        // The answer was lost: whether Git committed isn't known until HEAD is read again.
+        setReview({ phase: "unknown", preview: p });
+        api.run(target, { op: "status", repo: top }).then(
+          (v) => {
+            if (!alive.current) return;
+            const s = asStatus(v);
+            setReview({ phase: "unknown", preview: p, moved: s.head !== p.head, head: s.head });
+          },
+          () => undefined,
+        );
+      },
+    );
+  };
+
+  const busy = review.phase === "loading" || review.phase === "committing";
+  const close = () => !(review.phase === "committing") && onClose();
+  const p = review.phase === "refused" || review.phase === "loading" ? undefined : review.preview;
+  const rows = p ? previewRows(p) : [];
+  const files = p ? splitPatch(p.diff) : [];
+  const blocked = p && (p.unmerged ? "There are unresolved conflicts." : !p.files.length ? "Nothing is staged now." : !text ? "The message is empty." : undefined);
+
+  return (
+    <div className="leave-overlay" onMouseDown={(e) => e.target === e.currentTarget && close()}>
+      <div
+        ref={box}
+        className="leave-dialog repo-review"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-busy={busy}
+        onKeyDown={(e) => {
+          keys(e);
+          if (e.key === "Escape") {
+            e.preventDefault();
+            close();
+          }
+        }}
+      >
+        <h2 id={titleId} className="leave-title">
+          <GitCommitHorizontal size={15} aria-hidden /> {review.phase === "committed" ? "Committed" : `Commit${p?.branch ? ` to ${p.branch}` : ""}`}
+        </h2>
+        {review.phase === "loading" && (
+          <p role="status" className="repo-review-status">
+            <Spinner /> Reading what's staged…
+          </p>
+        )}
+        {review.phase === "refused" && <Failure failure={review.error} what="Couldn't read what's staged" />}
+        {p && (
+          <div className="repo-review-body">
+            <dl className="repo-review-facts">
+              <dt>Repository</dt>
+              <dd className="mono">{top}</dd>
+              <dt>Branch</dt>
+              <dd className="mono">{p.branch ?? "detached HEAD"}</dd>
+              <dt>On top of</dt>
+              <dd className="mono">{p.head ? p.head.slice(0, 12) : "nothing: this is the first commit"}</dd>
+              <dt>Author</dt>
+              <dd className="mono">{p.author ?? "unknown: Git on the server has no user.name and user.email"}</dd>
+              <dt>Hooks</dt>
+              <dd>
+                {!p.hooks.length
+                  ? "No commit hooks in this repository."
+                  : review.phase === "committed"
+                    ? `${p.hooks.join(", ")} ran.`
+                    : `${p.hooks.join(", ")} will run, as Git runs them. Nothing skips them.`}
+              </dd>
+            </dl>
+            {p.operation && <p className="repo-notice warn">{OPERATION_LABEL[p.operation]} This commit is part of it.</p>}
+            <h3>Message</h3>
+            <pre className="repo-review-message mono">{text || "(empty)"}</pre>
+            <h3>
+              {rows.length} {rows.length === 1 ? "file" : "files"}
+            </h3>
+            <ul className="repo-review-files">
+              {rows.map((r) => (
+                <li key={r.path}>
+                  <span className={`repo-code code-${r.code}`}>{r.code}</span> <span className="mono">{r.from ? `${r.from} → ${r.path}` : r.path}</span>
+                </li>
+              ))}
+            </ul>
+            {p.truncated && <p className="repo-notice warn">The staged diff is over 2 MiB, so only its start is shown. The file list above is complete.</p>}
+            {p.lossy && <p className="repo-notice warn">Some of the diff isn't UTF-8, so a few characters are shown as �.</p>}
+            <div className="repo-review-diff">
+              {files.map((f, i) => (
+                <PatchFile key={i} diff={f.diff} />
+              ))}
+            </div>
+          </div>
+        )}
+        {review.phase === "ready" && review.error && (
+          <Failure failure={review.error} what={review.error.kind === "hook" ? "The commit was refused" : "Nothing was committed"} />
+        )}
+        {review.phase === "committing" && (
+          <p role="status" className="repo-review-status">
+            <Spinner /> Committing{p?.hooks.length ? `; ${p.hooks.join(", ")} can take a while` : ""}…
+          </p>
+        )}
+        {review.phase === "unknown" && (
+          <div className="files-banner warn" role="alert">
+            <CircleAlert size={14} aria-hidden />
+            <span>
+              The server didn't answer, so whether Git committed isn't known.{" "}
+              {review.moved === undefined
+                ? "Reading HEAD again…"
+                : review.moved
+                  ? `HEAD is now ${review.head?.slice(0, 12) ?? "?"}: a commit was made. Check it in the history before committing again.`
+                  : "HEAD hasn't moved: nothing was committed."}
+            </span>
+          </div>
+        )}
+        {review.phase === "committed" && (
+          <div className="repo-review-done">
+            <p className="files-banner ok" role="status">
+              <Check size={14} aria-hidden /> <span>
+                Committed <span className="mono">{review.result.head.slice(0, 12)}</span>
+                {review.result.branch ? <> on <span className="mono">{review.result.branch}</span></> : null}.
+              </span>
+            </p>
+            {!review.result.matches && (
+              <div className="repo-notice warn">
+                A hook changed what was committed. The commit holds:
+                <ul className="repo-review-files">
+                  {review.result.files.map((f) => (
+                    <li key={f.path}>
+                      <span className={`repo-code code-${f.status}`}>{f.status}</span> <span className="mono">{f.path}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+        {review.phase === "committed" && review.result.output.trim() && (
+          <>
+            <h3>What Git and the hooks printed</h3>
+            <pre className="repo-output mono">{review.result.output.trim()}</pre>
+          </>
+        )}
+        <div className="confirm-actions">
+          {review.phase === "committed" || review.phase === "unknown" ? (
+            <button className="btn primary" autoFocus onClick={onClose}>
+              Close
+            </button>
+          ) : (
+            <>
+              <button className="btn" onClick={close} disabled={review.phase === "committing"}>
+                Cancel
+              </button>
+              {review.phase === "ready" && review.error?.kind === "stale" ? (
+                <button className="btn primary" onClick={load}>
+                  Preview again
+                </button>
+              ) : (
+                <button className="btn primary" autoFocus disabled={!p || !!blocked || busy} title={blocked} onClick={() => p && commit(p)}>
+                  {review.phase === "ready" && review.error ? "Try again" : "Commit"}
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** One file of a combined patch, drawn as the diff panel draws it. */
+function PatchFile({ diff }: { diff: string }) {
+  const parsed = useMemo(() => parseDiff(diff), [diff]);
+  const title = /^diff --git a\/(.*) b\/(.*)$/m.exec(diff);
+  return (
+    <div className="repo-review-file">
+      <div className="repo-review-file-head mono">{parsed.rename ? `${parsed.rename.from} → ${parsed.rename.to}` : (title?.[2] ?? "")}</div>
+      {parsed.binary && <p className="repo-notice">Binary file.</p>}
+      <DiffLines parsed={parsed} />
+    </div>
+  );
+}
+
+function FileRow({
+  change: c,
+  selected,
+  onSelect,
+  checked,
+  onCheck,
+}: {
+  change: Change;
+  selected: boolean;
+  onSelect: () => void;
+  /** Ticked for Stage or Unstage; undefined for a change that can't be ticked (a conflict). */
+  checked?: boolean;
+  onCheck: (on: boolean) => void;
+}) {
   const name = c.path.split("/").pop() ?? c.path;
   const dir = c.path.slice(0, c.path.length - name.length);
   return (
+    <div className="repo-row">
+      {checked === undefined ? (
+        <span className="repo-tick-space" aria-hidden />
+      ) : (
+        <input
+          type="checkbox"
+          className="repo-tick"
+          checked={checked}
+          aria-label={`Tick ${c.path} to ${c.side === "staged" ? "unstage" : "stage"} it`}
+          onChange={(e) => onCheck(e.target.checked)}
+        />
+      )}
     <button className="repo-file" aria-current={selected || undefined} onClick={onSelect} title={`${c.label}: ${c.origPath ? `${c.origPath} → ` : ""}${c.path}`}>
       <span className={`repo-code code-${c.code === "?" ? "untracked" : c.code}`} aria-label={c.label}>
         {c.code}
@@ -419,6 +946,7 @@ function FileRow({ change: c, selected, onSelect }: { change: Change; selected: 
         )
       )}
     </button>
+    </div>
   );
 }
 
@@ -434,12 +962,26 @@ const STAGE_NAME: Record<number, string> = { 1: "the common base", 2: "ours", 3:
 function DiffPanel({
   change,
   diff,
+  stale,
+  busy,
+  onStage,
+  onHunk,
+  onRefresh,
   context,
   onContext,
   onClose,
 }: {
   change: Change;
   diff: Load<DiffReply>;
+  /** Why this diff is newer than the list, so nothing in it can be staged until a refresh. */
+  stale?: string;
+  /** A write or a read is running. */
+  busy: boolean;
+  /** Stages (or unstages) the whole file; undefined for a conflict. */
+  onStage?: () => void;
+  /** Stages (or unstages) the hunk at this index. */
+  onHunk: (i: number) => void;
+  onRefresh: () => void;
   context: number;
   onContext: (n: number) => void;
   onClose: () => void;
@@ -447,6 +989,9 @@ function DiffPanel({
   const reply = lastOf(diff);
   const parsed = useMemo(() => (reply ? parseDiff(reply.diff) : undefined), [reply]);
   const contextId = useId();
+  const ready = diff.state === "ready" && !stale && !busy;
+  const byHunk = !!reply && !!parsed && diff.state === "ready" && hunksSupported(change, reply, parsed);
+  const unstaging = change.side === "staged";
   return (
     <section className="repo-diff" aria-label={`Diff of ${change.path}`}>
       <div className="repo-diff-head">
@@ -473,37 +1018,74 @@ function DiffPanel({
           ))}
         </select>
         {diff.state === "loading" && <Spinner />}
+        {onStage && (
+          <button className="btn repo-stage-file" disabled={!ready} onClick={onStage}>
+            {unstaging ? <Minus size={13} aria-hidden /> : <Plus size={13} aria-hidden />} {unstaging ? "Unstage file" : "Stage file"}
+          </button>
+        )}
         <button className="icon-btn" aria-label="Close the diff" title="Close the diff" onClick={onClose}>
           <X size={15} />
         </button>
       </div>
       {diff.state === "failed" && <Failure failure={diff.error} what={`Couldn't read the diff of ${change.path}`} />}
+      {stale && (
+        <div className="files-banner warn" role="status">
+          <FileWarning size={14} aria-hidden />
+          <span>{stale} Nothing here can be staged until the list is read again.</span>
+          <button className="btn" onClick={onRefresh} disabled={busy}>
+            Refresh
+          </button>
+        </div>
+      )}
       {parsed && reply && (
         <div className="repo-diff-body" data-stale={diff.state === "loading" || undefined}>
           <DiffNotices change={change} parsed={parsed} reply={reply} />
-          {parsed.hunks.map((h, i) => (
-            <div key={i} className="files-diff-hunk">
-              <div className="files-diff-at mono">{h.header}</div>
-              {h.lines.map((l, j) => (
-                <div key={j} className={`files-diff-line mono ${l.kind === "add" ? "add" : l.kind === "del" ? "del" : l.kind === "note" ? "note" : ""} ${conflictMarker(l.text) ? "marker" : ""}`}>
-                  {!parsed.combined && (
-                    <>
-                      <span className="files-diff-no">{l.oldNo ?? ""}</span>
-                      <span className="files-diff-no">{l.newNo ?? ""}</span>
-                    </>
-                  )}
-                  <span className="files-diff-sign">{l.kind === "add" ? "+" : l.kind === "del" ? "−" : l.kind === "note" ? "\\" : " "}</span>
-                  <span className="files-diff-text">{l.text}</span>
-                </div>
-              ))}
-            </div>
-          ))}
+          <DiffLines
+            parsed={parsed}
+            action={
+              byHunk
+                ? (i) => (
+                    <button className="btn repo-hunk-act" disabled={!ready} onClick={() => onHunk(i)} aria-label={`${unstaging ? "Unstage" : "Stage"} hunk ${i + 1} of ${parsed.hunks.length}`}>
+                      {unstaging ? <Minus size={12} aria-hidden /> : <Plus size={12} aria-hidden />} {unstaging ? "Unstage hunk" : "Stage hunk"}
+                    </button>
+                  )
+                : undefined
+            }
+          />
           {!parsed.hunks.length && !parsed.binary && !parsed.rename && !parsed.mode && !parsed.newFile && !parsed.deletedFile && !parsed.submodule && (
             <p className="muted small repo-diff-none">No differences on this side any more. Refresh to see the repository as it is now.</p>
           )}
         </div>
       )}
     </section>
+  );
+}
+
+/** A parsed diff's hunks and lines, with an optional action beside each hunk's header. */
+function DiffLines({ parsed, action }: { parsed: ParsedDiff; action?: (hunk: number) => ReactNode }) {
+  return (
+    <>
+      {parsed.hunks.map((h, i) => (
+        <div key={i} className="files-diff-hunk">
+          <div className="files-diff-at mono repo-hunk-head">
+            <span>{h.header}</span>
+            {action?.(i)}
+          </div>
+          {h.lines.map((l, j) => (
+            <div key={j} className={`files-diff-line mono ${l.kind === "add" ? "add" : l.kind === "del" ? "del" : l.kind === "note" ? "note" : ""} ${conflictMarker(l.text) ? "marker" : ""}`}>
+              {!parsed.combined && (
+                <>
+                  <span className="files-diff-no">{l.oldNo ?? ""}</span>
+                  <span className="files-diff-no">{l.newNo ?? ""}</span>
+                </>
+              )}
+              <span className="files-diff-sign">{l.kind === "add" ? "+" : l.kind === "del" ? "−" : l.kind === "note" ? "\\" : " "}</span>
+              <span className="files-diff-text">{l.text}</span>
+            </div>
+          ))}
+        </div>
+      ))}
+    </>
   );
 }
 

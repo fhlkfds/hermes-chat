@@ -19,12 +19,19 @@ export type Entry = {
   unstaged?: [number, number] | null;
   /** An untracked file whose first 8000 bytes hold a NUL, as Git decides. */
   binary?: boolean;
+  /** SHA-256 of the working-tree file as read (null: it's gone), for a file with unstaged changes or untracked. Staging
+   * sends it back, and the helper stages nothing if the file has changed since. */
+  worktree?: string | null;
 };
 
 export type Status = {
   /** The top folder of the checkout: every path is relative to it, and every later request names it. */
   top: string;
   gitDir: string;
+  /** HEAD's commit and the index's stamp when this was read: every write sends them back, and is refused if either
+   * moved (another agent committed or staged meanwhile). */
+  head: string | null;
+  index: string;
   branch: {
     /** HEAD's commit, or null before the first commit. */
     oid: string | null;
@@ -56,12 +63,61 @@ export type DiffReply = {
   sha: string;
   /** For a conflict, which index stages exist: 1 the common base, 2 ours, 3 theirs. */
   stages: number[];
+  /** The working-tree file's stamp as this diff shows it (unstaged and untracked sides only). */
+  worktree?: string | null;
+  /** HEAD and the index when the diff was read. */
+  head?: string | null;
+  index?: string;
+};
+
+/** What a write expects to find. `rawSha` (a commit only): the stamp of the staged changes the preview showed. */
+export type Expect = { head: string | null; index: string; rawSha?: string };
+
+/** What a commit now would hold (the helper's `preview`). */
+export type Preview = {
+  head: string | null;
+  index: string;
+  branch: string | null;
+  /** Each staged file, renames shown as a deletion and an addition; `renames` pairs them up. */
+  files: { status: string; path: string; oldMode: string; newMode: string }[];
+  renames: Record<string, { from: string; score: string }>;
+  rawSha: string;
+  /** The staged diff with a stat, cut at 2 MiB (`truncated`). The file list is never cut. */
+  diff: string;
+  truncated: boolean;
+  lossy: boolean;
+  unmerged: boolean;
+  operation: Status["operation"];
+  /** "Name <email>", or null when Git doesn't know who. */
+  author: string | null;
+  committer: string | null;
+  hooksPath: string;
+  /** The commit hooks Git will run: pre-commit, prepare-commit-msg, commit-msg, post-commit. */
+  hooks: string[];
+  /** The last ten commit subjects, for drafting a message in the same style. */
+  recent: string[];
+};
+
+export type Committed = {
+  head: string;
+  subject: string;
+  /** What Git and the hooks printed. */
+  output: string;
+  /** The commit holds exactly what the preview showed. False when a hook changed it. */
+  matches: boolean;
+  files: { status: string; path: string }[];
+  branch: string | null;
 };
 
 /** What the screen asks the helper for. Mirrors `Request` in repo_git.rs; nothing else can be asked. */
 export type RepoRequest =
   | { op: "status"; repo: string }
-  | { op: "diff"; repo: string; path: string; origPath?: string; side: Side; context: number };
+  | { op: "diff"; repo: string; path: string; origPath?: string; side: Side; context: number }
+  | { op: "stage"; repo: string; files: { path: string; worktree: string | null }[]; expect: Expect }
+  | { op: "unstage"; repo: string; paths: string[]; expect: Expect }
+  | { op: "apply"; repo: string; path: string; patch: string; reverse: boolean; context: number; diffSha: string; expect: Expect }
+  | { op: "preview"; repo: string }
+  | { op: "commit"; repo: string; message: string; expect: Expect };
 
 /** Rust's one command: send `request` to the helper through ssh to `target`. Rejects with a `RepoFailure`. */
 export type RepoApi = { run(target: string, request: RepoRequest): Promise<unknown> };
@@ -70,7 +126,8 @@ export type RepoApi = { run(target: string, request: RepoRequest): Promise<unkno
  * A failure the screen tells apart by `kind`:
  * - ssh: "bad-target", "spawn", "ssh-auth", "ssh-host-key", "ssh-unreachable", "ssh"
  * - the server: "unsupported" (no python3 or git), "timeout", "bad-reply"
- * - the repository: "bad-path", "not-found", "not-repo", "stale", "git", "internal"
+ * - the repository: "bad-path", "not-found", "not-repo", "stale", "busy", "git", "internal"
+ * - a commit: "hook", "identity", "locked", "conflict", "nothing-staged", "empty-message", "lost"
  * `output` is what ssh or Git printed, shown as it is.
  */
 export class RepoFailure extends Error {
@@ -106,7 +163,19 @@ export function failureHint(f: RepoFailure): string | undefined {
     case "timeout":
       return "A read changes nothing. A write may or may not have happened, so look at the repository again before trying it again.";
     case "stale":
-      return "Refresh to see the repository as it is now.";
+      return "Another agent or tool may be working in this checkout. Look at it again before you retry.";
+    case "busy":
+      return "Something kept changing the repository while it was read. Try again in a moment.";
+    case "hook":
+      return "Fix what the hook reports (in the chat or the Terminal), stage the fix, and commit again. Hooks are never skipped.";
+    case "identity":
+      return "Set them on the server: git config --global user.name and user.email.";
+    case "locked":
+      return "If no Git command is running, the lock was left by one that crashed; remove .git/index.lock in the Terminal.";
+    case "conflict":
+      return "Resolve the conflicts in the Terminal or ask Hermes to, then stage the resolved files.";
+    case "lost":
+      return "Look at the history in the Terminal (git log) before doing anything else.";
     default:
       return undefined;
   }
@@ -382,8 +451,132 @@ export function asStatus(v: unknown): Status {
   return s;
 }
 
+export function asPreview(v: unknown): Preview {
+  const p = v as Preview;
+  if (!p || typeof p.index !== "string" || !Array.isArray(p.files) || typeof p.rawSha !== "string") throw new RepoFailure("bad-reply", "The server's answer wasn't a commit preview.");
+  return { ...p, renames: p.renames ?? {}, hooks: Array.isArray(p.hooks) ? p.hooks : [], recent: Array.isArray(p.recent) ? p.recent : [] };
+}
+
+export function asCommitted(v: unknown): Committed {
+  const c = v as Committed;
+  if (!c || typeof c.head !== "string" || !Array.isArray(c.files)) throw new RepoFailure("bad-reply", "The server's answer wasn't a commit.");
+  return c;
+}
+
+export function asStamps(v: unknown): { head: string | null; index: string } {
+  const s = v as { head: string | null; index: string };
+  if (!s || typeof s.index !== "string") throw new RepoFailure("bad-reply", "The server's answer didn't say how the index is now.");
+  return s;
+}
+
 export function asDiff(v: unknown): DiffReply {
   const d = v as DiffReply;
   if (!d || typeof d.diff !== "string") throw new RepoFailure("bad-reply", "The server's answer wasn't a diff.");
   return { ...d, stages: Array.isArray(d.stages) ? d.stages : [] };
+}
+
+// ── staging and committing ──────────────────────────────────────────────────
+
+/** The stamps of a status, for a write made from it. */
+export const expectOf = (s: { head: string | null; index: string }): Expect => ({ head: s.head, index: s.index });
+
+/**
+ * Why the shown diff can't be acted on, or undefined when it can: the list and the diff were read at different
+ * moments, and something changed in between. Staging then would stage something the owner hasn't seen.
+ */
+export function diffStale(s: Status, entry: Entry | undefined, d: DiffReply): string | undefined {
+  if (d.head !== undefined && (d.head !== s.head || d.index !== s.index)) return "The repository changed after the list was read.";
+  if (entry && (d.worktree !== undefined && d.worktree !== null) && entry.worktree !== d.worktree) return "This file changed after the list was read.";
+  return undefined;
+}
+
+/**
+ * Whether single hunks of a change can be staged or unstaged: a text change to a file that exists on both sides,
+ * shown whole and byte for byte. Anything else (new, deleted, renamed, binary, a submodule, a conflict, a cut or
+ * lossy diff) is staged as a whole file.
+ */
+export function hunksSupported(c: Change, d: DiffReply, parsed: ParsedDiff): boolean {
+  if (c.side !== "staged" && c.side !== "unstaged") return false;
+  if (c.code !== "M" || c.binary || c.submodule || c.origPath) return false;
+  if (d.truncated || d.lossy || parsed.combined || parsed.binary || parsed.newFile || parsed.deletedFile || parsed.mode || parsed.rename) return false;
+  return parsed.hunks.length > 0;
+}
+
+/**
+ * A patch of only the hunks at `keep`, cut from the diff text exactly as Git printed it: its header lines, then each
+ * kept hunk's lines unchanged. The helper applies it with `git apply --cached --recount`, so the hunk headers' line
+ * counts needn't be fixed up; Git finds each hunk by its context.
+ */
+export function hunkPatch(diff: string, keep: number[]): string {
+  const lines = diff.split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  const head: string[] = [];
+  const hunks: string[][] = [];
+  for (const line of lines) {
+    if (line.startsWith("@@")) hunks.push([line]);
+    else if (hunks.length) hunks[hunks.length - 1].push(line);
+    else head.push(line);
+  }
+  const picked = keep.filter((i) => i >= 0 && i < hunks.length);
+  if (!picked.length) throw new Error("No such hunk.");
+  return [...head, ...picked.flatMap((i) => hunks[i])].join("\n") + "\n";
+}
+
+/** The message as it will be committed: verbatim, with one final new line. Empty when there's nothing but space. */
+export function commitMessage(draft: string): string {
+  if (!draft.trim()) return "";
+  return draft.replace(/\s+$/, "") + "\n";
+}
+
+/** A word on the message's first line, when it's long. */
+export function subjectNote(draft: string): string | undefined {
+  const subject = draft.split("\n")[0];
+  if (subject.length > 72) return `The first line is ${subject.length} characters; Git tools show about 72.`;
+  return undefined;
+}
+
+/** What `llm.oneshot` is told when asked for a commit message. It sees only the staged changes and recent subjects. */
+export const SUGGEST_INSTRUCTIONS =
+  "Write a Git commit message for the staged changes below. First line: an imperative summary under 72 characters, " +
+  "in the style of the recent subjects if they share one. Then, if the change needs it, a blank line and a short body " +
+  "saying why. Answer with the message only: no quotes, no code fences, no commentary.";
+
+/** The input for a suggested message: recent subjects, the files, then the staged diff, cut to `max` characters. */
+export function suggestInput(p: Preview, max = 60_000): string {
+  const files = previewRows(p).map((r) => `${r.code} ${r.from ? `${r.from} -> ` : ""}${r.path}`).join("\n");
+  const recent = p.recent.length ? `Recent subjects:\n${p.recent.join("\n")}\n\n` : "";
+  const diff = p.diff.length > max ? `${p.diff.slice(0, max)}\n[diff cut]` : p.diff;
+  return `${recent}Staged files:\n${files}\n\nStaged diff:\n${diff}`;
+}
+
+/** Hermes's suggestion as a message: a fence or quotes around the whole answer taken off. */
+export function cleanSuggestion(text: string): string {
+  let t = text.trim();
+  const fence = /^```[a-z]*\n([\s\S]*?)\n```$/.exec(t);
+  if (fence) t = fence[1].trim();
+  if (/^".*"$/s.test(t) || /^'.*'$/s.test(t)) t = t.slice(1, -1).trim();
+  return t;
+}
+
+/** A combined patch (the preview's diff) split into each file's own diff, without the stat above them. */
+export function splitPatch(text: string): { header: string; diff: string }[] {
+  const out: { header: string; diff: string }[] = [];
+  for (const part of text.split(/^(?=diff --git )/m)) {
+    if (!part.startsWith("diff --git ")) continue;
+    out.push({ header: part.slice(0, part.indexOf("\n") >>> 0), diff: part });
+  }
+  return out;
+}
+
+/** A preview's files, with each rename pair as one row: "R old → new" in place of "D old" and "A new". */
+export function previewRows(p: Preview): { code: string; path: string; from?: string }[] {
+  const moved = new Set(Object.values(p.renames).map((r) => r.from));
+  const rows: { code: string; path: string; from?: string }[] = [];
+  for (const f of p.files) {
+    if (moved.has(f.path) && f.status === "D") continue;
+    const r = p.renames[f.path];
+    if (r && f.status === "A") rows.push({ code: r.score.startsWith("C") ? "C" : "R", path: f.path, from: r.from });
+    else rows.push({ code: f.status, path: f.path });
+  }
+  return rows;
 }
