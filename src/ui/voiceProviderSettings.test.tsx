@@ -157,6 +157,52 @@ describe("Settings → Voice → Speech providers", () => {
     expect(fake.config("default").tts.edge).toMatchObject({ voice: "en-GB-SoniaNeural" });
   });
 
+  it("won't save a blank Hermes would use, and says why", async () => {
+    const { user, fake } = await shown();
+    await screen.findByRole("group", { name: "Text-to-speech" });
+    await user.clear(within(side("Text-to-speech")).getByLabelText(/^Voice/));
+    expect((await screen.findByRole("alert")).textContent).toMatch(/Microsoft Edge TTS's voice can't be blank/);
+    expect((saveButton() as HTMLButtonElement).disabled).toBe(true);
+    await user.type(within(side("Text-to-speech")).getByLabelText(/^Voice/), "en-GB-SoniaNeural");
+    expect((saveButton() as HTMLButtonElement).disabled).toBe(false);
+    expect(fake.writes).toEqual([]);
+  });
+
+  it("drops what was typed for a provider once another is picked, so nothing hidden is sent", async () => {
+    const { user, fake } = await shown();
+    await screen.findByRole("group", { name: "Speech-to-text" });
+    await user.selectOptions(picker("Speech-to-text"), "Groq");
+    await user.type(within(side("Speech-to-text")).getByLabelText("Groq Groq API key"), "gsk-hidden");
+    await user.selectOptions(within(side("Speech-to-text")).getByLabelText(/^Model/), "whisper-large-v3");
+    await user.selectOptions(picker("Speech-to-text"), "OpenAI");
+    await user.type(within(side("Speech-to-text")).getByLabelText("OpenAI OpenAI API key"), "sk-shown");
+    await user.click(saveButton());
+    await screen.findByText(/Saved on Hermes, and read back/);
+    expect(fake.savedKeys.map((k) => k.env)).toEqual(["VOICE_TOOLS_OPENAI_KEY"]);
+    expect(fake.writes.map((w) => w.route)).toEqual(["env", "provider"]);
+    expect(fake.config("default").stt.groq).toMatchObject({ model: "whisper-large-v3-turbo" });
+  });
+
+  it("shows a save still on its way after the panel opens again, and reads Hermes once it lands", async () => {
+    const { user, fake, hermes } = await shown();
+    await screen.findByRole("group", { name: "Text-to-speech" });
+    let open!: () => void;
+    fake.gate = new Promise((r) => (open = r));
+    await user.selectOptions(picker("Text-to-speech"), "ElevenLabs");
+    await user.click(saveButton());
+    await screen.findByText(/Saving to Hermes/);
+    // Settings closed and opened again while it saves.
+    cleanup();
+    render(<VoiceProviderSettings api={hermes.voiceSettings} profile="default" connected />);
+    await screen.findByRole("group", { name: "Text-to-speech" });
+    expect(screen.getByText(/Saving to Hermes/)).toBeTruthy();
+    expect(picker("Text-to-speech").disabled).toBe(true);
+    act(() => open());
+    await waitFor(() => expect(picker("Text-to-speech").value).toBe("ElevenLabs"));
+    expect(picker("Text-to-speech").disabled).toBe(false);
+    expect(listed("Text-to-speech")[3]).toMatch(/^ElevenLabs\s*In use/);
+  });
+
   it("says when the server can't list its speech providers, and what to do instead", async () => {
     await shown({ setUp: (s) => (s.voiceProviders.routes = "none") });
     const note = await screen.findByRole("note");

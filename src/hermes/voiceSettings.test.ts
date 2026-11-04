@@ -143,6 +143,33 @@ describe("Settings → Voice: saving", () => {
     expect(lost).toMatchObject({ kind: "failed", refused: false, done: [] });
   });
 
+  it("doesn't call a replaced key saved when its write didn't answer: the old key reads as set too", async () => {
+    const { fake, api } = await setUp();
+    fake.env.default = new Set(["GROQ_API_KEY"]);
+    const base = await api.read("default");
+    fake.failNext = { route: "env", detail: "Can't reach the Hermes dashboard: connection reset", stored: true };
+    const r = await api.save("default", base, draft({ keys: { stt: { GROQ_API_KEY: "gsk-new" } } }));
+    expect(r).toMatchObject({ kind: "failed", refused: false, done: [] });
+    // A pick that went through alongside it doesn't make the key proven either.
+    fake.failNext = { route: "env", status: 500, detail: "Internal server error", stored: true };
+    const again = await api.save("default", await api.read("default"), draft({ keys: { stt: { GROQ_API_KEY: "gsk-2" } }, settings: { "stt.groq.model": "whisper-large-v3" } }));
+    expect(again).toMatchObject({ kind: "failed", refused: false });
+  });
+
+  it("refuses, before sending anything, a blank Hermes would use, and a pick that needs a sign-in on the server", async () => {
+    const { fake, api } = await setUp();
+    const base = await api.read("default");
+    const blank = await api.save("default", base, draft({ settings: { "tts.edge.voice": " " } }));
+    expect(blank).toMatchObject({ kind: "failed", refused: true, done: [] });
+    if (blank.kind === "failed") expect(blank.reason).toMatch(/Microsoft Edge TTS's voice can't be blank/);
+    const nous = await api.save("default", base, draft({ provider: { tts: "Nous Subscription" } }));
+    expect(nous).toMatchObject({ kind: "failed", refused: true, done: [] });
+    if (nous.kind === "failed") expect(nous.reason).toMatch(/Nous Subscription needs a sign-in on the Hermes server first/);
+    expect(fake.writes).toEqual([]);
+    // Where Hermes falls back on a blank (a language, Gemini's voice), it is sent.
+    expect((await api.save("default", base, draft({ settings: { "stt.local.language": "", "stt.language": "" } }))).kind).toBe("saved");
+  });
+
   it("says when Hermes took a pick but it doesn't read back", async () => {
     const { fake, api } = await setUp();
     const base = await api.read("default");

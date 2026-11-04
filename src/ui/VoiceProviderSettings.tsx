@@ -1,7 +1,7 @@
 // Settings → Voice → Speech providers: pick the profile's speech-to-text and text-to-speech provider on Hermes, set the
 // picked one's model, voice and language, and give it an API key. See src/hermes/voiceSettings.ts and ADR 0051.
 // Keys are write-only: Hermes says only whether one is set, a typed one is sent once, and the field is emptied after.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { KeyRound, RotateCcw, Save } from "lucide-react";
 import {
   KINDS,
@@ -16,6 +16,7 @@ import {
   VoiceUnsupportedError,
   activeOf,
   draftChanges,
+  draftProblems,
   emptyDraft,
   fieldsOf,
   readiness,
@@ -115,9 +116,19 @@ export function VoiceProviderSettings({
   }, [api, profile, connected]);
 
   const changed = draftChanges(draft);
+  const problems = read && changed ? draftProblems(read, draft) : [];
+  // A save for this profile still on its way from before this panel opened (Settings was left and opened again, or the
+  // profile switched back): it is shown, nothing is saved over it, and Hermes is read again once it lands.
+  const elsewhere = useSyncExternalStore(api.subscribe, () => api.pending() === profile) && !saving;
+  const wasElsewhere = useRef(false);
+  useEffect(() => {
+    if (wasElsewhere.current && !elsewhere && connected) load();
+    wasElsewhere.current = elsewhere;
+  }, [elsewhere]);
+  const busy = saving || elsewhere;
 
   const save = async () => {
-    if (!read || saving) return;
+    if (!read || busy || problems.length) return;
     const mine = epoch.current;
     const forApi = api;
     const forProfile = profile;
@@ -151,12 +162,16 @@ export function VoiceProviderSettings({
     });
   };
 
+  // Another pick drops what was typed for the last one on that side: nothing hidden is ever sent.
   const setProvider = (kind: VoiceKind, name: string) =>
     setDraft((d) => {
       const provider = { ...d.provider };
       if (read && activeOf(read, kind)?.name === name) delete provider[kind];
       else provider[kind] = name;
-      return { ...d, provider };
+      const picked = read?.sides[kind].providers.find((p) => p.name === name);
+      const own = new Set(fieldsOf(kind, picked).map((f) => f.path));
+      const settings = Object.fromEntries(Object.entries(d.settings).filter(([path]) => !path.startsWith(`${kind}.`) || path === STT_LANGUAGE || own.has(path)));
+      return { provider, settings, keys: { ...d.keys, [kind]: {} } };
     });
   const setSetting = (path: string, value: string) =>
     setDraft((d) => {
@@ -206,28 +221,33 @@ export function VoiceProviderSettings({
               kind={kind}
               read={read}
               draft={draft}
-              disabled={saving}
+              disabled={busy}
               onProvider={(name) => setProvider(kind, name)}
               onSetting={setSetting}
               onKey={(env, value) => setKey(kind, env, value)}
             />
           ))}
           <div className="settings-row voice-save">
-            <div className={`small ${outcome && !outcome.ok ? "sign-in-error" : "muted"}`} role={outcome && !outcome.ok ? "alert" : "status"}>
-              {saving ? (
+            <div
+              className={`small ${(outcome && !outcome.ok) || problems.length ? "sign-in-error" : "muted"}`}
+              role={(outcome && !outcome.ok) || problems.length ? "alert" : "status"}
+            >
+              {busy ? (
                 <>
                   <Spinner /> Saving to Hermes, then reading it back…
                 </>
+              ) : problems.length ? (
+                problems.join(" ")
               ) : (
                 (outcome?.text ?? (changed ? "Not saved yet." : ""))
               )}
             </div>
             <div className="confirm-actions">
-              <button className="btn" disabled={!changed || saving} onClick={() => (setDraft(emptyDraft()), setOutcome(undefined))}>
+              <button className="btn" disabled={!changed || busy} onClick={() => (setDraft(emptyDraft()), setOutcome(undefined))}>
                 Discard changes
               </button>
-              <button className="btn primary" disabled={!changed || saving} onClick={save}>
-                <Save size={13} /> {saving ? "Saving…" : "Save to Hermes"}
+              <button className="btn primary" disabled={!changed || busy || problems.length > 0} onClick={save}>
+                <Save size={13} /> {busy ? "Saving…" : "Save to Hermes"}
               </button>
             </div>
           </div>
@@ -235,7 +255,7 @@ export function VoiceProviderSettings({
             Keys are saved in the profile's .env on the server and never shown here again: Hermes says only whether one is set. Installing a local
             provider's software (Local Whisper, Piper) and signing in to Nous Portal or xAI are done on the server with{" "}
             <span className="mono">hermes tools</span>.{" "}
-            <button className="link-btn" disabled={saving} onClick={load}>
+            <button className="link-btn" disabled={busy} onClick={load}>
               <RotateCcw size={11} /> Read again
             </button>
           </p>

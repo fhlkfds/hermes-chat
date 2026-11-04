@@ -26,13 +26,19 @@ import { failureOf } from "./toolsets";
 export type VoiceKind = "stt" | "tts";
 export const KINDS: readonly VoiceKind[] = ["stt", "tts"];
 
-/** A setting the screen offers for a provider: its key in the provider's config section (`tts.openai.voice`). */
-export type VoiceField = { key: string; label: string; hint?: string };
+/**
+ * A setting the screen offers for a provider: its key in the provider's config section (`tts.openai.voice`). `blankOk`:
+ * Hermes falls back to a default (or detects it) when it is blank. Otherwise a blank is refused: `PUT /api/config` can't
+ * remove a key, and Hermes would use the empty value (`cfg.get("voice", DEFAULT)` in `tools/tts_tool_*.py`).
+ */
+export type VoiceField = { key: string; label: string; hint?: string; blankOk?: boolean };
 
 const model: VoiceField = { key: "model", label: "Model" };
 const voice: VoiceField = { key: "voice", label: "Voice" };
 const voiceId: VoiceField = { key: "voice_id", label: "Voice", hint: "The provider's voice ID." };
-const language: VoiceField = { key: "language", label: "Language", hint: "A code such as en or es. Blank: the provider detects it." };
+const language: VoiceField = { key: "language", label: "Language", hint: "A code such as en or es. Blank: the provider detects it.", blankOk: true };
+// Speech-to-text falls back to its default model when blank (`if not model_name` in tools/transcription_*.py).
+const sttModel: VoiceField = { ...model, blankOk: true };
 
 /**
  * The settings shown for each provider, by its config section: Hermes's own defaults name them
@@ -41,34 +47,66 @@ const language: VoiceField = { key: "language", label: "Language", hint: "A code
  */
 export const PROVIDER_FIELDS: Record<VoiceKind, Record<string, VoiceField[]>> = {
   stt: {
-    local: [{ ...model, label: "Model size", hint: "Bigger is more accurate and slower. It downloads on first use." }, language],
-    groq: [model, language],
-    openai: [model, language],
-    mistral: [model, language],
-    xai: [{ ...model, hint: "Blank: Hermes's default, grok-voice-transcribe-2.0." }, language],
+    local: [{ ...sttModel, label: "Model size", hint: "Bigger is more accurate and slower. It downloads on first use." }, language],
+    groq: [sttModel, language],
+    openai: [sttModel, language],
+    mistral: [sttModel, language],
+    xai: [{ ...sttModel, hint: "Blank: Hermes's default, grok-voice-transcribe-2.0." }, language],
     elevenlabs: [
       { key: "model_id", label: "Model" },
-      { key: "language_code", label: "Language", hint: "A three-letter code such as eng. Blank: the provider detects it." },
+      { key: "language_code", label: "Language", hint: "A three-letter code such as eng. Blank: the provider detects it.", blankOk: true },
     ],
-    deepinfra: [{ ...model, hint: "Blank: the first speech-to-text model in DeepInfra's catalog." }],
+    deepinfra: [{ ...sttModel, hint: "Blank: the first speech-to-text model in DeepInfra's catalog." }],
   },
   tts: {
     edge: [{ ...voice, hint: "Such as en-US-AriaNeural or en-GB-SoniaNeural." }],
     openai: [model, { ...voice, hint: "Such as alloy, nova, onyx or shimmer." }],
     elevenlabs: [voiceId, { key: "model_id", label: "Model" }],
-    gemini: [model, { ...voice, hint: "Such as Kore or Puck." }],
-    xai: [{ ...voiceId, hint: "Such as eve, or a custom voice ID." }, { ...language, hint: "A code such as en or pt-BR, or auto." }],
-    mistral: [model, voiceId],
+    gemini: [{ ...model, blankOk: true }, { ...voice, hint: "Such as Kore or Puck.", blankOk: true }],
+    xai: [{ ...voiceId, hint: "Such as eve, or a custom voice ID.", blankOk: true }, { ...language, hint: "A code such as en or pt-BR, or auto." }],
+    mistral: [model, { ...voiceId, blankOk: true }],
     minimax: [model, voiceId],
     kittentts: [model, voice],
     neutts: [model],
-    piper: [{ ...voice, hint: "A voice name, downloaded on first use, or the path of an .onnx file on the server." }],
-    deepinfra: [{ ...model, hint: "Blank: the first text-to-speech model in DeepInfra's catalog." }, voice],
+    piper: [{ ...voice, hint: "A voice name, downloaded on first use, or the path of an .onnx file on the server.", blankOk: true }],
+    deepinfra: [{ ...model, hint: "Blank: the first text-to-speech model in DeepInfra's catalog.", blankOk: true }, voice],
   },
 };
 
 /** `stt.language`: the language hint Hermes gives every speech-to-text provider without its own. */
 export const STT_LANGUAGE = "stt.language";
+
+/** The longest setting this app sends: Rust passes on no longer value, so a longer one could never read back. */
+export const SETTING_MAX = 256;
+
+/** The field at a config path, if the screen offers one there. */
+function fieldAt(path: string): VoiceField | undefined {
+  if (path === STT_LANGUAGE) return { key: "language", label: "Language", blankOk: true };
+  const [kind, section, key] = path.split(".");
+  return PROVIDER_FIELDS[kind as VoiceKind]?.[section]?.find((f) => f.key === key);
+}
+
+/**
+ * Why a draft can't be sent, if it can't: a blank where Hermes would use the blank, a setting too long to read back, or
+ * a pick of a provider that needs a sign-in on the server. Hermes's provider route writes a Nous Subscription pick as
+ * `nous` and only then says the account isn't entitled (`needs_nous_auth`), leaving no provider in use; an xAI pick
+ * without its sign-in is written as `xai` and fails when used.
+ */
+export function draftProblems(read: VoiceRead, draft: VoiceDraft): string[] {
+  const out: string[] = [];
+  for (const [path, value] of Object.entries(draft.settings)) {
+    const f = fieldAt(path);
+    if (!value.trim() && !f?.blankOk) out.push(`${settingLabel(read, path)} can't be blank: Hermes would use the blank value.`);
+    else if (value.length > SETTING_MAX) out.push(`${settingLabel(read, path)} is longer than ${SETTING_MAX} characters.`);
+  }
+  for (const kind of KINDS) {
+    const name = draft.provider[kind];
+    const p = name === undefined ? undefined : read.sides[kind].providers.find((r) => r.name === name);
+    if (p?.status === "needs_auth")
+      out.push(`${p.name} needs a sign-in on the Hermes server first (with hermes tools there); picking it now would leave no ${KIND_LABEL[kind].toLowerCase()} provider working.`);
+  }
+  return out;
+}
 
 /**
  * Hermes lists speech-to-text providers by name only (its `/config` answer has `tts_provider` for text-to-speech rows,
@@ -156,6 +194,8 @@ const str = (v: unknown): string => (typeof v === "string" ? v : "");
 const noRoute = (status: number | undefined, reason: string) => status === 405 || (status === 404 && reason === "Not Found");
 
 export const KIND_LABEL: Record<VoiceKind, string> = { stt: "Speech-to-text", tts: "Text-to-speech" };
+
+const keyLabel = (kind: VoiceKind, env: Record<string, string>) => `the ${KIND_LABEL[kind].toLowerCase()} ${Object.keys(env).length === 1 ? "key" : "keys"}`;
 
 /** What a provider's readiness means for the owner, as a badge and a sentence. */
 export function readiness(p: VoiceProvider): { badge: string; text: string; ok: boolean } {
@@ -340,13 +380,16 @@ export class VoiceSettingsApi {
     ];
     if (what.length) return { kind: "conflict", read: before, what, kinds, paths };
 
+    const problems = draftProblems(before, draft);
+    if (problems.length) return { kind: "failed", reason: problems.join(" "), refused: true, done: [], read: before };
+
     const keys = KINDS.map((kind) => [kind, Object.fromEntries(Object.entries(draft.keys[kind] ?? {}).filter(([, v]) => v.trim()))] as const).filter(
       ([, env]) => Object.keys(env).length,
     );
     const steps: { label: string; send: () => Promise<unknown> }[] = [
       // Keys first, so a provider picked with its new key is ready once it is in use.
       ...keys.map(([kind, env]) => ({
-        label: `the ${KIND_LABEL[kind].toLowerCase()} ${Object.keys(env).length === 1 ? "key" : "keys"}`,
+        label: keyLabel(kind, env),
         send: () => this.rest("PUT", `api/tools/toolsets/${kind}/env?${this.q(profile)}`, { env }),
       })),
       ...KINDS.filter((kind) => draft.provider[kind] !== undefined && draft.provider[kind] !== activeOf(before, kind)?.name).map((kind) => ({
@@ -393,7 +436,9 @@ export class VoiceSettingsApi {
     for (const [kind, env] of keys)
       for (const name of Object.keys(env))
         if (!after.sides[kind].providers.some((p) => p.keys.some((k) => k.env === name && k.set))) missing.push(name);
-    if (!missing.length) return { kind: "saved", read: after, ...(failure ? { warning: failure.reason } : {}) };
+    // A key Hermes says is set may be the one it had before: when a key's write didn't answer, the read can't prove it.
+    const keysUnproven = !!failure && keys.some(([kind, env]) => !done.includes(keyLabel(kind, env)));
+    if (!missing.length && !keysUnproven) return { kind: "saved", read: after, ...(failure ? { warning: failure.reason } : {}) };
     if (failure) return { kind: "failed", ...failure, done, read: after };
     return { kind: "mismatch", read: after, what: missing };
   }
