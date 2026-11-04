@@ -184,7 +184,7 @@ pub async fn app_restart(app: AppHandle, state: State<'_, Updates>, drafts: Stri
 
 /// The arguments to start the app again with: the same, less `--screenshot`.
 fn relaunch_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Vec<std::ffi::OsString> {
-    args.into_iter().skip(1).filter(|a| a != "--screenshot").collect()
+    args.into_iter().skip(1).filter(|a| a != "--screenshot" && a != "--show" && a != "--toggle").collect()
 }
 
 /// Starts the app again, if the owner asked to restart, from the binary it started from (or the AppImage, which the
@@ -196,7 +196,7 @@ pub fn relaunch(app: &AppHandle) {
     let env = app.env();
     match tauri::process::current_binary(&env) {
         Ok(exe) => {
-            if let Err(e) = std::process::Command::new(exe).args(relaunch_args(env.args_os)).env(crate::remote::RESTARTED, "1").spawn() {
+            if let Err(e) = std::process::Command::new(exe).args(relaunch_args(env.args_os)).env(crate::remote::NEW_INSTANCE, "1").spawn() {
                 eprintln!("hermes-chat: couldn't start again after the update: {e}");
             }
         }
@@ -296,8 +296,8 @@ mod tests {
     }
 
     #[test]
-    fn restarts_without_asking_for_a_screenshot() {
-        let args = ["/usr/bin/hermes-chat", "--screenshot", "--other"].map(std::ffi::OsString::from);
+    fn restarts_without_asking_for_a_screenshot_or_to_show_a_window() {
+        let args = ["/usr/bin/hermes-chat", "--screenshot", "--toggle", "--show", "--other"].map(std::ffi::OsString::from);
         assert_eq!(relaunch_args(args), ["--other"]);
     }
 

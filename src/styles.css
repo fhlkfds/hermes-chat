@@ -991,10 +991,12 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 .shortcut-controls { display: flex; gap: 8px; flex-shrink: 0; }
 .shortcut-key { min-width: 132px; justify-content: center; font-family: var(--mono); }
 .shortcut-key.recording { border-color: var(--accent, var(--text)); color: var(--text); }
-.screenshot-settings h3 { font-size: calc(13rem / 14); margin: 22px 0 6px; }
-.screenshot-settings p.settings-note { margin: 8px 0 0; }
+.screenshot-settings h3, .global-shortcut-settings h3 { font-size: calc(13rem / 14); margin: 22px 0 6px; }
+.screenshot-settings p.settings-note, .global-shortcut-settings p.settings-note { margin: 8px 0 0; }
+.shortcut-failure { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.shortcut-failure p { margin: 0; }
 .shortcut-examples { margin: 6px 0 8px; padding-left: 18px; line-height: 1.7; }
-.screenshot-settings code { font-family: var(--mono); font-size: calc(11.5rem / 14); background: var(--raised-2); padding: 1px 5px; border-radius: 4px; }
+.screenshot-settings code, .global-shortcut-settings code { font-family: var(--mono); font-size: calc(11.5rem / 14); background: var(--raised-2); padding: 1px 5px; border-radius: 4px; }
 .warn-note { color: var(--warn); }
 /* projects (Projects.tsx, ADR 0007): the switcher under the profile's name, and the project screen */
 .sb-project { display: flex; padding: 0 12px 6px 14px; margin-top: -4px; }
@@ -2102,6 +2104,17 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
   .usage-status-actions { margin-left: 0; }
   .usage-filters select, .usage-filters input { max-width: 100%; }
 }
+
+/* Edit and Regenerate (ADR 0035). */
+.leave-overlay .leave-dialog.replay-dialog { max-width: min(640px, 100%); }
+.replay-text { width: 100%; resize: vertical; min-height: 72px; font: inherit; line-height: 1.5; }
+.replay-later li:last-child { color: var(--text-2); }
+.variant-nav { display: flex; align-items: center; gap: 4px; margin-top: 6px; font-size: calc(12rem / 14); color: var(--muted); flex-wrap: wrap; }
+.variant-nav .icon-btn { width: 24px; height: 24px; }
+.variant-count { font-variant-numeric: tabular-nums; color: var(--text-2); min-width: 3ch; text-align: center; }
+.variant-what { margin-left: 4px; overflow-wrap: anywhere; }
+.msg.user .variant-nav { justify-content: flex-end; }
+.branch-unfinished .btn { margin-left: 4px; padding: 2px 8px; font-size: calc(12rem / 14); }
 
 /* ---------- Logs (Logs.tsx, ADR 0033) ---------- */
 /* A screen tall enough for the list: the list scrolls, the controls above it stay. */

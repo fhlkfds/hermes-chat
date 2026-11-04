@@ -263,21 +263,55 @@ export function BranchDialog({
   );
 }
 
-/** At the top of a branch made here: where it came from, and a way back to that point. */
-export function BranchedFrom({ link, parentListed, onOpen }: { link: BranchLink; parentListed: boolean; onOpen: () => void }) {
+/**
+ * At the top of a branch made here: where it came from, and a way back to that point. A branch made by Edit or
+ * Regenerate says so (ADR 0035); one whose message hasn't gone into it yet offers `finish`, which sends it.
+ */
+export function BranchedFrom({
+  link,
+  parentListed,
+  onOpen,
+  finish,
+}: {
+  link: BranchLink;
+  parentListed: boolean;
+  onOpen: () => void;
+  finish?: { busy: boolean; blocked?: string; run: () => void };
+}) {
+  const parent = parentListed ? (
+    <button className="link-btn" onClick={onOpen} title="Open that chat at this point">
+      {link.parentTitle}
+    </button>
+  ) : (
+    <b title="That chat isn't in the list now">{link.parentTitle}</b>
+  );
+  const kind = link.variant?.kind;
   return (
     <div className="branch-note" role="note">
       <GitBranch size={13} aria-hidden />
       <span>
-        Branched from{" "}
-        {parentListed ? (
-          <button className="link-btn" onClick={onOpen} title="Open that chat at this point">
-            {link.parentTitle}
-          </button>
+        {kind === "edit" ? (
+          <>
+            Edited from {parent}, where your original message <q className="branch-quote">{link.point.excerpt}</q> and what came after it stay
+          </>
+        ) : kind === "regenerate" ? (
+          <>
+            Another answer to your message <q className="branch-quote">{link.point.excerpt}</q> in {parent}, where the first answer stays.
+          </>
         ) : (
-          <b title="That chat isn't in the list now">{link.parentTitle}</b>
-        )}{" "}
-        after {whose(link.point.role)} <q className="branch-quote">{link.point.excerpt}</q>
+          <>
+            Branched from {parent} after {whose(link.point.role)} <q className="branch-quote">{link.point.excerpt}</q>
+          </>
+        )}
+        {finish && (
+          <span className="branch-unfinished" role="status">
+            {" "}
+            Your message hasn't gone to this branch yet.{" "}
+            <button className="btn" disabled={finish.busy || !!finish.blocked} title={finish.blocked} onClick={finish.run}>
+              {finish.busy ? <Spinner /> : null} Send it now
+            </button>
+          </span>
+        )}
       </span>
     </div>
   );

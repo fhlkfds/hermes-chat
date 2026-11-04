@@ -187,15 +187,12 @@ fn write_settings(path: &PathBuf, settings: &Settings) -> Result<(), String> {
 
 /// Shows the window, brings it forward and tells the webview, which puts focus back where it was.
 pub fn show<R: Runtime>(app: &AppHandle<R>) {
-    let tray = app.state::<Tray>();
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
     }
-    tray.hidden.store(false, Ordering::SeqCst);
-    let _ = app.emit(VISIBILITY_EVENT, serde_json::json!({ "hidden": false }));
-    set_show_label(&tray, false);
+    seen(app, false);
 }
 
 /// Hides the window to the tray and tells the webview, which stops Dictation and Read aloud.
@@ -206,14 +203,21 @@ pub fn hide<R: Runtime>(app: &AppHandle<R>) {
             return;
         }
     }
-    tray.hidden.store(true, Ordering::SeqCst);
-    let _ = app.emit(VISIBILITY_EVENT, serde_json::json!({ "hidden": true }));
-    set_show_label(&tray, true);
+    seen(app, true);
     // The tray may have gone between deciding to hide and hiding: the watcher, which saw the window still showing,
     // won't bring it back, so this does.
     if must_reappear(true, tray.state.lock().unwrap().0) {
         show(app);
     }
+}
+
+/// The window was just shown or hidden, here or by the global shortcut (summon.rs): the tray's Show/Hide line and the
+/// webview, which stops Dictation and Read aloud while hidden, follow it.
+pub fn seen<R: Runtime>(app: &AppHandle<R>, hidden: bool) {
+    let Some(tray) = app.try_state::<Tray>() else { return };
+    tray.hidden.store(hidden, Ordering::SeqCst);
+    let _ = app.emit(VISIBILITY_EVENT, serde_json::json!({ "hidden": hidden }));
+    set_show_label(&tray, hidden);
 }
 
 fn set_show_label(tray: &Tray, hidden: bool) {

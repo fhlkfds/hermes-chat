@@ -22,6 +22,7 @@ import { appUpdates } from "./hermes/tauriUpdates";
 import { needsAttention, type Updater } from "./hermes/updates";
 import { desktopNotify } from "./hermes/tauriNotify";
 import { ScreenshotDesk, type ScreenshotApi } from "./hermes/screenshots";
+import { desktopSummon, type SummonApi } from "./hermes/summon";
 import { onDesktopScreenshot, screenshotSupport, showWindow, syncScreenshotOutbox, tauriScreenshots, type ScreenshotSupport } from "./hermes/tauriScreenshot";
 import { checkShortcut, shortcutLabel, shortcutOf } from "./ui/shortcut";
 
@@ -34,6 +35,8 @@ import { Inbox } from "./ui/Inbox";
 import { inboxAcks, inboxEntries, inboxScope, needsOwner, type InboxEntry } from "./hermes/inbox";
 import { ChatPane, type JumpTarget } from "./ui/ChatPane";
 import { BranchDialog, BranchedFrom } from "./ui/Branch";
+import { ReplayDialog } from "./ui/Replay";
+import { replayBlocked, variantsIn, type ReplayKind } from "./hermes/replay";
 import { branchBlocked, type BranchLink } from "./hermes/branch";
 import type { QueueApi } from "./ui/Queue";
 import { PANE_NAMES, Split, usePaneVisible, type PaneSlot } from "./ui/Split";
@@ -394,6 +397,7 @@ export function Main({
   localFiles = tauriLocalFiles,
   webPages = tauriWebPages,
   screenshots = tauriScreenshotWiring,
+  summon = desktopSummon,
   personaStore = savedPersona,
   guardClose = tauriCloseGuard,
   onSignOut,
@@ -416,6 +420,8 @@ export function Main({
   localFiles?: LocalFiles;
   webPages?: WebPages;
   screenshots?: Screenshots;
+  /** The global shortcut (ADR 0033); none outside the desktop app. */
+  summon?: SummonApi;
   /** Where Settings → Persona keeps unsaved edits and replaced versions on this computer. */
   personaStore?: PersonaStore;
   /** Asks before the window closes; registered only while Settings → Persona holds an unsaved edit. */
@@ -1148,6 +1154,15 @@ export function Main({
   const previewShown = !!preview && !screenCovering && (previewFits || !previewHidden);
   const previewCovers = previewShown && !previewFits;
 
+  // The global shortcut or `hermes-chat --show` brought the window forward: the cursor goes back in the selected pane's
+  // composer, its draft as it was. Settings or another screen over the chat stays as it was left, unsaved edits and all.
+  const onSummonedRef = useRef(() => {});
+  onSummonedRef.current = () => {
+    if (covered || covering || previewCovers || searchOpen) return;
+    focusPane(active.key);
+  };
+  useEffect(() => summon?.onSummoned(() => onSummonedRef.current()), [summon]);
+
 
   const slots: PaneSlot[] = panes.map((p, i) => {
     const listed = p.chatId === null ? undefined : chats.find((c) => c.id === p.chatId);
@@ -1221,6 +1236,13 @@ export function Main({
           onNew={() => newChat()}
           onDelete={() => deleteChat(chat.id)}
           onOpenChat={(id) => openChat(id, { pane: p.key })}
+          onOpenTurn={(id, turn) => {
+            if (!chats.some((c) => c.id === id)) return setToast({ text: "That chat isn't in the chat list now.", at: Date.now() });
+            guard(() => {
+              openChat(id, { pane: p.key, keepSettings: true });
+              patchPane(p.key, { jump: { turn, at: Date.now() } });
+            });
+          }}
           onShowAt={(link) => {
             if (!chats.some((c) => c.id === link.parentId)) return setToast({ text: "That chat isn't in the chat list now.", at: Date.now() });
             // Opened at the message's stored row, the one the branch ends with, whatever its words.
@@ -1541,6 +1563,7 @@ export function Main({
             skillDiscards={skillDiscards}
             checkScreenshots={screenshots.support}
             tray={tray}
+            summon={summon}
             voiceSetup={voice.setup}
             showTextGeneration={showTextGeneration}
             showMemory={showMemory}
@@ -1848,6 +1871,7 @@ function ChatView({
   onDelete,
   onOpenChat,
   onShowAt,
+  onOpenTurn,
   paneControls,
   previewControls,
   screenshots,
@@ -1894,6 +1918,8 @@ function ChatView({
   onOpenChat: (id: string) => void;
   /** Opens the chat a branch came from, at the message it was branched after. */
   onShowAt: (link: BranchLink) => void;
+  /** Opens another version of a turn in this pane, at that turn (ADR 0035). */
+  onOpenTurn: (chatId: string, turn: number) => void;
   paneControls: ReactNode;
   previewControls: ReactNode;
   screenshots?: ScreenshotDesk;
@@ -2026,6 +2052,19 @@ function ChatView({
   const [branchFrom, setBranchFrom] = useState<string>();
   useEffect(() => setBranchFrom(undefined), [chatId, profile]);
   const link = useSyncExternalStore(hermes.subscribe, () => hermes.getSnapshot().branches.links[chat.id]);
+  // Edit and Regenerate (ADR 0035): the message the dialog is open for, and the versions of this chat's turns.
+  const [replayFrom, setReplayFrom] = useState<{ itemId: string; kind: ReplayKind }>();
+  useEffect(() => setReplayFrom(undefined), [chatId, profile]);
+  const links = useSyncExternalStore(hermes.subscribe, () => hermes.getSnapshot().branches.links);
+  const listedChats = useSyncExternalStore(hermes.subscribe, () => hermes.getSnapshot().chats);
+  const variants = useMemo(() => {
+    const byTurn = variantsIn(links, chat.id, (id) => listedChats.some((c) => c.id === id));
+    // Hermes keeps no model per reply: the original shows what its chat runs on now, when that's known here.
+    for (const versions of byTurn.values())
+      for (const v of versions) if (v.kind === "original") v.model = listedChats.find((c) => c.id === v.chatId)?.model;
+    return byTurn;
+  }, [links, listedChats, chat.id]);
+  const [finishing, setFinishing] = useState(false);
   const parentListed = useSyncExternalStore(hermes.subscribe, () => !!link && hermes.getSnapshot().chats.some((c) => c.id === link.parentId));
 
   // Slash commands (commands.ts). Each empties the Draft it was typed in only once it has run, only if the owner hasn't
@@ -2174,7 +2213,36 @@ function ChatView({
       queue={queue}
       queueApi={queueApi}
       branch={started ? { blocked: branchBlocked(chat, status === "connected"), onBranch: setBranchFrom } : undefined}
-      branchedFrom={link && <BranchedFrom link={link} parentListed={parentListed} onOpen={() => onShowAt(link)} />}
+      branchedFrom={
+        link && (
+          <BranchedFrom
+            link={link}
+            parentListed={parentListed}
+            onOpen={() => onShowAt(link)}
+            finish={
+              link.variant?.pending
+                ? {
+                    busy: finishing,
+                    blocked: replayBlocked(chat, status === "connected"),
+                    run: () => {
+                      setFinishing(true);
+                      hermes.finishReplay(chat.id).then(
+                        (warnings) => warnings.length && onToast(warnings.join(" ")),
+                        (e) => onToast((e as Error).message),
+                      ).finally(() => setFinishing(false));
+                    },
+                  }
+                : undefined
+            }
+          />
+        )
+      }
+      replay={
+        started && chat.source !== "import"
+          ? { blocked: replayBlocked(chat, status === "connected"), onReplay: (itemId, kind) => setReplayFrom({ itemId, kind }) }
+          : undefined
+      }
+      variants={variants.size ? { byTurn: variants, onPick: (id, turn) => id !== chat.id && onOpenTurn(id, turn) } : undefined}
       footer={
         <StatusBar
           chat={chat}
@@ -2200,6 +2268,21 @@ function ChatView({
         />
       }
     />
+    {replayFrom && (
+      <ReplayDialog
+        key={`${chat.id}/${replayFrom.itemId}/${replayFrom.kind}`}
+        kind={replayFrom.kind}
+        api={{ preview: () => hermes.previewReplay(chat.id, replayFrom.itemId, replayFrom.kind), make: (p, words) => hermes.replay(p, words) }}
+        onClose={() => setReplayFrom(undefined)}
+        done={(id, warnings) => {
+          setReplayFrom(undefined);
+          if (!stillIn()) return;
+          // The new version opens here; this chat, its Draft and its answer stay as they were.
+          onOpenChat(id);
+          if (warnings.length) onToast(warnings.join(" "));
+        }}
+      />
+    )}
     {branchFrom && (
       <BranchDialog
         key={`${chat.id}/${branchFrom}`}
