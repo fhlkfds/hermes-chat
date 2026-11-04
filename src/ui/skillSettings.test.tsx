@@ -143,8 +143,8 @@ describe("Settings → Skills list", () => {
     await user.type(screen.getByRole("searchbox", { name: "Search skills" }), "WRITING");
     expect(within(list()).getAllByRole("listitem")).toHaveLength(1);
     expect(screen.getByText(/1 of 4 skills/)).toBeTruthy();
-    await user.clear(screen.getByRole("searchbox"));
-    await user.type(screen.getByRole("searchbox"), "nothing like this");
+    await user.clear(screen.getByRole("searchbox", { name: "Search skills" }));
+    await user.type(screen.getByRole("searchbox", { name: "Search skills" }), "nothing like this");
     expect(screen.getByText(/No skills match/)).toBeTruthy();
   });
 

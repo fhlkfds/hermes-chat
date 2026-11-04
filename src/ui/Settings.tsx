@@ -4,10 +4,11 @@
 // Hermes offers the model in the profile (ToolsetSettings.tsx). Persona: the profile's SOUL.md on Hermes
 // (PersonaSettings.tsx). Memory: what Hermes remembers for the profile (MemorySettings.tsx). Skills: the profile's
 // skills, switched and edited on Hermes (SkillSettings.tsx).
-// Profiles are switched in the list's header, not here (ADR 0001).
-import { useEffect, useState, useSyncExternalStore } from "react";
+// Profiles are switched in the list's header, not here (ADR 0001). The search box (Ctrl+F) shows the sections of every
+// tab whose text holds what was typed (settingsSearch.ts).
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { getUIPrefs, subscribe as subscribeUIPrefs } from "../hermes/uiPrefs";
-import { ArrowLeft, Brain, Cpu, Download, KeyRound, Lock, LogOut, Palette, PlugZap, Puzzle, Settings2, ShieldCheck, Sparkles, Trash2, Wrench } from "lucide-react";
+import { ArrowLeft, Brain, Cpu, Download, KeyRound, Lock, LogOut, Palette, PlugZap, Puzzle, Search, Settings2, ShieldCheck, Sparkles, Trash2, Wrench, X } from "lucide-react";
 import type { Chat, ConnectionStatus } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
 import { TRANSCRIPT_LIMIT_BYTES } from "../hermes/chatCache";
@@ -37,6 +38,7 @@ import type { ScreenshotSupport } from "../hermes/tauriScreenshot";
 import { UpdateSettings } from "./UpdateSettings";
 import { ImportSection, type ImportWiring } from "./ImportTranscripts";
 import { BackupSection, type BackupWiring } from "./Backup";
+import { applySearch, clearMarks, queryWords, textMatches } from "./settingsSearch";
 
 type Tab = "general" | "appearance" | "model" | "toolsets" | "persona" | "memory" | "skills";
 const TABS = [
@@ -48,6 +50,18 @@ const TABS = [
   { id: "memory", label: "Memory", Icon: Brain },
   { id: "skills", label: "Skills", Icon: Puzzle },
 ] as const;
+
+/** The tabs whose sections a search shows in place. */
+const SEARCHED: readonly Tab[] = ["general", "appearance", "model", "toolsets"];
+/**
+ * The tabs a search names instead: each edits one thing Hermes keeps (a file, a list of entries), so it's opened to
+ * search rather than mounted beside the others with its unsaved edit.
+ */
+const ABOUT: Partial<Record<Tab, string>> = {
+  persona: "Who Hermes is and how it speaks in this profile's chats: the profile's SOUL.md, edited on the server.",
+  memory: "What Hermes remembers about you and your work between chats, changed or removed entry by entry.",
+  skills: "Instructions Hermes can load for a kind of task: turn each skill on or off for the profile, and edit its SKILL.md.",
+};
 
 /** Settings → Persona's wiring: the API, where its edits are kept on this computer, and what it edits. */
 export type PersonaWiring = { api: PersonaApi; store: PersonaStore; storeKey: string; where: PersonaWhere };
@@ -178,6 +192,8 @@ export function SettingsScreen({
   const [pulled, setPulled] = useState<string>();
   const [pullError, setPullError] = useState<string>();
   const [signingOut, setSigningOut] = useState(false);
+  /** What's typed in the search box; Settings shows search results while it holds a word. */
+  const [query, setQuery] = useState("");
   const summonStatus = useSummonStatus(summon);
   const { screenshotShortcut } = useSyncExternalStore(subscribeUIPrefs, getUIPrefs);
   const [tab, setTabNow] = useState<Tab>(showTextGeneration ? "model" : showMemory && memory ? "memory" : "general");
@@ -186,11 +202,16 @@ export function SettingsScreen({
   );
   // Leaving the Persona, Memory or Skills tab asks first while it holds an unsaved edit.
   const setTab = (t: Tab) => t !== tab && guard(() => setTabNow(t));
+  // Asked from elsewhere in the app, these end a search too.
   useEffect(() => {
-    if (showTextGeneration) setTab("model");
+    if (!showTextGeneration) return;
+    setQuery("");
+    setTab("model");
   }, [showTextGeneration]);
   useEffect(() => {
-    if (showMemory && memory) setTab("memory");
+    if (!showMemory || !memory) return;
+    setQuery("");
+    setTab("memory");
   }, [showMemory]);
 
   const pull = async () => {
@@ -205,38 +226,191 @@ export function SettingsScreen({
     }
   };
 
-  return (
-    <div className="settings">
-      <div className="settings-inner">
-        <button className="back" onClick={onClose}>
-          <ArrowLeft size={15} /> Back to chat
-        </button>
-        <h1>Settings</h1>
-        <div
-          className="settings-tabs"
-          role="tablist"
-          aria-label="Settings"
-          onKeyDown={(e) => arrowSelect(e, tabs.map((t) => t.id), tab, setTab)}
-        >
-          {tabs.map(({ id, label, Icon }) => (
-            <button
-              key={id}
-              id={`settings-tab-${id}`}
-              className={`settings-tab ${tab === id ? "on" : ""}`}
-              role="tab"
-              aria-selected={tab === id}
-              tabIndex={tab === id ? 0 : -1}
-              aria-controls={`settings-panel-${id}`}
-              onClick={() => setTab(id)}
-            >
-              <Icon size={14} /> {label}
-            </button>
-          ))}
-        </div>
+  const searchBox = useRef<HTMLInputElement>(null);
+  const results = useRef<HTMLDivElement>(null);
+  const words = queryWords(query);
+  const searching = words.length > 0;
+  const wordsKey = words.join(" ");
+  const [found, setFound] = useState(0);
+  // The shown sections follow the text as it changes: a tab reading from Hermes fills in after the search starts.
+  useLayoutEffect(() => {
+    const root = results.current;
+    if (!root || !wordsKey) return;
+    const w = wordsKey.split(" ");
+    const run = () => setFound(applySearch(root, w));
+    run();
+    const seen = new MutationObserver(run);
+    seen.observe(root, { childList: true, subtree: true, characterData: true });
+    return () => {
+      seen.disconnect();
+      clearMarks();
+    };
+  }, [wordsKey]);
+  // Ctrl+F finds in Settings; the chat panes it covers aren't active, so theirs doesn't open. A dialog keeps its focus, and a
+  // shortcut recorder keeps the keys it takes.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.defaultPrevented && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "f" && !document.querySelector('[aria-modal="true"]')) {
+        e.preventDefault();
+        searchBox.current?.focus();
+        searchBox.current?.select();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  /** Starting a search leaves the tab shown, so it asks first, as switching tabs does, while that tab holds an unsaved edit. */
+  const typed = (v: string) => (!searching && queryWords(v).length ? guard(() => setQuery(v)) : setQuery(v));
+  /** A tab picked while searching ends the search there. */
+  const pick = (t: Tab) => {
+    if (!searching) return setTab(t);
+    setQuery("");
+    setTabNow(t);
+  };
+  const elsewhere = tabs.filter((t) => ABOUT[t.id] && textMatches(`${t.label} ${ABOUT[t.id]}`, words));
 
-        {tab === "persona" && persona ? (
-          <div id="settings-panel-persona" role="tabpanel" aria-labelledby="settings-tab-persona">
-            {/* An edit is for one connection and profile: another profile is another editor. */}
+  const general = (
+    <>
+      <section>
+        <h2>Connection</h2>
+        <div className="settings-status">
+          <span className={`conn-dot ${status} ${unsecure ? "unsecure" : ""}`} />
+          <span>{STATUS_LABEL[status]}</span>
+          {unsecure && <span className="badge warn">Unsecure</span>}
+          <span className="muted mono">{routeLabel(route)}</span>
+        </div>
+        <div className="settings-row">
+          <div className="muted small">
+            <KeyRound size={12} /> Signed in as <span className="mono">{username}</span>.{" "}
+            {passwordSaved ? "The password is saved in your system keyring." : "The system keyring couldn't save the password."}
+          </div>
+          <button
+            className="btn"
+            disabled={signingOut}
+            onClick={async () => {
+              setSigningOut(true);
+              // Resolves without signing out when the owner chose to stay with an unsaved persona edit.
+              await onSignOut().finally(() => setSigningOut(false));
+            }}
+          >
+            <LogOut size={14} /> {signingOut ? "Signing out…" : "Sign out"}
+          </button>
+        </div>
+        {headers.length > 0 && (
+          <div className="muted small settings-headers">
+            <ShieldCheck size={12} /> Sends {headers.length === 1 ? "an extra request header" : `${headers.length} extra request headers`}:{" "}
+            {headers.map((h, i) => (
+              <span key={i}>
+                {i > 0 && ", "}
+                <span className="mono">{h}</span>
+              </span>
+            ))}
+            .{" "}
+            {headersSaved
+              ? "Their values are saved in your system keyring and never shown."
+              : "Their values are never shown. The system keyring couldn't save them, so you type them again at the next sign-in."}
+          </div>
+        )}
+        <p className="muted small settings-note">
+          Signing out deletes the saved password from the keyring. You type it again at the next sign-in.
+          {headers.length > 0 && headersSaved && " The extra request headers stay saved, to change or remove on the sign-in screen."}
+        </p>
+        {onSetUp && (
+          <div className="settings-row settings-setup">
+            <div className="muted small">
+              Connect to another server, or give Hermes a model provider's API key. The connection in use stays until a new one is tested and
+              saved.
+            </div>
+            <button className="btn" onClick={onSetUp}>
+              <PlugZap size={14} /> Run setup again
+            </button>
+          </div>
+        )}
+      </section>
+
+      <StartupSettings />
+      <TraySettings tray={tray} />
+
+      <VoiceSettings status={status} profile={profile} setup={voiceSetup} />
+      <GlobalShortcutSettings
+        api={summon}
+        status={summonStatus.status}
+        setStatus={summonStatus.setStatus}
+        loadError={summonStatus.error}
+        screenshotShortcut={screenshotShortcut}
+      />
+      <ScreenshotSettings checkSupport={checkScreenshots} globalShortcut={summonStatus.status?.shortcut ?? null} />
+      <UpdateSettings />
+
+      <section>
+        <h2>Local cache</h2>
+        <p className="muted">
+          Hermes Chat keeps a copy of each profile's chat list on this computer, so the list shows as soon as you sign in. It also keeps a
+          Saved copy of the chats you opened most recently, up to {fmtSize(TRANSCRIPT_LIMIT_BYTES)}, so you can read them while Hermes can't be
+          reached. The oldest copies are deleted first when that fills up. Clearing the cache keeps your display settings.
+        </p>
+        <div className="settings-row">
+          <div>
+            <div className="big-num">{fmtSize(bytes)}</div>
+            <div className="muted small">{bytes ? "Stored on this computer" : "Nothing stored"}</div>
+          </div>
+          {!confirmClear ? (
+            <button className="btn" disabled={!bytes} onClick={() => setConfirmClear(true)}>
+              <Trash2 size={14} /> Clear local cache
+            </button>
+          ) : (
+            <div className="confirm">
+              <span>
+                <Lock size={12} /> Only the chat copies on this computer are deleted; your display settings are kept. Nothing on your Hermes
+                server is touched; the list is saved again at the next refresh, and a chat's Saved copy when you next open it.
+              </span>
+              <div className="confirm-actions">
+                <button className="btn" onClick={() => setConfirmClear(false)}>
+                  Cancel
+                </button>
+                <button
+                  className="btn danger"
+                  onClick={() => {
+                    onClearCache();
+                    setBytes(cacheBytes());
+                    setConfirmClear(false);
+                  }}
+                >
+                  Clear {fmtSize(bytes)}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </section>
+
+      <section>
+        <h2>History</h2>
+        <p className="muted">
+          The list shows chats from the past month. Older chats stay on the server until you pull them for the{" "}
+          <span className="mono">{profile}</span> profile.
+        </p>
+        <div className="settings-row">
+          <div className={`small ${pullError ? "sign-in-error" : "muted"}`} role={pullError ? "alert" : undefined}>
+            {pullError ?? pulled ?? (olderPulled ? "All chats are listed, however old." : "Showing chats from the past month.")}
+          </div>
+          <button className="btn" disabled={pulling || olderPulled || status !== "connected"} onClick={pull}>
+            <Download size={14} /> {pulling ? "Pulling…" : olderPulled ? "Up to date" : "Pull older history"}
+          </button>
+        </div>
+      </section>
+      {importer && <ImportSection wiring={importer} connected={status === "connected"} />}
+      {backup && <BackupSection wiring={backup} />}
+    </>
+  );
+
+  /** The content of a tab: the same whether it's shown alone or with others in a search. */
+  const panel = (id: Tab): ReactNode => {
+    switch (id) {
+      case "persona":
+        return (
+          persona && (
+            // An edit is for one connection and profile: another profile is another editor.
             <PersonaSettings
               key={`${persona.storeKey}`}
               api={persona.api}
@@ -246,163 +420,119 @@ export function SettingsScreen({
               connected={status === "connected"}
               onDirty={onPersonaDirty}
             />
+          )
+        );
+      case "memory":
+        // An edit lives only while this tab is open, and for one profile; leaving with one asks first.
+        return memory && <MemorySettings key={profile} api={memory} profile={profile} status={status} server={routeLabel(route) ?? "not known until connected"} onDirtyChange={onMemoryDirty} discardSignal={memoryDiscards} />;
+      case "skills":
+        // An edit lives only while this tab is open, and for one profile; leaving with one asks first.
+        return skills && <SkillSettings key={profile} api={skills} profile={profile} status={status} server={routeLabel(route) ?? "not known until connected"} onDirtyChange={onSkillDirty} discardSignal={skillDiscards} />;
+      case "appearance":
+        return <AppearanceSettings store={appearance} listFonts={listFonts} />;
+      case "model":
+        // A draft lives only while this tab is open, and for one profile.
+        return <ModelSettings key={profile} api={modelSettings} profile={profile} connected={status === "connected"} showTextGeneration={searching ? undefined : showTextGeneration} />;
+      case "toolsets":
+        // Read for one profile; switching profile reads the new one's afresh.
+        return toolsets && <ToolsetSettings key={profile} api={toolsets} profile={profile} connected={status === "connected"} runningReplies={runningReplies} chat={openChat} />;
+      case "general":
+        return general;
+    }
+  };
+  const shownTab = tabs.some((t) => t.id === tab) ? tab : "general";
+  const total = found + elsewhere.length;
+
+  return (
+    <div className="settings">
+      <div className="settings-inner">
+        <button className="back" onClick={onClose}>
+          <ArrowLeft size={15} /> Back to chat
+        </button>
+        <div className="settings-head">
+          <h1>Settings</h1>
+          <div className="settings-search" role="search">
+            <Search size={14} aria-hidden />
+            <input
+              ref={searchBox}
+              type="search"
+              aria-label="Search settings"
+              placeholder="Search settings"
+              value={query}
+              onChange={(e) => typed(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape" && query) {
+                  e.stopPropagation();
+                  setQuery("");
+                }
+              }}
+            />
+            {query && (
+              <button className="icon-btn" aria-label="Clear search" title="Clear search" onClick={() => (setQuery(""), searchBox.current?.focus())}>
+                <X size={14} />
+              </button>
+            )}
           </div>
-        ) : tab === "memory" && memory ? (
-          <div id="settings-panel-memory" role="tabpanel" aria-labelledby="settings-tab-memory">
-            {/* An edit lives only while this tab is open, and for one profile; leaving with one asks first. */}
-            <MemorySettings key={profile} api={memory} profile={profile} status={status} server={routeLabel(route) ?? "not known until connected"} onDirtyChange={onMemoryDirty} discardSignal={memoryDiscards} />
-          </div>
-        ) : tab === "skills" && skills ? (
-          <div id="settings-panel-skills" role="tabpanel" aria-labelledby="settings-tab-skills">
-            {/* An edit lives only while this tab is open, and for one profile; leaving with one asks first. */}
-            <SkillSettings key={profile} api={skills} profile={profile} status={status} server={routeLabel(route) ?? "not known until connected"} onDirtyChange={onSkillDirty} discardSignal={skillDiscards} />
-          </div>
-        ) : tab === "appearance" ? (
-          <div id="settings-panel-appearance" role="tabpanel" aria-labelledby="settings-tab-appearance">
-            <AppearanceSettings store={appearance} listFonts={listFonts} />
-          </div>
-        ) : tab === "model" ? (
-          <div id="settings-panel-model" role="tabpanel" aria-labelledby="settings-tab-model">
-            {/* A draft lives only while this tab is open, and for one profile. */}
-            <ModelSettings key={profile} api={modelSettings} profile={profile} connected={status === "connected"} showTextGeneration={showTextGeneration} />
-          </div>
-        ) : tab === "toolsets" && toolsets ? (
-          <div id="settings-panel-toolsets" role="tabpanel" aria-labelledby="settings-tab-toolsets">
-            {/* Read for one profile; switching profile reads the new one's afresh. */}
-            <ToolsetSettings key={profile} api={toolsets} profile={profile} connected={status === "connected"} runningReplies={runningReplies} chat={openChat} />
+        </div>
+        <div
+          className="settings-tabs"
+          role="tablist"
+          aria-label="Settings"
+          onKeyDown={(e) => arrowSelect(e, tabs.map((t) => t.id), tab, pick)}
+        >
+          {tabs.map(({ id, label, Icon }) => {
+            const on = !searching && shownTab === id;
+            return (
+              <button
+                key={id}
+                id={`settings-tab-${id}`}
+                className={`settings-tab ${on ? "on" : ""}`}
+                role="tab"
+                aria-selected={on}
+                tabIndex={on || (searching && id === tabs[0].id) ? 0 : -1}
+                aria-controls={searching ? undefined : `settings-panel-${id}`}
+                onClick={() => pick(id)}
+              >
+                <Icon size={14} /> {label}
+              </button>
+            );
+          })}
+        </div>
+
+        {searching ? (
+          <div className="settings-results">
+            <p className="muted small settings-search-count" role="status">
+              {total ? `${total} ${total === 1 ? "match" : "matches"} for “${query.trim()}”` : `No settings match “${query.trim()}”.`}
+            </p>
+            {elsewhere.map(({ id, label, Icon }) => (
+              <div key={id} className="settings-row settings-search-elsewhere">
+                <div>
+                  <div className="settings-search-tab">
+                    <Icon size={13} /> {label}
+                  </div>
+                  <div className="muted small">{ABOUT[id]}</div>
+                </div>
+                <button className="btn" onClick={() => pick(id)}>
+                  Open {label}
+                </button>
+              </div>
+            ))}
+            <div ref={results}>
+              {tabs
+                .filter((t) => SEARCHED.includes(t.id))
+                .map(({ id, label, Icon }) => (
+                  <div key={id} data-search-group={id} role="group" aria-label={label}>
+                    <div className="settings-search-tab">
+                      <Icon size={13} /> {label}
+                    </div>
+                    {panel(id)}
+                  </div>
+                ))}
+            </div>
           </div>
         ) : (
-          <div id="settings-panel-general" role="tabpanel" aria-labelledby="settings-tab-general">
-            <section>
-              <h2>Connection</h2>
-              <div className="settings-status">
-                <span className={`conn-dot ${status} ${unsecure ? "unsecure" : ""}`} />
-                <span>{STATUS_LABEL[status]}</span>
-                {unsecure && <span className="badge warn">Unsecure</span>}
-                <span className="muted mono">{routeLabel(route)}</span>
-              </div>
-              <div className="settings-row">
-                <div className="muted small">
-                  <KeyRound size={12} /> Signed in as <span className="mono">{username}</span>.{" "}
-                  {passwordSaved ? "The password is saved in your system keyring." : "The system keyring couldn't save the password."}
-                </div>
-                <button
-                  className="btn"
-                  disabled={signingOut}
-                  onClick={async () => {
-                    setSigningOut(true);
-                    // Resolves without signing out when the owner chose to stay with an unsaved persona edit.
-                    await onSignOut().finally(() => setSigningOut(false));
-                  }}
-                >
-                  <LogOut size={14} /> {signingOut ? "Signing out…" : "Sign out"}
-                </button>
-              </div>
-              {headers.length > 0 && (
-                <div className="muted small settings-headers">
-                  <ShieldCheck size={12} /> Sends {headers.length === 1 ? "an extra request header" : `${headers.length} extra request headers`}:{" "}
-                  {headers.map((h, i) => (
-                    <span key={i}>
-                      {i > 0 && ", "}
-                      <span className="mono">{h}</span>
-                    </span>
-                  ))}
-                  .{" "}
-                  {headersSaved
-                    ? "Their values are saved in your system keyring and never shown."
-                    : "Their values are never shown. The system keyring couldn't save them, so you type them again at the next sign-in."}
-                </div>
-              )}
-              <p className="muted small settings-note">
-                Signing out deletes the saved password from the keyring. You type it again at the next sign-in.
-                {headers.length > 0 && headersSaved && " The extra request headers stay saved, to change or remove on the sign-in screen."}
-              </p>
-              {onSetUp && (
-                <div className="settings-row settings-setup">
-                  <div className="muted small">
-                    Connect to another server, or give Hermes a model provider's API key. The connection in use stays until a new one is tested and
-                    saved.
-                  </div>
-                  <button className="btn" onClick={onSetUp}>
-                    <PlugZap size={14} /> Run setup again
-                  </button>
-                </div>
-              )}
-            </section>
-
-            <StartupSettings />
-            <TraySettings tray={tray} />
-
-            <VoiceSettings status={status} profile={profile} setup={voiceSetup} />
-            <GlobalShortcutSettings
-              api={summon}
-              status={summonStatus.status}
-              setStatus={summonStatus.setStatus}
-              loadError={summonStatus.error}
-              screenshotShortcut={screenshotShortcut}
-            />
-            <ScreenshotSettings checkSupport={checkScreenshots} globalShortcut={summonStatus.status?.shortcut ?? null} />
-            <UpdateSettings />
-
-            <section>
-              <h2>Local cache</h2>
-              <p className="muted">
-                Hermes Chat keeps a copy of each profile's chat list on this computer, so the list shows as soon as you sign in. It also keeps a
-                Saved copy of the chats you opened most recently, up to {fmtSize(TRANSCRIPT_LIMIT_BYTES)}, so you can read them while Hermes can't be
-                reached. The oldest copies are deleted first when that fills up. Clearing the cache keeps your display settings.
-              </p>
-              <div className="settings-row">
-                <div>
-                  <div className="big-num">{fmtSize(bytes)}</div>
-                  <div className="muted small">{bytes ? "Stored on this computer" : "Nothing stored"}</div>
-                </div>
-                {!confirmClear ? (
-                  <button className="btn" disabled={!bytes} onClick={() => setConfirmClear(true)}>
-                    <Trash2 size={14} /> Clear local cache
-                  </button>
-                ) : (
-                  <div className="confirm">
-                    <span>
-                      <Lock size={12} /> Only the chat copies on this computer are deleted; your display settings are kept. Nothing on your Hermes
-                      server is touched; the list is saved again at the next refresh, and a chat's Saved copy when you next open it.
-                    </span>
-                    <div className="confirm-actions">
-                      <button className="btn" onClick={() => setConfirmClear(false)}>
-                        Cancel
-                      </button>
-                      <button
-                        className="btn danger"
-                        onClick={() => {
-                          onClearCache();
-                          setBytes(cacheBytes());
-                          setConfirmClear(false);
-                        }}
-                      >
-                        Clear {fmtSize(bytes)}
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </section>
-
-            <section>
-              <h2>History</h2>
-              <p className="muted">
-                The list shows chats from the past month. Older chats stay on the server until you pull them for the{" "}
-                <span className="mono">{profile}</span> profile.
-              </p>
-              <div className="settings-row">
-                <div className={`small ${pullError ? "sign-in-error" : "muted"}`} role={pullError ? "alert" : undefined}>
-                  {pullError ?? pulled ?? (olderPulled ? "All chats are listed, however old." : "Showing chats from the past month.")}
-                </div>
-                <button className="btn" disabled={pulling || olderPulled || status !== "connected"} onClick={pull}>
-                  <Download size={14} /> {pulling ? "Pulling…" : olderPulled ? "Up to date" : "Pull older history"}
-                </button>
-              </div>
-            </section>
-            {importer && <ImportSection wiring={importer} connected={status === "connected"} />}
-            {backup && <BackupSection wiring={backup} />}
+          <div id={`settings-panel-${shownTab}`} role="tabpanel" aria-labelledby={`settings-tab-${shownTab}`}>
+            {panel(shownTab)}
           </div>
         )}
       </div>
