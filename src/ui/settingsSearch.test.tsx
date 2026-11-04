@@ -139,8 +139,10 @@ describe("Searching Settings", () => {
     const { user } = await shown();
     expect(screen.queryByRole("heading", { name: "Show Hermes Chat from anywhere" })).toBeNull();
     expect(screen.queryByText(/Global shortcut/i)).toBeNull();
-    await user.type(box(), "toggle");
-    expect(showing("Screenshots")).toBe(true);
+    await user.click(box());
+    await user.paste("toggle");
+    await waitFor(() => expect(showing("Screenshots")).toBe(true));
+    expect(showing("Tray")).toBe(false);
     expect(screen.getAllByText("hermes-chat --toggle").length).toBeGreaterThan(0);
   });
 
