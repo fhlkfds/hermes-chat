@@ -800,6 +800,12 @@ async fn usage_export(app: tauri::AppHandle, csv: String, file_name: String) -> 
     save_with_dialog(&app, "Export usage — chat titles are in the file", file_name, ("CSV", &["csv"]), csv).await
 }
 
+/// Saves Logs' export or support bundle (src/hermes/logs.ts, ADR 0033) where the owner picks. `None`: cancelled.
+#[tauri::command]
+async fn logs_export(app: tauri::AppHandle, text: String, file_name: String) -> Result<Option<String>, String> {
+    save_with_dialog(&app, "Save logs — read the file before sharing it", file_name, ("Text", &["txt", "log"]), text).await
+}
+
 /// A local file the owner picked for the preview pane.
 #[derive(Serialize)]
 struct PickedFile {
@@ -995,6 +1001,7 @@ pub fn run(screenshot: bool) {
             import_pick_file,
             templates_export,
             usage_export,
+            logs_export,
             preview_pick_local,
             preview_read_local,
             preview_read_local_image,

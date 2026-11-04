@@ -3,7 +3,11 @@ import { createRoot } from "react-dom/client";
 import App from "./App";
 import { restoreDraftsAfterRestart } from "./hermes/tauriUpdates";
 import { syncScreenshotOutbox } from "./hermes/tauriScreenshot";
+import { captureAppDiagnostics } from "./hermes/logs";
 import "./styles.css";
+
+// Console warnings and errors, uncaught errors and unhandled rejections, for Logs → This app (ADR 0033).
+captureAppDiagnostics();
 
 /** The drafts saved for an update's restart couldn't all be put back, so the app doesn't open over them. */
 function RecoveryFailed({ reason }: { reason: string }) {

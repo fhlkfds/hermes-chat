@@ -51,8 +51,10 @@ import { tauriCloseGuard, type CloseGuard } from "./ui/tauriWindow";
 import { FileBrowser } from "./ui/FileBrowser";
 import { OutputsScreen, type OutputsScope } from "./ui/Outputs";
 import { UsageAnalytics } from "./ui/UsageAnalytics";
+import { LogsScreen } from "./ui/Logs";
+import { note } from "./hermes/logs";
 import { OutputsIndex, outputsIn, splitPath, type Output } from "./hermes/outputs";
-import { composing, routeLabel } from "./ui/bits";
+import { STATUS_LABEL, composing, routeLabel } from "./ui/bits";
 import { ProjectScreen, ProjectSwitcher, type ProjectUnread } from "./ui/Projects";
 import { ScheduledJobs } from "./ui/ScheduledJobs";
 import { tauriTerminal } from "./ui/tauriTerminal";
@@ -512,6 +514,8 @@ export function Main({
   // Usage analytics covers the chat panes too (ADR 0026). It reads Hermes afresh each time it opens.
   const [usageOpen, setUsageOpen] = useState(false);
   const usageIo = useMemo(() => hermes.usageIo(), [hermes]);
+  // Logs covers the chat panes too (ADR 0033). What it read goes when it closes; this app's own diagnostics stay.
+  const [logsOpen, setLogsOpen] = useState(false);
   const listProfiles = useCallback(() => hermes.profiles(), [hermes]);
   const update = useSyncExternalStore(updates.subscribe, updates.getSnapshot);
   const updateWaiting = needsAttention(update);
@@ -536,6 +540,16 @@ export function Main({
   const split = panes.length > 1;
   const [listOpen, setListOpen] = useState(true);
   const [toast, setToast] = useState<Toast | null>(notSaved ? { text: notSaved, at: Date.now() } : null);
+  // This app's diagnostics for the Logs screen (ADR 0033): the connection's changes, and the failures the app showed.
+  useEffect(() => {
+    note(status === "connected" ? "INFO" : "WARNING", `Connection to ${routeLabel(route) ?? "Hermes"}, profile ${profile}: ${STATUS_LABEL[status]}${status !== "connected" && closedReason ? ` (${closedReason})` : ""}`);
+  }, [status, closedReason, profile]);
+  useEffect(() => {
+    if (syncError) note("WARNING", `Chat list: ${syncError}`);
+  }, [syncError]);
+  useEffect(() => {
+    if (toast) note("WARNING", `Shown: ${toast.text}`);
+  }, [toast]);
   // What became of a branch whose answer was lost, once the chat list settled it (ADR 0027).
   useEffect(() => {
     if (branchNews) setToast({ text: branchNews.text, at: branchNews.at });
@@ -634,6 +648,7 @@ export function Main({
     setTerminalOpen(false);
     setOutputsOpen(false);
     setUsageOpen(false);
+    setLogsOpen(false);
     setShowTextGeneration(undefined);
     setShowMemory(undefined);
     setSettingsOpen(true);
@@ -732,6 +747,7 @@ export function Main({
       setTerminalOpen(false);
       setOutputsOpen(false);
       setUsageOpen(false);
+      setLogsOpen(false);
       if (remember) rememberOpenChat(profile, id);
     };
     if (keepSettings) go();
@@ -754,6 +770,7 @@ export function Main({
     setTerminalOpen(false);
     setOutputsOpen(false);
     setUsageOpen(false);
+    setLogsOpen(false);
   });
 
   // A second pane opens to the right and becomes the active one. Both panes may show the same chat: they are two views
@@ -773,6 +790,7 @@ export function Main({
     setTerminalOpen(false);
     setOutputsOpen(false);
     setUsageOpen(false);
+    setLogsOpen(false);
     rememberOpenChat(profile, chatId);
   });
 
@@ -804,6 +822,7 @@ export function Main({
       setTerminalOpen(false);
       setOutputsOpen(false);
       setUsageOpen(false);
+      setLogsOpen(false);
       setSearchOpen(false);
       if (!previewFits) setPreviewHidden(true);
     });
@@ -1102,7 +1121,7 @@ export function Main({
   // Settings covers the chat, and the pane with it; so do the project screen, Server files, Scheduled jobs and the
   // Terminal.
   // Outputs covers the chat panes but keeps the preview pane beside it, since its files open there.
-  const screenCovering = settingsOpen || projectScreenOpen || filesOpen || jobsOpen || terminalOpen || usageOpen;
+  const screenCovering = settingsOpen || projectScreenOpen || filesOpen || jobsOpen || terminalOpen || usageOpen || logsOpen;
   const covering = screenCovering || outputsOpen;
   const previewShown = !!preview && !screenCovering && (previewFits || !previewHidden);
   const previewCovers = previewShown && !previewFits;
@@ -1167,6 +1186,7 @@ export function Main({
                   setTerminalOpen(false);
                   setOutputsOpen(false);
                   setUsageOpen(false);
+                  setLogsOpen(false);
                   setShowTextGeneration(undefined);
                   setShowMemory({});
                   setSettingsOpen(true);
@@ -1230,6 +1250,7 @@ export function Main({
             setTerminalOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
+            setLogsOpen(false);
             setFilesOpen((o) => !o);
           })
         }
@@ -1241,6 +1262,7 @@ export function Main({
             setJobsOpen(false);
             setTerminalOpen(false);
             setUsageOpen(false);
+            setLogsOpen(false);
             setOutputsOpen((o) => !o);
           })
         }
@@ -1258,6 +1280,7 @@ export function Main({
             setFilesOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
+            setLogsOpen(false);
             setTerminalOpen(false);
             setJobsOpen(true);
           })
@@ -1271,6 +1294,7 @@ export function Main({
             setJobsOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
+            setLogsOpen(false);
             setTerminalMounted(true);
             setTerminalOpen((o) => !o);
           })
@@ -1283,10 +1307,24 @@ export function Main({
             setJobsOpen(false);
             setTerminalOpen(false);
             setOutputsOpen(false);
+            setLogsOpen(false);
             setUsageOpen((o) => !o);
           })
         }
         usageOpen={usageOpen && !settingsOpen && !projectScreenOpen && !filesOpen && !jobsOpen}
+        onLogs={() =>
+          guard(() => {
+            setProjectOpen(false);
+            setSettingsOpen(false);
+            setFilesOpen(false);
+            setJobsOpen(false);
+            setTerminalOpen(false);
+            setOutputsOpen(false);
+            setUsageOpen(false);
+            setLogsOpen((o) => !o);
+          })
+        }
+        logsOpen={logsOpen && !settingsOpen && !projectScreenOpen && !filesOpen && !jobsOpen && !usageOpen}
         terminalOpen={terminalOpen && !settingsOpen}
         terminalRunning={terminalRunning}
         updateWaiting={updateWaiting}
@@ -1316,6 +1354,7 @@ export function Main({
                     setTerminalOpen(false);
                     setOutputsOpen(false);
                     setUsageOpen(false);
+                    setLogsOpen(false);
                     setProjectOpen(true);
                   });
                 }}
@@ -1327,6 +1366,7 @@ export function Main({
                     setTerminalOpen(false);
                     setOutputsOpen(false);
                     setUsageOpen(false);
+                    setLogsOpen(false);
                     setProjectOpen(true);
                     void projects.readDefaults();
                   })
@@ -1371,6 +1411,7 @@ export function Main({
             setTerminalOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
+            setLogsOpen(false);
             // One destination at a time: an earlier Memory shortcut mustn't switch Settings away from this one.
             setShowMemory(undefined);
             setShowTextGeneration({});
@@ -1549,6 +1590,19 @@ export function Main({
               focusPane(active.key);
             }}
           />
+        ) : logsOpen ? (
+          <LogsScreen
+            key={profile}
+            profile={profile}
+            connected={status === "connected"}
+            connection={route?.kind === "ssh" ? "SSH tunnel" : "dashboard URL"}
+            read={(file, lines) => hermes.readLog(profile, file, lines)}
+            save={(text, fileName) => invoke<string | null>("logs_export", { text, fileName })}
+            onClose={() => {
+              flushSync(() => setLogsOpen(false));
+              focusPane(active.key);
+            }}
+          />
         ) : outputsOpen ? (
           <OutputsScreen
             snapshot={outSnap}
@@ -1584,6 +1638,7 @@ export function Main({
               setFilesPath(splitPath(o.path).dir);
               setOutputsOpen(false);
               setUsageOpen(false);
+              setLogsOpen(false);
               setFilesOpen(true);
             }}
             onClose={() => {

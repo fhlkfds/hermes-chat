@@ -147,6 +147,14 @@ _Avoid_: tool permissions, capabilities, plugins (a plugin can bring a toolset, 
 The list, opened from the rail, of what needs the owner or has finished in any profile on the server: a reply running, an Approval waiting, a failure or Failed message, or a chat with something new. Each entry names its profile and chat, says when, and opens the chat in its profile. Nothing is answered, retried or sent from it. Dismissing an entry takes it out of the inbox only, on this computer: the chat stays Unread, Active or Settled, and Archived or not, as it was. An entry shows again only for something newer. Running work in other profiles shows only for chats the dashboard itself runs (ADR 0019).
 _Avoid_: notifications, activity, feed
 
+**Logs**:
+The screen, opened from the rail, that shows one source at a time: this app's own diagnostics (connection changes, failures it showed, uncaught errors), or one of the profile's Hermes logs (agent, errors, gateway, MCP servers). Following reads a Hermes log's last 500 lines every 2 seconds while it is on screen. Notes in the list mark where reading stopped and started again, and where lines may be missing. Pausing keeps the view still while reading carries on. Every line is redacted before the app keeps it. Nothing is kept after Logs closes, except this app's diagnostics, which last until the app quits (ADR 0033).
+_Avoid_: console, debug log, activity
+
+**Support bundle**:
+One text file, saved where the owner picks, with every line kept of the sources they tick on the Logs screen. Before saving it shows what goes in, how many of each kind of secret were redacted, and that redaction can miss a secret written another way. It is never uploaded (ADR 0033).
+_Avoid_: debug report, debug share (Hermes's own, which uploads to a paste service)
+
 **Saved copy**:
 The transcript of a chat the owner opened lately, kept on this computer so it can be read while Hermes can't be reached, even after a restart. It shows with a note saying when it was saved, until the chat loads from Hermes again. Each connection and profile keeps its own, without the password. A copy never holds Approvals, errors or Failed messages. The least recently saved copies are deleted first once they pass the storage limit, deleting a chat deletes its copy, and Clear local cache deletes them all.
 _Avoid_: cache (for one chat's copy), offline mode
