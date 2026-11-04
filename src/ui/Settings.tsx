@@ -31,6 +31,8 @@ import type { VoiceSetup } from "../hermes/pipe";
 import { ScreenshotSettings } from "./ScreenshotSettings";
 import { GlobalShortcutSettings, useSummonStatus } from "./GlobalShortcutSettings";
 import type { SummonApi } from "../hermes/summon";
+import { TraySettings } from "./TraySettings";
+import type { TrayWiring } from "../hermes/tauriTray";
 import type { ScreenshotSupport } from "../hermes/tauriScreenshot";
 import { UpdateSettings } from "./UpdateSettings";
 import { ImportSection, type ImportWiring } from "./ImportTranscripts";
@@ -77,6 +79,7 @@ export function SettingsScreen({
   listFonts,
   checkScreenshots,
   summon,
+  tray,
   modelSettings,
   toolsets,
   runningReplies = 0,
@@ -120,6 +123,8 @@ export function SettingsScreen({
   checkScreenshots?: () => Promise<ScreenshotSupport>;
   /** The global shortcut; left out where there is no desktop app. */
   summon?: SummonApi;
+  /** The tray icon and Close to tray; left out where there is no desktop app to ask. */
+  tray?: TrayWiring;
   /** The profile's model setup on Hermes. */
   modelSettings: ModelSettingsApi;
   /** The profile's toolsets on Hermes; without it there is no Toolsets tab. */
@@ -319,6 +324,7 @@ export function SettingsScreen({
             </section>
 
             <StartupSettings />
+            <TraySettings tray={tray} />
 
             <VoiceSettings status={status} profile={profile} setup={voiceSetup} />
             <GlobalShortcutSettings

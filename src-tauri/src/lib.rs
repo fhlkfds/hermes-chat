@@ -1,5 +1,6 @@
 pub mod defaults_file;
 pub mod fonts;
+pub mod links;
 pub mod media;
 pub mod notify;
 pub mod portal;
@@ -9,6 +10,7 @@ pub mod saved_password;
 pub mod screenshot;
 pub mod summon;
 pub mod terminal;
+pub mod tray;
 pub mod transport;
 pub mod tunnel;
 pub mod web_page;
@@ -317,14 +319,16 @@ fn screenshot_ack_request(state: State<'_, Screenshots>, id: u64) {
     state.requests.acknowledge(id);
 }
 
+/// The chat link waiting for the window, from the command line or a later launch (links.rs); handed out once.
+#[tauri::command]
+fn chat_link_take(links: State<'_, links::Links>) -> Option<String> {
+    links.take()
+}
+
 /// Brings the window forward after a desktop shortcut's screenshot was attached, so the owner can review it.
 #[tauri::command]
 fn screenshot_show_window(app: tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
-    }
+    tray::show(&app);
 }
 
 /// Saves a file pasted into the composer to a temp file and returns its path. Its bytes come as the raw body, not
@@ -931,7 +935,8 @@ async fn repo_git(target: String, request: repo_git::Request) -> Result<serde_js
 }
 
 /// Starts the app. `screenshot`: it was started by `hermes-chat --screenshot`, with no other Hermes Chat to take it.
-pub fn run(screenshot: bool) {
+/// `link`: it was started to open a chat link, with no other Hermes Chat to open it (links.rs).
+pub fn run(screenshot: bool, link: Option<String>) {
     let screenshots = Screenshots::default();
     if screenshot {
         screenshots.requests.ask();
@@ -946,7 +951,10 @@ pub fn run(screenshot: bool) {
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .manage(screenshots)
+        .manage(links::Links::new(link))
         .manage(update::Updates::default())
+        .manage(tray::Tray::default())
+        .on_window_event(tray::on_window_event)
         .on_permission_request(|webview, kind| permission(&webview, kind))
         .setup(|app| {
             use tauri::Emitter;
@@ -985,9 +993,18 @@ pub fn run(screenshot: bool) {
                     handle.state::<Screenshots>().requests.ask();
                     let _ = handle.emit(remote::EVENT, ());
                 }
+                // A second launch or `--show` brings back this window, hidden to the tray or not (ADR 0034).
                 remote::Request::Show { token } => summon::activate(&handle, false, token, false),
                 remote::Request::Toggle { token } => summon::activate(&handle, true, token, false),
+                // A chat link opened while the app runs: kept for the window, which comes forward to show it.
+                remote::Request::OpenLink { link, token } => {
+                    if handle.state::<links::Links>().put(link) {
+                        let _ = handle.emit(links::EVENT, ());
+                        summon::activate(&handle, false, token, false);
+                    }
+                }
             });
+            tray::start(app.handle());
             Ok(())
         })
         .manage(PickedFiles::default())
@@ -1044,6 +1061,7 @@ pub fn run(screenshot: bool) {
             screenshot_pending_request,
             screenshot_ack_request,
             screenshot_show_window,
+            chat_link_take,
             summon::summon_status,
             summon::summon_set,
             summon::summon_retry,
@@ -1064,7 +1082,12 @@ pub fn run(screenshot: bool) {
             defaults_file::project_defaults_swap,
             defaults_file::tags_read,
             defaults_file::tags_swap,
-            update::restart_drafts_set_aside
+            update::restart_drafts_set_aside,
+            tray::tray_status,
+            tray::tray_set_close_to_tray,
+            tray::tray_inbox,
+            tray::window_unsaved,
+            tray::window_hidden
         ])
         .build(context)
         .expect("error while building tauri application")

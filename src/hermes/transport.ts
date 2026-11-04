@@ -34,6 +34,7 @@ import { failureMark } from "./inbox";
 import { projectsApi, type ProjectsApi } from "./projects";
 import { listServerCommands, runServerCommand, type CommandDef, type CommandResult, type ServerCommandList } from "./commands";
 import { CronApi } from "./cronJobs";
+import { AutomationsApi } from "./automations";
 import { ModelSettingsApi } from "./modelSettings";
 import { ToolsetsApi } from "./toolsets";
 import { readBack, sendImport, type ImportRest, type PlannedChat } from "./importTranscripts";
@@ -476,6 +477,7 @@ export class Hermes {
   private nextId = 1;
   private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   private listeners = new Set<() => void>();
+  private sendListeners = new Set<(profile: string, chatId: string) => void>();
   private snapshot: Snapshot;
   /** Chats this app moved between Active and Settled that Hermes hasn't stored yet: the `pinned` flag each should
    * have (ADR 0002). While a chat is here, this flag beats the one the server lists. */
@@ -678,6 +680,9 @@ export class Hermes {
 
   /** Hermes's scheduled jobs, each call naming its profile (cronJobs.ts). Hermes runs them; this only manages them. */
   readonly cron = new CronApi((method, pathAndQuery, body) => this.rest(method, pathAndQuery, body));
+
+  /** Hermes's webhook routes, each call naming its profile (automations.ts). Hermes receives and runs the events. */
+  readonly automations = new AutomationsApi((method, pathAndQuery, body) => this.rest(method, pathAndQuery, body));
 
   /** Settings → Model's reads and writes, for the profile shown (modelSettings.ts). */
   readonly modelSettings = new ModelSettingsApi(
@@ -1141,6 +1146,24 @@ export class Hermes {
     };
   }
 
+  /**
+   * A chat in `profile` by its id, as Hermes stores it now (`GET /api/sessions/{id}?profile=`), to open from a chat
+   * link (chatLinks.ts); the list's own copy says what it is called and whether it is Settled. Null when Hermes
+   * answers that the profile has no such chat (deleted, or never there). Rejects when Hermes can't be asked.
+   */
+  async findChat(chatId: string, profile: string): Promise<Found | null> {
+    let row: SessionRow & { pinned?: boolean | number; archived?: boolean | number };
+    try {
+      row = (await this.rest("GET", `${sessionPath(chatId)}?${new URLSearchParams({ profile })}`)) as typeof row;
+    } catch (e) {
+      if ((e as Error).message.includes("answered 404")) return null;
+      throw e;
+    }
+    if (row?.id !== chatId) return null;
+    const listed = profile === this.profile ? this.snapshot.chats.find((c) => c.id === chatId) : undefined;
+    return { ...this.toFound({ ...row, archived: !!row.archived } as SearchRow, listed, !row.pinned), snippet: [] };
+  }
+
   /** Puts a found chat in the list, if it isn't there yet, so it can be opened (`open`). */
   reveal(found: Found) {
     if (this.snapshot.chats.some((c) => c.id === found.chatId)) return;
@@ -1189,6 +1212,15 @@ export class Hermes {
   };
 
   getSnapshot = () => this.snapshot;
+
+  /**
+   * Calls `fn` each time the owner sends a message from this app (the composer, the queue, or Retry), with the profile
+   * and chat it goes to, as it starts on its way. Returns a function that stops it.
+   */
+  onSend = (fn: (profile: string, chatId: string) => void) => {
+    this.sendListeners.add(fn);
+    return () => void this.sendListeners.delete(fn);
+  };
 
   /**
    * Starts a Chat in this app. It is Active from the start, and pinned once Hermes has stored it (ADR 0002). `model`:
@@ -2101,6 +2133,7 @@ export class Hermes {
       title: c.items.length === 0 && c.runtimeId ? (text || attachments[0]?.name || c.title).slice(0, 48) : c.title,
       items: [...c.items, user],
     }));
+    for (const fn of this.sendListeners) fn(profile, chatId);
     // Kept from the start, so a message on its way when the app closes isn't lost.
     const kept = this.saveOutbox(chatId);
     queued?.kept(kept);

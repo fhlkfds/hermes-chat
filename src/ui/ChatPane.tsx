@@ -1,7 +1,7 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
 // Dictation and Read aloud come from Voice.tsx.
 import { createContext, memo, type ReactNode, useCallback, useContext, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
-import { ArrowUp, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, FileDown, FileInput, FileText, Globe, HardDrive, ListPlus, Paperclip, RotateCcw, Search, Server, Square, Wrench, X } from "lucide-react";
+import { ArrowUp, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, FileDown, FileInput, FileText, Globe, HardDrive, Link2, ListPlus, Paperclip, RotateCcw, Search, Server, Square, Wrench, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
@@ -12,6 +12,7 @@ import { ApprovalCard } from "./ApprovalCard";
 import { QueuePanel, type QueueApi } from "./Queue";
 import { Markdown } from "./Markdown";
 import { ArchiveButton, SettleButton, SourceIcon, Spinner, StoredTime, composing, highlight } from "./bits";
+import { wakeFull } from "../hermes/snooze";
 import { AttachmentChip, Previews, readPreview } from "./previews";
 import { Speaker } from "./speaker";
 import { DictationNoteView, DictationStrip, ListenButton, MicButton, type VoiceApi, listenBlocked, micBlocked, useDictation, useVoiceSetup } from "./Voice";
@@ -24,6 +25,7 @@ import { previewName, toolTargets, withoutBidi } from "../hermes/preview";
 import { type CommandHost, useSlashCommands } from "./SlashCommands";
 import { Templates, type TemplateHere } from "./Templates";
 import { BranchButton } from "./Branch";
+import { useWindowHidden } from "./windowState";
 import { EditButton, RegenerateButton, VariantNav } from "./Replay";
 import { turnsOf, type ReplayKind, type Variant } from "../hermes/replay";
 
@@ -107,8 +109,8 @@ const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateS
 
 /**
  * `alsoPostsIn`: the Telegram or Discord chat Hermes will also post its replies in. `draft`: the composer's text, kept
- * outside the pane so it survives switching chats. `onAnswer` answers an Approval card. `onSettle`, `onArchive` and
- * `onExport` are left out for a chat not started yet. `notLoaded`: the chat has no Saved copy and can't load until
+ * outside the pane so it survives switching chats. `onAnswer` answers an Approval card. `onSettle`, `onArchive`,
+ * `onExport` and `onCopyLink` are left out for a chat not started yet. `notLoaded`: the chat has no Saved copy and can't load until
  * Hermes is connected. `onRetry`, `onEdit` and `onDismiss` act on failed or unconfirmed messages. `modelControls`
  * contains the model picker; `footer` contains the status bar. Only the active pane answers Ctrl+F and takes focus as
  * it opens. Native drops attach to the pane under the pointer. `paneControls` follows the chat's own buttons.
@@ -140,6 +142,7 @@ export function ChatPane({
   onSettle,
   onArchive,
   onExport,
+  onCopyLink,
   modelControls,
   active = true,
   visible = true,
@@ -149,6 +152,7 @@ export function ChatPane({
   screenshots,
   screenshotKeys,
   projects,
+  snoozedUntil,
   notice,
   banner,
   footer,
@@ -184,6 +188,8 @@ export function ChatPane({
   onSettle?: (settled: boolean) => void;
   onArchive?: (archived: boolean) => void;
   onExport?: () => void;
+  /** Copies the chat's link (chatLinks.ts). */
+  onCopyLink?: () => void;
   modelControls?: ReactNode;
   active?: boolean;
   visible?: boolean;
@@ -194,6 +200,8 @@ export function ChatPane({
   screenshotKeys?: string;
   /** The names of the projects the chat is in, or a new chat will be put in. */
   projects?: string[];
+  /** When the chat wakes, if the owner snoozed it and it hasn't woken yet (snooze.ts). */
+  snoozedUntil?: number;
   /** Shown at the top of the transcript: what a new chat starts with. */
   notice?: ReactNode;
   /** Shown under the header, outside the transcript's scroll: a question about this chat. */
@@ -228,6 +236,9 @@ export function ChatPane({
   }, [!voice]);
   const listen = speaker && { speaker, blocked: listenBlocked(status, voiceSetup) };
   useEffect(() => { if (!active) speaker?.stop(); }, [active, speaker]);
+  // Hidden to the tray, nothing is read aloud (ADR 0034).
+  const windowHidden = useWindowHidden();
+  useEffect(() => { if (windowHidden) speaker?.stop(); }, [windowHidden, speaker]);
   // The blocks are memoized, so they get one answer handler for the life of the pane.
   const onAnswerRef = useRef(onAnswer);
   onAnswerRef.current = onAnswer;
@@ -421,8 +432,10 @@ export function ChatPane({
           {chat.source !== "app" && <SourceIcon source={chat.source} size={13} />}
           <span>{chat.title}</span>
           {chat.settled && <span className="badge">Settled</span>}
-          {chat.settled && onSettle && !chat.archived && (
-            <SettleButton settled size={12} className="unsettle-btn" labeled onSettle={onSettle} />
+          {!chat.settled && !chat.archived && snoozedUntil !== undefined && (
+            <span className="badge" title={`Snoozed until ${wakeFull(snoozedUntil)}`}>
+              Snoozed
+            </span>
           )}
           {chat.archived && <span className="badge">Archived</span>}
           {projects?.map((name) => (
@@ -446,6 +459,11 @@ export function ChatPane({
             {onExport && (
               <button className="icon-btn" title="Export as Markdown" onClick={onExport}>
                 <FileDown size={16} />
+              </button>
+            )}
+            {onCopyLink && (
+              <button className="icon-btn" title="Copy chat link" aria-label="Copy chat link" onClick={onCopyLink}>
+                <Link2 size={16} />
               </button>
             )}
             {onSettle && !chat.archived && <SettleButton settled={chat.settled} size={16} className="icon-btn" onSettle={onSettle} />}
@@ -1010,6 +1028,10 @@ function Composer({
   }, [dictation.active]);
   // Leaving a pane (including Settings or the narrow switcher) releases its microphone and drops late transcripts.
   useEffect(() => { if (!autoFocus) dictation.cancel(); }, [autoFocus]);
+  // So does hiding the window to the tray: the microphone never stays open behind a hidden window (ADR 0034). The
+  // recording is dropped, as Cancel drops it; nothing is sent to Hermes to transcribe.
+  const windowHidden = useWindowHidden();
+  useEffect(() => { if (windowHidden) dictation.cancel(); }, [windowHidden]);
 
   // Files still being read, saved or checked: sending waits for them, so none misses the message it was added for.
   const [attaching, setAttaching] = useState(0);
@@ -1182,6 +1204,7 @@ function Composer({
         )}
         <textarea
           ref={taRef}
+          data-composer
           rows={1}
           autoFocus={autoFocus}
           placeholder="Message Hermes"

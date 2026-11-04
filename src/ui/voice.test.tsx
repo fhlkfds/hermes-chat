@@ -9,6 +9,7 @@ import { FakeHermes, row } from "../hermes/fakeHermes";
 import { connect, type Hermes } from "../hermes/transport";
 import { Main } from "../App";
 import { Speaker } from "./speaker";
+import { setWindowHidden } from "./windowState";
 
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: async () => null }));
@@ -99,6 +100,7 @@ beforeEach(() => {
   played.made = [];
 });
 afterEach(() => {
+  act(() => setWindowHidden(false));
   cleanup();
   localStorage.clear();
 });
@@ -185,6 +187,21 @@ describe("Dictation", () => {
     // Nothing was sent to the chat: the owner edits the text first.
     expect(server.requests.filter((r) => r.method === "prompt.submit")).toEqual([]);
     expect(document.activeElement).toBe(composer());
+  });
+
+  it("closes the microphone and drops the recording when the window is hidden to the tray, keeping the typed draft", async () => {
+    const { server, user, hermes } = await signedIn();
+    await user.type(composer(), "Hi.");
+    await record(user);
+    mic.say(2);
+    act(() => setWindowHidden(true));
+    expect(mic.closed).toBe(true);
+    expect(screen.queryByRole("status", { name: "Recording" })).toBeNull();
+    act(() => setWindowHidden(false));
+    await settle(hermes);
+    // Nothing went to Hermes to transcribe, and the draft is as typed.
+    expect(server.recordings).toEqual([]);
+    expect(composer().value).toBe("Hi.");
   });
 
   it("drops the recording on Cancel or Esc, sending nothing", async () => {
@@ -495,6 +512,17 @@ describe("Read aloud", () => {
     await user.click(screen.getByRole("button", { name: /NAS disks/ }));
     expect(played.pause).toHaveBeenCalled();
     expect(played.revoked).toEqual(["blob:audio-1"]);
+  });
+
+  it("stops and lets go of the audio when the window is hidden to the tray", async () => {
+    const { user } = await inBackup();
+    await user.click(readAloud());
+    await screen.findByRole("button", { name: "Stop" });
+    act(() => setWindowHidden(true));
+    expect(played.pause).toHaveBeenCalled();
+    expect(played.revoked).toEqual(["blob:audio-1"]);
+    act(() => setWindowHidden(false));
+    expect(readAloud().getAttribute("aria-pressed")).toBe("false");
   });
 
   it("stops Read aloud when focus moves to another mounted pane", async () => {
