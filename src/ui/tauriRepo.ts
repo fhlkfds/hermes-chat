@@ -1,5 +1,5 @@
 // The Repository screen's Rust commands (src-tauri/src/repo_git.rs): a Git operation on the server, through ssh, and
-// the same with progress lines passed on as the helper prints them (worktrees, ADR 0042).
+// the same with progress lines passed on as the helper prints them (worktrees, ADR 0043).
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { asRepoFailure, type RepoApi } from "../hermes/repo";
 import type { Progress } from "../hermes/worktrees";

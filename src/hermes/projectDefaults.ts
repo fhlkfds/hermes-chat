@@ -101,7 +101,7 @@ export type NewChatSettings = {
  */
 export function resolveNewChat(o: {
   chosen?: ModelPick;
-  /** A folder the owner chose for this chat: a worktree it is started in (ADR 0042). */
+  /** A folder the owner chose for this chat: a worktree it is started in (ADR 0043). */
   chosenFolder?: string;
   project?: { name: string; defaults?: ProjectDefaults };
   sticky?: ModelPick;

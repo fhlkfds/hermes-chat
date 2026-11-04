@@ -1242,7 +1242,7 @@ export class Hermes {
   /**
    * The chats Hermes has working in `path` or a folder inside it, in every profile, from any Hermes client
    * (`GET /api/sessions?cwd_prefix=`, archived ones included). Only rows whose own `cwd` is inside `path` count. Rejects
-   * when a profile can't be asked: a removal must not go ahead on a partial answer (ADR 0042).
+   * when a profile can't be asked: a removal must not go ahead on a partial answer (ADR 0043).
    */
   async chatsWorkingIn(path: string): Promise<{ id: string; title: string; profile: string; cwd: string; active: boolean }[]> {
     const root = path.replace(/\/+$/, "");

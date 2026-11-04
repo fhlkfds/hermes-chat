@@ -1,4 +1,4 @@
-// Worktrees on the server (ADR 0042): the Repository screen's Worktrees view and the chats started in one. Every Git
+// Worktrees on the server (ADR 0043): the Repository screen's Worktrees view and the chats started in one. Every Git
 // operation runs on the server, through the same helper and ssh as the rest of the Repository screen (repo.ts,
 // src-tauri/src/repo_worktree_helper.py). Which worktrees this app made, and which chats work in each, is recorded on
 // the server too, in the repository's own Git folder, so every desktop sees the same and a removal can't race an
@@ -108,7 +108,7 @@ export type WorktreePlan = {
   sourceDirty: { staged: number; unstaged: number; untracked: number; conflicts: number };
   submodules: string[];
   setup: SetupEntry[];
-  /** Repository setup commands (an install script): no Hermes contract for them, so never run (ADR 0042). */
+  /** Repository setup commands (an install script): no Hermes contract for them, so never run (ADR 0043). */
   setupCommands: "unsupported";
   stamp: string;
 };

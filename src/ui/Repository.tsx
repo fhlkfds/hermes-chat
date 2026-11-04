@@ -102,7 +102,7 @@ export function RepositoryScreen({
   suggestScope?: string;
   /** Opens a pull request's or a check's page in the owner's browser. */
   openUrl?: (url: string) => void;
-  /** What the Worktrees view needs from the app (ADR 0042). */
+  /** What the Worktrees view needs from the app (ADR 0043). */
   worktrees?: WorktreeHooks;
   /** Which view the screen opens on. */
   initialView?: "changes" | "worktrees";

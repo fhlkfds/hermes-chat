@@ -1,13 +1,14 @@
 
-# ── worktrees (ADR 0042) ────────────────────────────────────────────────────
+# ── worktrees (ADR 0043) ────────────────────────────────────────────────────
 #
 # The second half of the helper: creating, listing, setting up and removing worktrees of the repository on the
 # server. Rust sends this file after repo_git_helper.py as one program, so everything above is in scope here: `git`,
 # `run`, `Refusal`, `checkout`, `snapshot`, `in_progress`, `check_branch_name`, `git_line`.
 #
-# What this app made is recorded in the repository itself, in `<git common dir>/hermes-chat/worktrees.json`, changed
-# only while holding an exclusive flock on `worktrees.lock` beside it. So every desktop and every copy of the app sees
-# the same owners and chats, and an attach and a removal can't both pass their checks at once. A worktree this app
+# What this app made is recorded in the repository itself, in `<git common dir>/hermes-chat/managed-worktrees.json`,
+# changed only while holding an exclusive flock on `worktrees.lock` beside it. (`worktrees.json` there is the first
+# Worktrees design's record, ADR 0042, in another format: it is never read or written here.) So every desktop and every
+# copy of the app sees the same owners and chats, and an attach and a removal can't both pass their checks at once. A worktree this app
 # made is also locked with `git worktree lock` and a reason naming it, so `git worktree remove` and `prune` elsewhere
 # leave it alone.
 #
@@ -21,6 +22,7 @@ import time
 # `git worktree list --porcelain -z` needs Git 2.36.
 WORKTREE_GIT = (2, 36)
 RECORD_DIR = "hermes-chat"
+RECORD_FILE = "managed-worktrees.json"
 RECORD_VERSION = 1
 LOCK_REASON = "hermes-chat: managed worktree "
 KEPT_PREFIX = "refs/hermes-chat/kept/"
@@ -163,7 +165,7 @@ class Records:
 
     def __init__(self, top):
         self.dir = os.path.join(common_dir(top), RECORD_DIR)
-        self.file = os.path.join(self.dir, "worktrees.json")
+        self.file = os.path.join(self.dir, RECORD_FILE)
         self.fd = None
         self.doc = None
 

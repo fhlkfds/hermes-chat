@@ -425,7 +425,7 @@ type Pane = {
   draftError?: string;
   picked?: { found: Found; at: number };
   jump?: JumpTarget;
-  /** The worktree a New chat pane starts its chat in, picked in the Repository screen (ADR 0042). */
+  /** The worktree a New chat pane starts its chat in, picked in the Repository screen (ADR 0043). */
   worktree?: WorktreeStart;
 };
 
@@ -507,7 +507,7 @@ export function Main({
   localFiles?: LocalFiles;
   webPages?: WebPages;
   screenshots?: Screenshots;
-  /** The Repository screen's helper over ssh, and worktrees' (ADR 0034, 0042). */
+  /** The Repository screen's helper over ssh, and worktrees' (ADR 0034, 0043). */
   repoApi?: RepoApi;
   /** The global shortcut (ADR 0033); none outside the desktop app. */
   summon?: SummonApi;
@@ -919,7 +919,7 @@ export function Main({
 
   const newChat = (remember = true) => openChat(null, { remember, fresh: true });
 
-  /** Opens the Repository screen on a worktree's Worktrees view, as a chat's worktree label does (ADR 0042). */
+  /** Opens the Repository screen on a worktree's Worktrees view, as a chat's worktree label does (ADR 0043). */
   const openRepository = (at: { target: string; path: string; view: "worktrees" }) =>
     guard(() => {
       setProjectOpen(false);
@@ -2418,7 +2418,7 @@ function ChatView({
   repoApi: RepoApi;
   /** The connection and profile, as this computer keys what it keeps for each. */
   scope: string;
-  /** The worktree this New chat pane starts its chat in (ADR 0042). */
+  /** The worktree this New chat pane starts its chat in (ADR 0043). */
   worktree?: WorktreeStart;
   onDropWorktree: () => void;
   /** Opens the Repository screen's Worktrees view on the worktree a chat works in. */
@@ -2467,7 +2467,7 @@ function ChatView({
   useEffect(() => setApplying(false), [chatId]);
 
   const shownModel = (started && chat.model) || startSettings.model.value;
-  // The worktree this chat was started in from this computer, if it was (ADR 0042).
+  // The worktree this chat was started in from this computer, if it was (ADR 0043).
   const inWorktreeKey = useSyncExternalStore(worktreeChats.subscribe, () => JSON.stringify(started ? (worktreeChats.get(scope, chat.id) ?? null) : null));
   const inWorktree = useMemo(() => JSON.parse(inWorktreeKey) as WorktreeChat | null, [inWorktreeKey]);
   const pickModel = (pick: ModelPick) => {

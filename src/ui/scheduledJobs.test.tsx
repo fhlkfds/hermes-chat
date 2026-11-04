@@ -233,17 +233,428 @@ describe("the Scheduled jobs screen", () => {
     expect(document.querySelectorAll(".job-preview li")).toHaveLength(1);
   });
 
-  it("pages run history up to Hermes's limit, and says what a missed run does", async () => {
+  it("pages run history 20 at a time up to Hermes's limit, and says what a missed run does", async () => {
     const s = server();
     const id = s.cron.jobs.default[0].id;
-    s.cron.runs[id] = Array.from({ length: 30 }, (_, i) => ({ id: `cron_output:${id}:${i}`, title: `COMPLETED · run ${i}`, source: "cron_output", started_at: 1_793_600_000 - i * 60 }));
+    s.cron.runs[id] = Array.from({ length: 120 }, (_, i) => ({ id: `cron_output:${id}:${i}`, title: `COMPLETED · run ${i}`, preview: `run ${i}`, source: "cron_output", started_at: 1_793_600_000 - i * 60 }));
     const { user } = await launch(s);
     await user.click(screen.getByText("[fixture] Weekday brief"));
     expect(screen.getByText(/Hermes still runs it up to 2 hours late/)).toBeTruthy();
-    // The fake answers with all 30 whatever the limit; the app asks for 20 first, then Hermes's 100.
-    await waitFor(() => expect(s.restRequests.some((r) => r.path.endsWith("/runs") && r.query.get("limit") === "20")).toBe(true));
+    const history = () => document.querySelectorAll(".job-history > li");
+    await waitFor(() => expect(history()).toHaveLength(20));
+    for (const n of [40, 60, 80, 100]) {
+      await user.click(screen.getByRole("button", { name: "Show more runs" }));
+      await waitFor(() => expect(history()).toHaveLength(n));
+    }
+    expect(screen.queryByRole("button", { name: "Show more runs" })).toBeNull();
+    expect(screen.getByText("Hermes lists a job's latest 100 runs; older ones aren't shown.")).toBeTruthy();
+    expect(s.restRequests.filter((r) => r.path.endsWith("/runs")).map((r) => r.query.get("limit"))).toEqual(["20", "40", "60", "80", "100"]);
+    expect(history()[99].textContent).toMatch(/run 99/);
+  });
+
+  it("stops paging when Hermes has no more runs", async () => {
+    const s = server();
+    const id = s.cron.jobs.default[0].id;
+    s.cron.runs[id] = Array.from({ length: 27 }, (_, i) => ({ id: `cron_output:${id}:${i}`, title: `COMPLETED · run ${i}`, source: "cron_output", started_at: 1_793_600_000 - i * 60 }));
+    const { user } = await launch(s);
+    await user.click(screen.getByText("[fixture] Weekday brief"));
     await user.click(await screen.findByRole("button", { name: "Show more runs" }));
-    await waitFor(() => expect(s.restRequests.some((r) => r.path.endsWith("/runs") && r.query.get("limit") === "100")).toBe(true));
+    await waitFor(() => expect(document.querySelectorAll(".job-history > li")).toHaveLength(27));
+    expect(screen.queryByRole("button", { name: "Show more runs" })).toBeNull();
+    expect(screen.getByText("Showing the latest 27 runs.")).toBeTruthy();
+  });
+
+  it("shows each run's state, times and error, and an agent run's result when asked", async () => {
+    const s = server();
+    const id = s.cron.jobs.default[0].id;
+    const at = 1_793_806_654;
+    s.cron.runs[id] = [
+      { id: "local-now", source: "cron", started_at: at + 300, ended_at: null, is_active: true, scheduler_owned: true, profile: "default" },
+      { id: "local-ok", source: "cron", started_at: at, ended_at: at + 80, end_reason: "cron_complete", profile: "default", preview: "[IMPORTANT: You are running as a scheduled cron job." },
+      { id: "cron_output:x:1", title: "FAILED · Script exited with code 3", preview: "# Cron Job: x **Status:** script failed", source: "cron_output", started_at: at - 60 },
+      { id: "local-dead", source: "cron", started_at: at - 600, ended_at: null, is_active: false, scheduler_owned: false, profile: "default" },
+    ];
+    s.transcripts["local-ok"] = [
+      { role: "user", text: "Fixture only.", row_id: 1 },
+      { role: "assistant", text: "[fixture] Here is the weekday brief.", row_id: 2 },
+    ];
+    const { user } = await launch(s);
+    await user.click(screen.getByText("[fixture] Weekday brief"));
+    const history = await screen.findByRole("list", { name: "Run history, newest first" });
+    const rows = within(history).getAllByRole("listitem");
+    expect(rows.map((r) => r.querySelector(".badge")!.textContent)).toEqual(["Running", "Succeeded", "Failed", "Unknown"]);
+    expect(rows[1].textContent).toMatch(/took 1 min 20 s/);
+    // Hermes's injected cron preamble isn't the result, so it isn't shown as one.
+    expect(rows[1].textContent).not.toMatch(/IMPORTANT/);
+    expect(rows[2].textContent).toMatch(/Script exited with code 3/);
+    expect(rows[2].textContent).not.toMatch(/Cron Job/);
+    expect(rows[3].textContent).toMatch(/no end recorded for this run/);
+    expect(screen.getByText("A run is under way on the server.")).toBeTruthy();
+    // Only agent runs have a session to read; reading it is a GET and changes nothing.
+    expect(within(rows[2]).queryByRole("button", { name: /Show the result/ })).toBeNull();
+    const show = within(rows[1]).getByRole("button", { name: "Show the result" });
+    await user.click(show);
+    expect(await within(rows[1]).findByText("[fixture] Here is the weekday brief.")).toBeTruthy();
+    expect(within(rows[1]).getByRole("button", { name: "Hide the result" }).getAttribute("aria-expanded")).toBe("true");
+    expect(within(rows[1]).getByRole("region", { name: "Run result" })).toBeTruthy();
+    expect(writes(s)).toHaveLength(0);
+    await user.click(within(rows[1]).getByRole("button", { name: "Hide the result" }));
+    expect(within(rows[1]).queryByText("[fixture] Here is the weekday brief.")).toBeNull();
+  });
+
+  it("drops a history answer that a newer read has superseded", async () => {
+    const s = server();
+    const id = s.cron.jobs.default[0].id;
+    s.cron.runs[id] = [{ id: "cron_output:x:old", title: "COMPLETED · the old run", preview: "the old run", source: "cron_output", started_at: 1_793_600_000 }];
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const route = s.cron.route.bind(s.cron);
+    let first = true;
+    s.cron.route = (req) => {
+      const handle = route(req);
+      if (!handle || !req.path.endsWith("/runs") || !first) return handle;
+      first = false;
+      // Hermes read the history as it was, but the answer is slow to arrive.
+      return async () => {
+        const answer = await handle();
+        await held;
+        return answer;
+      };
+    };
+    const { user } = await launch(s);
+    await user.click(screen.getByText("[fixture] Weekday brief"));
+    s.cron.runs[id] = [{ id: "cron_output:x:new", title: "COMPLETED · the manual run", preview: "the manual run", source: "cron_output", started_at: 1_793_700_000 }, ...s.cron.runs[id]];
+    await user.click(screen.getByRole("button", { name: /Run now/ }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Run now" }));
+    expect(await screen.findByText("the manual run")).toBeTruthy();
+    release();
+    await act(async () => void (await new Promise((r) => setTimeout(r, 20))));
+    expect(screen.getByText("the manual run")).toBeTruthy();
+    expect(document.querySelectorAll(".job-history > li")).toHaveLength(2);
+  });
+
+  it("doesn't start a second run while one is under way", async () => {
+    const s = server();
+    const job = s.cron.jobs.default[0];
+    s.cron.executions[job.id] = { id: "e1", job_id: job.id, status: "running", claimed_at: "2026-11-04T09:35:34-06:00" };
+    const { user } = await launch(s);
+    const row = screen.getByText("[fixture] Weekday brief").closest("button")!;
+    expect(within(row).getByText("Running")).toBeTruthy();
+    await user.click(row);
+    await user.click(screen.getByRole("button", { name: /Run now/ }));
+    expect(screen.getByRole("alertdialog").textContent).toMatch(/A run of this job is under way on the server: Hermes runs one at a time/);
+    s.cron.failNext = { match: /trigger$/, when: "before", message: 'The dashboard answered 409: {"detail":"Job is already running or was claimed by another scheduler"}' };
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Run now" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("This job is running already. Its result shows here once it finishes.");
+    expect(job.last_run_at).toBeNull();
+  });
+
+  it("says where Hermes can't deliver a job's results", async () => {
+    const s = server();
+    s.cron.add("default", { name: "[fixture] To Discord", prompt: "Fixture only.", schedule: "0 9 * * *", deliver: "discord" });
+    s.cron.add("default", { name: "[fixture] To Slack", prompt: "Fixture only.", schedule: "0 9 * * *", deliver: "slack" });
+    const { user } = await launch(s);
+    expect(within(screen.getByText("[fixture] To Discord").closest("button")!).getByText("Discord has no home channel set on the server, so Hermes won't deliver there.")).toBeTruthy();
+    expect(within(screen.getByText("[fixture] To Slack").closest("button")!).getByText("Slack isn't set up on this profile's gateway, so Hermes won't deliver there.")).toBeTruthy();
+    expect(within(screen.getByText("[fixture] Weekday brief").closest("button")!).queryByText(/won't deliver/)).toBeNull();
+    await user.click(screen.getByText("[fixture] To Slack"));
+    await user.click(screen.getByRole("button", { name: /Run now/ }));
+    expect(screen.getByRole("alertdialog").textContent).toMatch(/Slack isn't set up/);
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: /Edit/ }));
+    // The job's own target stays offered, so saving another field doesn't change it; a platform with no home channel can't be picked.
+    const deliver = screen.getByLabelText("Deliver to") as HTMLSelectElement;
+    expect(deliver.value).toBe("slack");
+    expect((within(deliver).getByRole("option", { name: /Discord/ }) as HTMLOptionElement).disabled).toBe(true);
+    expect(screen.getByText("Slack isn't set up on this profile's gateway, so Hermes won't deliver there.")).toBeTruthy();
+  });
+
+  it("says when the dashboard doesn't allow reading or changing jobs", async () => {
+    const s = server();
+    const route = s.cron.route.bind(s.cron);
+    let refuse = true;
+    s.cron.route = (req) => (refuse && req.path === "/api/cron/jobs" ? () => Promise.reject(new Error('The dashboard answered 403: {"detail":"Forbidden"}')) : route(req));
+    await launch(s);
+    expect((await screen.findByRole("alert")).textContent).toBe("The dashboard doesn't allow this: Forbidden");
+    expect(screen.queryByRole("button", { name: /New job/ })).toBeNull();
+    cleanup();
+    refuse = false;
+    const t = server();
+    const { user: u2 } = await launch(t);
+    await u2.click(screen.getByText("[fixture] Weekday brief"));
+    t.cron.failNext = { match: /pause$/, when: "before", message: 'The dashboard answered 403: {"detail":"Forbidden"}' };
+    await u2.click(screen.getByRole("button", { name: /Pause/ }));
+    expect((await screen.findByRole("alert")).textContent).toBe("The dashboard doesn't allow this: Forbidden");
+    expect(screen.getByRole("button", { name: /Pause/ })).toBeTruthy();
+    expect(t.cron.jobs.default[0].enabled).toBe(true);
+  });
+
+  it("finds a job whose create answer was lost, without creating it twice", async () => {
+    const { user, s } = await launch();
+    await user.click(screen.getByRole("button", { name: /New job/ }));
+    await user.type(screen.getByPlaceholderText(/What Hermes should do/), "Fixture only.");
+    await user.type(screen.getByPlaceholderText("every day at 9am"), "every 2h");
+    await user.type(screen.getByPlaceholderText(/Named after the prompt/), "Fixture lost answer");
+    // Hermes saved it, then the connection dropped before its answer came back.
+    s.cron.failNext = { match: /^POST /, when: "after" };
+    await user.click(screen.getByRole("button", { name: "Create job" }));
+    await screen.findByRole("heading", { name: /Fixture lost answer/ });
+    expect(writes(s)).toHaveLength(1);
+    expect(s.cron.jobs.default.filter((j) => j.name === "Fixture lost answer")).toHaveLength(1);
+  });
+
+  it("keeps the last list read, with actions off, once disconnected", async () => {
+    const s = server();
+    const hermes = await connect(s.openPipe);
+    running.push(hermes);
+    const view = render(<ScheduledJobs api={hermes.cron} profile="default" connected onClose={() => {}} />);
+    expect(await screen.findByText("[fixture] Weekday brief")).toBeTruthy();
+    view.rerender(<ScheduledJobs api={hermes.cron} profile="default" connected={false} onClose={() => {}} />);
+    expect(screen.getByText(/Not connected to Hermes\. Jobs keep running on the server/).textContent).toMatch(/as it was last read/);
+    expect((screen.getByRole("button", { name: /New job/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText("[fixture] Weekday brief")).toBeTruthy();
+  });
+
+  it("creates a job in another profile, on that profile's clock, and never shows a superseded profile's settings", async () => {
+    const s = server();
+    const { user } = await launch(s);
+    await user.click(screen.getByRole("button", { name: /New job/ }));
+    const where = screen.getByLabelText("Profile") as HTMLSelectElement;
+    await waitFor(() => expect(within(where).getAllByRole("option").map((o) => o.textContent)).toEqual(["default (this one)", "work"]));
+    // Picking work, then back to default before work's settings arrive: work's late answer is dropped.
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const route = s.cron.route.bind(s.cron);
+    s.cron.route = (req) => {
+      const handle = route(req);
+      if (!handle || req.query.get("profile") !== "work" || req.path !== "/api/cron/jobs") return handle;
+      return async () => {
+        await held;
+        return handle();
+      };
+    };
+    await user.selectOptions(where, "work");
+    expect(screen.getByText(/Reading that profile's settings/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Create job" }) as HTMLButtonElement).disabled).toBe(true);
+    await user.selectOptions(where, "default");
+    release();
+    await act(async () => void (await new Promise((r) => setTimeout(r, 20))));
+    expect(screen.getByText(/the default profile's schedule time zone/)).toBeTruthy();
+    s.cron.route = route;
+    await user.selectOptions(where, "work");
+    await screen.findByText(/the work profile's schedule time zone/);
+    await user.type(screen.getByPlaceholderText(/What Hermes should do/), "Fixture only.");
+    await user.type(screen.getByPlaceholderText("every day at 9am"), "every day at 7am");
+    await user.type(screen.getByPlaceholderText(/Named after the prompt/), "Fixture in work");
+    const summary = screen.getByRole("region", { name: "Summary" });
+    expect(summary.textContent).toMatch(/Profilework/);
+    await user.click(screen.getByRole("button", { name: "Create job" }));
+    expect(await screen.findByText(/Created “Fixture in work” in the work profile/)).toBeTruthy();
+    expect(writes(s).map((w) => w.query.get("profile"))).toEqual(["work"]);
+    expect(s.cron.jobs.work.map((j) => j.name)).toEqual(["Fixture in work"]);
+    expect(screen.queryByText("Fixture in work")).toBeNull();
+  });
+
+  it("sums up a new job before it is saved, and sends nothing to test its delivery", async () => {
+    const { user, s } = await launch();
+    await user.click(screen.getByRole("button", { name: /New job/ }));
+    expect(screen.queryByRole("region", { name: "Summary" })).toBeNull();
+    await user.type(screen.getByPlaceholderText(/What Hermes should do/), "Fixture only.");
+    await user.type(screen.getByPlaceholderText("every day at 9am"), "weekdays at 8:30am");
+    await user.selectOptions(screen.getByLabelText("Deliver to"), "telegram");
+    await user.type(screen.getByPlaceholderText("Leave empty to keep running"), "5");
+    await user.click(screen.getByLabelText(/Create it paused/));
+    const terms = Object.fromEntries(
+      within(screen.getByRole("region", { name: "Summary" }))
+        .getAllByRole("term")
+        .map((dt) => [dt.textContent, dt.nextElementSibling!.textContent]),
+    );
+    expect(terms).toEqual({
+      Job: "Named by Hermes after its prompt",
+      Profile: "default",
+      Runs: "On weekdays at 8:30 AM, on the schedule time zone, America/Chicago",
+      Stops: "After 5 runs",
+      "Delivers to": "Telegram",
+      Starts: "Paused: it won't run until resumed",
+    });
+    expect(screen.getByText(/Nothing is sent to try it/)).toBeTruthy();
+    expect(s.restRequests.filter((r) => r.method !== "GET")).toHaveLength(0);
+  });
+
+  it("says the schedule's time zone apart from this computer's, and what a clock change does", async () => {
+    const s = server();
+    s.cron.add("default", { name: "[fixture] Night", prompt: "Fixture only.", schedule: "30 2 * * *" });
+    const { user } = await launch(s);
+    await user.click(screen.getByText("[fixture] Night"));
+    expect(screen.getByText(/^Schedule time zone: America\/Chicago\./)).toBeTruthy();
+    expect(screen.getByText(/Clocks go (forward|back) an hour on/)).toBeTruthy();
+  });
+
+  it("puts focus back where the owner was", async () => {
+    const { user } = await launch();
+    await user.click(screen.getByText("[fixture] Weekday brief"));
+    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "[fixture] Weekday brief" }));
+    await user.click(screen.getByRole("button", { name: /Run now/ }));
+    expect(document.activeElement).toBe(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Cancel" }));
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: /Run now/ })));
+    await user.click(screen.getByRole("button", { name: /Back to the jobs/ }));
+    await waitFor(() => expect((document.activeElement as HTMLElement).dataset.jobId).toBe(screen.getByText("[fixture] Weekday brief").closest("button")!.dataset.jobId));
+  });
+
+  it("puts a change Hermes confirmed in the list, though the owner left the job before it landed", async () => {
+    const { user, s } = await launch();
+    let release!: () => void;
+    s.cron.gate = new Promise<void>((r) => (release = r));
+    await user.click(screen.getByText("[fixture] Weekday brief"));
+    await user.click(screen.getByRole("button", { name: /Pause/ }));
+    await user.click(screen.getByRole("button", { name: /Back to the jobs/ }));
+    release();
+    await waitFor(() => expect(within(screen.getByText("[fixture] Weekday brief").closest("button")!).queryByText("Paused")).toBeTruthy());
+    s.cron.gate = new Promise<void>((r) => (release = r));
+    await user.click(screen.getByText("[fixture] Weekday brief"));
+    await user.click(within(document.querySelector<HTMLElement>(".jobs-screen")!).getByRole("button", { name: "Delete" }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete job" }));
+    await user.click(screen.getByRole("button", { name: /Back to the jobs/ }));
+    release();
+    await waitFor(() => expect(screen.queryByText("[fixture] Weekday brief")).toBeNull());
+    expect(screen.getByRole("heading", { name: "Scheduled jobs" })).toBeTruthy();
+  });
+
+  it("keeps Hermes's own words for a failed delivery", async () => {
+    const s = server();
+    const id = s.cron.jobs.default[0].id;
+    s.cron.runs[id] = [{ id: `cron_output:${id}:latest`, title: "DELIVERY FAILED · Telegram said: chat not found", preview: "Telegram said: chat not found", source: "cron_output", started_at: 1_793_800_000 }];
+    const { user } = await launch(s);
+    await user.click(screen.getByText("[fixture] Weekday brief"));
+    const row = within(await screen.findByRole("list", { name: "Run history, newest first" })).getByRole("listitem");
+    expect(row.textContent).toMatch(/Failed.*delivering its result failed: Telegram said: chat not found/);
+  });
+
+  it("says when the profile a new job goes in has no time zone Hermes Chat can name", async () => {
+    const s = server();
+    s.cron.timezones = { work: "" };
+    const { user } = await launch(s);
+    await user.click(screen.getByRole("button", { name: /New job/ }));
+    const where = screen.getByLabelText("Profile") as HTMLSelectElement;
+    await waitFor(() => expect(within(where).getAllByRole("option")).toHaveLength(2));
+    await user.selectOptions(where, "work");
+    expect(await screen.findByText(/Hermes uses the server's own time zone and doesn't name it/)).toBeTruthy();
+    expect(screen.getByText(/^Times are shown in this computer's time zone/)).toBeTruthy();
+    expect(screen.queryByText(/the work profile's schedule time zone/)).toBeNull();
+    await user.type(screen.getByPlaceholderText(/What Hermes should do/), "Fixture only.");
+    await user.type(screen.getByPlaceholderText("every day at 9am"), "every day at 7am");
+    expect(screen.getByRole("region", { name: "Summary" }).textContent).toMatch(/can't confirm the work profile's own time zone/);
+  });
+
+  it("doesn't let a list read from before a change undo it", async () => {
+    const { user, s } = await launch();
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const route = s.cron.route.bind(s.cron);
+    let arm = true;
+    s.cron.route = (req) => {
+      const handle = route(req);
+      if (!handle || !arm || req.method !== "GET" || req.path !== "/api/cron/jobs") return handle;
+      arm = false;
+      // Hermes read the list before the pause below; its answer arrives after it.
+      return async () => {
+        const answer = await handle();
+        await held;
+        return answer;
+      };
+    };
+    await user.click(screen.getByRole("button", { name: /Refresh/ }));
+    await user.click(screen.getByText("[fixture] Weekday brief"));
+    await user.click(screen.getByRole("button", { name: /Pause/ }));
+    await screen.findByRole("button", { name: /Resume/ });
+    release();
+    await act(async () => void (await new Promise((r) => setTimeout(r, 30))));
+    expect(screen.getByRole("button", { name: /Resume/ })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /Back to the jobs/ }));
+    expect(within(screen.getByText("[fixture] Weekday brief").closest("button")!).getByText("Paused")).toBeTruthy();
+  });
+
+  it("reads a run's result again once the run has changed, and drops a read the owner hid", async () => {
+    const s = server();
+    const id = s.cron.jobs.default[0].id;
+    s.cron.runs[id] = [{ id: "local-r", source: "cron", started_at: 1_793_800_000, ended_at: null, is_active: true, scheduler_owned: true, profile: "default" }];
+    s.transcripts["local-r"] = [{ role: "user", text: "Fixture only.", row_id: 1 }];
+    let release!: () => void;
+    let held: Promise<void> | undefined = new Promise<void>((r) => (release = r));
+    const { user } = await launch(s);
+    // Hold the first read of the run's messages: it answers with the run as it was, after the run has finished.
+    const realStored = (s as unknown as { storedMessages: (id: string, q: URLSearchParams) => unknown }).storedMessages.bind(s);
+    (s as unknown as { storedMessages: (id: string, q: URLSearchParams) => unknown }).storedMessages = (mid, q) => {
+      const answer = realStored(mid, q);
+      const wait = held;
+      held = undefined;
+      return wait ? wait.then(() => answer) : answer;
+    };
+    await user.click(screen.getByText("[fixture] Weekday brief"));
+    const history = await screen.findByRole("list", { name: "Run history, newest first" });
+    await user.click(within(history).getByRole("button", { name: "Show the result" }));
+    s.cron.runs[id] = [{ id: "local-r", source: "cron", started_at: 1_793_800_000, ended_at: 1_793_800_030, end_reason: "cron_complete", profile: "default" }];
+    s.transcripts["local-r"].push({ role: "assistant", text: "[fixture] The finished reply.", row_id: 2 });
+    await user.click(screen.getByRole("button", { name: /Refresh runs/ }));
+    expect(await screen.findByText("[fixture] The finished reply.")).toBeTruthy();
+    release();
+    await act(async () => void (await new Promise((r) => setTimeout(r, 30))));
+    expect(screen.getByText("[fixture] The finished reply.")).toBeTruthy();
+    expect(screen.queryByText(/has no reply from the agent/)).toBeNull();
+    // Hidden while still reading: the answer, when it comes, doesn't open it again.
+    await user.click(screen.getByRole("button", { name: "Hide the result" }));
+    held = new Promise<void>((r) => (release = r));
+    await user.click(screen.getByRole("button", { name: "Show the result" }));
+    await user.click(screen.getByRole("button", { name: "Hide the result" }));
+    release();
+    await act(async () => void (await new Promise((r) => setTimeout(r, 30))));
+    expect(screen.queryByText("[fixture] The finished reply.")).toBeNull();
+    expect(screen.getByRole("button", { name: "Show the result" })).toBeTruthy();
+  });
+
+  it("doesn't call a zone Hermes doesn't name the one it runs the jobs in", async () => {
+    const s = server();
+    s.cron.timezone = "";
+    s.cron.jobs.default = [];
+    await launch(s);
+    expect(screen.getByText(/Times are shown in this computer's time zone, .*, which may not be the zone Hermes runs this profile's jobs in\./)).toBeTruthy();
+    expect(screen.queryByText(/the schedule time zone Hermes runs/)).toBeNull();
+    expect(screen.getByText(/Hermes uses the server's own time zone and doesn't name it/)).toBeTruthy();
+  });
+
+  it("gives focus back to New job when a new job is cancelled", async () => {
+    const { user } = await launch();
+    await user.click(screen.getByRole("button", { name: /New job/ }));
+    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "New scheduled job" }));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: /New job/ })));
+  });
+
+  it("never shows a profile's jobs once another profile is current", async () => {
+    const s = server();
+    s.cron.add("work", { name: "[fixture] Work job", prompt: "Fixture only.", schedule: "0 8 * * *" });
+    const hermes = await connect(s.openPipe);
+    running.push(hermes);
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const route = s.cron.route.bind(s.cron);
+    s.cron.route = (req) => {
+      const handle = route(req);
+      if (!handle || req.query.get("profile") !== "default" || req.path !== "/api/cron/jobs") return handle;
+      return async () => {
+        const answer = await handle();
+        await held;
+        return answer;
+      };
+    };
+    const view = render(<ScheduledJobs key="default" api={hermes.cron} profile="default" connected onClose={() => {}} />);
+    view.rerender(<ScheduledJobs key="work" api={hermes.cron} profile="work" connected onClose={() => {}} />);
+    expect(await screen.findByText("[fixture] Work job")).toBeTruthy();
+    release();
+    await act(async () => void (await new Promise((r) => setTimeout(r, 20))));
+    expect(screen.queryByText("[fixture] Weekday brief")).toBeNull();
+    expect(screen.getByText("[fixture] Work job")).toBeTruthy();
   });
 
   it("shows the profile's own jobs after switching profile", async () => {

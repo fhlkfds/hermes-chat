@@ -996,7 +996,7 @@ async fn repo_git(target: String, request: repo_git::Request) -> Result<serde_js
 }
 
 /// `repo_git`, for a request that reports progress as it goes (creating a worktree and running its setup, removing
-/// one): each progress line goes to `on_progress` as the helper prints it (ADR 0042).
+/// one): each progress line goes to `on_progress` as the helper prints it (ADR 0043).
 #[tauri::command]
 async fn repo_git_stream(
     target: String,

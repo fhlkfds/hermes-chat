@@ -1,4 +1,4 @@
-# Worktrees screenshots (#82, ADR 0042)
+# Worktrees screenshots (#82, ADR 0043)
 
 Captured on 2026-11-04 from the running Tauri debug build (WebKitGTK, frontend built in) on an Xvfb display with openbox. They're framebuffer captures of the 1280 × 820 window, or the 760-pixel window for `18` and `19`. They aren't mockups, and nothing was composited or retouched.
 
@@ -14,7 +14,7 @@ The chat list comes from a stand-in dashboard with synthetic chats (`bridge.ts` 
    - `git worktree list` showed it locked as `hermes-chat: managed worktree …`;
    - `.env` was copied and `node_modules` was a link to the main checkout's;
    - the main checkout's own changes were untouched;
-   - `.git/hermes-chat/worktrees.json` said `ready`.
+   - `.git/hermes-chat/worktrees.json` said `ready` (the record has since been renamed `managed-worktrees.json`, so it stays apart from ADR 0042's).
 4. `4-new-chat-in-worktree.png`: Start a chat in it. The New chat pane shows the worktree as the chat's folder, chosen for this chat, and its branch, with Don't start it there.
 5. `5-chat-shows-its-branch.png`: the chat, started with `cwd` set to the worktree, shows its branch in its header. The record on the server then had the chat attached, with its profile and connection.
 6. `6-list-chat-attached.png`: the list, opened from that header label. The chat is named by its title, and Remove is disabled: "Chats work in it: detach them first".

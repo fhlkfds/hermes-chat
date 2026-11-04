@@ -1,4 +1,4 @@
-// A stand-in Hermes dashboard for the Worktrees screenshots (ADR 0042): sign-in, the WS ticket, `/api/ws` and dashboard
+// A stand-in Hermes dashboard for the Worktrees screenshots (ADR 0043): sign-in, the WS ticket, `/api/ws` and dashboard
 // REST, all answered by the tests' FakeHermes with synthetic chats. Loopback only. The Repository screen itself talks to
 // the real server over ssh; this only stands in for Hermes's chats. Build and run:
 //   npx rolldown docs/screenshots/worktrees/bridge.ts --platform node -o /tmp/bridge.mjs && node /tmp/bridge.mjs 47800

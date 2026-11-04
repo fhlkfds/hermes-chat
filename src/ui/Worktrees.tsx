@@ -1,4 +1,4 @@
-// The Repository screen's Worktrees view (ADR 0042): the repository's worktrees on the server, with what each holds
+// The Repository screen's Worktrees view (ADR 0043): the repository's worktrees on the server, with what each holds
 // and which chats work in it; New worktree, with a preview of exactly what will be made and a setup run once; and
 // Remove, with a preview of what it touches, which keeps every change first. Everything runs on the server through the
 // screen's helper (worktrees.ts).

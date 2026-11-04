@@ -2,6 +2,8 @@
 
 The Repository screen (ADR 0034) has a **Worktrees** view (#82). It lists the repository's worktrees on the server, makes new ones for parallel coding chats, runs their setup once, starts a chat in one, and removes one after a preview that keeps every change first. Every Git operation runs on the Hermes server, through the same constant helper over the owner's own `ssh`, with structured requests and no shell. Nothing runs Git on this computer.
 
+This supersedes ADR 0042, the first design for #82 (merged in #157), which made worktrees through the same helper but put each one at a fixed `<parent>/<repo>.worktrees/<branch>` and kept its record in another format. Worktrees that design made stay readable by Git and are listed here as not made by this app, so they are never removed, set up or attached to from here: its record (`hermes-chat/worktrees.json`) is left as it is, and its lock reason (`hermes-chat <id>`) isn't this one's.
+
 ## Why not the dashboard's worktree routes
 
 Hermes at `f0d9488` (deployed, read over SSH on 2026-11-04) has `POST /api/git/worktree/add` and `/remove` (`hermes_cli/web_routers/git.py` over `hermes_cli/web_git.py`), and `GET /api/git/worktrees`. The project screen already uses the list (ADR 0007). The two writes can't meet #82:
@@ -20,7 +22,7 @@ The helper's second half (`src-tauri/src/repo_worktree_helper.py`) adds eleven r
 
 ### The record: who made which worktree, and which chats work in it
 
-What this app made is recorded **in the repository**, in `<git common dir>/hermes-chat/worktrees.json` (version 1, mode 0700 folder). It is changed only while holding an exclusive `flock` on `worktrees.lock` beside it, and written to a temporary file that is fsynced and renamed. So:
+What this app made is recorded **in the repository**, in `<git common dir>/hermes-chat/managed-worktrees.json` (version 1, mode 0700 folder; `worktrees.json` beside it is ADR 0042's record and is never touched). It is changed only while holding an exclusive `flock` on `worktrees.lock` beside it, and written to a temporary file that is fsynced and renamed. So:
 
 - Every desktop and every copy of this app reads the same owners and chats. Nothing about a worktree is kept only on one computer.
 - An attach and a removal can't both pass their checks: each holds the lock from its check to its write. A second change waits up to 15 s, then answers `busy` and changes nothing.
@@ -161,7 +163,7 @@ Ownership could also move to Hermes's own `worktree_registry` (per profile, toda
 
 - **What the server needs:** what ADR 0034 needs, and Git 2.36 or newer for worktrees. Older Git says the server isn't supported for worktrees.
 - **Stored on the server, in the repository:**
-  - `<git common dir>/hermes-chat/worktrees.json` and `worktrees.lock`, removed with the repository;
+  - `<git common dir>/hermes-chat/managed-worktrees.json` and `worktrees.lock`, removed with the repository (the lock file is shared with ADR 0042's helper, so the two never change the folder at once);
   - kept changes as `refs/hermes-chat/kept/*` commits, which `git gc` keeps because they are refs.
 - **Stored on this computer:** which chat was started in which worktree, for each connection and profile (`hermes-chat.worktree-chats`, webview local storage). It's a convenience: lost or cleared, a chat only stops showing its branch.
 - **Time limits:** creating and setup get 30 minutes, Git's checkout 15 of them. Removing gets 20, reading a removal plan or the list 5, everything else 60 s.

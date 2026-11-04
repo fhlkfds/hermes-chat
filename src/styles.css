@@ -1791,7 +1791,29 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .job-kept dd { margin: 0; font-family: var(--mono); overflow-wrap: anywhere; }
 .job-history { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; font-size: calc(12.5rem / 14); }
 .job-history li { border-left: 2px solid var(--line-2); padding-left: 10px; }
-.job-history .badge { margin-left: 8px; }
+.job-history-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.job-history .badge.run-succeeded { background: rgba(74, 222, 128, 0.12); color: var(--ok); }
+.job-history .badge.run-failed { background: rgba(248, 113, 113, 0.12); color: var(--bad); }
+.job-history .badge.run-running { background: rgba(245, 184, 74, 0.14); color: var(--warn); }
+.job-history-error { white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 2px; }
+.job-result-toggle { display: inline-flex; align-items: center; gap: 4px; margin-top: 4px; padding: 2px 0; color: var(--muted); font-size: calc(12.5rem / 14); }
+.job-result-toggle:hover { color: var(--text); }
+.job-result-toggle:focus-visible { outline: 2px solid var(--line-2); outline-offset: 2px; border-radius: 4px; }
+.job-result { margin-top: 6px; }
+.job-result .job-prompt { margin: 0; max-height: 240px; }
+.job-section-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.job-section-head h2 { margin: 0; }
+.job-section-head .btn.small { height: 28px; padding: 0 10px; font-size: calc(12.5rem / 14); }
+.settings section.job-summary { padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); }
+.job-summary .job-sub { margin-top: 0; }
+.job-summary .job-kept dd { font-family: inherit; }
+.jobs-screen h1:focus { outline: none; }
+.jobs-screen h1:focus-visible { outline: 2px solid var(--line-2); outline-offset: 2px; border-radius: 6px; }
+@media (max-width: 520px) {
+  .job-kept > div { flex-direction: column; gap: 0; }
+  .job-kept dt { min-width: 0; }
+  .jobs-actions .btn { flex: 1 1 auto; }
+}
 .job-history-title { color: var(--text); overflow-wrap: anywhere; }
 .job-history-preview { overflow-wrap: anywhere; }
 .job-form { display: flex; flex-direction: column; gap: 16px; }
@@ -2511,7 +2533,7 @@ p.logs-status { margin: 0 0 8px; line-height: 1.5; }
 .repo-check-pending { color: var(--warn); }
 .repo-link { width: 20px; height: 20px; }
 
-/* Repository → Worktrees (ADR 0042) */
+/* Repository → Worktrees (ADR 0043) */
 .repo-views { display: flex; gap: 4px; border-bottom: 1px solid var(--line); padding: 8px 22px 0; flex: none; }
 .repo-view { padding: 6px 12px; border-radius: 7px 7px 0 0; color: var(--muted); border: 1px solid transparent; border-bottom: none; margin-bottom: -1px; }
 .repo-view:hover { color: var(--text); }

@@ -1,4 +1,4 @@
-//! Worktrees on the server (ADR 0042): the helper's worktree operations, run as the server runs them (the exact remote
+//! Worktrees on the server (ADR 0043): the helper's worktree operations, run as the server runs them (the exact remote
 //! command string through `sh -c`), against real Git repositories in a temporary folder. Only ssh itself is left out.
 
 use hermes_chat::repo_git::{self, RepoError, Request};
@@ -177,7 +177,7 @@ async fn a_new_branch_worktree_is_made_beside_the_repository_from_the_base_shown
     assert_eq!(main["main"], true);
     assert_eq!(main["protected"][0]["kind"], "main");
     // The record is in the repository, where every desktop sees it.
-    assert!(app.join(".git/hermes-chat/worktrees.json").is_file());
+    assert!(app.join(".git/hermes-chat/managed-worktrees.json").is_file());
 }
 
 #[tokio::test]
@@ -330,7 +330,7 @@ async fn a_creation_cut_off_part_way_is_found_and_can_be_finished_or_forgotten()
     assert_eq!(done["worktree"]["state"], "ready");
 
     // A creation cut off before Git made anything: the record says so, and forgetting it touches nothing on disk.
-    let rec = app.join(".git/hermes-chat/worktrees.json");
+    let rec = app.join(".git/hermes-chat/managed-worktrees.json");
     let mut doc: Value = serde_json::from_str(&std::fs::read_to_string(&rec).unwrap()).unwrap();
     doc["worktrees"][ID2] = serde_json::json!({
         "id": ID2, "path": d.join("app-never"), "branch": "never", "state": "creating",
@@ -687,7 +687,7 @@ async fn two_creations_for_the_same_folder_cant_both_be_recorded() {
     assert_eq!([a.is_ok(), b.is_ok()].iter().filter(|ok| **ok).count(), 1, "{a:?} {b:?}");
     let refused = if a.is_ok() { b } else { a };
     assert!(["exists", "busy", "stale", "branch-exists"].contains(&kind(refused.unwrap_err()).as_str()));
-    let doc: Value = serde_json::from_str(&std::fs::read_to_string(app.join(".git/hermes-chat/worktrees.json")).unwrap()).unwrap();
+    let doc: Value = serde_json::from_str(&std::fs::read_to_string(app.join(".git/hermes-chat/managed-worktrees.json")).unwrap()).unwrap();
     assert_eq!(doc["worktrees"].as_object().unwrap().len(), 1);
 }
 
@@ -771,4 +771,39 @@ async fn a_removal_that_fails_leaves_a_failed_setup_failed() {
     assert_eq!(rec["state"], "setup-failed", "the failed setup isn't marked ready");
     assert_eq!(rec["exists"], true);
     assert!(wt.join("locked/inside.txt").is_file());
+}
+
+#[tokio::test]
+async fn a_worktree_from_the_first_design_is_not_taken_for_one_made_here() {
+    // ADR 0042's helper recorded its worktrees in `<git common dir>/hermes-chat/worktrees.json`, in another format,
+    // and locked them `hermes-chat <id>`. This helper never reads or writes that file, and treats those trees as not
+    // made here: shown, but not removed, attached to or set up from here.
+    let (d, app) = repo("first-design");
+    let old = d.join("app.worktrees/old");
+    git(&app, &["worktree", "add", "-q", "-b", "old", &old, "main"]);
+    git(&app, &["worktree", "lock", "--reason", &format!("hermes-chat {ID2}"), "--", &old]);
+    let first = serde_json::to_vec(&serde_json::json!({"v": 1, "worktrees": {ID2: {
+        "id": ID2, "path": old, "branch": "old", "newBranch": true, "base": "main", "baseSha": "", "setup": [],
+        "state": "ready", "protected": false, "chats": [], "createdAt": 1, "createdBy": "owner"
+    }}}))
+    .unwrap();
+    std::fs::create_dir_all(app.join(".git/hermes-chat")).unwrap();
+    std::fs::write(app.join(".git/hermes-chat/worktrees.json"), &first).unwrap();
+
+    let l = list(&app).await;
+    let t = tree(&l, &old);
+    assert!(t["managed"].is_null(), "{t}");
+    let why: Vec<&str> = t["protected"].as_array().unwrap().iter().map(|b| b["kind"].as_str().unwrap()).collect();
+    assert!(why.contains(&"unmanaged") && why.contains(&"locked"), "{why:?}");
+    assert!(l["missing"].as_array().unwrap().is_empty());
+    let attach = ask(Request::WorktreeAttach { repo: s(&app), id: ID2.into(), token: TOKEN.into(), profile: "p".into(), connection: "c".into() }).await;
+    assert_eq!(kind(attach.unwrap_err()), "not-found");
+    assert_eq!(kind(ask(Request::WorktreeSetup { repo: s(&app), id: ID2.into() }).await.unwrap_err()), "not-found");
+    assert_eq!(kind(ask(Request::WorktreeRemovePlan { repo: s(&app), id: ID2.into() }).await.unwrap_err()), "not-found");
+
+    // Making one here goes in this helper's own record and leaves the first design's untouched.
+    create(&app, ID, "feature/new", false).await;
+    assert_eq!(tree(&list(&app).await, &d.join("app-feature-new"))["managed"]["id"], ID);
+    assert_eq!(std::fs::read(app.join(".git/hermes-chat/worktrees.json")).unwrap(), first);
+    assert!(app.join(".git/hermes-chat/managed-worktrees.json").is_file());
 }

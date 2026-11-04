@@ -15,7 +15,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
-/// The helper program, sent unchanged every time: the Git half, then the worktree half (ADR 0042), which ends by
+/// The helper program, sent unchanged every time: the Git half, then the worktree half (ADR 0043), which ends by
 /// running it.
 pub const HELPER: &str = concat!(include_str!("repo_git_helper.py"), include_str!("repo_worktree_helper.py"));
 
@@ -102,7 +102,7 @@ pub enum Request {
     #[serde(rename_all = "camelCase")]
     RemoteHead { repo: String, remote: String, remote_branch: String },
     /// Every worktree of the repository `repo` is in, with what this app recorded about the ones it made: their
-    /// chats, setup and state, and the changes kept from removed ones (ADR 0042).
+    /// chats, setup and state, and the changes kept from removed ones (ADR 0043).
     WorktreeList { repo: String },
     /// What creating a worktree would do, checked but not done: the base commit, the branch, the folder (a suggested
     /// one when `path` is empty), the setup entries, and a stamp the creation must match.
