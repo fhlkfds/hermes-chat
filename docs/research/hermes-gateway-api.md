@@ -589,6 +589,7 @@ Read in `tui_gateway/methods_session.py` (`session.undo`), `tui_gateway/methods_
   - `prompt.submit` with edited text answered `{status: "streaming", user_row_id}`. The branch then held the edited message and its reply only. `parent_session_id` was the parent, `source` was `tui`.
   - `session.branch {count: 3}` through Q2, then undo, left Q1 and A1. `prompt.submit` of Q2's stored text, `@file:` ref included, reached the model with Hermes's file context.
 - **The parent.** Its 8 rows were unchanged after all of it.
+- **The model switch.** ADR 0027's `config.set model` on a fresh branch stores a `display_kind = model_switch` user row after the copy, and deactivates any marker the branch copied (`_append_model_switch_marker`, `tui_gateway/server.py:1291`). `session.undo` counts only user-originated turns: a row with a `display_kind` other than `steer` isn't one (`split_user_originated_turn`, `agent/context_compressor.py`). So it rewinds from the copy and takes the marker with it. Read in the `bf0203a` source on 2026-11-04; not probed live.
 - **Per-reply model.** Stored rows have no model field. Their keys include `finish_reason`, `token_count` and `reasoning`, but not `model`. The session row has `model` and `model_config` only. So a reply's model isn't stored, only the session's latest.
 - **Images.** `_cmd_retry` refuses `attached_images` with 4018 `retry cannot safely reconstruct or combine attached media`.
 - What the app does: ADR 0035.

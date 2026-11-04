@@ -68,7 +68,7 @@ import {
   type SpineRow,
   type StoredBranchRow,
 } from "./branch";
-import { cannotResend, laterOf, replayBlocked, resendText, replayTarget, splitRefs, turnAt, variantRoot, withRefs, type ReplayKind, type ReplayPreview } from "./replay";
+import { cannotResend, laterOf, replayBlocked, resendText, replayTarget, splitRefs, turnAt, variantRoot, withRefs, withoutMarkers, type ReplayKind, type ReplayPreview } from "./replay";
 
 /**
  * The `source` this app stamps on chats it starts. Legacy `session.create` stores any string as-is, but the gateway
@@ -267,6 +267,9 @@ type ServerRequest = { id: string; method: string; params: Record<string, unknow
 
 /** JSON-RPC "method not found": what Hermes expects from a client that can't handle a request. */
 const NO_SUCH_METHOD = -32601;
+
+/** Why an Edit or Regenerate made nothing: the chat isn't as the owner saw it in the dialog. */
+const REPLAY_CHANGED = "This chat changed since this opened, here or in another Hermes client. Nothing was made; open it again to see the chat as it is now.";
 
 /** Dashboard REST caps a page of stored messages at 500. The compaction history reads at most `COMPACTION_ROWS`. */
 const COMPACTION_PAGE = 500;
@@ -1398,10 +1401,13 @@ export class Hermes {
    * `BranchUnconfirmed`, and the chat list read once connected again settles it, by the idempotency key it went
    * with; branching from the same message again meanwhile returns the same branch.
    */
-  async branch(preview: BranchPreview, title?: string, variant?: BranchVariant): Promise<{ chatId: string; warnings: string[] }> {
+  async branch(preview: BranchPreview, title?: string, variant?: BranchVariant, whole?: string): Promise<{ chatId: string; warnings: string[] }> {
     const profile = this.profile;
     const { chat, spine, index } = await this.branchBoundary(preview.chatId, preview.itemId, profile);
     const count = index + 1;
+    // An Edit or Regenerate checks the whole chat at this, the last read before the branch is made: a message another
+    // client added after the point changes what the branch leaves out.
+    if (whole !== undefined && spineKey(spine) !== whole) throw new Error(REPLAY_CHANGED);
     // Every row the preview showed, as it showed it: a message changed or removed anywhere before the point counts.
     if (count !== preview.count || spineKey(spine.slice(0, count)) !== preview.fingerprint)
       throw new Error("This chat changed since the preview opened. Open it again to see what the branch would hold.");
@@ -1576,17 +1582,19 @@ export class Hermes {
     const blocked = replayBlocked(chat, this.snapshot.status === "connected");
     if (blocked) throw new Error(blocked);
     // The whole chat, not only the part copied: a message added after it by another client changes what's left out.
+    // `branch` checks it again at its own last read, just before the branch is made.
     const { spine } = await this.branchBoundary(chat.id, preview.branch.itemId, profile);
-    if (spineKey(spine) !== preview.spine)
-      throw new Error("This chat changed since this opened, here or in another Hermes client. Nothing was made; open it again to see the chat as it is now.");
+    if (spineKey(spine) !== preview.spine) throw new Error(REPLAY_CHANGED);
     const count = preview.branch.count;
+    // What the branch must hold before and after its copy is taken back, without model-switch markers: switching the
+    // branch to the chat's model as it's made changes those (`withoutMarkers`).
     const variant: BranchVariant = {
       kind: preview.kind,
       rootId: preview.rootId,
       turn: preview.turn,
-      pending: { text, prefix: spineKey(spine.slice(0, count - 1)), through: preview.branch.fingerprint },
+      pending: { text, prefix: spineKey(withoutMarkers(spine.slice(0, count - 1))), through: spineKey(withoutMarkers(spine.slice(0, count))) },
     };
-    const made = await this.branch(preview.branch, undefined, variant);
+    const made = await this.branch(preview.branch, undefined, variant, preview.spine);
     if (this.profile !== profile) return made;
     try {
       made.warnings.push(...(await this.finishReplay(made.chatId)));
@@ -1623,7 +1631,8 @@ export class Hermes {
     const keep = Number.parseInt(pending.prefix, 10);
     const sid = await this.resume(chatId);
     const generation = this.generation;
-    const read = async () => spineOf(await this.storedRows(chatId, profile));
+    // Without model-switch markers, as `pending` was worked out: the one stored after the copy goes with it.
+    const read = async () => withoutMarkers(spineOf(await this.storedRows(chatId, profile)));
     // Checked after every wait, before anything is changed: the owner may have switched profile, the connection may
     // have changed, or a reply or another message may have started in the branch meanwhile. The words stay pending.
     const stillMine = () => {
