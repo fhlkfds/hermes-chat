@@ -203,6 +203,49 @@ describe("Settings → Voice → Speech providers", () => {
     expect(listed("Text-to-speech")[3]).toMatch(/^ElevenLabs\s*In use/);
   });
 
+  it("doesn't let a read still on its way from before a save undo what the save read back", async () => {
+    const { user, server } = await shown();
+    await screen.findByRole("group", { name: "Text-to-speech" });
+    let open!: () => void;
+    server.voiceSetupGate = new Promise((r) => (open = r));
+    await user.click(screen.getByRole("button", { name: /Read again/ }));
+    await user.selectOptions(picker("Text-to-speech"), "ElevenLabs");
+    await user.click(saveButton());
+    await screen.findByText(/Saved on Hermes, and read back/);
+    act(() => open());
+    await new Promise((r) => setTimeout(r, 30));
+    expect(picker("Text-to-speech").value).toBe("ElevenLabs");
+    expect(listed("Text-to-speech")[3]).toMatch(/^ElevenLabs\s*In use/);
+  });
+
+  it("empties a typed key when the save fails before Hermes answers", async () => {
+    const { user, server, fake } = await shown();
+    await screen.findByRole("group", { name: "Speech-to-text" });
+    await user.selectOptions(picker("Speech-to-text"), "Groq");
+    await user.type(within(side("Speech-to-text")).getByLabelText("Groq Groq API key"), "gsk-kept?");
+    server.voiceSetupFailure = "Can't reach the Hermes dashboard: connection reset";
+    await user.click(saveButton());
+    expect((await screen.findByRole("alert")).textContent).toMatch(/Couldn't save: Can't reach the Hermes dashboard/);
+    expect(within(side("Speech-to-text")).getByLabelText<HTMLInputElement>("Groq Groq API key").value).toBe("");
+    expect(picker("Speech-to-text").value).toBe("Groq");
+    expect(fake.savedKeys).toEqual([]);
+  });
+
+  it("can name Local Whisper when Hermes is only picking it", async () => {
+    const { user, fake } = await shown({ setUp: (s) => (s.voice = { ...s.voice, sttProvider: undefined }) });
+    await screen.findByRole("group", { name: "Speech-to-text" });
+    expect(picker("Speech-to-text").value).toBe("");
+    expect(picker("Speech-to-text").selectedOptions[0].textContent).toBe("Picked by Hermes (now Local Whisper)");
+    expect(side("Speech-to-text").textContent).toMatch(/The profile names none, so Hermes picks as it transcribes/);
+    // The one in use still shows its settings.
+    expect(within(side("Speech-to-text")).getByLabelText<HTMLSelectElement>(/Model size/).value).toBe("base");
+    await user.selectOptions(picker("Speech-to-text"), "Local Whisper");
+    await user.click(saveButton());
+    await screen.findByText(/Saved on Hermes, and read back/);
+    expect(fake.provider("default", "stt")).toBe("local");
+    expect(picker("Speech-to-text").value).toBe("Local Whisper");
+  });
+
   it("says when the server can't list its speech providers, and what to do instead", async () => {
     await shown({ setUp: (s) => (s.voiceProviders.routes = "none") });
     const note = await screen.findByRole("note");

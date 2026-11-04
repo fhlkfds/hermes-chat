@@ -275,6 +275,16 @@ function optionsFrom(schema: unknown): Record<string, string[]> {
 /** The provider `kind` uses now, as Hermes marks it. */
 export const activeOf = (read: VoiceRead, kind: VoiceKind) => read.sides[kind].providers.find((p) => p.active);
 
+/** The provider name the profile's config writes for `kind` (`stt.provider`), if any. */
+export const namedOf = (read: VoiceRead, kind: VoiceKind) => (kind === "stt" ? read.setup.sttProvider : read.setup.ttsProvider);
+
+/**
+ * The listed provider the profile has picked for `kind`: the one in use, when the config names one. With `stt.provider`
+ * unset Hermes marks Local Whisper in use but picks as it transcribes, so nothing counts as picked, and picking Local
+ * Whisper writes it.
+ */
+export const pickedOf = (read: VoiceRead, kind: VoiceKind) => (namedOf(read, kind) ? activeOf(read, kind) : undefined);
+
 /** `{tts: {openai: {voice: "nova"}}}` from `{"tts.openai.voice": "nova"}`. */
 function nested(settings: Record<string, string>): Json {
   const out: Json = {};
@@ -372,10 +382,16 @@ export class VoiceSettingsApi {
   private async write(profile: string, base: VoiceRead, draft: VoiceDraft): Promise<VoiceSave> {
     // Checked first: another client may have picked another provider or changed a setting since the owner read them.
     const before = await this.read(profile);
-    const kinds = KINDS.filter((kind) => draft.provider[kind] !== undefined && activeOf(before, kind)?.name !== activeOf(base, kind)?.name);
+    // The provider is compared both as Hermes lists it and as the config names it: a switch between two providers Hermes
+    // doesn't list (command or plugin ones) changes only the name.
+    const kinds = KINDS.filter(
+      (kind) =>
+        draft.provider[kind] !== undefined &&
+        (activeOf(before, kind)?.name !== activeOf(base, kind)?.name || namedOf(before, kind) !== namedOf(base, kind)),
+    );
     const paths = Object.keys(draft.settings).filter((path) => before.values[path] !== base.values[path]);
     const what = [
-      ...kinds.map((kind) => `the ${KIND_LABEL[kind].toLowerCase()} provider (now ${activeOf(before, kind)?.name ?? "none"})`),
+      ...kinds.map((kind) => `the ${KIND_LABEL[kind].toLowerCase()} provider (now ${activeOf(before, kind)?.name ?? namedOf(before, kind) ?? "none"})`),
       ...paths.map((path) => settingLabel(before, path)),
     ];
     if (what.length) return { kind: "conflict", read: before, what, kinds, paths };
@@ -392,7 +408,7 @@ export class VoiceSettingsApi {
         label: keyLabel(kind, env),
         send: () => this.rest("PUT", `api/tools/toolsets/${kind}/env?${this.q(profile)}`, { env }),
       })),
-      ...KINDS.filter((kind) => draft.provider[kind] !== undefined && draft.provider[kind] !== activeOf(before, kind)?.name).map((kind) => ({
+      ...KINDS.filter((kind) => draft.provider[kind] !== undefined && draft.provider[kind] !== pickedOf(before, kind)?.name).map((kind) => ({
         label: `the ${KIND_LABEL[kind].toLowerCase()} provider`,
         send: () => this.rest("PUT", `api/tools/toolsets/${kind}/provider?${this.q(profile)}`, { provider: draft.provider[kind] }),
       })),

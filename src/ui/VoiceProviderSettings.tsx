@@ -15,6 +15,8 @@ import {
   type VoiceSettingsApi,
   VoiceUnsupportedError,
   activeOf,
+  namedOf,
+  pickedOf,
   draftChanges,
   draftProblems,
   emptyDraft,
@@ -129,7 +131,8 @@ export function VoiceProviderSettings({
 
   const save = async () => {
     if (!read || busy || problems.length) return;
-    const mine = epoch.current;
+    // A read still on its way from before the save would show what Hermes had then: it is dropped.
+    const mine = ++epoch.current;
     const forApi = api;
     const forProfile = profile;
     setSaving(true);
@@ -140,6 +143,7 @@ export function VoiceProviderSettings({
     } catch (e) {
       if (!current(mine, forApi, forProfile)) return;
       setSaving(false);
+      setDraft((d) => ({ ...d, keys: {} }));
       setOutcome({ ok: false, text: `Couldn't save: ${messageOf(e)}` });
       return;
     }
@@ -166,7 +170,7 @@ export function VoiceProviderSettings({
   const setProvider = (kind: VoiceKind, name: string) =>
     setDraft((d) => {
       const provider = { ...d.provider };
-      if (read && activeOf(read, kind)?.name === name) delete provider[kind];
+      if (read && (pickedOf(read, kind)?.name ?? "") === name) delete provider[kind];
       else provider[kind] = name;
       const picked = read?.sides[kind].providers.find((p) => p.name === name);
       const own = new Set(fieldsOf(kind, picked).map((f) => f.path));
@@ -284,9 +288,11 @@ function ProviderSide({
 }) {
   const providers = read.sides[kind].providers;
   const inUse = activeOf(read, kind);
-  const pickedName = draft.provider[kind] ?? inUse?.name;
-  const picked = providers.find((p) => p.name === pickedName);
-  const named = kind === "stt" ? read.setup.sttProvider : read.setup.ttsProvider;
+  // With nothing named, the select shows "Picked by Hermes" and the provider in use can be picked to name it.
+  const pickedName = draft.provider[kind] ?? pickedOf(read, kind)?.name;
+  // Its settings and keys show for the one in use when nothing is named.
+  const picked = providers.find((p) => p.name === (pickedName ?? inUse?.name));
+  const named = namedOf(read, kind);
   const label = KIND_LABEL[kind];
   const fields = fieldsOf(kind, picked);
   const value = (path: string) => draft.settings[path] ?? read.values[path] ?? "";
@@ -298,7 +304,7 @@ function ProviderSide({
       <label className="voice-field">
         <span>Provider</span>
         <select aria-label={`${label} provider`} value={pickedName ?? ""} disabled={disabled} onChange={(e) => onProvider(e.target.value)}>
-          {!inUse && <option value="">None picked</option>}
+          {!pickedOf(read, kind) && <option value="">{inUse ? `Picked by Hermes (now ${inUse.name})` : "None picked"}</option>}
           {providers.map((p) => (
             <option key={p.name} value={p.name}>
               {p.name}
@@ -323,7 +329,7 @@ function ProviderSide({
         {providers.map((p) => {
           const r = readiness(p);
           return (
-            <li key={p.name} className={p.name === pickedName ? "picked" : undefined}>
+            <li key={p.name} className={p.name === picked?.name ? "picked" : undefined}>
               <span className="voice-provider-name">{p.name}</span>
               {p.active && <span className="badge">In use</span>}
               <span className={`badge ${r.ok ? "ok" : "warn"}`}>{r.badge}</span>

@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { FakeHermes } from "./fakeHermes";
 import { connect } from "./transport";
-import { type VoiceDraft, VoiceUnsupportedError, activeOf, emptyDraft } from "./voiceSettings";
+import { type VoiceDraft, VoiceUnsupportedError, activeOf, emptyDraft, namedOf, pickedOf } from "./voiceSettings";
 
 async function setUp() {
   const server = new FakeHermes();
@@ -168,6 +168,29 @@ describe("Settings → Voice: saving", () => {
     expect(fake.writes).toEqual([]);
     // Where Hermes falls back on a blank (a language, Gemini's voice), it is sent.
     expect((await api.save("default", base, draft({ settings: { "stt.local.language": "", "stt.language": "" } }))).kind).toBe("saved");
+  });
+
+  it("names Local Whisper when it is picked while the profile names no speech-to-text provider", async () => {
+    const { server, fake, api } = await setUp();
+    server.voice = { ...server.voice, sttProvider: undefined };
+    const base = await api.read("default");
+    expect(activeOf(base, "stt")?.name).toBe("Local Whisper");
+    expect(pickedOf(base, "stt")).toBeUndefined();
+    const r = await api.save("default", base, draft({ provider: { stt: "Local Whisper" } }));
+    expect(r.kind).toBe("saved");
+    expect(fake.writes).toEqual([{ profile: "default", route: "provider", body: { provider: "Local Whisper" } }]);
+    if (r.kind === "saved") expect(namedOf(r.read, "stt")).toBe("local");
+  });
+
+  it("sees another client switch between two providers Hermes doesn't list", async () => {
+    const { fake, api } = await setUp();
+    fake.set("default", "stt.provider", "my-command-a");
+    const base = await api.read("default");
+    expect(activeOf(base, "stt")).toBeUndefined();
+    fake.set("default", "stt.provider", "my-command-b");
+    const r = await api.save("default", base, draft({ provider: { stt: "Groq" } }));
+    expect(r).toMatchObject({ kind: "conflict", what: ["the speech-to-text provider (now my-command-b)"], kinds: ["stt"] });
+    expect(fake.writes).toEqual([]);
   });
 
   it("says when Hermes took a pick but it doesn't read back", async () => {
