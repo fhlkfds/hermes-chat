@@ -8,13 +8,16 @@ import type { Kept } from "../hermes/account";
 import type { Hermes } from "../hermes/transport";
 import { STAGES, missing, stageLabel, testConnection, type Probe, type ProviderKey, type ProviderSetup, type TestOutcome } from "../hermes/setup";
 import { routeLabel } from "./bits";
+import { NAME_MAX, defaultName } from "../hermes/connections";
 
 /**
  * `first-run`: nothing is set up on this computer, so there is nowhere to cancel to; Cancel starts over.
- * `sign-in`: opened from the sign-in screen. `reconfigure`: opened from Settings while signed in; the connection in
- * use carries on until a new one is tested and saved.
+ * `sign-in`: opened from the sign-in screen, to add a connection. `reconfigure`: opened from Settings while signed in,
+ * to change the connection in use or add a provider key; the connection in use carries on until the change is tested
+ * and saved. `add`: adds another saved connection. `edit`: changes a saved connection (ADR 0049). Both start at the
+ * Server step.
  */
-export type SetupMode = "first-run" | "sign-in" | "reconfigure";
+export type SetupMode = "first-run" | "sign-in" | "reconfigure" | "add" | "edit";
 
 type Step = "welcome" | "server" | "account" | "providers";
 const NUMBERED: Step[] = ["server", "account", "providers"];
@@ -27,6 +30,7 @@ const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 export function Onboarding({
   mode,
   initial,
+  initialName = "",
   probe,
   hermes,
   onConnect,
@@ -36,6 +40,8 @@ export function Onboarding({
   mode: SetupMode;
   /** The sign-in to start from: the one saved, without its password. */
   initial: SignInDetails;
+  /** The connection's name, when it has one already. Left empty, it is named after its host. */
+  initialName?: string;
   probe: Probe;
   /** The connection in use, once there is one: Settings' own, or the one setup just saved. */
   hermes?: Hermes;
@@ -44,14 +50,16 @@ export function Onboarding({
    * `notSaved`: why the keyring couldn't keep the password or the extra request headers, when it couldn't, and `kept`
    * which of them it did keep.
    */
-  onConnect: (d: SignInDetails) => Promise<{ notSaved?: string; kept?: Kept }>;
+  onConnect: (d: SignInDetails, name: string) => Promise<{ notSaved?: string; kept?: Kept }>;
   /** Leaves setup with nothing changed. Absent on first run. */
   onCancel?: () => void;
   /** Leaves setup once a connection is saved. */
   onDone: () => void;
 }) {
-  const [step, setStep] = useState<Step>("welcome");
+  const firstStep: Step = mode === "add" || mode === "edit" ? "server" : "welcome";
+  const [step, setStep] = useState<Step>(firstStep);
   const [d, setD] = useState<SignInDetails>(initial);
+  const [name, setName] = useState(initialName);
   const [test, setTest] = useState<Test>({ state: "idle" });
   const [connecting, setConnecting] = useState(false);
   const [connectError, setConnectError] = useState<string>();
@@ -109,7 +117,7 @@ export function Onboarding({
     setConnecting(true);
     setConnectError(undefined);
     try {
-      const { notSaved, kept } = await onConnect(withHeaders(d));
+      const { notSaved, kept } = await onConnect(withHeaders(d), name);
       setNotSaved(notSaved && `${notSaved.replace(/\.?$/, ".")} ${retypeLater(kept)}`);
       setSaved(true);
       setD((was) => ({ ...was, password: "" }));
@@ -126,9 +134,10 @@ export function Onboarding({
     if (test.state === "testing") stopTest();
     if (onCancel) return onCancel();
     setD({ ...initial, password: "" });
+    setName(initialName);
     setTest({ state: "idle" });
     setConnectError(undefined);
-    setStep("welcome");
+    setStep(firstStep);
   };
   // Once a connection is saved there is nothing to cancel: leaving finishes setup.
   const canCancel = !connecting && !saved && (!!onCancel || step !== "welcome");
@@ -186,13 +195,21 @@ export function Onboarding({
             }}
           >
             <h1 id={titleId} ref={heading} tabIndex={-1}>
-              Where is your Hermes server?
+              {mode === "edit" ? `Edit ${initialName || "the connection"}` : mode === "add" ? "Add a connection" : "Where is your Hermes server?"}
             </h1>
-            <p className="muted">Hermes Chat talks to the Hermes dashboard running on your server.</p>
+            <p className="muted">
+              Hermes Chat talks to the Hermes dashboard running on your server.
+              {(mode === "add" || mode === "edit") && " The connection in use carries on until this one is tested and saved."}
+            </p>
+            <Field label="Name" hint="Shown in the connection list. Two connections can share a name; their addresses tell them apart.">
+              {(a) => (
+                <input {...a} value={name} maxLength={NAME_MAX} placeholder={defaultName(d)} spellCheck={false} onChange={(e) => setName(e.target.value)} />
+              )}
+            </Field>
             <ServerFields d={d} set={set} />
             <div className="setup-actions">
-              <button type="button" className="btn" onClick={() => setStep("welcome")}>
-                Back
+              <button type="button" className="btn" onClick={() => (firstStep === "server" ? cancel() : setStep("welcome"))}>
+                {firstStep === "server" ? "Cancel" : "Back"}
               </button>
               <button type="submit" className="btn primary" disabled={!(d.mode === "ssh" ? d.sshTarget : d.url).trim()}>
                 Next
@@ -331,7 +348,7 @@ function Welcome({
         {mode === "first-run" ? "Welcome to Hermes Chat" : "Set up Hermes Chat"}
       </h1>
       <p className="muted">
-        Hermes Chat is a desktop app for your own Hermes Agent server. {mode === "reconfigure" ? "You can connect it to another server, or give Hermes a model provider's API key." : "Let's connect it."}
+        Hermes Chat is a desktop app for your own Hermes Agent server. {mode === "reconfigure" ? "You can change the connection in use, or give Hermes a model provider's API key." : "Let's connect it."}
       </p>
       <div className="setup-need">
         <div className="setup-need-title">You'll need</div>

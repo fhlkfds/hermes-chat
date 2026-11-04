@@ -291,3 +291,21 @@ function parse(raw: string | null): UIPrefsDoc {
   }
   return migrateDoc(parsed, TAGS_MIGRATIONS, TAGS_VERSION);
 }
+
+/**
+ * Forgets every scope `match` picks, after the owner removed their connection (forgetConnection.ts, ADR 0049). Other
+ * scopes, and fields a newer app wrote, are kept as stored.
+ */
+export async function forgetTagScopes(file: TagsFile, match: (scope: string) => boolean): Promise<void> {
+  let raw = await file.read();
+  for (let i = 0; i < SWAP_TRIES; i++) {
+    const doc = parse(raw);
+    const scopes = isDoc(doc.scopes) ? doc.scopes : {};
+    const kept = Object.fromEntries(Object.entries(scopes).filter(([s]) => !match(s)));
+    if (Object.keys(kept).length === Object.keys(scopes).length) return;
+    const res = await file.swap(raw, JSON.stringify({ ...doc, scopes: kept }));
+    if (res.swapped) return;
+    raw = res.current;
+  }
+  throw new Error("Another Hermes Chat kept changing the tags; they weren't removed. Try again.");
+}

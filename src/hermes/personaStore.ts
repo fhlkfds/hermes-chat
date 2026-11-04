@@ -2,10 +2,11 @@
 // - the unsaved edit, with the SOUL.md it started from, so closing the app, signing out or a crash doesn't lose it;
 // - the versions of SOUL.md that saves from this app replaced, newest first, so a change can be undone.
 // Nothing here is shown as saved: only Hermes, read back, says that (persona.ts).
-import type { SavedSignIn } from "./account";
+import { type ScopeSource, connectionScope } from "./connections";
 import type { Soul } from "./persona";
 
-const PREFIX = "hermes-chat.persona.";
+export const PERSONA_PREFIX = "hermes-chat.persona.";
+const PREFIX = PERSONA_PREFIX;
 /** How many replaced versions are kept per connection and profile. */
 export const EARLIER_KEPT = 5;
 
@@ -17,9 +18,8 @@ export type PersonaDraft = { text: string; base: Soul; at: number };
 export type EarlierSoul = Soul & { replacedAt: number };
 
 /** Where a connection and profile's persona edits are kept. */
-export function personaKey(connection: SavedSignIn, profile: string): string {
-  const target = connection.mode === "ssh" ? connection.sshTarget : connection.url;
-  return PREFIX + JSON.stringify([connection.mode, target, connection.username, profile]);
+export function personaKey(connection: ScopeSource, profile: string): string {
+  return PREFIX + connectionScope(connection, profile);
 }
 
 const isSoul = (s: unknown): s is Soul =>
@@ -86,6 +86,17 @@ export class PersonaStore {
 
   /** Saves under way, by connection and profile, kept here so a reopened editor waits for one started before. */
   private saves = new Map<string, Promise<unknown>>();
+
+  /** Waits for this connection's saves, then releases its persisted and failed-write copies. */
+  async forget(owns: (key: string) => boolean): Promise<void> {
+    await Promise.all([...this.saves].filter(([key]) => owns(key)).map(([, done]) => done));
+    for (const key of this.memory.keys()) {
+      if (!owns(key)) continue;
+      this.storage.removeItem(key);
+      this.memory.delete(key);
+      this.notStored.delete(key);
+    }
+  }
 
   /** Notes a save of `key` under way until `done` settles. */
   trackSave(key: string, done: Promise<unknown>) {

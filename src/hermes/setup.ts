@@ -246,6 +246,21 @@ export function explain(f: ProbeFailure, d: SignInDetails): TestOutcome & { ok: 
   }
 }
 
+/**
+ * Why a real sign-in (at launch, or switching connection) failed, explained as a failed test is. Rust gives a sign-in
+ * only its message, so the stage is read from that.
+ */
+export function explainSignIn(message: string, d: SignInDetails): Extract<TestOutcome, { ok: false }> {
+  const stage: Stage = /Wrong username or password|Too many sign-in attempts|sign-in/i.test(message)
+    ? "sign-in"
+    : /canonical session protocol|chat connection|ready/i.test(message)
+      ? "chat"
+      : /^SSH|ssh |Couldn't start ssh|couldn't look up|Enter the/i.test(message)
+        ? "address"
+        : "reach";
+  return explain({ stage, message }, d) as Extract<TestOutcome, { ok: false }>;
+}
+
 /** What each stage of a test checks, for the checklist setup shows. */
 export function stageLabel(stage: Stage, mode: SignInDetails["mode"]): string {
   switch (stage) {

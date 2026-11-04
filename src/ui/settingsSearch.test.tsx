@@ -177,8 +177,8 @@ describe("Searching Settings", () => {
   it("names the Diagnostics tab, and opening it ends the search there", async () => {
     const { user } = await shown();
     await user.type(box(), "protocol");
-    // General's Connection section holds the button that also says so, and stays in the results.
-    expect(showing("Connection")).toBe(true);
+    // General's Connection in use section holds the button that also says so, and stays in the results.
+    expect(showing("Connection in use")).toBe(true);
     await user.click(screen.getByRole("button", { name: "Open Diagnostics" }));
     expect(box().value).toBe("");
     expect(screen.getByRole("tab", { name: /Diagnostics/ }).getAttribute("aria-selected")).toBe("true");

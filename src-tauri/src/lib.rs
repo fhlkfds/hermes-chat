@@ -686,35 +686,37 @@ fn files_cancel(transfers: State<'_, Transfers>, id: u64) {
     }
 }
 
+/// The dashboard password of one saved connection. `connection`: its id; none for the connection migrated from the
+/// single sign-in kept before saved connections, which keeps the keyring entry it had (src/hermes/connections.ts).
 #[tauri::command]
-async fn password_load() -> Result<Option<String>, String> {
-    saved_password::load(saved_password::PASSWORD).await
+async fn password_load(connection: Option<String>) -> Result<Option<String>, String> {
+    saved_password::load(saved_password::account(saved_password::PASSWORD, connection.as_deref())?).await
 }
 
 #[tauri::command]
-async fn password_save(password: String) -> Result<(), String> {
-    saved_password::save(saved_password::PASSWORD, password).await
+async fn password_save(password: String, connection: Option<String>) -> Result<(), String> {
+    saved_password::save(saved_password::account(saved_password::PASSWORD, connection.as_deref())?, password).await
 }
 
 #[tauri::command]
-async fn password_delete() -> Result<(), String> {
-    saved_password::delete(saved_password::PASSWORD).await
+async fn password_delete(connection: Option<String>) -> Result<(), String> {
+    saved_password::delete(saved_password::account(saved_password::PASSWORD, connection.as_deref())?).await
 }
 
-/// The extra request headers, names and values, as JSON the webview reads and writes.
+/// One saved connection's extra request headers, names and values, as JSON the webview reads and writes.
 #[tauri::command]
-async fn headers_load() -> Result<Option<String>, String> {
-    saved_password::load(saved_password::HEADERS).await
-}
-
-#[tauri::command]
-async fn headers_save(headers: String) -> Result<(), String> {
-    saved_password::save(saved_password::HEADERS, headers).await
+async fn headers_load(connection: Option<String>) -> Result<Option<String>, String> {
+    saved_password::load(saved_password::account(saved_password::HEADERS, connection.as_deref())?).await
 }
 
 #[tauri::command]
-async fn headers_delete() -> Result<(), String> {
-    saved_password::delete(saved_password::HEADERS).await
+async fn headers_save(headers: String, connection: Option<String>) -> Result<(), String> {
+    saved_password::save(saved_password::account(saved_password::HEADERS, connection.as_deref())?, headers).await
+}
+
+#[tauri::command]
+async fn headers_delete(connection: Option<String>) -> Result<(), String> {
+    saved_password::delete(saved_password::account(saved_password::HEADERS, connection.as_deref())?).await
 }
 
 /// Writes `text` where the owner picks in the native Save dialog, which asks before replacing a file. The webview

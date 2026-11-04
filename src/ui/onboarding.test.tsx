@@ -112,7 +112,15 @@ async function start() {
 }
 
 const dialog = () => screen.queryByRole("dialog");
-const savedSignIn = () => JSON.parse(localStorage.getItem(SAVED) ?? "null");
+const savedSignIn = () => {
+  const doc = JSON.parse(localStorage.getItem("hermes-chat.connections") ?? "null");
+  const c = doc?.connections.find((c: { id: string }) => c.id === doc.current);
+  if (!c) return null;
+  return { mode: c.mode, sshTarget: c.sshTarget, url: c.url, username: c.username };
+};
+const savedPassword = () => {
+  try { return JSON.parse(backend.keyring!).password; } catch { return backend.keyring; }
+};
 /** This computer already set up and signed in, as before setup existed. */
 function alreadySetUp({ signedOut = false } = {}) {
   localStorage.setItem(SAVED, JSON.stringify({ mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" }));
@@ -156,7 +164,7 @@ describe("First run", () => {
 
     await user.click(screen.getByRole("button", { name: "Save and connect" }));
     expect(await screen.findByRole("heading", { name: "Model providers" })).toBeTruthy();
-    expect(backend.keyring).toBe("hunter2");
+    expect(savedPassword()).toBe("hunter2");
     expect(savedSignIn()).toEqual({ mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" });
     expect(home.opened).toBe(1);
     // Saved, so there is nothing left to cancel.
@@ -282,13 +290,13 @@ describe("An install set up before", () => {
   it("signed out, gets the sign-in screen, which can open setup and cancel back", async () => {
     alreadySetUp({ signedOut: true });
     const user = await start();
-    expect(await screen.findByRole("heading", { name: "Connect to Hermes" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Connect to hermes" })).toBeTruthy();
     expect(dialog()).toBeNull();
 
-    await user.click(screen.getByRole("button", { name: "Set up a different server…" }));
+    await user.click(screen.getByRole("button", { name: "Set up a new connection…" }));
     expect(await screen.findByRole("heading", { name: "Set up Hermes Chat" })).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(await screen.findByRole("heading", { name: "Connect to Hermes" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Connect to hermes" })).toBeTruthy();
     expect(dialog()).toBeNull();
   });
 });
@@ -346,7 +354,7 @@ describe("Setup from Settings", () => {
 
     await user.click(screen.getByRole("button", { name: "Save and connect" }));
     await screen.findByRole("heading", { name: "Model providers" });
-    expect([home.closed, studio.opened, backend.keyring]).toEqual([true, 1, "pa55"]);
+    expect([home.closed, studio.opened, savedPassword()]).toEqual([true, 1, "pa55"]);
     expect(savedSignIn()).toEqual({ mode: "url", sshTarget: "liam@hermes", url: "http://studio.example.com:9119", username: "liam" });
 
     await user.click(screen.getByRole("button", { name: "Finish" }));
@@ -373,7 +381,7 @@ describe("Setup from Settings", () => {
     );
     expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
     await waitFor(() => expect(home.opened).toBe(2));
-    expect([backend.keyring, savedSignIn().mode]).toEqual(["hunter2", "ssh"]);
+    expect([backend.keyring, savedSignIn()!.mode]).toEqual(["hunter2", "ssh"]);
     // Back under setup, the chats wait: none is opened, or read, while setup covers them.
     await waitFor(() => expect(document.querySelector(".panes")).toBeTruthy());
     expect(document.querySelector(".panes")?.hasAttribute("inert")).toBe(true);
@@ -417,7 +425,7 @@ describe("Setup from Settings", () => {
 
     await user.click(screen.getByRole("button", { name: "Cancel setup" }));
     expect(home.closed).toBe(false);
-    expect(screen.queryByRole("heading", { name: "Connect to Hermes" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Connect to hermes" })).toBeNull();
   });
 
   it("adds a provider key without touching the connection", async () => {

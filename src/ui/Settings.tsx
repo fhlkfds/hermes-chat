@@ -133,6 +133,7 @@ export function SettingsScreen({
   capabilities,
   openGuide = () => {},
   showDiagnostics,
+  connectionManager,
 }: {
   status: ConnectionStatus;
   route?: Route;
@@ -198,6 +199,8 @@ export function SettingsScreen({
   guard?: (go: () => void) => void;
   /** Set, each time anew, to show the Model tab at the Text generation model: from a title that couldn't be regenerated. */
   showTextGeneration?: object;
+  /** The saved connections (Connections.tsx `ConnectionManager`), shown first in General. */
+  connectionManager?: ReactNode;
   /** Set (to a new object each time) to show the Memory tab. */
   showMemory?: object;
   /** What the connected Hermes supports; without it there is no Diagnostics tab and no tab is held back. */
@@ -340,8 +343,9 @@ export function SettingsScreen({
 
   const general = (
     <>
+      {connectionManager}
       <section>
-        <h2>Connection</h2>
+        <h2>Connection in use</h2>
         <div className="settings-status">
           <span className={`conn-dot ${status} ${unsecure ? "unsecure" : ""}`} />
           <span>{STATUS_LABEL[status]}</span>
@@ -395,8 +399,8 @@ export function SettingsScreen({
         {onSetUp && (
           <div className="settings-row settings-setup">
             <div className="muted small">
-              Connect to another server, or give Hermes a model provider's API key. The connection in use stays until a new one is tested and
-              saved.
+              Change this connection's address or sign-in, or give Hermes a model provider's API key. The connection stays as it is until the
+              change is tested and saved. To keep it and use another server too, add a connection above.
             </div>
             <button className="btn" onClick={onSetUp}>
               <PlugZap size={14} /> Run setup again

@@ -13,7 +13,7 @@
 // recovery backup of everything is saved first, and each category is then written whole or not at all, after
 // checking nothing changed it since the preview. Restored queues come back paused, and nothing is ever sent.
 import { invoke } from "@tauri-apps/api/core";
-import type { SavedSignIn } from "./account";
+import { type ScopeSource, scopeParts } from "./connections";
 import { sha256 } from "./importTranscripts";
 import { toBranches, toQueue } from "./chatCache";
 import { PROJECTS_KEY, PROJECTS_VERSION, readLinks, type ScopeLinks } from "./projectLinks";
@@ -48,14 +48,41 @@ export type Conn = { mode: "ssh" | "url"; target: string; username: string };
 /** A connection and profile that data in a backup is for. */
 export type Place = Conn & { profile: string };
 
-export const connOf = (s: Pick<SavedSignIn, "mode" | "sshTarget" | "url" | "username">): Conn => ({
-  mode: s.mode,
-  target: s.mode === "ssh" ? s.sshTarget : s.url,
-  username: s.username,
-});
+/**
+ * This computer's connection, where restored data goes: its address, and `parts`, what its kept scopes start with
+ * (connections.ts `scopeParts`: its stable id, ADR 0049). `parts` stays on this computer; a backup holds the address.
+ */
+export type Target = Conn & { parts?: string[] };
+
+const addressOf = (s: ScopeSource): Conn => ({ mode: s.mode, target: s.mode === "ssh" ? s.sshTarget : s.url, username: s.username });
+export const connOf = (s: ScopeSource): Target => ({ ...addressOf(s), parts: scopeParts(s) });
 const sameConn = (a: Conn, b: Conn) => a.mode === b.mode && a.target === b.target && a.username === b.username;
-/** A place as the stores key it: projectLinks.ts `projectScope`, drafts.ts `draftKey` and chatCache.ts all agree. */
+/** An address-keyed place's scope: how the stores keyed it before saved connections, and still do without an id. */
 export const scopeOf = (p: Place) => JSON.stringify([p.mode, p.target, p.username, p.profile]);
+/** Where `target`'s `profile` is kept: projectLinks.ts `projectScope`, drafts.ts `draftKey` and chatCache.ts all agree. */
+const scopeAt = (target: Target, profile: string) => JSON.stringify([...(target.parts ?? [target.mode, target.target, target.username]), profile]);
+
+/**
+ * Which saved connection and profile a kept scope is for: one of `list`'s connections' scope parts, then a profile.
+ * Data is kept by the connection's id, so the backup names it by its address, which another computer can map.
+ */
+export const placesOf =
+  (list: () => readonly ScopeSource[]) =>
+  (scope: string): Place | undefined => {
+    let a: unknown;
+    try {
+      a = JSON.parse(scope);
+    } catch {
+      return undefined;
+    }
+    if (!Array.isArray(a)) return undefined;
+    for (const c of list()) {
+      const parts = scopeParts(c);
+      const profile = a[parts.length];
+      if (a.length === parts.length + 1 && parts.every((p, i) => a[i] === p) && short(profile) && profile) return { ...addressOf(c), profile };
+    }
+    return undefined;
+  };
 const short = (v: unknown, max = 2000): v is string => typeof v === "string" && v.length <= max;
 function toPlace(v: unknown): Place | undefined {
   const a = v as unknown[];
@@ -69,6 +96,8 @@ const placeOfScope = (scope: string) => {
     return undefined;
   }
 };
+/** The place a kept scope is for: a saved connection's (`env.place`), else one keyed by its address. */
+const placeIn = (env: BackupEnv, scope: string) => env.place?.(scope) ?? placeOfScope(scope);
 
 /** JSON with keys sorted, so equal values compare equal however their keys were ordered. */
 export function stable(v: unknown): string {
@@ -84,7 +113,13 @@ type Rec = { scope: string; key: string; value: unknown };
 type Loaded = { recs: Rec[]; raw: string };
 export type BackupStorage = Pick<Storage, "length" | "key" | "getItem" | "setItem" | "removeItem">;
 /** Where the categories are kept: localStorage, and the files tags and project defaults are swapped in (defaults_file.rs). */
-export type BackupEnv = { storage: BackupStorage; tags: DefaultsFile; defaults: DefaultsFile };
+export type BackupEnv = {
+  storage: BackupStorage;
+  tags: DefaultsFile;
+  defaults: DefaultsFile;
+  /** Which saved connection and profile a kept scope is for (`placesOf`); without it, only address-keyed scopes are read. */
+  place?: (scope: string) => Place | undefined;
+};
 
 type Category = {
   label: string;
@@ -171,23 +206,23 @@ function writeAll(s: BackupStorage, changes: Map<string, string | null>) {
  * JSON, as drafts.ts and chatCache.ts write them. A key it can't read as one is left alone.
  */
 function perKey(prefix: string, chat: boolean, json: boolean): Pick<Category, "load" | "save"> {
-  const parts = (k: string): { scope: string; key: string } | undefined => {
+  const parts = (env: BackupEnv, k: string): { scope: string; key: string } | undefined => {
     try {
       const a: unknown = JSON.parse(k.slice(prefix.length));
-      if (!Array.isArray(a) || a.length !== (chat ? 5 : 4)) return undefined;
-      const place = toPlace(a.slice(0, 4));
-      const id = chat ? a[4] : "";
-      if (!place || !(id === null || (typeof id === "string" && id.length <= 400))) return undefined;
-      return { scope: scopeOf(place), key: id ?? "" };
+      if (!Array.isArray(a) || a.length < (chat ? 2 : 1)) return undefined;
+      const scope = JSON.stringify(chat ? a.slice(0, -1) : a);
+      const id = chat ? a[a.length - 1] : "";
+      if (!placeIn(env, scope) || !(id === null || (typeof id === "string" && id.length <= 400))) return undefined;
+      return { scope, key: id ?? "" };
     } catch {
       return undefined;
     }
   };
   const keyOf = (r: Rec) => prefix + JSON.stringify([...(JSON.parse(r.scope) as string[]), ...(chat ? [r.key === "" ? null : r.key] : [])]);
-  const snapshot = (s: BackupStorage) => new Map(keysWith(s, prefix).filter((k) => parts(k)).map((k) => [k, s.getItem(k) ?? ""]));
+  const snapshot = (env: BackupEnv) => new Map(keysWith(env.storage, prefix).filter((k) => parts(env, k)).map((k) => [k, env.storage.getItem(k) ?? ""]));
   return {
-    async load({ storage }) {
-      const now = snapshot(storage);
+    async load(env) {
+      const now = snapshot(env);
       const recs = [...now].flatMap(([k, text]): Rec[] => {
         let value: unknown = text;
         if (json)
@@ -196,12 +231,13 @@ function perKey(prefix: string, chat: boolean, json: boolean): Pick<Category, "l
           } catch {
             return [];
           }
-        return [{ ...parts(k)!, value }];
+        return [{ ...parts(env, k)!, value }];
       });
       return { recs, raw: JSON.stringify([...now]) };
     },
-    async save({ storage }, before, recs) {
-      const now = snapshot(storage);
+    async save(env, before, recs) {
+      const { storage } = env;
+      const now = snapshot(env);
       if (JSON.stringify([...now]) !== before.raw) throw new ChangedError();
       const read = (text: string): { value: unknown } | undefined => {
         if (!json) return { value: text };
@@ -249,7 +285,7 @@ function perDoc(
       const raw = await file(env).read();
       const doc = parse(raw);
       const scopes = isObj(doc.scopes) ? doc.scopes : {};
-      const recs = Object.entries(scopes).flatMap(([scope, part]) => (placeOfScope(scope) ? split(scope, part) : []));
+      const recs = Object.entries(scopes).flatMap(([scope, part]) => (placeIn(env, scope) ? split(scope, part) : []));
       return { recs, raw: JSON.stringify(raw) };
     },
     async save(env, before, recs) {
@@ -473,7 +509,12 @@ export const CATEGORY_IDS = Object.keys(CATEGORIES) as CategoryId[];
 const cat = (id: CategoryId): Category => CATEGORIES[id];
 
 /** The app's storage: this webview's localStorage, and the tags and project defaults files every instance shares. */
-export const savedBackupEnv = (): BackupEnv => ({ storage: localStorage, tags: savedTagsFile, defaults: savedDefaultsFile });
+export const savedBackupEnv = (connections?: () => readonly ScopeSource[]): BackupEnv => ({
+  storage: localStorage,
+  tags: savedTagsFile,
+  defaults: savedDefaultsFile,
+  ...(connections && { place: placesOf(connections) }),
+});
 
 /** A backup the owner picked to restore (src-tauri backup.rs `PickedBackup`). */
 export type PickedBackup = { name: string; path: string; bytes: number; entries: Entry[] };
@@ -514,7 +555,7 @@ export async function summarize(env: BackupEnv): Promise<ExportSummary> {
     for (const r of recs) if (r.scope) scopes.add(r.scope);
     if (id === "queues") queueFilesLeftOut = recs.reduce((n, r) => n + (toQueue(r.value)?.items ?? []).reduce((m, i) => m + (i.attachments?.length ?? 0), 0), 0);
   }
-  return { counts, places: [...scopes].flatMap((s) => placeOfScope(s) ?? []), queueFilesLeftOut };
+  return { counts, places: [...scopes].flatMap((s) => placeIn(env, s) ?? []), queueFilesLeftOut };
 }
 
 /**
@@ -528,9 +569,12 @@ export async function makeBackup(env: BackupEnv, ids: readonly CategoryId[], now
   const place = (scope: string) => {
     let id = placeIds.get(scope);
     if (!id) {
+      // A scope no connection here has (a template's project on a removed connection) names no place, so it isn't restored.
+      const p = placeIn(env, scope);
+      if (!p) return "";
       id = `p${placeIds.size + 1}`;
       placeIds.set(scope, id);
-      places[id] = placeOfScope(scope)!;
+      places[id] = p;
     }
     return id;
   };
@@ -673,10 +717,10 @@ export function defaultMapping(backup: Backup, target: Conn, profiles: readonly 
 }
 
 /** What restoring `backup` under `policies` and `mapping` would do to this computer's `current` data. */
-export function planRestore(backup: Backup, current: Current, target: Conn, mapping: Mapping, policies: Partial<Record<CategoryId, Policy>>): RestorePlan {
+export function planRestore(backup: Backup, current: Current, target: Target, mapping: Mapping, policies: Partial<Record<CategoryId, Policy>>): RestorePlan {
   const scopeOfPlace = (id: string) => {
     const profile = mapping[id];
-    return profile ? scopeOf({ ...target, profile }) : profile;
+    return profile ? scopeAt(target, profile) : profile;
   };
   const categories: CategoryPlan[] = [];
   let problem: string | undefined;
