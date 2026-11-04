@@ -10,6 +10,7 @@ use axum::{Json, Router};
 use axum::extract::{Request, State};
 use axum::middleware::{self, Next};
 use axum::response::Redirect;
+use hermes_chat::display;
 use hermes_chat::transport::{self, Dashboard, ExtraHeader, LocalFile, PipeEvent, SignIn, TransportError};
 use std::sync::{Arc, Mutex};
 use serde_json::{json, Value};
@@ -310,6 +311,79 @@ async fn session(mut ws: WebSocket, profile: Option<String>) {
             _ => {}
         }
     }
+}
+
+/// The Bot Desktop bridge: `SCREEN-1` echoes each binary frame back reversed and, once the viewer closes, reports the
+/// close code it got on `closes`; `TAKEN-1` closes at once with Hermes's 4000 `control-taken`; anything else is 4401.
+async fn display_ws(ws: WebSocketUpgrade, Query(q): Query<HashMap<String, String>>, State(closes): State<Closes>) -> Response {
+    let ticket = q.get("display_ticket").cloned().unwrap_or_default();
+    ws.on_upgrade(move |mut ws| async move {
+        let close = |code: u16, reason: &'static str| Message::Close(Some(axum::extract::ws::CloseFrame { code, reason: reason.into() }));
+        match ticket.as_str() {
+            "SCREEN-1" => {
+                ws.send(Message::Binary(b"RFB 003.008\n".to_vec().into())).await.unwrap();
+                while let Some(Ok(m)) = ws.recv().await {
+                    match m {
+                        Message::Binary(b) => ws.send(Message::Binary(b.iter().rev().copied().collect::<Vec<u8>>().into())).await.unwrap(),
+                        Message::Close(f) => {
+                            let _ = closes.send(f.map(|f| f.code));
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            "TAKEN-1" => drop(ws.send(close(4000, "control-taken")).await),
+            _ => drop(ws.send(close(4401, "display ticket missing, expired or used")).await),
+        }
+    })
+}
+
+type Closes = mpsc::UnboundedSender<Option<u16>>;
+
+async fn screen_stub() -> (Arc<Dashboard>, mpsc::UnboundedReceiver<Option<u16>>) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let app = Router::new()
+        .route("/auth/password-login", post(login))
+        .route("/api/display/ws", get(display_ws))
+        .with_state(tx);
+    let dashboard = Dashboard::sign_in(&serve(app).await, &sign_in("hunter2")).await.expect("signed in");
+    (Arc::new(dashboard), rx)
+}
+
+async fn next_display(rx: &mut mpsc::UnboundedReceiver<display::DisplayEvent>) -> display::DisplayEvent {
+    tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.expect("event in time").expect("socket open")
+}
+
+#[tokio::test]
+async fn the_screen_relays_rfb_bytes_both_ways_and_closing_it_is_a_normal_close() {
+    let (dashboard, mut closes) = screen_stub().await;
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let socket = display::open(dashboard, "SCREEN-1", move |e| drop(tx.send(e))).await.expect("open");
+    assert_eq!(next_display(&mut rx).await, display::DisplayEvent::Data(b"RFB 003.008\n".to_vec()));
+    socket.send(vec![1, 2, 3]).unwrap();
+    assert_eq!(next_display(&mut rx).await, display::DisplayEvent::Data(vec![3, 2, 1]));
+    // Hermes hands control back only on a normal close.
+    drop(socket);
+    let got = tokio::time::timeout(Duration::from_secs(5), closes.recv()).await.unwrap().unwrap();
+    assert_eq!(got, Some(1000));
+}
+
+#[tokio::test]
+async fn the_screen_reports_hermess_own_close_code() {
+    let (dashboard, _closes) = screen_stub().await;
+    for (ticket, code) in [("TAKEN-1", 4000), ("SPENT", 4401)] {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let _socket = display::open(dashboard.clone(), ticket, move |e| drop(tx.send(e))).await.expect("open");
+        match next_display(&mut rx).await {
+            display::DisplayEvent::Closed { code: got, reason } => {
+                assert_eq!(got, code, "{reason}");
+                assert!(!reason.is_empty());
+            }
+            other => panic!("expected a close, got {other:?}"),
+        }
+    }
+    assert!(display::open(dashboard, "two words", |_| {}).await.is_err(), "a ticket with a space isn't one");
 }
 
 async fn stub() -> Url {

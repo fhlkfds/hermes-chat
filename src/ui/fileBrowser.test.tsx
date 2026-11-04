@@ -254,34 +254,36 @@ describe("Server files", () => {
     expect((screen.getByRole("button", { name: "Up one folder" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("takes turns with Settings over the chat, and leaves no chat marked open meanwhile", async () => {
+  it("opens in the side panel beside the chat, and Settings covers it as it covers the chat", async () => {
     const { user } = await launch(server());
     await user.click(screen.getByRole("button", { name: /Nightly backup/ }));
     await waitFor(() => expect(document.querySelector("[aria-current='true']")).not.toBeNull());
     await openFiles(user);
     const filesButton = screen.getByRole("button", { name: "Server files" });
     expect(filesButton.getAttribute("aria-pressed")).toBe("true");
-    expect(document.querySelector("[aria-current='true']")).toBeNull();
+    // The chat stays open beside it.
+    expect(document.querySelector("[aria-current='true']")).not.toBeNull();
+    expect(screen.getByRole("tab", { name: "Files" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.queryByRole("button", { name: "Back to chat" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "Settings" }));
-    await waitFor(() => expect(document.querySelector(".files")).toBeNull());
+    await waitFor(() => expect(document.querySelector("aside.side-panel")!.hasAttribute("hidden")).toBe(true));
     expect(filesButton.getAttribute("aria-pressed")).toBe("false");
     await openFiles(user);
-    expect(screen.queryByRole("button", { name: "Back to chat" })).toBeTruthy();
     expect(document.querySelectorAll(".files")).toHaveLength(1);
+    // The rail's button closes it again.
+    await user.click(filesButton);
+    expect(document.querySelector("aside.side-panel")!.hasAttribute("hidden")).toBe(true);
   });
 
-  it("gives way to a chat, and opens again where it was", async () => {
+  it("stays beside a chat that opens, on the folder it was in", async () => {
     const { user } = await launch(server());
     await openFiles(user);
     await user.click(row_("projects"));
     await waitFor(() => expect(names()).toEqual(["app"]));
     await user.click(screen.getByRole("button", { name: /Nightly backup/ }));
-    await waitFor(() => expect(document.querySelector(".files")).toBeNull());
-    expect(document.querySelector(".chat-title span")?.textContent).toBe("Nightly backup");
-    await openFiles(user);
+    await waitFor(() => expect(document.querySelector(".chat-title span")?.textContent).toBe("Nightly backup"));
+    expect(document.querySelector("aside.side-panel")!.hasAttribute("hidden")).toBe(false);
     expect(trail()).toEqual(["/", "home", "/liam", "/projects"]);
-    await user.click(screen.getByRole("button", { name: "Back to chat" }));
-    expect(document.querySelector(".files")).toBeNull();
   });
 });
 

@@ -1,4 +1,5 @@
 pub mod defaults_file;
+pub mod display;
 pub mod fonts;
 pub mod media;
 pub mod notify;
@@ -112,6 +113,7 @@ impl Screenshots {
 async fn hermes_connect(
     state: State<'_, AppState>,
     transfers: State<'_, Transfers>,
+    displays: State<'_, display::Displays>,
     target: Target,
     username: String,
     password: String,
@@ -122,6 +124,7 @@ async fn hermes_connect(
     let mut slot = state.0.lock().await;
     *slot = None;
     transfers.stop_all();
+    displays.close_all();
     let attempt = attempt.unwrap_or_default();
     // Run apart, so `hermes_connect_cancel` can stop it; stopping it drops what it opened, SSH tunnel included.
     let task = {
@@ -418,9 +421,10 @@ async fn hermes_toolset_guards(state: State<'_, AppState>, profile: String) -> R
 }
 
 #[tauri::command]
-async fn hermes_disconnect(state: State<'_, AppState>, transfers: State<'_, Transfers>) -> Result<(), String> {
+async fn hermes_disconnect(state: State<'_, AppState>, transfers: State<'_, Transfers>, displays: State<'_, display::Displays>) -> Result<(), String> {
     *state.0.lock().await = None;
     transfers.stop_all();
+    displays.close_all();
     Ok(())
 }
 
@@ -913,6 +917,62 @@ fn terminal_close(terminals: State<'_, terminal::Terminals>, id: u64) {
     terminals.close(id);
 }
 
+/// Opens a terminal on this computer: the owner's own login shell, in their home folder (ADR 0033). The webview picks
+/// neither the program nor its arguments.
+#[tauri::command]
+async fn terminal_open_local(
+    terminals: State<'_, terminal::Terminals>,
+    cols: u16,
+    rows: u16,
+    on_event: Channel<terminal::TerminalEvent>,
+) -> Result<u64, terminal::TerminalError> {
+    terminals.open(terminal::local_shell_command(), cols, rows, move |e| {
+        let _ = on_event.send(e);
+    })
+}
+
+/// What a screen socket sends the webview: its RFB bytes raw (an ArrayBuffer there), and how it closed as JSON.
+fn display_event(e: display::DisplayEvent) -> tauri::ipc::InvokeResponseBody {
+    match e {
+        display::DisplayEvent::Data(bytes) => tauri::ipc::InvokeResponseBody::Raw(bytes),
+        display::DisplayEvent::Closed { code, reason } => tauri::ipc::InvokeResponseBody::Json(serde_json::json!({ "code": code, "reason": reason }).to_string()),
+    }
+}
+
+/// Opens the Screen's stream, the Bot Desktop's RFB, with a ticket Hermes gave over `/api/ws` (display.rs, ADR 0033).
+/// It is closed with the connection it was opened on.
+#[tauri::command]
+async fn display_open(
+    state: State<'_, AppState>,
+    displays: State<'_, display::Displays>,
+    ticket: String,
+    on_event: Channel<tauri::ipc::InvokeResponseBody>,
+) -> Result<u64, String> {
+    let epoch = displays.epoch();
+    let dashboard = dashboard(&state).await?;
+    let socket = display::open(dashboard, &ticket, move |e| {
+        let _ = on_event.send(display_event(e));
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    displays.keep(epoch, socket).ok_or_else(|| transport::TransportError::Closed.to_string())
+}
+
+/// The webview's RFB bytes for screen socket `x-display-id`, as the raw body.
+#[tauri::command]
+fn display_send(displays: State<'_, display::Displays>, request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    let InvokeBody::Raw(bytes) = request.body() else {
+        return Err("The screen's input didn't arrive as bytes.".into());
+    };
+    let id = header_value(&request, "x-display-id").and_then(|v| v.parse().ok()).ok_or("The screen's input didn't name its socket.")?;
+    displays.send(id, bytes.clone()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn display_close(displays: State<'_, display::Displays>, id: u64) {
+    displays.close(id);
+}
+
 /// Starts the app. `screenshot`: it was started by `hermes-chat --screenshot`, with no other Hermes Chat to take it.
 pub fn run(screenshot: bool) {
     let screenshots = Screenshots::default();
@@ -960,6 +1020,7 @@ pub fn run(screenshot: bool) {
         .manage(Transfers::default())
         .manage(UploadPicks::default())
         .manage(terminal::Terminals::default())
+        .manage(display::Displays::default())
         .invoke_handler(tauri::generate_handler![
             hermes_connect,
             hermes_send,
@@ -1013,6 +1074,10 @@ pub fn run(screenshot: bool) {
             terminal_write,
             terminal_resize,
             terminal_close,
+            terminal_open_local,
+            display_open,
+            display_send,
+            display_close,
             update::update_install_kind,
             update::update_check,
             update::update_download_and_install,

@@ -27,11 +27,11 @@ afterEach(() => {
 
 const settle = (hermes: Hermes) => act(async () => void (await hermes.idle()));
 const pane = () => {
-  const el = document.querySelector<HTMLElement>("aside.preview");
+  const el = document.querySelector<HTMLElement>("aside.preview:not([hidden])");
   if (!el) throw new Error("The preview pane isn't open");
   return el;
 };
-const paneOpen = () => !!document.querySelector("aside.preview");
+const paneOpen = () => !!document.querySelector("aside.preview:not([hidden])");
 const fsReads = (s: FakeHermes) => s.restRequests.filter((r) => r.path.startsWith("/api/fs/"));
 
 /** A local disk the Open dialog picks from: `pick` is what the owner picks next (null cancels). */
@@ -181,7 +181,7 @@ describe("Opening the preview pane", () => {
 
   it("opens from the chat header, where the owner types a server path or web address", async () => {
     const { user } = await signedIn();
-    await user.click(screen.getByRole("button", { name: "Open the preview" }));
+    await user.click(screen.getByRole("button", { name: "Open the side panel" }));
     const box = within(pane()).getByRole("textbox", { name: "Web address or path on the Hermes server" });
     expect(within(pane()).getByText("liam@hermes")).toBeTruthy();
 
@@ -203,7 +203,7 @@ describe("Opening the preview pane", () => {
 describe("What the pane shows", () => {
   async function openPath(path: string) {
     const s = await signedIn();
-    await s.user.click(screen.getByRole("button", { name: "Open the preview" }));
+    await s.user.click(screen.getByRole("button", { name: "Open the side panel" }));
     await s.user.type(within(pane()).getByRole("textbox"), `${path}{Enter}`);
     return s;
   }
@@ -256,7 +256,7 @@ describe("What the pane shows", () => {
       "/home/me/locked.txt": new Error("Permission denied (os error 13)"),
     });
     const { server, user } = await signedIn({ local });
-    await user.click(screen.getByRole("button", { name: "Open the preview" }));
+    await user.click(screen.getByRole("button", { name: "Open the side panel" }));
 
     local.next = null;
     await user.click(within(pane()).getByRole("button", { name: "Open a file on this computer…" }));
@@ -294,7 +294,7 @@ describe("Web pages a site won't let the pane show (issue #55)", () => {
   };
   async function openWeb(url: string, web: ReturnType<typeof theWeb>) {
     const s = await signedIn({ web });
-    await s.user.click(screen.getByRole("button", { name: "Open the preview" }));
+    await s.user.click(screen.getByRole("button", { name: "Open the side panel" }));
     await s.user.type(within(pane()).getByRole("textbox"), `${url}{Enter}`);
     return s;
   }
@@ -376,23 +376,23 @@ describe("Closing and resizing", () => {
   it("closes with its button, the header toggle, or Escape", async () => {
     const { user } = await signedIn();
     await user.click(screen.getByRole("link", { name: "the docs" }));
-    await user.click(within(pane()).getByRole("button", { name: "Close the preview" }));
+    await user.click(within(pane()).getByRole("button", { name: "Close the side panel" }));
     expect(paneOpen()).toBe(false);
 
-    await user.click(screen.getByRole("button", { name: "Open the preview" }));
-    expect(screen.getByRole("button", { name: "Close the preview", pressed: true })).toBeTruthy();
-    await user.click(screen.getAllByRole("button", { name: "Close the preview" })[0]);
+    await user.click(screen.getByRole("button", { name: "Open the side panel" }));
+    expect(screen.getByRole("button", { name: "Close the side panel", pressed: true })).toBeTruthy();
+    await user.click(screen.getAllByRole("button", { name: "Close the side panel" })[0]);
     expect(paneOpen()).toBe(false);
 
-    await user.click(screen.getByRole("button", { name: "Open the preview" }));
+    await user.click(screen.getByRole("button", { name: "Open the side panel" }));
     await user.keyboard("{Escape}");
     expect(paneOpen()).toBe(false);
   });
 
   it("resizes from its edge with the keyboard, and keeps the width", async () => {
     const { user } = await signedIn();
-    await user.click(screen.getByRole("button", { name: "Open the preview" }));
-    const edge = screen.getByRole("separator", { name: "Resize the preview" });
+    await user.click(screen.getByRole("button", { name: "Open the side panel" }));
+    const edge = screen.getByRole("separator", { name: "Resize the side panel" });
     expect(edge.getAttribute("aria-valuenow")).toBe("480");
     edge.focus();
     await user.keyboard("{ArrowLeft}{ArrowLeft}");
@@ -405,7 +405,7 @@ describe("Closing and resizing", () => {
 
   it("resizes by dragging its edge", async () => {
     const { user } = await signedIn();
-    await user.click(screen.getByRole("button", { name: "Open the preview" }));
+    await user.click(screen.getByRole("button", { name: "Open the side panel" }));
     const edge = screen.getByRole("separator");
     fireEvent.pointerDown(edge, { button: 0, clientX: 800, pointerId: 1 });
     fireEvent.pointerMove(edge, { clientX: 700, pointerId: 1 });
@@ -441,11 +441,11 @@ describe("Closing and resizing", () => {
     expect(document.querySelector(".main-chat")!.hasAttribute("inert")).toBe(false);
     await user.type(screen.getByPlaceholderText("Message Hermes"), "still here");
 
-    await user.click(screen.getByRole("button", { name: "Show the preview" }));
+    await user.click(screen.getByRole("button", { name: "Show the side panel" }));
     expect(within(pane()).getByTitle("Web page: https://docs.example.com/crash")).toBeTruthy();
     await user.keyboard("{Escape}");
     expect(paneOpen()).toBe(false);
-    expect(screen.getByRole("button", { name: "Show the preview" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Show the side panel" })).toBeTruthy();
   });
 
   it("keeps Alt+arrows from switching the chat hidden under a covering preview", async () => {
@@ -506,7 +506,7 @@ describe("Closing and resizing", () => {
       expect(document.querySelectorAll(".pane")).toHaveLength(2);
       expect(document.querySelector(".panes.covered")).toBeNull();
     }
-    await user.click(within(destinationPane).getByRole("button", { name: "Show the preview" }));
+    await user.click(within(destinationPane).getByRole("button", { name: "Show the side panel" }));
     expect(within(pane()).getByTitle("Web page: https://docs.example.com/crash")).toBeTruthy();
   });
 
@@ -521,7 +521,7 @@ describe("Closing and resizing", () => {
     await waitFor(() => expect(hermes.getSnapshot()).toMatchObject({ profile: "work", status: "connected" }));
     expect(paneOpen()).toBe(false);
 
-    await user.click(screen.getByRole("button", { name: "Open the preview" }));
+    await user.click(screen.getByRole("button", { name: "Open the side panel" }));
     await user.type(within(pane()).getByRole("textbox"), "/home/liam/app/main.py{Enter}");
     await within(pane()).findByText(/missing\.txt/);
     expect(fsReads(server).at(-1)!.query.get("profile")).toBe("work");

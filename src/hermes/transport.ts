@@ -45,6 +45,7 @@ import { isUnsecure } from "./unsecure";
 import { providerKeys, readyProviders, type ProviderSetup, type SavedKey } from "./setup";
 import { restartHold } from "./unsaved";
 import { hostFileView, readServerFile, type FileView } from "./preview";
+import type { DisplayLease, DisplayObserve, DisplayStatus, ScreenApi } from "./screen";
 import { agentFsEditIo } from "./artifacts";
 import { splitPath, type OutputsIo, type StoredRow as StoredOutputRow } from "./outputs";
 import type { UsageIo } from "./usageAnalytics";
@@ -588,6 +589,31 @@ export class Hermes {
     sendsIn: (profile) => this.sendsIn(profile),
     publish: (others) => this.update({ others }),
   });
+
+  /** Lease changes Hermes broadcasts for the Bot Desktop (`display.lease`). */
+  private leaseListeners = new Set<(profileKey: string, lease: DisplayLease) => void>();
+
+  /**
+   * The profile's Bot Desktop, the side panel's Screen (screen.ts, ADR 0033). `display.*` is scoped to the profile
+   * shown, and a viewer id is good only on the connection that minted it.
+   */
+  readonly screen: ScreenApi = {
+    status: () => this.request("display.status", { profile: this.profile }) as Promise<DisplayStatus>,
+    start: () => this.request("display.start", { profile: this.profile }) as Promise<DisplayStatus>,
+    observe: (viewerId) => this.request("display.observe", { profile: this.profile, ...(viewerId && { viewer_id: viewerId }) }) as Promise<DisplayObserve>,
+    takeOver: async (viewerId) => ((await this.request("display.lease.acquire", { profile: this.profile, viewer_id: viewerId })) as { lease: DisplayLease }).lease,
+    handBack: async (viewerId) => ((await this.request("display.lease.release", { profile: this.profile, viewer_id: viewerId })) as { lease: DisplayLease }).lease,
+    onLease: (listener) => {
+      this.leaseListeners.add(listener);
+      return () => void this.leaseListeners.delete(listener);
+    },
+    openSocket: (ticket, onData, onClose) => {
+      const pipe = this.pipe;
+      if (!pipe || this.closing || this.snapshot.status !== "connected") return Promise.reject(new Error("Not connected to Hermes."));
+      if (!pipe.openDisplay) return Promise.reject(new Error("This connection can't show the screen."));
+      return pipe.openDisplay(ticket, onData, onClose);
+    },
+  };
 
   /**
    * The files on the machine the dashboard runs on (remoteFiles.ts). They are the same for every profile, and can only
@@ -2418,6 +2444,11 @@ export class Hermes {
     const { type, session_id, payload = {} } = frame.params;
     if (type === "gateway.ready") {
       this.onReady?.(payload);
+      return;
+    }
+    if (type === "display.lease") {
+      const { profile_key, lease } = payload as { profile_key?: unknown; lease?: DisplayLease };
+      if (typeof profile_key === "string" && lease && typeof lease.epoch === "number") for (const l of this.leaseListeners) l(profile_key, lease);
       return;
     }
     // Broadcast when any process changes the session store (tui_gateway/change_watcher.py).

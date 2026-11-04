@@ -19,3 +19,4 @@ It opens from the rail, as an app-level action (ADR 0001), and covers the chat p
 - The app's window-wide shortcuts (Ctrl+K, Ctrl+N, Ctrl+B, Ctrl+F…) don't fire while the terminal has the keys. Shells need those keys. Ctrl+Shift+C and Ctrl+Shift+V copy and paste, as in other Linux terminals.
 - The PTY closes when the app exits, and ssh gets a hangup, so no shell outlives the app.
 - xterm.js loads only when the Terminal is first opened, so it adds nothing to startup.
+- Since ADR 0033 the Terminal is a tab of the side panel beside the chat, not a screen over it, and it has a shell on this computer too.

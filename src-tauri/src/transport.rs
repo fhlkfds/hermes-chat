@@ -622,15 +622,7 @@ impl Dashboard {
             body: "ws-ticket response has no ticket".into(),
         })?;
 
-        let mut ws_url = endpoint(&self.base, "api/ws");
-        ws_url
-            .set_scheme(if self.base.scheme() == "https" { "wss" } else { "ws" })
-            .expect("http(s) URLs map to ws(s)");
-        ws_url.query_pairs_mut().append_pair("ticket", ticket).append_pair("profile", profile);
-        let mut handshake = ws_url.as_str().into_client_request().map_err(|e| TransportError::WebSocket(e.to_string()))?;
-        for (name, value) in &self.headers {
-            handshake.headers_mut().insert(name, value.clone());
-        }
+        let handshake = self.ws_handshake("api/ws", &[("ticket", ticket), ("profile", profile)])?;
         let (ws, _) = tokio_tungstenite::connect_async(handshake)
             .await
             .map_err(|e| TransportError::WebSocket(e.to_string()))?;
@@ -676,6 +668,26 @@ impl Dashboard {
         });
 
         Ok(Pipe { outgoing, task })
+    }
+
+    /// The WebSocket handshake for `path` under the dashboard, with `query` and the owner's extra request headers. No
+    /// cookie: each socket is let in by its own single-use ticket in the query, as the official clients do.
+    pub fn ws_handshake(&self, path: &str, query: &[(&str, &str)]) -> Result<tokio_tungstenite::tungstenite::handshake::client::Request, TransportError> {
+        let mut ws_url = endpoint(&self.base, path);
+        ws_url
+            .set_scheme(if self.base.scheme() == "https" { "wss" } else { "ws" })
+            .expect("http(s) URLs map to ws(s)");
+        ws_url.query_pairs_mut().extend_pairs(query);
+        let mut handshake = ws_url.as_str().into_client_request().map_err(|e| TransportError::WebSocket(e.to_string()))?;
+        for (name, value) in &self.headers {
+            handshake.headers_mut().insert(name, value.clone());
+        }
+        Ok(handshake)
+    }
+
+    /// Whether a server's close reason may repeat the owner's extra request headers, so it mustn't be shown.
+    pub fn hides_reason(&self, reason: &str) -> bool {
+        repeats_header(reason, &self.headers)
     }
 
     /// One dashboard REST call for the webview: `GET`, `PATCH` or `DELETE` on a path under `api/`, with a
