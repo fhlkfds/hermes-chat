@@ -119,6 +119,31 @@ describe("the rail", () => {
     expect(screen.getByRole("button", { name: "Settings", description: "Import, backup and more" })).toBeTruthy();
   });
 
+  it("puts the tip just past its button's edge, whatever the button's size", async () => {
+    const { user } = rail();
+    const btn = screen.getByRole("button", { name: "Logs" });
+    btn.getBoundingClientRect = () => ({ top: 400, bottom: 428, left: 14, right: 42, height: 28, width: 28, x: 14, y: 400, toJSON() {} });
+    await user.hover(btn);
+    expect((tip() as HTMLElement).style.left).toBe("52px");
+    expect((tip() as HTMLElement).style.top).toBe("414px");
+  });
+
+  it("hides the tip on Escape even when the focused element keeps its keys to itself", async () => {
+    const { user } = rail();
+    const box = document.createElement("textarea");
+    box.addEventListener("keydown", (e) => e.stopPropagation());
+    document.body.append(box);
+    try {
+      box.focus();
+      await user.hover(screen.getByRole("button", { name: "Usage" }));
+      expect(tip()).not.toBeNull();
+      await user.keyboard("{Escape}");
+      expect(tip()).toBeNull();
+    } finally {
+      box.remove();
+    }
+  });
+
   it("shows a line about a tool without a shortcut", async () => {
     const { user } = rail();
     await user.hover(screen.getByRole("button", { name: "Automations" }));

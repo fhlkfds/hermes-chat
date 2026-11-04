@@ -226,7 +226,7 @@ export function Rail({
       {/* On the page itself, so a screen the rail sits under (the Inbox) can't cover it. */}
       {tip &&
         createPortal(
-          <div className="rail-tip" role="tooltip" aria-hidden style={{ top: tip.top }} {...tipProps}>
+          <div className="rail-tip" role="tooltip" aria-hidden style={{ top: tip.top, left: tip.left }} {...tipProps}>
             <span className="rail-tip-label">{tip.label}</span>
             {tip.keys && <kbd>{tip.keys}</kbd>}
             {tip.note && <span className="rail-tip-note">{tip.note}</span>}
@@ -236,6 +236,9 @@ export function Rail({
     </aside>
   );
 }
+
+/** Between a rail button and its tip; the tip's `::before` bridges it (styles.css). */
+const TIP_GAP = 10;
 
 /** `describe` false: the button's own name already says what `note` does. */
 type RailTip = { label: string; keys?: string; note?: string; describe?: boolean };
@@ -248,17 +251,18 @@ type RailTip = { label: string; keys?: string; note?: string; describe?: boolean
  */
 function useRailTip() {
   const id = useId();
-  const [at, setAt] = useState<{ key: string; top: number }>();
+  const [at, setAt] = useState<{ key: string; top: number; left: number }>();
   const tipRef = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLElement | null>(null);
   const hide = useCallback(() => setAt(undefined), []);
   useEffect(() => {
     if (!at) return;
+    // Captured, so a focused element that keeps its keys to itself (the Terminal) can't keep the tip up.
     const onKey = (e: globalThis.KeyboardEvent) => e.key === "Escape" && hide();
-    window.addEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
     window.addEventListener("blur", hide);
     return () => {
-      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keydown", onKey, true);
       window.removeEventListener("blur", hide);
     };
   }, [at, hide]);
@@ -276,7 +280,8 @@ function useRailTip() {
     const show = (e: { currentTarget: HTMLElement }) => {
       trigger.current = e.currentTarget;
       const r = e.currentTarget.getBoundingClientRect();
-      setAt({ key, top: r.top + r.height / 2 });
+      // Beside the button's own edge, whatever size the window gives it, so the tip's bridge always reaches it.
+      setAt({ key, top: r.top + r.height / 2, left: r.right + TIP_GAP });
     };
     return {
       onMouseEnter: show,
@@ -287,7 +292,7 @@ function useRailTip() {
     };
   };
   /** The tip showing, read after every `bind` of the render. */
-  const shown = () => (at && tips[at.key] ? { ...tips[at.key], top: at.top } : undefined);
+  const shown = () => (at && tips[at.key] ? { ...tips[at.key], top: at.top, left: at.left } : undefined);
   /** The buttons' descriptions, out of sight; read after every `bind` of the render. */
   const descriptions = () => (
     <div hidden>

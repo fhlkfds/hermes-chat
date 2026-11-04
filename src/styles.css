@@ -253,12 +253,13 @@ kbd {
 .rail-group .icon-btn { width: 32px; height: 32px; }
 .rail-group .icon-btn.on::before { left: -12px; top: 8px; bottom: 8px; }
 .rail-tip {
-  position: fixed; left: 62px; transform: translateY(-50%); background: var(--raised-2); border: 1px solid var(--line-2);
+  position: fixed; transform: translateY(-50%); background: var(--raised-2); border: 1px solid var(--line-2);
   padding: 6px 9px; border-radius: 8px; font-size: calc(12.5rem / 14); white-space: nowrap; z-index: 60;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4); display: grid; grid-template-columns: auto auto; align-items: center; column-gap: 10px; row-gap: 2px;
 }
-/* The gap between the button and its tip, so the pointer can cross it onto the tip without the tip going. */
-.rail-tip::before { content: ""; position: absolute; top: 0; bottom: 0; left: -18px; width: 18px; }
+/* Across the gap to the button (TIP_GAP, Sidebar.tsx) and a little over its edge, so the pointer can cross onto the
+   tip without the tip going. */
+.rail-tip::before { content: ""; position: absolute; top: 0; bottom: 0; left: -14px; width: 14px; }
 .rail-tip-label { color: var(--text-strong); font-weight: 600; }
 .rail-tip kbd {
   justify-self: end; font: inherit; font-size: calc(11rem / 14); color: var(--muted); background: var(--raised-3); border: 1px solid var(--line-2);
