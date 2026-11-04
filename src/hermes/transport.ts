@@ -37,8 +37,9 @@ import { CronApi } from "./cronJobs";
 import { AutomationsApi } from "./automations";
 import { ModelSettingsApi } from "./modelSettings";
 import { ToolsetsApi } from "./toolsets";
-import { readBack, sendImport, type ImportRest, type PlannedChat } from "./importTranscripts";
+import { readBack, sendImport, type PlannedChat } from "./importTranscripts";
 import { memoryApi, type MemoryApi } from "./memory";
+import { MemoryProvidersApi } from "./memoryProviders";
 import { SkillsApi } from "./skills";
 import { CapabilityStore, CapabilityUnsupportedError } from "./capabilities";
 import type { OpenPipe, Pipe, PipeEvent, RestMethod, Route, Speech, Transcript, VoiceSetup } from "./pipe";
@@ -796,6 +797,11 @@ export class Hermes {
     get: (pathAndQuery) => this.rest("GET", pathAndQuery),
   });
   /**
+   * Settings → Memory's external memory (memoryProviders.ts, ADR 0045). Each call names its profile, and goes only over a
+   * connection that is up.
+   */
+  readonly memoryProviders = new MemoryProvidersApi((method, pathAndQuery, body) => this.connectedRest(method, pathAndQuery, body));
+  /**
    * Importing transcripts (importTranscripts.ts, ADR 0031). Each call names its profile, and goes only over a
    * connection that is up, so a call made before a sign-out or profile switch never reaches another server or profile.
    */
@@ -804,7 +810,7 @@ export class Hermes {
     onServer: (profile: string, ids: string[]) => readBack(this.connectedRest, profile, ids),
   };
 
-  private connectedRest: ImportRest = async (method, pathAndQuery, body) => {
+  private connectedRest = async (method: "GET" | "POST" | "PUT", pathAndQuery: string, body?: unknown): Promise<unknown> => {
     const pipe = this.closing ? undefined : this.connectedPipe();
     if (!pipe) throw new Error("Not connected to Hermes.");
     return JSON.parse(await this.relay(pipe, method, pathAndQuery, body));
