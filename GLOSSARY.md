@@ -254,6 +254,14 @@ _Avoid_: soul, personality (Hermes's `/personality` presets are another thing), 
 A Hermes cron job in one profile: a prompt Hermes runs at the times its schedule sets, delivering the reply where the job says. Hermes keeps the job on the server and its gateway runs it there, so it runs while Hermes Chat is closed. The Scheduled jobs screen lists the profile's jobs with their schedule, time zone, next run and last result, and creates, edits, pauses, resumes, runs and deletes them through Hermes. A change shows only once Hermes, read back, has it. Deleting a job, or running it now, asks first (ADR 0013).
 _Avoid_: cron (Hermes's name, fine in server-side talk), task, automation, reminder
 
+**Automation**:
+A Hermes webhook route in one profile: when GitHub sends an event to it, Hermes checks the event's signature, filters it, and starts a task with a prompt made from the event. Hermes keeps the route and runs the task on the server, so it works while Hermes Chat is closed. The Automations screen sets routes up, previews what an example event would do, and shows what became of the events that arrived (ADR 0033).
+_Avoid_: webhook (fine for the transport), trigger, hook, scheduled job (that runs on a clock, not on an event)
+
+**Delivery**:
+One event a provider sent to an Automation, identified by the provider's delivery id. Its state says what Hermes did with it: received, filtered out, waiting to coalesce, replaced by a later event, queued, running, completed or failed. A request whose signature, size or timing didn't check out isn't a delivery: it is only counted. A copy of a delivery, or its signed body sent again under a new id, is counted on it and never runs again.
+_Avoid_: event (the provider's word for what's inside), request, hit
+
 **Run now**:
 The owner's action that has Hermes run a Scheduled job at once, on the server, as its schedule would: a real run with the job's real delivery. Hermes answers when the run has finished, and resumes the job if it was paused.
 _Avoid_: trigger, test run
@@ -290,6 +298,8 @@ _Avoid_: upgrade (pacman's word, for the package step only)
 - **Draft** vs the New chat pane: the code also calls the pane for a chat not started yet "the draft". In this glossary a Draft is only the composer's unsent text.
 - **Toolset** vs **Approval** and YOLO: a toolset decides which tools the model is offered at all; an Approval, and YOLO, decide whether a command Hermes counts as dangerous runs without asking. Turning a toolset on or off changes neither. Speech-to-text is listed among the toolsets because Hermes lists it there, but it has no tools: its switch is the profile's `stt.enabled`, which Dictation uses.
 - **Dictation** and **Read aloud** vs Hermes's voice mode: Hermes's `/voice` mode (`voice.record`, `voice.tts` over the socket) records with the server's own microphone and speaks through the server's speakers. This app never uses it. Dictation records on this computer, and both use the server only to transcribe and to make the audio.
+- **Automation** vs **Scheduled job**: both start Hermes tasks on the server, an automation when an event arrives, a scheduled job at set times. A route can also start a scheduled job on each event (`cron_job`); Hermes Chat shows such a route but doesn't set it up. An automation's tasks are `webhook` sessions, listed among the chats as from another Hermes platform.
+- **Retry** (of a Delivery) vs **Retry** (of a Failed message): retrying a delivery has Hermes run the stored event again as a new task on the server, through the automation's rules as they are now; it never undoes what the failed attempt did.
 - **Scheduled job** vs its runs: each run of an agent job is a Hermes session with source `cron`. The chat list leaves those out; the job's runs show on the Scheduled jobs screen.
 - **Branch** vs Hermes's other children of a session: Hermes also gives `parent_session_id` to a chat it compressed onto a new session, and to subagent and tool sessions. Only one made with Branch from here is shown as a Branch, with where it came from. Hermes stores a branch made here with source `tui`, because of how the legacy resume records the live session; the app shows it as this app's chat (ADR 0027).
 - **Source** vs the `source` field on a Hermes session: the app derives a chat's Source from that field, but the field has more values than the app shows. `gui` (what this app stamps on chats it starts) and `hermes-chat` (what it stamped before; Hermes won't edit those) count as this app, and `cli` and `tui` as the command line. `cron` chats aren't listed, and any other value (for example `api_server`, `webhook`) shows as "another Hermes platform".

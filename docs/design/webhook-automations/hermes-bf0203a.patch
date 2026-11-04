@@ -1,0 +1,1669 @@
+--- a/gateway/platforms/webhook.py
++++ b/gateway/platforms/webhook.py
+@@ -41,6 +41,7 @@
+ from gateway.platforms.tcp_site import start_tcp_site
+ from gateway.platforms.webhook_coalesce import WebhookCoalescer, validate_coalesce_config
+ from gateway.platforms.webhook_filters import DEFAULT_SCRIPT_TIMEOUT_SECONDS, WebhookRouteProcessor
++from gateway.platforms.webhook_ledger import Ledger
+ from gateway.platforms.webhook_mcp_events import (
+     handle_mcp_event_control, mcp_event_delivery_id, render_mcp_event_prompt)
+ from gateway.response_filters import is_autonomous_silence_response
+@@ -129,6 +130,25 @@
+     return hmac.new(secret.encode(), data, hashlib.sha256).hexdigest()
+ 
+ 
++_SECRET_ENV_RE = re.compile(r"^[A-Z_][A-Z0-9_]{0,127}$")
++# Retries the dashboard sends for an owner (webhooks/1): signed by the server with the route's own secret over
++# "<timestamp>.<retry-of>.<retry-key>.<body>", fresh within the replay window. Only a holder of the secret can make one.
++_RETRY_SIGNATURE = "X-Hermes-Retry-Signature"
++
++
++def _route_secret(route: dict, global_secret: str) -> object:
++    """The route's HMAC secret: a ``secret_env`` reference (webhooks/1) names an environment variable of the
++    gateway's profile, so the value never sits in the subscription store or passes through a client."""
++    ref = route.get("secret_env")
++    if ref is not None:
++        return os.environ.get(ref, "") if isinstance(ref, str) and _SECRET_ENV_RE.match(ref) else ""
++    return route.get("secret", global_secret)
++
++
++def retry_signature(secret: str, timestamp: str, retry_of: str, key: str, body: bytes) -> str:
++    return _hex_hmac(secret, f"{timestamp}.{retry_of}.{key}.".encode() + body)
++
++
+ def _is_usable_secret(secret: object) -> bool:
+     """True when ``secret`` is a string with at least one non-space character.
+ 
+@@ -238,6 +258,9 @@
+         self._rate_counts: dict[str, deque[float]] = {}  # per-route hit timestamps in a fixed window
+         self._rate_limit: int = int(extra.get("rate_limit", 30))  # per minute
+         self._max_body_bytes: int = int(extra.get("max_body_bytes", 1_048_576))  # 1MB
++        # webhooks/1: this process's identity in the delivery ledgers it writes (Ledger.claim_instance).
++        self._instance_id: str = uuid.uuid4().hex
++        self._claimed_ledgers: set = set()
+         self._script_timeout_seconds: int = int(extra.get("script_timeout_seconds", DEFAULT_SCRIPT_TIMEOUT_SECONDS))
+         self._route_processor = WebhookRouteProcessor(script_timeout_seconds=self._script_timeout_seconds)
+         # Opt-in per-route debounce of rapid same-entity events (route ``coalesce`` block). #92066
+@@ -255,7 +278,7 @@
+ 
+     def _validate_route(self, name: str, route: dict) -> None:
+         """Startup validation: secret required; INSECURE_NO_AUTH only on loopback (crash early on a public footgun)."""
+-        secret = route.get("secret", self._global_secret)
++        secret = _route_secret(route, self._global_secret)
+         if not _is_usable_secret(secret):
+             raise ValueError(f"[webhook] Route '{name}' HMAC secret is missing, blank, or not a string. Set 'secret' "
+                              f"on the route or globally. "
+@@ -417,7 +440,7 @@
+     def _dynamic_route_allowed(self, name: str, route: dict) -> bool:
+         """Reject dynamic routes whose effective secret is missing, blank, or not a string
+         (_is_usable_secret); INSECURE_NO_AUTH is loopback-only."""
+-        effective_secret = route.get("secret", self._global_secret)
++        effective_secret = _route_secret(route, self._global_secret)
+         if not _is_usable_secret(effective_secret):
+             logger.warning("[webhook] Dynamic route '%s' skipped: 'secret' is missing, blank, or not a string. "
+                            "Set a valid HMAC secret, or use '%s' to explicitly disable auth (testing only).",
+@@ -527,29 +550,83 @@
+         from hermes_cli.profiles import get_profile_dir
+         return _profile_runtime_scope(get_profile_dir(profile))
+ 
++    def _ledger(self, profile) -> Ledger:
++        """The routed profile's delivery ledger (webhooks/1), in that profile's home, claimed for this gateway
++        process the first time it is used, so what an earlier process stored and never acted on counts as not run."""
++        with self._profile_scope(profile):
++            ledger = Ledger()
++        if ledger.path not in self._claimed_ledgers:
++            ledger.claim_instance(self._instance_id)
++            self._claimed_ledgers.add(ledger.path)
++        return ledger
++
++    def _reject(self, profile, route_name: str, kind: str) -> None:
++        """Count a refused request on its route. Nothing the request carried is stored."""
++        try:
++            self._ledger(profile).reject(profile, route_name, kind)
++        except Exception:
++            logger.warning("[webhook] could not count a %s rejection for %s", kind, route_name, exc_info=True)
++
+     async def _read_authenticated_body(self, request: web.Request, route_name: str,
+                                        route_config: dict) -> tuple[Optional[bytes], Optional[web.Response]]:
+         """Auth-before-body: size-cap, read, then HMAC-validate. Returns ``(body, None)`` or ``(None, response)``."""
++        profile = request.match_info.get("profile")
+         if (request.content_length or 0) > self._max_body_bytes:
++            self._reject(profile, route_name, "too_large")
+             return None, _json_error("Payload too large", 413)
+         try:
+             raw_body = await request.read()
+         except web.HTTPRequestEntityTooLarge:  # client_max_size tripped — chunked or lying Content-Length
++            self._reject(profile, route_name, "too_large")
+             return None, _json_error("Payload too large", 413)
+         except Exception as e:
+             logger.error("[webhook] Failed to read body: %s", e)
+             return None, _json_error("Bad request", 400)
+         if len(raw_body) > self._max_body_bytes:  # defense in depth if the server-level limit was bypassed
++            self._reject(profile, route_name, "too_large")
+             return None, _json_error("Payload too large", 413)
+         # Missing, blank, or non-string secrets fail closed here too (not only in connect()), so direct
+         # handler reuse cannot become an unauthenticated dispatch surface.
+-        secret = route_config.get("secret", self._global_secret)
++        secret = _route_secret(route_config, self._global_secret)
+         if not _is_usable_secret(secret):
+             logger.error("[webhook] Route %s HMAC secret is missing, blank, or not a string; refusing request",
+                          route_name)
++            self._reject(profile, route_name, "no_secret")
+             return None, _json_error("Webhook route is missing an HMAC secret", 403)
++        if secret != _INSECURE_NO_AUTH and request.headers.get(_RETRY_SIGNATURE):
++            # An owner's retry, re-sent by the dashboard: its own signature, bound to a fresh timestamp.
++            ts = request.headers.get("X-Hermes-Retry-Timestamp", "")
++            retry_of = request.headers.get("X-Hermes-Retry-Of", "")
++            key = request.headers.get("X-Hermes-Retry-Key", "")
++            if not (retry_of and key and _timestamp_fresh(ts, "[webhook] Route '%s' retry outside the replay window",
++                                                          route_name)):
++                self._reject(profile, route_name, "stale_timestamp")
++                return None, _json_error("Invalid signature", 401)
++            if not _hmac_str_equal(request.headers[_RETRY_SIGNATURE],
++                                   retry_signature(secret, ts, retry_of, key, raw_body)):
++                self._reject(profile, route_name, "bad_signature")
++                return None, _json_error("Invalid signature", 401)
++            request["hermes_retry"] = (retry_of, key)
++            return raw_body, None
++        if route_config.get("provider") == "github" and secret != _INSECURE_NO_AUTH:
++            # A GitHub route takes GitHub's scheme only, so no weaker scheme (body-only V1) reaches it.
++            if not request.headers.get("X-Hub-Signature-256"):
++                self._reject(profile, route_name, "bad_signature")
++                return None, _json_error("Invalid signature", 401)
++            if not request.headers.get("X-GitHub-Delivery"):
++                self._reject(profile, route_name, "missing_delivery_id")
++                return None, _json_error("Missing X-GitHub-Delivery", 400)
++            # Only GitHub's signature is checked, whatever other scheme's headers come with it, so the ledger's
++            # replay check (the body's digest) covers exactly what was verified.
++            if not _hmac_str_equal(request.headers["X-Hub-Signature-256"], "sha256=" + _hex_hmac(secret, raw_body)):
++                logger.warning("[webhook] Invalid signature for route %s", route_name)
++                self._reject(profile, route_name, "bad_signature")
++                return None, _json_error("Invalid signature", 401)
++            return raw_body, None
+         if secret != _INSECURE_NO_AUTH and not self._validate_signature(request, raw_body, secret):
+             logger.warning("[webhook] Invalid signature for route %s", route_name)
++            kind = request.get("hermes_reject")
++            self._reject(profile, route_name, kind if isinstance(kind, str) else "bad_signature")
+             return None, _json_error("Invalid signature", 401)
+         return raw_body, None
+ 
+@@ -638,6 +715,7 @@
+         # Disabled routes stay in the subscriptions file (dashboard can re-enable) but reject events.
+         # Only an explicit ``enabled: false`` turns a route off.
+         if route_config.get("enabled", True) is False:
++            self._reject(profile, route_name, "paused")
+             return route_name, None, profile, _json_error(f"Route disabled: {route_name}", 403)
+         return route_name, route_config, profile, None
+ 
+@@ -679,6 +757,7 @@
+             return error_response
+         # Rate limiting (after auth)
+         if not self._record_rate_limit_hit(route_name, time.time()):
++            self._reject(profile, route_name, "rate_limited")
+             return _json_error("Rate limit exceeded", 429)
+         payload = self._parse_body(raw_body)
+         if payload is _UNPARSEABLE:
+@@ -689,11 +768,63 @@
+         delivery_id = mcp_event_delivery_id(route_config, payload) or delivery_id
+         event_type = (headers.get("X-GitHub-Event", "") or headers.get("X-GitLab-Event", "")
+                       or payload.get("event_type", "") or payload.get("type", "") or "unknown")
++        # webhooks/1: the authenticated delivery is stored once, before anything acts on it. A delivery id already
++        # in the ledger is a duplicate across restarts (copies of an admitted task go on to the admission ledger,
++        # which decides them as before). On a ``provider: "github"`` route, a signed body already in the ledger is
++        # a replay under a new delivery id, which GitHub's signature doesn't cover, and creates no work either.
++        retry = request.get("hermes_retry")
++        retry = retry if isinstance(retry, tuple) else None  # set only by _read_authenticated_body
++        if retry:
++            delivery_id = f"{retry[0]}~retry~{retry[1]}"
++        ledger = self._ledger(profile)
++        try:
++            seen, _row = ledger.begin(profile, route_name, delivery_id, event=event_type, payload=payload,
++                                      body=raw_body,
++                                      signed=raw_body if route_config.get("provider") == "github" else None,
++                                      retry_of=retry[0] if retry else None,
++                                      idempotency_key=retry[1] if retry else None, owner=self._instance_id)
++        except Exception:
++            logger.exception("[webhook] delivery ledger unavailable for route %s", route_name)
++            return _json_error("Delivery ledger unavailable; retry this delivery", 503)
++        if seen == "repeat":
++            # Already admitted as a task: the admission ledger answers copies of it, as without the ledger.
++            return await self._process_delivery(request, route_name, route_config, profile, payload, event_type,
++                                                delivery_id, ledger)
++        if seen == "duplicate":
++            logger.info("[webhook] Duplicate delivery %s on route %s (ledger)", delivery_id, route_name)
++            return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
++        response = await self._process_delivery(request, route_name, route_config, profile, payload, event_type,
++                                                delivery_id, ledger)
++        # Outcomes decided here, at the edge; an agent run's own progress is read from the admission ledger.
++        try:
++            body = json.loads(response.body) if getattr(response, "body", None) else {}
++        except (TypeError, ValueError):
++            body = {}
++        status = body.get("status") if isinstance(body, dict) else None
++        if status == "ignored":
++            ledger.set_state(profile, route_name, delivery_id, "filtered",
++                             reason=body.get("reason") or f"event:{event_type}")
++        elif status == "delivered":
++            ledger.set_state(profile, route_name, delivery_id, "completed", reason="delivered")
++        elif status == "accepted" and route_config.get("cron_job"):
++            ledger.set_state(profile, route_name, delivery_id, "queued", reason="cron_job")
++        elif response.status == 502:
++            ledger.set_state(profile, route_name, delivery_id, "failed", reason="delivery_failed")
++        elif response.status == 503:
++            ledger.set_state(profile, route_name, delivery_id, "failed", reason="admission_unavailable")
++        elif response.status >= 400:
++            ledger.set_state(profile, route_name, delivery_id, "failed", reason=f"http_{response.status}")
++        return response
++
++    async def _process_delivery(self, request, route_name: str, route_config: dict, profile, payload: Any,
++                                event_type: str, delivery_id: str, ledger: Ledger) -> web.Response:
++        """Everything after the ledger has stored a new delivery: event and payload filters, script, render,
++        then coalescing or dispatch."""
+         allowed_events = route_config.get("events", [])
+         if allowed_events and event_type not in allowed_events:
+             logger.debug("[webhook] Ignoring event %s for route %s (allowed: %s)", event_type, route_name,
+                          allowed_events)
+-            return web.json_response({"status": "ignored", "event": event_type})
++            return web.json_response({"status": "ignored", "event": event_type, "reason": f"event:{event_type}"})
+         if not self._route_processor.route_filters_match(route_config, payload, event_type, request.headers):
+             logger.info("[webhook] filtered event=%s route=%s", event_type, route_name)
+             return web.json_response({"status": "ignored", "reason": "filter", "route": route_name})
+@@ -735,6 +866,9 @@
+         if isinstance(coalesce, dict) and self._coalescer.enqueue(
+                 route_name=route_name, coalesce=coalesce, payload=payload, event_type=event_type, prompt=prompt,
+                 delivery_id=delivery_id, now=now, route_config=route_config, profile=profile):
++            group = self._coalescer.group_key(route_name, coalesce["key"], payload, event_type)
++            ledger.set_state(profile, route_name, delivery_id, "coalesced",
++                             coalesce_key=group.split("|", 1)[1] if group else None)
+             return web.json_response({"status": "coalesced", "route": route_name, "event": event_type,
+                                       "delivery_id": delivery_id}, status=202)
+         return await self._dispatch_agent_run(request, route_config, route_name, profile, payload, prompt, event_type,
+@@ -761,12 +895,17 @@
+         already ``coalesced``: an admission failure is logged and gives back the batch's delivery ids
+         (*superseded* too), so a resend of any of them is processed, not answered as a duplicate."""
+         async def _admit_or_log():
++            ledger = self._ledger(profile)
++            for earlier in superseded:
++                ledger.set_state(profile, route_name, earlier, "superseded", superseded_by=delivery_id)
+             outcome = await self._admit_agent_run(payload, prompt, delivery_id, now, route_config=route_config,
+                                                   route_name=route_name, profile=profile, event_type=event_type)
+             if outcome is None:
+                 logger.error("[webhook] Coalesced delivery %s on route %s was not admitted", delivery_id, route_name)
+                 for released in (*superseded, delivery_id):
+                     self._seen_deliveries.pop(_WebhookDeliveryIdentity.from_parts(profile, route_name, released), None)
++                    # Nothing ran: the provider's resend of any of them is processed again.
++                    ledger.set_state(profile, route_name, released, "failed", reason="admission_unavailable")
+         task = asyncio.create_task(_admit_or_log())
+         self._background_tasks.add(task)
+         task.add_done_callback(self._background_tasks.discard)
+@@ -804,6 +943,10 @@
+         self._delivery_info_created[session_chat_id] = now
+         self._delivery_info_order.append((now, session_chat_id))
+         self._prune_delivery_info(now)
++        try:
++            self._ledger(profile).set_state(profile, route_name, delivery_id, "queued", session_chat_id=session_chat_id)
++        except Exception:
++            logger.warning("[webhook] could not mark delivery %s queued", delivery_id, exc_info=True)
+         source = self._admission_source(route_name, profile, delivery_id)
+         event = MessageEvent(text=prompt, message_type=MessageType.TEXT, source=source, raw_message=payload,
+                              message_id=delivery_id, timestamp=datetime.fromtimestamp(0, UTC))
+@@ -893,6 +1036,7 @@
+                 return False
+             if not _timestamp_fresh(
+                     v2_timestamp, "[webhook] Route '%s' generic HMAC V2 timestamp outside replay window", route_name):
++                request["hermes_reject"] = "stale_timestamp"
+                 return False
+             return _hmac_str_equal(v2_sig, _hex_hmac(secret, v2_timestamp.encode() + b"." + body))
+         # Generic V1 (legacy, deprecated): body-only HMAC → replays indefinitely.
+--- /dev/null
++++ b/gateway/platforms/webhook_ledger.py
+@@ -0,0 +1,383 @@
++"""Durable delivery ledger for webhook routes (the `webhooks/1` automations contract).
++
++Every request that passes the route's signature check, its replay window and the rate limit is stored here once,
++keyed by ``(profile, route, provider delivery id)``, BEFORE any filtering, coalescing or task creation. The row then
++records what became of it: ``received`` -> ``filtered`` | ``coalesced`` -> ``superseded`` | ``queued`` -> ``running``
++-> ``completed`` | ``failed``. A request that fails authentication is never stored (it is untrusted, and storing it
++would let anyone fill the disk); only a per-route counter of rejections is kept.
++
++The ledger is the durable replay guard: a delivery id seen within the retention window, or (on a GitHub route) the
++same signed body under another id, creates no second task, across gateway restarts. An owner's retry is reserved here
++by the dashboard before it is sent, so at most one attempt at an event is ever under way.
++
++Agent-run states (queued/running/completed/failed) are not copied here: they are read at query time from the
++profile's own admission ledger (``session_admissions``), which is the authority on them.
++
++One SQLite file per profile home: ``$HERMES_HOME/webhook_deliveries.db`` (0600). The gateway and the dashboard are
++separate processes; every write is one ``BEGIN IMMEDIATE`` transaction, so check-then-write is atomic between them.
++"""
++from __future__ import annotations
++
++import contextlib
++import hashlib
++import json
++import os
++import sqlite3
++import threading
++import time
++from pathlib import Path
++from typing import Any, Iterator, Optional
++
++RETENTION_SECONDS = 7 * 24 * 3600  # longer than GitHub's 3-day manual-redelivery window
++MAX_ROWS_PER_ROUTE = 1000
++EXCERPT_CHARS = 600
++# A provider may resend these: nothing ran, so the redelivery is processed instead of answered as a duplicate.
++PROVIDER_RETRYABLE = frozenset({"admission_unavailable", "profile_not_served"})
++# The gateway refuses an owner's retry signed longer ago than this (its replay window, +-300 s). A reservation the
++# gateway hasn't claimed by then can never be claimed, so it stops blocking other attempts.
++RETRY_WINDOW_SECONDS = 300 + 60
++REJECTION_KINDS = ("bad_signature", "stale_timestamp", "missing_delivery_id", "too_large", "rate_limited", "paused",
++                   "no_secret")
++
++_SCHEMA = """
++CREATE TABLE IF NOT EXISTS deliveries (
++  profile TEXT NOT NULL, route TEXT NOT NULL, delivery_id TEXT NOT NULL,
++  event TEXT NOT NULL DEFAULT '', action TEXT,
++  received_at REAL NOT NULL, updated_at REAL NOT NULL,
++  state TEXT NOT NULL, reason TEXT, owner TEXT,
++  session_chat_id TEXT, coalesce_key TEXT, superseded_by TEXT,
++  duplicates INTEGER NOT NULL DEFAULT 0, last_duplicate_at REAL,
++  retry_of TEXT, idempotency_key TEXT, body BLOB, body_sha256 TEXT, excerpt TEXT,
++  PRIMARY KEY (profile, route, delivery_id));
++CREATE INDEX IF NOT EXISTS deliveries_recent ON deliveries(profile, route, received_at DESC);
++CREATE INDEX IF NOT EXISTS deliveries_body ON deliveries(profile, route, body_sha256);
++CREATE INDEX IF NOT EXISTS deliveries_retry ON deliveries(profile, route, retry_of);
++CREATE TABLE IF NOT EXISTS rejections (
++  profile TEXT NOT NULL, route TEXT NOT NULL, kind TEXT NOT NULL,
++  count INTEGER NOT NULL DEFAULT 0, last_at REAL,
++  PRIMARY KEY (profile, route, kind));
++CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
++"""
++
++_lock = threading.Lock()  # one writer per process; BEGIN IMMEDIATE orders the processes
++
++
++def ledger_path(home: Optional[Path] = None) -> Path:
++    if home is None:
++        from hermes_constants import get_hermes_home
++        home = get_hermes_home()
++    return Path(home) / "webhook_deliveries.db"
++
++
++def excerpt(payload: Any) -> str:
++    """A short, sanitized look at the payload for the history: the event's own identifying fields only."""
++    if not isinstance(payload, dict):
++        return ""
++    picks: dict[str, Any] = {}
++    for key in ("action", "ref", "number"):
++        if isinstance(payload.get(key), (str, int)):
++            picks[key] = payload[key]
++    for obj, fields in (("repository", ("full_name",)), ("pull_request", ("number", "title")),
++                        ("issue", ("number", "title")), ("release", ("tag_name",)), ("sender", ("login",)),
++                        ("workflow_run", ("name", "conclusion"))):
++        value = payload.get(obj)
++        if isinstance(value, dict):
++            for f in fields:
++                if isinstance(value.get(f), (str, int)):
++                    picks[f"{obj}.{f}"] = value[f]
++    return json.dumps(picks, ensure_ascii=False)[:EXCERPT_CHARS]
++
++
++class Ledger:
++    """One profile home's delivery ledger, for the gateway (ingress) and the dashboard (history, retry)."""
++
++    def __init__(self, home: Optional[Path] = None, *, retention_seconds: float = RETENTION_SECONDS,
++                 max_rows_per_route: int = MAX_ROWS_PER_ROUTE):
++        self.path = ledger_path(home)
++        self.state_db = self.path.parent / "state.db"
++        self.retention_seconds = retention_seconds
++        self.max_rows_per_route = max_rows_per_route
++
++    # --- connections ---
++
++    @contextlib.contextmanager
++    def _write(self) -> Iterator[sqlite3.Connection]:
++        with _lock:
++            self.path.parent.mkdir(parents=True, exist_ok=True)
++            fresh = not self.path.exists()
++            conn = sqlite3.connect(str(self.path), timeout=10, isolation_level=None)
++            try:
++                if fresh:
++                    os.chmod(self.path, 0o600)
++                conn.row_factory = sqlite3.Row
++                conn.executescript(_SCHEMA)
++                conn.execute("BEGIN IMMEDIATE")
++                try:
++                    yield conn
++                except BaseException:
++                    conn.execute("ROLLBACK")
++                    raise
++                conn.execute("COMMIT")
++            finally:
++                conn.close()
++
++    @contextlib.contextmanager
++    def _read(self) -> Iterator[Optional[sqlite3.Connection]]:
++        if not self.path.exists():
++            yield None
++            return
++        conn = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True, timeout=10)
++        conn.row_factory = sqlite3.Row
++        try:
++            yield conn
++        finally:
++            conn.close()
++
++    # --- what a row means ---
++
++    @staticmethod
++    def _instance(conn) -> Optional[str]:
++        row = conn.execute("SELECT value FROM meta WHERE key='gateway_instance'").fetchone()
++        return row["value"] if row else None
++
++    def _never_ran(self, conn, row, now: float) -> bool:
++        """Whether a stored delivery provably started nothing, so it may be processed again: refused for admission;
++        stored as received by a gateway process that has since been replaced (a live one may still be acting on it,
++        however long its script takes); a retry the gateway refused, or never claimed within the retry window."""
++        state = row["state"]
++        return ((state == "failed" and row["reason"] in PROVIDER_RETRYABLE | {"not_sent"})
++                or (state == "received" and row["owner"] != self._instance(conn))
++                or (state == "reserved" and now - row["received_at"] > RETRY_WINDOW_SECONDS))
++
++    def _effective(self, conn, row, now: float) -> dict:
++        """A row as the owner sees it: an agent task's state from the admission ledger; a delivery that never got
++        going as failed. ``{state, reason, session_id, outcome}``."""
++        state, reason = row["state"], row["reason"]
++        if state in ("received", "reserved") and self._never_ran(conn, row, now):
++            why = "not_sent" if state == "reserved" else "interrupted"
++            return {"state": "failed", "reason": why, "session_id": None, "outcome": why}
++        if state == "reserved":
++            return {"state": "received", "reason": "retry_sent", "session_id": None, "outcome": None}
++        run = run_state(self.state_db, row["session_chat_id"]) if state in ("queued", "running") else None
++        if run is None:
++            return {"state": state, "reason": reason, "session_id": None, "outcome": None}
++        return {"state": run["state"], "reason": run["outcome"] if run["state"] == "failed" else reason,
++                "session_id": run["session_id"], "outcome": run["outcome"]}
++
++    def _attempts(self, conn, profile: str, route: str, root: str) -> list:
++        """The delivery ``root`` and every retained retry of it: every attempt at one event."""
++        return conn.execute("""SELECT * FROM deliveries WHERE profile=? AND route=? AND (delivery_id=? OR retry_of=?)
++            ORDER BY received_at""", (profile, route, root, root)).fetchall()
++
++    def _active(self, conn, profile: str, route: str, root: str, now: float, exclude: str = "") -> Optional[dict]:
++        """An attempt at the event ``root`` that didn't fail (queued, running, completed, or under way), if any."""
++        for a in self._attempts(conn, profile, route, root):
++            if a["delivery_id"] != exclude and self._effective(conn, a, now)["state"] != "failed":
++                return dict(a)
++        return None
++
++    def _count(self, conn, profile: str, route: str, delivery_id: str, now: float) -> None:
++        conn.execute("""UPDATE deliveries SET duplicates=duplicates+1, last_duplicate_at=?
++            WHERE profile=? AND route=? AND delivery_id=?""", (now, profile, route, delivery_id))
++
++    # --- ingress (gateway) ---
++
++    def claim_instance(self, instance: str) -> None:
++        """Record the gateway process now serving this home. Rows an earlier process stored as received, and never
++        acted on, then count as never having run."""
++        with self._write() as conn:
++            conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('gateway_instance', ?)", (instance,))
++
++    def reject(self, profile: Optional[str], route: str, kind: str, now: Optional[float] = None) -> None:
++        """Count a request that was refused before it was trusted. Nothing from the request is stored."""
++        now = time.time() if now is None else now
++        with self._write() as conn:
++            conn.execute("""INSERT INTO rejections(profile, route, kind, count, last_at) VALUES (?,?,?,1,?)
++                ON CONFLICT(profile, route, kind) DO UPDATE SET count=count+1, last_at=excluded.last_at""",
++                         (profile or "default", route, kind, now))
++
++    def begin(self, profile: Optional[str], route: str, delivery_id: str, *, event: str, payload: Any,
++              body: bytes, signed: Optional[bytes] = None, retry_of: Optional[str] = None,
++              idempotency_key: Optional[str] = None, owner: Optional[str] = None,
++              now: Optional[float] = None) -> tuple[str, dict]:
++        """Store an authenticated delivery. ``("new", row)``, ``("duplicate", row)`` or ``("repeat", row)``. A
++        duplicate is counted on the row it repeats and must not create work. A repeat (the same delivery id as an
++        admitted agent task) is counted too, and goes on to Hermes's admission ledger, which decides it as before.
++
++        A delivery is a copy when its id is stored and did more than fail before running; when it never ran but a
++        retry of it did; or, on a GitHub route, when another stored delivery with the same signed body (``signed``,
++        exactly what the verified signature covered) did more than fail before running. GitHub's
++        ``X-GitHub-Delivery`` header is outside its signature, so that digest is the replay guard. An owner's retry
++        (``retry_of``) may repeat its event's body: the dashboard reserved it (``reserve_retry``) after checking no
++        other attempt is under way, and the gateway claims that reservation here. ``owner`` is the gateway process
++        storing it."""
++        now = time.time() if now is None else now
++        profile = profile or "default"
++        action = payload.get("action") if isinstance(payload, dict) and isinstance(payload.get("action"), str) else None
++        digest = hashlib.sha256(signed).hexdigest() if signed is not None else None
++        with self._write() as conn:
++            self._prune(conn, profile, route, now)
++            row = conn.execute("SELECT * FROM deliveries WHERE profile=? AND route=? AND delivery_id=?",
++                               (profile, route, delivery_id)).fetchone()
++            if (row is not None and row["state"] == "reserved" and retry_of and row["retry_of"] == retry_of
++                    and row["idempotency_key"] == idempotency_key and not self._never_ran(conn, row, now)):
++                conn.execute("""UPDATE deliveries SET state='received', owner=?, updated_at=?
++                    WHERE profile=? AND route=? AND delivery_id=?""", (owner, now, profile, route, delivery_id))
++                return "new", self._get(conn, profile, route, delivery_id)
++            if row is not None and not self._never_ran(conn, row, now):
++                self._count(conn, profile, route, delivery_id, now)
++                return ("repeat" if row["session_chat_id"] else "duplicate"), dict(row)
++            # Never ran, or new: a copy all the same if another attempt at the same event ran.
++            root = retry_of or delivery_id
++            other = self._active(conn, profile, route, root, now, exclude=delivery_id)
++            if other is None and digest is not None and not retry_of:
++                for r in conn.execute("""SELECT * FROM deliveries WHERE profile=? AND route=? AND body_sha256=?
++                        AND delivery_id != ? ORDER BY received_at DESC""", (profile, route, digest, delivery_id)):
++                    if not self._never_ran(conn, r, now):
++                        other = dict(r)
++                        break
++            if other is not None:
++                self._count(conn, profile, route, other["delivery_id"], now)
++                return "duplicate", other
++            conn.execute("""INSERT OR REPLACE INTO deliveries(profile, route, delivery_id, event, action, received_at,
++                updated_at, state, reason, owner, retry_of, idempotency_key, body, body_sha256, excerpt, duplicates)
++                VALUES (?,?,?,?,?,?,?,'received',NULL,?,?,?,?,?,?,0)""",
++                         (profile, route, delivery_id, event, action, now, now, owner, retry_of, idempotency_key,
++                          body, digest, excerpt(payload)))
++            return "new", self._get(conn, profile, route, delivery_id)
++
++    def set_state(self, profile: Optional[str], route: str, delivery_id: str, state: str, *,
++                  reason: Optional[str] = None, session_chat_id: Optional[str] = None,
++                  coalesce_key: Optional[str] = None, superseded_by: Optional[str] = None) -> None:
++        with self._write() as conn:
++            conn.execute("""UPDATE deliveries SET state=?, reason=?, updated_at=?,
++                session_chat_id=COALESCE(?, session_chat_id), coalesce_key=COALESCE(?, coalesce_key),
++                superseded_by=COALESCE(?, superseded_by)
++                WHERE profile=? AND route=? AND delivery_id=?""",
++                         (state, reason, time.time(), session_chat_id, coalesce_key, superseded_by,
++                          profile or "default", route, delivery_id))
++
++    # --- dashboard ---
++
++    def reserve_retry(self, profile: Optional[str], route: str, delivery_id: str, key: str,
++                      now: Optional[float] = None) -> tuple[str, Optional[dict]]:
++        """Reserve an owner's retry of ``delivery_id`` before it is sent, atomically with the check that no attempt
++        at the same event is under way or done. ``("reserved", row)`` (send it), ``("already", row)`` (this key was
++        already used for a retry that may have run), ``("blocked", row)`` (that other attempt), ``("missing",
++        None)``. The reservation blocks every other attempt until the gateway claims it and it fails, or until the
++        retry window has passed and it can no longer be claimed."""
++        now = time.time() if now is None else now
++        profile = profile or "default"
++        with self._write() as conn:
++            same = conn.execute("SELECT * FROM deliveries WHERE profile=? AND route=? AND idempotency_key=?",
++                                (profile, route, key)).fetchone()
++            if same is not None and not self._never_ran(conn, same, now):
++                return "already", dict(same)
++            target = conn.execute("SELECT * FROM deliveries WHERE profile=? AND route=? AND delivery_id=?",
++                                  (profile, route, delivery_id)).fetchone()
++            if target is None:
++                return "missing", None
++            root = target["retry_of"] or target["delivery_id"]
++            rid = f"{root}~retry~{key}"
++            other = self._active(conn, profile, route, root, now, exclude=rid)
++            if other is not None:
++                return "blocked", other
++            conn.execute("""INSERT OR REPLACE INTO deliveries(profile, route, delivery_id, event, action, received_at,
++                updated_at, state, reason, owner, retry_of, idempotency_key, body, body_sha256, excerpt, duplicates)
++                VALUES (?,?,?,?,?,?,?,'reserved',NULL,NULL,?,?,?,?,?,0)""",
++                         (profile, route, rid, target["event"], target["action"], now, now, root, key, target["body"],
++                          target["body_sha256"], target["excerpt"]))
++            return "reserved", self._get(conn, profile, route, rid)
++
++    def release(self, profile: Optional[str], route: str, delivery_id: str) -> None:
++        """The gateway refused a reserved retry outright, so it never ran: it no longer blocks anything."""
++        with self._write() as conn:
++            conn.execute("""UPDATE deliveries SET state='failed', reason='not_sent', updated_at=?
++                WHERE profile=? AND route=? AND delivery_id=? AND state='reserved'""",
++                         (time.time(), profile or "default", route, delivery_id))
++
++    def get(self, profile: Optional[str], route: str, delivery_id: str) -> Optional[dict]:
++        with self._read() as conn:
++            return None if conn is None else self._get(conn, profile or "default", route, delivery_id)
++
++    def view(self, profile: Optional[str], route: str, row: dict, now: Optional[float] = None) -> dict:
++        """``row`` as the owner sees it (``_effective``), plus ``blocked``: whether another attempt at the same event
++        is under way or done, which rules out retrying this one."""
++        now = time.time() if now is None else now
++        profile = profile or "default"
++        with self._read() as conn:
++            if conn is None:
++                return {"state": row["state"], "reason": row["reason"], "session_id": None, "outcome": None,
++                        "blocked": False}
++            root = row["retry_of"] or row["delivery_id"]
++            return {**self._effective(conn, row, now),
++                    "blocked": self._active(conn, profile, route, root, now, exclude=row["delivery_id"]) is not None}
++
++    def list(self, profile: Optional[str], route: str, *, limit: int = 50,
++             before: Optional[float] = None) -> list[dict]:
++        with self._read() as conn:
++            if conn is None:
++                return []
++            rows = conn.execute("""SELECT * FROM deliveries WHERE profile=? AND route=? AND received_at < ?
++                ORDER BY received_at DESC LIMIT ?""",
++                                (profile or "default", route, before if before is not None else 1e18,
++                                 max(1, min(limit, 200)))).fetchall()
++            return [dict(r) for r in rows]
++
++    def rejections(self, profile: Optional[str], route: str) -> dict[str, dict]:
++        with self._read() as conn:
++            if conn is None:
++                return {}
++            rows = conn.execute("SELECT kind, count, last_at FROM rejections WHERE profile=? AND route=?",
++                                (profile or "default", route)).fetchall()
++            return {r["kind"]: {"count": r["count"], "last_at": r["last_at"]} for r in rows}
++
++    def forget_route(self, profile: Optional[str], route: str) -> None:
++        if not self.path.exists():
++            return
++        with self._write() as conn:
++            conn.execute("DELETE FROM deliveries WHERE profile=? AND route=?", (profile or "default", route))
++            conn.execute("DELETE FROM rejections WHERE profile=? AND route=?", (profile or "default", route))
++
++    # --- internals ---
++
++    @staticmethod
++    def _get(conn, profile: str, route: str, delivery_id: str) -> Optional[dict]:
++        row = conn.execute("SELECT * FROM deliveries WHERE profile=? AND route=? AND delivery_id=?",
++                           (profile, route, delivery_id)).fetchone()
++        return dict(row) if row else None
++
++    def _prune(self, conn, profile: str, route: str, now: float) -> None:
++        conn.execute("DELETE FROM deliveries WHERE received_at < ?", (now - self.retention_seconds,))
++        conn.execute("""DELETE FROM deliveries WHERE profile=? AND route=? AND delivery_id IN (
++            SELECT delivery_id FROM deliveries WHERE profile=? AND route=? ORDER BY received_at DESC LIMIT -1 OFFSET ?)""",
++                     (profile, route, profile, route, self.max_rows_per_route))
++
++
++def run_state(state_db: Path, session_chat_id: Optional[str]) -> Optional[dict]:
++    """What the profile's admission ledger says about the task a delivery started: its session id and
++    ``queued`` | ``running`` | ``completed`` | ``failed`` with Hermes's own outcome. None when there is no task."""
++    if not session_chat_id or not state_db.exists():
++        return None
++    conn = sqlite3.connect(f"file:{state_db}?mode=ro", uri=True, timeout=5)
++    conn.row_factory = sqlite3.Row
++    try:
++        row = conn.execute("""SELECT s.id AS session_id, s.ended_at, a.status, a.outcome FROM sessions s
++            LEFT JOIN session_admissions a ON a.target_session_id = s.id
++            WHERE s.chat_id = ? ORDER BY s.started_at DESC, a.seq DESC LIMIT 1""", (session_chat_id,)).fetchone()
++    except sqlite3.Error:
++        return None
++    finally:
++        conn.close()
++    if row is None:
++        return None
++    status, outcome = row["status"], row["outcome"]
++    if status == "queued":
++        state = "queued"
++    elif status == "started":
++        state = "running"
++    elif status == "terminal":
++        state = "completed" if outcome == "completed" else "failed"
++    else:
++        state = "running" if row["ended_at"] is None else "completed"
++    return {"session_id": row["session_id"], "state": state, "outcome": outcome}
+--- a/hermes_cli/web_routers/ops.py
++++ b/hermes_cli/web_routers/ops.py
+@@ -27,7 +27,8 @@
+ from hermes_cli.web_server_memory import _normalize_memory_provider_name, _require_memory_provider_ready
+ from hermes_cli.web_models import (
+     BackupRequest, CredentialPoolAdd, HookCreate, HookDelete, ImportRequest, MemoryProviderSelect,
+-    MemoryReset, PairingApprove, PairingRevoke, WebhookCreate, WebhookEnabledToggle,
++    MemoryReset, PairingApprove, PairingRevoke, WebhookCreate, WebhookEnabledToggle, WebhookRetry,
++    WebhookUpdate,
+ )
+ from hermes_cli.web_routers._common import (
+     config_scoped_to_thread, config_write_scope, destructive_profile, http_failure,
+@@ -135,9 +136,92 @@
+ 
+ # --- Webhooks: same JSON store as the CLI (hermes_cli.webhook); the adapter
+ # hot-reloads it. Per-route HMAC secrets are redacted on read, surfaced once on create.
++#
++# webhooks/1 (the automations contract, docs: hermes-chat docs/design/webhook-automations.md) adds, without changing
++# what older clients see: provider pinning, declarative filters, coalescing and a secret reference on create and on a
++# compare-and-swap update; the delivery ledger (gateway/platforms/webhook_ledger.py) read per route; and an owner's
++# explicit retry of a failed delivery.
++
++WEBHOOK_CONTRACT = "webhooks/1"
++_SECRET_ENV_RE = re.compile(r"^[A-Z_][A-Z0-9_]{0,127}$")
++_FILTER_OPS = ("exists", "missing", "equals", "not_equals", "contains", "in", "regex")
++_MAX_FILTERS = 20
++_RETRY_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
++
++
++def _route_revision(route: dict[str, Any]) -> str:
++    """Changes whenever anything about the route does, the secret included, without revealing it."""
++    import hashlib
++    import json as _json
++    shown = {k: v for k, v in route.items() if k != "secret"}
++    shown["secret_digest"] = hashlib.sha256(str(route.get("secret", "")).encode()).hexdigest()
++    return hashlib.sha256(_json.dumps(shown, sort_keys=True, default=str).encode()).hexdigest()[:16]
++
++
++def _check_filter(spec: Any, depth: int = 0) -> None:
++    bad = lambda why: HTTPException(status_code=400, detail=f"Invalid filter: {why}")  # noqa: E731
++    if depth > 4:
++        raise bad("filters nest at most 4 deep")
++    if not isinstance(spec, dict):
++        raise bad("each filter is an object")
++    combos = [k for k in ("all", "any", "not") if k in spec]
++    if combos:
++        if len(spec) != 1:
++            raise bad(f"'{combos[0]}' stands alone in its object")
++        value = spec[combos[0]]
++        if combos[0] == "not":
++            _check_filter(value, depth + 1)
++            return
++        if not isinstance(value, list) or not 1 <= len(value) <= _MAX_FILTERS:
++            raise bad(f"'{combos[0]}' takes a list of 1 to {_MAX_FILTERS} filters")
++        for item in value:
++            _check_filter(item, depth + 1)
++        return
++    field = spec.get("field")
++    if not isinstance(field, str) or not field.strip() or len(field) > 200:
++        raise bad("a filter needs a field path")
++    ops = [k for k in spec if k != "field"]
++    if "in_file" in ops:
++        raise bad("'in_file' reads a file on the server, so it is set in config.yaml, not from a client")
++    if len(ops) != 1 or ops[0] not in _FILTER_OPS:
++        raise bad(f"use one of {', '.join(_FILTER_OPS)}")
++    op, value = ops[0], spec[ops[0]]
++    if op in ("exists", "missing") and not isinstance(value, bool):
++        raise bad(f"'{op}' takes true or false")
++    if op == "in" and not isinstance(value, list):
++        raise bad("'in' takes a list")
++    if op == "regex":
++        if not isinstance(value, str) or len(value) > 500:
++            raise bad("'regex' takes a pattern of at most 500 characters")
++        try:
++            re.compile(value)
++        except re.error as exc:
++            raise bad(f"the pattern doesn't compile: {exc}") from exc
++
++
++def _check_route_fields(name: str, provider: Any, filters: Any, coalesce: Any, secret_env: Any) -> None:
++    if provider not in (None, "", "github"):
++        raise HTTPException(status_code=400, detail="Unknown provider. This server supports 'github'.")
++    if filters is not None:
++        if not isinstance(filters, list) or len(filters) > _MAX_FILTERS:
++            raise HTTPException(status_code=400, detail=f"Filters are a list of at most {_MAX_FILTERS}.")
++        for spec in filters:
++            _check_filter(spec)
++    if coalesce:
++        from gateway.platforms.webhook_coalesce import validate_coalesce_config
++        try:
++            validate_coalesce_config(name, {"coalesce": coalesce})
++        except ValueError as exc:
++            raise HTTPException(status_code=400, detail=str(exc).replace("[webhook] ", "")) from exc
++        for field in ("window_seconds", "max_wait_seconds"):
++            if (coalesce.get(field) or 0) > 86400:
++                raise HTTPException(status_code=400, detail=f"coalesce.{field} is at most 86400 seconds.")
++    if secret_env not in (None, "") and (not isinstance(secret_env, str) or not _SECRET_ENV_RE.match(secret_env)):
++        raise HTTPException(status_code=400, detail="A secret reference is an environment variable name, like GITHUB_WEBHOOK_SECRET.")
+ 
+ 
+ def _webhook_route_summary(name: str, route: dict[str, Any], base_url: str) -> dict[str, Any]:
++    secret_env = route.get("secret_env")
+     return {
+         "name": name,
+         "description": route.get("description", ""),
+@@ -149,25 +233,54 @@
+         "skills": list(route.get("skills") or []),
+         "created_at": route.get("created_at"),
+         "url": f"{base_url}/webhooks/{name}",
+-        "secret_set": bool(route.get("secret")),
++        "secret_set": bool(route.get("secret")) or bool(secret_env),
+         # Default-enabled; only an explicit enabled:false turns a route off.
+         "enabled": route.get("enabled", True) is not False,
++        # webhooks/1
++        "provider": route.get("provider") or "",
++        "filters": list(route.get("filters") or []),
++        "coalesce": route.get("coalesce") or None,
++        "profile": route.get("profile", "default"),
++        "secret_ref": f"env:{secret_env}" if secret_env else ("stored" if route.get("secret") else ""),
++        # Whether this dashboard's scope of the profile has the variable; the gateway reads its own environment.
++        "secret_env_set": bool(os.environ.get(secret_env)) if isinstance(secret_env, str) and secret_env else None,
++        "deliver_chat_id": (route.get("deliver_extra") or {}).get("chat_id"),
++        "kind": "cron_job" if route.get("cron_job") else "deliver_only" if route.get("deliver_only") else "agent",
++        "revision": _route_revision(route),
+     }
+ 
+ 
++def _webhook_limits() -> dict[str, Any]:
++    from gateway.platforms.webhook_ledger import MAX_ROWS_PER_ROUTE, RETENTION_SECONDS
++    import hermes_cli.webhook as wh
++    extra = wh._get_webhook_config().get("extra", {}) or {}
++    return {"retention_seconds": RETENTION_SECONDS, "max_rows_per_route": MAX_ROWS_PER_ROUTE,
++            "max_body_bytes": int(extra.get("max_body_bytes", 1_048_576)),
++            "rate_limit_per_minute": int(extra.get("rate_limit", 30)), "signed_timestamp_window_seconds": 300}
++
++
+ @router.get("/api/webhooks")
+ async def list_webhooks(profile: Optional[str] = None):
+     def _run():
+         import hermes_cli.webhook as wh
++        from gateway.platforms.webhook_ledger import Ledger
+ 
+         base_url = wh._get_webhook_base_url()
++        ledger = Ledger()
++        subscriptions = []
++        for name, route in wh._load_subscriptions().items():
++            summary = _webhook_route_summary(name, route, base_url)
++            latest = ledger.list(route.get("profile"), name, limit=1)
++            summary["last_received_at"] = latest[0]["received_at"] if latest else None
++            summary["rejections"] = ledger.rejections(route.get("profile"), name)
++            subscriptions.append(summary)
+         return {
+             "enabled": wh._is_webhook_enabled(),
+             "base_url": base_url,
+-            "subscriptions": [
+-                _webhook_route_summary(name, route, base_url)
+-                for name, route in wh._load_subscriptions().items()
+-            ],
++            "contract": WEBHOOK_CONTRACT,
++            "providers": ["github"],
++            "limits": _webhook_limits(),
++            "subscriptions": subscriptions,
+         }
+ 
+     return await config_scoped_to_thread(profile, _run)
+@@ -211,29 +324,45 @@
+         raise HTTPException(
+             status_code=400, detail="Direct delivery requires a real target (telegram, discord, …), not 'log'.",
+         )
++    _check_route_fields(name, body.provider, body.filters, body.coalesce, body.secret_env)
++    if body.coalesce and body.deliver_only:
++        raise HTTPException(status_code=400, detail="Coalescing applies to agent routes only, not direct delivery.")
+ 
+     def _snapshot():
+         subscriptions = wh._load_subscriptions()
+         return subscriptions.get(name, wh._MISSING_SUBSCRIPTION)
+ 
+     expected = await config_scoped_to_thread(profile, _snapshot)
++    if body.create_only and expected is not wh._MISSING_SUBSCRIPTION:
++        raise HTTPException(status_code=409, detail=f"A route named '{name}' already exists.")
+ 
+-    secret = body.secret or secrets.token_urlsafe(32)
++    secret = None if body.secret_env else (body.secret or secrets.token_urlsafe(32))
+     route: dict[str, Any] = {
+         "description": body.description or f"Dashboard-created subscription: {name}",
+         "events": [e.strip() for e in body.events if e.strip()],
+-        "secret": secret,
+         "prompt": body.prompt or "",
+         "skills": [s.strip() for s in body.skills if s.strip()],
+         "deliver": body.deliver or "log",
+         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+     }
++    if secret is not None:
++        route["secret"] = secret
++    else:
++        route["secret_env"] = body.secret_env
+     if body.script and body.script.strip():
+         route["script"] = body.script.strip()
+     if body.deliver_only:
+         route["deliver_only"] = True
+     if body.deliver_chat_id:
+         route["deliver_extra"] = {"chat_id": body.deliver_chat_id}
++    if body.provider:
++        route["provider"] = body.provider
++    if body.filters:
++        route["filters"] = body.filters
++    if body.coalesce:
++        route["coalesce"] = body.coalesce
++    if not body.enabled:
++        route["enabled"] = False
+ 
+     def _save():
+         try:
+@@ -243,7 +372,71 @@
+         return _webhook_route_summary(name, published, wh._get_webhook_base_url())
+ 
+     summary = await config_scoped_to_thread(profile, _save)
+-    summary["secret"] = secret  # surfaced exactly once, on create
++    if secret is not None:
++        summary["secret"] = secret  # surfaced exactly once, on create
++    return summary
++
++
++@router.put("/api/webhooks/{name}")
++async def update_webhook(name: str, body: WebhookUpdate, profile: Optional[str] = None):
++    """webhooks/1: change a route in place. Fields left out keep their value; the secret is kept unless
++    ``rotate_secret`` (returned once) or a ``secret_env`` change. 409 when ``revision`` is stale."""
++    import hermes_cli.webhook as wh
++
++    key = (name or "").strip().lower()
++    _check_route_fields(key, body.provider, body.filters, body.coalesce, body.secret_env)
++    issued: dict[str, str] = {}
++
++    def _run():
++        def change(subscriptions):
++            current = subscriptions.get(key)
++            if current is None:
++                raise HTTPException(status_code=404, detail=f"No subscription named '{key}'")
++            if _route_revision(current) != body.revision:
++                raise HTTPException(status_code=409, detail={
++                    "message": "This route was changed since it was read.",
++                    "current": _webhook_route_summary(key, current, wh._get_webhook_base_url())})
++            route = dict(current)
++            for field in ("description", "prompt", "deliver"):
++                if getattr(body, field) is not None:
++                    route[field] = getattr(body, field)
++            if body.events is not None:
++                route["events"] = [e.strip() for e in body.events if e.strip()]
++            if body.skills is not None:
++                route["skills"] = [s.strip() for s in body.skills if s.strip()]
++            if body.deliver_chat_id is not None:
++                extra = dict(route.get("deliver_extra") or {})
++                if body.deliver_chat_id:
++                    extra["chat_id"] = body.deliver_chat_id
++                else:
++                    extra.pop("chat_id", None)
++                route["deliver_extra"] = extra
++                if not extra:
++                    route.pop("deliver_extra")
++            for field in ("provider", "filters", "coalesce"):
++                value = getattr(body, field)
++                if value is not None:
++                    if value:
++                        route[field] = value
++                    else:
++                        route.pop(field, None)
++            if route.get("coalesce") and (route.get("deliver_only") or route.get("cron_job")):
++                raise HTTPException(status_code=400, detail="Coalescing applies to agent routes only.")
++            if body.secret_env:
++                route["secret_env"] = body.secret_env
++                route.pop("secret", None)
++            elif body.secret_env == "" and route.get("secret_env"):
++                route.pop("secret_env")
++                issued["secret"] = route["secret"] = secrets.token_urlsafe(32)
++            elif body.rotate_secret and not route.get("secret_env"):
++                issued["secret"] = route["secret"] = secrets.token_urlsafe(32)
++            subscriptions[key] = route
++            return route
++
++        return _webhook_route_summary(key, wh._mutate_subscriptions(change), wh._get_webhook_base_url())
++
++    summary = await config_scoped_to_thread(profile, _run)
++    summary.update(issued)  # a new secret is shown once, here
+     return summary
+ 
+ 
+@@ -261,11 +454,16 @@
+ 
+     def _run():
+         import hermes_cli.webhook as wh
++        from gateway.platforms.webhook_ledger import Ledger
+ 
+         def remove(subscriptions):
+-            del subscriptions[_webhook_key_in(subscriptions, name)]
++            key = _webhook_key_in(subscriptions, name)
++            route_profile = subscriptions[key].get("profile")
++            del subscriptions[key]
++            return key, route_profile
+ 
+-        wh._mutate_subscriptions(remove)
++        key, route_profile = wh._mutate_subscriptions(remove)
++        Ledger().forget_route(route_profile, key)  # the route's delivery history goes with it
+ 
+     await config_scoped_to_thread(profile, _run)
+     return {"ok": True}
+@@ -289,6 +487,137 @@
+     return {"ok": True, "name": key, "enabled": bool(body.enabled)}
+ 
+ 
++# Outcomes after which the task may have acted (tools, messages), so a retry needs the owner's confirmation.
++_STARTED_OUTCOMES = {"failed", "interrupted", "settled_unknown", "cancelled"}
++
++
++def _delivery_view(ledger, profile: Optional[str], route: str, row: dict, enabled: bool) -> dict[str, Any]:
++    """One delivery for the history: its state as the owner sees it (the admission ledger's, for an agent task) and
++    whether it can be retried: failed, with a stored body, on a running route, and no other attempt at the same event
++    (the original or any retry of it) under way or done."""
++    import json as _json
++
++    seen = ledger.view(profile, route, row)
++    try:
++        excerpt = _json.loads(row.get("excerpt") or "{}")
++    except ValueError:
++        excerpt = {}
++    retryable = seen["state"] == "failed" and bool(row.get("body")) and enabled and not seen["blocked"]
++    return {
++        "delivery_id": row["delivery_id"], "event": row["event"], "action": row.get("action"),
++        "received_at": row["received_at"], "updated_at": row["updated_at"], "state": seen["state"],
++        "reason": seen["reason"], "session_id": seen["session_id"], "outcome": seen["outcome"],
++        "duplicates": row["duplicates"], "last_duplicate_at": row.get("last_duplicate_at"),
++        "retry_of": row.get("retry_of"), "coalesce_key": row.get("coalesce_key"),
++        "superseded_by": row.get("superseded_by"), "excerpt": excerpt, "retryable": retryable,
++        "retry_needs_confirmation": retryable and (seen["outcome"] in _STARTED_OUTCOMES or seen["reason"] == "delivery_failed"),
++    }
++
++
++@router.get("/api/webhooks/{name}/deliveries")
++async def list_webhook_deliveries(name: str, profile: Optional[str] = None, limit: int = 50,
++                                  before: Optional[float] = None):
++    """webhooks/1: the route's delivery history, newest first, with each task's state read from the profile's
++    admission ledger. Requests refused before they were trusted are only counted (``rejections``)."""
++    def _run():
++        import hermes_cli.webhook as wh
++        from gateway.platforms.webhook_ledger import Ledger
++
++        subscriptions = wh._load_subscriptions()
++        key = _webhook_key_in(subscriptions, name)
++        route = subscriptions[key]
++        ledger = Ledger()
++        rows = ledger.list(route.get("profile"), key, limit=max(1, min(limit, 200)), before=before)
++        enabled = route.get("enabled", True) is not False
++        return {
++            "route": key, "contract": WEBHOOK_CONTRACT, "enabled": enabled,
++            "deliveries": [_delivery_view(ledger, route.get("profile"), key, r, enabled) for r in rows],
++            "rejections": ledger.rejections(route.get("profile"), key),
++            "next_before": rows[-1]["received_at"] if len(rows) >= max(1, min(limit, 200)) else None,
++            "limits": _webhook_limits(),
++        }
++
++    return await config_scoped_to_thread(profile, _run)
++
++
++@router.post("/api/webhooks/{name}/deliveries/{delivery_id}/retry")
++async def retry_webhook_delivery(name: str, delivery_id: str, body: WebhookRetry, profile: Optional[str] = None):
++    """webhooks/1: run a failed delivery again, as a new delivery ``<original>~retry~<key>`` through the gateway's
++    whole pipeline (filters, coalescing, dedupe), signed by this server with the route's secret. The same
++    ``idempotency_key`` never makes a second task. 409 when it isn't retryable, or when the failed attempt had started
++    (its tools may have acted) and ``confirm_side_effects`` isn't set."""
++    if not _RETRY_KEY_RE.match(body.idempotency_key or ""):
++        raise HTTPException(status_code=400, detail="idempotency_key: 8 to 64 letters, digits, '-' or '_'.")
++
++    def _retry():
++        import json as _json
++        import socket
++        import urllib.error
++        import urllib.request
++
++        import hermes_cli.webhook as wh
++        from gateway.platforms.webhook import _route_secret, retry_signature
++        from gateway.platforms.webhook_ledger import Ledger
++
++        subscriptions = wh._load_subscriptions()
++        key = _webhook_key_in(subscriptions, name)
++        route = subscriptions[key]
++        profile_name = route.get("profile")
++        ledger = Ledger()
++        row = ledger.get(profile_name, key, delivery_id)
++        if row is None:
++            raise HTTPException(status_code=404, detail="No such delivery in this route's history.")
++        enabled = route.get("enabled", True) is not False
++        if not enabled:
++            raise HTTPException(status_code=409, detail={"code": "paused", "message": "The route is paused. Resume it to retry."})
++        view = _delivery_view(ledger, profile_name, key, row, enabled)
++        secret = _route_secret(route, (wh._get_webhook_config().get("extra", {}) or {}).get("secret", ""))
++        if not isinstance(secret, str) or not secret.strip():
++            raise HTTPException(status_code=409, detail={"code": "no_secret", "message": "The route's secret isn't available to sign the retry."})
++        if view["retry_needs_confirmation"] and not body.confirm_side_effects:
++            raise HTTPException(status_code=409, detail={"code": "needs_confirmation",
++                                                         "message": "The failed attempt had started, so its tools may have acted. Confirm to run it again."})
++        # Reserved atomically with the check that no other attempt at this event is under way or done; the
++        # reservation stands until the gateway claims it, or the retry window passes and it no longer can.
++        outcome, reserved = ledger.reserve_retry(profile_name, key, delivery_id, body.idempotency_key)
++        if outcome == "already":
++            return {"status": "already_sent", "delivery_id": reserved["delivery_id"]}
++        if outcome != "reserved":
++            state = view["state"] if outcome == "missing" else ledger.view(profile_name, key, reserved)["state"]
++            raise HTTPException(status_code=409, detail={"code": "not_retryable", "message": (
++                f"Only a failed delivery can be retried; this one is {view['state']}." if view["state"] != "failed"
++                else f"Another attempt at this event is {state}, so this one isn't run again.")})
++        rid, root = reserved["delivery_id"], reserved["retry_of"]
++        ts = str(int(time.time()))
++        headers = {"Content-Type": "application/json", "X-Hermes-Retry-Of": root,
++                   "X-Hermes-Retry-Key": body.idempotency_key, "X-Hermes-Retry-Timestamp": ts,
++                   "X-Hermes-Retry-Signature": retry_signature(secret, ts, root, body.idempotency_key, reserved["body"])}
++        if reserved["event"] and reserved["event"] != "unknown":
++            headers["X-GitHub-Event"] = reserved["event"]
++        req = urllib.request.Request(wh._route_url(key, route), data=reserved["body"], method="POST", headers=headers)
++        try:
++            with urllib.request.urlopen(req, timeout=30) as resp:
++                status, answer = resp.status, _json.loads(resp.read() or b"{}")
++        except urllib.error.HTTPError as exc:
++            status, answer = exc.code, {"error": exc.read().decode(errors="replace")[:300]}
++        except (TimeoutError, socket.timeout) as exc:
++            # It may still arrive: the reservation keeps every other attempt out until it is claimed or expires.
++            raise HTTPException(status_code=504, detail={"code": "uncertain", "delivery_id": rid, "message": (
++                "The gateway didn't answer in time, so the retry may or may not run. The history will show it; "
++                "retrying again with the same key won't start a second task.")}) from exc
++        except OSError as exc:
++            ledger.release(profile_name, key, rid)  # never reached the listener
++            raise HTTPException(status_code=503,
++                                detail="The gateway's webhook listener isn't reachable, so nothing was retried.") from exc
++        if status >= 400:
++            ledger.release(profile_name, key, rid)  # refused before it was claimed: nothing ran
++            raise HTTPException(status_code=502, detail={"code": "gateway_refused", "status": status, "answer": answer})
++        return {"status": answer.get("status", "accepted"), "delivery_id": answer.get("delivery_id"),
++                "route": key, "gateway_status": status}
++
++    return await config_scoped_to_thread(profile, _retry)
++
++
+ # --- Gateway lifecycle: spawn the real `hermes gateway <verb>` so behaviour
+ # matches the CLI exactly (status is surfaced by /api/status).
+ 
+--- a/hermes_cli/web_models.py
++++ b/hermes_cli/web_models.py
+@@ -390,6 +390,31 @@
+     deliver_only: bool = False
+     deliver_chat_id: Optional[str] = None
+     secret: Optional[str] = None  # omit to auto-generate
++    # webhooks/1 (all optional, so older clients keep the old behaviour)
++    provider: Optional[str] = None  # "github": GitHub's signature scheme only, and X-GitHub-Delivery required
++    filters: Optional[list] = None
++    coalesce: Optional[dict] = None
++    secret_env: Optional[str] = None  # a reference: the gateway reads the secret from this environment variable
++    enabled: bool = True  # False creates the route paused
++    create_only: bool = False  # 409 instead of replacing a route that already has this name
++
++class WebhookUpdate(BaseModel):
++    revision: str  # the route's revision as last read; 409 when it changed since
++    description: Optional[str] = None
++    events: Optional[list[str]] = None
++    prompt: Optional[str] = None
++    skills: Optional[list[str]] = None
++    deliver: Optional[str] = None
++    deliver_chat_id: Optional[str] = None
++    provider: Optional[str] = None
++    filters: Optional[list] = None
++    coalesce: Optional[dict] = None  # {} turns coalescing off
++    secret_env: Optional[str] = None  # "" goes back to a stored secret (a new one is made and returned once)
++    rotate_secret: bool = False
++
++class WebhookRetry(BaseModel):
++    idempotency_key: str
++    confirm_side_effects: bool = False
+ 
+ class WebhookEnabledToggle(BaseModel):
+     enabled: bool
+--- /dev/null
++++ b/tests/gateway/test_webhook_ledger_contract.py
+@@ -0,0 +1,378 @@
++"""webhooks/1: the delivery ledger stores each authenticated delivery once, before anything acts on it, and refuses
++replays durably; refused requests are only counted. (Hermes Chat automations contract, reference implementation.)"""
++import hashlib
++import hmac
++import json
++import time
++
++import pytest
++from aiohttp import web
++from aiohttp.test_utils import TestClient, TestServer
++
++from gateway.config import PlatformConfig
++from gateway.platforms.webhook import WebhookAdapter, retry_signature
++from gateway.platforms.webhook_ledger import Ledger
++
++SECRET = "ledger-contract-secret"
++ISSUE = {"action": "opened", "issue": {"number": 7, "title": "Crash", "labels": [{"name": "bug"}]},
++         "repository": {"full_name": "example/fixture"}}
++
++
++def _adapter(**route_extra) -> WebhookAdapter:
++    route = {"secret": SECRET, "events": ["issues"], "prompt": "Issue #{issue.number}", "deliver": "log",
++             "provider": "github", **route_extra}
++    return WebhookAdapter(PlatformConfig(enabled=True, extra={"host": "127.0.0.1", "port": 0,
++                                                              "routes": {"gh": route}, "rate_limit": 100}))
++
++
++def _app(adapter: WebhookAdapter) -> web.Application:
++    from tests.gateway.fixtures.webhook_route_authority import mount_authority
++    app = web.Application()
++    mount_authority(app, adapter)
++    app.router.add_post("/webhooks/{route_name}", adapter._handle_webhook)
++    return app
++
++
++def _signed(body: bytes, delivery: str, event: str = "issues", secret: str = SECRET) -> dict:
++    return {"Content-Type": "application/json", "X-GitHub-Event": event, "X-GitHub-Delivery": delivery,
++            "X-Hub-Signature-256": "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()}
++
++
++def _rows(adapter):
++    return {r["delivery_id"]: r for r in adapter._ledger(None).list(None, "gh", limit=50)}
++
++
++@pytest.mark.asyncio
++async def test_signed_delivery_is_stored_before_work_and_a_replay_never_makes_a_second_task():
++    adapter = _adapter()
++    seen = []
++
++    async def capture(event):
++        seen.append(event)
++
++    adapter.handle_message = capture
++    body = json.dumps(ISSUE).encode()
++    async with TestClient(TestServer(_app(adapter))) as cli:
++        first = await cli.post("/webhooks/gh", data=body, headers=_signed(body, "d-1"))
++        assert first.status == 202 and (await first.json())["status"] == "accepted"
++        # The provider's own redelivery: same id.
++        again = await cli.post("/webhooks/gh", data=body, headers=_signed(body, "d-1"))
++        assert (again.status, (await again.json())["status"]) == (200, "duplicate")
++        # A captured request replayed under a NEW delivery id: GitHub's signature doesn't cover the header.
++        forged = await cli.post("/webhooks/gh", data=body, headers=_signed(body, "d-forged"))
++        assert (forged.status, (await forged.json())["status"]) == (200, "duplicate")
++    rows = _rows(adapter)
++    assert set(rows) == {"d-1"}
++    assert rows["d-1"]["state"] == "queued" and rows["d-1"]["session_chat_id"].startswith("webhook:v2:")
++    assert rows["d-1"]["duplicates"] == 2
++    assert len(seen) == 1
++
++
++@pytest.mark.asyncio
++async def test_refused_requests_are_counted_not_stored():
++    adapter = _adapter()
++    body = json.dumps(ISSUE).encode()
++    async with TestClient(TestServer(_app(adapter))) as cli:
++        bad = await cli.post("/webhooks/gh", data=body, headers=_signed(body, "d-2", secret="wrong"))
++        assert bad.status == 401
++        # A GitHub route takes GitHub's scheme only: a body-only generic signature is refused.
++        generic = {"Content-Type": "application/json", "X-GitHub-Delivery": "d-3",
++                   "X-Webhook-Signature": hmac.new(SECRET.encode(), body, hashlib.sha256).hexdigest()}
++        assert (await cli.post("/webhooks/gh", data=body, headers=generic)).status == 401
++        missing = _signed(body, "x")
++        del missing["X-GitHub-Delivery"]
++        assert (await cli.post("/webhooks/gh", data=body, headers=missing)).status == 400
++    assert _rows(adapter) == {}
++    counts = adapter._ledger(None).rejections(None, "gh")
++    assert counts["bad_signature"]["count"] == 2 and counts["missing_delivery_id"]["count"] == 1
++
++
++@pytest.mark.asyncio
++async def test_filtered_events_are_recorded_with_the_reason():
++    adapter = _adapter(filters=[{"field": "issue.labels", "contains": {"name": "urgent"}}])
++    body = json.dumps(ISSUE).encode()
++    push = json.dumps({"ref": "refs/heads/main"}).encode()
++    async with TestClient(TestServer(_app(adapter))) as cli:
++        assert (await (await cli.post("/webhooks/gh", data=body, headers=_signed(body, "d-4"))).json())["reason"] == "filter"
++        assert (await cli.post("/webhooks/gh", data=push, headers=_signed(push, "d-5", event="push"))).status == 200
++    rows = _rows(adapter)
++    assert (rows["d-4"]["state"], rows["d-4"]["reason"]) == ("filtered", "filter")
++    assert (rows["d-5"]["state"], rows["d-5"]["reason"]) == ("filtered", "event:push")
++
++
++@pytest.mark.asyncio
++async def test_an_owner_retry_is_signed_by_the_server_and_its_key_dedupes():
++    adapter = _adapter()
++    body = json.dumps(ISSUE).encode()
++
++    def retry_headers(key, ts=None):
++        ts = ts or str(int(time.time()))
++        return {"Content-Type": "application/json", "X-GitHub-Event": "issues", "X-Hermes-Retry-Of": "d-6",
++                "X-Hermes-Retry-Key": key, "X-Hermes-Retry-Timestamp": ts,
++                "X-Hermes-Retry-Signature": retry_signature(SECRET, ts, "d-6", key, body)}
++
++    async with TestClient(TestServer(_app(adapter))) as cli:
++        assert (await cli.post("/webhooks/gh", data=body, headers=_signed(body, "d-6"))).status == 202
++        # While the original's task is queued, even a correctly signed retry starts nothing.
++        early = await cli.post("/webhooks/gh", data=body, headers=retry_headers("key-0000"))
++        assert (await early.json())["status"] == "duplicate"
++        adapter._ledger(None).set_state(None, "gh", "d-6", "failed", reason="failed")
++        retried = await cli.post("/webhooks/gh", data=body, headers=retry_headers("key-0001"))
++        assert retried.status == 202 and (await retried.json())["delivery_id"] == "d-6~retry~key-0001"
++        twice = await cli.post("/webhooks/gh", data=body, headers=retry_headers("key-0001"))
++        assert (await twice.json())["status"] == "duplicate"
++        stale = await cli.post("/webhooks/gh", data=body, headers=retry_headers("key-0002", str(int(time.time()) - 900)))
++        assert stale.status == 401
++    rows = _rows(adapter)
++    assert rows["d-6~retry~key-0001"]["retry_of"] == "d-6"
++    assert "d-6~retry~key-0002" not in rows
++    assert adapter._ledger(None).rejections(None, "gh")["stale_timestamp"]["count"] == 1
++
++
++@pytest.mark.asyncio
++async def test_coalesced_events_record_the_group_and_what_superseded_them():
++    adapter = _adapter(coalesce={"key": "issue.number", "window_seconds": 0.2, "max_wait_seconds": 5})
++    first = json.dumps({**ISSUE, "action": "opened"}).encode()
++    second = json.dumps({**ISSUE, "action": "edited"}).encode()
++    async with TestClient(TestServer(_app(adapter))) as cli:
++        assert (await (await cli.post("/webhooks/gh", data=first, headers=_signed(first, "c-1"))).json())["status"] == "coalesced"
++        assert (await (await cli.post("/webhooks/gh", data=second, headers=_signed(second, "c-2"))).json())["status"] == "coalesced"
++        await adapter._coalescer.flush()  # dispatches the group and waits for its admission
++    rows = _rows(adapter)
++    assert (rows["c-1"]["state"], rows["c-1"]["superseded_by"]) == ("superseded", "c-2")
++    assert rows["c-2"]["state"] == "queued" and rows["c-2"]["coalesce_key"] == "7"
++
++
++def test_a_provider_may_resend_what_never_ran(tmp_path):
++    ledger = Ledger(tmp_path)
++    assert ledger.begin(None, "gh", "d-7", event="issues", payload=ISSUE, body=b"{}", signed=b"{}")[0] == "new"
++    ledger.set_state(None, "gh", "d-7", "failed", reason="admission_unavailable")
++    assert ledger.begin(None, "gh", "d-7", event="issues", payload=ISSUE, body=b"{}", signed=b"{}")[0] == "new"
++    ledger.set_state(None, "gh", "d-7", "queued")
++    assert ledger.begin(None, "gh", "d-7", event="issues", payload=ISSUE, body=b"{}", signed=b"{}")[0] == "duplicate"
++
++
++def test_the_replay_check_covers_what_the_signature_covers(tmp_path):
++    ledger = Ledger(tmp_path)
++    # Two alerts with the same body, signed at different times (generic V2): both are new.
++    assert ledger.begin(None, "alerts", "a-1", event="alert", payload={}, body=b"{}", signed=b"100.{}")[0] == "new"
++    assert ledger.begin(None, "alerts", "a-2", event="alert", payload={}, body=b"{}", signed=b"200.{}")[0] == "new"
++    # The same signed material under a new id is a replay.
++    assert ledger.begin(None, "alerts", "a-3", event="alert", payload={}, body=b"{}", signed=b"200.{}")[0] == "duplicate"
++    # Unsigned (INSECURE_NO_AUTH): only the delivery id dedupes.
++    assert ledger.begin(None, "open", "o-1", event="x", payload={}, body=b"{}", signed=None)[0] == "new"
++    assert ledger.begin(None, "open", "o-2", event="x", payload={}, body=b"{}", signed=None)[0] == "new"
++
++
++def test_retention_drops_old_rows(tmp_path):
++    ledger = Ledger(tmp_path, retention_seconds=10, max_rows_per_route=2)
++    for i in range(3):
++        ledger.begin(None, "gh", f"r-{i}", event="issues", payload=ISSUE, body=str(i).encode(), signed=str(i).encode(), now=1000 + i)
++    ledger.begin(None, "gh", "late", event="issues", payload=ISSUE, body=b"late", signed=b"late", now=2000)
++    assert [r["delivery_id"] for r in ledger.list(None, "gh")] == ["late"]
++
++
++@pytest.mark.asyncio
++async def test_a_restarted_gateway_still_refuses_a_replay():
++    body = json.dumps(ISSUE).encode()
++    seen = []
++
++    async def capture(event):
++        seen.append(event)
++
++    first = _adapter()
++    first.handle_message = capture
++    async with TestClient(TestServer(_app(first))) as cli:
++        assert (await cli.post("/webhooks/gh", data=body, headers=_signed(body, "r-1"))).status == 202
++    # A new adapter is a restarted gateway: its in-memory dedupe cache is empty, the ledger isn't.
++    second = _adapter()
++    second.handle_message = capture
++    async with TestClient(TestServer(_app(second))) as cli:
++        for delivery in ("r-1", "r-1-forged"):
++            answer = await cli.post("/webhooks/gh", data=body, headers=_signed(body, delivery))
++            assert (answer.status, (await answer.json())["status"]) == (200, "duplicate")
++    assert len(seen) == 1 and _rows(second)["r-1"]["duplicates"] == 2
++
++
++@pytest.mark.asyncio
++async def test_pausing_refuses_new_events_and_leaves_a_queued_task_alone():
++    adapter = _adapter()
++    seen = []
++
++    async def capture(event):
++        seen.append(event)
++
++    adapter.handle_message = capture
++    queued = json.dumps(ISSUE).encode()
++    later = json.dumps({**ISSUE, "issue": {**ISSUE["issue"], "number": 8}}).encode()
++    async with TestClient(TestServer(_app(adapter))) as cli:
++        assert (await cli.post("/webhooks/gh", data=queued, headers=_signed(queued, "p-1"))).status == 202
++        adapter._routes["gh"] = {**adapter._routes["gh"], "enabled": False}
++        refused = await cli.post("/webhooks/gh", data=later, headers=_signed(later, "p-2"))
++        assert refused.status == 403
++    rows = _rows(adapter)
++    assert set(rows) == {"p-1"} and rows["p-1"]["state"] == "queued"
++    assert len(seen) == 1
++    assert adapter._ledger(None).rejections(None, "gh")["paused"]["count"] == 1
++
++
++@pytest.mark.asyncio
++async def test_out_of_order_events_are_listed_and_coalesced_in_the_order_received():
++    adapter = _adapter(coalesce={"key": "issue.number", "window_seconds": 0.2, "max_wait_seconds": 5})
++    # GitHub sent "opened" before "edited", but "edited" arrived first.
++    edited = json.dumps({**ISSUE, "action": "edited"}).encode()
++    opened = json.dumps({**ISSUE, "action": "opened"}).encode()
++    async with TestClient(TestServer(_app(adapter))) as cli:
++        await cli.post("/webhooks/gh", data=edited, headers=_signed(edited, "o-2"))
++        await cli.post("/webhooks/gh", data=opened, headers=_signed(opened, "o-1"))
++        await adapter._coalescer.flush()
++    listed = adapter._ledger(None).list(None, "gh")
++    assert [r["delivery_id"] for r in listed] == ["o-1", "o-2"]  # newest received first
++    rows = {r["delivery_id"]: r for r in listed}
++    # The latest RECEIVED event runs; the history says what replaced the other.
++    assert (rows["o-2"]["state"], rows["o-2"]["superseded_by"]) == ("superseded", "o-1")
++    assert rows["o-1"]["state"] == "queued" and rows["o-1"]["action"] == "opened"
++
++
++@pytest.mark.asyncio
++async def test_an_oversized_payload_is_refused_and_counted_not_stored():
++    adapter = _adapter()
++    body = json.dumps({**ISSUE, "pad": "x" * 1_100_000}).encode()
++    async with TestClient(TestServer(_app(adapter))) as cli:
++        assert (await cli.post("/webhooks/gh", data=body, headers=_signed(body, "big-1"))).status == 413
++    assert _rows(adapter) == {}
++    assert adapter._ledger(None).rejections(None, "gh")["too_large"]["count"] == 1
++
++
++@pytest.mark.asyncio
++async def test_a_changed_provider_schema_is_stored_and_rendered_without_failing():
++    adapter = _adapter(filters=[{"field": "issue.number", "exists": True}])
++    seen = []
++
++    async def capture(event):
++        seen.append(event)
++
++    adapter.handle_message = capture
++    # The provider renamed "issue" and made "repository" a string: no field the route or excerpt expects is there.
++    renamed = json.dumps({"action": "opened", "ticket": {"number": 7}, "repository": "example/fixture"}).encode()
++    # The filter passes, but the template's field is now a string: it renders as the string.
++    reshaped = json.dumps({"action": "opened", "issue": {"number": "seven"}}).encode()
++    async with TestClient(TestServer(_app(adapter))) as cli:
++        filtered = await cli.post("/webhooks/gh", data=renamed, headers=_signed(renamed, "s-1"))
++        assert (await filtered.json())["reason"] == "filter"
++        assert (await cli.post("/webhooks/gh", data=reshaped, headers=_signed(reshaped, "s-2"))).status == 202
++    rows = _rows(adapter)
++    assert (rows["s-1"]["state"], json.loads(rows["s-1"]["excerpt"])) == ("filtered", {"action": "opened"})
++    assert rows["s-2"]["state"] == "queued"
++    assert [e.text for e in seen] == ["Issue #seven"]
++
++
++
++def test_a_copy_of_an_admitted_task_goes_on_to_the_admission_ledger(tmp_path):
++    ledger = Ledger(tmp_path)
++    assert ledger.begin(None, "gh", "k-1", event="issues", payload=ISSUE, body=b"one", signed=b"one")[0] == "new"
++    ledger.set_state(None, "gh", "k-1", "queued", session_chat_id="webhook:v2:abc")
++    # Same id, even with a changed body: Hermes's admission ledger decides it; the stored row stays as it was.
++    assert ledger.begin(None, "gh", "k-1", event="issues", payload=ISSUE, body=b"two", signed=b"two")[0] == "repeat"
++    row = ledger.get(None, "gh", "k-1")
++    assert (row["body"], row["duplicates"], row["state"]) == (b"one", 1, "queued")
++    # A filtered delivery has no task: a copy of it is a duplicate here, durably.
++    ledger.begin(None, "gh", "k-2", event="push", payload={}, body=b"p", signed=b"p")
++    ledger.set_state(None, "gh", "k-2", "filtered", reason="event:push")
++    assert ledger.begin(None, "gh", "k-2", event="push", payload={}, body=b"p", signed=b"p")[0] == "duplicate"
++
++
++def test_a_body_that_ran_once_never_runs_again_after_an_attempt_that_never_ran(tmp_path):
++    ledger = Ledger(tmp_path)
++    begin = lambda d: ledger.begin(None, "gh", d, event="issues", payload=ISSUE, body=b"b", signed=b"b")[0]  # noqa: E731
++    # The first attempt reached Hermes before the profile was served: nothing ran.
++    assert begin("d-1") == "new"
++    ledger.set_state(None, "gh", "d-1", "failed", reason="admission_unavailable")
++    # The same body under another id runs once...
++    assert begin("d-2") == "new"
++    ledger.set_state(None, "gh", "d-2", "queued", session_chat_id="webhook:v2:x")
++    # ...and then neither the first id's resend nor another replay makes a second task.
++    assert begin("d-1") == "duplicate"
++    assert begin("d-3") == "duplicate"
++    assert ledger.get(None, "gh", "d-2")["duplicates"] == 2
++
++
++@pytest.mark.asyncio
++async def test_other_schemes_headers_on_a_github_route_change_nothing_about_a_replay():
++    adapter = _adapter()
++    seen = []
++
++    async def capture(event):
++        seen.append(event)
++
++    adapter.handle_message = capture
++    body = json.dumps(ISSUE).encode()
++    async with TestClient(TestServer(_app(adapter))) as cli:
++        assert (await cli.post("/webhooks/gh", data=body, headers=_signed(body, "m-1"))).status == 202
++        # The captured request again, under a new id, with made-up headers of schemes that sign a timestamp or id.
++        # Only GitHub's signature is checked on a GitHub route, and the replay check covers what it signed.
++        for i, extra in enumerate(({"X-Webhook-Signature-V2": "00" * 32, "X-Webhook-Timestamp": str(int(time.time()))},
++                                   {"svix-id": "msg_x", "svix-timestamp": str(int(time.time())), "svix-signature": "v1,AAAA"})):
++            replay = await cli.post("/webhooks/gh", data=body, headers={**_signed(body, f"m-{i + 2}"), **extra})
++            assert (replay.status, (await replay.json())["status"]) == (200, "duplicate")
++    assert len(seen) == 1 and _rows(adapter)["m-1"]["duplicates"] == 2
++
++
++def test_a_delivery_stuck_as_received_runs_again_only_after_its_gateway_is_gone(tmp_path):
++    ledger = Ledger(tmp_path)
++    ledger.claim_instance("gateway-a")
++    begin = lambda d, now, owner: ledger.begin(None, "gh", d, event="issues", payload=ISSUE, body=b"b", signed=b"b",  # noqa: E731
++                                               owner=owner, now=now)[0]
++    assert begin("x-1", 1000, "gateway-a") == "new"  # stored; its script is still running, however long it takes
++    assert begin("x-1", 1000 + 86_000, "gateway-a") == "duplicate"
++    assert begin("x-2", 1000 + 86_000, "gateway-a") == "duplicate"
++    # The gateway that stored it stopped before acting on it; the next one serves the home. GitHub's redelivery runs,
++    # and runs once.
++    ledger.claim_instance("gateway-b")
++    assert begin("x-1", 1000 + 86_001, "gateway-b") == "new"
++    ledger.set_state(None, "gh", "x-1", "queued", session_chat_id="webhook:v2:y")
++    assert begin("x-3", 1000 + 86_002, "gateway-b") == "duplicate"
++
++
++def test_a_redelivery_of_an_event_a_retry_already_ran_is_a_duplicate(tmp_path):
++    ledger = Ledger(tmp_path)
++    # The original never ran (the profile wasn't served); the owner's retry of it did.
++    ledger.begin(None, "gh", "l-1", event="issues", payload=ISSUE, body=b"b", signed=b"b")
++    ledger.set_state(None, "gh", "l-1", "failed", reason="admission_unavailable")
++    assert ledger.reserve_retry(None, "gh", "l-1", "key-0001")[0] == "reserved"
++    assert ledger.begin(None, "gh", "l-1~retry~key-0001", event="issues", payload=ISSUE, body=b"b", signed=b"b",
++                        retry_of="l-1", idempotency_key="key-0001")[0] == "new"
++    ledger.set_state(None, "gh", "l-1~retry~key-0001", "queued", session_chat_id="webhook:v2:r")
++    # GitHub redelivers the original, under its id or (a replay) another: neither starts a second task.
++    assert ledger.begin(None, "gh", "l-1", event="issues", payload=ISSUE, body=b"b", signed=b"b")[0] == "duplicate"
++    assert ledger.begin(None, "gh", "l-9", event="issues", payload=ISSUE, body=b"b", signed=b"b")[0] == "duplicate"
++    # Without a body digest (a route without a provider), the retry lineage alone still catches it.
++    ledger.begin(None, "plain", "p-1", event="x", payload={}, body=b"q")
++    ledger.set_state(None, "plain", "p-1", "failed", reason="admission_unavailable")
++    ledger.reserve_retry(None, "plain", "p-1", "key-0002")
++    ledger.begin(None, "plain", "p-1~retry~key-0002", event="x", payload={}, body=b"q", retry_of="p-1",
++                 idempotency_key="key-0002")
++    ledger.set_state(None, "plain", "p-1~retry~key-0002", "queued", session_chat_id="webhook:v2:s")
++    assert ledger.begin(None, "plain", "p-1", event="x", payload={}, body=b"q")[0] == "duplicate"
++
++
++def test_a_retry_reservation_blocks_other_attempts_until_claimed_or_expired(tmp_path):
++    from gateway.platforms.webhook_ledger import RETRY_WINDOW_SECONDS
++
++    ledger = Ledger(tmp_path)
++    ledger.begin(None, "gh", "r-1", event="issues", payload=ISSUE, body=b"b", signed=b"b", now=1000)
++    ledger.set_state(None, "gh", "r-1", "failed", reason="failed")
++    assert ledger.reserve_retry(None, "gh", "r-1", "key-0001", now=1000)[0] == "reserved"
++    # Sent, but its answer never came: it may still arrive, so no other attempt can start.
++    assert ledger.reserve_retry(None, "gh", "r-1", "key-0002", now=1010)[0] == "blocked"
++    assert ledger.reserve_retry(None, "gh", "r-1", "key-0001", now=1010)[0] == "already"
++    assert ledger.begin(None, "gh", "r-1", event="issues", payload=ISSUE, body=b"b", signed=b"b", now=1010)[0] == "duplicate"
++    # Past the retry window the gateway refuses it, so it can never run: another attempt may.
++    late = 1000 + RETRY_WINDOW_SECONDS + 1
++    assert ledger.view(None, "gh", ledger.get(None, "gh", "r-1~retry~key-0001"), now=late)["state"] == "failed"
++    assert ledger.reserve_retry(None, "gh", "r-1", "key-0002", now=late)[0] == "reserved"
++    # A failed retry is retried by reserving again from it: the original, and every retry, are one event.
++    ledger.begin(None, "gh", "r-1~retry~key-0002", event="issues", payload=ISSUE, body=b"b", signed=b"b",
++                 retry_of="r-1", idempotency_key="key-0002", now=late)
++    ledger.set_state(None, "gh", "r-1~retry~key-0002", "failed", reason="failed")
++    assert ledger.reserve_retry(None, "gh", "r-1~retry~key-0002", "key-0003", now=late + 1)[1]["retry_of"] == "r-1"
+--- /dev/null
++++ b/tests/hermes_cli/test_webhook_deliveries_api.py
+@@ -0,0 +1,145 @@
++"""webhooks/1 dashboard routes: delivery history and the owner's retry (Hermes Chat automations contract)."""
++import io
++import json
++import threading
++import time
++
++import pytest
++
++from gateway.platforms.webhook_ledger import RETRY_WINDOW_SECONDS, Ledger
++
++ISSUE = {"action": "opened", "issue": {"number": 7, "title": "Crash"}, "repository": {"full_name": "example/fixture"}}
++
++
++@pytest.fixture
++def client(_isolate_hermes_home):
++    from starlette.testclient import TestClient
++
++    import hermes_state
++    from hermes_cli.config import load_config, save_config
++    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
++    from hermes_constants import get_hermes_home
++
++    hermes_state.DEFAULT_DB_PATH = get_hermes_home() / "state.db"
++    cfg = load_config()
++    cfg.setdefault("platforms", {})["webhook"] = {"enabled": True, "extra": {"host": "127.0.0.1", "port": 8644}}
++    save_config(cfg)
++    c = TestClient(app)
++    c.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
++    made = c.post("/api/webhooks", json={"name": "gh", "provider": "github", "events": ["issues"], "create_only": True})
++    assert made.status_code == 200, made.text
++    return c
++
++
++def _failed(ledger, delivery_id, **kw):
++    ledger.begin(None, "gh", delivery_id, event="issues", payload=ISSUE, body=json.dumps(ISSUE).encode(), **kw)
++    ledger.set_state(None, "gh", delivery_id, "failed", reason="http_500")
++
++
++def _views(client):
++    return {d["delivery_id"]: d for d in client.get("/api/webhooks/gh/deliveries").json()["deliveries"]}
++
++
++def test_a_failed_retry_doesnt_block_another(client):
++    ledger = Ledger()
++    _failed(ledger, "o-1")
++    # A retry that a gateway stored and never acted on before it stopped: it failed, so it blocks nothing.
++    ledger.claim_instance("gateway-a")
++    ledger.begin(None, "gh", "o-1~retry~key-0001", event="issues", payload=ISSUE, body=b"{}", retry_of="o-1",
++                 idempotency_key="key-0001", owner="gateway-a")
++    ledger.claim_instance("gateway-b")
++    views = _views(client)
++    assert views["o-1~retry~key-0001"]["state"] == "failed" and views["o-1~retry~key-0001"]["retryable"]
++    assert views["o-1"]["retryable"]
++    # A retry that is still under way blocks every other attempt at the same event.
++    ledger.begin(None, "gh", "o-1~retry~key-0002", event="issues", payload=ISSUE, body=b"{}", retry_of="o-1",
++                 idempotency_key="key-0002")
++    ledger.set_state(None, "gh", "o-1~retry~key-0002", "queued")
++    views = _views(client)
++    assert not views["o-1"]["retryable"] and not views["o-1~retry~key-0001"]["retryable"]
++
++
++def test_two_retries_at_once_start_one_task(client, monkeypatch):
++    import urllib.request
++
++    _failed(Ledger(), "o-2")
++    sent = []
++
++    class Answer(io.BytesIO):
++        status = 202
++
++        def __enter__(self):
++            return self
++
++        def __exit__(self, *exc):
++            return False
++
++    def gateway(req, timeout=None):
++        # The gateway's listener: it stores the retry as it arrives, after a moment.
++        headers = {k.lower(): v for k, v in req.header_items()}
++        time.sleep(0.3)
++        retry_id = f"{headers['x-hermes-retry-of']}~retry~{headers['x-hermes-retry-key']}"
++        Ledger().begin(None, "gh", retry_id, event="issues", payload=ISSUE, body=req.data,
++                       retry_of=headers["x-hermes-retry-of"], idempotency_key=headers["x-hermes-retry-key"])
++        Ledger().set_state(None, "gh", retry_id, "queued")
++        sent.append(retry_id)
++        return Answer(json.dumps({"status": "accepted", "delivery_id": retry_id}).encode())
++
++    monkeypatch.setattr(urllib.request, "urlopen", gateway)
++    answers = []
++
++    def retry(key):
++        answers.append(client.post("/api/webhooks/gh/deliveries/o-2/retry",
++                                   json={"idempotency_key": key, "confirm_side_effects": True}).status_code)
++
++    threads = [threading.Thread(target=retry, args=(k,)) for k in ("key-aaaa1111", "key-bbbb2222")]
++    for t in threads:
++        t.start()
++    for t in threads:
++        t.join()
++    assert sorted(answers) == [200, 409]
++    assert len(sent) == 1
++
++
++def test_a_failed_retry_is_blocked_by_its_original_running_again(client):
++    ledger = Ledger()
++    ledger.begin(None, "gh", "o-3", event="issues", payload=ISSUE, body=json.dumps(ISSUE).encode())
++    ledger.set_state(None, "gh", "o-3", "failed", reason="admission_unavailable")
++    ledger.reserve_retry(None, "gh", "o-3", "key-0003")
++    ledger.begin(None, "gh", "o-3~retry~key-0003", event="issues", payload=ISSUE, body=b"{}", retry_of="o-3",
++                 idempotency_key="key-0003")
++    ledger.set_state(None, "gh", "o-3~retry~key-0003", "failed", reason="http_500")
++    # GitHub's redelivery of the original (it never ran) is processed and is now under way.
++    assert ledger.begin(None, "gh", "o-3", event="issues", payload=ISSUE, body=json.dumps(ISSUE).encode())[0] == "new"
++    ledger.set_state(None, "gh", "o-3", "queued")
++    assert not _views(client)["o-3~retry~key-0003"]["retryable"]
++    answer = client.post("/api/webhooks/gh/deliveries/o-3~retry~key-0003/retry",
++                         json={"idempotency_key": "key-0004", "confirm_side_effects": True})
++    assert answer.status_code == 409
++
++
++def test_a_retry_whose_answer_timed_out_keeps_others_out_until_it_expires(client, monkeypatch):
++    import socket
++    import urllib.request
++
++    _failed(Ledger(), "o-4")
++    late = []
++
++    def gateway(req, timeout=None):
++        late.append(req)  # the gateway will get it, but too late to answer
++        raise socket.timeout("timed out")
++
++    monkeypatch.setattr(urllib.request, "urlopen", gateway)
++    retry = lambda key: client.post("/api/webhooks/gh/deliveries/o-4/retry",  # noqa: E731
++                                    json={"idempotency_key": key, "confirm_side_effects": True})
++    first = retry("key-cccc3333")
++    assert first.status_code == 504 and first.json()["detail"]["code"] == "uncertain"
++    assert retry("key-dddd4444").status_code == 409
++    assert retry("key-cccc3333").json() == {"status": "already_sent", "delivery_id": "o-4~retry~key-cccc3333"}
++    assert len(late) == 1
++    # Once the retry window has passed it can no longer be claimed, so another attempt may run.
++    ledger = Ledger()
++    with ledger._write() as conn:
++        conn.execute("UPDATE deliveries SET received_at=received_at-? WHERE delivery_id='o-4~retry~key-cccc3333'",
++                     (RETRY_WINDOW_SECONDS + 5,))
++    assert _views(client)["o-4"]["retryable"]
