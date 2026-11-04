@@ -21,4 +21,4 @@ element was composited or retouched.
 - `8-editor-summary.png`: the summary shown before anything is saved.
 - `9-created-elsewhere.png`: the list after creating that job in `fixture-b`.
 - `10-history-paging.png`: a job's history after Show more runs, 20 at a time.
-- `11-narrow.png`: the job screen in a narrow window.
+- `11-narrow.png`: a job at the window's minimum width (760 px), with the 2:30 AM spring-forward note from the profile's real zone.
