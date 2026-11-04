@@ -15,7 +15,35 @@ const click = (sel, text) =>
   `(() => { const el = [...document.querySelectorAll(${JSON.stringify(sel)})].find(e => e.textContent.includes(${JSON.stringify(text ?? "")}));
      if (!el) throw new Error("no " + ${JSON.stringify(sel + " " + (text ?? ""))}); el.click(); })()`;
 const key = (k, mods = {}) => `document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: ${JSON.stringify(k)}, bubbles: true, ...${JSON.stringify(mods)} }))`;
+// The chat list's sections (ADR 0036): three chats moved out of Settled, two of them snoozed (as another window would
+// leave them), and a reply running in "NAS disk usage" so it shows in Working.
+const sections = `(async () => {
+  const h = window.shots.hermes;
+  for (const id of ["caddy", "rust", "trip"]) await h.unsettle(id);
+  const scope = JSON.stringify(["ssh", "liam@hermes", "liam", h.getSnapshot().profile]);
+  localStorage.setItem("hermes-chat.snoozes", JSON.stringify({ v: 1, scopes: { [scope]: { trip: Date.now() + 3 * 3600e3, rust: Date.now() + 26 * 3600e3 } } }));
+  window.dispatchEvent(new StorageEvent("storage", { key: "hermes-chat.snoozes" }));
+  void h.send("nas", "Run a SMART check on every disk in tank");
+})()`;
+const menuOn = (chat) =>
+  `(() => { const el = document.querySelector('.row-open[data-chat="${chat}"]'); const r = el.getBoundingClientRect();
+     el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: r.left + 80, clientY: r.top + 20 })); })()`;
 const scenes = {
+  "sidebar-sections": { query: "", steps: [sections, click(".section-toggle", "Snoozed"), click(".section-toggle", "Settled")] },
+  "sidebar-sections-light": { query: "?mode=light", steps: [sections, click(".section-toggle", "Snoozed"), click(".section-toggle", "Settled")] },
+  "snooze-menu": { query: "", steps: [sections, menuOn("caddy")] },
+  "snooze-custom": { query: "", steps: [sections, menuOn("caddy"), click(".menu-item", "Custom…"), click(".snooze-dialog .segmented button", "Duration")] },
+  // A headless page never has focus and isn't hovered, so the actions a hover shows are shown on one top row (Settle) and
+  // one Settled row (Unsettle): the same icon-only button.
+  unsettle: {
+    query: "",
+    steps: [
+      sections,
+      click(".section-toggle", "Settled"),
+      `(() => { const s = document.head.appendChild(document.createElement("style"));
+         s.textContent = '.row:has([data-chat="backup"]) .row-action, .row:has([data-chat="zfs"]) .row-action { display: grid } .row:has([data-chat="backup"]) .row-meta, .row:has([data-chat="zfs"]) .row-meta { display: none }'; })()`,
+    ],
+  },
   "new-chat": { query: "", steps: [] },
   chat: { query: "", steps: [click("button", "Nightly backup")] },
   "chat-light": { query: "?mode=light", steps: [click("button", "Nightly backup")] },

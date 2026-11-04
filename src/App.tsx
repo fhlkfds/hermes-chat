@@ -43,7 +43,9 @@ import { PANE_NAMES, Split, usePaneVisible, type PaneSlot } from "./ui/Split";
 import type { VoiceApi } from "./ui/Voice";
 import { SearchPalette } from "./ui/Search";
 import { SavedFilters, TagManager } from "./ui/Tags";
+import { useSnoozeClock } from "./ui/Snooze";
 import { TagsStore, savedTagsFile, type SavedFilter } from "./hermes/tags";
+import { AttentionClock, SNOOZE_KEY, SnoozeStore, chatSections, wakeFull } from "./hermes/snooze";
 import { runFilter } from "./hermes/chatFilter";
 import { SettingsScreen, type PersonaWiring } from "./ui/Settings";
 import { LeavePersona, type LeaveWhat } from "./ui/LeavePersona";
@@ -641,6 +643,25 @@ export function Main({
     window.addEventListener("focus", back);
     return () => window.removeEventListener("focus", back);
   }, [tagsStore]);
+  // Snoozes: kept on this computer for each connection and profile, never sent to Hermes (snooze.ts, ADR 0036).
+  const snoozeStore = useMemo(() => new SnoozeStore(localStorage, scope), [scope]);
+  const snoozes = useSyncExternalStore(snoozeStore.subscribe, snoozeStore.getSnapshot);
+  // Renders again when the next snooze wakes, so a chat's header stops saying Snoozed then.
+  const snoozeNow = useSnoozeClock(snoozes);
+  const snoozedNow = (chatId: string) => ((snoozes[chatId] ?? 0) > snoozeNow ? snoozes[chatId] : undefined);
+  useEffect(() => {
+    const changed = (e: StorageEvent) => e.key === SNOOZE_KEY && snoozeStore.reread();
+    window.addEventListener("storage", changed);
+    return () => window.removeEventListener("storage", changed);
+  }, [snoozeStore]);
+  // Sending a message from this app wakes a snoozed chat, as it makes a Settled one active again (ADR 0002).
+  useEffect(
+    () => hermes.onSend((sentIn, chatId) => sentIn === profile && snoozeStore.isSnoozed(chatId) && snoozeStore.wake(chatId)),
+    [hermes, profile, snoozeStore],
+  );
+  // When each chat last stopped working, so the list puts it at the top then (snooze.ts). Noted on every change.
+  const attention = useMemo(() => new AttentionClock(), [scope]);
+  attention.observe(chats, Date.now(), status === "connected");
   const tagChange = (fn: () => Promise<unknown>) =>
     fn().catch((e) => setToast({ text: (e as Error).message, at: Date.now() }));
   const openSearch = (start?: SavedFilter) => {
@@ -926,12 +947,32 @@ export function Main({
     else if (chat?.runtimeId && !chat.loading) setFocusItem(undefined);
   }, [focusItem, chats]);
 
-  // Undo sends the opposite change, not a stored copy, so it also works once the list has refreshed.
+  // Undo sends the opposite change, not a stored copy, so it also works once the list has refreshed. Settling forgets
+  // a snooze, which Undo puts back.
   const setSettled = (id: string, settled: boolean) => {
     const title = chats.find((c) => c.id === id)?.title ?? "";
+    const snoozedUntil = settled && snoozeStore.isSnoozed(id) ? snoozes[id] : undefined;
     const move = (s: boolean) => void (s ? hermes.settle(id) : hermes.unsettle(id));
     move(settled);
-    setToast({ text: `${settled ? "Settled" : "Moved to Active"}: ${title}`, undo: () => move(!settled), at: Date.now() });
+    if (settled) snoozeStore.wake(id);
+    setToast({
+      text: `${settled ? "Settled" : "Unsettled"}: ${title}`,
+      undo: () => {
+        move(!settled);
+        if (snoozedUntil) snoozeStore.snooze(id, snoozedUntil);
+      },
+      at: Date.now(),
+    });
+  };
+
+  // Snoozing is kept on this computer only; Undo puts back what the chat had.
+  const snoozeChat = (id: string, until: number | undefined) => {
+    const title = chats.find((c) => c.id === id)?.title ?? "";
+    const before = snoozeStore.isSnoozed(id) ? snoozes[id] : undefined;
+    const put = (to: number | undefined) => (to ? snoozeStore.snooze(id, to) : snoozeStore.wake(id));
+    // Unsnoozing wakes it now, so it comes to the top as a snooze that ran out would.
+    put(until ?? Date.now());
+    setToast({ text: `${until ? `Snoozed until ${wakeFull(until)}` : "Unsnoozed"}: ${title}`, undo: () => put(before), at: Date.now() });
   };
 
   // Putting a chat in a project, or taking it out, is kept on this computer only; Undo puts it back.
@@ -954,6 +995,7 @@ export function Main({
       if (deleted) {
         projects.forgetChat(id);
         tagChange(() => tagsStore.forgetChat(id));
+        snoozeStore.wake(id);
         if (stillIn(profile)) setToast({ text: `Deleted: ${title}`, at: Date.now() });
       }
       return deleted;
@@ -1078,12 +1120,14 @@ export function Main({
         if (!e.repeat) takeScreenshot();
         return;
       }
-      // Alt+Up/Down: the Active chat above or below the one showing, as the list orders them. Only while the chat is
-      // on screen; a list that uses the same keys (the queue) takes them first, and a select keeps Alt+Down to open.
+      // Alt+Up/Down: the chat above or below the one showing, at the top of the list or in Working, as the list orders
+      // them. Only while the chat is on screen; a list that uses the same keys (the queue) takes them first, and a
+      // select keeps Alt+Down to open.
       const onChat = !covering && !previewCovers && !projectScreenOpen && !searchOpen;
       if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
         if (!onChat || e.defaultPrevented || (e.target as Element | null)?.tagName === "SELECT") return;
-        const order = listed.filter((c) => !c.settled && !c.archived).sort((a, b) => b.updatedAt - a.updatedAt);
+        const { top, working } = chatSections(listed, snoozes, Date.now(), attention.since);
+        const order = [...top, ...working];
         const at = order.findIndex((c) => c.id === active.chatId);
         const next = order[at < 0 ? 0 : at + (e.key === "ArrowDown" ? 1 : -1)];
         if (next) {
@@ -1172,6 +1216,7 @@ export function Main({
           favorites={modelFavorites}
           projects={projects}
           projectNames={listed ? projectNames(chat.id) : shownProject ? [shownProject.name] : undefined}
+          snoozedUntil={snoozedNow(chat.id)}
           templates={{
             scope,
             projects: listable.map(({ id, name }) => ({ id, name })),
@@ -1421,6 +1466,10 @@ export function Main({
           onOpen={(id) => openChat(id)}
           onOpenIn={openIn}
           onSettle={setSettled}
+          snoozes={snoozes}
+          attentionSince={attention.since}
+          onSnooze={(id, until) => snoozeChat(id, until)}
+          onWake={(id) => snoozeChat(id, undefined)}
           onArchive={setArchived}
           onListArchived={(on) => void hermes.listArchived(on)}
           onDelete={deleteChat}
@@ -1834,6 +1883,7 @@ function ChatView({
   favorites,
   projects,
   projectNames,
+  snoozedUntil,
   templates,
   shownProject,
   where,
@@ -1874,6 +1924,8 @@ function ChatView({
   favorites: string[];
   projects: ProjectsStore;
   projectNames?: string[];
+  /** When the chat wakes, if it is snoozed. */
+  snoozedUntil?: number;
   /** The projects the composer's templates can be offered in, and the ones this chat is in or the list shows. */
   templates: TemplateHere;
   /** The project the list shows, its defaults for new chats, and whether this chat is in it. */
@@ -2123,6 +2175,7 @@ function ChatView({
       key={`${profile}/${chat.id}`}
       chat={chat}
       projects={projectNames}
+      snoozedUntil={snoozedUntil}
       templates={templates}
       notice={
         !started && shownProject ? (
