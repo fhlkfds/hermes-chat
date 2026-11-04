@@ -572,6 +572,29 @@ Read in the deployed checkout (`tui_gateway/methods_session_branch.py`, `tui_gat
 - **Errors.** 4008 `nothing to branch — send a message first` when the spine is empty. 5008 `branch failed: …` when the copy fails. 5000 `agent init failed on branch: …` comes after the row is stored. 5032 (no AI provider) came before anything was stored in the first probe run. An unknown method is JSON-RPC −32601.
 - **The official desktop app** counts its own copyable spine (`toBranchMessages`: user and assistant messages with text) and sends `count` plus `through_message_id`; its legacy client drops `through_message_id` (`apps/desktop/src/api/client.ts:66-70`). It sends no `name`.
 
+### Edit and Regenerate (2026-11-03, deployed `f0d9488`, probed over SSH)
+
+`f0d9488` includes `bf0203a`. `tui_gateway/methods_prompt.py` changed between them only for hosted-room images, and `methods_session_branch.py` didn't change. The probe used a throwaway `HERMES_HOME`, synthetic chats seeded with `SessionDB`, a loopback stub model, and a second `/api/ws` client (`docs/screenshots/edit-regenerate/setup/`).
+
+- **The rewind lives in `prompt.submit`.** `prompt.submit.truncate` is only `host_supervisor`'s gate label. The params (`PromptSubmitParams`, `tui_gateway/contracts/prompt_voice.py`) are:
+  - `truncate_before_row_id` (preferred), `truncate_before_message_id`, or `truncate_before_user_ordinal`;
+  - `confirm_truncate`, `confirm_empty_truncate`, `confirm_deep_truncate`;
+  - `rebind_survivor_row_ids`.
+- **What it does.** `_truncate_history_for_submit` cuts the live history before the target user turn, then writes it with `replace_messages(active_only=True, archive_dropped=True)`. The dropped rows stay in `state.db` with `active = 0`, and REST `/messages` no longer lists them. The answer adds `survivor_user_row_ids`, or `survivor_row_id_map` when `rebind_survivor_row_ids` was sent, and the new message's `user_row_id`.
+- **Refusals:**
+  - a target without `confirm_truncate`: 4029;
+  - a target row not found: 4018 (`_STALE_TARGET_MSG`), with no fallback;
+  - an ordinal with a stale row: 4030;
+  - an ordinal alone on a durable session: 4004;
+  - a cut that leaves nothing: 4028, unless `confirm_empty_truncate`;
+  - a cut that archives more than one user turn: logged, and refused with 4033 only once `DEEP_TRUNCATE_ENFORCED` is set (it is `False` here).
+- **Why it isn't used on the chat itself.** It removes the later turns from the chat. That is how the official desktop app edits and regenerates, and why this app doesn't.
+- **`session.branch` with `count`.** `count <= 0`, or none, copies the whole spine (`if isinstance(count, int) and count > 0`). So no branch can end *before* the first message.
+- **Branch, then cut.** Probed: `session.branch {count: 4}` through the owner's message, then in the new branch `prompt.submit {text, truncate_before_row_id: <the branch's copy>, confirm_truncate: true}`. The parent's 11 rows were unchanged. The branch held the 3 copied rows, the copy archived, the new message and its reply. The model got the 3 rows (the hidden instruction merged into the first user turn) and the new message.
+- **The first message.** `session.branch {count: 1}`, then the cut without `confirm_empty_truncate`, is 4028. With it, the branch holds only the new message and its reply. Hermes's auto-titler then titles the branch on that first turn (`title_source = llm`).
+- **The model switch.** ADR 0027's `config.set model` on a fresh branch stores a `display_kind = model_switch` marker row after the copy. The cut archives it with the copy. The session's model setting is unaffected.
+- **Another client adding a turn** (a second WS connection's `session.resume`, then `prompt.submit`) doesn't touch the first client's runtime session. Only the stored rows show it.
+
 ## Artifacts (editing Outputs, ADR 0029)
 
 Read in the deployed `bf0203a` source on 2026-11-03; not probed live.

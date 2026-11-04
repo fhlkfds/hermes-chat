@@ -91,4 +91,6 @@ Under an owner's message, **Edited in** links to each branch it was edited in. A
 
 - Every Edit and Regenerate is a new chat in the list, Active, named as Hermes names branches (`Backup plan #2`).
 - An answer's switch exists only on the computer that made it, as the branch point does in ADR 0027.
+- When ADR 0027 switches the branch to the original's model, Hermes stores a model-switch marker row after the copy. The cut archives that row with the copy, so the model isn't told of the switch in its history. The session still runs on the switched model.
+- A branch that edits the first message starts from an empty history, so Hermes's auto-titler titles it on that turn, replacing `Weekend hike #2`.
 - Verified against the tests' fake Hermes and live against the deployed `f0d9488`. The canonical protocol and other Hermes versions weren't tested.
