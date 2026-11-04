@@ -1,5 +1,5 @@
 // Icon rail beside a chat list (ADR 0001), ported from the prototype's variants C and A, with its tools grouped into Work
-// and Server and tips that show at once (ADR 0048). The list's header is the profile switcher. Settings opens from the
+// and Server and tips that show at once (ADR 0049). The list's header is the profile switcher. Settings opens from the
 // rail's foot. Right-clicking a chat opens its menu (ChatMenu.tsx).
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { BarChart3, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, EyeOff, FileOutput, FolderOpen, Inbox as InboxIcon, LockOpen, ScrollText, Search, Settings, SquarePen, SquareTerminal, Trash2, Webhook, FolderGit2 } from "lucide-react";
@@ -158,7 +158,7 @@ export function Rail({
       </button>
     ),
   ].filter(Boolean);
-  // Daily tools first, then the profile's tools in two labeled groups (ADR 0048).
+  // Daily tools first, then the profile's tools in two labeled groups (ADR 0049).
   const parts = (
     <>
       <div className="rail-top">
