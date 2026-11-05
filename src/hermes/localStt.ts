@@ -1,4 +1,4 @@
-// Speech to text on this computer (#220, ADR 0062). Rust finds the engines, keeps the choice in the app's config folder,
+// Speech to text on this computer (#220, ADR 0067). Rust finds the engines, keeps the choice in the app's config folder,
 // and runs the engine inside `hermes_transcribe` when "This computer" is chosen (src-tauri/src/local_stt.rs), so a
 // recording can't reach Hermes then. The webview only picks among what Rust found, or has Rust open a file dialog.
 import { invoke } from "@tauri-apps/api/core";

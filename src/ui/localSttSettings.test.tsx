@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Settings → Voice → Speech to text (ADR 0062), against an in-memory stand-in for the Rust commands and a stand-in
+// Settings → Voice → Speech to text (ADR 0067), against an in-memory stand-in for the Rust commands and a stand-in
 // microphone. Rust's own checks (only found or dialog-picked programs run) are tested in src-tauri/src/local_stt.rs.
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";

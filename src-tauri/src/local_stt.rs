@@ -1,4 +1,4 @@
-//! Speech to text on this computer (#220, ADR 0062): finds the engines already installed here, keeps which one the
+//! Speech to text on this computer (#220, ADR 0067): finds the engines already installed here, keeps which one the
 //! owner picked, and runs it on a Dictation or Voice conversation recording instead of sending the audio to Hermes.
 //!
 //! Only programs found on `PATH` under a known engine's name, or one the owner picked in the native Open dialog, are

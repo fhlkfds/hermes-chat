@@ -91,7 +91,7 @@ describe("the profile's voice providers", () => {
   });
 });
 
-describe("speech to text on this computer (ADR 0062)", () => {
+describe("speech to text on this computer (ADR 0067)", () => {
   const server = { transcribe: true, speak: true, sttEnabled: true, sttProvider: "groq" };
 
   it("names the local engine and says the audio stays here", () => {

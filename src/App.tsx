@@ -890,7 +890,7 @@ export function Main({
   const openVoiceSettings = useRef(() => {});
   const voice = useMemo<VoiceApi>(
     () => ({
-      // Speech to text may run on this computer instead (ADR 0062); Rust decides where a recording goes either way.
+      // Speech to text may run on this computer instead (ADR 0067); Rust decides where a recording goes either way.
       setup: () =>
         Promise.all([hermes.voiceSetup(), tauriLocalStt.state().catch(() => undefined)]).then(([setup, local]) =>
           local?.onThisComputer ? { ...setup, sttLocal: { label: local.label ?? undefined, problem: local.problem ?? undefined } } : setup,

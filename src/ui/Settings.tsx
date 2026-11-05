@@ -235,7 +235,7 @@ export function SettingsScreen({
   voiceSettings?: VoiceSettingsApi;
   /** Calls `fn` whenever the voice set-up may have changed on Hermes; returns its unsubscribe. */
   onVoiceChange?: (fn: () => void) => () => void;
-  /** Speech to text on this computer instead of on Hermes (ADR 0062), in the Voice tab. */
+  /** Speech to text on this computer instead of on Hermes (ADR 0067), in the Voice tab. */
   localStt?: LocalSttApi;
   /** Transcribes a recording the way Dictation does, for the Voice tab's Test. */
   transcribe?: (audio: Uint8Array, mime: string) => Promise<Transcript>;

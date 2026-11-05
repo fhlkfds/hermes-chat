@@ -1,5 +1,5 @@
 // Settings → Voice → Speech to text: where Dictation and voice conversations turn speech into text, on the Hermes
-// server or with an engine already installed on this computer (ADR 0062), and a Test that records a few seconds.
+// server or with an engine already installed on this computer (ADR 0067), and a Test that records a few seconds.
 import { useEffect, useRef, useState } from "react";
 import { FolderOpen, Mic } from "lucide-react";
 import type { Transcript } from "../hermes/pipe";
