@@ -4,6 +4,7 @@
 import type { Downloaded, PickedUpload, TransferProgress } from "./remoteFiles";
 import type { SavedKey } from "./setup";
 import type { OpenScreenSocket } from "./screen";
+import type { RouteVia } from "./routes";
 
 /** A local file as `statFiles` finds it: its size, or why it can't be attached (e.g. "it's a folder"). */
 export type LocalFile = { path: string; name: string; size?: number; error?: string };
@@ -57,7 +58,12 @@ export type PipeEvent = { kind: "frame"; text: string } | { kind: "closed"; reas
  * How the pipe reaches the dashboard: through an SSH tunnel, or straight to the URL the owner typed. For a URL whose
  * host is a name, `addresses` are the IP addresses Rust resolved it to.
  */
-export type Route = { kind: "ssh"; target: string } | { kind: "url"; url: string; addresses: string[] };
+export type Route = ({ kind: "ssh"; target: string } | { kind: "url"; url: string; addresses: string[] }) & {
+  /** The server's id, a hash of its Hermes install id, when its status named one (ADR 0056). */
+  server?: string;
+  /** Which of the connection's routes this is, when it has more than one (routes.ts). */
+  via?: RouteVia;
+};
 
 /** The dashboard REST verbs the Rust side relays. POST and PUT reach only Settings → Model's two write routes, the scheduled-job writes, Settings → Toolsets' switch, Settings → Persona's save, Settings → Skills' switch and save, and Settings → Voice's provider pick and key save (ADR 0055), among others listed at `Dashboard::request` in src-tauri/src/transport.rs. */
 export type RestMethod = "GET" | "PATCH" | "DELETE" | "POST" | "PUT";

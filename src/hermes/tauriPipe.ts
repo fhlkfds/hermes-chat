@@ -5,6 +5,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import type { LocalFile, OpenPipe, PipeEvent, Route, ToolsetGuards, Transcript, VoiceSetup } from "./pipe";
 import type { Downloaded, PickedUpload, TransferProgress } from "./remoteFiles";
 import type { Probe, Probed, ProbeFailure, SavedKey } from "./setup";
+import { routedPipe, type ReachRoute, type RouteDetails, type RoutedHooks } from "./routes";
 
 // A failed command rejects with the Rust error's text, not an Error.
 export const asError = (e: unknown) => Promise.reject(new Error(String(e)));
@@ -24,21 +25,57 @@ export type ExtraHeader = { name: string; value: string };
  * `mode` picks which of `sshTarget` and `url` is used. `headers` go with every request to a URL, never through the SSH
  * tunnel; Rust checks them. Like the password, they are kept in the system keyring, never beside the rest.
  */
-export type SignInDetails = { mode: "ssh" | "url"; sshTarget: string; url: string; username: string; password: string; headers?: ExtraHeader[] };
+export type SignInDetails = {
+  mode: "ssh" | "url";
+  sshTarget: string;
+  url: string;
+  username: string;
+  password: string;
+  headers?: ExtraHeader[];
+  /**
+   * The connection's routes, tried in order (routes.ts, ADR 0056); the address above is then the first route's. Absent
+   * on a sign-in with one route, which is its address.
+   */
+  routes?: RouteDetails[];
+  /** The server every route must reach, once known: a hash of its Hermes install id (ADR 0056). */
+  server?: string;
+};
 
 const targetOf = (d: SignInDetails) =>
   d.mode === "ssh" ? { kind: "ssh", target: d.sshTarget } : { kind: "url", url: d.url, headers: d.headers ?? [] };
 
-/** Setup's connection test (src-tauri `hermes_probe`): it rejects with a `ProbeFailure`, not an Error. */
+const asProbeFailure = (e: unknown): ProbeFailure => (e && typeof e === "object" ? (e as ProbeFailure) : { stage: "address", message: String(e) });
+
+/** Setup's connection test (src-tauri `hermes_probe`): it rejects with a `ProbeFailure`, not an Error. One route only. */
 export const tauriProbe: Probe = {
-  run: (d, profile) =>
-    invoke<Probed>("hermes_probe", { target: targetOf(d), username: d.username, password: d.password, profile }).catch((e: unknown) =>
-      Promise.reject<Probed>(e && typeof e === "object" ? (e as ProbeFailure) : { stage: "address", message: String(e) }),
+  run: (d, profile, quick = false) =>
+    invoke<Probed>("hermes_probe", { target: targetOf(d), username: d.username, password: d.password, profile, expectServer: d.server ?? null, quick }).catch(
+      (e: unknown) => Promise.reject<Probed>(asProbeFailure(e)),
     ),
   cancel: () => void invoke("hermes_probe_cancel").catch(() => {}),
 };
 
-export function tauriPipe(d: SignInDetails): OpenPipe {
+/** What `hermes_reach` found: how the route went, and the dashboard's `/api/status` body, if it answered one. */
+export type Reached = { route: Route; status?: string | null };
+
+/**
+ * Reaches one route without signing in (src-tauri `hermes_reach`): the tunnel or address opens, and `/api/status`
+ * answers as the Hermes `expectServer` names. Rejects with a `ProbeFailure`. No password goes anywhere.
+ */
+export const tauriReach = (d: SignInDetails, expectServer: string | undefined, quick = true): Promise<Reached> =>
+  invoke<Reached>("hermes_reach", { target: targetOf(d), expectServer: expectServer ?? null, quick }).catch((e: unknown) =>
+    Promise.reject<Reached>(asProbeFailure(e)),
+  );
+
+export const reachRoute: ReachRoute = (d, expectServer) => tauriReach(d, expectServer);
+
+/** The pipe for a connection: its routes, tried in order (routes.ts `routedPipe`), each opened by Rust. */
+export function tauriPipe(d: SignInDetails, hooks?: RoutedHooks): OpenPipe {
+  return routedPipe(d, (one, opts) => routePipe(one, opts), hooks);
+}
+
+/** One route's pipe. `expectServer`, `quick` and `sshRoute`: see routes.ts `OpenRoute`. */
+function routePipe(d: SignInDetails, opts: { expectServer?: string; quick: boolean; sshRoute?: string }): OpenPipe {
   const target = targetOf(d);
   return async (onEvent, profile, signal) => {
     const channel = new Channel<PipeEvent>();
@@ -48,7 +85,17 @@ export function tauriPipe(d: SignInDetails): OpenPipe {
     const stop = () => void invoke("hermes_connect_cancel", { attempt }).catch(() => {});
     signal?.addEventListener("abort", stop, { once: true });
     if (signal?.aborted) stop();
-    const route = await invoke<Route>("hermes_connect", { target, username: d.username, password: d.password, profile, attempt, onEvent: channel })
+    const route = await invoke<Route>("hermes_connect", {
+      target,
+      username: d.username,
+      password: d.password,
+      profile,
+      attempt,
+      onEvent: channel,
+      expectServer: opts.expectServer ?? null,
+      quick: opts.quick,
+      sshRoute: opts.sshRoute ?? null,
+    })
       .catch(asError)
       .finally(() => signal?.removeEventListener("abort", stop));
     return {

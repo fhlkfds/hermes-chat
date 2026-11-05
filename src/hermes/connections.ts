@@ -11,6 +11,7 @@
 // keeps the storage scope and keyring entries it already had (`legacy`), so its drafts, queues and saved password
 // stay where they are and nothing has to move.
 import type { ExtraHeader, SignInDetails } from "./tauriPipe";
+import { ROUTES_MAX, ROUTE_KINDS, isRouteId, routeAddress, routesOf, type RouteKind, type SavedRoute } from "./routes";
 
 export const CONNECTIONS_KEY = "hermes-chat.connections";
 /** Where the one sign-in was kept before there were saved connections. Read once, for the migration. */
@@ -36,6 +37,16 @@ export type SavedConnection = Address & {
    * saved for, so that password is never sent once the address has been edited.
    */
   legacy?: { scope: string[]; address: string };
+  /**
+   * The ways to reach the server, tried in order (routes.ts, ADR 0056). Absent on a connection that has only ever had
+   * one, whose route is its address. When present, the address above is the first route's.
+   */
+  routes?: SavedRoute[];
+  /**
+   * The server's id once a route has reported one: a hash of its Hermes install id. Every route must reach it. Kept
+   * only on a connection with several routes; one with a single route connects as it always did.
+   */
+  server?: string;
 };
 
 type Doc = { connections: SavedConnection[]; current?: string };
@@ -54,8 +65,40 @@ export function addressKey(a: Address): string {
   return JSON.stringify([a.mode, (a.mode === "ssh" ? a.sshTarget : a.url).trim(), a.username.trim()]);
 }
 
-/** The address shown beside a connection's name: its SSH target, or its URL. */
+/** The address shown beside a connection's name: its SSH target, or its URL (its first route's, with several). */
 export const addressLabel = (a: Address) => (a.mode === "ssh" ? `ssh://${a.sshTarget.trim()}` : a.url.trim());
+
+/** A connection's routes in a few words: "LAN, Tailscale and SSH". */
+export function routesSummary(c: Address & { routes?: SavedRoute[] }): string {
+  const names = routesOf(c).map((r) => ({ lan: "LAN", tailscale: "Tailscale", web: "web address", ssh: "SSH" })[r.kind] + (r.off ? " (off)" : ""));
+  return names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+}
+
+const SERVER_ID = /^[0-9a-f]{32}$/;
+
+function toRoutes(v: unknown): SavedRoute[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const seen = new Set<string>();
+  const routes = v
+    .map((r): SavedRoute | undefined => {
+      if (!isObj(r) || !isRouteId(r.id) || seen.has(r.id) || !ROUTE_KINDS.includes(r.kind as RouteKind)) return undefined;
+      const target = str(r.target);
+      if (target === undefined) return undefined;
+      seen.add(r.id);
+      return { id: r.id, kind: r.kind as RouteKind, target, ...(r.off === true && { off: true }) };
+    })
+    .filter((r): r is SavedRoute => !!r)
+    .slice(0, ROUTES_MAX);
+  return routes.length ? routes : undefined;
+}
+
+/** `c` with its address made its first route's, when it has a list of routes. */
+export function withFirstRoute(c: SavedConnection): SavedConnection {
+  const first = c.routes?.[0];
+  if (!first) return c;
+  const { sshTarget, url, mode } = routeAddress(first, c.username);
+  return { ...c, mode, sshTarget, url };
+}
 
 /** A name for a connection the owner didn't name: the SSH host, or the URL's host. */
 export function defaultName(a: Address): string {
@@ -112,14 +155,18 @@ function toConnection(v: unknown): SavedConnection | undefined {
   const legacy = isObj(v.legacy) && Array.isArray(v.legacy.scope) && v.legacy.scope.every((p) => typeof p === "string") && typeof v.legacy.address === "string"
     ? { scope: v.legacy.scope as string[], address: v.legacy.address }
     : undefined;
-  return {
+  const routes = toRoutes(v.routes);
+  const server = typeof v.server === "string" && SERVER_ID.test(v.server) ? v.server : undefined;
+  return withFirstRoute({
     id: v.id,
     name: name.trim() || defaultName(a),
     ...a,
     addedAt: time(v.addedAt) ?? 0,
     ...(lastUsedAt !== undefined && { lastUsedAt }),
     ...(legacy && { legacy }),
-  };
+    ...(routes && { routes }),
+    ...(server && { server }),
+  });
 }
 
 /** The single sign-in kept before, if one is set up there (setup.ts `isSetUp`). */
@@ -251,14 +298,21 @@ export class Connections {
     return { id: this.makeId(), name: cleanName(name, a), ...addressOf(a), addedAt: this.now() };
   }
 
-  /** Adds `c`, or replaces the saved connection with its id. */
-  save(c: SavedConnection) {
+  /** Adds `c`, or replaces the saved connection with its id. With routes, its address is made its first route's. */
+  save(saving: SavedConnection) {
+    const c = withFirstRoute(saving);
     const at = this.doc.connections.findIndex((x) => x.id === c.id);
     if (at < 0 && this.doc.connections.length >= CONNECTIONS_MAX) throw new Error(`Hermes Chat keeps at most ${CONNECTIONS_MAX} connections. Remove one first.`);
     const connections = [...this.doc.connections];
     if (at < 0) connections.push(c);
     else connections[at] = c;
     this.write({ ...this.doc, connections });
+  }
+
+  /** Keeps the server id a route reported for `id`, the first time one does (ADR 0056). */
+  setServer(id: string, server: string) {
+    const c = this.get(id);
+    if (c && !c.server && SERVER_ID.test(server)) this.save({ ...c, server });
   }
 
   rename(id: string, name: string) {

@@ -16,6 +16,7 @@ import { SubNav, type SubNavItem } from "./SubNav";
 import { SettingRow, SettingsSearching, SettingsSection } from "./SettingRows";
 import type { Chat, ConnectionStatus } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
+import { viaLabel } from "../hermes/routes";
 import { TRANSCRIPT_LIMIT_BYTES } from "../hermes/chatCache";
 import { STATUS_LABEL, arrowSelect, fmtSize, routeLabel } from "./bits";
 import type { AppearanceStore, Fonts } from "./appearance";
@@ -440,7 +441,19 @@ export function SettingsScreen({
               </>
             }
             hint={<span className="mono">{routeLabel(route) ?? "No address yet"}</span>}
-            control={unsecure && <span className="badge warn">Unsecure</span>}
+            control={
+              (unsecure || route?.via) && (
+                <>
+                  {unsecure && <span className="badge warn">Unsecure</span>}
+                  {route?.via && (
+                    <span className="badge" title={route.via.index > 0 ? "A route earlier in the list didn't answer. It's checked again now and then." : "The first route in the list"}>
+                      {viaLabel(route.via)}
+                      {route.via.index > 0 ? " (fallback)" : ""}
+                    </span>
+                  )}
+                </>
+              )
+            }
           />
           <SettingRow
             name={

@@ -14,6 +14,7 @@ import { ChatMenu, type ChatProjects, type ChatSnooze, type ChatTags } from "./C
 import { SnoozeDialog, useSnoozeClock } from "./Snooze";
 import { DeleteChatDialog } from "./DeleteChat";
 import { ArchiveButton, STATUS_LABEL, SettleButton, SourceIcon, Spinner, composing, relTime, routeLabel, useReturnFocus } from "./bits";
+import { viaLabel } from "../hermes/routes";
 import { dragChat, dragChatEnd } from "./Tabs";
 
 
@@ -46,9 +47,12 @@ export function Rail({
   repoOpen = false,
   updateWaiting = false,
   connectionsMenu,
+  connectionName,
 }: {
   status: ConnectionStatus;
   route?: Route;
+  /** The connection in use's name, shown with the route it is using when it has several ("Home server · via Tailscale"). */
+  connectionName?: string;
   unsecure: boolean;
   closedReason?: string;
   onReconnect: () => void;
@@ -87,6 +91,7 @@ export function Rail({
   const where = routeLabel(route);
   // The connection's full wording lives only in its tip (ADR 0001).
   const connNote = [
+    route?.via && [connectionName, viaLabel(route.via)].filter(Boolean).join(" · "),
     where,
     unsecure && "Unsecure: traffic to the server isn't encrypted",
     status !== "connected" && closedReason,

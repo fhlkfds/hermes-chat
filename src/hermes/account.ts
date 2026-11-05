@@ -5,8 +5,11 @@
 //
 // A secret is only ever given back for the address it was saved for: a password with the mode, target and username
 // it signed in with, headers with their URL. So a sign-in to an edited address whose secrets the keyring couldn't save
-// never sends the old address's secrets to the new one.
+// never sends the old address's secrets to the new one. A connection with several routes (ADR 0056) saves its password
+// with every route it was typed for, and a route added since, whose secrets weren't saved, is skipped (`locked`)
+// until the password is typed again.
 import { type Address, type Connections, type SavedConnection, addressKey, addressOf, cleanName, detailsOf } from "./connections";
+import { routeAddress, routeKey, routesOf, savedRoute, withRoutes, type RouteDetails } from "./routes";
 import type { ExtraHeader, SignInDetails } from "./tauriPipe";
 import type { Hermes } from "./transport";
 
@@ -37,14 +40,21 @@ export const WRONG_PASSWORD = "Wrong username or password.";
 /** What the keyring kept at sign-in. */
 export type Kept = { password: boolean; headers: boolean };
 
-/** The keyring's password entry, saved with the address it signs in to. */
-const passwordEntry = (a: Address, password: string) => JSON.stringify({ v: 1, for: addressKey(a), password });
+/**
+ * The keyring's password entry, saved with what it signs in to. One route: its address, as before routes existed
+ * (`v: 1`), so an older version still reads it. Several: the username and every route (`v: 2`).
+ */
+function passwordEntry(d: SignInDetails, password: string): string {
+  if (!d.routes) return JSON.stringify({ v: 1, for: addressKey(d), password });
+  return JSON.stringify({ v: 2, username: d.username.trim(), routes: d.routes.filter((r) => !r.locked).map(routeKey), password });
+}
 
 /**
- * The saved password, if it was saved for `c`'s address now. The migrated connection's entry is the plain password
- * kept before, which counts only while its address is the one it had then.
+ * The saved password, and the keys (`routeKey`) of `c`'s routes it was saved for. Undefined when it was saved for none
+ * of them. The migrated connection's entry is the plain password kept before, which counts only for the address it had
+ * then.
  */
-function passwordFor(c: SavedConnection, raw: string | undefined): string | undefined {
+function passwordFor(c: SavedConnection, raw: string | undefined): { password: string; routes: Set<string> } | undefined {
   if (raw === undefined) return undefined;
   let v: unknown;
   try {
@@ -52,10 +62,34 @@ function passwordFor(c: SavedConnection, raw: string | undefined): string | unde
   } catch {
     v = undefined;
   }
-  const entry = v as { v?: unknown; for?: unknown; password?: unknown } | null;
-  if (entry && typeof entry === "object" && entry.v === 1 && typeof entry.for === "string" && typeof entry.password === "string")
-    return entry.for === addressKey(c) ? entry.password : undefined;
-  return c.legacy && c.legacy.address === addressKey(c) ? raw : undefined;
+  const routes = routesOf(c);
+  const entry = v as { v?: unknown; for?: unknown; password?: unknown; username?: unknown; routes?: unknown } | null;
+  const forAddress = (key: string) => new Set(routes.filter((r) => addressKey(routeAddress(r, c.username)) === key).map(routeKey));
+  let found: { password: string; routes: Set<string> } | undefined;
+  if (entry && typeof entry === "object" && typeof entry.password === "string" && entry.v === 1 && typeof entry.for === "string")
+    found = { password: entry.password, routes: forAddress(entry.for) };
+  else if (entry && typeof entry === "object" && typeof entry.password === "string" && entry.v === 2) {
+    const saved = Array.isArray(entry.routes) ? entry.routes.filter((k): k is string => typeof k === "string") : [];
+    found = entry.username === c.username.trim() ? { password: entry.password, routes: new Set(routes.map(routeKey).filter((k) => saved.includes(k))) } : undefined;
+  } else if (c.legacy) found = { password: raw, routes: forAddress(c.legacy.address) };
+  return found?.routes.size ? found : undefined;
+}
+
+/** The saved extra request headers, by the URL they were saved for. */
+type SavedHeaders = Map<string, ExtraHeader[]>;
+
+const headerList = (v: unknown): ExtraHeader[] =>
+  Array.isArray(v) ? v.filter((h): h is ExtraHeader => typeof h?.name === "string" && typeof h?.value === "string") : [];
+
+/**
+ * The keyring's headers entry. One route: `{url, headers}`, as before routes existed. Several: each web address's
+ * headers with its URL (`v: 2`). None to save: undefined, and the entry is deleted.
+ */
+function headersEntry(d: SignInDetails): string | undefined {
+  if (!d.routes) return d.headers?.length ? JSON.stringify({ url: d.url, headers: d.headers }) : undefined;
+  // A locked route keeps the headers saved for its URL: they were given back for that URL, and go nowhere else.
+  const routes = d.routes.filter((r) => r.kind !== "ssh" && r.headers?.length).map((r) => ({ url: r.target, headers: r.headers }));
+  return routes.length ? JSON.stringify({ v: 2, routes }) : undefined;
 }
 
 /**
@@ -73,8 +107,18 @@ export async function signIn(
   signal?: AbortSignal,
 ): Promise<{ hermes: Hermes; connection: SavedConnection; notSaved?: string; kept: Kept }> {
   const hermes = await account.connect(c, d, signal);
-  const { password, headers = [] } = d;
-  const connection: SavedConnection = { ...c, ...addressOf(d), name: name === undefined ? c.name : cleanName(name, d) };
+  const { password } = d;
+  // The server the routes reached, once one said: every route must reach it from now on (ADR 0056). Only a connection
+  // with several routes keeps it.
+  const server = d.routes ? (hermes.getSnapshot().route?.server ?? d.server) : undefined;
+  const { routes: _routes, server: _server, ...rest } = c;
+  const connection: SavedConnection = {
+    ...rest,
+    ...addressOf(d),
+    name: name === undefined ? c.name : cleanName(name, d),
+    ...(d.routes && { routes: d.routes.map(savedRoute) }),
+    ...(server && { server }),
+  };
   try {
     account.connections.save(connection);
   } catch (e) {
@@ -85,12 +129,13 @@ export async function signIn(
   const secrets = account.secrets(connection);
   const notSaved: string[] = [];
   const kept = { password: true, headers: true };
-  await secrets.password.save(passwordEntry(connection, password)).catch((e: Error) => {
+  await secrets.password.save(passwordEntry(d, password)).catch((e: Error) => {
     kept.password = false;
     notSaved.push(`Couldn't save the password in the system keyring: ${e.message}`);
   });
   // The headers are saved with the URL they were signed in to; `savedHeaders` gives them back for that URL only.
-  const savingHeaders = headers.length ? secrets.headers.save(JSON.stringify({ url: d.url, headers })) : secrets.headers.delete();
+  const headers = headersEntry(d);
+  const savingHeaders = headers ? secrets.headers.save(headers) : secrets.headers.delete();
   await savingHeaders.catch((e: Error) => {
     kept.headers = false;
     notSaved.push(`Couldn't save the extra request headers in the system keyring: ${e.message}`);
@@ -99,32 +144,51 @@ export async function signIn(
   return notSaved.length ? { hermes, connection: signedIn, notSaved: notSaved.join(". "), kept } : { hermes, connection: signedIn, kept };
 }
 
-/**
- * `c`'s saved extra request headers, if they were saved for its URL now. None when nothing is saved, the keyring can't
- * be read, or they belong to another URL.
- */
-async function savedHeaders(c: SavedConnection, account: Account): Promise<ExtraHeader[]> {
+/** `c`'s saved extra request headers, by URL. None when nothing is saved or the keyring can't be read. */
+async function savedHeaders(c: SavedConnection, account: Account): Promise<SavedHeaders> {
+  const out: SavedHeaders = new Map();
   try {
-    const saved = JSON.parse((await account.secrets(c).headers.load()) ?? "null") as { url?: unknown; headers?: unknown } | null;
-    if (saved?.url !== c.url || !Array.isArray(saved.headers)) return [];
-    return saved.headers.filter((h): h is ExtraHeader => typeof h?.name === "string" && typeof h?.value === "string");
+    const saved = JSON.parse((await account.secrets(c).headers.load()) ?? "null") as { v?: unknown; url?: unknown; headers?: unknown; routes?: unknown } | null;
+    if (saved?.v === 2 && Array.isArray(saved.routes))
+      for (const r of saved.routes as { url?: unknown; headers?: unknown }[]) {
+        if (typeof r?.url === "string") out.set(r.url, headerList(r.headers));
+      }
+    else if (typeof saved?.url === "string") out.set(saved.url, headerList(saved.headers));
   } catch {
-    return [];
+    // Nothing saved that can be read.
   }
+  return out;
+}
+
+/** `c`'s routes with the headers saved for each one's URL now; a URL edited since gets none. */
+const routesWithHeaders = (c: SavedConnection, headers: SavedHeaders): RouteDetails[] =>
+  routesOf(c).map((r) => {
+    const h = r.kind === "ssh" ? undefined : headers.get(r.target);
+    return { ...r, ...(h?.length && { headers: h }) };
+  });
+
+/** The sign-in for `c` with `password`: its address, or with several routes all of them, and the server it reaches. */
+function detailsFor(c: SavedConnection, password: string, headers: SavedHeaders, routes = routesWithHeaders(c, headers)): SignInDetails {
+  const d = c.routes ? withRoutes(detailsOf(c, password), routes) : detailsOf(c, password, headers.get(c.url) ?? []);
+  return c.routes && c.server ? { ...d, server: c.server } : d;
 }
 
 /**
- * `c` with its saved password, to sign in without asking. Undefined when no password is saved for its address, or
- * the keyring can't be read, so the owner is asked.
+ * `c` with its saved password, to sign in without asking. Undefined when no password is saved for any of its routes,
+ * or the keyring can't be read, so the owner is asked. A route the password wasn't saved for is `locked`: connecting
+ * skips it.
  */
 export async function savedSignIn(c: SavedConnection, account: Account): Promise<SignInDetails | undefined> {
-  const password = passwordFor(c, await account.secrets(c).password.load().catch(() => undefined));
-  return password === undefined ? undefined : detailsOf(c, password, await savedHeaders(c, account));
+  const saved = passwordFor(c, await account.secrets(c).password.load().catch(() => undefined));
+  if (!saved) return undefined;
+  const headers = await savedHeaders(c, account);
+  const routes = routesWithHeaders(c, headers).map((r) => (saved.routes.has(routeKey(r)) ? r : { ...r, locked: true }));
+  return detailsFor(c, saved.password, headers, routes);
 }
 
 /** The sign-in screen's details for `c` when it asks: everything saved but the password. */
 export async function signInForm(c: SavedConnection, account: Account): Promise<SignInDetails> {
-  return detailsOf(c, "", await savedHeaders(c, account));
+  return detailsFor(c, "", await savedHeaders(c, account));
 }
 
 /**

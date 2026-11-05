@@ -984,6 +984,24 @@ export class Hermes {
   }
 
   /**
+   * Closes the connection and opens it again, as a drop would but on purpose, so a connection with several routes can
+   * go back to a preferred one (routes.ts `PreferredRoutes`, ADR 0056). Only while connected and quiet: no reply
+   * running, no Approval waiting, no message sending or queued, no chat loading. A Failed message, which waits on the owner, doesn't hold it. Resolves to whether it moved.
+   */
+  async reroute(reason: string): Promise<boolean> {
+    if (this.closing || this.snapshot.status !== "connected" || this.redialing) return false;
+    const busy =
+      this.submitting.size > 0 ||
+      this.resuming.size > 0 ||
+      this.snapshot.chats.some((c) => c.running || c.loading || c.items.some((i) => (isOutgoing(i) && i.outgoing.state === "sending") || isWaiting(i))) ||
+      Object.values(this.snapshot.queues).some((q) => q.items.length > 0);
+    if (busy) return false;
+    this.detach(reason);
+    await this.reconnect();
+    return true;
+  }
+
+  /**
    * The model providers the shown profile's Hermes can use now, and those it can take an API key for (setup.ts).
    * A server without `GET /api/env` says so in `unsupported`, and the keys are set on the server instead.
    */

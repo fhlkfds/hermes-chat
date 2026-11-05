@@ -8,6 +8,7 @@ import { FakeHermes } from "../hermes/fakeHermes";
 import type { OpenPipe } from "../hermes/pipe";
 import type { Probed, ProbeFailure } from "../hermes/setup";
 import type { SignInDetails } from "../hermes/tauriPipe";
+import type { RoutedHooks } from "../hermes/routes";
 
 /** The Rust side: the servers this computer can reach, the keyring, and the connection tests run. */
 const backend = vi.hoisted(() => ({
@@ -49,11 +50,9 @@ function reach(d: SignInDetails): { server: FakeHermes } | ProbeFailure {
   return { server: found.server as FakeHermes };
 }
 
-vi.mock("../hermes/tauriPipe", () => ({
-  asError: (e: unknown) => Promise.reject(new Error(String(e))),
-  tauriPipe:
-    (d: SignInDetails): OpenPipe =>
-    async (onEvent, profile, signal) => {
+/** One route's pipe, as Rust opens it: `reach` says how it goes. */
+function openOne(d: SignInDetails): OpenPipe {
+  return async (onEvent, profile, signal) => {
       if (backend.holdConnect)
         await new Promise<void>((resolve, reject) => {
           backend.letConnect = resolve;
@@ -72,7 +71,21 @@ vi.mock("../hermes/tauriPipe", () => ({
           throw new Error(`The provider said: invalid key ${key.slice(2, 14)}…`);
         },
       };
-    },
+    };
+}
+
+vi.mock("../hermes/tauriPipe", async () => {
+  const { routedPipe } = await vi.importActual<typeof import("../hermes/routes")>("../hermes/routes");
+  return {
+  asError: (e: unknown) => Promise.reject(new Error(String(e))),
+  // Each route as Rust opens it, tried in order as the app does (routes.ts).
+  tauriPipe: (d: SignInDetails, hooks?: RoutedHooks): OpenPipe => routedPipe(d, (one) => openOne(one), hooks),
+  tauriReach: async (d: SignInDetails) => {
+    const r = reach(d);
+    if ("stage" in r && r.stage !== "sign-in") throw r;
+    return { route: "server" in r ? r.server.route : { kind: "ssh", target: d.sshTarget }, status: '{"version":"0.22.5","auth_required":true}' };
+  },
+  reachRoute: async () => {},
   tauriProbe: {
     run: async (d: SignInDetails): Promise<Probed> => {
       backend.probes++;
@@ -94,7 +107,8 @@ vi.mock("../hermes/tauriPipe", () => ({
       if (!backend.lateCancel) backend.release?.();
     },
   },
-}));
+  };
+});
 vi.mock("@tauri-apps/api/core", () => ({
   Channel: class {},
   invoke: async (cmd: string, args?: { password?: string }) => {
@@ -389,7 +403,7 @@ describe("Setup from Settings", () => {
     const user = await openSetup();
 
     await user.click(screen.getByRole("button", { name: "Change connection" }));
-    await user.click(screen.getByRole("button", { name: "URL" }));
+    await user.selectOptions(screen.getByLabelText("Connect through"), "web");
     await user.type(screen.getByLabelText("Dashboard URL"), "http://studio.example.com:9119");
     await user.click(screen.getByRole("button", { name: "Next" }));
     expect((screen.getByLabelText("Dashboard username") as HTMLInputElement).value).toBe("liam");
@@ -417,7 +431,7 @@ describe("Setup from Settings", () => {
     backend.servers.set("url:http://studio.example.com:9119", { server: studio, password: "pa55" });
     const user = await openSetup();
     await user.click(screen.getByRole("button", { name: "Change connection" }));
-    await user.click(screen.getByRole("button", { name: "URL" }));
+    await user.selectOptions(screen.getByLabelText("Connect through"), "web");
     await user.type(screen.getByLabelText("Dashboard URL"), "http://studio.example.com:9119");
     await user.click(screen.getByRole("button", { name: "Next" }));
     await user.type(screen.getByLabelText("Dashboard password"), "pa55");
@@ -462,7 +476,7 @@ describe("Setup from Settings", () => {
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(screen.getByRole("button", { name: "Run setup again" }));
     await user.click(await screen.findByRole("button", { name: "Change connection" }));
-    await user.click(screen.getByRole("button", { name: "URL" }));
+    await user.selectOptions(screen.getByLabelText("Connect through"), "web");
     await user.type(screen.getByLabelText("Dashboard URL"), "http://studio.example.com:9119");
     await user.click(screen.getByRole("button", { name: "Next" }));
     await user.type(screen.getByLabelText("Dashboard password"), "pa55");
@@ -574,7 +588,7 @@ describe("A connection test explains each stage on its own", () => {
     const user = await start();
     await screen.findByRole("heading", { name: "Welcome to Hermes Chat" });
     await user.click(screen.getByRole("button", { name: "Get started" }));
-    await user.click(screen.getByRole("button", { name: "URL" }));
+    await user.selectOptions(screen.getByLabelText("Connect through"), "web");
     await user.type(screen.getByLabelText("Dashboard URL"), "https://hermes.example.com");
     await user.click(screen.getByRole("button", { name: "Next" }));
     await user.type(screen.getByLabelText("Dashboard username"), "liam");
@@ -632,7 +646,7 @@ describe("Stopping Save and connect", () => {
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(screen.getByRole("button", { name: "Run setup again" }));
     await user.click(await screen.findByRole("button", { name: "Change connection" }));
-    await user.click(screen.getByRole("button", { name: "URL" }));
+    await user.selectOptions(screen.getByLabelText("Connect through"), "web");
     await user.type(screen.getByLabelText("Dashboard URL"), "http://studio.example.com:9119");
     await user.click(screen.getByRole("button", { name: "Next" }));
     await user.type(screen.getByLabelText("Dashboard password"), "pa55");
@@ -669,7 +683,7 @@ describe("Composer drafts across a reconfiguration", () => {
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(screen.getByRole("button", { name: "Run setup again" }));
     await user.click(await screen.findByRole("button", { name: "Change connection" }));
-    await user.click(screen.getByRole("button", { name: "URL" }));
+    await user.selectOptions(screen.getByLabelText("Connect through"), "web");
     await user.type(screen.getByLabelText("Dashboard URL"), "http://studio.example.com:9119");
     await user.click(screen.getByRole("button", { name: "Next" }));
     await user.type(screen.getByLabelText("Dashboard password"), "pa55");
@@ -809,7 +823,7 @@ describe("Stopping at the edges", () => {
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(screen.getByRole("button", { name: "Run setup again" }));
     await user.click(await screen.findByRole("button", { name: "Change connection" }));
-    await user.click(screen.getByRole("button", { name: "URL" }));
+    await user.selectOptions(screen.getByLabelText("Connect through"), "web");
     await user.type(screen.getByLabelText("Dashboard URL"), "http://studio.example.com:9119");
     await user.click(screen.getByRole("button", { name: "Next" }));
     await user.type(screen.getByLabelText("Dashboard password"), "pa55");
