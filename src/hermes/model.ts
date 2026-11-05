@@ -47,9 +47,10 @@ export type Outgoing = {
 export type Item =
   /**
    * `attachments`: names sent with the message. `outgoing`: sent from here and not confirmed yet. `rowId`: its stored
-   * row, once known.
+   * row, once known. `steer`: it went into a running reply, as `/steer` does, rather than starting a turn of its own
+   * (Hermes stores it with `display_kind: "steer"`, ADR 0057).
    */
-  | { kind: "user"; id: string; text: string; attachments?: string[]; at?: number; outgoing?: Outgoing; rowId?: number }
+  | { kind: "user"; id: string; text: string; attachments?: string[]; at?: number; outgoing?: Outgoing; rowId?: number; steer?: boolean }
   /**
    * `interrupted`: the owner, or another Hermes client, stopped this reply before it finished. `rowId`: its stored row,
    * once known. `usage`: the tokens its turn took, only for a reply this app watched finish (`usage.ts`).
@@ -103,6 +104,18 @@ export type ApprovalItem = Extract<Item, { kind: "approval" }>;
 export type OutgoingItem = Extract<Item, { kind: "user" }> & { outgoing: Outgoing };
 
 export const isOutgoing = (i: Item): i is OutgoingItem => i.kind === "user" && i.outgoing !== undefined;
+
+/**
+ * Where the last turn starts: just after the owner's last message that began one. A steered message goes into the
+ * reply already running, so it doesn't begin a turn. 0 when there is no such message.
+ */
+export const turnStart = (items: Item[]) => {
+  for (let n = items.length - 1; n >= 0; n--) {
+    const i = items[n];
+    if (i.kind === "user" && !i.steer) return n + 1;
+  }
+  return 0;
+};
 
 /**
  * A Queued message: words and files the owner lined up to send after the chat's reply (ADR 0018). `id` is stable for

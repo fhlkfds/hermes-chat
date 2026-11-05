@@ -71,6 +71,13 @@ for (const d of [
   { delivery_id: "4f1c2a90-0000-4000-8000-000000000006", received_at: ago(2), state: "running", session_id: "hook-41", action: "edited", excerpt: issue(43, "[fixture] Dark mode contrast") },
 ])
   server.webhooks.addDelivery("default", "triage-issues", { updated_at: d.received_at, ...d });
+// Settings → Persona (ADR 0014, 0056): `?profiles=1` adds two more profiles, each with its own SOUL.md (synthetic).
+server.souls = {
+  default: "# Persona\n\nYou are Hermes, a terse home-lab assistant. Answer in plain words, and say what you changed.\n",
+  work: "# Work\n\nYou are Hermes at work: formal, careful, and you cite the ticket you are working on.\n",
+};
+if (new URLSearchParams(location.search).get("profiles")) server.otherProfiles = { work: [], research: [] };
+
 // `?relay=http://127.0.0.1:PORT`: `GET /api/logs` goes to a real Hermes dashboard through that relay (logs-live.mjs), as
 // it would through the Rust side, and Logs' Save writes through it too. Everything else stays the fake Hermes.
 const relay = new URLSearchParams(location.search).get("relay");

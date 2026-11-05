@@ -491,6 +491,15 @@ export class FakeHermes {
   memoryLimit: Record<"memory" | "profile", number> = { memory: 2200, profile: 1375 };
   /** False: a server older than the `learning.*` methods, which answers them "method not found". */
   learningMethods = true;
+  /**
+   * True: the profile-scoped REST twins of `learning.*` that the deployed `f0d94882` has (`GET /api/learning/graph`,
+   * `GET`/`PUT`/`DELETE /api/learning/node`, all `?profile=`). False, as at `bf0203a`: they answer 404.
+   */
+  learningRoutes = false;
+  /** Answers the next `PUT` or `DELETE /api/learning/node` with this status and reason instead of writing. Applies once. */
+  learningRestRefusal?: { status: number; detail: string };
+  /** Runs as each `PUT` or `DELETE /api/learning/node` arrives, with the profile and body, before anything else. */
+  beforeLearningRest?: (profile: string, body: { id?: string; content?: string }) => void;
   /** An external memory provider the profile uses (`GET /api/memory` → `active`); none when empty. */
   memoryProvider = "";
   /** Runs before each `learning.*` request is answered, e.g. to change memory as the agent would meanwhile. */
@@ -1418,6 +1427,7 @@ export class FakeHermes {
       this.webhooks.route(req) ??
       this.cron.route(req) ??
       this.skills.route(req) ??
+      this.learningRoute(req) ??
       this.memoryProviders.route(req) ??
       this.voiceProviders.route(req);
     const toolset = /^\/api\/tools\/toolsets(?:\/([^/]+)(\/config)?)?$/.exec(req.path);
@@ -1536,9 +1546,9 @@ export class FakeHermes {
     if (result !== undefined) this.respond(r.id, result);
   }
 
-  /** The served profile's memory cards, MEMORY.md's first (`agent/learning_graph._memory_cards`). */
-  private memoryCards(): { source: "memory" | "profile"; text: string; id: string }[] {
-    const m = this.memory[this.servedProfile] ?? { memory: [], profile: [] };
+  /** A profile's memory cards, the served profile's by default, MEMORY.md's first (`agent/learning_graph._memory_cards`). */
+  private memoryCards(profile = this.servedProfile): { source: "memory" | "profile"; text: string; id: string }[] {
+    const m = this.memory[profile] ?? { memory: [], profile: [] };
     const cards = [...m.memory.map((text) => ({ source: "memory" as const, text })), ...m.profile.map((text) => ({ source: "profile" as const, text }))];
     return cards.map((c, i) => ({ ...c, id: `memory:${c.source}:${i}:${fingerprint(c.text)}` }));
   }
@@ -1561,10 +1571,10 @@ export class FakeHermes {
   }
 
   /** The entry a memory node id names, found by its fingerprint as `_locate_memory` does, or why it can't be. */
-  private memoryEntry(id: string): { source: "memory" | "profile"; text: string } | string {
+  private memoryEntry(id: string, profile = this.servedProfile): { source: "memory" | "profile"; text: string } | string {
     const parts = id.split(":");
     if (parts.length !== 4 || parts[0] !== "memory" || (parts[1] !== "memory" && parts[1] !== "profile")) return `bad memory node id: '${id}'`;
-    const found = this.memoryCards().find((c) => c.source === parts[1] && fingerprint(c.text) === parts[3]);
+    const found = this.memoryCards(profile).find((c) => c.source === parts[1] && fingerprint(c.text) === parts[3]);
     return found ?? "memory node id is stale — refresh the graph";
   }
 
@@ -1575,11 +1585,22 @@ export class FakeHermes {
       this.learningError = undefined;
       return this.fail(r.id, code, message);
     }
-    const found = this.memoryEntry(String(r.params.id ?? ""));
+    const answer = this.memoryMutate(this.servedProfile, String(r.params.id ?? ""), content);
+    if (answer !== "drop") return answer;
+    this.drop();
+    return undefined;
+  }
+
+  /**
+   * `_mutate_memory` on `profile`'s memory: `content` replaces the entry the id names, or null removes it. "drop": the
+   * connection is to drop now (`dropOnLearning`), after writing if that says `applied`.
+   */
+  private memoryMutate(profile: string, id: string, content: string | null): { ok: boolean; message: string } | "drop" {
+    const found = this.memoryEntry(id, profile);
     const body = content?.trim();
     if (content !== null && !body) return { ok: false, message: "empty memory — use delete to remove it" };
     if (typeof found === "string") return { ok: false, message: found };
-    const m = (this.memory[this.servedProfile] ??= { memory: [], profile: [] });
+    const m = (this.memory[profile] ??= { memory: [], profile: [] });
     const entries = m[found.source];
     const next = entries.flatMap((e) => (e === found.text ? (body === undefined ? [] : [body]) : [e]));
     const total = [...next.join("\n§\n")].length;
@@ -1589,12 +1610,69 @@ export class FakeHermes {
     const drop = this.dropOnLearning;
     this.dropOnLearning = undefined;
     if (drop !== "lost") m[found.source] = [...new Set(next)];
-    if (drop) {
-      this.drop();
-      return undefined;
-    }
+    if (drop) return "drop";
     const name = found.source === "memory" ? "MEMORY.md" : "USER.md";
     return { ok: true, message: body === undefined ? `deleted memory from ${name}` : `updated memory in ${name}` };
+  }
+
+  /** Every profile this fake server has, for routes that refuse an unknown `?profile=` (`_profile_scope`'s 404). */
+  private knownProfile(profile: string | null): string {
+    const p = profile || this.servedProfile;
+    if (p === "default" || p in this.otherProfiles || p in this.memory || this.skills.profiles.has(p)) return p;
+    throw new Error(`The dashboard answered 404: ${JSON.stringify({ detail: `Profile '${p}' does not exist.` })}`);
+  }
+
+  /**
+   * `/api/learning/graph` and `/api/learning/node` (`hermes_cli/web_routers/status.py` at `f0d94882`), each under
+   * `?profile=`: the graph's memory nodes (its skill nodes left out, as this app doesn't read them), one node's
+   * detail (404 with Hermes's reason when it isn't there), and the edit and delete. A delete of an id that isn't a
+   * memory node archives the skill of that name (`learning_mutations._delete_skill`).
+   */
+  private learningRoute(req: RestRequest): (() => unknown) | undefined {
+    if (req.path !== "/api/learning/graph" && req.path !== "/api/learning/node") return undefined;
+    const notHere = () => Promise.reject(new Error(`The dashboard answered 404: ${JSON.stringify({ detail: `No such API endpoint: ${req.path}` })}`));
+    if (!this.learningRoutes) return notHere;
+    const refuse = (status: number, detail: string) => new Error(`The dashboard answered ${status}: ${JSON.stringify({ detail })}`);
+    const at = `${req.method} ${req.path}`;
+    if (at === "GET /api/learning/graph")
+      return () => {
+        const profile = this.knownProfile(req.query.get("profile"));
+        const cards = this.memoryCards(profile);
+        return {
+          nodes: cards.map((c) => ({ id: c.id, label: c.text.split("\n")[0].slice(0, 80), kind: "memory", memorySource: c.source, timestamp: null, category: "memory" })),
+          edges: [],
+          memory: cards.map((c) => ({ source: c.source, title: c.text.split("\n")[0].slice(0, 80), body: c.text.slice(0, 1200), fingerprint: fingerprint(c.text) })),
+        };
+      };
+    if (at === "GET /api/learning/node")
+      return () => {
+        const profile = this.knownProfile(req.query.get("profile"));
+        const id = req.query.get("id") ?? "";
+        const found = this.memoryEntry(id, profile);
+        if (typeof found === "string") throw refuse(404, found);
+        return { ok: true, kind: "memory", id, label: found.text.split("\n")[0].slice(0, 80), content: found.text };
+      };
+    if (at === "PUT /api/learning/node" || at === "DELETE /api/learning/node")
+      return () => {
+        const profile = this.knownProfile(req.query.get("profile"));
+        const { id, content } = (req.body ?? {}) as { id?: string; content?: string };
+        this.beforeLearningRest?.(profile, { id, content });
+        if (this.learningRestRefusal) {
+          const { status, detail } = this.learningRestRefusal;
+          this.learningRestRefusal = undefined;
+          throw refuse(status, detail);
+        }
+        if (req.method === "DELETE" && !String(id).startsWith("memory:")) {
+          const res = this.skills.archive(profile, String(id ?? ""));
+          if (!res.ok) throw refuse(400, res.message);
+          return res;
+        }
+        const res = this.memoryMutate(profile, String(id ?? ""), req.method === "PUT" ? String(content ?? "") : null);
+        if (res === "drop") throw new Error("Can't reach the Hermes dashboard: the connection was reset.");
+        if (!res.ok) throw refuse(400, res.message);
+        return res;
+      };
+    return () => Promise.reject(refuse(405, "Method Not Allowed"));
   }
 
   /**

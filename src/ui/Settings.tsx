@@ -9,7 +9,7 @@
 // Profiles are switched in the list's header, not here (ADR 0001). The search box (Ctrl+F) shows the sections of every
 // tab whose text holds what was typed (settingsSearch.ts).
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowLeft, AudioLines, Brain, Camera, Cpu, Database, Download, HardDrive, KeyRound, Lock, LogOut, NotebookPen, Palette, PlugZap, Power, Puzzle, Search, Settings2, ShieldCheck, Sparkles, Stethoscope, Trash2, User, Wrench, X } from "lucide-react";
+import { ArrowLeft, AudioLines, Brain, Camera, Cpu, Database, Download, HardDrive, KeyRound, Lock, LogOut, MessagesSquare, NotebookPen, Palette, PlugZap, Power, Puzzle, Search, Settings2, ShieldCheck, Sparkles, Stethoscope, Trash2, User, Wrench, X } from "lucide-react";
 import type { MemorySource } from "../hermes/memory";
 import { SubNav, type SubNavItem } from "./SubNav";
 import type { Chat, ConnectionStatus } from "../hermes/model";
@@ -28,10 +28,11 @@ import type { MemoryProvidersApi } from "../hermes/memoryProviders";
 import { MemoryProviderSettings } from "./MemoryProviderSettings";
 import type { SkillsApi } from "../hermes/skills";
 import { SkillSettings } from "./SkillSettings";
-import { PersonaSettings, type PersonaWhere } from "./PersonaSettings";
+import { PersonaPage, type PersonaDirty, type PersonaWhere } from "./PersonaSettings";
 import type { PersonaApi } from "../hermes/persona";
 import type { PersonaStore } from "../hermes/personaStore";
 import { StartupSettings } from "./StartupSettings";
+import { FollowUpSettings } from "./FollowUpSettings";
 import { VoiceSettings, useVoiceChanges } from "./Voice";
 import type { VoiceSetup } from "../hermes/pipe";
 import type { VoiceSettingsApi } from "../hermes/voiceSettings";
@@ -46,15 +47,17 @@ import { BackupSection, type BackupWiring } from "./Backup";
 import { guideUrl, type CapabilityId, type CapabilityStore } from "../hermes/capabilities";
 import { CapabilityGate, DiagnosticsSettings, type OpenGuide } from "./Diagnostics";
 import { NAMED, applySearch, clearMarks, queryWords, textMatches } from "./settingsSearch";
+import { ProfilePicker } from "./ProfilePicker";
 
 type Tab = "general" | "appearance" | "model" | "voice" | "toolsets" | "persona" | "memory" | "skills" | "diagnostics";
 /**
- * General's four groups, shown one at a time beside a sub-nav (ADR 0051); a search shows every group's sections at once.
+ * General's five groups, shown one at a time beside a sub-nav (ADR 0051); a search shows every group's sections at once.
  * Voice moved to its own tab with the speech providers (ADR 0055), so the third group holds screenshots.
  */
-type GenGroup = "connection" | "launch" | "screenshots" | "storage";
+type GenGroup = "connection" | "chats" | "launch" | "screenshots" | "storage";
 const GEN_GROUPS: SubNavItem[] = [
   { id: "connection", label: "Connection", icon: <PlugZap size={14} /> },
+  { id: "chats", label: "Chats", icon: <MessagesSquare size={14} /> },
   { id: "launch", label: "Launch, tray & updates", icon: <Power size={14} /> },
   { id: "screenshots", label: "Screenshots", icon: <Camera size={14} /> },
   { id: "storage", label: "Storage & data", icon: <HardDrive size={14} /> },
@@ -96,8 +99,12 @@ export const signInText = (route?: Route) =>
       ? "Dashboard username and password, at the dashboard's URL"
       : "Dashboard username and password";
 
-/** Settings → Persona's wiring: the API, where its edits are kept on this computer, and what it edits. */
-export type PersonaWiring = { api: PersonaApi; store: PersonaStore; storeKey: string; where: PersonaWhere };
+/**
+ * Settings → Persona's wiring: the API, where each profile's edits are kept on this computer (`keyOf`), and where it
+ * starts: `where.profile` is the profile in use. Persona lists and picks profiles itself (ADR 0056), and copies the shown
+ * SOUL.md to another profile (ADR 0057).
+ */
+export type PersonaWiring = { api: PersonaApi; store: PersonaStore; keyOf: (profile: string) => string; where: PersonaWhere };
 
 const allow = (go: () => void) => go();
 
@@ -158,6 +165,7 @@ export function SettingsScreen({
   openGuide = () => {},
   showDiagnostics,
   connectionManager,
+  listProfiles,
 }: {
   status: ConnectionStatus;
   route?: Route;
@@ -224,7 +232,12 @@ export function SettingsScreen({
   /** Settings → Persona; the tab is left out without it. */
   persona?: PersonaWiring;
   /** Says whether the Persona tab holds an edit Hermes doesn't have yet. */
-  onPersonaDirty?: (dirty: boolean, kept: boolean) => void;
+  onPersonaDirty?: PersonaDirty;
+  /**
+   * Every profile on the server (`GET /api/profiles`). With it, Skills and Memory each pick which profile they show, and
+   * skills can be copied between profiles (ADR 0057). Persona lists them itself (ADR 0056).
+   */
+  listProfiles?: () => Promise<string[]>;
   /** Runs `go`, once the owner agrees to leave an unsaved persona, memory or skill edit behind, if there is one. */
   guard?: (go: () => void) => void;
   /** Set, each time anew, to show the Model tab at the Text generation model: from a title that couldn't be regenerated. */
@@ -269,6 +282,29 @@ export function SettingsScreen({
   const [memProfiles, setMemProfiles] = useState<string[]>();
   /** Picking a memory file or profile leaves any unsaved memory edit, so it asks first, as switching tabs does. */
   const pickMem = (id: string) => memKey(memSel) !== id && guard(() => setMemSel(memSelOf(id)));
+  // Which profile Skills and Memory each show (ADR 0057): the app's own until the owner picks another, and the app's own
+  // again when the app switches profile. Picking one leaves an unsaved edit, so it asks first. Persona picks its own
+  // (PersonaPage, ADR 0056).
+  const [profiles, setProfiles] = useState<string[]>();
+  const [shownIn, setShownIn] = useState({ skills: profile, memory: profile, of: profile });
+  const tabProfile = shownIn.of === profile ? shownIn : { skills: profile, memory: profile, of: profile };
+  useEffect(() => setShownIn({ skills: profile, memory: profile, of: profile }), [profile]);
+  const connected = status === "connected";
+  useEffect(() => {
+    if (!listProfiles || !connected) return;
+    let live = true;
+    listProfiles().then(
+      (names) => live && setProfiles(names),
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [listProfiles, connected]);
+  const pickProfile = (which: "skills" | "memory", p: string) =>
+    p !== tabProfile[which] && guard(() => setShownIn((cur) => ({ ...(cur.of === profile ? cur : tabProfile), [which]: p })));
+  const picker = (which: "skills" | "memory", label: string) =>
+    listProfiles && <ProfilePicker value={tabProfile[which]} shown={profile} profiles={profiles} label={label} onPick={(p) => pickProfile(which, p)} />;
   const tabs = TABS.filter(
     (t) =>
       (t.id !== "toolsets" || toolsets) &&
@@ -459,6 +495,7 @@ export function SettingsScreen({
       </section>
       </>
     ),
+    chats: <FollowUpSettings />,
     launch: (
       <>
       <StartupSettings />
@@ -539,6 +576,7 @@ export function SettingsScreen({
   const general = searching ? (
     <>
       {generalGroups.connection}
+      {generalGroups.chats}
       {generalGroups.launch}
       {generalGroups.screenshots}
       {generalGroups.storage}
@@ -556,14 +594,15 @@ export function SettingsScreen({
       case "persona":
         return (
           persona &&
-          // An edit is for one connection and profile: another profile is another editor.
+          // An edit is for one connection and profile: another profile is another editor. The picker starts again on the
+          // profile in use when that or the connection changes.
           gated(
             "persona",
-            <PersonaSettings
-              key={`${persona.storeKey}`}
+            <PersonaPage
+              key={persona.keyOf(persona.where.profile)}
               api={persona.api}
               store={persona.store}
-              storeKey={persona.storeKey}
+              keyOf={persona.keyOf}
               where={persona.where}
               connected={status === "connected"}
               onDirty={onPersonaDirty}
@@ -586,15 +625,16 @@ export function SettingsScreen({
                 {gated(
                   "memory",
                   <MemorySettings
-                    key={profile}
+                    key={tabProfile.memory}
                     api={memory}
-                    profile={profile}
+                    profile={tabProfile.memory}
                     status={status}
                     server={routeLabel(route) ?? "not known until connected"}
                     onDirtyChange={onEntriesDirty}
                     discardSignal={memoryDiscards}
                     source={memSel.kind === "file" ? memSel.source : undefined}
                     files={false}
+                    picker={picker("memory", "Profile whose memory is shown")}
                   />,
                 )}
               </div>
@@ -624,7 +664,17 @@ export function SettingsScreen({
           skills &&
           gated(
             "skills",
-            <SkillSettings key={profile} api={skills} profile={profile} status={status} server={routeLabel(route) ?? "not known until connected"} onDirtyChange={onSkillDirty} discardSignal={skillDiscards} />,
+            <SkillSettings
+              key={tabProfile.skills}
+              api={skills}
+              profile={tabProfile.skills}
+              status={status}
+              server={routeLabel(route) ?? "not known until connected"}
+              onDirtyChange={onSkillDirty}
+              discardSignal={skillDiscards}
+              picker={picker("skills", "Profile whose skills are shown")}
+              profiles={profiles}
+            />,
           )
         );
       case "appearance":

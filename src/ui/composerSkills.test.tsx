@@ -8,6 +8,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row } from "../hermes/fakeHermes";
 import { memoryCache } from "../hermes/memoryCache";
 import { connect, type Hermes } from "../hermes/transport";
+import { setUIPrefs } from "../hermes/uiPrefs";
 import { Main } from "../App";
 
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }) }));
@@ -177,6 +178,18 @@ describe("A message that runs a skill", () => {
     expect(await screen.findByText(/can't be queued/)).toBeTruthy();
     expect(composer().value).toBe("then check it with $debugging ");
     expect(hermes.getSnapshot().queues.backup).toBeUndefined();
+    expect(dispatched(server)).toEqual([]);
+  });
+
+  it("doesn't steer a running reply either, when Enter steers", async () => {
+    setUIPrefs({ followUp: "steer" });
+    const { server, hermes, user } = await launch();
+    await user.click(composer());
+    await user.keyboard("Run the backup{Enter}");
+    await waitFor(() => expect(hermes.getSnapshot().chats.find((c) => c.id === "backup")?.running).toBe(true));
+    await user.keyboard("then check it with $debugging{Enter}{Enter}");
+    expect(await screen.findByText(/can't be queued/)).toBeTruthy();
+    expect(composer().value).toBe("then check it with $debugging ");
     expect(dispatched(server)).toEqual([]);
   });
 

@@ -760,7 +760,9 @@ impl Dashboard {
     /// `PUT api/config`), the scheduled-job writes (`cron_write`), Settings → Persona's
     /// `PUT api/profiles/{name}/soul`, and Settings → Toolsets' switch, `PUT api/tools/toolsets/<name>` with exactly
     /// `{"enabled": true|false}` (`toolset_toggle_allowed`), Settings → Skills' two writes, `PUT api/skills/toggle` and
-    /// `PUT api/skills/content` with exactly their fields (`skill_write_allowed`), and Import transcripts'
+    /// `PUT api/skills/content` with exactly their fields (`skill_write_allowed`), Settings → Skills' copy to another
+    /// profile, `POST api/skills` (`skill_create_allowed`), Settings → Memory's entry edit for any profile, `PUT
+    /// api/learning/node` naming a memory entry (`memory_entry_edit_allowed`), and Import transcripts'
     /// `POST api/sessions/import` whose every session is marked `source: "import"` (`import_body_allowed`, ADR 0031),
     /// the Automations writes (`webhook_write`, ADR 0036), Settings → Memory's external memory writes
     /// (`memory_provider_write`, ADR 0045), and Settings → Voice's provider pick and key save (`voice_provider_write`,
@@ -779,6 +781,8 @@ impl Dashboard {
             ("PUT", _) if toolset_toggle_allowed(path, body.as_deref()) => Method::PUT,
             ("PUT", _) if voice_provider_write(path, body.as_deref()) => Method::PUT,
             ("PUT", _) if skill_write_allowed(path, body.as_deref()) => Method::PUT,
+            ("POST", "api/skills") if skill_create_allowed(body.as_deref()) => Method::POST,
+            ("PUT", "api/learning/node") if memory_entry_edit_allowed(body.as_deref()) => Method::PUT,
             ("PUT", _) if memory_provider_write("PUT", path, body.as_deref()) => Method::PUT,
             ("POST", _) if memory_provider_write("POST", path, body.as_deref()) => Method::POST,
             ("POST", _) if webhook_write("POST", path, body.as_deref()) => Method::POST,
@@ -1548,6 +1552,55 @@ pub fn skill_write_allowed(path: &str, body: Option<&str>) -> bool {
     name_ok && value_ok
 }
 
+/// Hermes's rule for a new skill's name and its category (`tools/skill_manager_tool.py` `VALID_NAME_RE`, at most 64):
+/// a lowercase letter or digit, then lowercase letters, digits, `.`, `_` or `-`. One folder name, so it can't leave the
+/// profile's skills folder.
+fn skill_dir_name(n: &str) -> bool {
+    let mut b = n.bytes();
+    n.len() <= 64
+        && matches!(b.next(), Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit())
+        && b.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'.' || c == b'_' || c == b'-')
+}
+
+/// Whether a `POST api/skills` body is Settings → Skills' copy of a skill into another profile (ADR 0057): exactly
+/// `{"name", "content"}` and optionally `"category"`, the name and category each one folder name as Hermes allows
+/// it (`skill_dir_name`), the content a string. The profile goes in the query, never the body. Hermes's own front matter,
+/// size and security checks then apply, and it refuses a name the profile already has.
+pub fn skill_create_allowed(body: Option<&str>) -> bool {
+    let Some(fields) = body.and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok()) else {
+        return false;
+    };
+    let Some(fields) = fields.as_object() else {
+        return false;
+    };
+    let known = fields.keys().all(|k| matches!(k.as_str(), "name" | "content" | "category"));
+    let name_ok = fields.get("name").and_then(|n| n.as_str()).is_some_and(skill_dir_name);
+    let content_ok = fields.get("content").is_some_and(|c| c.is_string());
+    let category_ok = fields.get("category").is_none_or(|c| c.as_str().is_some_and(skill_dir_name));
+    known && name_ok && content_ok && category_ok
+}
+
+/// Whether a `PUT api/learning/node` body replaces one built-in memory entry (ADR 0057): exactly `{"id", "content"}`,
+/// the id a memory node as Hermes names it, `memory:<memory|profile>:<index>:<fingerprint>` (`agent/learning_graph.py`
+/// `memory_node_id`, the fingerprint 12 hex digits of SHA-256). Hermes resolves the fingerprint under the memory tool's
+/// lock and refuses a stale one. A skill's id is its name, and skills are edited only through `api/skills/content`,
+/// with its checks, so no other id is relayed.
+pub fn memory_entry_edit_allowed(body: Option<&str>) -> bool {
+    let Some(fields) = body.and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok()) else {
+        return false;
+    };
+    let Some(fields) = fields.as_object().filter(|o| o.len() == 2) else {
+        return false;
+    };
+    let id_ok = fields.get("id").and_then(|i| i.as_str()).is_some_and(|id| {
+        let parts: Vec<&str> = id.split(':').collect();
+        matches!(parts.as_slice(), ["memory", "memory" | "profile", index, print]
+            if !index.is_empty() && index.len() <= 9 && index.bytes().all(|c| c.is_ascii_digit())
+                && print.len() == 12 && print.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)))
+    });
+    id_ok && fields.get("content").is_some_and(|c| c.is_string())
+}
+
 /// Settings → Memory's external memory writes (ADR 0045, Hermes's `/api/memory` routes): `PUT api/memory/provider`
 /// `{"provider": name}` picks a profile's provider ("" for built-in memory only), `PUT
 /// api/memory/providers/{name}/config` `{"values": {key: text}}`, never empty, saves its settings, and `POST
@@ -1935,7 +1988,61 @@ impl Dashboard {
 
 #[cfg(test)]
 mod tests {
-    use super::{memory_provider_write, provider_key_name, webhook_write};
+    use super::{memory_entry_edit_allowed, memory_provider_write, provider_key_name, skill_create_allowed, webhook_write};
+
+    #[test]
+    fn only_a_skill_copy_creates_a_skill() {
+        for body in [
+            r#"{"name":"release-notes","content":"---\nname: release-notes\n---\nx"}"#,
+            r#"{"name":"a.b_c-9","content":"x","category":"writing"}"#,
+            &format!(r#"{{"name":"{}","content":""}}"#, "a".repeat(64)),
+        ] {
+            assert!(skill_create_allowed(Some(body)), "{body}");
+        }
+        for body in [
+            r#"{"name":"Release","content":"x"}"#,
+            r#"{"name":"-x","content":"x"}"#,
+            r#"{"name":"../x","content":"x"}"#,
+            r#"{"name":"a/b","content":"x"}"#,
+            r#"{"name":"","content":"x"}"#,
+            r#"{"name":"x","content":"x","category":"a/b"}"#,
+            r#"{"name":"x","content":"x","category":".."}"#,
+            r#"{"name":"x","content":"x","category":null}"#,
+            // The profile goes in the query only.
+            r#"{"name":"x","content":"x","profile":"other"}"#,
+            r#"{"name":"x"}"#,
+            r#"{"name":"x","content":1}"#,
+            "[]",
+            "not json",
+        ] {
+            assert!(!skill_create_allowed(Some(body)), "{body}");
+        }
+        assert!(!skill_create_allowed(Some(&format!(r#"{{"name":"{}","content":""}}"#, "a".repeat(65)))));
+        assert!(!skill_create_allowed(None));
+    }
+
+    #[test]
+    fn only_memory_entries_are_edited_through_the_learning_route() {
+        for body in [r#"{"id":"memory:memory:0:0123456789ab","content":"x"}"#, r#"{"id":"memory:profile:12:abcdefabcdef","content":""}"#] {
+            assert!(memory_entry_edit_allowed(Some(body)), "{body}");
+        }
+        for body in [
+            // A skill's id is its name: skills are edited through api/skills/content only.
+            r#"{"id":"release-notes","content":"x"}"#,
+            r#"{"id":"memory:memory:0","content":"x"}"#,
+            r#"{"id":"memory:other:0:0123456789ab","content":"x"}"#,
+            r#"{"id":"memory:memory:x:0123456789ab","content":"x"}"#,
+            r#"{"id":"memory:memory:0:0123456789AB","content":"x"}"#,
+            r#"{"id":"memory:memory:0:0123456789abc","content":"x"}"#,
+            r#"{"id":"memory:memory:0:0123456789ab:x","content":"x"}"#,
+            r#"{"id":"memory:memory:0:0123456789ab","content":"x","profile":"p"}"#,
+            r#"{"id":"memory:memory:0:0123456789ab","content":1}"#,
+            "not json",
+        ] {
+            assert!(!memory_entry_edit_allowed(Some(body)), "{body}");
+        }
+        assert!(!memory_entry_edit_allowed(None));
+    }
 
     #[test]
     fn only_the_memory_provider_writes() {

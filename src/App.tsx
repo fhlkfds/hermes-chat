@@ -4,7 +4,7 @@ import { ArrowLeft, ArrowRight, Columns2, FolderCog, GitBranch, PanelBottom, Pan
 import { CONNECT_STOPPED, RenameConflict, connect, readSaved, toSource, type Delivery, type Hermes } from "./hermes/transport";
 import { invoke } from "@tauri-apps/api/core";
 import type { CommandHost } from "./ui/SlashCommands";
-import type { ServerCommandList } from "./hermes/commands";
+import { STEER, type ServerCommandList } from "./hermes/commands";
 import type { SkillCall, SkillCommands } from "./hermes/skillCommands";
 import { CHECK_EVERY_MS } from "./hermes/otherProfiles";
 import { type Account, type Kept, type SavedSignIn, launchSignIn, removeConnection, savedSignIn, signIn, signInForm, signOutToSignIn } from "./hermes/account";
@@ -41,7 +41,7 @@ import { desktopLinks, type LinkInbox } from "./hermes/tauriLinks";
 import { ChatLinkNotice, type LinkNoticeView } from "./ui/ChatLinkNotice";
 import { Inbox } from "./ui/Inbox";
 import { inboxAcks, inboxEntries, inboxScope, needsOwner, type InboxEntry } from "./hermes/inbox";
-import { ChatPane, type JumpTarget } from "./ui/ChatPane";
+import { ChatPane, type FollowUpHost, type JumpTarget } from "./ui/ChatPane";
 import { BranchDialog, BranchedFrom } from "./ui/Branch";
 import { MembershipDialog, MembershipStatus, needsOwner as membershipNeedsOwner } from "./ui/MembershipSync";
 import { ReplayDialog } from "./ui/Replay";
@@ -783,10 +783,13 @@ export function Main({
   const [personaUnsaved, setPersonaUnsaved] = useState(false);
   // This computer could keep the unsaved edit, so leaving doesn't lose it.
   const [personaKept, setPersonaKept] = useState(true);
-  const onPersonaDirty = useCallback((dirty: boolean, kept: boolean) => {
+  // The profile whose persona is open: Settings → Persona can edit any profile's, not only the one in use.
+  const [personaProfile, setPersonaProfile] = useState<string>();
+  const onPersonaDirty = useCallback((dirty: boolean, kept: boolean, profile: string) => {
     personaDirty.current = dirty;
     setPersonaUnsaved(dirty);
     setPersonaKept(kept);
+    setPersonaProfile(profile);
   }, []);
   // An unsaved edit in Settings → Memory (MemorySettings.tsx) lives only on screen: leaving it asks first too.
   const memoryDirty = useRef(false);
@@ -1147,11 +1150,12 @@ export function Main({
   workingRef.current = working;
   // Read when the restore dialog renders and again just before it writes: sends and refused writes aren't React state.
   const restoreBusy = () => restoreBlocked({ working: workingRef.current, unsaved: unsaved.size, sending: sending.size });
-  // Settings → Persona edits this connection and profile's SOUL.md; its edits are kept apart per connection and profile.
+  // Settings → Persona edits the SOUL.md of any profile on this connection, starting on the one in use; its edits are
+  // kept apart per connection and profile.
   const persona: PersonaWiring = {
     api: hermes.persona,
     store: personaStore,
-    storeKey: personaKey(connection, profile),
+    keyOf: (p) => personaKey(connection, p),
     where: { server: route ? serverLabel(route) : connection.mode === "ssh" ? connection.sshTarget : serverLabel({ kind: "url", url: connection.url, addresses: [] }), route: where, profile },
   };
 
@@ -2589,6 +2593,7 @@ export function Main({
             persona={persona}
             onPersonaDirty={onPersonaDirty}
             guard={guard}
+            listProfiles={listProfiles}
           />
         ) : usageOpen ? (
           <UsageAnalytics
@@ -2874,7 +2879,7 @@ export function Main({
       {leaving?.edit === "persona" && (
         <LeavePersona
           what={leaving.what}
-          profile={profile}
+          profile={personaProfile ?? profile}
           kept={personaKept}
           onStay={() => {
             leaving.stay?.();
@@ -3265,6 +3270,30 @@ function ChatView({
     },
   };
 
+  // A message sent while the reply runs, by the Follow-up behavior setting (ADR 0057): queued (queueApi), or steered
+  // into the reply through the same route as a typed /steer, and only when /steer could run now. The Draft empties only
+  // once Hermes has taken the words, and only if the owner hasn't changed it meanwhile. If the reply ended, or Hermes
+  // couldn't steer it yet, the words go to the end of the queue instead, so they never jump a message queued earlier.
+  const followUpMode = useSyncExternalStore(subscribeUIPrefs, getUIPrefs).followUp;
+  const followUp: FollowUpHost | undefined = queueApi && {
+    mode: followUpMode,
+    why: () => commands.why(STEER),
+    steer: async (text) => {
+      const key = shownDraft;
+      const typed = savedDrafts.get(key);
+      const done = () => savedDrafts.get(key) === typed && savedDrafts.set(key, "");
+      if (await hermes.steer(chat.id, text) === "steered") {
+        done();
+        return undefined;
+      }
+      if (!stillIn()) throw new Error(`The profile changed to ${hermes.profile} meanwhile.`);
+      const why = hermes.enqueue(chat.id, text);
+      if (why) throw new Error(`Hermes couldn't steer the reply just then, and it couldn't be queued: ${why}`);
+      done();
+      return "Hermes couldn't steer the reply just then, so your message is queued instead.";
+    },
+  };
+
   // An opened chat shows its stored history and is marked read; a chat already open on this connection is left as it
   // is. Until connected it shows its Saved copy, and after a reconnect it loads again. Settings covers the panes, so
   // the chats aren't on screen meanwhile.
@@ -3344,6 +3373,7 @@ function ChatView({
       // typed stays in the composer, and a failure is a Failed message (ADR 0041).
       voiceSend={started ? (text) => hermes.sendTracked(chat.id, text) : undefined}
       commands={commands}
+      followUp={followUp}
       headActions={
         <>
           {started && inWorktree && (
