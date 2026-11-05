@@ -120,9 +120,10 @@ export interface Pipe {
   saveText(id: number, path: string, text: string, overwrite: boolean): Promise<string>;
   /**
    * Writes an artifact's text to `path` where `profile`'s tools run (src-tauri `fs_save_text`, `POST api/fs/write-text`,
-   * ADR 0029). Resolves to Hermes's answer; `cancelTransfer(id)` stops it.
+   * ADR 0029). `session`: the chat whose sandbox the path is in, as the read named it (ADR 0062). Resolves to Hermes's
+   * answer; `cancelTransfer(id)` stops it.
    */
-  fsSaveText(id: number, profile: string, path: string, text: string): Promise<string>;
+  fsSaveText(id: number, profile: string, path: string, text: string, session?: string): Promise<string>;
   cancelTransfer(id: number): Promise<void>;
   /**
    * Opens the Screen's RFB stream with a ticket from `display.observe` (src-tauri `display_open`, ADR 0039). Rust closes

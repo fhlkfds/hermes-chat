@@ -2147,7 +2147,7 @@ async fn fs_write_stub() -> (Dashboard, Arc<Mutex<Vec<String>>>) {
 async fn writes_an_artifacts_text_where_the_profiles_tools_run() {
     let (dashboard, writes) = fs_write_stub().await;
     let text = "# Plan\r\n\u{feff}naïve ✓ 🚀\n";
-    let got: Value = serde_json::from_str(&dashboard.write_agent_text("work two", "/srv/out/plan.md", text).await.expect("written")).unwrap();
+    let got: Value = serde_json::from_str(&dashboard.write_agent_text("work two", "/srv/out/plan.md", text, None).await.expect("written")).unwrap();
     assert_eq!(got["path"], "/srv/out/plan.md");
     assert_eq!(got["content"], text, "the text goes exactly as given");
     assert_eq!(got["byteSize"], text.len());
@@ -2155,21 +2155,21 @@ async fn writes_an_artifacts_text_where_the_profiles_tools_run() {
     assert_eq!(got["cookie"], "hermes_session_at=AT; hermes_session_rt=RT");
     assert_eq!(*writes.lock().unwrap(), vec!["/srv/out/plan.md".to_owned()]);
     // A path under the home folder is the tools' own form too.
-    dashboard.write_agent_text("default", "~/notes/todo.txt", "x").await.expect("a home path is sent");
+    dashboard.write_agent_text("default", "~/notes/todo.txt", "x", None).await.expect("a home path is sent");
 }
 
 #[tokio::test]
 async fn an_artifact_write_refuses_credential_files_odd_paths_and_too_much_text() {
     let (dashboard, writes) = fs_write_stub().await;
     for path in ["/srv/.env", "/home/me/.hermes/auth.json", "/srv/mcp-tokens/x.json", "relative.md", "/srv/a/../b.md", "/srv/dir/", "/srv/a\0b"] {
-        let err = dashboard.write_agent_text("default", path, "x").await.err().unwrap();
+        let err = dashboard.write_agent_text("default", path, "x", None).await.err().unwrap();
         assert!(matches!(err, TransportError::NotRelayed(_)), "{path}: {err:?}");
     }
     let big = "x".repeat(transport::AGENT_TEXT_MAX_BYTES as usize + 1);
-    let err = dashboard.write_agent_text("default", "/srv/big.md", &big).await.err().unwrap();
+    let err = dashboard.write_agent_text("default", "/srv/big.md", &big, None).await.err().unwrap();
     assert!(matches!(err, TransportError::FileTooLarge { .. }), "{err:?}");
     assert!(writes.lock().unwrap().is_empty(), "nothing reached the server");
-    let err = dashboard.write_agent_text("default", "/srv/readonly.md", "x").await.err().unwrap();
+    let err = dashboard.write_agent_text("default", "/srv/readonly.md", "x", None).await.err().unwrap();
     assert!(matches!(&err, TransportError::Unexpected { status: 403, body } if body.contains("not writable")), "{err:?}");
 }
 

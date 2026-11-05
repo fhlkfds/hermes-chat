@@ -34,7 +34,7 @@ const AVAILABILITY: Record<string, string> = {
   unknown: "Couldn't check",
 };
 
-function Availability({ o }: { o: Output }) {
+function Availability({ o, onRecheck, busy }: { o: Output; onRecheck?: () => void; busy: boolean }) {
   const a = o.availability;
   if (!a) return <span className="muted" title="Refresh checks whether the file is still there">Not checked</span>;
   const tip = [a.why, `Checked ${storedTime(a.checkedAt)}`].filter(Boolean).join("\n");
@@ -42,6 +42,11 @@ function Availability({ o }: { o: Output }) {
     <span className={`out-avail ${a.state}`} title={tip}>
       {AVAILABILITY[a.state] ?? a.state}
       {a.why && a.state !== "available" && <span className="out-why muted small">{a.why}</span>}
+      {a.state !== "available" && onRecheck && (
+        <button className="link-btn small" disabled={busy} onClick={onRecheck} title="Check again whether the file is at its path">
+          Check again
+        </button>
+      )}
     </span>
   );
 }
@@ -64,6 +69,7 @@ export function OutputsScreen({
   onPreview,
   onEdit,
   unsavedEdit,
+  onRecheck,
   onJump,
   onShowFolder,
   onClose,
@@ -92,6 +98,8 @@ export function OutputsScreen({
   onEdit?: (o: Output) => void;
   /** Whether the file has an edit open that isn't saved to Hermes. */
   unsavedEdit?: (o: Output) => boolean;
+  /** Checks one file again, for a row that says it's missing or couldn't be checked (ADR 0062). */
+  onRecheck?: (o: Output) => void;
   onJump: (o: Output) => void;
   onShowFolder: (o: Output) => void;
   onClose: () => void;
@@ -328,7 +336,7 @@ export function OutputsScreen({
                         {o.size !== undefined ? fmtSize(o.size) : "—"}
                       </td>
                       <td>
-                        <Availability o={o} />
+                        <Availability o={o} busy={!connected || !!snapshot.checking} onRecheck={onRecheck && (() => onRecheck(o))} />
                       </td>
                       <td className="out-source">
                         {title && <span className="out-chat">{title}</span>}

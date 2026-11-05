@@ -152,12 +152,12 @@ kbd {
 .section-toggle .dot { margin-left: 6px; width: 6px; height: 6px; }
 .chev { transition: transform 0.15s; flex: none; }
 .chev.open { transform: rotate(90deg); }
-.settled-section { flex: none; display: flex; flex-direction: column; max-height: 55%; padding: 0 8px 10px; }
-.settled-section.open { border-top: 1px solid var(--line); }
-.settled-list { overflow-y: auto; min-height: 0; }
-.settled-list .row-title { color: var(--muted); }
-/* Working and Snoozed sit under the chats that need the owner, in the list's scroll. */
-.row[data-section="snoozed"] .row-title { color: var(--muted); }
+/* Every section is in the list's scroll (ADR 0063); the ones out of the way are quieter. */
+.section-toggle:first-child { padding-top: 6px; }
+.row[data-section="snoozed"] .row-title,
+.row[data-section="unsettled"] .row-title,
+.row[data-section="settled"] .row-title,
+.row[data-section="archived"] .row-title { color: var(--muted); }
 /* A collapsed section's rows stay mounted, hidden; .row's own display would otherwise show them. */
 .row[hidden] { display: none; }
 .row-wake { font-variant-numeric: tabular-nums; }
@@ -2112,6 +2112,30 @@ label.memory-pick { cursor: pointer; }
 .inbox-row.is-stale .inbox-summary { font-style: italic; }
 .inbox-dismiss { margin-top: 6px; flex: none; }
 .inbox-empty { padding: 12px 16px; }
+.bots-btn { position: relative; }
+.bots-btn .dot { position: absolute; top: 4px; right: 4px; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); }
+.bots-about { padding: 0 16px 8px; margin: 0; }
+.bots-note { padding: 0 16px 8px; margin: 0; }
+.bots-row { align-items: center; }
+.bots-open { flex: 1; min-width: 0; display: flex; align-items: flex-start; gap: 10px; text-align: left; padding: 8px; border-radius: 8px; }
+.bots-face {
+  flex: none; width: 34px; height: 34px; border-radius: 50%; overflow: hidden; display: grid; place-items: center;
+  background: var(--raised-3); color: var(--text); font-weight: 600; font-size: calc(14rem / 14);
+}
+.bots-face.has-color { color: #fff; }
+.bots-face img { width: 100%; height: 100%; object-fit: cover; }
+.bots-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.bots-name { color: var(--text); font-size: calc(13rem / 14); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bots-desc { color: var(--faint); font-size: calc(11.5rem / 14); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bots-preview { color: var(--muted); font-size: calc(12rem / 14); line-height: 1.4; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.bots-preview.is-empty { color: var(--faint); font-style: italic; }
+.bots-activity { display: inline-flex; align-items: center; gap: 4px; font-size: calc(11.5rem / 14); font-weight: 500; color: var(--accent); white-space: nowrap; }
+.bots-activity.is-needs-you { color: var(--warn); }
+.bots-row.is-hidden .bots-open { opacity: 0.6; }
+.bots-new { flex: none; margin-right: 4px; }
+.bots-hidden { padding: 4px 8px; }
+.bots-hidden-toggle { display: inline-flex; align-items: center; gap: 4px; color: var(--faint); font-size: calc(11.5rem / 14); }
+.bots-hidden-toggle:hover { color: var(--text); }
 @media (max-width: 520px) {
   .inbox { width: calc(100vw - 60px); }
 }
@@ -2132,7 +2156,7 @@ label.memory-pick { cursor: pointer; }
 .toolset-label .appearance-title { gap: 8px; flex-wrap: wrap; }
 .toolset-hint { margin-top: 4px; line-height: 1.5; }
 .settings h3.toolset-subhead { margin: 24px 0 6px; }
-.switch:disabled { opacity: 0.5; cursor: not-allowed; }
+.switch:disabled, .switch[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
 .badge.off { color: var(--faint); }
 .toolset-desc { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; white-space: pre-line; }
 .toolset-ask { max-width: none; margin: 8px 0 4px; padding: 12px 14px; border: 1px solid var(--line-2); border-radius: var(--radius); }
@@ -2294,6 +2318,7 @@ label.memory-pick { cursor: pointer; }
 .out-avail.missing { color: var(--bad); }
 .out-avail.forbidden, .out-avail.folder, .out-avail.unknown { color: var(--warn); }
 .out-why { display: block; line-height: 1.35; }
+.out-avail .link-btn { display: block; font-size: 12px; margin-top: 2px; }
 .out-actions { text-align: right; white-space: nowrap; }
 .out-actions .icon-btn { width: 26px; height: 26px; }
 .out-actions .icon-btn:disabled { opacity: 0.35; cursor: default; }

@@ -68,6 +68,8 @@ export type SessionRow = {
   _lineage_ids?: string[];
   /** Not this fake's to send: a stored session no chat list shows (a later compression segment, a subagent run). */
   unlisted?: boolean;
+  /** Hermes's generic `hidden` flag: out of every default list, still resumable and found by search. Bot Chats have it. */
+  hidden?: boolean;
   /** Not this fake's to send: what the list shows instead for a compression root (its last segment's id, model, ...). */
   listedAs?: Partial<SessionRow>;
   /** A webhook session's platform identity (`webhook:v2:…`, `webhook:<route>`) and end. */
@@ -255,6 +257,9 @@ export function editFlags(body: Record<string, unknown> | undefined) {
   return flags;
 }
 
+/** `hermes_cli/web_server_files.py` `SANDBOX_NOT_FOUND` at `f0d94882`: a container path the dashboard couldn't map to the host. */
+export const SANDBOX_NOT_FOUND = "File not found on the gateway host: the path may live inside the agent sandbox";
+
 /** Hermes's `_FS_PREVIEW_LANGUAGE_BY_EXT` and `_fs_mime_type` at `bf0203a`, as far as the tests need them. */
 const FS_LANGUAGES: Record<string, string> = { py: "python", md: "markdown", html: "html", ts: "typescript", json: "json", txt: "text", sh: "shell" };
 const FS_MIME: Record<string, string> = {
@@ -280,6 +285,19 @@ export class FakeHermes {
   sessions: SessionRow[] = [];
   /** Every other profile's stored sessions, by profile name. Each profile has its own store (research doc §5). */
   otherProfiles: Record<string, SessionRow[]> = {};
+  /**
+   * Bot Mode (research doc "Bot Mode"): `full` as at the deployed `f0d94882`; `no-canonical`, a Hermes whose
+   * `profiles.list` rows don't report a Bot Chat; `none`, one without `profiles.list`.
+   */
+  botMode: "full" | "no-canonical" | "none" = "full";
+  /** What each profile's `profile.yaml` says about it, for `profiles.list`. */
+  profileMeta: Record<string, { description?: string; display_name?: string; ui_meta?: Record<string, unknown> }> = {};
+  /** Each profile's avatar, as a data URL (`profiles.get_asset`). */
+  botAvatars: Record<string, string> = {};
+  /** Runs as each `session.list` arrives, with its profile, e.g. to make a Bot Chat as another client would meanwhile. */
+  beforeTitleLookup?: (profile: string) => void;
+  /** Answers each `session.list` by title with this JSON-RPC error. */
+  titleLookupError?: { code: number; message: string };
   /**
    * Each profile's SOUL.md as the file holds it, by profile name; a profile left out has none. Read and written as
    * `GET`/`PUT /api/profiles/{name}/soul` do at the deployed `bf0203a` (persona.ts).
@@ -382,8 +400,15 @@ export class FakeHermes {
    * file's text (or bytes, one char per byte); `{ dir: true }` is a folder.
    */
   serverFiles: Record<string, string | { dir: true }> = {};
-  /** Every `POST /api/fs/write-text` that reached the server, in order (artifact saves, ADR 0029). */
-  readonly fsWrites: { profile: string; path: string; text: string }[] = [];
+  /** Every `POST /api/fs/write-text` that reached the server, in order (artifact saves, ADR 0029). `session`: the chat named. */
+  readonly fsWrites: { profile: string; path: string; text: string; session?: string }[] = [];
+  /**
+   * A Docker terminal backend with `docker_mount_cwd_to_workspace` on, as probed live at `f0d94882` (ADR 0062): the
+   * agent's `/workspace` is a host folder, the chat's own (`chats`, by stored session id) when a request names the chat
+   * with `session_id`, else the profile's (`profile`). A container path that doesn't map to a file there is Hermes's
+   * `SANDBOX_NOT_FOUND`. Unset: `/workspace` is an ordinary host path.
+   */
+  sandbox?: { profile?: string; chats: Record<string, string> };
   /** While set, an artifact save waits for it before Hermes writes. */
   fsWriteGate?: Promise<void>;
   /** Hermes's answer to the next artifact saves instead of writing: the Rust side's error text. */
@@ -428,7 +453,7 @@ export class FakeHermes {
   readonly sessionModel = new Map<string, ModelInfo>();
   /** runtime session id -> stored session id, for every session.create / session.resume. */
   readonly runtime = new Map<string, string>();
-  private created = new Map<string, { source: string; profile?: string }>(); // runtime id, until the first prompt stores it
+  private created = new Map<string, { source: string; profile?: string; hidden?: boolean; title?: string }>(); // runtime id, until the first prompt stores it
 
   /**
    * The profile's `.env` rows as `GET /api/env` lists them (`hermes_cli/web_routers/config_env.py` at the deployed
@@ -540,7 +565,7 @@ export class FakeHermes {
 
   /**
    * Makes this server answer as Hermes 0.16.0 (`3705625`, 2026-06-08) does, as read from its source: no `/api/health`,
-   * no `client.capabilities` or `gateway.capabilities`, no `projects.*` or `learning.*`, and no managed-files or agent
+   * no `client.capabilities` or `gateway.capabilities`, no `projects.*`, `learning.*` or `profiles.list` (Bot Mode), and no managed-files or agent
    * fs routes. Its `/api/status` has the version and the sign-in gate.
    */
   asOlderHermes() {
@@ -548,6 +573,7 @@ export class FakeHermes {
     for (const m of ["client.capabilities", "gateway.capabilities", "projects.list", "projects.create", "learning.frames", "learning.detail", "learning.edit", "learning.delete"]) noMethod(m);
     for (const r of ["GET /api/health", "GET /api/files", "GET /api/files/read", "GET /api/fs/list"]) delete this.rest[r];
     this.status = { version: "0.16.0", release_date: "2026.6.8", auth_required: true, auth_providers: ["basic"] };
+    this.botMode = "none";
   }
 
   /** Per-method behaviour; tests override entries. Unhandled methods get no answer. */
@@ -555,13 +581,63 @@ export class FakeHermes {
     // `tui_gateway/contracts/liveness.py` at upstream `74b2ed6`: what this build enforces, as flags.
     "gateway.capabilities": (r) => this.respond(r.id, { per_session_exclusive_submit: true }),
     "session.active_list": (r) => this.respond(r.id, { sessions: this.liveSessions.map((l) => ({ current: false, message_count: 0, model: "", preview: "", title: "", started_at: l.last_active, ...l })) }),
+    // Bot Mode at the deployed `f0d94882` (research doc "Bot Mode", probed live on 2026-11-04).
+    "profiles.list": (r) => {
+      if (this.botMode === "none") return this.fail(r.id, -32601, "unknown method: profiles.list");
+      this.respond(r.id, { profiles: this.profileNames().map((name) => this.profileRow(name)), bot_mode_protocol: true, install_id: "install-1f2e3d4c5b6a" });
+    },
+    // `session.list {profile, title?, include_hidden?, limit?}`: with `title`, the exact-title lookup (`resolved_id` the
+    // lineage tip); without, the newest visible rows. Never archived ones.
+    "session.list": (r) => {
+      const store = this.store(r.params.profile as string | undefined);
+      if (!store) return this.fail(r.id, 4064, `profile '${String(r.params.profile)}' not found`);
+      this.beforeTitleLookup?.(String(r.params.profile ?? "default"));
+      const title = typeof r.params.title === "string" ? r.params.title : undefined;
+      if (title && this.titleLookupError) return this.fail(r.id, this.titleLookupError.code, this.titleLookupError.message);
+      const rows = store
+        .filter((s) => !s.archived && !s.unlisted && (r.params.include_hidden === true || !s.hidden) && (title === undefined || s.title === title))
+        .sort((a, b) => b.started_at - a.started_at)
+        .slice(0, typeof r.params.limit === "number" ? r.params.limit : 20);
+      this.respond(r.id, {
+        sessions: rows.map((s) => ({ id: s.id, ...(title !== undefined && { resolved_id: s.listedAs?.id ?? s.id }), title: s.title ?? "", preview: s.preview, started_at: s.started_at, message_count: s.message_count, source: s.source })),
+      });
+    },
+    // `session.title {session_id, title}` on a live session: a title another row of the profile holds is refused with
+    // 4022; on a session with no row yet, it stores the row now (`{pending: false}`).
+    "session.title": (r) => {
+      const runtimeId = String(r.params.session_id);
+      const stored = this.runtime.get(runtimeId);
+      if (!stored) return this.fail(r.id, 4001, "session not found");
+      const title = String(r.params.title ?? "");
+      const created = this.created.get(runtimeId);
+      const store = this.store(created ? created.profile : (this.runtimeProfile.get(runtimeId) ?? "default"))!;
+      const holder = store.find((s) => s.title === title && s.id !== stored);
+      if (holder) return this.fail(r.id, 4022, `Title '${title}' is already in use by session ${holder.id}`);
+      if (created) {
+        this.created.delete(runtimeId);
+        store.push(row(stored, 0, { source: created.source, title, preview: "", message_count: 0, ...(created.hidden && { hidden: true }) }));
+      } else {
+        const s = store.find((x) => x.id === stored);
+        if (s) s.title = title;
+      }
+      this.respond(r.id, { title, pending: false });
+    },
+    "profiles.get_asset": (r) => {
+      const data = this.botAvatars[String(r.params.name ?? "")];
+      this.respond(r.id, data ? { found: true, mime: data.slice(5, data.indexOf(";")), size: data.length, data } : { found: false });
+    },
     "session.create": (r) => {
       const n = this.requests.filter((q) => q.method === "session.create").length;
       const runtimeId = `rt-${n}`;
       const stored = `20261031_12000${n}_abc123`;
       this.runtime.set(runtimeId, stored);
       this.runtimeProfile.set(runtimeId, (r.params.profile as string | undefined) || "default");
-      this.created.set(runtimeId, { source: String(r.params.source ?? "tui"), profile: r.params.profile as string | undefined });
+      this.created.set(runtimeId, {
+        source: String(r.params.source ?? "tui"),
+        profile: r.params.profile as string | undefined,
+        ...(r.params.hidden === true && { hidden: true }),
+        ...(typeof r.params.title === "string" && { title: r.params.title }),
+      });
       this.agentTools.set(runtimeId, this.offeredTools((r.params.profile as string | undefined) ?? "default"));
       // `SessionCreateParams` `model` / `provider` / `reasoning_effort` / `fast`: the session's own overrides.
       const base = this.defaultModel(r.params.profile as string | undefined);
@@ -662,7 +738,7 @@ export class FakeHermes {
       const created = this.created.get(runtimeId);
       if (created) {
         this.created.delete(runtimeId);
-        const stored = row(this.runtime.get(runtimeId)!, 0, { source: created.source, title: null, preview: String(r.params.text), message_count: 1 });
+        const stored = row(this.runtime.get(runtimeId)!, 0, { source: created.source, title: null, preview: String(r.params.text), message_count: 1, ...(created.hidden && { hidden: true }) });
         this.store(created.profile)?.push(stored);
       }
       const stored = this.runtime.get(runtimeId);
@@ -962,7 +1038,8 @@ export class FakeHermes {
     "GET /api/status": () => this.status,
     // `fs_list` (`hermes_cli/web_routers/files.py` at the deployed `bf0203a`): a folder's entries, or none and why.
     "GET /api/fs/list": ({ query }) => {
-      const path = query.get("path") ?? "";
+      // `fs_list` takes no `session_id`: a container path lists the profile's own `/workspace`.
+      const path = this.sandboxPath(query.get("path") ?? "") ?? query.get("path") ?? "";
       const all = new Set([...this.serverDirs, ...Object.keys(this.serverFiles)]);
       // A folder holding a file or folder is there too, as on a real disk.
       const isDir = (p: string) => this.serverDirs.has(p) || typeof this.serverFiles[p] === "object" || [...all].some((q) => q.startsWith(`${p}/`));
@@ -991,11 +1068,14 @@ export class FakeHermes {
       const archived = query.get("archived") ?? "exclude";
       // order=created (the default): newest started first; order=recent: latest activity first.
       const at = (s: SessionRow) => (query.get("order") === "recent" ? (s.last_active ?? s.started_at) : s.started_at);
-      const recent = visible.filter((s) => archived === "include" || s.archived === (archived === "only")).sort((a, b) => at(b) - at(a));
+      // Hidden rows are out of every list but the archived-only one, the recovery view (`list_sessions_rich`).
+      const recent = visible
+        .filter((s) => (archived === "include" || s.archived === (archived === "only")) && (!s.hidden || archived === "only"))
+        .sort((a, b) => at(b) - at(a));
       const offset = Number(query.get("offset") ?? 0);
       const limit = Number(query.get("limit") ?? 20);
       const page = recent.slice(offset, offset + limit);
-      const pinned = visible.filter((s) => s.pinned && !page.includes(s));
+      const pinned = visible.filter((s) => s.pinned && !page.includes(s) && (!s.hidden || archived === "only"));
       // A compression root lists as its last segment, with its own counts and every segment's id.
       const listed = (s: SessionRow) => {
         const { listedAs, ...stored } = s;
@@ -1035,10 +1115,11 @@ export class FakeHermes {
       const store = this.storeOrFail(query.get("profile")).filter((s) => !excluded.includes(s.source) && (!only.length || only.includes(s.source)));
       const hits = (token: string) => words.some((w) => token.toLowerCase().startsWith(w));
       const results = new Map<string, Record<string, unknown>>();
+      // A hit in a compressed chat is reported at its lineage's tip, with the tip's title (`add_lineage_result`).
       const add = (s: SessionRow, snippet: string, role: string | null) =>
         results.size < limit && !results.has(s.id) && results.set(s.id, {
-          snippet, role, source: s.source, model: s.model ?? null, session_started: s.started_at, session_id: s.id, lineage_root: s.id,
-          profile: query.get("profile") ?? "default", id: s.id, title: s.title, started_at: s.started_at,
+          snippet, role, source: s.source, model: s.model ?? null, session_started: s.started_at, session_id: s.listedAs?.id ?? s.id, lineage_root: s.id,
+          profile: query.get("profile") ?? "default", id: s.listedAs?.id ?? s.id, title: s.listedAs?.title ?? s.title, started_at: s.started_at,
           last_active: s.last_active ?? s.started_at, message_count: s.message_count, preview: s.preview, archived: s.archived,
         });
       for (const s of store)
@@ -1376,7 +1457,7 @@ export class FakeHermes {
       discardUpload: async (token) => void this.managedFiles.discardPick(token),
       upload: (id, token, path, overwrite, onProgress) => this.managedFiles.upload(id, token, path, overwrite, onProgress),
       saveText: (id, path, text, overwrite) => this.managedFiles.saveText(path, text, overwrite),
-      fsSaveText: (_id, profile, path, text) => this.fsWriteText(profile, path, text),
+      fsSaveText: (_id, profile, path, text, session) => this.fsWriteText(profile, path, text, session),
       cancelTransfer: async (id) => this.managedFiles.cancel(id),
       // Mirrors `Dashboard::toolset_guards`: only these two facts of the config.
       toolsetGuards: async (profile): Promise<ToolsetGuards> => {
@@ -1703,10 +1784,13 @@ export class FakeHermes {
    * the text is stored as UTF-8 (one char per byte here, as `serverFiles` holds bytes). The Rust side refuses
    * credential paths before anything is sent (`write_agent_text`).
    */
-  private async fsWriteText(profile: string, path: string, text: string): Promise<string> {
-    if (/(^|\/)(\.env(\..*)?|auth\.json|config\.yaml)$/i.test(path)) throw new Error(`Hermes Chat doesn't relay writes to ${path}, a credential file Hermes keeps out of reach`);
+  private async fsWriteText(profile: string, asked: string, text: string, session?: string): Promise<string> {
+    if (/(^|\/)(\.env(\..*)?|auth\.json|config\.yaml)$/i.test(asked)) throw new Error(`Hermes Chat doesn't relay writes to ${asked}, a credential file Hermes keeps out of reach`);
     await this.fsWriteGate;
     if (this.fsWriteFailure !== undefined) throw new Error(this.fsWriteFailure);
+    this.ownedSession(profile, session);
+    // `fs_write_text` resolves the target as `read-text` does, `session_id` included.
+    const path = this.sandboxPath(asked, session) ?? asked;
     const parent = path.slice(0, path.lastIndexOf("/")) || "/";
     const all = [...this.serverDirs, ...Object.keys(this.serverFiles)];
     const parentIsDir = this.serverDirs.has(parent) || typeof this.serverFiles[parent] === "object" || all.some((p) => p.startsWith(`${parent}/`));
@@ -1714,7 +1798,7 @@ export class FakeHermes {
     if (!parentIsDir) throw new Error(`The dashboard answered 400: {"detail":"Parent directory does not exist"}`);
     const bytes = new TextEncoder().encode(text);
     this.serverFiles[path] = Array.from(bytes, (b) => String.fromCharCode(b)).join("");
-    this.fsWrites.push({ profile, path, text });
+    this.fsWrites.push({ profile, path: asked, text, ...(session && { session }) });
     this.afterFsWrite?.(path);
     return JSON.stringify({ ok: true, path, byteSize: bytes.length });
   }
@@ -1723,9 +1807,16 @@ export class FakeHermes {
     const profile = query.get("profile");
     if (profile && profile !== "default" && !(profile in this.otherProfiles))
       throw new Error(`The dashboard answered 404: {"detail":"Profile '${profile}' does not exist."}`);
-    const path = query.get("path") ?? "";
-    const failure = this.fsReadFailure?.(path);
+    const asked = query.get("path") ?? "";
+    const failure = this.fsReadFailure?.(asked);
     if (failure) throw new Error(failure);
+    const session = query.get("session_id") ?? undefined;
+    this.ownedSession(profile, session);
+    const mapped = this.sandboxPath(asked, session);
+    // A container path that maps to no file in the sandbox it names (`_fs_sandbox_not_found_detail`).
+    if (mapped !== undefined && typeof this.serverFiles[mapped] !== "string" && this.serverFiles[mapped] === undefined)
+      throw new Error(`The dashboard answered 404: {"detail":"${SANDBOX_NOT_FOUND}"}`);
+    const path = mapped ?? asked;
     const name = path.split("/").pop() ?? "";
     if (/^\.env(\..*)?$|^auth\.json$|^config\.yaml$/i.test(name))
       throw new Error(`The dashboard answered 403: {"detail":"Access to sensitive files is not allowed"}`);
@@ -1733,6 +1824,22 @@ export class FakeHermes {
     if (f === undefined) throw new Error(`The dashboard answered 404: {"detail":"File not found"}`);
     if (typeof f !== "string") throw new Error(`The dashboard answered 400: {"detail":"Path points to a directory"}`);
     return { path, data: f };
+  }
+
+  /**
+   * Where a container path is on the host under `sandbox`: `/workspace/…` in the folder of the chat `session` names, or
+   * of the profile. Undefined for any other path, or with no sandbox.
+   */
+  private sandboxPath(path: string, session?: string): string | undefined {
+    if (!this.sandbox || !(path === "/workspace" || path.startsWith("/workspace/"))) return undefined;
+    const root = (session && this.sandbox.chats[session]) || this.sandbox.profile;
+    return root ? root + path.slice("/workspace".length) : `/nonexistent-sandbox${path}`;
+  }
+
+  /** `_fs_owned_session`: a `session_id` the profile doesn't own (or a blank one) is 404 before anything is read. */
+  private ownedSession(profile: string | null | undefined, session: string | undefined) {
+    if (session === undefined) return;
+    if (!session.trim() || !(this.store(profile) ?? []).some((s) => s.id === session)) throw new Error(`The dashboard answered 404: {"detail":"Session not found"}`);
   }
 
   respond(id: number, result: unknown) {
@@ -1865,6 +1972,47 @@ export class FakeHermes {
     if (f === undefined) return { path, name, error: "No such file or directory (os error 2)" };
     if (typeof f === "object" && "dir" in f) return { path, name, error: "it's a folder" };
     return { path, name, size: typeof f === "string" ? f.length : f.size };
+  }
+
+  /** Every profile, default first. */
+  private profileNames(): string[] {
+    return ["default", ...Object.keys(this.otherProfiles)];
+  }
+
+  /**
+   * One `profiles.list` row (`tui_gateway/methods_profiles.py` at `f0d94882`): `canonical_session` is the profile's row
+   * titled "Bot Chat", found by title, null when none or when it is archived; `last_session` the newest visible one.
+   */
+  private profileRow(name: string): Record<string, unknown> {
+    const meta = this.profileMeta[name] ?? {};
+    const store = this.store(name) ?? [];
+    const recent = (s: SessionRow) => s.last_active ?? s.started_at;
+    const bot = store.find((s) => s.title === "Bot Chat" && !s.archived && !s.unlisted);
+    const last = store.filter((s) => !s.hidden && !s.archived && !s.unlisted).sort((a, b) => recent(b) - recent(a))[0];
+    const tip = bot?.listedAs?.id ?? bot?.id;
+    // The preview is the tip's newest user or assistant message (`_latest_message_preview` on the tip).
+    const transcript = bot ? (this.transcripts[tip!] ?? this.transcripts[bot.id] ?? []).filter((m) => (m.role === "user" || m.role === "assistant") && (m.text ?? "").trim()) : [];
+    const newest = transcript[transcript.length - 1]?.text?.replace(/\s+/g, " ").trim() ?? bot?.preview ?? "";
+    const canonical = bot
+      ? { id: bot.id, resolved_id: tip, root_title: "Bot Chat", title: bot.listedAs?.title ?? "Bot Chat", preview: newest.length > 80 ? `${newest.slice(0, 80)}...` : newest, started_at: bot.started_at, last_active: recent(bot), message_count: bot.message_count, live_message_count: transcript.length || bot.message_count }
+      : null;
+    return {
+      name,
+      path: name === "default" ? "/home/liam/.hermes" : `/home/liam/.hermes/profiles/${name}`,
+      is_default: name === "default",
+      model: null,
+      provider: null,
+      description: meta.description ?? "",
+      display_name: meta.display_name ?? "",
+      skill_count: 0,
+      previous_names: [],
+      last_session: last ? { id: last.id, title: last.title ?? "", preview: last.preview, started_at: last.started_at, last_active: recent(last), message_count: last.message_count } : null,
+      worker_session: null,
+      ...(this.botMode === "full" && { canonical_session: canonical }),
+      ui_meta_revisions: meta.ui_meta ? { "hermes-bots": 1 } : {},
+      ...(meta.ui_meta && { ui_meta: structuredClone(meta.ui_meta) }),
+      has_avatar: name in this.botAvatars,
+    };
   }
 
   /** A profile's stored sessions; no profile means the default one. Undefined for a profile the server doesn't have. */

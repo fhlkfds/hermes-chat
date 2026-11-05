@@ -783,7 +783,8 @@ async fn files_save_text(
 
 /// Writes an artifact's whole new text to `path` where `profile`'s tools run (`POST api/fs/write-text`, ADR 0029). Like
 /// `files_save_text`, the webview checks the revision first and reads it back after, and the write is a transfer, so
-/// `files_cancel` stops it and a closed or replaced connection never sends it.
+/// `files_cancel` stops it and a closed or replaced connection never sends it. `session`: the chat whose sandbox the
+/// path is in, named as the read named it, so the save lands where the read did (ADR 0062).
 #[tauri::command]
 async fn fs_save_text(
     app: tauri::AppHandle,
@@ -792,11 +793,12 @@ async fn fs_save_text(
     profile: String,
     path: String,
     text: String,
+    session: Option<String>,
 ) -> Result<String, String> {
     let epoch = transfers.epoch();
     let work = async move {
         let dashboard = dashboard_since(&app, epoch).await?;
-        dashboard.write_agent_text(&profile, &path, &text).await.map_err(|e| e.to_string())
+        dashboard.write_agent_text(&profile, &path, &text, session.as_deref()).await.map_err(|e| e.to_string())
     };
     transfers.run(id, epoch, work).await
 }
