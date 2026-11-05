@@ -288,17 +288,33 @@ export class ProfileCloneApi {
     return failed;
   }
 
-  /** The skill copies, then each category read back from the new profile. `answer`: Hermes's answer to the create, if it came. */
+  /**
+   * The skill copies, then each category read back from the new profile. `answer`: Hermes's answer to the create, if it
+   * came. Without it the profile Hermes lists may be another client's, so nothing more is written to it.
+   */
   private async finish(plan: Plan, source: Source, answer: Record<string, unknown> | undefined, onStage: OnStage): Promise<Outcome> {
-    const go = carries(plan, source);
-    const failedSkills = plan.kind === "fresh" && go.skills ? await this.copySkills(plan, source, source.skills, onStage) : [];
-    if (plan.kind === "full" || !go.skills) onStage("skills", "skipped", plan.kind === "full" ? "Hermes copied them with the profile" : undefined);
-    const results = await this.check(plan, source, answer, failedSkills, onStage);
+    const copy = plan.kind === "fresh" && carries(plan, source).skills;
+    const withheld = copy && !answer;
+    const failedSkills = copy && !withheld ? await this.copySkills(plan, source, source.skills, onStage) : [];
+    if (plan.kind === "full") onStage("skills", "skipped", "Hermes copied them with the profile");
+    else if (withheld) onStage("skills", "skipped", "Hermes's answer was lost, so nothing is written to the profile it lists");
+    else if (!copy) onStage("skills", "skipped");
+    const results = await this.check(plan, source, answer, failedSkills, onStage, withheld);
     return { kind: "made", name: plan.name, answered: !!answer, results, failedSkills };
   }
 
-  /** Reads the new profile back and says how each category came out. Called again after skills are tried again. */
-  async check(plan: Plan, source: Source, answer: Record<string, unknown> | undefined, failedSkills: readonly FailedSkill[], onStage: OnStage): Promise<Result[]> {
+  /**
+   * Reads the new profile back and says how each category came out. Called again after skills are tried again.
+   * `withheld`: the skills weren't copied, as Hermes's answer to the create was lost.
+   */
+  async check(
+    plan: Plan,
+    source: Source,
+    answer: Record<string, unknown> | undefined,
+    failedSkills: readonly FailedSkill[],
+    onStage: OnStage,
+    withheld = false,
+  ): Promise<Result[]> {
     onStage("check", "running");
     const go = carries(plan, source);
     const full = plan.kind === "full";
@@ -338,6 +354,12 @@ export class ProfileCloneApi {
     else put("description", "failed", "It reads back differently from the source's");
 
     if (!go.skills) put("skills", "left", source.skills.length ? "Not picked: the clone has Hermes's built-in skills only" : "The source has none of its own; the clone has Hermes's built-in skills");
+    else if (withheld)
+      put(
+        "skills",
+        "failed",
+        `Not copied: Hermes's answer to the create was lost, so this app can't tell ${plan.name} is this clone and writes nothing more to it. Copy them in Settings → Skills once you've checked it.`,
+      );
     else if (!full)
       put(
         "skills",

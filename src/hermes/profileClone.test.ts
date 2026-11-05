@@ -192,6 +192,27 @@ describe("cloning a profile", () => {
     expect(stateOf(out, "model").state).toBe("copied");
   });
 
+  it("writes nothing more to a profile it found after a lost answer, as it may be another client's", async () => {
+    const { server, api } = await signedIn();
+    const source = await api.source("work", await api.profiles());
+    server.beforeProfileCreate = () => {
+      server.otherProfiles["work-2"] = [];
+      server.skills.profiles.add("work-2");
+      server.souls["work-2"] = "Another client's.\n";
+    };
+    server.profileCreateError = "Can't reach the Hermes dashboard: connection reset";
+    const before = server.restRequests.length;
+    const { seen, onStage } = recorder();
+    const out = made(await api.clone(fresh(["persona", "skills"]), source, onStage));
+    expect(server.restRequests.slice(before).filter((r) => r.method !== "GET").map((r) => `${r.method} ${r.path}`)).toEqual(["POST /api/profiles"]);
+    expect(server.skills.folders["work-2"]).toBeUndefined();
+    expect(out).toMatchObject({ answered: false, failedSkills: [] });
+    expect(stateOf(out, "skills")).toMatchObject({ state: "failed" });
+    expect(stateOf(out, "skills").note).toMatch(/^Not copied: Hermes's answer to the create was lost/);
+    expect(stateOf(out, "persona")).toMatchObject({ state: "failed", note: "SOUL.md reads back differently from the source's" });
+    expect(seen).toContain("skills skipped: Hermes's answer was lost, so nothing is written to the profile it lists");
+  });
+
   it("reports a model Hermes wouldn't set in Hermes's words, not as copied", async () => {
     const { server, api } = await signedIn();
     const source = await api.source("work", await api.profiles());

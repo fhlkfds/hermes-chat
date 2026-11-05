@@ -326,6 +326,8 @@ export class FakeHermes {
   profileEnv: Record<string, Record<string, string>> = {};
   /** While set, `POST /api/profiles` fails with this message and makes nothing (a refusal, or a 500 before the rename). */
   profileCreateError?: string;
+  /** Runs as a `POST /api/profiles` arrives, before anything else: another client making a profile meanwhile. */
+  beforeProfileCreate?: () => void;
   /** While set, `POST /api/profiles` makes the profile, then fails with this message, as a connection lost before the answer. */
   profileCreateLost?: string;
   /** While set, `POST /api/profiles` makes the profile but not its model, and answers `model_error` with this. */
@@ -1866,6 +1868,7 @@ export class FakeHermes {
    */
   private createProfile(body: Record<string, unknown>): unknown {
     const refuse = (detail: string) => new Error(`The dashboard answered 400: ${JSON.stringify({ detail })}`);
+    this.beforeProfileCreate?.();
     if (this.profileCreateError) throw new Error(this.profileCreateError);
     const name = typeof body.name === "string" ? body.name.trim().toLowerCase() : "";
     const known = (p: string) => p === "default" || p in this.otherProfiles;
