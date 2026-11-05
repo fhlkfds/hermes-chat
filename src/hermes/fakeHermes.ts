@@ -1227,7 +1227,11 @@ export class FakeHermes {
       agent: { ...this.modelConfig.agent },
       delegation: { ...this.modelConfig.delegation },
       ...(this.cron.zoneSetting(query.get("profile") || "default") && { timezone: this.cron.zoneSetting(query.get("profile") || "default") }),
+      // The raw map, as `include_defaults=false` reads it: what Rust's MCP edit starts from (fakeMcp.ts).
+      ...(this.mcp.servers[query.get("profile") || "default"] && { mcp_servers: this.mcp.servers[query.get("profile") || "default"] }),
     }),
+    // `PUT /api/env` for an MCP server's bearer token, which Rust's edit saves first (`Dashboard::mcp_edit`).
+    "PUT /api/env": ({ body, query }) => this.mcp.saveEnv(query.get("profile") || "default", String(body?.key ?? ""), String(body?.value ?? "")),
     "GET /api/delegation/routing": () => ({
       configured: "default",
       blocked_reason: null,

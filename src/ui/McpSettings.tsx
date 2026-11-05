@@ -135,6 +135,8 @@ export function McpSettings({
   const settle = (p: string, name: string | undefined, r: McpChange, what: string) => {
     if (!mine(p)) return;
     if (r.list) setList(r.list);
+    // A Test from before the change no longer says how the server is.
+    if (name) setOne(setTests, name, undefined);
     const note = changeNote(r, what);
     if (name && r.list?.servers.some((s) => s.name === name)) setOne(setNotes, name, note);
     else setListNote(note);

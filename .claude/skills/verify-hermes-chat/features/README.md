@@ -7,7 +7,7 @@ This folder is the maintained source for verifying what the owner sees and does 
 - Start from a fresh run: `hv up` (stand-in dashboard), then `wd.mjs open`. The app has empty `HOME` and `XDG_*` dirs, a private D-Bus with no keyring, and its own display.
 - `hv doctor` shows `ok` on every line, including `build … matches the source`.
 - Unless a recipe says otherwise, sign in first by following [sign-in.md](sign-in.md) to its signed-in end state.
-- The stand-in serves profile `default` with four seeded chats, all in the Settled section:
+- The stand-in serves profile `default` with four seeded chats, all in the Settled section, and an empty second profile `work` (both with synthetic MCP servers, see [mcp-servers.md](mcp-servers.md)):
   - `backup`, "Nightly backup failing". The reply mentions `restic unlock`.
   - `nginx`, "Rotate nginx logs".
   - `vpn`, "Why is the VPN slow". The reply mentions `MTU = 1380`.
@@ -38,5 +38,6 @@ Each feature file starts with an H1 and one paragraph describing the behaviour t
 - [Sign in](sign-in.md): first-run setup for a web address connection, a wrong password, and signing in again after a relaunch.
 - [Send a message](send-message.md): open a chat, send, watch the streamed reply, and confirm both messages on the server.
 - [New chat](new-chat.md): start a chat from the rail, the list panel or Ctrl+N, and see it created on the server and in the list.
+- [MCP servers](mcp-servers.md): Settings → MCP servers: list, test, add, edit with write-only secrets, remove, switch, OAuth sign-in, catalog, another profile.
 - [Search chats](search.md): Ctrl+K or the rail opens search, a body-text match opens its chat, and a miss shows No matches.
 - [Connections](connections.md): Settings → General → Connection, Test a saved connection, and Sign out.

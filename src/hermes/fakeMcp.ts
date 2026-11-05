@@ -120,6 +120,7 @@ export class FakeMcp {
         return { servers: all.sort(([a], [b]) => (a < b ? -1 : 1)).map(([n, c, p]) => this.summary(n, c, p)) };
       }
       if (req.path === "/api/mcp/servers" && m === "POST") return this.create(profile, req.body ?? {});
+      if (req.path === "/api/mcp/servers" && m === "PUT") return this.replace(profile, req.body ?? {});
       if (req.path === "/api/mcp/catalog" && m === "GET") return this.catalog(profile);
       if (req.path === "/api/mcp/catalog/install" && m === "POST") return this.install(profile, req.body ?? {});
       if (!one) throw answered(404, "Not Found");
@@ -249,6 +250,26 @@ export class FakeMcp {
       this.cfgs(profile)[name] = cfg;
       return this.summary(name, cfg);
     });
+  }
+
+  /** `PUT /api/mcp/servers` (`MCPServersReplace`): the whole map, refused if it names a plugin's server. Only Rust sends it. */
+  private replace(profile: string, body: Record<string, unknown>) {
+    const servers = (body.servers ?? {}) as Record<string, Cfg>;
+    for (const name of Object.keys(servers)) {
+      const plugin = this.pluginOf(profile, name);
+      if (plugin) throw answered(400, `Server '${name}' is provided by plugin '${plugin}' and cannot be modified`);
+    }
+    return this.write(profile, "replace", body, () => {
+      this.servers[profile] = structuredClone(servers);
+      return { ok: true };
+    });
+  }
+
+  /** `PUT /api/env`, as Rust's edit uses it: an MCP server's bearer token into the profile's `.env`. */
+  saveEnv(profile: string, key: string, value: string) {
+    if (!/^MCP_[A-Z0-9_]+_API_KEY$/.test(key)) throw answered(400, `${key}: this stand-in keeps only MCP server tokens`);
+    (this.env[profile] ??= {})[key] = value;
+    return { ok: true, key };
   }
 
   private catalog(profile: string) {

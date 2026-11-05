@@ -164,6 +164,9 @@ describe("Settings → MCP servers: adding and editing", () => {
 
   it("replaces a bearer token only when one is typed, and never shows the saved one", async () => {
     const { s, user } = await shown();
+    s.mcp.probes.web = { error: "401 Unauthorized" };
+    await user.click(screen.getByRole("button", { name: "Test web" }));
+    await within(rowOf("web")).findByText(/Couldn't connect/);
     await user.click(within(rowOf("web")).getByRole("button", { name: "Edit web" }));
     let token = within(dialog()).getByLabelText("Bearer token") as HTMLInputElement;
     expect(token.value).toBe("");
@@ -171,6 +174,8 @@ describe("Settings → MCP servers: adding and editing", () => {
     await user.click(within(dialog()).getByRole("button", { name: "Save" }));
     await within(rowOf("web")).findByText("Saved: Hermes reads it back that way.");
     expect(s.mcp.env.default.MCP_WEB_API_KEY).toBe("fresh-token-42");
+    // The Test from before the edit is gone with it.
+    expect(within(rowOf("web")).queryByText(/Couldn't connect/)).toBeNull();
     await user.click(within(rowOf("web")).getByRole("button", { name: "Edit web" }));
     token = within(dialog()).getByLabelText("Bearer token") as HTMLInputElement;
     expect(token.value).toBe("");
