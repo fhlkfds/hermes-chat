@@ -26,6 +26,11 @@ describe("Flagging likely secrets", () => {
     ["password or key", 'password: "Tr0ub4dor.3"', "Tr0ub4dor.3"],
     ["password or key", '{"command": "PASSWORD=\\"Mov3rs!2026\\" ./deploy.sh"}', "Mov3rs!2026"],
     ["password or key", '{"env": "{\\"db_password\\": \\"Tr0ub4dor&3\\"}"}', "Tr0ub4dor&3"],
+    ["password or key", '{"password": "Mov3rs!2026\\"SecretTail"}', 'Mov3rs!2026\\"SecretTail'],
+    ["password or key", "secret='it\\'s-a-S3cret'", "it\\'s-a-S3cret"],
+    ["password or key", '{"command": "PASSWORD=\\"C:\\\\keys\\\\Mov3rs!\\" run"}', "C:\\\\keys\\\\Mov3rs!"],
+    ["password or key", '{"command": "PASSWORD=\\"say \\\\\\"hi\\\\\\" 9x\\" run"}', 'say \\\\\\"hi\\\\\\" 9x'],
+    ["password or key", "password=C:\\Mov3rs!2026", "C:\\Mov3rs!2026"],
     ["bearer token", "Authorization: Bearer AbCdEfGhIjKlMnOpQrStUvWxYz", "AbCdEfGhIjKlMnOpQrStUvWxYz"],
     ["bearer token", '{"headers": {"Authorization": "Bearer AbCdEfGhIjKlMnOpQrStUvWxYz"}}', "AbCdEfGhIjKlMnOpQrStUvWxYz"],
   ])("flags a %s: %s", (kind, text, secret) => {

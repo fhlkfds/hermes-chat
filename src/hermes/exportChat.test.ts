@@ -291,6 +291,17 @@ describe("Flagging likely secrets in an export", () => {
     expect(p.markdown).not.toContain("7f3a9c2e8b1d4f6a0e5c");
   });
 
+  it("redacts all of a quoted password with an escaped quote or backslash in it", async () => {
+    const withTool: Item[] = [
+      { kind: "tool", id: "t", name: "login", args: { password: 'Mov3rs!2026"SecretTail', command: 'PASSWORD="C:\\kv0lt\\Vault9!" ./deploy.sh' }, status: "done", result: "ok" },
+    ];
+    const p = exportPreview(chat(withTool), { ...FIRST_DRAFT, toolCalls: true }, AT);
+    let bytes = "";
+    await saveExport(p.markdown, p.fileName, async (md) => ((bytes = md), "/tmp/x.md"));
+    for (const gone of ["Mov3rs", "SecretTail", "kv0lt", "Vault9"]) expect(bytes).not.toContain(gone);
+    expect(bytes).toContain("./deploy.sh");
+  });
+
   it("finds a quoted password in a tool call's command, where JSON escapes the quotes", async () => {
     const withTool: Item[] = [{ kind: "tool", id: "t", name: "terminal", args: { command: 'PASSWORD="Mov3rs!2026" ./deploy.sh' }, status: "done", result: "ok" }];
     const p = exportPreview(chat(withTool), { ...FIRST_DRAFT, toolCalls: true }, AT);

@@ -35,7 +35,9 @@ const RULES: { kind: string; re: RegExp; ok?: (value: string, m: RegExpMatchArra
   { kind: "bot token", re: /\b\d{8,10}:[A-Za-z0-9_-]{35}\b/g },
   {
     kind: "password or key",
-    re: /\b(?:[A-Za-z0-9]+[_-])*(?:password|passwd|pwd|passphrase|secret(?:[_-]?key)?|api[_-]?key|apikey|access[_-]?key|private[_-]?key|token)(?:\\?["'])?\s*[:=]\s*(?:\\"([^"\\\n]+)\\"|"([^"\n]+)"|'([^'\n]+)'|(?<bare>[^\s,;&"'`()[\]{}<>\\]+))/gi,
+    // A quoted value runs to its closing quote, past escaped characters (`\"`) in it. Inside a JSON string (`\"…\"`), an
+    // escaped backslash is `\\` and an escaped quote of the inner text is `\\\"`.
+    re: /\b(?:[A-Za-z0-9]+[_-])*(?:password|passwd|pwd|passphrase|secret(?:[_-]?key)?|api[_-]?key|apikey|access[_-]?key|private[_-]?key|token)(?:\\?["'])?\s*[:=]\s*(?:\\"((?:[^"\\\n]|\\\\\\"|\\\\)+)\\"|"((?:[^"\\\n]|\\.)+)"|'((?:[^'\\\n]|\\.)+)'|(?<bare>(?:[^\s,;&"'`()[\]{}<>\\]|\\(?!["']))+))/gi,
     ok: (value, m) => looksSecret(value, m.groups?.bare !== undefined),
   },
 ];

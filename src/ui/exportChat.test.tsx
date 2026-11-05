@@ -2,6 +2,7 @@
 // The Export dialog (ExportChat.tsx, ADR 0076): what the owner picks and redacts is what the saved bytes hold.
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useRef, useState } from "react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row } from "../hermes/fakeHermes";
 import type { Chat } from "../hermes/model";
@@ -194,6 +195,34 @@ describe("The Export dialog", () => {
     const before = preview().textContent;
     rerender(chat({ items: [...chat().items, { kind: "user", id: "u3", text: "One more thing" }] }));
     expect(preview().textContent).toBe(before);
+  });
+
+  it("starts with focus inside when there's no message to tick, keeps Tab there, and gives focus back on Escape", async () => {
+    const user = userEvent.setup();
+    const toolsOnly = chat({ items: [{ kind: "tool", id: "t1", name: "web_search", args: { q: "pizza" }, status: "done", result: "Sammy's" }] });
+    function Host() {
+      const [shown, setShown] = useState(false);
+      const button = useRef<HTMLButtonElement>(null);
+      return (
+        <>
+          <button ref={button} onClick={() => setShown(true)}>
+            More
+          </button>
+          {shown && <ExportChatDialog chat={toolsOnly} returnTo={button} onSaved={() => {}} onClose={() => setShown(false)} />}
+        </>
+      );
+    }
+    render(<Host />);
+    await user.click(screen.getByRole("button", { name: "More" }));
+    const dialog = screen.getByRole("dialog");
+    expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Text to redact" }));
+    for (let i = 0; i < 12; i++) {
+      await user.tab();
+      expect(dialog.contains(document.activeElement)).toBe(true);
+    }
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "More" }));
   });
 
   it("stays open and says why when saving fails, and stays open when the Save dialog is cancelled", async () => {

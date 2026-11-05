@@ -201,7 +201,15 @@ export function ExportChatDialog({
           }}
         >
           <label htmlFor={pickId}>Text to redact</label>
-          <input id={pickId} value={toRedact} onChange={(e) => setToRedact(e.target.value)} aria-describedby={pickHelpId} spellCheck={false} />
+          <input
+            id={pickId}
+            // With no message to tick, focus starts here, so the keyboard is in the dialog from the start.
+            autoFocus={!messages.length}
+            value={toRedact}
+            onChange={(e) => setToRedact(e.target.value)}
+            aria-describedby={pickHelpId}
+            spellCheck={false}
+          />
           <button className="btn" type="submit" disabled={!picking || overlaps}>
             Redact
           </button>
