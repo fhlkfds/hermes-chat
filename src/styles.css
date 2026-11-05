@@ -403,6 +403,9 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .msg.user.sending .bubble-text { opacity: 0.6; }
 .msg.user.failed .bubble-text { box-shadow: inset 0 0 0 1px rgba(248, 113, 113, 0.6); }
 .msg.user.unknown .bubble-text { box-shadow: inset 0 0 0 1px rgba(245, 184, 74, 0.6); }
+/* A message that went into the running reply rather than as a turn of its own (ADR 0057). */
+.steer-tag { display: inline-flex; align-items: center; gap: 4px; font-size: calc(11.5rem / 14); line-height: 1.3; color: var(--muted); }
+.msg.user.steer .bubble-text { background: transparent; outline: 1px dashed var(--line-3); outline-offset: -1px; }
 .send-failed { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; font-size: calc(12.5rem / 14); line-height: 1.45; }
 .send-failed-why { display: flex; gap: 6px; align-items: flex-start; color: var(--bad); text-align: right; }
 .send-failed.unknown .send-failed-why { color: var(--warn); }
@@ -904,6 +907,25 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 .voice-row { padding: 8px 0; border-top: 1px solid var(--line); }
 .voice-row:first-of-type { border-top: 0; }
 .voice-row-head { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+.badge.ok { background: rgba(74, 222, 128, 0.12); color: var(--ok); }
+.voice-side { padding: 12px 0 4px; border-top: 1px solid var(--line); }
+.voice-side h3 { margin: 0 0 2px; font-size: 1rem; }
+.voice-side > p { margin: 0 0 8px; }
+.voice-field { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; max-width: 520px; }
+.voice-field > span:first-child { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-weight: 500; }
+.voice-field .mono { font-size: calc(11rem / 14); font-weight: 400; }
+.voice-provider-list { list-style: none; margin: 6px 0 8px; padding: 0; display: grid; gap: 2px; }
+.voice-provider-list li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 3px 6px; border-radius: 6px; }
+.voice-provider-list li.picked { background: var(--raised-2); }
+.voice-provider-name { font-weight: 500; }
+.voice-provider-tag { flex-basis: 100%; padding-left: 0; }
+@media (min-width: 720px) { .voice-provider-tag { flex-basis: auto; } }
+.voice-picked { margin: 4px 0 8px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; }
+.voice-picked > p { margin: 0 0 4px; }
+.voice-save { padding-top: 10px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.voice-unsupported { padding: 8px 12px; border: 1px dashed var(--line); border-radius: 8px; }
+.voice-unsupported p { margin: 4px 0; }
+.conv-settings { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin: 6px 0; }
 /* updates */
 .settings-btn { position: relative; }
 .update-dot { position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; }
@@ -1526,11 +1548,13 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .setup-ok { color: var(--ok); }
 .setup-warn svg, .setup-ok svg { vertical-align: -2px; }
 .setup-warn .badge { margin-right: 2px; }
-.field select {
+/* A bare select in a form field. One with .select keeps that look: this rule's padding on .select's fixed 32px height
+   left no room for the text, cutting the Model page's pickers off. */
+.field select:not(.select) {
   background: var(--raised); border: 1px solid var(--line-2); border-radius: 9px; padding: 8px 10px; outline: none; color: var(--text);
   font: inherit; font-size: calc(13rem / 14);
 }
-.field select:focus { border-color: var(--line-3); }
+.field select:not(.select):focus { border-color: var(--line-3); }
 .link { color: var(--muted); text-decoration: underline; text-underline-offset: 2px; font-size: inherit; }
 .link:hover:not(:disabled) { color: var(--text); }
 .setup-link { align-self: center; font-size: calc(12.5rem / 14); }
@@ -1539,7 +1563,7 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .setup .field input:read-only { opacity: 0.6; }
 
 /* settings → memory */
-.memory-identity { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 0 0 16px; font-size: calc(12.5rem / 14); }
+.memory-identity { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 22px; margin: 0 0 16px; font-size: calc(12.5rem / 14); }
 .memory-identity div { display: flex; gap: 6px; align-items: baseline; min-width: 0; }
 .memory-identity dt { color: var(--faint); }
 .memory-identity dd { margin: 0; overflow-wrap: anywhere; }
@@ -1652,12 +1676,46 @@ button.provider-row:hover:not(:disabled) { background: var(--hover); }
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4); white-space: pre-line;
 }
 @media (hover: hover) { .skill-desc:hover .skill-desc-tip { display: block; } }
-.skill-category { white-space: nowrap; }
+.skill-category { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .skill-row .toolset-hint { margin-top: 6px; }
 @container settings (max-width: 820px) {
   .skill-row-main { grid-template-columns: minmax(0, 1fr) auto; }
   .skill-desc, .skill-category { grid-column: 1 / -1; }
 }
+/* Which profile Skills, Memory and Persona show (ProfilePicker.tsx, ADR 0057), in place of the profile's name. */
+.profile-pick {
+  background: var(--raised); border: 1px solid var(--line-2); border-radius: 7px; padding: 2px 6px; outline: none; color: var(--text);
+  font-size: calc(12.5rem / 14); max-width: 260px;
+}
+.profile-pick:focus-visible { border-color: var(--line-3); }
+/* Select mode in Skills and Memory: the bar, the question before a change, and what became of each item. */
+.skills-select, .memory-select { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 8px; }
+.skills-select-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 8px 10px; border: 1px solid var(--line-2); border-radius: var(--radius);
+  background: var(--raised-2); font-size: calc(12.5rem / 14);
+}
+.skills-select-count { font-weight: 500; }
+.skills-select-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+.skills-select .confirm, .memory-select .confirm { max-width: 640px; }
+.skills-bulk-ask .field { max-width: 280px; }
+.skill-pick, .memory-pick input { flex: none; width: 15px; height: 15px; margin: 0; accent-color: var(--text); }
+.skill-row.picked { background: var(--raised-2); }
+label.memory-pick { cursor: pointer; }
+.skills-bulk-result {
+  margin: 4px 0 8px; padding: 8px 12px; border: 1px solid var(--line-2); border-left: 3px solid var(--ok); border-radius: var(--radius);
+  font-size: calc(12.5rem / 14); line-height: 1.5;
+}
+.skills-bulk-result.warn { border-left-color: var(--warn); }
+.skills-bulk-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font-weight: 500; }
+.skills-bulk-result ul { list-style: none; margin: 4px 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.skills-bulk-result li { overflow-wrap: anywhere; }
+.skills-bulk-result li svg { vertical-align: -1px; }
+.skills-bulk-result li.ok svg { color: var(--ok); }
+.skills-bulk-result li.failed svg { color: var(--warn); }
+.skills-bulk-result .memory-entry-text { display: inline; white-space: normal; }
+.settings .skills-bulk-result p { margin: 4px 0 0; }
+.persona-copy { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 10px; margin-bottom: 8px; }
+.persona-copy .field { flex: 0 1 280px; min-width: 180px; }
 .skills-editor > .back { align-self: flex-start; }
 .skills-name { margin: 2px 0 0; font-size: calc(15rem / 14); font-weight: 500; overflow-wrap: anywhere; }
 .skills-text { min-height: 240px; }
@@ -1670,9 +1728,13 @@ button.provider-row:hover:not(:disabled) { background: var(--hover); }
 /* The memory question shares the persona one's box (below), wider than a plain .confirm. */
 .leave-overlay .leave-dialog { max-width: 420px; }
 /* Settings → Persona (PersonaSettings.tsx) and the question before leaving an unsaved edit (LeavePersona.tsx) */
-.persona-where { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 4px 0 14px; font-size: calc(13rem / 14); }
+.persona-where { display: grid; grid-template-columns: max-content 1fr; align-items: center; gap: 6px 14px; margin: 4px 0 14px; font-size: calc(13rem / 14); }
 .persona-where dt { color: var(--muted); }
 .persona-where dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.persona-where:has(.persona-picker) { align-items: baseline; }
+.persona-picker { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.persona-picker .select { min-width: 180px; max-width: 100%; }
+.persona-picker .muted { font-family: var(--ui-font, Inter), sans-serif; }
 .settings p.persona-effect { margin: 0 0 8px; line-height: 1.55; }
 .settings p.persona-effect svg, .settings p.persona-note svg { vertical-align: -2px; }
 .settings p.persona-note { margin: 8px 0 0; }
@@ -2176,8 +2238,6 @@ button.provider-row:hover:not(:disabled) { background: var(--hover); }
 /* xterm's scrollbar thumb is a `.slider` too; keep the Settings sliders' sizing off it. */
 .terminal-host .xterm-scrollable-element .slider { min-width: 0; flex: none; border-radius: 4px; }
 .terminal-foot { flex: none; margin: 0; padding: 8px 22px 12px; font-size: calc(12rem / 14); }
-.terminal-btn { position: relative; }
-.terminal-dot { position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; background: var(--ok); }
 
 /* ---------- saved connections (Connections.tsx, ADR 0049) ---------- */
 .rail-conns { position: relative; }
@@ -2317,48 +2377,6 @@ button.provider-row:hover:not(:disabled) { background: var(--hover); }
 .artifact-foot p { margin: 0; }
 .artifact-foot .btn, .artifact-panel .btn { display: inline-flex; align-items: center; gap: 6px; }
 .artifact-foot .confirm-actions { flex-wrap: wrap; }
-
-/* ---------- templates (Templates.tsx, ADR 0028) ---------- */
-.leave-overlay .leave-dialog.tpl-dialog { max-width: min(720px, calc(100% - 32px)); width: 100%; max-height: calc(100% - 32px); overflow-y: auto; gap: 12px; }
-.tpl-title { font-size: calc(14rem / 14); margin: 0; display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere; }
-.tpl-tools { display: flex; gap: 8px; flex-wrap: wrap; }
-.tpl-search, .tpl-form input, .tpl-form textarea, .tpl-form select {
-  background: var(--input, var(--raised-2)); border: 1px solid var(--line-2); border-radius: 8px; padding: 7px 10px; color: var(--text);
-  font: inherit; outline: none; min-width: 0;
-}
-.tpl-search { flex: 1 1 200px; }
-.tpl-search:focus, .tpl-form input:focus, .tpl-form textarea:focus, .tpl-form select:focus { border-color: var(--line-3); }
-.tpl-list { max-height: min(320px, 45vh); overflow-y: auto; border: 1px solid var(--line); border-radius: var(--radius); padding: 4px; }
-.tpl-option { display: grid; grid-template-columns: 1fr auto; column-gap: 8px; padding: 7px 9px; border-radius: 7px; cursor: pointer; }
-.tpl-option.sel { background: var(--hover-2); }
-.tpl-name { color: var(--text-strong); overflow-wrap: anywhere; }
-.tpl-project { font-size: calc(11rem / 14); padding: 1px 6px; border-radius: 5px; background: var(--accent-soft); color: var(--accent); align-self: center; }
-.tpl-desc { grid-column: 1 / -1; color: var(--muted); margin: 0; overflow-wrap: anywhere; }
-.tpl-empty { margin: 0; padding: 10px; color: var(--muted); line-height: 1.55; }
-.tpl-check { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: calc(12.5rem / 14); }
-.tpl-status { margin: 0; color: var(--muted); font-size: calc(12.5rem / 14); overflow-wrap: anywhere; }
-.tpl-status.err { color: var(--bad); }
-.tpl-foot { flex-wrap: wrap; align-items: center; }
-.tpl-keys { flex: 1 1 auto; color: var(--faint); font-size: calc(11.5rem / 14); }
-.tpl-ask { flex: 1 1 auto; color: var(--text); margin: 0; }
-.tpl-form { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
-.tpl-form textarea { resize: vertical; }
-.tpl-body { min-height: 160px; font-family: var(--mono); font-size: calc(12.5rem / 14); line-height: 1.5; }
-.tpl-fields { display: grid; gap: 10px; }
-.tpl-fields .field-label code { color: var(--text-strong); }
-.tpl-tag { font-size: calc(11rem / 14); color: var(--faint); }
-.tpl-preview {
-  margin: 0; max-height: 260px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 10px 12px; border-radius: 8px;
-  background: var(--raised-2); border: 1px solid var(--line); font-family: var(--mono); font-size: calc(12.5rem / 14); line-height: 1.5; color: var(--text);
-}
-.tpl-preview mark { background: var(--accent-soft); color: inherit; border-radius: 3px; }
-.tpl-preview mark.missing { background: rgba(248, 113, 113, 0.16); color: var(--bad); }
-.tpl-help { font-size: calc(12rem / 14); color: var(--muted); }
-.tpl-help summary { cursor: pointer; }
-.tpl-help dl { display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; margin: 6px 0; }
-.tpl-help dl > div { display: contents; }
-.tpl-help dd { margin: 0; }
-.tpl-help p { margin: 4px 0 0; }
 
 /* ---------- Branch from here (Branch.tsx, ADR 0027) ---------- */
 .leave-overlay .leave-dialog.branch-dialog { max-width: min(600px, 100%); width: 100%; max-height: min(92vh, 860px); overflow-y: auto; }

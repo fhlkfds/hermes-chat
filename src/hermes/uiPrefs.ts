@@ -1,6 +1,7 @@
 // Display preferences for this computer: the theme, whether the last chat reopens at launch and which chat each profile
 // had open, whether reasoning shows, the model last picked and the starred models, which items the status bar shows,
-// the screenshot shortcut and preview pane width, which computer the Terminal opens on, and Idle compaction. All preferences live in one versioned localStorage document.
+// the screenshot shortcut and preview pane width, which computer the Terminal opens on, what sending does while a
+// reply runs, and Idle compaction. All preferences live in one versioned localStorage document.
 // it (chatCache.ts) and later settings add fields here rather than new keys. Nothing here goes to Hermes. Every
 // settings feature reads and writes through this module.
 
@@ -47,12 +48,19 @@ export type UIPrefs = {
   templates: Template[];
   /** The Terminal's shell picked last: the Hermes server's, through ssh, or this computer's (ADR 0051). */
   terminalKind: TerminalKind;
-  /** Idle compaction: compact a chat open on Hermes here once it has sat idle with its context window this full (ADR 0056). */
+  /**
+   * What Enter does with a message while the chat's reply runs (ADR 0057): `queue` it for after the reply (ADR 0018),
+   * or `steer` it into the running reply. Ctrl+Enter does the other.
+   */
+  followUp: FollowUp;
+  /** Idle compaction: compact a chat open on Hermes here once it has sat idle with its context window this full (ADR 0059). */
   idleCompact: IdleCompactPrefs;
 };
 
+export type FollowUp = "queue" | "steer";
+
 /**
- * Idle compaction (idleCompact.ts, ADR 0056). `enabled`: off until the owner turns it on, since a compaction is a model
+ * Idle compaction (idleCompact.ts, ADR 0059). `enabled`: off until the owner turns it on, since a compaction is a model
  * call. `percent`: how full the context window must be, as Hermes measured it. `idleMinutes`: how long the chat must
  * have had nothing happen in it.
  */
@@ -82,6 +90,7 @@ export const DEFAULT_UI_PREFS: Readonly<UIPrefs> = Object.freeze({
   previewWidth: null,
   templates: [],
   terminalKind: "server",
+  followUp: "queue",
   idleCompact: Object.freeze({ enabled: false, percent: 70, idleMinutes: 15 }),
 });
 
@@ -202,6 +211,7 @@ export function readUIPrefs(doc: UIPrefsDoc, d: Readonly<UIPrefs> = DEFAULT_UI_P
     previewWidth: previewWidth === undefined ? d.previewWidth : previewWidth,
     templates: toTemplates(doc.templates) ?? [...d.templates],
     terminalKind: doc.terminalKind === "server" || doc.terminalKind === "local" ? doc.terminalKind : d.terminalKind,
+    followUp: doc.followUp === "queue" || doc.followUp === "steer" ? doc.followUp : d.followUp,
     idleCompact: toIdleCompact(doc.idleCompact, d.idleCompact) ?? { ...d.idleCompact },
   };
 }

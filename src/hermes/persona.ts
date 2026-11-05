@@ -56,6 +56,8 @@ export type SaveResult =
 
 /** A profile's home folder on the server, and the profile distribution it was installed from. */
 export type ProfileHome = { path?: string; distribution?: string };
+/** A profile Hermes has, by name, and where it lives. */
+export type PersonaProfile = ProfileHome & { name: string };
 
 /** Hermes's profile ids (`hermes_constants.PROFILE_ID_RE` at `bf0203a`), plus `default`. */
 const PROFILE_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/;
@@ -115,7 +117,7 @@ export function personaError(e: unknown, profile: string, writing: boolean): Per
  * refused before the write, and Hermes's 500 `Could not write SOUL.md` comes from the atomic write, which leaves the
  * file untouched. Any other failure (no answer, or a proxy's 502/504) may have come after Hermes wrote it.
  */
-const certainlyUnwritten = (e: PersonaError) =>
+export const certainlyUnwritten = (e: PersonaError) =>
   e.unsent ||
   (e.status !== undefined && ((e.status >= 400 && e.status < 500) || (e.status === 500 && /Could not write SOUL\.md/.test(e.message))));
 
@@ -131,7 +133,7 @@ export function deadline<T>(p: Promise<T>, ms: number, what: string): Promise<T>
   return Promise.race([p, late]).finally(() => clearTimeout(timer));
 }
 
-/** Reads and writes SOUL.md for a named profile. Every call names its profile; nothing here follows the profile shown. */
+/** Reads and writes SOUL.md for a named profile, any profile Hermes has. Every call names its profile; nothing here follows the profile shown. */
 export class PersonaApi {
   constructor(
     private rest: (method: RestMethod, pathAndQuery: string, body?: unknown) => Promise<unknown>,
@@ -144,17 +146,32 @@ export class PersonaApi {
   }
 
   /**
-   * Where `profile` lives on the server, from dashboard REST `GET /api/profiles` (`_profile_to_dict`): its home folder,
-   * which holds SOUL.md, and the profile distribution it was installed from, if any. Undefined when it isn't listed.
+   * Every profile Hermes has, in the order dashboard REST `GET /api/profiles` (`_profile_to_dict`) lists them: each
+   * one's home folder, which holds SOUL.md, and the profile distribution it was installed from, if any.
    */
+  async profiles(): Promise<PersonaProfile[]> {
+    type Row = { name?: unknown; path?: unknown; distribution_name?: unknown };
+    const res = (await deadline(this.rest("GET", "api/profiles"), this.timeouts.readMs, "listing profiles")) as { profiles?: unknown } | null;
+    const rows = Array.isArray(res?.profiles) ? (res.profiles as Row[]) : [];
+    const seen = new Set<string>();
+    const list: PersonaProfile[] = [];
+    for (const row of rows) {
+      const name = row?.name;
+      if (typeof name !== "string" || seen.has(name) || (name !== "default" && !PROFILE_ID.test(name))) continue;
+      seen.add(name);
+      list.push({
+        name,
+        path: typeof row.path === "string" && row.path ? row.path : undefined,
+        distribution: typeof row.distribution_name === "string" && row.distribution_name ? row.distribution_name : undefined,
+      });
+    }
+    return list;
+  }
+
+  /** Where `profile` lives on the server (`profiles`). Undefined when it isn't listed. */
   async home(profile: string): Promise<ProfileHome | undefined> {
-    const res = (await deadline(this.rest("GET", "api/profiles"), this.timeouts.readMs, "listing profiles")) as { profiles?: { name?: unknown; path?: unknown; distribution_name?: unknown }[] } | null;
-    const row = res?.profiles?.find((p) => p.name === profile);
-    if (!row) return undefined;
-    return {
-      path: typeof row.path === "string" && row.path ? row.path : undefined,
-      distribution: typeof row.distribution_name === "string" && row.distribution_name ? row.distribution_name : undefined,
-    };
+    const row = (await this.profiles()).find((p) => p.name === profile);
+    return row && { path: row.path, distribution: row.distribution };
   }
 
   /** SOUL.md of `profile` as Hermes has it now. */

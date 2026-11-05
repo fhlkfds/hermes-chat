@@ -209,9 +209,9 @@ describe("The Terminal tab", () => {
 });
 
 /** The Terminal tab as the app shows it: the computer picked is kept in the prefs (App.tsx does the same). */
-function Panel({ server, local, initialTarget, onTarget = () => {} }: { server: FakeTerminals; local: FakeTerminals; initialTarget: string; onTarget?: (t: string) => void }) {
+function Panel({ server, local, initialTarget, guessed, onTarget = () => {} }: { server: FakeTerminals; local: FakeTerminals; initialTarget: string; guessed?: boolean; onTarget?: (t: string) => void }) {
   const kind = useSyncExternalStore(subscribe, getUIPrefs).terminalKind;
-  return <TerminalTab server={{ api: server, initialTarget, onTarget }} local={{ api: local }} shown kind={kind} onKind={(k) => setUIPrefs({ terminalKind: k })} />;
+  return <TerminalTab server={{ api: server, initialTarget, guessed, onTarget }} local={{ api: local }} shown kind={kind} onKind={(k) => setUIPrefs({ terminalKind: k })} />;
 }
 const pressed = (name: RegExp) => screen.getByRole("button", { name }).getAttribute("aria-pressed");
 
@@ -272,6 +272,43 @@ describe("Which computer the Terminal opens on", () => {
     expect(onTarget).toHaveBeenCalledWith("liam@hermes");
     expect(server.opened.map((o) => o.target)).toEqual(["liam@hermes"]);
     expect(screen.queryByText("No SSH target for the Hermes server.")).toBeNull();
+  });
+
+  it("connects at once to a target worked out from the web address, and says where it came from if ssh can't get in", async () => {
+    const server = new FakeTerminals();
+    render(<Panel server={server} local={new FakeTerminals()} initialTarget="hermes" guessed />);
+    await act(async () => {});
+    expect(server.opened.map((o) => o.target)).toEqual(["hermes"]);
+    expect(screen.queryByText("No SSH target for the Hermes server.")).toBeNull();
+    act(() => server.opened[0].emit({ kind: "exit", code: 255 }));
+    expect(screen.getByText(/took/).textContent).toMatch(/took hermes from the address you sign in with/);
+    // Typing another target is the owner's own: the note goes.
+    fireEvent.change(screen.getByLabelText("SSH target"), { target: { value: "liam@hermes" } });
+    expect(screen.queryByText(/from the address you sign in with/)).toBeNull();
+  });
+
+  it("keeps a worked-out target a guess when connecting again to it, and saves one the owner types", async () => {
+    const server = new FakeTerminals();
+    const onTarget = vi.fn();
+    render(<Panel server={server} local={new FakeTerminals()} initialTarget="hermes" guessed onTarget={onTarget} />);
+    await act(async () => {});
+    act(() => server.opened[0].emit({ kind: "exit", code: 0 }));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /Connect again/ })));
+    expect(server.opened.map((o) => o.target)).toEqual(["hermes", "hermes"]);
+    expect(onTarget).not.toHaveBeenCalled();
+    act(() => server.opened[1].emit({ kind: "exit", code: 255 }));
+    expect(screen.getByText(/from the address you sign in with/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("SSH target"), { target: { value: "liam@hermes" } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /Connect again/ })));
+    expect(onTarget).toHaveBeenCalledWith("liam@hermes");
+  });
+
+  it("doesn't blame the guess when the owner ended the session", async () => {
+    const server = new FakeTerminals();
+    render(<Panel server={server} local={new FakeTerminals()} initialTarget="hermes" guessed />);
+    await act(async () => {});
+    act(() => server.opened[0].emit({ kind: "exit", code: 0 }));
+    expect(screen.queryByText(/from the address you sign in with/)).toBeNull();
   });
 
   it("offers this computer instead when there's no SSH target", async () => {

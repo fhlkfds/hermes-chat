@@ -1,9 +1,9 @@
-// Icon rail beside a chat list (ADR 0001), ported from the prototype's variants C and A, with its tools grouped into Work
-// and Server and tips that show at once (ADR 0050). The list's header is the profile switcher. Settings opens from the
+// Icon rail beside a chat list (ADR 0001), ported from the prototype's variants C and A, with the profile's tools in one
+// Server group and tips that show at once (ADR 0050, 0055). Server files and the Terminal live in the side panel only. The list's header is the profile switcher. Settings opens from the
 // rail's foot. Right-clicking a chat opens its menu (ChatMenu.tsx).
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { BarChart3, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, EyeOff, FileOutput, FolderOpen, Inbox as InboxIcon, LockOpen, ScrollText, Search, Settings, SquarePen, SquareTerminal, Trash2, Webhook, FolderGit2 } from "lucide-react";
+import { BarChart3, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, EyeOff, FileOutput, Inbox as InboxIcon, LockOpen, ScrollText, Search, Settings, SquarePen, Trash2, Webhook, FolderGit2 } from "lucide-react";
 import type { Chat, ConnectionStatus, OtherProfile, OtherProfiles } from "../hermes/model";
 import { SOURCE_LABEL, isWaiting } from "../hermes/model";
 import { CHECK_EVERY_MS, totalUnread } from "../hermes/otherProfiles";
@@ -27,8 +27,6 @@ export function Rail({
   onToggleList,
   onNew,
   onSearch,
-  onFiles,
-  filesOpen = false,
   onInbox,
   inboxOpen = false,
   inboxCount = 0,
@@ -46,9 +44,6 @@ export function Rail({
   logsOpen = false,
   onRepo,
   repoOpen = false,
-  onTerminal,
-  terminalOpen = false,
-  terminalRunning = false,
   updateWaiting = false,
   connectionsMenu,
 }: {
@@ -60,9 +55,6 @@ export function Rail({
   onToggleList: () => void;
   onNew: () => void;
   onSearch: () => void;
-  /** Opens Server files, the read-only browser for the files on the Hermes server (FileBrowser.tsx). */
-  onFiles?: () => void;
-  filesOpen?: boolean;
   /** Opens or closes the inbox (Inbox.tsx); `inboxCount`: its entries that need the owner. */
   onInbox?: () => void;
   inboxOpen?: boolean;
@@ -87,11 +79,6 @@ export function Rail({
   /** Opens or closes the Repository screen: a Git checkout on the server, through the owner's ssh (Repository.tsx). */
   onRepo?: () => void;
   repoOpen?: boolean;
-  /** Opens or closes the Terminal: a shell on the server through the owner's ssh (Terminal.tsx). */
-  onTerminal?: () => void;
-  terminalOpen?: boolean;
-  /** Its ssh is running, maybe out of sight. */
-  terminalRunning?: boolean;
   /** An update is ready to install or restart into (Settings → Updates). */
   updateWaiting?: boolean;
   /** The recent-connection picker (Connections.tsx `RailConnections`), above the connection's status. */
@@ -110,12 +97,7 @@ export function Rail({
   const connLabel = [STATUS_LABEL[status], connNote].filter(Boolean).join(" · ");
   const { shown, bind, hide, tipProps, descriptions } = useRailTip();
   const needs = inboxCount ? `${inboxCount} need${inboxCount === 1 ? "s" : ""} you` : undefined;
-  const work = [
-    onFiles && (
-      <button key="files" className={`icon-btn ${filesOpen ? "on" : ""}`} aria-label="Server files" aria-pressed={filesOpen} onClick={onFiles} {...bind("files", { label: "Server files", note: "Browse the files on the server" })}>
-        <FolderOpen size={18} />
-      </button>
-    ),
+  const server = [
     onOutputs && (
       <button key="outputs" className={`icon-btn ${outputsOpen ? "on" : ""}`} aria-label="Outputs" aria-pressed={outputsOpen} onClick={onOutputs} {...bind("outputs", { label: "Outputs", note: "Files Hermes made" })}>
         <FileOutput size={18} />
@@ -126,21 +108,6 @@ export function Rail({
         <FolderGit2 size={18} />
       </button>
     ),
-    onTerminal && (
-      <button
-        key="terminal"
-        className={`icon-btn terminal-btn ${terminalOpen ? "on" : ""}`}
-        aria-label={terminalRunning ? "Terminal, session running" : "Terminal"}
-        aria-pressed={terminalOpen}
-        onClick={onTerminal}
-        {...bind("terminal", { label: "Terminal", note: terminalRunning && !terminalOpen ? "On the server: a session is running" : "A shell on the server" })}
-      >
-        <SquareTerminal size={18} />
-        {terminalRunning && !terminalOpen && <span className="dot terminal-dot" aria-hidden />}
-      </button>
-    ),
-  ].filter(Boolean);
-  const server = [
     onJobs && (
       <button key="jobs" className={`icon-btn ${jobsOpen ? "on" : ""}`} aria-label="Scheduled jobs" aria-pressed={jobsOpen} onClick={onJobs} {...bind("jobs", { label: "Scheduled jobs", note: "Tasks Hermes runs on a schedule" })}>
         <CalendarClock size={18} />
@@ -162,7 +129,7 @@ export function Rail({
       </button>
     ),
   ].filter(Boolean);
-  // Daily tools first, then the profile's tools in two labeled groups (ADR 0050).
+  // Daily tools first, then the profile's tools in one labeled group (ADR 0050, 0055).
   const parts = (
     <>
       <div className="rail-top">
@@ -189,12 +156,6 @@ export function Rail({
         )}
       </div>
       <div className="rail-mid" onScroll={hide}>
-        {work.length > 0 && (
-          <div className="rail-group" role="group" aria-label="Work">
-            <span className="rail-group-label" aria-hidden>Work</span>
-            {work}
-          </div>
-        )}
         {server.length > 0 && (
           <div className="rail-group" role="group" aria-label="Server">
             <span className="rail-group-label" aria-hidden>Server</span>

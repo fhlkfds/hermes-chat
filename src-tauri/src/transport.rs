@@ -20,6 +20,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::{header, redirect, Method, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -193,9 +194,10 @@ pub struct Speech {
     pub provider: Option<String>,
 }
 
-/// What the profile's voice set-up looks like from here: whether the server has the two audio routes, and which
-/// providers the profile's config names. Only these fields leave Rust; the config they come from can hold API keys.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+/// What the profile's voice set-up looks like from here: whether the server has the two audio routes, which
+/// providers the profile's config names, and each provider's model, voice and language for Settings → Voice. Only these
+/// fields leave Rust; the config they come from can hold API keys.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VoiceSetup {
     /// The server has `POST /api/audio/transcribe`.
@@ -219,6 +221,54 @@ pub struct VoiceSetup {
     /// `voice.max_recording_seconds`: the longest one turn may be; 0 or less means Hermes sets no limit.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_recording_seconds: Option<f64>,
+    /// `stt.language`: the language hint Hermes gives every speech-to-text provider that has none of its own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stt_language: Option<String>,
+    /// Each speech-to-text provider's own settings, by provider (`stt.<provider>.<setting>`): only the settings named in
+    /// `VOICE_SETTING_KEYS`, and only when they are text. No key, token or other field of those sections leaves Rust.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub stt_settings: BTreeMap<String, BTreeMap<String, String>>,
+    /// The same for text-to-speech (`tts.<provider>.<setting>`).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub tts_settings: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+/// The settings of a speech provider's config section that Settings → Voice shows and changes: its model, voice and
+/// language. Hermes names them differently per provider (`tts.elevenlabs.voice_id`, `stt.elevenlabs.language_code`).
+pub const VOICE_SETTING_KEYS: [&str; 6] = ["model", "model_id", "voice", "voice_id", "language", "language_code"];
+
+/// A speech provider's name as a config section key: what Hermes's own providers are called. Other keys of `stt` and
+/// `tts` (`providers`, `streaming`, `local` …) are told apart by their contents, not their names.
+fn voice_provider_name(name: &str) -> bool {
+    let mut b = name.bytes();
+    name.len() <= 64 && matches!(b.next(), Some(c) if c.is_ascii_alphanumeric()) && b.all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+}
+
+/// A voice setting's value as text, kept exactly as Hermes has it so a later check can compare it: `None` for anything
+/// that isn't a string, or is long or holds control characters (no model or voice name does).
+fn voice_setting_text(v: &serde_json::Value) -> Option<String> {
+    v.as_str().filter(|s| s.chars().count() <= 256 && !s.chars().any(char::is_control)).map(str::to_owned)
+}
+
+/// The `VOICE_SETTING_KEYS` of each provider section under `section` (the config's `stt` or `tts`). Command providers
+/// under `providers` aren't Hermes's own and are left out.
+fn voice_settings(section: &serde_json::Value) -> BTreeMap<String, BTreeMap<String, String>> {
+    let Some(section) = section.as_object() else {
+        return BTreeMap::new();
+    };
+    section
+        .iter()
+        .filter(|(name, _)| name.as_str() != "providers" && voice_provider_name(name))
+        .filter_map(|(name, block)| {
+            let fields: BTreeMap<String, String> = block
+                .as_object()?
+                .iter()
+                .filter(|(k, _)| VOICE_SETTING_KEYS.contains(&k.as_str()))
+                .filter_map(|(k, v)| Some((k.clone(), voice_setting_text(v)?)))
+                .collect();
+            (!fields.is_empty()).then(|| (name.clone(), fields))
+        })
+        .collect()
 }
 
 /// How an audio route answered: its JSON, no such route, or a refusal and Hermes's reason.
@@ -710,10 +760,13 @@ impl Dashboard {
     /// `PUT api/config`), the scheduled-job writes (`cron_write`), Settings → Persona's
     /// `PUT api/profiles/{name}/soul`, and Settings → Toolsets' switch, `PUT api/tools/toolsets/<name>` with exactly
     /// `{"enabled": true|false}` (`toolset_toggle_allowed`), Settings → Skills' two writes, `PUT api/skills/toggle` and
-    /// `PUT api/skills/content` with exactly their fields (`skill_write_allowed`), and Import transcripts'
+    /// `PUT api/skills/content` with exactly their fields (`skill_write_allowed`), Settings → Skills' copy to another
+    /// profile, `POST api/skills` (`skill_create_allowed`), Settings → Memory's entry edit for any profile, `PUT
+    /// api/learning/node` naming a memory entry (`memory_entry_edit_allowed`), and Import transcripts'
     /// `POST api/sessions/import` whose every session is marked `source: "import"` (`import_body_allowed`, ADR 0031),
-    /// the Automations writes (`webhook_write`, ADR 0036), and Settings → Memory's external memory writes
-    /// (`memory_provider_write`, ADR 0045).
+    /// the Automations writes (`webhook_write`, ADR 0036), Settings → Memory's external memory writes
+    /// (`memory_provider_write`, ADR 0045), and Settings → Voice's provider pick and key save (`voice_provider_write`,
+    /// ADR 0055).
     /// Returns the response body on 2xx.
     pub async fn request(&self, method: &str, path_and_query: &str, body: Option<String>) -> Result<String, TransportError> {
         let (path, query) = path_and_query.split_once('?').unwrap_or((path_and_query, ""));
@@ -726,7 +779,10 @@ impl Dashboard {
             ("POST", _) if cron_write("POST", path) => Method::POST,
             ("PUT", _) if cron_write("PUT", path) => Method::PUT,
             ("PUT", _) if toolset_toggle_allowed(path, body.as_deref()) => Method::PUT,
+            ("PUT", _) if voice_provider_write(path, body.as_deref()) => Method::PUT,
             ("PUT", _) if skill_write_allowed(path, body.as_deref()) => Method::PUT,
+            ("POST", "api/skills") if skill_create_allowed(body.as_deref()) => Method::POST,
+            ("PUT", "api/learning/node") if memory_entry_edit_allowed(body.as_deref()) => Method::PUT,
             ("PUT", _) if memory_provider_write("PUT", path, body.as_deref()) => Method::PUT,
             ("POST", _) if memory_provider_write("POST", path, body.as_deref()) => Method::POST,
             ("POST", _) if webhook_write("POST", path, body.as_deref()) => Method::POST,
@@ -807,8 +863,8 @@ impl Dashboard {
 
     /// Reads whether the server has the two audio routes, and which providers `profile`'s config names. The routes
     /// are asked with bodies they refuse before doing any work (an empty recording, no text), so nothing is
-    /// transcribed or spoken. Only the provider names, `stt.enabled` and the three `voice.*` turn settings are kept
-    /// from the config.
+    /// transcribed or spoken. Only the provider names, `stt.enabled`, the three `voice.*` turn settings and each
+    /// provider's model, voice and language (`VOICE_SETTING_KEYS`) are kept from the config.
     pub async fn voice_setup(&self, profile: &str) -> Result<VoiceSetup, TransportError> {
         let has = |a: AudioAnswer| !matches!(a, AudioAnswer::NoRoute);
         let transcribe = has(self.post_audio("api/audio/transcribe", profile, &json!({"data_url": ""})).await?);
@@ -824,6 +880,7 @@ impl Dashboard {
             None => (None, None, None),
         };
         let voice = |key: &str| config.as_ref().and_then(|c| config_number(&c["voice"][key]));
+        let settings = |kind: &str| config.as_ref().map(|c| voice_settings(&c[kind])).unwrap_or_default();
         Ok(VoiceSetup {
             transcribe,
             speak,
@@ -833,6 +890,9 @@ impl Dashboard {
             silence_threshold: voice("silence_threshold"),
             silence_duration: voice("silence_duration"),
             max_recording_seconds: voice("max_recording_seconds"),
+            stt_language: config.as_ref().and_then(|c| voice_setting_text(&c["stt"]["language"])),
+            stt_settings: settings("stt"),
+            tts_settings: settings("tts"),
         })
     }
 
@@ -1386,6 +1446,43 @@ pub fn toolset_toggle_allowed(path: &str, body: Option<&str>) -> bool {
     }
 }
 
+/// Settings → Voice's writes under Hermes's toolset routes (ADR 0055, `hermes_cli/web_routers/tools.py`), for the `stt`
+/// and `tts` toolsets only:
+/// - `PUT api/tools/toolsets/{stt,tts}/provider` with exactly `{"provider": <name>}` picks a provider by the name Hermes
+///   lists it under (`apply_provider_selection`, which writes `<kind>.provider` and nothing else of the config).
+/// - `PUT api/tools/toolsets/{stt,tts}/env` with exactly `{"env": {NAME: key}}`, never empty, saves API keys to the
+///   profile's `.env`. Hermes takes only the env vars that toolset's providers list. A blank key, which Hermes skips, or
+///   one with a control character, which would break the `.env` line, isn't relayed.
+///
+/// Their `model` and `post-setup` routes, and every other toolset's `provider` and `env`, aren't reached.
+pub fn voice_provider_write(path: &str, body: Option<&str>) -> bool {
+    let Some(route) = path.strip_prefix("api/tools/toolsets/") else {
+        return false;
+    };
+    let field = match route {
+        "stt/provider" | "tts/provider" => "provider",
+        "stt/env" | "tts/env" => "env",
+        _ => return false,
+    };
+    let Some(fields) = body.and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok()) else {
+        return false;
+    };
+    let Some(value) = fields.as_object().filter(|o| o.len() == 1).and_then(|o| o.get(field)) else {
+        return false;
+    };
+    let text_ok = |s: &str, max: usize| !s.trim().is_empty() && s.chars().count() <= max && !s.chars().any(char::is_control);
+    let env_name = |n: &str| {
+        let mut b = n.bytes();
+        n.len() <= 128 && matches!(b.next(), Some(c) if c.is_ascii_uppercase()) && b.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == b'_')
+    };
+    match field {
+        "provider" => value.as_str().is_some_and(|p| text_ok(p, 200)),
+        _ => value
+            .as_object()
+            .is_some_and(|env| !env.is_empty() && env.iter().all(|(k, v)| env_name(k) && v.as_str().is_some_and(|v| text_ok(v, 4096)))),
+    }
+}
+
 /// The Automations writes (ADR 0036, Hermes's `/api/webhooks` routes and the `webhooks/1` contract): `POST
 /// api/webhooks` creates a route, `PUT api/webhooks/{name}` edits one, `PUT api/webhooks/{name}/enabled` pauses or
 /// resumes one, and `POST api/webhooks/{name}/deliveries/{id}/retry` retries a failed delivery. The route name is one
@@ -1453,6 +1550,55 @@ pub fn skill_write_allowed(path: &str, body: Option<&str>) -> bool {
         _ => false,
     };
     name_ok && value_ok
+}
+
+/// Hermes's rule for a new skill's name and its category (`tools/skill_manager_tool.py` `VALID_NAME_RE`, at most 64):
+/// a lowercase letter or digit, then lowercase letters, digits, `.`, `_` or `-`. One folder name, so it can't leave the
+/// profile's skills folder.
+fn skill_dir_name(n: &str) -> bool {
+    let mut b = n.bytes();
+    n.len() <= 64
+        && matches!(b.next(), Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit())
+        && b.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'.' || c == b'_' || c == b'-')
+}
+
+/// Whether a `POST api/skills` body is Settings → Skills' copy of a skill into another profile (ADR 0057): exactly
+/// `{"name", "content"}` and optionally `"category"`, the name and category each one folder name as Hermes allows
+/// it (`skill_dir_name`), the content a string. The profile goes in the query, never the body. Hermes's own front matter,
+/// size and security checks then apply, and it refuses a name the profile already has.
+pub fn skill_create_allowed(body: Option<&str>) -> bool {
+    let Some(fields) = body.and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok()) else {
+        return false;
+    };
+    let Some(fields) = fields.as_object() else {
+        return false;
+    };
+    let known = fields.keys().all(|k| matches!(k.as_str(), "name" | "content" | "category"));
+    let name_ok = fields.get("name").and_then(|n| n.as_str()).is_some_and(skill_dir_name);
+    let content_ok = fields.get("content").is_some_and(|c| c.is_string());
+    let category_ok = fields.get("category").is_none_or(|c| c.as_str().is_some_and(skill_dir_name));
+    known && name_ok && content_ok && category_ok
+}
+
+/// Whether a `PUT api/learning/node` body replaces one built-in memory entry (ADR 0057): exactly `{"id", "content"}`,
+/// the id a memory node as Hermes names it, `memory:<memory|profile>:<index>:<fingerprint>` (`agent/learning_graph.py`
+/// `memory_node_id`, the fingerprint 12 hex digits of SHA-256). Hermes resolves the fingerprint under the memory tool's
+/// lock and refuses a stale one. A skill's id is its name, and skills are edited only through `api/skills/content`,
+/// with its checks, so no other id is relayed.
+pub fn memory_entry_edit_allowed(body: Option<&str>) -> bool {
+    let Some(fields) = body.and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok()) else {
+        return false;
+    };
+    let Some(fields) = fields.as_object().filter(|o| o.len() == 2) else {
+        return false;
+    };
+    let id_ok = fields.get("id").and_then(|i| i.as_str()).is_some_and(|id| {
+        let parts: Vec<&str> = id.split(':').collect();
+        matches!(parts.as_slice(), ["memory", "memory" | "profile", index, print]
+            if !index.is_empty() && index.len() <= 9 && index.bytes().all(|c| c.is_ascii_digit())
+                && print.len() == 12 && print.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)))
+    });
+    id_ok && fields.get("content").is_some_and(|c| c.is_string())
 }
 
 /// Settings → Memory's external memory writes (ADR 0045, Hermes's `/api/memory` routes): `PUT api/memory/provider`
@@ -1842,7 +1988,61 @@ impl Dashboard {
 
 #[cfg(test)]
 mod tests {
-    use super::{memory_provider_write, provider_key_name, webhook_write};
+    use super::{memory_entry_edit_allowed, memory_provider_write, provider_key_name, skill_create_allowed, webhook_write};
+
+    #[test]
+    fn only_a_skill_copy_creates_a_skill() {
+        for body in [
+            r#"{"name":"release-notes","content":"---\nname: release-notes\n---\nx"}"#,
+            r#"{"name":"a.b_c-9","content":"x","category":"writing"}"#,
+            &format!(r#"{{"name":"{}","content":""}}"#, "a".repeat(64)),
+        ] {
+            assert!(skill_create_allowed(Some(body)), "{body}");
+        }
+        for body in [
+            r#"{"name":"Release","content":"x"}"#,
+            r#"{"name":"-x","content":"x"}"#,
+            r#"{"name":"../x","content":"x"}"#,
+            r#"{"name":"a/b","content":"x"}"#,
+            r#"{"name":"","content":"x"}"#,
+            r#"{"name":"x","content":"x","category":"a/b"}"#,
+            r#"{"name":"x","content":"x","category":".."}"#,
+            r#"{"name":"x","content":"x","category":null}"#,
+            // The profile goes in the query only.
+            r#"{"name":"x","content":"x","profile":"other"}"#,
+            r#"{"name":"x"}"#,
+            r#"{"name":"x","content":1}"#,
+            "[]",
+            "not json",
+        ] {
+            assert!(!skill_create_allowed(Some(body)), "{body}");
+        }
+        assert!(!skill_create_allowed(Some(&format!(r#"{{"name":"{}","content":""}}"#, "a".repeat(65)))));
+        assert!(!skill_create_allowed(None));
+    }
+
+    #[test]
+    fn only_memory_entries_are_edited_through_the_learning_route() {
+        for body in [r#"{"id":"memory:memory:0:0123456789ab","content":"x"}"#, r#"{"id":"memory:profile:12:abcdefabcdef","content":""}"#] {
+            assert!(memory_entry_edit_allowed(Some(body)), "{body}");
+        }
+        for body in [
+            // A skill's id is its name: skills are edited through api/skills/content only.
+            r#"{"id":"release-notes","content":"x"}"#,
+            r#"{"id":"memory:memory:0","content":"x"}"#,
+            r#"{"id":"memory:other:0:0123456789ab","content":"x"}"#,
+            r#"{"id":"memory:memory:x:0123456789ab","content":"x"}"#,
+            r#"{"id":"memory:memory:0:0123456789AB","content":"x"}"#,
+            r#"{"id":"memory:memory:0:0123456789abc","content":"x"}"#,
+            r#"{"id":"memory:memory:0:0123456789ab:x","content":"x"}"#,
+            r#"{"id":"memory:memory:0:0123456789ab","content":"x","profile":"p"}"#,
+            r#"{"id":"memory:memory:0:0123456789ab","content":1}"#,
+            "not json",
+        ] {
+            assert!(!memory_entry_edit_allowed(Some(body)), "{body}");
+        }
+        assert!(!memory_entry_edit_allowed(None));
+    }
 
     #[test]
     fn only_the_memory_provider_writes() {

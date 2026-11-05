@@ -37,6 +37,7 @@ export function TerminalScreen({
   kind = "server",
   api,
   initialTarget,
+  guessed = false,
   shown,
   onTarget,
   onRunning,
@@ -46,6 +47,8 @@ export function TerminalScreen({
   api: TerminalApi;
   /** Where to connect: the target last used for the terminal, or the sign-in's. Empty asks the owner first. */
   initialTarget: string;
+  /** `initialTarget` was worked out from the sign-in's web address (ADR 0055), so ssh failing may mean it's wrong. */
+  guessed?: boolean;
   /** False while the owner is elsewhere: the session keeps running out of sight. */
   shown: boolean;
   /** A target the owner typed and connected to, to use next time. */
@@ -160,12 +163,15 @@ export function TerminalScreen({
   const running = state.kind === "connecting" || state.kind === "open";
   const submit = () => {
     if (!target.trim() || running) return;
-    onTarget?.(target.trim());
+    // Connecting again to the target worked out from the web address keeps it a guess, following the address.
+    if (!(guessed && target.trim() === initialTarget.trim())) onTarget?.(target.trim());
     connect(target);
   };
   const what = kind === "local" ? "A shell on this computer" : "A shell on the Hermes server";
-  // A URL sign-in has no SSH target, and none was typed for this connection yet: say so, rather than a bare field.
+  // No SSH target from the sign-in or its web address (ADR 0055), and none typed for this connection yet: say so, rather than a bare field.
   const noTarget = kind === "server" && state.kind === "idle" && !initialTarget.trim();
+  // The guess from the web address didn't get in, and nothing else has been tried: say where it came from.
+  const guessFailed = kind === "server" && guessed && target.trim() === initialTarget.trim() && ((state.kind === "ended" && !state.byOwner && state.code === 255) || state.kind === "failed");
 
   return (
     <div className="terminal-screen" ref={screenRef} hidden={!shown} data-kind={kind}>
@@ -217,7 +223,7 @@ export function TerminalScreen({
                   <strong>No SSH target for the Hermes server.</strong>
                 </p>
                 <p className="muted">
-                  This connection signs in with a web address, so the app doesn't know how to reach the server over ssh. Set an SSH target, such as liam@hermes, to open a shell there. The app keeps it for this connection. Your ~/.ssh/config, keys and agent apply.
+                  This connection signs in with a web address that doesn't name the server (one on this computer, such as localhost), so the app can't tell how to reach it over ssh. Set an SSH target, such as liam@hermes, to open a shell there. The app keeps it for this connection. Your ~/.ssh/config, keys and agent apply.
                 </p>
               </div>
             ) : (
@@ -227,6 +233,11 @@ export function TerminalScreen({
                   : state.kind === "failed"
                     ? state.message
                     : "A shell on the Hermes server, through your own ssh: your ~/.ssh/config, keys and agent apply, and ssh asks here for anything it needs."}
+              </p>
+            )}
+            {guessFailed && (
+              <p className="muted terminal-guess">
+                The app took <span className="mono">{initialTarget}</span> from the address you sign in with. If you sign in to the server as someone else, set the target as user@host here, or add a Host entry with a User line to ~/.ssh/config.
               </p>
             )}
             <div className="terminal-connect-row">
@@ -270,7 +281,7 @@ export function TerminalTab({
   onKind,
   onRunning,
 }: {
-  server: { api: TerminalApi; initialTarget: string; onTarget: (target: string) => void };
+  server: { api: TerminalApi; initialTarget: string; guessed?: boolean; onTarget: (target: string) => void };
   local: { api: TerminalApi };
   shown: boolean;
   kind: TerminalKind;
@@ -297,7 +308,7 @@ export function TerminalTab({
           <Laptop size={13} /> This computer {running.local && <span className="dot run-dot" role="img" aria-label="(running)" />}
         </button>
       </div>
-      {made.server && <TerminalScreen kind="server" api={server.api} initialTarget={server.initialTarget} onTarget={server.onTarget} shown={shown && kind === "server"} onRunning={ran("server")} onOther={() => onKind("local")} />}
+      {made.server && <TerminalScreen kind="server" api={server.api} initialTarget={server.initialTarget} guessed={server.guessed} onTarget={server.onTarget} shown={shown && kind === "server"} onRunning={ran("server")} onOther={() => onKind("local")} />}
       {made.local && <TerminalScreen kind="local" api={local.api} initialTarget="" shown={shown && kind === "local"} onRunning={ran("local")} />}
     </div>
   );

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// The rail's layout and its tips (ADR 0050): the daily tools first, then the Work and Server groups, and a tip that
+// The rail's layout and its tips (ADR 0050, 0055): the daily tools first, then the Server group, and a tip that
 // shows at once, with the button's name and shortcut, on hover or keyboard focus.
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -18,7 +18,6 @@ function rail(over: Partial<Parameters<typeof Rail>[0]> = {}) {
     onToggleList: noop,
     onNew: vi.fn(),
     onSearch: noop,
-    onFiles: noop,
     onInbox: noop,
     onOutputs: noop,
     onSettings: noop,
@@ -27,7 +26,6 @@ function rail(over: Partial<Parameters<typeof Rail>[0]> = {}) {
     onUsage: noop,
     onLogs: noop,
     onRepo: noop,
-    onTerminal: noop,
     ...over,
   };
   return { ...render(<Rail {...props} />), props, user: userEvent.setup() };
@@ -37,12 +35,15 @@ const names = (el: HTMLElement) => within(el).getAllByRole("button").map((b) => 
 const tip = () => screen.queryByRole("tooltip", { hidden: true });
 
 describe("the rail", () => {
-  it("puts New chat, Search and Inbox first, then the Work and Server groups, with Settings at the foot", () => {
+  it("puts New chat, Search and Inbox first, then the Server group, with Settings at the foot", () => {
     const { container } = rail();
     const top = container.querySelector(".rail-top") as HTMLElement;
     expect(names(top)).toEqual(["Hide or show chats", "New chat (Ctrl+N)", "Search all chats (Ctrl+K)", "Inbox"]);
-    expect(names(screen.getByRole("group", { name: "Work" }))).toEqual(["Server files", "Outputs", "Repository", "Terminal"]);
-    expect(names(screen.getByRole("group", { name: "Server" }))).toEqual(["Scheduled jobs", "Automations", "Logs", "Usage"]);
+    expect(names(screen.getByRole("group", { name: "Server" }))).toEqual(["Outputs", "Repository", "Scheduled jobs", "Automations", "Logs", "Usage"]);
+    // Server files and the Terminal are the side panel's tabs, not rail buttons.
+    expect(screen.queryByRole("group", { name: "Work" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Server files" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Terminal/ })).toBeNull();
     const bottom = container.querySelector(".rail-bottom") as HTMLElement;
     expect(names(bottom)).toEqual(["Connected", "Settings"]);
     // Import lives in Settings, not on the rail.
@@ -50,9 +51,8 @@ describe("the rail", () => {
   });
 
   it("leaves out a group with none of its tools", () => {
-    rail({ onJobs: undefined, onAutomations: undefined, onUsage: undefined, onLogs: undefined });
+    rail({ onOutputs: undefined, onRepo: undefined, onJobs: undefined, onAutomations: undefined, onUsage: undefined, onLogs: undefined });
     expect(screen.queryByRole("group", { name: "Server" })).toBeNull();
-    expect(screen.getByRole("group", { name: "Work" })).toBeTruthy();
   });
 
   it("names the shortcuts for screen readers", () => {
@@ -107,7 +107,7 @@ describe("the rail", () => {
   it("gives each button its tip's line as its description", () => {
     rail({ inboxCount: 2, updateWaiting: true });
     expect(screen.getByRole("button", { name: "Automations", description: "Tasks started by GitHub events" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Server files", description: "Browse the files on the server" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Outputs", description: "Files Hermes made" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Settings: an update is ready", description: "An update is ready" })).toBeTruthy();
     // A line the name already says isn't said twice.
     expect(screen.getByRole("button", { name: "Inbox, 2 need you", description: "" })).toBeTruthy();

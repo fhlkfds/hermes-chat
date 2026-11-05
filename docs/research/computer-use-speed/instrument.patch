@@ -1,0 +1,62 @@
+diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
+index 3625815..bd3d9f4 100644
+--- a/src-tauri/src/lib.rs
++++ b/src-tauri/src/lib.rs
+@@ -966,6 +966,7 @@ async fn display_open(
+     let epoch = displays.epoch();
+     let dashboard = dashboard(&state).await?;
+     let socket = display::open(dashboard, &ticket, move |e| {
++        if let display::DisplayEvent::Data(b) = &e { eprintln!("BENCH tx {:.6} {}", bench_mono(), b.len()); }
+         let _ = on_event.send(display_event(e));
+     })
+     .await
+@@ -973,6 +974,19 @@ async fn display_open(
+     displays.keep(epoch, socket).ok_or_else(|| transport::TransportError::Closed.to_string())
+ }
+ 
++fn bench_mono() -> f64 {
++    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
++    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
++    ts.tv_sec as f64 + ts.tv_nsec as f64 / 1e9
++}
++
++#[tauri::command]
++fn bench_log(lines: Vec<String>) {
++    let wall = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64() * 1000.0;
++    eprintln!("BENCH clock {:.6} {:.3}", bench_mono(), wall);
++    for l in lines { eprintln!("BENCH js {l}"); }
++}
++
+ /// The webview's RFB bytes for screen socket `x-display-id`, as the raw body.
+ #[tauri::command]
+ fn display_send(displays: State<'_, display::Displays>, request: tauri::ipc::Request<'_>) -> Result<(), String> {
+@@ -1136,6 +1150,7 @@ pub fn run(screenshot: bool, link: Option<String>) {
+             terminal_close,
+             terminal_open_local,
+             display_open,
++            bench_log,
+             display_send,
+             display_close,
+             update::update_install_kind,
+diff --git a/src/hermes/tauriPipe.ts b/src/hermes/tauriPipe.ts
+index 2ac4ffb..39c8c30 100644
+--- a/src/hermes/tauriPipe.ts
++++ b/src/hermes/tauriPipe.ts
+@@ -88,7 +88,16 @@ export function tauriPipe(d: SignInDetails): OpenPipe {
+       openDisplay: async (ticket, onData, onClose) => {
+         // RFB bytes arrive raw, as an ArrayBuffer; the close, once, as JSON.
+         const channel = new Channel<ArrayBuffer | { code: number; reason: string }>();
+-        channel.onmessage = (m) => (m instanceof ArrayBuffer ? onData(m) : onClose(m.code, m.reason));
++        const benchLines: string[] = [];
++        let benchTimer: ReturnType<typeof setTimeout> | undefined;
++        channel.onmessage = (m) => {
++          if (m instanceof ArrayBuffer) {
++            benchLines.push(`${(performance.timeOrigin + performance.now()).toFixed(3)} ${m.byteLength}`);
++            clearTimeout(benchTimer);
++            benchTimer = setTimeout(() => void invoke("bench_log", { lines: benchLines.splice(0) }), 400);
++          }
++          return m instanceof ArrayBuffer ? onData(m) : onClose(m.code, m.reason);
++        };
+         const id = await invoke<number>("display_open", { ticket, onEvent: channel }).catch(asError);
+         return {
+           // The owner's keys and pointer go as the raw body.
