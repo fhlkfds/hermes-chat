@@ -743,7 +743,7 @@ describe("Settings, Voice, Speech to text (ADR 0062)", () => {
 
     await user.selectOptions(within(here).getByLabelText("Language"), "es");
     await waitFor(() => expect(localStt.language).toBe("es"));
-    expect(within<HTMLElement>(here).getByLabelText<HTMLSelectElement>("Language").value).toBe("es");
+    expect(within(here).getByLabelText<HTMLSelectElement>("Language").value).toBe("es");
 
     await user.click(within(here).getByRole("button", { name: "Delete the small model" }));
     await within(here).findByText(/Not ready: The small model isn't downloaded yet/);
