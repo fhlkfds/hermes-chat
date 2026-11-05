@@ -100,7 +100,7 @@ describe("Saved connections", () => {
     await openRail();
     await userEvent.click(screen.getByRole("button", { name: "Add connection" }));
     await userEvent.type(screen.getByLabelText("Name"), "Home");
-    await userEvent.click(screen.getByRole("button", { name: "URL" }));
+    await userEvent.selectOptions(screen.getByLabelText("Connect through"), "web");
     await userEvent.type(screen.getByLabelText(/^Dashboard URL/), BRAVO);
     await userEvent.click(screen.getByRole("button", { name: "Next" }));
     await userEvent.type(await screen.findByLabelText("Dashboard username"), "owner");
@@ -148,7 +148,7 @@ describe("Saved connections", () => {
     await openRail();
     await userEvent.click(screen.getByRole("button", { name: "Add connection" }));
     await userEvent.type(screen.getByLabelText("Name"), "Another");
-    await userEvent.click(screen.getByRole("button", { name: "URL" }));
+    await userEvent.selectOptions(screen.getByLabelText("Connect through"), "web");
     await userEvent.type(screen.getByLabelText(/^Dashboard URL/), BRAVO);
     await userEvent.click(screen.getByRole("button", { name: "Next" }));
     await userEvent.type(screen.getByLabelText("Dashboard username"), "owner");

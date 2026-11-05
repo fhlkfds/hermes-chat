@@ -3,7 +3,7 @@
 // id; two can share a name, so each always shows its address too.
 import { useEffect, useId, useRef, useState } from "react";
 import { Check, CircleAlert, Globe, Pencil, Plug, PlugZap, Plus, Server, Settings2, Terminal, Trash2, TriangleAlert, X } from "lucide-react";
-import { type SavedConnection, NAME_MAX, addressLabel } from "../hermes/connections";
+import { type SavedConnection, NAME_MAX, addressLabel, routesSummary } from "../hermes/connections";
 import { KEPT_ON_SERVER, REMOVED_LOCALLY } from "../hermes/forgetConnection";
 import { stageLabel, type TestOutcome } from "../hermes/setup";
 import { composing, relTime, routeLabel, useReturnFocus } from "./bits";
@@ -269,7 +269,16 @@ export function ConnectionManager({
                     </div>
                   )}
                   <div className="conn-option-meta">
-                    {c.mode === "ssh" ? "SSH" : "URL"} · <span className="mono">{addressLabel(c)}</span> · {c.username || "no username"} · {lastUsedText(c)}
+                    {c.routes && c.routes.length > 1 ? (
+                      <span title={`Tried in order, first ${addressLabel(c)}`}>
+                        {c.routes.length} routes: {routesSummary(c)}
+                      </span>
+                    ) : (
+                      <>
+                        {c.mode === "ssh" ? "SSH" : "URL"} · <span className="mono">{addressLabel(c)}</span>
+                      </>
+                    )}{" "}
+                    · {c.username || "no username"} · {lastUsedText(c)}
                   </div>
                 </div>
               </div>

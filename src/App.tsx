@@ -31,8 +31,9 @@ import { onDesktopScreenshot, screenshotSupport, showWindow, syncScreenshotOutbo
 import { ConnectionManager, RailConnections, RemoveConnection, SwitchConnection } from "./ui/Connections";
 import { checkShortcut, shortcutLabel, shortcutOf } from "./ui/shortcut";
 
-import { tauriPipe, tauriProbe, type SignInDetails } from "./hermes/tauriPipe";
-import { isSetUp, testConnection, type TestOutcome } from "./hermes/setup";
+import { reachRoute, tauriPipe, tauriProbe, tauriReach, type SignInDetails } from "./hermes/tauriPipe";
+import { PreferredRoutes, RouteHealth, routesOf, sshAddressOf } from "./hermes/routes";
+import { isSetUp, testSignIn, type TestOutcome } from "./hermes/setup";
 import { isOutgoing, isWaiting, type Attachment, type Chat, type ConnectionStatus, type Found } from "./hermes/model";
 import type { ModelCatalog, ModelPick } from "./hermes/models";
 import { ChatList, Rail, leavingNote } from "./ui/Sidebar";
@@ -166,13 +167,19 @@ let connectionStore: Connections | undefined;
 /** The saved connections, read (and the old single sign-in migrated) the first time they're needed. */
 const savedConnections = () => (connectionStore ??= new Connections(localStorage));
 
+/** How each connection's routes did lately, for this run of the app (routes.ts `RouteHealth`). */
+const routeHealth = new Map<string, RouteHealth>();
+const healthOf = (id: string) => routeHealth.get(id) ?? routeHealth.set(id, new RouteHealth()).get(id)!;
+/** A connection's pipe: its routes in order, and the server id the first route that names one reports kept (ADR 0056). */
+const pipeFor = (c: SavedConnection, d: SignInDetails) => tauriPipe(d, { onServer: (server) => savedConnections().setServer(c.id, server), health: healthOf(c.id) });
+
 const account: Account = {
   get connections() {
     return savedConnections();
   },
   secrets: systemSecrets,
-  connect: (c, d, signal) => connect(tauriPipe(d), undefined, localChatCache(c), desktopNotify, signal),
-  readSaved: (c, d, reason) => readSaved(tauriPipe(d), reason, localChatCache(c), desktopNotify),
+  connect: (c, d, signal) => connect(pipeFor(c, d), undefined, localChatCache(c), desktopNotify, signal),
+  readSaved: (c, d, reason) => readSaved(pipeFor(c, d), reason, localChatCache(c), desktopNotify),
 };
 
 /** Deletes what this computer keeps for a removed connection (forgetConnection.ts). */
@@ -187,9 +194,23 @@ const appearance = appearanceStore(localStorage, document.documentElement);
 const backupEnv = savedBackupEnv(() => savedConnections().recent());
 
 /** The names of the extra request headers a sign-in sends; only a URL sends them. */
-const headerNames = (d: SignInDetails) => (d.mode === "url" ? (d.headers ?? []).map((h) => h.name.trim()) : []);
+const headerNames = (d: SignInDetails) =>
+  d.routes
+    ? [...new Set(d.routes.filter((r) => r.kind !== "ssh").flatMap((r) => (r.headers ?? []).map((h) => h.name.trim())))]
+    : d.mode === "url"
+      ? (d.headers ?? []).map((h) => h.name.trim())
+      : [];
 
 const BLANK: SignInDetails = { mode: "ssh", sshTarget: "", url: "", username: "", password: "", headers: [] };
+
+/**
+ * `d`, the sign-in `c` was made with, held to the server `c` knows now: a route may have reported it since `d` was read
+ * (ADR 0056). Only a connection with several routes is held to one.
+ */
+const withKnownServer = (c: SavedConnection, d: SignInDetails): SignInDetails => {
+  const server = savedConnections().get(c.id)?.server;
+  return d.routes && server ? { ...d, server } : d;
+};
 
 /**
  * What launch ends in: signed in to the connection in use with its saved password, or the sign-in screen and why.
@@ -329,6 +350,15 @@ export default function App({ links = desktopLinks }: { links?: LinkInbox } = {}
     setHermes(h);
     setConnections((n) => n + 1);
   };
+
+  // On a fallback route, the routes before it are checked now and then without the password, and the connection
+  // moves back to one that answers once nothing is running (ADR 0056).
+  useEffect(() => {
+    const d = signedInWith.current;
+    const id = connection?.id;
+    if (!hermes || !id || !d?.routes || routesOf(d).filter((r) => !r.off).length < 2) return;
+    return new PreferredRoutes(hermes, d, reachRoute, healthOf(id), () => store.get(id)?.server ?? d.server).start();
+  }, [hermes, connection?.id]);
 
   /** The sign-in screen, for `c` with `d` filled in, or with none picked. */
   const showSignIn = (c: SavedConnection | undefined, d: SignInDetails = BLANK, why?: string) => {
@@ -473,6 +503,7 @@ export default function App({ links = desktopLinks }: { links?: LinkInbox } = {}
         initial={setup.initial}
         initialName={setup.name}
         probe={tauriProbe}
+        reach={tauriReach}
         hermes={hermes ?? undefined}
         onConnect={(d, name, signal) => connectWith(setup.target, d, name, signal)}
         onCancel={setup.mode === "first-run" ? undefined : () => setSetup(undefined)}
@@ -483,7 +514,7 @@ export default function App({ links = desktopLinks }: { links?: LinkInbox } = {}
 
   /** Setup to change `c`: from the sign-in it is using, if it's the one in use, header values and all but the password. */
   const editConnection = async (c: SavedConnection) => {
-    const now = c.id === connectionRef.current?.id && signedInWith.current ? { ...signedInWith.current, password: "" } : await signInForm(c, account);
+    const now = c.id === connectionRef.current?.id && signedInWith.current ? withKnownServer(c, { ...signedInWith.current, password: "" }) : await signInForm(c, account);
     // ServerFields clears the header values if the URL changes, so they never go to another server.
     setSetup({ mode: c.id === connectionRef.current?.id && current.current ? "reconfigure" : "edit", initial: now, target: c, name: c.name });
   };
@@ -525,9 +556,9 @@ export default function App({ links = desktopLinks }: { links?: LinkInbox } = {}
           }}
           onRemoveConnection={removeSaved}
           onTestConnection={async (c) => {
-            const d = c.id === connection.id && signedInWith.current ? signedInWith.current : await savedSignIn(c, account);
+            const d = c.id === connection.id && signedInWith.current ? withKnownServer(c, signedInWith.current) : await savedSignIn(c, account);
             if (!d) throw new Error("No password is saved for this connection, so it can't be tested. Edit it to sign in again.");
-            return testConnection(tauriProbe, d);
+            return testSignIn(tauriProbe, d);
           }}
           onSignOut={() =>
             serial(async () => {
@@ -2211,6 +2242,7 @@ export function Main({
       <Rail
         status={status}
         route={route}
+        connectionName={connection.name}
         unsecure={unsecure}
         closedReason={closedReason}
         onReconnect={() => void hermes.reconnect()}
@@ -2707,7 +2739,7 @@ export function Main({
           <RepositoryScreen
             key={repoAt ? `at-${repoAt.n}` : "repo"}
             api={repoApi}
-            initialTarget={repoAt?.target ?? repoTarget(connection, localStorage.getItem(REPO_TARGET_KEY), localStorage.getItem(terminalTargetKey(connection)))}
+            initialTarget={repoAt?.target ?? repoTarget(sshAddressOf(connection), localStorage.getItem(REPO_TARGET_KEY), localStorage.getItem(terminalTargetKey(connection)))}
             initialPath={repoAt?.path ?? localStorage.getItem(REPO_PATH_KEY) ?? ""}
             initialView={repoAt?.view}
             worktrees={{
@@ -2780,8 +2812,8 @@ export function Main({
                     <TerminalTab
                       server={{
                         api: tauriTerminal,
-                        initialTarget: terminalTarget(connection, localStorage.getItem(terminalTargetKey(connection))),
-                        guessed: terminalTargetGuessed(connection, localStorage.getItem(terminalTargetKey(connection))),
+                        initialTarget: terminalTarget(sshAddressOf(connection), localStorage.getItem(terminalTargetKey(connection))),
+                        guessed: terminalTargetGuessed(sshAddressOf(connection), localStorage.getItem(terminalTargetKey(connection))),
                         onTarget: (t) => localStorage.setItem(terminalTargetKey(connection), t),
                       }}
                       local={{ api: tauriLocalTerminal }}

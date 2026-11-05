@@ -7,6 +7,8 @@ import type { SignInDetails } from "../hermes/tauriPipe";
 import { type SavedConnection, addressLabel } from "../hermes/connections";
 import { explainSignIn } from "../hermes/setup";
 import { ServerFields, withHeaders } from "./Onboarding";
+import { RouteSummary } from "./Routes";
+import { routesSummary } from "../hermes/connections";
 import { ConnectionPicker } from "./Connections";
 
 export function SignIn({
@@ -53,7 +55,10 @@ export function SignIn({
     }
     setD(next);
   };
-  const ready = (d.mode === "ssh" ? d.sshTarget : d.url).trim() && d.username.trim() && d.password;
+  // A connection with several routes shows them, to be changed in setup; one with a single route, its address here.
+  const routed = !!d.routes;
+  // Typing the password unlocks the routes it wasn't saved for (account.ts `savedSignIn`).
+  const ready = (routed || (d.mode === "ssh" ? d.sshTarget : d.url).trim()) && d.username.trim() && d.password;
   const why = error ? explainSignIn(error, d) : undefined;
   const picker = connections.length > 1 || (!connection && connections.length > 0);
   return (
@@ -64,7 +69,13 @@ export function SignIn({
         <p className="muted">
           {connection ? (
             <>
-              Sign in to the dashboard at <span className="mono">{addressLabel(connection)}</span>.
+              {routed ? (
+                <>Sign in to the dashboard over {routesSummary(connection)}.</>
+              ) : (
+                <>
+                  Sign in to the dashboard at <span className="mono">{addressLabel(connection)}</span>.
+                </>
+              )}
             </>
           ) : (
             "Pick a saved connection, or set up a new one."
@@ -79,13 +90,13 @@ export function SignIn({
               if (!ready || busy) return;
               setBusy(true);
               try {
-                await onSignIn(withHeaders(d));
+                await onSignIn(withHeaders(routed ? { ...d, routes: d.routes!.map(({ locked: _locked, ...r }) => r) } : d));
               } finally {
                 setBusy(false);
               }
             }}
           >
-            <ServerFields d={d} set={set} />
+            {routed ? <RouteSummary d={d} /> : <ServerFields d={d} set={set} />}
             <label className="field">
               <span className="field-label">Dashboard username</span>
               <input value={d.username} onChange={(e) => set({ username: e.target.value })} />
@@ -93,9 +104,15 @@ export function SignIn({
             <label className="field">
               <span className="field-label">Dashboard password</span>
               <input type="password" autoFocus value={d.password} onChange={(e) => set({ password: e.target.value })} />
-              <span className="field-hint">
-                <KeyRound size={12} /> {d.mode === "ssh" ? "Sent to the server through the SSH tunnel." : "Sent to the dashboard at this URL."} Saved
-                in your system keyring, for this connection only.
+              <span className="field-hint block">
+                <KeyRound size={12} />{" "}
+                {`${
+                  routed
+                    ? "Sent only over a route that reaches this connection's Hermes server."
+                    : d.mode === "ssh"
+                      ? "Sent to the server through the SSH tunnel."
+                      : "Sent to the dashboard at this URL."
+                } Saved in your system keyring, for this connection only.`}
               </span>
               {cleared && (
                 <span className="field-hint block" role="status">
@@ -108,7 +125,8 @@ export function SignIn({
                 <div>
                   <CircleAlert size={12} /> {why.problem}
                 </div>
-                {error !== why.problem && <div className="small sign-in-raw">{error}</div>}
+                {/* Every route's failure is listed below already (routes.ts `RoutesFailedError`). */}
+                {error !== why.problem && !/^No route reached Hermes\./.test(error ?? "") && <div className="small sign-in-raw">{error}</div>}
                 {why.fixes.length > 0 && (
                   <ul className="sign-in-fixes">
                     {why.fixes.map((f) => (

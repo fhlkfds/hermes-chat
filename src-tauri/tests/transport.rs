@@ -2260,3 +2260,119 @@ async fn saves_an_edits_text_through_the_upload_route() {
     assert!(matches!(err, TransportError::NotRelayed(_)), "{err:?}");
     assert_eq!(uploads.lock().unwrap().as_slice(), ["/srv/notes.md"]);
 }
+
+// ── Routes: same-server check and plain http (ADR 0056) ─────────────────────────────────────────────────────────
+
+/// A dashboard whose `/api/status` names `install`, counting the sign-ins it got.
+async fn installed(install: &'static str) -> (Url, Arc<Mutex<u32>>) {
+    let logins = Arc::new(Mutex::new(0u32));
+    let counted = logins.clone();
+    let app = Router::new()
+        .route("/auth/password-login", post(login))
+        .route("/api/auth/ws-ticket", post(ws_ticket))
+        .route("/api/ws", get(api_ws))
+        .route("/api/status", get(move || async move {
+            Json(json!({"version": "0.22.5", "auth_required": true, "auth_providers": ["basic"], "install_id": install}))
+        }))
+        .layer(middleware::from_fn(move |req: Request, next: Next| {
+            let counted = counted.clone();
+            async move {
+                if req.uri().path() == "/auth/password-login" {
+                    *counted.lock().unwrap() += 1;
+                }
+                next.run(req).await
+            }
+        }));
+    (serve(app).await, logins)
+}
+
+#[test]
+fn a_server_is_told_apart_by_its_hashed_install_id() {
+    let id = transport::server_id("install-1");
+    assert_eq!(id.len(), 32);
+    assert!(!id.contains("install"));
+    assert_ne!(id, transport::server_id("install-2"));
+    let status = r#"{"version":"0.17.0","install_id":"install-1","auth_required":true}"#;
+    assert_eq!(transport::identify(Some(status), None).unwrap(), Some(id.clone()));
+    assert_eq!(transport::identify(Some(status), Some(&id)).unwrap(), Some(id.clone()));
+    assert!(matches!(transport::identify(Some(status), Some(&transport::server_id("install-2"))), Err(TransportError::WrongServer)));
+    // An older Hermes names no install: nothing to tell apart, so it passes.
+    assert_eq!(transport::identify(Some(r#"{"version":"0.16.0"}"#), Some(&id)).unwrap(), None);
+    // No status read at all (a 404 from a proxy): nothing known either way.
+    assert_eq!(transport::identify(None, Some(&id)).unwrap(), None);
+    // Anything that isn't a Hermes status is the wrong server.
+    for other in ["<html>router login</html>", "[]", r#"{"ok":true}"#, r#"{"version":3}"#] {
+        assert!(matches!(transport::identify(Some(other), None), Err(TransportError::NotHermes)), "{other}");
+    }
+}
+
+#[tokio::test]
+async fn reading_the_server_needs_no_sign_in_and_names_its_install() {
+    let (base, logins) = installed("install-home").await;
+    let seen = transport::read_server(&base, &HeaderMap::new(), None, Duration::from_secs(5)).await.unwrap();
+    assert_eq!(seen.server, Some(transport::server_id("install-home")));
+    assert!(seen.status.unwrap().contains("0.22.5"));
+    assert_eq!(*logins.lock().unwrap(), 0);
+    let wrong = transport::read_server(&base, &HeaderMap::new(), Some(&transport::server_id("install-away")), Duration::from_secs(5)).await;
+    assert!(matches!(wrong, Err(TransportError::WrongServer)));
+}
+
+#[tokio::test]
+async fn a_route_that_reaches_another_server_never_gets_the_password() {
+    let (base, logins) = installed("install-neighbour").await;
+    let expect = transport::server_id("install-home");
+    let failed = transport::probe_expecting(&base, &sign_in("hunter2"), "default", Duration::from_secs(5), Duration::from_secs(5), Some(&expect)).await.unwrap_err();
+    assert_eq!(failed.stage, Stage::Reach);
+    assert!(failed.message.starts_with("Wrong server:"), "{}", failed.message);
+    assert_eq!(*logins.lock().unwrap(), 0, "the password went out");
+
+    // The same server passes, and the test says which it was.
+    let (home, logins) = installed("install-home").await;
+    let probed = transport::probe_expecting(&home, &sign_in("hunter2"), "default", Duration::from_secs(5), Duration::from_secs(5), Some(&expect)).await.unwrap();
+    assert_eq!(probed.server, Some(expect));
+    assert_eq!(*logins.lock().unwrap(), 1);
+}
+
+#[tokio::test]
+async fn something_that_isnt_hermes_never_gets_the_password() {
+    let logins = Arc::new(Mutex::new(0u32));
+    let counted = logins.clone();
+    let app = Router::new()
+        .route("/api/status", get(|| async { "<html>Router admin</html>" }))
+        .route("/auth/password-login", post(move || async move {
+            *counted.lock().unwrap() += 1;
+            StatusCode::NOT_FOUND
+        }));
+    let failed = transport::probe(&serve(app).await, &sign_in("hunter2"), "default").await.unwrap_err();
+    assert_eq!(failed.stage, Stage::Reach);
+    assert!(failed.message.contains("isn't a Hermes dashboard"), "{}", failed.message);
+    assert_eq!(*logins.lock().unwrap(), 0);
+}
+
+#[test]
+fn plain_http_goes_only_to_this_computer_a_lan_or_tailscale() {
+    for ip in ["127.0.0.1", "10.1.2.3", "172.16.0.9", "192.168.1.10", "169.254.3.4", "100.64.0.1", "100.127.255.254", "::1", "fd7a:115c:a1e0::1", "fc00::5", "fe80::1", "::ffff:192.168.1.10"] {
+        assert!(transport::is_local_or_private(ip.parse().unwrap()), "{ip}");
+    }
+    for ip in ["8.8.8.8", "100.63.255.255", "100.128.0.1", "172.32.0.1", "2001:4860:4860::8888", "::ffff:8.8.8.8", "0.0.0.0"] {
+        assert!(!transport::is_local_or_private(ip.parse().unwrap()), "{ip}");
+    }
+}
+
+#[tokio::test]
+async fn a_plain_http_route_to_a_public_address_is_refused() {
+    let direct = |url: &str, addresses: &[&str]| transport::DirectUrl {
+        base: Url::parse(url).unwrap(),
+        addresses: addresses.iter().map(|a| a.parse().unwrap()).collect(),
+    };
+    assert!(transport::check_plain_http(&direct("http://192.168.1.10:9119/", &[])).is_ok());
+    assert!(transport::check_plain_http(&direct("http://[fd7a:115c:a1e0::9]:9119/", &[])).is_ok());
+    assert!(transport::check_plain_http(&direct("http://hermes:9119/", &["100.100.64.121"])).is_ok());
+    assert!(transport::check_plain_http(&direct("https://hermes.example.com/", &["203.0.113.7"])).is_ok());
+    let refused = transport::check_plain_http(&direct("http://203.0.113.7:9119/", &[])).unwrap_err().to_string();
+    assert!(refused.contains("203.0.113.7 is a public address"), "{refused}");
+    // A name is local only if everything it resolved to is.
+    assert!(transport::check_plain_http(&direct("http://hermes.example.com:9119/", &["192.168.1.10", "203.0.113.7"])).is_err());
+    let local = transport::resolve_direct("http://localhost:9119").await.unwrap();
+    assert!(transport::check_plain_http(&local).is_ok());
+}

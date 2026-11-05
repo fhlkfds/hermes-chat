@@ -13,6 +13,8 @@
 //! Access, on every request and the WebSocket handshake (ADR 0006).
 //! Setup uses two more things here: `probe`, which tests a sign-in without keeping it, and
 //! `Dashboard::save_provider_key`, which gives Hermes a model provider's API key.
+//! Before any password goes out, `read_server` reads the dashboard's public `/api/status` and `identify` checks it is
+//! a Hermes dashboard, and the same one the connection signed in to before (ADR 0056).
 
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
@@ -78,6 +80,15 @@ pub enum TransportError {
     BadHeader(String),
     #[error("The dashboard sent Hermes Chat on to {0}, another site. Hermes Chat doesn't follow it there, so your extra request headers aren't sent to it. If a gateway such as Cloudflare Access is in front of the dashboard, check the headers it needs.")]
     Redirected(String),
+    /// `/api/status` answered, but not as a Hermes dashboard does (ADR 0056). No password was sent.
+    #[error("Wrong server: something answered at this address, but it isn't a Hermes dashboard. Hermes Chat didn't send it the password.")]
+    NotHermes,
+    /// A Hermes dashboard answered whose install id isn't the one the connection signed in to before (ADR 0056).
+    #[error("Wrong server: a different Hermes server answered at this address than the one this connection signed in to before. Hermes Chat didn't send it the password.")]
+    WrongServer,
+    /// Plain http:// to an address that isn't this computer, a LAN or Tailscale (ADR 0056).
+    #[error("Plain http:// is only used on this computer, a LAN or Tailscale, and {0} is a public address. Use https:// or SSH to reach it.")]
+    PlainHttpPublic(String),
     #[error("The dashboard sent Hermes Chat on to another site, whose address isn't shown, as it may repeat your extra request headers. Hermes Chat doesn't follow it there, so your headers aren't sent to it. If a gateway such as Cloudflare Access is in front of the dashboard, check the headers it needs.")]
     RedirectedHidden,
 }
@@ -363,6 +374,108 @@ pub async fn resolve_direct(raw: &str) -> Result<DirectUrl, TransportError> {
         None => return Err(TransportError::BadUrl),
     };
     Ok(DirectUrl { base, addresses })
+}
+
+/// Whether `ip` is this computer, a private LAN range, link-local, or Tailscale (100.64.0.0/10, or fd7a:115c:a1e0::/48,
+/// which the unique-local fc00::/7 holds): the only places a plain http:// route goes (ADR 0056).
+pub fn is_local_or_private(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, ..] = v4.octets();
+            v4.is_loopback() || v4.is_private() || v4.is_link_local() || (a == 100 && (64..=127).contains(&b))
+        }
+        IpAddr::V6(v6) => {
+            let first = v6.segments()[0];
+            v6.is_loopback()
+                || (first & 0xfe00) == 0xfc00
+                || (first & 0xffc0) == 0xfe80
+                || v6.to_ipv4_mapped().is_some_and(|v4| is_local_or_private(IpAddr::V4(v4)))
+        }
+    }
+}
+
+/// Refuses a plain http:// dashboard whose host is, or resolves to, anything but this computer, a LAN or Tailscale:
+/// the password would cross the internet unencrypted (ADR 0056). https:// goes anywhere.
+pub fn check_plain_http(direct: &DirectUrl) -> Result<(), TransportError> {
+    if direct.base.scheme() != "http" {
+        return Ok(());
+    }
+    let host = direct.base.host_str().unwrap_or_default().to_owned();
+    let literal = match direct.base.host() {
+        Some(url::Host::Ipv4(ip)) => Some(IpAddr::V4(ip)),
+        Some(url::Host::Ipv6(ip)) => Some(IpAddr::V6(ip)),
+        _ => None,
+    };
+    let local = match literal {
+        Some(ip) => is_local_or_private(ip),
+        None => !direct.addresses.is_empty() && direct.addresses.iter().all(|ip| is_local_or_private(*ip)),
+    };
+    if local { Ok(()) } else { Err(TransportError::PlainHttpPublic(host)) }
+}
+
+/// A Hermes install's id as this app keeps it: a hash, so the id itself, which `/api/status` shows anyone who asks,
+/// isn't written anywhere here. Hermes's own diagnostics leave it out (ADR 0044); this only tells servers apart.
+pub fn server_id(install_id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(format!("hermes-chat server\n{install_id}").as_bytes());
+    digest.iter().take(16).map(|b| format!("{b:02x}")).collect()
+}
+
+/// Reads an `/api/status` body: it must be a Hermes dashboard's, which always carries its version or its sign-in gate,
+/// and when it names its install and `expect` is set, the install must be that one. The server's id when it names
+/// one. None of this sends the password (ADR 0056).
+pub fn identify(status: Option<&str>, expect: Option<&str>) -> Result<Option<String>, TransportError> {
+    let Some(text) = status else { return Ok(None) };
+    let v: serde_json::Value = serde_json::from_str(text).map_err(|_| TransportError::NotHermes)?;
+    let o = v.as_object().ok_or(TransportError::NotHermes)?;
+    if !o.get("version").is_some_and(serde_json::Value::is_string) && !o.get("auth_required").is_some_and(serde_json::Value::is_boolean) {
+        return Err(TransportError::NotHermes);
+    }
+    let id = o.get("install_id").and_then(serde_json::Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(server_id);
+    match (&id, expect) {
+        (Some(seen), Some(want)) if seen != want => Err(TransportError::WrongServer),
+        _ => Ok(id),
+    }
+}
+
+/// `GET /api/status` at `base`, which a Hermes dashboard answers without a sign-in, with the body read inside the
+/// limit too, since a server can send its headers and then stall. None when it answered something else than 2xx, or
+/// a redirect within its own site. A refusal (401, 403) is an error: the route is public on a Hermes dashboard, so
+/// that is something in front of it, such as Cloudflare Access without its headers.
+async fn read_status(http: &reqwest::Client, base: &Url, headers: &HeaderMap) -> Result<Option<String>, TransportError> {
+    let resp = http.get(endpoint(base, "api/status")).send().await.map_err(unreachable)?;
+    if resp.status().is_redirection() {
+        // Stopped at another site (`same_origin_redirects`), such as a gateway's login page.
+        return match unexpected(resp, headers).await {
+            e @ (TransportError::Redirected(_) | TransportError::RedirectedHidden) => Err(e),
+            _ => Ok(None),
+        };
+    }
+    if matches!(resp.status(), StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
+        return Err(unexpected(resp, headers).await);
+    }
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+    resp.text().await.map(Some).map_err(unreachable)
+}
+
+/// What `read_server` found: the `/api/status` body, if one was read, and the server's id (`server_id`), if it named
+/// its install.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ServerSeen {
+    pub status: Option<String>,
+    pub server: Option<String>,
+}
+
+/// Reads `/api/status` within `wait` and checks it with `identify`, before anything signs in (ADR 0056).
+pub async fn read_server(base: &Url, headers: &HeaderMap, expect: Option<&str>, wait: Duration) -> Result<ServerSeen, TransportError> {
+    let http = client(headers)?;
+    let status = tokio::time::timeout(wait, read_status(&http, base, headers))
+        .await
+        .map_err(|_| TransportError::Unreachable(format!("the dashboard didn't answer within {}s.", wait.as_secs())))??;
+    let server = identify(status.as_deref(), expect)?;
+    Ok(ServerSeen { status, server })
 }
 
 /// A local file the owner wants to attach: its size, or why it can't be attached.
@@ -1778,6 +1891,8 @@ impl ProbeFailure {
 pub struct Probed {
     pub status: Option<String>,
     pub ready: String,
+    /// The server's id (`server_id`), when its status named its install.
+    pub server: Option<String>,
 }
 
 /// How long each step of a connection test may take. The app's own sign-in has no limit, but a test the owner is
@@ -1792,34 +1907,22 @@ pub async fn probe(base: &Url, sign_in: &SignIn, profile: &str) -> Result<Probed
 }
 
 pub async fn probe_with(base: &Url, sign_in: &SignIn, profile: &str, step: Duration) -> Result<Probed, ProbeFailure> {
+    probe_expecting(base, sign_in, profile, step, step, None).await
+}
+
+/// `probe_with`, which also refuses, before the password goes out, a server that isn't the one `expect` names
+/// (`identify`, ADR 0056). `reach`: how long the status read may take, shorter for one of several routes.
+pub async fn probe_expecting(base: &Url, sign_in: &SignIn, profile: &str, step: Duration, reach: Duration, expect: Option<&str>) -> Result<Probed, ProbeFailure> {
     let timed_out = |what: &str| format!("{what} didn't answer within {}s.", step.as_secs());
     // The same headers and redirect rule as the sign-in, so a gateway in front of the dashboard lets this through too.
     let http = client(&sign_in.headers).map_err(|e| ProbeFailure::new(Stage::Address, e.to_string()))?;
-    // The body is read inside the limit too: a server can send its headers and then stall.
-    let read_status = async {
-        let resp = http.get(endpoint(base, "api/status")).send().await.map_err(unreachable)?;
-        if resp.status().is_redirection() {
-            // Stopped at another site (`same_origin_redirects`), such as a gateway's login page.
-            return match unexpected(resp, &sign_in.headers).await {
-                e @ (TransportError::Redirected(_) | TransportError::RedirectedHidden) => Err(e),
-                _ => Ok(None),
-            };
-        }
-        // The route is public on a Hermes dashboard, so a refusal here is from something in front of it, such as
-        // Cloudflare Access without its headers. Its page isn't shown if the request carried any (`shown_body`).
-        if matches!(resp.status(), StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
-            return Err(unexpected(resp, &sign_in.headers).await);
-        }
-        if !resp.status().is_success() {
-            return Ok(None);
-        }
-        resp.text().await.map(Some).map_err(unreachable)
-    };
-    let status = match tokio::time::timeout(step, read_status).await {
-        Err(_) => return Err(ProbeFailure::new(Stage::Reach, timed_out("The dashboard"))),
+    // A refusal's page isn't shown if the request carried extra headers (`shown_body`).
+    let status = match tokio::time::timeout(reach, read_status(&http, base, &sign_in.headers)).await {
+        Err(_) => return Err(ProbeFailure::new(Stage::Reach, format!("The dashboard didn't answer within {}s.", reach.as_secs()))),
         Ok(Err(e)) => return Err(ProbeFailure::new(Stage::Reach, e.to_string())),
         Ok(Ok(status)) => status,
     };
+    let server = identify(status.as_deref(), expect).map_err(|e| ProbeFailure { stage: Stage::Reach, message: e.to_string(), status: status.clone() })?;
     let fail = |stage, message: String| ProbeFailure { stage, message, status: status.clone() };
     let dashboard = match tokio::time::timeout(step, Dashboard::sign_in(base, sign_in)).await {
         Err(_) => return Err(fail(Stage::SignIn, timed_out("The dashboard's sign-in"))),
@@ -1845,7 +1948,7 @@ pub async fn probe_with(base: &Url, sign_in: &SignIn, profile: &str, step: Durat
     let first = tokio::time::timeout(step, rx).await;
     drop(pipe);
     match first {
-        Ok(Ok(PipeEvent::Frame { text })) => Ok(Probed { status, ready: text }),
+        Ok(Ok(PipeEvent::Frame { text })) => Ok(Probed { status, ready: text, server }),
         Ok(Ok(PipeEvent::Closed { reason })) => Err(fail(Stage::Chat, format!("The chat connection closed before Hermes was ready: {reason}"))),
         Ok(Err(_)) => Err(fail(Stage::Chat, "The chat connection closed before Hermes was ready.".into())),
         Err(_) => Err(fail(Stage::Chat, timed_out("Hermes"))),

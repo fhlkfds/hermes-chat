@@ -3,8 +3,9 @@
 // can give the server. The Rust side does the testing (`hermes_probe`) and the key saving (`hermes_save_provider_key`).
 import type { SavedSignIn } from "./account";
 import type { Route } from "./pipe";
-import type { SignInDetails } from "./tauriPipe";
+import type { Reached, SignInDetails } from "./tauriPipe";
 import { isUnsecure } from "./unsecure";
+import { KIND_LABEL, routeTargetLabel, routesOf, singleRoute, type RouteDetails } from "./routes";
 
 /**
  * How far a connection test got: the address or SSH tunnel, the dashboard's port, the sign-in, then the chat
@@ -20,12 +21,27 @@ export type Probed = { route: Route; status?: string | null; ready: string };
 export type ProbeFailure = { stage: Stage; message: string; status?: string | null };
 
 /** Runs connection tests. `run` rejects with a `ProbeFailure`; `cancel` stops the test under way. */
-export type Probe = { run(d: SignInDetails, profile: string): Promise<Probed>; cancel(): void };
+export type Probe = { run(d: SignInDetails, profile: string, quick?: boolean): Promise<Probed>; cancel(): void };
 
 /** What a connection test found. A failure names the stage it stopped at, what went wrong, and what to try. */
 export type TestOutcome =
   | { ok: true; route: Route; unsecure: boolean; version?: string }
-  | { ok: false; stage: Stage; problem: string; detail?: string; fixes: string[] };
+  | { ok: false; stage: Stage; problem: string; detail?: string; fixes: string[]; verdict: Verdict };
+
+/** A failed test in one or two words, as a route's Test reports it (ADR 0056). */
+export type Verdict = "timed out" | "refused" | "wrong server" | "sign-in failed" | "unreachable" | "stopped" | "failed";
+
+/** What a failure comes to, in a word or two. */
+export function verdictOf(f: ProbeFailure): Verdict {
+  const m = f.message;
+  if (f.stage === "cancelled") return "stopped";
+  if (/^Wrong server:|Host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED/.test(m)) return "wrong server";
+  if (f.stage === "sign-in") return "sign-in failed";
+  if (/didn't answer within|didn't open the tunnel within|timed out|didn't finish connecting/i.test(m)) return "timed out";
+  if (/refused/i.test(m)) return "refused";
+  if (f.stage === "address" || f.stage === "reach") return "unreachable";
+  return "failed";
+}
 
 /** What the dashboard says about itself before anyone signs in (`GET /api/status`). */
 export type DashboardStatus = { version?: string; authRequired?: boolean; authProviders?: string[] };
@@ -42,7 +58,10 @@ export const isSetUp = (saved: SavedSignIn) => !!(saved.sshTarget.trim() || save
 /** The fields setup still needs before it can test, in words; empty when it can test. */
 export function missing(d: SignInDetails): string[] {
   const out: string[] = [];
-  if (!(d.mode === "ssh" ? d.sshTarget : d.url).trim()) out.push(d.mode === "ssh" ? "the SSH target" : "the dashboard URL");
+  const on = d.routes?.filter((r) => !r.off);
+  if (on && !on.length) out.push("a route that is turned on");
+  else if (on && on.some((r) => !r.target.trim())) out.push("an address for every route that is on");
+  else if (!on && !(d.mode === "ssh" ? d.sshTarget : d.url).trim()) out.push(d.mode === "ssh" ? "the SSH target" : "the dashboard URL");
   if (!d.username.trim()) out.push("the dashboard username");
   if (!d.password) out.push("the dashboard password");
   return out;
@@ -87,10 +106,10 @@ const asFailure = (e: unknown): ProbeFailure =>
     : { stage: "address", message: e instanceof Error ? e.message : String(e) };
 
 /** Tests `d` with `probe` and explains the result. Never rejects. */
-export async function testConnection(probe: Probe, d: SignInDetails, profile = "default"): Promise<TestOutcome> {
+export async function testConnection(probe: Probe, d: SignInDetails, profile = "default", quick = false): Promise<TestOutcome> {
   let probed: Probed;
   try {
-    probed = await probe.run(d, profile);
+    probed = await probe.run(d, profile, quick);
   } catch (e) {
     return explain(asFailure(e), d);
   }
@@ -129,7 +148,21 @@ export function explain(f: ProbeFailure, d: SignInDetails): TestOutcome & { ok: 
     problem,
     detail: detail === null || detail === problem ? undefined : detail,
     fixes,
+    verdict: verdictOf(f),
   });
+  const where = ssh ? sshHost(d.sshTarget) : hostOf(d.url);
+  // Before the password went anywhere (ADR 0056).
+  if (/^Wrong server: a different Hermes/.test(m))
+    return out(`A different Hermes server answered at ${where}, not the one this connection signed in to before. It wasn't sent the password.`, [
+      "On another network, the same LAN address can be another machine. This route is skipped there.",
+      "If you reinstalled Hermes on your server, choose Trust this server in the connection's settings.",
+    ], null);
+  if (/^Wrong server: something answered/.test(m))
+    return out(`Something answered at ${where}, but it isn't a Hermes dashboard. It wasn't sent the password.`, [
+      ssh ? "Check that port 9119 on the server is the Hermes dashboard." : "Check the address and port: the dashboard listens on 9119 unless it was started with another.",
+    ], null);
+  if (/^Plain http:\/\/ is only used/.test(m))
+    return out(m, ["Use https:// for an address on the internet, or reach the server over SSH or Tailscale."], null);
   const checkSsh = `Check it from a terminal: ssh -o BatchMode=yes ${d.sshTarget.trim() || "<target>"} true`;
   const turnedAway = () =>
     out(`Something in front of the dashboard at ${hostOf(d.url)} turned Hermes Chat away.`, [
@@ -253,8 +286,21 @@ export function explain(f: ProbeFailure, d: SignInDetails): TestOutcome & { ok: 
 export function explainSignIn(message: string, d: SignInDetails): Extract<TestOutcome, { ok: false }> {
   // Sign out's own note that the keyring kept the password (account.ts `signOut`): no sign-in failed, so it is shown
   // as it is, not read as an unreachable server.
-  if (/^Signed out, but /.test(message)) return { ok: false, stage: "sign-in", problem: message, fixes: [] };
-  const stage: Stage = /Wrong username or password|Too many sign-in attempts|sign-in/i.test(message)
+  if (/^Signed out, but /.test(message)) return { ok: false, stage: "sign-in", problem: message, fixes: [], verdict: "failed" };
+  // Every route failed (routes.ts `RoutesFailedError`): each line says how one did.
+  if (/^No route reached Hermes\./.test(message))
+    return {
+      ok: false,
+      stage: "reach",
+      problem: "None of this connection's routes reached Hermes.",
+      fixes: message.split("\n").slice(1).map((l) => l.replace(/^• /, "")),
+      verdict: "unreachable",
+    };
+  const stage: Stage = /^Wrong server:/.test(message)
+    ? "reach"
+    : /^Plain http:\/\//.test(message)
+      ? "address"
+      : /Wrong username or password|Too many sign-in attempts|sign-in/i.test(message)
     ? "sign-in"
     : /canonical session protocol|chat connection|ready/i.test(message)
       ? "chat"
@@ -279,6 +325,72 @@ export function stageLabel(stage: Stage, mode: SignInDetails["mode"]): string {
       return "Stopped";
   }
 }
+
+// ---------- routes (ADR 0056) ----------
+
+/** One route's part of a test: the route, and how it went, once it has. */
+export type RouteTest = { route: RouteDetails; outcome?: TestOutcome; server?: string };
+
+/**
+ * Tests each of `d`'s routes that is on, one after another, with the password: the first that reaches Hermes names the
+ * server, and the rest must reach the same one. `onEach` hears the list as each result comes in. Never rejects.
+ */
+export async function testRoutes(probe: Probe, d: SignInDetails, onEach?: (tests: RouteTest[]) => void, profile = "default"): Promise<RouteTest[]> {
+  // A route the saved password wasn't saved for isn't sent it (account.ts).
+  const tests: RouteTest[] = routesOf(d)
+    .filter((r) => !r.off && !r.locked)
+    .map((route) => ({ route }));
+  let server = d.server;
+  for (const [i, t] of tests.entries()) {
+    const one = singleRoute({ ...d, ...(server && { server }) }, t.route);
+    // One of several: a dead route gives way sooner, as when connecting.
+    const outcome = await testConnection(probe, one, profile, tests.length > 1);
+    const seen = outcome.ok ? outcome.route.server : undefined;
+    server ??= seen;
+    tests[i] = { ...t, outcome, ...(seen && { server: seen }) };
+    onEach?.([...tests]);
+    if (!outcome.ok && outcome.stage === "cancelled") break;
+  }
+  return tests;
+}
+
+/**
+ * A connection's test, as Settings' list runs it with the saved sign-in: one route as before; with several, the first
+ * that works, or if none does, each one's failure.
+ */
+export async function testSignIn(probe: Probe, d: SignInDetails): Promise<TestOutcome> {
+  if (!d.routes) return testConnection(probe, d);
+  const tests = await testRoutes(probe, d);
+  const outcomes = tests.map((t) => t.outcome).filter((o): o is TestOutcome => !!o);
+  const ok = outcomes.find((o) => o.ok);
+  if (ok) return ok;
+  const failed = outcomes.filter((o): o is Extract<TestOutcome, { ok: false }> => !o.ok);
+  if (failed.length < 2) return failed[0] ?? { ok: false, stage: "address", problem: "Every route of this connection is turned off.", fixes: [], verdict: "failed" };
+  return {
+    ok: false,
+    stage: failed[0].stage,
+    problem: "None of this connection's routes reached Hermes.",
+    fixes: tests.flatMap((t) => (t.outcome && !t.outcome.ok ? [`${routeName(t.route)}: ${t.outcome.verdict}. ${t.outcome.problem}`] : [])),
+    verdict: failed[0].verdict,
+  };
+}
+
+/** What a route's Test found without signing in: reached (and which Hermes), or how it failed. */
+export type ReachOutcome = { ok: true; version?: string; server?: string; unsecure: boolean } | Extract<TestOutcome, { ok: false }>;
+
+/** Reaches one route without the password (`hermes_reach`) and explains the result. Never rejects. */
+export async function testReach(reach: (d: SignInDetails, expect: string | undefined) => Promise<Reached>, d: SignInDetails, route: RouteDetails): Promise<ReachOutcome> {
+  const one = singleRoute(d, route);
+  try {
+    const got = await reach(one, d.server);
+    return { ok: true, version: readStatus(got.status)?.version, server: got.route.server, unsecure: isUnsecure(got.route) };
+  } catch (e) {
+    return explain(asFailure(e), one) as Extract<TestOutcome, { ok: false }>;
+  }
+}
+
+/** A route as the owner knows it: "Tailscale, http://hermes:9119". */
+export const routeName = (r: RouteDetails) => `${KIND_LABEL[r.kind]}, ${routeTargetLabel(r)}`;
 
 // ---------- model provider keys ----------
 

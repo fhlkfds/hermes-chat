@@ -6,9 +6,11 @@ import { Check, CircleAlert, Globe, KeyRound, Minus, Plus, ShieldAlert, ShieldCh
 import type { ExtraHeader, SignInDetails } from "../hermes/tauriPipe";
 import type { Kept } from "../hermes/account";
 import type { Hermes } from "../hermes/transport";
-import { STAGES, missing, stageLabel, testConnection, type Probe, type ProviderKey, type ProviderSetup, type TestOutcome } from "../hermes/setup";
+import { STAGES, missing, stageLabel, testConnection, testRoutes, type Probe, type ProviderKey, type ProviderSetup, type RouteTest, type TestOutcome } from "../hermes/setup";
 import { routeLabel } from "./bits";
-import { NAME_MAX, defaultName } from "../hermes/connections";
+import { NAME_MAX, defaultName, routesSummary } from "../hermes/connections";
+import { RouteTests, RoutesEditor, finishRoutes, routesReady, type Reach } from "./Routes";
+import { routesOf } from "../hermes/routes";
 
 /**
  * `first-run`: nothing is set up on this computer, so there is nowhere to cancel to; Cancel starts over.
@@ -23,7 +25,8 @@ type Step = "welcome" | "server" | "account" | "providers";
 const NUMBERED: Step[] = ["server", "account", "providers"];
 const STEP_LABEL: Record<Step, string> = { welcome: "Welcome", server: "Server", account: "Sign in", providers: "Model providers" };
 
-type Test = { state: "idle" } | { state: "testing" } | { state: "done"; outcome: TestOutcome };
+/** A connection test. With several routes, `routes` holds each one's part, filled in as they finish. */
+type Test = { state: "idle" } | { state: "testing"; routes?: RouteTest[] } | { state: "done"; outcome: TestOutcome; routes?: RouteTest[] };
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -45,6 +48,7 @@ export function Onboarding({
   initial,
   initialName = "",
   probe,
+  reach,
   hermes,
   onConnect,
   onCancel,
@@ -56,6 +60,8 @@ export function Onboarding({
   /** The connection's name, when it has one already. Left empty, it is named after its host. */
   initialName?: string;
   probe: Probe;
+  /** Reaches one route without signing in, for each route's Test (ADR 0056). Without it, routes have no Test. */
+  reach?: Reach;
   /** The connection in use, once there is one: Settings' own, or the one setup just saved. */
   hermes?: Hermes;
   /**
@@ -122,16 +128,35 @@ export function Onboarding({
     setStopped(false);
   };
 
-  const startTest = async () => {
-    if (missing(d).length || test.state === "testing") return;
+  const startTest = async (over = d) => {
+    if (missing(over).length || test.state === "testing") return;
     const mine = ++run.current;
     testing.current = true;
-    setTest({ state: "testing" });
     setConnectError(undefined);
-    const outcome = await testConnection(probe, withHeaders(d));
+    const ready = withHeaders(over);
+    if (!ready.routes) {
+      setTest({ state: "testing" });
+      const outcome = await testConnection(probe, ready);
+      if (mine !== run.current) return;
+      testing.current = false;
+      return setTest(outcome.ok || outcome.stage !== "cancelled" ? { state: "done", outcome } : { state: "idle" });
+    }
+    // Each route in turn, the list filling in as they finish; from the start, every route waits its turn.
+    setTest({ state: "testing", routes: routesOf(ready).filter((r) => !r.off && !r.locked).map((route) => ({ route })) });
+    const routes = await testRoutes(probe, ready, (now) => mine === run.current && setTest({ state: "testing", routes: now }));
     if (mine !== run.current) return;
     testing.current = false;
-    setTest(outcome.ok || outcome.stage !== "cancelled" ? { state: "done", outcome } : { state: "idle" });
+    const outcomes = routes.map((t) => t.outcome).filter((o): o is TestOutcome => !!o);
+    if (outcomes.some((o) => !o.ok && o.stage === "cancelled")) return setTest({ state: "idle" });
+    const outcome = outcomes.find((o) => o.ok) ?? outcomes[0];
+    setTest(outcome ? { state: "done", outcome, routes } : { state: "idle" });
+  };
+
+  /** The owner says the server the routes reach now is theirs (a reinstall): forget the one this connection knew. */
+  const trust = () => {
+    const next = { ...d, server: undefined };
+    set({ server: undefined });
+    if (step === "account") void startTest(next);
   };
 
   const connect = async () => {
@@ -233,7 +258,10 @@ export function Onboarding({
             className="setup-body conn-form"
             onSubmit={(e) => {
               e.preventDefault();
-              if ((d.mode === "ssh" ? d.sshTarget : d.url).trim()) setStep("account");
+              if (routesReady(d)) {
+                setD((was) => finishRoutes(was));
+                setStep("account");
+              }
             }}
           >
             <h1 id={titleId} ref={heading} tabIndex={-1}>
@@ -249,12 +277,12 @@ export function Onboarding({
                 <input {...a} value={name} maxLength={NAME_MAX} placeholder={defaultName(d)} spellCheck={false} onChange={(e) => setName(e.target.value)} />
               )}
             </Field>
-            <ServerFields d={d} set={set} />
+            <RoutesEditor d={d} set={set} reach={reach} onTrust={trust} />
             <div className="setup-actions">
               <button type="button" className="btn" onClick={() => (firstStep === "server" ? cancel() : setStep("welcome"))}>
                 {firstStep === "server" ? "Cancel" : "Back"}
               </button>
-              <button type="submit" className="btn primary" disabled={!(d.mode === "ssh" ? d.sshTarget : d.url).trim()}>
+              <button type="submit" className="btn primary" disabled={!routesReady(d)}>
                 Next
               </button>
             </div>
@@ -274,7 +302,9 @@ export function Onboarding({
               Sign in to the dashboard
             </h1>
             <p className="muted">
-              {d.mode === "ssh" ? (
+              {d.routes ? (
+                <>Over {routesSummary(d)}, tried in that order.</>
+              ) : d.mode === "ssh" ? (
                 <>
                   Through <span className="mono">ssh://{d.sshTarget.trim()}</span>.
                 </>
@@ -318,12 +348,24 @@ export function Onboarding({
             </Field>
 
             <div aria-live="polite">
-              {test.state === "testing" && (
+              {test.state === "testing" && !test.routes && (
                 <div className="setup-testing">
                   <span className="spinner" aria-hidden /> Testing the connection…
                 </div>
               )}
-              {test.state === "done" && <TestResult outcome={test.outcome} mode={d.mode} />}
+              {test.state !== "idle" && test.routes && (
+                <RouteTests tests={test.routes} canTrust={!!d.server && test.state === "done"} onTrust={trust} />
+              )}
+              {test.state === "done" && !test.routes && <TestResult outcome={test.outcome} mode={d.mode} />}
+              {test.state === "done" && !test.routes && !test.outcome.ok && test.outcome.verdict === "wrong server" && d.server && /different Hermes/.test(test.outcome.problem) && (
+                <p className="muted small">
+                  If you reinstalled Hermes on your server,{" "}
+                  <button type="button" className="link" onClick={trust}>
+                    trust this server
+                  </button>{" "}
+                  and test again.
+                </p>
+              )}
               {stopping && (
                 <div className="setup-testing">
                   <span className="spinner" aria-hidden /> Stopping…
@@ -451,9 +493,12 @@ function retypeLater(kept: Kept = { password: false, headers: true }): string {
   return "You'll type the password again at the next launch.";
 }
 
-/** The owner's extra request headers without the rows left blank; Rust checks the rest (ADR 0006). */
+/**
+ * The owner's extra request headers without the rows left blank; Rust checks the rest (ADR 0006). With routes, each
+ * route's, its address completed too (`finishRoutes`).
+ */
 export const withHeaders = (d: SignInDetails): SignInDetails =>
-  d.mode === "url" ? { ...d, headers: (d.headers ?? []).filter((h) => h.name.trim() || h.value.trim()) } : d;
+  d.routes ? finishRoutes(d) : d.mode === "url" ? { ...d, headers: (d.headers ?? []).filter((h) => h.name.trim() || h.value.trim()) } : d;
 
 /** Where the dashboard is: an SSH target, or a URL with any extra request headers. Shared with the sign-in screen. */
 export function ServerFields({ d, set }: { d: SignInDetails; set: (patch: Partial<SignInDetails>) => void }) {

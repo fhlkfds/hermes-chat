@@ -17,8 +17,8 @@ pub enum TunnelError {
     Spawn(String),
     #[error("SSH failed: {0}")]
     Ssh(String),
-    #[error("SSH didn't open the tunnel within {}s.", READY_TIMEOUT.as_secs())]
-    Timeout,
+    #[error("SSH didn't open the tunnel within {0}s.")]
+    Timeout(u64),
 }
 
 /// A running `ssh -N -L`. Dropping it kills ssh.
@@ -28,13 +28,25 @@ pub struct Tunnel {
 }
 
 pub async fn open(target: &str, remote_port: u16) -> Result<Tunnel, TunnelError> {
+    open_within(target, remote_port, None).await
+}
+
+/// `open`, giving up sooner when `quick` is set: ssh's TCP connect after `quick`, and the whole tunnel after twice
+/// that. A connection with several routes uses it, so a route that is down doesn't hold up the next (ADR 0056).
+pub async fn open_within(target: &str, remote_port: u16, quick: Option<Duration>) -> Result<Tunnel, TunnelError> {
     let target = target.trim();
     // A leading '-' would be read as an ssh option.
     if target.is_empty() || target.starts_with('-') || target.contains(char::is_whitespace) {
         return Err(TunnelError::BadTarget);
     }
     let local_port = free_port().await.map_err(|e| TunnelError::Spawn(e.to_string()))?;
-    let mut child = Command::new("ssh")
+    let ready_within = quick.map_or(READY_TIMEOUT, |q| q * 2);
+    let connect_timeout = quick.map(|q| format!("ConnectTimeout={}", q.as_secs().max(1)));
+    let mut child = Command::new("ssh");
+    if let Some(option) = &connect_timeout {
+        child.args(["-o", option]);
+    }
+    let mut child = child
         .args([
             "-N",
             "-o", "BatchMode=yes",
@@ -51,7 +63,7 @@ pub async fn open(target: &str, remote_port: u16) -> Result<Tunnel, TunnelError>
         .spawn()
         .map_err(|e| TunnelError::Spawn(e.to_string()))?;
 
-    let deadline = tokio::time::Instant::now() + READY_TIMEOUT;
+    let deadline = tokio::time::Instant::now() + ready_within;
     loop {
         if let Some(_status) = child.try_wait().map_err(|e| TunnelError::Spawn(e.to_string()))? {
             let mut err = String::new();
@@ -64,7 +76,7 @@ pub async fn open(target: &str, remote_port: u16) -> Result<Tunnel, TunnelError>
             return Ok(Tunnel { _child: child, local_port });
         }
         if tokio::time::Instant::now() >= deadline {
-            return Err(TunnelError::Timeout);
+            return Err(TunnelError::Timeout(ready_within.as_secs()));
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }

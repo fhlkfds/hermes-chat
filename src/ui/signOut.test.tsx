@@ -77,7 +77,7 @@ describe("Signing out with extra request headers", () => {
     render(<App />);
     // Nothing is set up yet, so setup opens.
     await userEvent.click(await screen.findByRole("button", { name: "Get started" }));
-    await userEvent.click(screen.getByRole("button", { name: "URL" }));
+    await userEvent.selectOptions(screen.getByLabelText("Connect through"), "web");
     await userEvent.type(screen.getByLabelText(/^Dashboard URL/), "https://hermes.example.com");
     await userEvent.click(screen.getByRole("button", { name: "Add header" }));
     await userEvent.type(screen.getByLabelText("Header 1 name"), "CF-Access-Client-Secret");

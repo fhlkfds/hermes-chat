@@ -22,4 +22,4 @@ A URL sign-in (ADR 0004) has no SSH target, so the Terminal's server side (ADR 0
 
 - A name that only this computer resolves to itself (such as its own host name in `/etc/hosts`) isn't recognised: the app doesn't resolve names. ssh there opens a shell on this computer, as typing that target would.
 - A URL sign-in's Terminal starts ssh to the address's host as soon as it opens. If that isn't the server's ssh name, ssh prints why and the field holds the guess to fix.
-- The Preview's server pages (ADR 0052) still need an SSH sign-in: Rust holds only the target it signed in with.
+- The Preview's server pages (ADR 0052) still need an SSH sign-in: Rust holds only the target it signed in with. Since ADR 0056, a connection with an SSH route gives the Terminal, the Repository and server pages that route's target, whichever route the chat connection uses.
