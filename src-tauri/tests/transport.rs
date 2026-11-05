@@ -269,8 +269,21 @@ async fn config(headers: HeaderMap, Query(q): Query<HashMap<String, String>>) ->
     }
     Json(json!({
         "model": {"default": "glm-5.3-flash", "api_key": "sk-model-SECRET"},
-        "stt": {"enabled": false, "provider": "groq", "groq": {"api_key": "gsk-SECRET"}},
-        "tts": {"provider": "openai", "openai": {"api_key": "sk-tts-SECRET", "voice": "alloy"}},
+        "stt": {
+            "enabled": false, "provider": "groq", "language": "en",
+            "groq": {"api_key": "gsk-SECRET", "model": "whisper-large-v3-turbo", "language": ""},
+            "elevenlabs": {"model_id": "scribe_v2", "language_code": "eng", "diarize": false, "api_token": "el-SECRET"},
+            // A command provider: not Hermes's own, so none of it is passed on.
+            "providers": {"mine": {"type": "command", "command": "run --key=cmd-SECRET", "model": "m"}},
+            // Not text, too long, or with a control character: left out rather than changed.
+            "xai": {"model": 3, "language": "a".repeat(257), "voice": "a\nb"},
+            "../x": {"model": "m"},
+        },
+        "tts": {
+            "provider": "openai", "keep_warm_seconds": 60, "streaming": {"min_len": 20},
+            "openai": {"api_key": "sk-tts-SECRET", "voice": "alloy", "model": "gpt-4o-mini-tts", "consent_attestation": "c-SECRET"},
+            "elevenlabs": {"voice_id": "pNInz6obpgDQGcFmaJgB", "model_id": "eleven_multilingual_v2", "xi_api_key": "xi-SECRET"},
+        },
         // `true` is YAML for a typo'd number: Hermes's `_numeric_or` drops it, and so does the app.
         "voice": {"silence_threshold": 350, "silence_duration": 1.5, "max_recording_seconds": true, "gpt_live": {"api_key": "sk-live-SECRET"}},
     }))
@@ -430,12 +443,14 @@ fn stub_routes() -> Router {
         .route("/api/model/moa", put(echo_write).post(echo_write))
         .route("/api/tools/toolsets/{name}", put(echo_write))
         .route("/api/tools/toolsets/{name}/env", put(echo_write))
+        .route("/api/tools/toolsets/{name}/provider", put(echo_write))
         .route("/api/tools/toolsets/{name}/post-setup", post(echo_write))
         .route("/api/profiles/{name}/soul", put(echo_write).post(echo_write))
         .route("/api/skills", post(echo_write))
         .route("/api/skills/toggle", put(echo_write))
         .route("/api/skills/content", put(echo_write))
         .route("/api/skills/hub/install", post(echo_write))
+        .route("/api/learning/node", put(echo_write).post(echo_write))
         .route("/api/cron/jobs", post(echo_write))
         .route("/api/sessions/import", post(echo_write))
         .route("/api/cron/jobs/{id}", put(echo_write))
@@ -746,14 +761,43 @@ async fn relays_the_two_skill_writes_with_exactly_their_fields() {
     let body = json!({"name": "notes", "content": "---\nname: notes\n---\nBody\n"}).to_string();
     let got: Value = serde_json::from_str(&dashboard.request("PUT", "api/skills/content?profile=spare", Some(body)).await.unwrap()).unwrap();
     assert_eq!(got["body"], json!({"name": "notes", "content": "---\nname: notes\n---\nBody\n"}));
+    // A copy into another profile (ADR 0057): the profile in the query, the body as sent.
+    let body = json!({"name": "notes", "content": "---\nname: notes\n---\nBody\n", "category": "writing"}).to_string();
+    let got: Value = serde_json::from_str(&dashboard.request("POST", "api/skills?profile=spare", Some(body)).await.unwrap()).unwrap();
+    assert_eq!(got["uri"], json!("/api/skills?profile=spare"));
+    assert_eq!(got["body"], json!({"name": "notes", "content": "---\nname: notes\n---\nBody\n", "category": "writing"}));
+}
+
+#[tokio::test]
+async fn relays_a_memory_entry_edit_for_any_profile_and_nothing_else_there() {
+    let dashboard = signed_in().await;
+    let body = json!({"id": "memory:profile:3:0123456789ab", "content": "Works in UTC+1."}).to_string();
+    let got: Value = serde_json::from_str(&dashboard.request("PUT", "api/learning/node?profile=spare", Some(body)).await.unwrap()).unwrap();
+    assert_eq!(got["uri"], json!("/api/learning/node?profile=spare"));
+    assert_eq!(got["body"], json!({"id": "memory:profile:3:0123456789ab", "content": "Works in UTC+1."}));
+    for body in [
+        // A skill's id is its name: skill edits go through api/skills/content only.
+        r#"{"id":"notes","content":"x"}"#,
+        r#"{"id":"memory:profile:3:0123456789ab","content":"x","profile":"other"}"#,
+        r#"{"id":"memory:profile:3","content":"x"}"#,
+    ] {
+        let err = dashboard.request("PUT", "api/learning/node", Some(body.into())).await.err().unwrap();
+        assert!(matches!(err, TransportError::NotRelayed(_)), "{body}: {err:?}");
+    }
+    assert!(matches!(dashboard.request("POST", "api/learning/node", Some(r#"{"id":"memory:memory:0:0123456789ab"}"#.into())).await, Err(TransportError::NotRelayed(_))));
 }
 
 #[tokio::test]
 async fn relays_no_other_skill_write() {
     let dashboard = signed_in().await;
     for (method, path, body) in [
-        // Creating a skill, and the hub's routes, which fetch and run code from elsewhere.
-        ("POST", "api/skills", r#"{"name":"x","content":"y"}"#),
+        // Creating a skill other than as a copy's exact fields (ADR 0057), and the hub's routes, which fetch and run
+        // code from elsewhere.
+        ("POST", "api/skills", r#"{"name":"x","content":"y","profile":"other"}"#),
+        ("POST", "api/skills", r#"{"name":"../x","content":"y"}"#),
+        ("POST", "api/skills", r#"{"name":"X","content":"y"}"#),
+        ("POST", "api/skills", r#"{"name":"x","content":"y","category":"a/b"}"#),
+        ("POST", "api/skills", r#"{"name":"x"}"#),
         ("POST", "api/skills/hub/install", r#"{"identifier":"github/x"}"#),
         ("POST", "api/skills/toggle", r#"{"name":"x","enabled":true}"#),
         ("PUT", "api/skills/lock", r#"{"name":"x","locked":true}"#),
@@ -781,6 +825,62 @@ async fn relays_no_other_skill_write() {
     assert!(dashboard.request("PUT", "api/skills/toggle", None).await.is_err());
     let long = format!(r#"{{"name":"{}","enabled":true}}"#, "a".repeat(257));
     assert!(matches!(dashboard.request("PUT", "api/skills/toggle", Some(long)).await, Err(TransportError::NotRelayed(_))));
+}
+
+#[tokio::test]
+async fn relays_the_voice_provider_pick_and_key_save() {
+    let dashboard = signed_in().await;
+    for (path, body) in [
+        ("api/tools/toolsets/stt/provider?profile=work", json!({"provider": "Local Whisper"})),
+        ("api/tools/toolsets/tts/provider?profile=work", json!({"provider": "Mistral (Voxtral TTS)"})),
+        ("api/tools/toolsets/tts/env?profile=work", json!({"env": {"ELEVENLABS_API_KEY": "el-key"}})),
+        ("api/tools/toolsets/stt/env?profile=work", json!({"env": {"GROQ_API_KEY": "gsk-1", "VOICE_TOOLS_OPENAI_KEY": "sk-2"}})),
+    ] {
+        let got: Value = serde_json::from_str(&dashboard.request("PUT", path, Some(body.to_string())).await.unwrap()).unwrap();
+        assert_eq!(got, json!({"uri": format!("/{path}"), "content_type": "application/json", "body": body}));
+    }
+}
+
+#[tokio::test]
+async fn relays_no_other_voice_provider_write() {
+    let dashboard = signed_in().await;
+    for (method, path, body) in [
+        // Other toolsets' provider and key routes, and the voice toolsets' other routes.
+        ("PUT", "api/tools/toolsets/web/provider", r#"{"provider":"Firecrawl Self-Hosted"}"#),
+        ("PUT", "api/tools/toolsets/image_gen/env", r#"{"env":{"FAL_KEY":"k"}}"#),
+        ("PUT", "api/tools/toolsets/stt/model", r#"{"model":"m"}"#),
+        ("POST", "api/tools/toolsets/stt/post-setup", r#"{"key":"faster_whisper"}"#),
+        ("POST", "api/tools/toolsets/tts/provider", r#"{"provider":"Piper"}"#),
+        ("PUT", "api/tools/toolsets/stt/provider/x", r#"{"provider":"Groq"}"#),
+        ("PUT", "api/tools/toolsets/STT/provider", r#"{"provider":"Groq"}"#),
+        // Bodies with anything else, a profile in the body, or no provider.
+        ("PUT", "api/tools/toolsets/stt/provider", r#"{"provider":"Groq","profile":"other"}"#),
+        ("PUT", "api/tools/toolsets/stt/provider", r#"{"provider":""}"#),
+        ("PUT", "api/tools/toolsets/stt/provider", r#"{"provider":"  "}"#),
+        ("PUT", "api/tools/toolsets/stt/provider", r#"{"provider":7}"#),
+        ("PUT", "api/tools/toolsets/stt/provider", r#"{"provider":"a\nb"}"#),
+        ("PUT", "api/tools/toolsets/stt/provider", r#"{"env":{"GROQ_API_KEY":"k"}}"#),
+        ("PUT", "api/tools/toolsets/stt/provider", "not json"),
+        // Keys: never empty, blank, multi-line, or under a name that isn't an env var's.
+        ("PUT", "api/tools/toolsets/stt/env", r#"{"env":{}}"#),
+        ("PUT", "api/tools/toolsets/stt/env", r#"{"env":{"GROQ_API_KEY":""}}"#),
+        ("PUT", "api/tools/toolsets/stt/env", r#"{"env":{"GROQ_API_KEY":"  "}}"#),
+        ("PUT", "api/tools/toolsets/stt/env", r#"{"env":{"GROQ_API_KEY":"k\nLD_PRELOAD=x"}}"#),
+        ("PUT", "api/tools/toolsets/stt/env", r#"{"env":{"GROQ_API_KEY":7}}"#),
+        ("PUT", "api/tools/toolsets/stt/env", r#"{"env":{"groq_api_key":"k"}}"#),
+        ("PUT", "api/tools/toolsets/stt/env", r#"{"env":{"1KEY":"k"}}"#),
+        ("PUT", "api/tools/toolsets/stt/env", r#"{"env":{"A B":"k"}}"#),
+        ("PUT", "api/tools/toolsets/stt/env", r#"{"env":{"GROQ_API_KEY":"k"},"profile":"other"}"#),
+        ("PUT", "api/tools/toolsets/stt/env", r#"{"env":["GROQ_API_KEY"]}"#),
+    ] {
+        let err = dashboard.request(method, path, Some(body.into())).await.err().unwrap();
+        assert!(matches!(err, TransportError::NotRelayed(_)), "{method} {path} {body}: {err:?}");
+    }
+    assert!(matches!(dashboard.request("PUT", "api/tools/toolsets/stt/provider", None).await, Err(TransportError::NotRelayed(_))));
+    let long = json!({"env": {"GROQ_API_KEY": "k".repeat(4097)}}).to_string();
+    assert!(matches!(dashboard.request("PUT", "api/tools/toolsets/stt/env", Some(long)).await, Err(TransportError::NotRelayed(_))));
+    let long = json!({"env": {"A".repeat(129): "k"}}).to_string();
+    assert!(matches!(dashboard.request("PUT", "api/tools/toolsets/stt/env", Some(long)).await, Err(TransportError::NotRelayed(_))));
 }
 
 #[tokio::test]
@@ -1370,13 +1470,28 @@ async fn reads_the_voice_setup_without_passing_on_any_key() {
             silence_threshold: Some(350.0),
             silence_duration: Some(1.5),
             max_recording_seconds: None,
+            stt_language: Some("en".into()),
+            stt_settings: [
+                ("elevenlabs".into(), [("language_code".into(), "eng".into()), ("model_id".into(), "scribe_v2".into())].into()),
+                ("groq".into(), [("language".into(), "".into()), ("model".into(), "whisper-large-v3-turbo".into())].into()),
+            ]
+            .into(),
+            tts_settings: [
+                ("elevenlabs".into(), [("model_id".into(), "eleven_multilingual_v2".into()), ("voice_id".into(), "pNInz6obpgDQGcFmaJgB".into())].into()),
+                ("openai".into(), [("model".into(), "gpt-4o-mini-tts".into()), ("voice".into(), "alloy".into())].into()),
+            ]
+            .into(),
         }
     );
     let json = serde_json::to_string(&setup).unwrap();
     assert!(!json.contains("SECRET"), "{json}");
     assert_eq!(
         json,
-        r#"{"transcribe":true,"speak":true,"sttEnabled":false,"sttProvider":"groq","ttsProvider":"openai","silenceThreshold":350.0,"silenceDuration":1.5}"#
+        concat!(
+            r#"{"transcribe":true,"speak":true,"sttEnabled":false,"sttProvider":"groq","ttsProvider":"openai","silenceThreshold":350.0,"silenceDuration":1.5,"#,
+            r#""sttLanguage":"en","sttSettings":{"elevenlabs":{"language_code":"eng","model_id":"scribe_v2"},"groq":{"language":"","model":"whisper-large-v3-turbo"}},"#,
+            r#""ttsSettings":{"elevenlabs":{"model_id":"eleven_multilingual_v2","voice_id":"pNInz6obpgDQGcFmaJgB"},"openai":{"model":"gpt-4o-mini-tts","voice":"alloy"}}}"#
+        )
     );
 }
 
@@ -1390,9 +1505,7 @@ async fn a_server_without_voice_has_neither_route() {
             stt_enabled: None,
             stt_provider: None,
             tts_provider: None,
-            silence_threshold: None,
-            silence_duration: None,
-            max_recording_seconds: None,
+            ..Default::default()
         };
         assert_eq!(setup, none, "{profile}");
     }

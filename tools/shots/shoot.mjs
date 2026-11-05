@@ -36,6 +36,9 @@ const typeSearch = (text) =>
   `(() => { const box = document.querySelector("input[aria-label='Search settings']");
      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(box, ${JSON.stringify(text)});
      box.dispatchEvent(new Event("input", { bubbles: true })); })()`;
+const pickPersona = (profile) =>
+  `(() => { const s = document.querySelector("select.persona-profile");
+     Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(s, ${JSON.stringify(profile)}); s.dispatchEvent(new Event("change", { bubbles: true })); })()`;
 const scenes = {
   "sidebar-sections": { query: "", steps: [sections, click(".section-toggle", "Snoozed"), click(".section-toggle", "Settled")] },
   "sidebar-sections-light": { query: "?mode=light", steps: [sections, click(".section-toggle", "Snoozed"), click(".section-toggle", "Settled")] },
@@ -61,13 +64,29 @@ const scenes = {
   // Settings → General (#174), at 1920 × 1080 and at the window's 760 × 500 minimum.
   "general-connection": { query: "", ...hd, steps: [openSettings] },
   "general-launch": { query: "", ...hd, steps: [openSettings, click(".subnav-item", "Launch")] },
-  "general-voice": { query: "", ...hd, steps: [openSettings, click(".subnav-item", "Voice")] },
+  "general-screenshots": { query: "", ...hd, steps: [openSettings, click(".subnav-item", "Screenshots")] },
+  "general-chats": { query: "", ...hd, steps: [openSettings, click(".subnav-item", "Chats")] },
   "general-storage": { query: "", ...hd, steps: [openSettings, click(".subnav-item", "Storage")] },
   "general-search": { query: "", ...hd, steps: [openSettings, typeSearch("cache")] },
   "general-more": { query: "", ...hd, steps: [openSettings, click(".subnav-item", "Launch"), click(".set-more-btn[aria-label='About Close to tray']")] },
   "general-light": { query: "?mode=light", ...hd, steps: [openSettings, click(".subnav-item", "Storage")] },
   "general-min": { query: "", width: 760, height: 500, steps: [openSettings] },
   "general-min-launch": { query: "", width: 760, height: 500, steps: [openSettings, click(".subnav-item", "Launch")] },
+  // Settings → Persona (ADR 0056): the profile picker, another profile's SOUL.md picked, and the question before
+  // picking another while an edit is unsaved.
+  persona: { query: "?profiles=1", steps: [key(",", { ctrlKey: true }), click("[role=tab]", "Persona")] },
+  "persona-work": { query: "?profiles=1", steps: [key(",", { ctrlKey: true }), click("[role=tab]", "Persona"), pickPersona("work")] },
+  "persona-ask": {
+    query: "?profiles=1",
+    steps: [
+      key(",", { ctrlKey: true }),
+      click("[role=tab]", "Persona"),
+      `(() => { const t = document.querySelector("textarea.persona-text");
+         Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(t, t.value + "\\nAlways answer in British English.\\n");
+         t.dispatchEvent(new Event("input", { bubbles: true })); })()`,
+      pickPersona("research"),
+    ],
+  },
   // Automations (ADR 0036). Tall pages: the screenshot covers the whole screen, scrolled to the part named.
   automations: { query: "", steps: [click("button[aria-label='Automations']")] },
   "automation-editor": { query: "", height: 1700, steps: [click("button[aria-label='Automations']"), click("button", "New automation")] },

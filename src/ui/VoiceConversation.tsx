@@ -1,7 +1,7 @@
 // A Voice conversation in the chat pane (ADR 0041): the Start voice conversation button beside Dictation's, and the
 // panel above the composer while one is on. The conversation itself is conversation.ts.
 import { forwardRef, useEffect, useReducer, useRef, useState, useSyncExternalStore } from "react";
-import { AudioLines, Mic, MicOff, PhoneOff, RotateCcw, Send, Square, Trash2, Volume2 } from "lucide-react";
+import { AudioLines, Mic, MicOff, PhoneOff, RotateCcw, Send, Settings2, Square, Trash2, Volume2 } from "lucide-react";
 import type { VoiceSetup } from "../hermes/pipe";
 import type { ConnectionStatus, Item } from "../hermes/model";
 import type { Delivery } from "../hermes/transport";
@@ -150,7 +150,18 @@ function Steps({ s }: { s: ConversationState }) {
  * The conversation's panel: the microphone and what the conversation is doing, the controls for each step, what
  * reached Hermes, and what is recorded and where it goes. Focus lands on it as it opens; Esc stops the reply's audio.
  */
-export function ConversationPanel({ conversation, setup, onEnd }: { conversation: VoiceConversation; setup?: VoiceSetup; onEnd: () => void }) {
+export function ConversationPanel({
+  conversation,
+  setup,
+  onEnd,
+  onSettings,
+}: {
+  conversation: VoiceConversation;
+  setup?: VoiceSetup;
+  onEnd: () => void;
+  /** Opens Settings → Voice, to change the providers; the conversation pauses as its pane goes out of focus. */
+  onSettings?: () => void;
+}) {
   const s = useSyncExternalStore(conversation.subscribe, conversation.getSnapshot);
   const settings = turnSettings(setup);
   const ref = useRef<HTMLElement>(null);
@@ -281,6 +292,16 @@ export function ConversationPanel({ conversation, setup, onEnd }: { conversation
           </ol>
         )}
       </div>
+      {onSettings && (
+        <div className="conv-settings">
+          <span className="muted small">
+            Hearing you with {stt?.label ?? "the profile's speech-to-text provider"}, speaking with {tts?.label ?? "the profile's text-to-speech provider"}.
+          </span>
+          <button className="link-btn" onClick={onSettings} title="Pick the speech providers, their voice, model and language, in Settings → Voice. The conversation pauses meanwhile.">
+            <Settings2 size={12} aria-hidden /> Change voice settings
+          </button>
+        </div>
+      )}
       <details className="conv-about">
         <summary>What is recorded, and where it goes</summary>
         <p>

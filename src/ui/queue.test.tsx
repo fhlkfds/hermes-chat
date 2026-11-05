@@ -158,7 +158,7 @@ describe("While Hermes replies", () => {
 describe("The same chat in both panes", () => {
   it("shares one queue: queued in one pane, it shows in both, can be removed from either, and goes once", async () => {
     const s = await replying();
-    await s.user.click(screen.getByRole("button", { name: "Split into two panes" }));
+    await s.user.keyboard("{Control>}\\{/Control}");
     const [left, right] = panes();
     await s.user.type(composerIn(right), "from the right{Enter}");
     await s.user.type(composerIn(left), "from the left{Enter}");

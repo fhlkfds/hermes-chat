@@ -21,10 +21,11 @@ Issue #174: every Settings page was a long run of paragraphs and controls. The s
 
 ## Consequences
 
-- General, Connections, On launch, Tray, Updates, Voice, Screenshots, Local cache, History, Import transcripts and Backup use the layout. Their headings, control names and statuses are unchanged, so their tests and the search still find them. Hints were shortened; the text they lost is behind the (i).
+- General, Connections, Sending while Hermes replies (ADR 0057, follow-ups), On launch, Tray, Updates, Screenshots, Local cache, History, Import transcripts and Backup use the layout, and so does the Voice tab's set-up section (Dictation, Read aloud and Voice conversation), which moved out of General to its own tab (ADR 0055, speech providers). Their headings, control names and statuses are unchanged, so their tests and the search still find them. Hints were shortened; the text they lost is behind the (i).
 - The other tabs move in later PRs, one page per PR, each with before-and-after screenshots:
   - **Appearance:** each `appearance-row` becomes a `SettingRow`. The theme gallery and the preview become free-form content in a card (`set-block`).
   - **Model:** each model and auxiliary row becomes a `SettingRow` with its picker as the control. Apply and the conflict note go under the card.
+  - **Voice:** the speech providers become a row for each side, with its picker as the control. The picked provider's model, voice, language and key go in a `set-block` under its row.
   - **Toolsets:** each toolset becomes a row with its switch. The open chat's line becomes the hint. "How a change applies" becomes the section's (i).
   - **Persona:** the SOUL.md editor goes in a `set-block`. Its "when it takes effect" text becomes the section's (i).
   - **Memory and Skills:** each entry or skill becomes a row in a card. Editors open in a `set-block` under their row.

@@ -73,13 +73,15 @@ const names = () => [...document.querySelectorAll(".files-table tbody .files-lab
 const trail = () => [...document.querySelectorAll(".files-crumbs li")].map((li) => li.textContent);
 const row_ = (name: string) => screen.getByRole("button", { name: new RegExp(`^${name}`) });
 
+/** Server files is the side panel's Files tab (ADR 0039, 0055); the rail has no button for it. */
 async function openFiles(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(screen.getByRole("button", { name: "Server files" }));
+  if (document.querySelector("aside.side-panel:not([hidden])") === null) await user.click(screen.getByRole("button", { name: /^(Open|Show) the side panel$/ }));
+  await user.click(screen.getByRole("tab", { name: "Files" }));
   await waitFor(() => expect(document.querySelector(".files-table")).not.toBeNull());
 }
 
 describe("Server files", () => {
-  it("opens from the rail on the server's starting folder, labelled with the server, read-only, dotfiles tucked away", async () => {
+  it("opens in the side panel on the server's starting folder, labelled with the server, read-only, dotfiles tucked away", async () => {
     const s = server();
     const { user } = await launch(s);
     await openFiles(user);
@@ -275,19 +277,19 @@ describe("Server files", () => {
     await user.click(screen.getByRole("button", { name: /Nightly backup/ }));
     await waitFor(() => expect(document.querySelector("[aria-current='true']")).not.toBeNull());
     await openFiles(user);
-    const filesButton = screen.getByRole("button", { name: "Server files" });
-    expect(filesButton.getAttribute("aria-pressed")).toBe("true");
     // The chat stays open beside it.
     expect(document.querySelector("[aria-current='true']")).not.toBeNull();
     expect(screen.getByRole("tab", { name: "Files" }).getAttribute("aria-selected")).toBe("true");
     expect(screen.queryByRole("button", { name: "Back to chat" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await waitFor(() => expect(document.querySelector("aside.side-panel")!.hasAttribute("hidden")).toBe(true));
-    expect(filesButton.getAttribute("aria-pressed")).toBe("false");
-    await openFiles(user);
+    // Leaving Settings brings the panel back on Files, the same one.
+    await user.click(screen.getByRole("button", { name: "Back to chat" }));
+    await waitFor(() => expect(document.querySelector("aside.side-panel")!.hasAttribute("hidden")).toBe(false));
+    expect(screen.getByRole("tab", { name: "Files" }).getAttribute("aria-selected")).toBe("true");
     expect(document.querySelectorAll(".files")).toHaveLength(1);
-    // The rail's button closes it again.
-    await user.click(filesButton);
+    // The header's side panel button closes it again.
+    await user.click(document.querySelector<HTMLElement>(".chat-head-actions [title='Close the side panel']")!);
     expect(document.querySelector("aside.side-panel")!.hasAttribute("hidden")).toBe(true);
   });
 

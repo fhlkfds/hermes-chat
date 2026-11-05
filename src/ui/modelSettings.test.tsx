@@ -2,6 +2,8 @@
 // Settings → Model on screen, against the fake dashboard: the draft, Apply, the guardrails, and leaving Settings.
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+// @ts-expect-error The app has no Node types; the tests run in Node. (Vitest empties a CSS import, ?raw included.)
+import { readFileSync } from "node:fs";
 import { useState } from "react";
 import { afterEach, describe, expect, it } from "vitest";
 import { FakeHermes } from "../hermes/fakeHermes";
@@ -71,6 +73,28 @@ describe("Settings → Model", () => {
     expect(select("Approval checks provider").value).toBe("auto");
     expect(select("Approval checks effort").value).toBe("none");
     expect(screen.getByText(/Text generation, Compression and Vision are pinned to OpenRouter/)).toBeTruthy();
+  });
+
+  it("keeps the pickers' text in view: the form-field select style leaves .select's padding alone", async () => {
+    // .select is 32px tall with no vertical padding. The setup form's field rule padded every select in a field 8px top
+    // and bottom, which cut the text in the Model page's pickers down to a sliver.
+    const sheet = document.createElement("style");
+    sheet.textContent = readFileSync("src/styles.css", "utf8") as string;
+    document.head.append(sheet);
+    try {
+      await shown();
+      for (const name of ["Main provider", "Main model", "Main reasoning effort"]) expect(select(name).closest(".field")).toBeTruthy();
+      for (const s of screen.getAllByRole<HTMLSelectElement>("combobox")) {
+        expect([s.getAttribute("aria-label"), getComputedStyle(s).height, getComputedStyle(s).paddingTop, getComputedStyle(s).paddingBottom]).toEqual([
+          s.getAttribute("aria-label"),
+          "32px",
+          "0px",
+          "0px",
+        ]);
+      }
+    } finally {
+      sheet.remove();
+    }
   });
 
   it("can't apply a provider switch until a model is picked for the new provider", async () => {

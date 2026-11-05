@@ -26,17 +26,18 @@
 // Token usage and cost (usage.ts, ADR 0008): each reply's usage is how far its session's live counters moved during
 // its turn; each chat's totals and cost are Hermes's stored ones, read with the chat list and after each turn.
 import { PersonaApi } from "./persona";
-import { APPROVAL_CHOICES, isBroadGrant, isOutgoing, isWaiting, offeredChoices, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type ContextUse, type Found, type Item, type ListedChat, type LiveSession, type LiveSessions, type OtherProfiles, type Outgoing, type OutgoingItem, type Queued, type SavedSend, type SeenFailure, type SessionLive, type Source, QUEUE_LIMIT } from "./model";
+import { APPROVAL_CHOICES, isBroadGrant, isOutgoing, isWaiting, offeredChoices, turnStart, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type ContextUse, type Found, type Item, type ListedChat, type LiveSession, type LiveSessions, type OtherProfiles, type Outgoing, type OutgoingItem, type Queued, type SavedSend, type SeenFailure, type SessionLive, type Source, QUEUE_LIMIT } from "./model";
 import { catalogFromServer, fallbackCatalog, isEffort, modelKey, pickFromInfo, type ModelCatalog, type ModelPick } from "./models";
 import { noOthers, OtherProfilesCheck } from "./otherProfiles";
 import { failureMark } from "./inbox";
 // Projects are Hermes's own, read and written with legacy `projects.*` (projects.ts, research doc "Projects").
 import { projectsApi, type ProjectsApi } from "./projects";
-import { listServerCommands, runServerCommand, type CommandDef, type CommandResult, type ServerCommandList } from "./commands";
+import { STEER, listServerCommands, runServerCommand, type CommandDef, type CommandResult, type ServerCommandList } from "./commands";
 import { CronApi } from "./cronJobs";
 import { AutomationsApi } from "./automations";
 import { ModelSettingsApi } from "./modelSettings";
 import { ToolsetsApi } from "./toolsets";
+import { VoiceSettingsApi } from "./voiceSettings";
 import { readBack, sendImport, type PlannedChat } from "./importTranscripts";
 import { memoryApi, type MemoryApi } from "./memory";
 import { MemoryProvidersApi } from "./memoryProviders";
@@ -247,6 +248,8 @@ type TranscriptMessage = {
   timestamp?: number | null;
   /** The stored row (`messages.id`); a live session's not-yet-stored tail has none. */
   row_id?: number | null;
+  /** How Hermes shows the row: `steer` for a message that went into a running reply (`session_history.py`). */
+  display_kind?: string | null;
 };
 
 /** Legacy `prompt.submit` result. `user_row_id`: the stored row of the message, when its turn started at once
@@ -805,7 +808,7 @@ export class Hermes {
       return pipe.toolsetGuards(profile);
     },
     (_profile, name) => {
-      if (name === "stt") this.voiceRead = undefined;
+      if (name === "stt") this.voiceChanged();
     },
     (method, params) => this.request(method, params),
     // What its write check found, which only Settings → Toolsets can learn (capabilities.ts `toolsetSwitches`).
@@ -814,10 +817,35 @@ export class Hermes {
       return (state, why) => this.capabilities.report(gen, "toolsetSwitches", state, why);
     },
   );
+  /**
+   * Settings → Voice's reads and writes (voiceSettings.ts, ADR 0055). Each call names its profile, and goes only over a
+   * connection that is up. Its read of the voice set-up is always fresh; a save drops the chat panes' cached one.
+   */
+  readonly voiceSettings = new VoiceSettingsApi(
+    (method, pathAndQuery, body) => this.connectedRest(method, pathAndQuery, body),
+    (profile) => {
+      const pipe = this.closing ? undefined : this.connectedPipe();
+      if (!pipe) return Promise.reject(new Error("Not connected to Hermes."));
+      return pipe.voiceSetup(profile);
+    },
+    () => this.voiceChanged(),
+  );
+  private voiceListeners = new Set<() => void>();
+  /** Drops the cached voice set-up, and tells whoever shows it to read it again. */
+  private voiceChanged() {
+    this.voiceRead = undefined;
+    for (const fn of this.voiceListeners) fn();
+  }
+  /** Called whenever the voice set-up may have changed on Hermes (a Voice or Toolsets save). */
+  readonly onVoiceChange = (fn: () => void) => {
+    this.voiceListeners.add(fn);
+    return () => void this.voiceListeners.delete(fn);
+  };
   /** Settings → Memory's reads and writes (memory.ts). Each call names the profile it is for. */
   readonly memory: MemoryApi = memoryApi({
     rpc: (method, params) => this.request(method, params),
     get: (pathAndQuery) => this.rest("GET", pathAndQuery),
+    send: (method, pathAndQuery, body) => this.rest(method, pathAndQuery, body),
   });
   /**
    * Settings → Memory's external memory (memoryProviders.ts, ADR 0045). Each call names its profile, and goes only over a
@@ -1027,6 +1055,21 @@ export class Hermes {
     const runtimeId = this.snapshot.chats.find((c) => c.id === chatId)?.runtimeId;
     if (!runtimeId) return Promise.reject(new Error("This chat isn't open on Hermes."));
     return runServerCommand((method, params) => this.request(method, params), runtimeId, def, arg);
+  }
+
+  /**
+   * Sends `text` into the chat's running reply without stopping it, through the same `command.dispatch` as `/steer`
+   * (ADR 0057). Once Hermes has taken it, it shows at the end of the chat marked as a steer: `"steered"`. `"not
+   * running"`: Hermes had no reply to steer, or couldn't steer this one yet, and wants the words sent as a message
+   * instead; nothing went. Rejects saying why Hermes didn't take it.
+   */
+  async steer(chatId: string, text: string): Promise<"steered" | "not running"> {
+    const profile = this.profile;
+    const res = await this.runCommand(chatId, STEER, text);
+    if (res.kind === "send") return "not running";
+    if (this.profile === profile)
+      this.patchChat(chatId, (c) => ({ ...c, items: [...c.items, { kind: "user", id: freeId(c.items, `s-${c.items.length}`), text, steer: true }] }));
+    return "steered";
   }
 
   /** Has Hermes transcribe a Dictation recording with the shown profile's speech-to-text provider. */
@@ -4119,7 +4162,7 @@ function pauseAfter(type: string, p: Record<string, unknown>, items: Item[]): st
   if (type === "error") return "The last reply ended with an error. Check the chat, then resume.";
   if (p.status === "interrupted") return "The last reply was stopped. Resume to send the next message.";
   if (p.error || p.status === "error") return "The last reply failed. Check the chat, then resume.";
-  const turn = items.slice(items.map((i) => i.kind).lastIndexOf("user") + 1);
+  const turn = items.slice(turnStart(items));
   if (turn.some((i) => i.kind === "approval")) return "Hermes asked for an Approval in the last reply. Check the chat, then resume.";
   return undefined;
 }
@@ -4188,7 +4231,9 @@ function historyItems(messages: TranscriptMessage[]): Item[] {
     if (!m.text?.trim()) return thought;
     const at = storedAt(m.timestamp);
     const rowId = Number.isSafeInteger(m.row_id) ? (m.row_id as number) : undefined;
-    if (m.role === "user" || m.role === "assistant") return [...thought, { kind: m.role, id, text: m.text, ...(at && { at }), ...(rowId !== undefined && { rowId }) }];
+    if (m.role === "user")
+      return [{ kind: "user", id, text: m.text, ...(at && { at }), ...(rowId !== undefined && { rowId }), ...(m.display_kind === "steer" && { steer: true }) }];
+    if (m.role === "assistant") return [...thought, { kind: "assistant", id, text: m.text, ...(at && { at }), ...(rowId !== undefined && { rowId }) }];
     return [];
   });
 }
@@ -4268,7 +4313,7 @@ function markInterrupted(items: Item[]): Item[] {
  * unless it has some already, which a repeated `message.complete` would find.
  */
 function withReplyUsage(items: Item[], usage: ReplyUsage, from?: string | null): Item[] {
-  const start = from === null ? 0 : from === undefined ? items.map((i) => i.kind).lastIndexOf("user") + 1 : items.findIndex((i) => i.id === from) + 1;
+  const start = from === null ? 0 : from === undefined ? turnStart(items) : items.findIndex((i) => i.id === from) + 1;
   // If the boundary itself disappeared, there is no reliable turn to attach these counters to.
   if (typeof from === "string" && start === 0) return items;
   for (let n = items.length - 1; n >= start; n--) {
@@ -4351,7 +4396,8 @@ function applyEvent(c: Chat, type: string, p: Record<string, unknown>): Chat {
     }
     case "message.complete": {
       // Providers that don't stream send the whole reply here; a streamed turn repeats text it already sent.
-      const lastUser = items.map((i) => i.kind).lastIndexOf("user");
+      // A steered message is part of the turn, so the turn starts at the last message that began one.
+      const lastUser = turnStart(items) - 1;
       const answered = items.slice(lastUser + 1).some((i) => i.kind === "assistant");
       // The last response's reasoning, for a turn that showed none: it goes before the reply.
       const reasoning = typeof p.reasoning === "string" ? p.reasoning.trim() : "";

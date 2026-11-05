@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Settings' row layout (#174, ADR 0055): a row's longer help folds behind an (i) button that never joins the control's
+// Settings' row layout (#174, ADR 0059): a row's longer help folds behind an (i) button that never joins the control's
 // name, and opens by itself while Settings is searched.
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";

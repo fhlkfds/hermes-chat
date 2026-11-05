@@ -42,7 +42,7 @@ afterEach(() => {
 
 describe("reading", () => {
   it("is the defaults when nothing is stored", () => {
-    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, checkUpdatesOnLaunch: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, modelPicks: {}, modelFavorites: [], statusBar: ["context", "yolo", "model", "status"], previewWidth: null, screenshotShortcut: "Ctrl+Shift+S", templates: [], terminalKind: "server" });
+    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, checkUpdatesOnLaunch: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, modelPicks: {}, modelFavorites: [], statusBar: ["context", "yolo", "model", "status"], previewWidth: null, screenshotShortcut: "Ctrl+Shift+S", templates: [], terminalKind: "server", followUp: "queue" });
     expect(getUIPrefs()).toEqual(DEFAULT_UI_PREFS);
   });
 
@@ -68,6 +68,7 @@ describe("reading", () => {
         lastOpenChat: { default: "c1", work: 7, "": "c2", home: "" },
         previewWidth: 12.5,
         terminalKind: "laptop",
+        followUp: "interrupt",
       }),
     );
     expect(getUIPrefs()).toEqual({
@@ -80,7 +81,7 @@ describe("reading", () => {
       modelPicks: {},
       modelFavorites: ["openai/gpt-5", "anthropic/claude-opus-5-5"],
       statusBar: ["model", "tokens"],
-      previewWidth: null, screenshotShortcut: "Ctrl+Shift+S", templates: [], terminalKind: "server",
+      previewWidth: null, screenshotShortcut: "Ctrl+Shift+S", templates: [], terminalKind: "server", followUp: "queue",
     });
   });
 
@@ -111,6 +112,17 @@ describe("reading", () => {
     for (const bad of ["laptop", 1, null]) {
       localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ v: 1, terminalKind: bad }));
       expect(getUIPrefs().terminalKind).toBe("server");
+    }
+  });
+
+  it("keeps what sending does while a reply runs, queueing until steering is picked", () => {
+    expect(getUIPrefs().followUp).toBe("queue");
+    setUIPrefs({ followUp: "steer" });
+    expect(stored().followUp).toBe("steer");
+    // Hermes's own `interrupt` mode isn't one this app offers: it is read as the default.
+    for (const bad of ["interrupt", true, null]) {
+      localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ v: 1, followUp: bad }));
+      expect(getUIPrefs().followUp).toBe("queue");
     }
   });
 

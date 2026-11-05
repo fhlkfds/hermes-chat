@@ -16,11 +16,23 @@ export type VoiceApi = {
   setup: () => Promise<VoiceSetup>;
   transcribe: (audio: Uint8Array, mime: string) => Promise<Transcript>;
   speak: (text: string) => Promise<Speech>;
+  /** Calls `fn` whenever the set-up may have changed on Hermes (a Settings → Voice save); returns its unsubscribe. */
+  onChange?: (fn: () => void) => () => void;
+  /** Opens Settings → Voice, to change the providers. */
+  openSettings?: () => void;
 };
 
-/** The profile's voice set-up, read once connected; undefined until read, or if it couldn't be. */
+/** A count that goes up each time the voice set-up may have changed on Hermes, to read it again. */
+export function useVoiceChanges(voice: Pick<VoiceApi, "onChange"> | undefined): number {
+  const [changes, bump] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => voice?.onChange?.(bump), [voice]);
+  return changes;
+}
+
+/** The profile's voice set-up, read once connected and again after it changes; undefined until read, or if it couldn't be. */
 export function useVoiceSetup(voice: VoiceApi | undefined, connected: boolean): VoiceSetup | undefined {
   const [setup, setSetup] = useState<VoiceSetup>();
+  const changes = useVoiceChanges(voice);
   useEffect(() => {
     if (!voice || !connected) return;
     let live = true;
@@ -31,7 +43,7 @@ export function useVoiceSetup(voice: VoiceApi | undefined, connected: boolean): 
     return () => {
       live = false;
     };
-  }, [voice, connected]);
+  }, [voice, connected, changes]);
   return setup;
 }
 
@@ -299,7 +311,18 @@ function conversationTurns(setup: VoiceSetup): { label: string; needs: string; m
 }
 
 /** Settings → Voice: what the profile's providers are and need, and where recordings go. */
-export function VoiceSettings({ status, profile, setup }: { status: ConnectionStatus; profile: string; setup?: () => Promise<VoiceSetup> }) {
+export function VoiceSettings({
+  status,
+  profile,
+  setup,
+  changes = 0,
+}: {
+  status: ConnectionStatus;
+  profile: string;
+  setup?: () => Promise<VoiceSetup>;
+  /** Goes up each time the set-up may have changed, to read it again. */
+  changes?: number;
+}) {
   const [got, setGot] = useState<{ setup?: VoiceSetup; error?: string }>();
   const connected = status === "connected";
   useEffect(() => {
@@ -312,7 +335,7 @@ export function VoiceSettings({ status, profile, setup }: { status: ConnectionSt
     return () => {
       live = false;
     };
-  }, [setup, connected, profile]);
+  }, [setup, connected, profile, changes]);
 
   const s = got?.setup;
   const row = (name: string, blocked: string | undefined, provider: { label: string; needs: string; more?: string }) => (
@@ -340,7 +363,7 @@ export function VoiceSettings({ status, profile, setup }: { status: ConnectionSt
             all of them on the server, so the providers' keys never reach this app.
           </p>
           <p>
-            Pick the providers on the server with <span className="mono">hermes tools</span> (Speech-to-Text and Text-to-Speech). The microphone is
+            Change the providers under Speech providers, below. The microphone is
             open only while you record, or while a voice conversation is on; a conversation pauses when you leave its chat pane or hide the window,
             and only you can resume it. Recordings stay in memory here and go to Hermes, and on to the provider if it's a cloud one; Hermes deletes
             its copy once it has the text. Recordings stop by themselves after {MAX_RECORDING_SECONDS / 60} minutes.

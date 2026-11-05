@@ -1,7 +1,7 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
 // Dictation and Read aloud come from Voice.tsx.
 import { createContext, memo, type ReactNode, useCallback, useContext, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
-import { Archive, ArchiveRestore, ArrowUp, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, EyeOff, FileDown, FileInput, FileText, Globe, HardDrive, Link2, ListPlus, Ellipsis, Paperclip, RotateCcw, Search, Server, Square, Trash2, Wrench, X } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowUp, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, CornerDownRight, EyeOff, FileDown, FileInput, Globe, HardDrive, Link2, ListPlus, Ellipsis, Paperclip, RotateCcw, Search, Server, Square, Trash2, Wrench, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
@@ -29,12 +29,30 @@ import { useOpenPreview } from "./previewContext";
 import { ShowInChatContext, type ShowInChat } from "./showInChat";
 import { previewName, toolTargets, withoutBidi } from "../hermes/preview";
 import { type CommandHost, useSlashCommands } from "./SlashCommands";
-import { Templates, type TemplateHere } from "./Templates";
 import { BranchButton } from "./Branch";
 import { useWindowHidden } from "./windowState";
 import { EditButton, RegenerateButton, VariantNav } from "./Replay";
 import { CopyButton, replyMarkdown } from "./CopyMessage";
 import { turnsOf, type ReplayKind, type Variant } from "../hermes/replay";
+import type { FollowUp } from "../hermes/uiPrefs";
+
+/**
+ * What a message sent while the chat's reply runs does (ADR 0057). `mode`: what Enter does, the Follow-up behavior
+ * setting; Ctrl+Enter does the other. `why`: why a message can't steer the running reply now, so it is queued instead,
+ * or undefined when it can. `steer` sends the words into the running reply and empties the Draft once Hermes has taken
+ * them; it resolves with a note to show, if any, and rejects saying why nothing went.
+ */
+export type FollowUpHost = {
+  mode: FollowUp;
+  why(): string | undefined;
+  steer(text: string): Promise<string | undefined>;
+};
+
+/** Why a message with files can't steer: `/steer` carries only words. */
+const FILES_CANT_STEER = "A steer carries only words, so a message with files goes after the reply.";
+
+/** The reasons for queueing instead of steering already told, so each is said once while the app runs. */
+const toldWhy = new Set<string>();
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type ThinkingItem = Extract<Item, { kind: "thinking" }>;
@@ -267,7 +285,7 @@ export function ChatPane({
   queue,
   queueApi,
   commands,
-  templates,
+  followUp,
   branch,
   branchedFrom,
   replay,
@@ -320,8 +338,8 @@ export function ChatPane({
   queue?: ChatQueue;
   queueApi?: QueueApi;
   commands?: CommandHost;
-  /** Where the composer's Templates are picked from (Templates.tsx). */
-  templates?: TemplateHere;
+  /** What sending does while the reply runs: queue or steer (ADR 0057). Without it, it queues. */
+  followUp?: FollowUpHost;
   branch?: { blocked?: string; onBranch: (itemId: string) => void };
   branchedFrom?: ReactNode;
   replay?: { blocked?: string; onReplay: (itemId: string, kind: ReplayKind) => void };
@@ -751,7 +769,7 @@ export function ChatPane({
         screenshots={screenshots}
         screenshotKeys={screenshotKeys}
         commands={commands}
-        templates={templates}
+        followUp={followUp}
       />
       )}
       <ShowInChatContext.Provider value={showInChat}>{footer}</ShowInChatContext.Provider>
@@ -813,7 +831,12 @@ const BlockView = memo(
     );
     if (block.kind === "user")
       return (
-        <div className={`msg user${block.outgoing ? ` outgoing ${block.outgoing.state}` : ""}`} data-item={block.id} data-at={block.at}>
+        <div className={`msg user${block.outgoing ? ` outgoing ${block.outgoing.state}` : ""}${block.steer ? " steer" : ""}`} data-item={block.id} data-at={block.at}>
+          {block.steer && (
+            <div className="steer-tag" title="This went into the running reply, as /steer does, rather than as a new message.">
+              <CornerDownRight size={12} aria-hidden /> Steered into the reply
+            </div>
+          )}
           {block.attachments && (
             <div className="msg-files">
               {block.attachments.map((name, i) => (
@@ -1076,7 +1099,7 @@ function Composer({
   screenshots,
   screenshotKeys,
   commands,
-  templates = NO_PROJECTS,
+  followUp,
 }: {
   offline: boolean;
   /** Enter, and the Queue button, add the message to the chat's queue (`onQueue`, which says why it couldn't). */
@@ -1107,7 +1130,8 @@ function Composer({
   screenshots?: ScreenshotDesk;
   screenshotKeys?: string;
   commands?: CommandHost;
-  templates?: TemplateHere;
+  /** While a reply runs, Enter queues or steers by its `mode`, and Ctrl+Enter does the other. */
+  followUp?: FollowUpHost;
 }) {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const focused = useRef(autoFocus);
@@ -1261,14 +1285,41 @@ function Composer({
     ta.style.height = Math.min(ta.scrollHeight, 240) + "px";
   }, [text]);
 
-  // The template library; Insert puts its message in the draft, never sends it.
-  const [picking, setPicking] = useState(false);
-
   const sendable = attaching === 0 && (!!text.trim() || attachments.length > 0);
   const slash = useSlashCommands(commands, text, onText, taRef);
-  const send = () => {
+  // While a reply runs a message can steer it instead of waiting in the queue. Why it can't now, if it can't: the
+  // chat's (no /steer here, still loading), or the message's own (files). Offline, everything queues without a word.
+  const [steering, setSteering] = useState(false);
+  const canFollow = !!followUp && !!onQueue && running && !offline;
+  const steerWhy = canFollow ? (followUp.why() ?? (attachments.length ? FILES_CANT_STEER : undefined)) : undefined;
+  const enterSteers = canFollow && followUp.mode === "steer" && !steerWhy;
+  const ctrlSteers = canFollow && followUp.mode === "queue" && !steerWhy;
+  const steer = async (words: string) => {
+    setSteering(true);
+    setRefused([]);
+    try {
+      const out = await followUp!.steer(words);
+      if (out) setRefused([out]);
+    } catch (e) {
+      setRefused([`Couldn't steer the reply, so nothing was sent: ${e instanceof Error ? e.message : String(e)}`]);
+    } finally {
+      setSteering(false);
+    }
+  };
+  /** `other`: Ctrl+Enter, which does the other of queue and steer while a reply runs. */
+  const send = (other = false) => {
     if (slash.run()) return;
-    if (!sendable) return;
+    if (!sendable || steering) return;
+    // A message that would steer and can't is queued, saying why: the chat's reason once, files every time.
+    let fellBack: string | undefined;
+    if (canFollow && (followUp.mode === "steer") !== other) {
+      if (!steerWhy) return void steer(text.trim());
+      if (steerWhy === FILES_CANT_STEER) fellBack = `Your message is queued, not steered. ${steerWhy}`;
+      else if (!toldWhy.has(steerWhy)) {
+        toldWhy.add(steerWhy);
+        fellBack = `Your message is queued, not steered. /steer can't run: ${steerWhy}`;
+      }
+    }
     if (queueing && onQueue) {
       const why = onQueue(text.trim(), attachments);
       if (why) return setRefused([why]);
@@ -1277,8 +1328,12 @@ function Composer({
       onSend(text.trim(), attachments);
     }
     setAttachments([]);
-    setRefused([]);
+    setRefused(fellBack ? [fellBack] : []);
   };
+  // What Enter, and the button beside the text, do now; Ctrl+Enter does the other while a reply runs.
+  const enterDoes = enterSteers ? "steer" : queueing ? "queue" : "send";
+  // With the Ctrl+Enter hint there is no room for Shift+Enter's, which never changes.
+  const keysHint = `Enter to ${enterDoes} · ${enterSteers ? "Ctrl+Enter to queue" : ctrlSteers ? "Ctrl+Enter to steer" : "Shift+Enter for a new line"}`;
 
   return (
     <div
@@ -1310,6 +1365,7 @@ function Composer({
         <ConversationPanel
           conversation={conversation}
           setup={voiceSetup}
+          onSettings={voice?.openSettings}
           onEnd={() => {
             conversation.end();
             // Back to the button that started it, once it is shown again.
@@ -1367,8 +1423,8 @@ function Composer({
             if (slash.onKeyDown(e)) return;
             if (e.key === "Enter" && !e.shiftKey && !composing(e)) {
               e.preventDefault();
-              // Enter queues only while the hint below says so; Dictation hides it.
-              if (!(queueing && dictation.active)) send();
+              // Enter queues or steers only while the hint below says so; Dictation hides it.
+              if (!(queueing && dictation.active)) send(e.ctrlKey || e.metaKey);
             }
           }}
         />
@@ -1399,15 +1455,29 @@ function Composer({
               <Camera size={16} />
             </button>
           )}
-          <button className="icon-btn" title="Templates" aria-label="Templates" aria-haspopup="dialog" onClick={() => setPicking(true)}>
-            <FileText size={16} />
-          </button>
           {modelControls}
-          {!dictation.active && <span className="composer-keys">{queueing ? "Enter to queue" : "Enter to send"} · Shift+Enter for a new line</span>}
-          {queueing && onQueue && (
-            <button className="send queue-btn" title="Queue: send after the reply (Enter)" aria-label="Queue" disabled={!sendable} onClick={send}>
-              <ListPlus size={16} />
+          {!dictation.active && (
+            <span className="composer-keys" title={steerWhy && `Can't steer now: ${steerWhy}`}>
+              {keysHint}
+            </span>
+          )}
+          {enterSteers ? (
+            <button
+              className="send queue-btn"
+              title="Steer: add to the running reply without stopping it (Enter)"
+              aria-label="Steer"
+              disabled={!sendable || steering}
+              onClick={() => send()}
+            >
+              {steering ? <Spinner /> : <CornerDownRight size={16} />}
             </button>
+          ) : (
+            queueing &&
+            onQueue && (
+              <button className="send queue-btn" title="Queue: send after the reply (Enter)" aria-label="Queue" disabled={!sendable || steering} onClick={() => send()}>
+                <ListPlus size={16} />
+              </button>
+            )
           )}
           {running ? (
             <button className="send stop" title={stopping ? "Stopping" : "Stop"} disabled={offline || stopping} onClick={onStop}>
@@ -1415,7 +1485,7 @@ function Composer({
             </button>
           ) : (
             !(queueing && onQueue) && (
-              <button className="send" title="Send" disabled={offline || !sendable} onClick={send}>
+              <button className="send" title="Send" disabled={offline || !sendable} onClick={() => send()}>
                 <ArrowUp size={16} />
               </button>
             )
@@ -1423,22 +1493,8 @@ function Composer({
         </div>
         {dictation.active && <DictationStrip dictation={dictation} />}
       </div>
-      {picking && (
-        <Templates
-          here={templates}
-          draft={text}
-          returnTo={taRef}
-          onClose={() => setPicking(false)}
-          onInsert={(next) => {
-            onText(next);
-            // After React has put the new text in.
-            requestAnimationFrame(() => taRef.current?.setSelectionRange(next.length, next.length));
-          }}
-        />
-      )}
     </div>
   );
 }
 
-const NO_PROJECTS: TemplateHere = { scope: "", projects: [], here: [] };
 const NOT_TALKING: ConversationState = { phase: "off", muted: false, hearing: false, playing: false, heard: [], devices: [] };

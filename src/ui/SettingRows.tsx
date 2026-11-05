@@ -1,4 +1,4 @@
-// The layout every Settings page is moving to (#174, ADR 0055). A section is a heading, at most one line under it, and a
+// The layout every Settings page is moving to (#174, ADR 0059). A section is a heading, at most one line under it, and a
 // card of rows. A row is a setting's name with a one-line hint on the left and its control on the right. Longer help
 // folds behind an (i) button beside the name or heading, and opens by itself while Settings is searched, so a match
 // inside it can be seen. Each section stays a <section>, the unit Settings' search shows or hides (settingsSearch.ts).

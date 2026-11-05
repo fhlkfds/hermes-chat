@@ -1,7 +1,7 @@
 // The terminal session's lifecycle against a fake of Rust's terminal commands: output goes to the screen, typing
 // and resizing reach ssh only while it runs, and every way it can end is reported once, the owner's end as theirs.
 import { describe, expect, it } from "vitest";
-import { TerminalSession, endedText, terminalTarget, type TerminalApi, type TerminalEvent, type TerminalState } from "./terminal";
+import { TerminalSession, endedText, sshTargetFromUrl, terminalTarget, terminalTargetGuessed, type TerminalApi, type TerminalEvent, type TerminalState } from "./terminal";
 
 class FakeTerminals implements TerminalApi {
   opened: { target: string; cols: number; rows: number; emit: (e: TerminalEvent) => void }[] = [];
@@ -152,5 +152,37 @@ describe("terminal target", () => {
     expect(terminalTarget({ mode: "ssh", sshTarget: "liam@hermes" }, " root@hermes ")).toBe("root@hermes");
     expect(terminalTarget({ mode: "url", sshTarget: "old" }, null)).toBe("");
     expect(terminalTarget({ mode: "url", sshTarget: "" }, "hermes")).toBe("hermes");
+  });
+
+  it("is the web address's host for a web-address sign-in with nothing typed", () => {
+    expect(terminalTarget({ mode: "url", sshTarget: "old", url: "http://hermes:9119" }, null)).toBe("hermes");
+    expect(terminalTarget({ mode: "url", sshTarget: "", url: "https://hermes.tail36fb9.ts.net/" }, null)).toBe("hermes.tail36fb9.ts.net");
+    // One typed for the terminal still wins.
+    expect(terminalTarget({ mode: "url", sshTarget: "", url: "http://hermes:9119" }, "root@hermes")).toBe("root@hermes");
+    // An SSH sign-in keeps its own, whatever the url field holds.
+    expect(terminalTarget({ mode: "ssh", sshTarget: "liam@box", url: "http://hermes:9119" }, null)).toBe("liam@box");
+  });
+
+  it("says when it was worked out from the web address", () => {
+    expect(terminalTargetGuessed({ mode: "url", sshTarget: "", url: "http://hermes:9119" }, null)).toBe(true);
+    expect(terminalTargetGuessed({ mode: "url", sshTarget: "", url: "http://hermes:9119" }, "liam@hermes")).toBe(false);
+    expect(terminalTargetGuessed({ mode: "url", sshTarget: "", url: "http://localhost:9119" }, null)).toBe(false);
+    expect(terminalTargetGuessed({ mode: "ssh", sshTarget: "liam@hermes" }, null)).toBe(false);
+  });
+});
+
+describe("ssh target from a web address", () => {
+  it("is the host, with no user or port", () => {
+    expect(sshTargetFromUrl("http://hermes:9119")).toBe("hermes");
+    expect(sshTargetFromUrl(" https://user:pw@Hermes.example.org./dash ")).toBe("hermes.example.org");
+    expect(sshTargetFromUrl("http://100.100.64.121:9119")).toBe("100.100.64.121");
+    expect(sshTargetFromUrl("http://[fd7a:115c::1]:9119")).toBe("fd7a:115c::1");
+    // An IPv4-mapped address off this computer is still the server's.
+    expect(sshTargetFromUrl("http://[::ffff:100.100.64.121]:9119")).toBe("::ffff:6464:4079");
+  });
+
+  it("is nothing for this computer, a bad address, or another scheme", () => {
+    for (const u of ["http://localhost:9119", "http://LOCALHOST", "http://app.localhost", "http://127.0.0.1:9119", "http://127.1.2.3", "http://0.0.0.0:9119", "http://[::1]:9119", "http://[::]:9119", "http://[::ffff:127.0.0.1]:9119", "http://[::ffff:7f12:3456]", "http://[::ffff:0.0.0.0]", "ftp://hermes", "hermes:9119", "", undefined])
+      expect(sshTargetFromUrl(u), String(u)).toBe("");
   });
 });

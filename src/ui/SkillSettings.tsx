@@ -3,13 +3,17 @@
 // written until the owner presses Save, every save is checked against the file as opened and read back, and an edit
 // Hermes didn't take stays on screen. Skill text is instructions for the agent, shown as plain text only, never run or
 // rendered. Installing skills from elsewhere isn't done here.
-import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, ArrowLeft, Check, Copy, GitMerge, History, Info, RefreshCw, Search } from "lucide-react";
+//
+// Any profile's skills can be shown (the picker Settings passes in), and in Select mode several can be copied or moved to
+// another profile, or archived, one at a time, each read back from Hermes (ADR 0057).
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { AlertTriangle, ArrowLeft, ArrowRightLeft, Check, CheckSquare, Copy, GitMerge, History, Info, RefreshCw, Search, Trash2 } from "lucide-react";
 import type { ConnectionStatus } from "../hermes/model";
 import { merge3 } from "../hermes/textEdit";
 import {
   ESSENTIAL_SKILLS,
   SkillsError,
+  archivable,
   declaredName,
   skillProblems,
   type ReferenceCheck,
@@ -17,6 +21,7 @@ import {
   type SkillRow,
   type SkillsApi,
   type SkillsView,
+  type TransferOutcome,
 } from "../hermes/skills";
 
 /** The skill open in the editor: its row, SKILL.md as last read from Hermes, and the owner's text. */
@@ -24,6 +29,12 @@ type Editing = { row: SkillRow; base: SkillFile; draft: string };
 type Notice = { kind: "ok" | "error" | "conflict" | "unsure"; text: string };
 type LoadProblem = { kind: "unsupported" | "permission" | "error"; text: string };
 type RowNote = { name: string; kind: "ok" | "failed"; text: string };
+/** What Select mode does with the skills picked: copy or move them to another profile, or archive them here. */
+type Bulk = "copy" | "move" | "archive";
+/** A question before a bulk change: which, and the profile a copy or move goes to. */
+type BulkAsk = { op: Bulk; to?: string };
+/** The latest bulk change: what it was, where to, and what became of each skill. */
+type BulkDone = { op: Bulk; to?: string; outcomes: TransferOutcome[] };
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const SOURCE: Record<string, string> = { hub: "Skills Hub", bundled: "Built in", external: "External folder", agent: "Local" };
@@ -35,6 +46,22 @@ const domId = (name: string) => `skill-${encodeURIComponent(name)}`;
 /** What happens after an edit is saved, for the notice and the screen's note. */
 const EDIT_EFFECT =
   "The agent reads SKILL.md each time it loads the skill, so its next load, in any chat, gets this text. The name and description in the skills list the agent sees reach chats started from now on.";
+const skillsText = (n: number) => `${n} ${n === 1 ? "skill" : "skills"}`;
+const BULK_VERB: Record<Bulk, { doing: string; done: string }> = {
+  copy: { doing: "Copying", done: "Copied" },
+  move: { doing: "Moving", done: "Moved" },
+  archive: { doing: "Archiving", done: "Archived" },
+};
+
+/** What became of one skill, in words. */
+function outcomeText(op: Bulk, o: TransferOutcome, from: string, to?: string): string {
+  if (o.kind === "failed") return o.problem;
+  if (o.kind === "copied-only") return `Copied to ${to}, but the original couldn't be archived, so it's in both profiles now. ${o.problem}`;
+  if (op === "copy") return `Copied to ${to}, and read back from Hermes there.`;
+  if (op === "move") return `Moved to ${to}: the copy reads back from Hermes there, and the original is archived in ${from}.`;
+  return "Archived, and gone from the list read back from Hermes.";
+}
+
 const switchEffect = (on: boolean) =>
   on
     ? "New chats list it among their skills. A chat already going doesn't list it, but can still load it by name."
@@ -47,10 +74,16 @@ export function SkillSettings({
   server,
   onDirtyChange,
   discardSignal = 0,
+  picker,
+  profiles,
 }: {
   api: SkillsApi;
   profile: string;
   status: ConnectionStatus;
+  /** Picks the profile shown, in place of its name (Settings' `ProfilePicker`). */
+  picker?: ReactNode;
+  /** Every profile Hermes lists, once read: where a copy or move can go. */
+  profiles?: readonly string[];
   /** The server, as Settings names the connection (`routeLabel`). */
   server: string;
   /** Called with whether an unsaved edit is open, and with false once this goes. */
@@ -75,6 +108,12 @@ export function SkillSettings({
   const [notice, setNotice] = useState<Notice>();
   // A question before the open edit is dropped or replaced: what it says, and what it would do.
   const [leaving, setLeaving] = useState<{ text: string; go: () => void }>();
+  // Select mode: the skills picked, by name, the question before a change to them, the change under way, and its result.
+  const [selecting, setSelecting] = useState(false);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const [bulkAsk, setBulkAsk] = useState<BulkAsk>();
+  const [bulkRunning, setBulkRunning] = useState<{ op: Bulk; at: number; of: number }>();
+  const [bulkDone, setBulkDone] = useState<BulkDone>();
   // Answers for this profile only: a late answer after the screen went away, or after a newer request, is dropped.
   const alive = useRef(true);
   const reads = useRef(0);
@@ -267,12 +306,74 @@ export function SkillSettings({
     });
   };
 
+  /**
+   * Copies, moves or archives `rows` one at a time. A move archives a skill only once its copy reads back from the other
+   * profile, so a skill is never left in neither. The list is read again afterwards.
+   */
+  const runBulk = async (op: Bulk, rows: SkillRow[], to?: string) => {
+    if (bulkRunning || !connected || !rows.length || (op !== "archive" && !to)) return;
+    setBulkAsk(undefined);
+    setBulkDone(undefined);
+    setRowNote(undefined);
+    const outcomes: TransferOutcome[] = [];
+    for (const [i, row] of rows.entries()) {
+      if (!alive.current) return;
+      setBulkRunning({ op, at: i + 1, of: rows.length });
+      try {
+        if (op === "archive") {
+          await api.archive(profile, row.name);
+          outcomes.push({ name: row.name, kind: "done" });
+          continue;
+        }
+        const file = await api.copy(profile, to!, row, names);
+        if (op === "copy") {
+          outcomes.push({ name: row.name, kind: "done", file });
+          continue;
+        }
+        try {
+          await api.archive(profile, row.name);
+          outcomes.push({ name: row.name, kind: "done", file });
+        } catch (e) {
+          outcomes.push({ name: row.name, kind: "copied-only", problem: messageOf(e) });
+        }
+      } catch (e) {
+        outcomes.push({ name: row.name, kind: "failed", problem: messageOf(e) });
+      }
+    }
+    if (!alive.current) return;
+    setBulkRunning(undefined);
+    setBulkDone({ op, to, outcomes });
+    // What went is no longer picked; what failed stays picked, to try again.
+    const gone = new Set(outcomes.filter((o) => o.kind === "done" && op !== "copy").map((o) => o.name));
+    setSelected((cur) => new Set([...cur].filter((n) => !gone.has(n))));
+    void load();
+  };
+
+  const pick = (name: string, on: boolean) =>
+    setSelected((cur) => {
+      const next = new Set(cur);
+      if (on) next.add(name);
+      else next.delete(name);
+      return next;
+    });
+
+  const endSelect = () => {
+    setSelecting(false);
+    setSelected(new Set());
+    setBulkAsk(undefined);
+  };
+
   const filtered = (() => {
     const q = query.trim().toLowerCase();
     const rows = view?.skills ?? [];
     return q ? rows.filter((s) => `${s.name}\n${s.description}\n${s.category ?? ""}`.toLowerCase().includes(q)) : rows;
   })();
   const off = view?.skills.filter((s) => !s.enabled).length ?? 0;
+  // The picked skills still listed, in the list's order, and those Hermes won't archive (so can't move or delete).
+  const picked = view?.skills.filter((s) => selected.has(s.name)) ?? [];
+  const kept = picked.filter((s) => !archivable(s));
+  const targets = (profiles ?? []).filter((p) => p !== profile);
+  const busyBulk = !!bulkRunning;
 
   return (
     <>
@@ -289,7 +390,7 @@ export function SkillSettings({
           </div>
           <div>
             <dt>Profile</dt>
-            <dd className="mono">{profile}</dd>
+            <dd className="mono">{picker ?? profile}</dd>
           </div>
         </dl>
 
@@ -466,10 +567,68 @@ export function SkillSettings({
                     {query.trim() ? `${filtered.length} of ${view.skills.length}` : `${view.skills.length}`} {view.skills.length === 1 ? "skill" : "skills"}
                     {off > 0 && `, ${off} off`}
                   </span>
-                  <button className="btn" disabled={!connected || loading || !!toggling} onClick={() => void load()} title="Read the skills from Hermes again.">
+                  <button className="btn" disabled={!connected || loading || !!toggling || busyBulk} onClick={() => void load()} title="Read the skills from Hermes again.">
                     <RefreshCw size={14} /> {loading ? "Reloading…" : "Reload"}
                   </button>
+                  {selecting ? (
+                    <button className="btn" disabled={busyBulk} onClick={endSelect}>
+                      Done
+                    </button>
+                  ) : (
+                    <button
+                      className="btn"
+                      disabled={!view.skills.length || !!toggling || !!opening}
+                      onClick={() => (setSelecting(true), setBulkDone(undefined), setRowNote(undefined))}
+                      title="Pick skills to copy or move to another profile, or to delete."
+                    >
+                      <CheckSquare size={14} /> Select
+                    </button>
+                  )}
                 </div>
+                {selecting && (
+                  <SelectBar
+                    profile={profile}
+                    shown={filtered}
+                    picked={picked}
+                    kept={kept}
+                    targets={targets}
+                    profilesRead={!!profiles}
+                    connected={connected}
+                    ask={bulkAsk}
+                    running={bulkRunning}
+                    onPickAll={() => setSelected((cur) => new Set([...cur, ...filtered.map((r) => r.name)]))}
+                    onClear={() => setSelected(new Set())}
+                    onAsk={(ask) => (setBulkAsk(ask), ask && setBulkDone(undefined))}
+                    onRun={(op, to) => void runBulk(op, op === "copy" ? picked : picked.filter(archivable), to)}
+                  />
+                )}
+                {bulkDone && (
+                  <div className={`skills-bulk-result ${bulkDone.outcomes.some((o) => o.kind !== "done") ? "warn" : ""}`} role={bulkDone.outcomes.some((o) => o.kind !== "done") ? "alert" : "status"}>
+                    <div className="skills-bulk-head">
+                      {(() => {
+                        const ok = bulkDone.outcomes.filter((o) => o.kind === "done").length;
+                        const where = bulkDone.to ? ` to ${bulkDone.to}` : "";
+                        return `${BULK_VERB[bulkDone.op].done} ${ok} of ${skillsText(bulkDone.outcomes.length)}${where}.`;
+                      })()}
+                      <button className="link-btn" onClick={() => setBulkDone(undefined)}>
+                        Dismiss
+                      </button>
+                    </div>
+                    <ul>
+                      {bulkDone.outcomes.map((o) => (
+                        <li key={o.name} className={o.kind === "done" ? "ok" : "failed"}>
+                          {o.kind === "done" ? <Check size={12} /> : <AlertTriangle size={12} />} <span className="mono">{o.name}</span>: {outcomeText(bulkDone.op, o, profile, bulkDone.to)}
+                        </li>
+                      ))}
+                    </ul>
+                    {bulkDone.op !== "copy" && bulkDone.outcomes.some((o) => o.kind === "done") && (
+                      <p className="muted small">
+                        Hermes keeps archived skills in the {profile} profile's <span className="mono">skills/.archive</span> folder. To bring one back, run{" "}
+                        <span className="mono">hermes -p {profile} curator restore &lt;name&gt;</span> on the server.
+                      </p>
+                    )}
+                  </div>
+                )}
                 {!view.platformsRead && (
                   <p className="muted small skills-note">
                     <AlertTriangle size={12} /> Couldn't read the profile's per-platform skill lists, or which skills they name, so a skill shown on may still be off in this app's chats.
@@ -493,9 +652,19 @@ export function SkillSettings({
                       const essential = ESSENTIAL_SKILLS.has(s.name);
                       const offFor = Object.hasOwn(view.offFor, s.name) ? view.offFor[s.name] : undefined;
                       return (
-                        <li key={s.name} className="skill-row">
+                        <li key={s.name} className={`skill-row ${selecting ? "selecting" : ""} ${selected.has(s.name) ? "picked" : ""}`}>
                           <div className="skill-row-main">
                             <div className="skill-name">
+                              {selecting && (
+                                <input
+                                  type="checkbox"
+                                  className="skill-pick"
+                                  aria-labelledby={`${id}-label`}
+                                  checked={selected.has(s.name)}
+                                  disabled={busyBulk}
+                                  onChange={(e) => pick(s.name, e.target.checked)}
+                                />
+                              )}
                               <span id={`${id}-label`} className="mono">
                                 {s.name}
                               </span>
@@ -515,8 +684,9 @@ export function SkillSettings({
                               )}
                             </div>
                             <div className="muted small skill-category">{s.category ?? ""}</div>
+                            {!selecting && (
                             <div className="skills-row-actions">
-                              <button className="btn" id={`${id}-edit`} disabled={!!opening || !!toggling} aria-describedby={`${id}-label`} onClick={() => void open(s)}>
+                              <button className="btn" id={`${id}-edit`} disabled={!!opening || !!toggling || busyBulk} aria-describedby={`${id}-label`} onClick={() => void open(s)}>
                                 {opening === s.name ? "Opening…" : "Edit"}
                               </button>
                               {essential ? (
@@ -530,13 +700,14 @@ export function SkillSettings({
                                   aria-checked={s.enabled}
                                   aria-labelledby={`${id}-label`}
                                   aria-describedby={`${id}-desc`}
-                                  disabled={!connected || !!toggling || !!opening}
+                                  disabled={!connected || !!toggling || !!opening || busyBulk}
                                   onClick={() => void toggle(s)}
                                 >
                                   <span className="switch-knob" />
                                 </button>
                               )}
                             </div>
+                            )}
                           </div>
                           {offFor && s.enabled && (
                             <div className="muted small toolset-hint">
@@ -577,6 +748,130 @@ export function SkillSettings({
         </p>
       </section>
     </>
+  );
+}
+
+/**
+ * Select mode's bar: how many skills are picked, picking all shown or none, and Copy to, Move to and Delete, each asked
+ * first in place, with what it does. Hermes archives only a profile's own (Local) skills, so the others can be copied but
+ * not moved or deleted, and the bar says which.
+ */
+function SelectBar({
+  profile,
+  shown,
+  picked,
+  kept,
+  targets,
+  profilesRead,
+  connected,
+  ask,
+  running,
+  onPickAll,
+  onClear,
+  onAsk,
+  onRun,
+}: {
+  profile: string;
+  shown: SkillRow[];
+  picked: SkillRow[];
+  /** The picked skills Hermes won't archive. */
+  kept: SkillRow[];
+  /** The other profiles a copy or move can go to. */
+  targets: string[];
+  profilesRead: boolean;
+  connected: boolean;
+  ask?: BulkAsk;
+  running?: { op: Bulk; at: number; of: number };
+  onPickAll: () => void;
+  onClear: () => void;
+  onAsk: (ask: BulkAsk | undefined) => void;
+  onRun: (op: Bulk, to?: string) => void;
+}) {
+  const n = picked.length;
+  const movable = n - kept.length;
+  const allShown = shown.length > 0 && shown.every((r) => picked.some((p) => p.name === r.name));
+  const off = !connected || !!running;
+  const noTarget = !profilesRead ? "Reading the server's profiles…" : !targets.length ? "This server has no other profile to copy to." : undefined;
+  const keptNames = kept.map((r) => r.name).join(", ");
+  return (
+    <div className="skills-select" role="group" aria-label="Selected skills">
+      <div className="skills-select-bar">
+        <span className="skills-select-count" aria-live="polite">
+          {n ? `${skillsText(n)} selected` : "No skills selected"}
+        </span>
+        <button className="link-btn" disabled={!!running || allShown || !shown.length} onClick={onPickAll}>
+          Select all shown
+        </button>
+        <button className="link-btn" disabled={!!running || !n} onClick={onClear}>
+          Clear
+        </button>
+        <span className="skills-select-actions">
+          <button className="btn" disabled={off || !n || !!noTarget} title={noTarget} onClick={() => onAsk({ op: "copy", to: targets[0] })}>
+            <Copy size={14} /> Copy to…
+          </button>
+          <button
+            className="btn"
+            disabled={off || !movable || !!noTarget}
+            title={noTarget ?? (n && !movable ? "Hermes archives only Local skills listed by their own name, so none of these can be moved." : undefined)}
+            onClick={() => onAsk({ op: "move", to: targets[0] })}
+          >
+            <ArrowRightLeft size={14} /> Move to…
+          </button>
+          <button
+            className="btn danger"
+            disabled={off || !movable}
+            title={n && !movable ? "Hermes archives only Local skills listed by their own name, so none of these can be deleted." : undefined}
+            onClick={() => onAsk({ op: "archive" })}
+          >
+            <Trash2 size={14} /> Delete…
+          </button>
+        </span>
+      </div>
+      {kept.length > 0 && !running && (
+        <p className="muted small skills-note">
+          <Info size={12} /> Hermes won't archive {keptNames}, so Move and Delete leave {kept.length === 1 ? "it" : "them"} out; Copy still works.
+          It archives only Local skills, and finds one by the name it declares, so a skill listed by its folder path (two skills declare the same
+          name) can't be archived either.
+        </p>
+      )}
+      {running && (
+        <div className="switch-status" role="status">
+          {BULK_VERB[running.op].doing} {running.at} of {running.of}… Each one is read back from Hermes before the next.
+        </div>
+      )}
+      {ask && !running && (
+        <div className="confirm skills-bulk-ask" role="alertdialog" aria-label={ask.op === "archive" ? "Delete the selected skills?" : `${ask.op === "copy" ? "Copy" : "Move"} the selected skills?`}>
+          {ask.op !== "archive" && (
+            <label className="field">
+              <span className="field-label">To profile</span>
+              <select className="mono" value={ask.to} onChange={(e) => onAsk({ ...ask, to: e.target.value })} autoFocus>
+                {targets.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <span className="confirm-msg">
+            {ask.op === "copy" &&
+              `Copy ${skillsText(n)} from ${profile} to ${ask.to}? Each becomes a new Local skill there, with the same name and category, and is read back from Hermes. Only SKILL.md is copied: files under references/, templates/, scripts/ or assets/ stay in ${profile}. Hermes refuses a name ${ask.to} already has.`}
+            {ask.op === "move" &&
+              `Move ${skillsText(movable)} from ${profile} to ${ask.to}? Each is copied as a new Local skill there and read back, then archived in ${profile}. Only SKILL.md is copied: files under references/, templates/, scripts/ or assets/ stay in ${profile}'s archive. Hermes refuses a name ${ask.to} already has, and then leaves the original where it is.`}
+            {ask.op === "archive" &&
+              `Delete ${skillsText(movable)} from ${profile}? Hermes archives each one: it moves the skill's folder into ${profile}'s skills/.archive, so new chats no longer see it, and Hermes refuses to load it in chats already going. Hermes Chat can't bring one back; running hermes -p ${profile} curator restore <name> on the server does.`}
+          </span>
+          <div className="confirm-actions">
+            <button className="btn" autoFocus={ask.op === "archive"} onClick={() => onAsk(undefined)}>
+              Cancel
+            </button>
+            <button className={`btn ${ask.op === "copy" ? "primary" : "danger"}`} disabled={off || (ask.op !== "archive" && !ask.to)} onClick={() => onRun(ask.op, ask.to)}>
+              {ask.op === "copy" ? `Copy ${skillsText(n)}` : ask.op === "move" ? `Move ${skillsText(movable)}` : `Delete ${skillsText(movable)}`}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
