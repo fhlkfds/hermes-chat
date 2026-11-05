@@ -13,6 +13,7 @@ import { connect, type Hermes } from "../hermes/transport";
 import { Main } from "../App";
 import { appearanceStore } from "./appearance";
 import { SettingsScreen } from "./Settings";
+import { searchText } from "./settingsSearch";
 
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: async () => null }));
@@ -590,6 +591,73 @@ describe("Settings → Memory states", () => {
     const { s } = await shown({ status: "offline", wait: false });
     expect(screen.getByRole("status").textContent).toMatch(/Not connected to Hermes/);
     expect(learning(s)).toEqual([]);
+  });
+});
+
+describe("Settings → Memory as cards of rows (ADR 0059)", () => {
+  const section = (title: string) => screen.getByRole("heading", { name: title }).closest("section")!;
+  const folded = (el: Element) => !!el.closest(".set-more");
+
+  it("draws each part as a card of rows, with each entry a row and its editor under it", async () => {
+    const { user } = await shown();
+    const memory = section("Memory");
+    const card = memory.querySelector(":scope > .set-card")!;
+    expect([...card.querySelectorAll(":scope > .set-row .set-name")].map((n) => n.textContent)).toEqual(["Profile", "Server", "File"]);
+    const list = screen.getByRole("list", { name: "Agent notes entries" });
+    expect(list.parentElement).toBe(card);
+    expect(within(memory).getByRole("button", { name: /^Reload/ }).closest(".set-head")).toBeTruthy();
+    await user.click(entry(SHORT));
+    const editing = screen.getByRole("group", { name: /Edit entry in MEMORY.md/ });
+    expect(editing.classList.contains("set-block")).toBe(true);
+    expect(editing.closest("li")).toBe(entry(SHORT).closest("li"));
+    const effect = section("When edits take effect");
+    expect([...effect.querySelectorAll(".set-row .set-name")].map((n) => n.textContent)).toEqual(["New chats", "Chats already going", "Entries Hermes leaves out"]);
+  });
+
+  it("folds the longer help behind an (i), where Settings search still reads it", async () => {
+    const { user } = await shown();
+    const memory = section("Memory");
+    const about = within(memory).getByRole("button", { name: "About Memory" });
+    expect(about.getAttribute("aria-expanded")).toBe("false");
+    const help = memory.querySelector<HTMLElement>(".set-more")!;
+    expect(help.hidden).toBe(true);
+    expect(help.textContent).toMatch(/To add a memory, ask Hermes in a chat to remember it/);
+    expect(help.textContent).toMatch(/Restore previous version puts back what a save from here replaced/);
+    expect(searchText(memory)).toMatch(/To add a memory, ask Hermes in a chat/);
+    // The (i) isn't part of the heading's name.
+    expect(screen.getByRole("heading", { name: "Memory" })).toBeTruthy();
+    await user.click(about);
+    expect(about.getAttribute("aria-expanded")).toBe("true");
+    expect(help.hidden).toBe(false);
+    const effect = section("When edits take effect");
+    expect(within(effect).getByRole("button", { name: "About New chats" }).getAttribute("aria-expanded")).toBe("false");
+    expect(searchText(effect)).toMatch(/it never restarts Hermes/);
+  });
+
+  it("never folds a conflict, a kept edit, a question before removing, or being offline", async () => {
+    const { s, user } = await shown();
+    await user.click(entry(FALCON));
+    await user.click(button(/^Delete$/));
+    expect(folded(screen.getByRole("alertdialog", { name: "Remove this entry?" }))).toBe(false);
+    await user.click(button("Keep it"));
+    await user.click(entry(SHORT));
+    await user.type(editor(), " Mine");
+    s.memory.default.memory[1] = "Owner wants detailed answers.";
+    await user.click(button("Save"));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toMatch(/Nothing was saved/);
+    expect(folded(alert)).toBe(false);
+    expect(alert.closest(".set-card")).toBeTruthy();
+    const kept = screen.getByRole("group", { name: "Your kept edit" });
+    expect(folded(kept)).toBe(false);
+    expect(kept.textContent).toMatch(/not saved anywhere/);
+  });
+
+  it("shows being offline as a note across the card", async () => {
+    await shown({ status: "offline", wait: false });
+    const note = screen.getByRole("status");
+    expect(note.classList.contains("set-note")).toBe(true);
+    expect(folded(note)).toBe(false);
   });
 });
 

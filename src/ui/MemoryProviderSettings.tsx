@@ -21,6 +21,7 @@ import {
   type ProviderSetup,
   type SetupStep,
 } from "../hermes/memoryProviders";
+import { SettingNote, SettingsSection } from "./SettingRows";
 
 type Notice = { tone: "ok" | "warn" | "error"; text: string };
 type Busy = "use" | "save" | "setup" | "copy";
@@ -515,272 +516,305 @@ export function MemoryProviderSettings({
           )}
     </>
   );
-  return (
-    <section aria-labelledby="external-memory-heading" className="external-memory">
-      <h2 id="external-memory-heading">External memory</h2>
-      <p className="muted">
-        Besides its built-in memory, each profile can use one external memory provider, such as Honcho, that keeps what the agent learns in its own
-        store. Profiles use the same memory only when they use the same provider pointed at the same store; otherwise each keeps its own. For
-        Honcho, the table lists the server, workspace and peers each profile uses, and which profiles match. Matching profiles share memory
-        when they also use the same Honcho account.
-      </p>
+  /** What a write came to; `note`: as a line across the card, rather than in the open provider's settings. */
+  const noticeLine = (n: Notice, note: boolean) => {
+    const kind = n.tone === "ok" ? "ok" : n.tone === "warn" ? "unsure" : "error";
+    const body = (
+      <>
+        {n.tone === "ok" ? <Check size={14} /> : <AlertTriangle size={14} />}
+        <span>{n.text}</span>
+      </>
+    );
+    const role = n.tone === "ok" ? "status" : "alert";
+    return note ? (
+      <SettingNote tone={n.tone === "ok" ? "muted" : n.tone === "warn" ? "warn" : "bad"} role={role} className={`memory-notice ${kind}`}>
+        {body}
+      </SettingNote>
+    ) : (
+      <div className={`memory-notice ${kind}`} role={role}>
+        {body}
+      </div>
+    );
+  };
 
-      {unsupported ? (
-        <div className="memory-state" role="status">
-          <Info size={14} />
-          <div className="small">{unsupported}</div>
+  // The open provider's settings, under its row in the list (ADR 0059), with what a write to them came to.
+  const editorBlock = open && openRow && memory && (
+    <div className="set-block provider-editor" role="group" aria-label={`${open} settings for ${target}`}>
+      {whyNotReady(openRow) && (
+        <div className="memory-state warn" role="status">
+          <AlertTriangle size={14} />
+          <div className="small">{whyNotReady(openRow)}</div>
         </div>
-      ) : !connected && !rows ? (
-        <div className="memory-state" role="status">
-          <div className="small muted">Not connected to Hermes. Providers show once it's connected.</div>
+      )}
+
+      {(openRow.setup.python || openRow.setup.external.length > 0) && (
+        <div className="provider-setup">
+          <div className="provider-group-name">On the server</div>
+          <div className="small">
+            {openRow.setup.installed ? (
+              <span>
+                <Check size={12} /> What it needs is installed.
+              </span>
+            ) : (
+              <span>Not installed yet.</span>
+            )}
+          </div>
+          {openRow.setup.pip.length > 0 && <div className="small muted">Python packages, into its own environment: <span className="mono">{openRow.setup.pip.join(", ")}</span></div>}
+          {openRow.setup.external.map((d) => (
+            <div key={d.name} className="small muted">
+              {d.name}: <span className="mono">{d.install || "(no install command)"}</span>
+            </div>
+          ))}
+          {confirmSetup ? (
+            <div className="confirm" role="alertdialog" aria-label={`Install ${open} on the server?`}>
+              <span className="confirm-msg">
+                Hermes will run these on the server, as its own user, for {target}:
+              </span>
+              <span className="confirm-detail">
+                {[...(openRow.setup.python ? ["hermes pm install (Python packages)"] : []), ...openRow.setup.external.filter((d) => d.install).map((d) => d.install)].join("\n")}
+              </span>
+              <div className="confirm-actions">
+                <button className="btn" autoFocus onClick={() => setConfirmSetup(false)}>
+                  Cancel
+                </button>
+                <button className="btn primary" disabled={!connected || !!busy} onClick={() => void install(open, openRow.setup)}>
+                  Install
+                </button>
+              </div>
+            </div>
+          ) : (
+            !openRow.setup.installed && (
+              <div>
+                <button className="btn" disabled={!connected || !!busy} onClick={() => setConfirmSetup(true)}>
+                  <Download size={14} /> {busy === "setup" ? "Installing…" : "Install on the server"}
+                </button>
+              </div>
+            )
+          )}
+          {steps?.provider === open && (
+            <ul className="provider-steps small" aria-label="Setup output">
+              {steps.steps.map((s, i) => (
+                <li key={i}>
+                  <span className={s.status === "failed" ? "err-text" : ""}>
+                    {s.name} — {STEP[s.status] ?? s.status.replace(/_/g, " ")}
+                  </span>
+                  {s.command && <span className="mono muted"> {s.command}</span>}
+                  {s.output && <pre className="provider-output">{s.output}</pre>}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
+      )}
+
+      {formError ? (
+        <div className="memory-state error" role="alert">
+          <AlertTriangle size={14} />
+          <div className="small">{formError}</div>
+          <button className="btn" disabled={!connected} onClick={() => void loadForm(target, open)}>
+            <RefreshCw size={14} /> Try again
+          </button>
+        </div>
+      ) : !form || form.name !== open ? (
+        <div className="small muted">Reading {open}'s settings…</div>
       ) : (
         <>
-          <div className="provider-overview-head">
-            {overview === "folded" ? <span /> : <h3>Profiles</h3>}
+          {sharers.length > 0 && (
+            <div className="provider-copy">
+              <label className="field">
+                <span className="field-label">Copy settings from another profile on {open}</span>
+                <select value={copyFrom} disabled={!!busy} onChange={(e) => setCopyFrom(e.target.value)}>
+                  <option value="">Choose a profile…</option>
+                  {sharers.map((p) => (
+                    <option key={p} value={p}>
+                      {p}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button className="btn" disabled={!copyFrom || !!busy} onClick={() => void copy()}>
+                <Copy size={14} /> {busy === "copy" ? "Copying…" : "Copy"}
+              </button>
+              <span className="field-hint block">To share a profile's memory, copy its settings: both then point at the same store. API keys aren't copied.</span>
+            </div>
+          )}
+          {form.fields.length === 0 ? (
+            <p className="small muted">This provider has no settings Hermes lets another app change.</p>
+          ) : (
+            <>
+              {grouped(shown.filter((f) => f.main))}
+              {shown.some((f) => !f.main) && (
+                <details className="provider-more">
+                  <summary>More settings ({shown.filter((f) => !f.main).length})</summary>
+                  {grouped(shown.filter((f) => !f.main))}
+                </details>
+              )}
+            </>
+          )}
+          {form.docsUrl && (
+            <a className="link small provider-docs" href={form.docsUrl} target="_blank" rel="noreferrer">
+              {form.label} documentation <ExternalLink size={11} />
+            </a>
+          )}
+          <div className="confirm-actions">
+            {dirty && (
+              <button className="btn" disabled={!!busy} onClick={() => setEdits({})}>
+                Cancel
+              </button>
+            )}
+            {dirty ? (
+              <button className="btn primary" disabled={!connected || !!busy || problems.length > 0} onClick={() => void save()}>
+                {busy === "save" ? "Saving…" : `Save and use for ${target}`}
+              </button>
+            ) : memory.active === open ? (
+              <span className="small muted">{target} uses {open}.</span>
+            ) : (
+              <button className="btn primary" disabled={!connected || !!busy || openRow.status !== "ready"} title={openRow.status !== "ready" ? "Hermes uses a provider only once it's ready." : undefined} onClick={() => void use(open)}>
+                {busy === "use" ? "Switching…" : `Use for ${target}`}
+              </button>
+            )}
+          </div>
+        </>
+      )}
+      {notice && noticeLine(notice, false)}
+    </div>
+  );
+
+  const shows = !unsupported && (connected || !!rows);
+  // The settings show under their row only while the list does.
+  const editorShown = !!editorBlock && !memoryError;
+  return (
+    <>
+      <SettingsSection
+        title="External memory"
+        titleId="external-memory-heading"
+        className="external-memory"
+        intro="Besides its built-in memory, each profile can use one external memory provider, such as Honcho, that keeps what the agent learns in its own store."
+        more={
+          <p>
+            Profiles use the same memory only when they use the same provider pointed at the same store; otherwise each keeps its own. For Honcho, the
+            table lists the server, workspace and peers each profile uses, and which profiles match. Matching profiles share memory when they also use the
+            same Honcho account.
+          </p>
+        }
+        action={
+          shows && (
             <button className="btn" disabled={!connected || !!busy} onClick={reload} title="Read every profile's provider from Hermes again.">
               <RefreshCw size={14} /> Reload
             </button>
-          </div>
-          {overview === "folded" && (
+          )
+        }
+      >
+        {unsupported ? (
+          <SettingNote role="status">
+            <Info size={14} />
+            <span>{unsupported}</span>
+          </SettingNote>
+        ) : !shows ? (
+          <SettingNote role="status">Not connected to Hermes. Providers show once it's connected.</SettingNote>
+        ) : overview === "folded" ? (
+          <div className="set-block">
             <details className="disc provider-fold">
               <summary>
                 <ChevronRight size={13} className="disc-chev" aria-hidden /> All profiles and their stores
               </summary>
               {overviewTable}
             </details>
-          )}
-          {overview === "table" && overviewTable}
-          <div className="provider-manage" role="group" aria-labelledby="provider-manage-heading">
-            <h3 id="provider-manage-heading">
-              Provider for <span className="mono">{target}</span>
-            </h3>
-            {leaving && (
-              <div className="confirm memory-leave" role="alertdialog" aria-label="Discard your changes?">
-                <span className="confirm-msg">Discard your unsaved provider settings? Nothing of them has been sent to Hermes.</span>
-                <div className="confirm-actions">
-                  <button className="btn" autoFocus onClick={() => setLeaving(undefined)}>
-                    Keep editing
-                  </button>
-                  <button className="btn danger" onClick={leaving}>
-                    Discard changes
-                  </button>
-                </div>
-              </div>
-            )}
-            {memoryError ? (
-              <div className="memory-state error" role="alert">
-                <AlertTriangle size={14} />
-                <div className="small">Couldn't read {target}'s providers: {memoryError}</div>
-                <button className="btn" disabled={!connected} onClick={() => void loadProfile(target)}>
-                  <RefreshCw size={14} /> Try again
+          </div>
+        ) : (
+          <div className="set-block provider-overview">
+            <h3>Profiles</h3>
+            {overviewTable}
+          </div>
+        )}
+      </SettingsSection>
+
+      {shows && (
+        <SettingsSection
+          title={`Provider for ${target}`}
+          titleId="provider-manage-heading"
+          more={
+            <>
+              <p>
+                Saving a provider's settings also makes it the profile's provider, as Hermes does. Hermes picks the provider when it starts a chat's agent,
+                so chats started after a change use it; a chat already going keeps the one it started with. The built-in memory above stays on with any
+                provider.
+              </p>
+              <p>
+                The list holds the providers Hermes finds for the profile: those bundled with Hermes and those installed in the profile's plugins. To add
+                another from Hermes's plugin catalog, such as Mem0 or Hindsight, run <code>hermes -p {target} plugins install &lt;name&gt;</code> on the
+                server, then Reload.
+              </p>
+            </>
+          }
+        >
+          {leaving && (
+            <div className="set-block confirm set-confirm" role="alertdialog" aria-label="Discard your changes?">
+              <span className="confirm-msg">Discard your unsaved provider settings? Nothing of them has been sent to Hermes.</span>
+              <div className="confirm-actions">
+                <button className="btn" autoFocus onClick={() => setLeaving(undefined)}>
+                  Keep editing
+                </button>
+                <button className="btn danger" onClick={leaving}>
+                  Discard changes
                 </button>
               </div>
-            ) : !memory ? (
-              <div className="memory-state" role="status">
-                <div className="small muted">Reading {target}'s providers from Hermes…</div>
-              </div>
-            ) : (
-              <>
-                <ul className="provider-list" aria-label={`Memory providers for ${target}`}>
-                  <li>
-                    <div className={`provider-row ${memory.active === "" ? "active" : ""}`}>
-                      <div className="provider-row-main">
-                        <span className="provider-row-name">{BUILT_IN}</span>
-                        {memory.active === "" && <span className="badge provider-status ok">In use</span>}
-                        <div className="muted small">Only the two memory files above. Turns off the external provider; what it stored stays where it is.</div>
-                      </div>
-                      {memory.active !== "" && (
-                        <button className="btn" disabled={!connected || !!busy} onClick={() => leave(() => void use(""))}>
-                          {busy === "use" ? "Switching…" : `Use for ${target}`}
-                        </button>
-                      )}
-                    </div>
-                  </li>
-                  {memory.providers.map((p) => (
-                    <li key={p.name}>
-                      <button className={`provider-row ${memory.active === p.name ? "active" : ""} ${open === p.name ? "on" : ""}`} aria-expanded={open === p.name} disabled={!!busy && open !== p.name} onClick={() => openProvider(p.name)}>
-                        <div className="provider-row-main">
-                          <span className="provider-row-name mono">{p.name}</span>
-                          {memory.active === p.name && <span className="badge provider-status ok">In use</span>}
-                          <StatusBadge status={p.status} />
-                          <div className="muted small">{p.description}</div>
-                        </div>
-                      </button>
-                    </li>
-                  ))}
-                  {memory.active && !memory.providers.some((p) => p.name === memory.active) && (
-                    <li>
-                      <div className="provider-row active">
-                        <div className="provider-row-main">
-                          <span className="provider-row-name mono">{memory.active}</span> <span className="badge provider-status ok">In use</span> <StatusBadge status="missing" />
-                          <div className="muted small">The profile names this provider, but Hermes doesn't find it installed for {target}, so chats run with built-in memory only.</div>
-                        </div>
-                      </div>
-                    </li>
-                  )}
-                </ul>
-
-                {open && openRow && (
-                  <div className="provider-editor" role="group" aria-label={`${open} settings for ${target}`}>
-                    {whyNotReady(openRow) && (
-                      <div className="memory-state warn" role="status">
-                        <AlertTriangle size={14} />
-                        <div className="small">{whyNotReady(openRow)}</div>
-                      </div>
-                    )}
-
-                    {(openRow.setup.python || openRow.setup.external.length > 0) && (
-                      <div className="provider-setup">
-                        <div className="provider-group-name">On the server</div>
-                        <div className="small">
-                          {openRow.setup.installed ? (
-                            <span>
-                              <Check size={12} /> What it needs is installed.
-                            </span>
-                          ) : (
-                            <span>Not installed yet.</span>
-                          )}
-                        </div>
-                        {openRow.setup.pip.length > 0 && <div className="small muted">Python packages, into its own environment: <span className="mono">{openRow.setup.pip.join(", ")}</span></div>}
-                        {openRow.setup.external.map((d) => (
-                          <div key={d.name} className="small muted">
-                            {d.name}: <span className="mono">{d.install || "(no install command)"}</span>
-                          </div>
-                        ))}
-                        {confirmSetup ? (
-                          <div className="confirm" role="alertdialog" aria-label={`Install ${open} on the server?`}>
-                            <span className="confirm-msg">
-                              Hermes will run these on the server, as its own user, for {target}:
-                            </span>
-                            <span className="confirm-detail">
-                              {[...(openRow.setup.python ? ["hermes pm install (Python packages)"] : []), ...openRow.setup.external.filter((d) => d.install).map((d) => d.install)].join("\n")}
-                            </span>
-                            <div className="confirm-actions">
-                              <button className="btn" autoFocus onClick={() => setConfirmSetup(false)}>
-                                Cancel
-                              </button>
-                              <button className="btn primary" disabled={!connected || !!busy} onClick={() => void install(open, openRow.setup)}>
-                                Install
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          !openRow.setup.installed && (
-                            <div>
-                              <button className="btn" disabled={!connected || !!busy} onClick={() => setConfirmSetup(true)}>
-                                <Download size={14} /> {busy === "setup" ? "Installing…" : "Install on the server"}
-                              </button>
-                            </div>
-                          )
-                        )}
-                        {steps?.provider === open && (
-                          <ul className="provider-steps small" aria-label="Setup output">
-                            {steps.steps.map((s, i) => (
-                              <li key={i}>
-                                <span className={s.status === "failed" ? "err-text" : ""}>
-                                  {s.name} — {STEP[s.status] ?? s.status.replace(/_/g, " ")}
-                                </span>
-                                {s.command && <span className="mono muted"> {s.command}</span>}
-                                {s.output && <pre className="provider-output">{s.output}</pre>}
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-                      </div>
-                    )}
-
-                    {formError ? (
-                      <div className="memory-state error" role="alert">
-                        <AlertTriangle size={14} />
-                        <div className="small">{formError}</div>
-                        <button className="btn" disabled={!connected} onClick={() => void loadForm(target, open)}>
-                          <RefreshCw size={14} /> Try again
-                        </button>
-                      </div>
-                    ) : !form || form.name !== open ? (
-                      <div className="small muted">Reading {open}'s settings…</div>
-                    ) : (
-                      <>
-                        {sharers.length > 0 && (
-                          <div className="provider-copy">
-                            <label className="field">
-                              <span className="field-label">Copy settings from another profile on {open}</span>
-                              <select value={copyFrom} disabled={!!busy} onChange={(e) => setCopyFrom(e.target.value)}>
-                                <option value="">Choose a profile…</option>
-                                {sharers.map((p) => (
-                                  <option key={p} value={p}>
-                                    {p}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                            <button className="btn" disabled={!copyFrom || !!busy} onClick={() => void copy()}>
-                              <Copy size={14} /> {busy === "copy" ? "Copying…" : "Copy"}
-                            </button>
-                            <span className="field-hint block">To share a profile's memory, copy its settings: both then point at the same store. API keys aren't copied.</span>
-                          </div>
-                        )}
-                        {form.fields.length === 0 ? (
-                          <p className="small muted">This provider has no settings Hermes lets another app change.</p>
-                        ) : (
-                          <>
-                            {grouped(shown.filter((f) => f.main))}
-                            {shown.some((f) => !f.main) && (
-                              <details className="provider-more">
-                                <summary>More settings ({shown.filter((f) => !f.main).length})</summary>
-                                {grouped(shown.filter((f) => !f.main))}
-                              </details>
-                            )}
-                          </>
-                        )}
-                        {form.docsUrl && (
-                          <a className="link small provider-docs" href={form.docsUrl} target="_blank" rel="noreferrer">
-                            {form.label} documentation <ExternalLink size={11} />
-                          </a>
-                        )}
-                        <div className="confirm-actions">
-                          {dirty && (
-                            <button className="btn" disabled={!!busy} onClick={() => setEdits({})}>
-                              Cancel
-                            </button>
-                          )}
-                          {dirty ? (
-                            <button className="btn primary" disabled={!connected || !!busy || problems.length > 0} onClick={() => void save()}>
-                              {busy === "save" ? "Saving…" : `Save and use for ${target}`}
-                            </button>
-                          ) : memory.active === open ? (
-                            <span className="small muted">{target} uses {open}.</span>
-                          ) : (
-                            <button className="btn primary" disabled={!connected || !!busy || openRow.status !== "ready"} title={openRow.status !== "ready" ? "Hermes uses a provider only once it's ready." : undefined} onClick={() => void use(open)}>
-                              {busy === "use" ? "Switching…" : `Use for ${target}`}
-                            </button>
-                          )}
-                        </div>
-                      </>
-                    )}
+            </div>
+          )}
+          {memoryError ? (
+            <SettingNote tone="bad" role="alert" className="memory-problem">
+              <AlertTriangle size={14} />
+              <div>Couldn't read {target}'s providers: {memoryError}</div>
+              <button className="btn" disabled={!connected} onClick={() => void loadProfile(target)}>
+                <RefreshCw size={14} /> Try again
+              </button>
+            </SettingNote>
+          ) : !memory ? (
+            <SettingNote role="status">Reading {target}'s providers from Hermes…</SettingNote>
+          ) : (
+            <ul className="provider-list memory-provider-list" aria-label={`Memory providers for ${target}`}>
+              <li>
+                <div className={`provider-row ${memory.active === "" ? "active" : ""}`}>
+                  <div className="provider-row-main">
+                    <span className="provider-row-name">{BUILT_IN}</span>
+                    {memory.active === "" && <span className="badge provider-status ok">In use</span>}
+                    <div className="muted small">Only the two memory files above. Turns off the external provider; what it stored stays where it is.</div>
                   </div>
-                )}
-              </>
-            )}
-
-            {notice && (
-              <div className={`memory-notice ${notice.tone === "ok" ? "ok" : notice.tone === "warn" ? "unsure" : "error"}`} role={notice.tone === "ok" ? "status" : "alert"}>
-                {notice.tone === "ok" ? <Check size={14} /> : <AlertTriangle size={14} />}
-                <span>{notice.text}</span>
-              </div>
-            )}
-          </div>
-
-          <p className="muted small settings-note">
-            Saving a provider's settings also makes it the profile's provider, as Hermes does. Hermes picks the provider when it starts a chat's agent, so
-            chats started after a change use it; a chat already going keeps the one it started with. The built-in memory above stays on with any provider.
-            The list holds the providers Hermes finds for the profile: those bundled with Hermes and those installed in the profile's plugins. To add
-            another from Hermes's plugin catalog, such as Mem0 or Hindsight, run <span className="mono">hermes -p {target} plugins install &lt;name&gt;</span> on
-            the server, then Reload.
-          </p>
-        </>
+                  {memory.active !== "" && (
+                    <button className="btn" disabled={!connected || !!busy} onClick={() => leave(() => void use(""))}>
+                      {busy === "use" ? "Switching…" : `Use for ${target}`}
+                    </button>
+                  )}
+                </div>
+              </li>
+              {memory.providers.map((p) => (
+                <li key={p.name}>
+                  <button className={`provider-row ${memory.active === p.name ? "active" : ""} ${open === p.name ? "on" : ""}`} aria-expanded={open === p.name} disabled={!!busy && open !== p.name} onClick={() => openProvider(p.name)}>
+                    <div className="provider-row-main">
+                      <span className="provider-row-name mono">{p.name}</span>
+                      {memory.active === p.name && <span className="badge provider-status ok">In use</span>}
+                      <StatusBadge status={p.status} />
+                      <div className="muted small">{p.description}</div>
+                    </div>
+                  </button>
+                  {open === p.name && editorBlock}
+                </li>
+              ))}
+              {memory.active && !memory.providers.some((p) => p.name === memory.active) && (
+                <li>
+                  <div className="provider-row active">
+                    <div className="provider-row-main">
+                      <span className="provider-row-name mono">{memory.active}</span> <span className="badge provider-status ok">In use</span> <StatusBadge status="missing" />
+                      <div className="muted small">The profile names this provider, but Hermes doesn't find it installed for {target}, so chats run with built-in memory only.</div>
+                    </div>
+                  </div>
+                </li>
+              )}
+            </ul>
+          )}
+          {notice && !editorShown && noticeLine(notice, true)}
+        </SettingsSection>
       )}
-    </section>
+    </>
   );
 }
