@@ -297,7 +297,7 @@ pub async fn transcribe(engine: &Engine, wav: &[u8], limit: Duration) -> Result<
         // faster-whisper's model is already here; it must never fetch one.
         .env("HF_HUB_OFFLINE", "1")
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
@@ -307,8 +307,9 @@ pub async fn transcribe(engine: &Engine, wav: &[u8], limit: Duration) -> Result<
         Ok(r) => r.map_err(|e| format!("{label} failed: {e}"))?,
     };
     if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let last = stderr.lines().rev().map(str::trim).find(|l| !l.is_empty()).unwrap_or("no message");
+        // whisper-ctranslate2 prints some of its errors on stdout, so that is the fallback.
+        let last_line = |b: &[u8]| String::from_utf8_lossy(b).lines().rev().map(str::trim).find(|l| !l.is_empty()).map(str::to_owned);
+        let last = last_line(&out.stderr).or_else(|| last_line(&out.stdout)).unwrap_or_else(|| "no message".into());
         let how = out.status.code().map_or_else(|| "was killed".to_string(), |c| format!("exited with {c}"));
         return Err(format!("{label} {how}: {}", last.chars().take(300).collect::<String>()));
     }
@@ -319,8 +320,15 @@ pub async fn transcribe(engine: &Engine, wav: &[u8], limit: Duration) -> Result<
 /// `None` when Hermes transcribes. Otherwise this computer's engine's answer: a recording is never sent to Hermes
 /// while "This computer" is chosen, even when no engine is ready.
 pub async fn transcribe_if_local(app: &AppHandle, mime: &str, wav: &[u8]) -> Option<Result<Transcript, String>> {
-    let settings = settings_path(app).and_then(|p| read_settings(&p));
-    let settings = match settings {
+    match settings_path(app) {
+        Ok(path) => transcribe_if_local_at(&path, mime, wav).await,
+        Err(e) => Some(Err(e)),
+    }
+}
+
+/// `transcribe_if_local` with the settings file at `path`.
+pub async fn transcribe_if_local_at(path: &Path, mime: &str, wav: &[u8]) -> Option<Result<Transcript, String>> {
+    let settings = match read_settings(path) {
         Ok(s) if !s.on_this_computer => return None,
         Ok(s) => s,
         Err(e) => return Some(Err(e)),
@@ -630,6 +638,43 @@ mod tests {
         gone.model = Some(d.join("missing.bin"));
         assert!(transcribe(&gone, b"RIFF", Duration::from_secs(10)).await.unwrap_err().contains("isn't there any more"));
         assert_eq!(leftovers(), 0);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[tokio::test]
+    async fn a_failure_printed_only_on_stdout_is_still_said() {
+        let d = temp("stdout");
+        let e = fake_engine(&d, "stdout", "echo 'RuntimeError: Unable to open file model.bin'; exit 1");
+        assert_eq!(transcribe(&e, b"RIFF", Duration::from_secs(10)).await.unwrap_err(), "whisper.cpp exited with 1: RuntimeError: Unable to open file model.bin");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The routing `hermes_transcribe` follows: `None` sends to Hermes; `Some` returns before Hermes is reached.
+    #[tokio::test]
+    async fn with_this_computer_chosen_a_recording_never_goes_to_hermes() {
+        let d = temp("route");
+        let path = d.join(SETTINGS_FILE);
+        let route = |p: PathBuf| async move { transcribe_if_local_at(&p, "audio/wav", b"RIFF").await };
+        assert!(route(path.clone()).await.is_none(), "no file: Hermes, as before");
+        write_settings(&path, &Settings { on_this_computer: false, engine: Some(fake_engine(&d, "unused", "exit 0")) }).unwrap();
+        assert!(route(path.clone()).await.is_none(), "Hermes server chosen");
+
+        write_settings(&path, &Settings { on_this_computer: true, engine: None }).unwrap();
+        assert_eq!(route(path.clone()).await.unwrap().unwrap_err(), "No speech-to-text engine is chosen on this computer.");
+        let failing = fake_engine(&d, "failing", "echo boom >&2; exit 2");
+        write_settings(&path, &Settings { on_this_computer: true, engine: Some(failing) }).unwrap();
+        assert_eq!(route(path.clone()).await.unwrap().unwrap_err(), "whisper.cpp exited with 2: boom");
+        let mut missing = fake_engine(&d, "missing", "exit 0");
+        missing.binary = d.join("nowhere/whisper-cli");
+        write_settings(&path, &Settings { on_this_computer: true, engine: Some(missing) }).unwrap();
+        assert!(route(path.clone()).await.unwrap().is_err());
+        let ok = fake_engine(&d, "fine", r#"while [ "$1" != "-of" ]; do shift; done; echo "hello" > "$2.txt""#);
+        write_settings(&path, &Settings { on_this_computer: true, engine: Some(ok) }).unwrap();
+        assert_eq!(route(path.clone()).await.unwrap().unwrap().text, "hello");
+        assert!(transcribe_if_local_at(&path, "audio/webm", b"x").await.unwrap().is_err(), "only WAV, and still not to Hermes");
+
+        std::fs::write(&path, "not json").unwrap();
+        assert!(route(path.clone()).await.unwrap().is_err(), "an unreadable choice isn't taken as Hermes server");
         let _ = std::fs::remove_dir_all(&d);
     }
 

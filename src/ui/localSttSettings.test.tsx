@@ -41,11 +41,21 @@ function fakeApi(found: FoundEngine[], start: LocalSttState = { onThisComputer: 
   return { api, sets };
 }
 
-/** A microphone that opens at once; `stopped` once the track is let go of. */
+/** A microphone that opens at once, a new track each time; `track` is the last, `tracks` all of them. */
 function fakeMic() {
-  const track = { stopped: false, readyState: "live", onended: null, stop: () => void (track.stopped = true) };
+  const tracks: { stopped: boolean }[] = [];
+  const newTrack = () => {
+    const track = { stopped: false, readyState: "live", onended: null, stop: () => void (track.stopped = true) };
+    tracks.push(track);
+    return track;
+  };
   const env: AudioEnv = {
-    mediaDevices: { getUserMedia: async () => ({ getAudioTracks: () => [track], getTracks: () => [track] }) as never },
+    mediaDevices: {
+      getUserMedia: async () => {
+        const track = newTrack();
+        return { getAudioTracks: () => [track], getTracks: () => [track] } as never;
+      },
+    },
     makeContext: () =>
       ({
         sampleRate: 16_000,
@@ -56,7 +66,13 @@ function fakeMic() {
         close: async () => {},
       }) as never,
   };
-  return { env, track };
+  return {
+    env,
+    tracks,
+    get track() {
+      return tracks[tracks.length - 1];
+    },
+  };
 }
 
 describe("Speech to text: where it runs", () => {
@@ -105,7 +121,8 @@ describe("Speech to text: Test", () => {
   it(`records ${TEST_SECONDS} s, transcribes it the way Dictation does, and shows the text and time`, async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const { api } = fakeApi([WHISPER], { onThisComputer: true });
-    const { env, track } = fakeMic();
+    const mic = fakeMic();
+    const env = mic.env;
     const transcribe = vi.fn(async () => ({ text: "hello there", provider: "whisper.cpp" }));
     render(<LocalSttSettings api={api} connected transcribe={transcribe} env={env} />);
     await userEvent.click(await screen.findByRole("button", { name: /Test/ }), { advanceTimers: vi.advanceTimersByTime });
@@ -114,7 +131,7 @@ describe("Speech to text: Test", () => {
     await act(() => vi.advanceTimersByTimeAsync(TEST_SECONDS * 1000));
     await waitFor(() => expect(screen.getByText(/“hello there” .* s, by whisper\.cpp\./)).toBeTruthy());
     expect(transcribe).toHaveBeenCalledWith(expect.any(Uint8Array), "audio/wav");
-    expect(track.stopped).toBe(true);
+    expect(mic.track.stopped).toBe(true);
   });
 
   it("says why the local engine failed", async () => {
@@ -129,13 +146,35 @@ describe("Speech to text: Test", () => {
 
   it("closes the microphone when the tab closes mid-test", async () => {
     const { api } = fakeApi([], { onThisComputer: false });
-    const { env, track } = fakeMic();
+    const mic = fakeMic();
     const transcribe = vi.fn();
-    const view = render(<LocalSttSettings api={api} connected transcribe={transcribe} env={env} />);
+    const view = render(<LocalSttSettings api={api} connected transcribe={transcribe} env={mic.env} />);
     await userEvent.click(await screen.findByRole("button", { name: /Test/ }));
     await screen.findByText(/Recording… say/);
     view.unmount();
-    expect(track.stopped).toBe(true);
+    expect(mic.track.stopped).toBe(true);
     expect(transcribe).not.toHaveBeenCalled();
+  });
+
+  it("closes a Test's microphone when the setting changes, so a second Test can't leave the first one open", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { api } = fakeApi([], { onThisComputer: false });
+    const mic = fakeMic();
+    const transcribe = vi.fn(async () => ({ text: "second" }));
+    const view = render(<LocalSttSettings api={api} connected transcribe={transcribe} env={mic.env} />);
+    const click = (el: HTMLElement) => userEvent.click(el, { advanceTimers: vi.advanceTimersByTime });
+    await click(await screen.findByRole("button", { name: /Test/ }));
+    await screen.findByText(/Recording… say/);
+    await click(screen.getByRole("radio", { name: "This computer" }));
+    expect(mic.tracks[0].stopped).toBe(true);
+    await click(screen.getByRole("button", { name: /Test/ }));
+    await screen.findByText(/Recording… say/);
+    expect(mic.tracks).toHaveLength(2);
+    // The first Test's timer firing changes nothing; only the second is transcribed.
+    await act(() => vi.advanceTimersByTimeAsync(TEST_SECONDS * 1000));
+    await waitFor(() => expect(screen.getByText(/“second”/)).toBeTruthy());
+    expect(transcribe).toHaveBeenCalledTimes(1);
+    view.unmount();
+    expect(mic.tracks.every((t) => t.stopped)).toBe(true);
   });
 });

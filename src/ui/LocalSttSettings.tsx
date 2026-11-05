@@ -49,15 +49,24 @@ export function LocalSttSettings({
     if (local && !found) api.detect().then(setFound, (e) => setError(messageOf(e)));
   }, [local, found, api]);
 
+  /** Drops any Test under way, closing its microphone, so a newer one or a change can't leave it open. */
+  const stopTest = () => {
+    live.current.run++;
+    live.current.capture?.cancel();
+    live.current.capture = undefined;
+    setTest(undefined);
+  };
+
   const act = (p: Promise<LocalSttState | undefined>) => {
     setError(undefined);
-    setTest(undefined);
+    stopTest();
     p.then((s) => s && setState(s), (e) => setError(messageOf(e)));
   };
 
   const runTest = async () => {
     if (!transcribe) return;
-    const run = ++live.current.run;
+    stopTest();
+    const run = live.current.run;
     const fail = (why: string) => run === live.current.run && setTest({ phase: "failed", why });
     try {
       const capture = await startCapture(fail, undefined, env);
@@ -65,7 +74,7 @@ export function LocalSttSettings({
       live.current.capture = capture;
       setTest({ phase: "recording", capture });
       await new Promise((r) => setTimeout(r, TEST_SECONDS * 1000));
-      if (run !== live.current.run) return;
+      if (run !== live.current.run) return capture.cancel();
       live.current.capture = undefined;
       const recording = capture.stop();
       setTest({ phase: "transcribing" });
