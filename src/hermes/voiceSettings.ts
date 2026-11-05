@@ -37,7 +37,8 @@ const model: VoiceField = { key: "model", label: "Model" };
 const voice: VoiceField = { key: "voice", label: "Voice" };
 const voiceId: VoiceField = { key: "voice_id", label: "Voice", hint: "The provider's voice ID." };
 const language: VoiceField = { key: "language", label: "Language", hint: "A code such as en or es. Blank: the provider detects it.", blankOk: true };
-// Speech-to-text falls back to its default model when blank (`if not model_name` in tools/transcription_*.py).
+// Of the speech-to-text models, Local Whisper's (`_normalize_local_model`), xAI's (`normalize_xai_stt_model`) and
+// DeepInfra's (the live catalog's first) fall back when blank; Groq, OpenAI and Mistral send a blank model as it is.
 const sttModel: VoiceField = { ...model, blankOk: true };
 
 /**
@@ -48,9 +49,9 @@ const sttModel: VoiceField = { ...model, blankOk: true };
 export const PROVIDER_FIELDS: Record<VoiceKind, Record<string, VoiceField[]>> = {
   stt: {
     local: [{ ...sttModel, label: "Model size", hint: "Bigger is more accurate and slower. It downloads on first use." }, language],
-    groq: [sttModel, language],
-    openai: [sttModel, language],
-    mistral: [sttModel, language],
+    groq: [model, language],
+    openai: [model, language],
+    mistral: [model, language],
     xai: [{ ...sttModel, hint: "Blank: Hermes's default, grok-voice-transcribe-2.0." }, language],
     elevenlabs: [
       { key: "model_id", label: "Model" },
@@ -97,6 +98,9 @@ export function draftProblems(read: VoiceRead, draft: VoiceDraft): string[] {
   for (const [path, value] of Object.entries(draft.settings)) {
     const f = fieldAt(path);
     if (!value.trim() && !f?.blankOk) out.push(`${settingLabel(read, path)} can't be blank: Hermes would use the blank value.`);
+    // Some providers strip a value before falling back and some don't (Piper's voice, Mistral's voice ID), so spaces
+    // alone are never sent.
+    else if (value && !value.trim()) out.push(`${settingLabel(read, path)} has only spaces: leave it empty or type a value.`);
     else if (value.length > SETTING_MAX) out.push(`${settingLabel(read, path)} is longer than ${SETTING_MAX} characters.`);
   }
   for (const kind of KINDS) {
@@ -283,7 +287,15 @@ export const namedOf = (read: VoiceRead, kind: VoiceKind) => (kind === "stt" ? r
  * unset Hermes marks Local Whisper in use but picks as it transcribes, so nothing counts as picked, and picking Local
  * Whisper writes it.
  */
-export const pickedOf = (read: VoiceRead, kind: VoiceKind) => (namedOf(read, kind) ? activeOf(read, kind) : undefined);
+export const pickedOf = (read: VoiceRead, kind: VoiceKind) => {
+  const named = namedOf(read, kind)?.toLowerCase();
+  const active = activeOf(read, kind);
+  // The row and the name must agree: the list and the config are separate reads, and could disagree.
+  return named && active && identityOf(active) === named ? active : undefined;
+};
+
+/** What picking `p` writes to `<kind>.provider`: its config section, or `nous` for a Nous Subscription row. */
+const identityOf = (p: VoiceProvider) => (p.managed ? "nous" : p.section?.toLowerCase());
 
 /**
  * What Hermes changed between `base` (the read a draft was made from) and `now`, of what the draft changes: a provider
@@ -291,8 +303,14 @@ export const pickedOf = (read: VoiceRead, kind: VoiceKind) => (namedOf(read, kin
  * Hermes doesn't list changes only the name), and each setting.
  */
 export function changedUnder(base: VoiceRead, now: VoiceRead, draft: VoiceDraft): { what: string[]; kinds: VoiceKind[]; paths: string[] } {
+  // A side counts when the draft picks there, or holds a key or a provider's setting there: those were typed for the
+  // provider shown then.
+  const touches = (kind: VoiceKind) =>
+    draft.provider[kind] !== undefined ||
+    Object.values(draft.keys[kind] ?? {}).some((v) => v) ||
+    Object.keys(draft.settings).some((path) => path.startsWith(`${kind}.`) && path !== STT_LANGUAGE);
   const kinds = KINDS.filter(
-    (kind) => draft.provider[kind] !== undefined && (activeOf(now, kind)?.name !== activeOf(base, kind)?.name || namedOf(now, kind) !== namedOf(base, kind)),
+    (kind) => touches(kind) && (activeOf(now, kind)?.name !== activeOf(base, kind)?.name || namedOf(now, kind) !== namedOf(base, kind)),
   );
   const paths = Object.keys(draft.settings).filter((path) => now.values[path] !== base.values[path]);
   const what = [

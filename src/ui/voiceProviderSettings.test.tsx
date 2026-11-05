@@ -276,6 +276,25 @@ describe("Settings → Voice → Speech providers", () => {
     expect(fake.writes.map((w) => w.body)).toEqual([{ stt: { local: { model: "small" } } }]);
   });
 
+  it("drops a key and settings typed for the provider in use when Read again finds another client switched it", async () => {
+    const { user, fake } = await shown({ setUp: (s) => s.voiceProviders.set("default", "tts.provider", "openai") });
+    await screen.findByRole("group", { name: "Text-to-speech" });
+    expect(picker("Text-to-speech").value).toBe("OpenAI TTS");
+    await user.clear(within(side("Text-to-speech")).getByLabelText(/^Voice/));
+    await user.type(within(side("Text-to-speech")).getByLabelText(/^Voice/), "nova");
+    await user.type(within(side("Text-to-speech")).getByLabelText("OpenAI TTS OpenAI API key"), "sk-typed");
+    fake.set("default", "tts.provider", "elevenlabs");
+    await user.click(screen.getByRole("button", { name: /Read again/ }));
+    await waitFor(() => expect(picker("Text-to-speech").value).toBe("ElevenLabs"));
+    expect(screen.getByRole("alert").textContent).toMatch(/Changed on Hermes since you opened this: the text-to-speech provider \(now ElevenLabs\)/);
+    expect((saveButton() as HTMLButtonElement).disabled).toBe(true);
+    // Back on OpenAI TTS, nothing typed for it is left.
+    await user.selectOptions(picker("Text-to-speech"), "OpenAI TTS");
+    expect(within(side("Text-to-speech")).getByLabelText<HTMLInputElement>(/^Voice/).value).toBe("alloy");
+    expect(within(side("Text-to-speech")).getByLabelText<HTMLInputElement>("OpenAI TTS OpenAI API key").value).toBe("");
+    expect(fake.writes).toEqual([]);
+  });
+
   it("says when the server can't list its speech providers, and what to do instead", async () => {
     await shown({ setUp: (s) => (s.voiceProviders.routes = "none") });
     const note = await screen.findByRole("note");

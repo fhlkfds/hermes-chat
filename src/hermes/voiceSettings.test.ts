@@ -197,6 +197,36 @@ describe("Settings → Voice: saving", () => {
     await expect(api.read("default")).rejects.toThrow(/couldn't read the profile's config on Hermes/);
   });
 
+  it("counts a pick as made only when the list and the config agree on it", async () => {
+    const { api } = await setUp();
+    const read = await api.read("default");
+    expect(pickedOf(read, "stt")?.name).toBe("Local Whisper");
+    // The two are separate reads: a config naming another provider than the row marked in use confirms nothing.
+    expect(pickedOf({ ...read, setup: { ...read.setup, sttProvider: "groq" } }, "stt")).toBeUndefined();
+    expect(pickedOf({ ...read, setup: { ...read.setup, ttsProvider: "nous" } }, "tts")).toBeUndefined();
+  });
+
+  it("refuses a blank model where Hermes sends it as it is, and spaces alone anywhere", async () => {
+    const { fake, api } = await setUp();
+    const base = await api.read("default");
+    for (const settings of <Record<string, string>[]>[{ "stt.groq.model": "" }, { "stt.openai.model": "" }, { "stt.mistral.model": "" }, { "tts.piper.voice": "  " }, { "stt.language": " " }]) {
+      const r = await api.save("default", base, draft({ settings }));
+      expect(r, JSON.stringify(settings)).toMatchObject({ kind: "failed", refused: true, done: [] });
+    }
+    expect(fake.writes).toEqual([]);
+    expect((await api.save("default", base, draft({ settings: { "stt.local.model": "", "tts.piper.voice": "" } }))).kind).toBe("saved");
+  });
+
+  it("sees another client switch the provider under a key or setting typed for the old one", async () => {
+    const { fake, api } = await setUp();
+    fake.set("default", "tts.provider", "openai");
+    const base = await api.read("default");
+    fake.set("default", "tts.provider", "elevenlabs");
+    const r = await api.save("default", base, draft({ settings: { "tts.openai.voice": "nova" }, keys: { tts: { VOICE_TOOLS_OPENAI_KEY: "sk-1" } } }));
+    expect(r).toMatchObject({ kind: "conflict", kinds: ["tts"] });
+    expect(fake.writes).toEqual([]);
+  });
+
   it("sees another client switch between two providers Hermes doesn't list", async () => {
     const { fake, api } = await setUp();
     fake.set("default", "stt.provider", "my-command-a");
