@@ -79,7 +79,7 @@ import { guideUrl, type CapabilityId } from "./hermes/capabilities";
 import { useCapabilities } from "./ui/Diagnostics";
 import { Automations } from "./ui/Automations";
 import { tauriLocalTerminal, tauriTerminal } from "./ui/tauriTerminal";
-import { terminalTarget, terminalTargetKey, type TerminalKind } from "./hermes/terminal";
+import { terminalTarget, terminalTargetGuessed, terminalTargetKey, type TerminalKind } from "./hermes/terminal";
 import { REPO_PATH_KEY, REPO_RECENT_KEY, REPO_TARGET_KEY, readRecent, remember, repoTarget } from "./hermes/repo";
 import { RepositoryScreen } from "./ui/Repository";
 import { startInWorktree, worktreeChats, type WorktreeChat, type WorktreeStart } from "./hermes/worktrees";
@@ -2764,6 +2764,7 @@ export function Main({
                       server={{
                         api: tauriTerminal,
                         initialTarget: terminalTarget(connection, localStorage.getItem(terminalTargetKey(connection))),
+                        guessed: terminalTargetGuessed(connection, localStorage.getItem(terminalTargetKey(connection))),
                         onTarget: (t) => localStorage.setItem(terminalTargetKey(connection), t),
                       }}
                       local={{ api: tauriLocalTerminal }}
