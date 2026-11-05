@@ -682,7 +682,7 @@ describe("Ending and leaving", () => {
 describe("Split panes and Settings", () => {
   it("pauses when focus moves to the other pane, and only that pane's conversation", async () => {
     const s = await opened();
-    await s.user.click(screen.getByRole("button", { name: "Split into two panes" }));
+    await s.user.keyboard("{Control>}\\{/Control}");
     await s.user.click(screen.getByRole("button", { name: /^NAS disks/ }));
     await settle(s.hermes);
     const panes = () => [...document.querySelectorAll<HTMLElement>(".pane")];

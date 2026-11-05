@@ -1,6 +1,6 @@
 import { type ReactNode, type RefObject, Suspense, lazy, useCallback, useLayoutEffect, useMemo, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal, flushSync } from "react-dom";
-import { ArrowLeft, ArrowRight, Columns2, FolderCog, GitBranch, PanelBottom, PanelLeft, PanelRight, PanelTop, Rows2, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Columns2, FolderCog, GitBranch, PanelBottom, PanelLeft, PanelRight, PanelTop, X } from "lucide-react";
 import { CONNECT_STOPPED, RenameConflict, connect, readSaved, toSource, type Delivery, type Hermes } from "./hermes/transport";
 import { invoke } from "@tauri-apps/api/core";
 import type { CommandHost } from "./ui/SlashCommands";
@@ -2028,19 +2028,6 @@ export function Main({
   const covering = screenCovering || outputsOpen;
   const previewShown = panelOpen && !screenCovering && (previewFits || !panelHidden);
   const previewCovers = previewShown && !previewFits;
-  /** The rail's Terminal and Server files: open the side panel at that tab, or close it if it is showing it already. */
-  const railPanel = (tab: PanelTab) =>
-    guard(() => {
-      setSettingsOpen(false);
-      setProjectOpen(false);
-      setJobsOpen(false);
-      setAutomationsOpen(false);
-      setUsageOpen(false);
-      setLogsOpen(false);
-      setRepoOpen(false);
-      if (previewShown && panelTab === tab) setPanelOpen(false);
-      else openPanel(tab);
-    });
 
   // `hermes-chat --show`, `--toggle` or a second launch brought the window forward: the cursor goes back in the selected pane's
   // composer, its draft as it was. Settings or another screen over the chat stays as it was left, unsaved edits and all.
@@ -2178,19 +2165,11 @@ export function Main({
             </button>
           }
         />,
-        split ? (
+        // Splitting is Ctrl+\, a tab's menu, or dragging a tab to an edge (ADR 0055); a split pane keeps its Close.
+        split && (
           <button className="icon-btn" title={`Close the ${paneNames(splitDir)[i].toLowerCase()} pane${isActive ? "" : " (Ctrl+\\)"}`} aria-label={`Close the ${paneNames(splitDir)[i].toLowerCase()} pane`} onClick={() => closePane(p.key)}>
             <X size={16} />
           </button>
-        ) : (
-          <>
-            <button className="icon-btn" title="Split right: open this chat in a second pane beside it (Ctrl+\)" aria-label="Split into two panes" onClick={() => splitWith(p.chatId, "row")}>
-              <Columns2 size={16} />
-            </button>
-            <button className="icon-btn" title="Split down: open this chat in a second pane below it" aria-label="Split into two panes, one above the other" onClick={() => splitWith(p.chatId, "column")}>
-              <Rows2 size={16} />
-            </button>
-          </>
         )
       ),
     };
@@ -2208,7 +2187,6 @@ export function Main({
         onToggleList={() => setListOpen((o) => !o)}
         onNew={() => newChat()}
         onSearch={() => openSearch()}
-        onFiles={() => railPanel("files")}
         onOutputs={() =>
           guard(() => {
             setSettingsOpen(false);
@@ -2221,7 +2199,6 @@ export function Main({
           })
         }
         outputsOpen={outputsOpen && !settingsOpen && !projectScreenOpen}
-        filesOpen={previewShown && panelTab === "files"}
         onInbox={() => setInboxOpen((o) => !o)}
         inboxOpen={inboxOpen}
         inboxCount={inboxCount}
@@ -2254,7 +2231,6 @@ export function Main({
           })
         }
         automationsOpen={automationsOpen && !settingsOpen}
-        onTerminal={() => railPanel("terminal")}
         onRepo={() =>
           guard(() => {
             setProjectOpen(false);
@@ -2293,8 +2269,6 @@ export function Main({
           })
         }
         logsOpen={logsOpen && !settingsOpen && !projectScreenOpen && !jobsOpen && !automationsOpen && !usageOpen}
-        terminalOpen={previewShown && panelTab === "terminal"}
-        terminalRunning={terminalRunning}
         updateWaiting={updateWaiting}
         connectionsMenu={
           onSwitchConnection && (
