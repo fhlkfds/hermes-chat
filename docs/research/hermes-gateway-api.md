@@ -644,7 +644,7 @@ Read in `apps/desktop/src/AGENTS.md` ("Bot Mode"), `apps/desktop/src/plugins/her
 - **The `/new` → `/compact` guard.** In a Bot Chat the composer turns `/new` into `/compact` ("Bot chats are one continuous conversation — compacting instead"), when the stored id on screen is `canonical_session.id` or `.resolved_id` (`isCanonicalChatOnScreen`; `new-compact-guard.test.ts`).
 - **Avatars and editing.** `profiles.get_asset {name, asset: "avatar"}` → `{found, mime, size, data}` with `data` a data URL (probed: PNG round trip; `{found: false}` when absent). `profiles.set_asset {name, asset, data | clear}` stores PNG, JPEG or WebP, sniffed. `profiles.configure {name, description?, ui_meta?, ui_meta_expected_revisions?, …}` writes sections independently and answers per-section `applied` with `ui_meta_revisions` (probed: `{ui_meta: true, ui_meta_revisions: {"hermes-bots": 1}, description: true}`). Renaming the folder is `hermes profile rename`, which has no ws method.
 - **Bots talking to each other** isn't a client feature: `tools/bot_mode_dm.py` (`message_agent`) and `tui_gateway/methods_bot_relay.py` (`bot_relay.*`) run inside the agent, and the "Messaging other agents" prompt section is injected only into a session titled "Bot Chat" on a Bot-Mode-managed install, switched by `agent.bot_mode_protocol` (default on). A DM to a local bot runs `hermes -p <name> chat --in ~ -c "Bot Chat" --create-if-missing`, so its own Bot Chat receives it, and the bot's row shows it like any other turn.
-- What the app does: ADR 0062.
+- What the app does: ADR 0066.
 
 ## Artifacts (editing Outputs, ADR 0029)
 

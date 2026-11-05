@@ -1,9 +1,9 @@
-// Contract tests for Bot Mode (ADR 0062), mirroring Hermes's own in apps/desktop/src/plugins/hermes-bots/:
+// Contract tests for Bot Mode (ADR 0066), mirroring Hermes's own in apps/desktop/src/plugins/hermes-bots/:
 // bot-row-opens-canonical-chat, canonical-chat-creation, canonical-chat-adopt-on-conflict, canonical-chat-registry
 // (no stored pointer) and new-compact-guard. The transport's side (hidden from the list and search, the open) is in
 // botsTransport.test.ts.
 import { describe, expect, it } from "vitest";
-import { BOT_CHAT_TITLE, BotChats, BotModeUnsupportedError, botName, isBotChatOnScreen, isBotChatTitle, rosterOf, type BotRpc } from "./bots";
+import { BOT_CHAT_TITLE, BotChats, BotModeUnsupportedError, botActivity, botName, isBotChatOnScreen, isBotChatTitle, newInBotChatNote, rosterOf, type BotRpc } from "./bots";
 
 type Call = { method: string; params: Record<string, unknown> };
 
@@ -201,3 +201,26 @@ describe("telling a Bot Chat apart", () => {
   });
 });
 
+
+describe("a bot's activity", () => {
+  const bot = { botChat: { id: "root", resolvedId: "tip", preview: "", lastActive: 0, messageCount: 0 } };
+  it("follows its Bot Chat only, by registry row or lineage tip", () => {
+    expect(botActivity(bot, [{ chatId: "tip", status: "working" }])).toBe("replying");
+    expect(botActivity(bot, [{ chatId: "root", status: "waiting" }])).toBe("needs-you");
+    // A side-chat working in the same profile isn't the bot's row.
+    expect(botActivity(bot, [{ chatId: "side", status: "working" }])).toBeUndefined();
+    expect(botActivity({ botChat: null }, [{ chatId: "root", status: "working" }])).toBeUndefined();
+  });
+
+  it("prefers what this connection holds for the open Bot Chat, which is fresher than the last check", () => {
+    expect(botActivity(bot, [{ chatId: "root", status: "working" }], { running: false })).toBeUndefined();
+    expect(botActivity(bot, [], { running: true })).toBe("replying");
+    expect(botActivity(bot, [], { running: true, waiting: true })).toBe("needs-you");
+  });
+
+  it("says why /new compacted instead", () => {
+    expect(newInBotChatNote({ kind: "compacted" })).toMatch(/one continuous conversation, so \/new compacts it .* Hermes compacted it\.$/);
+    expect(newInBotChatNote({ kind: "nothing" })).toMatch(/nothing to compact yet/);
+    expect(newInBotChatNote({ kind: "busy", message: "Hermes is already compacting this chat." })).toMatch(/already compacting/);
+  });
+});

@@ -1,4 +1,4 @@
-// Hermes's Bot Mode (ADR 0062, research doc "Bot Mode"). Each bot is a Hermes profile with a persistent identity, and
+// Hermes's Bot Mode (ADR 0066, research doc "Bot Mode"). Each bot is a Hermes profile with a persistent identity, and
 // each has one Bot Chat: the profile's session titled exactly "Bot Chat". That title is the chat's only identity. It is
 // looked up by title on every open (`session.list {title, include_hidden: true}`), never by a session id kept here,
 // and never by which chat is newest. One is created only when the lookup finds none, and the creation looks again
@@ -128,7 +128,7 @@ export function rosterOf(result: unknown): Bot[] {
   });
 }
 
-/** Whether a listed or found chat is a Bot Chat, which the chat list and search leave out (ADR 0062). */
+/** Whether a listed or found chat is a Bot Chat, which the chat list and search leave out (ADR 0066). */
 export const isBotChatTitle = (title: unknown) => typeof title === "string" && title.trim() === BOT_CHAT_TITLE;
 
 /**
@@ -216,4 +216,36 @@ export class BotChats {
     }
     return { registryId: stored, openId: stored, created: true };
   }
+}
+
+/** What a bot is doing in its Bot Chat: replying, or waiting on the owner (an Approval). None when idle. */
+export type BotActivity = "replying" | "needs-you" | undefined;
+
+/**
+ * A bot's activity, from its Bot Chat only, the chat its row opens (Hermes's `bot-row.tsx`: "Status keys off the
+ * canonical Bot Chat"). `live`: the sessions `session.active_list` last reported as working or waiting. `here`: the Bot
+ * Chat as this connection holds it, when open here, which is fresher than the last check.
+ */
+export function botActivity(
+  bot: Pick<Bot, "botChat">,
+  live: readonly { chatId: string; status: "working" | "waiting" }[],
+  here?: { running?: boolean; waiting?: boolean },
+): BotActivity {
+  if (here?.waiting) return "needs-you";
+  const row = bot.botChat;
+  const mine = row ? live.filter((s) => s.chatId === row.id || s.chatId === row.resolvedId) : [];
+  if (mine.some((s) => s.status === "waiting")) return "needs-you";
+  if (here?.running || (here === undefined && mine.some((s) => s.status === "working"))) return "replying";
+  return undefined;
+}
+
+/**
+ * What `/new` typed in a Bot Chat says. A Bot Chat is one continuous conversation, so, as in Hermes's desktop, it is
+ * compacted instead of a new chat being started: the model reads a fresh, shorter context, and the chat stays the same.
+ */
+export function newInBotChatNote(res: { kind: string; message?: string }): string {
+  const lead = "A Bot Chat is one continuous conversation, so /new compacts it instead of starting a new chat.";
+  if (res.kind === "compacted") return `${lead} Hermes compacted it.`;
+  if (res.kind === "nothing") return `${lead} There was nothing to compact yet.`;
+  return `${lead} ${res.message ?? ""}`.trim();
 }

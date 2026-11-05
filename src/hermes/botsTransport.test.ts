@@ -1,4 +1,4 @@
-// Bot Mode through the real transport (transport.ts) against FakeHermes as the deployed f0d94882 (ADR 0062): the
+// Bot Mode through the real transport (transport.ts) against FakeHermes as the deployed f0d94882 (ADR 0066): the
 // roster, opening a bot's Bot Chat by title, creating it once, keeping it out of the chat list and search, and what a
 // Hermes without Bot Mode shows. The resolution rules themselves are in bots.test.ts.
 import { afterEach, describe, expect, it } from "vitest";

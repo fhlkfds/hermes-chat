@@ -1438,7 +1438,7 @@ export class Hermes {
   /** Puts a found chat in the list, if it isn't there yet, so it can be opened (`open`). */
   /**
    * The server's bots, one per profile, with each one's Bot Chat as `profiles.list` reports it, found by title on the
-   * server (bots.ts, ADR 0062). Rejects with `BotModeUnsupportedError`, and Connection diagnostics says so, when this
+   * server (bots.ts, ADR 0066). Rejects with `BotModeUnsupportedError`, and Connection diagnostics says so, when this
    * Hermes has no Bot Mode.
    */
   async bots(): Promise<Bot[]> {
@@ -1495,7 +1495,8 @@ export class Hermes {
     if (this.snapshot.chats.some((c) => c.id === found.chatId)) return;
     const { chatId: id, title, source, settled, archived, updatedAt } = found;
     this.revealed.add(id);
-    this.update({ chats: [...this.snapshot.chats, { id, title, source, settled, archived, updatedAt, items: [] }] });
+    // A Bot Chat reached from the inbox stays out of the list, as one opened from its bot's row does (ADR 0066).
+    this.update({ chats: [...this.snapshot.chats, { id, title, source, settled, archived, updatedAt, items: [], ...(isBotChatTitle(title) && { bot: true }) }] });
   }
 
   /**
@@ -3703,7 +3704,7 @@ export class Hermes {
         ...(sources && { sources }),
       });
       const res = (await this.rest("GET", `api/sessions?${query}`)) as SessionPage;
-      // A Bot Chat is opened from its bot's row only, never from the list (ADR 0062). Hermes lists them hidden, except
+      // A Bot Chat is opened from its bot's row only, never from the list (ADR 0066). Hermes lists them hidden, except
       // in the archived view, and one born visible elsewhere is still named "Bot Chat".
       rows.push(...res.sessions.filter((r) => !isBotChatTitle(r.title)));
       const passedCutoff = res.sessions.some((r) => !r.pinned && lastActive(r) < cutoff);
