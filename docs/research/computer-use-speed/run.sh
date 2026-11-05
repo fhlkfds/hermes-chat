@@ -9,6 +9,6 @@ app=$1 xvnc=$2 label=$3 out=$4
 mkdir -p "$out"
 for scenario in ${SCENARIOS:-page small busy}; do
   load=$(cut -d' ' -f1 /proc/loadavg)
-  python3 "$here/x11bench.py" run "$app" "$xvnc" "$scenario" "$out/$label-$scenario.json"
-  echo "load $load $(python3 "$here/analyze.py" "$out/$label-$scenario.json")"
+  python3 -B "$here/x11bench.py" run "$app" "$xvnc" "$scenario" "$out/$label-$scenario.json"
+  echo "load $load $(python3 -B "$here/analyze.py" "$out/$label-$scenario.json")"
 done

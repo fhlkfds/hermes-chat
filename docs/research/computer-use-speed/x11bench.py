@@ -305,12 +305,15 @@ def poll(app_display, spots, fd):
     stop = {"now": False}
     signal.signal(signal.SIGTERM, lambda *_: stop.update(now=True))
     while not stop["now"]:
-        t = time.monotonic()
         for i, s in enumerate(spots):
+            asked = time.monotonic()
             v = decode(app.pixel(s["x"], s["y"]))
+            # The pixel is as it was at some moment while the read was out: [asked, answered]. The later bound is the
+            # one used, so a slow read can't make a frame look faster than it was.
+            answered = time.monotonic()
             if v is not None and v != last[i]:
                 last[i] = v
-                seen.append([t, i, v])
+                seen.append([answered, i, v, asked])
     os.write(fd, json.dumps(seen).encode())
     os.close(fd)
 
