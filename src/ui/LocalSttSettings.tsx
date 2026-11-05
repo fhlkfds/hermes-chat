@@ -43,7 +43,7 @@ export function LocalSttSettings({
 }: {
   api: LocalSttApi;
   /** The app's own path for a recording, the one Dictation takes, or one side alone: Rust decides where it may go. */
-  transcribe?: (audio: Uint8Array, mime: string, side?: SttSide) => Promise<HeardTranscript>;
+  transcribe?: (audio: Uint8Array, mime: string, side?: SttSide, signal?: AbortSignal) => Promise<HeardTranscript>;
   status: ConnectionStatus;
   /** The profile's voice set-up, to name its speech-to-text provider on Hermes. */
   setup?: () => Promise<VoiceSetup>;
@@ -58,8 +58,14 @@ export function LocalSttSettings({
   const [error, setError] = useState<string>();
   const [test, setTest] = useState<Test>();
   // `run` goes up with every Test and every stop, so anything from an older one is dropped. `starting` aborts a
-  // microphone still opening; `capture` is the open one.
-  const live = useRef({ run: 0, capture: undefined as Capture | undefined, starting: undefined as AbortController | undefined, mounted: true });
+  // microphone still opening; `capture` is the open one; `sending` stops a transcription on its way, in Rust too.
+  const live = useRef({
+    run: 0,
+    capture: undefined as Capture | undefined,
+    starting: undefined as AbortController | undefined,
+    sending: undefined as AbortController | undefined,
+    mounted: true,
+  });
 
   const show = (s: LocalSttState) => {
     setState(s);
@@ -73,6 +79,7 @@ export function LocalSttSettings({
       now.mounted = false;
       now.run++;
       now.starting?.abort();
+      now.sending?.abort();
       now.capture?.cancel();
     };
   }, [api]);
@@ -119,6 +126,7 @@ export function LocalSttSettings({
   const stopTest = () => {
     live.current.run++;
     live.current.starting?.abort();
+    live.current.sending?.abort();
     live.current.capture?.cancel();
     live.current.capture = undefined;
     setTest(undefined);
@@ -179,11 +187,12 @@ export function LocalSttSettings({
             : { side, running: true },
       );
       setTest({ phase: "transcribing", tried: [...tried] });
+      const sending = (live.current.sending = new AbortController());
       for (const [i, t] of tried.entries()) {
         if (!t.running) continue;
         const started = performance.now();
         try {
-          const got = await transcribe(recording.audio, recording.mime, t.side);
+          const got = await transcribe(recording.audio, recording.mime, t.side, sending.signal);
           tried[i] = { side: t.side, text: got.text, ms: performance.now() - started, by: got.provider };
         } catch (e) {
           tried[i] = { side: t.side, error: messageOf(e), ms: performance.now() - started };
@@ -280,7 +289,9 @@ export function LocalSttSettings({
             name="Where it runs"
             hint={
               route.primary === "local"
-                ? "The recording never leaves this computer. Only the text goes to Hermes."
+                ? route.backup
+                  ? "Transcribed here first. Only the text goes to Hermes, unless this computer can't: then the recording does."
+                  : "The recording never leaves this computer. Only the text goes to Hermes."
                 : "Recordings go to Hermes, which transcribes them."
             }
             control={radios("Where speech to text runs", [[false, "Hermes server"], [true, "This computer"]] as const, route.primary === "local", where)}

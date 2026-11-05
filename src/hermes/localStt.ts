@@ -4,7 +4,7 @@
 // a recording can't reach Hermes. The webview only picks among what Rust found, or has Rust open a file dialog.
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { asError } from "./tauriPipe";
-import { DEFAULT_STT_PREFS, untilAborted, type HeardTranscript, type SttPrefs, type SttSide } from "./sttRoute";
+import { DEFAULT_STT_PREFS, SttCancelled, untilAborted, type HeardTranscript, type SttPrefs, type SttSide } from "./sttRoute";
 
 export type LocalSttKind = "whisper-cpp" | "faster-whisper" | "openai-whisper" | "vosk";
 export type LocalEngine = { kind: LocalSttKind; binary: string; model?: string | null };
@@ -83,8 +83,9 @@ export const tauriLocalStt: LocalSttApi = {
     const headers: Record<string, string> = { "x-mime": encodeURIComponent(mime), "x-stt-run": run };
     if (profile) headers["x-profile"] = encodeURIComponent(profile);
     if (side) headers["x-stt-side"] = side;
+    // Dropped before it went: nothing to send, and nothing for Rust to stop.
+    if (signal?.aborted) return Promise.reject(new SttCancelled());
     const cancel = () => void invoke("local_stt_cancel", { run }).catch(() => {});
-    if (signal?.aborted) return untilAborted(Promise.reject(new Error("Cancelled.")), signal, cancel);
     return untilAborted(invoke<HeardTranscript>("hermes_transcribe", audio, { headers }).catch(asError), signal, cancel);
   },
   onChange: (fn) => {

@@ -68,15 +68,29 @@ export function untilAborted<T>(p: Promise<T>, signal: AbortSignal | undefined, 
 
 // The route as Rust last read it back, for what must be known without Hermes: whether the microphone can be used
 // offline, and whether a voice conversation needs Hermes's own speech to text. Set by Main, and by Settings on a change.
+// Each read or read-back is numbered, so an older read that answers late never replaces a newer one.
 let current: Readonly<SttPrefs> = DEFAULT_STT_PREFS;
+let latest = 0;
 const listeners = new Set<() => void>();
+
+function apply(next: Readonly<SttPrefs>) {
+  if (next.primary === current.primary && next.backup === current.backup && next.timeoutSeconds === current.timeoutSeconds) return;
+  current = Object.freeze({ ...next });
+  for (const fn of listeners) fn();
+}
 
 export const sttRoute = {
   get: (): Readonly<SttPrefs> => current,
+  /** The route as just read back from Rust: newer than any read still on its way. */
   set(next: Readonly<SttPrefs>) {
-    if (next.primary === current.primary && next.backup === current.backup && next.timeoutSeconds === current.timeoutSeconds) return;
-    current = Object.freeze({ ...next });
-    for (const fn of listeners) fn();
+    latest++;
+    apply(next);
+  },
+  /** Reads the route; its answer is taken unless something newer came meanwhile. */
+  async refresh(read: () => Promise<Readonly<SttPrefs>>) {
+    const mine = ++latest;
+    const next = await read();
+    if (mine === latest) apply(next);
   },
   subscribe(fn: () => void): () => void {
     listeners.add(fn);

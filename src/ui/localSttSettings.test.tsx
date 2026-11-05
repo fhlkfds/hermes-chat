@@ -119,6 +119,9 @@ describe("Speech to text: where it runs", () => {
 
     await userEvent.click(radio("Backup speech to text", "Hermes server"));
     await waitFor(() => expect(screen.getByRole("status").textContent).toMatch(/isn't there any more\. Until then, Hermes, the backup, transcribes each recording/));
+    // With Hermes as backup, the recording can leave this computer, and the hint says so.
+    expect(screen.queryByText(/The recording never leaves this computer/)).toBeNull();
+    expect(screen.getByText(/unless this computer can't: then the recording does/)).toBeTruthy();
   });
 
   it("sets the backup and its time, says where the recording goes, and names the provider on Hermes", async () => {
@@ -323,6 +326,24 @@ describe("Speech to text: Test", () => {
     await act(() => vi.advanceTimersByTimeAsync(TEST_SECONDS * 1000));
     expect(transcribe).not.toHaveBeenCalled();
     expect(screen.getByRole("alert").textContent).toMatch(/disconnected/);
+  });
+
+  it("stops the transcription on its way, in Rust too, when cancelled", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const api = fake();
+    const signals: AbortSignal[] = [];
+    const transcribe = vi.fn((_a: Uint8Array, _m: string, _side?: SttSide, signal?: AbortSignal) => {
+      signals.push(signal!);
+      return new Promise<HeardTranscript>(() => {});
+    });
+    render(<LocalSttSettings api={api} status="connected" transcribe={transcribe} env={fakeMic().env} />);
+    await userEvent.click(await screen.findByRole("button", { name: /^Test$/ }), { advanceTimers: vi.advanceTimersByTime });
+    await act(() => vi.advanceTimersByTimeAsync(TEST_SECONDS * 1000));
+    await screen.findAllByText(/Transcribing…/);
+    expect(signals[0].aborted).toBe(false);
+    await userEvent.click(screen.getByRole("button", { name: /Cancel/ }), { advanceTimers: vi.advanceTimersByTime });
+    expect(signals[0].aborted).toBe(true);
+    expect(screen.queryAllByText(/Transcribing…/)).toHaveLength(0);
   });
 
   it("can be cancelled while it records, closing the microphone", async () => {

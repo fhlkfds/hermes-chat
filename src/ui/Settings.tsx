@@ -240,7 +240,7 @@ export function SettingsScreen({
   /** Where speech to text runs, and this computer's engine and models (ADR 0065, 0067), in the Voice tab. */
   localStt?: LocalSttApi;
   /** Transcribes a recording the way Dictation does, or on one side alone, for the Voice tab's Test. */
-  transcribe?: (audio: Uint8Array, mime: string, side?: SttSide) => Promise<HeardTranscript>;
+  transcribe?: (audio: Uint8Array, mime: string, side?: SttSide, signal?: AbortSignal) => Promise<HeardTranscript>;
   /** Set, each time anew, to show the Voice tab: from a voice conversation's "Change voice settings". */
   showVoice?: object;
   /** Settings → Persona; the tab is left out without it. */

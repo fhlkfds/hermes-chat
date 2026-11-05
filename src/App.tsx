@@ -900,7 +900,6 @@ export function Main({
       // goes, and its answer says where it ran. The route read here also tells the composer whether Hermes is needed.
       setup: () =>
         Promise.all([hermes.voiceSetup(), localStt.state().catch(() => undefined)]).then(([setup, local]) => {
-          if (local) sttRoute.set(prefsOf(local));
           return local?.onThisComputer
             ? { ...setup, sttLocal: { label: local.label ?? undefined, problem: local.problem ?? undefined, backup: !!local.backup } }
             : setup;
@@ -918,7 +917,7 @@ export function Main({
   );
   // The speech-to-text route as Rust reads it, also while Hermes is offline: Dictation can run on this computer then.
   useEffect(() => {
-    const read = () => void localStt.state().then((s) => sttRoute.set(prefsOf(s)), () => sttRoute.set(DEFAULT_STT_PREFS));
+    const read = () => void sttRoute.refresh(() => localStt.state().then(prefsOf, () => DEFAULT_STT_PREFS));
     read();
     return localStt.onChange(read);
   }, [localStt]);
@@ -2745,7 +2744,7 @@ export function Main({
             onVoiceChange={voice.onChange}
             showVoice={showVoice}
             localStt={localStt}
-            transcribe={(audio, mime, side) => localStt.transcribe({ audio, mime, profile: hermes.profile, side })}
+            transcribe={(audio, mime, side, signal) => localStt.transcribe({ audio, mime, profile: hermes.profile, side, signal })}
             showTextGeneration={showTextGeneration}
             showMemory={showMemory}
             capabilities={hermes.capabilities}

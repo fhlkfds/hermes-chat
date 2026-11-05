@@ -592,6 +592,23 @@ pub async fn transcribe_routed<'a>(
 /// minute, so a cancel sent just after the recording isn't lost to the order the two commands arrive in).
 static RUNS: Mutex<Vec<(String, watch::Sender<bool>, Instant, bool)>> = Mutex::new(Vec::new());
 const EARLY_CANCEL_KEPT: Duration = Duration::from_secs(60);
+/// The most cancels kept waiting for their transcription; the oldest go first.
+const EARLY_CANCELS_MAX: usize = 64;
+
+/// Drops cancels that waited too long for their transcription (or came after it ended), and the oldest past the most.
+fn prune(runs: &mut Vec<(String, watch::Sender<bool>, Instant, bool)>) {
+    runs.retain(|(_, _, at, running)| *running || at.elapsed() < EARLY_CANCEL_KEPT);
+    let waiting = runs.iter().filter(|(.., running)| !running).count();
+    let mut over = waiting.saturating_sub(EARLY_CANCELS_MAX);
+    // Oldest first: they are pushed in order.
+    runs.retain(|(.., running)| {
+        if *running || over == 0 {
+            return true;
+        }
+        over -= 1;
+        false
+    });
+}
 
 /// A transcription's place in `RUNS`, taken out when it ends.
 struct Ticket {
@@ -602,7 +619,7 @@ struct Ticket {
 impl Ticket {
     fn new(id: String) -> Ticket {
         let mut runs = RUNS.lock().unwrap_or_else(|e| e.into_inner());
-        runs.retain(|(_, _, at, running)| *running || at.elapsed() < EARLY_CANCEL_KEPT);
+        prune(&mut runs);
         let cancel = match runs.iter_mut().find(|(i, ..)| *i == id) {
             Some((_, tx, _, running)) => {
                 *running = true;
@@ -635,6 +652,7 @@ pub fn local_stt_cancel(run: String) {
         None => {
             let (tx, _) = watch::channel(true);
             runs.push((run, tx, Instant::now(), false));
+            prune(&mut runs);
         }
     }
 }
@@ -721,6 +739,10 @@ pub async fn download_model(
         file.flush().await.map_err(|e| e.to_string())?;
         file.sync_all().await.map_err(|e| e.to_string())?;
         drop(file);
+        // A cancel that came with the last chunk, or while the file was written out, still wins.
+        if cancel.load(Ordering::Relaxed) {
+            return Err(CANCELLED.into());
+        }
         if done != info.bytes {
             return Err(format!("The download ended at {done} of {} bytes.", info.bytes));
         }
@@ -748,9 +770,13 @@ async fn interruptible<T>(cancel: &AtomicBool, step: impl Future<Output = T>) ->
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     };
+    if cancel.load(Ordering::Relaxed) {
+        return Err(CANCELLED.into());
+    }
     tokio::select! {
-        out = step => Ok(out),
+        biased;
         () = cancelled => Err(CANCELLED.into()),
+        out = step => Ok(out),
         () = tokio::time::sleep(DOWNLOAD_STALL) => Err(format!("The download stalled: nothing came for {} s.", DOWNLOAD_STALL.as_secs())),
     }
 }
@@ -1488,6 +1514,42 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(5));
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "the part file was left behind");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_cancel_with_the_last_chunk_still_drops_the_download() {
+        let body = b"pretend ggml model".to_vec();
+        let digest: &'static str = Box::leak(hex(&Sha256::digest(&body)).into_boxed_str());
+        let info = ModelInfo { name: "base", bytes: body.len() as u64, sha256: digest };
+        let url = serve(body.clone()).await;
+        let dir = temp("last-chunk");
+        let cancel = AtomicBool::new(false);
+        let err = download_model(&reqwest::Client::new(), &url, &dir, &info, &cancel, |done| {
+            if done == info.bytes {
+                cancel.store(true, Ordering::Relaxed);
+            }
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(err, CANCELLED);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "nothing was put in place");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cancels_that_never_meet_their_transcription_are_dropped() {
+        let (tx, _) = watch::channel(true);
+        let old = Instant::now().checked_sub(EARLY_CANCEL_KEPT + Duration::from_secs(1)).unwrap();
+        let mut runs = vec![("stale".to_string(), tx.clone(), old, false), ("running".to_string(), tx.clone(), old, true)];
+        for i in 0..EARLY_CANCELS_MAX + 10 {
+            runs.push((format!("c{i}"), tx.clone(), Instant::now(), false));
+        }
+        prune(&mut runs);
+        assert!(runs.iter().all(|(i, ..)| i != "stale"), "a cancel past its minute is dropped");
+        assert!(runs.iter().any(|(i, ..)| i == "running"), "a running transcription is kept");
+        assert_eq!(runs.iter().filter(|(.., r)| !r).count(), EARLY_CANCELS_MAX);
+        assert!(runs.iter().all(|(i, ..)| !matches!(i.as_str(), "c0" | "c9")), "the oldest go first");
+        assert!(runs.iter().any(|(i, ..)| i == "c10"));
     }
 
     #[test]

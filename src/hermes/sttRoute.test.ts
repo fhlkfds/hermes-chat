@@ -59,4 +59,16 @@ describe("the route Rust read back", () => {
     sttRoute.set(DEFAULT_STT_PREFS);
     expect(heard).toHaveBeenCalledTimes(2);
   });
+  it("keeps a newer read-back when an older read answers late", async () => {
+    let answer!: (p: ReturnType<typeof prefsOf>) => void;
+    const slow = sttRoute.refresh(() => new Promise((r) => (answer = r)));
+    sttRoute.set(prefsOf({ onThisComputer: true }));
+    answer(prefsOf({ onThisComputer: false }));
+    await slow;
+    expect(sttRoute.get().primary).toBe("local");
+    // A read started after the change is taken.
+    await sttRoute.refresh(async () => prefsOf({ onThisComputer: false, backup: true }));
+    expect(sttRoute.get()).toEqual({ primary: "server", backup: true, timeoutSeconds: 30 });
+    sttRoute.set(DEFAULT_STT_PREFS);
+  });
 });
