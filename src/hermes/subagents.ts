@@ -22,7 +22,6 @@ export const isFailure = (s: SubagentState) => s === "failed" || s === "error" |
 /** One thing a subagent did. `seq`: its tool call's number, which Hermes counts per subagent. */
 export type SubagentActivity =
   | { kind: "tool"; at: number; seq?: number; tool: string; preview?: string }
-  | { kind: "thinking"; at: number; text: string }
   | { kind: "ended"; at: number; text: string };
 
 export type Subagent = {
@@ -143,11 +142,10 @@ function eventReport(type: string, payload: unknown, at: number): Report | undef
         activity: { kind: "tool", at, tool, ...(seq !== undefined && { seq }), ...(preview && { preview }) },
       };
     }
-    // Its reasoning, which Hermes leaves out unless the chat shows reasoning.
-    case "subagent.thinking": {
-      const text = str(p.text);
-      return { ...base, state: "running", ...(text && { activity: { kind: "thinking", at, text } }) };
-    }
+    // Hermes's spinner lines and the child's reasoning, which can't be told apart, so only that it runs. Its live
+    // transcript (`subagent.tail`) has the reasoning.
+    case "subagent.thinking":
+      return { ...base, state: "running" };
     case "subagent.complete": {
       // A completion without a status Hermes defines says it ended, not how.
       const reported = stateOf(p.status, "ended");

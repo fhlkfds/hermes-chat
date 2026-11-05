@@ -268,8 +268,6 @@ function Activity({ s }: { s: Subagent }) {
                   <span className="mono">{a.tool}</span>
                   {a.preview && <span className="subagent-preview"> {a.preview}</span>}
                 </span>
-              ) : a.kind === "thinking" ? (
-                <span className="subagent-thinking">{a.text}</span>
               ) : (
                 <span>{a.text}</span>
               )}
@@ -419,7 +417,11 @@ function Controls({ s, under, api }: { s: Subagent; under: number; api: Subagent
         <div className="subagent-confirm" role="group" aria-label="Stop this subagent?">
           <p>
             Stop {target}?{" "}
-            {under ? `The ${under === 1 ? "subagent" : `${under} subagents`} it started that ${under === 1 ? "is" : "are"} still running stop with it.` : "It has no running subagents of its own."}{" "}
+            {under === 1
+              ? "The subagent it started that is still running stops with it."
+              : under
+                ? `The ${under} subagents it started that are still running stop with it.`
+                : "It has no running subagents of its own."}{" "}
             The chat's reply and the other subagents keep going.
           </p>
           <div className="subagent-actions">

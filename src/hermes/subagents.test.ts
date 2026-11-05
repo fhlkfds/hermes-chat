@@ -149,6 +149,12 @@ describe("The subagent tree from Hermes's events", () => {
     expect(t!.subagents[0].state).toBe("ended");
   });
 
+  it("counts a thinking event as running, without logging its text, which mixes Hermes's spinner with reasoning", () => {
+    let t = onSubagentEvent(undefined, "subagent.spawn_requested", who("a", "A"), 1);
+    t = onSubagentEvent(t, "subagent.thinking", who("a", "A", { text: "(>∀<☆)☆ computing..." }), 2);
+    expect(t!.subagents[0]).toMatchObject({ state: "running", activity: [] });
+  });
+
   it("names every subagent under one, at any depth", () => {
     let t: SubagentTree | undefined;
     t = onSubagentEvent(t, "subagent.start", who("a", "A"), 1);

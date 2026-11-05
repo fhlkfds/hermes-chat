@@ -637,7 +637,6 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .subagent-activity li { display: flex; gap: 8px; min-width: 0; overflow-wrap: anywhere; }
 .subagent-at { flex: none; color: var(--faint); font-variant-numeric: tabular-nums; }
 .subagent-preview { color: var(--muted); }
-.subagent-thinking { color: var(--muted); font-style: italic; }
 .subagent-output-head { display: flex; align-items: center; gap: 6px; }
 .subagent-output-head .icon-btn { width: 24px; height: 24px; }
 .subagent-tail {

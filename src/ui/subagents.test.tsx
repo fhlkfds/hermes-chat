@@ -84,7 +84,7 @@ describe("The Subagents panel", () => {
     const trigger = within(panel()).getByRole("button", { name: "Stop it…" });
     await user.click(trigger);
     const ask = within(panel()).getByRole("group", { name: "Stop this subagent?" });
-    expect(ask.textContent).toMatch(/Stop “Read the auth code” \(sa-auth\)\? The subagent it started that is still running stop/);
+    expect(ask.textContent).toMatch(/Stop “Read the auth code” \(sa-auth\)\? The subagent it started that is still running stops with it/);
     expect(ask.textContent).toMatch(/The chat's reply and the other subagents keep going/);
     // Cancel puts focus back where the question came from, and nothing is sent.
     expect(document.activeElement).toBe(within(ask).getByRole("button", { name: "Stop it" }));
