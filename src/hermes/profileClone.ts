@@ -106,11 +106,11 @@ export function nameProblem(name: string, profiles: readonly ProfileRow[]): stri
 
 const modelOf = (p: ProfileRow) => (p.model && p.provider ? { provider: p.provider, model: p.model } : undefined);
 
-/** Which parts `plan` carries over that the source has. The full copy carries all it has. */
+/** Which parts `plan` carries over that the source has. The full copy carries all it has. A missing SOUL.md isn't sent as an empty one. */
 function carries(plan: Pick<Plan, "kind"> & { parts?: ReadonlySet<Part> }, source: Source): Record<Part, boolean> {
   const pick = (p: Part) => plan.kind === "full" || !!plan.parts?.has(p);
   return {
-    persona: pick("persona"),
+    persona: source.soul.exists && pick("persona"),
     model: !!modelOf(source.profile) && pick("model"),
     description: !!source.profile.description && pick("description"),
     skills: (plan.kind === "full" || source.skills.length > 0) && pick("skills"),
@@ -126,7 +126,7 @@ export function preview(plan: Pick<Plan, "kind"> & { parts?: ReadonlySet<Part> }
   return {
     persona: {
       copied: go.persona,
-      available: true,
+      available: source.soul.exists,
       note: source.soul.exists ? `${source.soul.content.length.toLocaleString("en-US")} characters, as Hermes has it now` : "The source has none, so Hermes's default goes in",
     },
     model: { copied: go.model, available: !!model, note: model ? `${model.model} (${model.provider})${full ? "" : ". Hermes checks it against its model list"}` : "The source names no model of its own" },
@@ -330,11 +330,11 @@ export class ProfileCloneApi {
       problem = `Couldn't read ${plan.name} back: ${profileProblem(e, "list profiles").problem}`;
     }
 
-    if (!go.persona) put("persona", "left", "Not picked: Hermes's default SOUL.md went in");
+    if (!go.persona) put("persona", "left", source.soul.exists ? "Not picked: Hermes's default SOUL.md went in" : "The source has none, so Hermes's default went in");
     else
       try {
         const soul = await this.persona.read(plan.name);
-        if (sameSoul(soul, full ? source.soul : { exists: true, content: source.soul.content })) put("persona", "copied", "SOUL.md reads back as the source's");
+        if (sameSoul(soul, source.soul)) put("persona", "copied", "SOUL.md reads back as the source's");
         else put("persona", "failed", "SOUL.md reads back differently from the source's");
       } catch (e) {
         put("persona", "unchecked", `Couldn't read SOUL.md back: ${said(e)}`);

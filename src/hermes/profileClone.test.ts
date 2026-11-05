@@ -135,6 +135,24 @@ describe("cloning a profile", () => {
     expect(stateOf(out, "skills").note).toMatch(/^Hermes copied every skill folder. Its skills couldn't be compared with the source's: /);
   });
 
+  it("sends no SOUL.md when the source has none, so Hermes's default goes in, but copies one that is there and empty", async () => {
+    const { server, api } = await signedIn();
+    delete server.souls.work;
+    const none = await api.source("work", await api.profiles());
+    expect(preview({ kind: "fresh", parts: new Set<Part>(["persona"]) }, none).persona).toMatchObject({ copied: false, available: false });
+    const out = made(await api.clone(fresh(["persona"]), none, () => {}));
+    expect(creates(server)).toEqual([{ name: "work-2" }]);
+    expect(server.souls["work-2"]).toBe("You are Hermes, a helpful assistant.\n");
+    expect(stateOf(out, "persona")).toMatchObject({ state: "left", note: "The source has none, so Hermes's default went in" });
+
+    server.souls.work = "";
+    const empty = await api.source("work", await api.profiles());
+    const again = made(await api.clone(fresh(["persona"], "work-3"), empty, () => {}));
+    expect(creates(server)[1]).toEqual({ name: "work-3", soul: "" });
+    expect(server.souls["work-3"]).toBe("");
+    expect(stateOf(again, "persona").state).toBe("copied");
+  });
+
   it("refuses a taken name before writing anything, read again from Hermes, and never replaces a profile", async () => {
     const { server, api } = await signedIn();
     const profiles = await api.profiles();
