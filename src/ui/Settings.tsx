@@ -9,7 +9,7 @@
 // Profiles are switched in the list's header, not here (ADR 0001). The search box (Ctrl+F) shows the sections of every
 // tab whose text holds what was typed (settingsSearch.ts).
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowLeft, AudioLines, Brain, Camera, Cpu, Database, Download, HardDrive, KeyRound, Lock, LogOut, NotebookPen, Palette, PlugZap, Power, Puzzle, Search, Settings2, ShieldCheck, Sparkles, Stethoscope, Trash2, User, Wrench, X } from "lucide-react";
+import { ArrowLeft, AudioLines, Brain, Camera, Cpu, Database, Download, HardDrive, KeyRound, Lock, LogOut, MessagesSquare, NotebookPen, Palette, PlugZap, Power, Puzzle, Search, Settings2, ShieldCheck, Sparkles, Stethoscope, Trash2, User, Wrench, X } from "lucide-react";
 import type { MemorySource } from "../hermes/memory";
 import { SubNav, type SubNavItem } from "./SubNav";
 import type { Chat, ConnectionStatus } from "../hermes/model";
@@ -32,6 +32,7 @@ import { PersonaPage, type PersonaDirty, type PersonaWhere } from "./PersonaSett
 import type { PersonaApi } from "../hermes/persona";
 import type { PersonaStore } from "../hermes/personaStore";
 import { StartupSettings } from "./StartupSettings";
+import { FollowUpSettings } from "./FollowUpSettings";
 import { VoiceSettings, useVoiceChanges } from "./Voice";
 import type { VoiceSetup } from "../hermes/pipe";
 import type { VoiceSettingsApi } from "../hermes/voiceSettings";
@@ -49,12 +50,13 @@ import { NAMED, applySearch, clearMarks, queryWords, textMatches } from "./setti
 
 type Tab = "general" | "appearance" | "model" | "voice" | "toolsets" | "persona" | "memory" | "skills" | "diagnostics";
 /**
- * General's four groups, shown one at a time beside a sub-nav (ADR 0051); a search shows every group's sections at once.
+ * General's five groups, shown one at a time beside a sub-nav (ADR 0051); a search shows every group's sections at once.
  * Voice moved to its own tab with the speech providers (ADR 0055), so the third group holds screenshots.
  */
-type GenGroup = "connection" | "launch" | "screenshots" | "storage";
+type GenGroup = "connection" | "chats" | "launch" | "screenshots" | "storage";
 const GEN_GROUPS: SubNavItem[] = [
   { id: "connection", label: "Connection", icon: <PlugZap size={14} /> },
+  { id: "chats", label: "Chats", icon: <MessagesSquare size={14} /> },
   { id: "launch", label: "Launch, tray & updates", icon: <Power size={14} /> },
   { id: "screenshots", label: "Screenshots", icon: <Camera size={14} /> },
   { id: "storage", label: "Storage & data", icon: <HardDrive size={14} /> },
@@ -462,6 +464,7 @@ export function SettingsScreen({
       </section>
       </>
     ),
+    chats: <FollowUpSettings />,
     launch: (
       <>
       <StartupSettings />
@@ -542,6 +545,7 @@ export function SettingsScreen({
   const general = searching ? (
     <>
       {generalGroups.connection}
+      {generalGroups.chats}
       {generalGroups.launch}
       {generalGroups.screenshots}
       {generalGroups.storage}

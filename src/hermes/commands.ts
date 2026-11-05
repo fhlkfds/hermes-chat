@@ -27,6 +27,9 @@ export const COMMANDS: readonly CommandDef[] = [
   { name: "context", description: "Show what fills this chat's context window, as Hermes counts it", scope: "server" },
 ];
 
+/** `/steer`, which the composer also uses for a message sent into a running reply (ADR 0057). */
+export const STEER: CommandDef = COMMANDS.find((c) => c.name === "steer")!;
+
 /**
  * The command typed: a "/" as the very first character, then a name, then whitespace or the end. The argument is the
  * rest with its outer whitespace trimmed and its inside, new lines included, kept as typed. Undefined for any other

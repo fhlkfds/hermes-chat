@@ -486,7 +486,7 @@ export class VoiceConversation {
       this.set({ note: "Couldn't tell which reply was to what you said, so it isn't spoken. It's in the chat above." });
       return this.enterListening();
     }
-    let to = items.findIndex((i, n) => n > from && i.kind === "user");
+    let to = items.findIndex((i, n) => n > from && i.kind === "user" && !i.steer);
     if (to < 0) to = items.length;
     const after = items.slice(from + 1, to);
     // Another message from the owner has gone since: this turn's reply is over, whether or not the chat still runs.
