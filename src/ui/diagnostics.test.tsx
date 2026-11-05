@@ -9,6 +9,8 @@ import { CapabilityStore, guideUrl, type CapabilityIO } from "../hermes/capabili
 import { connect, type Hermes } from "../hermes/transport";
 import { Main } from "../App";
 import { CapabilityGate, DiagnosticsSettings } from "./Diagnostics";
+import { SettingsSearching } from "./SettingRows";
+import { queryWords, searchText, textMatches } from "./settingsSearch";
 
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: async () => null }));
@@ -196,6 +198,71 @@ describe("Connection diagnostics", () => {
     );
     expect(screen.getByRole("status").textContent).toMatch(/Not connected: as last checked/);
     expect(within(row$("Projects")).getByText("Supported")).toBeTruthy();
+  });
+});
+
+describe("Diagnostics' layout (#174, ADR 0059)", () => {
+  const section = (name: string) => screen.getByRole("region", { name });
+  const help = (about: string) => {
+    const button = screen.getByRole("button", { name: `About ${about}` });
+    return { button, panel: document.getElementById(button.getAttribute("aria-controls")!)! };
+  };
+
+  it("shows the server's facts as rows of a name and a value, and the features table in a card", () => {
+    diagnostics(scriptedStore(NEW), { unsecure: true });
+    const server = section("Server");
+    const names = [...server.querySelectorAll(".set-card > .set-row .set-name")].map((n) => n.textContent);
+    expect(names).toEqual(["Server", "Profile", "Hermes version", "Protocol", "Sign-in", "Feature flags", "Extra request headers"]);
+    const first = server.querySelector(".set-card > .set-row")!;
+    expect(first.querySelector(".set-control .set-value")!.textContent).toMatch(/^https:\/\/hermes\.fixture\.invalid Unsecure$/);
+    const features = section("Features");
+    expect(features.querySelector(".set-card > .set-block table")).toBe(screen.getByRole("table"));
+    expect(within(features).getByRole("button", { name: "Read the compatibility guide" }).closest(".set-row")).not.toBeNull();
+    // Check again and Copy report act on the whole section, so they sit at its heading.
+    expect(within(features).getByRole("button", { name: "Check again" }).closest(".set-head-action")).not.toBeNull();
+    expect(within(features).getByRole("button", { name: "Copy report" }).closest(".set-head-action")).not.toBeNull();
+  });
+
+  it("folds the explanations behind an (i), opens them while Settings is searched, and search still finds their words", async () => {
+    const store = scriptedStore(NEW);
+    const { rerender } = render(<div />);
+    const page = (searching: boolean) => (
+      <SettingsSearching.Provider value={searching}>
+        <DiagnosticsSettings store={store} connected signIn="x" headers={0} unsecure={false} profile="default" openGuide={() => {}} />
+      </SettingsSearching.Provider>
+    );
+    rerender(page(false));
+    const server = help("Server");
+    const features = help("Features");
+    expect(server.button.getAttribute("aria-expanded")).toBe("false");
+    expect(server.panel.hidden).toBe(true);
+    expect(server.panel.textContent).toMatch(/A version alone doesn't show what it can do/);
+    expect(features.panel.hidden).toBe(true);
+    expect(features.panel.textContent).toMatch(/The report holds no password, cookie, ticket or header value/);
+    await userEvent.setup().click(features.button);
+    expect(features.button.getAttribute("aria-expanded")).toBe("true");
+    expect(features.panel.hidden).toBe(false);
+    // Folded or not, a section's help is part of what Settings searches it by.
+    expect(textMatches(searchText(section("Server")), queryWords("version alone"))).toBe(true);
+    expect(textMatches(searchText(section("Features")), queryWords("never on disk"))).toBe(true);
+    rerender(page(true));
+    expect(help("Server").panel.hidden).toBe(false);
+    expect(help("Server").button.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("never folds the check's status, the unsecure badge, a problem, or what a missing feature needs", async () => {
+    const down = new Error("Can't reach the Hermes dashboard: connection refused");
+    const store = scriptedStore(Object.fromEntries(Object.keys(NEW).map((k) => [k, down])));
+    diagnostics(store, { unsecure: true });
+    act(() => store.connected(1, "default", {}, Promise.resolve({})));
+    const alert = await screen.findByRole("alert");
+    const visible = (el: Element) => expect(el.closest(".set-more")).toBeNull();
+    visible(alert);
+    expect(alert.closest(".set-note.warn")).not.toBeNull();
+    visible(screen.getByRole("status"));
+    visible(screen.getByText("Unsecure"));
+    visible(within(row$("Skills")).getByText("Couldn't check"));
+    visible(within(row$("Skills")).getByText(/Needs:/));
   });
 });
 
