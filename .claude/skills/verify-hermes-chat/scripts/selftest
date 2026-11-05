@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Self-checks for the harness itself, not the app. Needs `hv bootstrap` done; no build, no app, no network.
 #   wd.mjs: `wait` times out with exit 2, a bad [ms] is rejected, `gone` returns at once on no match.
-#   hv up:  a failed start stops every process it started and deletes its run dir;
+#   hv up:  a failed start stops every process it started (and a child its driver left behind) and deletes its run dir;
+#           an interrupted start (TERM) does the same;
 #           three concurrent `hv up`s each get their own display (their own Xvfb holds its lock), and `hv down` stops them.
 # Runs under a throwaway HV_HOME with a fake app and a fake tauri-driver, so it never touches a real run.
 set -euo pipefail
@@ -24,10 +25,14 @@ srv.listen(0, "127.0.0.1", () => console.log(srv.address().port));
 JS
 node "$T/fake-wd.mjs" >"$T/fake-wd.port" &
 FAKE_WD=$!
+# `hv up`s still starting; cleanup stops them before it touches their run state.
+LAUNCHERS=()
 # Also stops any run an interrupted self-test left up.
 cleanup() {
-  local r
+  local r p
   kill "$FAKE_WD" 2>/dev/null || true
+  for p in "${LAUNCHERS[@]}"; do kill -TERM "$p" 2>/dev/null || true; done
+  for p in "${LAUNCHERS[@]}"; do wait "$p" 2>/dev/null || true; done
   for r in "$T"/hv/runs/*/; do [ -f "$r/state.env" ] && HV_HOME=$T/hv HV_RUN=${r%/} "$HERE/hv" down >/dev/null 2>&1; done
   rm -rf "$T"
 }
@@ -51,10 +56,16 @@ export HV_HOME=$T/hv HV_TARGET=$T/target
 mkdir -p "$HV_HOME" "$HV_TARGET/debug" "$T/bin"
 [ -d "$REAL_HOME/root" ] && ln -s "$REAL_HOME/root" "$HV_HOME/root"
 printf '#!/bin/sh\nexit 0\n' >"$HV_TARGET/debug/hermes-chat"; chmod +x "$HV_TARGET/debug/hermes-chat"
-# A tauri-driver stand-in: FAKE_DRIVER=fail exits at once, otherwise it answers 200 on --port.
+# A tauri-driver stand-in. FAKE_DRIVER=fail leaves a child running (as a WebKitWebDriver would), writes its PID to
+# $FAKE_CHILD and exits at once; otherwise it answers 200 on --port.
 cat >"$T/bin/tauri-driver" <<'SH'
 #!/bin/sh
-[ "${FAKE_DRIVER:-}" = fail ] && { echo "fake tauri-driver: failing on purpose" >&2; exit 1; }
+if [ "${FAKE_DRIVER:-}" = fail ]; then
+  sleep 300 </dev/null >/dev/null 2>&1 &
+  echo $! >"$FAKE_CHILD"
+  echo "fake tauri-driver: failing on purpose" >&2
+  exit 1
+fi
 exec python3 -c 'import sys, http.server as h
 p = int(sys.argv[sys.argv.index("--port") + 1])
 class Ok(h.BaseHTTPRequestHandler):
@@ -67,29 +78,50 @@ export PATH=$T/bin:$PATH
 hv() { "$HERE/hv" "$@"; }
 
 # A failed start leaves nothing running and no run dir, and keeps state.env with the evidence.
-code=0; FAKE_DRIVER=fail hv up >"$T/up.log" 2>&1 || code=$?
+code=0; FAKE_DRIVER=fail FAKE_CHILD=$T/driver-child.pid hv up >"$T/up.log" 2>&1 || code=$?
 st=$(ls "$HV_HOME"/evidence/*/state.env 2>/dev/null | head -1 || true)
-if [ "$code" != 0 ] && [ -n "$st" ] && [ -z "$(ls -A "$HV_HOME/runs")" ]; then
+if [ "$code" != 0 ] && [ -n "$st" ] && [ -s "$T/driver-child.pid" ] && [ -z "$(ls -A "$HV_HOME/runs")" ]; then
   # shellcheck disable=SC2046
-  if dead $(pids_of "$st") && disp=$(. "$st"; echo "${DISPLAY_NUM#:}") && [ -n "$disp" ] && [ ! -e "/tmp/.X$disp-lock" ]; then
-    pass "failed hv up stopped Xvfb :$disp, openbox, D-Bus, the stand-in and the driver"
+  if dead $(pids_of "$st") "$(cat "$T/driver-child.pid")" && disp=$(. "$st"; echo "${DISPLAY_NUM#:}") && [ -n "$disp" ] && [ ! -e "/tmp/.X$disp-lock" ]; then
+    pass "failed hv up stopped Xvfb :$disp, openbox, D-Bus, the stand-in, the driver and the child it left"
   else
-    fail "failed hv up left processes or display :${disp:-?} behind ($(pids_of "$st"))"
+    fail "failed hv up left processes or display :${disp:-?} behind ($(pids_of "$st"), driver child $(cat "$T/driver-child.pid" 2>/dev/null))"
   fi
 else
-  fail "failed hv up: exit $code, state ${st:-missing}, runs: $(ls "$HV_HOME/runs"); log: $(tail -5 "$T/up.log")"
+  fail "failed hv up: exit $code, state ${st:-missing}, driver child pid $(cat "$T/driver-child.pid" 2>/dev/null || echo missing), runs: $(ls "$HV_HOME/runs"); log: $(tail -5 "$T/up.log")"
+fi
+rm -rf "$HV_HOME/evidence"
+
+# A start interrupted with TERM, once Xvfb is up, stops what it started too.
+"$HERE/hv" up >"$T/int.log" 2>&1 &
+LAUNCHERS=($!)
+for _ in $(seq 150); do
+  st=$(ls "$HV_HOME"/runs/*/state.env 2>/dev/null | head -1 || true)
+  [ -n "$st" ] && [ -n "$(. "$st"; echo "${WM_PID:-}")" ] && break
+  sleep 0.1
+done
+kill -TERM "${LAUNCHERS[0]}"
+code=0; wait "${LAUNCHERS[0]}" || code=$?
+LAUNCHERS=()
+st=$(ls "$HV_HOME"/evidence/*/state.env 2>/dev/null | head -1 || true)
+# shellcheck disable=SC2046
+if [ "$code" = 130 ] && [ -n "$st" ] && [ -z "$(ls -A "$HV_HOME/runs")" ] && dead $(pids_of "$st"); then
+  pass "hv up interrupted with TERM stopped what it had started ($(pids_of "$st"))"
+else
+  fail "interrupted hv up: exit $code, state ${st:-missing}, pids $([ -n "$st" ] && pids_of "$st"), runs: $(ls "$HV_HOME/runs"); log: $(tail -3 "$T/int.log")"
 fi
 rm -rf "$HV_HOME/evidence"
 
 # Concurrent starts get distinct displays, each held by its own Xvfb.
-ups=()
-for i in 1 2 3; do (hv up >"$T/up$i.log" 2>&1; echo $? >"$T/up$i.code") & ups+=($!); done
-wait "${ups[@]}"
+for i in 1 2 3; do "$HERE/hv" up >"$T/up$i.log" 2>&1 & LAUNCHERS+=($!); done
+codes=()
+for p in "${LAUNCHERS[@]}"; do code=0; wait "$p" || code=$?; codes+=("$code"); done
+LAUNCHERS=()
 runs=() displays=()
 for i in 1 2 3; do
   r=$(sed -n 's/^export HV_RUN=//p' "$T/up$i.log")
-  if [ "$(cat "$T/up$i.code")" = 0 ] && [ -n "$r" ]; then runs+=("$r"); displays+=("$(. "$r/state.env"; echo "$DISPLAY_NUM")")
-  else fail "concurrent hv up $i: exit $(cat "$T/up$i.code"): $(tail -5 "$T/up$i.log")"; fi
+  if [ "${codes[i-1]}" = 0 ] && [ -n "$r" ]; then runs+=("$r"); displays+=("$(. "$r/state.env"; echo "$DISPLAY_NUM")")
+  else fail "concurrent hv up $i: exit ${codes[i-1]}: $(tail -5 "$T/up$i.log")"; fi
 done
 uniq_displays=$(printf '%s\n' "${displays[@]}" | sort -u | wc -l)
 [ "${#runs[@]}" = 3 ] && [ "$uniq_displays" = 3 ] && pass "three concurrent hv up got displays ${displays[*]}" || fail "concurrent displays: ${displays[*]:-none}"
