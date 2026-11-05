@@ -157,7 +157,7 @@ The scripts and raw results are in `real-hermes/` and `real-hermes/runs/`.
 | `computer_use` key | 0.05 s | 0.08 s | 3 (2 asked for, plus the retry) |
 | Whole turn | 27.1 s | 33.1 s | 14.5, 27.1 and 33.1 s |
 
-About 90 % of a turn was the model, and most of the rest was the capture. The stream and the tunnel are tens of milliseconds (below). What the runs show about the loop:
+The model was 85 to 93 % of each turn, and most of the rest was the captures. The stream and the tunnel are tens of milliseconds (below). What the runs show about the loop:
 
 - **One round trip goes to finding the tool.** `computer_use` is deferred by default (`tools.tool_search.defer`). Each run's first call was `tool_describe`, and every action went through the `tool_call` bridge.
 - **The first key press is always sent twice.** With the default background delivery, `key` came back `ok: false` with `verdict.decision: "escalate"`. In every run, the model then sent it again with `delivery_mode: "foreground"` and kept that. With approvals on, foreground delivery needs its own approval.
