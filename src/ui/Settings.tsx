@@ -8,7 +8,9 @@
 // Profiles are switched in the list's header, not here (ADR 0001). The search box (Ctrl+F) shows the sections of every
 // tab whose text holds what was typed (settingsSearch.ts).
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowLeft, Brain, Cpu, Download, KeyRound, Lock, LogOut, Palette, PlugZap, Puzzle, Search, Settings2, ShieldCheck, Sparkles, Stethoscope, Trash2, Wrench, X } from "lucide-react";
+import { ArrowLeft, Brain, Cpu, Database, Download, HardDrive, KeyRound, Lock, LogOut, Mic, NotebookPen, Palette, PlugZap, Power, Puzzle, Search, Settings2, ShieldCheck, Sparkles, Stethoscope, Trash2, User, Wrench, X } from "lucide-react";
+import type { MemorySource } from "../hermes/memory";
+import { SubNav, type SubNavItem } from "./SubNav";
 import type { Chat, ConnectionStatus } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
 import { TRANSCRIPT_LIMIT_BYTES } from "../hermes/chatCache";
@@ -43,6 +45,18 @@ import { CapabilityGate, DiagnosticsSettings, type OpenGuide } from "./Diagnosti
 import { NAMED, applySearch, clearMarks, queryWords, textMatches } from "./settingsSearch";
 
 type Tab = "general" | "appearance" | "model" | "toolsets" | "persona" | "memory" | "skills" | "diagnostics";
+/** General's four groups, shown one at a time beside a sub-nav (ADR 0051); a search shows every group's sections at once. */
+type GenGroup = "connection" | "launch" | "voice" | "storage";
+const GEN_GROUPS: SubNavItem[] = [
+  { id: "connection", label: "Connection", icon: <PlugZap size={14} /> },
+  { id: "launch", label: "Launch, tray & updates", icon: <Power size={14} /> },
+  { id: "voice", label: "Voice & screenshots", icon: <Mic size={14} /> },
+  { id: "storage", label: "Storage & data", icon: <HardDrive size={14} /> },
+];
+/** What the Memory tab shows beside its list: one of the profile's two memory files, or one profile's external memory. */
+type MemSel = { kind: "file"; source: MemorySource } | { kind: "profile"; name: string };
+const memKey = (m: MemSel) => (m.kind === "file" ? `file:${m.source}` : `profile:${m.name}`);
+const memSelOf = (id: string): MemSel => (id.startsWith("file:") ? { kind: "file", source: id.slice(5) as MemorySource } : { kind: "profile", name: id.slice(8) });
 const TABS = [
   { id: "general", label: "General", Icon: Settings2 },
   { id: "appearance", label: "Appearance", Icon: Palette },
@@ -231,6 +245,12 @@ export function SettingsScreen({
   );
   // A new object each time a note asks for a capability, so the row is focused again even for the same one.
   const [diagFocus, setDiagFocus] = useState<{ id: CapabilityId } | undefined>(showDiagnostics?.id ? { id: showDiagnostics.id } : undefined);
+  const [genGroup, setGenGroup] = useState<GenGroup>("connection");
+  const [memSel, setMemSel] = useState<MemSel>({ kind: "file", source: "memory" });
+  /** Every profile's name, once the Memory tab's provider overview has read them; until then only the shown profile. */
+  const [memProfiles, setMemProfiles] = useState<string[]>();
+  /** Picking a memory file or profile leaves any unsaved memory edit, so it asks first, as switching tabs does. */
+  const pickMem = (id: string) => memKey(memSel) !== id && guard(() => setMemSel(memSelOf(id)));
   const tabs = TABS.filter(
     (t) =>
       (t.id !== "toolsets" || toolsets) &&
@@ -298,7 +318,11 @@ export function SettingsScreen({
     const root = results.current;
     if (!root || !wordsKey) return;
     const w = wordsKey.split(" ");
-    const run = () => setFound(applySearch(root, w));
+    const run = () => {
+      setFound(applySearch(root, w));
+      // A match inside a folded explanation (Toolsets' "How a change applies") would be counted but unseen: open the folds.
+      for (const d of root.querySelectorAll<HTMLDetailsElement>("details")) d.open = true;
+    };
     run();
     const seen = new MutationObserver(run);
     seen.observe(root, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: NAMED });
@@ -341,8 +365,9 @@ export function SettingsScreen({
   };
   const elsewhere = tabs.filter((t) => ABOUT[t.id] && textMatches(`${t.label} ${ABOUT[t.id]}`, words));
 
-  const general = (
-    <>
+  const generalGroups: Record<GenGroup, ReactNode> = {
+    connection: (
+      <>
       {connectionManager}
       <section>
         <h2>Connection in use</h2>
@@ -408,14 +433,23 @@ export function SettingsScreen({
           </div>
         )}
       </section>
-
+      </>
+    ),
+    launch: (
+      <>
       <StartupSettings />
       <TraySettings tray={tray} />
-
+      <UpdateSettings />
+      </>
+    ),
+    voice: (
+      <>
       <VoiceSettings status={status} profile={profile} setup={voiceSetup} />
       <ScreenshotSettings checkSupport={checkScreenshots} />
-      <UpdateSettings />
-
+      </>
+    ),
+    storage: (
+      <>
       <section>
         <h2>Local cache</h2>
         <p className="muted">
@@ -475,7 +509,22 @@ export function SettingsScreen({
       </section>
       {importer && <ImportSection wiring={importer} connected={status === "connected"} />}
       {backup && <BackupSection wiring={backup} />}
+      </>
+    ),
+  };
+  // A search shows every group's sections together, so what's typed can be found in any of them.
+  const general = searching ? (
+    <>
+      {generalGroups.connection}
+      {generalGroups.launch}
+      {generalGroups.voice}
+      {generalGroups.storage}
     </>
+  ) : (
+    <div className="settings-split">
+      <SubNav label="General" items={GEN_GROUPS} selected={genGroup} onPick={(id) => setGenGroup(id as GenGroup)} />
+      <div className="settings-split-body">{generalGroups[genGroup]}</div>
+    </div>
   );
 
   /** The content of a tab: the same whether it's shown alone or with others in a search. */
@@ -498,21 +547,54 @@ export function SettingsScreen({
             />,
           )
         );
-      case "memory":
-        // An edit lives only while this tab is open, and for one profile; leaving with one asks first.
+      case "memory": {
+        if (!memory) return null;
+        const items: SubNavItem[] = [
+          { id: "file:memory", label: "Agent notes", icon: <NotebookPen size={14} />, under: "Built-in" },
+          { id: "file:profile", label: "User profile", icon: <User size={14} /> },
+          ...(memoryProviders ? (memProfiles ?? [profile]).map((p, i) => ({ id: `profile:${p}`, label: p, mono: true, icon: <Database size={14} />, under: i === 0 ? "External memory" : undefined })) : []),
+        ];
+        // Both parts stay mounted whichever is shown, so an unsaved edit in either is kept, and guarded, as before.
         return (
-          memory && (
-            <>
-              {gated(
-                "memory",
-                <MemorySettings key={profile} api={memory} profile={profile} status={status} server={routeLabel(route) ?? "not known until connected"} onDirtyChange={onEntriesDirty} discardSignal={memoryDiscards} />,
-              )}
+          <div className="settings-split">
+            <SubNav label="Memory" items={items} selected={memKey(memSel)} onPick={pickMem} />
+            <div className="settings-split-body">
+              <div hidden={memSel.kind !== "file"}>
+                {gated(
+                  "memory",
+                  <MemorySettings
+                    key={profile}
+                    api={memory}
+                    profile={profile}
+                    status={status}
+                    server={routeLabel(route) ?? "not known until connected"}
+                    onDirtyChange={onEntriesDirty}
+                    discardSignal={memoryDiscards}
+                    source={memSel.kind === "file" ? memSel.source : undefined}
+                    files={false}
+                  />,
+                )}
+              </div>
               {memoryProviders && (
-                <MemoryProviderSettings key={`providers-${profile}`} api={memoryProviders} profile={profile} connected={status === "connected"} onDirtyChange={onProvidersDirty} discardSignal={memoryDiscards} />
+                <div hidden={memSel.kind !== "profile"}>
+                  <MemoryProviderSettings
+                    key={`providers-${profile}`}
+                    api={memoryProviders}
+                    profile={profile}
+                    connected={status === "connected"}
+                    onDirtyChange={onProvidersDirty}
+                    discardSignal={memoryDiscards}
+                    target={memSel.kind === "profile" ? memSel.name : undefined}
+                    onProfiles={setMemProfiles}
+                    onPick={(p) => pickMem(`profile:${p}`)}
+                    overview="folded"
+                  />
+                </div>
               )}
-            </>
-          )
+            </div>
+          </div>
         );
+      }
       case "skills":
         // An edit lives only while this tab is open, and for one profile; leaving with one asks first.
         return (

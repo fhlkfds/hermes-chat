@@ -299,6 +299,7 @@ describe("Taking a screenshot for the composer", () => {
   it("takes a desktop shortcut's screenshot into the chat on screen, out of Settings", async () => {
     const { rust, user } = await signedIn();
     await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(await screen.findByRole("button", { name: "Voice & screenshots" }));
     expect(document.querySelector(".panes.covered")?.hasAttribute("inert")).toBe(true);
 
     rust.pressDesktopShortcut();
@@ -393,6 +394,7 @@ describe("A desktop without a way to take screenshots", () => {
     render(<Main hermes={hermes} connection={{ mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" }} onSignOut={async () => {}} screenshots={rust.wiring} />);
     await settle(hermes);
     await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(await screen.findByRole("button", { name: "Voice & screenshots" }));
     expect((await screen.findByRole("alert")).textContent).toContain("picks a region or window with slurp and grim");
   });
 });
@@ -401,6 +403,7 @@ describe("Setting the screenshot shortcut", () => {
   async function inSettings() {
     const s = await signedIn();
     await s.user.click(screen.getByRole("button", { name: "Settings" }));
+    await s.user.click(await screen.findByRole("button", { name: "Voice & screenshots" }));
     const key = screen.getByRole("button", { name: "Screenshot shortcut" });
     return { ...s, key };
   }

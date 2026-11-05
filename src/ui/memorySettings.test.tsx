@@ -51,7 +51,7 @@ function memoryStorage() {
 }
 
 /** Settings on its own, opened on the Memory tab. */
-function Shell({ hermes, profile, status }: { hermes: Hermes; profile: string; status: ConnectionStatus }) {
+function Shell({ hermes, profile, status, guard }: { hermes: Hermes; profile: string; status: ConnectionStatus; guard?: (go: () => void) => void }) {
   const [appearance] = useState(() => appearanceStore(memoryStorage(), document.createElement("html")));
   return (
     <SettingsScreen
@@ -67,6 +67,7 @@ function Shell({ hermes, profile, status }: { hermes: Hermes; profile: string; s
       listFonts={async () => ({ all: [], mono: [] })}
       modelSettings={hermes.modelSettings}
       memory={hermes.memory}
+      guard={guard}
       onClearCache={() => {}}
       onPullOlder={async () => []}
       onSignOut={async () => {}}
@@ -75,11 +76,11 @@ function Shell({ hermes, profile, status }: { hermes: Hermes; profile: string; s
   );
 }
 
-async function shown({ s = server(), profile = "default", status = "connected" as ConnectionStatus, wait = true } = {}) {
+async function shown({ s = server(), profile = "default", status = "connected" as ConnectionStatus, wait = true, guard = undefined as ((go: () => void) => void) | undefined } = {}) {
   const hermes = await connect(s.openPipe, "default");
   running.push(hermes);
   const user = userEvent.setup();
-  render(<Shell hermes={hermes} profile={profile} status={status} />);
+  render(<Shell hermes={hermes} profile={profile} status={status} guard={guard} />);
   await user.click(screen.getByRole("tab", { name: /Memory/ }));
   if (wait) await screen.findByRole("list", { name: "Agent notes entries" });
   return { s, hermes, user };
@@ -90,6 +91,9 @@ const named = (text: string | RegExp) => (typeof text === "string" ? new RegExp(
 const entry = (text: string | RegExp) => within(screen.getByRole("list", { name: /entries$/ })).getByRole("button", { name: named(text) });
 const editor = () => screen.getByRole<HTMLTextAreaElement>("textbox", { name: /Entry in/ });
 const button = (name: string | RegExp) => screen.getByRole("button", { name });
+/** A memory file's entry in the Memory tab's list beside the detail (ADR 0051). */
+const file = (name: RegExp) => within(screen.getByRole("navigation", { name: "Memory" })).getByRole("button", { name });
+const current = (name: RegExp) => file(name).getAttribute("aria-current") === "true";
 const learning = (s: FakeHermes, method?: string) => s.requests.filter((r) => (method ? r.method === method : r.method.startsWith("learning.")));
 
 describe("Settings → Memory", () => {
@@ -97,10 +101,12 @@ describe("Settings → Memory", () => {
     const { user } = await shown();
     expect(screen.getByText("ssh://liam@hermes")).toBeTruthy();
     expect(screen.getByText("/home/liam/.hermes/memories/MEMORY.md")).toBeTruthy();
-    const files = screen.getByRole("tablist", { name: "Memory files" });
-    expect(within(files).getAllByRole("tab").map((t) => t.textContent)).toEqual(["Agent notesMEMORY.md2 entries", "User profileUSER.md1 entry"]);
+    const files = screen.getByRole("navigation", { name: "Memory" });
+    expect(within(files).getAllByRole("button").map((t) => t.textContent)).toEqual(["Agent notes", "User profile"]);
+    expect(current(/Agent notes/)).toBe(true);
+    expect(screen.getByText(/2 entries, \d+ characters/)).toBeTruthy();
     expect(screen.getByRole("heading", { name: "When edits take effect" })).toBeTruthy();
-    await user.click(within(files).getByRole("tab", { name: /User profile/ }));
+    await user.click(within(files).getByRole("button", { name: /User profile/ }));
     expect(screen.getByText("/home/liam/.hermes/memories/USER.md")).toBeTruthy();
     expect(entry(SAM)).toBeTruthy();
   });
@@ -121,7 +127,7 @@ describe("Settings → Memory", () => {
     const s = server();
     s.memory.default.profile = [];
     const { user } = await shown({ s });
-    await user.click(screen.getByRole("tab", { name: /User profile/ }));
+    await user.click(file(/User profile/));
     expect(screen.getByText(/nothing in USER.md yet/)).toBeTruthy();
   });
 
@@ -327,22 +333,26 @@ describe("Settings → Memory", () => {
     expect(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Your kept edit 2" }).value).toBe(`${FALCON} Draft B`);
   });
 
-  it("drops a pending question about opening another file once a save starts", async () => {
+  it("asks through Settings' guard before opening another file over an unsaved edit, and a save meanwhile keeps the file", async () => {
     const s = server();
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
     const edit = s.handlers["learning.edit"];
     s.handlers["learning.edit"] = (r) => void gate.then(() => edit(r));
-    const { user } = await shown({ s });
+    const asked: (() => void)[] = [];
+    let unsaved = false;
+    const { user } = await shown({ s, guard: (go) => (unsaved ? void asked.push(go) : go()) });
     await user.click(entry(SHORT));
     await user.type(editor(), " Saved.");
-    await user.click(screen.getByRole("tab", { name: /User profile/ }));
-    expect(screen.getByRole("alertdialog", { name: "Discard your edit?" })).toBeTruthy();
+    unsaved = true;
+    await user.click(file(/User profile/));
+    // The question is App's (through `guard`), as for a tab switch; the file and the edit stay until it's answered.
+    expect(asked).toHaveLength(1);
+    expect(current(/Agent notes/)).toBe(true);
     await user.click(button("Save"));
-    expect(screen.queryByRole("alertdialog", { name: "Discard your edit?" })).toBeNull();
     release();
     await screen.findByText(/Saved, and read back/);
-    expect(screen.getByRole("tab", { name: /Agent notes/ }).getAttribute("aria-selected")).toBe("true");
+    expect(current(/Agent notes/)).toBe(true);
     expect(screen.getByRole("group", { name: /Edit entry in MEMORY.md/ })).toBeTruthy();
   });
 
@@ -360,7 +370,7 @@ describe("Settings → Memory", () => {
     await user.type(editor(), " and more");
     await user.click(button(/Reload/));
     expect((await screen.findByRole("alert")).textContent).toMatch(/Hermes doesn't have your edit/);
-    expect(screen.getByRole("tab", { name: /Agent notes/ }).getAttribute("aria-selected")).toBe("true");
+    expect(current(/Agent notes/)).toBe(true);
     expect(screen.getByRole("group", { name: /Edit entry in MEMORY.md/ })).toBeTruthy();
     expect(editor().value).toBe("Same words in both files and more");
     expect(s.memory.default.memory[1]).toBe(SHORT);
@@ -454,13 +464,15 @@ describe("Settings → Memory", () => {
     await user.type(editor(), " Saved later.");
     await user.click(button("Save"));
     await waitFor(() => expect(s.requests.some((r) => r.method === "learning.edit")).toBe(true));
-    expect(screen.getByRole("tab", { name: /User profile/ })).toHaveProperty("disabled", true);
     expect(entry(FALCON)).toHaveProperty("disabled", true);
+    // A file picked from the list while the save runs waits for it: the entry stays open until the save has read back.
+    await user.click(file(/User profile/));
+    expect(screen.getByRole("group", { name: /Edit entry in MEMORY.md/ })).toBeTruthy();
+    expect(editor().value).toBe(`${SHORT} Saved later.`);
     release();
     await screen.findByText(/Saved, and read back/);
-    expect(screen.getByRole("tab", { name: /Agent notes/ }).getAttribute("aria-selected")).toBe("true");
-    expect(editor().value).toBe(`${SHORT} Saved later.`);
-    expect(screen.getByRole("tab", { name: /User profile/ })).toHaveProperty("disabled", false);
+    expect(await screen.findByRole("list", { name: "User profile entries" })).toBeTruthy();
+    expect(current(/User profile/)).toBe(true);
   });
 
   it("keeps the edit when Hermes refuses the save, with Hermes's reason", async () => {
@@ -498,7 +510,7 @@ describe("Settings → Memory", () => {
 
   it("removes an entry after asking, and reads back that it's gone", async () => {
     const { s, user } = await shown();
-    await user.click(screen.getByRole("tab", { name: /User profile/ }));
+    await user.click(file(/User profile/));
     await user.click(entry(SAM));
     await user.click(button("Delete"));
     await user.click(within(screen.getByRole("alertdialog", { name: "Remove this entry?" })).getByRole("button", { name: "Remove entry" }));
@@ -513,7 +525,7 @@ describe("Settings → Memory", () => {
     const gate = new Promise<void>((r) => (release = r));
     const frames = s.handlers["learning.frames"];
     s.handlers["learning.frames"] = (r) => void gate.then(() => frames(r));
-    await user.click(screen.getByRole("tab", { name: /User profile/ }));
+    await user.click(file(/User profile/));
     await user.click(entry(SAM));
     await user.click(button("Delete"));
     expect(screen.getByRole("alertdialog", { name: "Remove this entry?" })).toBeTruthy();
@@ -522,7 +534,7 @@ describe("Settings → Memory", () => {
     s.handlers["learning.frames"] = frames;
     release();
     await waitFor(() => expect(button(/Reload/).textContent?.trim()).toBe("Reload"));
-    await user.click(screen.getByRole("tab", { name: /Agent notes/ }));
+    await user.click(file(/Agent notes/));
     await user.click(entry(SHORT));
     await user.type(editor(), " Newer words.");
     expect(editor().value).toBe(`${SHORT} Newer words.`);

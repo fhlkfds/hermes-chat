@@ -5,7 +5,7 @@
 // written until the owner saves; every write is checked against a fresh read and read back. Typed secrets live only in
 // this form and go only to Hermes.
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, Check, Copy, Download, ExternalLink, Info, RefreshCw } from "lucide-react";
+import { AlertTriangle, Check, Copy, Download, ExternalLink, Info, RefreshCw, ChevronRight } from "lucide-react";
 import {
   MemoryProvidersUnsupported,
   copiedValues,
@@ -95,8 +95,20 @@ export function MemoryProviderSettings({
   connected,
   onDirtyChange,
   discardSignal = 0,
+  target: targetProp,
+  onProfiles,
+  onPick,
+  overview = "table",
 }: {
   api: MemoryProvidersApi;
+  /** The profile to manage, chosen outside (Settings' Memory list, ADR 0051); the owner has already agreed to leave unsaved changes. */
+  target?: string;
+  /** Called with every profile's name once they're read, for a list drawn elsewhere. */
+  onProfiles?: (profiles: string[]) => void;
+  /** With `target` from outside: a profile picked in the table goes here, so the list elsewhere follows it. */
+  onPick?: (profile: string) => void;
+  /** "folded": the all-profiles table sits under a fold, since a list elsewhere already names them. */
+  overview?: "table" | "folded";
   /** The profile the app shows, which the screen starts on. */
   profile: string;
   connected: boolean;
@@ -205,7 +217,22 @@ export function MemoryProviderSettings({
 
   const manage = (who: string) => {
     if (busy || who === target) return;
-    leave(() => {
+    leave(() => switchTo(who));
+  };
+  // A profile picked outside shows once no write or read is under way, as `manage` waits, so a late answer can't land on it.
+  useEffect(() => {
+    if (targetProp !== undefined && targetProp !== target && !busy) {
+      setEdits({});
+      setNotice(undefined);
+      setConfirmSetup(false);
+      switchTo(targetProp);
+    }
+  }, [targetProp, busy]);
+  useEffect(() => {
+    if (rows) onProfiles?.(rows.map((r) => r.profile));
+  }, [rows]);
+  const switchTo = (who: string) => {
+    {
       setTarget(who);
       setMemory(undefined);
       setOpen(undefined);
@@ -213,7 +240,7 @@ export function MemoryProviderSettings({
       setCopyFrom("");
       setSteps(undefined);
       void loadProfile(who, undefined);
-    });
+    }
   };
 
   const openProvider = (name: string) => {
@@ -422,33 +449,8 @@ export function MemoryProviderSettings({
     ));
   };
 
-  return (
-    <section aria-labelledby="external-memory-heading" className="external-memory">
-      <h2 id="external-memory-heading">External memory</h2>
-      <p className="muted">
-        Besides its built-in memory, each profile can use one external memory provider, such as Honcho, that keeps what the agent learns in its own
-        store. Profiles use the same memory only when they use the same provider pointed at the same store; otherwise each keeps its own. For
-        Honcho, the table lists the server, workspace and peers each profile uses, and which profiles match. Matching profiles share memory
-        when they also use the same Honcho account.
-      </p>
-
-      {unsupported ? (
-        <div className="memory-state" role="status">
-          <Info size={14} />
-          <div className="small">{unsupported}</div>
-        </div>
-      ) : !connected && !rows ? (
-        <div className="memory-state" role="status">
-          <div className="small muted">Not connected to Hermes. Providers show once it's connected.</div>
-        </div>
-      ) : (
-        <>
-          <div className="provider-overview-head">
-            <h3>Profiles</h3>
-            <button className="btn" disabled={!connected || !!busy} onClick={reload} title="Read every profile's provider from Hermes again.">
-              <RefreshCw size={14} /> Reload
-            </button>
-          </div>
+  const overviewTable = (
+    <>
           {overviewError ? (
             <div className="memory-state error" role="alert">
               <AlertTriangle size={14} />
@@ -474,7 +476,7 @@ export function MemoryProviderSettings({
                     return (
                       <tr key={r.profile} className={r.profile === target ? "on" : undefined} aria-current={r.profile === target || undefined}>
                         <th scope="row">
-                          <button className="link-btn mono" disabled={!!busy} onClick={() => manage(r.profile)} title={`Manage ${r.profile}'s provider below`}>
+                          <button className="link-btn mono" disabled={!!busy} onClick={() => (targetProp !== undefined && onPick ? onPick(r.profile) : manage(r.profile))} title={`Manage ${r.profile}'s provider below`}>
                             {r.profile}
                           </button>
                           {r.profile === profile && <div className="muted small">shown in the app</div>}
@@ -511,7 +513,44 @@ export function MemoryProviderSettings({
               </table>
             </div>
           )}
+    </>
+  );
+  return (
+    <section aria-labelledby="external-memory-heading" className="external-memory">
+      <h2 id="external-memory-heading">External memory</h2>
+      <p className="muted">
+        Besides its built-in memory, each profile can use one external memory provider, such as Honcho, that keeps what the agent learns in its own
+        store. Profiles use the same memory only when they use the same provider pointed at the same store; otherwise each keeps its own. For
+        Honcho, the table lists the server, workspace and peers each profile uses, and which profiles match. Matching profiles share memory
+        when they also use the same Honcho account.
+      </p>
 
+      {unsupported ? (
+        <div className="memory-state" role="status">
+          <Info size={14} />
+          <div className="small">{unsupported}</div>
+        </div>
+      ) : !connected && !rows ? (
+        <div className="memory-state" role="status">
+          <div className="small muted">Not connected to Hermes. Providers show once it's connected.</div>
+        </div>
+      ) : (
+        <>
+          <div className="provider-overview-head">
+            {overview === "folded" ? <span /> : <h3>Profiles</h3>}
+            <button className="btn" disabled={!connected || !!busy} onClick={reload} title="Read every profile's provider from Hermes again.">
+              <RefreshCw size={14} /> Reload
+            </button>
+          </div>
+          {overview === "folded" && (
+            <details className="disc provider-fold">
+              <summary>
+                <ChevronRight size={13} className="disc-chev" aria-hidden /> All profiles and their stores
+              </summary>
+              {overviewTable}
+            </details>
+          )}
+          {overview === "table" && overviewTable}
           <div className="provider-manage" role="group" aria-labelledby="provider-manage-heading">
             <h3 id="provider-manage-heading">
               Provider for <span className="mono">{target}</span>

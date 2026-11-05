@@ -50,10 +50,16 @@ export function MemorySettings({
   server,
   onDirtyChange,
   discardSignal = 0,
+  source: sourceProp,
+  files = true,
 }: {
   api: MemoryApi;
   profile: string;
   status: ConnectionStatus;
+  /** The file shown, chosen outside (Settings' Memory list, ADR 0051); the owner has already agreed to leave any unsaved edit. */
+  source?: MemorySource;
+  /** False: the file tabs are drawn elsewhere (Settings' Memory list), so only Reload shows above the entries. */
+  files?: boolean;
   /** The server, as Settings names the connection (`routeLabel`). */
   server: string;
   /** Called with whether an unsaved edit is open, and with false once this goes. */
@@ -65,9 +71,16 @@ export function MemorySettings({
   const [view, setView] = useState<MemoryView>();
   const [problem, setProblem] = useState<LoadProblem>();
   const [loading, setLoading] = useState(false);
-  const [source, setSource] = useState<MemorySource>("memory");
+  const [source, setSource] = useState<MemorySource>(sourceProp ?? "memory");
   const [editing, setEditing] = useState<Editing>();
   const [busy, setBusy] = useState<"save" | "delete" | "reload">();
+  // A file picked outside (Settings' list) shows once no save or reload is under way, as the in-page tabs waited by disabling.
+  useEffect(() => {
+    if (sourceProp && sourceProp !== source && !busy) {
+      setSource(sourceProp);
+      setEditing(undefined);
+    }
+  }, [sourceProp, busy]);
   const [notice, setNotice] = useState<Notice>();
   // The owner's texts that Hermes didn't take (a conflict, or a save that read back differently), each kept to copy or
   // to put in an entry until they discard it. A later one never replaces an earlier one.
@@ -376,11 +389,11 @@ export function MemorySettings({
             {view.provider && (
               <p className="muted small">
                 <Info size={12} /> This profile also uses the <span className="mono">{view.provider}</span> memory provider. What it stores is kept by that
-                provider, not in these files, and isn't shown here. Its settings are under External memory below.
+                provider, not in these files, and isn't shown here. Its settings are under External memory in the list beside.
               </p>
             )}
-            <div className="memory-resources" role="tablist" aria-label="Memory files">
-              {MEMORY_RESOURCES.map((r) => {
+            <div className={`memory-resources ${files ? "" : "memory-toolbar"}`} role={files ? "tablist" : undefined} aria-label={files ? "Memory files" : undefined}>
+              {files && MEMORY_RESOURCES.map((r) => {
                 const n = view.resources[r.source].entries.length;
                 return (
                   <button
@@ -409,7 +422,7 @@ export function MemorySettings({
               </button>
             </div>
 
-            <div id="memory-panel" role="tabpanel" aria-labelledby={`memory-tab-${source}`}>
+            <div id="memory-panel" role={files ? "tabpanel" : undefined} aria-labelledby={files ? `memory-tab-${source}` : undefined}>
               <p className="muted small memory-about">
                 {meta.about} {resource && `${entriesText(resource.entries.length)}, ${resourceChars(resource.entries).toLocaleString()} characters.`}
               </p>
