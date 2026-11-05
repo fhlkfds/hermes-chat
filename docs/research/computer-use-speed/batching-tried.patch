@@ -13,7 +13,7 @@ index 384b80a..d214502 100644
  //! is a dropped link, which keeps the owner in control, since they may be part-way through a sign-in. Leaving on
  //! purpose hands control back over `/api/ws` first (transport.ts `releaseScreen`).
 +//!
-+//! RFB bytes reach the webview in batches (`Batcher`, ADR 0052). Hermes sends one WebSocket message per read of Xvnc's
++//! RFB bytes reach the webview in batches (`Batcher`, ADR 0056). Hermes sends one WebSocket message per read of Xvnc's
 +//! socket, so one page change comes as dozens to hundreds of small messages, and each message the webview is sent costs
 +//! it a script run on its main thread, and one IPC fetch more when it is 1 KiB or larger. Bytes that come within a few
 +//! milliseconds of the last batch wait for the next one, so a busy screen costs the webview a few hundred deliveries a
