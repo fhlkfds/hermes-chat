@@ -267,8 +267,12 @@ The resizable panel beside the chat, with four tabs: Preview, Terminal, Files an
 _Avoid_: drawer, sidebar (that is the chat list), inspector
 
 **Preview**:
-The Side panel's tab that shows a web page, a Server file, a Local file or a tool call's output. It opens from a link in a reply or from an opened tool call. What it shows can't reach the app, the sign-in or this computer's other files (ADR 0007). A web page whose site refuses to be shown inside other apps gets a note and Open in your browser instead (ADR 0011).
+The Side panel's tab that shows a web page, a Server page, a Server file, a Local file or a tool call's output. It opens from a link in a reply or from an opened tool call. What it shows can't reach the app, the sign-in or this computer's other files (ADR 0007). A web page whose site refuses to be shown inside other apps gets a note and Open in your browser instead (ADR 0011).
 _Avoid_: preview pane (its name before the Side panel), viewer, artifact (the official desktop app's word)
+
+**Server page**:
+A web page on the Hermes server's own loopback (`localhost`, `127.0.0.1`, `[::1]` or `0.0.0.0`), such as a dev server Hermes started there. The Preview opens a loopback address as a Server page unless the owner switches it to **This computer**. It loads through an SSH tunnel to the sign-in's SSH target, opened while the page shows and closed when it goes. A URL sign-in has no SSH target, so its Server pages don't open (ADR 0052).
+_Avoid_: remote page, tunnelled page, port forward (the mechanism)
 
 **Server file**:
 A file on the Hermes server, by its full path there. Hermes reads it, and Hermes may refuse, for example a file with credentials. Paths in tool calls are Server files, since that is where Hermes runs its tools.

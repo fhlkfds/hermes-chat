@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { FakeHermes } from "./fakeHermes";
 import { connect } from "./transport";
-import { checkWebUrl, fenced, parseAddress, readLocalFile, sandboxedHtml, toolTargets, withoutBidi, type LocalText } from "./preview";
+import { checkWebUrl, fenced, loopbackOf, pageOn, parseAddress, readLocalFile, sandboxedHtml, toolTargets, tunnelUrl, withoutBidi, type LocalText } from "./preview";
 import type { Item } from "./model";
 
 const APP = "tauri://localhost";
@@ -39,6 +39,46 @@ describe("The pane's address box", () => {
     expect(parseAddress("notes.md", APP)).toHaveProperty("error", expect.stringContaining("starting with / or ~/"));
     expect(parseAddress("file:///home/liam/notes.md", APP)).toEqual({ error: "To preview a file on this computer, use Open a file on this computer." });
     expect(parseAddress("   ", APP)).toHaveProperty("error");
+  });
+});
+
+describe("Pages on a loopback address (issue #171)", () => {
+  it("finds localhost, 127.0.0.1, [::1] and 0.0.0.0 pages, with their port", () => {
+    expect(loopbackOf("http://localhost:3000/app")).toEqual({ at: "localhost:3000" });
+    expect(loopbackOf("http://LOCALHOST:5173")).toEqual({ at: "localhost:5173" });
+    expect(loopbackOf("http://127.0.0.1:8000/")).toEqual({ at: "127.0.0.1:8000" });
+    expect(loopbackOf("http://127.1:8000/")).toEqual({ at: "127.0.0.1:8000" });
+    expect(loopbackOf("http://[::1]:8080/")).toEqual({ at: "[::1]:8080" });
+    expect(loopbackOf("http://0.0.0.0:8000/")).toEqual({ at: "0.0.0.0:8000" });
+    expect(loopbackOf("http://localhost/")).toEqual({ at: "localhost:80" });
+    expect(loopbackOf("https://localhost/")).toEqual({ at: "localhost:443" });
+  });
+
+  it("leaves other hosts and schemes alone, as Rust does", () => {
+    for (const raw of ["https://example.com/", "http://10.0.0.5:3000/", "http://127.0.0.2/", "http://app.localhost:3000/", "ftp://localhost/", "not a url"])
+      expect(loopbackOf(raw), raw).toBeUndefined();
+  });
+
+  it("opens them on the server unless the owner picked this computer", () => {
+    expect(pageOn({ kind: "web", url: "http://localhost:3000/" })).toBe("server");
+    expect(pageOn({ kind: "web", url: "http://localhost:3000/", on: "local" })).toBe("local");
+    expect(pageOn({ kind: "web", url: "https://example.com/", on: "local" })).toBeUndefined();
+  });
+
+  it("loads only a tunnel address on this computer's 127.0.0.1", () => {
+    expect(tunnelUrl("http://127.0.0.1:41234/a?b#c", APP)).toBe("http://127.0.0.1:41234/a?b#c");
+    for (const raw of ["http://localhost:41234/", "https://evil.example/", "http://127.0.0.1/", "javascript:alert(1)", "http://u:p@127.0.0.1:4/"])
+      expect(tunnelUrl(raw, APP), raw).toBeUndefined();
+    expect(tunnelUrl("http://127.0.0.1:1420/", "http://127.0.0.1:1420")).toBeUndefined();
+  });
+
+  it("takes a typed localhost:port without its scheme, and names a scheme it refuses", () => {
+    expect(parseAddress("localhost:3000", APP)).toEqual({ target: { kind: "web", url: "http://localhost:3000/" } });
+    expect(parseAddress("127.0.0.1:8000/docs", APP)).toEqual({ target: { kind: "web", url: "http://127.0.0.1:8000/docs" } });
+    expect(parseAddress("[::1]:8080", APP)).toEqual({ target: { kind: "web", url: "http://[::1]:8080/" } });
+    expect(parseAddress("localhost:99999", APP)).toEqual({ error: "That isn't a web address." });
+    expect(parseAddress("postgres://localhost:5432/db", APP)).toEqual({ error: "Only http:// and https:// pages open in the preview, and postgres: isn't a web address." });
+    expect(parseAddress("localhostfoo:3000", APP)).toHaveProperty("error", expect.stringContaining("http://"));
   });
 });
 

@@ -14,7 +14,11 @@ import type { ArtifactRef } from "./artifacts";
  */
 export type PreviewTarget =
   | { kind: "start" }
-  | { kind: "web"; url: string }
+  /**
+   * `on`: for a page on a loopback address (`loopbackOf`), whose loopback it is: the Hermes server's, through an SSH
+   * tunnel (the default, since that is where Hermes runs what it starts), or this computer's (ADR 0052).
+   */
+  | { kind: "web"; url: string; on?: PageOn }
   /** `host`: on the dashboard's own machine, read through the managed files routes (ADR 0012), not where tools run. */
   | { kind: "server"; path: string; host?: boolean }
   /** An Output open to edit (artifacts.ts, ADR 0029): read and saved on the machine `ref` names. */
@@ -91,11 +95,47 @@ export function checkWebUrl(raw: string, appOrigin: string): { url: string } | {
   } catch {
     return { error: "That isn't a web address." };
   }
-  if (u.protocol !== "http:" && u.protocol !== "https:") return { error: "Only http:// and https:// pages open in the preview." };
+  if (u.protocol !== "http:" && u.protocol !== "https:")
+    return { error: `Only http:// and https:// pages open in the preview, and ${u.protocol} isn't a web address.` };
   if (u.username || u.password) return { error: "Web addresses with a username or password in them don't open in the preview." };
   if (!u.hostname) return { error: "That isn't a web address." };
   if (u.origin === appOrigin) return { error: "Hermes Chat's own pages don't open in the preview." };
   return { url: u.href };
+}
+
+/** Where a page on a loopback address is loaded from: the Hermes server's loopback, or this computer's. */
+export type PageOn = "server" | "local";
+
+/** The loopback names a page can be on (`localhost`, `127.0.0.1`, `[::1]`, `0.0.0.0`), as `URL` normalises them. */
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "0.0.0.0"]);
+
+/**
+ * Where an http(s) address on a loopback address points, as `localhost:3000`, or undefined for any other address. The
+ * same hosts Rust takes for a server page (src-tauri/src/server_page.rs `server_page`); Rust checks again.
+ */
+export function loopbackOf(raw: string): { at: string } | undefined {
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return undefined;
+  }
+  if ((u.protocol !== "http:" && u.protocol !== "https:") || !LOOPBACK_HOSTS.has(u.hostname)) return undefined;
+  return { at: `${u.hostname}:${u.port || (u.protocol === "https:" ? "443" : "80")}` };
+}
+
+/** Where a web target loads from: `server` or `local` for a loopback address, undefined for any other page. */
+export const pageOn = (t: Extract<PreviewTarget, { kind: "web" }>): PageOn | undefined => (loopbackOf(t.url) ? (t.on ?? "server") : undefined);
+
+/**
+ * The address Rust gave for a server page's tunnel, if it is what Rust makes: http(s) on `127.0.0.1` at a port, and
+ * never the app's own origin. Anything else isn't loaded.
+ */
+export function tunnelUrl(raw: string, appOrigin: string): string | undefined {
+  const web = checkWebUrl(raw, appOrigin);
+  if (!("url" in web)) return undefined;
+  const u = new URL(web.url);
+  return u.hostname === "127.0.0.1" && u.port ? web.url : undefined;
 }
 
 /** A path the server can read: absolute, or under its home (`~/`). Relative paths would resolve in Hermes's own folder. */
@@ -110,6 +150,8 @@ export function parseAddress(raw: string, appOrigin: string): { target: PreviewT
   if (!text) return { error: "Enter a web address or a path on the Hermes server." };
   if (/^file:/i.test(text)) return { error: "To preview a file on this computer, use Open a file on this computer." };
   if (isServerPath(text)) return { target: { kind: "server", path: text } };
+  // `localhost:3000` as a dev server prints it, without its scheme: a web page on a loopback address.
+  if (/^(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)(:\d{1,5})?([/?#]|$)/i.test(text)) return parseAddress(`http://${text}`, appOrigin);
   if (/^[a-z][a-z0-9+.-]*:/i.test(text)) {
     const web = checkWebUrl(text, appOrigin);
     return "url" in web ? { target: { kind: "web", url: web.url } } : web;

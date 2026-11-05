@@ -96,7 +96,7 @@ import { PreviewPane } from "./ui/PreviewPane";
 import { PANE_MIN_WIDTH, SidePanel, type PanelTab } from "./ui/SidePanel";
 import { ScreenTab } from "./ui/Screen";
 import { PreviewContext } from "./ui/previewContext";
-import { tauriLocalFiles, tauriWebPages, type LocalFiles, type WebPages } from "./ui/tauriPreview";
+import { tauriLocalFiles, tauriServerPages, tauriWebPages, type LocalFiles, type ServerPages, type WebPages } from "./ui/tauriPreview";
 import type { PreviewTarget } from "./hermes/preview";
 import type { Route } from "./hermes/pipe";
 import { tauriTray, type TrayWiring } from "./hermes/tauriTray";
@@ -703,6 +703,7 @@ export function Main({
   connectionGuard,
   localFiles = tauriLocalFiles,
   webPages = tauriWebPages,
+  serverPages = tauriServerPages,
   screenshots = tauriScreenshotWiring,
   summon = desktopSummon,
   personaStore = savedPersona,
@@ -748,6 +749,8 @@ export function Main({
   onSetUp?: () => void;
   localFiles?: LocalFiles;
   webPages?: WebPages;
+  /** Pages on the Hermes server's own loopback, through SSH (ADR 0052). */
+  serverPages?: ServerPages;
   screenshots?: Screenshots;
   /** The Repository screen's helper over ssh, and worktrees' (ADR 0034, 0043). */
   repoApi?: RepoApi;
@@ -2749,6 +2752,7 @@ export function Main({
                     readServer={(path, host) => (host ? hermes.readHostFile(path) : hermes.readServerFile(path))}
                     local={localFiles}
                     web={webPages}
+                    serverPages={serverPages}
                     onOpen={openPreview}
                     artifacts={artifacts}
                     connected={status === "connected"}
