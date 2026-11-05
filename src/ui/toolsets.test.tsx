@@ -770,7 +770,9 @@ describe("Settings → Toolsets layout: cards of rows, help behind an (i)", () =
         onClose={() => {}}
       />,
     );
-    await user.type(screen.getByRole("searchbox", { name: "Search settings" }), "HERMES_TUI_TOOLSETS");
+    // Pasted, not typed: every keystroke filters the whole Settings screen, which is slow on a loaded CI runner.
+    await user.click(screen.getByRole("searchbox", { name: "Search settings" }));
+    await user.paste("HERMES_TUI_TOOLSETS");
     const hit = await screen.findByText("HERMES_TUI_TOOLSETS");
     const section = hit.closest("section") as HTMLElement;
     await waitFor(() => expect(section.hasAttribute("data-search-miss")).toBe(false));

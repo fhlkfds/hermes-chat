@@ -395,10 +395,11 @@ export function ToolsetSettings({
   // Coming back to the window reads it again, for changes made elsewhere meanwhile.
   useEffect(() => {
     // Another client may have saved the profile's own list, or forced a toolset off: the config is read again too.
-    const onFocus = () => connected && list && (void read(false), void readChatNow.current(), readGuards());
+    // The list through its ref: a focus right after the first read lands can come before this effect runs again.
+    const onFocus = () => connected && shownList.current && (void read(false), void readChatNow.current(), readGuards());
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
-  }, [connected, list, read]);
+  }, [connected, read]);
 
   /** The config facts (inherited, forced off, no_mcp) read again; only the latest read's answer is shown. */
   const readGuards = () => {
