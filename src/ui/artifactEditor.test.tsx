@@ -86,7 +86,8 @@ describe("The artifact editor", () => {
     expect(changes.textContent).toMatch(/added.*removed/);
     await user.click(screen.getByRole("button", { name: "Save" }));
     await screen.findByText(/Saved\. Hermes has your edit, read back from the server\./);
-    expect(server.fsWrites).toEqual([{ profile: "default", path: "/srv/out/plan.md", text: "# Launch plan\n\nShip it.\n" }]);
+    // Saved naming the chat whose tools wrote it, as it was read (ADR 0062).
+    expect(server.fsWrites).toEqual([{ profile: "default", path: "/srv/out/plan.md", text: "# Launch plan\n\nShip it.\n", session: "plan" }]);
     expect(document.querySelector(".artifact-id .badge")!.textContent).toMatch(/^Saved /);
   });
 

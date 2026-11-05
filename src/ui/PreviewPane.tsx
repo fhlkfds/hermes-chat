@@ -73,7 +73,7 @@ export function PreviewPane({
   target: PreviewTarget;
   serverLabel: string;
   /** `host`: the file is on the dashboard's own machine (preview.ts `PreviewTarget`). */
-  readServer: (path: string, host?: boolean) => Promise<FileView>;
+  readServer: (path: string, host?: boolean, session?: string) => Promise<FileView>;
   local: LocalFiles;
   web: WebPages;
   serverPages: ServerPages;
@@ -184,11 +184,11 @@ export function PreviewPane({
               store={artifacts}
               artifact={target.ref}
               connected={connected}
-              onDone={() => onOpen({ kind: "server", path: target.ref.path, ...(target.ref.host && { host: true }) })}
+              onDone={() => onOpen({ kind: "server", path: target.ref.path, ...(target.ref.host && { host: true }), ...(target.ref.session && { session: target.ref.session }) })}
             />
           ) : null
         ) : target.kind === "server" ? (
-          <FileBody key={reloads} name={target.path} load={() => readServer(target.path, target.host)} />
+          <FileBody key={reloads} name={target.path} load={() => readServer(target.path, target.host, target.session)} />
         ) : (
           <FileBody key={reloads} name={target.name} load={() => local.read(target)} />
         )}

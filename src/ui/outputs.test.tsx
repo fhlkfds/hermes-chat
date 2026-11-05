@@ -4,7 +4,7 @@
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { FakeHermes, row, type TranscriptMessage } from "../hermes/fakeHermes";
+import { FakeHermes, SANDBOX_NOT_FOUND, row, type TranscriptMessage } from "../hermes/fakeHermes";
 import { memoryCache } from "../hermes/memoryCache";
 import { connect, type Hermes } from "../hermes/transport";
 import { Main } from "../App";
@@ -95,7 +95,8 @@ describe("Outputs", () => {
     expect(rows[2].textContent).toContain("Version 1 of 2");
     expect(rows[1].textContent).toContain("Quarterly report");
     expect(rows[1].textContent).toContain("Written by write_file");
-    expect(rows[1].textContent).toContain("Not checked");
+    // Opening Outputs checks the files never checked, so a missing one says so before it is opened (ADR 0062).
+    await waitFor(() => expect(document.querySelectorAll(".out-table tbody tr")[1].textContent).toContain("Available"));
   });
 
   it("widens to every chat in the profile, searches and filters by type, and says when nothing matches", async () => {
@@ -127,7 +128,8 @@ describe("Outputs", () => {
     // A missing file can't be previewed, and says why.
     const preview = within(rows[0] as HTMLElement).getByRole("button", { name: /^Preview/ }) as HTMLButtonElement;
     expect(preview.disabled).toBe(true);
-    expect(preview.title).toBe("The file isn't at this path any more.");
+    // Read again naming its chat, as Preview and Edit read it, before it is called missing (ADR 0062).
+    expect(preview.title).toBe("It isn't at this path where its chat's tools ran: it was deleted, moved or renamed. Check again, or look in its folder.");
   });
 
   it("opens a file in the preview pane beside Outputs", async () => {
@@ -264,5 +266,77 @@ describe("Outputs", () => {
     });
     await waitFor(() => expect(localStorage.getItem("hermes-chat.outputs")).not.toContain("/srv/img/cat.png"));
     expect(localStorage.getItem("hermes-chat.outputs")).toContain("/srv/out/report.md");
+  });
+});
+
+// Issue #223: a Docker terminal backend that mounts each chat's folder at `/workspace`, as probed live at `f0d94882`.
+// `write_file` reports the container path; only a read naming the chat finds it.
+describe("A file in its chat's sandbox (#223)", () => {
+  const SCRIPT = "/workspace/hermes-verify-install.sh";
+  function sandboxed() {
+    const s = new FakeHermes();
+    s.sessions = [row("verify", 1, { pinned: true, title: "Verify the install" })];
+    s.transcripts.verify = [
+      { role: "user", text: "Check the install", row_id: 1, timestamp: 1_790_000_000 },
+      ...call("w1", "write_file", { path: SCRIPT }, written(SCRIPT, 26), 2),
+      ...call("w2", "write_file", { path: "/workspace/gone.md" }, written("/workspace/gone.md", 5), 4),
+    ];
+    // The chat's folder holds the script; the profile's own `/workspace` doesn't.
+    s.sandbox = { profile: "/home/liam/hermes", chats: { verify: "/home/liam/work2" } };
+    s.serverDirs.add("/home/liam/hermes");
+    s.serverFiles["/home/liam/work2/hermes-verify-install.sh"] = "#!/bin/sh\necho hermes ok\n";
+    return s;
+  }
+  const reads = (s: FakeHermes) =>
+    s.restRequests.filter((r) => /^\/api\/fs\/read-/.test(r.path)).map((r) => [r.path, r.query.get("path"), r.query.get("session_id")]);
+  const rowOf = (name: string) => [...document.querySelectorAll(".out-table tbody tr")].find((tr) => tr.querySelector(".files-label")!.textContent === name) as HTMLElement;
+
+  it("opens in Preview and Edit and saves where it was read, though a read without its chat is Hermes's 404", async () => {
+    const { server, user } = await launch(sandboxed());
+    // What Hermes Chat asked before: no chat, so Hermes looks in the profile's own `/workspace`.
+    expect(() => server.rest["GET /api/fs/read-data-url"]({ path: "/api/fs/read-data-url", query: new URLSearchParams({ path: SCRIPT, profile: "default" }) } as never)).toThrow(
+      `The dashboard answered 404: {"detail":"${SANDBOX_NOT_FOUND}"}`,
+    );
+    await openChat(user, "Verify the install");
+    await openOutputs(user);
+    // Checked on opening: the folder listing misses it, the read naming the chat finds it.
+    await waitFor(() => expect(rowOf("hermes-verify-install.sh").querySelector(".out-avail")!.textContent).toBe("Available"));
+
+    await user.click(within(rowOf("hermes-verify-install.sh")).getByRole("button", { name: "Preview hermes-verify-install.sh" }));
+    await waitFor(() => expect(document.querySelector(".preview-pane, aside.preview")?.textContent).toContain("echo hermes ok"));
+
+    await user.click(within(rowOf("hermes-verify-install.sh")).getByRole("button", { name: "Edit hermes-verify-install.sh" }));
+    const text = (await screen.findByRole("textbox", { name: "Text of hermes-verify-install.sh" })) as HTMLTextAreaElement;
+    expect(screen.queryByText(/can't be edited here/)).toBeNull();
+    expect(text.value).toBe("#!/bin/sh\necho hermes ok\n");
+    await user.click(text);
+    await user.paste("# checked\n");
+    await user.click(screen.getByRole("button", { name: "Review changes…" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText(/Saved\. Hermes has your edit, read back from the server\./);
+    expect(server.fsWrites.map((w) => [w.path, w.session])).toEqual([[SCRIPT, "verify"]]);
+    expect(server.serverFiles["/home/liam/work2/hermes-verify-install.sh"]).toContain("# checked");
+    expect(server.serverFiles["/home/liam/hermes/hermes-verify-install.sh"]).toBeUndefined();
+    // Every read of it named its chat.
+    expect(reads(server).filter(([, path]) => path === SCRIPT).every(([, , chat]) => chat === "verify")).toBe(true);
+  });
+
+  it("says Missing before it is opened when the chat's copy is really gone, with Edit and Preview off and a way to look again", async () => {
+    const { server, user } = await launch(sandboxed());
+    await openChat(user, "Verify the install");
+    await openOutputs(user);
+    const gone = () => rowOf("gone.md");
+    await waitFor(() => expect(gone().querySelector(".out-avail")!.textContent).toMatch(/^Missing.*can't find it in its chat's sandbox/));
+    const preview = within(gone()).getByRole("button", { name: "Preview gone.md" }) as HTMLButtonElement;
+    const edit = within(gone()).getByRole("button", { name: "Edit gone.md" }) as HTMLButtonElement;
+    expect(preview.disabled && edit.disabled).toBe(true);
+    expect(edit.title).toMatch(/^Hermes can't find it in its chat's sandbox\..*Check again, or look in its folder\.$/);
+    expect(within(gone()).getByRole("button", { name: "Show gone.md's folder in Server files" })).toBeTruthy();
+
+    // Put back in the chat's folder, Check again finds it.
+    server.serverFiles["/home/liam/work2/gone.md"] = "back";
+    await user.click(within(gone()).getByRole("button", { name: "Check again" }));
+    await waitFor(() => expect(gone().querySelector(".out-avail")!.textContent).toBe("Available"));
+    expect((within(gone()).getByRole("button", { name: "Edit gone.md" }) as HTMLButtonElement).disabled).toBe(false);
   });
 });

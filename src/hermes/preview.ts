@@ -4,7 +4,7 @@
 // the native Open dialog; Rust reads it (src-tauri/src/transport.rs `read_local_text`). Web pages load in a sandboxed
 // frame (ADR 0007). Everything shown is untrusted: nothing here turns it into HTML the app itself renders.
 import type { Item } from "./model";
-import type { RemotePreview } from "./remoteFiles";
+import { SANDBOX_MISSING, SANDBOX_NOT_FOUND_PREFIX, SESSION_GONE, type RemotePreview } from "./remoteFiles";
 import type { ArtifactRef } from "./artifacts";
 
 /**
@@ -19,8 +19,11 @@ export type PreviewTarget =
    * tunnel (the default, since that is where Hermes runs what it starts), or this computer's (ADR 0052).
    */
   | { kind: "web"; url: string; on?: PageOn }
-  /** `host`: on the dashboard's own machine, read through the managed files routes (ADR 0012), not where tools run. */
-  | { kind: "server"; path: string; host?: boolean }
+  /**
+   * `host`: on the dashboard's own machine, read through the managed files routes (ADR 0012), not where tools run.
+   * `session`: the chat whose sandbox the path is in, an Output's (outputs.ts `sessionOf`, ADR 0062).
+   */
+  | { kind: "server"; path: string; host?: boolean; session?: string }
   /** An Output open to edit (artifacts.ts, ADR 0029): read and saved on the machine `ref` names. */
   | { kind: "artifact"; ref: ArtifactRef }
   | { kind: "local"; path: string; name: string }
@@ -271,6 +274,7 @@ function serverFileError(e: unknown): Error {
   const status = Number(m[1]);
   if (status === 404 && detail === "Not Found") return new Error("This Hermes server can't read files for the preview.");
   if (status === 404 && detail === "File not found") return new Error("There's no file at this path on the Hermes server.");
+  if (status === 404 && detail.startsWith(SANDBOX_NOT_FOUND_PREFIX)) return new Error(SANDBOX_MISSING);
   if (status === 403 && /sensitive/i.test(detail)) return new Error("Hermes doesn't show this file, since it may hold credentials.");
   if (status === 400 && detail === "Path points to a directory") return new Error("This path is a folder on the Hermes server, not a file.");
   if (status === 413) return new Error("This file is too large for Hermes to preview.");
@@ -281,20 +285,28 @@ function serverFileError(e: unknown): Error {
 /**
  * Reads a Server file for the pane. `get` is a signed-in dashboard REST GET returning the parsed body. Images go as a
  * `data:` URL, up to Hermes's 16 MB; anything else as text, up to its first 512 KB. A binary file that isn't an image
- * is `unsupported`. Failures reject with a message for the owner.
+ * is `unsupported`. Failures reject with a message for the owner. `session`: the chat whose sandbox the path is in
+ * (ADR 0062), named as `session_id`; a chat Hermes no longer has is left out and the file read as before.
  */
-export async function readServerFile(get: (pathAndQuery: string) => Promise<unknown>, path: string, profile: string): Promise<FileView> {
+export async function readServerFile(get: (pathAndQuery: string) => Promise<unknown>, path: string, profile: string, session?: string): Promise<FileView> {
   if (!isServerPath(path)) throw new Error("Only full paths on the Hermes server, starting with / or ~/, open in the preview.");
-  const query = new URLSearchParams({ path, profile }).toString();
+  let chat = session;
+  const query = () => new URLSearchParams({ path, profile, ...(chat && { session_id: chat }) }).toString();
+  const fetch = (route: string) =>
+    get(`${route}?${query()}`).catch((e) => {
+      if (!chat || !SESSION_GONE.test(e instanceof Error ? e.message : String(e))) throw e;
+      chat = undefined;
+      return get(`${route}?${query()}`);
+    });
   const image = async (size?: number): Promise<FileView> => {
-    const res = (await get(`api/fs/read-data-url?${query}`).catch((e) => Promise.reject(serverFileError(e)))) as { dataUrl?: unknown };
+    const res = (await fetch("api/fs/read-data-url").catch((e) => Promise.reject(serverFileError(e)))) as { dataUrl?: unknown };
     const src = typeof res.dataUrl === "string" ? res.dataUrl : "";
     if (!IMAGE_DATA_URL.test(src)) return unsupported(path, /^data:([^;,]+)/.exec(src)?.[1], size);
     const base64 = src.slice(src.indexOf(",") + 1);
     return { kind: "image", src, size: size ?? (base64.length * 3) / 4 - (base64.match(/=*$/)?.[0].length ?? 0) };
   };
   if (IMAGE_NAME.test(path)) return image();
-  const res = (await get(`api/fs/read-text?${query}`).catch((e) => Promise.reject(serverFileError(e)))) as ReadText;
+  const res = (await fetch("api/fs/read-text").catch((e) => Promise.reject(serverFileError(e)))) as ReadText;
   const size = typeof res.byteSize === "number" ? res.byteSize : undefined;
   if (res.binary) return res.mimeType?.startsWith("image/") ? image(size) : unsupported(path, res.mimeType, size);
   const text = typeof res.text === "string" ? res.text : "";

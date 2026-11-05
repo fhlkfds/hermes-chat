@@ -46,7 +46,7 @@ import { SkillsApi } from "./skills";
 import { CapabilityStore, CapabilityUnsupportedError } from "./capabilities";
 import { BOT_CHAT_TITLE, BotChats, BotModeUnsupportedError, isBotChat, isBotChatTitle, rosterOf, type Bot } from "./bots";
 import type { OpenPipe, Pipe, PipeEvent, RestMethod, Route, Speech, Transcript, VoiceSetup } from "./pipe";
-import { RemoteFilesError, previewSupport, remoteFiles, type EditIo, type RemoteFiles } from "./remoteFiles";
+import { RemoteFilesError, SANDBOX_MISSING, SANDBOX_NOT_FOUND_PREFIX, SESSION_GONE, previewSupport, remoteFiles, type EditIo, type RemoteFiles } from "./remoteFiles";
 import { isUnsecure } from "./unsecure";
 import { providerKeys, readyProviders, type ProviderSetup, type SavedKey } from "./setup";
 import { restartHold } from "./unsaved";
@@ -745,15 +745,15 @@ export class Hermes {
    * How an artifact on the machine where `profile`'s tools run is read and saved (artifacts.ts `agentFsEditIo`, ADR
    * 0027). A save starts only while connected, and Rust stops it when the connection closes or is replaced.
    */
-  artifactFs(profile: string): EditIo {
+  artifactFs(profile: string, session?: string): EditIo {
     return agentFsEditIo((pathAndQuery, maxBytes) => this.restGet(pathAndQuery, maxBytes), {
-      saveText: (id, p, path, text) => {
+      saveText: (id, p, path, text, chat) => {
         const pipe = this.pipe;
         if (!pipe || this.closing || this.snapshot.status !== "connected") return Promise.reject(new Error("Not connected to Hermes."));
-        return pipe.fsSaveText(id, p, path, text);
+        return pipe.fsSaveText(id, p, path, text, chat);
       },
       cancel: (id) => this.pipe?.cancelTransfer(id) ?? Promise.resolve(),
-    }, profile);
+    }, profile, session);
   }
 
   /**
@@ -3924,10 +3924,11 @@ export class Hermes {
 
   /**
    * A file on the Hermes server, for the preview pane, read for the profile shown (preview.ts `readServerFile`). Hermes
-   * reads it where its tools run, which for a profile with an SSH terminal backend is that machine.
+   * reads it where its tools run, which for a profile with an SSH terminal backend is that machine. `session`: the chat
+   * whose sandbox the path is in (ADR 0062).
    */
-  readServerFile(path: string): Promise<FileView> {
-    return readServerFile((q) => this.rest("GET", q), path, this.snapshot.profile);
+  readServerFile(path: string, session?: string): Promise<FileView> {
+    return readServerFile((q) => this.rest("GET", q), path, this.snapshot.profile, session);
   }
 
   /**
@@ -3977,6 +3978,15 @@ export class Hermes {
           typeof e?.name === "string" ? [{ name: e.name, isDirectory: e.isDirectory === true }] : [],
         );
         return { entries, ...(typeof res.error === "string" && { error: res.error }) };
+      },
+      // Read as Preview reads it, naming the chat (ADR 0062). `read-text` reads at most 512 KB of the file.
+      confirm: async (path, session) => {
+        try {
+          await this.restGet(`api/fs/read-text?${new URLSearchParams({ path, profile, session_id: session })}`, LIST_MAX_BYTES);
+          return { state: "available" };
+        } catch (e) {
+          return outputFound(e instanceof Error ? e.message : String(e));
+        }
       },
     };
   }
@@ -4230,6 +4240,30 @@ function timeLimit<T>(p: Promise<T>, ms: number): Promise<T> {
 
 /** The most a folder listing for Outputs may be: a folder of tens of thousands of entries. */
 const LIST_MAX_BYTES = 8 * 1024 * 1024;
+
+/**
+ * What a failed `read-text` naming an Output's chat says about the file (outputs.ts `OutputsIo.confirm`, ADR 0062), or
+ * undefined when Hermes no longer has the chat. A file too large to preview, or one Hermes is using, is there.
+ */
+export function outputFound(message: string): { state: "missing" | "folder" | "forbidden" | "available" | "unknown"; why?: string } | undefined {
+  if (SESSION_GONE.test(message)) return undefined;
+  const m = /^The dashboard answered (\d{3}): ([\s\S]*)$/.exec(message);
+  if (!m) return { state: "unknown", why: message };
+  let detail = m[2];
+  try {
+    const d = (JSON.parse(m[2]) as { detail?: unknown }).detail;
+    if (typeof d === "string") detail = d;
+  } catch {
+    // As it came.
+  }
+  const status = Number(m[1]);
+  if (status === 404 && detail.startsWith(SANDBOX_NOT_FOUND_PREFIX)) return { state: "missing", why: SANDBOX_MISSING };
+  if (status === 404 && detail === "File not found") return { state: "missing", why: "It isn't at this path where its chat's tools ran: it was deleted, moved or renamed." };
+  if (status === 400 && detail === "Path points to a directory") return { state: "folder" };
+  if (status === 403) return { state: "forbidden", why: "The server refused to read it." };
+  if (status === 413 || status === 409) return { state: "available" };
+  return { state: "unknown", why: `The server couldn't read it (${status}): ${detail}` };
+}
 
 const sessionPath = (chatId: string) => `api/sessions/${encodeURIComponent(chatId)}`;
 

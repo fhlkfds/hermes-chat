@@ -257,6 +257,9 @@ export function editFlags(body: Record<string, unknown> | undefined) {
   return flags;
 }
 
+/** `hermes_cli/web_server_files.py` `SANDBOX_NOT_FOUND` at `f0d94882`: a container path the dashboard couldn't map to the host. */
+export const SANDBOX_NOT_FOUND = "File not found on the gateway host: the path may live inside the agent sandbox";
+
 /** Hermes's `_FS_PREVIEW_LANGUAGE_BY_EXT` and `_fs_mime_type` at `bf0203a`, as far as the tests need them. */
 const FS_LANGUAGES: Record<string, string> = { py: "python", md: "markdown", html: "html", ts: "typescript", json: "json", txt: "text", sh: "shell" };
 const FS_MIME: Record<string, string> = {
@@ -397,8 +400,15 @@ export class FakeHermes {
    * file's text (or bytes, one char per byte); `{ dir: true }` is a folder.
    */
   serverFiles: Record<string, string | { dir: true }> = {};
-  /** Every `POST /api/fs/write-text` that reached the server, in order (artifact saves, ADR 0029). */
-  readonly fsWrites: { profile: string; path: string; text: string }[] = [];
+  /** Every `POST /api/fs/write-text` that reached the server, in order (artifact saves, ADR 0029). `session`: the chat named. */
+  readonly fsWrites: { profile: string; path: string; text: string; session?: string }[] = [];
+  /**
+   * A Docker terminal backend with `docker_mount_cwd_to_workspace` on, as probed live at `f0d94882` (ADR 0062): the
+   * agent's `/workspace` is a host folder, the chat's own (`chats`, by stored session id) when a request names the chat
+   * with `session_id`, else the profile's (`profile`). A container path that doesn't map to a file there is Hermes's
+   * `SANDBOX_NOT_FOUND`. Unset: `/workspace` is an ordinary host path.
+   */
+  sandbox?: { profile?: string; chats: Record<string, string> };
   /** While set, an artifact save waits for it before Hermes writes. */
   fsWriteGate?: Promise<void>;
   /** Hermes's answer to the next artifact saves instead of writing: the Rust side's error text. */
@@ -1028,7 +1038,8 @@ export class FakeHermes {
     "GET /api/status": () => this.status,
     // `fs_list` (`hermes_cli/web_routers/files.py` at the deployed `bf0203a`): a folder's entries, or none and why.
     "GET /api/fs/list": ({ query }) => {
-      const path = query.get("path") ?? "";
+      // `fs_list` takes no `session_id`: a container path lists the profile's own `/workspace`.
+      const path = this.sandboxPath(query.get("path") ?? "") ?? query.get("path") ?? "";
       const all = new Set([...this.serverDirs, ...Object.keys(this.serverFiles)]);
       // A folder holding a file or folder is there too, as on a real disk.
       const isDir = (p: string) => this.serverDirs.has(p) || typeof this.serverFiles[p] === "object" || [...all].some((q) => q.startsWith(`${p}/`));
@@ -1446,7 +1457,7 @@ export class FakeHermes {
       discardUpload: async (token) => void this.managedFiles.discardPick(token),
       upload: (id, token, path, overwrite, onProgress) => this.managedFiles.upload(id, token, path, overwrite, onProgress),
       saveText: (id, path, text, overwrite) => this.managedFiles.saveText(path, text, overwrite),
-      fsSaveText: (_id, profile, path, text) => this.fsWriteText(profile, path, text),
+      fsSaveText: (_id, profile, path, text, session) => this.fsWriteText(profile, path, text, session),
       cancelTransfer: async (id) => this.managedFiles.cancel(id),
       // Mirrors `Dashboard::toolset_guards`: only these two facts of the config.
       toolsetGuards: async (profile): Promise<ToolsetGuards> => {
@@ -1773,10 +1784,13 @@ export class FakeHermes {
    * the text is stored as UTF-8 (one char per byte here, as `serverFiles` holds bytes). The Rust side refuses
    * credential paths before anything is sent (`write_agent_text`).
    */
-  private async fsWriteText(profile: string, path: string, text: string): Promise<string> {
-    if (/(^|\/)(\.env(\..*)?|auth\.json|config\.yaml)$/i.test(path)) throw new Error(`Hermes Chat doesn't relay writes to ${path}, a credential file Hermes keeps out of reach`);
+  private async fsWriteText(profile: string, asked: string, text: string, session?: string): Promise<string> {
+    if (/(^|\/)(\.env(\..*)?|auth\.json|config\.yaml)$/i.test(asked)) throw new Error(`Hermes Chat doesn't relay writes to ${asked}, a credential file Hermes keeps out of reach`);
     await this.fsWriteGate;
     if (this.fsWriteFailure !== undefined) throw new Error(this.fsWriteFailure);
+    this.ownedSession(profile, session);
+    // `fs_write_text` resolves the target as `read-text` does, `session_id` included.
+    const path = this.sandboxPath(asked, session) ?? asked;
     const parent = path.slice(0, path.lastIndexOf("/")) || "/";
     const all = [...this.serverDirs, ...Object.keys(this.serverFiles)];
     const parentIsDir = this.serverDirs.has(parent) || typeof this.serverFiles[parent] === "object" || all.some((p) => p.startsWith(`${parent}/`));
@@ -1784,7 +1798,7 @@ export class FakeHermes {
     if (!parentIsDir) throw new Error(`The dashboard answered 400: {"detail":"Parent directory does not exist"}`);
     const bytes = new TextEncoder().encode(text);
     this.serverFiles[path] = Array.from(bytes, (b) => String.fromCharCode(b)).join("");
-    this.fsWrites.push({ profile, path, text });
+    this.fsWrites.push({ profile, path: asked, text, ...(session && { session }) });
     this.afterFsWrite?.(path);
     return JSON.stringify({ ok: true, path, byteSize: bytes.length });
   }
@@ -1793,9 +1807,16 @@ export class FakeHermes {
     const profile = query.get("profile");
     if (profile && profile !== "default" && !(profile in this.otherProfiles))
       throw new Error(`The dashboard answered 404: {"detail":"Profile '${profile}' does not exist."}`);
-    const path = query.get("path") ?? "";
-    const failure = this.fsReadFailure?.(path);
+    const asked = query.get("path") ?? "";
+    const failure = this.fsReadFailure?.(asked);
     if (failure) throw new Error(failure);
+    const session = query.get("session_id") ?? undefined;
+    this.ownedSession(profile, session);
+    const mapped = this.sandboxPath(asked, session);
+    // A container path that maps to no file in the sandbox it names (`_fs_sandbox_not_found_detail`).
+    if (mapped !== undefined && typeof this.serverFiles[mapped] !== "string" && this.serverFiles[mapped] === undefined)
+      throw new Error(`The dashboard answered 404: {"detail":"${SANDBOX_NOT_FOUND}"}`);
+    const path = mapped ?? asked;
     const name = path.split("/").pop() ?? "";
     if (/^\.env(\..*)?$|^auth\.json$|^config\.yaml$/i.test(name))
       throw new Error(`The dashboard answered 403: {"detail":"Access to sensitive files is not allowed"}`);
@@ -1803,6 +1824,22 @@ export class FakeHermes {
     if (f === undefined) throw new Error(`The dashboard answered 404: {"detail":"File not found"}`);
     if (typeof f !== "string") throw new Error(`The dashboard answered 400: {"detail":"Path points to a directory"}`);
     return { path, data: f };
+  }
+
+  /**
+   * Where a container path is on the host under `sandbox`: `/workspace/…` in the folder of the chat `session` names, or
+   * of the profile. Undefined for any other path, or with no sandbox.
+   */
+  private sandboxPath(path: string, session?: string): string | undefined {
+    if (!this.sandbox || !(path === "/workspace" || path.startsWith("/workspace/"))) return undefined;
+    const root = (session && this.sandbox.chats[session]) || this.sandbox.profile;
+    return root ? root + path.slice("/workspace".length) : `/nonexistent-sandbox${path}`;
+  }
+
+  /** `_fs_owned_session`: a `session_id` the profile doesn't own (or a blank one) is 404 before anything is read. */
+  private ownedSession(profile: string | null | undefined, session: string | undefined) {
+    if (session === undefined) return;
+    if (!session.trim() || !(this.store(profile) ?? []).some((s) => s.id === session)) throw new Error(`The dashboard answered 404: {"detail":"Session not found"}`);
   }
 
   respond(id: number, result: unknown) {
