@@ -1,0 +1,72 @@
+name: release-dry-run
+
+# Builds the standalone AppImage, signs it, writes latest.json, verifies the result, and keeps it as a workflow
+# artifact. It never publishes a release (docs/releases.md).
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/release-dry-run.yml
+      - scripts/release/**
+      - src-tauri/tauri.release.conf.json
+  workflow_dispatch:
+    inputs:
+      signing:
+        description: "throwaway: a key made in this job and discarded with it. secret: the TAURI_SIGNING_PRIVATE_KEY repository secret, which must match the public key in src-tauri/tauri.release.conf.json."
+        type: choice
+        options: [throwaway, secret]
+        default: throwaway
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-dry-run-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  appimage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      SIGNING: ${{ inputs.signing || 'throwaway' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install Tauri system libraries and minisign
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev librsvg2-dev libdbus-1-dev \
+            libayatana-appindicator3-dev patchelf file minisign
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - name: Check that verify.sh refuses broken releases
+        run: scripts/release/verify.test.sh
+      - name: Take the owner's key from the repository secret
+        if: env.SIGNING == 'secret'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::The TAURI_SIGNING_PRIVATE_KEY secret isn't set. docs/releases.md says how the owner creates it."
+            exit 1
+          fi
+          (umask 077 && printf '%s' "$TAURI_SIGNING_PRIVATE_KEY" > "$RUNNER_TEMP/updater.key")
+          echo "HERMES_CHAT_UPDATER_KEY=$RUNNER_TEMP/updater.key" >> "$GITHUB_ENV"
+      - name: Build, sign, stage and verify
+        env:
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ env.SIGNING == 'secret' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+        run: scripts/release/dry-run.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: appimage-${{ env.SIGNING }}-${{ github.sha }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 14
