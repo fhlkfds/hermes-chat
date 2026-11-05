@@ -7,6 +7,7 @@ import type { ConnectionStatus, Item } from "../hermes/model";
 import type { Delivery } from "../hermes/transport";
 import { clock, sttProvider, ttsProvider } from "../hermes/voice";
 import { type TurnSettings, conversationBlocked, turnSettings } from "../hermes/voiceTurns";
+import type { SttPrefs } from "../hermes/sttRoute";
 import { type ConversationState, type Heard, VoiceConversation } from "./conversation";
 import type { AudioEnv } from "./recorder";
 import type { Speaker } from "./speaker";
@@ -325,6 +326,6 @@ export function ConversationPanel({
 }
 
 /** Why the conversation can't start in this chat now, for the Start button. */
-export function startBlocked(status: ConnectionStatus, setup: VoiceSetup | undefined, started: boolean, dictating: boolean): string | undefined {
-  return conversationBlocked(status, setup, started) ?? (dictating ? "Finish or cancel the dictation first." : undefined);
+export function startBlocked(status: ConnectionStatus, setup: VoiceSetup | undefined, started: boolean, dictating: boolean, stt?: Readonly<SttPrefs>): string | undefined {
+  return conversationBlocked(status, setup, started, stt) ?? (dictating ? "Finish or cancel the dictation first." : undefined);
 }

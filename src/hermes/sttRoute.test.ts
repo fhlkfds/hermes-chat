@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { DEFAULT_STT_PREFS, LOCAL_MAX_SECONDS, SttFailed, fellBackNote, toSttPrefs, transcribeRouted, type SttPrefs, type SttRunner } from "./sttRoute";
+import { DEFAULT_STT_PREFS, LOCAL_MAX_SECONDS, SttCancelled, SttFailed, fellBackNote, toSttPrefs, transcribeRouted, type SttPrefs, type SttRunner } from "./sttRoute";
 import { DEFAULT_UI_PREFS, readUIPrefs } from "./uiPrefs";
 
 const audio = new Uint8Array([1, 2, 3]);
@@ -88,6 +88,24 @@ describe("where speech-to-text runs", () => {
     expect(got).toEqual({ text: "", provider: undefined, ran: "local" });
     expect(server).not.toHaveBeenCalled();
     expect(fellBackNote(got)).toBeUndefined();
+  });
+
+  it("never goes on to the backup once the recording is dropped, even when the primary fails after", async () => {
+    let fail!: (e: Error) => void;
+    const local: SttRunner = vi.fn(() => new Promise<never>((_, reject) => (fail = reject)));
+    const server = said("should never get the audio");
+    const abort = new AbortController();
+    const run = transcribeRouted(prefs({ primary: "local", backup: true }), { server, local }, audio, "audio/wav", abort.signal);
+    abort.abort();
+    fail(new Error("whisper.cpp exited with code 1"));
+    await expect(run).rejects.toBeInstanceOf(SttCancelled);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(server).not.toHaveBeenCalled();
+    // Dropped before it began: nothing runs at all.
+    const before = new AbortController();
+    before.abort();
+    await expect(transcribeRouted(prefs({ primary: "server", backup: true }), { server, local }, audio, "audio/wav", before.signal)).rejects.toBeInstanceOf(SttCancelled);
+    expect(server).not.toHaveBeenCalled();
   });
 
   it("says what each side said when both fail", async () => {

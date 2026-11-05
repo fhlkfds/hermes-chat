@@ -6,6 +6,7 @@ import type { Speech, VoiceSetup } from "../hermes/pipe";
 import type { ConnectionStatus } from "../hermes/model";
 import { MAX_RECORDING_SECONDS, clock, dictationBlocked, messageOf, readAloudBlocked, sttProvider, ttsProvider } from "../hermes/voice";
 import { conversationBlocked, turnSettings } from "../hermes/voiceTurns";
+import { getUIPrefs, subscribe as subscribeUIPrefs } from "../hermes/uiPrefs";
 import { DEFAULT_STT_PREFS, fellBackOf, type HeardTranscript, type SttPrefs } from "../hermes/sttRoute";
 import { type AudioEnv, type Capture, CaptureAborted, type Recording, startCapture } from "./recorder";
 import type { Speaker } from "./speaker";
@@ -15,8 +16,11 @@ import { SettingNote, SettingRow, SettingsSection } from "./SettingRows";
 /** What the chat pane needs for voice: the profile's set-up, and Hermes's transcribing and speaking. */
 export type VoiceApi = {
   setup: () => Promise<VoiceSetup>;
-  /** Transcribes where the owner chose (sttRoute.ts); `ran` and `fellBack` say where it did. */
-  transcribe: (audio: Uint8Array, mime: string) => Promise<HeardTranscript>;
+  /**
+   * Transcribes where the owner chose (sttRoute.ts); `ran` and `fellBack` say where it did. Aborting `signal` drops the
+   * recording: nothing more is tried with it.
+   */
+  transcribe: (audio: Uint8Array, mime: string, signal?: AbortSignal) => Promise<HeardTranscript>;
   speak: (text: string) => Promise<Speech>;
   /** Calls `fn` whenever the set-up may have changed on Hermes (a Settings → Voice save); returns its unsubscribe. */
   onChange?: (fn: () => void) => () => void;
@@ -71,7 +75,8 @@ export function useDictation(transcribe: VoiceApi["transcribe"] | undefined, onT
   const [, tick] = useReducer((n: number) => n + 1, 0);
   // `turn` is bumped by every start, stop and cancel, so a late answer for an earlier one is dropped.
   // `starting` aborts a microphone still opening, so Cancel or closing the chat closes it at once.
-  const live = useRef<{ capture?: Capture; starting?: AbortController; turn: number }>({ turn: 0 });
+  // `sending` aborts a transcription on its way, so a dropped recording never goes on to the backup.
+  const live = useRef<{ capture?: Capture; starting?: AbortController; sending?: AbortController; turn: number }>({ turn: 0 });
   const latest = useRef({ transcribe, onTranscript });
   latest.current = { transcribe, onTranscript };
 
@@ -80,6 +85,7 @@ export function useDictation(transcribe: VoiceApi["transcribe"] | undefined, onT
     return () => {
       now.turn++;
       now.starting?.abort();
+      now.sending?.abort();
       now.capture?.cancel();
       now.capture = undefined;
     };
@@ -87,10 +93,13 @@ export function useDictation(transcribe: VoiceApi["transcribe"] | undefined, onT
 
   const send = async (recording: Recording) => {
     const turn = ++live.current.turn;
+    live.current.sending?.abort();
+    const sending = new AbortController();
+    live.current.sending = sending;
     setNote(undefined);
     setState({ phase: "transcribing", seconds: recording.seconds });
     try {
-      const got = await latest.current.transcribe!(recording.audio, recording.mime);
+      const got = await latest.current.transcribe!(recording.audio, recording.mime, sending.signal);
       if (turn !== live.current.turn) return;
       setState({ phase: "idle" });
       const fellBack = fellBackOf(got);
@@ -159,6 +168,7 @@ export function useDictation(transcribe: VoiceApi["transcribe"] | undefined, onT
   const cancel = () => {
     live.current.turn++;
     live.current.starting?.abort();
+    live.current.sending?.abort();
     live.current.capture?.cancel();
     live.current.capture = undefined;
     setState({ phase: "idle" });
@@ -349,6 +359,7 @@ export function VoiceSettings({
   }, [setup, connected, profile, changes]);
 
   const s = got?.setup;
+  const stt = useSyncExternalStore(subscribeUIPrefs, getUIPrefs).speechToText;
   const row = (name: string, blocked: string | undefined, provider: { label: string; needs: string; more?: string }) => (
     <SettingRow
       name={name}
@@ -395,9 +406,9 @@ export function VoiceSettings({
         </SettingNote>
       ) : (
         <>
-          {row("Dictation", dictationBlocked(s), sttProvider(s))}
+          {row("Dictation", stt.primary === "local" || stt.backup ? undefined : dictationBlocked(s), sttProvider(s))}
           {row("Read aloud", readAloudBlocked(s), ttsProvider(s))}
-          {row("Voice conversation", conversationBlocked(status, s, true), conversationTurns(s))}
+          {row("Voice conversation", conversationBlocked(status, s, true, stt), conversationTurns(s))}
         </>
       )}
     </SettingsSection>

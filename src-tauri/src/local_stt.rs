@@ -281,10 +281,8 @@ pub async fn download_model(
     let dest = dir.join(info.file_name());
     let part = dir.join(format!(".{}.part", info.file_name()));
     let result = async {
-        let mut response = client
-            .get(format!("{base_url}{}", info.file_name()))
-            .send()
-            .await
+        let mut response = interruptible(cancel, client.get(format!("{base_url}{}", info.file_name())).send())
+            .await?
             .map_err(|e| format!("Couldn't reach the download: {e}"))?;
         if !response.status().is_success() {
             return Err(format!("The download answered {}.", response.status()));
@@ -292,10 +290,7 @@ pub async fn download_model(
         let mut file = tokio::fs::File::create(&part).await.map_err(|e| format!("Couldn't write the model: {e}"))?;
         let mut hash = Sha256::new();
         let mut done: u64 = 0;
-        while let Some(chunk) = response.chunk().await.map_err(|e| format!("The download broke off: {e}"))? {
-            if cancel.load(Ordering::Relaxed) {
-                return Err("Cancelled.".into());
-            }
+        while let Some(chunk) = interruptible(cancel, response.chunk()).await?.map_err(|e| format!("The download broke off: {e}"))? {
             done += chunk.len() as u64;
             if done > info.bytes {
                 return Err("The download is bigger than the model should be, so it was dropped.".into());
@@ -321,6 +316,24 @@ pub async fn download_model(
         let _ = tokio::fs::remove_file(&part).await;
     }
     result
+}
+
+/// How long a download may go without a byte before it is given up.
+pub const DOWNLOAD_STALL: Duration = Duration::from_secs(60);
+
+/// Waits for `step`, but gives up as soon as `cancel` is set (checked every 100 ms) or after `DOWNLOAD_STALL` with
+/// nothing: a server that stops sending can't hold the download, and its slot, for ever.
+async fn interruptible<T>(cancel: &AtomicBool, step: impl std::future::Future<Output = T>) -> Result<T, String> {
+    let cancelled = async {
+        while !cancel.load(Ordering::Relaxed) {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    };
+    tokio::select! {
+        out = step => Ok(out),
+        () = cancelled => Err("Cancelled.".into()),
+        () = tokio::time::sleep(DOWNLOAD_STALL) => Err(format!("The download stalled: nothing came for {} s.", DOWNLOAD_STALL.as_secs())),
+    }
 }
 
 /// A model size as the screen lists it: its size, and whether it is downloaded (the file is there at its exact size).
@@ -509,6 +522,7 @@ pub async fn local_stt_status(app: tauri::AppHandle, state: State<'_, LocalStt>)
 }
 
 /// Sets the model size and the language. Either may be left out. An unknown size or a malformed language is refused.
+/// Setting a size also stops using a picked model file, so the size picked is the one that runs.
 #[tauri::command]
 pub async fn local_stt_set(app: tauri::AppHandle, state: State<'_, LocalStt>, model: Option<String>, language: Option<String>) -> Result<Status, String> {
     if let Some(m) = &model {
@@ -522,8 +536,10 @@ pub async fn local_stt_set(app: tauri::AppHandle, state: State<'_, LocalStt>, mo
         }
     }
     state.change(&app, |c| {
+        // Picking a size uses it: a picked model file stops being used (the file itself stays).
         if let Some(m) = model {
             c.model = m;
+            c.model_file = None;
         }
         if let Some(l) = language {
             c.language = l;
@@ -875,6 +891,30 @@ printf '\n Hola,\n mundo.\n'"#,
         // Only the good one is there, and no part file is left.
         let names: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
         assert_eq!(names, ["ggml-tiny.bin"]);
+    }
+
+    #[tokio::test]
+    async fn a_stalled_download_can_be_cancelled() {
+        // Headers, then a body that never comes.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = axum::Router::new().fallback(|| async {
+            axum::body::Body::from_stream(futures_util::stream::pending::<Result<Vec<u8>, std::io::Error>>())
+        });
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let dir = scratch("stalled");
+        let info = ModelInfo { name: "tiny", bytes: 10, sha256: "00" };
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            flag.store(true, Ordering::Relaxed);
+        });
+        let started = std::time::Instant::now();
+        let err = download_model(&reqwest::Client::new(), &format!("http://{addr}/"), &dir, &info, &cancel, |_| {}).await.unwrap_err();
+        assert_eq!(err, "Cancelled.");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "the part file was left behind");
     }
 
     #[test]

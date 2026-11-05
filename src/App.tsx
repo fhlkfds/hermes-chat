@@ -897,12 +897,13 @@ export function Main({
     () => ({
       setup: () => hermes.voiceSetup(),
       // Where the owner chose: Hermes, this computer, or one with the other as backup (ADR 0065).
-      transcribe: (audio, mime) =>
+      transcribe: (audio, mime, signal) =>
         transcribeRouted(
           getUIPrefs().speechToText,
           { server: (a, m) => hermes.transcribe(a, m), local: (a, _m, timeout) => localStt.transcribe(a, timeout) },
           audio,
           mime,
+          signal,
         ),
       speak: (text) => hermes.speak(text),
       onChange: hermes.onVoiceChange,

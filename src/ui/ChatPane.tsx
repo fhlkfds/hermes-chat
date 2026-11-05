@@ -1457,7 +1457,7 @@ function Composer({
           {conversation && !dictation.active && !talking && (
             <StartConversationButton
               ref={startTalkRef}
-              blocked={startBlocked(status, voiceSetup, started, dictation.active)}
+              blocked={startBlocked(status, voiceSetup, started, dictation.active, sttPrefs)}
               onBlocked={setTalkBlocked}
               onStart={() => {
                 setTalkBlocked(undefined);

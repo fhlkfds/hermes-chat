@@ -60,7 +60,10 @@ export class FakeLocalStt implements LocalSttApi {
     this.sets.push(change);
     if (change.model !== undefined && !FAKE_MODELS.some((m) => m.name === change.model)) throw new Error(`There's no Whisper model called ${change.model}.`);
     if (change.language !== undefined && !/^(auto|[a-z]{2,3})$/.test(change.language)) throw new Error("The language must be auto or a code such as en or es.");
-    if (change.model !== undefined) this.model = change.model;
+    if (change.model !== undefined) {
+      this.model = change.model;
+      this.modelFile = undefined;
+    }
     if (change.language !== undefined) this.language = change.language;
     return this.snapshot();
   };

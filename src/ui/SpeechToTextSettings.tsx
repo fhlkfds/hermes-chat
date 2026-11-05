@@ -71,6 +71,19 @@ export function SpeechToTextSettings({
       if (mounted.current) setBusy(undefined);
     }
   };
+  // A download this screen didn't start (begun before Settings was left and opened again) reports to the screen that
+  // started it, so this one reads Rust's status until it ends.
+  const othersDownload = !!here.status?.downloading && !busy?.startsWith("download:");
+  useEffect(() => {
+    if (!othersDownload) return;
+    const id = setInterval(() => {
+      local.status().then(
+        (s) => mounted.current && setHere({ status: s }),
+        () => {},
+      );
+    }, 1000);
+    return () => clearInterval(id);
+  }, [othersDownload, local]);
   const download = (name: string) => {
     setProgress({ name, done: 0, total: here.status?.models.find((m) => m.name === name)?.bytes ?? 0 });
     void act(`download:${name}`, () => local.download(name, (p) => mounted.current && setProgress(p))).finally(() => mounted.current && setProgress(undefined));
@@ -397,7 +410,13 @@ function TestRow({
     let capture: Capture;
     try {
       capture = await startCapture(
-        (why) => turn === live.current.turn && setTest({ phase: "done", results: [], note: why }),
+        (why) => {
+          if (turn !== live.current.turn) return;
+          // The run ends here: its countdown stops and nothing is transcribed.
+          live.current.turn++;
+          live.current.capture = undefined;
+          setTest({ phase: "done", results: [], note: why });
+        },
         abort.signal,
         env,
       );

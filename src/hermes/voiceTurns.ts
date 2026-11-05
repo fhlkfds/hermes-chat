@@ -9,6 +9,7 @@
 import type { VoiceSetup } from "./pipe";
 import type { ConnectionStatus } from "./model";
 import { MAX_RECORDING_SECONDS, dictationBlocked } from "./voice";
+import { DEFAULT_STT_PREFS, type SttPrefs } from "./sttRoute";
 
 /** Hermes's defaults for the three settings (`hermes_cli/config_defaults.py`, `tools/voice_mode.py`). */
 export const HERMES_SILENCE_THRESHOLD = 200;
@@ -176,13 +177,20 @@ export function isEcho(heard: string, spoken: string | undefined): boolean {
 /**
  * Why a Voice conversation can't be started in this chat now, or undefined. It needs Hermes connected, both audio
  * routes (it transcribes what the owner says and speaks the replies), and a chat that has started: a new chat's first
- * message makes it, and opening that chat would end the conversation.
+ * message makes it, and opening that chat would end the conversation. With this computer in the speech-to-text route
+ * (`stt`), Hermes's transcribing isn't needed.
  */
-export function conversationBlocked(status: ConnectionStatus, setup: VoiceSetup | undefined, started: boolean): string | undefined {
+export function conversationBlocked(
+  status: ConnectionStatus,
+  setup: VoiceSetup | undefined,
+  started: boolean,
+  stt: Readonly<SttPrefs> = DEFAULT_STT_PREFS,
+): string | undefined {
   if (status !== "connected") return "Connect to Hermes to talk with it: it transcribes what you say and speaks its replies.";
   if (!setup) return "Checking this Hermes's voice set-up…";
-  const stt = dictationBlocked(setup);
-  if (stt) return stt;
+  // With this computer in the route, Hermes's own speech-to-text isn't needed to start (ADR 0065).
+  const sttBlocked = stt.primary === "local" || stt.backup ? undefined : dictationBlocked(setup);
+  if (sttBlocked) return sttBlocked;
   if (!setup.speak) return "This Hermes server can't speak its replies. Updating Hermes adds it.";
   if (!started) return "Send this chat's first message, then talk: a voice conversation needs a chat that has started.";
   return undefined;

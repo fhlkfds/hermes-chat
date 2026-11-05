@@ -99,6 +99,25 @@ export class SttTimeout extends Error {
   }
 }
 
+/** The recording was dropped (Cancel, the chat closed, the conversation ended or paused) before it was transcribed. */
+export class SttCancelled extends Error {
+  constructor() {
+    super("Cancelled.");
+    this.name = "SttCancelled";
+  }
+}
+
+/** `p`, or a rejection with `SttCancelled` as soon as `signal` aborts. */
+function untilAborted<T>(p: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return p;
+  return new Promise<T>((resolve, reject) => {
+    const stop = () => reject(new SttCancelled());
+    if (signal.aborted) return stop();
+    signal.addEventListener("abort", stop, { once: true });
+    p.then(resolve, reject).finally(() => signal.removeEventListener("abort", stop));
+  });
+}
+
 export type Timers = { set: (fn: () => void, ms: number) => unknown; clear: (id: unknown) => void };
 const globalTimers: Timers = {
   set: (fn, ms) => setTimeout(fn, ms),
@@ -109,25 +128,29 @@ const globalTimers: Timers = {
  * Transcribes `audio` where the owner chose: the primary, then, if it fails, the backup. Hearing no
  * speech isn't a failure: an empty transcript from the primary is the answer. With a backup, the primary gets
  * `timeoutSeconds`, and an answer that comes later is dropped; the backup, and a primary with no backup, get as long
- * as they take (this computer stops itself after `LOCAL_MAX_SECONDS`).
+ * as they take (this computer stops itself after `LOCAL_MAX_SECONDS`). Once `signal` aborts, nothing more is tried and
+ * whatever is running is no longer waited for: a recording the owner dropped never goes on to the backup.
  */
 export async function transcribeRouted(
   prefs: Readonly<SttPrefs>,
   sides: Record<SttSide, SttRunner>,
   audio: Uint8Array,
   mime: string,
+  signal?: AbortSignal,
   timers: Timers = globalTimers,
 ): Promise<RoutedTranscript> {
   const order: SttSide[] = prefs.backup ? [prefs.primary, other(prefs.primary)] : [prefs.primary];
   const tried: { side: SttSide; why: string }[] = [];
   for (const [i, side] of order.entries()) {
     const timed = prefs.backup && i === 0;
+    if (signal?.aborted) throw new SttCancelled();
     try {
       const run = sides[side](audio, mime, timed ? prefs.timeoutSeconds : LOCAL_MAX_SECONDS);
-      const got = await (timed ? within(run, prefs.timeoutSeconds, timers) : run);
+      const got = await untilAborted(timed ? within(run, prefs.timeoutSeconds, timers) : run, signal);
       const fellBack = tried.length ? { from: tried[0].side, why: tried[0].why } : undefined;
       return { ...got, ran: side, ...(fellBack && { fellBack }) };
     } catch (e) {
+      if (e instanceof SttCancelled || signal?.aborted) throw new SttCancelled();
       tried.push({ side, why: messageOf(e) });
     }
   }

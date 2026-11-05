@@ -73,7 +73,7 @@ export type ConversationState = {
 
 /** What a conversation needs from the chat pane. `send` puts text in the chat as the owner's message. */
 export type ConversationDeps = {
-  transcribe: (audio: Uint8Array, mime: string) => Promise<HeardTranscript>;
+  transcribe: (audio: Uint8Array, mime: string, signal?: AbortSignal) => Promise<HeardTranscript>;
   send: (text: string) => Promise<{ delivery: Delivery; itemId?: string }>;
   /** Stops Hermes's reply (the composer's Stop), not just its audio. */
   stopReply: () => void;
@@ -108,6 +108,8 @@ export class VoiceConversation {
   /** Seconds of microphone audio since the conversation started: the clock every timing here runs on. */
   private clock = 0;
   private loudness = 0;
+  /** Aborts the transcription on its way, on End or a pause. */
+  private transcribeAbort?: AbortController;
   /** The microphone is shut until this time on the clock (the echo tail). */
   private shutUntil = 0;
   /** When the pane last went quiet, and what had played: for the echo check. */
@@ -170,6 +172,7 @@ export class VoiceConversation {
   end(): void {
     if (this.state.phase === "off") return;
     this.session++;
+    this.transcribeAbort?.abort();
     // Forgotten first, so the speaker stopping below doesn't read as the reply ending and listen again.
     this.speakingItem = undefined;
     this.held = this.transcribing = this.awaiting = undefined;
@@ -196,6 +199,8 @@ export class VoiceConversation {
     const phase = this.state.phase;
     if (phase === "off" || phase === "paused") return;
     this.session++;
+    // A held turn is sent again on resume; the run on its way stops here, so it never goes on to the backup meanwhile.
+    this.transcribeAbort?.abort();
     this.speakingItem = undefined;
     if (this.transcribing) this.held = this.transcribing;
     this.transcribing = this.awaiting = undefined;
@@ -404,11 +409,14 @@ export class VoiceConversation {
 
   private async transcribe(turn: Turn) {
     const session = this.session;
+    this.transcribeAbort?.abort();
+    const abort = new AbortController();
+    this.transcribeAbort = abort;
     this.transcribing = turn;
     this.set({ phase: "transcribing" });
     let got: HeardTranscript;
     try {
-      got = await this.deps.transcribe(turn.recording.audio, turn.recording.mime);
+      got = await this.deps.transcribe(turn.recording.audio, turn.recording.mime, abort.signal);
     } catch (e) {
       if (session !== this.session) return;
       // The transport's own errors already say what failed; others ("Not connected to Hermes.") get it said.
