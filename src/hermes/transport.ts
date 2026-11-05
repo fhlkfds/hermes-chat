@@ -2935,8 +2935,8 @@ export class Hermes {
   }
 
   /**
-   * Reads Hermes's roster of the chat's subagents (`subagent.list`) into its tree, once the chat is resumed on a
-   * connection: what ran or ended while the app wasn't listening. A roster that arrives for a session the chat no longer
+   * Reads Hermes's roster of the chat's subagents (`subagent.list`) into its tree: when the chat is resumed on a
+   * connection, for what ran or ended while the app wasn't listening, and when a subagent is opened. A roster that arrives for a session the chat no longer
    * has is dropped. A Hermes without the method is asked no more on this connection.
    */
   private async listSubagents(chatId: string, runtimeId: string): Promise<void> {
@@ -2962,8 +2962,8 @@ export class Hermes {
   }
 
   /**
-   * The end of a subagent's live transcript (`subagent.tail`, the last 16 KB). Hermes shares it only for a subagent
-   * running for this chat on this connection; otherwise it isn't available.
+   * The end of a subagent's live transcript (`subagent.tail`, the last 16 KB). Hermes shares it only for a running
+   * subagent, and only with the chat session that started it; otherwise it isn't available.
    */
   async subagentOutput(chatId: string, id: SubagentId): Promise<SubagentOutput> {
     const { runtimeId, still } = this.liveScope(chatId);

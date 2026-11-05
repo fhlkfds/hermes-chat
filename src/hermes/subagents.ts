@@ -248,8 +248,8 @@ export function onSubagentEvent(tree: SubagentTree | undefined, type: string, pa
 
 /**
  * The tree with Hermes's roster (`subagent.list`) applied, now `live`. Hermes lists the subagents still running, and
- * background delegations that failed lately. A running subagent the roster leaves out has ended without the app
- * hearing how, so it's `unknown`. The roster is also how the app hears of a nested subagent's tools: Hermes relays only
+ * background delegations that failed lately. After a drop, a running or queued subagent the roster leaves out has ended
+ * without the app hearing how, so it's `unknown`. The roster is also how the app hears of a nested subagent's tools: Hermes relays only
  * its start and end (`delegate_tool_progress._normalize_event` drops the rest). Undefined when there's no tree and
  * nothing listed.
  */
@@ -293,12 +293,12 @@ export function onRoster(tree: SubagentTree | undefined, result: unknown, at: nu
   }
   if (!tree && !listed.length && !failures.length) return undefined;
   const ids = new Set([...listed, ...failures].map((r) => r.id));
-  // Hermes lists a subagent once it runs. A queued one missing from a roster read while connected throughout just hasn't
-  // started; after a drop, it may have come and gone unheard.
+  // Only after a drop is a missing one news: while connected throughout, its end comes as an event, and a roster read
+  // just before it started (or, queued, before Hermes registers it) leaves it out without meaning anything.
   const recovering = tree?.sync.kind !== "live";
-  const gone: Report[] = known
-    .filter((s) => (s.state === "running" || (s.state === "queued" && recovering)) && !ids.has(s.id))
-    .map((s) => ({ id: s.id, state: "unknown" }));
+  const gone: Report[] = recovering
+    ? known.filter((s) => (s.state === "running" || s.state === "queued") && !ids.has(s.id)).map((s) => ({ id: s.id, state: "unknown" }))
+    : [];
   // One the roster brings that the app hadn't heard of was running before the app could hear it.
   const next = applied(tree, [...listed, ...failures, ...gone], (r) => (r.stored ? {} : { partial: true }));
   return { ...next, sync: { kind: "live" } };

@@ -203,9 +203,11 @@ describe("Recovering the tree after a reconnect", () => {
     expect(server.requests.filter((r) => r.method === "subagent.interrupt")).toEqual([]);
   });
 
-  it("while connected, a roster read keeps a queued subagent that hasn't started, and gives a nested one its tools", async () => {
+  it("while connected, a roster read leaves out-of-roster subagents as they are, and gives a nested one its tools", async () => {
     const { server, hermes, id, runtime, tree, agent } = await replying();
     server.event(runtime, "subagent.spawn_requested", who("q", "Waits its turn"));
+    // Started after Hermes made the roster below.
+    server.event(runtime, "subagent.start", who("r", "Just started"));
     server.event(runtime, "subagent.start", who("p", "Parent"));
     server.event(runtime, "subagent.tool", who("p", "Parent", { tool_name: "read_file", tool_preview: "src/auth.ts", tool_count: 1 }));
     // Hermes relays a nested subagent's start, not its tool calls.
@@ -216,7 +218,7 @@ describe("Recovering the tree after a reconnect", () => {
     ];
     await hermes.refreshSubagents(id);
     expect(tree().sync).toEqual({ kind: "live" });
-    expect(agent("q")!.state).toBe("queued");
+    expect([agent("q")!.state, agent("r")!.state]).toEqual(["queued", "running"]);
     expect(agent("g")).toMatchObject({ state: "running", toolCount: 4, lastActivity: { text: "grep" } });
     // What the events said about the parent stays: the roster's bare tool name is no news.
     expect(agent("p")!.lastActivity!.text).toBe("read_file: src/auth.ts");
