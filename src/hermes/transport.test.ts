@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeHermes } from "./fakeHermes";
 import { APP_SOURCE, ProtocolMismatchError, connect } from "./transport";
 
@@ -63,6 +63,108 @@ describe("Hermes transport", () => {
       ["user", "What's the disk usage on the NAS?"],
       ["assistant", "It's at **92%**."],
     ]);
+  });
+
+  describe("streamed deltas (#224)", () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    });
+
+    it("are in the snapshot at once, every character in order, and heard of once a frame", async () => {
+      const frames: FrameRequestCallback[] = [];
+      vi.stubGlobal("requestAnimationFrame", (f: FrameRequestCallback) => frames.push(f));
+      const { server, hermes, chat, runtime } = await signedIn();
+      const id = await hermes.newChat();
+      await hermes.send(id, "count to 49");
+      server.event(runtime(id), "message.start");
+      const text = (kind: string) => chat(id).items.filter((x) => x.kind === kind).map((x) => (x as { text: string }).text);
+      const heard: string[][] = [];
+      hermes.subscribe(() => heard.push(text("assistant")));
+      server.event(runtime(id), "reasoning.delta", { text: "Counting." });
+      let reply = "";
+      for (let i = 0; i < 50; i++) {
+        server.event(runtime(id), "message.delta", { text: `${i} ` });
+        reply += `${i} `;
+        expect(text("assistant")).toEqual([reply]);
+      }
+      expect(text("thinking")).toEqual(["Counting."]);
+      expect(heard).toEqual([]);
+      frames.splice(0).forEach((f) => f(0));
+      expect(heard).toEqual([[reply]]);
+      frames.splice(0).forEach((f) => f(0));
+      expect(heard).toHaveLength(1);
+
+      // Anything else is heard of at once, and brings the deltas still waiting with it.
+      server.event(runtime(id), "message.delta", { text: "done." });
+      server.event(runtime(id), "message.complete", { text: "", status: "complete" });
+      expect(heard).toEqual([[reply], [reply + "done."]]);
+      expect(chat(id).running).toBe(false);
+      frames.splice(0).forEach((f) => f(0));
+      expect(heard).toHaveLength(2);
+    });
+
+    it("are heard of once per batch, never by an earlier batch's timeout, and not after Hermes closes", async () => {
+      const frames: FrameRequestCallback[] = [];
+      vi.stubGlobal("requestAnimationFrame", (f: FrameRequestCallback) => frames.push(f));
+      const { server, hermes, runtime } = await signedIn();
+      const id = await hermes.newChat();
+      await hermes.send(id, "hi");
+      server.event(runtime(id), "message.start");
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      let heard = 0;
+      hermes.subscribe(() => heard++);
+      const runFrames = () => frames.splice(0).forEach((f) => f(0));
+
+      server.event(runtime(id), "message.delta", { text: "a" });
+      vi.advanceTimersByTime(16);
+      runFrames();
+      expect(heard).toBe(1);
+      // A second batch starts just before the first one's timeout would have gone off: that timeout tells nobody.
+      vi.advanceTimersByTime(80);
+      server.event(runtime(id), "message.delta", { text: "b" });
+      vi.advanceTimersByTime(10);
+      expect(heard).toBe(1);
+      runFrames();
+      expect(heard).toBe(2);
+      vi.advanceTimersByTime(200);
+      expect(heard).toBe(2);
+
+      // Heard of at once with the next change: the batch's frame and timeout then tell nobody.
+      server.event(runtime(id), "message.delta", { text: "c" });
+      server.event(runtime(id), "tool.start", { tool_id: "t1", name: "terminal", args: {}, preview: "ls" });
+      expect(heard).toBe(3);
+      runFrames();
+      vi.advanceTimersByTime(200);
+      expect(heard).toBe(3);
+
+      server.event(runtime(id), "message.delta", { text: "d" });
+      const closing = hermes.close();
+      vi.advanceTimersByTime(200);
+      await closing;
+      const after = heard;
+      runFrames();
+      vi.advanceTimersByTime(200);
+      expect(heard).toBe(after);
+    });
+
+    it("are heard of soon even in a window that draws no frames", async () => {
+      vi.stubGlobal("requestAnimationFrame", () => 0);
+      const { server, hermes, chat, runtime } = await signedIn();
+      const id = await hermes.newChat();
+      await hermes.send(id, "hi");
+      server.event(runtime(id), "message.start");
+      vi.useFakeTimers();
+      let heard = 0;
+      hermes.subscribe(() => heard++);
+      server.event(runtime(id), "message.delta", { text: "Hello" });
+      server.event(runtime(id), "message.delta", { text: " there" });
+      vi.advanceTimersByTime(99);
+      expect(heard).toBe(0);
+      vi.advanceTimersByTime(1);
+      expect(heard).toBe(1);
+      expect(chat(id).items.at(-1)).toMatchObject({ kind: "assistant", text: "Hello there" });
+    });
   });
 
   it("shows a reply that arrives only in message.complete", async () => {

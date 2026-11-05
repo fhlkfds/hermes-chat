@@ -879,7 +879,7 @@ const BlockView = memo(
     if (block.kind === "assistant")
       return (
         <div className="msg assistant" data-item={block.id} data-at={block.at}>
-          <Markdown text={block.text} query={query} />
+          <Markdown text={block.text} query={query} streaming={live} />
           {live && <span className="cursor" />}
           {block.interrupted && <div className="stopped">Stopped</div>}
           {!live && block.text.trim() && (

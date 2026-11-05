@@ -3,6 +3,8 @@
 // the same size twice side by side: opening both, two replies streaming at once, and moving the divider.
 // Uses Playwright's cached headless shell (`npx playwright install chromium-headless-shell`) or $CHROME; no npm deps.
 // Usage: [THROTTLE=4] node bench/run.mjs [turns...]   (default 50 200 800; THROTTLE slows the CPU that many times)
+//        [THROTTLE=4] node bench/run.mjs code [blocks...]   streams a reply of N code blocks, untagged and tagged
+//        (default 1 3 6 10), one 12-character delta a frame (#224)
 import { build, preview } from "vite";
 import { spawn } from "node:child_process";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
@@ -11,8 +13,9 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const configFile = fileURLToPath(new URL("./vite.config.ts", import.meta.url));
-const sizes = process.argv.slice(2).map(Number);
-if (!sizes.length) sizes.push(50, 200, 800);
+const code = process.argv[2] === "code";
+const sizes = process.argv.slice(code ? 3 : 2).map(Number);
+if (!sizes.length) sizes.push(...(code ? [1, 3, 6, 10] : [50, 200, 800]));
 
 function chrome() {
   if (process.env.CHROME) return process.env.CHROME;
@@ -93,7 +96,10 @@ try {
     if (i > 100) throw new Error(`window.bench never appeared at ${url}`);
     await new Promise((r) => setTimeout(r, 100));
   }
-  for (const turns of sizes) {
+  if (code)
+    for (const blocks of sizes)
+      for (const tagged of [false, true]) console.log(`code x${blocks} ${tagged ? "tagged  " : "untagged"}`, await timed(`bench.streamCode(${blocks}, ${tagged})`));
+  for (const turns of code ? [] : sizes) {
     console.log(`\n== ${turns} turns ==`);
     console.log("open  ", await timed(`bench.open(${turns})`), await memory());
     console.log("stream", await timed("bench.stream()"));

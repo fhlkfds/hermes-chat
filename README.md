@@ -454,8 +454,9 @@ npm run app     # run the desktop app in development mode
 | `HERMES_LIVE_DASHBOARD=… npx vitest run src/hermes/cronJobs.live.test.ts` | Runs the Scheduled jobs calls against a real dashboard. It refuses one whose profiles don't all live under `/tmp`; see the file's header. Skipped by `npm test`. |
 | `HERMES_LIVE_DASHBOARD=… npx vitest run src/hermes/importTranscripts.live.test.ts` | Imports real export files into a real dashboard, imports them again, and sends a corrupted file. It refuses one whose profiles don't all live under `/tmp`; see the file's header. Skipped by `npm test`. |
 | `node bench/run.mjs` | Benchmarks long chats (50, 200, and 800 turns) in headless Chromium. See below. |
+| `node bench/run.mjs code` | Benchmarks streaming a reply with 1, 3, 6, and 10 code blocks, tagged and untagged, in headless Chromium. |
 
-The benchmark times opening, streaming, find-in-chat, scrolling, two simultaneous streams, and divider dragging. It needs `$CHROME` or Playwright's cached headless shell (`npx playwright install chromium-headless-shell`). Set `THROTTLE=4` to slow the CPU four times.
+The benchmark times opening, streaming, find-in-chat, scrolling, two simultaneous streams, and divider dragging. It needs `$CHROME` or Playwright's cached headless shell (`npx playwright install chromium-headless-shell`). Set `THROTTLE=4` to slow the CPU four times. `bench/parse.ts` times only the Markdown parse and highlight work for the same streamed reply, in Node (usage in the file).
 
 GitHub Actions (`.github/workflows/ci.yml`) runs `npm test`, `npm run build`, and the Rust tests on every pull request and on pushes to `main`.
 
