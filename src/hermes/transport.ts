@@ -4444,7 +4444,7 @@ function applyEvent(c: Chat, type: string, p: Record<string, unknown>): Chat {
                 ...i,
                 status: "done",
                 durationS: p.duration_s as number | undefined,
-                // A screenshot inside it stays on the server (ADR 0060).
+                // A screenshot inside it stays on the server (ADR 0061).
                 result: toolResultText(p.result),
                 summary: p.summary as string | undefined,
               }

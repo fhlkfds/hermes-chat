@@ -1,4 +1,4 @@
-// What the app keeps of a tool's result (ADR 0060). Hermes sends a tool's whole result with `tool.complete`, and a
+// What the app keeps of a tool's result (ADR 0061). Hermes sends a tool's whole result with `tool.complete`, and a
 // `computer_use` capture's carries its screenshot inline, as a base64 data URL: about 590 KB of text for the 1440x900
 // Bot Desktop, every step. The chat would keep it as text nobody can read, pretty-printed, and its Saved copy would
 // outgrow the local limit. So inline data is swapped for a short note saying what it was, as Hermes's own history does

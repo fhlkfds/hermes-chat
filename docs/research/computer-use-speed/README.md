@@ -6,7 +6,7 @@ Measured on 2026-11-04 to find out why computer use (Hermes driving its Bot Desk
 
 What this could not measure is Hermes's loop: model latency, and `cua-driver`'s capture time. The code shows one or two model round trips per action, each carrying a full-resolution screenshot (Step 1). A step is very likely slow because of those round trips, not the stream, but that is an inference from the code, not a measurement. What Hermes would need is under Step 3.
 
-**Added on 2026-11-05: Step 4 times a real Hermes**, with its own bridge, Bot Desktop, `cua-driver` and model, through the app's SSH tunnel. It confirms the inference. A model round trip took 2.4 s (median), and a five-action task needed eight of them. A capture took 0.6 s. A key press reached this computer's screen in about 40 ms over the LAN, plus about 16 ms in the app. It also found one cost in the app: every capture's screenshot came into the chat as text, which is now left out (ADR 0060).
+**Added on 2026-11-05: Step 4 times a real Hermes**, with its own bridge, Bot Desktop, `cua-driver` and model, through the app's SSH tunnel. It confirms the inference. A model round trip took 2.4 s (median), and a five-action task needed eight of them. A capture took 0.6 s. A key press reached this computer's screen in about 40 ms over the LAN, plus about 16 ms in the app. It also found one cost in the app: every capture's screenshot came into the chat as text, which is now left out (ADR 0061).
 
 ## What was measured, and how
 
@@ -203,14 +203,14 @@ Hermes sends a tool's whole result with `tool.complete`. A `computer_use` captur
 
 The instrumented build ran the same kind of computer-use turn through the real transport and Saved-copy code (`runs/app-chat-*.log`):
 
-| | Before | After (ADR 0060) |
+| | Before | After (ADR 0061) |
 | --- | --- | --- |
 | Frame per capture on `/api/ws` | 0.9–1.0 MB | 0.9–1.0 MB (unchanged; Hermes sends it) |
 | Handling one frame in the webview | about 1 ms | about 1 to 2 ms |
 | The chat's Saved copy at the reply's end | 4.7 MB of JSON for 5 captures, over the 2 MB limit, so not kept | 46 kB for 7 captures, kept |
 | Saving it | 13 to 15 ms | 1 ms |
 
-This isn't what makes a step slow: the frame costs the webview about a millisecond. But each step made the chat about 1 MB bigger, cost it its Saved copy, and could push other chats' copies out. The chat now keeps a short note in place of each image (ADR 0060).
+This isn't what makes a step slow: the frame costs the webview about a millisecond. But each step made the chat about 1 MB bigger, cost it its Saved copy, and could push other chats' copies out. The chat now keeps a short note in place of each image (ADR 0061).
 
 ### What Hermes would need, with the numbers
 
@@ -220,7 +220,7 @@ In order of measured effect on a step:
 2. **Don't defer `computer_use` while the Bot Desktop is running**, or keep it described once it has been. That saves one round trip per turn.
 3. **Deliver input in the foreground on the Bot Desktop by default.** No one else's focus is there to steal. That saves the retry every run had, and its separate approval.
 4. **Find out why each capture takes 0.5 s in `cua-driver` on Linux**, even `ax` with no image. On a five-capture task that's 2.5 s.
-5. **Leave image data out of `tool.complete`.** The model needs it, but clients don't: the event should carry the text and the saved path. This app now drops it on arrival (ADR 0060). Other clients pay for it too.
+5. **Leave image data out of `tool.complete`.** The model needs it, but clients don't: the event should carry the text and the saved path. This app now drops it on arrival (ADR 0061). Other clients pay for it too.
 6. **One approval for all of computer use in a chat**, rather than one per kind of action and another for foreground.
 7. **Smaller screenshots** (Step 3, item 5) matter less than thought: on this model they changed a turn's time by a few hundred milliseconds at most. Sending the JPEG Hermes already asks for, instead of a PNG, would still cut each request.
 8. **Timing in the logs** (Step 3, item 6) is partly there. `agent.log` already has each tool's time ("tool computer_use completed (1.37s)") and each model call's latency and token counts. Still missing are the driver's own time and the accessibility walk.
