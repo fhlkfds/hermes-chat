@@ -78,9 +78,12 @@ pub enum TransportError {
     Voice(String),
     #[error("{0}")]
     BadHeader(String),
-    /// Settings → MCP servers' edit, refused before anything was sent, or unconfirmed after (ADR 0068).
+    /// Settings → MCP servers' edit, refused before anything was written (ADR 0068).
     #[error("{0}")]
     Mcp(String),
+    /// Settings → MCP servers' edit, after something may have been written: Hermes didn't confirm all of it (ADR 0068).
+    #[error("Not confirmed: {0}")]
+    McpUnconfirmed(String),
     #[error("The dashboard sent Hermes Chat on to {0}, another site. Hermes Chat doesn't follow it there, so your extra request headers aren't sent to it. If a gateway such as Cloudflare Access is in front of the dashboard, check the headers it needs.")]
     Redirected(String),
     /// `/api/status` answered, but not as a Hermes dashboard does (ADR 0056). No password was sent.
@@ -2129,13 +2132,39 @@ impl Dashboard {
         };
         let before = read().await?;
         let edited = crate::mcp::edited(&before, edit).map_err(TransportError::Mcp)?;
+        let mut token_saved = false;
         if let Some((key, token)) = &edited.token {
             let body = json!({ "key": key, "value": token }).to_string();
-            self.call(&http, Method::PUT, scoped("api/env", false), Some(body), false).await?;
+            match self.call(&http, Method::PUT, scoped("api/env", false), Some(body), false).await {
+                Ok(_) => token_saved = true,
+                // A refusal wrote nothing; anything else may have saved the token.
+                Err(e @ TransportError::Unexpected { status: 400..=499, .. }) => return Err(e),
+                Err(e) => return Err(TransportError::McpUnconfirmed(format!("the new bearer token may have been saved, and the rest of the change wasn't sent: {e}"))),
+            }
         }
+        // Once the token is saved, an existing `${…}` reference already uses it: nothing after this is "not changed".
+        let partial = |e: TransportError| {
+            if token_saved {
+                TransportError::McpUnconfirmed(format!("Hermes saved the new bearer token, but not the rest of the change: {e}"))
+            } else {
+                e
+            }
+        };
+        self.write_mcp_map(&http, scoped("api/mcp/servers", false), &edited).await.map_err(partial)?;
+        match read().await {
+            Ok(after) if after == edited.servers => Ok(()),
+            Ok(_) => Err(TransportError::McpUnconfirmed(
+                "Hermes took the change, but its config reads back otherwise: another client may have changed it meanwhile. The list shows what Hermes has now.".into(),
+            )),
+            Err(e) => Err(TransportError::McpUnconfirmed(format!("Hermes took the change, but its config couldn't be read back to confirm it: {e}"))),
+        }
+    }
+
+    /// `PUT /api/mcp/servers` with the whole map; a refusal is shown without any secret the map held.
+    async fn write_mcp_map(&self, http: &reqwest::Client, url: Url, edited: &crate::mcp::Edited) -> Result<(), TransportError> {
         let body = json!({ "servers": edited.servers }).to_string();
         let resp = http
-            .put(scoped("api/mcp/servers", false))
+            .put(url)
             .header(header::COOKIE, self.cookie_header())
             .header(header::CONTENT_TYPE, "application/json")
             .body(body)
@@ -2144,19 +2173,13 @@ impl Dashboard {
             .map_err(unreachable)?;
         self.keep_cookies(&resp);
         match resp.status() {
-            s if s.is_success() => {}
-            StatusCode::UNAUTHORIZED => return Err(TransportError::SignedOut),
+            s if s.is_success() => Ok(()),
+            StatusCode::UNAUTHORIZED => Err(TransportError::SignedOut),
             s => {
                 let answer = resp.text().await.unwrap_or_default();
-                return Err(TransportError::Unexpected { status: s.as_u16(), body: crate::mcp::scrubbed(&answer, &edited.secrets) });
+                Err(TransportError::Unexpected { status: s.as_u16(), body: crate::mcp::scrubbed(&answer, &edited.secrets) })
             }
         }
-        if read().await? != edited.servers {
-            return Err(TransportError::Mcp(
-                "Hermes took the change, but its config reads back otherwise: another client may have changed it meanwhile. The list shows what Hermes has now.".into(),
-            ));
-        }
-        Ok(())
     }
 }
 

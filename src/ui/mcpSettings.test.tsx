@@ -5,7 +5,7 @@
 // dropped. Every server here is synthetic.
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import { StrictMode, useState } from "react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeHermes } from "../hermes/fakeHermes";
 import { connect, type Hermes } from "../hermes/transport";
@@ -45,7 +45,12 @@ async function shown({ s = server(), profile = "default", openUrl = vi.fn() } = 
   const hermes = await connect(s.openPipe, "default");
   running.push(hermes);
   const user = userEvent.setup();
-  const view = render(<McpSettings api={hermes.mcp} profile={profile} connected openUrl={openUrl} pollMs={20} />);
+  // StrictMode, as the app runs in development: effects set up, clean up and set up again.
+  const view = render(
+    <StrictMode>
+      <McpSettings api={hermes.mcp} profile={profile} connected openUrl={openUrl} pollMs={20} />
+    </StrictMode>,
+  );
   await screen.findByRole("button", { name: /Read again/ });
   return { s, hermes, user, view, openUrl };
 }
@@ -117,7 +122,10 @@ describe("Settings → MCP servers: adding and editing", () => {
     const d = dialog();
     await user.type(within(d).getByRole("textbox", { name: "Name" }), "search");
     await user.type(within(d).getByRole("textbox", { name: "Command" }), "uvx");
-    await user.type(within(d).getByRole("textbox", { name: /Arguments/ }), "search-mcp{Enter}--fast");
+    await user.click(within(d).getByRole("button", { name: "Add an argument" }));
+    await user.type(within(d).getByRole("textbox", { name: "Argument 1" }), "search-mcp");
+    await user.click(within(d).getByRole("button", { name: "Add an argument" }));
+    await user.type(within(d).getByRole("textbox", { name: "Argument 2" }), "--fast");
     await user.click(within(d).getByRole("button", { name: "Add a variable" }));
     await user.type(within(d).getByRole("textbox", { name: "Variable 1 name" }), "SEARCH_KEY");
     await user.type(within(d).getByLabelText("SEARCH_KEY value"), "typed-secret-999");
@@ -150,7 +158,7 @@ describe("Settings → MCP servers: adding and editing", () => {
     await user.click(within(rowOf("fs")).getByRole("button", { name: "Edit fs" }));
     const d = dialog();
     expect((within(d).getByRole("textbox", { name: "Command" }) as HTMLInputElement).value).toBe("npx");
-    expect((within(d).getByRole("textbox", { name: /Arguments/ }) as HTMLTextAreaElement).value).toBe("-y\n@x/fs\n/srv");
+    expect([1, 2, 3].map((i) => (within(d).getByRole("textbox", { name: `Argument ${i}` }) as HTMLInputElement).value)).toEqual(["-y", "@x/fs", "/srv"]);
     const value = within(d).getByLabelText("API_KEY value") as HTMLInputElement;
     expect(value.value).toBe("");
     expect(value.placeholder).toMatch(/blank keeps it/);
@@ -160,6 +168,29 @@ describe("Settings → MCP servers: adding and editing", () => {
     await within(rowOf("fs")).findByText("Saved: Hermes reads it back that way.");
     expect(s.mcp.servers.default.fs).toEqual({ command: "bunx", args: ["-y", "@x/fs", "/srv"], env: { API_KEY: SECRET } });
     expect(s.mcp.servers.default.web).toEqual({ url: "https://web.example/mcp", headers: { Authorization: "Bearer ${MCP_WEB_API_KEY}" } });
+  });
+
+  it("keeps each argument as Hermes has it, an empty one and one with a line break too, when saved unchanged", async () => {
+    const s = server();
+    const args = ["--label", "", "--script", "first line\nsecond line"];
+    s.mcp.servers.default.fs.args = [...args];
+    const { user } = await shown({ s });
+    await user.click(within(rowOf("fs")).getByRole("button", { name: "Edit fs" }));
+    expect((within(dialog()).getByRole("textbox", { name: "Argument 4" }) as HTMLTextAreaElement).value).toBe("first line\nsecond line");
+    await user.click(within(dialog()).getByRole("button", { name: "Save" }));
+    await within(rowOf("fs")).findByText("Saved: Hermes reads it back that way.");
+    expect(s.mcp.servers.default.fs.args).toEqual(args);
+  });
+
+  it("says when an edit's new token was saved but Hermes refused the rest", async () => {
+    const { s, user } = await shown();
+    await user.click(within(rowOf("web")).getByRole("button", { name: "Edit web" }));
+    await user.type(within(dialog()).getByLabelText("Bearer token"), "tok-partial");
+    s.mcp.refuse = { status: 400, detail: "rejected" };
+    await user.click(within(dialog()).getByRole("button", { name: "Save" }));
+    await within(dialog()).findByText(/Hermes didn't confirm it: Hermes saved the new bearer token, but not the rest/);
+    // What reached Hermes isn't kept on screen.
+    expect((within(dialog()).getByLabelText("Bearer token") as HTMLInputElement).value).toBe("");
   });
 
   it("replaces a bearer token only when one is typed, and never shows the saved one", async () => {

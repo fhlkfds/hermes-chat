@@ -168,7 +168,22 @@ async fn a_write_that_reads_back_otherwise_is_not_called_saved() {
         .mcp_edit("work", &edit(json!({"name": "fs", "server": {"transport": "stdio", "command": "npx", "args": [], "env": [{"key": "API_KEY"}]}})))
         .await
         .unwrap_err();
-    assert!(matches!(&err, TransportError::Mcp(m) if m.contains("reads back otherwise")), "{err:?}");
+    assert!(matches!(&err, TransportError::McpUnconfirmed(m) if m.contains("reads back otherwise")), "{err:?}");
+}
+
+#[tokio::test]
+async fn a_token_saved_before_a_refused_map_is_not_called_unchanged() {
+    let (dashboard, shared) = stub().await;
+    shared.lock().unwrap().refuse_echoing = true;
+    let err = dashboard
+        .mcp_edit("work", &edit(json!({"name": "web", "server": {"transport": "http", "url": "https://old.example/mcp", "auth": "header", "bearerToken": "tok-new-5678"}})))
+        .await
+        .unwrap_err();
+    // The token went to `.env` first, so the server already signs in with it: that's said, never "not changed".
+    assert!(matches!(&err, TransportError::McpUnconfirmed(m) if m.contains("saved the new bearer token")), "{err:?}");
+    let shown = err.to_string();
+    assert!(shown.starts_with("Not confirmed: ") && !shown.contains("tok-new") && !shown.contains("s3cret"), "{shown}");
+    assert_eq!(shared.lock().unwrap().env.len(), 1);
 }
 
 #[tokio::test]

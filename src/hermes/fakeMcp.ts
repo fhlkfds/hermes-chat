@@ -371,10 +371,16 @@ export class FakeMcp {
       if (Object.keys(headers).length) cfg.headers = headers;
       else delete cfg.headers;
     }
-    await this.write(profile, `edit ${e.name}`, e, () => {
-      if (token) (this.env[profile] ??= {})[token[0]] = token[1];
-      delete servers[e.name];
-      servers[name] = cfg;
-    });
+    // The token goes to `.env` first; once it's there, a failure after it is "not confirmed", never "not changed".
+    if (token) (this.env[profile] ??= {})[token[0]] = token[1];
+    try {
+      await this.write(profile, `edit ${e.name}`, e, () => {
+        delete servers[e.name];
+        servers[name] = cfg;
+      });
+    } catch (err) {
+      if (token) throw new Error(`Not confirmed: Hermes saved the new bearer token, but not the rest of the change: ${err instanceof Error ? err.message : String(err)}`);
+      throw err;
+    }
   }
 }

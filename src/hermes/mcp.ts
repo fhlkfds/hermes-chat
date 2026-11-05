@@ -118,6 +118,8 @@ const refusedBy = (f: Failure) => f.status !== undefined && f.status >= 400 && f
 export class McpUnsupportedError extends Error {}
 /** A change refused before anything was sent (Rust's checks of an edit). */
 class RefusedFirst extends Error {}
+/** An edit Rust couldn't confirm after writing some or all of it. */
+class NotConfirmed extends Error {}
 
 function serverOf(v: unknown): McpServer | undefined {
   const s = obj(v);
@@ -262,8 +264,17 @@ export class McpApi {
     return this.list(profile).catch(() => undefined);
   }
 
-  /** Runs `write`, then decides from the list read again whether `done` holds. */
-  private async change(profile: string, write: () => Promise<unknown>, done: (l: McpList) => boolean, note?: (res: unknown) => string | undefined): Promise<McpChange> {
+  /**
+   * Runs `write`, then decides from the list read again whether `done` holds. `listSettles`: whether a failed write that
+   * the list then shows counts as saved. Not for an edit: the list can't show a secret, and Rust has confirmed or not.
+   */
+  private async change(
+    profile: string,
+    write: () => Promise<unknown>,
+    done: (l: McpList) => boolean,
+    note?: (res: unknown) => string | undefined,
+    listSettles = true,
+  ): Promise<McpChange> {
     let res: unknown;
     try {
       res = await write();
@@ -273,9 +284,9 @@ export class McpApi {
       if (e instanceof RefusedFirst || f.notRelayed || /^Not connected to Hermes/.test(f.reason)) return { kind: "refused", reason: f.reason, list: await this.again(profile) };
       if (f.signedOut) return { kind: "unconfirmed", reason: f.reason };
       const list = await this.again(profile);
-      if (refusedBy(f)) return { kind: "refused", reason: f.reason, list };
-      // A lost answer may still have landed: the list settles it.
-      if (list && done(list)) return { kind: "saved", list };
+      if (refusedBy(f) && !(e instanceof NotConfirmed)) return { kind: "refused", reason: f.reason, list };
+      // A lost answer may still have landed: the list settles it, when it can show all of the change.
+      if (listSettles && list && done(list)) return { kind: "saved", list };
       return { kind: "unconfirmed", reason: f.reason, list };
     }
     const list = await this.again(profile);
@@ -298,11 +309,16 @@ export class McpApi {
       () =>
         this.editInRust(profile, editOf(name, form)).catch((e: unknown) => {
           const m = e instanceof Error ? e.message : String(e);
-          // Rust's own refusals come as plain sentences; a failed request or an unconfirmed write says so.
-          if (/^(The dashboard answered|Can't reach)|sign-in has expired|reads back otherwise/i.test(m)) throw e;
+          // Something may have been written (the token, or the map) that Rust couldn't confirm.
+          if (/^Not confirmed: /.test(m)) throw new NotConfirmed(m.replace(/^Not confirmed: /, ""));
+          // A failed request: Hermes's refusal (4xx, nothing written), or a lost answer.
+          if (/^(The dashboard answered|Can't reach)|sign-in has expired/i.test(m)) throw e;
+          // Rust's own refusals, before anything was sent, come as plain sentences.
           throw new RefusedFirst(m);
         }),
       (l) => matches(l.servers.find((s) => s.name === form.name), form) && (form.name === name || !l.servers.some((s) => s.name === name)),
+      undefined,
+      false,
     );
   }
 

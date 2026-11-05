@@ -553,7 +553,8 @@ function ServerDialog({
   const [name, setName] = useState(editing?.name ?? "");
   const [transport, setTransport] = useState<"stdio" | "http">(editing?.transport === "http" ? "http" : "stdio");
   const [command, setCommand] = useState(editing?.command ?? "");
-  const [args, setArgs] = useState((editing?.args ?? []).join("\n"));
+  // One field per argument, as Hermes keeps them: an empty one, or one holding a line break, stays exactly as it is.
+  const [args, setArgs] = useState<string[]>(editing?.args ?? []);
   const [env, setEnv] = useState<EnvRow[]>((editing?.envKeys ?? []).map((key) => ({ key, value: "", saved: true })));
   const [url, setUrl] = useState(editing?.url ?? "");
   const [auth, setAuth] = useState<Auth>(editing?.auth ?? "none");
@@ -562,7 +563,11 @@ function ServerDialog({
   const [sending, setSending] = useState(false);
   const [outcome, setOutcome] = useState<McpChange>();
   const open = useRef(true);
-  useEffect(() => () => void (open.current = false), []);
+  // Set again on each setup: StrictMode runs a cleanup and a setup while the dialog stays open.
+  useEffect(() => {
+    open.current = true;
+    return () => void (open.current = false);
+  }, []);
 
   const form: ServerForm =
     transport === "stdio"
@@ -570,7 +575,7 @@ function ServerDialog({
           transport,
           name: name.trim(),
           command,
-          args: args.split("\n").filter((a) => a.trim() !== ""),
+          args,
           // A saved variable left blank keeps Hermes's value; a new one sends what's typed.
           env: env.map((e) => (e.saved && e.value === "" ? { key: e.key.trim() } : { key: e.key.trim(), value: e.value })),
         }
@@ -656,10 +661,25 @@ function ServerDialog({
                 <span className="field-label">Command</span>
                 <input value={command} onChange={(e) => setCommand(e.target.value)} placeholder="npx" spellCheck={false} autoComplete="off" />
               </label>
-              <label className="field">
-                <span className="field-label">Arguments, one per line</span>
-                <textarea className="mcp-args mono" rows={3} value={args} onChange={(e) => setArgs(e.target.value)} placeholder={"-y\n@modelcontextprotocol/server-filesystem\n/srv/notes"} spellCheck={false} />
-              </label>
+              <div className="field">
+                <span className="field-label">Arguments</span>
+                {args.map((a, i) => (
+                  <div className="mcp-arg-row" key={i}>
+                    {a.includes("\n") ? (
+                      // An argument with a line break (an inline script) keeps it.
+                      <textarea className="mcp-args mono" rows={Math.min(6, a.split("\n").length)} aria-label={`Argument ${i + 1}`} value={a} onChange={(e) => setArgs((xs) => xs.map((x, j) => (j === i ? e.target.value : x)))} spellCheck={false} />
+                    ) : (
+                      <input className="mono" aria-label={`Argument ${i + 1}`} value={a} onChange={(e) => setArgs((xs) => xs.map((x, j) => (j === i ? e.target.value : x)))} placeholder={i === 0 ? "-y" : ""} spellCheck={false} autoComplete="off" />
+                    )}
+                    <button type="button" className="icon-btn" aria-label={`Remove argument ${i + 1}`} onClick={() => setArgs((xs) => xs.filter((_, j) => j !== i))}>
+                      <X size={13} />
+                    </button>
+                  </div>
+                ))}
+                <button type="button" className="link mcp-add-env" onClick={() => setArgs((xs) => [...xs, ""])}>
+                  Add an argument
+                </button>
+              </div>
               <div className="field">
                 <span className="field-label">Environment variables</span>
                 {env.map((e, i) => (
@@ -786,6 +806,8 @@ function CatalogDialog({
   const [outcome, setOutcome] = useState<McpChange>();
   const open = useRef(true);
   useEffect(() => {
+    // Set again on each setup: StrictMode runs a cleanup and a setup while the dialog stays open.
+    open.current = true;
     api.catalog(profile).then(
       (c) => open.current && setCatalog(c),
       (e) => open.current && setError(messageOf(e)),

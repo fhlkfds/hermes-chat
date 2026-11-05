@@ -3085,3 +3085,5 @@ p.logs-status { margin: 0 0 8px; line-height: 1.5; }
 .mcp-identity div { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 8px; }
 .mcp-identity dt { color: var(--muted); }
 .mcp-identity dd { margin: 0; overflow-wrap: anywhere; }
+.mcp-arg-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: start; }
+.mcp-arg-row input { min-width: 0; }

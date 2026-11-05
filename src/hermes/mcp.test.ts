@@ -114,6 +114,29 @@ describe("MCP servers: editing", () => {
     expect(r).toMatchObject({ kind: "refused", reason: "GONE has no saved value to keep. Type one." });
   });
 
+  it("never calls an edit saved because the list looks right after a failure: the list can't show a secret", async () => {
+    const { api, fake } = await setUp();
+    // The answer to the map write is lost after the token was saved: the list shows the same server as before.
+    fake.drop = "lost";
+    const lost = await api.edit("default", "web", http({ name: "web", url: "https://old.example/mcp", auth: "header", bearerToken: "tok-2" }));
+    expect(lost.kind).toBe("unconfirmed");
+    expect(lost.kind !== "saved" && lost.reason).toMatch(/saved the new bearer token/);
+    // An env edit whose answer is lost is unconfirmed too.
+    fake.drop = "lost";
+    expect((await api.edit("default", "fs", stdio({ name: "fs", command: "npx", args: ["-y", "pkg"], env: [{ key: "API_KEY", value: "new" }, { key: "MODE" }] }))).kind).toBe("unconfirmed");
+  });
+
+  it("says a token was saved when Hermes refused the rest, and a refusal with no token changed nothing", async () => {
+    const { api, fake } = await setUp();
+    fake.refuse = { status: 400, detail: "Server 'web' rejected: suspicious" };
+    const partial = await api.edit("default", "web", http({ name: "web", url: "https://old.example/mcp", auth: "header", bearerToken: "tok-3" }));
+    expect(partial).toMatchObject({ kind: "unconfirmed", reason: expect.stringMatching(/^Hermes saved the new bearer token, but not the rest/) });
+    expect(fake.env.default.MCP_WEB_API_KEY).toBe("tok-3");
+    fake.refuse = { status: 400, detail: "Server 'fs' rejected: suspicious" };
+    const refused = await api.edit("default", "fs", stdio({ name: "fs", command: "bash" }));
+    expect(refused).toMatchObject({ kind: "refused", reason: "Server 'fs' rejected: suspicious" });
+  });
+
   it("refuses an edit of a server another client removed meanwhile", async () => {
     const { api, fake } = await setUp();
     delete fake.servers.default.fs;
