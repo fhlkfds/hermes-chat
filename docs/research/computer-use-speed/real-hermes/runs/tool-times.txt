@@ -1,0 +1,12 @@
+# tool_times.py on the throwaway Bot Desktop (1440x900, Chromium on the test page), cua-driver 0.21.0, native images.
+# The early version printed "first"; p50/max are what matter. "key + capture_after" came back in 19 ms with no image;
+# that wasn't looked into, so it is left out of tool_times.py.
+start-up (first call, driver launch): 1070 ms
+capture som: n=5 first=503 p50=505ms max=1053ms result~893 chars
+capture vision: n=5 first=503 p50=505ms max=508ms result~587291 chars
+capture ax: n=5 first=500 p50=500ms max=501ms result~418 chars
+click (no capture): n=5 first=48 p50=49ms max=58ms result~454 chars
+key s (no capture): n=5 first=18 p50=19ms max=19ms result~1367 chars
+click + capture_after som: n=5 first=545 p50=545ms max=549ms result~1310 chars
+# cProfile of one capture: 493 of 529 ms (ax) and 494 of 764 ms (vision) is the wait for cua-driver's MCP reply
+# ({method 'acquire' of '_thread.lock' objects}); the Python side is a few ms, plus 126 ms of JSON decoding for vision.

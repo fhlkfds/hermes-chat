@@ -1,0 +1,19 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+html,body{margin:0;height:100%;font:16px/1.5 sans-serif;overflow:hidden}
+#art{position:absolute;inset:0;overflow:hidden;padding:24px 48px;background:#fff;color:#222}
+#art img{width:640px;height:200px;display:block;margin:16px 0}
+#flash{position:absolute;inset:0;display:none;background:linear-gradient(135deg,#f6d365,#fda085 40%,#5ee7df 80%,#b490ca)}
+canvas{position:absolute;right:24px;bottom:24px;display:none}
+</style></head><body>
+<div id="art"></div><div id="flash"></div><canvas id="c" width="800" height="500"></canvas>
+<script>
+const art=document.getElementById('art');let html='';
+for(let i=0;i<120;i++){html+=`<h2>Section ${i}: the quick brown fox</h2><p>${'Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. '.repeat(4)}</p>`;
+ if(i%3==0){const c=document.createElement('canvas');c.width=640;c.height=200;const g=c.getContext('2d');for(let k=0;k<400;k++){g.fillStyle=`hsl(${(k*37+i*50)%360},70%,${30+k%40}%)`;g.beginPath();g.arc(Math.random()*640,Math.random()*200,5+Math.random()*30,0,7);g.fill();}html+=`<img src="${c.toDataURL()}">`;}}
+art.innerHTML=html;
+const flash=document.getElementById('flash'),cv=document.getElementById('c'),g=cv.getContext('2d');let anim=false,t=0;
+function draw(){if(!anim)return;t++;const grd=g.createLinearGradient(0,0,800,500);grd.addColorStop(0,`hsl(${t*3%360},80%,50%)`);grd.addColorStop(1,`hsl(${(t*3+180)%360},80%,50%)`);g.fillStyle=grd;g.fillRect(0,0,800,500);g.fillStyle='#fff';g.font='bold 64px sans-serif';g.fillText('frame '+t,40,120);for(let k=0;k<60;k++){g.fillStyle=`hsl(${(k*13+t*5)%360},70%,60%)`;g.fillRect((k*53+t*7)%800,(k*29+t*3)%500,40,40);}requestAnimationFrame(draw);}
+addEventListener('keydown',e=>{if(e.key=='t')flash.style.display=flash.style.display=='block'?'none':'block';
+ if(e.key=='s')art.scrollTop+=400; if(e.key=='w')art.scrollTop=0;
+ if(e.key=='a'&&!anim){anim=true;cv.style.display='block';draw();} if(e.key=='z'){anim=false;cv.style.display='none';} if(e.key=='f')flash.style.display='none';});
+</script></body></html>

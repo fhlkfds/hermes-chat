@@ -1,0 +1,157 @@
+diff --git a/src-tauri/src/display.rs b/src-tauri/src/display.rs
+index 384b80a..52f1c55 100644
+--- a/src-tauri/src/display.rs
++++ b/src-tauri/src/display.rs
+@@ -90,7 +90,14 @@ pub async fn open(dashboard: Arc<Dashboard>, ticket: &str, on_event: impl Fn(Dis
+                     }
+                 },
+                 msg = stream.next() => match msg {
+-                    Some(Ok(Message::Binary(bytes))) => on_event(DisplayEvent::Data(bytes.to_vec())),
++                    Some(Ok(Message::Binary(bytes))) => {
++                        // BENCH-172 (temporary): when each chunk reached Rust.
++                        if std::env::var_os("SCREEN_BENCH").is_some() {
++                            let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64() * 1000.0;
++                            eprintln!("BENCH rx {t:.3} {}", bytes.len());
++                        }
++                        on_event(DisplayEvent::Data(bytes.to_vec()))
++                    }
+                     Some(Ok(Message::Close(frame))) => break frame.map_or((1005, String::new()), |f| (u16::from(f.code), f.reason.to_string())),
+                     Some(Ok(_)) => {}
+                     Some(Err(e)) => break (1006, e.to_string()),
+diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
+index 3de5c3f..32b2ec2 100644
+--- a/src-tauri/src/lib.rs
++++ b/src-tauri/src/lib.rs
+@@ -1034,6 +1034,14 @@ fn display_send(displays: State<'_, display::Displays>, request: tauri::ipc::Req
+     displays.send(id, bytes.clone()).map_err(|e| e.to_string())
+ }
+ 
++/// BENCH-172 (temporary): the webview's timings, to stderr.
++#[tauri::command]
++fn bench_trace(lines: Vec<String>) {
++    for l in lines {
++        eprintln!("BENCH {l}");
++    }
++}
++
+ #[tauri::command]
+ fn display_close(displays: State<'_, display::Displays>, id: u64) {
+     displays.close(id);
+@@ -1192,6 +1200,7 @@ pub fn run(screenshot: bool, link: Option<String>) {
+             display_open,
+             display_send,
+             display_close,
++            bench_trace,
+             update::update_install_kind,
+             update::update_check,
+             update::update_download_and_install,
+diff --git a/src/main.tsx b/src/main.tsx
+index a40a93a..32e05e6 100644
+--- a/src/main.tsx
++++ b/src/main.tsx
+@@ -28,7 +28,8 @@ function RecoveryFailed({ reason }: { reason: string }) {
+ // Whether the window is hidden to the tray, for the whole app's life (ADR 0034).
+ void followWindowVisibility();
+ 
+-void restoreDraftsAfterRestart().then((failed) => {
++if (import.meta.env.VITE_SCREEN_BENCH_URL) void import("./screenBench").then((m) => m.runScreenBench()); // BENCH-172
++else void restoreDraftsAfterRestart().then((failed) => {
+   const root = createRoot(document.getElementById("root")!);
+   if (failed) return root.render(<RecoveryFailed reason={failed} />);
+   // Even at the sign-in screen, crash leftovers are swept with every connection's persisted outbox protected: after
+diff --git a/src/screenBench.tsx b/src/screenBench.tsx
+new file mode 100644
+index 0000000..bd8e8d6
+--- /dev/null
++++ b/src/screenBench.tsx
+@@ -0,0 +1,90 @@
++// BENCH-172 (temporary, not committed): the real Screen, signed in by URL to a bench dashboard, with timings out.
++import { createRoot } from "react-dom/client";
++import { invoke } from "@tauri-apps/api/core";
++import "./styles.css";
++import { connect } from "./hermes/transport";
++import { tauriPipe } from "./hermes/tauriPipe";
++import { ScreenTab, loadNoVnc, type RfbConstructor } from "./ui/Screen";
++import { localChatCache } from "./hermes/chatCache";
++import type { OpenPipe } from "./hermes/pipe";
++
++const now = () => performance.timeOrigin + performance.now();
++const lines: string[] = [];
++setInterval(() => {
++  if (lines.length) void invoke("bench_trace", { lines: lines.splice(0) });
++}, 500);
++
++export async function runScreenBench() {
++  const env = import.meta.env;
++  const details = { mode: "url" as const, sshTarget: "", url: env.VITE_SCREEN_BENCH_URL, username: "bench", password: env.VITE_SCREEN_BENCH_PW };
++  // Each /api/ws frame's synchronous handling (parse + reduce), timed.
++  const real = tauriPipe(details);
++  const timed: OpenPipe = (onEvent, profile, signal) =>
++    real(
++      (e) => {
++        const t = now();
++        onEvent(e);
++        const dt = now() - t;
++        const text = (e as { text?: string }).text;
++        if (text && (text.length > 20000 || dt > 8)) lines.push(`frame ${t.toFixed(3)} ${text.length} ${dt.toFixed(2)}`);
++      },
++      profile,
++      signal,
++    );
++  const base = localChatCache(details);
++  const cache = {
++    ...base,
++    saveTranscript: (p: string, id: string, items: Parameters<typeof base.saveTranscript>[2]) => {
++      const t = now();
++      base.saveTranscript(p, id, items);
++      lines.push(`save ${t.toFixed(3)} ${JSON.stringify(items).length} ${(now() - t).toFixed(2)} kept=${!!localStorage.getItem(Object.keys(localStorage).find((k) => k.includes(id)) ?? "-")}`);
++    },
++  };
++  const hermes = await connect(timed, "default", cache);
++  // A main-thread stall shows as a late animation frame.
++  let last = now();
++  const tick = () => {
++    const t = now();
++    if (t - last > 50) lines.push(`stall ${t.toFixed(3)} ${(t - last).toFixed(1)}`);
++    last = t;
++    requestAnimationFrame(tick);
++  };
++  requestAnimationFrame(tick);
++  (window as unknown as { benchTurn: (text: string) => Promise<void> }).benchTurn = async (text: string) => {
++    const chatId = await hermes.newChat();
++    lines.push(`turn ${now().toFixed(3)} ${chatId}`);
++    await hermes.send(chatId, text);
++  };
++  setTimeout(() => void (window as unknown as { benchTurn: (t: string) => Promise<void> }).benchTurn(env.VITE_SCREEN_BENCH_PROMPT), Number(env.VITE_SCREEN_BENCH_DELAY ?? 20000));
++  const api = hermes.screen;
++  const openSocket: typeof api.openSocket = (ticket, onData, onClose) =>
++    api.openSocket(
++      ticket,
++      (bytes) => {
++        lines.push(`js ${now().toFixed(3)} ${bytes.byteLength}`);
++        onData(bytes);
++      },
++      onClose,
++    );
++  const loadRfb = async (): Promise<RfbConstructor> => {
++    const Rfb = await loadNoVnc();
++    return class extends (Rfb as unknown as new (...a: unknown[]) => object) {
++      constructor(...a: unknown[]) {
++        super(...a);
++        const display = (this as unknown as { _display: { flip(q?: boolean): void; _renderQ: unknown[] } })._display;
++        const flip = display.flip.bind(display);
++        display.flip = (fromQueue?: boolean) => {
++          const draws = display._renderQ.length === 0 || fromQueue;
++          flip(fromQueue);
++          if (draws) lines.push(`flip ${now().toFixed(3)}`);
++        };
++      }
++    } as unknown as RfbConstructor;
++  };
++  document.body.style.height = "100vh";
++  createRoot(document.getElementById("root")!).render(
++    <div style={{ height: "100vh", display: "flex", flexDirection: "column" }}>
++      <ScreenTab api={{ ...api, openSocket }} shown connected loadRfb={loadRfb} />
++    </div>,
++  );
++}

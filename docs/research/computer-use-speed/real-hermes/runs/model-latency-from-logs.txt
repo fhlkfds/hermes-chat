@@ -1,0 +1,19 @@
+# Model round trips the deployed Hermes (2026.9.24) logged in agent.log and each profile's agent.log, as of
+# 2026-11-05: "API call #N: model=… in=… out=… latency=…s" lines, 9,291 in all. Only these aggregates are kept here.
+# "short" = calls that answered in 300 tokens or fewer, which is what a computer-use step mostly is.
+
+By model:
+z-ai/glm-5.3-flash: n=5223 short(out<=300) n=2687 p50=1.9 p90=5.3 | all p50=3.8 | median in=59842
+deepseek/deepseek-v4-flash: n=2020 short(out<=300) n=801 p50=3.5 p90=6.4 | all p50=6.6 | median in=73425
+deepseek/deepseek-v4-pro: n=1025 short(out<=300) n=449 p50=4.8 p90=8.8 | all p50=7.3 | median in=45089
+deepseek/deepseek-v4-flash-0731: n=690 short(out<=300) n=249 p50=4.1 p90=8.8 | all p50=8.6 | median in=59076
+gpt-6.1-terra: n=123 short(out<=300) n=113 p50=3.3 p90=7.6 | all p50=3.4 | median in=47979
+gpt-6.1-sol: n=61 short(out<=300) n=48 p50=6.6 p90=13.2 | all p50=7.4 | median in=87731
+
+z-ai/glm-5.3-flash by output tokens (latency p50):
+out 0-50: n=432 p50 1.4s
+out 50-150: n=1251 p50 1.6s
+out 150-300: n=1001 p50 2.7s
+out 300-1000: n=1606 p50 5.3s
+out 1000-3000: n=722 p50 14.1s
+out 3000-99999: n=211 p50 34.8s
