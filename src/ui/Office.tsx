@@ -1,12 +1,11 @@
 // The agent office (ADR 0077): every agent at work on this connection as a desk, in one room per chat, or the same desks
 // as a list. It opens from the rail beside the chat list, like the Inbox. A desk opens what it stands for: the chat's
 // reply opens the chat, at its Approval card or failure, and a subagent opens in the chat's Subagents panel. Nothing here
-// answers, approves, retries or starts anything, and it draws nothing while it is closed or the window is hidden.
-import { useEffect, useId, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
-import { CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleStop, Clock, Coffee, LayoutGrid, List, Loader, ShieldAlert, X } from "lucide-react";
+// answers, approves, retries or starts anything. App draws it only while it is open and the window can be seen.
+import { useEffect, useId, useRef, useState, useSyncExternalStore, type FocusEvent, type KeyboardEvent } from "react";
+import { CircleAlert, CircleCheck, CircleDashed, CircleDot, CircleHelp, CircleStop, Clock, Coffee, LayoutGrid, List, Loader, ShieldAlert, X } from "lucide-react";
 import { officeTally, type Desk, type DeskState, type Room } from "../hermes/office";
 import { composing, relTime, useReturnFocus } from "./bits";
-import { useWindowHidden } from "./windowState";
 
 export const STATE_LABEL: Record<DeskState, string> = {
   queued: "Queued",
@@ -15,6 +14,7 @@ export const STATE_LABEL: Record<DeskState, string> = {
   failed: "Failed",
   uncertain: "May not have sent",
   completed: "Finished",
+  unread: "New, not read yet",
   stopped: "Stopped",
   ended: "Ended, Hermes didn't say how",
   unknown: "Not known yet",
@@ -28,6 +28,7 @@ const STATE_ICON: Record<DeskState, typeof X> = {
   failed: CircleAlert,
   uncertain: CircleHelp,
   completed: CircleCheck,
+  unread: CircleDot,
   stopped: CircleStop,
   ended: CircleDashed,
   unknown: CircleHelp,
@@ -40,17 +41,9 @@ const subscribeReducedMotion = (fn: () => void) => {
   q?.addEventListener?.("change", fn);
   return () => q?.removeEventListener?.("change", fn);
 };
-const subscribeVisibility = (fn: () => void) => {
-  document.addEventListener("visibilitychange", fn);
-  return () => document.removeEventListener("visibilitychange", fn);
-};
-
-/** Whether the desks may move: not when the owner asks for reduced motion, nor while nobody can see them. */
+/** Whether the desks may move: not when the owner asks for reduced motion. While hidden, the office isn't drawn at all. */
 function useMotion(): "on" | "still" {
-  const reduced = useSyncExternalStore(subscribeReducedMotion, () => !!reducedMotionQuery()?.matches);
-  const pageHidden = useSyncExternalStore(subscribeVisibility, () => document.visibilityState === "hidden");
-  const trayHidden = useWindowHidden();
-  return reduced || pageHidden || trayHidden ? "still" : "on";
+  return useSyncExternalStore(subscribeReducedMotion, () => !!reducedMotionQuery()?.matches) ? "still" : "on";
 }
 
 /** The subagent that started a subagent's desk, when it has a desk in the room too. */
@@ -109,6 +102,19 @@ export function Office({
   const desks = () => Array.from(root.current?.querySelectorAll<HTMLButtonElement>("[data-desk]") ?? []);
   // Opening, and switching views, puts focus on the first desk, or on Close when there is none.
   useEffect(() => void (desks()[0] ?? root.current?.querySelector<HTMLElement>(".office-close"))?.focus(), [view]);
+  // A desk with focus can go, as when its reply ends and its room with it. Focus then goes to the desk now in its place,
+  // or Close, rather than to the page, where the office's keys don't reach.
+  const lastDesk = useRef<{ key: string; index: number }>(undefined);
+  useEffect(() => {
+    const was = lastDesk.current;
+    if (!was || (document.activeElement && document.activeElement !== document.body)) return;
+    const all = desks();
+    (all.find((d) => d.dataset.desk === was.key) ?? all[Math.min(was.index, all.length - 1)] ?? root.current?.querySelector<HTMLElement>(".office-close"))?.focus();
+  });
+  const onFocus = (e: FocusEvent<HTMLElement>) => {
+    const key = e.target instanceof HTMLElement ? e.target.dataset.desk : undefined;
+    if (key) lastDesk.current = { key, index: desks().indexOf(e.target as HTMLButtonElement) };
+  };
 
   const open = (room: Room, desk: Desk) => (room.profile !== profile && leaving ? setAsking({ room, desk }) : onOpen(room, desk));
   // Staying puts focus back on the desk the question came from.
@@ -142,7 +148,7 @@ export function Office({
     .join(" · ");
 
   return (
-    <section ref={root} className="inbox office" role="dialog" aria-labelledby={headId} onKeyDown={onKeyDown}>
+    <section ref={root} className="inbox office" role="dialog" aria-labelledby={headId} onKeyDown={onKeyDown} onFocus={onFocus}>
       <header className="inbox-head">
         <div className="inbox-heading">
           <h2 id={headId}>Office</h2>

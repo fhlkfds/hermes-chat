@@ -2234,6 +2234,7 @@ label.memory-pick { cursor: pointer; }
 .desk.state-failed .desk-state { color: var(--bad); }
 .desk.state-completed .desk-screen { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
 .desk.state-completed .desk-state { color: var(--ok); }
+.desk.state-unread .desk-screen { color: var(--accent); }
 .desk.state-stopped .desk-screen, .desk.state-ended .desk-screen, .desk.state-idle .desk-screen, .desk.state-unknown .desk-screen { background: var(--sidebar); color: var(--faint); }
 .desk.is-stale { border-style: dashed; border-color: var(--line-3); }
 .desk.is-stale .desk-screen {

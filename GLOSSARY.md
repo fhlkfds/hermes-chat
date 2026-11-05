@@ -228,7 +228,7 @@ An agent Hermes started from a chat's reply to do part of its work (Hermes's `de
 _Avoid_: child agent, worker, delegate (in the UI). Subagent model settings in Settings → Model pick models, not running work
 
 **Office** / **Desk**:
-The agent office, opened from the rail: every agent at work on the connection as a **Desk**, in a room per chat. A chat's room has a desk for its reply, in the state the Rail inbox gives it, and one for each of its Subagents. A desk opens its chat, or the subagent in the chat's Subagents panel; it never approves or starts anything. **List** shows the same desks as rows. A desk that can't be checked shows "as last seen", and only Hermes's word makes one Finished (ADR 0077).
+The agent office, opened from the rail: every agent at work on the connection as a **Desk**, in a room per chat. A chat's room has a desk for its reply, in the state the Rail inbox gives it, and one for each of its Subagents. A desk opens its chat, or the subagent in the chat's Subagents panel; it never approves or starts anything. **List** shows the same desks as rows. A desk that can't be checked shows "as last seen", and only Hermes's word that a subagent completed makes a desk Finished (ADR 0077).
 _Avoid_: dashboard, agents view, workers
 
 **Approval**:

@@ -252,19 +252,24 @@ describe("Motion", () => {
     expect(motion()).toBe("still");
   });
 
-  it("holds still while the window is hidden to the tray or the page can't be seen", () => {
-    prefersReduced(false);
-    office("desks");
-    act(() => setWindowHidden(true));
-    expect(motion()).toBe("still");
-    act(() => setWindowHidden(false));
-    expect(motion()).toBe("on");
-    const was = Object.getOwnPropertyDescriptor(document, "visibilityState");
-    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
-    act(() => void document.dispatchEvent(new Event("visibilitychange")));
-    expect(motion()).toBe("still");
-    if (was) Object.defineProperty(document, "visibilityState", was);
-    else delete (document as { visibilityState?: unknown }).visibilityState;
+});
+
+describe("A desk that goes while it has focus", () => {
+  it.each(["desks", "list"] as const)("leaves focus on the desk now in its place, where the keys still work (%s)", async (view) => {
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    const props = { view, onView: () => {}, server: "hermes", profile: "default", connected: true, onOpen: () => {}, onClose };
+    const { rerender } = render(<Office rooms={sample()} {...props} />);
+    // The first room's only desk, as its reply stops waiting and the room leaves the office.
+    expect(document.activeElement?.getAttribute("data-desk")).toBe("work deploy reply");
+    rerender(<Office rooms={sample().slice(1)} {...props} />);
+    expect(document.activeElement?.getAttribute("data-desk")).toBe("default audit reply");
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement?.getAttribute("data-desk")).toBe("default audit a");
+    rerender(<Office rooms={[]} {...props} />);
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Close the office" }));
+    await user.keyboard("{Escape}");
+    expect(onClose).toHaveBeenCalled();
   });
 });
 
@@ -318,6 +323,31 @@ describe("The office in the app", () => {
     await user.click(within(screen.getByRole("region", { name: "Audit" })).getByRole("button", { name: /^The chat's reply, Waiting for your approval/ }));
     await waitFor(() => expect(document.activeElement?.closest(".approval")).toBeTruthy());
     expect(writes(server)).toHaveLength(before);
+  });
+
+  it("isn't drawn, and stops asking Hermes for checks, while the window is hidden to the tray or minimized", async () => {
+    const { hermes, user } = await auditing();
+    const checks = vi.spyOn(hermes, "checkOtherProfiles");
+    await user.click(officeButton()!);
+    expect(document.querySelector(".office")).toBeTruthy();
+    expect(checks).toHaveBeenCalledTimes(1);
+
+    act(() => setWindowHidden(true));
+    expect(document.querySelector(".office")).toBeNull();
+    act(() => setWindowHidden(false));
+    expect(document.querySelector(".office")).toBeTruthy();
+    // Back in sight, it checks again at once: the checks it had asked for stopped while hidden.
+    expect(checks).toHaveBeenCalledTimes(2);
+
+    const was = Object.getOwnPropertyDescriptor(document, "visibilityState");
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    act(() => void document.dispatchEvent(new Event("visibilitychange")));
+    expect(document.querySelector(".office")).toBeNull();
+    if (was) Object.defineProperty(document, "visibilityState", was);
+    else delete (document as { visibilityState?: unknown }).visibilityState;
+    act(() => void document.dispatchEvent(new Event("visibilitychange")));
+    expect(document.querySelector(".office")).toBeTruthy();
+    expect(checks).toHaveBeenCalledTimes(3);
   });
 
   it("is off with no rail button and nothing drawn when Settings turns it off, and draws nothing while closed", async () => {

@@ -20,6 +20,13 @@ const get = () => hidden;
 /** The window is hidden to the tray now. */
 export const useWindowHidden = () => useSyncExternalStore(subscribe, get, get);
 
+const subscribeVisibility = (fn: () => void) => {
+  document.addEventListener("visibilitychange", fn);
+  return () => document.removeEventListener("visibilitychange", fn);
+};
+/** The page can't be seen, as when the window is minimized: the webview's own word, apart from the tray. */
+export const usePageHidden = () => useSyncExternalStore(subscribeVisibility, () => document.visibilityState === "hidden");
+
 /** The composer to type in once the window is back: the active pane's, or the only one showing. */
 const composer = (doc: Document) =>
   doc.querySelector<HTMLElement>(".pane.active [data-composer]") ?? doc.querySelector<HTMLElement>(".pane:not(.hidden) [data-composer]");

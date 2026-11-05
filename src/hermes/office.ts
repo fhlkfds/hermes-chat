@@ -8,11 +8,12 @@ import { childrenOf, type Subagent, type SubagentId, type SubagentState, type Su
 
 /**
  * What a desk's agent is doing. `approval`: the chat's reply waits for the owner's answer. `uncertain`: a message the
- * owner sent may not have reached Hermes. `completed`: Hermes said it finished, never guessed. `idle`: the chat's reply
+ * owner sent may not have reached Hermes. `completed`: Hermes said the subagent finished, never guessed. `unread`: the
+ * chat has something the owner hasn't read, which alone doesn't say its reply finished. `idle`: the chat's reply
  * isn't running, and nothing about it needs the owner, but its subagents are known. `unknown`: a subagent known only as
  * the parent of another, or a reply while the app isn't connected and nothing else says how it is.
  */
-export type DeskState = "queued" | "running" | "approval" | "failed" | "uncertain" | "completed" | "stopped" | "ended" | "unknown" | "idle";
+export type DeskState = "queued" | "running" | "approval" | "failed" | "uncertain" | "completed" | "unread" | "stopped" | "ended" | "unknown" | "idle";
 
 export type Desk = {
   key: string;
@@ -42,7 +43,8 @@ const SUBAGENT_STATE: Record<SubagentState, DeskState> = {
 
 /** Which inbox entry a chat's reply desk shows when there are several: what needs the owner first. */
 const REPLY_ORDER: readonly InboxKind[] = ["approval", "running", "failed", "uncertain", "completed"];
-const REPLY_STATE: Record<InboxKind, DeskState> = { approval: "approval", running: "running", failed: "failed", uncertain: "uncertain", completed: "completed" };
+// The inbox's "completed" is a chat with something unread: no event confirms that a reply finished.
+const REPLY_STATE: Record<InboxKind, DeskState> = { approval: "approval", running: "running", failed: "failed", uncertain: "uncertain", completed: "unread" };
 
 /** Live work is shown whatever the owner dismissed; what already happened goes once they dismiss it in the inbox. */
 const isLive = (e: InboxEntry) => e.kind === "running" || (e.kind === "approval" && !e.ended);

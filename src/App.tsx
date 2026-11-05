@@ -109,7 +109,7 @@ import { tauriLocalFiles, tauriServerPages, tauriWebPages, type LocalFiles, type
 import type { PreviewTarget } from "./hermes/preview";
 import type { Route } from "./hermes/pipe";
 import { tauriTray, type TrayWiring } from "./hermes/tauriTray";
-import { useWindowHidden } from "./ui/windowState";
+import { usePageHidden, useWindowHidden } from "./ui/windowState";
 import { getUIPrefs, setUIPrefs, subscribe as subscribeUIPrefs, toggleModelFavorite, type StickyModelPick } from "./hermes/uiPrefs";
 
 /** Keeps the repository folder opened last, and the recent ones, on this computer (Repository screen, ADR 0034). */
@@ -1937,10 +1937,13 @@ export function Main({
   useEffect(() => () => tray.reportInbox(0), [tray]);
   // Hidden to the tray, the window shows no chat: replies arriving meanwhile leave their chats Unread.
   const windowHidden = useWindowHidden();
+  const pageHidden = usePageHidden();
+  // The office is drawn, and its rooms worked out, only while it can be seen: hidden to the tray or minimized, it isn't.
+  const officeVisible = officeShown && !windowHidden && !pageHidden;
 
-  // The inbox and the Bots view ask for fresh checks as they open, and keep asking while open: both show what is live.
-  // The office only while it can be seen, since it draws nothing while the window is hidden.
-  const liveWatched = inboxOpen || botsOpen || (officeShown && !windowHidden);
+  // The inbox, the Bots view and the office ask for fresh checks as they open, and keep asking while open: they show
+  // what is live.
+  const liveWatched = inboxOpen || botsOpen || officeVisible;
   useEffect(() => {
     if (!liveWatched) return;
     void hermes.checkOtherProfiles();
@@ -2631,7 +2634,7 @@ export function Main({
           onClose={() => setBotsOpen(false)}
         />
       )}
-      {officeShown && (
+      {officeVisible && (
         <Office
           rooms={officeRooms({ entries: inbox.entries, shown: (e) => !acks.isDismissed(e, dismissed), chats, profile, connected: status === "connected" })}
           view={agentOffice === "list" ? "list" : "desks"}

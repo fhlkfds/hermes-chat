@@ -20,7 +20,7 @@ describe("The office's rooms", () => {
     const tree = started(started(undefined, "a"), "b", { parent_id: "a", depth: 1 });
     const others: OtherProfiles = { byName: { work: { chats: [{ id: "w1", title: "Deploy", at: 5_000, unread: true, source: "app" }] } } };
     expect(brief(rooms([chat("quiet", { subagents: tree }), chat("busy", { running: true })], { others }))).toEqual([
-      "work/w1: completed",
+      "work/w1: unread",
       "default/busy: running",
       "default/quiet: idle running running",
     ]);
@@ -38,6 +38,21 @@ describe("The office's rooms", () => {
     const chats = [chat("done", { unread: true }), chat("broke", { items: [failure] }), chat("busy", { running: true })];
     const keys = new Set(inboxEntries({ profile: "default", chats, connected: true, others: none }).entries.map((e) => e.key));
     expect(brief(rooms(chats, { dismissed: keys }))).toEqual(["default/busy: running"]);
+  });
+
+  it("never shows a reply as finished on an unread chat alone, nor counts it as work", () => {
+    const stopped = { kind: "assistant", id: "m-1", text: "Half a repl", stopped: true } as unknown as Chat["items"][number];
+    const rs = rooms([chat("read-later", { unread: true }), chat("cut-short", { unread: true, items: [stopped], subagents: started(undefined, "a") })]);
+    expect(rs.flatMap((r) => r.desks.filter((d) => d.agent.kind === "reply").map((d) => d.state))).toEqual(["unread", "unread"]);
+    expect(rs.flatMap((r) => r.desks).some((d) => d.state === "completed")).toBe(false);
+    expect(officeTally(rs)).toEqual({ working: 1, waiting: 0, failed: 0, desks: 3 });
+  });
+
+  it("marks another profile's desks as last seen once a check can't list the profiles, keeping what the one before read", () => {
+    const listed = { chats: [{ id: "w1", title: "Deploy", at: 5_000, unread: true, source: "app" as const }], checkedAt: 4_000 };
+    expect(rooms([], { others: { byName: { work: listed } } })[0].desks[0].stale).toBeUndefined();
+    const failed = rooms([], { others: { byName: { work: listed }, error: "Couldn't list the profiles: 502" } });
+    expect(failed[0].desks[0]).toMatchObject({ state: "unread", stale: "As last seen: Hermes couldn't be checked." });
   });
 
   it("says why every desk is as last seen while disconnected, and never calls a reply it can't see idle", () => {
