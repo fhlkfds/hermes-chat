@@ -188,7 +188,7 @@ const account: Account = {
 };
 
 /** The sign-in methods a connection's server offers, read without signing in (ADR 0058). */
-const serverMethods = (d: SignInDetails) => readMethods(tauriReach, d);
+const serverMethods = (d: SignInDetails) => readMethods((one, expect) => tauriReach(one, expect, true, true), d);
 
 /** Deletes what this computer keeps for a removed connection (forgetConnection.ts). */
 const forgetLocal = (c: SavedConnection) => forgetConnectionData(c, { defaults: savedDefaults, tags: savedTagsFile, persona: savedPersona, afterwards: syncScreenshotOutbox });

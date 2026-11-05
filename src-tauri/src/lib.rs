@@ -355,18 +355,22 @@ async fn hermes_probe(
 struct Reached {
     route: Route,
     status: Option<String>,
-    /// The sign-in methods it offers (ADR 0058).
-    methods: transport::Methods,
+    /// The sign-in methods it offers (ADR 0058), when asked for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    methods: Option<transport::Methods>,
 }
 
 #[tauri::command]
-async fn hermes_reach(target: Target, expect_server: Option<String>, quick: Option<bool>) -> Result<Reached, ProbeFailure> {
+async fn hermes_reach(target: Target, expect_server: Option<String>, quick: Option<bool>, methods: Option<bool>) -> Result<Reached, ProbeFailure> {
     let quick = quick.unwrap_or(false);
     let (base, _tunnel, route, headers) = open_target(target, quick).await.map_err(|e| ProbeFailure::new(Stage::Address, e))?;
     let seen = transport::read_server(&base, &headers, expect_server.as_deref(), reach_within(quick))
         .await
         .map_err(|e| ProbeFailure::new(Stage::Reach, e.to_string()))?;
-    let methods = transport::read_methods(&base, &headers, seen.status.as_deref(), reach_within(quick)).await;
+    let methods = match methods {
+        Some(true) => Some(transport::read_methods(&base, &headers, seen.status.as_deref(), reach_within(quick)).await),
+        _ => None,
+    };
     Ok(Reached { route: route.with_server(seen.server), status: seen.status, methods })
 }
 

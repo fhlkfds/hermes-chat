@@ -87,10 +87,11 @@ export type Reached = { route: Route; status?: string | null; methods?: Methods 
 
 /**
  * Reaches one route without signing in (src-tauri `hermes_reach`): the tunnel or address opens, and `/api/status`
- * answers as the Hermes `expectServer` names. Rejects with a `ProbeFailure`. No password goes anywhere.
+ * answers as the Hermes `expectServer` names. `methods`: also read the sign-in methods it offers. Rejects with a
+ * `ProbeFailure`. No password goes anywhere.
  */
-export const tauriReach = (d: SignInDetails, expectServer: string | undefined, quick = true): Promise<Reached> =>
-  invoke<Reached>("hermes_reach", { target: targetOf(d), expectServer: expectServer ?? null, quick }).catch((e: unknown) =>
+export const tauriReach = (d: SignInDetails, expectServer: string | undefined, quick = true, methods = false): Promise<Reached> =>
+  invoke<Reached>("hermes_reach", { target: targetOf(d), expectServer: expectServer ?? null, quick, methods }).catch((e: unknown) =>
     Promise.reject<Reached>(asProbeFailure(e)),
   );
 

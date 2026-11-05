@@ -2579,3 +2579,25 @@ fn the_methods_are_what_the_server_lists_and_supports() {
     assert_eq!((got.methods, got.note), (vec![password("basic", "Password")], Some(MethodsNote::NoneSupported)));
     assert_eq!(serde_json::to_value(methods(Some(both), Some(two))).unwrap()["methods"][2], json!({"method": "token"}));
 }
+
+/// Against a real Hermes dashboard with the session-token provider, when `HERMES_LIVE_TOKEN_DASHBOARD` (its URL) and
+/// `HERMES_LIVE_TOKEN` are set; skipped otherwise. A throwaway one: docs/compatibility.md, "Sign-in methods".
+#[tokio::test]
+async fn live_token_sign_in() {
+    let (Ok(url), Ok(secret)) = (std::env::var("HERMES_LIVE_TOKEN_DASHBOARD"), std::env::var("HERMES_LIVE_TOKEN")) else { return };
+    let base = Url::parse(&url).unwrap();
+    let wait = Duration::from_secs(20);
+    let seen = transport::read_server(&base, &Default::default(), None, wait).await.expect("status read");
+    let methods = transport::read_methods(&base, &Default::default(), seen.status.as_deref(), wait).await;
+    assert!(methods.methods.contains(&transport::SignInMethod::Token), "{methods:?}");
+    let probed = transport::probe_with(&base, &token(&secret), "default", wait).await.expect("the right token signs in");
+    assert!(probed.ready.contains("gateway.ready"), "{}", probed.ready);
+    let wrong = transport::probe_with(&base, &token(&format!("{secret}-wrong")), "default", wait).await.unwrap_err();
+    assert_eq!(wrong.stage, Stage::SignIn);
+    assert!(wrong.message.starts_with("Wrong token"), "{}", wrong.message);
+    assert!(!wrong.message.contains(&secret));
+    let dashboard = Dashboard::sign_in(&base, &token(&secret)).await.expect("signed in");
+    let me: Value = serde_json::from_str(&dashboard.request("GET", "api/auth/me", None).await.expect("me")).unwrap();
+    assert_eq!(me["provider"], "session-token");
+    println!("live: {methods:?}; signed in as {}; a wrong token: {}", me["user_id"], wrong.message);
+}
