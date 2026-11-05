@@ -2318,48 +2318,6 @@ button.provider-row:hover:not(:disabled) { background: var(--hover); }
 .artifact-foot .btn, .artifact-panel .btn { display: inline-flex; align-items: center; gap: 6px; }
 .artifact-foot .confirm-actions { flex-wrap: wrap; }
 
-/* ---------- templates (Templates.tsx, ADR 0028) ---------- */
-.leave-overlay .leave-dialog.tpl-dialog { max-width: min(720px, calc(100% - 32px)); width: 100%; max-height: calc(100% - 32px); overflow-y: auto; gap: 12px; }
-.tpl-title { font-size: calc(14rem / 14); margin: 0; display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere; }
-.tpl-tools { display: flex; gap: 8px; flex-wrap: wrap; }
-.tpl-search, .tpl-form input, .tpl-form textarea, .tpl-form select {
-  background: var(--input, var(--raised-2)); border: 1px solid var(--line-2); border-radius: 8px; padding: 7px 10px; color: var(--text);
-  font: inherit; outline: none; min-width: 0;
-}
-.tpl-search { flex: 1 1 200px; }
-.tpl-search:focus, .tpl-form input:focus, .tpl-form textarea:focus, .tpl-form select:focus { border-color: var(--line-3); }
-.tpl-list { max-height: min(320px, 45vh); overflow-y: auto; border: 1px solid var(--line); border-radius: var(--radius); padding: 4px; }
-.tpl-option { display: grid; grid-template-columns: 1fr auto; column-gap: 8px; padding: 7px 9px; border-radius: 7px; cursor: pointer; }
-.tpl-option.sel { background: var(--hover-2); }
-.tpl-name { color: var(--text-strong); overflow-wrap: anywhere; }
-.tpl-project { font-size: calc(11rem / 14); padding: 1px 6px; border-radius: 5px; background: var(--accent-soft); color: var(--accent); align-self: center; }
-.tpl-desc { grid-column: 1 / -1; color: var(--muted); margin: 0; overflow-wrap: anywhere; }
-.tpl-empty { margin: 0; padding: 10px; color: var(--muted); line-height: 1.55; }
-.tpl-check { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: calc(12.5rem / 14); }
-.tpl-status { margin: 0; color: var(--muted); font-size: calc(12.5rem / 14); overflow-wrap: anywhere; }
-.tpl-status.err { color: var(--bad); }
-.tpl-foot { flex-wrap: wrap; align-items: center; }
-.tpl-keys { flex: 1 1 auto; color: var(--faint); font-size: calc(11.5rem / 14); }
-.tpl-ask { flex: 1 1 auto; color: var(--text); margin: 0; }
-.tpl-form { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
-.tpl-form textarea { resize: vertical; }
-.tpl-body { min-height: 160px; font-family: var(--mono); font-size: calc(12.5rem / 14); line-height: 1.5; }
-.tpl-fields { display: grid; gap: 10px; }
-.tpl-fields .field-label code { color: var(--text-strong); }
-.tpl-tag { font-size: calc(11rem / 14); color: var(--faint); }
-.tpl-preview {
-  margin: 0; max-height: 260px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 10px 12px; border-radius: 8px;
-  background: var(--raised-2); border: 1px solid var(--line); font-family: var(--mono); font-size: calc(12.5rem / 14); line-height: 1.5; color: var(--text);
-}
-.tpl-preview mark { background: var(--accent-soft); color: inherit; border-radius: 3px; }
-.tpl-preview mark.missing { background: rgba(248, 113, 113, 0.16); color: var(--bad); }
-.tpl-help { font-size: calc(12rem / 14); color: var(--muted); }
-.tpl-help summary { cursor: pointer; }
-.tpl-help dl { display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; margin: 6px 0; }
-.tpl-help dl > div { display: contents; }
-.tpl-help dd { margin: 0; }
-.tpl-help p { margin: 4px 0 0; }
-
 /* ---------- Branch from here (Branch.tsx, ADR 0027) ---------- */
 .leave-overlay .leave-dialog.branch-dialog { max-width: min(600px, 100%); width: 100%; max-height: min(92vh, 860px); overflow-y: auto; }
 /* It scrolls as a whole, so nothing in it is squeezed to fit. */

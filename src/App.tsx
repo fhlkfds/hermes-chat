@@ -18,7 +18,6 @@ import { connOf, restoreBlocked, savedBackupEnv } from "./hermes/backup";
 import { chatToReopen, forgetOpenChat, rememberOpenChat } from "./hermes/uiPrefs";
 import { exportChat } from "./hermes/exportChat";
 import { PROJECTS_KEY, projectLinks, projectScope } from "./hermes/projectLinks";
-import type { TemplateHere } from "./ui/Templates";
 import { ProjectsStore, type Project } from "./hermes/projects";
 import { instructionsMessage, modelProblem, resolveNewChat, savedDefaults, type ProjectDefaults } from "./hermes/projectDefaults";
 import { systemSecrets } from "./hermes/tauriKeyring";
@@ -2097,11 +2096,6 @@ export function Main({
           projects={projects}
           projectNames={listed ? projectNames(chat.id) : shownProject ? [shownProject.name] : undefined}
           snoozedUntil={snoozedNow(chat.id)}
-          templates={{
-            scope,
-            projects: listable.map(({ id, name }) => ({ id, name })),
-            here: listable.filter((pr) => pr.id === shownProject?.id || (listed && proj.chats[pr.id]?.includes(chat.id))).map((pr) => pr.id),
-          }}
           shownProject={shownProject && { name: shownProject.name, defaults: proj.defaults[shownProject.id], has: !!listed && !!proj.chats[shownProject.id]?.includes(chat.id) }}
           where={where}
           connectionName={hereLabel}
@@ -2962,7 +2956,6 @@ function ChatView({
   projects,
   projectNames,
   snoozedUntil,
-  templates,
   shownProject,
   where,
   connectionName,
@@ -3010,8 +3003,6 @@ function ChatView({
   projectNames?: string[];
   /** When the chat wakes, if it is snoozed. */
   snoozedUntil?: number;
-  /** The projects the composer's templates can be offered in, and the ones this chat is in or the list shows. */
-  templates: TemplateHere;
   /** The project the list shows, its defaults for new chats, and whether this chat is in it. */
   shownProject?: { name: string; defaults?: ProjectDefaults; has: boolean };
   /** The connection, as a folder on the server is shown beside it. */
@@ -3293,7 +3284,6 @@ function ChatView({
       chat={chat}
       projects={projectNames}
       snoozedUntil={snoozedUntil}
-      templates={templates}
       notice={
         !started && (shownProject || worktree) ? (
           <NewChatSettingsView
