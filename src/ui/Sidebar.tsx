@@ -9,7 +9,7 @@ import { SOURCE_LABEL, isWaiting } from "../hermes/model";
 import { CHECK_EVERY_MS, totalUnread } from "../hermes/otherProfiles";
 import type { Route } from "../hermes/pipe";
 import { RenameConflict, TitleModelUnavailable, type Snapshot } from "../hermes/transport";
-import { SECTION_KEYS, SECTION_LABEL, canClear, chatSections, wakeFull, wakeLabel, type Cleared, type SectionKey, type Snoozes } from "../hermes/snooze";
+import { SECTION_LABEL, canClear, chatSections, wakeFull, wakeLabel, type Cleared, type SectionKey, type Snoozes } from "../hermes/snooze";
 import { getUIPrefs, setUIPrefs, subscribe as subscribeUIPrefs } from "../hermes/uiPrefs";
 import { ChatMenu, type ChatClear, type ChatProjects, type ChatSnooze, type ChatTags } from "./ChatMenu";
 import { SnoozeDialog, useSnoozeClock } from "./Snooze";
@@ -967,7 +967,7 @@ export function ChatList({
   }, [deletingGone]);
   // Opening a chat in a collapsed section, say from a search, opens the section; settling, snoozing or clearing the
   // chat on screen doesn't.
-  const selectedIn = SECTION_KEYS.find((k) => sections[k].some((c) => c.id === selectedId));
+  const selectedIn = shown.find((k) => sections[k].some((c) => c.id === selectedId));
   useEffect(() => {
     if (selectedIn) setCollapsed(selectedIn, false);
   }, [selectedId]);
