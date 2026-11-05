@@ -1,13 +1,15 @@
 // @vitest-environment jsdom
 // Side questions (`/btw`, ADR 0069) in the running app, against a fake Hermes: offered by Hermes's catalog, asked while a
 // reply runs or the chat is idle, answered on a card above the composer and never in the transcript.
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row } from "../hermes/fakeHermes";
 import { memoryCache } from "../hermes/memoryCache";
+import type { SideQuestion } from "../hermes/model";
 import { connect, type Hermes } from "../hermes/transport";
 import { Main } from "../App";
+import { SideQuestions } from "./SideQuestions";
 
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: async () => null }));
@@ -152,5 +154,40 @@ describe("A side question", () => {
     const card = await screen.findByRole("article", { name: "Side question: still there?" });
     act(() => server.drop());
     await waitFor(() => expect(within(card).getByRole("alert").textContent).toBe("No answer: The connection to Hermes dropped before it answered."));
+  });
+});
+
+describe("The stack of cards", () => {
+  /** The section as a scroll box 100 px tall whose content is `content.height` tall. */
+  const geometry = (section: HTMLElement, content: { height: number }) => {
+    let top = 0;
+    Object.defineProperties(section, {
+      clientHeight: { configurable: true, get: () => 100 },
+      scrollHeight: { configurable: true, get: () => content.height },
+      scrollTop: { configurable: true, get: () => top, set: (v: number) => (top = Math.max(0, Math.min(v, content.height - 100))) },
+    });
+  };
+  const asking = (id: string): SideQuestion => ({ id, question: `Q ${id}?`, state: "asking" });
+  const answered = (q: SideQuestion): SideQuestion => ({ id: q.id, question: q.question, state: "answered", answer: "A long answer." });
+
+  it("stays on the newest card as older answers grow, unless the owner scrolled up, and a new question brings it back", () => {
+    const content = { height: 100 };
+    const [one, two, three] = [asking("1"), asking("2"), asking("3")];
+    const { rerender } = render(<SideQuestions questions={[one, two, three]} onDismiss={() => {}} />);
+    const section = screen.getByRole("region", { name: "Side questions" });
+    geometry(section, content);
+
+    content.height = 400;
+    rerender(<SideQuestions questions={[answered(one), two, three]} onDismiss={() => {}} />);
+    expect(section.scrollTop).toBe(300);
+
+    section.scrollTop = 0;
+    fireEvent.scroll(section);
+    content.height = 600;
+    rerender(<SideQuestions questions={[answered(one), answered(two), three]} onDismiss={() => {}} />);
+    expect(section.scrollTop).toBe(0);
+
+    rerender(<SideQuestions questions={[answered(two), three, asking("4")]} onDismiss={() => {}} />);
+    expect(section.scrollTop).toBe(500);
   });
 });

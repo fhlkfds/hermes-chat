@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // Side questions (`/btw`, ADR 0069): asked through `prompt.btw` on the chat's live session, answered by the
 // `btw.complete` that names their task id, and never part of the chat, its Saved copy or a reply running alongside.
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row, type TranscriptMessage } from "./fakeHermes";
 import { SIDE_QUESTIONS_KEPT, connect, type Hermes } from "./transport";
 import { listServerCommands } from "./commands";
@@ -102,6 +102,27 @@ describe("A side question", () => {
     expect(await hermes.askSideQuestion("backup", "Quick one?")).toBe(true);
     expect(chat().sideQuestions?.[0]).toMatchObject({ taskId: "btw_early1", state: "answered", answer: "Quick answer." });
     server.handlers["prompt.btw"] = reply;
+  });
+
+  it("doesn't hold an answer no question claims once none waits for its task id", async () => {
+    const { server, hermes, chat, runtime } = await opened();
+    // Another question's answer comes while this one waits for its task id, and nobody here asked it.
+    server.handlers["prompt.btw"] = (r) => {
+      server.event(runtime, "btw.complete", { task_id: "btw_stray", question: "Dismissed?", text: "A stale answer." });
+      server.respond(r.id, { task_id: "btw_first" });
+    };
+    expect(await hermes.askSideQuestion("backup", "First?")).toBe(true);
+    // Had the stray answer been kept, a later question Hermes happens to give that id would show it.
+    let answer!: () => void;
+    server.handlers["prompt.btw"] = (r) => (answer = () => server.respond(r.id, { task_id: "btw_stray" }));
+    const asking = hermes.askSideQuestion("backup", "Second?");
+    await vi.waitFor(() => expect(answer).toBeDefined());
+    answer();
+    expect(await asking).toBe(true);
+    expect(chat().sideQuestions?.map((q) => [q.question, q.state])).toEqual([
+      ["First?", "asking"],
+      ["Second?", "asking"],
+    ]);
   });
 
   it("shows why there's no answer: Hermes's failure, an empty answer, a refusal, an older Hermes, a dropped connection", async () => {

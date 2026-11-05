@@ -8,14 +8,28 @@ import { Markdown } from "./Markdown";
 import { Spinner } from "./bits";
 
 export function SideQuestions({ questions, onDismiss }: { questions: SideQuestion[]; onDismiss: (id: string) => void }) {
-  // A new question shows at the bottom, which the stack scrolls to when it is taller than its share of the window.
+  // The stack scrolls once it is taller than its share of the window. It stays at the bottom, where the newest question
+  // is, as questions come and answers grow, unless the owner has scrolled up; a new question brings it back down.
   const ref = useRef<HTMLElement>(null);
-  const newest = questions.at(-1)?.id;
+  const atBottom = useRef(true);
+  const newest = useRef<string>(undefined);
   useLayoutEffect(() => {
-    if (ref.current) ref.current.scrollTop = ref.current.scrollHeight;
-  }, [newest]);
+    const el = ref.current;
+    if (!el) return;
+    if (newest.current !== questions.at(-1)?.id) atBottom.current = true;
+    newest.current = questions.at(-1)?.id;
+    if (atBottom.current) el.scrollTop = el.scrollHeight;
+  }, [questions]);
   return (
-    <section ref={ref} className="side-questions" aria-label="Side questions">
+    <section
+      ref={ref}
+      className="side-questions"
+      aria-label="Side questions"
+      onScroll={(e) => {
+        const el = e.currentTarget;
+        atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 4;
+      }}
+    >
       {questions.map((q) => (
         <article key={q.id} className={`side-q ${q.state}`} aria-label={`Side question: ${q.question}`}>
           <div className="side-q-head">
