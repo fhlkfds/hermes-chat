@@ -7,6 +7,7 @@ import { FakeVoiceProviders } from "./fakeVoiceProviders";
 import { FakeSkills } from "./fakeSkills";
 import { FakeServerFiles } from "./fakeServerFiles";
 import { ScheduleError, isoIn, parseSchedule, upcomingRuns } from "./schedule";
+import { skillInvocationText } from "./skillCommands";
 
 type Request = { jsonrpc: "2.0"; id: number; method: string; params: Record<string, unknown> };
 /** The client's answer to a server→client request (`tui_gateway/server_requests.py`). */
@@ -233,8 +234,14 @@ const EDITABLE_SOURCES = new Set(["cli", "tui", "gui", "desktop", "oneshot", "to
  * What `session.resume` shows: no hidden rows, and no model-switch marker, a `[System: …]` user row its
  * `_is_display_hidden_marker` sniff drops though REST still lists it.
  */
+/** What `session.resume` shows of a stored history: hidden rows left out, and a skill's turn as its invocation. */
 const shownHistory = (messages: TranscriptMessage[]) =>
-  messages.filter((m) => m.display_kind !== "hidden" && !(m.role === "user" && m.display_kind === "model_switch"));
+  messages
+    .filter((m) => m.display_kind !== "hidden" && !(m.role === "user" && m.display_kind === "model_switch"))
+    .map((m) => {
+      const shown = m.role === "user" && m.text ? skillInvocationText(m.text) : undefined;
+      return shown ? { ...m, text: shown, display_kind: "skill_invocation" } : m;
+    });
 
 /** A stored session `daysAgo` days old, unpinned and from this app unless overridden. */
 export function row(id: string, daysAgo: number, over: Partial<SessionRow> = {}): SessionRow {
@@ -323,6 +330,10 @@ export class FakeHermes {
   commandCatalog: string[] | undefined = ["steer", "context", "compress", "help"];
   /** The profile's quick commands (`quick_commands` in config.yaml), by name, with their description. */
   quickCommands: Record<string, string> = {};
+  /** False: `commands.catalog` answers with no `skills` field, as a Hermes that can't run skills as commands. */
+  catalogSkills = true;
+  /** Each live session's profile, for the skills `command.dispatch` finds. */
+  readonly runtimeProfile = new Map<string, string>();
   /** A `/steer` is queued for the running turn; false answers as Hermes does with no turn running. */
   steerable = true;
   contextOutput = "Context window: 12,400 / 200,000 tokens (6%)\n  System prompt  3,100\n  Messages       9,300";
@@ -549,6 +560,7 @@ export class FakeHermes {
       const runtimeId = `rt-${n}`;
       const stored = `20261031_12000${n}_abc123`;
       this.runtime.set(runtimeId, stored);
+      this.runtimeProfile.set(runtimeId, (r.params.profile as string | undefined) || "default");
       this.created.set(runtimeId, { source: String(r.params.source ?? "tui"), profile: r.params.profile as string | undefined });
       this.agentTools.set(runtimeId, this.offeredTools((r.params.profile as string | undefined) ?? "default"));
       // `SessionCreateParams` `model` / `provider` / `reasoning_effort` / `fast`: the session's own overrides.
@@ -580,6 +592,7 @@ export class FakeHermes {
       }
       const runtimeId = `rt-r${++this.resumed}`;
       this.runtime.set(runtimeId, stored);
+      this.runtimeProfile.set(runtimeId, (r.params.profile as string | undefined) || "default");
       this.agentTools.set(runtimeId, this.offeredTools((r.params.profile as string | undefined) ?? "default"));
       const messages = shownHistory(this.transcripts[stored] ?? []);
       const info = { ...this.sessionInfo, ...this.sessionModel.get(stored) };
@@ -712,16 +725,21 @@ export class FakeHermes {
       if (!this.commandCatalog) return this.fail(r.id, -32601, "unknown method: commands.catalog");
       const canon = Object.fromEntries(this.commandCatalog.flatMap((n) => [[`/${n}`, `/${n}`], ...(n === "steer" ? [["/s", "/steer"]] : [])]));
       const user = Object.keys(this.quickCommands).map((n) => [`/${n}`, this.quickCommands[n]]);
+      // Skills are listed in `pairs` and `skills`, not in a category (`_catalog_skills`).
+      const skills = this.catalogSkills ? this.skills.commandSkills(String(r.params.profile || "default")) : [];
       this.respond(r.id, {
-        pairs: [...this.commandCatalog.map((n) => [`/${n}`, n]), ...user], canon, commands: {},
+        pairs: [...this.commandCatalog.map((n) => [`/${n}`, n]), ...user, ...skills.map((k) => [`/${k.slug}`, k.description])], canon, commands: {},
         categories: [{ name: "Session", pairs: this.commandCatalog.map((n) => [`/${n}`, n]) }, ...(user.length ? [{ name: "User commands", pairs: user }] : [])],
-        skills: {}, skill_count: 0, warning: "", plugin_discovery_error: "", plugin_commands: {},
+        ...(this.catalogSkills && { skills: Object.fromEntries(skills.map((k) => [`/${k.slug}`, { usage: 0, origin: "local" }])), skill_count: skills.length }),
+        warning: "", plugin_discovery_error: "", plugin_commands: {},
       });
     },
     // `command.dispatch` `_cmd_steer`: queued for a running turn; with none, Hermes asks for it to be sent as a message.
     "command.dispatch": (r) => {
       const sid = String(r.params.session_id);
       if (!this.runtime.has(sid)) return this.fail(r.id, 4001, "session not found");
+      const skill = this.skillMessage(this.runtimeProfile.get(sid) ?? "default", String(r.params.name), String(r.params.arg ?? ""));
+      if (skill) return this.respond(r.id, skill);
       if (r.params.name !== "steer") return this.fail(r.id, 4018, `not a quick/plugin/bundle/skill command: ${r.params.name}`);
       const arg = String(r.params.arg ?? "");
       if (!arg) return this.fail(r.id, 4004, "usage: /steer <prompt>");
@@ -1251,6 +1269,48 @@ export class FakeHermes {
   private branched = 0;
   private asked = 0;
   closed = false;
+
+  /**
+   * `command.dispatch`'s `_dispatch_skill` for `profile`: the skill named, and any leading `/skill` words of `arg` (up to
+   * five in all), wrapped as Hermes wraps them (`build_skill_invocation_message`, `build_stacked_skill_invocation_message`),
+   * with the invocation Hermes's history shows for it. Undefined when `name` is no skill's command.
+   */
+  skillMessage(profile: string, name: string, arg: string) {
+    const skills = this.catalogSkills ? this.skills.commandSkills(profile) : [];
+    const find = (word: string) => skills.find((k) => k.slug === word.toLowerCase()) ?? skills.find((k) => k.slug === word.toLowerCase().replace(/_/g, "-"));
+    const first = skills.find((k) => k.slug === name.toLowerCase());
+    if (!first) return undefined;
+    const extra: typeof skills = [];
+    let rest = arg;
+    while (extra.length < 4) {
+      const m = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(rest.trimStart());
+      const k = m && find(m[1]);
+      if (!m || !k || extra.includes(k)) break;
+      extra.push(k);
+      rest = m[2] ?? "";
+    }
+    const instruction = rest.trim();
+    const block = (k: (typeof skills)[number], note: string) => `${note}\n\n${k.body}\n\n[Skill directory: /home/liam/.hermes/skills/${k.name}]`;
+    let message: string;
+    let display: string;
+    if (!extra.length) {
+      const note = `[IMPORTANT: The user has invoked the "${first.name}" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]`;
+      message = block(first, note) + (instruction ? `\nThe user has provided the following instruction alongside the skill invocation: ${instruction}` : "");
+      display = `/${first.name}${instruction ? ` ${instruction.split(/\s+/).join(" ")}` : ""}`;
+    } else {
+      const loaded = [...new Set([first, ...extra])];
+      const typed = [first, ...extra].map((k) => `/${k.slug}`).join(" ");
+      const header = [
+        `[IMPORTANT: The user has invoked the "${typed}" stacked skill bundle, loading ${loaded.length} skills together. Treat every skill below as active guidance for this turn.]`,
+        "",
+        `Skills loaded: ${loaded.map((k) => k.name).join(", ")}`,
+        ...(instruction ? ["", `User instruction: ${instruction}`] : []),
+      ].join("\n");
+      message = [header, ...loaded.map((k) => block(k, `[Loaded as part of the "${typed}" stacked skill invocation.]`))].join("\n\n");
+      display = `${typed}${instruction ? ` ${instruction.split(/\s+/).join(" ")}` : ""}`;
+    }
+    return { type: "skill", message, name: first.name, display };
+  }
 
   openPipe: OpenPipe = async (onEvent, profile) => {
     if (this.refuse !== undefined) throw new Error(this.refuse);

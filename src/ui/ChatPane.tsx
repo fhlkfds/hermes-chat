@@ -7,6 +7,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import type { ApprovalChoice, AttachCheck, Attachment, Chat, ChatQueue, ConnectionStatus, Item, OutgoingItem, Source } from "../hermes/model";
 import { SOURCE_LABEL, isOutgoing, isWaiting } from "../hermes/model";
+import type { SkillCall } from "../hermes/skillCommands";
 import type { DeskState, ScreenshotDesk } from "../hermes/screenshots";
 import { ApprovalCard } from "./ApprovalCard";
 import { Menu } from "./ChatMenu";
@@ -306,7 +307,8 @@ export function ChatPane({
   onEdit: (itemId: string) => void;
   onDismiss: (itemId: string) => void;
   onAttach: (paths: string[]) => Promise<AttachCheck>;
-  onSend: (text: string, attachments: Attachment[]) => void;
+  /** `skill`: the message runs skills (skillCommands.ts); Hermes builds what goes from it. */
+  onSend: (text: string, attachments: Attachment[], skill?: SkillCall) => void;
   onStop: () => void;
   onAnswer: (approvalId: string, choice: ApprovalChoice, confirmed?: boolean) => void;
   onSettle?: (settled: boolean) => void;
@@ -748,9 +750,9 @@ export function ChatPane({
         text={draft}
         onText={onDraft}
         onAttach={onAttach}
-        onSend={(t, attachments) => {
+        onSend={(...send) => {
           stickToBottom.current = true;
-          onSend(t, attachments);
+          onSend(...send);
         }}
         onStop={onStop}
         modelControls={modelControls}
@@ -1114,7 +1116,7 @@ function Composer({
   text: string;
   onText: (text: string) => void;
   onAttach: (paths: string[]) => Promise<AttachCheck>;
-  onSend: (text: string, attachments: Attachment[]) => void;
+  onSend: (text: string, attachments: Attachment[], skill?: SkillCall) => void;
   onStop: () => void;
   modelControls?: ReactNode;
   autoFocus?: boolean;
@@ -1310,6 +1312,18 @@ function Composer({
   const send = (other = false) => {
     if (slash.run()) return;
     if (!sendable || steering) return;
+    const skill = slash.skill;
+    if (skill) {
+      // Hermes builds a skill's message for the chat's session when it goes, so it can't wait in the queue or steer a
+      // running reply, and the files' words would land around the skill's own text.
+      if (skill.problem) return setRefused([skill.problem]);
+      if (attachments.length) return setRefused(["Files can't go with a message that runs a skill. Send them in a message of their own."]);
+      if (queueing && onQueue) return setRefused(["A message that runs a skill can't be queued. Send it while connected, with no reply running and nothing queued."]);
+      if (offline || running) return;
+      onSend(text.trim(), attachments, skill.call);
+      setRefused([]);
+      return;
+    }
     // A message that would steer and can't is queued, saying why: the chat's reason once, files every time.
     let fellBack: string | undefined;
     if (canFollow && (followUp.mode === "steer") !== other) {
