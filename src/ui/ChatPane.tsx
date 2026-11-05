@@ -1267,7 +1267,7 @@ function Composer({
       // files' words would land around the skill's own text.
       if (skill.problem) return setRefused([skill.problem]);
       if (attachments.length) return setRefused(["Files can't go with a message that runs a skill. Send them in a message of their own."]);
-      if (queueing && onQueue) return setRefused(["A message that runs a skill can't be queued. Send it once the reply has ended and the queue is empty."]);
+      if (queueing && onQueue) return setRefused(["A message that runs a skill can't be queued. Send it while connected, with no reply running and nothing queued."]);
       if (offline || running) return;
       onSend(text.trim(), attachments, skill.call);
       setRefused([]);
