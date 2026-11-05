@@ -1027,7 +1027,8 @@ impl Dashboard {
                 let mut hide = headers.clone();
                 let mut bare = HeaderValue::from_str(token).map_err(|_| TransportError::BadToken)?;
                 bare.set_sensitive(true);
-                hide.insert(HeaderName::from_static("x-hermes-chat-token"), bare);
+                // Appended: an extra header of the same name keeps its own value hidden too.
+                hide.append(HeaderName::from_static("x-hermes-chat-token"), bare);
                 let dashboard = Dashboard { http, base: base.clone(), cookies: Mutex::default(), headers, hide, token: true };
                 let me = dashboard.http.get(endpoint(base, "api/auth/me")).send().await.map_err(unreachable)?;
                 match me.status() {

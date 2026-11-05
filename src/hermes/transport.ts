@@ -49,7 +49,7 @@ import { BOT_CHAT_TITLE, BotChats, BotModeUnsupportedError, isBotChat, isBotChat
 import type { OpenPipe, Pipe, PipeEvent, RestMethod, Route, Speech, Transcript, VoiceSetup } from "./pipe";
 import { RemoteFilesError, SANDBOX_MISSING, SANDBOX_NOT_FOUND_PREFIX, SESSION_GONE, previewSupport, remoteFiles, type EditIo, type RemoteFiles } from "./remoteFiles";
 import { isUnsecure } from "./unsecure";
-import { TOKEN_REFUSED } from "./account";
+import { TOKEN_REFUSED } from "./routes";
 import { providerKeys, readyProviders, type ProviderSetup, type SavedKey } from "./setup";
 import { restartHold } from "./unsaved";
 import { hostFileView, readServerFile, type FileView } from "./preview";

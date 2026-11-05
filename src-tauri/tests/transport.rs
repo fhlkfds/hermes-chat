@@ -2409,6 +2409,10 @@ async fn token_me(headers: HeaderMap) -> Response {
         Some("BASIC") => Json(json!({"user_id": "liam", "provider": "basic", "expires_at": 0})).into_response(),
         Some("abcd") => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"detail": "abcd"}))).into_response(),
         Some("deadbeef1234") => Json(json!({"user_id": "x", "provider": "deadbeef1234"})).into_response(),
+        Some("echo-header") => {
+            let echoed = headers.get("x-hermes-chat-token").and_then(|v| v.to_str().ok()).unwrap_or("").to_owned();
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"detail": echoed}))).into_response()
+        }
         _ => (StatusCode::UNAUTHORIZED, Json(json!({"detail": "Unauthorized"}))).into_response(),
     }
 }
@@ -2489,6 +2493,10 @@ async fn a_wrong_token_is_turned_down_and_a_token_for_another_provider_too() {
     assert!(err.starts_with("The dashboard answered 500") && !err.contains("abcd"), "{err}");
     let err = Dashboard::sign_in(&base, &token("deadbeef1234")).await.err().unwrap().to_string();
     assert!(err.contains("as a different sign-in") && !err.contains("deadbeef"), "{err}");
+    // An extra header that happens to share the name the token is hidden under keeps its own value hidden.
+    let headers = transport::extra_headers(&[header("X-Hermes-Chat-Token", "gateway-secret-value")]).unwrap();
+    let err = Dashboard::sign_in(&base, &SignIn { credential: Credential::Token("echo-header".into()), headers }).await.err().unwrap().to_string();
+    assert!(err.starts_with("The dashboard answered 500") && !err.contains("gateway-secret"), "{err}");
     for bad in ["", "  ", "two words", "line\nbreak"] {
         assert!(matches!(Dashboard::sign_in(&base, &token(bad)).await.err().unwrap(), TransportError::BadToken), "{bad:?}");
     }

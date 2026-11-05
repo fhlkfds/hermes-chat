@@ -203,7 +203,15 @@ export const NO_ROUTES = "Every route of this connection is turned off, or needs
 /** What Rust and transport say when connecting was stopped. */
 const STOPPED = "Connecting was stopped.";
 /** Failures that are the same over any route: Hermes turned the sign-in down, or the owner stopped it. */
-const FINAL = /^(Wrong username or password\.|Wrong token:|This Hermes server doesn't take a token|Too many sign-in attempts|Connecting was stopped)/;
+const FINAL = /^(Wrong username or password\.|Wrong token:|The dashboard took the token as|This Hermes server doesn't take a token|Too many sign-in attempts|Connecting was stopped)/;
+
+/**
+ * How the Rust side's messages start when a token sign-in can't go through as it is (ADR 0058): the dashboard turned
+ * the token down (`TransportError::BadToken`) or took it as another provider's (`NotSessionToken`), the server doesn't
+ * take one (`TokenNotOffered`), the route's extra headers set Authorization (`AuthorizationHeaderSet`), or no token is
+ * saved for the address. Trying again won't change them, so launch asks and a reconnect stops.
+ */
+export const TOKEN_REFUSED = /^(Wrong token:|The dashboard took the token as|This Hermes server doesn't take a token|Token sign-in sends the token|No token is saved)/;
 
 /** Every route failed; `failures` says how each did, in the order tried. */
 export class RoutesFailedError extends Error {
@@ -285,6 +293,8 @@ export function routedPipe(d: SignInDetails, open: OpenRoute, hooks: RoutedHooks
       const route: Route = { ...pipe.route, via: { id: r.id, kind: r.kind, index: on.indexOf(r), of: on.length } };
       return { ...pipe, route };
     }
+    // Every route turned the token down or couldn't use it: that is the failure, not the routes.
+    if (failures.length && failures.every((f) => TOKEN_REFUSED.test(f.message))) throw new Error(failures[0].message);
     throw new RoutesFailedError(failures);
   };
 }

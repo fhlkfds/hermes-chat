@@ -12,7 +12,7 @@
 // A connection can sign in with the dashboard's session token instead (ADR 0058). Rust keeps that token in its own
 // keyring entry and loads it itself; this side only learns which addresses it is saved for (`TokenKeyring`).
 import { type Address, type Connections, type SavedConnection, addressKey, addressOf, cleanName, detailsOf, wayOf } from "./connections";
-import { routeAddress, routeKey, routesOf, savedRoute, withRoutes, type RouteDetails } from "./routes";
+import { TOKEN_REFUSED, routeAddress, routeKey, routesOf, savedRoute, withRoutes, type RouteDetails } from "./routes";
 import type { ExtraHeader, SignInDetails } from "./tauriPipe";
 import type { Hermes } from "./transport";
 
@@ -46,12 +46,6 @@ export type Account = {
 
 /** What the Rust side says when the dashboard turns the password down (`TransportError::BadCredentials`). */
 export const WRONG_PASSWORD = "Wrong username or password.";
-/**
- * How the Rust side's messages start when a token sign-in can't go through as it is: the dashboard turned the token
- * down (`TransportError::BadToken`), the server doesn't take one (`TokenNotOffered`), the route's extra headers set
- * Authorization (`AuthorizationHeaderSet`), or no token is saved for the address. Trying again won't change them.
- */
-export const TOKEN_REFUSED = /^(Wrong token:|This Hermes server doesn't take a token|Token sign-in sends the token|No token is saved)/;
 
 /** Whether `reason` is a sign-in that only asking again can fix, so launch shows the sign-in screen, not Offline. */
 export const turnedDown = (reason: string) => reason === WRONG_PASSWORD || TOKEN_REFUSED.test(reason);

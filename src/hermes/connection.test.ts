@@ -72,14 +72,19 @@ describe("Reconnecting", () => {
     expect(status()).toBe("connected");
   });
 
-  it("goes Offline at once when the dashboard turns the token down, without retrying it", async () => {
-    const { server, hermes } = await signedIn();
-    server.refuse = "Wrong token: the dashboard turned it down. A token stops working when HERMES_DASHBOARD_SESSION_TOKEN is replaced on the server.";
-    server.drop();
-    await vi.advanceTimersByTimeAsync(1_000);
-    expect(hermes.getSnapshot()).toMatchObject({ status: "offline", closedReason: expect.stringMatching(/^Wrong token:/) });
-    await vi.advanceTimersByTimeAsync(10 * 60_000);
-    expect(server.opened).toBe(1);
+  it("goes Offline at once when the dashboard turns the token down, or takes it as another sign-in, without retrying it", async () => {
+    for (const refusal of [
+      "Wrong token: the dashboard turned it down. A token stops working when HERMES_DASHBOARD_SESSION_TOKEN is replaced on the server.",
+      "The dashboard took the token as a basic sign-in, not as its session token, so Hermes Chat didn't sign in with it.",
+    ]) {
+      const { server, hermes } = await signedIn();
+      server.refuse = refusal;
+      server.drop();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(hermes.getSnapshot()).toMatchObject({ status: "offline", closedReason: refusal });
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(server.opened).toBe(1);
+    }
   });
 
   it("goes Offline at once if the server now speaks the canonical protocol", async () => {

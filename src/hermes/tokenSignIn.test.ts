@@ -110,6 +110,7 @@ describe("Token sign-in", () => {
       "This Hermes server doesn't take a token: its sign-in doesn't list the session-token provider.",
       "Token sign-in sends the token in the Authorization header, and this connection's extra request headers already set Authorization.",
       "No token is saved for this address. Enter the token to sign in.",
+      "The dashboard took the token as a basic sign-in, not as its session token, so Hermes Chat didn't sign in with it.",
     ]) {
       const refusing: Account = { ...a, connect: () => Promise.reject(new Error(why)) };
       await expect(launchSignIn(c, lan, refusing)).rejects.toThrow(why);
