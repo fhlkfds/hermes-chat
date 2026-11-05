@@ -5,6 +5,7 @@ import { CONNECT_STOPPED, RenameConflict, connect, readSaved, toSource, type Del
 import { invoke } from "@tauri-apps/api/core";
 import type { CommandHost } from "./ui/SlashCommands";
 import { STEER, type ServerCommandList } from "./hermes/commands";
+import type { SkillCall, SkillCommands } from "./hermes/skillCommands";
 import { CHECK_EVERY_MS } from "./hermes/otherProfiles";
 import { type Account, type Kept, type SavedSignIn, launchSignIn, removeConnection, savedSignIn, signIn, signInForm, signOutToSignIn } from "./hermes/account";
 import { CONNECTIONS_KEY, Connections, type SavedConnection, addressLabel, defaultName, prefScope } from "./hermes/connections";
@@ -3119,7 +3120,7 @@ function ChatView({
   };
 
   // A failed send stays in its chat's outbox. A failure to start a chat restores the New chat draft.
-  const send = async (text: string, attachments: Attachment[]) => {
+  const send = async (text: string, attachments: Attachment[], skill?: SkillCall) => {
     const paths = attachments.map((a) => a.path);
     screenshots?.hold(paths);
     const typed = savedDrafts.take(shownDraft);
@@ -3140,7 +3141,7 @@ function ChatView({
       return;
     }
     try {
-      await hermes.send(to.id, text, attachments);
+      await hermes.send(to.id, text, attachments, skill);
     } finally {
       try {
         await screenshotWiring.syncOutbox?.();
@@ -3205,8 +3206,11 @@ function ChatView({
   // that does nothing: its Draft stays as typed. One command at a time per Draft, so two panes on one chat can't run it
   // twice.
   const serverCommands = useServerCommands(hermes, status === "connected", profile);
+  const skillCommands = useSkillCommands(hermes, status === "connected", profile);
   const caps = useCapabilities(hermes.capabilities);
   const commands: CommandHost = {
+    skills: status === "connected" ? skillCommands.skills : undefined,
+    refreshSkills: skillCommands.refresh,
     guide: caps.caps.commands.state === "unsupported" ? () => openGuide(guideUrl("commands")) : undefined,
     why: (def) => {
       if (def.name === "help" || def.name === "new") return undefined;
@@ -3485,6 +3489,24 @@ function ChatView({
 const commandsRunning = new Set<string>();
 
 type ServerCommands = { state: "loading" } | { state: "ready"; list: ServerCommandList } | { state: "failed"; reason: string };
+
+/**
+ * The skills the composer offers for `profile` (`Hermes.skillCommands`), read once connected and again on `refresh` if
+ * they may have changed. Undefined while unknown, or when this Hermes can't run skills from the composer.
+ */
+function useSkillCommands(hermes: Hermes, connected: boolean, profile: string): { skills?: SkillCommands; refresh: () => void } {
+  const [read, setRead] = useState<{ profile: string; skills?: SkillCommands }>();
+  const [asked, setAsked] = useState(0);
+  useEffect(() => {
+    if (!connected) return;
+    let live = true;
+    const keep = (skills?: SkillCommands) => live && setRead((r) => (r?.profile === profile && r.skills === skills ? r : { profile, skills }));
+    hermes.skillCommands().then(keep, () => keep(undefined));
+    return () => void (live = false);
+  }, [hermes, connected, profile, asked]);
+  const refresh = useCallback(() => setAsked((n) => n + 1), []);
+  return { skills: read?.profile === profile ? read.skills : undefined, refresh };
+}
 
 /** Which of the registry's server commands Hermes lists for `profile`, read once connected (`Hermes.serverCommands`). */
 function useServerCommands(hermes: Hermes, connected: boolean, profile: string): ServerCommands {

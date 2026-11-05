@@ -37,6 +37,18 @@ server.transcripts = {
   nas: [{ role: "user", text: "How full is the NAS?" }, { role: "assistant", text: "The `tank` pool is at **71%** (5.1 TiB of 7.2 TiB)." }],
 };
 
+// Skills (ADR 0030, ADR 0015): synthetic ones in the default profile; `notes` is kept off for this app's chats.
+const skillMd = (name: string, description: string) => `---\nname: ${name}\ndescription: ${description}\n---\n\nThe ${name} skill's instructions.\n`;
+for (const [name, description] of [
+  ["debugging", "Find the cause of a failure before changing anything"],
+  ["restic-maintenance", "Check, unlock and prune restic repositories without losing snapshots"],
+  ["release-notes", "Write release notes from the changes merged since the last tag"],
+  ["writing", "Plain, short sentences; no filler"],
+  ["notes", "Keep running notes for a chat"],
+])
+  server.skills.add("default", { dir: `/home/liam/.hermes/skills/${name}`, source: "agent" }, skillMd(name, description));
+server.skills.platformDisabled.default = { tui: ["notes"] };
+
 // Automations (ADR 0036): one GitHub route on a webhooks/1 server, with a made-up delivery history.
 server.sessions.push(row("hook-41", 0.05, { source: "webhook", title: "Triage example/fixture#41" }));
 server.webhooks.baseUrl = "https://hooks.example.net";

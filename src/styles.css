@@ -813,6 +813,12 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .cmd-args { font-family: var(--mono); color: var(--faint); }
 .cmd-scope { font-size: calc(11rem / 14); padding: 1px 6px; border-radius: 5px; background: var(--raised-3); color: var(--muted); justify-self: end; }
 .cmd-scope.server { background: var(--accent-soft); color: var(--accent); }
+/* Skills in the same menu (src/hermes/skillCommands.ts): a heading after the commands, and a description of up to two lines. */
+.cmd-group { padding: 8px 8px 2px; margin-top: 4px; border-top: 1px solid var(--line); color: var(--faint); font-size: calc(11rem / 14); font-weight: 500; text-transform: uppercase; letter-spacing: 0.04em; }
+.cmd-scope.skill { background: var(--raised-3); color: var(--text-2); }
+.cmd-option.skill .cmd-desc { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.skill-note { font-size: calc(12rem / 14); color: var(--muted); padding: 0 6px 8px; }
+.skill-note.error { color: var(--bad); }
 .cmd-empty { padding: 6px 8px; color: var(--muted); }
 .cmd-keys { padding: 4px 8px 2px; color: var(--faint); font-size: calc(11.5rem / 14); border-top: 1px solid var(--line); margin-top: 4px; }
 .cmd-help { padding: 8px 12px 10px; max-height: 50vh; overflow-y: auto; }
