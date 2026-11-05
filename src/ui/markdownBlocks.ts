@@ -81,9 +81,12 @@ function lex(text: string, base: number): Block[] {
  * blocks and what follows are parsed again. Text added at the end can grow or end the last block, or turn it into
  * part of the block before (a paragraph "2" becomes item 2 of the list above it once "." comes). It can't change how
  * a block's first line reads, so nothing before the second last block moves. Link reference and footnote definitions
- * can change any block, and make the result `whole`.
+ * can change any block, and make the result `whole`, as does a byte order mark.
  */
 export function splitBlocks(text: string, prev?: Blocks): Blocks {
+  // The parser drops a byte order mark at the start of a document before counting offsets, and one starting a later
+  // block would be dropped there too were the block parsed on its own: such a text renders in one piece.
+  if (text.includes("\uFEFF")) return { text, blocks: [], whole: true };
   const from = prev && text.startsWith(prev.text) ? (prev.blocks[prev.blocks.length - 2]?.start ?? 0) : 0;
   const kept = from ? prev!.blocks.slice(0, -2) : [];
   const blocks = [...kept, ...lex(text.slice(from), from)];

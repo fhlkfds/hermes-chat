@@ -6,6 +6,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Markdown } from "./Markdown";
 import { splitBlocks, type Blocks } from "./markdownBlocks";
+import { rehypePlugins, remarkPlugins } from "./markdownPipeline";
+import { unified } from "unified";
+import remarkParse from "remark-parse";
+import remarkRehype from "remark-rehype";
+import rehypeHighlight from "rehype-highlight";
 
 // Each piece of Markdown ReactMarkdown is asked to parse, in order.
 const parsed = vi.hoisted(() => [] as string[]);
@@ -44,6 +49,8 @@ const REPLIES: Record<string, string> = {
   "unclosed fence ending in spaces and tabs": "```\nx\n \t\n\t\n\n",
   "crlf": "Para one\r\nline two\r\n\r\n```js\r\nlet a = 1\r\n\r\n```\r\n\r\n- a\r\n- b\r\n\r\n| x | y |\r\n| - | - |\r\n| 1 | 2 |\r\n",
   tabs: "-\tone\n-\ttwo\n\n\tindented code\n\t\tmore\n\n\t\nafter",
+  "byte order mark first": "\uFEFF# Heading\n\nabc",
+  "byte order mark later": "Intro.\n\n\uFEFF# Heading\n\n```\nx\n```",
   "starts indented": "   - indented list\n   - item\n\n  ```\n  fence indented two\n    four\n  ```",
 };
 
@@ -136,6 +143,8 @@ describe("Splitting a reply into blocks", () => {
     expect(splitBlocks(REPLIES["reference links"]).whole).toBe(true);
     expect(splitBlocks(REPLIES.footnotes).whole).toBe(true);
     expect(splitBlocks("> [x]: /in-a-quote\n\n[x]").whole).toBe(true);
+    expect(splitBlocks("\uFEFFabc").whole).toBe(true);
+    expect(splitBlocks("Intro.\n\n\uFEFF# Heading").whole).toBe(true);
     expect(splitBlocks(REPLIES.code).whole).toBe(false);
   });
 });
@@ -150,6 +159,20 @@ describe("A streamed reply, once finished", () => {
     const text = REPLIES["lists, loose and tight"] + "\n\n" + REPLIES.table + "\n\n" + REPLIES.links;
     const { seen } = streamed(text, 5);
     seen.forEach((html, i) => expect(html, `after ${(i + 1) * 5} characters`).toBe(whole(text.slice(0, (i + 1) * 5))));
+  });
+});
+
+describe("Highlighting a block at a time, from the cache", () => {
+  it("gives the tree rehype-highlight gives the whole reply, as Markdown did before #224", () => {
+    const strip = (node: unknown): unknown =>
+      Array.isArray(node) ? node.map(strip) : node && typeof node === "object" ? Object.fromEntries(Object.entries(node).filter(([k]) => k !== "position").map(([k, v]) => [k, strip(v)])) : node;
+    const tree = (text: string, plugins: unknown[]) => {
+      const p = unified().use(remarkParse).use(remarkPlugins).use(remarkRehype).use(plugins as never);
+      return strip(p.runSync(p.parse(text)));
+    };
+    const before = [() => rehypeHighlight({ detect: true })];
+    for (const [name, text] of Object.entries(REPLIES))
+      for (let i = 0; i < 2; i++) expect(tree(text, rehypePlugins("")), `${name}, ${i ? "from the cache" : "first time"}`).toEqual(tree(text, before));
   });
 });
 
@@ -220,6 +243,13 @@ describe("Code still coming in", () => {
     expect(whole(text, "gateway")).toContain('<mark class="hit">gateway</mark>');
     expect(whole(text)).toBe(plainHtml);
     expect(whole(text, "restart")).not.toContain('<mark class="hit">gateway</mark>');
+  });
+
+  it("leaves code in a language highlight.js doesn't know as it was, from the cache too", () => {
+    const text = "```klingon\nqapla' batlh\n```";
+    const first = whole(text);
+    expect(first).toContain('<code class="hljs language-klingon">qapla\' batlh\n</code>');
+    expect(whole(text)).toBe(first);
   });
 });
 
