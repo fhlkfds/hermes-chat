@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // A reply streaming in through Markdown (#224): each delta must redo only what it changed, and the finished reply must
 // come out as it always has.
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, fireEvent, render } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Markdown } from "./Markdown";
@@ -194,5 +194,33 @@ describe("Code still coming in", () => {
     expect(whole(text, "gateway")).toContain('<mark class="hit">gateway</mark>');
     expect(whole(text)).toBe(plainHtml);
     expect(whole(text, "restart")).not.toContain('<mark class="hit">gateway</mark>');
+  });
+});
+
+describe("A streamed reply's code blocks", () => {
+  it("copy exactly their code, find marks and all, and name their language", () => {
+    const writeText = vi.fn(async () => {});
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    // jsdom has no layout, so no innerText; a <pre>'s innerText is its text.
+    Object.defineProperty(HTMLElement.prototype, "innerText", { configurable: true, get() { return this.textContent; } });
+    try {
+      const text = "Run:\n\n" + fence("bash", "systemctl restart gateway\njournalctl -u gateway") + "\n\nThen check.";
+      const { container, rerender } = render(<Markdown text={text.slice(0, 30)} query="gateway" streaming />);
+      rerender(<Markdown text={text} query="gateway" streaming />);
+      rerender(<Markdown text={text} query="gateway" />);
+      expect(container.querySelectorAll("pre mark.hit")).toHaveLength(2);
+      expect(container.querySelector(".code-head span")!.textContent).toBe("bash");
+      fireEvent.click(container.querySelector(".code-copy")!);
+      expect(writeText).toHaveBeenCalledWith("systemctl restart gateway\njournalctl -u gateway\n");
+    } finally {
+      delete (HTMLElement.prototype as { innerText?: string }).innerText;
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("are marked by find-in-chat while still coming in, before they are highlighted", () => {
+    const { container } = render(<Markdown text={"```\nrestart the gateway\nand the gate"} query="gate" streaming />);
+    expect(container.querySelector("pre code span")).toBeNull();
+    expect([...container.querySelectorAll("pre mark.hit")].map((m) => m.textContent)).toEqual(["gate", "gate"]);
   });
 });
