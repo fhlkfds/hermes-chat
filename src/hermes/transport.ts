@@ -623,6 +623,8 @@ export class Hermes {
   private queueHolds = new Map<string, number>();
   /** A look at the queues is due once the current change is done (`pumpSoon`). */
   private pumpDue = false;
+  /** Listeners are due a call for a streamed delta already in the snapshot (`notifySoon`). */
+  private notifyDue = false;
 
   /** Hermes's projects, each call naming its profile (projects.ts). Folders are read, never created. */
   readonly projects: ProjectsApi = projectsApi({
@@ -3087,10 +3089,17 @@ export class Hermes {
     if (type === "message.complete" || type === "error") this.turnStart.delete(chat.id);
     // A turn that failed without a `message.complete` ends without counters, so the next one can't be measured.
     if (type === "error") this.usageFrom.set(session_id!, "unknown");
-    this.patchChat(chat.id, (c) => {
-      const next = applyEvent(c, type, payload);
-      return usage ? { ...next, items: withReplyUsage(next.items, usage, from) } : next;
-    });
+    // A streamed delta is in the snapshot at once, so the reply's text is always whole and in order, but the app hears of
+    // it once a frame: Hermes can send many in one frame, and each would render the reply again (ADR 0068).
+    const delta = type === "message.delta" || type === "reasoning.delta";
+    this.patchChat(
+      chat.id,
+      (c) => {
+        const next = applyEvent(c, type, payload);
+        return usage ? { ...next, items: withReplyUsage(next.items, usage, from) } : next;
+      },
+      delta,
+    );
     if (type === "message.complete") {
       const receipt = (payload.persisted_turn ?? {}) as PersistedTurn;
       this.noteRows(chat.id, [receipt.user_row_id, receipt.final_assistant_row_id, ...(Array.isArray(receipt.row_ids) ? receipt.row_ids : [])]);
@@ -4152,17 +4161,41 @@ export class Hermes {
     }
   }
 
-  private patchChat(id: string, fn: (c: Chat) => Chat) {
+  private patchChat(id: string, fn: (c: Chat) => Chat, nextFrame = false) {
     if (!this.snapshot.chats.some((c) => c.id === id)) return;
-    this.update({ chats: this.snapshot.chats.map((c) => (c.id === id ? fn(c) : c)) });
+    this.update({ chats: this.snapshot.chats.map((c) => (c.id === id ? fn(c) : c)) }, nextFrame);
   }
 
-  private update(patch: Partial<Snapshot>) {
+  /**
+   * Changes the snapshot. Listeners hear of it at once, or with `nextFrame`, at the next animation frame, along with
+   * every other change made by then; any change heard of at once before that takes the waiting ones with it.
+   */
+  private update(patch: Partial<Snapshot>, nextFrame = false) {
     this.snapshot = { ...this.snapshot, ...patch };
-    for (const fn of this.listeners) fn();
+    if (nextFrame) this.notifySoon();
+    else this.tellListeners();
     this.pumpSoon();
   }
+
+  private tellListeners() {
+    this.notifyDue = false;
+    for (const fn of this.listeners) fn();
+  }
+
+  /** Calls the listeners at the next animation frame, or after `NOTIFY_LATEST_MS` in a window that draws no frames. */
+  private notifySoon() {
+    if (this.notifyDue) return;
+    this.notifyDue = true;
+    const flush = () => {
+      if (this.notifyDue) this.tellListeners();
+    };
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(flush);
+    setTimeout(flush, NOTIFY_LATEST_MS);
+  }
 }
+
+/** The longest a streamed delta waits to be heard of, when the window draws no frames (minimized, hidden). */
+const NOTIFY_LATEST_MS = 100;
 
 function unsureMessage(title: string, archived: boolean, e: Error): string {
   return `Couldn't tell whether "${title}" was ${archived ? "archived" : "restored"}: ${withoutStop(e.message)}. It's checked again on the next refresh.`;
