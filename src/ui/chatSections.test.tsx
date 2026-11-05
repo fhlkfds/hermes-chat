@@ -251,6 +251,19 @@ describe("Clearing from the Inbox, in the app", () => {
     });
     await waitFor(() => expect(titles("inbox")).toEqual(["Deploy notes", "Groceries"]));
     expect(head("Unsettled").textContent).toBe("Unsettled0");
+    // The clear that activity ended is forgotten, not just passed over.
+    await waitFor(() => expect(JSON.parse(localStorage.getItem(CLEARED_KEY)!).scopes).toEqual({}));
+  });
+
+  it("forgets a chat's clear when the owner snoozes it, so it wakes into the Inbox", async () => {
+    const { user } = await signedIn();
+    const rowFor = (title: string) => screen.getByRole("button", { name: new RegExp(title) }).parentElement!;
+    await user.click(within(rowFor("Groceries")).getByRole("button", { name: "Clear from the Inbox" }));
+    expect(Object.keys(Object.values(JSON.parse(localStorage.getItem(CLEARED_KEY)!).scopes)[0] as object)).toEqual(["b"]);
+    await user.click(head("Unsettled"));
+    fireEvent.contextMenu(screen.getByRole("button", { name: /Groceries/ }));
+    await user.click(screen.getByRole("menuitem", { name: "1 hour" }));
+    expect(JSON.parse(localStorage.getItem(CLEARED_KEY)!).scopes).toEqual({});
   });
 
   it("lists archived chats only while the Archived section is shown", async () => {

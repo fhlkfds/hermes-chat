@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Chat, Item } from "./model";
-import { AttentionClock, CLEARED_KEY, ClearedStore, SNOOZE_KEY, SnoozeStore, WOKEN_KEPT_MS, canClear, chatSections, customUntil, lastActive, nextWake, snoozePresets, wakeLabel } from "./snooze";
+import { AttentionClock, CLEARED_KEY, ClearedStore, SNOOZE_KEY, SnoozeStore, WOKEN_KEPT_MS, canClear, chatSections, customUntil, lastActive, nextWake, staleClears, snoozePresets, wakeLabel } from "./snooze";
 
 /** A Storage stand-in, its document under `key` readable as `raw`. */
 function memory(start?: string, key = SNOOZE_KEY) {
@@ -218,6 +218,49 @@ describe("chatSections", () => {
       );
       expect([s.settled, s.snoozed, s.working, s.archived].map((l) => l.map((c) => c.id))).toEqual([["s"], ["z"], ["w"], ["a"]]);
       expect(s.unsettled).toEqual([]);
+    });
+
+    it("keeps a chat with a fractional activity time cleared, the mark kept exactly", () => {
+      const storage = memory(undefined, CLEARED_KEY);
+      const store = new ClearedStore(storage, "A");
+      const at = WED - HOUR + 0.25;
+      const c = chat("frac", at);
+      store.clear("frac", lastActive(c, {}, WED));
+      expect(store.getSnapshot().frac).toBe(at);
+      expect(chatSections([c], {}, WED, {}, store.getSnapshot()).unsettled.map((x) => x.id)).toEqual(["frac"]);
+      // And after a restart, read back from storage.
+      expect(chatSections([c], {}, WED, {}, new ClearedStore(storage, "A").getSnapshot()).unsettled.map((x) => x.id)).toEqual(["frac"]);
+    });
+
+    it("finds the clears something newer has ended, so they can be forgotten for good", () => {
+      const cleared = { a: WED - HOUR, b: WED - HOUR, c: WED - HOUR, d: WED - HOUR, e: WED - HOUR };
+      const chats = [
+        chat("a", WED - HOUR),
+        chat("b", WED - HOUR + 1),
+        chat("c", WED - HOUR, { unread: true }),
+        chat("d", WED - HOUR, { items: [waiting] }),
+        chat("e", WED - HOUR, { running: true }),
+        chat("f", WED),
+      ];
+      expect(staleClears(chats, {}, WED, {}, cleared)).toEqual(["b", "c", "d"]);
+      // A snooze that woke after the clear ends it too, while the wake still counts.
+      expect(staleClears([chat("a", WED - HOUR)], { a: WED - 60_000 }, WED, {}, cleared)).toEqual(["a"]);
+    });
+
+    it("leaves a chat in the Inbox after clear, snooze, wake and the wake ageing out, once the stale clear is forgotten", () => {
+      const storage = memory(undefined, CLEARED_KEY);
+      const store = new ClearedStore(storage, "A");
+      const c = chat("a", WED - 10 * 24 * HOUR);
+      store.clear("a", lastActive(c, {}, WED - 9 * 24 * HOUR));
+      const woke = { a: WED - 8 * 24 * HOUR };
+      // Woken a day after the clear: back in the Inbox, and the clear is stale.
+      const dayAfter = WED - 8 * 24 * HOUR + HOUR;
+      expect(chatSections([c], woke, dayAfter, {}, store.getSnapshot()).inbox.map((x) => x.id)).toEqual(["a"]);
+      for (const id of staleClears([c], woke, dayAfter, {}, store.getSnapshot())) store.restore(id);
+      // A week on, the wake no longer counts; with the clear forgotten, even after a restart, the chat stays put.
+      const later = new ClearedStore(storage, "A").getSnapshot();
+      expect(later).toEqual({});
+      expect(chatSections([c], woke, WED, {}, later).inbox.map((x) => x.id)).toEqual(["a"]);
     });
 
     it("offers Clear only for a read, quiet, Active chat", () => {

@@ -178,9 +178,12 @@ export class ClearedStore extends ChatTimesStore {
     super(storage, scope, now, CLEARED_KEY, CLEARED_VERSION, CLEARED_MIGRATIONS);
   }
 
-  /** Clears the chat from the Inbox as it is now: `mark`, when it was last active. */
+  /**
+   * Clears the chat from the Inbox as it is now: `mark`, when it was last active, kept exactly (Hermes's activity times
+   * have fractions of a millisecond, and a mark rounded down would leave the chat in the Inbox).
+   */
   clear(chatId: string, mark: number) {
-    this.set(chatId, Math.max(1, Math.round(mark)));
+    this.set(chatId, mark > 0 ? mark : 1);
   }
 
   /** Puts the chat back in the Inbox, or forgets a clear that no longer holds. */
@@ -288,6 +291,17 @@ export function lastActive(c: Chat, snoozes: Snoozes, now: number, since: Readon
 
 /** The chat can be cleared from the Inbox: the owner has read it, and Hermes isn't replying in it or waiting on them. */
 export const canClear = (c: Chat) => !c.unread && !c.running && !c.items.some(isWaiting) && !c.settled && !c.archived;
+
+/**
+ * The clears among `chats` that no longer hold, because something happened in the chat after it was cleared, or it is
+ * Unread or Hermes waits on the owner in it. Forgetting them keeps the chat in the Inbox once that activity stops
+ * counting (a woken snooze does after WOKEN_KEPT_MS). A reply still running doesn't end a clear: its end does.
+ */
+export function staleClears(chats: Chat[], snoozes: Snoozes, now: number, since: Readonly<Record<string, number>>, cleared: Cleared): string[] {
+  return chats
+    .filter((c) => cleared[c.id] !== undefined && (lastActive(c, snoozes, now, since) > cleared[c.id] || !!c.unread || c.items.some(isWaiting)))
+    .map((c) => c.id);
+}
 
 /**
  * Where each chat shows in the list, in the order shown. The Inbox is newest first, a chat counting as new when it woke

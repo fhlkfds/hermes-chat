@@ -59,7 +59,7 @@ import { SearchPalette } from "./ui/Search";
 import { SavedFilters, TagManager } from "./ui/Tags";
 import { useSnoozeClock } from "./ui/Snooze";
 import { TagsStore, savedTagsFile, type SavedFilter } from "./hermes/tags";
-import { AttentionClock, CLEARED_KEY, ClearedStore, SNOOZE_KEY, SnoozeStore, chatSections, lastActive, wakeFull } from "./hermes/snooze";
+import { AttentionClock, CLEARED_KEY, ClearedStore, SNOOZE_KEY, SnoozeStore, chatSections, lastActive, staleClears, wakeFull } from "./hermes/snooze";
 import { IDLE_COMPACT_CHECK_MS, IdleCompactor, idleCompactionNote } from "./hermes/idleCompact";
 import { runFilter } from "./hermes/chatFilter";
 import { SettingsScreen, type PersonaWiring } from "./ui/Settings";
@@ -1132,6 +1132,11 @@ export function Main({
     window.addEventListener("storage", changed);
     return () => window.removeEventListener("storage", changed);
   }, [clearedStore]);
+  // A clear that something newer has ended is forgotten, so the chat stays in the Inbox from then on, even once that
+  // activity stops counting (a woken snooze, after a week).
+  useEffect(() => {
+    for (const id of staleClears(chats, snoozes, Date.now(), attention.since, cleared)) clearedStore.restore(id);
+  }, [chats, snoozes, snoozeNow, cleared, clearedStore]);
   attention.observe(chats, Date.now(), status === "connected");
   const tagChange = (fn: () => Promise<unknown>) =>
     fn().catch((e) => setToast({ text: (e as Error).message, at: Date.now() }));
@@ -1741,6 +1746,8 @@ export function Main({
     const title = chats.find((c) => c.id === id)?.title ?? "";
     const before = snoozeStore.isSnoozed(id) ? snoozes[id] : undefined;
     const put = (to: number | undefined) => (to ? snoozeStore.snooze(id, to) : snoozeStore.wake(id));
+    // A snooze ends in the Inbox, so it replaces a clear the chat had.
+    if (until) clearedStore.restore(id);
     // Unsnoozing wakes it now, so it comes to the top as a snooze that ran out would.
     put(until ?? Date.now());
     setToast({ text: `${until ? `Snoozed until ${wakeFull(until)}` : "Unsnoozed"}: ${title}`, undo: () => put(before), at: Date.now() });
