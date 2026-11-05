@@ -1,0 +1,27 @@
+# A side question is a card above the composer, and is never saved
+
+Issue #216. `/btw <question>` asks Hermes something about the chat without interrupting the reply that's running and without adding anything to the chat. Hermes answers from a snapshot of the conversation, with tools denied, and leaves the chat's history and prompt cache alone (`agent/side_question.py` at the deployed `f0d94882`).
+
+## Decisions
+
+- **Through `prompt.btw`, as Hermes's own clients send it.** `prompt.btw {session_id, text}` replies with a `task_id` at once. The answer comes later as a `btw.complete` event on the same session, `{task_id, question, text}` (`tui_gateway/methods_prompt.py`, `contracts/events.py` `SideAgentCompletePayload`). It doesn't go through `command.dispatch`, which Hermes's desktop client also avoids for `/btw` because the slash worker prints the answer too late.
+- **Offered the way `/steer` is (ADR 0057).** `/btw` is in the composer's command list as a Hermes command. It can run when Hermes's `commands.catalog` lists `/btw` for the profile, the chat has started and is open on Hermes, and the app is connected. Otherwise the menu marks it and says why, with the same reasons `/steer` gives. Unlike `/steer`, no quick or plugin command can take its place, because `prompt.btw` is a method of its own, so `replaced` and `unsure` never apply to it. A Hermes that lists `/btw` but has no `prompt.btw` answers "method not found", and the card says Hermes can't answer side questions here.
+- **It never queues, steers or starts a turn.** The composer runs a typed command before it looks at the queue or the Follow-up behavior, so `/btw` works the same while a reply runs and while the chat is idle. Hermes's answer is handled before any turn bookkeeping, so it can't end, extend or mark a reply.
+- **A card per question above the composer, apart from the transcript.** Each card is marked "Side question", shows the question, and then a waiting line, the answer (as Markdown, with Copy), or why there's no answer. It has a Dismiss button. The cards sit between the queue and the composer, as wide as both, oldest at the top and the newest nearest the composer. Like the queue, the cards together take at most 40% of the window's height and scroll past it, showing the newest, and each answer scrolls inside its card past 220 px. Dismissing a card puts the focus back in the composer.
+- **Several stack, up to three per chat.** A fourth takes the oldest one's place, answered or not. Three is enough to ask again while an answer is still coming, or to compare a couple of answers, while the stack stays short enough that scrolling it is rare. A side question is a quick aside: an owner who wants a fourth has usually read the first. An answer still to come for a card that went is dropped.
+- **Each chat has its own cards, and they stay while switching chats.** They are kept on the chat in the app's live state (`Chat.sideQuestions`) next to its items, so opening another chat and coming back shows them again at no extra cost. A side question answered while its chat isn't on screen is there when the owner comes back. Switching profile, signing out, or reloading the app drops them.
+- **Never saved.** The cards aren't items, so they aren't in the chat's Saved copy, its exports, its branches, or the chat list kept on this computer. Hermes doesn't store them either.
+- **Errors go on the card.** Hermes refusing the question (no live session, method not found, a backend that's restarting) fails the card, and the words stay in the composer so Enter can ask again. A `btw.complete` whose text starts `error: ` is Hermes's failure (`_spawn_side_agent` sends a failure that way, with no field of its own), and an empty one means Hermes had no answer. A connection that drops before the answer fails every card still waiting, because Hermes sends the answer only on the connection the question was asked on. None of these is a Failed message.
+- **An answer can come before Hermes says which question it answers.** Hermes answers on another thread, so with a quick model `btw.complete` can arrive before the `prompt.btw` reply. While a card in the chat waits for its task id, such an answer is held and matched once the id comes. Answers to task ids the chat never asked are ignored.
+
+## Considered options
+
+- **A new answer replaces the last.** Simpler, but a second question asked while the first is still being answered would hide it, and the issue's example is asking while a long task runs, when that happens.
+- **Showing the answer in the transcript, as Hermes's desktop client does (a `[btw "…"]` system line).** Rejected: the issue asks for the answer apart from the transcript, the line wouldn't survive a reload of the history (Hermes doesn't store it), and it would read as part of the conversation the model sees.
+- **Keeping cards across a reload.** The issue calls them throwaway, and Hermes keeps no record a reload could read them back from.
+
+## Consequences
+
+- An owner who switches profile or reloads the app loses any cards, waiting ones included. Their answers come to nothing.
+- A Hermes where `auxiliary.side_question` routes to another model answers with that model; the card doesn't say which.
+- Usage is billed to the chat's session by Hermes, so the chat's token and cost totals include side questions the next time they are read.

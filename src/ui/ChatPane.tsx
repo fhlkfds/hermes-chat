@@ -14,6 +14,7 @@ import { Menu } from "./ChatMenu";
 import { isBotChat } from "../hermes/bots";
 import { DeleteChatDialog } from "./DeleteChat";
 import { QueuePanel, type QueueApi } from "./Queue";
+import { SideQuestions } from "./SideQuestions";
 import { Markdown } from "./Markdown";
 import { SourceIcon, Spinner, StoredTime, composing, highlight } from "./bits";
 import { wakeFull } from "../hermes/snooze";
@@ -292,6 +293,7 @@ export function ChatPane({
   queue,
   queueApi,
   commands,
+  onDismissSideQuestion,
   followUp,
   branch,
   branchedFrom,
@@ -346,6 +348,8 @@ export function ChatPane({
   queue?: ChatQueue;
   queueApi?: QueueApi;
   commands?: CommandHost;
+  /** Takes away the card of one of the chat's side questions (ADR 0069). */
+  onDismissSideQuestion?: (id: string) => void;
   /** What sending does while the reply runs: queue or steer (ADR 0057). Without it, it queues. */
   followUp?: FollowUpHost;
   branch?: { blocked?: string; onBranch: (itemId: string) => void };
@@ -743,6 +747,7 @@ export function ChatPane({
       </div>
 
       {queueApi && <QueuePanel chat={chat} queue={queue} status={status} api={queueApi} />}
+      {chat.sideQuestions && onDismissSideQuestion && <SideQuestions questions={chat.sideQuestions} onDismiss={onDismissSideQuestion} />}
       {chat.source === "import" ? (
         // ADR 0031: an imported transcript is a record, not a session Hermes can carry on as it was.
         <div className="composer-wrap read-only-note" role="note">
