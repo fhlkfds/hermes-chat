@@ -31,33 +31,49 @@ const queuedTexts = (el: HTMLElement) => Array.from(el.querySelectorAll(".queue-
 const rowsIn = (el: HTMLElement) => Array.from(el.querySelectorAll<HTMLElement>(".queue-item"));
 const rowOf = (el: HTMLElement, text: string) => rowsIn(el).find((r) => r.querySelector(".queue-text")?.textContent === text)!;
 
-/**
- * Drags `source` over `target` with the pointer at `clientY`, the queue's rows laid out 40 pixels tall from the top, and
- * drops it there unless `drop` is false. Returns whether the drop was allowed, as the browser decides it: by the
- * dragover's default being prevented.
- */
-function drag(source: Element, target: Element, clientY: number, { drop = true } = {}) {
+/** A drag's data, as in a browser readable only on drop; before, only its types. */
+function transfer() {
   const data = new Map<string, string>();
-  let readable = false;
   const dataTransfer = {
+    readable: false,
     types: [] as string[],
     setData: (k: string, v: string) => (data.set(k, v), dataTransfer.types.push(k)),
-    getData: (k: string) => (readable ? (data.get(k) ?? "") : ""),
+    getData: (k: string) => (dataTransfer.readable ? (data.get(k) ?? "") : ""),
     effectAllowed: "",
     dropEffect: "",
   };
+  return dataTransfer;
+}
+type Transfer = ReturnType<typeof transfer>;
+
+/** Lays the queue rows out 40 pixels tall from the top, in their order at the time each is measured. */
+function layOut() {
   for (const row of document.querySelectorAll<HTMLElement>(".queue-item")) {
     vi.spyOn(row, "getBoundingClientRect").mockImplementation(() => {
       const top = Array.from(row.parentElement!.children).indexOf(row) * 40;
       return { left: 0, top, width: 600, height: 40, right: 600, bottom: top + 40, x: 0, y: top, toJSON: () => {} };
     });
   }
-  const at = (e: Event) => Object.defineProperties(e, { clientX: { value: 10 }, clientY: { value: clientY } });
+}
+
+// jsdom has no DragEvent, so the pointer's place is put on the event by hand.
+const at = (e: Event, clientY: number) => Object.defineProperties(e, { clientX: { value: 10 }, clientY: { value: clientY } });
+/** Whether `target` takes a drop there, as the browser decides it: by the dragover's default being prevented. */
+const dragOver = (target: Element, clientY: number, dataTransfer: Transfer) => !fireEvent(target, at(createEvent.dragOver(target, { dataTransfer }), clientY));
+const dropOn = (target: Element, clientY: number, dataTransfer: Transfer) => {
+  dataTransfer.readable = true;
+  fireEvent(target, at(createEvent.drop(target, { dataTransfer }), clientY));
+};
+
+/** Drags `source` over `target` with the pointer at `clientY`, and drops it there unless `drop` is false. Returns whether
+ * the drop was allowed. */
+function drag(source: Element, target: Element, clientY: number, { drop = true } = {}) {
+  const dataTransfer = transfer();
+  layOut();
   fireEvent.dragStart(source, { dataTransfer });
-  const allowed = !fireEvent(target, at(createEvent.dragOver(target, { dataTransfer })));
+  const allowed = dragOver(target, clientY, dataTransfer);
   if (!drop) return allowed;
-  readable = true;
-  if (allowed) fireEvent(target, at(createEvent.drop(target, { dataTransfer })));
+  if (allowed) dropOn(target, clientY, dataTransfer);
   fireEvent.dragEnd(source, { dataTransfer });
   return allowed;
 }
@@ -223,14 +239,21 @@ describe("While Hermes replies", () => {
     const s = await replying();
     for (const t of ["first", "second", "third"]) await s.user.type(composerIn(document.body), `${t}{Enter}`);
     const queue = () => queueIn(document.body)!;
-    const dataTransfer = { types: [] as string[], setData: (k: string) => dataTransfer.types.push(k), getData: () => "", effectAllowed: "", dropEffect: "" };
+    const dataTransfer = transfer();
+    layOut();
     fireEvent.dragStart(rowOf(queue(), "first"), { dataTransfer });
+    expect(dragOver(queue(), 115, dataTransfer)).toBe(true);
     await s.finish();
     expect(prompts(s.server)).toEqual(["Unlock it", "first"]);
-    const over = createEvent.dragOver(queue(), { dataTransfer });
-    Object.defineProperty(over, "clientY", { value: 75 });
-    expect(fireEvent(queue(), over)).toBe(true);
+    layOut();
+    // Its row is gone, so it sees no dragend; the drag still carries its type.
+    expect(dragOver(queue(), 75, dataTransfer)).toBe(false);
+    dropOn(queue(), 75, dataTransfer);
     expect(queuedTexts(queue())).toEqual(["second", "third"]);
+    expect(queue().querySelector(".insert-before, .insert-after")).toBeNull();
+
+    drag(rowOf(queue(), "third"), queue(), 5);
+    expect(queuedTexts(queue())).toEqual(["third", "second"]);
   });
 
   it("goes by Tab from a message to its Edit and Remove, then to the next message", async () => {
