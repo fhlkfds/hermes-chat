@@ -1,0 +1,42 @@
+# Hermes Chat verification map
+
+This folder is the maintained source for verifying what the owner sees and does in the Hermes Chat desktop app. Read this index before driving the app, then use the matching feature file as the recipe. The harness is `wd.mjs` (WebDriver into the real Tauri window) plus `hv` (launch, doctor, screenshots, stand-in state). Both are documented in [../SKILL.md](../SKILL.md).
+
+## Baseline preconditions
+
+- Start from a fresh run: `hv up` (stand-in dashboard), then `wd.mjs open`. The app has empty `HOME` and `XDG_*` dirs, a private D-Bus with no keyring, and its own display.
+- `hv doctor` shows `ok` on every line, including `build … matches the source`.
+- Unless a recipe says otherwise, sign in first by following [sign-in.md](sign-in.md) to its signed-in end state.
+- The stand-in serves profile `default` with four seeded chats, all in the Settled section:
+  - `backup`, "Nightly backup failing". The reply mentions `restic unlock`.
+  - `nginx`, "Rotate nginx logs".
+  - `vpn`, "Why is the VPN slow". The reply mentions `MTU = 1380`.
+  - `trip`, "Plan a weekend in Lisbon".
+- Every Bash call starts with `S=$(git rev-parse --show-toplevel)/.claude/skills/verify-hermes-chat/scripts; export HV_RUN=<from hv up>`.
+
+## Driving conventions
+
+- Find handles with `wd.mjs handles` on each new screen. Prefer aria-labels, `<label>` text and button text, then the app's data attributes and classes. Never use coordinates.
+- Drive only with `click`, `fill`, `select`, `press` and `keys`. Use `eval` only to read state.
+- Use `wait` and `gone` instead of `sleep`. The reply stream, sign-in and search are all asynchronous.
+- Treat every command as literal. Quoted names are the app's exact text, and they are case-sensitive.
+- A run's chats and messages live on its own stand-in, so a mutation needs no restore: `hv down` discards it.
+
+## Proof and skip reporting
+
+- Capture the action and its result. Take numbered `wd.mjs shot` images before and after (`hv shot` when the window frame or a native dialog matters), and assert the end state with `wait` or `text`.
+- Changes on the server are proved by reading them back with `hv state` (or the real dashboard's API). Persistence in the app is proved by reopening the screen, or by relaunching with `wd.mjs close` then `wd.mjs open` and signing in again.
+- Report every entry point the feature lists. A path you couldn't reach is reported with the command you tried and the precondition that was missing, never as verified through a different path.
+- Evidence stays in `~/.cache/hermes-verify/evidence/<run>/` after `hv down`.
+
+## Feature entry contract
+
+Each feature file starts with an H1 and one paragraph describing the behaviour the user sees. Then come exactly four H2s, in this order: `Sub-features` (short IDs), `How to get to it (user POV)` (every entry point), `Driving it with wd.mjs` (`Preconditions:`, then labelled bullets pairing each user action with exact commands and the result you can see), and `Gotchas`. Leave implementation details out.
+
+## Features
+
+- [Sign in](sign-in.md): first-run setup for a web address connection, a wrong password, and signing in again after a relaunch.
+- [Send a message](send-message.md): open a chat, send, watch the streamed reply, and confirm both messages on the server.
+- [New chat](new-chat.md): start a chat from the rail, the list panel or Ctrl+N, and see it created on the server and in the list.
+- [Search chats](search.md): Ctrl+K or the rail opens search, a body-text match opens its chat, and a miss shows No matches.
+- [Connections](connections.md): Settings → General → Connection, Test a saved connection, and Sign out.
