@@ -12,6 +12,7 @@ import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useSta
 import { ArrowLeft, AudioLines, Brain, Camera, Cpu, Database, Download, HardDrive, KeyRound, Lock, LogOut, MessagesSquare, NotebookPen, Palette, PlugZap, Power, Puzzle, Search, Settings2, ShieldCheck, Sparkles, Stethoscope, Trash2, User, Wrench, X } from "lucide-react";
 import type { MemorySource } from "../hermes/memory";
 import { SubNav, type SubNavItem } from "./SubNav";
+import { SettingRow, SettingsSearching, SettingsSection } from "./SettingRows";
 import type { Chat, ConnectionStatus } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
 import { TRANSCRIPT_LIMIT_BYTES } from "../hermes/chatCache";
@@ -428,147 +429,180 @@ export function SettingsScreen({
   const generalGroups: Record<GenGroup, ReactNode> = {
     connection: (
       <>
-      {connectionManager}
-      <section>
-        <h2>Connection in use</h2>
-        <div className="settings-status">
-          <span className={`conn-dot ${status} ${unsecure ? "unsecure" : ""}`} />
-          <span>{STATUS_LABEL[status]}</span>
-          {unsecure && <span className="badge warn">Unsecure</span>}
-          <span className="muted mono">{routeLabel(route)}</span>
-        </div>
-        <div className="settings-row">
-          <div className="muted small">
-            <KeyRound size={12} /> Signed in as <span className="mono">{username}</span>.{" "}
-            {passwordSaved ? "The password is saved in your system keyring." : "The system keyring couldn't save the password."}
-          </div>
-          <button
-            className="btn"
-            disabled={signingOut}
-            onClick={async () => {
-              setSigningOut(true);
-              // Resolves without signing out when the owner chose to stay with an unsaved persona edit.
-              await onSignOut().finally(() => setSigningOut(false));
-            }}
+        {connectionManager}
+        <SettingsSection title="Connection in use">
+          <SettingRow
+            name={
+              <>
+                <span className={`conn-dot ${status} ${unsecure ? "unsecure" : ""}`} /> {STATUS_LABEL[status]}
+              </>
+            }
+            hint={<span className="mono">{routeLabel(route) ?? "No address yet"}</span>}
+            control={unsecure && <span className="badge warn">Unsecure</span>}
+          />
+          <SettingRow
+            name={
+              <>
+                Signed in as <span className="mono">{username}</span>
+              </>
+            }
+            about="signing out"
+            hint={
+              <>
+                <KeyRound size={12} aria-hidden />{" "}
+                {passwordSaved ? "The password is saved in your system keyring. Signing out deletes it." : "The system keyring couldn't save the password."}
+              </>
+            }
+            more={
+              <>
+                <p>Signing out deletes the saved password from the keyring. You type it again at the next sign-in.</p>
+                {headers.length > 0 && headersSaved && (
+                  <p>
+                    The extra request headers' values are saved in your system keyring and never shown. They stay saved when you sign out, to change or
+                    remove on the sign-in screen.
+                  </p>
+                )}
+              </>
+            }
+            control={
+              <button
+                className="btn"
+                disabled={signingOut}
+                onClick={async () => {
+                  setSigningOut(true);
+                  // Resolves without signing out when the owner chose to stay with an unsaved persona edit.
+                  await onSignOut().finally(() => setSigningOut(false));
+                }}
+              >
+                <LogOut size={14} /> {signingOut ? "Signing out…" : "Sign out"}
+              </button>
+            }
           >
-            <LogOut size={14} /> {signingOut ? "Signing out…" : "Sign out"}
-          </button>
-        </div>
-        {headers.length > 0 && (
-          <div className="muted small settings-headers">
-            <ShieldCheck size={12} /> Sends {headers.length === 1 ? "an extra request header" : `${headers.length} extra request headers`}:{" "}
-            {headers.map((h, i) => (
-              <span key={i}>
-                {i > 0 && ", "}
-                <span className="mono">{h}</span>
-              </span>
-            ))}
-            .{" "}
-            {headersSaved
-              ? "Their values are saved in your system keyring and never shown."
-              : "Their values are never shown. The system keyring couldn't save them, so you type them again at the next sign-in."}
-          </div>
-        )}
-        <p className="muted small settings-note">
-          Signing out deletes the saved password from the keyring. You type it again at the next sign-in.
-          {headers.length > 0 && headersSaved && " The extra request headers stay saved, to change or remove on the sign-in screen."}
-        </p>
-        {capabilities && (
-          <div className="settings-row settings-setup">
-            <div className="muted small">See the Hermes version, protocol and sign-in, and which features this server supports.</div>
-            <button className="btn" onClick={() => pick("diagnostics")}>
-              <Stethoscope size={14} aria-hidden /> Connection diagnostics
-            </button>
-          </div>
-        )}
-        {onSetUp && (
-          <div className="settings-row settings-setup">
-            <div className="muted small">
-              Change this connection's address or sign-in, or give Hermes a model provider's API key. The connection stays as it is until the
-              change is tested and saved. To keep it and use another server too, add a connection above.
-            </div>
-            <button className="btn" onClick={onSetUp}>
-              <PlugZap size={14} /> Run setup again
-            </button>
-          </div>
-        )}
-      </section>
+            {headers.length > 0 && (
+              <div className="set-hint">
+                <ShieldCheck size={12} aria-hidden /> Sends {headers.length === 1 ? "an extra request header" : `${headers.length} extra request headers`}:{" "}
+                {headers.map((h, i) => (
+                  <span key={i}>
+                    {i > 0 && ", "}
+                    <span className="mono">{h}</span>
+                  </span>
+                ))}
+                . {!headersSaved && "Their values are never shown. The system keyring couldn't save them, so you type them again at the next sign-in."}
+              </div>
+            )}
+          </SettingRow>
+          {capabilities && (
+            <SettingRow
+              name="Server details"
+              hint="The Hermes version, protocol and sign-in, and which features this server supports."
+              control={
+                <button className="btn" onClick={() => pick("diagnostics")}>
+                  <Stethoscope size={14} aria-hidden /> Connection diagnostics
+                </button>
+              }
+            />
+          )}
+          {onSetUp && (
+            <SettingRow
+              name="Setup"
+              hint="Change this connection's address or sign-in, or give Hermes a model provider's API key."
+              more="The connection stays as it is until the change is tested and saved. To keep it and use another server too, add a connection above."
+              control={
+                <button className="btn" onClick={onSetUp}>
+                  <PlugZap size={14} /> Run setup again
+                </button>
+              }
+            />
+          )}
+        </SettingsSection>
       </>
     ),
     chats: <FollowUpSettings />,
     launch: (
       <>
-      <StartupSettings />
-      <TraySettings tray={tray} />
-      <UpdateSettings />
+        <StartupSettings />
+        <TraySettings tray={tray} />
+        <UpdateSettings />
       </>
     ),
     screenshots: (
       <>
-      <ScreenshotSettings checkSupport={checkScreenshots} />
+        <ScreenshotSettings checkSupport={checkScreenshots} />
       </>
     ),
     storage: (
       <>
-      <section>
-        <h2>Local cache</h2>
-        <p className="muted">
-          Hermes Chat keeps a copy of each profile's chat list on this computer, so the list shows as soon as you sign in. It also keeps a
-          Saved copy of the chats you opened most recently, up to {fmtSize(TRANSCRIPT_LIMIT_BYTES)}, so you can read them while Hermes can't be
-          reached. The oldest copies are deleted first when that fills up. Clearing the cache keeps your display settings.
-        </p>
-        <div className="settings-row">
-          <div>
-            <div className="big-num">{fmtSize(bytes)}</div>
-            <div className="muted small">{bytes ? "Stored on this computer" : "Nothing stored"}</div>
-          </div>
-          {!confirmClear ? (
-            <button className="btn" disabled={!bytes} onClick={() => setConfirmClear(true)}>
-              <Trash2 size={14} /> Clear local cache
-            </button>
-          ) : (
-            <div className="confirm">
-              <span>
-                <Lock size={12} /> Only the chat copies on this computer are deleted; your display settings are kept. Nothing on your Hermes
-                server is touched; the list is saved again at the next refresh, and a chat's Saved copy when you next open it.
-              </span>
-              <div className="confirm-actions">
-                <button className="btn" onClick={() => setConfirmClear(false)}>
-                  Cancel
-                </button>
-                <button
-                  className="btn danger"
-                  onClick={() => {
-                    onClearCache();
-                    setBytes(cacheBytes());
-                    setConfirmClear(false);
-                  }}
-                >
-                  Clear {fmtSize(bytes)}
-                </button>
+        <SettingsSection title="Local cache">
+          <SettingRow
+            name="Chat lists and Saved copies"
+            hint="Lets the chat list show at once, and recent chats open while Hermes can't be reached."
+            more={
+              <p>
+                Hermes Chat keeps a copy of each profile's chat list on this computer. It also keeps a Saved copy of the chats you opened most recently,
+                up to {fmtSize(TRANSCRIPT_LIMIT_BYTES)}; the oldest copies are deleted first when that fills up. Clearing the cache keeps your display
+                settings.
+              </p>
+            }
+            control={
+              !confirmClear && (
+                <>
+                  <span className="set-value">{bytes ? `${fmtSize(bytes)} stored` : "Nothing stored"}</span>
+                  <button className="btn" disabled={!bytes} onClick={() => setConfirmClear(true)}>
+                    <Trash2 size={14} /> Clear local cache
+                  </button>
+                </>
+              )
+            }
+          >
+            {confirmClear && (
+              <div className="confirm set-confirm">
+                <span>
+                  <Lock size={12} /> Only the chat copies on this computer are deleted; your display settings are kept. Nothing on your Hermes server is
+                  touched; the list is saved again at the next refresh, and a chat's Saved copy when you next open it.
+                </span>
+                <div className="confirm-actions">
+                  <button className="btn" onClick={() => setConfirmClear(false)}>
+                    Cancel
+                  </button>
+                  <button
+                    className="btn danger"
+                    onClick={() => {
+                      onClearCache();
+                      setBytes(cacheBytes());
+                      setConfirmClear(false);
+                    }}
+                  >
+                    Clear {fmtSize(bytes)}
+                  </button>
+                </div>
               </div>
-            </div>
-          )}
-        </div>
-      </section>
+            )}
+          </SettingRow>
+        </SettingsSection>
 
-      <section>
-        <h2>History</h2>
-        <p className="muted">
-          The list shows chats from the past month. Older chats stay on the server until you pull them for the{" "}
-          <span className="mono">{profile}</span> profile.
-        </p>
-        <div className="settings-row">
-          <div className={`small ${pullError ? "sign-in-error" : "muted"}`} role={pullError ? "alert" : undefined}>
-            {pullError ?? pulled ?? (olderPulled ? "All chats are listed, however old." : "Showing chats from the past month.")}
-          </div>
-          <button className="btn" disabled={pulling || olderPulled || status !== "connected"} onClick={pull}>
-            <Download size={14} /> {pulling ? "Pulling…" : olderPulled ? "Up to date" : "Pull older history"}
-          </button>
-        </div>
-      </section>
-      {importer && <ImportSection wiring={importer} connected={status === "connected"} />}
-      {backup && <BackupSection wiring={backup} />}
+        <SettingsSection title="History">
+          <SettingRow
+            name="Older chats"
+            hint={
+              <>
+                The list shows the past month. Older <span className="mono">{profile}</span> chats stay on the server until you pull them.
+              </>
+            }
+            control={
+              <button className="btn" disabled={pulling || olderPulled || status !== "connected"} onClick={pull}>
+                <Download size={14} /> {pulling ? "Pulling…" : olderPulled ? "Up to date" : "Pull older history"}
+              </button>
+            }
+          >
+            {(pullError || pulled || olderPulled) && (
+              <div className={`small ${pullError ? "sign-in-error" : "muted"}`} role={pullError ? "alert" : undefined}>
+                {pullError ?? pulled ?? "All chats are listed, however old."}
+              </div>
+            )}
+          </SettingRow>
+        </SettingsSection>
+        {importer && <ImportSection wiring={importer} connected={status === "connected"} />}
+        {backup && <BackupSection wiring={backup} />}
       </>
     ),
   };
@@ -583,7 +617,7 @@ export function SettingsScreen({
     </>
   ) : (
     <div className="settings-split">
-      <SubNav label="General" items={GEN_GROUPS} selected={genGroup} onPick={(id) => setGenGroup(id as GenGroup)} />
+      <SubNav label="General" items={GEN_GROUPS} selected={genGroup} onPick={(id) => setGenGroup(id as GenGroup)} compact />
       <div className="settings-split-body">{generalGroups[genGroup]}</div>
     </div>
   );
@@ -722,6 +756,7 @@ export function SettingsScreen({
   const total = found + elsewhere.length;
 
   return (
+    <SettingsSearching.Provider value={searching}>
     <div className="settings" ref={screenRef}>
       <div className="settings-inner">
         <button className="back" onClick={onClose}>
@@ -768,9 +803,12 @@ export function SettingsScreen({
                 aria-selected={on}
                 tabIndex={on || (searching && id === tabs[0].id) ? 0 : -1}
                 aria-controls={searching ? undefined : `settings-panel-${id}`}
+                // In a narrow window only the shown tab keeps its label (#154); the others are named here and by a tip.
+                aria-label={label}
+                title={label}
                 onClick={() => pick(id)}
               >
-                <Icon size={14} /> {label}
+                <Icon size={14} aria-hidden /> <span className="settings-tab-label">{label}</span>
               </button>
             );
           })}
@@ -814,5 +852,6 @@ export function SettingsScreen({
         )}
       </div>
     </div>
+    </SettingsSearching.Provider>
   );
 }

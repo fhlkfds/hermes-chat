@@ -2,6 +2,7 @@
 // setting is kept by Rust in the app's config folder, for this computer, and what shows is what Rust read back.
 import { useEffect, useState } from "react";
 import type { TrayStatus, TrayWiring } from "../hermes/tauriTray";
+import { SettingNote, SettingRow, SettingsSection } from "./SettingRows";
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -56,40 +57,42 @@ export function TraySettings({ tray }: { tray?: TrayWiring }) {
   const on = !!status?.closeToTray;
   const here = status && where(status);
   return (
-    <section>
-      <h2>Tray</h2>
-      <div className="appearance-row">
-        <div className="appearance-label">
-          <div className="appearance-title" id="close-to-tray-label">
-            Close to tray
+    <SettingsSection title="Tray">
+      <SettingRow
+        name="Close to tray"
+        nameId="close-to-tray-label"
+        hint="Closing the window hides it in the tray instead of quitting. Off: closing the window quits."
+        hintId="close-to-tray-help"
+        more={
+          <p>
+            Replies keep arriving, drafts stay, and the tray icon or opening Hermes Chat again brings the same window back. Hiding it stops Dictation
+            and Read aloud, and pauses a voice conversation. Quit in the tray menu always exits.
+          </p>
+        }
+        control={
+          <button
+            className="switch"
+            role="switch"
+            aria-checked={on}
+            aria-labelledby="close-to-tray-label"
+            aria-describedby="close-to-tray-help"
+            disabled={!status || saving}
+            onClick={() => void turn(!on)}
+          >
+            <span className="switch-knob" />
+          </button>
+        }
+      >
+        {problem && (
+          <div className="sign-in-error" role="alert">
+            {problem}
           </div>
-          <div className="muted small" id="close-to-tray-help">
-            Closing the window hides it in the tray instead of quitting. Replies keep arriving, drafts stay, and the tray icon or opening Hermes Chat
-            again brings the same window back. Hiding it stops Dictation and Read aloud, and pauses a voice conversation. Quit in the tray menu always exits. Off: closing the window
-            quits.
-          </div>
-        </div>
-        <button
-          className="switch"
-          role="switch"
-          aria-checked={on}
-          aria-labelledby="close-to-tray-label"
-          aria-describedby="close-to-tray-help"
-          disabled={!status || saving}
-          onClick={() => void turn(!on)}
-        >
-          <span className="switch-knob" />
-        </button>
-      </div>
+        )}
+      </SettingRow>
       {/* Announced only when the tray can't be used, as Settings → Screenshots does. */}
-      <p className={`small settings-note tray-note ${here?.problem ? "warn-note" : "muted"}`} role={here?.problem ? "status" : undefined}>
+      <SettingNote className="tray-note" tone={here?.problem ? "warn" : "muted"} role={here?.problem ? "status" : undefined}>
         {here ? here.text : !tray || checked ? "The tray works only in the desktop app." : "Checking the tray…"}
-      </p>
-      {problem && (
-        <p className="sign-in-error settings-note" role="alert">
-          {problem}
-        </p>
-      )}
-    </section>
+      </SettingNote>
+    </SettingsSection>
   );
 }

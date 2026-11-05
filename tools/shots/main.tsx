@@ -112,6 +112,34 @@ if (relay) {
 
 const hermes = await connect(server.openPipe);
 (window as unknown as { shots: unknown }).shots = { server, hermes };
+// Settings → General's desktop parts, as the desktop app wires them: two saved connections, the tray and screenshots. The
+// tray and screenshot answers are made up, as Rust would give them on a desktop that shows tray icons.
+const current = { id: "conn-home-0001", name: "Home server", mode: "ssh" as const, sshTarget: "liam@hermes", url: "", username: "liam", addedAt: 0, lastUsedAt: Date.now() - 60e3 };
+const saved = [current, { id: "conn-work-0002", name: "Work lab", mode: "url" as const, sshTarget: "", url: "https://hermes.lab.example.net", username: "liam", addedAt: 0, lastUsedAt: Date.now() - 3 * 86400e3 }];
+let tray = { closeToTray: false, tray: "shown" as const };
+const trayWiring = {
+  status: async () => tray,
+  setCloseToTray: async (on: boolean) => (tray = { ...tray, closeToTray: on }),
+  onStatus: () => () => {},
+  onNewChat: () => () => {},
+  onOpenInbox: () => () => {},
+  reportInbox: () => {},
+};
+const screenshots = {
+  api: { capture: () => Promise.reject(new Error("No screenshots in the browser harness")), discard: async () => {} },
+  onDesktopShortcut: () => () => {},
+  attached: () => {},
+  support: async () => ({ ok: true, summary: "Screenshots use the desktop portal (xdg-desktop-portal-hyprland): pick a region or a window." }),
+};
 createRoot(document.getElementById("root")!).render(
-  <Main hermes={hermes} connection={{ mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" }} onSignOut={async () => {}} />,
+  <Main
+    hermes={hermes}
+    connection={current}
+    saved={saved}
+    onSwitchConnection={() => {}}
+    onTestConnection={async () => ({ ok: true, route: { kind: "ssh", target: "liam@hermes", local: "127.0.0.1:9119" }, version: "0.22.6", unsecure: false }) as never}
+    tray={trayWiring as never}
+    screenshots={screenshots}
+    onSignOut={async () => {}}
+  />,
 );

@@ -20,6 +20,7 @@ import {
 } from "../hermes/importTranscripts";
 import { fmtSize } from "./bits";
 import { useModal } from "./modal";
+import { SettingRow, SettingsSection } from "./SettingRows";
 
 /** What the import needs from the app: Hermes, the profile shown, and where its chats can go. */
 export type ImportWiring = {
@@ -47,20 +48,23 @@ export function ImportSection({ wiring, connected }: { wiring: ImportWiring; con
   const [open, setOpen] = useState(false);
   const button = useRef<HTMLButtonElement>(null);
   return (
-    <section>
-      <h2>Import transcripts</h2>
-      <p className="muted">
-        Bring an exported chat into the <span className="mono">{wiring.profile}</span> profile. Imported chats are read-only here: they keep their words, not
-        everything the original chat had.
-      </p>
-      <div className="settings-row">
-        <div className="small muted">Hermes Chat Markdown exports, and Hermes session exports (JSONL).</div>
-        <button ref={button} className="btn" disabled={!connected} onClick={() => setOpen(true)}>
-          <FileInput size={14} /> Import…
-        </button>
-      </div>
+    <SettingsSection title="Import transcripts">
+      <SettingRow
+        name="Import a chat export"
+        hint={
+          <>
+            Hermes Chat Markdown exports, and Hermes session exports (JSONL), into the <span className="mono">{wiring.profile}</span> profile.
+          </>
+        }
+        more="Imported chats are read-only here: they keep their words, not everything the original chat had."
+        control={
+          <button ref={button} className="btn" disabled={!connected} onClick={() => setOpen(true)}>
+            <FileInput size={14} /> Import…
+          </button>
+        }
+      />
       {open && <ImportDialog wiring={wiring} connected={connected} returnTo={button} onClose={() => setOpen(false)} />}
-    </section>
+    </SettingsSection>
   );
 }
 

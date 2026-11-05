@@ -7,6 +7,7 @@ import { getUIPrefs, setUIPrefs, subscribe } from "../hermes/uiPrefs";
 import { appUpdates } from "../hermes/tauriUpdates";
 import type { Found, Updater, UpdateState } from "../hermes/updates";
 import { fmtSize } from "./bits";
+import { SettingRow, SettingsSection } from "./SettingRows";
 
 const time = (at: number) => new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 
@@ -153,35 +154,36 @@ export function UpdateSettings({ updates = appUpdates }: { updates?: Updater }) 
   const { checkUpdatesOnLaunch } = useSyncExternalStore(subscribe, getUIPrefs);
   const canCheck = ["idle", "upToDate", "available", "unsupported"].includes(s.state);
   return (
-    <section>
-      <div className="settings-row">
-        <h2>Updates</h2>
-        {canCheck && s.state !== "unsupported" && (
+    <SettingsSection
+      title="Updates"
+      action={
+        canCheck &&
+        s.state !== "unsupported" && (
           <button className="btn" onClick={() => void updates.check()}>
             <RefreshCw size={14} /> Check for updates
           </button>
-        )}
-      </div>
-      <div className="update-status" aria-live="polite">
+        )
+      }
+    >
+      <div className="set-block update-status" aria-live="polite">
         <Status s={s} updates={updates} />
       </div>
-      <div className="appearance-row">
-        <div className="appearance-label">
-          <div className="appearance-title" id="check-updates-label">
-            Check for updates on launch
-          </div>
-          <div className="muted small">Asks GitHub, or this build's update server, each time the app starts. Nothing installs without you.</div>
-        </div>
-        <button
-          className="switch"
-          role="switch"
-          aria-checked={checkUpdatesOnLaunch}
-          aria-labelledby="check-updates-label"
-          onClick={() => setUIPrefs({ checkUpdatesOnLaunch: !checkUpdatesOnLaunch })}
-        >
-          <span className="switch-knob" />
-        </button>
-      </div>
-    </section>
+      <SettingRow
+        name="Check for updates on launch"
+        nameId="check-updates-label"
+        hint="Asks GitHub, or this build's update server, each time the app starts. Nothing installs without you."
+        control={
+          <button
+            className="switch"
+            role="switch"
+            aria-checked={checkUpdatesOnLaunch}
+            aria-labelledby="check-updates-label"
+            onClick={() => setUIPrefs({ checkUpdatesOnLaunch: !checkUpdatesOnLaunch })}
+          >
+            <span className="switch-knob" />
+          </button>
+        }
+      />
+    </SettingsSection>
   );
 }

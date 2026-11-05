@@ -9,6 +9,7 @@ import { conversationBlocked, turnSettings } from "../hermes/voiceTurns";
 import { type AudioEnv, type Capture, CaptureAborted, type Recording, startCapture } from "./recorder";
 import type { Speaker } from "./speaker";
 import { Spinner } from "./bits";
+import { SettingNote, SettingRow, SettingsSection } from "./SettingRows";
 
 /** What the chat pane needs for voice: the profile's set-up, and Hermes's transcribing and speaking. */
 export type VoiceApi = {
@@ -296,13 +297,14 @@ export function micBlocked(status: ConnectionStatus, setup: VoiceSetup | undefin
 }
 
 /** How a Voice conversation's turns end with this profile's `voice.*` settings, as a Settings row says it. */
-function conversationTurns(setup: VoiceSetup): { label: string; needs: string } {
+function conversationTurns(setup: VoiceSetup): { label: string; needs: string; more: string } {
   const t = turnSettings(setup);
   const source = (fromProfile: boolean) => (fromProfile ? "the profile's" : "Hermes's default");
   return {
     label: `Ends a turn after ${t.silenceSeconds} s of quiet`,
-    needs:
-      `Needs both of the above. A turn ends after ${t.silenceSeconds} s of quiet (voice.silence_duration, ${source(t.fromProfile.silence)}), ` +
+    needs: "Needs Dictation and Read aloud. Hands-free: you speak, Hermes answers aloud, in turn.",
+    more:
+      `A turn ends after ${t.silenceSeconds} s of quiet (voice.silence_duration, ${source(t.fromProfile.silence)}), ` +
       `below loudness ${t.threshold} (voice.silence_threshold, ${source(t.fromProfile.threshold)}), and lasts at most ${Math.round(t.maxSeconds)} s ` +
       `(voice.max_recording_seconds, ${source(t.fromProfile.max)}).`,
   };
@@ -336,35 +338,49 @@ export function VoiceSettings({
   }, [setup, connected, profile, changes]);
 
   const s = got?.setup;
-  const row = (name: string, blocked: string | undefined, provider: { label: string; needs: string }) => (
-    <div className="voice-row">
-      <div className="voice-row-head">
-        <b>{name}</b>
-        {blocked ? <span className="badge warn">Unavailable</span> : <span className="badge">{provider.label}</span>}
-      </div>
-      <div className="muted small">{blocked ?? provider.needs}</div>
-    </div>
+  const row = (name: string, blocked: string | undefined, provider: { label: string; needs: string; more?: string }) => (
+    <SettingRow
+      name={name}
+      hint={blocked ?? provider.needs}
+      more={provider.more}
+      control={blocked ? <span className="badge warn">Unavailable</span> : <span className="badge">{provider.label}</span>}
+    />
   );
 
   return (
-    <section>
-      <h2>Voice</h2>
-      <p className="muted">
-        Dictate a message with the microphone in the composer: the text lands in the composer for you to edit before sending. Read aloud, under a
-        reply, has Hermes speak it. Start voice conversation, beside the microphone, does both in turn, hands-free, until you end it. Hermes does
-        all of them on the server with the <span className="mono">{profile}</span> profile's own speech
-        providers, so their keys never reach this app.
-      </p>
+    <SettingsSection
+      title="Voice"
+      intro={
+        <>
+          Dictation, Read aloud and voice conversations run on Hermes, with the <span className="mono">{profile}</span> profile's own speech providers.
+        </>
+      }
+      more={
+        <>
+          <p>
+            Dictate a message with the microphone in the composer: the text lands in the composer for you to edit before sending. Read aloud, under a
+            reply, has Hermes speak it. Start voice conversation, beside the microphone, does both in turn, hands-free, until you end it. Hermes does
+            all of them on the server, so the providers' keys never reach this app.
+          </p>
+          <p>
+            Change the providers under Speech providers, below. The microphone is
+            open only while you record, or while a voice conversation is on; a conversation pauses when you leave its chat pane or hide the window,
+            and only you can resume it. Recordings stay in memory here and go to Hermes, and on to the provider if it's a cloud one; Hermes deletes
+            its copy once it has the text. Recordings stop by themselves after {MAX_RECORDING_SECONDS / 60} minutes.
+          </p>
+        </>
+      }
+    >
       {!connected ? (
-        <p className="muted small">Connect to Hermes to see this profile's voice set-up.</p>
+        <SettingNote>Connect to Hermes to see this profile's voice set-up.</SettingNote>
       ) : got?.error ? (
-        <p className="small sign-in-error" role="alert">
+        <SettingNote tone="bad" role="alert">
           Couldn't read the voice set-up: {got.error}
-        </p>
+        </SettingNote>
       ) : !s ? (
-        <p className="muted small">
+        <SettingNote>
           <Spinner /> Reading the voice set-up…
-        </p>
+        </SettingNote>
       ) : (
         <>
           {row("Dictation", dictationBlocked(s), sttProvider(s))}
@@ -372,12 +388,6 @@ export function VoiceSettings({
           {row("Voice conversation", conversationBlocked(status, s, true), conversationTurns(s))}
         </>
       )}
-      <p className="muted small settings-note">
-        Change the providers under Speech providers, below. The microphone is
-        open only while you record, or while a voice conversation is on; a conversation pauses when you leave its chat pane or hide the window,
-        and only you can resume it. Recordings stay in memory here and go to Hermes, and on to the provider if it's a cloud one; Hermes deletes its
-        copy once it has the text. Recordings stop by themselves after {MAX_RECORDING_SECONDS / 60} minutes.
-      </p>
-    </section>
+    </SettingsSection>
   );
 }

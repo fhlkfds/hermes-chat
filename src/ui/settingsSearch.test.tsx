@@ -146,6 +146,22 @@ describe("Searching Settings", () => {
     expect(screen.getAllByText("hermes-chat --toggle").length).toBeGreaterThan(0);
   });
 
+  it("finds words in a row's folded help and opens it, and folds it again when the search ends (#174)", async () => {
+    const { user } = await shown();
+    await user.click(screen.getByRole("button", { name: "Launch, tray & updates" }));
+    const about = () => screen.getByRole("button", { name: "About Close to tray" });
+    const help = () => document.getElementById(about().getAttribute("aria-controls")!)!;
+    expect(help().hidden).toBe(true);
+    // Only the folded help says this.
+    await user.type(box(), "always exits");
+    expect(showing("Tray")).toBe(true);
+    expect(showing("On launch")).toBe(false);
+    expect(help().hidden).toBe(false);
+    expect(highlights.get(HIGHLIGHT_NAME)!.ranges.map((r) => r.toString())).toEqual(["always", "exits"]);
+    await user.clear(box());
+    expect(help().hidden).toBe(true);
+  });
+
   it("finds a section by a control's name that shows only to assistive technology", async () => {
     const { user } = await shown();
     // "Interface font size" is the size picker's aria-label; the section's text says neither "size" nor the pair.

@@ -37,6 +37,7 @@ import {
 } from "../hermes/backup";
 import { fmtSize } from "./bits";
 import { useModal } from "./modal";
+import { SettingRow, SettingsSection } from "./SettingRows";
 
 /** What Backup needs from the app. */
 export type BackupWiring = {
@@ -67,26 +68,25 @@ export function BackupSection({ wiring }: { wiring: BackupWiring }) {
   const exportButton = useRef<HTMLButtonElement>(null);
   const restoreButton = useRef<HTMLButtonElement>(null);
   return (
-    <section>
-      <h2>Backup</h2>
-      <p className="muted">
-        Keep your drafts, queued messages, templates, tags, project membership and settings when you reinstall or move to another computer. A backup holds
-        only what Hermes Chat keeps on this computer: your chats and the rest stay on your Hermes server, and no password is ever in it.
-      </p>
-      <div className="settings-row">
-        <div className="small muted">A zip file, saved where you choose.</div>
-        <div className="confirm-actions">
-          <button ref={exportButton} className="btn" onClick={() => setOpen("export")}>
-            <Archive size={14} /> Export backup…
-          </button>
-          <button ref={restoreButton} className="btn" onClick={() => setOpen("restore")}>
-            <ArchiveRestore size={14} /> Restore…
-          </button>
-        </div>
-      </div>
+    <SettingsSection title="Backup">
+      <SettingRow
+        name="Back up this computer's data"
+        hint="Drafts, queued messages, templates, tags and settings, in one zip file."
+        more="Keep your drafts, queued messages, templates, tags, project membership and settings when you reinstall or move to another computer. The zip file is saved where you choose. A backup holds only what Hermes Chat keeps on this computer: your chats and the rest stay on your Hermes server, and no password is ever in it."
+        control={
+          <>
+            <button ref={exportButton} className="btn" onClick={() => setOpen("export")}>
+              <Archive size={14} /> Export backup…
+            </button>
+            <button ref={restoreButton} className="btn" onClick={() => setOpen("restore")}>
+              <ArchiveRestore size={14} /> Restore…
+            </button>
+          </>
+        }
+      />
       {open === "export" && <ExportDialog wiring={wiring} returnTo={exportButton} onClose={() => setOpen(undefined)} />}
       {open === "restore" && <RestoreDialog wiring={wiring} returnTo={restoreButton} onClose={() => setOpen(undefined)} />}
-    </section>
+    </SettingsSection>
   );
 }
 
