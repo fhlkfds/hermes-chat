@@ -19,7 +19,10 @@ afterEach(cleanup);
 
 const fence = (lang: string, code: string) => "```" + lang + "\n" + code + "\n```";
 
-/** Finished replies of every shape a block split has to get right. */
+/**
+ * Finished replies of every shape a block split has to get right. The tests going over every prefix of all of them
+ * take about half a second, so they get longer than the default to finish on a loaded machine.
+ */
 const REPLIES: Record<string, string> = {
   code: "Here it is:\n\n" + fence("ts", "const a = 1;\n\n\nconst b = 2;") + "\n\nThen run:\n\n" + fence("", "fn main() {\n    let x: u32 = 1;\n}") + "\n\nDone.",
   tildes: "~~~python\ndef f():\n    return 1\n~~~\nAfter, with no blank line.\n````\n```\nnot closed by three\n````",
@@ -83,7 +86,7 @@ describe("A code block while a reply streams in", () => {
 });
 
 describe("Splitting a reply into blocks", () => {
-  it("finds the same blocks whether it parses the reply afresh or carries on from the last split", () => {
+  it("finds the same blocks whether it parses the reply afresh or carries on from the last split", { timeout: 30_000 }, () => {
     for (const [name, text] of Object.entries(REPLIES))
       for (const step of [1, 3, 12]) {
         let prev: Blocks | undefined;
@@ -115,12 +118,12 @@ describe("Splitting a reply into blocks", () => {
 });
 
 describe("A streamed reply, once finished", () => {
-  it("comes out exactly as the same reply rendered in one piece", () => {
+  it("comes out exactly as the same reply rendered in one piece", { timeout: 30_000 }, () => {
     for (const [name, text] of Object.entries(REPLIES))
       for (const query of ["", "e"]) expect(streamed(text, 7, query).html, `${name}, query "${query}"`).toBe(whole(text, query));
   });
 
-  it("matches the one-piece render at every delta too, apart from code still coming in", () => {
+  it("matches the one-piece render at every delta too, apart from code still coming in", { timeout: 30_000 }, () => {
     const text = REPLIES["lists, loose and tight"] + "\n\n" + REPLIES.table + "\n\n" + REPLIES.links;
     const { seen } = streamed(text, 5);
     seen.forEach((html, i) => expect(html, `after ${(i + 1) * 5} characters`).toBe(whole(text.slice(0, (i + 1) * 5))));
