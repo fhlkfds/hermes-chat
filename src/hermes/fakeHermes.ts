@@ -477,6 +477,8 @@ export class FakeHermes {
   learningRoutes = false;
   /** Answers the next `PUT` or `DELETE /api/learning/node` with this status and reason instead of writing. Applies once. */
   learningRestRefusal?: { status: number; detail: string };
+  /** Runs as each `PUT` or `DELETE /api/learning/node` arrives, with the profile and body, before anything else. */
+  beforeLearningRest?: (profile: string, body: { id?: string; content?: string }) => void;
   /** An external memory provider the profile uses (`GET /api/memory` → `active`); none when empty. */
   memoryProvider = "";
   /** Runs before each `learning.*` request is answered, e.g. to change memory as the agent would meanwhile. */
@@ -1572,6 +1574,7 @@ export class FakeHermes {
       return () => {
         const profile = this.knownProfile(req.query.get("profile"));
         const { id, content } = (req.body ?? {}) as { id?: string; content?: string };
+        this.beforeLearningRest?.(profile, { id, content });
         if (this.learningRestRefusal) {
           const { status, detail } = this.learningRestRefusal;
           this.learningRestRefusal = undefined;

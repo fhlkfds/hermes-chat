@@ -90,7 +90,9 @@ export function MemorySettings({
   const [source, setSource] = useState<MemorySource>(sourceProp ?? "memory");
   const [editing, setEditing] = useState<Editing>();
   const [busy, setBusy] = useState<"save" | "delete" | "reload" | "bulk">();
-  // Select mode: the entries picked, by id, in the file shown; the question before removing them; and what became of each.
+  // Select mode: the entries picked, by text, in the file shown; the question before removing them; and what became of
+  // each. Hermes names an entry by its text (and keeps one of identical entries), while an id also holds its position,
+  // which shifts as entries go, so a pick is kept by text.
   const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [confirmBulk, setConfirmBulk] = useState(false);
@@ -146,6 +148,8 @@ export function MemorySettings({
   const show = (next: MemoryView, opts: { keep?: Editing } = {}) => {
     setView(next);
     setProblem(undefined);
+    // A picked entry that changed or went is no longer picked.
+    setSelected((cur) => new Set([...cur].filter((t) => next.resources[source].entries.some((e) => e.text === t))));
     const open = opts.keep ?? editing;
     if (!open) return;
     const still = next.resources[open.entry.source].entries.find((e) => e.id === open.entry.id);
@@ -338,7 +342,7 @@ export function MemorySettings({
   const removeSelected = async () => {
     if (busy || !view) return;
     // In the file's order, as last read.
-    const entries = view.resources[source].entries.filter((e) => selected.has(e.id));
+    const entries = view.resources[source].entries.filter((e) => selected.has(e.text));
     if (!entries.length) return;
     setBusy("bulk");
     setConfirmBulk(false);
@@ -350,8 +354,8 @@ export function MemorySettings({
       if (r.view) show(r.view);
       setBulkDone(r.outcomes);
       // What went is no longer picked; what's left stays picked, to try again.
-      const left = new Set(r.outcomes.filter((o) => o.kind !== "removed").map((o) => o.entry.id));
-      setSelected((cur) => new Set([...cur].filter((id) => left.has(id))));
+      const gone = new Set(r.outcomes.filter((o) => o.kind === "removed").map((o) => o.entry.text));
+      setSelected((cur) => new Set([...cur].filter((t) => !gone.has(t))));
     } catch (e) {
       if (!alive.current) return;
       if (e instanceof MemoryUnsupportedError) failLoad(e);
@@ -375,6 +379,8 @@ export function MemorySettings({
 
   const resource = view?.resources[source];
   const meta = resourceOf(source);
+  /** How many entries of the file shown are picked. */
+  const picked = resource?.entries.filter((e) => selected.has(e.text)).length ?? 0;
   const filePath = view?.home ? `${view.home.replace(/\/+$/, "")}/memories/${meta.file}` : meta.file;
   const changed = !!editing && editing.draft !== editing.entry.text;
   const draftProblem = changed && editing ? (entryProblem(editing.draft) ?? (view && duplicateProblem(editing.draft, editing.entry, view.resources[editing.entry.source].entries))) : undefined;
@@ -508,16 +514,16 @@ export function MemorySettings({
                   {resource?.entries.map((e) => (
                     <li key={e.id}>
                       {selecting ? (
-                        <label className={`memory-entry memory-pick ${selected.has(e.id) ? "on" : ""}`}>
+                        <label className={`memory-entry memory-pick ${selected.has(e.text) ? "on" : ""}`}>
                           <input
                             type="checkbox"
-                            checked={selected.has(e.id)}
+                            checked={selected.has(e.text)}
                             disabled={!!busy}
                             onChange={(ev) =>
                               setSelected((cur) => {
                                 const next = new Set(cur);
-                                if (ev.target.checked) next.add(e.id);
-                                else next.delete(e.id);
+                                if (ev.target.checked) next.add(e.text);
+                                else next.delete(e.text);
                                 return next;
                               })
                             }
@@ -543,16 +549,16 @@ export function MemorySettings({
                 <div className="memory-select" role="group" aria-label="Selected entries">
                   <div className="skills-select-bar">
                     <span className="skills-select-count" aria-live="polite">
-                      {selected.size ? `${entriesText(selected.size)} selected` : "No entries selected"}
+                      {picked ? `${entriesText(picked)} selected` : "No entries selected"}
                     </span>
-                    <button className="link-btn" disabled={!!busy || selected.size === resource.entries.length} onClick={() => setSelected(new Set(resource.entries.map((e) => e.id)))}>
+                    <button className="link-btn" disabled={!!busy || picked === resource.entries.length} onClick={() => setSelected(new Set(resource.entries.map((e) => e.text)))}>
                       Select all
                     </button>
-                    <button className="link-btn" disabled={!!busy || !selected.size} onClick={() => setSelected(new Set())}>
+                    <button className="link-btn" disabled={!!busy || !picked} onClick={() => setSelected(new Set())}>
                       Clear
                     </button>
                     <span className="skills-select-actions">
-                      <button className="btn danger" disabled={!connected || !!busy || !selected.size} onClick={() => setConfirmBulk(true)}>
+                      <button className="btn danger" disabled={!connected || !!busy || !picked} onClick={() => setConfirmBulk(true)}>
                         <Trash2 size={14} /> {busy === "bulk" ? "Deleting…" : "Delete…"}
                       </button>
                     </span>
@@ -564,7 +570,7 @@ export function MemorySettings({
                   {confirmBulk && (
                     <div className="confirm" role="alertdialog" aria-label="Delete the selected entries?">
                       <span className="confirm-msg">
-                        <Trash2 size={12} /> Remove {entriesText(selected.size)} from {meta.file} in the {profile} profile on the server? Hermes forgets them in
+                        <Trash2 size={12} /> Remove {entriesText(picked)} from {meta.file} in the {profile} profile on the server? Hermes forgets them in
                         new chats. Each is checked against what was read first, and one that changed since is left alone. They can't be put back from here.
                       </span>
                       <div className="confirm-actions">
@@ -572,7 +578,7 @@ export function MemorySettings({
                           Keep them
                         </button>
                         <button className="btn danger" disabled={!connected || !!busy} onClick={() => void removeSelected()}>
-                          Remove {entriesText(selected.size)}
+                          Remove {entriesText(picked)}
                         </button>
                       </div>
                     </div>
@@ -590,7 +596,7 @@ export function MemorySettings({
                   <ul>
                     {bulkDone.map((o) => (
                       <li key={o.entry.id} className={o.kind === "removed" ? "ok" : "failed"}>
-                        {o.kind === "removed" ? <Check size={12} /> : <AlertTriangle size={12} />} <span className="memory-entry-text">{firstLine(o.entry.text)}</span>:{" "}
+                        {o.kind === "removed" ? <Check size={12} /> : <AlertTriangle size={12} />} <span className="memory-entry-text">{firstLine(o.entry.text)}</span> —{" "}
                         {REMOVED[o.kind]}
                         {o.problem && ` ${o.problem}`}
                       </li>

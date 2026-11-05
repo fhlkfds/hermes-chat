@@ -598,7 +598,7 @@ export function SkillSettings({
                     running={bulkRunning}
                     onPickAll={() => setSelected((cur) => new Set([...cur, ...filtered.map((r) => r.name)]))}
                     onClear={() => setSelected(new Set())}
-                    onAsk={setBulkAsk}
+                    onAsk={(ask) => (setBulkAsk(ask), ask && setBulkDone(undefined))}
                     onRun={(op, to) => void runBulk(op, op === "copy" ? picked : picked.filter(archivable), to)}
                   />
                 )}
@@ -812,7 +812,7 @@ function SelectBar({
           <button
             className="btn"
             disabled={off || !movable || !!noTarget}
-            title={noTarget ?? (n && !movable ? "Only Local skills can be moved: Hermes doesn't archive built-in, Skills Hub or external-folder skills." : undefined)}
+            title={noTarget ?? (n && !movable ? "Hermes archives only Local skills listed by their own name, so none of these can be moved." : undefined)}
             onClick={() => onAsk({ op: "move", to: targets[0] })}
           >
             <ArrowRightLeft size={14} /> Move to…
@@ -820,7 +820,7 @@ function SelectBar({
           <button
             className="btn danger"
             disabled={off || !movable}
-            title={n && !movable ? "Only Local skills can be deleted: Hermes doesn't archive built-in, Skills Hub or external-folder skills." : undefined}
+            title={n && !movable ? "Hermes archives only Local skills listed by their own name, so none of these can be deleted." : undefined}
             onClick={() => onAsk({ op: "archive" })}
           >
             <Trash2 size={14} /> Delete…
@@ -829,9 +829,9 @@ function SelectBar({
       </div>
       {kept.length > 0 && !running && (
         <p className="muted small skills-note">
-          <Info size={12} /> {kept.length === 1 ? `${keptNames} isn't a Local skill` : `${keptNames} aren't Local skills`}, so Hermes won't archive{" "}
-          {kept.length === 1 ? "it" : "them"}: {kept.length === 1 ? "it" : "they"} can be copied to another profile, but Move and Delete leave{" "}
-          {kept.length === 1 ? "it" : "them"} out.
+          <Info size={12} /> Hermes won't archive {keptNames}, so Move and Delete leave {kept.length === 1 ? "it" : "them"} out; Copy still works.
+          It archives only Local skills, and finds one by the name it declares, so a skill listed by its folder path (two skills declare the same
+          name) can't be archived either.
         </p>
       )}
       {running && (

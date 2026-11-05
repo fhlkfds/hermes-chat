@@ -109,7 +109,8 @@ export class FakeSkills {
 
   /** `archive_skill` behind `DELETE /api/learning/node`: refuses what Hermes refuses, else moves the folder aside. */
   archive(profile: string, name: string): { ok: boolean; message: string } {
-    const found = this.find(profile, name);
+    // `_find_skill_dir`: by front matter name only, never a folder path.
+    const found = (this.folders[profile] ?? []).find((s) => frontmatter(this.file(s.dir))?.name === name);
     if (!found) return { ok: false, message: `skill '${name}' not found` };
     if (this.pinned[profile]?.has(name)) return { ok: false, message: `'${name}' is pinned — unpin it first (hermes curator unpin ${name})` };
     if (found.source === "hub") return { ok: false, message: `skill '${name}' is hub-installed; never archive` };

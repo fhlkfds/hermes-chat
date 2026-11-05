@@ -441,6 +441,25 @@ describe("copying and archiving across profiles (ADR 0056)", () => {
     expect(server.restRequests.some((r) => r.method === "DELETE")).toBe(false);
   });
 
+  it("never archives a skill listed by its path, which Hermes finds only by the name it declares", async () => {
+    const { server, api } = await signedIn();
+    server.learningRoutes = true;
+    const e = await rejection(api.archive("default", "writing/release-notes"));
+    expect(e!.kind).toBe("refused");
+    expect(e!.unsent).toBe(true);
+    expect(server.restRequests.some((r) => r.method === "DELETE")).toBe(false);
+  });
+
+  it("keeps switching and editing skills on a server whose copy route is missing", async () => {
+    const { server, hermes, api } = await signedIn();
+    server.skills.createRoute = false;
+    const e = await rejection(api.copy("default", "spare", await row(api, "default", "release-notes"), LISTED));
+    expect(e!.kind).toBe("unsupported");
+    expect(hermes.capabilities.get("skills").state).not.toBe("unsupported");
+    const r = await api.setEnabled("default", "github", false);
+    expect(r.confirmed).toBe(true);
+  });
+
   it("says a server without the archive route can't archive, and changes nothing", async () => {
     const { server, api } = await signedIn();
     expect(server.learningRoutes).toBe(false);

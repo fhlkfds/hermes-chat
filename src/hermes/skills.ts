@@ -102,10 +102,12 @@ export const SKILL_TIMEOUTS = { readMs: 30_000, writeMs: 60_000 };
 export const creatableName = (n: string) => n.length <= 64 && /^[a-z0-9][a-z0-9._-]*$/.test(n);
 
 /**
- * Whether Hermes archives a skill of this source when asked (`archive_skill`): only the profile's own skills. Skills
- * Hub and external-folder skills never are, and built-in ones only on a server set to prune them.
+ * Whether Hermes archives this skill when asked (`archive_skill`): only the profile's own skills. Skills Hub and
+ * external-folder skills never are, and built-in ones only on a server set to prune them. Hermes finds the skill to
+ * archive by its front matter name (`_find_skill_dir`), so one the list names by its path (two skills declare the same
+ * name) can't be archived: sending the path finds nothing, and sending the shared name could archive the other one.
  */
-export const archivable = (row: SkillRow) => row.source === "agent";
+export const archivable = (row: SkillRow) => row.source === "agent" && !row.name.includes("/");
 
 /**
  * What became of one skill a copy, move or archive was asked for:
@@ -577,6 +579,8 @@ export class SkillsApi {
   async archive(profile: string, name: string): Promise<SkillsView> {
     // Hermes takes an id starting `memory:` for a memory entry.
     if (!safeSkillName(name) || name.startsWith("memory:")) throw new SkillsError("identity", `"${name}" isn't a skill name Hermes Chat sends to Hermes.`, undefined, true);
+    if (name.includes("/"))
+      throw new SkillsError("refused", `${name} is listed by its folder path because another skill declares the same name, and Hermes archives a skill by that name, so it can't be archived from here.`, undefined, true);
     let lost: SkillsError | undefined;
     try {
       await deadline(this.rest("DELETE", `api/learning/node?${new URLSearchParams({ profile })}`, { id: name }), this.timeouts.writeMs, "archiving it");

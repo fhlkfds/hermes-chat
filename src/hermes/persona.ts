@@ -115,7 +115,7 @@ export function personaError(e: unknown, profile: string, writing: boolean): Per
  * refused before the write, and Hermes's 500 `Could not write SOUL.md` comes from the atomic write, which leaves the
  * file untouched. Any other failure (no answer, or a proxy's 502/504) may have come after Hermes wrote it.
  */
-const certainlyUnwritten = (e: PersonaError) =>
+export const certainlyUnwritten = (e: PersonaError) =>
   e.unsent ||
   (e.status !== undefined && ((e.status >= 400 && e.status < 500) || (e.status === 500 && /Could not write SOUL\.md/.test(e.message))));
 

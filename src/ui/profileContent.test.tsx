@@ -114,7 +114,7 @@ describe("Settings → Skills for any profile", () => {
     const { s, user } = await launch();
     await openSkills(user);
     await select(user, "release-notes", "github");
-    expect(screen.getByText(/github isn't a Local skill, so Hermes won't archive it/)).toBeTruthy();
+    expect(screen.getByText(/Hermes won't archive github, so Move and Delete leave it out; Copy still works/)).toBeTruthy();
     await user.click(screen.getByRole("button", { name: /Move to…/ }));
     const ask = screen.getByRole("alertdialog", { name: "Move the selected skills?" });
     await user.click(within(ask).getByRole("button", { name: "Move 1 skill" }));
@@ -166,6 +166,21 @@ describe("Settings → Skills for any profile", () => {
     expect(screen.getByRole<HTMLButtonElement>("button", { name: /Copy to…/ }).disabled).toBe(false);
   });
 
+  it("offers no Move or Delete for a skill listed by its path, which Hermes can't archive by name", async () => {
+    const { s, user } = await launch();
+    s.skills.add("default", { dir: `${HOME}/skills/writing/notes`, source: "agent", category: "writing" }, skill("notes", "Writing notes."));
+    s.skills.add("default", { dir: `${HOME}/skills/devops/notes`, source: "agent", category: "devops" }, skill("notes", "Ops notes."));
+    await openSkills(user);
+    await select(user, "writing/notes");
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: /Move to…/ }).disabled).toBe(true);
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: /Delete…/ }).disabled).toBe(true);
+    expect(screen.getByText(/a skill listed by its folder path/)).toBeTruthy();
+    // Picked with a Local one, only that one moves.
+    await user.click(within(rowOf("release-notes")).getByRole("checkbox"));
+    await user.click(screen.getByRole("button", { name: /Move to…/ }));
+    expect(screen.getByRole("button", { name: "Move 1 skill" })).toBeTruthy();
+  });
+
   it("asks before picking another profile drops an unsaved skill edit", async () => {
     const { user } = await launch();
     await openSkills(user);
@@ -204,6 +219,35 @@ describe("Settings → Memory for any profile", () => {
   });
 });
 
+describe("Settings → Memory selection after a partial removal", () => {
+  it("keeps a refused entry picked, though its position moved, and removes it on a second try", async () => {
+    const { s, user } = await launch();
+    await user.click(screen.getByRole("tab", { name: /Memory/ }));
+    await user.selectOptions(await screen.findByRole("combobox", { name: "Profile whose memory is shown" }), "spare");
+    await screen.findByText("Spare note one.");
+    await user.click(screen.getByRole("button", { name: "Select" }));
+    await user.click(screen.getByRole("checkbox", { name: /Spare note one/ }));
+    await user.click(screen.getByRole("checkbox", { name: /Spare note three/ }));
+    // Hermes takes the first removal and refuses the second.
+    let writes = 0;
+    s.beforeLearningRest = () => {
+      if (++writes === 2) s.learningRestRefusal = { status: 400, detail: "MEMORY.md is busy" };
+    };
+    await user.click(screen.getByRole("button", { name: /Delete…/ }));
+    await user.click(screen.getByRole("button", { name: "Remove 2 entries" }));
+    await screen.findByText(/Removed 1 of 2 entries/);
+    expect(s.memory.spare.memory).toEqual(["Spare note two.", "Spare note three."]);
+    // "Spare note three." moved from third to second, and is still the one picked.
+    expect(screen.getByText("1 entry selected")).toBeTruthy();
+    expect(screen.getByRole<HTMLInputElement>("checkbox", { name: /Spare note three/ }).checked).toBe(true);
+    expect(screen.getByRole<HTMLInputElement>("checkbox", { name: /Spare note two/ }).checked).toBe(false);
+    await user.click(screen.getByRole("button", { name: /Delete…/ }));
+    await user.click(screen.getByRole("button", { name: "Remove 1 entry" }));
+    await screen.findByText(/Removed 1 of 1 entry/);
+    expect(s.memory.spare.memory).toEqual(["Spare note two."]);
+  });
+});
+
 describe("Settings → Persona for any profile", () => {
   const soul = (profile: string) => screen.findByRole<HTMLTextAreaElement>("textbox", { name: `SOUL.md for the ${profile} profile` });
 
@@ -224,6 +268,52 @@ describe("Settings → Persona for any profile", () => {
     expect(s.souls.default).toBe(SOUL);
     // What spare had is kept with spare's own earlier versions.
     expect(store.earlier(personaKey(connection, "spare")).map((v) => v.content)).toEqual([SPARE_SOUL]);
+  });
+
+  it("keeps what the other profile had when a copy's outcome can't be told, and says it may have been written", async () => {
+    const { s, store, connection, user } = await launch();
+    await user.click(screen.getByRole("tab", { name: /Persona/ }));
+    await soul("default");
+    await user.click(screen.getByRole("button", { name: /Copy…/ }));
+    await waitFor(() => expect(screen.getByRole("alertdialog", { name: "Replace spare's SOUL.md?" }).textContent).toMatch(/25 characters/));
+    // Hermes writes it, then the answer is lost, and reading it back fails too.
+    s.soulWriteLost = "Can't reach the Hermes dashboard: connection reset";
+    s.afterSoulWrite = () => (s.soulReadError = `The dashboard answered 500: {"detail":"read failed"}`);
+    await user.click(screen.getByRole("button", { name: "Replace spare's" }));
+    expect((await screen.findByRole("alert")).textContent).toMatch(/Hermes may have written the copy to spare, but it couldn't be confirmed/);
+    expect(s.souls.spare).toBe(SOUL);
+    expect(store.earlier(personaKey(connection, "spare")).map((v) => v.content)).toEqual([SPARE_SOUL]);
+  });
+
+  it("waits for a save to the other profile already under way, and won't copy over one that starts meanwhile", async () => {
+    const { s, store, connection, user } = await launch();
+    await user.click(screen.getByRole("tab", { name: /Persona/ }));
+    await soul("default");
+    const key = personaKey(connection, "spare");
+    let finish = () => {};
+    store.trackSave(key, new Promise<void>((r) => (finish = r)));
+    await user.click(screen.getByRole("button", { name: /Copy…/ }));
+    const ask = screen.getByRole("alertdialog", { name: "Replace spare's SOUL.md?" });
+    expect(ask.textContent).toMatch(/Reading spare's SOUL.md…/);
+    expect(s.restRequests.filter((r) => r.method === "GET" && r.path === "/api/profiles/spare/soul")).toHaveLength(0);
+    await act(async () => finish());
+    await waitFor(() => expect(ask.textContent).toMatch(/Replace spare's SOUL.md \(25 characters\)/));
+    // Another save to spare starts after the question was answered.
+    store.trackSave(key, new Promise<void>(() => {}));
+    await user.click(screen.getByRole("button", { name: "Replace spare's" }));
+    expect((await screen.findByRole("alert")).textContent).toMatch(/A save to spare's persona is still under way, so nothing was copied/);
+    expect(s.souls.spare).toBe(SPARE_SOUL);
+  });
+
+  it("drops the copy question once the owner starts editing", async () => {
+    const { s, user } = await launch();
+    await user.click(screen.getByRole("tab", { name: /Persona/ }));
+    await user.click(screen.getByRole("button", { name: /Copy…/ }));
+    await waitFor(() => expect(screen.getByRole("alertdialog", { name: "Replace spare's SOUL.md?" }).textContent).toMatch(/25 characters/));
+    await user.type(await soul("default"), "More.");
+    expect(screen.queryByRole("alertdialog", { name: "Replace spare's SOUL.md?" })).toBeNull();
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: /Copy…/ }).disabled).toBe(true);
+    expect(s.souls.spare).toBe(SPARE_SOUL);
   });
 
   it("copies nothing while there's an unsaved edit, and the question before leaving names the profile edited", async () => {
