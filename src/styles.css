@@ -569,10 +569,11 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .queue-toggle { height: 26px; padding: 0 10px; font-size: calc(12rem / 14); }
 .queue-note { padding: 0 12px 6px; color: var(--warn); }
 .queue-list { list-style: none; margin: 0; padding: 0 6px; overflow-y: auto; min-height: 0; }
-.queue-item { position: relative; display: flex; align-items: flex-start; gap: 8px; padding: 6px; border-radius: 8px; border-top: 1px solid var(--line); }
+/* Opaque, so the row WebKit draws as a drag image isn't see-through (white without a compositor). */
+.queue-item { position: relative; display: flex; align-items: flex-start; gap: 8px; padding: 6px; border-radius: 8px; border-top: 1px solid var(--line); background: var(--raised); }
 .queue-item:first-child { border-top: 0; }
 .queue-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.queue-item[draggable="true"] { cursor: grab; }
+.queue-item[draggable="true"] { cursor: grab; user-select: none; -webkit-user-select: none; }
 .queue-item.dragging { opacity: 0.45; }
 .queue-grip { flex: none; display: grid; place-items: center; width: 12px; height: 22px; margin-right: -4px; color: var(--faint); }
 .queue-item:hover .queue-grip { color: var(--muted); }

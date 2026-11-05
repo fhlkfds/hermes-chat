@@ -132,8 +132,12 @@ export function QueuePanel({ chat, queue, status, api }: { chat: Chat; queue?: C
               onRemove={() => remove(item, i)}
               onDrag={(on) => {
                 queueDrag = on ? { chat: chat.id, id: item.id } : null;
-                setDragging(on ? item.id : undefined);
-                if (!on) setOver(null);
+                // WebKit takes the drag image once dragstart returns: a row faded by then would be dragged faded.
+                if (on) setTimeout(() => queueDrag?.id === item.id && setDragging(item.id));
+                else {
+                  setDragging(undefined);
+                  setOver(null);
+                }
               }}
             />
           ))}

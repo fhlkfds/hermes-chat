@@ -161,7 +161,7 @@ describe("While Hermes replies", () => {
 
     expect(drag(rowOf(queue(), "d"), queue(), 5, { drop: false })).toBe(true);
     expect(marks()).toBe("^---");
-    expect(rowOf(queue(), "d").classList.contains("dragging")).toBe(true);
+    await waitFor(() => expect(rowOf(queue(), "d").classList.contains("dragging")).toBe(true));
     drag(rowOf(queue(), "d"), queue(), 5);
     expect(queuedTexts(queue())).toEqual(["d", "a", "b", "c"]);
     expect(marks()).toBe("----");
