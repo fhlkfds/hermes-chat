@@ -332,7 +332,8 @@ describe("in the app", () => {
     s.asOlderHermes();
     const { hermes, user } = await launch(s);
     await act(() => settledChecks(hermes));
-    await user.click(screen.getByRole("button", { name: "Server files" }));
+    await user.click(screen.getByRole("button", { name: "Open the side panel" }));
+    await user.click(screen.getByRole("tab", { name: "Files" }));
     expect(await screen.findByRole("region", { name: /doesn't support Server files/ })).toBeTruthy();
     expect(s.restRequests.filter((r) => r.method !== "GET" && r.path.startsWith("/api/files"))).toEqual([]);
   });

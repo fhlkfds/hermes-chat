@@ -49,7 +49,7 @@ export type UIPrefs = {
   /** The Terminal's shell picked last: the Hermes server's, through ssh, or this computer's (ADR 0051). */
   terminalKind: TerminalKind;
   /**
-   * What Enter does with a message while the chat's reply runs (ADR 0055): `queue` it for after the reply (ADR 0018),
+   * What Enter does with a message while the chat's reply runs (ADR 0057): `queue` it for after the reply (ADR 0018),
    * or `steer` it into the running reply. Ctrl+Enter does the other.
    */
   followUp: FollowUp;

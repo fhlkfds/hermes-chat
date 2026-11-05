@@ -1,7 +1,7 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
 // Dictation and Read aloud come from Voice.tsx.
 import { createContext, memo, type ReactNode, useCallback, useContext, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
-import { Archive, ArchiveRestore, ArrowUp, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, CornerDownRight, EyeOff, FileDown, FileInput, FileText, Globe, HardDrive, Link2, ListPlus, Ellipsis, Paperclip, RotateCcw, Search, Server, Square, Trash2, Wrench, X } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowUp, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, CornerDownRight, EyeOff, FileDown, FileInput, Globe, HardDrive, Link2, ListPlus, Ellipsis, Paperclip, RotateCcw, Search, Server, Square, Trash2, Wrench, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
@@ -29,7 +29,6 @@ import { useOpenPreview } from "./previewContext";
 import { ShowInChatContext, type ShowInChat } from "./showInChat";
 import { previewName, toolTargets, withoutBidi } from "../hermes/preview";
 import { type CommandHost, useSlashCommands } from "./SlashCommands";
-import { Templates, type TemplateHere } from "./Templates";
 import { BranchButton } from "./Branch";
 import { useWindowHidden } from "./windowState";
 import { EditButton, RegenerateButton, VariantNav } from "./Replay";
@@ -38,7 +37,7 @@ import { turnsOf, type ReplayKind, type Variant } from "../hermes/replay";
 import type { FollowUp } from "../hermes/uiPrefs";
 
 /**
- * What a message sent while the chat's reply runs does (ADR 0055). `mode`: what Enter does, the Follow-up behavior
+ * What a message sent while the chat's reply runs does (ADR 0057). `mode`: what Enter does, the Follow-up behavior
  * setting; Ctrl+Enter does the other. `why`: why a message can't steer the running reply now, so it is queued instead,
  * or undefined when it can. `steer` sends the words into the running reply and empties the Draft once Hermes has taken
  * them; it resolves with a note to show, if any, and rejects saying why nothing went.
@@ -287,7 +286,6 @@ export function ChatPane({
   queueApi,
   commands,
   followUp,
-  templates,
   branch,
   branchedFrom,
   replay,
@@ -340,10 +338,8 @@ export function ChatPane({
   queue?: ChatQueue;
   queueApi?: QueueApi;
   commands?: CommandHost;
-  /** What sending does while the reply runs: queue or steer (ADR 0055). Without it, it queues. */
+  /** What sending does while the reply runs: queue or steer (ADR 0057). Without it, it queues. */
   followUp?: FollowUpHost;
-  /** Where the composer's Templates are picked from (Templates.tsx). */
-  templates?: TemplateHere;
   branch?: { blocked?: string; onBranch: (itemId: string) => void };
   branchedFrom?: ReactNode;
   replay?: { blocked?: string; onReplay: (itemId: string, kind: ReplayKind) => void };
@@ -774,7 +770,6 @@ export function ChatPane({
         screenshotKeys={screenshotKeys}
         commands={commands}
         followUp={followUp}
-        templates={templates}
       />
       )}
       <ShowInChatContext.Provider value={showInChat}>{footer}</ShowInChatContext.Provider>
@@ -1105,7 +1100,6 @@ function Composer({
   screenshotKeys,
   commands,
   followUp,
-  templates = NO_PROJECTS,
 }: {
   offline: boolean;
   /** Enter, and the Queue button, add the message to the chat's queue (`onQueue`, which says why it couldn't). */
@@ -1138,7 +1132,6 @@ function Composer({
   commands?: CommandHost;
   /** While a reply runs, Enter queues or steers by its `mode`, and Ctrl+Enter does the other. */
   followUp?: FollowUpHost;
-  templates?: TemplateHere;
 }) {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const focused = useRef(autoFocus);
@@ -1292,9 +1285,6 @@ function Composer({
     ta.style.height = Math.min(ta.scrollHeight, 240) + "px";
   }, [text]);
 
-  // The template library; Insert puts its message in the draft, never sends it.
-  const [picking, setPicking] = useState(false);
-
   const sendable = attaching === 0 && (!!text.trim() || attachments.length > 0);
   const slash = useSlashCommands(commands, text, onText, taRef);
   // While a reply runs a message can steer it instead of waiting in the queue. Why it can't now, if it can't: the
@@ -1375,6 +1365,7 @@ function Composer({
         <ConversationPanel
           conversation={conversation}
           setup={voiceSetup}
+          onSettings={voice?.openSettings}
           onEnd={() => {
             conversation.end();
             // Back to the button that started it, once it is shown again.
@@ -1464,9 +1455,6 @@ function Composer({
               <Camera size={16} />
             </button>
           )}
-          <button className="icon-btn" title="Templates" aria-label="Templates" aria-haspopup="dialog" onClick={() => setPicking(true)}>
-            <FileText size={16} />
-          </button>
           {modelControls}
           {!dictation.active && (
             <span className="composer-keys" title={steerWhy && `Can't steer now: ${steerWhy}`}>
@@ -1505,22 +1493,8 @@ function Composer({
         </div>
         {dictation.active && <DictationStrip dictation={dictation} />}
       </div>
-      {picking && (
-        <Templates
-          here={templates}
-          draft={text}
-          returnTo={taRef}
-          onClose={() => setPicking(false)}
-          onInsert={(next) => {
-            onText(next);
-            // After React has put the new text in.
-            requestAnimationFrame(() => taRef.current?.setSelectionRange(next.length, next.length));
-          }}
-        />
-      )}
     </div>
   );
 }
 
-const NO_PROJECTS: TemplateHere = { scope: "", projects: [], here: [] };
 const NOT_TALKING: ConversationState = { phase: "off", muted: false, hearing: false, playing: false, heard: [], devices: [] };

@@ -500,8 +500,8 @@ describe("leaving an unsaved persona edit", () => {
     await user.keyboard("{Escape}");
     expect((await editor()).value).toBe("# Mine\n");
 
-    // The Server files button on the rail asks too.
-    await user.click(screen.getByRole("button", { name: "Server files" }));
+    // The Outputs button on the rail asks too.
+    await user.click(screen.getByRole("button", { name: "Outputs" }));
     await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Keep editing" }));
     expect((await editor()).value).toBe("# Mine\n");
 
@@ -554,13 +554,13 @@ describe("leaving an unsaved persona edit", () => {
     await openPersona(user);
     await edit(user, "# Default, edited\n");
     await user.click(document.querySelector<HTMLElement>(".profile-btn")!);
-    await user.click(await screen.findByRole("option", { name: /work/ }));
+    await user.click(within(await screen.findByRole("listbox", { name: "Profiles" })).getByRole("option", { name: /work/ }));
     const ask = screen.getByRole("alertdialog", { name: "Switch profile without saving the persona?" });
     await user.click(within(ask).getByRole("button", { name: "Keep editing" }));
     expect(hermes.profile).toBe("default");
 
     await user.click(document.querySelector<HTMLElement>(".profile-btn")!);
-    await user.click(await screen.findByRole("option", { name: /work/ }));
+    await user.click(within(await screen.findByRole("listbox", { name: "Profiles" })).getByRole("option", { name: /work/ }));
     await user.click(screen.getByRole("button", { name: "Switch anyway" }));
     await waitFor(() => expect(hermes.getSnapshot()).toMatchObject({ profile: "work", status: "connected" }));
     await waitFor(() => expect(hermes.getSnapshot().switching).toBeUndefined());
@@ -576,6 +576,17 @@ describe("leaving an unsaved persona edit", () => {
     await screen.findByText(/Saved SOUL.md/);
     expect(server.souls).toEqual({ default: SOUL, work: "# Work, edited\n" });
     expect(writes(server)).toEqual([["/api/profiles/work/soul", "# Work, edited\n"]]);
+  });
+
+  it("starts on the profile in use again after the app switches profile, and offers every profile", async () => {
+    const { hermes, user } = await launch();
+    await act(async () => void (await hermes.switchProfile("work")));
+    await waitFor(() => expect(hermes.getSnapshot()).toMatchObject({ profile: "work", status: "connected" }));
+    await openPersona(user);
+    expect((await editor("work")).value).toBe("# Work persona\n");
+    const picker = screen.getByRole<HTMLSelectElement>("combobox", { name: "Profile" });
+    expect(picker.value).toBe("work");
+    await waitFor(() => expect([...picker.options].map((o) => o.text)).toEqual(["work (in use)", "default"]));
   });
 
   it("asks before leaving Persona for Sign out, and keeps the edit for the next sign-in", async () => {
@@ -622,5 +633,120 @@ describe("leaving an unsaved persona edit", () => {
     await user.click(screen.getByRole("button", { name: /Back to chat/ }));
     expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(screen.queryByRole("tab", { name: /Persona/ })).toBeNull();
+  });
+});
+
+describe("editing another profile's persona (#190)", () => {
+  const picker = () => screen.getByRole<HTMLSelectElement>("combobox", { name: "Profile" });
+
+  it("lists every profile, starting on the one in use, and edits the picked one's SOUL.md without switching the app", async () => {
+    const { server, hermes, user, store, connection } = await launch();
+    server.otherProfiles.research = [];
+    server.distributions = { work: "acme-agents" };
+    await openPersona(user);
+    await editor();
+    expect(picker().value).toBe("default");
+    await waitFor(() => expect([...picker().options].map((o) => o.text)).toEqual(["default (in use)", "work", "research"]));
+
+    await user.selectOptions(picker(), "work");
+    const work = await editor("work");
+    expect(work.value).toBe("# Work persona\n");
+    // The notes are the picked profile's: its file, its distribution, and that the app is using another profile.
+    expect(document.querySelector(".persona-where")!.textContent).toContain("/home/liam/.hermes/profiles/work/SOUL.md");
+    expect(await screen.findByText(/installed from the/)).toBeTruthy();
+    expect(screen.getByText(/profile distribution/).textContent).toContain("acme-agents");
+    expect(screen.getByText(/Hermes Chat is using the/).textContent).toMatch(/using the default profile.*chats on the work profile/s);
+    expect(screen.getByText(/Hermes reads SOUL.md when a chat starts/).textContent).toContain("use the work profile");
+
+    await edit(user, "# Work, edited\n", "work");
+    await user.click(screen.getByRole("button", { name: /^Save$/ }));
+    await screen.findByText(/Saved SOUL.md/);
+    expect(server.souls).toEqual({ default: SOUL, work: "# Work, edited\n" });
+    // The same checks as for the profile in use: read first, write, read back.
+    const soul = server.restRequests.filter((r) => r.path.endsWith("/soul")).map((r) => `${r.method} ${r.path}`);
+    expect(soul.slice(-3)).toEqual(["GET /api/profiles/work/soul", "PUT /api/profiles/work/soul", "GET /api/profiles/work/soul"]);
+    expect(hermes.profile).toBe("default");
+    // What the save replaced is kept for the work profile, not the default one.
+    expect(store.earlier(personaKey(connection, "work")).map((v) => v.content)).toEqual(["# Work persona\n"]);
+    expect(store.earlier(personaKey(connection, "default"))).toEqual([]);
+  });
+
+  it("asks before picking another profile while an edit is unsaved, and keeps each profile's edit apart", async () => {
+    const { server, user, store, connection } = await launch();
+    await openPersona(user);
+    await edit(user, "# Default, edited\n");
+
+    await user.selectOptions(picker(), "work");
+    let ask = screen.getByRole("alertdialog", { name: "Open another profile's persona without saving?" });
+    expect(ask.textContent).toContain("offers them back when you pick default again");
+    await user.click(within(ask).getByRole("button", { name: "Keep editing" }));
+    expect(picker().value).toBe("default");
+    expect((await editor()).value).toBe("# Default, edited\n");
+
+    await user.selectOptions(picker(), "work");
+    ask = screen.getByRole("alertdialog", { name: "Open another profile's persona without saving?" });
+    await user.click(within(ask).getByRole("button", { name: "Open it anyway" }));
+    expect((await editor("work")).value).toBe("# Work persona\n");
+    // The default profile's edit is kept on this computer, and isn't offered for work.
+    expect(screen.queryByText(/Changes you didn't save/)).toBeNull();
+    expect(store.draft(personaKey(connection, "default"))?.text).toBe("# Default, edited\n");
+    expect(store.draft(personaKey(connection, "work"))).toBeUndefined();
+
+    // An unsaved edit on work too: leaving Settings asks about the work profile's persona.
+    await edit(user, "# Work, edited\n", "work");
+    await user.click(screen.getByRole("button", { name: /Back to chat/ }));
+    ask = screen.getByRole("alertdialog", { name: "Leave without saving the persona?" });
+    expect(ask.textContent).toContain("SOUL.md for the work profile");
+    await user.click(within(ask).getByRole("button", { name: "Keep editing" }));
+
+    // Back on default (asked first), its own edit is offered back, and work's stays apart.
+    await user.selectOptions(picker(), "default");
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Open it anyway" }));
+    await screen.findByText(/Changes you didn't save/);
+    await user.click(screen.getByRole("button", { name: "Restore them" }));
+    expect((await editor()).value).toBe("# Default, edited\n");
+    expect(store.draft(personaKey(connection, "work"))?.text).toBe("# Work, edited\n");
+    expect(writes(server)).toEqual([]);
+  });
+
+  it("doesn't ask when the picked profile has nothing unsaved", async () => {
+    const { user } = await launch();
+    await openPersona(user);
+    await editor();
+    await user.selectOptions(picker(), "work");
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect((await editor("work")).value).toBe("# Work persona\n");
+  });
+
+  it("shows a profile with no SOUL.md as empty, and creates it on Save", async () => {
+    const { server, user } = await launch();
+    server.otherProfiles.research = [];
+    await openPersona(user);
+    await editor();
+    await waitFor(() => expect([...picker().options].map((o) => o.value)).toContain("research"));
+    await user.selectOptions(picker(), "research");
+    await screen.findByText(/The research profile has no SOUL.md/);
+    await user.click(screen.getByRole("button", { name: /Create SOUL.md/ }));
+    await edit(user, "# Research\n", "research");
+    await user.click(screen.getByRole("button", { name: /Create SOUL.md/ }));
+    await screen.findByText(/Created SOUL.md/);
+    expect(server.souls.research).toBe("# Research\n");
+    expect(writes(server)).toEqual([["/api/profiles/research/soul", "# Research\n"]]);
+  });
+
+  it("still edits the profile in use when the profiles can't be listed, and says so", async () => {
+    const { server, user } = await launch();
+    const list = server.rest["GET /api/profiles"];
+    server.rest["GET /api/profiles"] = () => {
+      throw new Error("The dashboard answered 500: boom");
+    };
+    await openPersona(user);
+    expect((await editor()).value).toBe(SOUL);
+    await screen.findByText(/Couldn't list the server's profiles/);
+    expect([...picker().options].map((o) => o.value)).toEqual(["default"]);
+    server.rest["GET /api/profiles"] = list;
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect([...picker().options].map((o) => o.value)).toEqual(["default", "work"]));
+    expect(screen.queryByText(/Couldn't list the server's profiles/)).toBeNull();
   });
 });

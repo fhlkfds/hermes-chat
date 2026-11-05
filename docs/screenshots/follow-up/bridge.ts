@@ -1,4 +1,4 @@
-// A stand-in Hermes dashboard for the Follow-up behavior screenshots (#189, ADR 0055): sign-in, the WS ticket, `/api/ws`
+// A stand-in Hermes dashboard for the Follow-up behavior screenshots (#189, ADR 0057): sign-in, the WS ticket, `/api/ws`
 // and dashboard REST, all answered by the tests' FakeHermes with synthetic chats. Loopback only. Build and run:
 //   npx rolldown docs/screenshots/follow-up/bridge.ts --platform node -o /tmp/follow-up-bridge.mjs && node /tmp/follow-up-bridge.mjs 47810
 // NO_STEER=1 serves a Hermes whose `commands.catalog` doesn't list /steer. Hermes's side of the reply is scripted:

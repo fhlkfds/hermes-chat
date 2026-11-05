@@ -335,7 +335,7 @@ describe("Review regressions", () => {
     const { server, user } = await launch();
     let answer!: () => void;
     server.handlers["slash.exec"] = (r) => (answer = () => server.respond(r.id, { output: "Context window: once" }));
-    await user.click(screen.getByRole("button", { name: "Split into two panes" }));
+    await user.keyboard("{Control>}\\{/Control}");
     const [left, right] = screen.getAllByPlaceholderText<HTMLTextAreaElement>("Message Hermes");
     await user.click(left);
     await user.keyboard("/context{Enter}{Enter}");

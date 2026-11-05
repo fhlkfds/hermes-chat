@@ -76,8 +76,32 @@ export function Inbox({
   // After a dismissal, the row to put focus on, so it doesn't fall to the page.
   const [focusAt, setFocusAt] = useState<number>();
   const list = useRef<HTMLUListElement>(null);
+  const root = useRef<HTMLElement>(null);
   const headId = useId();
   useReturnFocus();
+
+  // A press anywhere outside it closes it: another rail tool, the chat, the side panel (ADR 0055). The Inbox button is
+  // left to toggle it, or the press would close it and the click open it again. A press in a frame (the Preview's page)
+  // never reaches this document, so focus going into one closes it too; the window losing focus to another app doesn't.
+  useEffect(() => {
+    const away = (e: PointerEvent) => {
+      const at = e.target;
+      if (at instanceof Node && !root.current?.contains(at) && !(at instanceof Element && at.closest(".inbox-btn"))) onClose();
+    };
+    let later: ReturnType<typeof setTimeout> | undefined;
+    // Read once the blur is over, when the frame is the active element.
+    const blurred = () => {
+      clearTimeout(later);
+      later = setTimeout(() => document.activeElement instanceof HTMLIFrameElement && !root.current?.contains(document.activeElement) && onClose());
+    };
+    document.addEventListener("pointerdown", away, true);
+    window.addEventListener("blur", blurred);
+    return () => {
+      document.removeEventListener("pointerdown", away, true);
+      window.removeEventListener("blur", blurred);
+      clearTimeout(later);
+    };
+  }, [onClose]);
 
   const shown = entries.filter((e) => (INBOX_FILTERS[filter] as readonly InboxKind[]).includes(e.kind));
   const count = (f: InboxFilter) => entries.filter((e) => (INBOX_FILTERS[f] as readonly InboxKind[]).includes(e.kind) && (f === "running" || needsOwner(e))).length;
@@ -116,7 +140,7 @@ export function Inbox({
   };
 
   return (
-    <section className="inbox" role="dialog" aria-labelledby={headId} onKeyDown={onKeyDown}>
+    <section ref={root} className="inbox" role="dialog" aria-labelledby={headId} onKeyDown={onKeyDown}>
       <header className="inbox-head">
         <div className="inbox-heading">
           <h2 id={headId}>Inbox</h2>

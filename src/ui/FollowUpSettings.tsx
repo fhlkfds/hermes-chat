@@ -1,4 +1,4 @@
-// What sending does while a chat's reply runs (ADR 0055). Kept in the display preferences (uiPrefs.ts), on this
+// What sending does while a chat's reply runs (ADR 0057). Kept in the display preferences (uiPrefs.ts), on this
 // computer only.
 import { useSyncExternalStore } from "react";
 import { getUIPrefs, setUIPrefs, subscribe, type FollowUp } from "../hermes/uiPrefs";

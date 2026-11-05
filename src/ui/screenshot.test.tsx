@@ -111,7 +111,7 @@ const chips = () =>
 describe("Taking a screenshot for the composer", () => {
   it("routes captures to the focused pane and retains each pane's staged captures across focus changes", async () => {
     const { rust, user } = await signedIn();
-    await user.click(screen.getByRole("button", { name: "Split into two panes" }));
+    await user.keyboard("{Control>}\\{/Control}");
     await user.click(screen.getByRole("button", { name: /Nightly backup/ }));
     const [left, right] = [...document.querySelectorAll<HTMLElement>(".pane")];
     await user.click(within(left).getByRole("button", { name: "Attach a screenshot" }));
@@ -131,7 +131,7 @@ describe("Taking a screenshot for the composer", () => {
 
   it("moves a capture to the newly focused pane if attachment validation finishes after focus changes", async () => {
     const { hermes, rust, user } = await signedIn();
-    await user.click(screen.getByRole("button", { name: "Split into two panes" }));
+    await user.keyboard("{Control>}\\{/Control}");
     await user.click(screen.getByRole("button", { name: /Nightly backup/ }));
     const [left, right] = [...document.querySelectorAll<HTMLElement>(".pane")];
     const check = hermes.checkAttachments.bind(hermes);
@@ -299,7 +299,7 @@ describe("Taking a screenshot for the composer", () => {
   it("takes a desktop shortcut's screenshot into the chat on screen, out of Settings", async () => {
     const { rust, user } = await signedIn();
     await user.click(screen.getByRole("button", { name: "Settings" }));
-    await user.click(await screen.findByRole("button", { name: "Voice & screenshots" }));
+    await user.click(await screen.findByRole("button", { name: "Screenshots" }));
     expect(document.querySelector(".panes.covered")?.hasAttribute("inert")).toBe(true);
 
     rust.pressDesktopShortcut();
@@ -394,7 +394,7 @@ describe("A desktop without a way to take screenshots", () => {
     render(<Main hermes={hermes} connection={{ mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" }} onSignOut={async () => {}} screenshots={rust.wiring} />);
     await settle(hermes);
     await user.click(screen.getByRole("button", { name: "Settings" }));
-    await user.click(await screen.findByRole("button", { name: "Voice & screenshots" }));
+    await user.click(await screen.findByRole("button", { name: "Screenshots" }));
     expect((await screen.findByRole("alert")).textContent).toContain("picks a region or window with slurp and grim");
   });
 });
@@ -403,7 +403,7 @@ describe("Setting the screenshot shortcut", () => {
   async function inSettings() {
     const s = await signedIn();
     await s.user.click(screen.getByRole("button", { name: "Settings" }));
-    await s.user.click(await screen.findByRole("button", { name: "Voice & screenshots" }));
+    await s.user.click(await screen.findByRole("button", { name: "Screenshots" }));
     const key = screen.getByRole("button", { name: "Screenshot shortcut" });
     return { ...s, key };
   }

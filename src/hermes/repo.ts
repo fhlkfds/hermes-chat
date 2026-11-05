@@ -3,6 +3,7 @@
 // answers, how its changes are grouped for the screen, and how a diff is read. The screen is src/ui/Repository.tsx.
 
 import type { Progress, WorktreeRequest } from "./worktrees";
+import { signInSshTarget, type SignInAddress } from "./terminal";
 
 /** One line of `git status --porcelain=v2`, as the helper reports it. Paths are relative to the checkout's top. */
 export type Entry = {
@@ -474,10 +475,10 @@ export const REPO_PATH_KEY = "hermes-chat.repo-path";
 export const REPO_RECENT_KEY = "hermes-chat.repo-recent";
 export const REPO_TARGET_KEY = "hermes-chat.repo-target";
 
-export function repoTarget(signIn: { mode: "ssh" | "url"; sshTarget: string }, saved: string | null, terminalSaved: string | null): string {
+export function repoTarget(signIn: SignInAddress, saved: string | null, terminalSaved: string | null): string {
   if (saved?.trim()) return saved.trim();
   if (terminalSaved?.trim()) return terminalSaved.trim();
-  return signIn.mode === "ssh" ? signIn.sshTarget.trim() : "";
+  return signInSshTarget(signIn);
 }
 
 /** The folders opened lately, newest first, at most five. */

@@ -43,7 +43,7 @@ export type Item =
   /**
    * `attachments`: names sent with the message. `outgoing`: sent from here and not confirmed yet. `rowId`: its stored
    * row, once known. `steer`: it went into a running reply, as `/steer` does, rather than starting a turn of its own
-   * (Hermes stores it with `display_kind: "steer"`, ADR 0055).
+   * (Hermes stores it with `display_kind: "steer"`, ADR 0057).
    */
   | { kind: "user"; id: string; text: string; attachments?: string[]; at?: number; outgoing?: Outgoing; rowId?: number; steer?: boolean }
   /**

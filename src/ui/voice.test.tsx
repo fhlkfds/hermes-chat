@@ -139,7 +139,7 @@ async function record(user: ReturnType<typeof userEvent.setup>) {
 describe("Dictation", () => {
   it("releases the microphone and drops pending transcripts when focus moves to another mounted pane", async () => {
     const { server, user, hermes } = await signedIn();
-    await user.click(screen.getByRole("button", { name: "Split into two panes" }));
+    await user.keyboard("{Control>}\\{/Control}");
     await user.click(screen.getByRole("button", { name: /Nightly backup/ }));
     const [left, right] = [...document.querySelectorAll<HTMLElement>(".pane")];
     await user.click(within(left).getByRole("button", { name: "Dictate" }));
@@ -527,7 +527,7 @@ describe("Read aloud", () => {
 
   it("stops Read aloud when focus moves to another mounted pane", async () => {
     const { user } = await inBackup();
-    await user.click(screen.getByRole("button", { name: "Split into two panes" }));
+    await user.keyboard("{Control>}\\{/Control}");
     const [left, right] = [...document.querySelectorAll<HTMLElement>(".pane")];
     await user.click(within(left).getByRole("button", { name: /Read aloud/ }));
     await within(left).findByRole("button", { name: "Stop" });
@@ -574,7 +574,7 @@ describe("Settings, Voice", () => {
   it("names the profile's providers and what they need", async () => {
     const { user } = await signedIn();
     await user.click(screen.getByRole("button", { name: "Settings" }));
-    await user.click(await screen.findByRole("button", { name: "Voice & screenshots" }));
+    await user.click(await screen.findByRole("tab", { name: /Voice/ }));
     const section = (await screen.findByRole("heading", { name: "Voice" })).closest("section")!;
     await within(section).findByText("Local Whisper");
     expect(within(section).getByText("Microsoft Edge TTS")).toBeTruthy();
@@ -587,7 +587,7 @@ describe("Settings, Voice", () => {
     server.voice = { transcribe: false, speak: false };
     const { user } = await signedIn(server);
     await user.click(screen.getByRole("button", { name: "Settings" }));
-    await user.click(await screen.findByRole("button", { name: "Voice & screenshots" }));
+    await user.click(await screen.findByRole("tab", { name: /Voice/ }));
     const section = (await screen.findByRole("heading", { name: "Voice" })).closest("section")!;
     // Dictation, Read aloud, and the Voice conversation that needs them both.
     await waitFor(() => expect(within(section).getAllByText("Unavailable")).toHaveLength(3));

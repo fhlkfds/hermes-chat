@@ -138,6 +138,8 @@ describe("where the screen reads from", () => {
     expect(repoTarget({ mode: "ssh", sshTarget: "liam@hermes" }, null, "liam@other")).toBe("liam@other");
     expect(repoTarget({ mode: "ssh", sshTarget: "liam@hermes" }, " box ", "liam@other")).toBe("box");
     expect(repoTarget({ mode: "url", sshTarget: "" }, null, null)).toBe("");
+    expect(repoTarget({ mode: "url", sshTarget: "", url: "http://hermes:9119" }, null, null)).toBe("hermes");
+    expect(repoTarget({ mode: "url", sshTarget: "", url: "http://localhost:9119" }, null, null)).toBe("");
   });
 
   it("remembers five folders, newest first, and survives a broken list", () => {

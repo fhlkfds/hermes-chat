@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// A message steered into a running reply (ADR 0055): how it shows in the chat, live and from history, and how the turn
+// A message steered into a running reply (ADR 0057): how it shows in the chat, live and from history, and how the turn
 // it went into ends.
 import { afterEach, describe, expect, it } from "vitest";
 import { FakeHermes, row, type TranscriptMessage } from "./fakeHermes";

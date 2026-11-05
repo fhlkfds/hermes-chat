@@ -144,7 +144,7 @@ A message the owner lined up while Hermes replied, to go after the reply. Each c
 _Avoid_: pending message, scheduled message, Hermes's queue (Hermes's own queue holds messages sent while a turn runs; this app doesn't use it as the queue)
 
 **Steered message**:
-A message the owner sent into a running reply instead of queueing it, through Hermes's `/steer`. Hermes adds it to the reply after the reply's next tool call, without stopping it, so it doesn't start a turn of its own. It shows in the chat marked "Steered into the reply", and Hermes stores it so (`display_kind: "steer"`). The Follow-up behavior setting picks whether Enter queues or steers while a reply runs; Ctrl+Enter does the other. A message with files, or one sent to a Hermes whose `/steer` can't run here, is queued instead (ADR 0055).
+A message the owner sent into a running reply instead of queueing it, through Hermes's `/steer`. Hermes adds it to the reply after the reply's next tool call, without stopping it, so it doesn't start a turn of its own. It shows in the chat marked "Steered into the reply", and Hermes stores it so (`display_kind: "steer"`). The Follow-up behavior setting picks whether Enter queues or steers while a reply runs; Ctrl+Enter does the other. A message with files, or one sent to a Hermes whose `/steer` can't run here, is queued instead (ADR 0057).
 _Avoid_: interrupt, redirect (Hermes's words for cutting the running reply short), injected message
 
 **Slash command**:
@@ -166,6 +166,10 @@ _Avoid_: TTS, playback, voice mode
 **Voice conversation**:
 Talking with Hermes hands-free in a started chat, from Start voice conversation until End: Dictation and Read aloud in turn. The microphone on this computer listens, a turn ends after the profile's `voice.silence_duration` of quiet (or on Send now), Hermes transcribes it, the text goes to the chat as the owner's message, and the reply is spoken. It never listens while anything plays, so Hermes's voice can't become a turn. "What Hermes got" shows each turn's text and whether it was sent. It pauses, closing the microphone, when Hermes disconnects, the window is hidden or minimized, or its pane loses focus, and only the owner resumes it. Opening another chat or profile ends it. Its audio is never saved on this computer; the text sent is a chat message, kept here as typed messages are (ADR 0041).
 _Avoid_: voice mode (Hermes's own), voice chat, live mode, hands-free mode
+
+**Speech provider**:
+The service Hermes turns speech into text with (speech-to-text), or text into speech with (text-to-speech), for one profile, such as Local Whisper or ElevenLabs. Dictation, Read aloud and Voice conversations all use the profile's two, on the server. Settings → Voice lists the ones Hermes offers, says which are set up (installed, signed in, or with a key), and picks one for each side, with its model, voice and language and its API key. A key is write-only: Hermes says only whether one is set. Each save is checked against Hermes first and confirmed by reading back (ADR 0055).
+_Avoid_: STT/TTS engine, voice backend, voice model
 
 **Close to tray**:
 The owner's setting that has closing the window hide it in the tray instead of quitting. It is off unless the owner turns it on, and works only while the desktop shows the tray icon; otherwise closing quits. A hidden window keeps its chats, drafts and replies coming in, but drops a Dictation recording, stops Read aloud, pauses a Voice conversation, and the chat it shows doesn't count as on screen, so new replies leave it Unread. The tray menu, `hermes-chat --show` or `--toggle`, or launching Hermes Chat again brings back the same window. Quit in the tray menu always exits. The setting is kept on this computer (ADR 0034).
@@ -335,7 +339,7 @@ The Repository screen's two separate ways to publish a branch. Push sends the co
 _Avoid_: publish (for either one alone), sync, ship
 
 **Terminal**:
-The Side panel's tab with the owner's own shells: one on the Hermes server, through their ssh to the sign-in's SSH target or one typed for it, and one on this computer, their login shell. ssh asks there for anything it needs, such as a passphrase or a new host key. A switch at the top picks **Hermes server** or **This computer**. The tab opens on the one picked last, the server's until then, and says so plainly when the server has no SSH target. Each session runs on while the other is shown or the panel is closed, and the rail shows it; signing out ends both. They are the owner's shells, not Hermes's: nothing typed there reaches a chat, an Approval or the agent (ADR 0022, ADR 0039, ADR 0051).
+The Side panel's tab with the owner's own shells: one on the Hermes server, through their ssh to the sign-in's SSH target (for a web-address sign-in, the address's host), or one typed for it, and one on this computer, their login shell. ssh asks there for anything it needs, such as a passphrase or a new host key. A switch at the top picks **Hermes server** or **This computer**. The tab opens on the one picked last, the server's until then, and says so plainly when the server has no SSH target. Each session runs on while the other is shown or the panel is closed, and the rail shows it; signing out ends both. They are the owner's shells, not Hermes's: nothing typed there reaches a chat, an Approval or the agent (ADR 0022, ADR 0039, ADR 0051, ADR 0055).
 _Avoid_: console, shell (for the tab), Hermes's terminal tool (the agent's, which runs in a chat)
 
 **Screen**:
@@ -359,7 +363,7 @@ The warning on a connection whose traffic between this app and the server isn't 
 _Avoid_: insecure (the app's label is "Unsecure"), unsafe
 
 **Persona**:
-A profile's SOUL.md on the Hermes server: who Hermes is and how it speaks in that profile's chats. Settings → Persona edits the shown profile's file as plain text. A Save writes only if Hermes still has what the edit started from, and the app says it saved only once Hermes, read back, has it. If the file changed elsewhere, nothing is written until the owner chooses. Chats started afterwards use the new persona; a chat under way keeps the one it started with. Hermes needs no restart, and the app never restarts it. An edit not saved stays on this computer, per connection and profile, and the last five versions that saves from here replaced are kept to put back.
+A profile's SOUL.md on the Hermes server: who Hermes is and how it speaks in that profile's chats. Settings → Persona edits the file of any profile on the server as plain text, picked at the top of the screen and starting on the profile in use; picking one doesn't switch the app's profile. A Save writes only if Hermes still has what the edit started from, and the app says it saved only once Hermes, read back, has it. If the file changed elsewhere, nothing is written until the owner chooses. Chats started afterwards use the new persona; a chat under way keeps the one it started with. Hermes needs no restart, and the app never restarts it. An edit not saved stays on this computer, per connection and profile, and the last five versions that saves from here replaced are kept to put back.
 _Avoid_: soul, personality (Hermes's `/personality` presets are another thing), system prompt
 
 **Scheduled job**:

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// What sending does while Hermes replies (ADR 0055): queue it (ADR 0018) or steer it into the running reply, by the
+// What sending does while Hermes replies (ADR 0057): queue it (ADR 0018) or steer it into the running reply, by the
 // Follow-up behavior setting, with Ctrl+Enter doing the other. Driven the way the owner would, against a fake Hermes;
 // each test checks what is on screen and what reached Hermes.
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";

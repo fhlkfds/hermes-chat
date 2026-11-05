@@ -27,7 +27,7 @@ export const COMMANDS: readonly CommandDef[] = [
   { name: "context", description: "Show what fills this chat's context window, as Hermes counts it", scope: "server" },
 ];
 
-/** `/steer`, which the composer also uses for a message sent into a running reply (ADR 0055). */
+/** `/steer`, which the composer also uses for a message sent into a running reply (ADR 0057). */
 export const STEER: CommandDef = COMMANDS.find((c) => c.name === "steer")!;
 
 /**
