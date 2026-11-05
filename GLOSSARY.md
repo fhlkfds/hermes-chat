@@ -331,7 +331,7 @@ The Repository screen's two separate ways to publish a branch. Push sends the co
 _Avoid_: publish (for either one alone), sync, ship
 
 **Terminal**:
-The Side panel's tab with the owner's own shells: one on the Hermes server, through their ssh to the sign-in's SSH target or one typed for it, and one on this computer, their login shell. ssh asks there for anything it needs, such as a passphrase or a new host key. Each session runs on while the other is shown or the panel is closed, and the rail shows it; signing out ends both. They are the owner's shells, not Hermes's: nothing typed there reaches a chat, an Approval or the agent (ADR 0022, ADR 0039).
+The Side panel's tab with the owner's own shells: one on the Hermes server, through their ssh to the sign-in's SSH target or one typed for it, and one on this computer, their login shell. ssh asks there for anything it needs, such as a passphrase or a new host key. A switch at the top picks **Hermes server** or **This computer**. The tab opens on the one picked last, the server's until then, and says so plainly when the server has no SSH target. Each session runs on while the other is shown or the panel is closed, and the rail shows it; signing out ends both. They are the owner's shells, not Hermes's: nothing typed there reaches a chat, an Approval or the agent (ADR 0022, ADR 0039, ADR 0051).
 _Avoid_: console, shell (for the tab), Hermes's terminal tool (the agent's, which runs in a chat)
 
 **Screen**:
@@ -383,7 +383,8 @@ The time zone Hermes reads a profile's schedules in and runs its jobs on: the pr
 _Avoid_: local time (ambiguous between the server and this computer), display time zone (this computer's)
 
 **Pane**:
-One view of a chat, its transcript and composer. The app can show two side by side. The focused pane is the one the
+One view of a chat, its transcript and composer. The app can show two, side by side or one above the other. Each pane
+has its own tabs; a tab dragged to the other pane or to a pane's edge moves there (ADR 0052). The focused pane is the one the
 chat list, Search and keyboard shortcuts target. This focus does not change whether a chat is Active or Settled.
 Two panes of one chat share its Draft, Queued messages and running reply; each has its own scroll, Find and pending
 Attachments.

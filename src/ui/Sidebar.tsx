@@ -14,7 +14,7 @@ import { ChatMenu, type ChatProjects, type ChatSnooze, type ChatTags } from "./C
 import { SnoozeDialog, useSnoozeClock } from "./Snooze";
 import { DeleteChatDialog } from "./DeleteChat";
 import { ArchiveButton, STATUS_LABEL, SettleButton, SourceIcon, Spinner, composing, relTime, routeLabel, useReturnFocus } from "./bits";
-import { dragChat } from "./Tabs";
+import { dragChat, dragChatEnd } from "./Tabs";
 
 
 
@@ -479,6 +479,7 @@ function ChatRow({
         // Dragged onto a pane's tabs or edge, the chat opens in a new tab or a split there (Tabs.tsx).
         draggable
         onDragStart={(e) => dragChat(e, chat.id)}
+        onDragEnd={dragChatEnd}
         title={`${retitling ? "Writing a new title…" : chat.source !== "app" ? `${chat.title} (from ${SOURCE_LABEL[chat.source]})` : chat.title}${alsoShown ? " (in the other pane)" : ""}${sleepsUntil ? ` (snoozed until ${wakeFull(sleepsUntil)})` : ""}`}
         onClick={() => {
           setRetitleError(undefined);
