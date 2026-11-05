@@ -1,13 +1,17 @@
-// Settings → Persona: the shown profile's SOUL.md on the Hermes server, edited as plain text. Nothing is shown as saved
-// until Hermes, read back, has it (persona.ts). An unsaved edit is kept on this computer, so leaving, closing the app,
-// or a crash doesn't lose it, and each version a save replaced is kept to put back (personaStore.ts). The text is the
-// owner's, but it is treated as untrusted: it is only ever a textarea's value, never rendered.
+// Settings → Persona: the SOUL.md of any profile on the Hermes server, edited as plain text. A picker at the top
+// (PersonaPage) lists every profile Hermes has, starting on the one in use; each picked profile gets an editor of its
+// own (PersonaSettings), so edits are never mixed, and picking another asks first while one is unsaved (ADR 0056).
+// Picking one here doesn't change the profile the app uses. Nothing is shown as saved until Hermes, read back, has it
+// (persona.ts). An unsaved edit is kept on this computer, so leaving, closing the app, or a crash doesn't lose it, and
+// each version a save replaced is kept to put back (personaStore.ts). The text is the owner's, but it is treated as
+// untrusted: it is only ever a textarea's value, never rendered.
 //
-// Any profile's SOUL.md can be shown (the picker Settings passes in), and the saved one copied over another profile's,
-// through the same check-first, read-back save (ADR 0057).
+// The shown profile's saved SOUL.md can be copied over another profile's, through the same check-first, read-back save
+// (ADR 0057).
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Copy, FileText, History, RotateCcw, Save, TriangleAlert, Undo2, X, ChevronRight } from "lucide-react";
 import { asReadBack, certainlyUnwritten, PersonaError, sameSoul, soulNotes, type PersonaApi, type ProfileHome, type Soul } from "../hermes/persona";
+import { LeavePersona } from "./LeavePersona";
 import { EARLIER_KEPT, type EarlierSoul, type PersonaDraft, type PersonaStore } from "../hermes/personaStore";
 
 /** Where SOUL.md is, as the screen names it. */
@@ -16,8 +20,137 @@ export type PersonaWhere = {
   server: string;
   /** The route in full, e.g. `ssh://liam@hermes`. */
   route?: string;
+  /** The profile whose SOUL.md is edited. For PersonaPage: the profile in use, which the picker starts on. */
   profile: string;
 };
+
+/** Says whether `profile`'s editor holds an edit Hermes doesn't have, and whether this computer could keep it. */
+export type PersonaDirty = (dirty: boolean, kept: boolean, profile: string) => void;
+
+/**
+ * Settings → Persona: a picker of every profile Hermes has, and an editor for the one picked. Each profile's editor is
+ * its own (keyed by `keyOf`), so its unsaved edit, kept versions and save under way stay with that profile. Picking
+ * another profile while the editor has an unsaved edit or a save under way asks first, as leaving the screen does.
+ */
+export function PersonaPage({
+  api,
+  where,
+  connected,
+  store,
+  keyOf,
+  onDirty,
+  now,
+}: {
+  api: PersonaApi;
+  /** `profile`: the profile in use, which the picker starts on. */
+  where: PersonaWhere;
+  connected: boolean;
+  store: PersonaStore;
+  /** Where a profile's edits are kept for this connection (personaStore.ts `personaKey`). */
+  keyOf: (profile: string) => string;
+  onDirty: PersonaDirty;
+  now?: () => number;
+}) {
+  const inUse = where.profile;
+  const [picked, setPicked] = useState(inUse);
+  /** The server's profiles by name, once listed. */
+  const [listed, setListed] = useState<string[]>();
+  const [listProblem, setListProblem] = useState<string>();
+  /** What the editor last said: an edit Hermes doesn't have (or a save under way), and whether this computer keeps it. */
+  const [unsaved, setUnsaved] = useState({ dirty: false, kept: true });
+  /** A profile picked while the editor had an unsaved edit: asked about before it opens. */
+  const [asking, setAsking] = useState<string>();
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+
+  const report = useCallback<PersonaDirty>(
+    (dirty, kept, profile) => {
+      setUnsaved({ dirty, kept });
+      onDirty(dirty, kept, profile);
+    },
+    [onDirty],
+  );
+
+  const list = useCallback(async () => {
+    setListProblem(undefined);
+    try {
+      const profiles = await api.profiles();
+      if (alive.current) setListed(profiles.map((p) => p.name));
+    } catch (e) {
+      if (alive.current) setListProblem(messageOf(e));
+    }
+  }, [api]);
+
+  // Listed once connected; a list that failed for want of a connection is tried again once it is back.
+  useEffect(() => {
+    if (connected && !listed) void list();
+  }, [connected]);
+
+  const pick = (profile: string) => {
+    if (profile === picked) return;
+    if (unsaved.dirty) setAsking(profile);
+    else setPicked(profile);
+  };
+
+  // The profile in use and the one picked are always offered, even before the list comes, or if it leaves them out.
+  const names = [...new Set([inUse, ...(listed ?? []), picked])];
+  if (listed) names.sort((a, b) => (a === inUse ? -1 : b === inUse ? 1 : listed.indexOf(a) - listed.indexOf(b)));
+  const picker = (
+    <span className="persona-picker">
+      <select className="select persona-profile" aria-label="Profile" value={picked} onChange={(e) => pick(e.target.value)}>
+        {names.map((p) => (
+          <option key={p} value={p}>
+            {p === inUse ? `${p} (in use)` : p}
+          </option>
+        ))}
+      </select>
+      {listProblem && (
+        <span className="muted small" role="status">
+          Couldn't list the server's profiles: {listProblem}{" "}
+          <button className="link-btn" disabled={!connected} onClick={() => void list()}>
+            Try again
+          </button>
+        </span>
+      )}
+    </span>
+  );
+
+  return (
+    <>
+      <PersonaSettings
+        key={keyOf(picked)}
+        api={api}
+        where={{ ...where, profile: picked }}
+        inUse={inUse}
+        picker={picker}
+        connected={connected}
+        store={store}
+        storeKey={keyOf(picked)}
+        profiles={listed}
+        storeKeyFor={keyOf}
+        onDirty={report}
+        now={now}
+      />
+      {asking && (
+        <LeavePersona
+          what="pick"
+          profile={picked}
+          kept={unsaved.kept}
+          onStay={() => setAsking(undefined)}
+          onGo={() => {
+            setAsking(undefined);
+            setPicked(asking);
+          }}
+        />
+      )}
+    </>
+  );
+}
 
 type Load =
   | { state: "loading" }
@@ -50,18 +183,21 @@ const when = (at: number) => {
 export function PersonaSettings({
   api,
   where,
+  inUse = where.profile,
+  picker,
   connected,
   store,
   storeKey,
   onDirty,
   now = Date.now,
-  picker,
   profiles,
   storeKeyFor,
 }: {
   api: PersonaApi;
   where: PersonaWhere;
-  /** Picks the profile shown, in place of its name (Settings' `ProfilePicker`). */
+  /** The profile the app is using, which may not be the one edited here. */
+  inUse?: string;
+  /** Shown in place of the profile's name, to pick another (PersonaPage). */
   picker?: ReactNode;
   /** Every profile Hermes lists, once read: where this SOUL.md can be copied. */
   profiles?: readonly string[];
@@ -72,10 +208,10 @@ export function PersonaSettings({
   /** Where this connection and profile's edits are kept (personaStore.ts `personaKey`). */
   storeKey: string;
   /**
-   * Says whether there is an edit Hermes doesn't have yet, so leaving can ask first, and whether this computer could
-   * keep it. False once this closes.
+   * Says whether there is an edit Hermes doesn't have yet, so leaving can ask first, whether this computer could keep
+   * it, and for which profile. False once this closes.
    */
-  onDirty: (dirty: boolean, kept: boolean) => void;
+  onDirty: PersonaDirty;
   now?: () => number;
 }) {
   const { profile } = where;
@@ -144,8 +280,8 @@ export function PersonaSettings({
   // Leaving asks first while there is an edit Hermes doesn't have, or a save whose outcome isn't known yet.
   // A kept edit waiting to be restored that only memory holds is lost on closing too, so that asks first as well.
   const atRisk = !!recover && !kept;
-  useEffect(() => onDirty(dirty || saving || atRisk, kept), [dirty, saving, atRisk, kept, onDirty]);
-  useEffect(() => () => onDirty(false, true), [onDirty]);
+  useEffect(() => onDirty(dirty || saving || atRisk, kept, profile), [dirty, saving, atRisk, kept, onDirty, profile]);
+  useEffect(() => () => onDirty(false, true, profile), [onDirty, profile]);
 
   // The edit is kept on this computer as it is typed. A kept edit waiting to be restored isn't overwritten meanwhile.
   useEffect(() => {
@@ -415,6 +551,7 @@ export function PersonaSettings({
         <p className="muted">
           The persona is the <span className="mono">SOUL.md</span> file in a profile's folder on the Hermes server: who Hermes is and how it speaks,
           for every chat in the profile. Hermes Chat edits it as plain text and keeps its Markdown as you write it.
+          {picker && " Pick any profile on this server to edit its persona; that doesn't change the profile Hermes Chat is using."}
         </p>
         <dl className="persona-where" aria-label="Persona file">
           <dt>Server</dt>
@@ -426,6 +563,12 @@ export function PersonaSettings({
             {file ? <span className="mono">{file}</span> : <span className="muted">SOUL.md in the {profile} profile's folder on the server</span>}
           </dd>
         </dl>
+        {profile !== inUse && (
+          <p className="muted small persona-effect">
+            Hermes Chat is using the <span className="mono">{inUse}</span> profile, so chats started here keep its persona. This one is for chats on
+            the <span className="mono">{profile}</span> profile, in any Hermes client.
+          </p>
+        )}
         <details className="disc persona-how">
           <summary>
             <ChevronRight size={13} className="disc-chev" aria-hidden /> When a saved persona takes effect

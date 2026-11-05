@@ -48,6 +48,22 @@ describe("reading SOUL.md", () => {
     expect(await api.home("nope")).toBeUndefined();
   });
 
+  it("lists every profile in Hermes's order, leaving out names it couldn't edit", async () => {
+    const { server, api } = await signedIn();
+    server.distributions = { work: "acme-agents" };
+    expect(await api.profiles()).toEqual([
+      { name: "default", path: "/home/liam/.hermes", distribution: undefined },
+      { name: "work", path: "/home/liam/.hermes/profiles/work", distribution: "acme-agents" },
+    ]);
+    server.rest["GET /api/profiles"] = () => ({ profiles: [{ name: "default" }, { name: "Bad Name" }, { name: 7 }, { name: "work", path: "" }, { name: "work" }, null] });
+    expect(await api.profiles()).toEqual([
+      { name: "default", path: undefined, distribution: undefined },
+      { name: "work", path: undefined, distribution: undefined },
+    ]);
+    server.rest["GET /api/profiles"] = () => ({});
+    expect(await api.profiles()).toEqual([]);
+  });
+
   it("says when the server has no persona route, the profile is gone, or the file can't be read", async () => {
     const { server, api } = await signedIn();
     server.soulRoutes = false;

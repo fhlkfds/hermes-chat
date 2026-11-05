@@ -28,7 +28,7 @@ import type { MemoryProvidersApi } from "../hermes/memoryProviders";
 import { MemoryProviderSettings } from "./MemoryProviderSettings";
 import type { SkillsApi } from "../hermes/skills";
 import { SkillSettings } from "./SkillSettings";
-import { PersonaSettings, type PersonaWhere } from "./PersonaSettings";
+import { PersonaPage, type PersonaDirty, type PersonaWhere } from "./PersonaSettings";
 import type { PersonaApi } from "../hermes/persona";
 import type { PersonaStore } from "../hermes/personaStore";
 import { StartupSettings } from "./StartupSettings";
@@ -97,12 +97,12 @@ export const signInText = (route?: Route) =>
       ? "Dashboard username and password, at the dashboard's URL"
       : "Dashboard username and password";
 
-/** Settings → Persona's wiring: the API, where its edits are kept on this computer, and what it edits. */
 /**
- * Settings → Persona's wiring. `storeKey`: where the shown profile's edits are kept; `keyFor`: the same for any profile,
- * so the tab can show another profile and copy SOUL.md to one (ADR 0057).
+ * Settings → Persona's wiring: the API, where each profile's edits are kept on this computer (`keyOf`), and where it
+ * starts: `where.profile` is the profile in use. Persona lists and picks profiles itself (ADR 0056), and copies the shown
+ * SOUL.md to another profile (ADR 0057).
  */
-export type PersonaWiring = { api: PersonaApi; store: PersonaStore; storeKey: string; keyFor?: (profile: string) => string; where: PersonaWhere };
+export type PersonaWiring = { api: PersonaApi; store: PersonaStore; keyOf: (profile: string) => string; where: PersonaWhere };
 
 const allow = (go: () => void) => go();
 
@@ -230,10 +230,10 @@ export function SettingsScreen({
   /** Settings → Persona; the tab is left out without it. */
   persona?: PersonaWiring;
   /** Says whether the Persona tab holds an edit Hermes doesn't have yet. */
-  onPersonaDirty?: (dirty: boolean, kept: boolean, profile?: string) => void;
+  onPersonaDirty?: PersonaDirty;
   /**
-   * Every profile on the server (`GET /api/profiles`). With it, Skills, Memory and Persona each pick which profile they
-   * show, and skills and SOUL.md can be copied between profiles (ADR 0057).
+   * Every profile on the server (`GET /api/profiles`). With it, Skills and Memory each pick which profile they show, and
+   * skills can be copied between profiles (ADR 0057). Persona lists them itself (ADR 0056).
    */
   listProfiles?: () => Promise<string[]>;
   /** Runs `go`, once the owner agrees to leave an unsaved persona, memory or skill edit behind, if there is one. */
@@ -280,12 +280,13 @@ export function SettingsScreen({
   const [memProfiles, setMemProfiles] = useState<string[]>();
   /** Picking a memory file or profile leaves any unsaved memory edit, so it asks first, as switching tabs does. */
   const pickMem = (id: string) => memKey(memSel) !== id && guard(() => setMemSel(memSelOf(id)));
-  // Which profile Skills, Memory and Persona each show (ADR 0057): the app's own until the owner picks another, and the
-  // app's own again when the app switches profile. Picking one leaves an unsaved edit, so it asks first.
+  // Which profile Skills and Memory each show (ADR 0057): the app's own until the owner picks another, and the app's own
+  // again when the app switches profile. Picking one leaves an unsaved edit, so it asks first. Persona picks its own
+  // (PersonaPage, ADR 0056).
   const [profiles, setProfiles] = useState<string[]>();
-  const [shownIn, setShownIn] = useState({ skills: profile, memory: profile, persona: profile, of: profile });
-  const tabProfile = shownIn.of === profile ? shownIn : { skills: profile, memory: profile, persona: profile, of: profile };
-  useEffect(() => setShownIn({ skills: profile, memory: profile, persona: profile, of: profile }), [profile]);
+  const [shownIn, setShownIn] = useState({ skills: profile, memory: profile, of: profile });
+  const tabProfile = shownIn.of === profile ? shownIn : { skills: profile, memory: profile, of: profile };
+  useEffect(() => setShownIn({ skills: profile, memory: profile, of: profile }), [profile]);
   const connected = status === "connected";
   useEffect(() => {
     if (!listProfiles || !connected) return;
@@ -298,12 +299,10 @@ export function SettingsScreen({
       live = false;
     };
   }, [listProfiles, connected]);
-  const pickProfile = (which: "skills" | "memory" | "persona", p: string) =>
+  const pickProfile = (which: "skills" | "memory", p: string) =>
     p !== tabProfile[which] && guard(() => setShownIn((cur) => ({ ...(cur.of === profile ? cur : tabProfile), [which]: p })));
-  const picker = (which: "skills" | "memory" | "persona", label: string) =>
+  const picker = (which: "skills" | "memory", label: string) =>
     listProfiles && <ProfilePicker value={tabProfile[which]} shown={profile} profiles={profiles} label={label} onPick={(p) => pickProfile(which, p)} />;
-  const personaProfile = persona?.keyFor ? tabProfile.persona : profile;
-  const onPersonaTabDirty = useCallback((dirty: boolean, kept: boolean) => onPersonaDirty(dirty, kept, personaProfile), [onPersonaDirty, personaProfile]);
   const tabs = TABS.filter(
     (t) =>
       (t.id !== "toolsets" || toolsets) &&
@@ -591,20 +590,18 @@ export function SettingsScreen({
       case "persona":
         return (
           persona &&
-          // An edit is for one connection and profile: another profile is another editor.
+          // An edit is for one connection and profile: another profile is another editor. The picker starts again on the
+          // profile in use when that or the connection changes.
           gated(
             "persona",
-            <PersonaSettings
-              key={persona.keyFor ? persona.keyFor(personaProfile) : persona.storeKey}
+            <PersonaPage
+              key={persona.keyOf(persona.where.profile)}
               api={persona.api}
               store={persona.store}
-              storeKey={persona.keyFor ? persona.keyFor(personaProfile) : persona.storeKey}
-              where={{ ...persona.where, profile: personaProfile }}
+              keyOf={persona.keyOf}
+              where={persona.where}
               connected={status === "connected"}
-              onDirty={onPersonaTabDirty}
-              picker={persona.keyFor && picker("persona", "Profile whose persona is shown")}
-              profiles={profiles}
-              storeKeyFor={persona.keyFor}
+              onDirty={onPersonaDirty}
             />,
           )
         );

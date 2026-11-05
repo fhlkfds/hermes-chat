@@ -268,9 +268,9 @@ describe("Settings → Persona for any profile", () => {
     const { s, store, connection, user } = await launch();
     await user.click(screen.getByRole("tab", { name: /Persona/ }));
     expect((await soul("default")).value).toBe(SOUL);
-    await user.selectOptions(screen.getByRole("combobox", { name: "Profile whose persona is shown" }), "spare");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Profile" }), "spare");
     expect((await soul("spare")).value).toBe(SPARE_SOUL);
-    await user.selectOptions(screen.getByRole("combobox", { name: "Profile whose persona is shown" }), "default");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Profile" }), "default");
     await soul("default");
     await user.click(screen.getByRole("button", { name: /Copy…/ }));
     const ask = await screen.findByRole("alertdialog", { name: "Replace spare's SOUL.md?" });
@@ -333,7 +333,7 @@ describe("Settings → Persona for any profile", () => {
     const { user } = await launch();
     await user.click(screen.getByRole("tab", { name: /Persona/ }));
     await soul("default");
-    await user.selectOptions(screen.getByRole("combobox", { name: "Profile whose persona is shown" }), "spare");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Profile" }), "spare");
     await user.type(await soul("spare"), "More.");
     expect(screen.getByRole<HTMLButtonElement>("button", { name: /Copy…/ }).disabled).toBe(true);
     await user.click(screen.getByRole("button", { name: /Back to chat/ }));

@@ -782,13 +782,13 @@ export function Main({
   const [personaUnsaved, setPersonaUnsaved] = useState(false);
   // This computer could keep the unsaved edit, so leaving doesn't lose it.
   const [personaKept, setPersonaKept] = useState(true);
-  // The profile whose persona Settings shows, which may not be the app's (ADR 0057), for the question before leaving.
-  const [personaOf, setPersonaOf] = useState<string>();
-  const onPersonaDirty = useCallback((dirty: boolean, kept: boolean, of?: string) => {
+  // The profile whose persona is open: Settings → Persona can edit any profile's, not only the one in use.
+  const [personaProfile, setPersonaProfile] = useState<string>();
+  const onPersonaDirty = useCallback((dirty: boolean, kept: boolean, profile: string) => {
     personaDirty.current = dirty;
     setPersonaUnsaved(dirty);
     setPersonaKept(kept);
-    setPersonaOf(of);
+    setPersonaProfile(profile);
   }, []);
   // An unsaved edit in Settings → Memory (MemorySettings.tsx) lives only on screen: leaving it asks first too.
   const memoryDirty = useRef(false);
@@ -1149,12 +1149,12 @@ export function Main({
   workingRef.current = working;
   // Read when the restore dialog renders and again just before it writes: sends and refused writes aren't React state.
   const restoreBusy = () => restoreBlocked({ working: workingRef.current, unsaved: unsaved.size, sending: sending.size });
-  // Settings → Persona edits this connection and profile's SOUL.md; its edits are kept apart per connection and profile.
+  // Settings → Persona edits the SOUL.md of any profile on this connection, starting on the one in use; its edits are
+  // kept apart per connection and profile.
   const persona: PersonaWiring = {
     api: hermes.persona,
     store: personaStore,
-    storeKey: personaKey(connection, profile),
-    keyFor: (p) => personaKey(connection, p),
+    keyOf: (p) => personaKey(connection, p),
     where: { server: route ? serverLabel(route) : connection.mode === "ssh" ? connection.sshTarget : serverLabel({ kind: "url", url: connection.url, addresses: [] }), route: where, profile },
   };
 
@@ -2878,7 +2878,7 @@ export function Main({
       {leaving?.edit === "persona" && (
         <LeavePersona
           what={leaving.what}
-          profile={personaOf ?? profile}
+          profile={personaProfile ?? profile}
           kept={personaKept}
           onStay={() => {
             leaving.stay?.();
