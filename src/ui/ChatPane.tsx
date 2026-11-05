@@ -348,7 +348,7 @@ export function ChatPane({
   queue?: ChatQueue;
   queueApi?: QueueApi;
   commands?: CommandHost;
-  /** Takes away the card of one of the chat's side questions (ADR 0069). */
+  /** Takes away the card of one of the chat's side questions (ADR 0070). */
   onDismissSideQuestion?: (id: string) => void;
   /** What sending does while the reply runs: queue or steer (ADR 0057). Without it, it queues. */
   followUp?: FollowUpHost;

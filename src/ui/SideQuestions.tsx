@@ -1,4 +1,4 @@
-// A chat's side questions (`/btw`, ADR 0069): a card each above the composer, newest nearest it, apart from the
+// A chat's side questions (`/btw`, ADR 0070): a card each above the composer, newest nearest it, apart from the
 // transcript. Hermes answers each from a snapshot of the chat and adds nothing to it, so nothing here is saved.
 import { useLayoutEffect, useRef } from "react";
 import { MessageCircleQuestion, X } from "lucide-react";

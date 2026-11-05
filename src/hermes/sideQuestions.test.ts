@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Side questions (`/btw`, ADR 0069): asked through `prompt.btw` on the chat's live session, answered by the
+// Side questions (`/btw`, ADR 0070): asked through `prompt.btw` on the chat's live session, answered by the
 // `btw.complete` that names their task id, and never part of the chat, its Saved copy or a reply running alongside.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row, type TranscriptMessage } from "./fakeHermes";

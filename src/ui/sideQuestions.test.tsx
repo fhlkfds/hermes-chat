@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Side questions (`/btw`, ADR 0069) in the running app, against a fake Hermes: offered by Hermes's catalog, asked while a
+// Side questions (`/btw`, ADR 0070) in the running app, against a fake Hermes: offered by Hermes's catalog, asked while a
 // reply runs or the chat is idle, answered on a card above the composer and never in the transcript.
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";

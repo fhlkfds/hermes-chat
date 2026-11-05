@@ -180,7 +180,7 @@ A message the owner sent into a running reply instead of queueing it, through He
 _Avoid_: interrupt, redirect (Hermes's words for cutting the running reply short), injected message
 
 **Side question (/btw)**:
-A question the owner asks about a chat with `/btw <question>`, while a reply runs or with the chat idle, without interrupting the reply or adding to the chat. Hermes answers it from a snapshot of the conversation, with no tools, and stores nothing. The question and its answer show on a card above the composer, marked "Side question", never in the transcript; it can be copied and dismissed. A chat shows up to three; a fourth takes the oldest one's place. Cards stay while switching chats and go on a profile switch or a reload; they are never saved, exported or put in the Saved copy. A question Hermes couldn't answer says why on its card, never as a Failed message (ADR 0069).
+A question the owner asks about a chat with `/btw <question>`, while a reply runs or with the chat idle, without interrupting the reply or adding to the chat. Hermes answers it from a snapshot of the conversation, with no tools, and stores nothing. The question and its answer show on a card above the composer, marked "Side question", never in the transcript; it can be copied and dismissed. A chat shows up to three; a fourth takes the oldest one's place. Cards stay while switching chats and go on a profile switch or a reload; they are never saved, exported or put in the Saved copy. A question Hermes couldn't answer says why on its card, never as a Failed message (ADR 0070).
 _Avoid_: aside, background question, `/background` (Hermes's command for a separate background session), btw message
 
 **Slash command**:

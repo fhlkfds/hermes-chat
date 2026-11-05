@@ -593,7 +593,7 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .queue-actions .btn { height: 26px; padding: 0 10px; font-size: calc(12rem / 14); }
 .queue-foot { padding: 6px 12px 8px; color: var(--faint); font-size: calc(11.5rem / 14); border-top: 1px solid var(--line); }
 
-/* Side questions (SideQuestions.tsx, ADR 0069): cards above the composer, as wide as it, apart from the transcript. Like the
+/* Side questions (SideQuestions.tsx, ADR 0070): cards above the composer, as wide as it, apart from the transcript. Like the
    queue they take at most 40% of the window, and each answer scrolls inside its card too. */
 .side-questions {
   width: calc(100% - 56px); max-width: var(--chat-width); margin: 0 auto 8px; display: flex; flex-direction: column; gap: 6px;

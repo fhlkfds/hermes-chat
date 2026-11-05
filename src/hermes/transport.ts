@@ -118,7 +118,7 @@ const SEARCH_LIMIT = 50;
 export const SEARCH_MAX = 100;
 /** How long the skills the composer offers are used before they are read again (`skillCommands`). */
 export const SKILL_COMMANDS_FRESH_MS = 60_000;
-/** The most side questions a chat shows; a newer one takes the oldest one's place (ADR 0069). */
+/** The most side questions a chat shows; a newer one takes the oldest one's place (ADR 0070). */
 export const SIDE_QUESTIONS_KEPT = 3;
 
 /** A side question with Hermes's answer to it, or why there is none (`commands.sideAnswer`). */
@@ -615,7 +615,7 @@ export class Hermes {
   private usageFrom = new Map<string, UsageCounters | "unknown">();
   /** Last item before a running turn, by stable id; null for an empty transcript. Older Failed messages can go away. */
   private turnStart = new Map<string, string | null>();
-  /** Side questions asked on this connection, so each card has its own id (ADR 0069). */
+  /** Side questions asked on this connection, so each card has its own id (ADR 0070). */
   private sideAsked = 0;
   /**
    * Side question answers that came before `prompt.btw` said which question they answer, by runtime session and task
@@ -1184,7 +1184,7 @@ export class Hermes {
   }
 
   /**
-   * Asks Hermes a side question about the chat (`/btw`, ADR 0069). Its card shows at once, waiting, and gets the answer
+   * Asks Hermes a side question about the chat (`/btw`, ADR 0070). Its card shows at once, waiting, and gets the answer
    * or why there is none; the chat's transcript and any reply running are left alone. Resolves whether Hermes took it.
    */
   async askSideQuestion(chatId: string, question: string): Promise<boolean> {

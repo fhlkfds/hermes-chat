@@ -25,7 +25,7 @@ export const COMMANDS: readonly CommandDef[] = [
   // `command.dispatch` `_cmd_steer` (tui_gateway/methods_tools.py): queued for after the running reply's next tool call.
   { name: "steer", args: "<message>", description: "Tell the running reply something after its next tool call, without stopping it", scope: "server" },
   // `prompt.btw` (tui_gateway/methods_prompt.py at the deployed `f0d94882`), as Hermes's own clients send it, not
-  // `command.dispatch`: it answers later, as a `btw.complete` event (ADR 0069).
+  // `command.dispatch`: it answers later, as a `btw.complete` event (ADR 0070).
   { name: "btw", args: "<question>", description: "Ask a side question about this chat without interrupting the reply or adding to the chat", scope: "server" },
   // `slash.exec` `/context`, answered from the live session (tui_gateway/methods_slash.py `_format_live_context_output`).
   { name: "context", description: "Show what fills this chat's context window, as Hermes counts it", scope: "server" },

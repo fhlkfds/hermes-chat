@@ -184,12 +184,12 @@ export type Chat = {
    */
   usage?: ChatUsage;
   usageError?: string;
-  /** Its side questions on screen, oldest first: never part of its transcript, and never saved (ADR 0069). */
+  /** Its side questions on screen, oldest first: never part of its transcript, and never saved (ADR 0070). */
   sideQuestions?: SideQuestion[];
 };
 
 /**
- * A question asked with `/btw` (GLOSSARY "Side question (/btw)", ADR 0069), which Hermes answers from a snapshot of the
+ * A question asked with `/btw` (GLOSSARY "Side question (/btw)", ADR 0070), which Hermes answers from a snapshot of the
  * chat without adding to it. `taskId`: Hermes's id for it once Hermes took it, which its answer (`btw.complete`) names.
  */
 export type SideQuestion = { id: string; question: string; taskId?: string } & (
