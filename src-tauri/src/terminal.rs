@@ -498,10 +498,12 @@ mod tests {
         assert_eq!(code, Some(4));
     }
 
+    #[cfg(unix)]
     fn vars(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<OsString> {
         move |k| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| OsString::from(v))
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_unix_shell_is_shell_by_its_full_path_else_sh() {
         let any = |_: &Path| true;

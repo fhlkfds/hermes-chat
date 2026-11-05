@@ -1297,17 +1297,19 @@ mod tests {
     #[test]
     fn each_engine_gets_a_fixed_argument_list_writing_audio_txt() {
         let (m, w, o) = (Path::new("/m/model"), Path::new("/t/audio.wav"), Path::new("/t"));
+        let of = Path::new("/t").join("audio").display().to_string();
+        let txt = Path::new("/t").join("audio.txt").display().to_string();
         let e = |kind| Engine { kind, binary: "/bin/x".into(), model: Some(m.into()) };
         let strs = |k, l| args(&e(k), m, w, o, l).into_iter().map(|a| a.into_string().unwrap()).collect::<Vec<_>>().join(" ");
-        assert_eq!(strs(Kind::WhisperCpp, "auto"), "-m /m/model -f /t/audio.wav -l auto -nt -np -otxt -of /t/audio");
+        assert_eq!(strs(Kind::WhisperCpp, "auto"), format!("-m /m/model -f /t/audio.wav -l auto -nt -np -otxt -of {of}"));
         assert_eq!(strs(Kind::FasterWhisper, "auto"), "/t/audio.wav --model_directory /m/model --output_dir /t --output_format txt --verbose False");
         assert_eq!(strs(Kind::OpenaiWhisper, "auto"), "/t/audio.wav --model /m/model --output_dir /t --output_format txt --verbose False --fp16 False");
-        assert_eq!(strs(Kind::Vosk, "auto"), "-m /m/model -i /t/audio.wav -o /t/audio.txt");
+        assert_eq!(strs(Kind::Vosk, "auto"), format!("-m /m/model -i /t/audio.wav -o {txt}"));
         // A language other than auto goes to each Whisper engine; Vosk's is its model's.
-        assert_eq!(strs(Kind::WhisperCpp, "es"), "-m /m/model -f /t/audio.wav -l es -nt -np -otxt -of /t/audio");
+        assert_eq!(strs(Kind::WhisperCpp, "es"), format!("-m /m/model -f /t/audio.wav -l es -nt -np -otxt -of {of}"));
         assert!(strs(Kind::FasterWhisper, "es").ends_with("--verbose False --language es"));
         assert!(strs(Kind::OpenaiWhisper, "es").ends_with("--fp16 False --language es"));
-        assert_eq!(strs(Kind::Vosk, "es"), "-m /m/model -i /t/audio.wav -o /t/audio.txt");
+        assert_eq!(strs(Kind::Vosk, "es"), format!("-m /m/model -i /t/audio.wav -o {txt}"));
         // A path with spaces and a leading dash stays one argument.
         let odd = Path::new("/m/-x y.bin");
         assert_eq!(args(&e(Kind::WhisperCpp), odd, w, o, "auto")[1], OsString::from("/m/-x y.bin"));
