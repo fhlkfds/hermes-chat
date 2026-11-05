@@ -5,7 +5,7 @@
 // rendered. Installing skills from elsewhere isn't done here.
 //
 // Any profile's skills can be shown (the picker Settings passes in), and in Select mode several can be copied or moved to
-// another profile, or archived, one at a time, each read back from Hermes (ADR 0056).
+// another profile, or archived, one at a time, each read back from Hermes (ADR 0057).
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, ArrowLeft, ArrowRightLeft, Check, CheckSquare, Copy, GitMerge, History, Info, RefreshCw, Search, Trash2 } from "lucide-react";
 import type { ConnectionStatus } from "../hermes/model";

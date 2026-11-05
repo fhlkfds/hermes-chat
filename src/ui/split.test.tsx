@@ -70,7 +70,7 @@ async function sideBySide() {
   const s = await signedIn();
   await s.user.click(rowButton("Nightly backup"));
   await settle(s.hermes);
-  await s.user.click(screen.getByRole("button", { name: "Split into two panes" }));
+  await s.user.keyboard("{Control>}\\{/Control}");
   await s.user.click(rowButton("NAS disks"));
   await settle(s.hermes);
   expect([titleIn(0), titleIn(1)]).toEqual(["Nightly backup", "NAS disks"]);
@@ -83,7 +83,7 @@ describe("Splitting", () => {
     const s = await signedIn();
     expect(panes()).toHaveLength(1);
     await s.user.click(rowButton("Nightly backup"));
-    await s.user.click(screen.getByRole("button", { name: "Split into two panes" }));
+    await s.user.keyboard("{Control>}\\{/Control}");
     expect(panes()).toHaveLength(2);
     expect([titleIn(0), titleIn(1)]).toEqual(["Nightly backup", "Nightly backup"]);
     expect(activeIndex()).toBe(1);
@@ -210,7 +210,7 @@ describe("The same chat in both panes", () => {
   it("shares one draft and one reply, so a message can't go twice", async () => {
     const s = await signedIn();
     await s.user.click(rowButton("Nightly backup"));
-    await s.user.click(screen.getByRole("button", { name: "Split into two panes" }));
+    await s.user.keyboard("{Control>}\\{/Control}");
     await s.user.type(composerIn(1), "Unlock it");
     expect(composerIn(0).value).toBe("Unlock it");
     await s.user.keyboard("{Enter}");
@@ -224,7 +224,7 @@ describe("The same chat in both panes", () => {
   it("answers an Approval once, whichever pane it is answered in", async () => {
     const s = await signedIn();
     await s.user.click(rowButton("Nightly backup"));
-    await s.user.click(screen.getByRole("button", { name: "Split into two panes" }));
+    await s.user.keyboard("{Control>}\\{/Control}");
     await s.user.type(composerIn(1), "Unlock it{Enter}");
     await waitFor(() => expect(prompts(s.server)).toHaveLength(1));
     const runtime = s.server.runtimeIdOf("backup")!;

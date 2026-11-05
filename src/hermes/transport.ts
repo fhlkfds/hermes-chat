@@ -37,6 +37,7 @@ import { CronApi } from "./cronJobs";
 import { AutomationsApi } from "./automations";
 import { ModelSettingsApi } from "./modelSettings";
 import { ToolsetsApi } from "./toolsets";
+import { VoiceSettingsApi } from "./voiceSettings";
 import { readBack, sendImport, type PlannedChat } from "./importTranscripts";
 import { memoryApi, type MemoryApi } from "./memory";
 import { MemoryProvidersApi } from "./memoryProviders";
@@ -805,7 +806,7 @@ export class Hermes {
       return pipe.toolsetGuards(profile);
     },
     (_profile, name) => {
-      if (name === "stt") this.voiceRead = undefined;
+      if (name === "stt") this.voiceChanged();
     },
     (method, params) => this.request(method, params),
     // What its write check found, which only Settings → Toolsets can learn (capabilities.ts `toolsetSwitches`).
@@ -814,6 +815,30 @@ export class Hermes {
       return (state, why) => this.capabilities.report(gen, "toolsetSwitches", state, why);
     },
   );
+  /**
+   * Settings → Voice's reads and writes (voiceSettings.ts, ADR 0055). Each call names its profile, and goes only over a
+   * connection that is up. Its read of the voice set-up is always fresh; a save drops the chat panes' cached one.
+   */
+  readonly voiceSettings = new VoiceSettingsApi(
+    (method, pathAndQuery, body) => this.connectedRest(method, pathAndQuery, body),
+    (profile) => {
+      const pipe = this.closing ? undefined : this.connectedPipe();
+      if (!pipe) return Promise.reject(new Error("Not connected to Hermes."));
+      return pipe.voiceSetup(profile);
+    },
+    () => this.voiceChanged(),
+  );
+  private voiceListeners = new Set<() => void>();
+  /** Drops the cached voice set-up, and tells whoever shows it to read it again. */
+  private voiceChanged() {
+    this.voiceRead = undefined;
+    for (const fn of this.voiceListeners) fn();
+  }
+  /** Called whenever the voice set-up may have changed on Hermes (a Voice or Toolsets save). */
+  readonly onVoiceChange = (fn: () => void) => {
+    this.voiceListeners.add(fn);
+    return () => void this.voiceListeners.delete(fn);
+  };
   /** Settings → Memory's reads and writes (memory.ts). Each call names the profile it is for. */
   readonly memory: MemoryApi = memoryApi({
     rpc: (method, params) => this.request(method, params),

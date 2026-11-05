@@ -687,9 +687,9 @@ describe("An unsaved memory edit in the app", () => {
     expect(editor().value).toBe(`${SHORT} Unsaved words.`);
   });
 
-  it("asks before Server files and Scheduled jobs, which cover Settings", async () => {
+  it("asks before Outputs and Scheduled jobs, which cover Settings", async () => {
     const { user } = await launchApp();
-    await user.click(screen.getByRole("button", { name: /Server files/ }));
+    await user.click(screen.getByRole("button", { name: "Outputs" }));
     await user.click(within(leaveDialog()).getByRole("button", { name: "Keep editing" }));
     expect(editor().value).toBe(`${SHORT} Unsaved words.`);
     await user.click(screen.getByRole("button", { name: "Scheduled jobs" }));

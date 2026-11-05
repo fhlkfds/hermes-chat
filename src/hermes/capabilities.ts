@@ -200,7 +200,7 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
     anchor: "skills",
     probe: { kind: "rest", path: (profile) => `api/skills?${new URLSearchParams({ profile })}`, maxBytes: 2 * 1024 * 1024, shape: isList },
     routes: [/^api\/skills$/],
-    // The edit and switch writes. Copying to another profile (`POST api/skills`, ADR 0056) isn't owned: a server without
+    // The edit and switch writes. Copying to another profile (`POST api/skills`, ADR 0057) isn't owned: a server without
     // that route still lists, switches and edits skills, and the copy's refusal is shown per skill.
     writeRoutes: [/^api\/skills\//],
   },

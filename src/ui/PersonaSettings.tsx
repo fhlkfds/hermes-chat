@@ -4,7 +4,7 @@
 // owner's, but it is treated as untrusted: it is only ever a textarea's value, never rendered.
 //
 // Any profile's SOUL.md can be shown (the picker Settings passes in), and the saved one copied over another profile's,
-// through the same check-first, read-back save (ADR 0056).
+// through the same check-first, read-back save (ADR 0057).
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Copy, FileText, History, RotateCcw, Save, TriangleAlert, Undo2, X, ChevronRight } from "lucide-react";
 import { asReadBack, certainlyUnwritten, PersonaError, sameSoul, soulNotes, type PersonaApi, type ProfileHome, type Soul } from "../hermes/persona";

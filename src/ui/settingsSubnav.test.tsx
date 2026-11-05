@@ -92,7 +92,7 @@ const heading = (name: string | RegExp) => screen.queryByRole("heading", { name 
 describe("Settings → General groups", () => {
   it("shows one group beside the sub-nav, Connection first", async () => {
     await shown();
-    expect(within(nav("General")).getAllByRole("button").map((b) => b.textContent)).toEqual(["Connection", "Launch, tray & updates", "Voice & screenshots", "Storage & data"]);
+    expect(within(nav("General")).getAllByRole("button").map((b) => b.textContent)).toEqual(["Connection", "Launch, tray & updates", "Screenshots", "Storage & data"]);
     expect(within(nav("General")).getByRole("button", { name: "Connection" }).getAttribute("aria-current")).toBe("true");
     expect(heading("Connection in use")).toBeTruthy();
     expect(heading("Local cache")).toBeNull();
@@ -106,8 +106,8 @@ describe("Settings → General groups", () => {
     expect(heading("History")).toBeTruthy();
     expect(heading("Connection in use")).toBeNull();
     await user.keyboard("{ArrowUp}");
-    expect(heading("Voice")).toBeTruthy();
-    expect(within(nav("General")).getByRole("button", { name: "Voice & screenshots" }).getAttribute("aria-current")).toBe("true");
+    expect(heading("Screenshots")).toBeTruthy();
+    expect(within(nav("General")).getByRole("button", { name: "Screenshots" }).getAttribute("aria-current")).toBe("true");
     await user.keyboard("{Home}");
     expect(heading("Connection in use")).toBeTruthy();
   });

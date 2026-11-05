@@ -904,6 +904,25 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 .voice-row { padding: 8px 0; border-top: 1px solid var(--line); }
 .voice-row:first-of-type { border-top: 0; }
 .voice-row-head { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+.badge.ok { background: rgba(74, 222, 128, 0.12); color: var(--ok); }
+.voice-side { padding: 12px 0 4px; border-top: 1px solid var(--line); }
+.voice-side h3 { margin: 0 0 2px; font-size: 1rem; }
+.voice-side > p { margin: 0 0 8px; }
+.voice-field { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; max-width: 520px; }
+.voice-field > span:first-child { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-weight: 500; }
+.voice-field .mono { font-size: calc(11rem / 14); font-weight: 400; }
+.voice-provider-list { list-style: none; margin: 6px 0 8px; padding: 0; display: grid; gap: 2px; }
+.voice-provider-list li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 3px 6px; border-radius: 6px; }
+.voice-provider-list li.picked { background: var(--raised-2); }
+.voice-provider-name { font-weight: 500; }
+.voice-provider-tag { flex-basis: 100%; padding-left: 0; }
+@media (min-width: 720px) { .voice-provider-tag { flex-basis: auto; } }
+.voice-picked { margin: 4px 0 8px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; }
+.voice-picked > p { margin: 0 0 4px; }
+.voice-save { padding-top: 10px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.voice-unsupported { padding: 8px 12px; border: 1px dashed var(--line); border-radius: 8px; }
+.voice-unsupported p { margin: 4px 0; }
+.conv-settings { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin: 6px 0; }
 /* updates */
 .settings-btn { position: relative; }
 .update-dot { position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; }
@@ -1526,11 +1545,13 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .setup-ok { color: var(--ok); }
 .setup-warn svg, .setup-ok svg { vertical-align: -2px; }
 .setup-warn .badge { margin-right: 2px; }
-.field select {
+/* A bare select in a form field. One with .select keeps that look: this rule's padding on .select's fixed 32px height
+   left no room for the text, cutting the Model page's pickers off. */
+.field select:not(.select) {
   background: var(--raised); border: 1px solid var(--line-2); border-radius: 9px; padding: 8px 10px; outline: none; color: var(--text);
   font: inherit; font-size: calc(13rem / 14);
 }
-.field select:focus { border-color: var(--line-3); }
+.field select:not(.select):focus { border-color: var(--line-3); }
 .link { color: var(--muted); text-decoration: underline; text-underline-offset: 2px; font-size: inherit; }
 .link:hover:not(:disabled) { color: var(--text); }
 .setup-link { align-self: center; font-size: calc(12.5rem / 14); }
@@ -1658,7 +1679,7 @@ button.provider-row:hover:not(:disabled) { background: var(--hover); }
   .skill-row-main { grid-template-columns: minmax(0, 1fr) auto; }
   .skill-desc, .skill-category { grid-column: 1 / -1; }
 }
-/* Which profile Skills, Memory and Persona show (ProfilePicker.tsx, ADR 0056), in place of the profile's name. */
+/* Which profile Skills, Memory and Persona show (ProfilePicker.tsx, ADR 0057), in place of the profile's name. */
 .profile-pick {
   background: var(--raised); border: 1px solid var(--line-2); border-radius: 7px; padding: 2px 6px; outline: none; color: var(--text);
   font-size: calc(12.5rem / 14); max-width: 260px;
@@ -2210,8 +2231,6 @@ label.memory-pick { cursor: pointer; }
 /* xterm's scrollbar thumb is a `.slider` too; keep the Settings sliders' sizing off it. */
 .terminal-host .xterm-scrollable-element .slider { min-width: 0; flex: none; border-radius: 4px; }
 .terminal-foot { flex: none; margin: 0; padding: 8px 22px 12px; font-size: calc(12rem / 14); }
-.terminal-btn { position: relative; }
-.terminal-dot { position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; background: var(--ok); }
 
 /* ---------- saved connections (Connections.tsx, ADR 0049) ---------- */
 .rail-conns { position: relative; }
@@ -2351,48 +2370,6 @@ label.memory-pick { cursor: pointer; }
 .artifact-foot p { margin: 0; }
 .artifact-foot .btn, .artifact-panel .btn { display: inline-flex; align-items: center; gap: 6px; }
 .artifact-foot .confirm-actions { flex-wrap: wrap; }
-
-/* ---------- templates (Templates.tsx, ADR 0028) ---------- */
-.leave-overlay .leave-dialog.tpl-dialog { max-width: min(720px, calc(100% - 32px)); width: 100%; max-height: calc(100% - 32px); overflow-y: auto; gap: 12px; }
-.tpl-title { font-size: calc(14rem / 14); margin: 0; display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere; }
-.tpl-tools { display: flex; gap: 8px; flex-wrap: wrap; }
-.tpl-search, .tpl-form input, .tpl-form textarea, .tpl-form select {
-  background: var(--input, var(--raised-2)); border: 1px solid var(--line-2); border-radius: 8px; padding: 7px 10px; color: var(--text);
-  font: inherit; outline: none; min-width: 0;
-}
-.tpl-search { flex: 1 1 200px; }
-.tpl-search:focus, .tpl-form input:focus, .tpl-form textarea:focus, .tpl-form select:focus { border-color: var(--line-3); }
-.tpl-list { max-height: min(320px, 45vh); overflow-y: auto; border: 1px solid var(--line); border-radius: var(--radius); padding: 4px; }
-.tpl-option { display: grid; grid-template-columns: 1fr auto; column-gap: 8px; padding: 7px 9px; border-radius: 7px; cursor: pointer; }
-.tpl-option.sel { background: var(--hover-2); }
-.tpl-name { color: var(--text-strong); overflow-wrap: anywhere; }
-.tpl-project { font-size: calc(11rem / 14); padding: 1px 6px; border-radius: 5px; background: var(--accent-soft); color: var(--accent); align-self: center; }
-.tpl-desc { grid-column: 1 / -1; color: var(--muted); margin: 0; overflow-wrap: anywhere; }
-.tpl-empty { margin: 0; padding: 10px; color: var(--muted); line-height: 1.55; }
-.tpl-check { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: calc(12.5rem / 14); }
-.tpl-status { margin: 0; color: var(--muted); font-size: calc(12.5rem / 14); overflow-wrap: anywhere; }
-.tpl-status.err { color: var(--bad); }
-.tpl-foot { flex-wrap: wrap; align-items: center; }
-.tpl-keys { flex: 1 1 auto; color: var(--faint); font-size: calc(11.5rem / 14); }
-.tpl-ask { flex: 1 1 auto; color: var(--text); margin: 0; }
-.tpl-form { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
-.tpl-form textarea { resize: vertical; }
-.tpl-body { min-height: 160px; font-family: var(--mono); font-size: calc(12.5rem / 14); line-height: 1.5; }
-.tpl-fields { display: grid; gap: 10px; }
-.tpl-fields .field-label code { color: var(--text-strong); }
-.tpl-tag { font-size: calc(11rem / 14); color: var(--faint); }
-.tpl-preview {
-  margin: 0; max-height: 260px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 10px 12px; border-radius: 8px;
-  background: var(--raised-2); border: 1px solid var(--line); font-family: var(--mono); font-size: calc(12.5rem / 14); line-height: 1.5; color: var(--text);
-}
-.tpl-preview mark { background: var(--accent-soft); color: inherit; border-radius: 3px; }
-.tpl-preview mark.missing { background: rgba(248, 113, 113, 0.16); color: var(--bad); }
-.tpl-help { font-size: calc(12rem / 14); color: var(--muted); }
-.tpl-help summary { cursor: pointer; }
-.tpl-help dl { display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; margin: 6px 0; }
-.tpl-help dl > div { display: contents; }
-.tpl-help dd { margin: 0; }
-.tpl-help p { margin: 4px 0 0; }
 
 /* ---------- Branch from here (Branch.tsx, ADR 0027) ---------- */
 .leave-overlay .leave-dialog.branch-dialog { max-width: min(600px, 100%); width: 100%; max-height: min(92vh, 860px); overflow-y: auto; }

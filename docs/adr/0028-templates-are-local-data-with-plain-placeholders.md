@@ -1,5 +1,7 @@
 # Templates are local data with plain placeholders, and Insert only fills the draft
 
+> **Update:** the composer's Templates button and dialog (`Templates.tsx`) were removed because the owner doesn't use them. The stored `templates` field, its checks in `templates.ts`, and its backup section are kept, so saved templates aren't lost and old backups still restore.
+
 Issue #89 asks for reusable messages with blanks the owner fills in, previewed in full before they reach the composer.
 
 ## Where they live

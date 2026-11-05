@@ -1,6 +1,6 @@
 import { type ReactNode, type RefObject, Suspense, lazy, useCallback, useLayoutEffect, useMemo, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal, flushSync } from "react-dom";
-import { ArrowLeft, ArrowRight, Columns2, FolderCog, GitBranch, PanelBottom, PanelLeft, PanelRight, PanelTop, Rows2, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Columns2, FolderCog, GitBranch, PanelBottom, PanelLeft, PanelRight, PanelTop, X } from "lucide-react";
 import { CONNECT_STOPPED, RenameConflict, connect, readSaved, toSource, type Delivery, type Hermes } from "./hermes/transport";
 import { invoke } from "@tauri-apps/api/core";
 import type { CommandHost } from "./ui/SlashCommands";
@@ -18,7 +18,6 @@ import { connOf, restoreBlocked, savedBackupEnv } from "./hermes/backup";
 import { chatToReopen, forgetOpenChat, rememberOpenChat } from "./hermes/uiPrefs";
 import { exportChat } from "./hermes/exportChat";
 import { PROJECTS_KEY, projectLinks, projectScope } from "./hermes/projectLinks";
-import type { TemplateHere } from "./ui/Templates";
 import { ProjectsStore, type Project } from "./hermes/projects";
 import { instructionsMessage, modelProblem, resolveNewChat, savedDefaults, type ProjectDefaults } from "./hermes/projectDefaults";
 import { systemSecrets } from "./hermes/tauriKeyring";
@@ -79,7 +78,7 @@ import { guideUrl, type CapabilityId } from "./hermes/capabilities";
 import { useCapabilities } from "./ui/Diagnostics";
 import { Automations } from "./ui/Automations";
 import { tauriLocalTerminal, tauriTerminal } from "./ui/tauriTerminal";
-import { terminalTarget, terminalTargetKey, type TerminalKind } from "./hermes/terminal";
+import { terminalTarget, terminalTargetGuessed, terminalTargetKey, type TerminalKind } from "./hermes/terminal";
 import { REPO_PATH_KEY, REPO_RECENT_KEY, REPO_TARGET_KEY, readRecent, remember, repoTarget } from "./hermes/repo";
 import { RepositoryScreen } from "./ui/Repository";
 import { startInWorktree, worktreeChats, type WorktreeChat, type WorktreeStart } from "./hermes/worktrees";
@@ -783,7 +782,7 @@ export function Main({
   const [personaUnsaved, setPersonaUnsaved] = useState(false);
   // This computer could keep the unsaved edit, so leaving doesn't lose it.
   const [personaKept, setPersonaKept] = useState(true);
-  // The profile whose persona Settings shows, which may not be the app's (ADR 0056), for the question before leaving.
+  // The profile whose persona Settings shows, which may not be the app's (ADR 0057), for the question before leaving.
   const [personaOf, setPersonaOf] = useState<string>();
   const onPersonaDirty = useCallback((dirty: boolean, kept: boolean, of?: string) => {
     personaDirty.current = dirty;
@@ -852,8 +851,17 @@ export function Main({
   const [showDiagnostics, setShowDiagnostics] = useState<{ id?: CapabilityId }>();
   /** What the connected Hermes supports, for the menus that say what it lacks (capabilities.ts). */
   const caps = useCapabilities(hermes.capabilities);
+  /** Set, each time anew, to open Settings on its Voice tab, from a voice conversation's "Change voice settings". */
+  const [showVoice, setShowVoice] = useState<object>();
+  const openVoiceSettings = useRef(() => {});
   const voice = useMemo<VoiceApi>(
-    () => ({ setup: () => hermes.voiceSetup(), transcribe: (audio, mime) => hermes.transcribe(audio, mime), speak: (text) => hermes.speak(text) }),
+    () => ({
+      setup: () => hermes.voiceSetup(),
+      transcribe: (audio, mime) => hermes.transcribe(audio, mime),
+      speak: (text) => hermes.speak(text),
+      onChange: hermes.onVoiceChange,
+      openSettings: () => openVoiceSettings.current(),
+    }),
     [hermes],
   );
   // The project screen covers the chat pane, as Settings does.
@@ -1065,7 +1073,12 @@ export function Main({
     setShowTextGeneration(undefined);
     setShowMemory(undefined);
     setShowDiagnostics(undefined);
+    setShowVoice(undefined);
     setSettingsOpen(true);
+  };
+  openVoiceSettings.current = () => {
+    openSettings();
+    setShowVoice({});
   };
   /** Opens Settings → Diagnostics at capability `id`, from the note a screen shows when Hermes lacks it. */
   const openDiagnostics = (id: CapabilityId) => {
@@ -2019,19 +2032,6 @@ export function Main({
   const covering = screenCovering || outputsOpen;
   const previewShown = panelOpen && !screenCovering && (previewFits || !panelHidden);
   const previewCovers = previewShown && !previewFits;
-  /** The rail's Terminal and Server files: open the side panel at that tab, or close it if it is showing it already. */
-  const railPanel = (tab: PanelTab) =>
-    guard(() => {
-      setSettingsOpen(false);
-      setProjectOpen(false);
-      setJobsOpen(false);
-      setAutomationsOpen(false);
-      setUsageOpen(false);
-      setLogsOpen(false);
-      setRepoOpen(false);
-      if (previewShown && panelTab === tab) setPanelOpen(false);
-      else openPanel(tab);
-    });
 
   // `hermes-chat --show`, `--toggle` or a second launch brought the window forward: the cursor goes back in the selected pane's
   // composer, its draft as it was. Settings or another screen over the chat stays as it was left, unsaved edits and all.
@@ -2101,11 +2101,6 @@ export function Main({
           projects={projects}
           projectNames={listed ? projectNames(chat.id) : shownProject ? [shownProject.name] : undefined}
           snoozedUntil={snoozedNow(chat.id)}
-          templates={{
-            scope,
-            projects: listable.map(({ id, name }) => ({ id, name })),
-            here: listable.filter((pr) => pr.id === shownProject?.id || (listed && proj.chats[pr.id]?.includes(chat.id))).map((pr) => pr.id),
-          }}
           shownProject={shownProject && { name: shownProject.name, defaults: proj.defaults[shownProject.id], has: !!listed && !!proj.chats[shownProject.id]?.includes(chat.id) }}
           where={where}
           connectionName={hereLabel}
@@ -2138,6 +2133,7 @@ export function Main({
                   setLogsOpen(false);
                   setShowTextGeneration(undefined);
                   setShowDiagnostics(undefined);
+                  setShowVoice(undefined);
                   setShowMemory({});
                   setSettingsOpen(true);
                 }
@@ -2173,19 +2169,11 @@ export function Main({
             </button>
           }
         />,
-        split ? (
+        // Splitting is Ctrl+\, a tab's menu, or dragging a tab to an edge (ADR 0055); a split pane keeps its Close.
+        split && (
           <button className="icon-btn" title={`Close the ${paneNames(splitDir)[i].toLowerCase()} pane${isActive ? "" : " (Ctrl+\\)"}`} aria-label={`Close the ${paneNames(splitDir)[i].toLowerCase()} pane`} onClick={() => closePane(p.key)}>
             <X size={16} />
           </button>
-        ) : (
-          <>
-            <button className="icon-btn" title="Split right: open this chat in a second pane beside it (Ctrl+\)" aria-label="Split into two panes" onClick={() => splitWith(p.chatId, "row")}>
-              <Columns2 size={16} />
-            </button>
-            <button className="icon-btn" title="Split down: open this chat in a second pane below it" aria-label="Split into two panes, one above the other" onClick={() => splitWith(p.chatId, "column")}>
-              <Rows2 size={16} />
-            </button>
-          </>
         )
       ),
     };
@@ -2203,7 +2191,6 @@ export function Main({
         onToggleList={() => setListOpen((o) => !o)}
         onNew={() => newChat()}
         onSearch={() => openSearch()}
-        onFiles={() => railPanel("files")}
         onOutputs={() =>
           guard(() => {
             setSettingsOpen(false);
@@ -2216,7 +2203,6 @@ export function Main({
           })
         }
         outputsOpen={outputsOpen && !settingsOpen && !projectScreenOpen}
-        filesOpen={previewShown && panelTab === "files"}
         onInbox={() => setInboxOpen((o) => !o)}
         inboxOpen={inboxOpen}
         inboxCount={inboxCount}
@@ -2249,7 +2235,6 @@ export function Main({
           })
         }
         automationsOpen={automationsOpen && !settingsOpen}
-        onTerminal={() => railPanel("terminal")}
         onRepo={() =>
           guard(() => {
             setProjectOpen(false);
@@ -2288,8 +2273,6 @@ export function Main({
           })
         }
         logsOpen={logsOpen && !settingsOpen && !projectScreenOpen && !jobsOpen && !automationsOpen && !usageOpen}
-        terminalOpen={previewShown && panelTab === "terminal"}
-        terminalRunning={terminalRunning}
         updateWaiting={updateWaiting}
         connectionsMenu={
           onSwitchConnection && (
@@ -2554,6 +2537,9 @@ export function Main({
             checkScreenshots={screenshots.support}
             tray={tray}
             voiceSetup={voice.setup}
+            voiceSettings={hermes.voiceSettings}
+            onVoiceChange={hermes.onVoiceChange}
+            showVoice={showVoice}
             showTextGeneration={showTextGeneration}
             showMemory={showMemory}
             capabilities={hermes.capabilities}
@@ -2769,6 +2755,7 @@ export function Main({
                       server={{
                         api: tauriTerminal,
                         initialTarget: terminalTarget(connection, localStorage.getItem(terminalTargetKey(connection))),
+                        guessed: terminalTargetGuessed(connection, localStorage.getItem(terminalTargetKey(connection))),
                         onTarget: (t) => localStorage.setItem(terminalTargetKey(connection), t),
                       }}
                       local={{ api: tauriLocalTerminal }}
@@ -2967,7 +2954,6 @@ function ChatView({
   projects,
   projectNames,
   snoozedUntil,
-  templates,
   shownProject,
   where,
   connectionName,
@@ -3015,8 +3001,6 @@ function ChatView({
   projectNames?: string[];
   /** When the chat wakes, if it is snoozed. */
   snoozedUntil?: number;
-  /** The projects the composer's templates can be offered in, and the ones this chat is in or the list shows. */
-  templates: TemplateHere;
   /** The project the list shows, its defaults for new chats, and whether this chat is in it. */
   shownProject?: { name: string; defaults?: ProjectDefaults; has: boolean };
   /** The connection, as a folder on the server is shown beside it. */
@@ -3298,7 +3282,6 @@ function ChatView({
       chat={chat}
       projects={projectNames}
       snoozedUntil={snoozedUntil}
-      templates={templates}
       notice={
         !started && (shownProject || worktree) ? (
           <NewChatSettingsView

@@ -4,7 +4,7 @@
 // in another entry; it is never stored on this computer. Memory text is shown as plain text, never rendered.
 //
 // Any profile's memory can be shown (the picker Settings passes in), and in Select mode several entries can be removed
-// at once, each checked against what was read (ADR 0056). Entries can't be copied or moved to another profile: Hermes
+// at once, each checked against what was read (ADR 0057). Entries can't be copied or moved to another profile: Hermes
 // has no call that adds one.
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, Check, CheckSquare, Copy, History, Info, RefreshCw, Trash2, Undo2 } from "lucide-react";
