@@ -951,7 +951,8 @@ impl Dashboard {
     /// `POST api/sessions/import` whose every session is marked `source: "import"` (`import_body_allowed`, ADR 0031),
     /// the Automations writes (`webhook_write`, ADR 0036), Settings → Memory's external memory writes
     /// (`memory_provider_write`, ADR 0045), and Settings → Voice's provider pick and key save (`voice_provider_write`,
-    /// ADR 0055), and Settings → MCP servers' add, switch, test, sign-in and catalog install (`mcp::relayed`, ADR 0068).
+    /// ADR 0055), Settings → MCP servers' add, switch, test, sign-in and catalog install (`mcp::relayed`, ADR 0068), and
+    /// Settings → Gateways' Telegram and Discord save and status check (`gateway_write`, ADR 0069).
     /// Returns the response body on 2xx.
     pub async fn request(&self, method: &str, path_and_query: &str, body: Option<String>) -> Result<String, TransportError> {
         let (path, query) = path_and_query.split_once('?').unwrap_or((path_and_query, ""));
@@ -976,6 +977,8 @@ impl Dashboard {
             ("POST", "api/sessions/import") if import_body_allowed(body.as_deref()) => Method::POST,
             ("POST", _) if crate::mcp::relayed("POST", path, body.as_deref()) => Method::POST,
             ("PUT", _) if crate::mcp::relayed("PUT", path, body.as_deref()) => Method::PUT,
+            ("POST", _) if gateway_write("POST", path, body.as_deref()) => Method::POST,
+            ("PUT", _) if gateway_write("PUT", path, body.as_deref()) => Method::PUT,
             ("POST" | "PUT", _) => return Err(TransportError::NotRelayed(format!("{method} {path}"))),
             (other, _) => return Err(TransportError::NotRelayed(format!("{other} requests"))),
         };
@@ -1670,6 +1673,43 @@ pub fn voice_provider_write(path: &str, body: Option<&str>) -> bool {
             .as_object()
             .is_some_and(|env| !env.is_empty() && env.iter().all(|(k, v)| env_name(k) && v.as_str().is_some_and(|v| text_ok(v, 4096)))),
     }
+}
+
+/// Settings → Gateways' writes (ADR 0069, Hermes's `hermes_cli/web_routers/messaging.py`), for Telegram and Discord
+/// only: `PUT api/messaging/platforms/{id}` with a JSON object of at most `enabled` (a bool), `env` (one-line values
+/// under that platform's own env var names) and `clear_env` (those names), and nothing else, a profile included; and
+/// `POST api/messaging/platforms/{id}/test` with no body, which only reports the state. A token goes from the webview
+/// to Hermes in the `env` value and is never kept or logged here.
+pub fn gateway_write(method: &str, path: &str, body: Option<&str>) -> bool {
+    let Some(rest) = path.strip_prefix("api/messaging/platforms/") else { return false };
+    let (id, test) = match rest.split_once('/') {
+        Some((id, "test")) => (id, true),
+        Some(_) => return false,
+        None => (rest, false),
+    };
+    let prefix = match id {
+        "telegram" => "TELEGRAM_",
+        "discord" => "DISCORD_",
+        _ => return false,
+    };
+    if test {
+        return method == "POST" && body.is_none();
+    }
+    if method != "PUT" {
+        return false;
+    }
+    let Some(fields) = body.and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok()) else { return false };
+    let Some(fields) = fields.as_object().filter(|o| !o.is_empty()) else { return false };
+    let env_name = |n: &str| {
+        n.len() <= 128 && n.strip_prefix(prefix).is_some_and(|t| !t.is_empty() && t.bytes().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == b'_'))
+    };
+    let value_ok = |s: &str| !s.trim().is_empty() && s.chars().count() <= 4096 && !s.chars().any(char::is_control);
+    fields.iter().all(|(k, v)| match k.as_str() {
+        "enabled" => v.is_boolean(),
+        "env" => v.as_object().is_some_and(|env| !env.is_empty() && env.iter().all(|(k, v)| env_name(k) && v.as_str().is_some_and(value_ok))),
+        "clear_env" => v.as_array().is_some_and(|keys| !keys.is_empty() && keys.iter().all(|k| k.as_str().is_some_and(env_name))),
+        _ => false,
+    })
 }
 
 /// The Automations writes (ADR 0036, Hermes's `/api/webhooks` routes and the `webhooks/1` contract): `POST

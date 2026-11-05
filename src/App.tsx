@@ -2715,6 +2715,7 @@ export function Main({
             modelSettings={hermes.modelSettings}
             toolsets={hermes.toolsets}
             mcp={hermes.mcp}
+            gateways={hermes.gateways}
             openUrl={(url) => webPages.openInBrowser(url)}
             runningReplies={chats.filter((c) => c.running).length}
             openChat={(() => {

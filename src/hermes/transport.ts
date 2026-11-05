@@ -26,6 +26,7 @@
 // Token usage and cost (usage.ts, ADR 0008): each reply's usage is how far its session's live counters moved during
 // its turn; each chat's totals and cost are Hermes's stored ones, read with the chat list and after each turn.
 import { McpApi } from "./mcp";
+import { GatewaysApi } from "./gateways";
 import { PersonaApi } from "./persona";
 import { APPROVAL_CHOICES, isBroadGrant, isOutgoing, isWaiting, offeredChoices, turnStart, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type ContextUse, type Found, type Item, type ListedChat, type LiveSession, type LiveSessions, type OtherProfiles, type Outgoing, type OutgoingItem, type Queued, type SavedSend, type SeenFailure, type SessionLive, type SideQuestion, type Source, QUEUE_LIMIT } from "./model";
 import { catalogFromServer, fallbackCatalog, isEffort, modelKey, pickFromInfo, type ModelCatalog, type ModelPick } from "./models";
@@ -941,6 +942,12 @@ export class Hermes {
       return (await pipe.toolsetGuards(profile)).noMcp;
     },
   );
+
+  /**
+   * Settings → Gateways' reads and writes (gateways.ts, ADR 0069): a profile's Telegram and Discord settings. Each call
+   * names its profile, and goes only over a connection that is up.
+   */
+  readonly gateways = new GatewaysApi((method, pathAndQuery, body) => this.connectedRest(method, pathAndQuery, body));
 
   /** Settings → Persona's reads and writes of a profile's SOUL.md (persona.ts). Each call names its profile. */
   readonly persona = new PersonaApi((method, pathAndQuery, body) => this.rest(method, pathAndQuery, body));
