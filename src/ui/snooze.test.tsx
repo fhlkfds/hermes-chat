@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// The chat list's sections (needs you at the top, Working, Snoozed, Settled) and snoozing from a chat's menu: the list
+// The chat list's sections (the Inbox, Working, Snoozed, Unsettled, Settled) and snoozing from a chat's menu: the list
 // on its own with chats in each state, then the whole app against a fake Hermes.
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -57,7 +57,6 @@ function List({
       status="connected"
       others={{ byName: {} }}
       chats={chats}
-      archivedListed={false}
       selectedId={null}
       onOpen={() => {}}
       onSettle={() => {}}
@@ -71,7 +70,6 @@ function List({
         setSnoozes(({ [id]: _, ...s }) => s);
       }}
       onArchive={() => {}}
-      onListArchived={() => {}}
       onDelete={() => {}}
       onRename={async () => {}}
       onRegenTitle={async () => {}}
@@ -91,13 +89,11 @@ function ListSince({ chats, since }: { chats: Chat[]; since: Record<string, numb
       status="connected"
       others={{ byName: {} }}
       chats={chats}
-      archivedListed={false}
       selectedId={null}
       onOpen={() => {}}
       onSettle={() => {}}
       attentionSince={since}
       onArchive={() => {}}
-      onListArchived={() => {}}
       onDelete={() => {}}
       onRename={async () => {}}
       onRegenTitle={async () => {}}
@@ -111,12 +107,12 @@ function ListSince({ chats, since }: { chats: Chat[]; since: Record<string, numb
 
 /** The button that opens chat `id` in the list. */
 const rowOf = (id: string) => document.querySelector<HTMLElement>(`.row-open[data-chat="${id}"]`)!;
-/** The titles of the chats the list shows in `section` ("top", "working", "snoozed" or "settled"), in order. */
+/** The titles of the chats the list shows in `section` ("inbox", "working", "snoozed", "unsettled" or "settled"), in order. */
 const titles = (section: string) =>
   [...document.querySelectorAll(`.row[data-section="${section}"]:not([hidden]) .row-open .row-title`)].map((t) => t.textContent);
 
 describe("The chat list's sections", () => {
-  it("shows no Active label: what needs you sits at the top, then Working, Snoozed and Settled", async () => {
+  it("shows no Active label: what needs you is in the Inbox, then Working, Snoozed and Settled", async () => {
     const user = userEvent.setup();
     render(
       <List
@@ -132,7 +128,7 @@ describe("The chat list's sections", () => {
       />,
     );
     expect(screen.queryByText("Active")).toBeNull();
-    expect(titles("top")).toEqual(["done", "asking"]);
+    expect(titles("inbox")).toEqual(["done", "asking"]);
     expect(titles("working")).toEqual(["busy"]);
     expect(document.querySelector('.row[data-section="working"] .spinner')).toBeTruthy();
     // Snoozed and Settled start collapsed, with counts.
@@ -144,16 +140,16 @@ describe("The chat list's sections", () => {
     expect(screen.getByRole("button", { name: /Settled/ }).textContent).toContain("1");
   });
 
-  it("moves a chat between Working and the top as its reply starts, waits on you, and ends", () => {
+  it("moves a chat between Working and the Inbox as its reply starts, waits on you, and ends", () => {
     const { rerender } = render(<List snoozed={[]} chats={[chat("a", { running: true })]} />);
     expect(titles("working")).toEqual(["a"]);
-    expect(titles("top")).toEqual([]);
+    expect(titles("inbox")).toEqual([]);
     expect(document.querySelector(".sb-scroll .empty-hint")!.textContent).toBe("Nothing needs you right now.");
     rerender(<List snoozed={[]} chats={[chat("a", { running: true, items: [waiting] })]} />);
     expect(screen.queryByText("Working")).toBeNull();
-    expect(titles("top")).toEqual(["a"]);
+    expect(titles("inbox")).toEqual(["a"]);
     rerender(<List snoozed={[]} chats={[chat("a")]} />);
-    expect(titles("top")).toEqual(["a"]);
+    expect(titles("inbox")).toEqual(["a"]);
   });
 
   it("snoozes from the right-click menu for an hour, 3 hours, tomorrow or next week, and wakes it", async () => {
@@ -169,7 +165,7 @@ describe("The chat list's sections", () => {
     expect(snoozed[0][0]).toBe("a");
     expect((snoozed[0][1] as number) - before).toBeGreaterThanOrEqual(3 * HOUR - 1000);
     expect((snoozed[0][1] as number) - before).toBeLessThanOrEqual(3 * HOUR + 1000);
-    expect(titles("top")).toEqual(["b"]);
+    expect(titles("inbox")).toEqual(["b"]);
 
     await user.click(screen.getByRole("button", { name: /Snoozed/ }));
     const napping = rowOf("a");
@@ -177,7 +173,7 @@ describe("The chat list's sections", () => {
     fireEvent.contextMenu(napping);
     await user.click(screen.getByRole("menuitem", { name: "Unsnooze" }));
     expect(snoozed[1]).toEqual(["a", undefined]);
-    expect(titles("top").sort()).toEqual(["a", "b"]);
+    expect(titles("inbox").sort()).toEqual(["a", "b"]);
   });
 
   it("snoozes for a custom duration or until a custom date and time", async () => {
@@ -252,13 +248,13 @@ describe("The chat list's sections", () => {
     const { rerender } = render(
       <List snoozed={[]} chats={[chat("a", { running: true, updatedAt: NOW - 600_000 }), chat("b", { updatedAt: NOW - 300_000 })]} />,
     );
-    expect(titles("top")).toEqual(["b"]);
+    expect(titles("inbox")).toEqual(["b"]);
     // App's AttentionClock says a stopped working just now; Hermes's own activity time for it is older than b's.
     since.a = NOW;
     rerender(
       <ListSince since={since} chats={[chat("a", { running: true, updatedAt: NOW - 600_000, items: [waiting] }), chat("b", { updatedAt: NOW - 300_000 })]} />,
     );
-    expect(titles("top")).toEqual(["a", "b"]);
+    expect(titles("inbox")).toEqual(["a", "b"]);
   });
 
   it("closes the Custom snooze dialog when its chat is settled, archived or gone meanwhile", async () => {
@@ -325,9 +321,9 @@ describe("The chat list's sections", () => {
     const far = NOW + 30 * 24 * HOUR;
     render(<List snoozed={[]} start={{ a: far }} chats={[chat("a"), chat("b")]} />);
     await act(async () => void vi.advanceTimersByTime(2 ** 31));
-    expect(titles("top")).toEqual(["b"]);
+    expect(titles("inbox")).toEqual(["b"]);
     await act(async () => void vi.advanceTimersByTime(far - Date.now() + 100));
-    expect(titles("top")).toEqual(["a", "b"]);
+    expect(titles("inbox")).toEqual(["a", "b"]);
   });
 
   it("renders what shows a snooze again when it wakes, as the chat's header does", async () => {
@@ -348,10 +344,10 @@ describe("The chat list's sections", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     vi.setSystemTime(NOW);
     render(<List snoozed={[]} start={{ a: NOW + HOUR }} chats={[chat("a"), chat("b")]} />);
-    expect(titles("top")).toEqual(["b"]);
+    expect(titles("inbox")).toEqual(["b"]);
     await act(async () => void vi.advanceTimersByTime(HOUR + 100));
     // It woke after b's last activity, so it comes first.
-    expect(titles("top")).toEqual(["a", "b"]);
+    expect(titles("inbox")).toEqual(["a", "b"]);
     expect(screen.queryByRole("button", { name: /Snoozed/ })).toBeNull();
   });
 });
@@ -378,14 +374,14 @@ describe("Snoozing in the app", () => {
     fireEvent.contextMenu(screen.getByRole("button", { name: /Deploy notes/ }));
     await user.click(screen.getByRole("menuitem", { name: "1 hour" }));
     expect(screen.getByRole("status").textContent).toMatch(/Snoozed until .*: Deploy notes/);
-    expect(titles("top")).toEqual(["Groceries"]);
+    expect(titles("inbox")).toEqual(["Groceries"]);
     const stored = JSON.parse(localStorage.getItem(SNOOZE_KEY)!);
     expect(Object.values(stored.scopes).map((s) => Object.keys(s as object))).toEqual([["a"]]);
     // Nothing about it goes to Hermes.
     expect(pinnedWrites(server)).toEqual([]);
 
     await user.click(within(screen.getByRole("status")).getByRole("button", { name: "Undo" }));
-    await waitFor(() => expect(titles("top")).toContain("Deploy notes"));
+    await waitFor(() => expect(titles("inbox")).toContain("Deploy notes"));
     expect(screen.queryByRole("button", { name: /Snoozed/ })).toBeNull();
   });
 
@@ -411,7 +407,7 @@ describe("Snoozing in the app", () => {
     const { hermes, user } = await signedIn();
     fireEvent.contextMenu(screen.getByRole("button", { name: /Deploy notes/ }));
     await user.click(screen.getByRole("menuitem", { name: "Next week" }));
-    expect(titles("top")).toEqual(["Groceries"]);
+    expect(titles("inbox")).toEqual(["Groceries"]);
     await user.click(screen.getByRole("button", { name: /Snoozed/ }));
     await user.click(screen.getByRole("button", { name: /Deploy notes/ }));
     await act(async () => void (await hermes.idle()));

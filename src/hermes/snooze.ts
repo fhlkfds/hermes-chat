@@ -1,14 +1,19 @@
-// Snoozing, and the chat list's sections (GLOSSARY.md, ADR 0036). Hermes has nowhere to keep a snooze, so it is kept on
-// this computer only, in one versioned localStorage document, separately for each connection and profile (the scope
-// projectLinks.ts `projectScope` gives), and never sent to Hermes. A snooze is the time the chat wakes, in Unix ms.
+// Snoozing, Clearing from the Inbox, and the chat list's sections (GLOSSARY.md, ADR 0036, ADR 0063). Hermes has
+// nowhere to keep a snooze or a clear, so each is kept on this computer only, in its own versioned localStorage
+// document, separately for each connection and profile (the scope projectLinks.ts `projectScope` gives), and never
+// sent to Hermes. A snooze is the time the chat wakes, in Unix ms; a clear is when the chat was last active as the owner
+// cleared it, so anything newer brings it back.
 //
-// The list shows a chat that isn't Archived in one place only, worked out from what the app already reads:
-//   1. Settled: the owner settled it (ADR 0002). It stays there whatever happens in it.
-//   2. Snoozed: the owner snoozed it and it hasn't woken yet.
-//   3. Working: Hermes is writing a reply in it and isn't waiting on the owner.
-//   4. Otherwise it is at the top: Hermes waits for the owner's answer, or is done.
+// The list shows each chat in one section only, worked out from what the app already reads:
+//   1. Archived: Hermes has it archived, whatever else holds.
+//   2. Settled: the owner settled it (ADR 0002). It stays there whatever happens in it.
+//   3. Snoozed: the owner snoozed it and it hasn't woken yet.
+//   4. Working: Hermes is writing a reply in it and isn't waiting on the owner.
+//   5. Unsettled: the owner cleared it from the Inbox and nothing has happened in it since.
+//   6. Otherwise it is in the Inbox: Hermes waits for the owner's answer, or is done, or it is new.
 import type { Chat } from "./model";
 import { isWaiting } from "./model";
+import type { SectionKey } from "./sectionKeys";
 import { migrateUIPrefs as migrateDoc, type UIPrefsDoc, type UIPrefsMigrations } from "./uiPrefs";
 
 export const SNOOZE_KEY = "hermes-chat.snoozes";
@@ -26,20 +31,23 @@ const MORNING = 9;
 const SCOPE_LIMIT = 200;
 const CHATS_PER_SCOPE = 5_000;
 
+/** One connection and profile's times, one per chat, Unix ms: when each snoozed chat wakes, or each cleared chat's mark. */
+export type ChatTimes = Readonly<Record<string, number>>;
 /** One connection and profile's snoozes: when each chat wakes, Unix ms. */
-export type Snoozes = Readonly<Record<string, number>>;
+export type Snoozes = ChatTimes;
+/** One connection and profile's cleared chats: when each was last active as the owner cleared it, Unix ms. */
+export type Cleared = ChatTimes;
 export type SnoozeStorage = Pick<Storage, "getItem" | "setItem">;
 
-const EMPTY: Snoozes = Object.freeze({});
+const EMPTY: ChatTimes = Object.freeze({});
 const isDoc = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const id = (v: unknown, max = 400) => (typeof v === "string" && v.length > 0 && v.length <= max ? v : undefined);
 
-/** One scope's snoozes as stored; anything that isn't valid is left out. */
-function toSnoozes(v: unknown): Record<string, number> {
+/** One scope's times as stored, the newest `CHATS_PER_SCOPE` written; anything that isn't valid is left out. */
+function toTimes(v: unknown): Record<string, number> {
   const out: Record<string, number> = {};
   if (!isDoc(v)) return out;
-  for (const [chat, until] of Object.entries(v).slice(0, CHATS_PER_SCOPE))
-    if (id(chat) && typeof until === "number" && Number.isFinite(until) && until > 0) out[chat] = until;
+  for (const [chat, at] of Object.entries(v).slice(-CHATS_PER_SCOPE)) if (id(chat) && typeof at === "number" && Number.isFinite(at) && at > 0) out[chat] = at;
   return out;
 }
 
@@ -47,19 +55,24 @@ function toSnoozes(v: unknown): Record<string, number> {
 const pruned = (s: Record<string, number>, now: number) => Object.fromEntries(Object.entries(s).filter(([, until]) => until > now - WOKEN_KEPT_MS));
 
 /**
- * The snoozes for one connection and profile, kept in `storage`. A change that can't be stored (storage full) is held
- * in memory while the app runs. `reread` picks up another window's change.
+ * A time for each of one connection and profile's chats, kept in `storage` under `key`. A change that can't be stored
+ * (storage full) is held in memory while the app runs. `reread` picks up another window's change. A chat set again
+ * moves to the end, so the oldest are the ones dropped past `CHATS_PER_SCOPE`.
  */
-export class SnoozeStore {
-  private snap: Snoozes = EMPTY;
+class ChatTimesStore {
+  private snap: ChatTimes = EMPTY;
   private cachedRaw: string | null | undefined;
-  private doc: UIPrefsDoc = { v: SNOOZE_VERSION };
+  private doc: UIPrefsDoc = { v: 1 };
   private listeners = new Set<() => void>();
 
   constructor(
     private storage: SnoozeStorage,
     private scope: string,
-    private now: () => number = Date.now,
+    protected now: () => number,
+    private key: string,
+    private version: number,
+    private migrations: UIPrefsMigrations,
+    private prune: (s: Record<string, number>, now: number) => Record<string, number> = (s) => s,
   ) {
     this.read();
   }
@@ -75,23 +88,18 @@ export class SnoozeStore {
     if (this.read()) this.emit();
   };
 
-  /** Snoozes the chat until `until` (Unix ms), replacing any snooze it had. */
-  snooze(chatId: string, until: number) {
-    this.change((s) => ({ ...s, [chatId]: until }));
+  protected set(chatId: string, at: number) {
+    this.change(({ [chatId]: _, ...s }) => ({ ...s, [chatId]: at }));
   }
 
-  /** Wakes the chat now, or forgets the snooze it had. */
-  wake(chatId: string) {
+  protected forget(chatId: string) {
     this.change(({ [chatId]: _, ...s }) => s);
   }
-
-  /** Whether the chat is snoozed and hasn't woken yet. */
-  isSnoozed = (chatId: string) => (this.snap[chatId] ?? 0) > this.now();
 
   private read(): boolean {
     let raw: string | null = null;
     try {
-      raw = this.storage.getItem(SNOOZE_KEY);
+      raw = this.storage.getItem(this.key);
     } catch {
       return false;
     }
@@ -103,9 +111,9 @@ export class SnoozeStore {
     } catch {
       // Unreadable: start empty.
     }
-    this.doc = migrateDoc(parsed, SNOOZE_MIGRATIONS, SNOOZE_VERSION);
+    this.doc = migrateDoc(parsed, this.migrations, this.version);
     const scopes = isDoc(this.doc.scopes) ? this.doc.scopes : {};
-    const next = toSnoozes(scopes[this.scope]);
+    const next = toTimes(scopes[this.scope]);
     if (JSON.stringify(next) === JSON.stringify(this.snap)) return false;
     this.snap = Object.freeze(next);
     return true;
@@ -113,18 +121,18 @@ export class SnoozeStore {
 
   private change(fn: (s: Record<string, number>) => Record<string, number>) {
     this.read();
-    const next = pruned(fn({ ...this.snap }), this.now());
+    const next = toTimes(this.prune(fn({ ...this.snap }), this.now()));
     if (JSON.stringify(next) === JSON.stringify(this.snap)) return;
     this.snap = Object.freeze(next);
     // Only this scope is rewritten; other scopes, and fields a newer app wrote, are kept.
     const scopes = isDoc(this.doc.scopes) ? { ...this.doc.scopes } : {};
+    delete scopes[this.scope];
     if (Object.keys(next).length) scopes[this.scope] = next;
-    else delete scopes[this.scope];
     const kept = Object.fromEntries(Object.entries(scopes).slice(-SCOPE_LIMIT));
-    this.doc = { ...this.doc, v: Math.max(SNOOZE_VERSION, Number(this.doc.v) || 0), scopes: kept };
+    this.doc = { ...this.doc, v: Math.max(this.version, Number(this.doc.v) || 0), scopes: kept };
     const raw = JSON.stringify(this.doc);
     try {
-      this.storage.setItem(SNOOZE_KEY, raw);
+      this.storage.setItem(this.key, raw);
       this.cachedRaw = raw;
     } catch {
       // Not kept: memory holds the change while the stored document is still the one last read.
@@ -134,6 +142,53 @@ export class SnoozeStore {
 
   private emit() {
     for (const fn of this.listeners) fn();
+  }
+}
+
+/** The snoozes for one connection and profile, kept in `storage`. */
+export class SnoozeStore extends ChatTimesStore {
+  constructor(storage: SnoozeStorage, scope: string, now: () => number = Date.now) {
+    super(storage, scope, now, SNOOZE_KEY, SNOOZE_VERSION, SNOOZE_MIGRATIONS, pruned);
+  }
+
+  /** Snoozes the chat until `until` (Unix ms), replacing any snooze it had. */
+  snooze(chatId: string, until: number) {
+    this.set(chatId, until);
+  }
+
+  /** Wakes the chat now, or forgets the snooze it had. */
+  wake(chatId: string) {
+    this.forget(chatId);
+  }
+
+  /** Whether the chat is snoozed and hasn't woken yet. */
+  isSnoozed = (chatId: string) => (this.getSnapshot()[chatId] ?? 0) > this.now();
+}
+
+export const CLEARED_KEY = "hermes-chat.cleared";
+export const CLEARED_VERSION = 1;
+const CLEARED_MIGRATIONS: UIPrefsMigrations = { 0: (doc) => doc };
+
+/**
+ * The chats the owner cleared from the Inbox, for one connection and profile, kept in `storage`. Each is kept with
+ * `lastActive` (snooze.ts `lastActive`) as it was then; the chat is back in the Inbox once something newer happens in it.
+ */
+export class ClearedStore extends ChatTimesStore {
+  constructor(storage: SnoozeStorage, scope: string, now: () => number = Date.now) {
+    super(storage, scope, now, CLEARED_KEY, CLEARED_VERSION, CLEARED_MIGRATIONS);
+  }
+
+  /**
+   * Clears the chat from the Inbox as it is now: `mark`, when it was last active, kept exactly (Hermes's activity times
+   * have fractions of a millisecond, and a mark rounded down would leave the chat in the Inbox).
+   */
+  clear(chatId: string, mark: number) {
+    this.set(chatId, mark > 0 ? mark : 1);
+  }
+
+  /** Puts the chat back in the Inbox, or forgets a clear that no longer holds. */
+  restore(chatId: string) {
+    if (chatId in this.getSnapshot()) this.forget(chatId);
   }
 }
 
@@ -219,28 +274,68 @@ export class AttentionClock {
   }
 }
 
-export type ChatSections = { top: Chat[]; working: Chat[]; snoozed: Chat[]; settled: Chat[]; archived: Chat[] };
+export { SECTION_KEYS, SECTION_LABEL, type SectionKey } from "./sectionKeys";
+
+export type ChatSections = Record<SectionKey, Chat[]>;
 
 /**
- * Where each chat shows in the list, in the order shown. The top is newest first, a chat counting as new when it woke
- * from a snooze or stopped working (`since`, from an AttentionClock). Working and Settled are newest first; Snoozed
- * wakes soonest first.
+ * When the chat was last active as the list counts it: Hermes's last activity, the time it woke from a snooze in the
+ * past WOKEN_KEPT_MS, or when this app saw it stop working (`since`, from an AttentionClock).
  */
-export function chatSections(chats: Chat[], snoozes: Snoozes, now: number, since: Readonly<Record<string, number>> = {}): ChatSections {
+export function lastActive(c: Chat, snoozes: Snoozes, now: number, since: Readonly<Record<string, number>> = {}): number {
   // A snooze that woke more than WOKEN_KEPT_MS ago no longer counts, though it is only forgotten at the next change.
-  const woke = (id: string) => ((snoozes[id] ?? 0) > now - WOKEN_KEPT_MS ? snoozes[id] : 0);
-  const recent = (c: Chat) => Math.max(c.updatedAt, woke(c.id), since[c.id] ?? 0);
+  const until = snoozes[c.id] ?? 0;
+  const woke = until <= now && until > now - WOKEN_KEPT_MS ? until : 0;
+  return Math.max(c.updatedAt, woke, since[c.id] ?? 0);
+}
+
+/** The chat can be cleared from the Inbox: the owner has read it, and Hermes isn't replying in it or waiting on them. */
+export const canClear = (c: Chat) => !c.unread && !c.running && !c.items.some(isWaiting) && !c.settled && !c.archived;
+
+/**
+ * The clears among `chats` that no longer hold, because something happened in the chat after it was cleared, or it is
+ * Unread or Hermes waits on the owner in it, or it is Settled or Archived (here or in another Hermes client: settling
+ * or archiving doesn't change when the chat was last active, so it is seen only as the state itself). Forgetting them
+ * keeps the chat in the Inbox once that activity stops counting (a woken snooze does after WOKEN_KEPT_MS), or once it is
+ * unsettled or restored. A reply still running doesn't end a clear: its end does.
+ */
+export function staleClears(chats: Chat[], snoozes: Snoozes, now: number, since: Readonly<Record<string, number>>, cleared: Cleared): string[] {
+  return chats
+    .filter(
+      (c) =>
+        cleared[c.id] !== undefined &&
+        (c.settled || !!c.archived || lastActive(c, snoozes, now, since) > cleared[c.id] || !!c.unread || c.items.some(isWaiting)),
+    )
+    .map((c) => c.id);
+}
+
+/**
+ * Where each chat shows in the list, in the order shown. The Inbox is newest first, a chat counting as new when it woke
+ * from a snooze or stopped working (`lastActive`). Working, Unsettled and Settled are newest first; Snoozed wakes
+ * soonest first. A cleared chat (`cleared`) is in Unsettled until something happens in it after it was cleared, or it is
+ * unread or waiting on the owner; it is then back in the Inbox.
+ */
+export function chatSections(
+  chats: Chat[],
+  snoozes: Snoozes,
+  now: number,
+  since: Readonly<Record<string, number>> = {},
+  cleared: Cleared = {},
+): ChatSections {
+  const recent = (c: Chat) => lastActive(c, snoozes, now, since);
   const byRecent = (a: Chat, b: Chat) => recent(b) - recent(a);
-  const s: ChatSections = { top: [], working: [], snoozed: [], settled: [], archived: [] };
+  const s: ChatSections = { inbox: [], working: [], snoozed: [], unsettled: [], settled: [], archived: [] };
   for (const c of chats) {
     if (c.archived) s.archived.push(c);
     else if (c.settled) s.settled.push(c);
     else if ((snoozes[c.id] ?? 0) > now) s.snoozed.push(c);
     else if (isWorking(c)) s.working.push(c);
-    else s.top.push(c);
+    else if (cleared[c.id] !== undefined && recent(c) <= cleared[c.id] && canClear(c)) s.unsettled.push(c);
+    else s.inbox.push(c);
   }
-  s.top.sort(byRecent);
+  s.inbox.sort(byRecent);
   s.working.sort(byRecent);
+  s.unsettled.sort(byRecent);
   s.settled.sort((a, b) => b.updatedAt - a.updatedAt);
   s.archived.sort((a, b) => b.updatedAt - a.updatedAt);
   s.snoozed.sort((a, b) => snoozes[a.id] - snoozes[b.id]);

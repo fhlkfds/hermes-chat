@@ -1,6 +1,6 @@
 # Hermes Chat
 
-A personal desktop chat client for the owner's own Hermes Agent servers, one at a time. Chats that need attention sit at the top; finished ones are settled out of the way.
+A personal desktop chat client for the owner's own Hermes Agent servers, one at a time. Chats that need attention sit in the Inbox; finished ones are settled out of the way.
 
 ## Language
 
@@ -9,30 +9,46 @@ One Hermes conversation as this app shows it, with its full message history.
 _Avoid_: session (Hermes's word for the same thing; keep it for server-side talk), conversation, thread
 
 **Active**:
-The state of a chat the owner is currently working in: any chat that isn't Settled. The list doesn't label it. An Active chat shows at the top of the list when it needs the owner or is done, in Working while Hermes replies in it, and in Snoozed while it is snoozed (ADR 0036). A chat becomes Active when the owner starts it in this app, or when the owner sends a message in it from this app.
+The state of a chat the owner is currently working in: any chat that isn't Settled. The list doesn't label it. An Active chat shows in the Inbox when it needs the owner or is done, in Working while Hermes replies in it, in Snoozed while it is snoozed, and in Unsettled once the owner clears it from the Inbox (ADR 0036, ADR 0063). A chat becomes Active when the owner starts it in this app, or when the owner sends a message in it from this app.
 _Avoid_: open, live, current
 
 **Settled**:
-The state of a chat the owner has put out of the way. Settled chats sit in a collapsed drawer at the foot of the list. Only the owner settles a chat; nothing settles on its own. A new message from another platform leaves a Settled chat where it is.
+The state of a chat the owner has put out of the way. Settled chats sit in the list's Settled section, collapsed until the owner opens it. Only the owner settles a chat; nothing settles on its own. A new message from another platform leaves a Settled chat where it is.
 _Avoid_: archived, done, closed
 
 **Settle** / **Unsettle**:
 The owner's manual actions that move a chat from Active to Settled, and back. Both are the same icon-only button, named when hovered. Settling a snoozed chat forgets the snooze.
 
 **Working**:
-Where the list shows an Active chat while Hermes is writing a reply in it and isn't waiting on the owner. Nobody puts a chat there: it moves there when a reply starts, and back to the top once Hermes asks the owner something (an Approval) or the reply ends. A Settled or snoozed chat stays where it is while Hermes works in it.
+Where the list shows an Active chat while Hermes is writing a reply in it and isn't waiting on the owner. Nobody puts a chat there: it moves there when a reply starts, and back to the Inbox once Hermes asks the owner something (an Approval) or the reply ends. A Settled or snoozed chat stays where it is while Hermes works in it.
 _Avoid_: running (fine in conversation), busy, in progress
 
 **Snoozed**:
-An Active chat the owner has put out of the way until a time they chose. It sits in a collapsed section under Working, soonest to wake first, and shows when it wakes. When that time comes it goes back to the top of the list, as new as when it woke. Snoozes are kept on this computer only, for each connection and profile; Hermes and other Hermes clients don't see them (ADR 0036).
+An Active chat the owner has put out of the way until a time they chose. It sits in the Snoozed section after Working, collapsed until the owner opens it, soonest to wake first, and shows when it wakes. When that time comes it goes back to the Inbox, as new as when it woke. Snoozes are kept on this computer only, for each connection and profile; Hermes and other Hermes clients don't see them (ADR 0036).
 _Avoid_: hidden, deferred, reminder
+
+**Inbox**:
+The first section of the chat list: the Active chats in the profile shown that need the owner or have finished, newest first: an Approval waiting, a failure, a reply done, something new. A chat stays there until the owner opens it and clears it, settles it or snoozes it, or a reply starts in it (ADR 0063).
+_Avoid_: top of the list (its name before ADR 0063), feed
+
+**Unsettled**:
+The section of the chat list holding the Active chats the owner cleared from the Inbox, newest first. It is a place in the list, not a state: an Unsettled chat is still Active, and settling it moves it to Settled (ADR 0063).
+_Avoid_: closed, hidden, read
+
+**Clear** / **Back to the Inbox**:
+The owner's actions, from a chat's row or its right-click menu, that move a read, quiet Active chat from the Inbox to Unsettled, and back. A chat can be cleared only when it isn't Unread, no reply is running in it and Hermes isn't waiting on the owner. It is back in the Inbox on its own as soon as anything newer happens in it: a message from any platform, a reply that ends, a snooze that wakes. Nothing is deleted or sent to Hermes: a clear is kept on this computer only, for each connection and profile. Settling, unsettling, archiving or deleting the chat forgets it (ADR 0063).
+_Avoid_: close (Close closes tabs and panes, and "closed" is kept away from Settled), dismiss (the Rail inbox's word), done
+
+**Chat list section**:
+One of the chat list's groups, in this order: Inbox, Working, Snoozed, Unsettled, Settled, Archived. Each chat is in exactly one. Each has a header with its count that collapses or expands it; which are collapsed is kept on this computer across restarts. Settings → General picks which sections show, any mix but never none; a chat in a hidden section is still found by Search (ADR 0063).
+_Avoid_: group, folder, tab
 
 **Snooze** / **Unsnooze**:
 The owner's actions, from a chat's right-click menu, that snooze an Active chat (for 1 hour, 3 hours, until tomorrow at 9, until next Monday at 9, or for a duration or until a date and time the owner picks) and wake it early. Sending a message in a snoozed chat from this app wakes it. A new message from another platform doesn't. Settled chats can't be snoozed.
 _Avoid_: remind me, defer
 
 **Archived**:
-A chat the owner has hidden in every Hermes client without deleting it. Its history stays on the server, and so does whether it is Active or Settled. Archived chats show only in the archived view, or in a search the owner asks to include them. A chat archived in another Hermes client is Archived here too.
+A chat the owner has hidden in every Hermes client without deleting it. Its history stays on the server, and so does whether it is Active or Settled. Archived chats show only in the list's Archived section, when Settings → General shows it, or in a search the owner asks to include them. A chat archived in another Hermes client is Archived here too.
 _Avoid_: hidden, settled, deleted
 
 **Archive** / **Restore**:
@@ -60,7 +76,7 @@ The owner's action that asks Hermes for a new title made from the chat's last fi
 _Avoid_: auto-title (Hermes's own titling of a new chat), retitle
 
 **Unread**:
-A chat with something new in it since the owner last opened it, in this app or any other Hermes client. It shows a dot, and so does the collapsed Settled header when a Settled chat is unread. A chat visible on screen never shows the dot. With two panes, both visible chats stay read; a pane hidden by the narrow-window switcher or Settings does not mark its chat read.
+A chat with something new in it since the owner last opened it, in this app or any other Hermes client. It shows a dot, and so does a collapsed section's header when a chat in it is unread. A chat visible on screen never shows the dot. With two panes, both visible chats stay read; a pane hidden by the narrow-window switcher or Settings does not mark its chat read.
 _Avoid_: new, unseen
 
 **Source**:
@@ -207,8 +223,8 @@ _Avoid_: permission, confirmation, prompt
 A named group of tools Hermes can offer the model, such as Web Search or Terminal. Which toolsets are on is a setting of the profile, kept by Hermes on the server: the list new chats in the profile start with, in every Hermes client, unless the server pins its own or the profile's coding focus mode picks one in a code workspace. A change reaches chats Hermes starts, or opens again, afterwards. A chat Hermes already has open, and a reply running in it, keeps the tools it started with, on its next turns too. Settings → Toolsets says a change is saved only once Hermes reads it back that way. It also shows, apart from the profile's setting, what the open chat has, as Hermes reads it for that chat. The profile's list is **inherited** while the profile hasn't saved one of its own: it is Hermes's default. A toolset is **forced off** when `agent.disabled_toolsets` turns it off on every platform, whatever the list says. A toolset being on doesn't let Hermes run anything it would otherwise ask about: Approvals and YOLO decide that.
 _Avoid_: tool permissions, capabilities, plugins (a plugin can bring a toolset, but isn't one)
 
-**Inbox**:
-The list, opened from the rail, of what needs the owner or has finished in any profile on the server: a reply running, an Approval waiting, a failure or Failed message, or a chat with something new. Each entry names its profile and chat, says when, and opens the chat in its profile. Nothing is answered, retried or sent from it. Dismissing an entry takes it out of the inbox only, on this computer: the chat stays Unread, Active or Settled, and Archived or not, as it was. An entry shows again only for something newer. Running work in other profiles shows only for chats the dashboard itself runs (ADR 0019).
+**Rail inbox**:
+The list, opened from the rail's Inbox button, of what needs the owner or has finished in any profile on the server: a reply running, an Approval waiting, a failure or Failed message, or a chat with something new. Each entry names its profile and chat, says when, and opens the chat in its profile. Nothing is answered, retried or sent from it. Dismissing an entry takes it out of the rail inbox only, on this computer: the chat stays Unread, Active or Settled, and Archived or not, as it was. An entry shows again only for something newer. Running work in other profiles shows only for chats the dashboard itself runs (ADR 0019).
 _Avoid_: notifications, activity, feed
 
 **Chat link**:
@@ -428,7 +444,7 @@ _Avoid_: upgrade (pacman's word, for the package step only)
 ## Relationships
 
 - Every **Chat** is either **Active** or **Settled**, never both. An **Archived** chat keeps that state for when it is restored.
-- An **Active** chat shows in one place in the list: **Snoozed** if it is snoozed, **Working** if Hermes is replying in it, otherwise at the top.
+- An **Active** chat shows in one place in the list: **Snoozed** if it is snoozed, **Working** if Hermes is replying in it, **Unsettled** if the owner cleared it and nothing newer has happened in it, otherwise the **Inbox**.
 - Every **Chat** has exactly one **Source**.
 - Every **Chat** belongs to exactly one **Profile**; Active and Settled are kept per profile.
 - An **Imported chat** becomes **Active** only when the owner sends a message in it from this app.
@@ -443,6 +459,8 @@ _Avoid_: upgrade (pacman's word, for the package step only)
 - **Screen** vs a web page in the **Preview**: both can show a site, but the Screen's browser runs on the server and is the agent's, with its sign-ins; the Preview loads the page on this computer, isolated from the app, and is the owner's alone.
 - **Artifact** vs **Edit** (of a Server file): both edit a text file's text with the same checked save, but an Artifact is an Output, edited beside the chat on the machine its tool wrote it on, with Hermes's proposed edits and kept versions. A Server file edit is made in the Files tab and only reaches the dashboard's machine.
 - **Output** vs a path in a reply: Outputs counts only what a tool's own result says it wrote. A reply that says "saved to /srv/x.pdf", or a `terminal` command that creates a file, makes no Output, though the owner can add that file by its path.
+- **Inbox** vs **Rail inbox**: the Inbox is the chat list's first section, one profile's Active chats; the Rail inbox, opened from the rail's Inbox button, lists what needs the owner across every profile on the server, chats in any state included. Clearing a chat from the Inbox doesn't dismiss its Rail inbox entry, and dismissing an entry doesn't clear the chat (ADR 0063).
+- **Unsettled** vs **Settled**: an Unsettled chat is Active, cleared from the Inbox until something newer happens in it, on this computer only. A Settled chat stays out of the way whatever happens in it, in every Hermes Chat on the server.
 - **Settled** vs **Archived**: they are different things. Archiving sets Hermes's own "archived" flag and hides a chat in every Hermes client; settling is this app's view of the owner's attention, stored as the "pinned" flag. Neither touches the other (ADR 0005).
 - **Queued message** vs **Draft** vs **Failed message**: a Draft hasn't been sent or queued; a Queued message waits in the chat's queue to be sent by this app; a Failed message was sent, and Hermes didn't take it or may not have. A queued message that goes leaves the queue, and becomes a Failed message only if Hermes doesn't take it.
 - **Imported chat** vs pulling older history: the list holds the past month's chats until the owner pulls older history in Settings, after which it holds all of the profile's chats. Pulled chats come in Settled unless pinned, but they are Imported chats only if their Source isn't this app.

@@ -36,6 +36,7 @@ import { PersonaPage, type PersonaDirty, type PersonaWhere } from "./PersonaSett
 import type { PersonaApi } from "../hermes/persona";
 import type { PersonaStore } from "../hermes/personaStore";
 import { StartupSettings } from "./StartupSettings";
+import { ChatSectionSettings } from "./ChatSectionSettings";
 import { FollowUpSettings } from "./FollowUpSettings";
 import { VoiceSettings, useVoiceChanges } from "./Voice";
 import type { VoiceSetup } from "../hermes/pipe";
@@ -532,7 +533,12 @@ export function SettingsScreen({
         </SettingsSection>
       </>
     ),
-    chats: <FollowUpSettings />,
+    chats: (
+      <>
+        <ChatSectionSettings />
+        <FollowUpSettings />
+      </>
+    ),
     launch: (
       <>
         <StartupSettings />
