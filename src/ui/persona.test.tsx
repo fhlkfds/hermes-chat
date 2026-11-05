@@ -554,13 +554,13 @@ describe("leaving an unsaved persona edit", () => {
     await openPersona(user);
     await edit(user, "# Default, edited\n");
     await user.click(document.querySelector<HTMLElement>(".profile-btn")!);
-    await user.click(await screen.findByRole("option", { name: /work/ }));
+    await user.click(within(await screen.findByRole("listbox", { name: "Profiles" })).getByRole("option", { name: /work/ }));
     const ask = screen.getByRole("alertdialog", { name: "Switch profile without saving the persona?" });
     await user.click(within(ask).getByRole("button", { name: "Keep editing" }));
     expect(hermes.profile).toBe("default");
 
     await user.click(document.querySelector<HTMLElement>(".profile-btn")!);
-    await user.click(await screen.findByRole("option", { name: /work/ }));
+    await user.click(within(await screen.findByRole("listbox", { name: "Profiles" })).getByRole("option", { name: /work/ }));
     await user.click(screen.getByRole("button", { name: "Switch anyway" }));
     await waitFor(() => expect(hermes.getSnapshot()).toMatchObject({ profile: "work", status: "connected" }));
     await waitFor(() => expect(hermes.getSnapshot().switching).toBeUndefined());

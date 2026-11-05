@@ -1658,6 +1658,40 @@ button.provider-row:hover:not(:disabled) { background: var(--hover); }
   .skill-row-main { grid-template-columns: minmax(0, 1fr) auto; }
   .skill-desc, .skill-category { grid-column: 1 / -1; }
 }
+/* Which profile Skills, Memory and Persona show (ProfilePicker.tsx, ADR 0056), in place of the profile's name. */
+.profile-pick {
+  background: var(--raised); border: 1px solid var(--line-2); border-radius: 7px; padding: 2px 6px; outline: none; color: var(--text);
+  font-size: calc(12.5rem / 14); max-width: 260px;
+}
+.profile-pick:focus-visible { border-color: var(--line-3); }
+/* Select mode in Skills and Memory: the bar, the question before a change, and what became of each item. */
+.skills-select, .memory-select { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 8px; }
+.skills-select-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 8px 10px; border: 1px solid var(--line-2); border-radius: var(--radius);
+  background: var(--raised-2); font-size: calc(12.5rem / 14);
+}
+.skills-select-count { font-weight: 500; }
+.skills-select-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+.skills-select .confirm, .memory-select .confirm { max-width: 640px; }
+.skills-bulk-ask .field { max-width: 280px; }
+.skill-pick, .memory-pick input { flex: none; width: 15px; height: 15px; margin: 0; accent-color: var(--text); }
+.skill-row.picked { background: var(--raised-2); }
+label.memory-pick { cursor: pointer; }
+.skills-bulk-result {
+  margin: 4px 0 8px; padding: 8px 12px; border: 1px solid var(--line-2); border-left: 3px solid var(--ok); border-radius: var(--radius);
+  font-size: calc(12.5rem / 14); line-height: 1.5;
+}
+.skills-bulk-result.warn { border-left-color: var(--warn); }
+.skills-bulk-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font-weight: 500; }
+.skills-bulk-result ul { list-style: none; margin: 4px 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.skills-bulk-result li { overflow-wrap: anywhere; }
+.skills-bulk-result li svg { vertical-align: -1px; }
+.skills-bulk-result li.ok svg { color: var(--ok); }
+.skills-bulk-result li.failed svg { color: var(--warn); }
+.skills-bulk-result .memory-entry-text { display: inline; white-space: normal; }
+.settings .skills-bulk-result p { margin: 4px 0 0; }
+.persona-copy { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 10px; margin-bottom: 8px; }
+.persona-copy .field { flex: 0 1 280px; min-width: 180px; }
 .skills-editor > .back { align-self: flex-start; }
 .skills-name { margin: 2px 0 0; font-size: calc(15rem / 14); font-weight: 500; overflow-wrap: anywhere; }
 .skills-text { min-height: 240px; }

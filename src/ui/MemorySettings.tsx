@@ -2,8 +2,12 @@
 // (memory.ts, GLOSSARY.md "Memory", ADR 0020). Nothing is written until the owner presses Save, and every write is
 // checked against the entry as it was read, then read back. An edit Hermes didn't take is kept on screen to copy or put
 // in another entry; it is never stored on this computer. Memory text is shown as plain text, never rendered.
-import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, Check, Copy, History, Info, RefreshCw, Trash2, Undo2 } from "lucide-react";
+//
+// Any profile's memory can be shown (the picker Settings passes in), and in Select mode several entries can be removed
+// at once, each checked against what was read (ADR 0056). Entries can't be copied or moved to another profile: Hermes
+// has no call that adds one.
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { AlertTriangle, Check, CheckSquare, Copy, History, Info, RefreshCw, Trash2, Undo2 } from "lucide-react";
 import type { ConnectionStatus } from "../hermes/model";
 import {
   MEMORY_RESOURCES,
@@ -22,6 +26,7 @@ import {
   type MemoryEntry,
   type MemorySource,
   type MemoryView,
+  type RemoveOutcome,
 } from "../hermes/memory";
 
 /**
@@ -38,6 +43,14 @@ const entriesText = (n: number) => `${n} ${n === 1 ? "entry" : "entries"}`;
 /** An entry's first line, for the list; the editor shows all of it. */
 const firstLine = (text: string) => text.split("\n").find((l) => l.trim()) ?? text;
 const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+/** What became of one entry a removal of several asked for, in words. */
+const REMOVED: Record<RemoveOutcome["kind"], string> = {
+  removed: "Removed, and gone when read back.",
+  changed: "Not removed: it changed on the server, or went, since it was read.",
+  failed: "Not removed.",
+  unsure: "Hermes didn't answer, and reading back couldn't tell whether it went.",
+  skipped: "Not tried: the connection dropped on an earlier entry.",
+};
 
 /** Whether there's an unsaved edit Settings → Memory would lose by closing. */
 export const memoryDirty = (editing: Editing | undefined, kept: readonly string[]) =>
@@ -52,10 +65,13 @@ export function MemorySettings({
   discardSignal = 0,
   source: sourceProp,
   files = true,
+  picker,
 }: {
   api: MemoryApi;
   profile: string;
   status: ConnectionStatus;
+  /** Picks the profile shown, in place of its name (Settings' `ProfilePicker`). */
+  picker?: ReactNode;
   /** The file shown, chosen outside (Settings' Memory list, ADR 0051); the owner has already agreed to leave any unsaved edit. */
   source?: MemorySource;
   /** False: the file tabs are drawn elsewhere (Settings' Memory list), so only Reload shows above the entries. */
@@ -73,12 +89,20 @@ export function MemorySettings({
   const [loading, setLoading] = useState(false);
   const [source, setSource] = useState<MemorySource>(sourceProp ?? "memory");
   const [editing, setEditing] = useState<Editing>();
-  const [busy, setBusy] = useState<"save" | "delete" | "reload">();
+  const [busy, setBusy] = useState<"save" | "delete" | "reload" | "bulk">();
+  // Select mode: the entries picked, by id, in the file shown; the question before removing them; and what became of each.
+  const [selecting, setSelecting] = useState(false);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const [confirmBulk, setConfirmBulk] = useState(false);
+  const [bulkDone, setBulkDone] = useState<RemoveOutcome[]>();
   // A file picked outside (Settings' list) shows once no save or reload is under way, as the in-page tabs waited by disabling.
   useEffect(() => {
     if (sourceProp && sourceProp !== source && !busy) {
       setSource(sourceProp);
       setEditing(undefined);
+      setSelected(new Set());
+      setConfirmBulk(false);
+      setBulkDone(undefined);
     }
   }, [sourceProp, busy]);
   const [notice, setNotice] = useState<Notice>();
@@ -311,6 +335,44 @@ export function MemorySettings({
     }
   };
 
+  const removeSelected = async () => {
+    if (busy || !view) return;
+    // In the file's order, as last read.
+    const entries = view.resources[source].entries.filter((e) => selected.has(e.id));
+    if (!entries.length) return;
+    setBusy("bulk");
+    setConfirmBulk(false);
+    setNotice(undefined);
+    setBulkDone(undefined);
+    try {
+      const r = await api.removeMany(profile, entries);
+      if (!alive.current) return;
+      if (r.view) show(r.view);
+      setBulkDone(r.outcomes);
+      // What went is no longer picked; what's left stays picked, to try again.
+      const left = new Set(r.outcomes.filter((o) => o.kind !== "removed").map((o) => o.entry.id));
+      setSelected((cur) => new Set([...cur].filter((id) => left.has(id))));
+    } catch (e) {
+      if (!alive.current) return;
+      if (e instanceof MemoryUnsupportedError) failLoad(e);
+      else setNotice({ kind: "error", text: `Nothing was removed: ${messageOf(e)}` });
+    } finally {
+      if (alive.current) setBusy(undefined);
+    }
+  };
+
+  const startSelect = () =>
+    leaveEntry(() => {
+      setEditing(undefined);
+      setSelecting(true);
+      setBulkDone(undefined);
+    });
+  const endSelect = () => {
+    setSelecting(false);
+    setSelected(new Set());
+    setConfirmBulk(false);
+  };
+
   const resource = view?.resources[source];
   const meta = resourceOf(source);
   const filePath = view?.home ? `${view.home.replace(/\/+$/, "")}/memories/${meta.file}` : meta.file;
@@ -343,7 +405,7 @@ export function MemorySettings({
           </div>
           <div>
             <dt>Profile</dt>
-            <dd className="mono">{profile}</dd>
+            <dd className="mono">{picker ?? profile}</dd>
           </div>
           {view && (
             <div>
@@ -420,6 +482,15 @@ export function MemorySettings({
               >
                 <RefreshCw size={14} /> {busy === "reload" ? "Reloading…" : "Reload"}
               </button>
+              {selecting ? (
+                <button className="btn" disabled={busy === "bulk"} onClick={endSelect}>
+                  Done
+                </button>
+              ) : (
+                <button className="btn" disabled={!!busy || !resource?.entries.length} onClick={startSelect} title="Pick entries to delete several at once.">
+                  <CheckSquare size={14} /> Select
+                </button>
+              )}
             </div>
 
             <div id="memory-panel" role={files ? "tabpanel" : undefined} aria-labelledby={files ? `memory-tab-${source}` : undefined}>
@@ -436,6 +507,25 @@ export function MemorySettings({
                 <ul className="memory-entries" aria-label={`${meta.name} entries`}>
                   {resource?.entries.map((e) => (
                     <li key={e.id}>
+                      {selecting ? (
+                        <label className={`memory-entry memory-pick ${selected.has(e.id) ? "on" : ""}`}>
+                          <input
+                            type="checkbox"
+                            checked={selected.has(e.id)}
+                            disabled={!!busy}
+                            onChange={(ev) =>
+                              setSelected((cur) => {
+                                const next = new Set(cur);
+                                if (ev.target.checked) next.add(e.id);
+                                else next.delete(e.id);
+                                return next;
+                              })
+                            }
+                          />
+                          <span className="memory-entry-text">{firstLine(e.text)}</span>
+                          <span className="muted small">{charCount(e.text).toLocaleString()} characters</span>
+                        </label>
+                      ) : (
                       <button className={`memory-entry ${editing?.entry.id === e.id ? "on" : ""}`} aria-current={editing?.entry.id === e.id || undefined}
                         disabled={!!busy && editing?.entry.id !== e.id}
                         onClick={() => open(e)}
@@ -443,9 +533,70 @@ export function MemorySettings({
                         <span className="memory-entry-text">{firstLine(e.text)}</span>
                         <span className="muted small">{charCount(e.text).toLocaleString()} characters</span>
                       </button>
+                      )}
                     </li>
                   ))}
                 </ul>
+              )}
+
+              {selecting && resource && (
+                <div className="memory-select" role="group" aria-label="Selected entries">
+                  <div className="skills-select-bar">
+                    <span className="skills-select-count" aria-live="polite">
+                      {selected.size ? `${entriesText(selected.size)} selected` : "No entries selected"}
+                    </span>
+                    <button className="link-btn" disabled={!!busy || selected.size === resource.entries.length} onClick={() => setSelected(new Set(resource.entries.map((e) => e.id)))}>
+                      Select all
+                    </button>
+                    <button className="link-btn" disabled={!!busy || !selected.size} onClick={() => setSelected(new Set())}>
+                      Clear
+                    </button>
+                    <span className="skills-select-actions">
+                      <button className="btn danger" disabled={!connected || !!busy || !selected.size} onClick={() => setConfirmBulk(true)}>
+                        <Trash2 size={14} /> {busy === "bulk" ? "Deleting…" : "Delete…"}
+                      </button>
+                    </span>
+                  </div>
+                  <p className="muted small skills-note">
+                    <Info size={12} /> Entries can't be copied or moved to another profile: Hermes has no call that adds a memory entry. To give another
+                    profile one, ask Hermes to remember it in a chat on that profile.
+                  </p>
+                  {confirmBulk && (
+                    <div className="confirm" role="alertdialog" aria-label="Delete the selected entries?">
+                      <span className="confirm-msg">
+                        <Trash2 size={12} /> Remove {entriesText(selected.size)} from {meta.file} in the {profile} profile on the server? Hermes forgets them in
+                        new chats. Each is checked against what was read first, and one that changed since is left alone. They can't be put back from here.
+                      </span>
+                      <div className="confirm-actions">
+                        <button className="btn" autoFocus onClick={() => setConfirmBulk(false)}>
+                          Keep them
+                        </button>
+                        <button className="btn danger" disabled={!connected || !!busy} onClick={() => void removeSelected()}>
+                          Remove {entriesText(selected.size)}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+              {bulkDone && (
+                <div className={`skills-bulk-result ${bulkDone.some((o) => o.kind !== "removed") ? "warn" : ""}`} role={bulkDone.some((o) => o.kind !== "removed") ? "alert" : "status"}>
+                  <div className="skills-bulk-head">
+                    Removed {bulkDone.filter((o) => o.kind === "removed").length} of {entriesText(bulkDone.length)}.
+                    <button className="link-btn" onClick={() => setBulkDone(undefined)}>
+                      Dismiss
+                    </button>
+                  </div>
+                  <ul>
+                    {bulkDone.map((o) => (
+                      <li key={o.entry.id} className={o.kind === "removed" ? "ok" : "failed"}>
+                        {o.kind === "removed" ? <Check size={12} /> : <AlertTriangle size={12} />} <span className="memory-entry-text">{firstLine(o.entry.text)}</span>:{" "}
+                        {REMOVED[o.kind]}
+                        {o.problem && ` ${o.problem}`}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               )}
 
               {leaving && (

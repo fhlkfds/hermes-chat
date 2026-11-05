@@ -11,6 +11,13 @@
 // - `PUT /api/skills/content?profile=` `{name, content}` → `_edit_skill`: Hermes's own front matter and size check
 //   (400 with its reason), then an atomic whole-file write that keeps the file's mode. No revision or If-Match.
 //
+// Copying a skill to another profile and archiving one (ADR 0056) use two routes the deployed `f0d94882` has:
+// - `POST /api/skills?profile=` `{name, content, category}` → `_create_skill`: Hermes's own name, front matter, size and
+//   security checks, and a refusal (400) when the profile already has a skill by that name. It writes SKILL.md only.
+// - `DELETE /api/learning/node?profile=` `{id: <skill name>}` → `skill_usage.archive_skill`: the skill's folder moves to
+//   the profile's `skills/.archive/`, and `hermes curator restore <name>` brings it back. Hermes refuses a pinned skill,
+//   one from the Skills Hub, a built-in one (unless `curator.prune_builtins`), and one in an external folder.
+//
 // Hermes has no conditional write, so a Save first reads SKILL.md again and writes only if it is still the file and text
 // the editor started from, then reads it back (as Persona does, ADR 0014). Skill text is instructions for the agent from
 // wherever it came from: it is only ever shown as plain text.
@@ -91,6 +98,26 @@ export const MAX_SKILL_CHARS = 100_000;
 export const MAX_DESCRIPTION_CHARS = 1024;
 /** How long a read or a write may go unanswered. The relay has no deadline of its own. */
 export const SKILL_TIMEOUTS = { readMs: 30_000, writeMs: 60_000 };
+/** Hermes's rule for a new skill's folder name and its category (`VALID_NAME_RE`, at most 64 characters). */
+export const creatableName = (n: string) => n.length <= 64 && /^[a-z0-9][a-z0-9._-]*$/.test(n);
+
+/**
+ * Whether Hermes archives a skill of this source when asked (`archive_skill`): only the profile's own skills. Skills
+ * Hub and external-folder skills never are, and built-in ones only on a server set to prune them.
+ */
+export const archivable = (row: SkillRow) => row.source === "agent";
+
+/**
+ * What became of one skill a copy, move or archive was asked for:
+ * - `done`: the change is read back from Hermes. `file`: the copy as the target profile has it.
+ * - `copied-only`: a move whose copy is read back, but the original couldn't be archived (`problem`), so it's in both.
+ * - `failed`: nothing changed for this skill (`problem`), as far as reading back shows.
+ * - `unsure`: Hermes's answer was lost and reading back couldn't tell (`problem`).
+ */
+export type TransferOutcome =
+  | { name: string; kind: "done"; file?: SkillFile }
+  | { name: string; kind: "copied-only" | "failed" | "unsure"; problem: string };
+
 /** How many replaced versions are kept per skill. */
 const KEEP_VERSIONS = 10;
 
@@ -226,10 +253,17 @@ export function referencedPaths(content: string): string[] {
 const DENIED = /permission denied|errno 13\b|errno 1\b|operation not permitted|read-only file system|errno 30\b/i;
 
 /** Sorts an error from a skills call. `doing`: what was asked, for the message. */
-export function skillsError(e: unknown, doing: "list" | "read" | "save" | "toggle", name?: string): SkillsError {
+export function skillsError(e: unknown, doing: "list" | "read" | "save" | "toggle" | "copy" | "archive", name?: string): SkillsError {
   if (e instanceof SkillsError) return e;
   const message = e instanceof Error ? e.message : String(e);
-  const what = { list: "list skills", read: `read ${name ?? "the skill"}`, save: `save ${name ?? "the skill"}`, toggle: `change ${name ?? "the skill"}` }[doing];
+  const what = {
+    list: "list skills",
+    read: `read ${name ?? "the skill"}`,
+    save: `save ${name ?? "the skill"}`,
+    toggle: `change ${name ?? "the skill"}`,
+    copy: `copy ${name ?? "the skill"}`,
+    archive: `archive ${name ?? "the skill"}`,
+  }[doing];
   if (/^Not connected to Hermes|^The chat connection is closed/.test(message)) return new SkillsError("disconnected", "Not connected to Hermes.", undefined, true);
   if (/^Can't reach the Hermes dashboard/.test(message)) return new SkillsError("disconnected", message);
   if (/^The dashboard sign-in has expired/.test(message)) return new SkillsError("signed-out", message);
@@ -237,14 +271,22 @@ export function skillsError(e: unknown, doing: "list" | "read" | "save" | "toggl
   const a = answered(message);
   if (!a) return new SkillsError("error", `Couldn't ${what}: ${message}`);
   const said = a.detail ? ` Hermes said: ${a.detail}${/[.!?]$/.test(a.detail) ? "" : "."}` : "";
-  const route = { list: "GET /api/skills", read: "GET /api/skills/content", save: "PUT /api/skills/content", toggle: "PUT /api/skills/toggle" }[doing];
+  const route = {
+    list: "GET /api/skills",
+    read: "GET /api/skills/content",
+    save: "PUT /api/skills/content",
+    toggle: "PUT /api/skills/toggle",
+    copy: "POST /api/skills",
+    archive: "DELETE /api/learning/node",
+  }[doing];
   // A route the server doesn't have: `bf0203a` answers `404 No such API endpoint: <path>`, plain FastAPI `404 Not Found`,
   // and 405 for a method a path doesn't take.
   if ((a.status === 404 && /^(not found$|no such api endpoint\b)/i.test(a.detail)) || a.status === 405)
     return new SkillsError("unsupported", `This Hermes server can't ${what}: it has no ${route} route. Updating Hermes adds it.`, a.status);
   if (a.status === 404) return new SkillsError("not-found", `Hermes has no skill named ${name ?? "that"} in this profile now. It may have been removed or renamed.${said}`, a.status);
   if (a.status === 403 || a.status === 401 || DENIED.test(a.detail)) return new SkillsError("permission", `Hermes isn't allowed to ${what}.${said}`, a.status);
-  if (a.status === 400 || a.status === 422) return new SkillsError("refused", `Hermes didn't ${doing === "save" ? "save it" : "do it"}:${said || " it gave no reason."}`, a.status);
+  if (a.status === 400 || a.status === 422)
+    return new SkillsError("refused", `Hermes didn't ${{ save: "save it", copy: "copy it", archive: "archive it" }[doing as string] ?? "do it"}:${said || " it gave no reason."}`, a.status);
   return new SkillsError("error", `Couldn't ${what} (Hermes answered ${a.status}).${said}`, a.status);
 }
 
@@ -467,6 +509,97 @@ export class SkillsApi {
     }
     const row = view.skills.find((s) => s.name === name);
     return { view, confirmed: !!row && row.enabled === enabled, lost };
+  }
+
+  /**
+   * Copies `row`'s SKILL.md from profile `from` to profile `to`, as a new skill with the name its front matter declares
+   * and the same category, then reads it back from `to`. Only SKILL.md goes: a skill's other files stay where they are.
+   * `listed`: every name `from`'s list shows. Rejects with a SkillsError when Hermes didn't create it, or when it can't
+   * be told whether it did.
+   */
+  async copy(from: string, to: string, row: SkillRow, listed: readonly string[]): Promise<SkillFile> {
+    if (from === to) throw new SkillsError("refused", "A skill can't be copied to the profile it's in.", undefined, true);
+    const source = await this.read(from, row.name, listed);
+    const name = declaredName(source);
+    if (!creatableName(name))
+      throw new SkillsError(
+        "refused",
+        `Hermes takes a new skill's name only in lowercase letters, digits, dots, dashes and underscores, starting with a letter or digit, so "${name}" can't be copied as it is. Rename it on the server first.`,
+        undefined,
+        true,
+      );
+    const category = row.category && creatableName(row.category) ? row.category : undefined;
+    const sent = asReadBack(source.content);
+    const there = async () => {
+      try {
+        return await this.read(to, name, [name]);
+      } catch (e) {
+        if (e instanceof SkillsError && e.kind === "not-found") return undefined;
+        throw e;
+      }
+    };
+    try {
+      const res = await deadline(
+        this.rest("POST", `api/skills?${new URLSearchParams({ profile: to })}`, { name, content: source.content, ...(category && { category }) }),
+        this.timeouts.writeMs,
+        "the copy",
+      );
+      if (!isObj(res) || res.success !== true) throw new SkillsError("error", "Hermes didn't say it created the skill.");
+    } catch (e) {
+      const err = skillsError(e, "copy", name);
+      if (certainlyUnwritten(err)) throw err;
+      let now: SkillFile | undefined;
+      try {
+        now = await there();
+      } catch (again) {
+        throw new SkillsError("error", `Couldn't tell whether ${name} was copied to ${to}: ${err.message} Reading it back also failed: ${skillsError(again, "read", name).message}`, err.status);
+      }
+      if (now && asReadBack(now.content) === sent) return now;
+      if (!now) throw err;
+      throw new SkillsError("error", `${to} has a skill named ${name} now, but its SKILL.md isn't the one sent: ${err.message}`, err.status);
+    }
+    let after: SkillFile | undefined;
+    try {
+      after = await there();
+    } catch (e) {
+      throw new SkillsError("error", `Hermes said it created ${name} in ${to}, but reading it back failed: ${skillsError(e, "read", name).message}`);
+    }
+    if (!after) throw new SkillsError("error", `Hermes said it created ${name} in ${to}, but ${to} doesn't list it when read back.`);
+    if (asReadBack(after.content) !== sent) throw new SkillsError("error", `Hermes created ${name} in ${to}, but its SKILL.md reads back differently from what was sent.`);
+    return after;
+  }
+
+  /**
+   * Archives `name` in `profile` (Hermes moves its folder to `skills/.archive/`), then reads the list back. Resolves to
+   * the list as read back when `name` is gone from it. Rejects with a SkillsError when Hermes refused, or when the
+   * skill is still listed.
+   */
+  async archive(profile: string, name: string): Promise<SkillsView> {
+    // Hermes takes an id starting `memory:` for a memory entry.
+    if (!safeSkillName(name) || name.startsWith("memory:")) throw new SkillsError("identity", `"${name}" isn't a skill name Hermes Chat sends to Hermes.`, undefined, true);
+    let lost: SkillsError | undefined;
+    try {
+      await deadline(this.rest("DELETE", `api/learning/node?${new URLSearchParams({ profile })}`, { id: name }), this.timeouts.writeMs, "archiving it");
+    } catch (e) {
+      const err = skillsError(e, "archive", name);
+      if (certainlyUnwritten(err)) throw err;
+      lost = err;
+    }
+    let view: SkillsView;
+    try {
+      view = await this.list(profile);
+    } catch (e) {
+      throw new SkillsError(
+        "error",
+        lost
+          ? `Couldn't tell whether ${name} was archived: ${lost.message} Reading the list back also failed.`
+          : `Hermes archived ${name}, but reading the list back failed: ${skillsError(e, "list").message}`,
+        lost?.status,
+      );
+    }
+    if (view.skills.some((s) => s.name === name))
+      throw new SkillsError("error", lost ? `Hermes didn't answer (${lost.message}), and ${name} is still listed.` : `Hermes answered, but ${name} is still listed in ${profile}.`, lost?.status);
+    return view;
   }
 
   /** What saves from here replaced in `profile`'s file at `path`, most recent first. Kept for this sign-in only. */

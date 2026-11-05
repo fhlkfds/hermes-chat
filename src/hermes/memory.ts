@@ -12,8 +12,14 @@
 //   went since it was read is refused ("memory node id is stale"), never applied to another entry.
 // - There is no call that adds an entry; only the agent's memory tool does.
 // - They take no `profile` and refuse one ("Extra inputs are not permitted"): they always act on the memory of the
-//   profile the dashboard process runs as. So this screen edits memory only when that profile, `GET
+//   profile the dashboard process runs as. So over the socket this screen edits memory only when that profile, `GET
 //   /api/profiles/active` → `current`, is the profile shown, and checks it again before every write.
+//
+// The deployed `f0d94882` also has the same calls as profile-scoped dashboard REST (ADR 0056,
+// `hermes_cli/web_routers/status.py`): `GET /api/learning/graph?profile=` lists the nodes, `GET /api/learning/node?id=`
+// reads one, and `PUT`/`DELETE /api/learning/node` `{id[, content]}` edit or remove it, each through the same
+// `agent.learning_mutations` under the memory tool's lock. With those, any profile's memory is read and edited, and the
+// socket calls are used only on a server without them.
 //
 // Memory text comes from the agent and whatever it read, so it is shown as plain text, never rendered, and never kept
 // on this computer. The one exception to "never kept": what a save from here replaced, held in this app's memory (never
@@ -99,11 +105,22 @@ export class MemoryUnverifiedError extends Error {
  */
 export type MemoryReplaced = { text: string; saved: string; savedAt: number };
 
-/** How the memory calls reach Hermes: a legacy JSON-RPC request on `/api/ws`, and a dashboard REST read. */
+/**
+ * How the memory calls reach Hermes: a legacy JSON-RPC request on `/api/ws`, a dashboard REST read, and the dashboard
+ * REST writes to `api/learning/node`. Without `send`, only the socket calls are used.
+ */
 export type MemoryIO = {
   rpc(method: string, params: Record<string, unknown>): Promise<unknown>;
   get(pathAndQuery: string): Promise<unknown>;
+  send?(method: "PUT" | "DELETE", pathAndQuery: string, body: unknown): Promise<unknown>;
 };
+
+/**
+ * What became of one entry a removal of several was asked for: `removed`, read back gone; `changed`, it changed or
+ * went on the server since it was read, so it wasn't touched; `failed`, Hermes refused (`problem`); `unsure`, the
+ * answer was lost and reading back couldn't tell; `skipped`, not tried, as the connection dropped on an earlier one.
+ */
+export type RemoveOutcome = { entry: MemoryEntry; kind: "removed" | "changed" | "failed" | "unsure" | "skipped"; problem?: string };
 
 export type MemoryApi = {
   /** The profile's memory. Rejects with `MemoryUnsupportedError` when it can't be edited from here. */
@@ -115,6 +132,13 @@ export type MemoryApi = {
   save(profile: string, entry: MemoryEntry, text: string): Promise<{ view: MemoryView; entry: MemoryEntry }>;
   /** Removes `entry`, as last read, then reads memory back to check it's gone. */
   remove(profile: string, entry: MemoryEntry): Promise<MemoryView>;
+  /**
+   * Removes each of `entries`, as last read, one at a time, then reads memory back once. An entry that changed since
+   * it was read is left alone. `view`: memory as read back, missing when that read failed.
+   */
+  removeMany(profile: string, entries: readonly MemoryEntry[]): Promise<{ view?: MemoryView; outcomes: RemoveOutcome[] }>;
+  /** Whether `profile`'s memory goes through the profile-scoped REST routes, as last found; undefined until a read. */
+  anyProfile(): boolean | undefined;
   /**
    * What this app's latest confirmed save to `entry`'s text replaced, while the entry still holds what that save left.
    * Undefined once the entry changed since, or when no save from here made it.
@@ -189,20 +213,64 @@ function parseId(id: string): { source: MemorySource; index: number; fingerprint
   return { source: parts[1], index, fingerprint: parts[3] || undefined };
 }
 
-/** The memory nodes in a `learning.frames` answer, in Hermes's order: MEMORY.md's entries first, then USER.md's. */
-function memoryNodes(frames: unknown): { id: string; source: MemorySource; index: number; fingerprint?: string }[] {
-  if (!isObj(frames) || !Array.isArray(frames.buckets)) throw new MemoryUnsupportedError("server", "Hermes answered the memory list in a shape this app doesn't know.");
-  const seen = new Map<string, { id: string; source: MemorySource; index: number; fingerprint?: string }>();
-  for (const bucket of frames.buckets) {
-    if (!isObj(bucket) || !Array.isArray(bucket.nodes)) continue;
-    for (const node of bucket.nodes) {
+type Node = { id: string; source: MemorySource; index: number; fingerprint?: string };
+
+/**
+ * The memory nodes in a `learning.frames` answer (nodes in `buckets`) or a `GET /api/learning/graph` one (`nodes`), in
+ * Hermes's order: MEMORY.md's entries first, then USER.md's.
+ */
+function memoryNodes(answer: unknown): Node[] {
+  let lists: unknown[];
+  if (isObj(answer) && Array.isArray(answer.buckets)) lists = answer.buckets.map((b) => (isObj(b) && Array.isArray(b.nodes) ? b.nodes : []));
+  else if (isObj(answer) && Array.isArray(answer.nodes)) lists = [answer.nodes];
+  else throw new MemoryUnsupportedError("server", "Hermes answered the memory list in a shape this app doesn't know.");
+  const seen = new Map<string, Node>();
+  for (const list of lists as unknown[][])
+    for (const node of list) {
       const id = isObj(node) && typeof node.id === "string" ? node.id : "";
       const parsed = parseId(id);
       if (parsed) seen.set(id, { id, ...parsed });
     }
-  }
   return [...seen.values()].sort((a, b) => a.index - b.index);
 }
+
+/** The status and Hermes's reason of a dashboard REST answer that isn't 2xx, as the relay words it. */
+function restAnswer(e: unknown): { status: number; detail: string } | undefined {
+  const m = /^The dashboard answered (\d{3}): ?([\s\S]*)$/.exec(messageOf(e));
+  if (!m) return undefined;
+  let detail = m[2];
+  try {
+    const d = (JSON.parse(m[2]) as { detail?: unknown }).detail;
+    if (typeof d === "string") detail = d;
+  } catch {
+    // Not JSON, e.g. a proxy's error page: keep the text.
+  }
+  return { status: Number(m[1]), detail: detail.trim() };
+}
+
+/** A REST answer meaning the server has no such route: `bf0203a`'s `404 No such API endpoint`, FastAPI's `404 Not Found`, or 405. */
+const noRoute = (a: { status: number; detail: string } | undefined) => !!a && ((a.status === 404 && /^(not found$|no such api endpoint\b)/i.test(a.detail)) || a.status === 405);
+
+/** What one `learning.detail` or `learning.edit`/`delete` answered: Hermes's `{ok, message, content}`. */
+type Answer = { ok: true; content?: string } | { ok: false; message: string };
+
+/**
+ * Where `learning.*` go for a profile: `rest`, the profile-scoped dashboard routes; `socket`, the legacy JSON-RPC calls,
+ * which reach only the profile the dashboard runs as (`check`).
+ */
+type Backend = {
+  check(profile: string): Promise<void>;
+  nodes(profile: string): Promise<Node[]>;
+  detail(profile: string, id: string): Promise<Answer>;
+  /** Rejects with `MemoryUnsureError` when Hermes's answer was lost, so the write may or may not have happened. */
+  write(profile: string, op: "edit" | "delete", id: string, content?: string): Promise<Answer>;
+};
+
+/** The route as the relay takes it: `profile` always in the query. */
+const learningPath = (what: "graph" | "node", profile: string, id?: string) => `api/learning/${what}?${new URLSearchParams({ ...(id !== undefined && { id }), profile })}`;
+
+/** Thrown by the REST backend's first read when the server has no `api/learning` routes, to use the socket instead. */
+class NoRestRoutes extends Error {}
 
 /** A failed `learning.*` or REST call, as the reason the screen shows. */
 function classify(e: unknown): Error {
@@ -213,6 +281,8 @@ function classify(e: unknown): Error {
   if (code === BAD_PARAMS)
     return new MemoryUnsupportedError("server", `This Hermes server's memory calls changed shape, so this app won't use them: ${messageOf(e)}`);
   const message = messageOf(e);
+  const rest = restAnswer(e);
+  if (rest?.status === 404 && /profile/i.test(rest.detail)) return new Error(`Hermes has no such profile: ${rest.detail}`);
   if (/signed out|401|unauthori[sz]ed/i.test(message)) return new MemoryPermissionError(`The dashboard no longer accepts this sign-in: ${message}`);
   if (isPermission(message)) return new MemoryPermissionError(`Hermes isn't allowed to do that on the server: ${message}`);
   return e instanceof Error ? e : new Error(message);
@@ -239,6 +309,8 @@ export function memoryApi(io: MemoryIO, now = () => Date.now()): MemoryApi {
   // What saves from here replaced, by profile and file, most recent first. Lives as long as this connection's client.
   const replaced = new Map<string, MemoryReplaced[]>();
   const rpc = (method: string, params: Record<string, unknown>) => io.rpc(method, params).catch((e) => Promise.reject(classify(e)));
+  /** Whether the server has the profile-scoped REST routes: unknown until the first read finds out. */
+  let restRoutes: boolean | undefined = io.send ? undefined : false;
 
   /** Rejects unless the dashboard runs as `profile`, whose memory `learning.*` reach. */
   const checkServed = async (profile: string) => {
@@ -248,20 +320,103 @@ export function memoryApi(io: MemoryIO, now = () => Date.now()): MemoryApi {
     throw new MemoryUnsupportedError(
       "profile",
       served && served !== "custom"
-        ? `Hermes can edit memory only for the profile its dashboard runs as, which is ${served}. The ${profile} profile's memory can't be read or changed from here.`
+        ? `Hermes can edit memory only for the profile its dashboard runs as, which is ${served}. The ${profile} profile's memory can't be read or changed from here. Updating Hermes adds the routes that reach every profile.`
         : `Hermes can edit memory only for the profile its dashboard runs as, and it doesn't say which that is, so the ${profile} profile's memory can't be read or changed from here.`,
       served || undefined,
     );
   };
 
+  /** A socket answer as `Answer`; a lost one as `MemoryUnsureError`. */
+  const socketWrite = async (method: string, params: Record<string, unknown>): Promise<Answer> => {
+    let res: unknown;
+    try {
+      res = await io.rpc(method, params);
+    } catch (e) {
+      if (rpcCode(e) === undefined)
+        throw new MemoryUnsureError(`The connection dropped before Hermes answered, so it may or may not have saved the change. Reload once connected to see. (${messageOf(e)})`);
+      throw classify(e);
+    }
+    if (isObj(res) && res.ok === true) return { ok: true };
+    return { ok: false, message: isObj(res) && typeof res.message === "string" ? res.message : "Hermes didn't say why." };
+  };
+
+  const socket: Backend = {
+    check: checkServed,
+    nodes: async () => memoryNodes(await rpc("learning.frames", FRAMES_PARAMS)),
+    detail: async (_profile, id) => {
+      const d = await rpc("learning.detail", { id });
+      if (isObj(d) && d.ok === true && typeof d.content === "string") return { ok: true, content: d.content };
+      return { ok: false, message: isObj(d) && typeof d.message === "string" ? d.message : "no content" };
+    },
+    write: (_profile, op, id, content) => socketWrite(op === "edit" ? "learning.edit" : "learning.delete", op === "edit" ? { id, content } : { id }),
+  };
+
+  const rest: Backend = {
+    check: async () => {},
+    nodes: async (profile) => {
+      let graph: unknown;
+      try {
+        graph = await io.get(learningPath("graph", profile));
+      } catch (e) {
+        if (restRoutes === undefined && noRoute(restAnswer(e))) throw new NoRestRoutes();
+        throw classify(e);
+      }
+      return memoryNodes(graph);
+    },
+    detail: async (profile, id) => {
+      try {
+        const d = await io.get(learningPath("node", profile, id));
+        if (isObj(d) && d.ok === true && typeof d.content === "string") return { ok: true, content: d.content };
+        return { ok: false, message: "no content" };
+      } catch (e) {
+        // `get_learning_node` answers 404 with Hermes's reason, such as a stale id.
+        const a = restAnswer(e);
+        if (a?.status === 404 && !noRoute(a)) return { ok: false, message: a.detail };
+        throw classify(e);
+      }
+    },
+    write: async (profile, op, id, content) => {
+      try {
+        const res = await io.send!(op === "edit" ? "PUT" : "DELETE", learningPath("node", profile), op === "edit" ? { id, content } : { id });
+        if (isObj(res) && res.ok === true) return { ok: true };
+        return { ok: false, message: isObj(res) && typeof res.message === "string" ? res.message : "Hermes didn't say why." };
+      } catch (e) {
+        const a = restAnswer(e);
+        // `_learning_mutation` answers a refusal 400 with Hermes's reason; nothing was written.
+        if (a?.status === 400) return { ok: false, message: a.detail };
+        if (a && a.status < 500) throw classify(e);
+        if (/^Not connected to Hermes|^The chat connection is closed/.test(messageOf(e))) throw classify(e);
+        throw new MemoryUnsureError(`Hermes didn't answer clearly, so it may or may not have made the change. Reload once connected to see. (${messageOf(e)})`);
+      }
+    },
+  };
+
+  /** The backend for reads and writes now: REST once known to be there, else the socket. */
+  const backend = () => (restRoutes === false ? socket : rest);
+
+  /** The nodes, finding out on the first read whether the server has the REST routes. */
+  const nodes = async (profile: string): Promise<{ b: Backend; nodes: Node[] }> => {
+    if (restRoutes !== false) {
+      try {
+        const found = await rest.nodes(profile);
+        restRoutes = true;
+        return { b: rest, nodes: found };
+      } catch (e) {
+        if (!(e instanceof NoRestRoutes)) throw e;
+        restRoutes = false;
+      }
+    }
+    await socket.check(profile);
+    return { b: socket, nodes: await socket.nodes(profile) };
+  };
+
   const read = async (profile: string): Promise<MemoryView> => {
     for (let attempt = 1; ; attempt++) {
-      const nodes = memoryNodes(await rpc("learning.frames", FRAMES_PARAMS));
-      if (nodes.some((n) => !n.fingerprint))
+      const { b, nodes: found } = await nodes(profile);
+      if (found.some((n) => !n.fingerprint))
         throw new MemoryUnsupportedError("server", "This Hermes server names memory entries by position only, so an edit could land on the wrong entry. Updating Hermes fixes this.");
-      const details = await Promise.all(nodes.map((n) => rpc("learning.detail", { id: n.id })));
-      const stale = details.some((d) => isObj(d) && d.ok === false && isStale(String(d.message ?? "")));
-      if (stale) {
+      const details = await Promise.all(found.map((n) => b.detail(profile, n.id)));
+      if (details.some((d) => !d.ok && isStale(d.message))) {
         if (attempt < READ_TRIES) continue;
         throw new Error("Memory kept changing on the server while it was read. Try Reload.");
       }
@@ -269,12 +424,9 @@ export function memoryApi(io: MemoryIO, now = () => Date.now()): MemoryApi {
         memory: { source: "memory", file: "MEMORY.md", entries: [] },
         profile: { source: "profile", file: "USER.md", entries: [] },
       };
-      nodes.forEach((n, i) => {
+      found.forEach((n, i) => {
         const d = details[i];
-        if (!isObj(d) || d.ok !== true || typeof d.content !== "string") {
-          const why = isObj(d) && typeof d.message === "string" ? d.message : "no content";
-          throw classify(new Error(`Hermes couldn't read a memory entry: ${why}`));
-        }
+        if (!d.ok || typeof d.content !== "string") throw classify(new Error(`Hermes couldn't read a memory entry: ${d.ok ? "no content" : d.message}`));
         resources[n.source].entries.push({ id: n.id, source: n.source, text: d.content });
       });
       const more = await extras(io, profile);
@@ -286,49 +438,36 @@ export function memoryApi(io: MemoryIO, now = () => Date.now()): MemoryApi {
     }
   };
 
-  const load = async (profile: string) => {
-    await checkServed(profile);
-    return read(profile);
-  };
-
   /** Rejects with a conflict unless `entry` is on the server as it was read. */
   const checkUnchanged = async (profile: string, entry: MemoryEntry) => {
-    const now = await rpc("learning.detail", { id: entry.id });
-    if (isObj(now) && now.ok === true && now.content === entry.text) return;
-    if (isObj(now) && now.ok === false && !isStale(String(now.message ?? ""))) throw classify(new Error(String(now.message ?? "Hermes couldn't read the entry.")));
+    const now = await backend().detail(profile, entry.id);
+    if (now.ok && now.content === entry.text) return;
+    if (!now.ok && !isStale(now.message)) throw classify(new Error(now.message));
     throw new MemoryConflictError(await read(profile));
   };
 
-  /** One `learning.edit` or `learning.delete`, and what its answer means. */
-  const write = async (profile: string, method: string, params: Record<string, unknown>) => {
-    let res: unknown;
-    try {
-      res = await io.rpc(method, params);
-    } catch (e) {
-      if (rpcCode(e) === undefined)
-        throw new MemoryUnsureError(`The connection dropped before Hermes answered, so it may or may not have saved the change. Reload once connected to see. (${messageOf(e)})`);
-      throw classify(e);
-    }
-    if (isObj(res) && res.ok === true) return;
-    const message = isObj(res) && typeof res.message === "string" ? res.message : "Hermes didn't say why.";
-    if (isStale(message)) throw new MemoryConflictError(await read(profile));
-    if (isPermission(message)) throw new MemoryPermissionError(`Hermes isn't allowed to change the memory file: ${message}`);
-    throw new MemoryRefusedError(`Hermes didn't save it: ${message}`);
+  /** One edit or removal, and what its answer means. */
+  const write = async (profile: string, op: "edit" | "delete", entry: MemoryEntry, content?: string) => {
+    const res = await backend().write(profile, op, entry.id, content);
+    if (res.ok) return;
+    if (isStale(res.message)) throw new MemoryConflictError(await read(profile));
+    if (isPermission(res.message)) throw new MemoryPermissionError(`Hermes isn't allowed to change the memory file: ${res.message}`);
+    throw new MemoryRefusedError(`Hermes didn't ${op === "edit" ? "save it" : "remove it"}: ${res.message}`);
   };
 
   return {
-    load,
+    load: read,
     async save(profile, entry, text) {
       const problem = entryProblem(text);
       if (problem) throw new MemoryRefusedError(problem);
       const next = pyStrip(text);
-      await checkServed(profile);
+      await backend().check(profile);
       await checkUnchanged(profile, entry);
       if (next !== entry.text) {
         // ponytail: checked on a fresh read, not under Hermes's lock; an identical entry written in between still merges.
         const dup = duplicateProblem(next, entry, (await read(profile)).resources[entry.source].entries);
         if (dup) throw new MemoryRefusedError(dup);
-        await write(profile, "learning.edit", { id: entry.id, content: next });
+        await write(profile, "edit", entry, next);
       }
       const view = await read(profile);
       const saved = view.resources[entry.source].entries.find((e) => e.text === next);
@@ -340,14 +479,59 @@ export function memoryApi(io: MemoryIO, now = () => Date.now()): MemoryApi {
       return { view, entry: saved };
     },
     async remove(profile, entry) {
-      await checkServed(profile);
+      await backend().check(profile);
       await checkUnchanged(profile, entry);
-      await write(profile, "learning.delete", { id: entry.id });
+      await write(profile, "delete", entry);
       const view = await read(profile);
       if (view.resources[entry.source].entries.some((e) => e.text === entry.text))
         throw new MemoryUnverifiedError("Hermes said it removed the entry, but it is still there when read back.", view);
       return view;
     },
+    async removeMany(profile, entries) {
+      const before = await read(profile);
+      const outcomes: RemoveOutcome[] = [];
+      let dropped = false;
+      for (const entry of entries) {
+        if (dropped) {
+          outcomes.push({ entry, kind: "skipped" });
+          continue;
+        }
+        // Hermes names an entry by its text, so one whose text is still in its file is the entry as read.
+        if (!before.resources[entry.source].entries.some((e) => e.text === entry.text)) {
+          outcomes.push({ entry, kind: "changed" });
+          continue;
+        }
+        try {
+          // Checked again on the server just before: a socket call reaches only the profile the dashboard runs as.
+          await backend().check(profile);
+          const res = await backend().write(profile, "delete", entry.id);
+          outcomes.push(res.ok ? { entry, kind: "removed" } : isStale(res.message) ? { entry, kind: "changed" } : { entry, kind: "failed", problem: res.message });
+        } catch (e) {
+          if (e instanceof MemoryUnsureError) {
+            dropped = true;
+            outcomes.push({ entry, kind: "unsure", problem: e.message });
+          } else outcomes.push({ entry, kind: "failed", problem: messageOf(classify(e)) });
+        }
+      }
+      let view: MemoryView | undefined;
+      try {
+        view = await read(profile);
+      } catch (e) {
+        // Without a read-back, a removal Hermes said it made isn't confirmed.
+        return { outcomes: outcomes.map((o) => (o.kind === "removed" ? { ...o, kind: "unsure" as const, problem: `Reading memory back failed: ${messageOf(e)}` } : o)) };
+      }
+      const after = view;
+      return {
+        view,
+        outcomes: outcomes.map((o) => {
+          const there = after.resources[o.entry.source].entries.some((e) => e.text === o.entry.text);
+          if (o.kind === "removed" && there) return { ...o, kind: "failed" as const, problem: "Hermes said it removed it, but it is still there when read back." };
+          if (o.kind === "unsure") return there ? { ...o, kind: "failed" as const } : { entry: o.entry, kind: "removed" as const };
+          return o;
+        }),
+      };
+    },
+    anyProfile: () => restRoutes,
     replacedBy(profile, entry) {
       return replaced.get(`${profile}\n${entry.source}`)?.find((r) => r.saved === entry.text);
     },

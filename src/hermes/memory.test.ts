@@ -366,3 +366,109 @@ describe("entry text", () => {
     expect(entryProblem("one\n§")).toMatch(/several/);
   });
 });
+
+describe("any profile's memory through the profile-scoped routes (ADR 0056)", () => {
+  /** A server with `GET /api/learning/graph` and `/api/learning/node`, as the deployed `f0d94882`. */
+  const withRoutes = () => {
+    const s = server();
+    s.learningRoutes = true;
+    return s;
+  };
+  const rest = (s: FakeHermes) => s.restRequests.filter((r) => r.path.startsWith("/api/learning")).map((r) => `${r.method} ${r.path}?${r.query}`);
+
+  it("reads a profile the dashboard doesn't run as, naming it in every call, and no socket call", async () => {
+    const { s, hermes } = await setUp(withRoutes());
+    const view = await hermes.memory.load("research");
+    expect(view.resources.memory.entries.map((e) => e.text)).toEqual(["Research profile: cite sources as numbered footnotes."]);
+    expect(view.home).toBe("/home/liam/.hermes/profiles/research");
+    expect(rest(s).every((c) => c.endsWith("profile=research"))).toBe(true);
+    expect(learning(s)).toEqual([]);
+    expect(hermes.memory.anyProfile()).toBe(true);
+  });
+
+  it("edits and removes another profile's entries, checked first and read back, and leaves the served one's alone", async () => {
+    const { s, hermes } = await setUp(withRoutes());
+    s.memory.research.memory.push("Second research note.");
+    let view = await hermes.memory.load("research");
+    const saved = await hermes.memory.save("research", view.resources.memory.entries[0], "Research profile: cite sources inline.");
+    expect(saved.entry.text).toBe("Research profile: cite sources inline.");
+    expect(s.memory.research.memory).toEqual(["Research profile: cite sources inline.", "Second research note."]);
+    view = await hermes.memory.remove("research", saved.view.resources.memory.entries[1]);
+    expect(s.memory.research.memory).toEqual(["Research profile: cite sources inline."]);
+    expect(view.resources.memory.entries).toHaveLength(1);
+    expect(s.memory.default.memory).toEqual([FALCON, SHORT]);
+    const put = s.restRequests.find((r) => r.method === "PUT")!;
+    expect(put.body).toEqual({ id: expect.stringMatching(/^memory:memory:0:[0-9a-f]{12}$/), content: "Research profile: cite sources inline." });
+  });
+
+  it("finds a conflict when the entry changed since it was read, and writes nothing", async () => {
+    const { s, hermes } = await setUp(withRoutes());
+    const view = await hermes.memory.load("research");
+    s.memory.research.memory = ["Research profile: changed by the agent."];
+    const e = await hermes.memory.save("research", view.resources.memory.entries[0], "mine").catch((x) => x);
+    expect(e).toBeInstanceOf(MemoryConflictError);
+    expect(s.restRequests.some((r) => r.method === "PUT")).toBe(false);
+  });
+
+  it("shows Hermes's own refusal, such as the file's limit", async () => {
+    const s = withRoutes();
+    s.memoryLimit.memory = 60;
+    const { hermes } = await setUp(s);
+    const view = await hermes.memory.load("research");
+    const e = await hermes.memory.save("research", view.resources.memory.entries[0], "x".repeat(80)).catch((x) => x);
+    expect(e).toBeInstanceOf(MemoryRefusedError);
+    expect(e.message).toMatch(/Replacement would put memory at 80\/60 chars/);
+  });
+
+  it("removes several entries one at a time, leaving one that changed since it was read, then reads back once", async () => {
+    const { s, hermes } = await setUp(withRoutes());
+    const view = await hermes.memory.load("default");
+    const [falcon, short] = view.resources.memory.entries;
+    const [sam] = view.resources.profile.entries;
+    s.memory.default.memory = [FALCON, "Owner prefers short answers."];
+    const r = await hermes.memory.removeMany("default", [falcon, short]);
+    expect(r.outcomes.map((o) => [o.entry.text, o.kind])).toEqual([
+      [FALCON, "removed"],
+      [SHORT, "changed"],
+    ]);
+    expect(s.memory.default.memory).toEqual(["Owner prefers short answers."]);
+    expect(r.view!.resources.memory.entries.map((e) => e.text)).toEqual(["Owner prefers short answers."]);
+    expect(s.memory.default.profile).toEqual([SAM]);
+    expect(sam.text).toBe(SAM);
+  });
+
+  it("says which of several removals Hermes refused", async () => {
+    const { s, hermes } = await setUp(withRoutes());
+    const view = await hermes.memory.load("default");
+    s.learningRestRefusal = { status: 400, detail: "MEMORY.md is locked by another process" };
+    const r = await hermes.memory.removeMany("default", view.resources.memory.entries);
+    expect(r.outcomes.map((o) => o.kind)).toEqual(["failed", "removed"]);
+    expect(r.outcomes[0].problem).toBe("MEMORY.md is locked by another process");
+    expect(s.memory.default.memory).toEqual([FALCON]);
+  });
+
+  it("settles a removal whose answer was lost by reading back, and doesn't try the rest", async () => {
+    const { s, hermes } = await setUp(withRoutes());
+    const view = await hermes.memory.load("default");
+    s.dropOnLearning = "applied";
+    const r = await hermes.memory.removeMany("default", view.resources.memory.entries);
+    expect(r.outcomes.map((o) => o.kind)).toEqual(["removed", "skipped"]);
+    expect(s.memory.default.memory).toEqual([SHORT]);
+  });
+
+  it("falls back to the socket calls, for the served profile only, on a server without the routes", async () => {
+    const { s, hermes } = await setUp();
+    expect((await hermes.memory.load("default")).resources.memory.entries).toHaveLength(2);
+    expect(hermes.memory.anyProfile()).toBe(false);
+    expect(learning(s).length).toBeGreaterThan(0);
+    const e = await hermes.memory.load("research").catch((x) => x);
+    expect(e).toBeInstanceOf(MemoryUnsupportedError);
+    expect(e.reason).toBe("profile");
+  });
+
+  it("says plainly when the profile isn't on the server", async () => {
+    const { hermes } = await setUp(withRoutes());
+    const e = await hermes.memory.load("nobody").catch((x) => x);
+    expect(e.message).toMatch(/Hermes has no such profile: Profile 'nobody' does not exist/);
+  });
+});

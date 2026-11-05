@@ -1,6 +1,7 @@
 // A fake Hermes's skills, for tests of Settings → Skills: `GET /api/skills`, `PUT /api/skills/toggle` and
 // `GET`/`PUT /api/skills/content` as the deployed `bf0203a` answers them (`hermes_cli/web_routers/skills.py`,
-// `tools/skill_manager_tool.py`). Each SKILL.md and its supporting files are nodes on the fake server's disk
+// `tools/skill_manager_tool.py`), and `POST /api/skills` and the skill archive behind `DELETE /api/learning/node` as
+// `f0d94882` answers them (`_create_skill`, `skill_usage.archive_skill`). Each SKILL.md and its supporting files are nodes on the fake server's disk
 // (`FakeServerFiles`), so the Server files listing sees the same folders.
 import type { FakeServerFiles } from "./fakeServerFiles";
 import type { RestRequest } from "./fakeHermes";
@@ -47,6 +48,14 @@ export class FakeSkills {
   readGate?: Promise<void>;
   /** Profiles `GET /api/config` and the skill routes know, besides `default`. */
   profiles = new Set<string>(["default"]);
+  /** False: the server is older than `POST /api/skills` (`bf0203a` has no create route). */
+  createRoute = true;
+  /** While set, `POST /api/skills` creates the skill, then fails this way, as a connection lost before the answer. */
+  createLost?: string;
+  /** Skills Hermes refuses to archive because they're pinned (`hermes curator pin`), by profile. */
+  pinned: Record<string, Set<string>> = {};
+  /** Each profile's archived skill folders (`skills/.archive/`), most recent last. */
+  archived: Record<string, FakeSkill[]> = {};
 
   constructor(private disk: FakeServerFiles) {}
 
@@ -91,6 +100,25 @@ export class FakeSkills {
     if (byDir) return byDir;
     const byName = skills.filter((s) => frontmatter(this.file(s.dir))?.name === name);
     return byName.length === 1 ? byName[0] : undefined;
+  }
+
+  /** A profile's own skills folder on the fake server. */
+  static home(profile: string) {
+    return profile === "default" ? "/home/liam/.hermes/skills" : `/home/liam/.hermes/profiles/${profile}/skills`;
+  }
+
+  /** `archive_skill` behind `DELETE /api/learning/node`: refuses what Hermes refuses, else moves the folder aside. */
+  archive(profile: string, name: string): { ok: boolean; message: string } {
+    const found = this.find(profile, name);
+    if (!found) return { ok: false, message: `skill '${name}' not found` };
+    if (this.pinned[profile]?.has(name)) return { ok: false, message: `'${name}' is pinned — unpin it first (hermes curator unpin ${name})` };
+    if (found.source === "hub") return { ok: false, message: `skill '${name}' is hub-installed; never archive` };
+    if (found.source === "bundled") return { ok: false, message: `skill '${name}' is a bundled built-in; enable curator.prune_builtins to allow pruning it` };
+    if (found.source === "external") return { ok: false, message: `skill '${name}' lives in skills.external_dirs; external skills are read-only to the curator` };
+    this.folders[profile] = (this.folders[profile] ?? []).filter((s) => s !== found);
+    (this.archived[profile] ??= []).push(found);
+    for (const path of Object.keys(this.disk.nodes)) if (path.startsWith(`${found.dir}/`)) delete this.disk.nodes[path];
+    return { ok: true, message: `archived '${name}' — restore with: hermes curator restore ${name}` };
   }
 
   /** Answers one request under `/api/skills`, or undefined for a path these routes don't have. */
@@ -145,6 +173,25 @@ export class FakeSkills {
         this.afterWrite?.();
         if (this.writeLost) throw new Error(this.writeLost);
         return { success: true, message: `Skill '${name}' updated (full rewrite).`, path: found.dir };
+      };
+    if (at === "POST /api/skills" && this.createRoute)
+      return () => {
+        const p = profile || "default";
+        this.scope(profile);
+        const { name, content, category } = req.body as { name: string; content: string; category?: string };
+        const valid = /^[a-z0-9][a-z0-9._-]*$/;
+        if (!name || name.length > 64 || !valid.test(name))
+          throw answered(400, `Invalid skill name '${name}'. Use lowercase letters, numbers, hyphens, dots, and underscores. Must start with a letter or digit.`);
+        if (category !== undefined && (!valid.test(category) || category.length > 64)) throw answered(400, `Invalid category '${category}'.`);
+        const fm = frontmatter(content);
+        if (!fm) throw answered(400, "SKILL.md must start with YAML frontmatter (---). See existing skills for format.");
+        for (const f of ["name", "description"]) if (!(f in fm)) throw answered(400, `Frontmatter must include '${f}' field.`);
+        const existing = this.find(profile, name);
+        if (existing) throw answered(400, `A skill named '${name}' already exists at ${existing.dir}.`);
+        const dir = `${FakeSkills.home(p)}${category ? `/${category}` : ""}/${name}`;
+        this.add(p, { dir, source: "agent", category }, content);
+        if (this.createLost) throw new Error(this.createLost);
+        return { success: true, message: `Skill '${name}' created.`, path: `${category ? `${category}/` : ""}${name}`, skill_md: `${dir}/SKILL.md` };
       };
     return () => Promise.reject(answered(405, "Method Not Allowed"));
   }

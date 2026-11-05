@@ -783,10 +783,13 @@ export function Main({
   const [personaUnsaved, setPersonaUnsaved] = useState(false);
   // This computer could keep the unsaved edit, so leaving doesn't lose it.
   const [personaKept, setPersonaKept] = useState(true);
-  const onPersonaDirty = useCallback((dirty: boolean, kept: boolean) => {
+  // The profile whose persona Settings shows, which may not be the app's (ADR 0056), for the question before leaving.
+  const [personaOf, setPersonaOf] = useState<string>();
+  const onPersonaDirty = useCallback((dirty: boolean, kept: boolean, of?: string) => {
     personaDirty.current = dirty;
     setPersonaUnsaved(dirty);
     setPersonaKept(kept);
+    setPersonaOf(of);
   }, []);
   // An unsaved edit in Settings → Memory (MemorySettings.tsx) lives only on screen: leaving it asks first too.
   const memoryDirty = useRef(false);
@@ -1138,6 +1141,7 @@ export function Main({
     api: hermes.persona,
     store: personaStore,
     storeKey: personaKey(connection, profile),
+    keyFor: (p) => personaKey(connection, p),
     where: { server: route ? serverLabel(route) : connection.mode === "ssh" ? connection.sshTarget : serverLabel({ kind: "url", url: connection.url, addresses: [] }), route: where, profile },
   };
 
@@ -2602,6 +2606,7 @@ export function Main({
             persona={persona}
             onPersonaDirty={onPersonaDirty}
             guard={guard}
+            listProfiles={listProfiles}
           />
         ) : usageOpen ? (
           <UsageAnalytics
@@ -2886,7 +2891,7 @@ export function Main({
       {leaving?.edit === "persona" && (
         <LeavePersona
           what={leaving.what}
-          profile={profile}
+          profile={personaOf ?? profile}
           kept={personaKept}
           onStay={() => {
             leaving.stay?.();
