@@ -179,7 +179,10 @@ fn write_whole(path: &std::path::Path, text: &[u8]) -> std::io::Result<()> {
         let _ = std::fs::remove_file(&part);
     }
     written?;
-    std::fs::File::open(dir)?.sync_all()
+    // Best effort: the copy is in place now, and reporting a failure here would leave it behind a restart that didn't
+    // happen, for an ordinary launch later to put back over newer drafts.
+    let _ = std::fs::File::open(dir).and_then(|d| d.sync_all());
+    Ok(())
 }
 
 /// Restarts the app. `drafts` (every draft, outbox and queue, from localStorage; updates.ts `DRAFT_PREFIXES`) is written to disk first, and nothing
