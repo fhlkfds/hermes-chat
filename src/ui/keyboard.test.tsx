@@ -364,8 +364,6 @@ describe("Chat list by keyboard", () => {
   it("reaches each chat with Tab, and Enter opens it", async () => {
     const s = await signedIn();
     button(/default/).focus();
-    await s.user.tab();
-    expect(focused()).toBe(button("Archived chats"));
     // New chat and Search, labeled, come first.
     await s.user.tab();
     expect(focused()).toBe(button("New chat"));
@@ -374,6 +372,9 @@ describe("Chat list by keyboard", () => {
     // The project switcher sits under the profile's name, before the chats.
     await s.user.tab();
     expect(focused()).toBe(button(/All chats/));
+    // Then the Inbox section's header, which collapses it, and its chats.
+    await s.user.tab();
+    expect(focused()).toBe(button(/^Inbox/));
     await s.user.tab();
     expect(focused()).toBe(rowButton("Nightly backup"));
     await s.user.keyboard("{Enter}");

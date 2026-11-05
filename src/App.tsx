@@ -59,7 +59,7 @@ import { SearchPalette } from "./ui/Search";
 import { SavedFilters, TagManager } from "./ui/Tags";
 import { useSnoozeClock } from "./ui/Snooze";
 import { TagsStore, savedTagsFile, type SavedFilter } from "./hermes/tags";
-import { AttentionClock, SNOOZE_KEY, SnoozeStore, chatSections, wakeFull } from "./hermes/snooze";
+import { AttentionClock, CLEARED_KEY, ClearedStore, SNOOZE_KEY, SnoozeStore, chatSections, lastActive, wakeFull } from "./hermes/snooze";
 import { IDLE_COMPACT_CHECK_MS, IdleCompactor, idleCompactionNote } from "./hermes/idleCompact";
 import { runFilter } from "./hermes/chatFilter";
 import { SettingsScreen, type PersonaWiring } from "./ui/Settings";
@@ -912,6 +912,12 @@ export function Main({
   // The side panel's Terminal (ADR 0022, ADR 0039): which shell is shown, kept in the prefs so it opens on the one picked
   // last (the Hermes server's until then, ADR 0051), and which are running, for the rail's dot.
   const termKind = useSyncExternalStore(subscribeUIPrefs, getUIPrefs).terminalKind;
+  // The list holds the profile's archived chats only while its Archived section is shown (ADR 0062); a profile switch
+  // starts without them, so they are listed again then.
+  const archivedShown = useSyncExternalStore(subscribeUIPrefs, getUIPrefs).chatSectionsShown.includes("archived");
+  useEffect(() => {
+    if (archivedShown !== archivedListed) void hermes.listArchived(archivedShown);
+  }, [hermes, archivedShown, archivedListed]);
   const [termRunning, setTermRunning] = useState<Record<TerminalKind, boolean>>({ server: false, local: false });
   const terminalRunning = termRunning.server || termRunning.local;
   // The owner holds Hermes's screen: its computer use waits until they hand back, so the Screen tab says so.
@@ -1118,6 +1124,14 @@ export function Main({
   );
   // When each chat last stopped working, so the list puts it at the top then (snooze.ts). Noted on every change.
   const attention = useMemo(() => new AttentionClock(), [scope]);
+  // The chats cleared from the Inbox: kept on this computer for each connection and profile, like snoozes (ADR 0062).
+  const clearedStore = useMemo(() => new ClearedStore(localStorage, scope), [scope]);
+  const cleared = useSyncExternalStore(clearedStore.subscribe, clearedStore.getSnapshot);
+  useEffect(() => {
+    const changed = (e: StorageEvent) => e.key === CLEARED_KEY && clearedStore.reread();
+    window.addEventListener("storage", changed);
+    return () => window.removeEventListener("storage", changed);
+  }, [clearedStore]);
   attention.observe(chats, Date.now(), status === "connected");
   const tagChange = (fn: () => Promise<unknown>) =>
     fn().catch((e) => setToast({ text: (e as Error).message, at: Date.now() }));
@@ -1710,6 +1724,8 @@ export function Main({
     const move = (s: boolean) => void (s ? hermes.settle(id) : hermes.unsettle(id));
     move(settled);
     if (settled) snoozeStore.wake(id);
+    // Unsettling is the owner asking for the chat back, so it comes back to the Inbox, not to a clear it had before.
+    clearedStore.restore(id);
     setToast({
       text: `${settled ? "Settled" : "Unsettled"}: ${title}`,
       undo: () => {
@@ -1728,6 +1744,16 @@ export function Main({
     // Unsnoozing wakes it now, so it comes to the top as a snooze that ran out would.
     put(until ?? Date.now());
     setToast({ text: `${until ? `Snoozed until ${wakeFull(until)}` : "Unsnoozed"}: ${title}`, undo: () => put(before), at: Date.now() });
+  };
+
+  // Clearing a chat from the Inbox is kept on this computer only, with when the chat was last active, so anything newer
+  // brings it back (ADR 0062). Undo does the opposite.
+  const clearFromInbox = (id: string, on: boolean) => {
+    const chat = chats.find((c) => c.id === id);
+    if (!chat) return;
+    const put = (to: boolean) => (to ? clearedStore.clear(id, lastActive(chat, snoozes, Date.now(), attention.since)) : clearedStore.restore(id));
+    put(on);
+    setToast({ text: `${on ? "Cleared from the Inbox" : "Back in the Inbox"}: ${chat.title}`, undo: () => put(!on), at: Date.now() });
   };
 
   // Putting a chat in a project, or taking it out: Hermes's once it keeps membership, waiting here until it confirms,
@@ -1752,6 +1778,7 @@ export function Main({
         projects.forgetChat(id);
         tagChange(() => tagsStore.forgetChat(id));
         snoozeStore.wake(id);
+        clearedStore.restore(id);
         if (stillIn(profile)) setToast({ text: `Deleted: ${title}`, at: Date.now() });
       }
       return deleted;
@@ -1774,6 +1801,7 @@ export function Main({
   const setArchived = (id: string, archived: boolean) => {
     const title = chats.find((c) => c.id === id)?.title ?? "";
     if (archived && !archivedListed) clearChat(id);
+    clearedStore.restore(id);
     const done = (ok: boolean) =>
       ok &&
       stillIn(profile) &&
@@ -2087,14 +2115,14 @@ export function Main({
         if (!e.repeat) takeScreenshot();
         return;
       }
-      // Alt+Up/Down: the chat above or below the one showing, at the top of the list or in Working, as the list orders
+      // Alt+Up/Down: the chat above or below the one showing, in the Inbox or in Working, as the list orders
       // them. Only while the chat is on screen; a list that uses the same keys (the queue) takes them first, and a
       // select keeps Alt+Down to open.
       const onChat = !covering && !previewCovers && !projectScreenOpen && !searchOpen;
       if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
         if (!onChat || e.defaultPrevented || (e.target as Element | null)?.tagName === "SELECT") return;
-        const { top, working } = chatSections(listed, snoozes, Date.now(), attention.since);
-        const order = [...top, ...working];
+        const { inbox, working } = chatSections(listed, snoozes, Date.now(), attention.since, cleared);
+        const order = [...inbox, ...working];
         const at = order.findIndex((c) => c.id === active.chatId);
         const next = order[at < 0 ? 0 : at + (e.key === "ArrowDown" ? 1 : -1)];
         if (next) {
@@ -2487,7 +2515,6 @@ export function Main({
           status={status}
           others={others}
           chats={listed}
-          archivedListed={archivedListed}
           syncError={syncError}
           selectedId={covering ? null : active.chatId}
           alsoShownId={covering ? null : (other?.chatId ?? null)}
@@ -2498,10 +2525,11 @@ export function Main({
           onSettle={setSettled}
           snoozes={snoozes}
           attentionSince={attention.since}
+          cleared={cleared}
+          onClear={clearFromInbox}
           onSnooze={(id, until) => snoozeChat(id, until)}
           onWake={(id) => snoozeChat(id, undefined)}
           onArchive={setArchived}
-          onListArchived={(on) => void hermes.listArchived(on)}
           onDelete={deleteChat}
           onRename={(id, title, from) => hermes.rename(id, title, from)}
           onRegenTitle={(id) => hermes.regenerateTitle(id)}

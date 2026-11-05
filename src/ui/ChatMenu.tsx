@@ -2,7 +2,7 @@
 // menu uses too. Escape or a click elsewhere closes one, and focus goes back to what had it. The arrow keys move
 // between a menu's items.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { AlarmClock, AlarmClockOff, AppWindow, CalendarClock, Check, Columns2, Link2, PanelLeft, PanelRight, Pencil, Sparkles, Tag as TagIcon, Trash2 } from "lucide-react";
+import { AlarmClock, AlarmClockOff, AppWindow, CalendarClock, Check, CheckCheck, Columns2, Inbox as InboxIcon, Link2, PanelLeft, PanelRight, Pencil, Sparkles, Tag as TagIcon, Trash2 } from "lucide-react";
 import type { Chat } from "../hermes/model";
 import type { Project } from "../hermes/projects";
 import { snoozePresets, wakeFull } from "../hermes/snooze";
@@ -28,6 +28,12 @@ export type ChatTags = { list: Tag[]; of: readonly string[]; onToggle: (tagId: s
 export type ChatSnooze = { until?: number; onSnooze: (until: number) => void; onCustom: () => void; onWake: () => void };
 
 /**
+ * Clearing the chat from the Inbox, or putting it back (snooze.ts `ClearedStore`, ADR 0062): `cleared`, whether it is
+ * cleared now, in Unsettled.
+ */
+export type ChatClear = { cleared: boolean; onClear: (cleared: boolean) => void };
+
+/**
  * The right-click menu for one chat, at the pointer, kept inside the window. `onRename` and `onRegenTitle` hand back
  * to the row. `onOpenIn` opens the chat in the left (0) or right (1) pane; with one pane (`split` false) the menu offers
  * to open it in a second pane. `onCopyLink` copies the chat's link (chatLinks.ts). `onDelete` asks before deleting the
@@ -46,6 +52,7 @@ export function ChatMenu({
   projects,
   tags,
   snooze,
+  clear,
   onDelete,
   onClose,
 }: {
@@ -62,6 +69,7 @@ export function ChatMenu({
   projects?: ChatProjects;
   tags?: ChatTags;
   snooze?: ChatSnooze;
+  clear?: ChatClear;
   onDelete?: () => void;
   onClose: () => void;
 }) {
@@ -147,6 +155,20 @@ export function ChatMenu({
             <span className="menu-label">{o.label}</span>
           </button>
         ))}
+      {clear && (
+        <button
+          role="menuitem"
+          className="menu-item"
+          title={clear.cleared ? "Show this chat in the Inbox again" : "Move this chat to Unsettled until something new happens in it"}
+          onClick={() => {
+            onClose();
+            clear.onClear(!clear.cleared);
+          }}
+        >
+          <span className="menu-icon">{clear.cleared ? <InboxIcon size={15} /> : <CheckCheck size={15} />}</span>
+          <span className="menu-label">{clear.cleared ? "Back to the Inbox" : "Clear from the Inbox"}</span>
+        </button>
+      )}
       {snooze && (
         <div role="group" aria-label="Snooze" className="menu-group">
           <div className="menu-heading" aria-hidden>

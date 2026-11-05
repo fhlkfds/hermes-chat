@@ -152,12 +152,12 @@ kbd {
 .section-toggle .dot { margin-left: 6px; width: 6px; height: 6px; }
 .chev { transition: transform 0.15s; flex: none; }
 .chev.open { transform: rotate(90deg); }
-.settled-section { flex: none; display: flex; flex-direction: column; max-height: 55%; padding: 0 8px 10px; }
-.settled-section.open { border-top: 1px solid var(--line); }
-.settled-list { overflow-y: auto; min-height: 0; }
-.settled-list .row-title { color: var(--muted); }
-/* Working and Snoozed sit under the chats that need the owner, in the list's scroll. */
-.row[data-section="snoozed"] .row-title { color: var(--muted); }
+/* Every section is in the list's scroll (ADR 0062); the ones out of the way are quieter. */
+.section-toggle:first-child { padding-top: 6px; }
+.row[data-section="snoozed"] .row-title,
+.row[data-section="unsettled"] .row-title,
+.row[data-section="settled"] .row-title,
+.row[data-section="archived"] .row-title { color: var(--muted); }
 /* A collapsed section's rows stay mounted, hidden; .row's own display would otherwise show them. */
 .row[hidden] { display: none; }
 .row-wake { font-variant-numeric: tabular-nums; }
@@ -2156,7 +2156,7 @@ label.memory-pick { cursor: pointer; }
 .toolset-label .appearance-title { gap: 8px; flex-wrap: wrap; }
 .toolset-hint { margin-top: 4px; line-height: 1.5; }
 .settings h3.toolset-subhead { margin: 24px 0 6px; }
-.switch:disabled { opacity: 0.5; cursor: not-allowed; }
+.switch:disabled, .switch[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
 .badge.off { color: var(--faint); }
 .toolset-desc { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; white-space: pre-line; }
 .toolset-ask { max-width: none; margin: 8px 0 4px; padding: 12px 14px; border: 1px solid var(--line-2); border-radius: var(--radius); }
