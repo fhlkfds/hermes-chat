@@ -433,7 +433,7 @@ export class FakeHermes {
   /** The profiles' external memory providers, as Settings → Memory → External memory reads and writes them. */
   /** The profile's MCP servers (fakeMcp.ts, ADR 0068). */
   readonly mcp = new FakeMcp((p) => p === "default" || p in this.otherProfiles);
-  /** The profile's Telegram and Discord gateways (fakeGateways.ts, ADR 0070). */
+  /** The profile's Telegram and Discord gateways (fakeGateways.ts, ADR 0073). */
   readonly gateways = new FakeGateways((p) => p === "default" || p in this.otherProfiles);
   readonly memoryProviders = new FakeMemoryProviders((p) => p === "default" || p in this.otherProfiles || p in this.memory);
   /** The profiles' speech providers, for Settings → Voice (fakeVoiceProviders.ts). */

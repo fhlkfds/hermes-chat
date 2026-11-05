@@ -1,4 +1,4 @@
-// Settings → Gateways' reads and writes (gateways.ts, ADR 0070) through the transport, against the fake dashboard's
+// Settings → Gateways' reads and writes (gateways.ts, ADR 0073) through the transport, against the fake dashboard's
 // messaging routes (fakeGateways.ts): the list, keep / replace / remove of a token, the switch, the read before a save
 // and the read after it, the status check, and the three problems told apart. Every token here is synthetic.
 import { describe, expect, it } from "vitest";
