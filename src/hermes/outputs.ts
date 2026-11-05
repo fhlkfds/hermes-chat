@@ -554,12 +554,14 @@ function trimmed<T extends Pick<ScopeIndex, "chats" | "added">>(index: T): T {
  * What the Outputs screen shows. `indexing`: a run is reading chats, `done` of `total`. `waiting`: chats in the last
  * run's scope that weren't read because of the per-run limit. `error`: why the last run or check failed.
  * `unsupported`: this server lacks a route Outputs needs. `notSaved`: this computer's storage refused the index.
+ * `checkingSince`: when the `refresh` under way started; an Output checked before then is still being checked again.
  */
 export type OutputsSnapshot = {
   chats: Record<string, ChatOutputs>;
   added: Output[];
   indexing?: { done: number; total: number };
   checking?: boolean;
+  checkingSince?: number;
   waiting: number;
   error?: string;
   unsupported?: string;
@@ -612,7 +614,7 @@ export class OutputsIndex {
   cancel() {
     this.runSeq++;
     this.checkSeq++;
-    if (this.snap.indexing || this.snap.checking) this.set({ indexing: undefined, checking: false });
+    if (this.snap.indexing || this.snap.checking || this.snap.checkingSince !== undefined) this.set({ indexing: undefined, checking: false, checkingSince: undefined });
     this.live = false;
     this.generation++;
   }
@@ -677,10 +679,13 @@ export class OutputsIndex {
   async refresh(chats: ChatRef[], rebuildEvicted: boolean, shown: (s: OutputsSnapshot) => Output[]): Promise<void> {
     if (!this.live) return;
     const seq = this.runSeq + 1;
+    this.set({ checkingSince: this.now() });
     await this.index(chats, false, rebuildEvicted);
     const s = this.snap;
-    if (seq !== this.runSeq || !this.live || s.error !== undefined || s.unsupported !== undefined) return;
-    await this.check(shown(s));
+    if (seq !== this.runSeq || !this.live) return;
+    if (s.error === undefined && s.unsupported === undefined) await this.check(shown(s));
+    // A newer refresh started meanwhile keeps its own mark.
+    if (seq === this.runSeq) this.set({ checkingSince: undefined });
   }
 
   /** Reads where each of `outputs` is now (`checkPaths`) and keeps the answers. */
@@ -743,6 +748,10 @@ export class OutputsIndex {
     this.set((s) => ({ added: s.added.filter((o) => o.key !== key) }), true);
   }
 }
+
+/** Whether `o` waits on the check of the `refresh` under way (ADR 0064): its last answer, if any, is from before it. */
+export const checkPending = (snap: Pick<OutputsSnapshot, "checkingSince">, o: Output) =>
+  snap.checkingSince !== undefined && !(o.availability && o.availability.checkedAt >= snap.checkingSince);
 
 /** Every Output kept for the chats in `chatIds` (all of them when undefined), and the added ones that go with them. */
 export function outputsIn(snap: Pick<OutputsSnapshot, "chats" | "added">, chatIds?: Set<string>): Output[] {

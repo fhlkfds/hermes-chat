@@ -152,6 +152,27 @@ describe("Outputs", () => {
     expect(within(row).getByRole("button", { name: /^Show hermes-verify-install\.sh's folder/ })).toBeTruthy();
   });
 
+  it("keeps Edit and Preview off while opening still checks a file, on a slow connection (#223)", async () => {
+    const s = server();
+    let release!: () => void;
+    const listed = new Promise<void>((r) => (release = r));
+    const list = s.rest["GET /api/fs/list"];
+    const { user } = await launch(s);
+    s.rest["GET /api/fs/list"] = async (req) => (await listed, list(req));
+    await openChat(user, "Quarterly report");
+    await user.click(screen.getByRole("button", { name: "Outputs" }));
+    const row = () => [...document.querySelectorAll(".out-table tbody tr")].find((tr) => tr.querySelector(".out-path")!.textContent === "/srv/out/report.md") as HTMLElement;
+    await waitFor(() => expect(row()?.querySelectorAll("td")[3].textContent).toBe("Checking…"));
+    for (const name of [/^Edit report\.md/, /^Preview report\.md/]) {
+      const button = within(row()).getByRole("button", { name }) as HTMLButtonElement;
+      expect(button.disabled).toBe(true);
+      expect(button.title).toBe("Checking whether it's still there…");
+    }
+    release();
+    await waitFor(() => expect(row().querySelector(".out-avail")?.textContent).toBe("Available"));
+    expect((within(row()).getByRole("button", { name: /^Edit report\.md/ }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it("opens a file in the preview pane beside Outputs", async () => {
     const { user } = await launch();
     await openChat(user, "Quarterly report");

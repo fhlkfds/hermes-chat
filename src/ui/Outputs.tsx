@@ -7,6 +7,7 @@ import type { ConnectionStatus } from "../hermes/model";
 import {
   HOW_LABEL,
   TYPE_LABEL,
+  checkPending,
   editable,
   previewable,
   shownName,
@@ -34,8 +35,11 @@ const AVAILABILITY: Record<string, string> = {
   unknown: "Couldn't check",
 };
 
-function Availability({ o }: { o: Output }) {
+const CHECKING = "Checking whether it's still there…";
+
+function Availability({ o, pending }: { o: Output; pending: boolean }) {
   const a = o.availability;
+  if (pending) return <span className="muted" title={CHECKING}>Checking…</span>;
   if (!a) return <span className="muted" title="Refresh checks whether the file is still there">Not checked</span>;
   const tip = [a.why, `Checked ${storedTime(a.checkedAt)}`].filter(Boolean).join("\n");
   return (
@@ -299,6 +303,8 @@ export function OutputsScreen({
                   const v = versionOf.get(o.key);
                   const can = previewable(o);
                   const canEdit = editable(o);
+                  // Not opened on a stale answer while opening (or Refresh) checks it again (#223).
+                  const pending = checkPending(snapshot, o);
                   const unsaved = unsavedEdit?.(o) ?? false;
                   const title = o.chatId ? (chatTitle(o.chatId) ?? "A chat not in the list") : undefined;
                   return (
@@ -328,7 +334,7 @@ export function OutputsScreen({
                         {o.size !== undefined ? fmtSize(o.size) : "—"}
                       </td>
                       <td>
-                        <Availability o={o} />
+                        <Availability o={o} pending={pending} />
                       </td>
                       <td className="out-source">
                         {title && <span className="out-chat">{title}</span>}
@@ -341,8 +347,8 @@ export function OutputsScreen({
                         <button
                           className="icon-btn"
                           aria-label={`Preview ${name}`}
-                          title={can.ok ? (v && !v.latest ? "Preview what the path holds now (a later version)" : "Preview") : can.why}
-                          disabled={!connected || !can.ok}
+                          title={pending ? CHECKING : can.ok ? (v && !v.latest ? "Preview what the path holds now (a later version)" : "Preview") : can.why}
+                          disabled={!connected || !can.ok || pending}
                           onClick={() => onPreview(o)}
                         >
                           <Eye size={15} />
@@ -351,9 +357,9 @@ export function OutputsScreen({
                           <button
                             className="icon-btn"
                             aria-label={`Edit ${name}`}
-                            title={unsaved ? "Go back to your unsaved edit" : canEdit.ok ? "Edit beside the chat" : canEdit.why}
+                            title={unsaved ? "Go back to your unsaved edit" : pending ? CHECKING : canEdit.ok ? "Edit beside the chat" : canEdit.why}
                             // An unsaved edit always opens again, whatever the server now has: it is the only copy.
-                            disabled={!unsaved && (!canEdit.ok || !connected)}
+                            disabled={!unsaved && (!canEdit.ok || !connected || pending)}
                             onClick={() => onEdit(o)}
                           >
                             <FilePen size={15} />
