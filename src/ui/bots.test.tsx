@@ -247,6 +247,22 @@ describe("What the owner does while a Bot Chat opens", () => {
 });
 
 describe("A Bot Chat outside the list", () => {
+  it("keeps the rail's dot for an Approval in a Bot Chat resumed here, after switching away from its profile", async () => {
+    const { server, hermes, user } = await launch((s) => (s.liveSessions = []));
+    await openBots(user);
+    await user.click(botRows()[1]);
+    await waitFor(() => expect(hermes.getSnapshot().chats.find((c) => c.id === "scribe-bot")?.runtimeId).toBeTruthy());
+    const runtimeId = hermes.getSnapshot().chats.find((c) => c.id === "scribe-bot")!.runtimeId!;
+    // Hermes lists the session this app resumed as waiting; its row carries no title, and the app knows its profile.
+    server.liveSessions = [{ id: runtimeId, session_key: "scribe-bot", status: "waiting", last_active: nowS() }];
+    await act(async () => void (await hermes.switchProfile("default")));
+    await act(async () => void (await hermes.sync()));
+    await act(async () => void (await hermes.checkOtherProfiles()));
+    expect(hermes.getSnapshot().live?.sessions).toEqual([expect.objectContaining({ chatId: "scribe-bot", status: "waiting", profile: "scribe" })]);
+    expect(hermes.getSnapshot().live?.sessions[0].title).toBeUndefined();
+    await waitFor(() => expect(botsButton()?.getAttribute("aria-label")).toBe("Bots, one needs you"));
+  });
+
   it("stays out of the list after switching away and back, and isn't the chat reopened at launch", async () => {
     const { hermes, user } = await launch();
     await openBots(user);

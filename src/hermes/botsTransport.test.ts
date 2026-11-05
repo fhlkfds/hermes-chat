@@ -178,6 +178,16 @@ describe("keeping Bot Chats out of the list and search", () => {
     expect(server.restRequests.filter((r) => r.method === "PATCH")).toEqual([]);
   });
 
+  it("marks an open chat renamed to the title in another client as a Bot Chat, and keeps it out of the list", async () => {
+    const { server, hermes } = await signedIn();
+    await hermes.open("side");
+    expect(hermes.getSnapshot().chats.find((c) => c.id === "side")?.runtimeId).toBeTruthy();
+    server.sessions.find((s) => s.id === "side")!.title = BOT_CHAT_TITLE;
+    await hermes.sync();
+    expect(hermes.getSnapshot().chats.find((c) => c.id === "side")).toMatchObject({ bot: true, title: BOT_CHAT_TITLE });
+    expect(shownIds(hermes)).toEqual([]);
+  });
+
   it("leaves out one born visible elsewhere, by its title", async () => {
     const server = new FakeHermes();
     const { hermes } = await signedIn(server);

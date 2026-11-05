@@ -35,7 +35,7 @@ export function Bots({
   connected: boolean;
   load: () => Promise<Bot[]>;
   avatar: (profile: string) => Promise<string | undefined>;
-  activity: (bot: Bot) => BotActivity;
+  activity: (bot: Bot, roster: readonly Bot[]) => BotActivity;
   leaving?: string;
   onOpen: (bot: Bot) => void;
   onNewChat: (bot: Bot) => void;
@@ -138,7 +138,7 @@ export function Bots({
   // Pinned bots first, then Hermes's order. Hidden ones wait behind a disclosure, as in Hermes's own list.
   const shown = (bots ?? []).filter((b) => !b.hidden).sort((a, b) => Number(b.pinned) - Number(a.pinned));
   const hidden = (bots ?? []).filter((b) => b.hidden);
-  const row = (b: Bot) => <Row key={b.profile} bot={b} picture={pictures[b.profile]} activity={activity(b)} shown={b.profile === profile} onOpen={() => go(b, "open")} onNewChat={() => go(b, "new")} />;
+  const row = (b: Bot) => <Row key={b.profile} bot={b} picture={pictures[b.profile]} activity={activity(b, bots ?? [])} shown={b.profile === profile} onOpen={() => go(b, "open")} onNewChat={() => go(b, "new")} />;
 
   return (
     <section ref={root} className="inbox bots" role="dialog" aria-labelledby={headId} onKeyDown={onKeyDown}>

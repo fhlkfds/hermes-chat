@@ -235,16 +235,23 @@ export type BotActivity = "replying" | "needs-you" | undefined;
 /**
  * A bot's activity, from its Bot Chat only, the chat its row opens (Hermes's `bot-row.tsx`: "Status keys off the
  * canonical Bot Chat"). `live`: the sessions `session.active_list` last reported as working or waiting. `here`: the Bot
- * Chat as this connection holds it, when open here, which is fresher than the last check.
+ * Chat as this connection holds it, when open here, which is fresher than the last check. `roster`: every bot, for a live
+ * session whose profile isn't known: a copied profile keeps the stored ids, so such a session counts only when no
+ * other bot's Bot Chat has its id.
  */
 export function botActivity(
-  bot: Pick<Bot, "botChat">,
-  live: readonly { chatId: string; status: "working" | "waiting" }[],
+  bot: Pick<Bot, "botChat" | "profile">,
+  live: readonly { chatId: string; status: "working" | "waiting"; profile?: string }[],
   here?: { running?: boolean; waiting?: boolean },
+  roster: readonly Pick<Bot, "botChat" | "profile">[] = [],
 ): BotActivity {
   if (here?.waiting) return "needs-you";
   const row = bot.botChat;
-  const mine = row ? live.filter((s) => s.chatId === row.id || s.chatId === row.resolvedId) : [];
+  const ids = (b: Pick<Bot, "botChat">) => (b.botChat ? [b.botChat.id, b.botChat.resolvedId] : []);
+  const shared = (id: string) => roster.some((b) => b.profile !== bot.profile && ids(b).includes(id));
+  const mine = row
+    ? live.filter((s) => (s.chatId === row.id || s.chatId === row.resolvedId) && (s.profile ? s.profile === bot.profile : !shared(s.chatId)))
+    : [];
   if (mine.some((s) => s.status === "waiting")) return "needs-you";
   if (here?.running || (here === undefined && mine.some((s) => s.status === "working"))) return "replying";
   return undefined;

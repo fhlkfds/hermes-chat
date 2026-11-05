@@ -214,13 +214,24 @@ describe("telling a Bot Chat apart", () => {
 
 
 describe("a bot's activity", () => {
-  const bot = { botChat: { id: "root", resolvedId: "tip", preview: "", lastActive: 0, messageCount: 0 } };
+  const bot = { profile: "ops", botChat: { id: "root", resolvedId: "tip", preview: "", lastActive: 0, messageCount: 0 } };
+  it("matches the profile as well as the id, since a copied profile keeps its stored ids", () => {
+    const copy = { profile: "ops-copy", botChat: { id: "root", resolvedId: "root", preview: "", lastActive: 0, messageCount: 0 } };
+    const live = [{ chatId: "root", status: "waiting" as const, profile: "ops-copy" }];
+    expect(botActivity(bot, live, undefined, [bot, copy])).toBeUndefined();
+    expect(botActivity(copy, live, undefined, [bot, copy])).toBe("needs-you");
+    // A session whose profile isn't known yet counts only for the one bot whose Bot Chat has its id.
+    const unknown = [{ chatId: "root", status: "working" as const }];
+    expect(botActivity(bot, unknown, undefined, [bot, copy])).toBeUndefined();
+    expect(botActivity(bot, [{ chatId: "tip", status: "working" as const }], undefined, [bot, copy])).toBe("replying");
+  });
+
   it("follows its Bot Chat only, by registry row or lineage tip", () => {
     expect(botActivity(bot, [{ chatId: "tip", status: "working" }])).toBe("replying");
     expect(botActivity(bot, [{ chatId: "root", status: "waiting" }])).toBe("needs-you");
     // A side-chat working in the same profile isn't the bot's row.
     expect(botActivity(bot, [{ chatId: "side", status: "working" }])).toBeUndefined();
-    expect(botActivity({ botChat: null }, [{ chatId: "root", status: "working" }])).toBeUndefined();
+    expect(botActivity({ profile: "ops", botChat: null }, [{ chatId: "root", status: "working" }])).toBeUndefined();
   });
 
   it("prefers what this connection holds for the open Bot Chat, which is fresher than the last check", () => {
