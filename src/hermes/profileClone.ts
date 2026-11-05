@@ -327,7 +327,7 @@ export class ProfileCloneApi {
     const model = modelOf(source.profile);
     if (!go.model) put("model", "left", model ? "Not picked: Hermes's default model setting went in" : "The source names no model of its own");
     else if (!full && answer?.model_set === false)
-      put("model", "failed", `Hermes didn't set it${str(answer.model_error) ? `: ${str(answer.model_error)}` : "."} Pick one in Settings → Model on the new profile.`);
+      put("model", "failed", `Hermes didn't set it${str(answer.model_error) ? `: ${str(answer.model_error)!.replace(/([^.!?])$/, "$1.")}` : "."} Pick one in Settings → Model on the new profile.`);
     else if (!row) put("model", "unchecked", problem ?? "");
     else if (row.model === model?.model && row.provider === model?.provider) put("model", "copied", `${row.model} (${row.provider})`);
     else put("model", "failed", `It reads back as ${row.model ?? "none"} (${row.provider ?? "no provider"}). Pick one in Settings → Model on the new profile.`);
@@ -346,6 +346,7 @@ export class ProfileCloneApi {
           ? `${failedSkills.length} of ${source.skills.length} didn't copy: ${failedSkills.map((f) => `${f.row.name} (${f.problem})`).join("; ")}`
           : `${source.skills.length} copied, SKILL.md only`,
       );
+    else if (source.skillsProblem) put("skills", "unchecked", `Hermes copied every skill folder. Its skills couldn't be compared with the source's: ${source.skillsProblem}`);
     else
       try {
         const there = new Set((await this.skills.list(plan.name)).skills.map((s) => s.name));

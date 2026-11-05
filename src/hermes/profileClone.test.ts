@@ -124,6 +124,17 @@ describe("cloning a profile", () => {
     expect(seen).toContain("skills skipped: Hermes copied them with the profile");
   });
 
+  it("doesn't call the full copy's skills read back when the source's skills couldn't be listed", async () => {
+    const { server, api } = await signedIn();
+    server.skills.routes = false;
+    const source = await api.source("work", await api.profiles());
+    expect(source.skillsProblem).toBeTruthy();
+    expect(preview({ kind: "fresh", parts: new Set<Part>(["skills"]) }, source).skills).toMatchObject({ copied: false, available: false });
+    const out = made(await api.clone({ kind: "full", source: "work", name: "work-full" }, source, () => {}));
+    expect(stateOf(out, "skills").state).toBe("unchecked");
+    expect(stateOf(out, "skills").note).toMatch(/^Hermes copied every skill folder. Its skills couldn't be compared with the source's: /);
+  });
+
   it("refuses a taken name before writing anything, read again from Hermes, and never replaces a profile", async () => {
     const { server, api } = await signedIn();
     const profiles = await api.profiles();

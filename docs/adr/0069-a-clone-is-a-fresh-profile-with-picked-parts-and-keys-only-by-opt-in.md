@@ -26,6 +26,7 @@ Issue #91 asks for Clone profile: a new profile made from an existing one, witho
 ## Consequences
 
 - A default clone has no API keys. Its chats fail until keys are added for it in Hermes (`hermes -p <name> setup`, or the dashboard's Keys page), and the dialog says so.
+- A new profile has no chat store (`state.db`) until a Hermes gateway serves it: a running default gateway that serves every profile picks it up (`_notify_multiplexer`), and otherwise its own gateway must start. Until then Hermes answers its chat list with 503 "Session store is not initialized. Start this profile's gateway to initialize it.", and Open shows that as the switcher's "Couldn't open", with Try again and Back (seen live on a dashboard with no gateway running). The clone itself is complete; this app doesn't start gateways.
 - A clone's own skills are SKILL.md only, as Settings → Skills' copy is; the full copy has their whole folders.
 - A clone never shares mutable state with its source: every copy is a new file in the new profile's folder. Editing the clone's SOUL.md or skills leaves the source's alone (checked live, below).
 - On a Hermes whose `POST /api/profiles` lacks a field (older than `soul`, `description` or `provider`/`model` on `ProfileCreate`), Hermes ignores it, and the read-back shows that category as not copied instead of claiming it. A Hermes without the route at all answers 405, and the dialog says the server can't create profiles.

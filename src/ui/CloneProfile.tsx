@@ -330,7 +330,7 @@ export function CloneProfileDialog({
             <p className="muted">
               {made.results.some((r) => r.state === "failed")
                 ? `${made.name} is on the server, but not everything above copied. It's not a full clone.`
-                : `${made.name} is on the server and read back as listed. Only what's ticked was copied.`}
+                : `${made.name} is on the server and read back as listed above.`}
             </p>
           </>
         )}
