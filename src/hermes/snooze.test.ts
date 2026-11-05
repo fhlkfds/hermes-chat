@@ -243,6 +243,8 @@ describe("chatSections", () => {
         chat("f", WED),
       ];
       expect(staleClears(chats, {}, WED, {}, cleared)).toEqual(["b", "c", "d"]);
+      // Settled or Archived, here or in another client, with no newer activity: ended too.
+      expect(staleClears([chat("a", WED - HOUR, { settled: true }), chat("b", WED - HOUR, { archived: true })], {}, WED, {}, cleared)).toEqual(["a", "b"]);
       // A snooze that woke after the clear ends it too, while the wake still counts.
       expect(staleClears([chat("a", WED - HOUR)], { a: WED - 60_000 }, WED, {}, cleared)).toEqual(["a"]);
     });

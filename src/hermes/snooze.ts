@@ -294,12 +294,18 @@ export const canClear = (c: Chat) => !c.unread && !c.running && !c.items.some(is
 
 /**
  * The clears among `chats` that no longer hold, because something happened in the chat after it was cleared, or it is
- * Unread or Hermes waits on the owner in it. Forgetting them keeps the chat in the Inbox once that activity stops
- * counting (a woken snooze does after WOKEN_KEPT_MS). A reply still running doesn't end a clear: its end does.
+ * Unread or Hermes waits on the owner in it, or it is Settled or Archived (here or in another Hermes client: settling
+ * or archiving doesn't change when the chat was last active, so it is seen only as the state itself). Forgetting them
+ * keeps the chat in the Inbox once that activity stops counting (a woken snooze does after WOKEN_KEPT_MS), or once it is
+ * unsettled or restored. A reply still running doesn't end a clear: its end does.
  */
 export function staleClears(chats: Chat[], snoozes: Snoozes, now: number, since: Readonly<Record<string, number>>, cleared: Cleared): string[] {
   return chats
-    .filter((c) => cleared[c.id] !== undefined && (lastActive(c, snoozes, now, since) > cleared[c.id] || !!c.unread || c.items.some(isWaiting)))
+    .filter(
+      (c) =>
+        cleared[c.id] !== undefined &&
+        (c.settled || !!c.archived || lastActive(c, snoozes, now, since) > cleared[c.id] || !!c.unread || c.items.some(isWaiting)),
+    )
     .map((c) => c.id);
 }
 

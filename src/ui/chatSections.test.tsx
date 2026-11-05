@@ -255,6 +255,28 @@ describe("Clearing from the Inbox, in the app", () => {
     await waitFor(() => expect(JSON.parse(localStorage.getItem(CLEARED_KEY)!).scopes).toEqual({}));
   });
 
+  it("forgets a clear once a refresh sees the chat settled in another client, so unsettling it there brings it back", async () => {
+    const { server, hermes, user } = await signedIn();
+    const rowFor = (title: string) => screen.getByRole("button", { name: new RegExp(title) }).parentElement!;
+    await user.click(within(rowFor("Deploy notes")).getByRole("button", { name: "Clear from the Inbox" }));
+    expect(titles("inbox")).toEqual(["Groceries"]);
+    const a = server.sessions.find((s) => s.id === "a")!;
+    const lastActive = a.last_active;
+    const refresh = () =>
+      act(async () => {
+        await hermes.sync();
+        await hermes.idle();
+      });
+    // Settled elsewhere: the pin changes, the activity time doesn't.
+    a.pinned = false;
+    await refresh();
+    await waitFor(() => expect(JSON.parse(localStorage.getItem(CLEARED_KEY)!).scopes).toEqual({}));
+    a.pinned = true;
+    await refresh();
+    expect(a.last_active).toBe(lastActive);
+    await waitFor(() => expect(titles("inbox")).toEqual(["Deploy notes", "Groceries"]));
+  });
+
   it("forgets a chat's clear when the owner snoozes it, so it wakes into the Inbox", async () => {
     const { user } = await signedIn();
     const rowFor = (title: string) => screen.getByRole("button", { name: new RegExp(title) }).parentElement!;
