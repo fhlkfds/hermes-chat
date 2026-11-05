@@ -227,6 +227,10 @@ _Avoid_: cancelled, failed
 An agent Hermes started from a chat's reply to do part of its work (Hermes's `delegate_task`). A subagent can start subagents of its own. The chat's Subagents panel, above the composer, shows them as a tree with each one's goal, model, state and last activity. Opening one shows what it did and its latest output, apart from the chat. **Steer** sends one subagent words to read after its current tool call. **Stop** ends one subagent and the running subagents it started. Each names its target first, and neither reaches the chat's reply or other subagents. A subagent never asks for an Approval. The tree is kept only while the app runs. After a reconnect the app reads it again from Hermes. A subagent that ended unheard while the app was disconnected, or whose end Hermes didn't explain, shows as Ended (ADR 0072).
 _Avoid_: child agent, worker, delegate (in the UI). Subagent model settings in Settings → Model pick models, not running work
 
+**Office** / **Desk**:
+The agent office, opened from the rail: every agent at work on the connection as a **Desk**, in a room per chat. A chat's room has a desk for its reply, in the state the Rail inbox gives it, and one for each of its Subagents. A desk opens its chat, or the subagent in the chat's Subagents panel; it never approves or starts anything. **List** shows the same desks as rows. A desk that can't be checked shows "as last seen", and only Hermes's word makes one Finished (ADR 0077).
+_Avoid_: dashboard, agents view, workers
+
 **Approval**:
 Hermes asking the owner before it runs a command it counts as dangerous. It shows as a card in the chat, and the reply waits until the owner approves or denies it, Hermes stops waiting, or the reply is stopped. The card offers only the answers Hermes offers: once, for the rest of the chat, always, or deny. The two broader grants ask the owner to confirm first.
 _Avoid_: permission, confirmation, prompt
