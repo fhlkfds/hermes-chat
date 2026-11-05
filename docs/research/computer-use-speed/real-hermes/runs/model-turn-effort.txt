@@ -1,0 +1,7 @@
+z-ai/glm-5.3-flash effort=high images=3: 2550 ms, out 102 tok -> '{"action": "scroll", "amount": 15, "direction": "down"}'
+z-ai/glm-5.3-flash effort=high images=3: 949 ms, out 23 tok -> '{"action": "click", "coordinate": [720, 420]}'
+z-ai/glm-5.3-flash effort=high images=3: 1497 ms, out 44 tok -> '{"action": "scroll", "amount": 25, "direction": "down"}'
+z-ai/glm-5.3-flash effort=medium images=3: 1981 ms, out 24 tok -> '{"action": "scroll", "amount": 10, "direction": "down"}'
+z-ai/glm-5.3-flash effort=medium images=3: 1802 ms, out 65 tok -> '{"action": "scroll", "amount": 30, "direction": "down"}'
+z-ai/glm-5.3-flash effort=low images=3: 734 ms, out 24 tok -> '{"action": "scroll", "amount": 5, "direction": "down"}'
+z-ai/glm-5.3-flash effort=low images=3: 2718 ms, out 47 tok -> '{"action": "scroll", "amount": 30, "coordinate": [720, 450],'

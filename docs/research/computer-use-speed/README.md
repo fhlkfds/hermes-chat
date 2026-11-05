@@ -6,6 +6,8 @@ Measured on 2026-11-04 to find out why computer use (Hermes driving its Bot Desk
 
 What this could not measure is Hermes's loop: model latency, and `cua-driver`'s capture time. The code shows one or two model round trips per action, each carrying a full-resolution screenshot (Step 1). A step is very likely slow because of those round trips, not the stream, but that is an inference from the code, not a measurement. What Hermes would need is under Step 3.
 
+**Added on 2026-11-05: Step 4 times a real Hermes**, with its own bridge, Bot Desktop, `cua-driver` and model, through the app's SSH tunnel. It confirms the inference. A model round trip took 2.4 s (median), and a five-action task needed eight of them. A capture took 0.6 s. A key press reached this computer's screen in about 40 ms over the LAN, plus about 16 ms in the app. It also found one cost in the app: every capture's screenshot came into the chat as text, which is now left out (ADR 0061).
+
 ## What was measured, and how
 
 No real Hermes server with a Bot Desktop, `cua-driver` and a model was reachable from the build machine. Everything below is a real part where possible, and says what stands in for the rest.
@@ -44,6 +46,8 @@ From hermes-agent `ed1afb082e` (`tools/computer_use/`, `agent/image_eviction_pol
 - **Waiting.** There is no fixed settle delay after an action. The `wait` action sleeps for as long as the model asks (up to 30 s).
 
 ### What could not be measured
+
+(Step 4 has since measured the first three on a real Hermes, over a LAN rather than a WAN.)
 
 - **Model latency per step.** This needs a real provider and key. Not available here, so no number is given.
 - **`cua-driver` capture and accessibility-walk time.** `cua-driver` isn't installed on this machine, and its Linux build needs the full Bot Desktop (Xfce, AT-SPI).
@@ -120,7 +124,7 @@ Load during the A/B was 9 to 29. These runs were made before the review fixes to
 
 ## Step 3: what Hermes would need
 
-In this setup the app's share of the stream was tens of milliseconds, and the model loop, which couldn't be timed here, costs one or two model round trips per action. So the app very likely can't make a computer-use step much faster, and these would, on the server (an inference from the code, to be confirmed with the timing in item 6):
+In this setup the app's share of the stream was tens of milliseconds, and the model loop, which couldn't be timed here, costs one or two model round trips per action. So the app very likely can't make a computer-use step much faster, and these would, on the server (an inference from the code, to be confirmed with the timing in item 6). Step 4 has since timed it: see its own list for what the numbers changed.
 
 1. **One round trip per action, not two.** Take a capture after every state-changing action by default (or make `capture_after` default to true for click, type, key, scroll and drag), so the model sees the result in the same tool result. This removes about half the model calls in a typical run.
 2. **Several actions per call.** Accept a short list of actions in one `computer_use` call (for example, click a field, type, press Enter), with one capture at the end.
@@ -130,3 +134,95 @@ In this setup the app's share of the stream was tens of milliseconds, and the mo
 6. **Timing in the logs.** Log, per `computer_use` call, the capture time, the accessibility-walk time, the image size sent and the model's time to first token, so a slow step can be traced on a real server. None of these could be measured here.
 
 Nothing is needed in the display stream: TigerVNC with Hermes's arguments, and the bridge's one-message-per-read splice, delivered a page change here in tens of milliseconds plus the link's own delay and transfer time.
+
+## Step 4: a real Hermes, timed (2026-11-05)
+
+Steps 1 to 3 had no Hermes to time. This step uses a real one:
+- **Hermes:** Hermes Agent 2026.9.24 (v0.22.6) on the owner's Linux server (10 cores, LAN, ping 0.8 ms), with its own `/api/display/ws` bridge.
+- **Bot Desktop:** TigerVNC Xvnc and Xfce at 1440x900, started by Hermes's `display.start`.
+- **Driver and model:** `cua-driver` 0.21.0 and the server's configured model, `z-ai/glm-5.3-flash` on OpenRouter.
+- **Isolation:** everything ran under a throwaway `HERMES_HOME`, with its own dashboard on the server's loopback and a bench password. This computer reached it through `ssh -N -L`, as the app does. The owner's profiles and screens weren't touched.
+- **What drew on the screen:** Chromium on the Bot Desktop showed `real-hermes/page.html`, an article with images, a full-screen flip and an animated canvas, each driven by a key.
+
+The scripts and raw results are in `real-hermes/` and `real-hermes/runs/`.
+
+### One step, end to end
+
+`turn.mjs` ran the same task three times through Hermes's real loop: capture, press a key, capture, press a key, capture, then answer. It recorded the `/api/ws` events the app gets, and `loop.py` splits them into model round trips and tool times. A model round trip here is the model's answer plus Hermes's own work between two tool calls.
+
+| Stage | Median | Max | Per run |
+| --- | --- | --- | --- |
+| Model round trip | 2.44 s | 6.91 s | 8: 5 actions, 1 to find the tool, 1 retry, 1 answer |
+| `computer_use` capture (`vision`) | 0.59 s | 1.22 s | 3 |
+| `computer_use` key | 0.05 s | 0.08 s | 3 (2 asked for, plus the retry) |
+| Whole turn | 27.1 s | 33.1 s | 14.5, 27.1 and 33.1 s |
+
+The model was 85 to 93 % of each turn, and most of the rest was the captures. The stream and the tunnel are tens of milliseconds (below). What the runs show about the loop:
+
+- **One round trip goes to finding the tool.** `computer_use` is deferred by default (`tools.tool_search.defer`). Each run's first call was `tool_describe`, and every action went through the `tool_call` bridge.
+- **The first key press is always sent twice.** With the default background delivery, `key` came back `ok: false` with `verdict.decision: "escalate"`. In every run, the model then sent it again with `delivery_mode: "foreground"` and kept that. With approvals on, foreground delivery needs its own approval.
+- **The model's time hardly depends on the screenshots** (`model_turn.py`: same model, the real tool schema, the real capture):
+  - With 1 to 20 screenshots in the request, a turn took 1.2 to 2.3 s. At 20 screenshots the prompt was 36k tokens, about 1,700 per 1440x900 image.
+  - One screenshot at 1024 px JPEG took 1.4 to 1.6 s, against 2.0 to 2.3 s at 1440 px.
+  - Reasoning effort high, medium or low took 0.7 to 2.7 s, in no clear order.
+  - Fewer or smaller images save tokens, but little time on this model.
+- **The model in real use** (5,223 calls in the server's logs, `runs/model-latency-from-logs.txt`):
+  - Answers of 300 tokens or fewer, which is what a step mostly is, took 1.9 s median and 5.3 s p90, with about 60k prompt tokens.
+  - Time follows output tokens: 1.4 s under 50 tokens, 5.3 s at 300 to 1,000, and 14 s at 1,000 to 3,000.
+  - The other models in the logs were slower on short answers: 3.3 to 6.6 s median.
+- **`cua-driver` takes half a second per capture, whatever the mode** (`tool_times.py`, `runs/tool-times.txt`):
+  - `som`, `vision` and `ax` each took 500 to 505 ms median, `ax` included, which has no image. The first call took 1.1 s, since it starts the driver.
+  - A profile of one capture put 493 ms in the wait for the driver's MCP reply.
+  - Clicks took 49 ms and keys 19 ms.
+  - A `vision` capture came back as a 446 KB PNG, although Hermes asks for JPEG at quality 85.
+- **Approvals.** For computer use, `approvals.mode: smart` skips the guardian model. Every input action that isn't granted for the chat asks the owner, on its own Approval card: one per kind of action (click, type, key, scroll and so on), and another for foreground delivery. That is a person's time, which isn't measured here.
+
+### The stream, through the real bridge
+
+`measure.mjs` speaks RFB to `/api/display/ws` as noVNC 1.7 does with TigerVNC: Tight, quality 7, compression 2, fences and continuous updates. It holds the screen, presses keys on the page and times the updates that follow. Medians of 12; the busy canvas ran for 5 s. Raw results are in `runs/stream-*.json`.
+
+| Read from | Fence round trip | Key → first update in: full-screen flip | Article scroll | Busy canvas |
+| --- | --- | --- | --- | --- |
+| Xvnc's socket, on the server | 0.1 ms | 28.9 ms | 27.3 ms | 30.2 frames/s |
+| Hermes's bridge, on the server | 0.5 ms | 32.7 ms | 34.2 ms | 30.2 frames/s |
+| The bridge through the SSH tunnel, on this computer | 2.1 ms | 39.1 ms | 44.3 ms | 30.0 frames/s |
+
+- **The first update is the picture.** TigerVNC sends a JPEG picture first: 223 to 226 kB for these changes, finished 27 to 44 ms after the key. About 100 ms later, once the link is idle, it sends a lossless refresh of the same area, about 530 kB more, finished 134 to 178 ms after the key. What the owner sees change is the first update.
+- **The split:** Hermes's bridge added about 5 ms, and the tunnel and LAN about 6 to 10 ms. The busy canvas kept Xvnc's 30 frames a second everywhere.
+
+**In the app.** This used `app-trace.patch` and `app_trace.py`, trace in `runs/app-stream.log.xz`: a debug build on Xvfb with software GL, as in Step 2, at a load average of 16 to 19.
+- **First frame of a change:** drawn 16 ms (median) after its first chunk reached Rust, 20 ms at p90.
+- **Each chunk, Rust to the webview:** 1.7 ms median, 38 ms at p99.
+- **A busy screen:** drawn every 32 ms (median), 38 ms at p90, so it kept the 30 frames a second.
+
+A key press's picture reached the glass on this computer in about 55 to 60 ms.
+
+### The one app-side cost: screenshots in the chat
+
+Hermes sends a tool's whole result with `tool.complete`. A `computer_use` capture's result carries its screenshot as a base64 data URL, so each capture is a 0.9 to 1 MB frame on `/api/ws`. The chat kept that result, pretty-printed, as the tool call's text.
+
+The instrumented build ran the same kind of computer-use turn through the real transport and Saved-copy code (`runs/app-chat-*.log`):
+
+| | Before | After (ADR 0061) |
+| --- | --- | --- |
+| Frame per capture on `/api/ws` | 0.9–1.0 MB | 0.9–1.0 MB (unchanged; Hermes sends it) |
+| Handling one frame in the webview | about 1 ms | about 1 to 2 ms |
+| The chat's Saved copy at the reply's end | 4.7 MB of JSON for 5 captures, over the 2 MB limit, so not kept | 46 kB for 7 captures, kept |
+| Saving it | 13 to 15 ms | 1 ms |
+
+This isn't what makes a step slow: the frame costs the webview about a millisecond. But each step made the chat about 1 MB bigger, cost it its Saved copy, and could push other chats' copies out. The chat now keeps a short note in place of each image (ADR 0061).
+
+### What Hermes would need, with the numbers
+
+In order of measured effect on a step:
+
+1. **Fewer round trips per action** (Step 3, items 1 and 2). Each one cost 2.4 s here. A five-action task took eight, so taking a capture after each action by default, and allowing several actions per call, would roughly halve a task.
+2. **Don't defer `computer_use` while the Bot Desktop is running**, or keep it described once it has been. That saves one round trip per turn.
+3. **Deliver input in the foreground on the Bot Desktop by default.** No one else's focus is there to steal. That saves the retry every run had, and its separate approval.
+4. **Find out why each capture takes 0.5 s in `cua-driver` on Linux**, even `ax` with no image. On a five-capture task that's 2.5 s.
+5. **Leave image data out of `tool.complete`.** The model needs it, but clients don't: the event should carry the text and the saved path. This app now drops it on arrival (ADR 0061). Other clients pay for it too.
+6. **One approval for all of computer use in a chat**, rather than one per kind of action and another for foreground.
+7. **Smaller screenshots** (Step 3, item 5) matter less than thought: on this model they changed a turn's time by a few hundred milliseconds at most. Sending the JPEG Hermes already asks for, instead of a PNG, would still cut each request.
+8. **Timing in the logs** (Step 3, item 6) is partly there. `agent.log` already has each tool's time ("tool computer_use completed (1.37s)") and each model call's latency and token counts. Still missing are the driver's own time and the accessibility walk.
+
+**Nothing in the stream needs to change.** A change on the Bot Desktop reached the glass on this computer in under 60 ms, less than two frames at Xvnc's 30 frames a second.

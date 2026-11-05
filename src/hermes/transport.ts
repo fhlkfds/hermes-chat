@@ -56,6 +56,7 @@ import { splitPath, type OutputsIo, type StoredRow as StoredOutputRow } from "./
 import type { UsageIo } from "./usageAnalytics";
 import { compactResultOf, compactionsOf, readingOf, type CompactResult, type CompactionHistory, type CompactionRow, type ContextReading } from "./contextInspect";
 import { chatUsageOf, countersOf, newerChatUsage, replyUsage, ZERO_COUNTERS, type ReplyUsage, type UsageCounters } from "./usage";
+import { toolResultText } from "./toolResult";
 import {
   BRANCH_KEY_TTL_MS,
   NO_BRANCHES,
@@ -4443,7 +4444,8 @@ function applyEvent(c: Chat, type: string, p: Record<string, unknown>): Chat {
                 ...i,
                 status: "done",
                 durationS: p.duration_s as number | undefined,
-                result: typeof p.result === "string" ? p.result : p.result == null ? undefined : JSON.stringify(p.result, null, 2),
+                // A screenshot inside it stays on the server (ADR 0061).
+                result: toolResultText(p.result),
                 summary: p.summary as string | undefined,
               }
             : i,

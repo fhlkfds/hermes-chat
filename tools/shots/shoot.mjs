@@ -44,6 +44,28 @@ const typeIn = (text) =>
 const pickPersona = (profile) =>
   `(() => { const s = document.querySelector("select.persona-profile");
      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(s, ${JSON.stringify(profile)}); s.dispatchEvent(new Event("change", { bubbles: true })); })()`;
+// A computer_use capture as Hermes sends it with tool.complete (ADR 0060): its screenshot inline, as a 1440x900 PNG's
+// worth of base64 (the bytes are random; only the size is real), then the tool call opened.
+const capture = `(async () => {
+  const { hermes: h, server: s } = window.shots;
+  const bytes = new Uint8Array(445924).map(() => Math.random() * 256);
+  let bin = ""; for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
+  const shot = "/home/liam/.hermes/cache/images/computer_use_76f76bd5c54f4cee.png";
+  await h.send("nas", "Open the router's admin page and tell me its firmware version.");
+  const rt = s.runtimeIdOf("nas");
+  s.event(rt, "message.start");
+  s.event(rt, "tool.start", { tool_id: "cu1", name: "computer_use", args: { action: "capture", mode: "vision" } });
+  s.event(rt, "tool.complete", { tool_id: "cu1", name: "computer_use", duration_s: 0.59, result: {
+    _multimodal: true,
+    content: [
+      { type: "text", text: "capture mode=vision 1440x900 app=Chromium-browser\\n0 interactable element(s):\\n  (shareable screenshot saved to " + shot + ")" },
+      { type: "image_url", image_url: { url: "data:image/png;base64,iVBORw0KGgo" + btoa(bin) } },
+    ],
+    text_summary: "capture mode=vision 1440x900 app=Chromium-browser",
+    meta: { mode: "vision", width: 1440, height: 900, elements: 0, png_bytes: 445924, screenshot_path: shot },
+  } });
+  s.event(rt, "message.complete", { text: "The router runs firmware 4.2.1.", status: "complete" });
+})()`;
 const scenes = {
   "sidebar-sections": { query: "", steps: [sections, click(".section-toggle", "Snoozed"), click(".section-toggle", "Settled")] },
   "sidebar-sections-light": { query: "?mode=light", steps: [sections, click(".section-toggle", "Snoozed"), click(".section-toggle", "Settled")] },
@@ -103,6 +125,10 @@ const scenes = {
   "skills-runs-with": { query: "", steps: [click("button", "Nightly backup"), typeIn("clear the stale lock using $restic-maintenance ")] },
   "skills-sent": { query: "", steps: [click("button", "Nightly backup"), typeIn("clear the stale lock using $restic-maintenance "), key("Enter")] },
   "skills-slash-menu-light": { query: "?mode=light", steps: [click("button", "Nightly backup"), typeIn("/")] },
+  "computer-use-result": {
+    query: "",
+    steps: [click("button", "NAS disk usage"), capture, click(".tool-line", "computer_use"), `document.querySelectorAll(".tool.open pre")[1].scrollTop = 150`],
+  },
   "automation-history-light": { query: "?mode=light", height: 1400, steps: [click("button[aria-label='Automations']"), click("button", "triage-issues"), scrollTo(".delivery-list")] },
 };
 const wanted = process.argv.slice(2).length ? process.argv.slice(2) : Object.keys(scenes);

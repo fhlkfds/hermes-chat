@@ -1,0 +1,8 @@
+z-ai/glm-5.3-flash images=1 1440px q85 (212 kB each): 2274 ms, request 289 kB, prompt 3323 tok, out 141 tok -> '{"action": "scroll", "amount": 30, "direction": "down"}'
+z-ai/glm-5.3-flash images=1 1440px q85 (212 kB each): 1983 ms, request 289 kB, prompt 3323 tok, out 134 tok -> '{"action": "scroll", "amount": 30, "direction": "down"}'
+z-ai/glm-5.3-flash images=5 1440px q85 (212 kB each): 1230 ms, request 1422 kB, prompt 10303 tok, out 24 tok -> '{"action": "scroll", "direction": "down", "amount": 20}'
+z-ai/glm-5.3-flash images=10 1440px q85 (212 kB each): 1393 ms, request 2838 kB, prompt 19028 tok, out 18 tok -> '{"action": "capture", "mode": "vision"}'
+z-ai/glm-5.3-flash images=20 1440px q85 (212 kB each): 2165 ms, request 5671 kB, prompt 36478 tok, out 18 tok -> '{"action": "capture", "mode": "vision"}'
+z-ai/glm-5.3-flash images=1 1024px q70 (88 kB each): 1410 ms, request 124 kB, prompt 2458 tok, out 154 tok -> '{"action": "scroll", "amount": 25, "direction": "down"}'
+z-ai/glm-5.3-flash images=1 1024px q70 (88 kB each): 1628 ms, request 124 kB, prompt 2458 tok, out 181 tok -> '{"action": "scroll", "amount": 30, "direction": "down"}'
+z-ai/glm-5.3-flash images=10 1024px q70 (88 kB each): 1396 ms, request 1195 kB, prompt 10378 tok, out 18 tok -> '{"action": "capture", "mode": "vision"}'

@@ -1,0 +1,95 @@
+{
+ "base": "http://127.0.0.2:9611/",
+ "quality": 7,
+ "compression": 2,
+ "continuousUpdates": true,
+ "observeMs": 14.7,
+ "connectToFirstFrameMs": 13.3,
+ "firstFrameKb": 0,
+ "fenceRoundTripMs": {
+  "n": 20,
+  "p50": 0.1,
+  "p90": 0.2,
+  "max": 0.2
+ },
+ "echo": [
+  {
+   "label": "full-screen flip",
+   "firstUpdateStartMs": {
+    "n": 12,
+    "p50": 24.3,
+    "p90": 25.1,
+    "max": 33.9
+   },
+   "firstUpdateDoneMs": {
+    "n": 12,
+    "p50": 28.9,
+    "p90": 30.7,
+    "max": 38.2
+   },
+   "refreshDoneMs": {
+    "n": 12,
+    "p50": 142,
+    "p90": 146.2,
+    "max": 152.3
+   },
+   "firstUpdateKb": {
+    "n": 12,
+    "p50": 222.6,
+    "p90": 222.6,
+    "max": 222.6
+   },
+   "kbWithRefresh": {
+    "n": 12,
+    "p50": 748.3,
+    "p90": 762.4,
+    "max": 771.7
+   }
+  },
+  {
+   "label": "article scroll",
+   "firstUpdateStartMs": {
+    "n": 12,
+    "p50": 22.9,
+    "p90": 23,
+    "max": 24.1
+   },
+   "firstUpdateDoneMs": {
+    "n": 12,
+    "p50": 27.3,
+    "p90": 27.9,
+    "max": 34.4
+   },
+   "refreshDoneMs": {
+    "n": 12,
+    "p50": 133.7,
+    "p90": 134.7,
+    "max": 138.5
+   },
+   "firstUpdateKb": {
+    "n": 12,
+    "p50": 225.9,
+    "p90": 233.1,
+    "max": 239.3
+   },
+   "kbWithRefresh": {
+    "n": 12,
+    "p50": 755.2,
+    "p90": 793.8,
+    "max": 820.6
+   }
+  }
+ ],
+ "animation": {
+  "framesPerSecond": 30.2,
+  "kbPerSecond": 1729,
+  "frameGapMs": {
+   "n": 150,
+   "p50": 33.1,
+   "p90": 33.6,
+   "max": 35.9
+  }
+ },
+ "wsMessages": 6703,
+ "wsKb": 28760
+}
