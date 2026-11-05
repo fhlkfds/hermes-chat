@@ -78,6 +78,12 @@ pub enum TransportError {
     Voice(String),
     #[error("{0}")]
     BadHeader(String),
+    /// Settings → MCP servers' edit, refused before anything was written (ADR 0068).
+    #[error("{0}")]
+    Mcp(String),
+    /// Settings → MCP servers' edit, after something may have been written: Hermes didn't confirm all of it (ADR 0068).
+    #[error("Not confirmed: {0}")]
+    McpUnconfirmed(String),
     #[error("The dashboard sent Hermes Chat on to {0}, another site. Hermes Chat doesn't follow it there, so your extra request headers aren't sent to it. If a gateway such as Cloudflare Access is in front of the dashboard, check the headers it needs.")]
     Redirected(String),
     /// `/api/status` answered, but not as a Hermes dashboard does (ADR 0056). No password was sent.
@@ -879,7 +885,7 @@ impl Dashboard {
     /// `POST api/sessions/import` whose every session is marked `source: "import"` (`import_body_allowed`, ADR 0031),
     /// the Automations writes (`webhook_write`, ADR 0036), Settings → Memory's external memory writes
     /// (`memory_provider_write`, ADR 0045), and Settings → Voice's provider pick and key save (`voice_provider_write`,
-    /// ADR 0055).
+    /// ADR 0055), and Settings → MCP servers' add, switch, test, sign-in and catalog install (`mcp::relayed`, ADR 0068).
     /// Returns the response body on 2xx.
     pub async fn request(&self, method: &str, path_and_query: &str, body: Option<String>) -> Result<String, TransportError> {
         let (path, query) = path_and_query.split_once('?').unwrap_or((path_and_query, ""));
@@ -902,6 +908,8 @@ impl Dashboard {
             ("PUT", _) if webhook_write("PUT", path, body.as_deref()) => Method::PUT,
             ("PUT", p) if is_profile_soul(p) => Method::PUT,
             ("POST", "api/sessions/import") if import_body_allowed(body.as_deref()) => Method::POST,
+            ("POST", _) if crate::mcp::relayed("POST", path, body.as_deref()) => Method::POST,
+            ("PUT", _) if crate::mcp::relayed("PUT", path, body.as_deref()) => Method::PUT,
             ("POST" | "PUT", _) => return Err(TransportError::NotRelayed(format!("{method} {path}"))),
             (other, _) => return Err(TransportError::NotRelayed(format!("{other} requests"))),
         };
@@ -2087,6 +2095,92 @@ impl Dashboard {
             StatusCode::UNAUTHORIZED => Err(TransportError::SignedOut),
             _ if show_failure => Err(unexpected(resp, &self.headers).await),
             s => Err(TransportError::Unexpected { status: s.as_u16(), body: "(not shown, as it may hold the key)".into() }),
+        }
+    }
+}
+
+impl Dashboard {
+    /// Settings → MCP servers' edit of one server for `profile` (ADR 0068). Hermes's only edit route replaces the whole
+    /// `mcp_servers` map (`PUT /api/mcp/servers`), and its list hides env values, so Rust makes the map:
+    ///
+    /// 1. `GET /api/config?profile=&include_defaults=false` reads the profile's config as written, `${VAR}` references
+    ///    unexpanded (the default read expands them, which would write secrets into config.yaml).
+    /// 2. `mcp::edited` changes that one server; every other goes back as read.
+    /// 3. A new bearer token goes to the profile's `.env` first, under `MCP_<NAME>_API_KEY` (`PUT /api/env`), as adding
+    ///    a server with one does.
+    /// 4. `PUT /api/mcp/servers?profile=` writes the map, and a second raw read must show it, or this says so.
+    ///
+    /// Nothing read goes back to the webview, and no error quotes a secret the map or the token held.
+    pub async fn mcp_edit(&self, profile: &str, edit: &crate::mcp::Edit) -> Result<(), TransportError> {
+        let http = client_kept_to_origin(&self.headers, true)?;
+        let scoped = |path: &str, raw: bool| {
+            let mut url = endpoint(&self.base, path);
+            url.query_pairs_mut().append_pair("profile", profile);
+            if raw {
+                url.query_pairs_mut().append_pair("include_defaults", "false");
+            }
+            url
+        };
+        let read = || async {
+            let text = self.call(&http, Method::GET, scoped("api/config", true), None, true).await?;
+            let config: serde_json::Value = serde_json::from_str(&text)
+                .map_err(|_| TransportError::Unexpected { status: 200, body: "Hermes's config wasn't understood (not shown, as it may hold a secret).".into() })?;
+            Ok::<_, TransportError>(match &config["mcp_servers"] {
+                serde_json::Value::Object(o) => o.clone(),
+                _ => serde_json::Map::new(),
+            })
+        };
+        let before = read().await?;
+        let edited = crate::mcp::edited(&before, edit).map_err(TransportError::Mcp)?;
+        let mut token_saved = false;
+        if let Some((key, token)) = &edited.token {
+            let body = json!({ "key": key, "value": token }).to_string();
+            match self.call(&http, Method::PUT, scoped("api/env", false), Some(body), false).await {
+                Ok(_) => token_saved = true,
+                // A refusal wrote nothing; anything else may have saved the token.
+                Err(e @ TransportError::Unexpected { status: 400..=499, .. }) => return Err(e),
+                Err(e) => return Err(TransportError::McpUnconfirmed(format!("the new bearer token may have been saved, and the rest of the change wasn't sent: {e}"))),
+            }
+        }
+        // Once the token is saved, an existing `${…}` reference already uses it: nothing after this is "not changed".
+        let partial = |e: TransportError| {
+            if token_saved {
+                TransportError::McpUnconfirmed(format!("Hermes saved the new bearer token, but not the rest of the change: {e}"))
+            } else {
+                e
+            }
+        };
+        self.write_mcp_map(&http, scoped("api/mcp/servers", false), &edited).await.map_err(partial)?;
+        match read().await {
+            Ok(after) if after == edited.servers => Ok(()),
+            Ok(_) => Err(TransportError::McpUnconfirmed(
+                "Hermes took the change, but its config reads back otherwise: another client may have changed it meanwhile. The list shows what Hermes has now.".into(),
+            )),
+            Err(e) => Err(TransportError::McpUnconfirmed(format!("Hermes took the change, but its config couldn't be read back to confirm it: {e}"))),
+        }
+    }
+
+    /// `PUT /api/mcp/servers` with the whole map; a refusal is shown without any secret the map held.
+    async fn write_mcp_map(&self, http: &reqwest::Client, url: Url, edited: &crate::mcp::Edited) -> Result<(), TransportError> {
+        let body = json!({ "servers": edited.servers }).to_string();
+        let resp = http
+            .put(url)
+            .header(header::COOKIE, self.cookie_header())
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(body)
+            .send()
+            .await
+            .map_err(unreachable)?;
+        self.keep_cookies(&resp);
+        match resp.status() {
+            s if s.is_success() => Ok(()),
+            StatusCode::UNAUTHORIZED => Err(TransportError::SignedOut),
+            s => {
+                let answer = resp.text().await.unwrap_or_default();
+                // Neither a secret the map held nor a value of the owner's extra request headers is shown.
+                let body = shown_body(s, &crate::mcp::scrubbed(&answer, &edited.secrets), &self.headers);
+                Err(TransportError::Unexpected { status: s.as_u16(), body })
+            }
         }
     }
 }

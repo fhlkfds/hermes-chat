@@ -3,6 +3,7 @@ pub mod defaults_file;
 pub mod display;
 pub mod fonts;
 pub mod links;
+pub mod mcp;
 pub mod local_stt;
 pub mod media;
 pub mod notify;
@@ -515,6 +516,14 @@ async fn hermes_get_limited(state: State<'_, AppState>, path: String, max_bytes:
 async fn hermes_toolset_guards(state: State<'_, AppState>, profile: String) -> Result<transport::ToolsetGuards, String> {
     let dashboard = dashboard(&state).await?;
     dashboard.toolset_guards(&profile).await.map_err(|e| e.to_string())
+}
+
+/// Settings → MCP servers' edit of one server for `profile` (`Dashboard::mcp_edit`, ADR 0068). The webview sends
+/// only that server's fields, secrets it didn't retype left out; Rust reads and writes Hermes's whole map.
+#[tauri::command]
+async fn hermes_mcp_edit(state: State<'_, AppState>, profile: String, edit: mcp::Edit) -> Result<(), String> {
+    let dashboard = dashboard(&state).await?;
+    dashboard.mcp_edit(&profile, &edit).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1234,6 +1243,7 @@ pub fn run(screenshot: bool, link: Option<String>) {
             hermes_speak,
             hermes_voice_setup,
             hermes_toolset_guards,
+            hermes_mcp_edit,
             hermes_get_limited,
             hermes_disconnect,
             files_download,

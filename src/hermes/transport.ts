@@ -25,6 +25,7 @@
 // Each chat's context fullness and YOLO come from its session's `info` and `usage`: research doc "Status bar".
 // Token usage and cost (usage.ts, ADR 0008): each reply's usage is how far its session's live counters moved during
 // its turn; each chat's totals and cost are Hermes's stored ones, read with the chat list and after each turn.
+import { McpApi } from "./mcp";
 import { PersonaApi } from "./persona";
 import { APPROVAL_CHOICES, isBroadGrant, isOutgoing, isWaiting, offeredChoices, turnStart, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type ContextUse, type Found, type Item, type ListedChat, type LiveSession, type LiveSessions, type OtherProfiles, type Outgoing, type OutgoingItem, type Queued, type SavedSend, type SeenFailure, type SessionLive, type Source, QUEUE_LIMIT } from "./model";
 import { catalogFromServer, fallbackCatalog, isEffort, modelKey, pickFromInfo, type ModelCatalog, type ModelPick } from "./models";
@@ -883,7 +884,7 @@ export class Hermes {
     onServer: (profile: string, ids: string[]) => readBack(this.connectedRest, profile, ids),
   };
 
-  private connectedRest = async (method: "GET" | "POST" | "PUT", pathAndQuery: string, body?: unknown): Promise<unknown> => {
+  private connectedRest = async (method: RestMethod, pathAndQuery: string, body?: unknown): Promise<unknown> => {
     const pipe = this.closing ? undefined : this.connectedPipe();
     if (!pipe) throw new Error("Not connected to Hermes.");
     return JSON.parse(await this.relay(pipe, method, pathAndQuery, body));
@@ -898,6 +899,26 @@ export class Hermes {
     for (const c of chats)
       this.reveal({ chatId: c.id, title: c.title, source: "import", settled: true, updatedAt: (c.startedAt ?? Date.now() / 1000) * 1000, snippet: [] });
   }
+
+  /**
+   * Settings → MCP servers' reads and writes (mcp.ts, ADR 0068). Each call names its profile, and goes only over a
+   * connection that is up. An edit goes to Rust, which writes Hermes's whole map; `no_mcp` comes from Rust's toolset
+   * guards.
+   */
+  readonly mcp = new McpApi(
+    (method, pathAndQuery, body) => this.connectedRest(method, pathAndQuery, body),
+    async (profile, edit) => {
+      const pipe = this.closing ? undefined : this.connectedPipe();
+      if (!pipe) throw new Error("Not connected to Hermes.");
+      if (!pipe.mcpEdit) throw new Error("Hermes Chat can't edit MCP servers over this connection. Remove the server and add it again instead.");
+      return pipe.mcpEdit(profile, edit);
+    },
+    async (profile) => {
+      const pipe = this.closing ? undefined : this.connectedPipe();
+      if (!pipe) throw new Error("Not connected to Hermes.");
+      return (await pipe.toolsetGuards(profile)).noMcp;
+    },
+  );
 
   /** Settings → Persona's reads and writes of a profile's SOUL.md (persona.ts). Each call names its profile. */
   readonly persona = new PersonaApi((method, pathAndQuery, body) => this.rest(method, pathAndQuery, body));

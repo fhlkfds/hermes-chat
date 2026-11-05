@@ -117,6 +117,7 @@ function routePipe(d: SignInDetails, opts: { expectServer?: string; quick: boole
       },
       voiceSetup: (profile) => invoke<VoiceSetup>("hermes_voice_setup", { profile }).catch(asError),
       toolsetGuards: (profile) => invoke<ToolsetGuards>("hermes_toolset_guards", { profile }).catch(asError),
+      mcpEdit: (profile, edit) => invoke<void>("hermes_mcp_edit", { profile, edit }).catch(asError),
       download: (id, path, name, onProgress) => {
         const channel = new Channel<TransferProgress>();
         channel.onmessage = onProgress;

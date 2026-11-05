@@ -34,7 +34,28 @@ server.storeMessage("vpn", { role: "assistant", text: "MTU 1500 on a 1420 tunnel
 server.storeMessage("trip", { role: "user", text: "Plan a weekend in Lisbon." });
 server.storeMessage("trip", { role: "assistant", text: "Day 1: Alfama and the castle. Day 2: Belém and the LX Factory." });
 
-const dump = () => JSON.stringify({ sessions: server.sessions, transcripts: server.transcripts }, null, 2);
+// Settings → MCP servers (ADR 0068): a second profile, servers of each kind, one from a plugin, Test results and a catalog.
+server.otherProfiles = { work: [] };
+server.mcp.servers.default = {
+  filesystem: { command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "/srv/notes"] },
+  github: { url: "https://mcp.example.com/github", headers: { Authorization: "Bearer ${MCP_GITHUB_API_KEY}" } },
+  linear: { url: "https://mcp.example.com/linear/sse", auth: "oauth" },
+  weather: { command: "uvx", args: ["weather-mcp"], env: { WEATHER_API_KEY: "wk-synthetic-0123456789" }, enabled: false },
+};
+server.mcp.env.default = { MCP_GITHUB_API_KEY: "ghp-synthetic-token" };
+server.mcp.plugins.default = { kanban: { plugin: "kanban-board", cfg: { command: "kanban-mcp", args: ["--stdio"] } } };
+server.mcp.servers.work = { calendar: { command: "cal-mcp" } };
+server.mcp.probes = {
+  filesystem: { tools: ["read_file", "write_file", "list_directory", "search_files"].map((name) => ({ name, description: `Synthetic ${name.replace("_", " ")}` })) },
+  github: { error: "HTTP 401 from POST https://mcp.example.com/github: Bearer token rejected" },
+};
+server.mcp.catalogEntries = [
+  { name: "context7", description: "Up-to-date library docs for the model", transport: "stdio", command: "npx", args: ["-y", "@upstash/context7-mcp"] },
+  { name: "brave-search", description: "Web search through the Brave Search API", transport: "stdio", command: "npx", args: ["-y", "brave-search-mcp"], env: [{ name: "BRAVE_API_KEY", prompt: "Brave Search API key" }] },
+];
+
+// MCP servers as each profile's config holds them; the `.env` (tokens) stays out.
+const dump = () => JSON.stringify({ sessions: server.sessions, transcripts: server.transcripts, mcp: server.mcp.servers }, null, 2);
 const save = () => stateFile && writeFileSync(stateFile, dump());
 save();
 
