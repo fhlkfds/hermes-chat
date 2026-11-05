@@ -2,7 +2,7 @@
 // Whether the Bot Desktop on the Hermes server has Chrome or Chromium (#218): the Screen tab's note and Settings →
 // Diagnostics' row, against FakeHermes's `display.status` with the browser found, missing and not reported, for the
 // profile in use.
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeHermes } from "../hermes/fakeHermes";
@@ -67,6 +67,21 @@ describe("The Screen tab", () => {
     await waitFor(() => expect(screen.queryByText(NO_BROWSER)).toBeNull());
     expect(screen.getByText(PM_CHROMIUM).closest("[role=status]")!.textContent).toBe(`Hermes found a browser on the server: ${PM_CHROMIUM}`);
     expect(s.requests.filter((r) => r.method === "display.status").map((r) => r.params.profile)).toEqual(["default", "default"]);
+  });
+
+  it.each([
+    ["the clipboard turns the write down", { writeText: () => Promise.reject(new Error("denied")) }],
+    ["there is no clipboard", undefined],
+  ])("says the command wasn't copied when %s, rather than showing it was", async (_, clipboard) => {
+    Object.defineProperty(navigator, "clipboard", { value: clipboard, configurable: true });
+    const s = new FakeHermes();
+    s.display = botDesktop({ browser: null });
+    const hermes = await hermesFor(s);
+    render(<ScreenTab api={hermes.screen} shown connected />);
+    const note = (await screen.findByText(NO_BROWSER)).closest(".preview-state") as HTMLElement;
+    fireEvent.click(within(note).getByRole("button", { name: "Copy the command" }));
+    expect((await within(note).findByRole("alert")).textContent).toBe("Couldn't copy it. Select the command and copy it yourself.");
+    expect(within(note).getByRole("button", { name: "Copy the command" }).querySelector(".lucide-copy")).not.toBeNull();
   });
 
   it.each([

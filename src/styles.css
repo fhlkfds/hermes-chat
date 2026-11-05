@@ -2675,8 +2675,9 @@ label.memory-pick { cursor: pointer; }
 .screen-start > svg { color: var(--muted); }
 .screen-start p { margin: 0; line-height: 1.55; font-size: calc(13rem / 14); }
 .screen-start .btn { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; }
-.screen-command { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+.screen-command { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
 .screen-command code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: calc(12rem / 14); background: var(--raised-2); padding: 6px 8px; border-radius: 6px; }
+.screen-command .copy-failed { flex-basis: 100%; font-size: calc(12rem / 14); color: var(--warn); }
 /* Automations (ADR 0036): webhook routes, the example-event preview, and the delivery history. */
 .automations-screen .automation-fieldset { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .automations-screen .automation-fieldset legend { padding: 0; margin-bottom: 4px; }

@@ -326,9 +326,11 @@ function BotDesktopSection({ screen, connected, profile }: { screen: Pick<Screen
   const note =
     b?.kind === "missing" ? (
       <SettingNote tone="warn">
-        No Chrome or Chromium on the Hermes server, so the agent can't open a browser on its screen. Run this on the server, then check again:
-        <CopyCommand command={BROWSER_FIX} />
-        <div className="muted small">Or set browser.executable_path in this profile's config to a Chrome or Chromium on the server.</div>
+        <div>
+          No Chrome or Chromium on the Hermes server, so the agent can't open a browser on its screen. Run this on the server, then check again:
+          <CopyCommand command={BROWSER_FIX} />
+          <div className="muted small">Or set browser.executable_path in this profile's config to a Chrome or Chromium on the server.</div>
+        </div>
       </SettingNote>
     ) : b?.kind === "unknown" ? (
       <SettingNote>{UNKNOWN_WHY[b.why]}</SettingNote>
