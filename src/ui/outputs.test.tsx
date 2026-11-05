@@ -200,6 +200,7 @@ describe("Outputs", () => {
     expect(localStorage.getItem("hermes-chat.outputs") ?? "").not.toContain("late.md");
   });
 
+  // 250 rows in jsdom: this ran 4–12 s on a loaded machine and timed out at the default 5 s in CI.
   it("shows many outputs a page at a time", async () => {
     const s = server();
     s.transcripts.report = Array.from({ length: 250 }, (_, i) => call(`w${i}`, "write_file", { path: `/srv/many/f${i}.txt` }, written(`/srv/many/f${i}.txt`, i), i * 2 + 1)).flat();
@@ -212,7 +213,7 @@ describe("Outputs", () => {
     expect(shown()).toHaveLength(250);
     await user.type(screen.getByRole("textbox", { name: /Search outputs/ }), "f249.");
     expect(shown()).toEqual(["f249.txt"]);
-  });
+  }, 20_000);
 
   it("says discovery is partial in a chat whose file tools didn't say what they wrote, though none was found", async () => {
     const s = server();
