@@ -1,6 +1,7 @@
 // What the UI renders. Terms follow GLOSSARY.md: a Chat is Active or Settled, may be Archived, and has one Source.
 import type { ModelPick } from "./models";
 import type { ChatUsage, ReplyUsage } from "./usage";
+import type { SubagentTree } from "./subagents";
 
 /** `import`: a transcript file imported into Hermes (ADR 0031). Hermes Chat shows it read-only. */
 export type Source = "app" | "telegram" | "discord" | "cli" | "desktop" | "import" | "other";
@@ -184,6 +185,8 @@ export type Chat = {
    */
   usage?: ChatUsage;
   usageError?: string;
+  /** The Subagents its replies started that this connection has heard of (subagents.ts, ADR 0068). Kept until the app closes. */
+  subagents?: SubagentTree;
 };
 
 /**

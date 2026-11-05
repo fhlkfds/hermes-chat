@@ -14,6 +14,7 @@ import { Menu } from "./ChatMenu";
 import { isBotChat } from "../hermes/bots";
 import { DeleteChatDialog } from "./DeleteChat";
 import { QueuePanel, type QueueApi } from "./Queue";
+import { SubagentsPanel, type SubagentsApi } from "./Subagents";
 import { Markdown } from "./Markdown";
 import { SourceIcon, Spinner, StoredTime, composing, highlight } from "./bits";
 import { wakeFull } from "../hermes/snooze";
@@ -291,6 +292,7 @@ export function ChatPane({
   headActions,
   queue,
   queueApi,
+  subagents,
   commands,
   followUp,
   branch,
@@ -345,6 +347,8 @@ export function ChatPane({
   headActions?: ReactNode;
   queue?: ChatQueue;
   queueApi?: QueueApi;
+  /** Steer, Stop and output for the chat's Subagents; without it the panel only shows them. */
+  subagents?: SubagentsApi;
   commands?: CommandHost;
   /** What sending does while the reply runs: queue or steer (ADR 0057). Without it, it queues. */
   followUp?: FollowUpHost;
@@ -742,6 +746,18 @@ export function ChatPane({
         </JumpContext.Provider>
       </div>
 
+      <SubagentsPanel
+        tree={chat.subagents}
+        api={subagents}
+        approvalWaiting={waiting}
+        onGoToApproval={() => {
+          const id = chat.items.find(isWaiting)?.id;
+          const card = id && rootRef.current?.querySelector<HTMLElement>(`.approval[data-item="${CSS.escape(id)}"]`);
+          if (!card) return;
+          card.scrollIntoView({ block: "center" });
+          card.focus();
+        }}
+      />
       {queueApi && <QueuePanel chat={chat} queue={queue} status={status} api={queueApi} />}
       {chat.source === "import" ? (
         // ADR 0031: an imported transcript is a record, not a session Hermes can carry on as it was.

@@ -144,6 +144,8 @@ describe("a check of a new Hermes (upstream 74b2ed6)", () => {
       automations: "supported",
       outputs: "supported",
       botMode: "supported",
+      // Only a chat's own subagent.list can learn this.
+      subagents: "unknown",
     });
     expect(snap.facts).toEqual({
       version: "0.17.0",

@@ -59,6 +59,7 @@ import type { UsageIo } from "./usageAnalytics";
 import { compactResultOf, compactionsOf, readingOf, type CompactResult, type CompactionHistory, type CompactionRow, type ContextReading } from "./contextInspect";
 import { chatUsageOf, countersOf, newerChatUsage, replyUsage, ZERO_COUNTERS, type ReplyUsage, type UsageCounters } from "./usage";
 import { toolResultText } from "./toolResult";
+import { onLost, onRoster, onSubagentEvent, onUnchecked, parseOutput, type SubagentId, type SubagentOutput } from "./subagents";
 import {
   BRANCH_KEY_TTL_MS,
   NO_BRANCHES,
@@ -290,6 +291,7 @@ type ServerRequest = { id: string; method: string; params: Record<string, unknow
 
 /** JSON-RPC "method not found": what Hermes expects from a client that can't handle a request. */
 const NO_SUCH_METHOD = -32601;
+const NO_SUBAGENT_LIST = "This Hermes has no subagent.list, so it can't say what they did while the app was disconnected.";
 
 /** Why an Edit or Regenerate made nothing: the chat isn't as the owner saw it in the dialog. */
 const REPLAY_CHANGED = "This chat changed since this opened, here or in another Hermes client. Nothing was made; open it again to see the chat as it is now.";
@@ -505,6 +507,8 @@ export class Hermes {
   private pipeProfile?: string;
   /** Counts pipes opened; events from an older pipe than the current one are ignored. */
   private generation = 0;
+  /** The connection whose Hermes has no `subagent.list`. */
+  private noSubagentList?: number;
   /** The connections (by generation) whose Hermes answered that it has no `session.compress`. */
   private noCompact = new Set<number>();
   /** Compactions asked of Hermes and not yet answered, by chat. A message sent meanwhile waits for it (`deliver`). */
@@ -2931,6 +2935,59 @@ export class Hermes {
   }
 
   /**
+   * Reads Hermes's roster of the chat's subagents (`subagent.list`) into its tree, once the chat is resumed on a
+   * connection: what ran or ended while the app wasn't listening. A roster that arrives for a session the chat no longer
+   * has is dropped. A Hermes without the method is asked no more on this connection.
+   */
+  private async listSubagents(chatId: string, runtimeId: string): Promise<void> {
+    const gen = this.generation;
+    const current = () => this.generation === gen && this.snapshot.chats.find((c) => c.id === chatId)?.runtimeId === runtimeId;
+    const unchecked = (why: string) => this.patchChat(chatId, (c) => (c.subagents ? { ...c, subagents: onUnchecked(c.subagents, why) } : c));
+    if (this.noSubagentList === gen) return unchecked(NO_SUBAGENT_LIST);
+    try {
+      const res = await this.request("subagent.list", { session_id: runtimeId });
+      if (current()) this.patchChat(chatId, (c) => ({ ...c, subagents: onRoster(c.subagents, res, Date.now()) }));
+    } catch (e) {
+      const missing = e instanceof RpcError && e.code === NO_SUCH_METHOD;
+      if (missing) this.noSubagentList = gen;
+      if (current()) unchecked(missing ? NO_SUBAGENT_LIST : `Hermes couldn't list them: ${(e as Error).message}`);
+    }
+  }
+
+  /**
+   * The end of a subagent's live transcript (`subagent.tail`, the last 16 KB). Hermes shares it only for a subagent
+   * running for this chat on this connection; otherwise it isn't available.
+   */
+  async subagentOutput(chatId: string, id: SubagentId): Promise<SubagentOutput> {
+    const { runtimeId, still } = this.liveScope(chatId);
+    const res = await this.request("subagent.tail", { session_id: runtimeId, subagent_id: id });
+    still();
+    return parseOutput(res);
+  }
+
+  /**
+   * Steers one subagent (`subagent.steer`): Hermes adds the words to its work after its current tool call, and no other
+   * subagent or the chat's reply gets them. `"rejected"`: Hermes didn't take them, as when it isn't taking steers now.
+   */
+  async steerSubagent(chatId: string, id: SubagentId, text: string): Promise<"queued" | "rejected"> {
+    const { runtimeId, still } = this.liveScope(chatId);
+    const res = (await this.request("subagent.steer", { session_id: runtimeId, subagent_id: id, text })) as { status?: unknown };
+    still();
+    return res?.status === "queued" ? "queued" : "rejected";
+  }
+
+  /**
+   * Stops one subagent (`subagent.interrupt`), and with it the subagents it started; the chat's reply and the other
+   * subagents keep going. Resolves whether Hermes found it to stop. Its `subagent.complete` then says it was stopped.
+   */
+  async stopSubagent(chatId: string, id: SubagentId): Promise<boolean> {
+    const { runtimeId, still } = this.liveScope(chatId);
+    const res = (await this.request("subagent.interrupt", { session_id: runtimeId, subagent_id: id })) as { found?: unknown };
+    still();
+    return res?.found === true;
+  }
+
+  /**
    * The chat's runtime session on this connection, and a check that throws if, by the time Hermes answers, the
    * connection, profile or the chat's session is another.
    */
@@ -3103,6 +3160,12 @@ export class Hermes {
       // Between turns its usage is where the next turn starts; one sent during a turn is part of the way through it.
       const counters = countersOf(payload.usage);
       if (counters && !chat.running) this.usageFrom.set(session_id!, counters);
+      return;
+    }
+    // Subagents are kept apart from the transcript, in the chat's own tree (ADR 0068).
+    if (type.startsWith("subagent.")) {
+      const at = Date.now();
+      this.patchChat(chat.id, (c) => ({ ...c, subagents: onSubagentEvent(c.subagents, type, payload, at) }));
       return;
     }
     if (type === "message.start") this.turnStart.set(chat.id, chat.items.at(-1)?.id ?? null);
@@ -3340,7 +3403,11 @@ export class Hermes {
       live,
       status: "reconnecting",
       closedReason: reason,
-      chats: this.snapshot.chats.map((c) => (c.runtimeId || c.running ? { ...c, runtimeId: undefined, live: undefined, running: false, stopping: false } : c)),
+      chats: this.snapshot.chats.map((c) => {
+        const subagents = onLost(c.subagents, Date.now());
+        const left = subagents === c.subagents ? c : { ...c, subagents };
+        return c.runtimeId || c.running ? { ...left, runtimeId: undefined, live: undefined, running: false, stopping: false } : left;
+      }),
     });
   }
 
@@ -3487,6 +3554,7 @@ export class Hermes {
         this.saveOutbox(chatId);
         this.saveTranscript(chatId);
         this.showApprovals(chatId, asking);
+        this.track(this.listSubagents(chatId, res.session_id));
         return res.session_id;
       } finally {
         this.resuming.delete(chatId);

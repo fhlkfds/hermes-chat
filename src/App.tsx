@@ -3619,6 +3619,21 @@ function ChatView({
       }
       queue={queue}
       queueApi={queueApi}
+      subagents={
+        started
+          ? {
+              output: (id) => hermes.subagentOutput(chat.id, id),
+              steer: (id, text) => hermes.steerSubagent(chat.id, id, text),
+              stop: (id) => hermes.stopSubagent(chat.id, id),
+              blocked:
+                status !== "connected" || !chat.runtimeId
+                  ? "Hermes isn't connected to this chat right now."
+                  : hermes.capabilities.get("subagents").state === "unsupported"
+                    ? "This Hermes can't steer or stop subagents."
+                    : undefined,
+            }
+          : undefined
+      }
       branch={started ? { blocked: branchBlocked(chat, status === "connected"), onBranch: setBranchFrom } : undefined}
       branchedFrom={
         link && (
