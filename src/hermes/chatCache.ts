@@ -195,12 +195,14 @@ function toOutgoing(v: unknown): OutgoingItem | undefined {
   const o = (v as { outgoing?: Record<string, unknown> } | null)?.outgoing;
   if (item?.kind !== "user" || !o || (o.state !== "sending" && o.state !== "failed" && o.state !== "unknown")) return undefined;
   const sent = o.sent as Record<string, unknown> | undefined;
+  const skill = o.skill as Record<string, unknown> | undefined;
   const attachments = Array.isArray(o.attachments) ? o.attachments.filter(isAttachment) : [];
   const outgoing: Outgoing = {
     state: o.state,
     ...(str(o.reason) !== undefined && { reason: str(o.reason) }),
     ...(attachments.length && { attachments }),
     ...(typeof sent?.prompt === "string" && { sent: { prompt: sent.prompt, ...(num(sent.after) !== undefined && { after: num(sent.after) }) } }),
+    ...(skill && typeof skill.name === "string" && skill.name && typeof skill.arg === "string" && { skill: { name: skill.name, arg: skill.arg } }),
   };
   return { ...item, outgoing };
 }

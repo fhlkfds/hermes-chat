@@ -29,6 +29,11 @@ const sections = `(async () => {
 const menuOn = (chat) =>
   `(() => { const el = document.querySelector('.row-open[data-chat="${chat}"]'); const r = el.getBoundingClientRect();
      el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: r.left + 80, clientY: r.top + 20 })); })()`;
+// Types into the composer as the owner would: React sees an input event, and the caret is at the end.
+const typeIn = (text) =>
+  `(() => { const ta = document.querySelector("textarea[data-composer]"); ta.focus();
+     Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(ta, ${JSON.stringify(text)});
+     ta.setSelectionRange(ta.value.length, ta.value.length); ta.dispatchEvent(new Event("input", { bubbles: true })); })()`;
 const scenes = {
   "sidebar-sections": { query: "", steps: [sections, click(".section-toggle", "Snoozed"), click(".section-toggle", "Settled")] },
   "sidebar-sections-light": { query: "?mode=light", steps: [sections, click(".section-toggle", "Snoozed"), click(".section-toggle", "Settled")] },
@@ -56,6 +61,12 @@ const scenes = {
   "automation-editor": { query: "", height: 1700, steps: [click("button[aria-label='Automations']"), click("button", "New automation")] },
   "automation-preview": { query: "", height: 1100, steps: [click("button[aria-label='Automations']"), click("button", "New automation"), scrollTo(".automation-preview")] },
   "automation-history": { query: "", height: 1400, steps: [click("button[aria-label='Automations']"), click("button", "triage-issues"), scrollTo(".delivery-list")] },
+  // Skills from the composer (issue #188): the "/" menu, the "$" menu mid-message, the note before sending, and the chat after.
+  "skills-slash-menu": { query: "", steps: [click("button", "Nightly backup"), typeIn("/")] },
+  "skills-dollar-menu": { query: "", steps: [click("button", "Nightly backup"), typeIn("clear the stale lock using $re")] },
+  "skills-runs-with": { query: "", steps: [click("button", "Nightly backup"), typeIn("clear the stale lock using $restic-maintenance ")] },
+  "skills-sent": { query: "", steps: [click("button", "Nightly backup"), typeIn("clear the stale lock using $restic-maintenance "), key("Enter")] },
+  "skills-slash-menu-light": { query: "?mode=light", steps: [click("button", "Nightly backup"), typeIn("/")] },
   "automation-history-light": { query: "?mode=light", height: 1400, steps: [click("button[aria-label='Automations']"), click("button", "triage-issues"), scrollTo(".delivery-list")] },
 };
 const wanted = process.argv.slice(2).length ? process.argv.slice(2) : Object.keys(scenes);

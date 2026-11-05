@@ -33,6 +33,7 @@ import { failureMark } from "./inbox";
 // Projects are Hermes's own, read and written with legacy `projects.*` (projects.ts, research doc "Projects").
 import { projectsApi, type ProjectsApi } from "./projects";
 import { listServerCommands, runServerCommand, type CommandDef, type CommandResult, type ServerCommandList } from "./commands";
+import { callText, offeredSkills, runSkill, skillInvocationText, type SkillCall, type SkillCommands } from "./skillCommands";
 import { CronApi } from "./cronJobs";
 import { AutomationsApi } from "./automations";
 import { ModelSettingsApi } from "./modelSettings";
@@ -109,6 +110,8 @@ const LOOKUP_AT_ONCE = 4;
 /** The most chats one search lists; dashboard REST caps it at 100. */
 const SEARCH_LIMIT = 50;
 export const SEARCH_MAX = 100;
+/** How long the skills the composer offers are used before they are read again (`skillCommands`). */
+export const SKILL_COMMANDS_FRESH_MS = 60_000;
 
 const MiB = 1024 * 1024;
 /** The most legacy `image.attach_bytes` and `file.attach` take (research doc §7). PDFs go as files: `pdf.attach`
@@ -591,6 +594,8 @@ export class Hermes {
   private listedAt?: number;
   /** The server commands listed for a connection and profile (`serverCommands`). */
   private commandsRead?: { key: string; done: Promise<ServerCommandList> };
+  /** The skills the composer offers, read for a connection and profile at `at` (`skillCommands`). */
+  private skillsRead?: { key: string; at: number; done: Promise<SkillCommands | undefined> };
   /** The voice set-up read for a connection and profile (`voiceSetup`). */
   private voiceRead?: { key: string; done: Promise<VoiceSetup> };
   /** The model list being read, and for which profile. */
@@ -877,7 +882,11 @@ export class Hermes {
   /** Settings → Persona's reads and writes of a profile's SOUL.md (persona.ts). Each call names its profile. */
   readonly persona = new PersonaApi((method, pathAndQuery, body) => this.rest(method, pathAndQuery, body));
   /** Settings → Skills' reads and writes of a profile's skills (skills.ts). Each call names its profile. */
-  readonly skills = new SkillsApi((method, pathAndQuery, body) => this.rest(method, pathAndQuery, body));
+  readonly skills = new SkillsApi((method, pathAndQuery, body) => {
+    // A switch or an edit can change which skills the composer offers, and their descriptions: read them again.
+    if (method !== "GET") this.skillsRead = undefined;
+    return this.rest(method, pathAndQuery, body);
+  });
 
   /**
    * What this Hermes server can do, for Connection diagnostics and the screens that depend on it (capabilities.ts,
@@ -1045,6 +1054,30 @@ export class Hermes {
       });
     }
     return this.commandsRead.done;
+  }
+
+  /**
+   * The skills the composer offers for the shown profile (skillCommands.ts): those Hermes's `commands.catalog` lists
+   * that Settings → Skills shows as on for the profile and this app's chats. Undefined when Hermes can't list skills that
+   * way, or it can't be told which are on. Read again after `SKILL_COMMANDS_FRESH_MS`, after a change from Settings →
+   * Skills, or on a new connection or profile; a failed read is tried again on the next call.
+   */
+  skillCommands(): Promise<SkillCommands | undefined> {
+    if (!this.connectedPipe()) return Promise.reject(new Error("Not connected to Hermes."));
+    const key = `${this.generation}/${this.profile}`;
+    const read = this.skillsRead;
+    if (read?.key !== key || Date.now() - read.at > SKILL_COMMANDS_FRESH_MS) {
+      const profile = this.profile;
+      const done = Promise.all([listServerCommands((method, params) => this.request(method, params), profile), this.skills.list(profile)]).then(
+        ([catalog, view]) => (catalog.skills ? offeredSkills(catalog.skills, view) : undefined),
+      );
+      const entry = { key, at: Date.now(), done };
+      this.skillsRead = entry;
+      done.catch(() => {
+        if (this.skillsRead === entry) this.skillsRead = undefined;
+      });
+    }
+    return this.skillsRead!.done;
   }
 
   /** Runs a server command in the chat's live session (commands.ts). Rejects if the chat isn't open on Hermes. */
@@ -2135,8 +2168,8 @@ export class Hermes {
    * became of it (`Delivery`): if Hermes didn't take it, or may not have, it stays in the chat marked so, with why, until
    * the owner retries or dismisses it, or reading the history back settles it. Nothing here ever sends it again.
    */
-  async send(chatId: string, text: string, attachments: Attachment[] = []): Promise<Delivery> {
-    return (await this.deliver(chatId, text, attachments)).delivery;
+  async send(chatId: string, text: string, attachments: Attachment[] = [], skill?: SkillCall): Promise<Delivery> {
+    return (await this.deliver(chatId, text, attachments, undefined, skill)).delivery;
   }
 
   /**
@@ -2158,7 +2191,7 @@ export class Hermes {
     if (!chat || !first || first.outgoing.state === "sending" || chat.running || this.submitting.has(chatId)) return undefined;
     const profile = this.profile;
     this.setOutgoing(profile, chatId, itemId, () => null);
-    const { delivery, itemId: again } = await this.deliver(chatId, first.text, first.outgoing.attachments ?? []);
+    const { delivery, itemId: again } = await this.deliver(chatId, first.text, first.outgoing.attachments ?? [], undefined, first.outgoing.skill);
     if (delivery.delivery === "unsent" && first.outgoing.state === "unknown" && again) this.setOutgoing(profile, chatId, again, () => first);
     return delivery;
   }
@@ -2317,9 +2350,12 @@ export class Hermes {
     text: string,
     attachments: Attachment[],
     queued?: { kept: (ok: boolean) => void; held: () => void },
+    skill?: SkillCall,
   ): Promise<{ delivery: Delivery; itemId?: string }> {
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
     if (!chat) return { delivery: { delivery: "unsent", reason: "This chat isn't in the list." } };
+    // A message that runs skills shows as Hermes will show it, `/name` and the words, never the skill's own text.
+    if (skill) text = callText(skill);
     const profile = this.profile;
     const activating = chat.settled;
     const wantedBefore = this.pinWanted.get(chatId);
@@ -2329,7 +2365,7 @@ export class Hermes {
       id: freeId(chat.items, `u-${chat.items.length}`),
       text,
       ...(attachments.length && { attachments: attachments.map((a) => a.name) }),
-      outgoing: { state: "sending", ...(attachments.length && { attachments }) },
+      outgoing: { state: "sending", ...(attachments.length && { attachments }), ...(skill && { skill }) },
     };
     this.patchChat(chatId, (c) => ({
       ...c,
@@ -2355,9 +2391,20 @@ export class Hermes {
     }
     try {
       // From here Hermes may have it: what went out, and the newest row the chat had, find it in the history later.
+      // A message that runs skills is found in the history by what Hermes shows for it, not the skill text that went.
+      let shown: string | undefined;
       const goingOut = (prompt: string) =>
-        this.setOutgoing(profile, chatId, user.id, (r) => withOutgoing(r, { sent: { prompt, ...(this.knownRow.has(chatId) && { after: this.knownRow.get(chatId) }) } }));
-      const submitting = this.resume(chatId).then((runtimeId) => this.submit(runtimeId, text, attachments, goingOut, !!queued));
+        this.setOutgoing(profile, chatId, user.id, (r) =>
+          withOutgoing(r, { sent: { prompt: shown ?? prompt, ...(this.knownRow.has(chatId) && { after: this.knownRow.get(chatId) }) } }),
+        );
+      const submitting = this.resume(chatId).then(async (runtimeId) => {
+        if (!skill) return this.submit(runtimeId, text, attachments, goingOut, !!queued);
+        // Hermes builds the skill's text for this session; nothing reaches the chat until it is sent below.
+        const ran = await runSkill((method, params) => this.request(method, params), runtimeId, skill);
+        shown = ran.display;
+        this.setOutgoing(profile, chatId, user.id, (r) => ({ ...r, text: ran.display }));
+        return this.submit(runtimeId, ran.message, attachments, goingOut, !!queued);
+      });
       this.submitting.set(chatId, submitting);
       const rowId = submitting.then(
         (r) => (typeof r.user_row_id === "number" ? r.user_row_id : undefined),
@@ -3911,7 +3958,11 @@ export class Hermes {
       try {
         const query = new URLSearchParams({ profile, order: "latest", limit: String(READ_BACK_ROWS), inline_images: "false" });
         const res = (await this.rest("GET", `${sessionPath(chat.id)}/messages?${query}`)) as { messages?: (StoredRow & StoredMessage)[] };
-        readBack = (res.messages ?? []).map((m) => ({ role: m.role ?? "", text: storedText(m.content), rowId: m.id }));
+        // Stored rows hold a skill's whole text; Hermes's history shows its invocation, which is what went out from here.
+        readBack = (res.messages ?? []).map((m) => {
+          const text = storedText(m.content);
+          return { role: m.role ?? "", text: skillInvocationText(text) ?? text, rowId: m.id };
+        });
       } catch {
         continue;
       }

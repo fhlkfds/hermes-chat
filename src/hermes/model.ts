@@ -37,6 +37,11 @@ export type Outgoing = {
   reason?: string;
   attachments?: Attachment[];
   sent?: { prompt: string; after?: number };
+  /**
+   * A message that runs skills (skillCommands.ts): what `command.dispatch` is asked, so a retry runs them again. The
+   * skill's text Hermes builds from it is never kept here; `sent.prompt` is what Hermes's history shows for it.
+   */
+  skill?: { name: string; arg: string };
 };
 
 export type Item =

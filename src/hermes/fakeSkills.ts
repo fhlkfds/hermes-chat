@@ -4,6 +4,7 @@
 // (`FakeServerFiles`), so the Server files listing sees the same folders.
 import type { FakeServerFiles } from "./fakeServerFiles";
 import type { RestRequest } from "./fakeHermes";
+import { skillSlug } from "./skillCommands";
 
 /** One skill folder: where it is on the server and what `provenance` Hermes gives it. */
 export type FakeSkill = { dir: string; source: "hub" | "bundled" | "external" | "agent"; category?: string };
@@ -72,6 +73,25 @@ export class FakeSkills {
   /** `skills.platform_disabled` for `GET /api/config`. */
   config(profile: string) {
     return { platform_disabled: this.platformDisabled[profile] ?? {} };
+  }
+
+  /**
+   * The skills `commands.catalog` lists for a profile as Hermes scans them for commands (`scan_skill_commands`): by front
+   * matter name, leaving out one in `skills.disabled`, the later of two whose slug is the same, and any skill whose
+   * name two skills share. The per-platform lists aren't applied: the dashboard's own process names no platform.
+   */
+  commandSkills(profile: string): { slug: string; name: string; description: string; body: string }[] {
+    const skills = this.folders[profile] ?? [];
+    const names = skills.map((s) => this.nameOf(s));
+    const out: { slug: string; name: string; description: string; body: string }[] = [];
+    skills.forEach((s, i) => {
+      const name = names[i];
+      const slug = skillSlug(name);
+      if (names.filter((n) => n === name).length > 1 || this.disabled[profile]?.has(name) || !slug || out.some((o) => o.slug === slug)) return;
+      const text = this.file(s.dir);
+      out.push({ slug, name, description: frontmatter(text)?.description || `Invoke the ${name} skill`, body: text.replace(/^---[\s\S]*?\n---\s*\n/, "").trim() });
+    });
+    return out;
   }
 
   private nameOf(s: FakeSkill) {
