@@ -222,9 +222,9 @@ describe("Settings → Toolsets", () => {
     const { user } = await shown(server);
     await user.click(toggle("Image Generation"));
     const ask = await screen.findByRole("alertdialog", { name: "Turn Image Generation on" });
-    // Right after its toolset's row, not above the list.
+    // Under its toolset's row, full width, not above the list.
     const row = toggle("Image Generation").closest(".toolset-row")!;
-    expect(row.nextElementSibling).toBe(ask);
+    expect(ask.parentElement).toBe(row.querySelector(":scope > .set-sub"));
     await waitFor(() => expect(document.activeElement).toBe(within(ask).getByRole("button", { name: "Keep it off" })));
     await user.keyboard("{Enter}");
     expect(screen.queryByRole("alertdialog")).toBeNull();
@@ -465,7 +465,8 @@ describe("Settings → Toolsets", () => {
       await shown();
       const scopes = document.querySelector("dl.toolset-scopes") as HTMLElement;
       expect(scopes.getAttribute("aria-label")).toBe("What a change reaches");
-      const terms = within(scopes).getAllByRole("term").map((t) => t.textContent);
+      // Behind the section's (i), so hidden until it's opened.
+      const terms = within(scopes).getAllByRole("term", { hidden: true }).map((t) => t.textContent);
       expect(terms).toEqual(["This chat Not changeable here", "The default profile Changed here", "The whole server Not changeable here"]);
       expect(scopes.textContent).toMatch(/its only way rebuilds the chat's agent and clears what the chat holds in memory/);
       expect(scopes.textContent).toMatch(/HERMES_TUI_TOOLSETS/);
@@ -693,5 +694,122 @@ describe("Settings → Toolsets", () => {
       expect(screen.queryByText(/This chat:/)).toBeNull();
       expect(server.requests.some((q) => q.method === "tools.show")).toBe(false);
     });
+  });
+});
+
+describe("Settings → Toolsets layout: cards of rows, help behind an (i)", () => {
+  it("draws a card of toolset rows, each with its switch on the right, and other platforms as their own section", async () => {
+    await shown();
+    const main = screen.getByRole("heading", { name: "Toolsets" }).closest("section") as HTMLElement;
+    expect(main.classList.contains("set-section")).toBe(true);
+    const ours = within(main).getByRole("group", { name: "Toolsets for this app's chats" });
+    expect(ours.parentElement?.classList.contains("set-card")).toBe(true);
+    const web = rowOf("Web Search & Scraping");
+    expect(web.classList.contains("set-row")).toBe(true);
+    expect(toggle("Web Search & Scraping").closest(".set-control")?.parentElement).toBe(web);
+    expect(within(web).getByText("web_search, web_extract").closest(".set-hint")).toBeTruthy();
+    // Refresh acts on the whole section, at its heading.
+    expect(screen.getByRole("button", { name: "Refresh" }).closest(".set-head")).toBeTruthy();
+    const others = screen.getByRole("heading", { name: "Other platforms" }).closest("section") as HTMLElement;
+    expect(others).not.toBe(main);
+    expect(within(others).getByRole("group", { name: "Toolsets for other platforms" }).parentElement?.classList.contains("set-card")).toBe(true);
+    expect(within(others).getByText(/These only reach the platform named on each/).closest(".set-intro")).toBeTruthy();
+  });
+
+  it("folds how a change applies behind the section's (i), and opens it", async () => {
+    const { user } = await shown();
+    const about = screen.getByRole("button", { name: "About Toolsets" });
+    expect(about.getAttribute("aria-expanded")).toBe("false");
+    const how = document.getElementById(about.getAttribute("aria-controls")!)!;
+    expect(how.hidden).toBe(true);
+    expect(within(how).getByText(/How a change applies:/)).toBeTruthy();
+    expect(how.querySelector("dl.toolset-scopes")).toBeTruthy();
+    expect(within(how).getByText(/Toolsets aren't Approvals/)).toBeTruthy();
+    expect(within(how).getByText(/Hermes keeps this list on the server/)).toBeTruthy();
+    // The heading's name is only its title.
+    expect(screen.getByRole("heading", { name: "Toolsets" }).textContent).toBe("Toolsets");
+    await user.click(about);
+    expect(about.getAttribute("aria-expanded")).toBe("true");
+    expect(how.hidden).toBe(false);
+  });
+
+  it("folds the speech-to-text setting's explanation behind its row's (i), without joining the switch's name", async () => {
+    const { user } = await shown();
+    const about = screen.getByRole("button", { name: "About Speech-to-Text" });
+    expect(about.getAttribute("aria-expanded")).toBe("false");
+    const more = screen.getByText(/turns speech-to-text on or off for the profile/).closest(".set-more") as HTMLElement;
+    expect(more.hidden).toBe(true);
+    expect(toggle("Speech-to-Text").closest(".toolset-row")?.contains(more)).toBe(true);
+    expect(toggle("Speech-to-Text").textContent).not.toMatch(/About/);
+    await user.click(about);
+    expect(more.hidden).toBe(false);
+  });
+
+  it("is found by Settings search inside the fold, which opens while searching", async () => {
+    const server = new FakeHermes();
+    const hermes = await connect(server.openPipe, "default");
+    const user = userEvent.setup();
+    const storage = new Map<string, string>();
+    const appearance = appearanceStore({ getItem: (k) => storage.get(k) ?? null, setItem: (k, v) => void storage.set(k, v) }, document.createElement("html"));
+    render(
+      <SettingsScreen
+        status="connected"
+        unsecure={false}
+        username="liam"
+        passwordSaved
+        profile="default"
+        olderPulled={false}
+        cacheBytes={() => 0}
+        appearance={appearance}
+        listFonts={async () => ({ all: [], mono: [] })}
+        modelSettings={hermes.modelSettings}
+        toolsets={hermes.toolsets}
+        onClearCache={() => {}}
+        onPullOlder={async () => []}
+        onSignOut={async () => {}}
+        onClose={() => {}}
+      />,
+    );
+    // Pasted, not typed: every keystroke filters the whole Settings screen, which is slow on a loaded CI runner.
+    await user.click(screen.getByRole("searchbox", { name: "Search settings" }));
+    await user.paste("HERMES_TUI_TOOLSETS");
+    const hit = await screen.findByText("HERMES_TUI_TOOLSETS");
+    const section = hit.closest("section") as HTMLElement;
+    await waitFor(() => expect(section.hasAttribute("data-search-miss")).toBe(false));
+    expect(within(section).getByRole("heading", { name: "Toolsets" })).toBeTruthy();
+    await waitFor(() => expect((hit.closest(".set-more") as HTMLElement).hidden).toBe(false));
+    expect(within(section).getByRole("button", { name: "About Toolsets" }).getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("keeps warnings, state and problems in view, not folded", async () => {
+    const server = new FakeHermes();
+    server.toolsetDisabledEverywhere.default = ["image_gen", "debugging"];
+    const { rerender } = await shown(server, { runningReplies: 1 });
+    const unfolded = (re: RegExp) => expect(screen.getByText(re).closest(".set-more")).toBeNull();
+    unfolded(/agent.disabled_toolsets also names debugging/);
+    unfolded(/A reply is running in a chat of this profile/);
+    unfolded(/Read from Hermes at/);
+    unfolded(/No chat is open/);
+    expect(await screen.findByText(/Inherited: the profile hasn't saved a list of its own/)).toBeTruthy();
+    unfolded(/Inherited: the profile hasn't saved a list of its own/);
+    // A toolset's own state and problems stay under its row.
+    const image = rowOf("Image Generation");
+    expect(within(image).getByText(/Its tools may not work, or be offered, even while it's on/).closest(".set-sub")).toBeTruthy();
+    expect(within(image).getByText(/turns it off on every platform. Turning it on here takes it off that list/).closest(".set-more")).toBeNull();
+    expect(screen.getByText(/Changes Hermes's Discord chats, not this app's/).closest(".set-more")).toBeNull();
+    for (const note of [/agent.disabled_toolsets also names/, /A reply is running/]) expect(screen.getByText(note).closest(".set-note")?.classList.contains("warn")).toBe(true);
+    rerender({ connected: false, runningReplies: 1 });
+    unfolded(/Not connected to Hermes. This is what Hermes had at/);
+  });
+
+  it("keeps a read failure in view before the first list", async () => {
+    const server = new FakeHermes();
+    server.toolsetRoutes = "none";
+    const hermes = await connect(server.openPipe, "default");
+    render(<ToolsetSettings api={hermes.toolsets} profile="default" connected />);
+    const alert = await screen.findByRole("alert");
+    expect(alert.closest(".set-more")).toBeNull();
+    expect(alert.classList.contains("set-note")).toBe(true);
+    expect(screen.getByRole("button", { name: "Try again" }).closest(".set-head")).toBeTruthy();
   });
 });

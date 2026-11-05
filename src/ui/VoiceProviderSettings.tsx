@@ -27,6 +27,7 @@ import {
 } from "../hermes/voiceSettings";
 import { messageOf } from "../hermes/voice";
 import { Spinner } from "./bits";
+import { SettingNote, SettingRow, SettingsSection } from "./SettingRows";
 
 const USED_FOR: Record<VoiceKind, string> = {
   stt: "Dictation, and what you say in a voice conversation.",
@@ -200,16 +201,46 @@ export function VoiceProviderSettings({
     setDraft((d) => ({ ...d, keys: { ...d.keys, [kind]: { ...d.keys[kind], [env]: value } } }));
 
   return (
-    <section className="voice-providers" aria-labelledby="voice-providers-title">
-      <h2 id="voice-providers-title">Speech providers</h2>
-      <p className="muted">
-        Which provider Hermes transcribes and speaks with for the <span className="mono">{profile}</span> profile, and its model, voice and
-        language. They are saved in the profile's config on the Hermes server, as <span className="mono">hermes tools</span> saves them there.
-      </p>
+    <SettingsSection
+      title="Speech providers"
+      titleId="voice-providers-title"
+      className="voice-providers"
+      intro={
+        <>
+          Which provider Hermes transcribes and speaks with for the <span className="mono">{profile}</span> profile, and its model, voice and
+          language.
+        </>
+      }
+      more={
+        <>
+          <p>
+            They are saved in the profile's config on the Hermes server, as <span className="mono">hermes tools</span> saves them there.
+          </p>
+          <p>
+            Keys are saved in the profile's .env on the server and never shown here again: Hermes says only whether one is set. Installing a local
+            provider's software (Local Whisper, Piper) and signing in to Nous Portal or xAI are done on the server with{" "}
+            <span className="mono">hermes tools</span>.
+          </p>
+        </>
+      }
+      action={
+        !connected || unsupported ? undefined : loadError ? (
+          <button className="btn" onClick={load}>
+            <RotateCcw size={13} /> Try again
+          </button>
+        ) : (
+          read && (
+            <button className="btn" disabled={busy} onClick={load}>
+              <RotateCcw size={13} /> Read again
+            </button>
+          )
+        )
+      }
+    >
       {!connected ? (
-        <p className="muted small">Connect to Hermes to see and change this profile's speech providers.</p>
+        <SettingNote>Connect to Hermes to see and change this profile's speech providers.</SettingNote>
       ) : unsupported ? (
-        <div className="voice-unsupported" role="note">
+        <div className="set-block" role="note">
           <p className="small">{unsupported}</p>
           <p className="muted small">
             Until then, pick the providers on the server with <span className="mono">hermes tools</span> (Speech-to-Text and Text-to-Speech). The
@@ -217,18 +248,13 @@ export function VoiceProviderSettings({
           </p>
         </div>
       ) : loadError ? (
-        <div className="settings-row">
-          <p className="small sign-in-error" role="alert">
-            Couldn't read the speech providers: {loadError}
-          </p>
-          <button className="btn" onClick={load}>
-            <RotateCcw size={13} /> Try again
-          </button>
-        </div>
+        <SettingNote tone="bad" role="alert">
+          Couldn't read the speech providers: {loadError}
+        </SettingNote>
       ) : !read ? (
-        <p className="muted small">
+        <SettingNote>
           <Spinner /> Reading the speech providers from Hermes…
-        </p>
+        </SettingNote>
       ) : (
         <>
           {KINDS.map((kind) => (
@@ -243,9 +269,10 @@ export function VoiceProviderSettings({
               onKey={(env, value) => setKey(kind, env, value)}
             />
           ))}
-          <div className="settings-row voice-save">
+          {/* The card's last line: SettingsSection has no place under its card, and what a save came to stays beside Save. */}
+          <SettingNote className="voice-save">
             <div
-              className={`small ${(outcome && !outcome.ok) || problems.length ? "sign-in-error" : "muted"}`}
+              className={(outcome && !outcome.ok) || problems.length ? "sign-in-error" : "muted"}
               role={(outcome && !outcome.ok) || problems.length ? "alert" : "status"}
             >
               {busy ? (
@@ -266,18 +293,10 @@ export function VoiceProviderSettings({
                 <Save size={13} /> {busy ? "Saving…" : "Save to Hermes"}
               </button>
             </div>
-          </div>
-          <p className="muted small settings-note">
-            Keys are saved in the profile's .env on the server and never shown here again: Hermes says only whether one is set. Installing a local
-            provider's software (Local Whisper, Piper) and signing in to Nous Portal or xAI are done on the server with{" "}
-            <span className="mono">hermes tools</span>.{" "}
-            <button className="link-btn" disabled={busy} onClick={load}>
-              <RotateCcw size={11} /> Read again
-            </button>
-          </p>
+          </SettingNote>
         </>
       )}
-    </section>
+    </SettingsSection>
   );
 }
 
@@ -311,73 +330,94 @@ function ProviderSide({
 
   return (
     <div className="voice-side" role="group" aria-label={label}>
-      <h3>{label}</h3>
-      <p className="muted small">{USED_FOR[kind]}</p>
-      <label className="voice-field">
-        <span>Provider</span>
-        <select aria-label={`${label} provider`} value={pickedName ?? ""} disabled={disabled} onChange={(e) => onProvider(e.target.value)}>
-          {!pickedOf(read, kind) && <option value="">{inUse ? `Picked by Hermes (now ${inUse.name})` : "None picked"}</option>}
-          {providers.map((p) => (
-            <option key={p.name} value={p.name}>
-              {p.name}
-              {p.active ? " (in use)" : ""} · {readiness(p).badge}
-            </option>
-          ))}
-        </select>
-      </label>
-      {kind === "stt" && !named && inUse && !draft.provider.stt && (
-        <p className="muted small">
-          The profile names none, so Hermes picks as it transcribes: {inUse.name} if it's installed, else the first cloud provider with a key.
-          Saving a pick here names it.
-        </p>
-      )}
-      {named && !inUse && (
-        <p className="muted small">
-          The profile names <span className="mono">{named}</span>, which isn't one Hermes lists to pick from here (a command or plugin provider set on
-          the server). Picking one here replaces it.
-        </p>
-      )}
-      <ul className="voice-provider-list" aria-label={`${label} providers`}>
-        {providers.map((p) => {
-          const r = readiness(p);
-          return (
-            <li key={p.name} className={p.name === picked?.name ? "picked" : undefined}>
-              <span className="voice-provider-name">{p.name}</span>
-              {p.active && <span className="badge">In use</span>}
-              <span className={`badge ${r.ok ? "ok" : "warn"}`}>{r.badge}</span>
-              {p.tag && <span className="muted small voice-provider-tag">{p.tag}</span>}
-            </li>
-          );
-        })}
-      </ul>
-      {picked && (
-        <div className="voice-picked" aria-label={`${picked.name} settings`} role="group">
-          <p className={`small ${readiness(picked).ok ? "muted" : ""}`}>
-            <b>{picked.name}</b>: {readiness(picked).text}
-          </p>
-          {picked.keys.map((k) => (
-            <KeyField key={k.env} k={k} provider={picked} typed={draft.keys[kind]?.[k.env] ?? ""} disabled={disabled} onKey={onKey} />
-          ))}
-          {fields.map((f) => (
-            <SettingField key={f.path} path={f.path} label={f.label} hint={f.hint} value={value(f.path)} options={read.options[f.path]} disabled={disabled} onSetting={onSetting} />
-          ))}
-          {kind === "stt" && (
-            <SettingField
-              path={STT_LANGUAGE}
-              label="Language for every provider"
-              hint="A code such as en, or blank to detect it. A provider's own language, above, comes first."
-              value={value(STT_LANGUAGE)}
-              disabled={disabled}
-              onSetting={onSetting}
-            />
-          )}
-          {picked.managed ? (
-            <p className="muted small">Hermes's Nous Portal gateway picks the model and voice for this one.</p>
-          ) : (
-            !fields.length && <p className="muted small">Its other settings stay as the profile's config on the server has them.</p>
-          )}
-        </div>
-      )}
+      <SettingRow
+        name={label}
+        nameAs="h3"
+        hint={USED_FOR[kind]}
+        control={
+          <select
+            className="select"
+            aria-label={`${label} provider`}
+            value={pickedName ?? ""}
+            disabled={disabled}
+            onChange={(e) => onProvider(e.target.value)}
+          >
+            {!pickedOf(read, kind) && <option value="">{inUse ? `Picked by Hermes (now ${inUse.name})` : "None picked"}</option>}
+            {providers.map((p) => (
+              <option key={p.name} value={p.name}>
+                {p.name}
+                {p.active ? " (in use)" : ""} · {readiness(p).badge}
+              </option>
+            ))}
+          </select>
+        }
+      >
+        {kind === "stt" && !named && inUse && !draft.provider.stt && (
+          <div className="muted">
+            The profile names none, so Hermes picks as it transcribes: {inUse.name} if it's installed, else the first cloud provider with a key.
+            Saving a pick here names it.
+          </div>
+        )}
+        {named && !inUse && (
+          <div className="muted">
+            The profile names <span className="mono">{named}</span>, which isn't one Hermes lists to pick from here (a command or plugin provider set
+            on the server). Picking one here replaces it.
+          </div>
+        )}
+      </SettingRow>
+      {/* What each provider needs, and the picked one's settings and keys. */}
+      <div className="set-block">
+        <ul className="voice-provider-list" aria-label={`${label} providers`}>
+          {providers.map((p) => {
+            const r = readiness(p);
+            return (
+              <li key={p.name} className={p.name === picked?.name ? "picked" : undefined}>
+                <span className="voice-provider-name">{p.name}</span>
+                {p.active && <span className="badge">In use</span>}
+                <span className={`badge ${r.ok ? "ok" : "warn"}`}>{r.badge}</span>
+                {p.tag && <span className="muted small voice-provider-tag">{p.tag}</span>}
+              </li>
+            );
+          })}
+        </ul>
+        {picked && (
+          <div className="voice-picked" aria-label={`${picked.name} settings`} role="group">
+            <p className={`small ${readiness(picked).ok ? "muted" : ""}`}>
+              <b>{picked.name}</b>: {readiness(picked).text}
+            </p>
+            {picked.keys.map((k) => (
+              <KeyField key={k.env} k={k} provider={picked} typed={draft.keys[kind]?.[k.env] ?? ""} disabled={disabled} onKey={onKey} />
+            ))}
+            {fields.map((f) => (
+              <SettingField
+                key={f.path}
+                path={f.path}
+                label={f.label}
+                hint={f.hint}
+                value={value(f.path)}
+                options={read.options[f.path]}
+                disabled={disabled}
+                onSetting={onSetting}
+              />
+            ))}
+            {kind === "stt" && (
+              <SettingField
+                path={STT_LANGUAGE}
+                label="Language for every provider"
+                hint="A code such as en, or blank to detect it. A provider's own language, above, comes first."
+                value={value(STT_LANGUAGE)}
+                disabled={disabled}
+                onSetting={onSetting}
+              />
+            )}
+            {picked.managed ? (
+              <p className="muted small">Hermes's Nous Portal gateway picks the model and voice for this one.</p>
+            ) : (
+              !fields.length && <p className="muted small">Its other settings stay as the profile's config on the server has them.</p>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

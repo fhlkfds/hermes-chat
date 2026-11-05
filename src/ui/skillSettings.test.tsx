@@ -13,7 +13,10 @@ import type { ConnectionStatus } from "../hermes/model";
 import { connect, type Hermes } from "../hermes/transport";
 import { Main } from "../App";
 import { appearanceStore } from "./appearance";
+import { SettingsSearching } from "./SettingRows";
 import { SettingsScreen } from "./Settings";
+import { queryWords, searchText, textMatches } from "./settingsSearch";
+import { SkillSettings } from "./SkillSettings";
 
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: async () => null }));
@@ -371,5 +374,100 @@ describe("An unsaved skill edit in the app", () => {
     await user.click(screen.getByRole("tab", { name: /General/ }));
     await user.click(within(screen.getByRole("alertdialog", { name: "Discard your skill edit?" })).getByRole("button", { name: "Discard edit" }));
     expect(screen.getByRole("tab", { name: /General/ }).getAttribute("aria-selected")).toBe("true");
+  });
+});
+
+describe("Settings → Skills as cards of rows (#174, ADR 0059)", () => {
+  /** The help an (i) button opens. */
+  const helpOf = (about: HTMLElement) => document.getElementById(about.getAttribute("aria-controls")!)!;
+  /** Whether `el` is on screen: no folded help hides it. */
+  const inView = (el: Element) => el.closest("[hidden]") === null;
+
+  it("draws each section as a heading and a card of rows, with a skill's Edit and switch as its row's control", async () => {
+    await shown();
+    const card = screen.getByRole("region", { name: "Skills" }).querySelector(":scope > .set-card")!;
+    expect([...card.querySelectorAll(":scope > .set-row .set-name")].map((e) => e.textContent)).toEqual(["Server", "Profile"]);
+    expect(list().parentElement).toBe(card);
+    expect(list().classList.contains("set-block")).toBe(true);
+    const control = rowOf("github").querySelector(".set-row > .set-control") as HTMLElement;
+    expect(within(control).getByRole("button", { name: "Edit" })).toBeTruthy();
+    expect(within(control).getByRole("switch", { name: "github" })).toBeTruthy();
+    // The description is the row's one-line hint.
+    expect(rowOf("github").querySelector(".set-hint")!.textContent).toContain("Work with GitHub.");
+    const effect = screen.getByRole("heading", { name: "When changes take effect", level: 2 }).closest("section")!;
+    expect(effect.classList.contains("set-section")).toBe(true);
+    expect(effect.querySelectorAll(":scope > .set-card > .set-row")).toHaveLength(4);
+  });
+
+  it("opens the editor in a block of the card, under the skill's own row", async () => {
+    const { user } = await shown();
+    await openSkill(user, "release-notes");
+    const group = screen.getByRole("group", { name: "Edit release-notes" });
+    expect(group.classList.contains("set-block")).toBe(true);
+    const row = group.previousElementSibling as HTMLElement;
+    expect(row.classList.contains("set-row")).toBe(true);
+    // The skill's name heads its editor, as a heading of its own, named by the skill alone.
+    expect(within(row).getByRole("heading", { level: 3, name: "release-notes" })).toBeTruthy();
+  });
+
+  it("folds explanation behind an (i), and keeps consequences, warnings and states in view", async () => {
+    const s = server();
+    s.skills.platformDisabled.default = { tui: ["release-notes"] };
+    const hermes = await connect(s.openPipe, "default");
+    running.push(hermes);
+    const user = userEvent.setup();
+    const view = render(<Shell hermes={hermes} profile="default" status="connected" />);
+    await user.click(screen.getByRole("tab", { name: /Skills/ }));
+    await screen.findByRole("list", { name: "Skills" });
+
+    const about = screen.getByRole("button", { name: "About Skills" });
+    expect(about.getAttribute("aria-expanded")).toBe("false");
+    expect(helpOf(about).hidden).toBe(true);
+    expect(helpOf(about).textContent).toMatch(/loads the rest when it needs it/);
+    await user.click(about);
+    expect(about.getAttribute("aria-expanded")).toBe("true");
+    expect(helpOf(about).hidden).toBe(false);
+    const off = screen.getByRole("button", { name: "About Turning a skill off" });
+    expect(helpOf(off).hidden).toBe(true);
+    expect(helpOf(off).textContent).toMatch(/skills\.disabled list, which every platform follows/);
+    // The (i) never joins the heading's name.
+    expect(screen.getByRole("heading", { name: "Skills", level: 2 })).toBeTruthy();
+
+    // Never folded: what a change reaches, what an undo can't bring back, and what keeps a skill off.
+    expect(inView(screen.getByText(/for every Hermes client using this profile/))).toBe(true);
+    expect(inView(screen.getByText(/earlier versions aren't kept on the server or on this computer/))).toBe(true);
+    expect(inView(within(rowOf("release-notes")).getByText(/skills\.platform_disabled\.tui/))).toBe(true);
+    view.rerender(<Shell hermes={hermes} profile="default" status="offline" />);
+    const stale = screen.getByText(/Not connected to Hermes. These are the skills as read at/);
+    expect(inView(stale)).toBe(true);
+    expect(stale.closest(".set-note.warn")!.getAttribute("role")).toBe("status");
+  });
+
+  it("opens every fold while Settings is searched, and the folded words are in the text search reads", async () => {
+    const hermes = await connect(server().openPipe, "default");
+    running.push(hermes);
+    render(
+      <SettingsSearching.Provider value>
+        <SkillSettings api={hermes.skills} profile="default" status="connected" server="liam@hermes" onDirtyChange={() => {}} />
+      </SettingsSearching.Provider>,
+    );
+    await screen.findByRole("list", { name: "Skills" });
+    for (const name of ["About Skills", "About Saving an edit", "About Turning a skill off"]) {
+      const about = screen.getByRole("button", { name });
+      expect(about.getAttribute("aria-expanded")).toBe("true");
+      expect(helpOf(about).hidden).toBe(false);
+    }
+    const effect = screen.getByRole("heading", { name: "When changes take effect", level: 2 }).closest("section")!;
+    expect(textMatches(searchText(effect), queryWords("skills.disabled every platform"))).toBe(true);
+    const skills = screen.getByRole("region", { name: "Skills" });
+    expect(textMatches(searchText(skills), queryWords("loads the rest"))).toBe(true);
+  });
+
+  it("is named by Settings' search, which opens the tab rather than mounting it", async () => {
+    const { user } = await shown();
+    await user.type(screen.getByRole("searchbox", { name: "Search settings" }), "SKILL.md");
+    await user.click(await screen.findByRole("button", { name: "Open Skills" }));
+    expect(screen.getByRole("tab", { name: /Skills/ }).getAttribute("aria-selected")).toBe("true");
+    expect(await screen.findByRole("list", { name: "Skills" })).toBeTruthy();
   });
 });

@@ -10,6 +10,7 @@ import { connect } from "../hermes/transport";
 import { MemoryProviderSettings } from "./MemoryProviderSettings";
 import { SettingsScreen } from "./Settings";
 import { appearanceStore } from "./appearance";
+import { searchText } from "./settingsSearch";
 
 afterEach(cleanup);
 
@@ -236,5 +237,58 @@ describe("Settings → Memory → External memory", () => {
     const hermes = await connect(server.openPipe, "default");
     render(<MemoryProviderSettings api={hermes.memoryProviders} profile="default" connected onDirtyChange={() => {}} />);
     expect(await screen.findByText(/doesn't list memory providers/)).toBeTruthy();
+  });
+});
+
+describe("Settings → Memory → External memory as cards of rows (ADR 0059)", () => {
+  const section = (title: string) => screen.getByRole("heading", { name: title }).closest("section")!;
+
+  it("puts the profiles' table and each profile's providers in cards, a provider's settings under its row", async () => {
+    const { user } = await shown();
+    const external = section("External memory");
+    expect(table().closest(".set-card")!.parentElement).toBe(external);
+    expect(within(external).getByRole("button", { name: /Reload/ }).closest(".set-head")).toBeTruthy();
+    const list = await providers("default");
+    const manage = section("Provider for default");
+    expect(list.parentElement).toBe(manage.querySelector(":scope > .set-card"));
+    await user.click(within(list).getByRole("button", { name: /honcho/ }));
+    const settings = await screen.findByRole("group", { name: "honcho settings for default" });
+    expect(settings.classList.contains("set-block")).toBe(true);
+    expect(settings.closest("li")).toBe(within(list).getByRole("button", { name: /honcho/ }).closest("li"));
+  });
+
+  it("folds the longer help behind an (i), where Settings search still reads it", async () => {
+    const { user } = await shown();
+    await providers("default");
+    for (const [title, words] of [
+      ["External memory", /Profiles use the same memory only when they use the same provider pointed at the same store/],
+      ["Provider for default", /hermes -p default plugins install <name>/],
+    ] as const) {
+      const s = section(title);
+      const about = within(s).getByRole("button", { name: `About ${title}` });
+      expect(about.getAttribute("aria-expanded")).toBe("false");
+      const help = s.querySelector<HTMLElement>(":scope > .set-more")!;
+      expect(help.hidden).toBe(true);
+      expect(help.textContent).toMatch(words);
+      expect(searchText(s)).toMatch(words);
+      await user.click(about);
+      expect(about.getAttribute("aria-expanded")).toBe("true");
+      expect(help.hidden).toBe(false);
+    }
+  });
+
+  it("never folds what a write came to, or the question before unsaved settings go", async () => {
+    const { user } = await shown();
+    await user.click(within(await providers("default")).getByRole("button", { name: /honcho/ }));
+    await user.type(await screen.findByLabelText(/Peer name/), "x");
+    await user.click(within(table()).getByRole("button", { name: "work" }));
+    const ask = screen.getByRole("alertdialog", { name: "Discard your changes?" });
+    expect(ask.closest(".set-more")).toBeNull();
+    await user.click(within(ask).getByRole("button", { name: "Keep editing" }));
+    await user.click(screen.getByRole("button", { name: "Use for default" }));
+    await user.click(within(screen.getByRole("alertdialog", { name: "Discard your changes?" })).getByRole("button", { name: "Discard changes" }));
+    const done = await screen.findByText(/default now uses built-in memory only/);
+    expect(done.closest(".set-more")).toBeNull();
+    expect(done.closest(".set-card")).toBeTruthy();
   });
 });

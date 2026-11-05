@@ -85,6 +85,7 @@ export function SettingsSection({
 export function SettingRow({
   name,
   nameId,
+  nameAs: Name = "span",
   hint,
   hintId,
   more,
@@ -95,6 +96,8 @@ export function SettingRow({
 }: {
   name: ReactNode;
   nameId?: string;
+  /** "h3" when the row heads what's under it (a provider's settings, the skill being edited), so it's a heading to jump to. */
+  nameAs?: "span" | "h3";
   hint?: ReactNode;
   hintId?: string;
   /** Longer help, folded behind the (i) beside the name. */
@@ -110,9 +113,9 @@ export function SettingRow({
     <div className={`set-row ${className}`}>
       <div className="set-text">
         <div className="set-name-line">
-          <span className="set-name" id={nameId}>
+          <Name className="set-name" id={nameId}>
             {name}
-          </span>
+          </Name>
           {button}
         </div>
         {hint && (

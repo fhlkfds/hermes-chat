@@ -22,12 +22,13 @@ Issue #174: every Settings page was a long run of paragraphs and controls. The s
 ## Consequences
 
 - General, Connections, Sending while Hermes replies (ADR 0057, follow-ups), On launch, Tray, Updates, Screenshots, Local cache, History, Import transcripts and Backup use the layout, and so does the Voice tab's set-up section (Dictation, Read aloud and Voice conversation), which moved out of General to its own tab (ADR 0055, speech providers). Their headings, control names and statuses are unchanged, so their tests and the search still find them. Hints were shortened; the text they lost is behind the (i).
-- The other tabs move in later PRs, one page per PR, each with before-and-after screenshots:
+- The other tabs moved together in one later PR (#174's stage 2), not one page per PR as first planned. With General merged as the agreed pattern, the remaining pages were mechanical, and one PR lets the old `.settings section` rule go in the same change. The mapping each page followed:
   - **Appearance:** each `appearance-row` becomes a `SettingRow`. The theme gallery and the preview become free-form content in a card (`set-block`).
-  - **Model:** each model and auxiliary row becomes a `SettingRow` with its picker as the control. Apply and the conflict note go under the card.
+  - **Model:** each model and auxiliary row becomes a `SettingRow` with its picker as the control. Apply, Discard and the part's state (not applied yet, a conflict) are the card's last line, so they stay beside what they apply. Voice's speech providers do the same with Save.
   - **Voice:** the speech providers become a row for each side, with its picker as the control. The picked provider's model, voice, language and key go in a `set-block` under its row.
   - **Toolsets:** each toolset becomes a row with its switch. The open chat's line becomes the hint. "How a change applies" becomes the section's (i).
   - **Persona:** the SOUL.md editor goes in a `set-block`. Its "when it takes effect" text becomes the section's (i).
   - **Memory and Skills:** each entry or skill becomes a row in a card. Editors open in a `set-block` under their row.
   - **Diagnostics:** server facts become rows of a name and a value. The features table goes in a `set-block`.
-- `.settings section`'s old rule (a top border and padding) stays until the last tab moves, then goes. New sections use `SettingsSection` and never write that markup by hand.
+- Every Settings tab now uses `SettingsSection`. `.settings section`'s old rule (a top border and padding) stays, because Automations, Projects, Scheduled jobs and Usage reuse the `.settings` frame with plain sections. New Settings sections use `SettingsSection` and never write that markup by hand.
+- Skills, Memory, Persona and Diagnostics are still offered as "Open <tab>" by Settings search, not searched in place (`ABOUT` in `Settings.tsx`, since #163), so their folded help is reached by opening the tab; it is in each section's search text for when they are.

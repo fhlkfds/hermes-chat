@@ -23,6 +23,7 @@ import {
   type SkillsView,
   type TransferOutcome,
 } from "../hermes/skills";
+import { SettingNote, SettingRow, SettingsSection } from "./SettingRows";
 
 /** The skill open in the editor: its row, SKILL.md as last read from Hermes, and the owner's text. */
 type Editing = { row: SkillRow; base: SkillFile; draft: string };
@@ -375,190 +376,223 @@ export function SkillSettings({
   const targets = (profiles ?? []).filter((p) => p !== profile);
   const busyBulk = !!bulkRunning;
 
+  /** A skill's name line: its name, where it comes from, and whether something keeps it off; in Select mode, its checkbox. */
+  const skillName = (s: SkillRow, pickable: boolean) => {
+    const id = domId(s.name);
+    const offFor = view && Object.hasOwn(view.offFor, s.name) ? view.offFor[s.name] : undefined;
+    return (
+      <span className="skill-name">
+        {pickable && (
+          <input
+            type="checkbox"
+            className="skill-pick"
+            aria-labelledby={`${id}-label`}
+            checked={selected.has(s.name)}
+            disabled={busyBulk}
+            onChange={(e) => pick(s.name, e.target.checked)}
+          />
+        )}
+        <span id={`${id}-label`} className="mono">
+          {s.name}
+        </span>
+        <span className="badge off">{sourceLabel(s.source)}</span>
+        {s.scope === "shared" && <span className="badge">Shared folder</span>}
+        {offFor && s.enabled && <span className="badge warn">Off in this app's chats</span>}
+        {s.category && <span className="muted small skill-category">{s.category}</span>}
+      </span>
+    );
+  };
+  /** One line; the pointer resting on it shows the whole text (ADR 0051). The tip repeats the text, so it's hidden from readers. */
+  const skillDesc = (s: SkillRow) => (
+    <div className="skill-desc">
+      <div id={`${domId(s.name)}-desc`} className="skill-desc-line">
+        {s.description || "No description."}
+      </div>
+      {s.description && (
+        <div className="skill-desc-tip" aria-hidden>
+          {s.description}
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <>
-      <section aria-labelledby="skills-heading">
-        <h2 id="skills-heading">Skills</h2>
-        <p className="muted">
-          Instructions Hermes can load for a task, each a SKILL.md file in a folder on the server. The agent sees each skill's name and description,
-          and loads the rest when it needs it. Turning a skill off or editing it here changes it on the server, for every Hermes client using this profile.
-        </p>
-        <dl className="memory-identity">
-          <div>
-            <dt>Server</dt>
-            <dd className="mono">{server}</dd>
-          </div>
-          <div>
-            <dt>Profile</dt>
-            <dd className="mono">{picker ?? profile}</dd>
-          </div>
-        </dl>
+      <SettingsSection
+        title="Skills"
+        titleId="skills-heading"
+        intro="Instructions Hermes can load for a task. Turning a skill off or editing it here changes it on the server, for every Hermes client using this profile."
+        more={<p>Each skill is a SKILL.md file in a folder on the server. The agent sees each skill's name and description, and loads the rest when it needs it.</p>}
+      >
+        <SettingRow name="Server" control={<span className="set-value mono skills-where">{server}</span>} />
+        <SettingRow name="Profile" control={picker ?? <span className="set-value mono skills-where">{profile}</span>} />
 
         {problem ? (
-          <div className={`memory-state ${problem.kind}`} role="alert">
+          <SettingNote className="skills-state" tone={problem.kind === "unsupported" ? "muted" : "bad"} role="alert">
             {problem.kind === "unsupported" ? <Info size={14} /> : <AlertTriangle size={14} />}
             <div>
               <div className="memory-state-title">
                 {problem.kind === "unsupported" ? "This Hermes server can't manage skills" : problem.kind === "permission" ? "Hermes refused" : "Couldn't read skills"}
               </div>
-              <div className="small">{problem.text}</div>
+              <div>{problem.text}</div>
             </div>
             {problem.kind !== "unsupported" && (
               <button className="btn" disabled={!connected || loading} onClick={() => void load()}>
                 <RefreshCw size={14} /> {loading ? "Trying…" : "Try again"}
               </button>
             )}
-          </div>
+          </SettingNote>
         ) : !view ? (
-          <div className="memory-state" role="status">
-            <div className="small muted">{connected ? "Reading skills from Hermes…" : "Not connected to Hermes. Skills show once it's connected."}</div>
-          </div>
+          <SettingNote role="status">{connected ? "Reading skills from Hermes…" : "Not connected to Hermes. Skills show once it's connected."}</SettingNote>
         ) : (
           <>
             {!connected && (
-              <div className="memory-state warn" role="status">
+              <SettingNote tone="warn" role="status">
                 <AlertTriangle size={14} />
-                <div className="small">Not connected to Hermes. These are the skills as read at {clock(view.readAt)}; reconnect to change or save them.</div>
-              </div>
+                <span>Not connected to Hermes. These are the skills as read at {clock(view.readAt)}; reconnect to change or save them.</span>
+              </SettingNote>
             )}
             {editing ? (
-              <div className="memory-editor skills-editor" role="group" aria-label={`Edit ${editing.row.name}`}>
-                <button className="back" autoFocus disabled={!!busy} onClick={() => unlessDirty("Discard your unsaved edit to this skill? Nothing of it has been saved to Hermes.", close)}>
-                  <ArrowLeft size={15} /> All skills
-                </button>
-                <h3 className="mono skills-name">{editing.row.name}</h3>
-                <dl className="memory-identity">
-                  <div>
-                    <dt>File</dt>
-                    <dd className="mono">{editing.base.path}</dd>
-                  </div>
-                  <div>
-                    <dt>Scope</dt>
-                    <dd>{editing.row.scope === "shared" ? "Shared folder" : "This profile"}</dd>
-                  </div>
-                  <div>
-                    <dt>Source</dt>
-                    <dd>{sourceLabel(editing.row.source)}</dd>
-                  </div>
-                  <div>
-                    <dt>State</dt>
-                    <dd>{editing.row.enabled ? "On" : "Off"}</dd>
-                  </div>
-                </dl>
-                {editing.row.scope === "shared" && (
-                  <p className="muted small skills-note">
-                    <Info size={12} /> This skill is in a folder the profile's <span className="mono">skills.external_dirs</span> names, outside its own skills
-                    folder. Other profiles that list that folder get the edit too.
-                  </p>
-                )}
-                {(editing.row.source === "bundled" || editing.row.source === "hub") && (
-                  <p className="muted small skills-note">
-                    <Info size={12} />{" "}
-                    {editing.row.source === "bundled"
-                      ? "This skill came with Hermes. Once edited, Hermes's updates keep your copy and stop updating it."
-                      : "This skill came from the Skills Hub. Once edited, hub updates skip it and keep your copy."}
-                  </p>
-                )}
-                <label className="field">
-                  <span className="field-label">
-                    SKILL.md {dirty && <span className="badge warn">Unsaved</span>}
-                  </span>
-                  <textarea
-                    className="memory-text skills-text"
-                    value={editing.draft}
-                    spellCheck={false}
-                    rows={Math.min(24, Math.max(10, editing.draft.split("\n").length + 1))}
-                    disabled={!!busy}
-                    onChange={(e) => {
-                      setEditing({ ...editing, draft: e.target.value });
-                      // A success said about the text before this change no longer holds.
-                      if (notice?.kind === "ok") setNotice(undefined);
-                    }}
-                  />
-                </label>
-                <SkillProblems editing={editing} refs={refs?.draft === editing.draft ? refs : undefined} busy={!!busy} connected={connected} onSaveAnyway={() => void save(true)} />
-                {conflict && (
-                  <div className="memory-recovered" role="group" aria-label="The version on the server now">
-                    <div className="field-label">
-                      On the server now <span className="muted small">(your edit is above; nothing is lost until you choose)</span>
+              <>
+                {/* The skill's own row, with its editor under it. */}
+                <SettingRow name={<span className="mono">{editing.row.name}</span>} nameAs="h3" about={editing.row.name} hint={skillDesc(editing.row)} />
+                <div className="set-block memory-editor skills-editor" role="group" aria-label={`Edit ${editing.row.name}`}>
+                  <button className="back" autoFocus disabled={!!busy} onClick={() => unlessDirty("Discard your unsaved edit to this skill? Nothing of it has been saved to Hermes.", close)}>
+                    <ArrowLeft size={15} /> All skills
+                  </button>
+                  <dl className="memory-identity">
+                    <div>
+                      <dt>File</dt>
+                      <dd className="mono">{editing.base.path}</dd>
                     </div>
-                    <textarea className="memory-text" readOnly value={conflict.content} rows={Math.min(14, Math.max(4, conflict.content.split("\n").length + 1))} aria-label="The version on the server now" />
+                    <div>
+                      <dt>Scope</dt>
+                      <dd>{editing.row.scope === "shared" ? "Shared folder" : "This profile"}</dd>
+                    </div>
+                    <div>
+                      <dt>Source</dt>
+                      <dd>{sourceLabel(editing.row.source)}</dd>
+                    </div>
+                    <div>
+                      <dt>State</dt>
+                      <dd>{editing.row.enabled ? "On" : "Off"}</dd>
+                    </div>
+                  </dl>
+                  {editing.row.scope === "shared" && (
+                    <p className="muted small skills-note">
+                      <Info size={12} /> This skill is in a folder the profile's <span className="mono">skills.external_dirs</span> names, outside its own skills
+                      folder. Other profiles that list that folder get the edit too.
+                    </p>
+                  )}
+                  {(editing.row.source === "bundled" || editing.row.source === "hub") && (
+                    <p className="muted small skills-note">
+                      <Info size={12} />{" "}
+                      {editing.row.source === "bundled"
+                        ? "This skill came with Hermes. Once edited, Hermes's updates keep your copy and stop updating it."
+                        : "This skill came from the Skills Hub. Once edited, hub updates skip it and keep your copy."}
+                    </p>
+                  )}
+                  <label className="field">
+                    <span className="field-label">
+                      SKILL.md {dirty && <span className="badge warn">Unsaved</span>}
+                    </span>
+                    <textarea
+                      className="memory-text skills-text"
+                      value={editing.draft}
+                      spellCheck={false}
+                      rows={Math.min(24, Math.max(10, editing.draft.split("\n").length + 1))}
+                      disabled={!!busy}
+                      onChange={(e) => {
+                        setEditing({ ...editing, draft: e.target.value });
+                        // A success said about the text before this change no longer holds.
+                        if (notice?.kind === "ok") setNotice(undefined);
+                      }}
+                    />
+                  </label>
+                  <SkillProblems editing={editing} refs={refs?.draft === editing.draft ? refs : undefined} busy={!!busy} connected={connected} onSaveAnyway={() => void save(true)} />
+                  {conflict && (
+                    <div className="memory-recovered" role="group" aria-label="The version on the server now">
+                      <div className="field-label">
+                        On the server now <span className="muted small">(your edit is above; nothing is lost until you choose)</span>
+                      </div>
+                      <textarea className="memory-text" readOnly value={conflict.content} rows={Math.min(14, Math.max(4, conflict.content.split("\n").length + 1))} aria-label="The version on the server now" />
+                      <div className="confirm-actions">
+                        <button className="btn" onClick={() => void navigator.clipboard?.writeText(conflict.content).catch(() => {})}>
+                          <Copy size={14} /> Copy
+                        </button>
+                        <button
+                          className="btn"
+                          disabled={!!busy}
+                          onClick={() =>
+                            setLeaving({
+                              text: "Use the server's version and drop your edit? Nothing of your edit has been saved to Hermes.",
+                              go: () => {
+                                setLeaving(undefined);
+                                setEditing({ ...editing, base: conflict, draft: conflict.content });
+                                setConflict(undefined);
+                                setNotice(undefined);
+                              },
+                            })
+                          }
+                        >
+                          Use the server's version
+                        </button>
+                        <button className="btn primary" disabled={!!busy} onClick={mergeIn}>
+                          <GitMerge size={14} /> Merge into my edit
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  {leaving && (
+                    <div className="confirm memory-leave" role="alertdialog" aria-label="Discard your edit?">
+                      <span className="confirm-msg">{leaving.text}</span>
+                      <div className="confirm-actions">
+                        <button className="btn" autoFocus onClick={() => setLeaving(undefined)}>
+                          Keep editing
+                        </button>
+                        <button className="btn danger" onClick={leaving.go}>
+                          Discard edit
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  <div className="memory-actions">
                     <div className="confirm-actions">
-                      <button className="btn" onClick={() => void navigator.clipboard?.writeText(conflict.content).catch(() => {})}>
-                        <Copy size={14} /> Copy
-                      </button>
-                      <button
-                        className="btn"
-                        disabled={!!busy}
-                        onClick={() =>
-                          setLeaving({
-                            text: "Use the server's version and drop your edit? Nothing of your edit has been saved to Hermes.",
-                            go: () => {
-                              setLeaving(undefined);
-                              setEditing({ ...editing, base: conflict, draft: conflict.content });
-                              setConflict(undefined);
-                              setNotice(undefined);
-                            },
+                      <RestoreButton api={api} profile={profile} editing={editing} disabled={!!busy} onRestore={(content, when) =>
+                          unlessDirty("Replace your unsaved edit with the earlier version? Nothing of your edit has been saved to Hermes.", () => {
+                            setEditing({ ...editing, draft: content });
+                            setNotice({ kind: "ok", text: `The version your save at ${clock(when)} replaced is in the editor. Save to put it back on Hermes; nothing has changed there yet.` });
                           })
                         }
-                      >
-                        Use the server's version
-                      </button>
-                      <button className="btn primary" disabled={!!busy} onClick={mergeIn}>
-                        <GitMerge size={14} /> Merge into my edit
+                      />
+                      <button className="btn" disabled={!connected || !!busy} onClick={() => void reload()} title="Read SKILL.md from Hermes again. An edit you're making is kept.">
+                        <RefreshCw size={14} /> {busy === "reload" ? "Reloading…" : "Reload"}
                       </button>
                     </div>
-                  </div>
-                )}
-                {leaving && (
-                  <div className="confirm memory-leave" role="alertdialog" aria-label="Discard your edit?">
-                    <span className="confirm-msg">{leaving.text}</span>
                     <div className="confirm-actions">
-                      <button className="btn" autoFocus onClick={() => setLeaving(undefined)}>
-                        Keep editing
+                      <button className="btn" disabled={!!busy} onClick={() => unlessDirty("Discard your unsaved edit to this skill? Nothing of it has been saved to Hermes.", close)}>
+                        Cancel
                       </button>
-                      <button className="btn danger" onClick={leaving.go}>
-                        Discard edit
+                      <button
+                        className="btn primary"
+                        disabled={!connected || !dirty || !!busy || skillProblems(editing.draft, declaredName(editing.base)).length > 0}
+                        onClick={() => void save(false)}
+                      >
+                        {busy === "save" ? "Saving…" : "Save"}
                       </button>
                     </div>
                   </div>
-                )}
-                <div className="memory-actions">
-                  <div className="confirm-actions">
-                    <RestoreButton api={api} profile={profile} editing={editing} disabled={!!busy} onRestore={(content, when) =>
-                        unlessDirty("Replace your unsaved edit with the earlier version? Nothing of your edit has been saved to Hermes.", () => {
-                          setEditing({ ...editing, draft: content });
-                          setNotice({ kind: "ok", text: `The version your save at ${clock(when)} replaced is in the editor. Save to put it back on Hermes; nothing has changed there yet.` });
-                        })
-                      }
-                    />
-                    <button className="btn" disabled={!connected || !!busy} onClick={() => void reload()} title="Read SKILL.md from Hermes again. An edit you're making is kept.">
-                      <RefreshCw size={14} /> {busy === "reload" ? "Reloading…" : "Reload"}
-                    </button>
-                  </div>
-                  <div className="confirm-actions">
-                    <button className="btn" disabled={!!busy} onClick={() => unlessDirty("Discard your unsaved edit to this skill? Nothing of it has been saved to Hermes.", close)}>
-                      Cancel
-                    </button>
-                    <button
-                      className="btn primary"
-                      disabled={!connected || !dirty || !!busy || skillProblems(editing.draft, declaredName(editing.base)).length > 0}
-                      onClick={() => void save(false)}
-                    >
-                      {busy === "save" ? "Saving…" : "Save"}
-                    </button>
-                  </div>
+                  {notice && (
+                    <div className={`memory-notice ${notice.kind}`} role={notice.kind === "ok" ? "status" : "alert"}>
+                      {notice.kind === "ok" ? <Check size={14} /> : <AlertTriangle size={14} />}
+                      <span>{notice.text}</span>
+                    </div>
+                  )}
                 </div>
-                {notice && (
-                  <div className={`memory-notice ${notice.kind}`} role={notice.kind === "ok" ? "status" : "alert"}>
-                    {notice.kind === "ok" ? <Check size={14} /> : <AlertTriangle size={14} />}
-                    <span>{notice.text}</span>
-                  </div>
-                )}
-              </div>
+              </>
             ) : (
               <>
-                <div className="skills-toolbar">
+                <div className="set-block skills-toolbar">
                   <label className="skills-search">
                     <Search size={14} />
                     <input type="search" className="profile-filter" aria-label="Search skills" placeholder="Search names, descriptions and categories" value={query} onChange={(e) => setQuery(e.target.value)} />
@@ -586,145 +620,123 @@ export function SkillSettings({
                   )}
                 </div>
                 {selecting && (
-                  <SelectBar
-                    profile={profile}
-                    shown={filtered}
-                    picked={picked}
-                    kept={kept}
-                    targets={targets}
-                    profilesRead={!!profiles}
-                    connected={connected}
-                    ask={bulkAsk}
-                    running={bulkRunning}
-                    onPickAll={() => setSelected((cur) => new Set([...cur, ...filtered.map((r) => r.name)]))}
-                    onClear={() => setSelected(new Set())}
-                    onAsk={(ask) => (setBulkAsk(ask), ask && setBulkDone(undefined))}
-                    onRun={(op, to) => void runBulk(op, op === "copy" ? picked : picked.filter(archivable), to)}
-                  />
+                  <div className="set-block skills-bulk">
+                    <SelectBar
+                      profile={profile}
+                      shown={filtered}
+                      picked={picked}
+                      kept={kept}
+                      targets={targets}
+                      profilesRead={!!profiles}
+                      connected={connected}
+                      ask={bulkAsk}
+                      running={bulkRunning}
+                      onPickAll={() => setSelected((cur) => new Set([...cur, ...filtered.map((r) => r.name)]))}
+                      onClear={() => setSelected(new Set())}
+                      onAsk={(ask) => (setBulkAsk(ask), ask && setBulkDone(undefined))}
+                      onRun={(op, to) => void runBulk(op, op === "copy" ? picked : picked.filter(archivable), to)}
+                    />
+                  </div>
                 )}
                 {bulkDone && (
-                  <div className={`skills-bulk-result ${bulkDone.outcomes.some((o) => o.kind !== "done") ? "warn" : ""}`} role={bulkDone.outcomes.some((o) => o.kind !== "done") ? "alert" : "status"}>
-                    <div className="skills-bulk-head">
-                      {(() => {
-                        const ok = bulkDone.outcomes.filter((o) => o.kind === "done").length;
-                        const where = bulkDone.to ? ` to ${bulkDone.to}` : "";
-                        return `${BULK_VERB[bulkDone.op].done} ${ok} of ${skillsText(bulkDone.outcomes.length)}${where}.`;
-                      })()}
-                      <button className="link-btn" onClick={() => setBulkDone(undefined)}>
-                        Dismiss
-                      </button>
+                  <div className="set-block skills-bulk">
+                    <div className={`skills-bulk-result ${bulkDone.outcomes.some((o) => o.kind !== "done") ? "warn" : ""}`} role={bulkDone.outcomes.some((o) => o.kind !== "done") ? "alert" : "status"}>
+                      <div className="skills-bulk-head">
+                        {(() => {
+                          const ok = bulkDone.outcomes.filter((o) => o.kind === "done").length;
+                          const where = bulkDone.to ? ` to ${bulkDone.to}` : "";
+                          return `${BULK_VERB[bulkDone.op].done} ${ok} of ${skillsText(bulkDone.outcomes.length)}${where}.`;
+                        })()}
+                        <button className="link-btn" onClick={() => setBulkDone(undefined)}>
+                          Dismiss
+                        </button>
+                      </div>
+                      <ul>
+                        {bulkDone.outcomes.map((o) => (
+                          <li key={o.name} className={o.kind === "done" ? "ok" : "failed"}>
+                            {o.kind === "done" ? <Check size={12} /> : <AlertTriangle size={12} />} <span className="mono">{o.name}</span>: {outcomeText(bulkDone.op, o, profile, bulkDone.to)}
+                          </li>
+                        ))}
+                      </ul>
+                      {bulkDone.op !== "copy" && bulkDone.outcomes.some((o) => o.kind === "done") && (
+                        <p className="muted small">
+                          Hermes keeps archived skills in the {profile} profile's <span className="mono">skills/.archive</span> folder. To bring one back, run{" "}
+                          <span className="mono">hermes -p {profile} curator restore &lt;name&gt;</span> on the server.
+                        </p>
+                      )}
                     </div>
-                    <ul>
-                      {bulkDone.outcomes.map((o) => (
-                        <li key={o.name} className={o.kind === "done" ? "ok" : "failed"}>
-                          {o.kind === "done" ? <Check size={12} /> : <AlertTriangle size={12} />} <span className="mono">{o.name}</span>: {outcomeText(bulkDone.op, o, profile, bulkDone.to)}
-                        </li>
-                      ))}
-                    </ul>
-                    {bulkDone.op !== "copy" && bulkDone.outcomes.some((o) => o.kind === "done") && (
-                      <p className="muted small">
-                        Hermes keeps archived skills in the {profile} profile's <span className="mono">skills/.archive</span> folder. To bring one back, run{" "}
-                        <span className="mono">hermes -p {profile} curator restore &lt;name&gt;</span> on the server.
-                      </p>
-                    )}
                   </div>
                 )}
                 {!view.platformsRead && (
-                  <p className="muted small skills-note">
-                    <AlertTriangle size={12} /> Couldn't read the profile's per-platform skill lists, or which skills they name, so a skill shown on may still be off in this app's chats.
-                  </p>
+                  <SettingNote tone="warn">
+                    <AlertTriangle size={14} />
+                    <span>Couldn't read the profile's per-platform skill lists, or which skills they name, so a skill shown on may still be off in this app's chats.</span>
+                  </SettingNote>
                 )}
                 {rowNote?.name === "" && (
-                  <div className="switch-status failed" role="alert">
+                  <SettingNote tone="warn" role="alert">
                     {rowNote.text}
-                  </div>
+                  </SettingNote>
                 )}
                 {!view.skills.length ? (
-                  <div className="memory-empty muted small">
-                    This profile has no skills yet. The agent can write one during a chat. Installing skills from elsewhere isn't done from Hermes Chat.
-                  </div>
+                  <SettingNote>This profile has no skills yet. The agent can write one during a chat. Installing skills from elsewhere isn't done from Hermes Chat.</SettingNote>
                 ) : !filtered.length ? (
-                  <div className="memory-empty muted small">No skills match “{query.trim()}”.</div>
+                  <SettingNote>No skills match “{query.trim()}”.</SettingNote>
                 ) : (
-                  <ul className="skills-list" aria-label="Skills">
+                  <ul className="set-block skills-list" aria-label="Skills">
                     {filtered.map((s) => {
                       const id = domId(s.name);
-                      const essential = ESSENTIAL_SKILLS.has(s.name);
                       const offFor = Object.hasOwn(view.offFor, s.name) ? view.offFor[s.name] : undefined;
                       return (
-                        <li key={s.name} className={`skill-row ${selecting ? "selecting" : ""} ${selected.has(s.name) ? "picked" : ""}`}>
-                          <div className="skill-row-main">
-                            <div className="skill-name">
-                              {selecting && (
-                                <input
-                                  type="checkbox"
-                                  className="skill-pick"
-                                  aria-labelledby={`${id}-label`}
-                                  checked={selected.has(s.name)}
-                                  disabled={busyBulk}
-                                  onChange={(e) => pick(s.name, e.target.checked)}
-                                />
-                              )}
-                              <span id={`${id}-label`} className="mono">
-                                {s.name}
-                              </span>
-                              <span className="badge off">{sourceLabel(s.source)}</span>
-                              {s.scope === "shared" && <span className="badge">Shared folder</span>}
-                              {offFor && s.enabled && <span className="badge warn">Off in this app's chats</span>}
-                            </div>
-                            {/* One line; the pointer resting on it shows the whole text (ADR 0051). The tip repeats the text, so it's hidden from readers. */}
-                            <div className="skill-desc">
-                              <div id={`${id}-desc`} className="muted small skill-desc-line">
-                                {s.description || "No description."}
+                        <li key={s.name} className={`skill-row ${selected.has(s.name) ? "picked" : ""}`}>
+                          <SettingRow
+                            name={skillName(s, selecting)}
+                            about={s.name}
+                            hint={skillDesc(s)}
+                            control={
+                              !selecting && (
+                                <>
+                                  <button className="btn" id={`${id}-edit`} disabled={!!opening || !!toggling || busyBulk} aria-describedby={`${id}-label`} onClick={() => void open(s)}>
+                                    {opening === s.name ? "Opening…" : "Edit"}
+                                  </button>
+                                  {ESSENTIAL_SKILLS.has(s.name) ? (
+                                    <span className="badge" title="Hermes keeps this skill on.">
+                                      Always on
+                                    </span>
+                                  ) : (
+                                    <button
+                                      className="switch"
+                                      role="switch"
+                                      aria-checked={s.enabled}
+                                      aria-labelledby={`${id}-label`}
+                                      aria-describedby={`${id}-desc`}
+                                      disabled={!connected || !!toggling || !!opening || busyBulk}
+                                      onClick={() => void toggle(s)}
+                                    >
+                                      <span className="switch-knob" />
+                                    </button>
+                                  )}
+                                </>
+                              )
+                            }
+                          >
+                            {offFor && s.enabled && (
+                              <div className="muted">
+                                The profile's <span className="mono">skills.platform_disabled.{offFor.join("/")}</span> list keeps it off in the chats Hermes Chat
+                                starts. This switch doesn't change that list.
                               </div>
-                              {s.description && (
-                                <div className="skill-desc-tip" aria-hidden>
-                                  {s.description}
-                                </div>
-                              )}
-                            </div>
-                            <div className="muted small skill-category">{s.category ?? ""}</div>
-                            {!selecting && (
-                            <div className="skills-row-actions">
-                              <button className="btn" id={`${id}-edit`} disabled={!!opening || !!toggling || busyBulk} aria-describedby={`${id}-label`} onClick={() => void open(s)}>
-                                {opening === s.name ? "Opening…" : "Edit"}
-                              </button>
-                              {essential ? (
-                                <span className="badge" title="Hermes keeps this skill on.">
-                                  Always on
-                                </span>
-                              ) : (
-                                <button
-                                  className="switch"
-                                  role="switch"
-                                  aria-checked={s.enabled}
-                                  aria-labelledby={`${id}-label`}
-                                  aria-describedby={`${id}-desc`}
-                                  disabled={!connected || !!toggling || !!opening || busyBulk}
-                                  onClick={() => void toggle(s)}
-                                >
-                                  <span className="switch-knob" />
-                                </button>
-                              )}
-                            </div>
                             )}
-                          </div>
-                          {offFor && s.enabled && (
-                            <div className="muted small toolset-hint">
-                              The profile's <span className="mono">skills.platform_disabled.{offFor.join("/")}</span> list keeps it off in the chats Hermes Chat
-                              starts. This switch doesn't change that list.
-                            </div>
-                          )}
-                          {toggling === s.name && (
-                            <div className="switch-status" role="status">
-                              Turning {s.enabled ? "off" : "on"}…
-                            </div>
-                          )}
-                          {rowNote?.name === s.name && (
-                            <div className={`switch-status ${rowNote.kind === "failed" ? "failed" : ""}`} role={rowNote.kind === "failed" ? "alert" : "status"}>
-                              {rowNote.text}
-                            </div>
-                          )}
+                            {toggling === s.name && (
+                              <div className="switch-status" role="status">
+                                Turning {s.enabled ? "off" : "on"}…
+                              </div>
+                            )}
+                            {rowNote?.name === s.name && (
+                              <div className={`switch-status ${rowNote.kind === "failed" ? "failed" : ""}`} role={rowNote.kind === "failed" ? "alert" : "status"}>
+                                {rowNote.text}
+                              </div>
+                            )}
+                          </SettingRow>
                         </li>
                       );
                     })}
@@ -734,19 +746,25 @@ export function SkillSettings({
             )}
           </>
         )}
-      </section>
+      </SettingsSection>
 
-      <section>
-        <h2>When changes take effect</h2>
-        <p className="muted">
-          {EDIT_EFFECT} Turning a skill off keeps it out of chats started from now on, and Hermes then refuses to load it in any chat, even one already
-          going. Turning one on lists it in new chats; one already going can still load it by name. Nothing needs restarting or reloading.
-        </p>
-        <p className="muted small">
-          The switch is the profile's <span className="mono">skills.disabled</span> list, which every platform follows. Edits you save here can be undone with
-          Restore previous version until you sign out or close Hermes Chat; earlier versions aren't kept on the server or on this computer.
-        </p>
-      </section>
+      <SettingsSection title="When changes take effect" intro="Nothing needs restarting or reloading.">
+        <SettingRow name="Saving an edit" hint="The skill's next load, in any chat, gets the saved text." more={<p>{EDIT_EFFECT}</p>} />
+        <SettingRow
+          name="Turning a skill off"
+          hint="Chats started from now on leave it out, and Hermes then refuses to load it in any chat, even one already going."
+          more={
+            <p>
+              The switch is the profile's <span className="mono">skills.disabled</span> list, which every platform follows.
+            </p>
+          }
+        />
+        <SettingRow name="Turning a skill on" hint="New chats list it; one already going can still load it by name." />
+        <SettingRow
+          name="Undoing a saved edit"
+          hint="Restore previous version, until you sign out or close Hermes Chat; earlier versions aren't kept on the server or on this computer."
+        />
+      </SettingsSection>
     </>
   );
 }

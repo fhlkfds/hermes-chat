@@ -10,6 +10,7 @@ import { memoryCache } from "../hermes/memoryCache";
 import { PersonaStore, personaKey } from "../hermes/personaStore";
 import { connect, type Hermes } from "../hermes/transport";
 import { Main } from "../App";
+import { queryWords, searchText, textMatches } from "./settingsSearch";
 
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: async () => null }));
@@ -76,6 +77,8 @@ async function openPersona(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole("tab", { name: /Persona/ }));
 }
 
+/** A row of the Persona section's card, by its name: Server, Profile or File. */
+const fact = (name: string) => [...document.querySelectorAll<HTMLElement>(".persona .set-row")].find((r) => r.querySelector(".set-name")?.textContent === name)!;
 const editor = (profile = "default") => screen.findByRole<HTMLTextAreaElement>("textbox", { name: `SOUL.md for the ${profile} profile` });
 const writes = (server: FakeHermes) => server.restRequests.filter((r) => r.method === "PUT" && r.path.endsWith("/soul")).map((r) => [r.path, r.body?.content]);
 
@@ -94,10 +97,9 @@ describe("Settings → Persona", () => {
     await openPersona(user);
     const box = await editor();
     expect(box.value).toBe(SOUL);
-    const where = document.querySelector(".persona-where")!;
-    expect(where.textContent).toContain("liam@hermes");
-    expect(where.textContent).toContain("default");
-    expect(where.textContent).toContain("/home/liam/.hermes/SOUL.md");
+    expect(fact("Server").textContent).toContain("liam@hermes");
+    expect(within(fact("Profile")).getByRole<HTMLSelectElement>("combobox", { name: "Profile" }).value).toBe("default");
+    expect(fact("File").textContent).toContain("/home/liam/.hermes/SOUL.md");
     expect(screen.getByText(/Hermes reads SOUL.md when a chat starts/).textContent).toMatch(/doesn't need to restart, and Hermes Chat never restarts it/);
     // Plain text, never rendered: the Markdown shows as typed.
     expect(document.querySelector(".persona strong")).toBeNull();
@@ -570,7 +572,7 @@ describe("leaving an unsaved persona edit", () => {
     expect(work.value).toBe("# Work persona\n");
     // The default profile's kept edit isn't offered here.
     expect(screen.queryByText(/Changes you didn't save/)).toBeNull();
-    expect(document.querySelector(".persona-where")!.textContent).toContain("/home/liam/.hermes/profiles/work/SOUL.md");
+    expect(fact("File").textContent).toContain("/home/liam/.hermes/profiles/work/SOUL.md");
     await edit(user, "# Work, edited\n", "work");
     await user.click(screen.getByRole("button", { name: /^Save$/ }));
     await screen.findByText(/Saved SOUL.md/);
@@ -652,7 +654,7 @@ describe("editing another profile's persona (#190)", () => {
     const work = await editor("work");
     expect(work.value).toBe("# Work persona\n");
     // The notes are the picked profile's: its file, its distribution, and that the app is using another profile.
-    expect(document.querySelector(".persona-where")!.textContent).toContain("/home/liam/.hermes/profiles/work/SOUL.md");
+    expect(fact("File").textContent).toContain("/home/liam/.hermes/profiles/work/SOUL.md");
     expect(await screen.findByText(/installed from the/)).toBeTruthy();
     expect(screen.getByText(/profile distribution/).textContent).toContain("acme-agents");
     expect(screen.getByText(/Hermes Chat is using the/).textContent).toMatch(/using the default profile.*chats on the work profile/s);
@@ -748,5 +750,82 @@ describe("editing another profile's persona (#190)", () => {
     await user.click(screen.getByRole("button", { name: "Try again" }));
     await waitFor(() => expect([...picker().options].map((o) => o.value)).toEqual(["default", "work"]));
     expect(screen.queryByText(/Couldn't list the server's profiles/)).toBeNull();
+  });
+});
+
+describe("the row layout (#174, ADR 0059)", () => {
+  const section = (heading: string) => screen.getByRole("heading", { name: heading, level: 2 }).closest("section")!;
+
+  it("draws each section as a heading and a card of rows, with the editor and its buttons in a block of the card", async () => {
+    const { user } = await launch();
+    await openPersona(user);
+    await edit(user, "# Edited\n");
+    await user.click(screen.getByRole("button", { name: /^Save$/ }));
+    await screen.findByText(/Saved SOUL.md/);
+
+    const persona = section("Persona");
+    expect(persona.classList).toContain("set-section");
+    const card = persona.querySelector(":scope > .set-card")!;
+    expect([...card.querySelectorAll(":scope > .set-row .set-name")].map((n) => n.textContent)).toEqual(["Server", "Profile", "File"]);
+    expect(within(fact("Profile")).getByRole("combobox", { name: "Profile" })).toBeTruthy();
+    // SOUL.md's editor, and Save, Cancel and Reload under it, are free-form content in the same card.
+    const block = card.querySelector<HTMLElement>(":scope > .set-block")!;
+    expect(within(block).getByRole("textbox", { name: "SOUL.md for the default profile" })).toBeTruthy();
+    for (const name of [/^Save$/, /Cancel/, /Reload/]) expect(within(block).getByRole("button", { name })).toBeTruthy();
+
+    // Copying is a row: its picker, still named "To profile", and Copy… beside it.
+    const copy = screen.getByRole("region", { name: "Copy to another profile" });
+    const to = within(copy).getByRole<HTMLSelectElement>("combobox", { name: "To profile" });
+    expect(to.closest(".set-row")).toBe(within(copy).getByRole("button", { name: /Copy…/ }).closest(".set-row"));
+
+    // Each earlier version is a row, with View as its control.
+    const earlier = section("Earlier versions");
+    const rows = earlier.querySelectorAll(".set-card > .set-row");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].querySelector(".set-name")!.textContent).toMatch(/^Replaced today at /);
+    expect(within(rows[0] as HTMLElement).getByRole("button", { name: "View" })).toBeTruthy();
+  });
+
+  it("folds when a saved persona takes effect behind the section's (i), where search still finds it", async () => {
+    const { user } = await launch();
+    await openPersona(user);
+    await editor();
+    const about = screen.getByRole("button", { name: "About Persona" });
+    const help = document.getElementById(about.getAttribute("aria-controls")!)!;
+    expect(about.getAttribute("aria-expanded")).toBe("false");
+    expect(help.hidden).toBe(true);
+    expect(help.textContent).toMatch(/Hermes reads SOUL.md when a chat starts/);
+    // The heading's name is its title alone.
+    expect(screen.getByRole("heading", { name: "Persona", level: 2 })).toBeTruthy();
+    // The folded words are still the section's text, which Settings' search matches.
+    expect(textMatches(searchText(section("Persona")), queryWords("rebuilds its instructions"))).toBe(true);
+    await user.click(about);
+    expect(about.getAttribute("aria-expanded")).toBe("true");
+    expect(help.hidden).toBe(false);
+  });
+
+  const unfolded = (el: Element) => expect(el.closest(".set-more, [hidden]")).toBeNull();
+
+  it("never folds a warning, a state or a question", async () => {
+    const { server, user } = await launch();
+    server.distributions = { default: "acme-agents" };
+    await openPersona(user);
+    await user.clear(await editor());
+    await user.click(screen.getByRole("button", { name: /^Save$/ }));
+    unfolded(await screen.findByText(/installed from the/));
+    unfolded(screen.getByText("Unsaved"));
+    unfolded(screen.getByRole("alertdialog", { name: "Save an empty SOUL.md?" }));
+    expect(document.querySelector(".persona .set-more :is([role=alert], [role=status], [role=alertdialog])")).toBeNull();
+  });
+
+  it("shows under the picker, unfolded, that the profiles couldn't be listed", async () => {
+    const { server, user } = await launch();
+    server.rest["GET /api/profiles"] = () => {
+      throw new Error("The dashboard answered 500: boom");
+    };
+    await openPersona(user);
+    const problem = await screen.findByText(/Couldn't list the server's profiles/);
+    unfolded(problem);
+    expect(problem.closest(".set-row")).toBe(fact("Profile"));
   });
 });

@@ -19,6 +19,7 @@ import {
   versionLine,
 } from "../hermes/capabilities";
 import { Spinner, relTime, storedTime } from "./bits";
+import { SettingNote, SettingRow, SettingsSection } from "./SettingRows";
 
 /** Opens a compatibility guide page in the owner's browser. */
 export type OpenGuide = (url: string) => void;
@@ -128,135 +129,150 @@ export function DiagnosticsSettings({
 
   return (
     <div className="diagnostics">
-      <section aria-labelledby="diag-server">
-        <h2 id="diag-server">Server</h2>
-        <p className="muted small">What the Hermes server says about itself. A version alone doesn't show what it can do, so each feature below is checked on its own.</p>
-        <dl className="diag-facts">
-          <dt>Server</dt>
-          <dd>
-            <span className="mono">{server ?? "Not connected"}</span> {unsecure && <span className="badge warn">Unsecure</span>}
-          </dd>
-          <dt>Profile</dt>
-          <dd className="mono">{profile}</dd>
-          <dt>Hermes version</dt>
-          <dd>
-            <span className={f.version || f.build ? "mono" : "muted"}>{versionLine(f)}</span>
-            {f.commit && (
-              <span className="muted">
-                {" "}
-                · commit <span className="mono">{f.commit.slice(0, 10)}</span>
-              </span>
-            )}
-            {f.releaseDate && <span className="muted"> · released {f.releaseDate}</span>}
-          </dd>
-          <dt>Protocol</dt>
-          <dd>{protocolText(f.protocol)}</dd>
-          <dt>Sign-in</dt>
-          <dd>{authLine(f, signIn)}</dd>
-          <dt>Feature flags</dt>
-          <dd>
-            {f.flags ? (
-              f.flags.length ? (
-                <span className="mono">{f.flags.join(", ")}</span>
-              ) : (
-                "None turned on"
-              )
+      <SettingsSection
+        title="Server"
+        titleId="diag-server"
+        intro="What the Hermes server says about itself."
+        more={<p>A version alone doesn't show what it can do, so each feature below is checked on its own.</p>}
+      >
+        <Fact name="Server">
+          <span className="mono">{server ?? "Not connected"}</span> {unsecure && <span className="badge warn">Unsecure</span>}
+        </Fact>
+        <Fact name="Profile">
+          <span className="mono">{profile}</span>
+        </Fact>
+        <Fact name="Hermes version">
+          <span className={f.version || f.build ? "mono" : "muted"}>{versionLine(f)}</span>
+          {f.commit && (
+            <span className="muted">
+              {" "}
+              · commit <span className="mono">{f.commit.slice(0, 10)}</span>
+            </span>
+          )}
+          {f.releaseDate && <span className="muted"> · released {f.releaseDate}</span>}
+        </Fact>
+        <Fact name="Protocol">{protocolText(f.protocol)}</Fact>
+        <Fact name="Sign-in">{authLine(f, signIn)}</Fact>
+        <Fact name="Feature flags">
+          {f.flags ? (
+            f.flags.length ? (
+              <span className="mono">{f.flags.join(", ")}</span>
             ) : (
-              <span className="muted">{f.flagsWhy ?? "Not read yet"}</span>
-            )}
-          </dd>
-          <dt>Extra request headers</dt>
-          <dd>{headers ? `${headers}, whose values are never shown` : "None"}</dd>
-        </dl>
-      </section>
+              "None turned on"
+            )
+          ) : (
+            <span className="muted">{f.flagsWhy ?? "Not read yet"}</span>
+          )}
+        </Fact>
+        <Fact name="Extra request headers">{headers ? `${headers}, whose values are never shown` : "None"}</Fact>
+      </SettingsSection>
 
-      <section aria-labelledby="diag-features">
-        <div className="diag-head">
-          <div>
-            <h2 id="diag-features">Features</h2>
-            <div className="muted small" role="status" aria-live="polite">
+      <SettingsSection
+        title="Features"
+        titleId="diag-features"
+        intro={
+          <>
+            <span role="status" aria-live="polite">
               <CheckStatus snap={snap} connected={connected} />
-            </div>
-          </div>
-          <div className="diag-actions">
+            </span>
+            <span className="sr-only" aria-live="polite">
+              {copied === "done" ? "Report copied, with secrets taken out." : ""}
+            </span>
+          </>
+        }
+        more={
+          <p>
+            Checks only read: nothing is changed on the server to find out. Results are kept in memory for this sign-in, never on disk. The report holds no
+            password, cookie, ticket or header value.
+          </p>
+        }
+        action={
+          <>
             <button className="btn" disabled={!connected || snap.checking} onClick={() => void store.refresh()}>
               <RefreshCw size={14} aria-hidden /> Check again
             </button>
             <button className="btn" onClick={copy}>
               {copied === "done" ? <Check size={14} aria-hidden /> : <ClipboardCopy size={14} aria-hidden />} {copied === "done" ? "Copied" : "Copy report"}
             </button>
-          </div>
-        </div>
-        <div className="sr-only" aria-live="polite">
-          {copied === "done" ? "Report copied, with secrets taken out." : ""}
-        </div>
+          </>
+        }
+      >
         {copied === "failed" && (
-          <p className="diag-alert" role="alert">
+          <SettingNote tone="warn" role="alert">
             <AlertTriangle size={14} aria-hidden /> Couldn't put the report on the clipboard.
-          </p>
+          </SettingNote>
         )}
         {failed && (
-          <p className="diag-alert" role="alert">
+          <SettingNote tone="warn" role="alert">
             <AlertTriangle size={14} aria-hidden /> Hermes didn't answer any check. {f.versionWhy} Each feature shows why below; Check again once the connection is steady.
-          </p>
+          </SettingNote>
         )}
-        <table className="diag-table">
-          <caption className="sr-only">What this Hermes server supports, feature by feature</caption>
-          <thead>
-            <tr>
-              <th scope="col">Feature</th>
-              <th scope="col">State</th>
-              <th scope="col">Details</th>
-            </tr>
-          </thead>
-          <tbody>
-            {CAPABILITIES.map((spec) => {
-              const cap = snap.caps[spec.id];
-              const here = focus?.id === spec.id;
-              return (
-                <tr key={spec.id} id={`capability-${spec.id}`} ref={here ? focused : undefined} tabIndex={here ? -1 : undefined} className={here ? "diag-focus" : undefined}>
-                  <th scope="row">
-                    <div>{spec.label}</div>
-                    <div className="muted small">{spec.usedBy}</div>
-                  </th>
-                  <td>
-                    <StateBadge state={cap.state} />
-                    <div className="muted small">
-                      {sourceText(cap.source)}
-                      {cap.checkedAt !== undefined && (
-                        <>
-                          {", "}
-                          <Checked at={cap.checkedAt} prefix="" />
-                        </>
-                      )}
-                    </div>
-                  </td>
-                  <td className="small">
-                    {cap.why && <div>{cap.why}</div>}
-                    {cap.state !== "supported" && (
-                      <div className="muted">
-                        Needs: {spec.needs} Without it: {spec.without}{" "}
-                        <button className="link-btn" onClick={() => openGuide(guideUrl(spec.id))} aria-label={`Compatibility guide: ${spec.label}`}>
-                          Compatibility guide
-                        </button>
+        <div className="set-block">
+          <table className="diag-table">
+            <caption className="sr-only">What this Hermes server supports, feature by feature</caption>
+            <thead>
+              <tr>
+                <th scope="col">Feature</th>
+                <th scope="col">State</th>
+                <th scope="col">Details</th>
+              </tr>
+            </thead>
+            <tbody>
+              {CAPABILITIES.map((spec) => {
+                const cap = snap.caps[spec.id];
+                const here = focus?.id === spec.id;
+                return (
+                  <tr key={spec.id} id={`capability-${spec.id}`} ref={here ? focused : undefined} tabIndex={here ? -1 : undefined} className={here ? "diag-focus" : undefined}>
+                    <th scope="row">
+                      <div>{spec.label}</div>
+                      <div className="muted small">{spec.usedBy}</div>
+                    </th>
+                    <td>
+                      <StateBadge state={cap.state} />
+                      <div className="muted small">
+                        {sourceText(cap.source)}
+                        {cap.checkedAt !== undefined && (
+                          <>
+                            {", "}
+                            <Checked at={cap.checkedAt} prefix="" />
+                          </>
+                        )}
                       </div>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        <p className="muted small settings-note">
-          Checks only read: nothing is changed on the server to find out. Results are kept in memory for this sign-in, never on disk. The report holds no
-          password, cookie, ticket or header value.{" "}
-          <button className="link-btn" onClick={() => openGuide(guideUrl())}>
-            Read the compatibility guide
-          </button>
-        </p>
-      </section>
+                    </td>
+                    <td className="small">
+                      {cap.why && <div>{cap.why}</div>}
+                      {cap.state !== "supported" && (
+                        <div className="muted">
+                          Needs: {spec.needs} Without it: {spec.without}{" "}
+                          <button className="link-btn" onClick={() => openGuide(guideUrl(spec.id))} aria-label={`Compatibility guide: ${spec.label}`}>
+                            Compatibility guide
+                          </button>
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <SettingRow
+          name="Compatibility guide"
+          hint="What each feature needs from Hermes, and what the app does without it."
+          control={
+            <button className="btn" onClick={() => openGuide(guideUrl())}>
+              <BookOpen size={14} aria-hidden /> Read the compatibility guide
+            </button>
+          }
+        />
+      </SettingsSection>
     </div>
   );
+}
+
+/** One thing the server or this connection is: its name, and its value where a setting's control would be. */
+function Fact({ name, children }: { name: string; children: ReactNode }) {
+  return <SettingRow className="diag-fact" name={name} control={<span className="set-value">{children}</span>} />;
 }
 
 /**

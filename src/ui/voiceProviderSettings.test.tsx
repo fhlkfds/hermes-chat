@@ -8,6 +8,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { FakeHermes } from "../hermes/fakeHermes";
 import { connect } from "../hermes/transport";
 import { VoiceProviderSettings } from "./VoiceProviderSettings";
+import { SettingsSearching } from "./SettingRows";
+import { queryWords, searchText, textMatches } from "./settingsSearch";
 
 afterEach(cleanup);
 
@@ -37,6 +39,8 @@ describe("Settings → Voice → Speech providers", () => {
   it("lists the providers Hermes supports for each side, which is in use, and which are set up", async () => {
     await shown({ setUp: (s) => (s.voiceProviders.env.default = new Set(["ELEVENLABS_API_KEY"])) });
     await screen.findByRole("group", { name: "Speech-to-text" });
+    // Each side heads its providers, so it's a heading to jump to.
+    expect(screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent)).toEqual(expect.arrayContaining(["Speech-to-text", "Text-to-speech"]));
     expect(listed("Speech-to-text")).toEqual([
       expect.stringMatching(/^Local Whisper\s*In use\s*Set up/),
       expect.stringMatching(/^Nous Subscription\s*Needs sign-in/),
@@ -369,5 +373,51 @@ describe("Settings → Voice → Speech providers", () => {
     rerender("default", undefined, false);
     expect(screen.getByText(/Connect to Hermes to see and change this profile's speech providers/)).toBeTruthy();
     expect(screen.queryByRole("combobox")).toBeNull();
+  });
+
+  it("is a card with a row for each side, its picker as the control and the picked provider's settings under it", async () => {
+    const { user } = await shown();
+    await screen.findByRole("group", { name: "Text-to-speech" });
+    const card = screen.getByRole("region", { name: "Speech providers" }).querySelector(":scope > .set-card")!;
+    for (const name of ["Speech-to-text", "Text-to-speech"] as const) {
+      expect(side(name).parentElement).toBe(card);
+      expect(picker(name).closest(".set-row > .set-control")?.closest(".voice-side")).toBe(side(name));
+      expect(screen.getByRole("list", { name: `${name} providers` }).closest(".set-block")?.parentElement).toBe(side(name));
+    }
+    await user.selectOptions(picker("Text-to-speech"), "OpenAI TTS");
+    expect(within(side("Text-to-speech")).getByRole("group", { name: "OpenAI TTS settings" }).closest(".set-block")).toBeTruthy();
+    // What a save comes to, with Discard and Save, is the card's last line; Read again acts on the whole section.
+    expect(saveButton().closest(".set-card > .set-note:last-child")?.parentElement).toBe(card);
+    expect(screen.getByRole("status").textContent).toBe("Not saved yet.");
+    expect(screen.getByRole("button", { name: /Read again/ }).closest(".set-head-action")).toBeTruthy();
+  });
+
+  it("folds how keys and the config are kept behind the section's (i), never a provider's state", async () => {
+    const { user } = await shown();
+    await screen.findByRole("group", { name: "Text-to-speech" });
+    const about = screen.getByRole("button", { name: "About Speech providers" });
+    const help = document.getElementById(about.getAttribute("aria-controls")!)!;
+    expect(about.getAttribute("aria-expanded")).toBe("false");
+    expect(help.hidden).toBe(true);
+    expect(help.textContent).toMatch(/Keys are saved in the profile's .env on the server and never shown here again/);
+    // Settings' search still finds the folded words, in the section it shows.
+    expect(textMatches(searchText(screen.getByRole("region", { name: "Speech providers" })), queryWords("never shown here again"))).toBe(true);
+    await user.selectOptions(picker("Text-to-speech"), "Piper");
+    expect(screen.getByText(/Its software isn't installed on the Hermes server/).closest("[hidden]")).toBeNull();
+    for (const fold of document.querySelectorAll("[hidden]")) expect(fold).toBe(help);
+  });
+
+  it("opens the section's help while Settings is searched", async () => {
+    const server = new FakeHermes();
+    const hermes = await connect(server.openPipe, "default");
+    render(
+      <SettingsSearching.Provider value>
+        <VoiceProviderSettings api={hermes.voiceSettings} profile="default" connected />
+      </SettingsSearching.Provider>,
+    );
+    await screen.findByRole("group", { name: "Speech-to-text" });
+    const about = screen.getByRole("button", { name: "About Speech providers" });
+    expect(about.getAttribute("aria-expanded")).toBe("true");
+    expect(document.getElementById(about.getAttribute("aria-controls")!)!.hidden).toBe(false);
   });
 });
