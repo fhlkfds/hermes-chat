@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# Self-checks for the harness itself, not the app. Needs `hv bootstrap` done; no build, no app, no network.
+#   wd.mjs: `wait` times out with exit 2, a bad [ms] is rejected, `gone` returns at once on no match.
+#   hv up:  a failed start stops every process it started and deletes its run dir;
+#           three concurrent `hv up`s each get their own display (their own Xvfb holds its lock), and `hv down` stops them.
+# Runs under a throwaway HV_HOME with a fake app and a fake tauri-driver, so it never touches a real run.
+set -euo pipefail
+
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REAL_HOME=${HV_HOME:-$HOME/.cache/hermes-verify}
+[ -d "$REAL_HOME/root" ] || command -v Xvfb >/dev/null || { echo "selftest: run \`hv bootstrap\` first" >&2; exit 1; }
+T=$(mktemp -d)
+FAILS=0
+pass() { echo "ok   $*"; }
+fail() { echo "FAIL $*"; FAILS=$((FAILS + 1)); }
+dead() { local p; for p in "$@"; do [ -z "$p" ] || ! kill -0 "$p" 2>/dev/null || return 1; done; }
+pids_of() { (. "$1"; echo "$XVFB_PID $WM_PID $DBUS_PID $BRIDGE_PID $DRIVER_PID"); }
+
+# --- wd.mjs against a fake WebDriver that never finds anything ---
+cat >"$T/fake-wd.mjs" <<'JS'
+import { createServer } from "node:http";
+const srv = createServer((req, res) => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ value: [] })); });
+srv.listen(0, "127.0.0.1", () => console.log(srv.address().port));
+JS
+node "$T/fake-wd.mjs" >"$T/fake-wd.port" &
+FAKE_WD=$!
+# Also stops any run an interrupted self-test left up.
+cleanup() {
+  local r
+  kill "$FAKE_WD" 2>/dev/null || true
+  for r in "$T"/hv/runs/*/; do [ -f "$r/state.env" ] && HV_HOME=$T/hv HV_RUN=${r%/} "$HERE/hv" down >/dev/null 2>&1; done
+  rm -rf "$T"
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+for _ in $(seq 50); do [ -s "$T/fake-wd.port" ] && break; sleep 0.1; done
+mkdir -p "$T/wdrun"
+printf "DRIVER_PORT='%s'\nEVIDENCE='%s'\n" "$(cat "$T/fake-wd.port")" "$T/wdrun" >"$T/wdrun/state.env"
+echo fake-session >"$T/wdrun/session"
+wd() { HV_RUN=$T/wdrun node "$HERE/wd.mjs" "$@"; }
+
+start=$(date +%s%N); code=0; wd wait .nothing "" 400 >/dev/null 2>"$T/err" || code=$?
+ms=$((($(date +%s%N) - start) / 1000000))
+[ "$code" = 2 ] && grep -q "timed out after 400 ms" "$T/err" && [ "$ms" -lt 5000 ] && pass "wd wait times out with exit 2 (${ms} ms)" || fail "wd wait: exit $code after ${ms} ms: $(cat "$T/err")"
+code=0; HV_RUN=$T/wdrun timeout 5 node "$HERE/wd.mjs" wait .nothing "" 5s >/dev/null 2>"$T/err" || code=$?
+[ "$code" = 1 ] && grep -q "whole number of ms" "$T/err" && pass "wd wait rejects a non-numeric timeout" || fail "wd wait with ms=5s: exit $code: $(cat "$T/err")"
+out=$(wd gone .nothing "" 400 2>&1) && [ "$out" = ok ] && pass "wd gone returns ok when nothing matches" || fail "wd gone: $out"
+
+# --- hv up under a throwaway HV_HOME ---
+export HV_HOME=$T/hv HV_TARGET=$T/target
+mkdir -p "$HV_HOME" "$HV_TARGET/debug" "$T/bin"
+[ -d "$REAL_HOME/root" ] && ln -s "$REAL_HOME/root" "$HV_HOME/root"
+printf '#!/bin/sh\nexit 0\n' >"$HV_TARGET/debug/hermes-chat"; chmod +x "$HV_TARGET/debug/hermes-chat"
+# A tauri-driver stand-in: FAKE_DRIVER=fail exits at once, otherwise it answers 200 on --port.
+cat >"$T/bin/tauri-driver" <<'SH'
+#!/bin/sh
+[ "${FAKE_DRIVER:-}" = fail ] && { echo "fake tauri-driver: failing on purpose" >&2; exit 1; }
+exec python3 -c 'import sys, http.server as h
+p = int(sys.argv[sys.argv.index("--port") + 1])
+class Ok(h.BaseHTTPRequestHandler):
+    def do_GET(self): self.send_response(200); self.end_headers(); self.wfile.write(b"{}")
+    def log_message(self, *a): pass
+h.HTTPServer(("127.0.0.1", p), Ok).serve_forever()' "$@"
+SH
+chmod +x "$T/bin/tauri-driver"
+export PATH=$T/bin:$PATH
+hv() { "$HERE/hv" "$@"; }
+
+# A failed start leaves nothing running and no run dir, and keeps state.env with the evidence.
+code=0; FAKE_DRIVER=fail hv up >"$T/up.log" 2>&1 || code=$?
+st=$(ls "$HV_HOME"/evidence/*/state.env 2>/dev/null | head -1 || true)
+if [ "$code" != 0 ] && [ -n "$st" ] && [ -z "$(ls -A "$HV_HOME/runs")" ]; then
+  # shellcheck disable=SC2046
+  if dead $(pids_of "$st") && disp=$(. "$st"; echo "${DISPLAY_NUM#:}") && [ -n "$disp" ] && [ ! -e "/tmp/.X$disp-lock" ]; then
+    pass "failed hv up stopped Xvfb :$disp, openbox, D-Bus, the stand-in and the driver"
+  else
+    fail "failed hv up left processes or display :${disp:-?} behind ($(pids_of "$st"))"
+  fi
+else
+  fail "failed hv up: exit $code, state ${st:-missing}, runs: $(ls "$HV_HOME/runs"); log: $(tail -5 "$T/up.log")"
+fi
+rm -rf "$HV_HOME/evidence"
+
+# Concurrent starts get distinct displays, each held by its own Xvfb.
+ups=()
+for i in 1 2 3; do (hv up >"$T/up$i.log" 2>&1; echo $? >"$T/up$i.code") & ups+=($!); done
+wait "${ups[@]}"
+runs=() displays=()
+for i in 1 2 3; do
+  r=$(sed -n 's/^export HV_RUN=//p' "$T/up$i.log")
+  if [ "$(cat "$T/up$i.code")" = 0 ] && [ -n "$r" ]; then runs+=("$r"); displays+=("$(. "$r/state.env"; echo "$DISPLAY_NUM")")
+  else fail "concurrent hv up $i: exit $(cat "$T/up$i.code"): $(tail -5 "$T/up$i.log")"; fi
+done
+uniq_displays=$(printf '%s\n' "${displays[@]}" | sort -u | wc -l)
+[ "${#runs[@]}" = 3 ] && [ "$uniq_displays" = 3 ] && pass "three concurrent hv up got displays ${displays[*]}" || fail "concurrent displays: ${displays[*]:-none}"
+raced=$(cat "$HV_HOME"/evidence/*/xvfb.log | grep -c "trying display" || true)
+echo "--   the three runs tried $raced displays to get 3 (more than 3 means a lost race was retried)"
+for r in "${runs[@]}"; do
+  # The doctor exits non-zero here anyway (fake driver, no build); only its Xvfb line matters.
+  doc=$(HV_RUN=$r hv doctor 2>&1 || true)
+  grep -q "^ok   Xvfb" <<<"$doc" && pass "doctor: $r's Xvfb is its own" || fail "doctor on $r: $(grep Xvfb <<<"$doc")"
+  pids=$(pids_of "$r/state.env")
+  HV_RUN=$r hv down >/dev/null 2>&1 || true
+  # shellcheck disable=SC2086
+  dead $pids && pass "hv down stopped $pids" || fail "hv down left some of $pids running"
+done
+
+[ "$FAILS" = 0 ] && echo "selftest: all ok" || { echo "selftest: $FAILS failed"; exit 1; }

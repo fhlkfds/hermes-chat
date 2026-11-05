@@ -84,7 +84,13 @@ async function one(css, text) {
   const found = await waitFor(css, text, 10000);
   return elId(found[0]);
 }
-const unescape = (v) => v.replace(/\\n/g, "").replace(/\\t/g, "").replace(/\\e/g, "");
+// A wait's [ms]: 15 s when omitted. Anything but a whole number of ms is an error, since NaN would never time out.
+function timeoutMs(raw) {
+  if (raw === undefined || raw === "") return 15000;
+  if (!/^\d+$/.test(raw)) die(`timeout must be a whole number of ms, got "${raw}"`);
+  return Number(raw);
+}
+const unescape =(v) => v.replace(/\\n/g, "").replace(/\\t/g, "").replace(/\\e/g, "");
 
 const [cmd, ...args] = process.argv.slice(2);
 const dashdash = args.indexOf("--");
@@ -106,11 +112,11 @@ try {
       console.log("closed");
       break;
     case "wait":
-      await waitFor(css, text, Number(extra || 15000));
+      await waitFor(css, text, timeoutMs(extra));
       console.log("ok");
       break;
     case "gone":
-      await waitFor(css, text, Number(extra || 15000), false);
+      await waitFor(css, text, timeoutMs(extra), false);
       console.log("ok");
       break;
     case "click":

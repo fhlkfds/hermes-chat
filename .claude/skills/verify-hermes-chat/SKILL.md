@@ -34,7 +34,7 @@ $S/hv up                          # stand-in dashboard (default)
 $S/hv up --dashboard http://127.0.0.4:47242   # a real Hermes dashboard you started (see below)
 ```
 
-`hv up` starts, each in its own process group: Xvfb on a free display from `:140` upward (1400×900), openbox, a private D-Bus session bus, the stand-in dashboard on a free loopback port, and tauri-driver on a free port. It prints `export HV_RUN=…`, the dashboard URL, and the evidence folder. The app's `HOME` and `XDG_*` dirs are new and empty under the run dir, so every run starts at the Welcome screen with no saved connection.
+`hv up` starts, each in its own process group: Xvfb on a free display from `:140` upward (1400×900; a display counts as ours only once our Xvfb holds its lock, so concurrent runs never share one), openbox, a private D-Bus session bus, the stand-in dashboard on a free loopback port, and tauri-driver on a free port. It prints `export HV_RUN=…`, the dashboard URL, and the evidence folder. If any step fails, `hv up` stops what it had started before it exits, the way `hv down` does. The app's `HOME` and `XDG_*` dirs are new and empty under the run dir, so every run starts at the Welcome screen with no saved connection.
 
 Then launch the app:
 
@@ -100,7 +100,7 @@ A proof:
 $S/hv down
 ```
 
-This ends the WebDriver session and kills the process groups this run started: tauri-driver with WebKitWebDriver, the app and any `ssh` it spawned, the stand-in, openbox and Xvfb. It also kills the D-Bus daemon by its PID and any app process still on this run's display, then deletes the run dir. It lists the evidence it kept. It never kills by process name, so other sessions' apps and servers on this box are safe. After `hv down`, check that the evidence folder still lists your shots. Run `hv down` after every failed attempt too, so displays and ports aren't stranded.
+This ends the WebDriver session and kills the process groups this run started: tauri-driver with WebKitWebDriver, the app and any `ssh` it spawned, the stand-in, openbox and Xvfb. It also kills the D-Bus daemon by its PID and any app process still on this run's display, then deletes the run dir. It copies `state.env` (display, ports, PIDs) into the evidence and lists what it kept. It never kills by process name, so other sessions' apps and servers on this box are safe. After `hv down`, check that the evidence folder still lists your shots. Run `hv down` after every failed attempt too, so displays and ports aren't stranded.
 
 ## Gotchas
 
@@ -110,3 +110,4 @@ This ends the WebDriver session and kills the process groups this run started: t
 - `cargo test` with the same `CARGO_TARGET_DIR` rebuilds `debug/hermes-chat` without `custom-protocol`, and the app then shows "Could not connect to localhost". Run `hv build` again before `hv up`.
 - WebKitGTK allows one automation session per app process. `wd.mjs open` refuses to open a second session while `$HV_RUN/session` exists.
 - At high load (`uptime` 30 or more), raise `wait` timeouts rather than adding sleeps.
+- After changing `hv` or `wd.mjs`, run `$S/selftest`. It needs only `hv bootstrap` (no build, no app). It checks `wait` timeouts, cleanup after a failed `hv up`, and that three concurrent `hv up` runs get three displays, and it prints `selftest: all ok`.
