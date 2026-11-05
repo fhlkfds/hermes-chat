@@ -7,7 +7,7 @@ import "../src/styles.css";
 import type { Chat, Item } from "../src/hermes/model";
 import { ChatPane } from "../src/ui/ChatPane";
 import { Split } from "../src/ui/Split";
-import { makeChat, makeReply } from "./fixture";
+import { codeReply, makeChat, makeReply } from "./fixture";
 
 const root = createRoot(document.getElementById("root")!);
 let setChat: (c: Chat) => void = () => {};
@@ -95,6 +95,52 @@ async function stream(chunk = 4) {
   flushSync(() => setChat({ ...current, items, running: false }));
   await painted();
   return { deltas: update.length, updateMs: stats(update), frameMs: stats(frames), stuckToBottom: bottom < 2 };
+}
+
+/**
+ * Streams the reply #224 measured into a short chat: a sentence and a 40-line code block, `blocks` times, tagged `ts`
+ * or untagged, `chunk` characters a delta and one delta a frame. `frameMs`: frame to frame, so what the owner sees;
+ * `lastMs`: the mean update of the last 20 deltas, when the reply is longest.
+ */
+async function streamCode(blocks: number, tagged: boolean, chunk = 12) {
+  root.render(<></>);
+  await painted();
+  current = makeChat(4);
+  flushSync(() => root.render(<Host key={++opened} initial={current} />));
+  await painted();
+  const reply = codeReply(blocks, tagged);
+  const before: Item[] = [...current.items, { kind: "user", id: "u-live", text: "Stream something." }];
+  flushSync(() => setChat({ ...current, items: before, running: true }));
+  await painted();
+  const update: number[] = [];
+  const frames: number[] = [];
+  let last = performance.now();
+  for (let i = chunk; i < reply.length + chunk; i += chunk) {
+    const items: Item[] = [...before, { kind: "assistant", id: "a-live", text: reply.slice(0, i) }];
+    const t0 = performance.now();
+    flushSync(() => setChat({ ...current, items, running: true }));
+    update.push(performance.now() - t0);
+    const now = await frame();
+    frames.push(now - last);
+    last = now;
+  }
+  const t0 = performance.now();
+  flushSync(() => setChat({ ...current, items: [...before, { kind: "assistant", id: "a-live", text: reply }], running: false }));
+  const endMs = Math.round(performance.now() - t0);
+  await painted();
+  const r1 = (x: number) => Math.round(x * 10) / 10;
+  const tail = update.slice(-20);
+  return {
+    blocks,
+    tagged,
+    deltas: update.length,
+    updateMs: stats(update),
+    lastMs: r1(tail.reduce((a, b) => a + b, 0) / tail.length),
+    frameMs: stats(frames),
+    over16ms: frames.filter((f) => f > 17).length,
+    endMs,
+    highlighted: document.querySelectorAll(`[data-item="a-live"] pre code.hljs`).length,
+  };
 }
 
 /**
@@ -295,4 +341,4 @@ const dragWatch = {
   },
 };
 
-Object.assign(window, { bench: { open, stream, find, scroll, splitOpen, splitStream, splitResize, dragWatch } });
+Object.assign(window, { bench: { open, stream, streamCode, find, scroll, splitOpen, splitStream, splitResize, dragWatch } });

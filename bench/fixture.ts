@@ -74,3 +74,24 @@ export function makeReply(seed = 99): string {
     .map((i) => (i as { text: string }).text)
     .join("\n\n");
 }
+
+const LOADER = [
+  "export async function load(id: string, opts: { retries?: number } = {}) {",
+  "  const res = await fetch(`/api/sessions/${id}`, { headers: { accept: 'application/json' } });",
+  "  if (!res.ok) throw new Error(`load ${id}: ${res.status} ${res.statusText}`);",
+  "  const body = (await res.json()) as { items: Item[]; next?: string };",
+  "  for (const item of body.items) cache.set(item.id, { ...item, seen: Date.now() });",
+  "  return body.next ? [...body.items, ...(await load(body.next, opts))] : body.items;",
+  "}",
+  "",
+];
+
+/**
+ * The reply #224 measured: a sentence plus a 40-line code block, `blocks` times. `tagged`: the fences say `ts`;
+ * otherwise highlighting has to guess the language of each.
+ */
+export function codeReply(blocks: number, tagged: boolean): string {
+  const code = Array.from({ length: 40 }, (_, i) => LOADER[i % LOADER.length]).join("\n");
+  const one = "Here is the next part of the loader, with the retry kept as it was.\n\n```" + (tagged ? "ts" : "") + "\n" + code + "\n```";
+  return Array.from({ length: blocks }, () => one).join("\n\n");
+}
