@@ -10,6 +10,8 @@ import { FakeHermes, row } from "../hermes/fakeHermes";
 import { connect, type Hermes } from "../hermes/transport";
 import { Main } from "../App";
 import { setWindowHidden } from "./windowState";
+import { FakeLocalStt } from "../hermes/fakeLocalStt";
+import { setUIPrefs } from "../hermes/uiPrefs";
 
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: async () => null }));
@@ -160,7 +162,7 @@ const composer = () => screen.getByPlaceholderText<HTMLTextAreaElement>("Message
 let signIns = 0;
 
 /** Signed in with "Nightly backup" open: a chat that has started. Turns end after one second of quiet. */
-async function opened(server = new FakeHermes()) {
+async function opened(server = new FakeHermes(), localStt = new FakeLocalStt()) {
   server.sessions = [row("backup", 1, { pinned: true, title: "Nightly backup" }), row("nas", 2, { pinned: true, title: "NAS disks" })];
   server.transcripts = {
     backup: [
@@ -174,11 +176,13 @@ async function opened(server = new FakeHermes()) {
   const hermes = await connect(server.openPipe);
   running.push(hermes);
   const user = userEvent.setup();
-  render(<Main hermes={hermes} connection={{ mode: "ssh", sshTarget: "liam@hermes", url: "", username: `talker${++signIns}` }} onSignOut={async () => {}} />);
+  render(
+    <Main hermes={hermes} connection={{ mode: "ssh", sshTarget: "liam@hermes", url: "", username: `talker${++signIns}` }} onSignOut={async () => {}} localStt={localStt} />,
+  );
   await user.click(await screen.findByRole("button", { name: /^Nightly backup/ }));
   await settle(hermes);
   await waitFor(() => expect(startButton().getAttribute("aria-disabled")).toBe("false"));
-  return { server, hermes, user, runtime: () => server.runtimeIdOf("backup")! };
+  return { server, hermes, user, localStt, runtime: () => server.runtimeIdOf("backup")! };
 }
 
 type Opened = Awaited<ReturnType<typeof opened>>;
@@ -536,6 +540,57 @@ describe("Mute and devices", () => {
     await settle(s.hermes);
     expect(mic.opened).toBe(1);
     expect(s.server.recordings).toHaveLength(0);
+  });
+});
+
+describe("Where speech to text runs (ADR 0065)", () => {
+  /** This computer first, Hermes as backup, with this computer's run held until `release`. */
+  async function localFirst() {
+    const localStt = new FakeLocalStt();
+    localStt.downloaded.add("base");
+    let release!: () => void;
+    localStt.gate = new Promise((r) => (release = r));
+    localStt.heard = new Error("whisper.cpp exited with code 1");
+    setUIPrefs({ speechToText: { primary: "local", backup: true, timeoutSeconds: 30 } });
+    const s = await opened(undefined, localStt);
+    await start(s);
+    mic.loud(1);
+    mic.quiet(1.3);
+    await waitFor(() => expect(localStt.recordings).toHaveLength(1));
+    return { ...s, release };
+  }
+
+  it("sends a turn to the backup when this computer fails, and says which one transcribed it", async () => {
+    const s = await localFirst();
+    s.server.heard = "Check the NAS";
+    s.release();
+    await waitFor(() => expect(prompts(s.server)).toEqual(["Check the NAS"]));
+    expect(s.server.recordings[0].audio).toEqual(s.localStt.recordings[0].audio);
+    expect(panel().querySelector(".conv-heard-via")!.textContent).toBe(
+      "Transcribed on Hermes. This computer couldn't transcribe it: whisper.cpp exited with code 1.",
+    );
+  });
+
+  it("never sends the turn to Hermes once the conversation ends while this computer transcribes it", async () => {
+    const s = await localFirst();
+    await s.user.click(within(panel()).getByRole("button", { name: /End conversation/ }));
+    s.release();
+    await settle(s.hermes);
+    await act(async () => void (await new Promise((r) => setTimeout(r, 50))));
+    expect(s.server.recordings).toEqual([]);
+    expect(prompts(s.server)).toEqual([]);
+  });
+
+  it("never sends the turn to Hermes when it pauses while this computer transcribes it", async () => {
+    const s = await localFirst();
+    // Hiding the window to the tray pauses it (ADR 0041).
+    act(() => setWindowHidden(true));
+    expect(mic.allClosed).toBe(true);
+    s.release();
+    await settle(s.hermes);
+    await act(async () => void (await new Promise((r) => setTimeout(r, 50))));
+    expect(s.server.recordings).toEqual([]);
+    expect(prompts(s.server)).toEqual([]);
   });
 });
 

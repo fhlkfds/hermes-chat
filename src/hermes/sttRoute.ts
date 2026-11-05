@@ -125,7 +125,8 @@ const globalTimers: Timers = {
 };
 
 /**
- * Transcribes `audio` where the owner chose: the primary, then, if it fails, the backup. Hearing no
+ * Transcribes `audio` where the owner chose: the primary, then, if it fails, the backup. Hermes alone fails with its
+ * own error, unchanged. Hearing no
  * speech isn't a failure: an empty transcript from the primary is the answer. With a backup, the primary gets
  * `timeoutSeconds`, and an answer that comes later is dropped; the backup, and a primary with no backup, get as long
  * as they take (this computer stops itself after `LOCAL_MAX_SECONDS`). Once `signal` aborts, nothing more is tried and
@@ -151,6 +152,8 @@ export async function transcribeRouted(
       return { ...got, ran: side, ...(fellBack && { fellBack }) };
     } catch (e) {
       if (e instanceof SttCancelled || signal?.aborted) throw new SttCancelled();
+      // Hermes alone, as before this choice existed: its own error, as it said it.
+      if (order.length === 1 && side === "server") throw e;
       tried.push({ side, why: messageOf(e) });
     }
   }

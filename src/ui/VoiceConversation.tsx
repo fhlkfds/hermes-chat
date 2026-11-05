@@ -55,7 +55,8 @@ export function useVoiceConversation(o: {
   useEffect(() => {
     if (!o.speaker || !o.voice) return;
     const c = new VoiceConversation({
-      transcribe: (audio, mime) => latest.current.voice!.transcribe(audio, mime),
+      // The signal goes on, so End or a pause stops the router before it tries the backup (ADR 0065).
+      transcribe: (audio, mime, signal) => latest.current.voice!.transcribe(audio, mime, signal),
       send: (text) =>
         latest.current.send ? latest.current.send(text) : Promise.resolve({ delivery: { delivery: "unsent", reason: "This chat can't take messages now." } }),
       stopReply: () => latest.current.stopReply(),
