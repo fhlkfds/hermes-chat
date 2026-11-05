@@ -2031,6 +2031,29 @@ button.provider-row:hover:not(:disabled) { background: var(--hover); }
 .settings .job-preview p { margin: 6px 0 0; }
 .job-check { display: flex; align-items: center; gap: 8px; font-size: calc(13rem / 14); }
 .jobs-screen .confirm { max-width: 560px; margin: 0 0 16px; padding: 12px 14px; border-radius: 12px; background: var(--raised); border: 1px solid var(--line-2); color: var(--text); }
+/* Troubleshoot (ADR 0053): the list row's button, the first message's preview, and what changed on the job. */
+.job-item { position: relative; }
+.job-item.has-trouble .job-row-head { padding-right: 128px; }
+.job-row-trouble { position: absolute; top: 9px; right: 10px; }
+.job-trouble-line { color: var(--text); }
+.job-run-trouble { margin-top: 4px; }
+.settings section.job-trouble { padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line-2); background: var(--raised); margin: 0 0 16px; }
+.settings section.job-trouble:focus { outline: none; }
+.job-trouble h2 { display: flex; align-items: center; gap: 6px; margin-top: 0; }
+.settings .job-trouble p { margin: 0 0 10px; }
+.job-trouble-notes { margin: 0 0 10px; padding-left: 18px; }
+.job-trouble-message { width: 100%; box-sizing: border-box; min-height: 260px; max-height: 50vh; resize: vertical; margin: 0 0 10px; background: var(--bg); border: 1px solid var(--line-2); border-radius: 9px; padding: 9px 11px; color: var(--text); font-family: var(--mono); font-size: calc(12rem / 14); line-height: 1.5; }
+.job-trouble-message:focus { border-color: var(--line-3); outline: none; }
+.job-changes { margin: 0 0 12px; padding-left: 18px; font-size: calc(13rem / 14); line-height: 1.6; }
+.job-changes .mono { overflow-wrap: anywhere; }
+.job-change-field { font-weight: 600; }
+.job-change-pair { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
+.job-change-pair .job-prompt { margin: 0 0 6px; max-height: 200px; background: var(--bg); }
+.job-trouble .jobs-actions { margin: 0 0 6px; }
+@media (max-width: 520px) {
+  .job-item.has-trouble .job-row-head { padding-right: 0; }
+  .job-row-trouble { position: static; margin-top: 6px; width: 100%; justify-content: center; }
+}
 /* Project defaults (ADR 0017): what a new chat starts with, the project's form, and Apply to this chat. */
 .start-settings { border: 1px solid var(--line); border-radius: 12px; background: var(--raised); padding: 12px 16px; font-size: calc(13rem / 14); }
 .start-settings h2 { margin: 0 0 8px; font-size: calc(12rem / 14); font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }

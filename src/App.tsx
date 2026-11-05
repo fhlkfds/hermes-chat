@@ -73,6 +73,7 @@ import { OutputsIndex, outputsIn, splitPath, type Output } from "./hermes/output
 import { STATUS_LABEL, composing, routeLabel } from "./ui/bits";
 import { ProjectScreen, ProjectSwitcher, type ProjectUnread } from "./ui/Projects";
 import { ScheduledJobs } from "./ui/ScheduledJobs";
+import { TroubleshootStore, startTroubleshoot } from "./hermes/troubleshoot";
 import { CapabilityGate } from "./ui/Diagnostics";
 import { guideUrl, type CapabilityId } from "./hermes/capabilities";
 import { useCapabilities } from "./ui/Diagnostics";
@@ -120,9 +121,10 @@ const SYNC_EVERY_MS = 60_000;
 // While the inbox is open it asks for fresh checks this often; they run at most every 15 seconds (transport.ts).
 const INBOX_CHECK_EVERY_MS = 30_000;
 const TOAST_MS = 5_000;
+const ACTION_TOAST_MS = 15_000;
 
 /** A short notice above the composer; `undo` puts back what it reports. `at` restarts the timer for a repeat. */
-type Toast = { text: string; undo?: () => void; at: number };
+type Toast = { text: string; undo?: () => void; action?: { label: string; run: () => void }; at: number };
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -854,6 +856,8 @@ export function Main({
   const [membershipOpen, setMembershipOpen] = useState(false);
   /** The Scheduled jobs screen covers the chat, as Settings does. */
   const [jobsOpen, setJobsOpen] = useState(false);
+  /** The job the Scheduled jobs screen opens on, when something other than the rail opened it; `n` starts it again. */
+  const [jobsAt, setJobsAt] = useState<{ id: string; n: number }>();
   /** Automations (webhook routes, ADR 0036) cover the chat too. */
   const [automationsOpen, setAutomationsOpen] = useState(false);
   // The side panel's Terminal (ADR 0022, ADR 0039): which shell is shown, kept in the prefs so it opens on the one picked
@@ -983,6 +987,10 @@ export function Main({
   // Projects are Hermes's, one store for each connection and profile; which chats are in each is kept on this computer.
   // A project picked in the switcher narrows the list to its chats. Active, Settled and Unread work as before inside it.
   const scope = projectScope(connection, profile);
+  // Troubleshooting chats started from the Jobs screen, for this app run (troubleshoot.ts, ADR 0053). The store sees
+  // every change in the chats, to tell when a troubleshooting reply has ended.
+  const troubleshoots = useMemo(() => new TroubleshootStore(), [hermes]);
+  useEffect(() => hermes.subscribe(() => troubleshoots.observe(hermes.getSnapshot())), [hermes, troubleshoots]);
   // Keep the same store and request queue when returning to a profile: a write still finishing for that profile
   // must share ordering with its new reads and writes, rather than commit from an abandoned snapshot.
   const projectStores = useMemo(() => new Map<string, ProjectsStore>(), [hermes]);
@@ -1191,6 +1199,44 @@ export function Main({
   };
 
   const newChat = (remember = true) => openChat(null, { remember, fresh: true });
+
+  /** Opens the Scheduled jobs screen on one job, as a troubleshooting chat's toast does (ADR 0053). */
+  const openJobAt = (id: string) =>
+    guard(() => {
+      setProjectOpen(false);
+      setSettingsOpen(false);
+      setOutputsOpen(false);
+      setUsageOpen(false);
+      setLogsOpen(false);
+      setRepoOpen(false);
+      setAutomationsOpen(false);
+      setJobsAt((a) => ({ id, n: (a?.n ?? 0) + 1 }));
+      setJobsOpen(true);
+    });
+  const openJobAtLatest = useRef(openJobAt);
+  openJobAtLatest.current = openJobAt;
+  // A troubleshooting reply that ends while the Jobs screen isn't showing is said in a toast, which opens the job: the
+  // screen reads it again there and shows what changed. On the Jobs screen, the job's own panel says it.
+  const jobsShowing = useRef(false);
+  jobsShowing.current = jobsOpen && !settingsOpen;
+  const troubleToasted = useRef(new Set<string>());
+  useEffect(
+    () =>
+      troubleshoots.subscribe(() => {
+        for (const t of troubleshoots.getSnapshot()) {
+          if (t.phase !== "ended" || troubleToasted.current.has(t.id)) continue;
+          troubleToasted.current.add(t.id);
+          if (jobsShowing.current) continue;
+          const here = hermes.profile === t.profile;
+          setToast({
+            text: `Troubleshooting “${t.jobName}”: Hermes's reply has ended.${here ? "" : ` Switch to ${t.profile} to see the job.`}`,
+            at: Date.now(),
+            ...(here && { action: { label: "See what changed", run: () => openJobAtLatest.current(t.jobId) } }),
+          });
+        }
+      }),
+    [troubleshoots],
+  );
 
   /** Opens the Repository screen on a worktree's Worktrees view, as a chat's worktree label does (ADR 0043). */
   const openRepository = (at: { target: string; path: string; view: "worktrees" }) =>
@@ -1619,7 +1665,8 @@ export function Main({
 
   useEffect(() => {
     if (!toast) return;
-    const timer = setTimeout(() => setToast(null), TOAST_MS);
+    // A toast that offers somewhere to go stays longer than one that only says something.
+    const timer = setTimeout(() => setToast(null), toast.action ? ACTION_TOAST_MS : TOAST_MS);
     return () => clearTimeout(timer);
   }, [toast]);
 
@@ -2177,6 +2224,7 @@ export function Main({
             setLogsOpen(false);
             setRepoOpen(false);
             setAutomationsOpen(false);
+            setJobsAt(undefined);
             setJobsOpen(true);
           })
         }
@@ -2403,11 +2451,18 @@ export function Main({
                 onClose={() => { flushSync(() => setJobsOpen(false)); focusPane(active.key); }}
               >
                 <ScheduledJobs
-                  key={profile}
+                  key={`${profile}:${jobsAt?.n ?? 0}`}
                   api={hermes.cron}
                   profile={profile}
                   connected={status === "connected"}
                   onClose={() => { flushSync(() => setJobsOpen(false)); focusPane(active.key); }}
+                  openJob={jobsAt?.id}
+                  troubleshoot={{
+                    store: troubleshoots,
+                    scope,
+                    start: (job, text) => startTroubleshoot(hermes, troubleshoots, scope, profile, job, text, (id) => openChat(id)),
+                    openChat: (id) => openChat(id),
+                  }}
                 />
               </CapabilityGate>
             ) : projectScreenOpen && shownProject && !settingsOpen ? (
@@ -2774,6 +2829,16 @@ export function Main({
               }}
             >
               Undo
+            </button>
+          )}
+          {toast.action && (
+            <button
+              onClick={() => {
+                toast.action?.run();
+                setToast(null);
+              }}
+            >
+              {toast.action.label}
             </button>
           )}
         </div>

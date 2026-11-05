@@ -2062,6 +2062,8 @@ export class FakeCron {
   failLists = 0;
   /** Calls the next write waits for before it is handled. */
   gate?: Promise<void>;
+  /** Reads of the job list wait for this before they are answered, as a slow server does. */
+  listGate?: Promise<void>;
   private seq = 0;
 
   constructor(private server: FakeHermes) {}
@@ -2158,6 +2160,7 @@ export class FakeCron {
     const write = req.method !== "GET";
     return async () => {
       if (write) await this.gate;
+      if (!write && what === "jobs" && !id) await this.listGate;
       const fail = write && this.failNext?.match.test(`${req.method} ${req.path}`) ? this.failNext : undefined;
       if (fail) this.failNext = undefined;
       if (fail?.when === "before") throw new Error(fail.message ?? "Can't reach the Hermes dashboard: error sending request");
