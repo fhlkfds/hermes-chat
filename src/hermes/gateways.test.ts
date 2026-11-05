@@ -117,6 +117,32 @@ describe("Gateways: saving", () => {
     expect(r.kind).toBe("saved");
   });
 
+  it("doesn't take a set token as replaced when the answer is lost and the preview didn't change", async () => {
+    const { api, fake } = await setUp();
+    let g = await tg(api);
+    fake.drop = "lost";
+    let r = await api.save("default", g, draft(g, { edits: { TELEGRAM_BOT_TOKEN: { kind: "replace", value: NEW_TOKEN } } }));
+    expect(r.kind).toBe("unconfirmed");
+    expect(fake.env.default.TELEGRAM_BOT_TOKEN).toBe(TOKEN);
+    g = await tg(api);
+    fake.drop = "stored";
+    r = await api.save("default", g, draft(g, { edits: { TELEGRAM_BOT_TOKEN: { kind: "replace", value: NEW_TOKEN } } }));
+    expect(r.kind).toBe("saved");
+  });
+
+  it("keeps what a save sent out of the gateway errors it reads back, short values included", async () => {
+    const { api, fake } = await setUp();
+    fake.gateway.default = { running: true, platforms: { telegram: { state: "fatal", error_code: "telegram_connect_error", error_message: "secret ab and webhook-secret-xyz were refused" } } };
+    const g = await tg(api);
+    // The list read before the save already shows the error; the save's own reads carry what it typed.
+    expect(g.error?.text).toBe("secret ab and webhook-secret-xyz were refused");
+    fake.refuse = { status: 500, detail: "boom" };
+    const r2 = await api.save("default", g, draft(g, { edits: { TELEGRAM_WEBHOOK_SECRET: { kind: "replace", value: "webhook-secret-xyz" } } }));
+    expect(r2.kind).toBe("unconfirmed");
+    expect(JSON.stringify(r2)).not.toContain("webhook-secret-xyz");
+    expect(r2.kind === "unconfirmed" && r2.list?.gateways[0].error?.text).toBe("secret ab and [redacted] were refused");
+  });
+
   it("says a running gateway needs a restart to use the change, unless Hermes served it at once", async () => {
     const { api, fake } = await setUp();
     fake.gateway.default = { running: true, platforms: { telegram: { state: "connected" } } };
@@ -191,6 +217,8 @@ describe("Gateways: redaction", () => {
     expect(redact(`a ${TOKEN} b`)).toBe("a [redacted token] b");
     expect(redact(`x ${DISCORD_SHAPED} y`)).toBe("x [redacted token] y");
     expect(redact("my-own-token went wrong", ["my-own-token"])).toBe("[redacted] went wrong");
+    expect(redact(`GET https://api.telegram.org/bot${TOKEN}/getMe: 401`)).toBe("GET https://api.telegram.org/bot[redacted token]/getMe: 401");
+    expect(redact("Rejected credential abc (about abc.)", ["abc"])).toBe("Rejected credential [redacted] (about [redacted].)");
     expect(redact("key sk-ant-abcdefghijklmnop1234")).toBe("key [redacted key]");
     expect(redact("«redacted:1234...my00» kept")).toBe("«redacted:1234...my00» kept");
   });

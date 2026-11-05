@@ -99,10 +99,15 @@ const noRoute = (f: Failure) => f.status === 405 || (f.status === 404 && f.reaso
  */
 export function redact(text: string, typed: readonly string[] = []): string {
   let out = text;
-  for (const t of typed) if (t.length >= 4) out = out.split(t).join("[redacted]");
+  for (const t of typed) {
+    if (!t) continue;
+    // A short value is taken out only where it stands alone, so "ab" doesn't eat every "ab" in the sentence.
+    out = t.length >= 4 ? out.split(t).join("[redacted]") : out.replace(new RegExp(`(?<![A-Za-z0-9])${t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9])`, "g"), "[redacted]");
+  }
   out = out
-    .replace(/\b\d{5,}:[A-Za-z0-9_-]{20,}/g, "[redacted token]")
-    .replace(/\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{20,}/g, "[redacted token]");
+    // No word boundary before the ID: Telegram's API puts the token right after "bot" in its URLs (`/bot123:AA…/getMe`).
+    .replace(/(?<!\d)\d{5,}:[A-Za-z0-9_-]{20,}/g, "[redacted token]")
+    .replace(/(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{20,}/g, "[redacted token]");
   return redactKnown(out).text;
 }
 
@@ -134,7 +139,7 @@ function fieldOf(v: unknown): GatewayField | undefined {
   };
 }
 
-function gatewayOf(v: unknown): Gateway | undefined {
+function gatewayOf(v: unknown, typed: readonly string[]): Gateway | undefined {
   const g = obj(v);
   const id = str(g.id);
   if (!supported(id)) return undefined;
@@ -149,7 +154,7 @@ function gatewayOf(v: unknown): Gateway | undefined {
     configured: g.configured === true,
     gatewayRunning: g.gateway_running === true,
     state: str(g.state) || "unknown",
-    error: code || message ? { kind: RUNTIME_KIND[code] ?? "other", text: redact(message || code) } : undefined,
+    error: code || message ? { kind: RUNTIME_KIND[code] ?? "other", text: redact(message || code, typed) } : undefined,
     fields: (Array.isArray(g.env_vars) ? g.env_vars : []).flatMap((f) => fieldOf(f) ?? []),
   };
 }
@@ -197,15 +202,20 @@ export function putBody(g: Gateway, d: Draft): { enabled: boolean; env?: Record<
 /** What the screen compares to tell whether Hermes still has what it showed. */
 const seen = (g: Gateway) => JSON.stringify([g.enabled, g.fields.map((f) => [f.key, f.set, f.preview ?? null, f.value ?? null])]);
 
-/** Whether `after`, read back, has what `d` asked of `before`. */
-function landed(before: Gateway, after: Gateway | undefined, d: Draft): boolean {
+/**
+ * Whether `after`, read back, has what `d` asked of `before`. `answered`: Hermes said it saved. Without that, a secret
+ * that was set already counts as replaced only if its preview changed, since the old one would read as set too.
+ */
+function landed(before: Gateway, after: Gateway | undefined, d: Draft, answered: boolean): boolean {
   if (!after || after.enabled !== d.enabled) return false;
   return before.fields.every((f) => {
     const v = wanted(f, d.edits[f.key]);
     if (v === undefined) return true;
     const now = after.fields.find((a) => a.key === f.key);
     if (v === null) return !now?.set;
-    return !!now?.set && (f.secret || now.value === v);
+    if (!now?.set) return false;
+    if (!f.secret) return now.value === v;
+    return answered || !f.set || now.preview !== f.preview;
   });
 }
 
@@ -221,23 +231,24 @@ function problemOf(f: Failure, typed: readonly string[], sentSecret: boolean): P
 export class GatewaysApi {
   constructor(private rest: GatewaysRest) {}
 
-  async list(profile: string): Promise<GatewayList> {
+  /** `typed`: values a save just sent, kept out of every text in the list. */
+  async list(profile: string, typed: readonly string[] = []): Promise<GatewayList> {
     let res: unknown;
     try {
       res = await this.rest("GET", `api/messaging/platforms?${q(profile)}`);
     } catch (e) {
       const f = failureOf(e);
       if (noRoute(f)) throw new GatewaysUnsupportedError("This Hermes server has no messaging gateway routes (/api/messaging/platforms). Updating Hermes adds them.");
-      throw new Error(redact(f.reason));
+      throw new Error(redact(f.reason, typed));
     }
     const rows = obj(res).platforms;
     if (!Array.isArray(rows)) throw new Error("Hermes answered with something other than a list of messaging platforms.");
     const start = str(obj(res).gateway_start_command);
-    return { profile, gateways: rows.flatMap((r) => gatewayOf(r) ?? []), startCommand: start || undefined, readAt: Date.now() };
+    return { profile, gateways: rows.flatMap((r) => gatewayOf(r, typed) ?? []), startCommand: start || undefined, readAt: Date.now() };
   }
 
-  private async again(profile: string): Promise<GatewayList | undefined> {
-    return this.list(profile).catch(() => undefined);
+  private async again(profile: string, typed: readonly string[] = []): Promise<GatewayList | undefined> {
+    return this.list(profile, typed).catch(() => undefined);
   }
 
   /**
@@ -251,7 +262,7 @@ export class GatewaysApi {
     if (local) return { kind: "refused", problem: { kind: sentSecret && /redacted/.test(local) ? "invalid-token" : "other", text: local } };
     let before: GatewayList;
     try {
-      before = await this.list(profile);
+      before = await this.list(profile, typed);
     } catch (e) {
       return { kind: "refused", problem: { kind: "other", text: `Hermes couldn't be read before saving, so nothing was sent: ${e instanceof Error ? e.message : String(e)}` } };
     }
@@ -265,16 +276,16 @@ export class GatewaysApi {
       const f = failureOf(e);
       if (f.notRelayed || /^Not connected to Hermes/.test(f.reason)) return { kind: "refused", problem: { kind: "other", text: f.reason } };
       if (f.signedOut) return { kind: "unconfirmed", reason: f.reason };
-      const list = await this.again(profile);
+      const list = await this.again(profile, typed);
       // Hermes checks the whole request before it writes, so a 4xx changed nothing.
       if (f.status !== undefined && f.status >= 400 && f.status < 500) return { kind: "refused", problem: problemOf(f, typed, sentSecret), list };
-      if (list && landed(shown, list.gateways.find((g) => g.id === shown.id), d)) return { kind: "saved", list, restart: !!list.gateways.find((g) => g.id === shown.id)?.gatewayRunning };
+      if (list && landed(shown, list.gateways.find((g) => g.id === shown.id), d, false)) return { kind: "saved", list, restart: !!list.gateways.find((g) => g.id === shown.id)?.gatewayRunning };
       return { kind: "unconfirmed", reason: redact(f.reason, typed), list };
     }
-    const list = await this.again(profile);
+    const list = await this.again(profile, typed);
     if (!list) return { kind: "unconfirmed", reason: "Hermes answered, but the gateways couldn't be read again to confirm it." };
     const after = list.gateways.find((g) => g.id === shown.id);
-    if (!landed(shown, after, d)) return { kind: "unconfirmed", reason: "Hermes answered, but reading it again doesn't show all of the change.", list };
+    if (!landed(shown, after, d, true)) return { kind: "unconfirmed", reason: "Hermes answered, but reading it again doesn't show all of the change.", list };
     return { kind: "saved", list, restart: !!after?.gatewayRunning && obj(res).hot_served !== true };
   }
 

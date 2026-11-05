@@ -151,11 +151,11 @@ describe("Settings → Gateways", () => {
 
   it("checks the status without sending anything, and shows Hermes's answer redacted", async () => {
     const s = server();
-    s.gateways.gateway.default = { running: true, platforms: { telegram: { state: "fatal", error_code: "telegram_auth_error", error_message: `Telegram bot token rejected: Unauthorized (${TOKEN})` } } };
+    s.gateways.gateway.default = { running: true, platforms: { telegram: { state: "fatal", error_code: "telegram_auth_error", error_message: `Telegram bot token rejected: Unauthorized (https://api.telegram.org/bot${TOKEN}/getMe)` } } };
     const { user, view } = await shown({ s });
     await user.click(screen.getByRole("button", { name: "Check status" }));
     const line = await within(rowOf("Check status")).findByRole("status");
-    expect(line.textContent).toContain("Token turned down: Telegram bot token rejected: Unauthorized ([redacted token])");
+    expect(line.textContent).toContain("Token turned down: Telegram bot token rejected: Unauthorized (https://api.telegram.org/bot[redacted token]/getMe)");
     expect(s.gateways.writes).toEqual([{ profile: "default", what: "test telegram" }]);
     expect(view.container.innerHTML).not.toContain(TOKEN);
   });
