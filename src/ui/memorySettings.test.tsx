@@ -671,6 +671,17 @@ describe("Settings → Memory as cards of rows (ADR 0059)", () => {
     expect(box.style.height).toBe("321px");
   });
 
+  it("keeps the focus on an entry opened from the keyboard", async () => {
+    const { user } = await shown();
+    const button = entry(SHORT);
+    button.focus();
+    await user.keyboard("{Enter}");
+    expect(editor()).toBeTruthy();
+    // The same button, still focused: opening an entry doesn't remake its row.
+    expect(entry(SHORT)).toBe(button);
+    expect(document.activeElement).toBe(button);
+  });
+
   it("shows being offline as a note across the card", async () => {
     await shown({ status: "offline", wait: false });
     const note = screen.getByRole("status");

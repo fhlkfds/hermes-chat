@@ -123,6 +123,8 @@ export function MemorySettings({
   const alive = useRef(true);
   const reads = useRef(0);
   const textArea = useRef<HTMLTextAreaElement>(null);
+  /** The open entry's list key. A save gives the entry a new id (a fingerprint of its text); the row keeps the key it opened with. */
+  const openKey = useRef<{ id: string; key: string }>(undefined);
 
   const dirty = memoryDirty(editing, kept);
   useEffect(() => onDirtyChange(dirty), [dirty]);
@@ -513,6 +515,15 @@ export function MemorySettings({
       {notice && noticeLine(notice, false)}
     </div>
   );
+  // The open row keeps its key while it's the same entry: opening one keeps its button (and the focus on it), and a save that
+  // replaces the entry's id keeps its editor. Another entry opened while the last one is still listed starts its own key.
+  if (!editing) openKey.current = undefined;
+  else if (openKey.current?.id !== editing.entry.id) {
+    const last = openKey.current;
+    const replaced = !!last && !resource?.entries.some((e) => e.id === last.id);
+    openKey.current = { id: editing.entry.id, key: replaced ? last.key : editing.entry.id };
+  }
+  const keyOf = (id: string) => (openKey.current?.id === id ? openKey.current.key : id);
   // Whether the open entry is in the list shown, so its editor can go under its row; otherwise it goes under the list.
   const editorInList = !!editing && !selecting && !!resource?.entries.some((e) => e.id === editing.entry.id);
 
@@ -527,8 +538,7 @@ export function MemorySettings({
       ) : (
         <ul className="memory-entries" aria-label={`${meta.name} entries`}>
           {resource?.entries.map((e) => (
-            // A save gives the entry a new id (it's a fingerprint of the text): the open one keeps its key, so its editor isn't remade.
-            <li key={editing?.entry.id === e.id ? "open-entry" : e.id}>
+            <li key={keyOf(e.id)}>
               {selecting ? (
                 <label className={`memory-entry memory-pick ${selected.has(e.text) ? "on" : ""}`}>
                   <input
