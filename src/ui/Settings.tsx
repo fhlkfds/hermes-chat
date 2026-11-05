@@ -136,6 +136,7 @@ export function SettingsScreen({
   route,
   unsecure,
   username,
+  signsInWith,
   passwordSaved,
   headers = [],
   headersSaved = true,
@@ -187,7 +188,9 @@ export function SettingsScreen({
   route?: Route;
   unsecure: boolean;
   username: string;
-  /** The keyring kept the password at sign-in. */
+  /** `token`: the connection signs in with the dashboard's session token (ADR 0058); absent, with a password. */
+  signsInWith?: "token";
+  /** The keyring kept the password, or the token, at sign-in. */
   passwordSaved: boolean;
   /** The names of the extra request headers the connection sends; their values are never shown. */
   headers?: string[];
@@ -478,20 +481,37 @@ export function SettingsScreen({
           />
           <SettingRow
             name={
-              <>
-                Signed in as <span className="mono">{username}</span>
-              </>
+              signsInWith === "token" ? (
+                "Signed in with the dashboard's session token"
+              ) : (
+                <>
+                  Signed in as <span className="mono">{username}</span>
+                </>
+              )
             }
             about="signing out"
             hint={
               <>
                 <KeyRound size={12} aria-hidden />{" "}
-                {passwordSaved ? "The password is saved in your system keyring. Signing out deletes it." : "The system keyring couldn't save the password."}
+                {signsInWith === "token"
+                  ? passwordSaved
+                    ? "The token is saved in your system keyring. Signing out deletes it from this computer."
+                    : "The system keyring couldn't save the token."
+                  : passwordSaved
+                    ? "The password is saved in your system keyring. Signing out deletes it."
+                    : "The system keyring couldn't save the password."}
               </>
             }
             more={
               <>
-                <p>Signing out deletes the saved password from the keyring. You type it again at the next sign-in.</p>
+                {signsInWith === "token" ? (
+                  <p>
+                    Signing out deletes the saved token from this computer's keyring. The token itself keeps working on the server: to revoke it, replace{" "}
+                    <span className="mono">HERMES_DASHBOARD_SESSION_TOKEN</span> on the server.
+                  </p>
+                ) : (
+                  <p>Signing out deletes the saved password from the keyring. You type it again at the next sign-in.</p>
+                )}
                 {headers.length > 0 && headersSaved && (
                   <p>
                     The extra request headers' values are saved in your system keyring and never shown. They stay saved when you sign out, to change or

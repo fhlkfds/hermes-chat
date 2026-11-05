@@ -165,7 +165,17 @@ export function withRoutes<T extends Address & { headers?: ExtraHeader[] }>(d: T
 /** The sign-in over one route alone, as Rust opens it. */
 export function singleRoute(d: SignInDetails, r: RouteDetails): SignInDetails {
   const a = routeAddress(r, d.username);
-  return { ...a, password: d.password, headers: r.kind === "ssh" ? [] : (r.headers ?? []), ...(d.server && { server: d.server }) };
+  const { method, provider, token, savedToken } = d;
+  return {
+    ...a,
+    password: d.password,
+    headers: r.kind === "ssh" ? [] : (r.headers ?? []),
+    ...(d.server && { server: d.server }),
+    ...(method && { method }),
+    ...(provider && { provider }),
+    ...(token !== undefined && { token }),
+    ...(savedToken !== undefined && { savedToken }),
+  };
 }
 
 /** The connection's SSH target, for the Terminal, the Repository screen and server pages: its first SSH route's. */
@@ -193,7 +203,7 @@ export const NO_ROUTES = "Every route of this connection is turned off, or needs
 /** What Rust and transport say when connecting was stopped. */
 const STOPPED = "Connecting was stopped.";
 /** Failures that are the same over any route: Hermes turned the sign-in down, or the owner stopped it. */
-const FINAL = /^(Wrong username or password\.|Too many sign-in attempts|Connecting was stopped)/;
+const FINAL = /^(Wrong username or password\.|Wrong token:|This Hermes server doesn't take a token|Too many sign-in attempts|Connecting was stopped)/;
 
 /** Every route failed; `failures` says how each did, in the order tried. */
 export class RoutesFailedError extends Error {

@@ -3373,8 +3373,8 @@ export class Hermes {
         if (this.closing) return;
         this.failedTries++;
         this.update({ closedReason: (e as Error).message, ...this.switchFailed(e as Error) });
-        // A server that changed protocol won't change back on its own.
-        if (e instanceof ProtocolMismatchError) this.update({ status: "offline" });
+        // A server that changed protocol won't change back on its own, nor will a token it turned down (ADR 0058).
+        if (e instanceof ProtocolMismatchError || /^Wrong token:/.test((e as Error).message)) this.update({ status: "offline" });
         else this.retryLater();
       } finally {
         this.redialing = undefined;

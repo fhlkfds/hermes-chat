@@ -44,7 +44,7 @@ function account(keyring = memoryKeyring(), headerKeyring = memoryKeyring()) {
   const sent: SignInDetails[] = [];
   const a: Account = {
     connections,
-    secrets: () => ({ password: keyring, headers: headerKeyring }),
+    secrets: () => ({ password: keyring, headers: headerKeyring, token: { saved: async () => undefined, keep: async () => {}, delete: async () => {} } }),
     connect: async (_c, d) => {
       sent.push(d);
       if (d.password !== "hunter2") throw new Error("Wrong username or password.");
@@ -250,7 +250,7 @@ describe("Saved connections", () => {
     const sent: { to: string; password: string }[] = [];
     const a: Account = {
       connections: new Connections(memoryStorage()),
-      secrets: (c) => ({ password: k(`password/${c.id}`), headers: k(`headers/${c.id}`) }),
+      secrets: (c) => ({ password: k(`password/${c.id}`), headers: k(`headers/${c.id}`), token: { saved: async () => undefined, keep: async () => {}, delete: async () => {} } }),
       connect: async (_c, d) => {
         sent.push({ to: d.url, password: d.password });
         if (passwords[d.url as keyof typeof passwords] !== d.password) throw new Error("Wrong username or password.");
@@ -309,7 +309,7 @@ describe("Saved connections", () => {
     await (await signIn(one, at("https://alpha.example.com", "alpha-pass"), a)).hermes.close();
     const locked: Keyring = { load: async () => undefined, save: async () => {}, delete: () => Promise.reject(new Error("the keyring is locked")) };
     const forget = vi.fn(async () => {});
-    const stuck = { ...a, secrets: () => ({ password: locked, headers: locked }) };
+    const stuck = { ...a, secrets: () => ({ password: locked, headers: locked, token: { saved: async () => undefined, keep: async () => {}, delete: async () => {} } }) };
     await expect(removeConnection(a.connections.get(one.id)!, stuck, forget)).rejects.toThrow("The connection is still saved");
     expect(forget).not.toHaveBeenCalled();
     expect(a.connections.recent()).toHaveLength(1);

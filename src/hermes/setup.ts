@@ -62,6 +62,10 @@ export function missing(d: SignInDetails): string[] {
   if (on && !on.length) out.push("a route that is turned on");
   else if (on && on.some((r) => !r.target.trim())) out.push("an address for every route that is on");
   else if (!on && !(d.mode === "ssh" ? d.sshTarget : d.url).trim()) out.push(d.mode === "ssh" ? "the SSH target" : "the dashboard URL");
+  if (d.method === "token") {
+    if (!d.token?.trim() && d.savedToken === undefined) out.push("the dashboard session token");
+    return out;
+  }
   if (!d.username.trim()) out.push("the dashboard username");
   if (!d.password) out.push("the dashboard password");
   return out;
@@ -250,12 +254,18 @@ export function explain(f: ProbeFailure, d: SignInDetails): TestOutcome & { ok: 
       ]);
 
     case "sign-in":
+      if (has(/^Wrong token:/))
+        return out("The dashboard turned down the token.", [
+          "Use the current value of HERMES_DASHBOARD_SESSION_TOKEN from the server's environment. A token stops working once it is replaced there.",
+        ], null);
+      if (has(/doesn't take a token|^Token sign-in sends|^No token is saved|took the token as/))
+        return out(m, has(/doesn't take a token/) ? ["Token sign-in needs a Hermes with the session-token provider, started with HERMES_DASHBOARD_SESSION_TOKEN set."] : [], null);
       if (has(/Wrong username or password/))
         return out("The dashboard turned down the username or password.", [
           "Use the Hermes dashboard's username and password, not your SSH or computer login. They're set under dashboard.basic_auth in the server's Hermes config.",
         ], null);
       if (has(/Too many sign-in attempts/)) return out(m, ["Wait a minute, then try again."], null);
-      if (status?.authProviders && !status.authProviders.includes(PASSWORD_PROVIDER))
+      if (d.method !== "token" && status?.authProviders && !status.authProviders.includes(PASSWORD_PROVIDER))
         return out("This dashboard doesn't offer username and password sign-in, which Hermes Chat uses.", [
           `It offers: ${status.authProviders.join(", ") || "nothing"}.`,
           "Set a dashboard username and password under dashboard.basic_auth in the server's Hermes config, then restart the dashboard.",
@@ -300,7 +310,7 @@ export function explainSignIn(message: string, d: SignInDetails): Extract<TestOu
     ? "reach"
     : /^Plain http:\/\//.test(message)
       ? "address"
-      : /Wrong username or password|Too many sign-in attempts|sign-in/i.test(message)
+      : /Wrong username or password|Too many sign-in attempts|sign-in|\btoken\b/i.test(message)
     ? "sign-in"
     : /canonical session protocol|chat connection|ready/i.test(message)
       ? "chat"

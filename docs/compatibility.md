@@ -97,6 +97,10 @@ Needs the webhook routes under `/api/webhooks`. Checked with `GET /api/webhooks`
 
 Needs `GET /api/fs/list`, and `GET /api/sessions/{id}/messages` with tool rows. Checked with `GET /api/fs/list`. Without `fs/list`, the Outputs screen shows a note instead of the list.
 
+## Sign-in methods
+
+The sign-in screen and Setup read the dashboard's public `GET /api/status` (`auth_required`, `auth_providers`, `auth_flows`) and, when `auth_flows` lists `native_pkce`, `GET /api/auth/providers`, before anything signs in (ADR 0058). Password sign-in needs a provider listed with `supports_password`, or `basic` in `auth_providers` on a Hermes without the providers list; every Hermes checked has `basic`. Token sign-in needs the `session-token` provider, in Hermes from `2edfd0d` (2026-10-28), started with `HERMES_DASHBOARD_SESSION_TOKEN` set; it was checked live at `f0d94882`. The owner's server at `bf0203a` doesn't have it, so the app doesn't offer Token there. A status that can't be read, or that lists no method the app supports, leaves the password, as before. Browser sign-in through OIDC or Nous Portal, which `auth_flows: native_pkce` advertises, isn't built yet.
+
 ## Bot Mode
 
 Needs `profiles.list` on `/api/ws` with each profile's Bot Chat in its rows (`canonical_session`, which is `null` for a profile without one), and `session.list` with `title` and `include_hidden` to look a Bot Chat up by its title. Checked with `profiles.list`. Hermes `f0d94882` has both. An older Hermes without `profiles.list`, or one whose rows don't report a Bot Chat, has no Bot Mode: the Bots button doesn't show, and diagnostics says why. To start a Bot Chat, the app also uses `session.create` with `hidden` and `session.title`.

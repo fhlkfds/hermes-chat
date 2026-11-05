@@ -6,6 +6,7 @@ import type { LocalFile, OpenPipe, PipeEvent, Route, ToolsetGuards, Transcript, 
 import type { Downloaded, PickedUpload, TransferProgress } from "./remoteFiles";
 import type { Probe, Probed, ProbeFailure, SavedKey } from "./setup";
 import { routedPipe, type ReachRoute, type RouteDetails, type RoutedHooks } from "./routes";
+import type { SignInWay } from "./connections";
 
 // A failed command rejects with the Rust error's text, not an Error.
 export const asError = (e: unknown) => Promise.reject(new Error(String(e)));
@@ -25,7 +26,7 @@ export type ExtraHeader = { name: string; value: string };
  * `mode` picks which of `sshTarget` and `url` is used. `headers` go with every request to a URL, never through the SSH
  * tunnel; Rust checks them. Like the password, they are kept in the system keyring, never beside the rest.
  */
-export type SignInDetails = {
+export type SignInDetails = SignInWay & {
   mode: "ssh" | "url";
   sshTarget: string;
   url: string;
@@ -39,7 +40,30 @@ export type SignInDetails = {
   routes?: RouteDetails[];
   /** The server every route must reach, once known: a hash of its Hermes install id (ADR 0056). */
   server?: string;
+  /** A token typed now (ADR 0058). Rust takes it in the connect or test command and never gives it back. */
+  token?: string;
+  /**
+   * Set when a token is saved for this connection: its keyring id, `null` for the migrated connection. With no token
+   * typed, Rust loads that one, and sends it only to an address it was saved for. The webview never sees it.
+   */
+  savedToken?: string | null;
 };
+
+/** A sign-in method a dashboard offers and Hermes Chat supports (src-tauri `transport::SignInMethod`, ADR 0058). */
+export type SignInMethod = { method: "password"; provider: string; label: string } | { method: "token" };
+
+/**
+ * The methods a dashboard offers, never empty (src-tauri `transport::Methods`). `note`: why they are a guess, Password
+ * as before: `unread`, the server's answer couldn't be read; `gate-off`, its sign-in is off; `none-supported`, it
+ * lists only methods Hermes Chat doesn't sign in with.
+ */
+export type Methods = { methods: SignInMethod[]; note?: "unread" | "gate-off" | "none-supported" };
+
+/** What Rust signs in with: the password, or a token typed now or saved (src-tauri `SignInWith`). */
+const credentialOf = (d: SignInDetails) =>
+  d.method === "token"
+    ? { method: "token", token: d.token?.trim() || null, connection: d.savedToken ?? null }
+    : { method: "password", username: d.username, password: d.password, provider: d.provider ?? null };
 
 const targetOf = (d: SignInDetails) =>
   d.mode === "ssh" ? { kind: "ssh", target: d.sshTarget } : { kind: "url", url: d.url, headers: d.headers ?? [] };
@@ -49,14 +73,17 @@ const asProbeFailure = (e: unknown): ProbeFailure => (e && typeof e === "object"
 /** Setup's connection test (src-tauri `hermes_probe`): it rejects with a `ProbeFailure`, not an Error. One route only. */
 export const tauriProbe: Probe = {
   run: (d, profile, quick = false) =>
-    invoke<Probed>("hermes_probe", { target: targetOf(d), username: d.username, password: d.password, profile, expectServer: d.server ?? null, quick }).catch(
+    invoke<Probed>("hermes_probe", { target: targetOf(d), credential: credentialOf(d), profile, expectServer: d.server ?? null, quick }).catch(
       (e: unknown) => Promise.reject<Probed>(asProbeFailure(e)),
     ),
   cancel: () => void invoke("hermes_probe_cancel").catch(() => {}),
 };
 
-/** What `hermes_reach` found: how the route went, and the dashboard's `/api/status` body, if it answered one. */
-export type Reached = { route: Route; status?: string | null };
+/**
+ * What `hermes_reach` found: how the route went, the dashboard's `/api/status` body, if it answered one, and the
+ * sign-in methods it offers.
+ */
+export type Reached = { route: Route; status?: string | null; methods?: Methods };
 
 /**
  * Reaches one route without signing in (src-tauri `hermes_reach`): the tunnel or address opens, and `/api/status`
@@ -87,8 +114,7 @@ function routePipe(d: SignInDetails, opts: { expectServer?: string; quick: boole
     if (signal?.aborted) stop();
     const route = await invoke<Route>("hermes_connect", {
       target,
-      username: d.username,
-      password: d.password,
+      credential: credentialOf(d),
       profile,
       attempt,
       onEvent: channel,

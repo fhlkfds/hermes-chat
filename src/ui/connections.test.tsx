@@ -31,8 +31,9 @@ vi.mock("@tauri-apps/api/core", () => ({
     switch (cmd) {
       case "hermes_connect": {
         const url = (args.target as { url: string }).url;
-        connects.push({ url, password: args.password as string });
-        if (passwords[url] !== args.password) throw "Wrong username or password.";
+        const { password } = args.credential as { password: string };
+        connects.push({ url, password });
+        if (passwords[url] !== password) throw "Wrong username or password.";
         const channel = args.onEvent as { onmessage: (e: PipeEvent) => void };
         pipe = await servers[url].openPipe((e) => channel.onmessage(e), args.profile as string);
         pipeUrl = url;
@@ -40,7 +41,7 @@ vi.mock("@tauri-apps/api/core", () => ({
       }
       case "hermes_probe": {
         const url = (args.target as { url: string }).url;
-        if (passwords[url] !== args.password) throw { stage: "sign-in", message: "Wrong username or password." };
+        if (passwords[url] !== (args.credential as { password: string }).password) throw { stage: "sign-in", message: "Wrong username or password." };
         return {
           route: { kind: "url", url, addresses: [] },
           status: '{"version":"0.22.5","auth_required":true,"auth_providers":["basic"]}',

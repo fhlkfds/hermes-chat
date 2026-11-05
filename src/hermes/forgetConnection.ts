@@ -19,7 +19,7 @@ import { WORKTREE_CHATS_KEY } from "./worktrees";
 
 /** What removing a connection deletes on this computer, in the owner's words, for the question it asks first. */
 export const REMOVED_LOCALLY = [
-  "its saved password and extra request headers, from the system keyring",
+  "its saved password or token and extra request headers, from the system keyring",
   "its address and username",
   "drafts, Failed messages and Queued messages, with the screenshots waiting in them",
   "the chat lists and Saved copies kept for reading offline, and which profile was shown",

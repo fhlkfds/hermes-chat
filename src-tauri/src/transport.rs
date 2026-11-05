@@ -33,14 +33,35 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use url::Url;
 
-/// The dashboard's username/password provider (`/api/status.auth_providers` on the live server).
-const PASSWORD_PROVIDER: &str = "basic";
+/// The dashboard's username/password provider (`/api/status.auth_providers` on the live server), used when the server's
+/// list of providers can't be read (ADR 0058).
+pub const PASSWORD_PROVIDER: &str = "basic";
+/// The provider that vouches for a provisioned `HERMES_DASHBOARD_SESSION_TOKEN` (ADR 0058).
+pub const TOKEN_PROVIDER: &str = "session-token";
 
 pub struct SignIn {
-    pub username: String,
-    pub password: String,
+    pub credential: Credential,
     /// Sent with every request to the dashboard, the WebSocket handshake included. Built by `extra_headers`.
     pub headers: HeaderMap,
+}
+
+/// How a sign-in proves who it is (ADR 0058). `Password`: a password provider's form, `basic` unless Hermes lists
+/// another. `Token`: the dashboard's session token, sent as `Authorization: Bearer` and never in a URL.
+pub enum Credential {
+    Password { provider: String, username: String, password: String },
+    Token(String),
+}
+
+impl Credential {
+    pub fn password(username: impl Into<String>, password: impl Into<String>) -> Self {
+        Credential::Password { provider: PASSWORD_PROVIDER.into(), username: username.into(), password: password.into() }
+    }
+}
+
+/// Whether `name` can be a dashboard auth provider's name: Hermes's are short, lowercase words with dashes, such as
+/// `basic`, `self-hosted` or `session-token`.
+pub fn provider_name(name: &str) -> bool {
+    (1..=64).contains(&name.len()) && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -51,6 +72,16 @@ pub enum TransportError {
     Unreachable(String),
     #[error("Wrong username or password.")]
     BadCredentials,
+    #[error("Wrong token: the dashboard turned it down. A token stops working when HERMES_DASHBOARD_SESSION_TOKEN is replaced on the server.")]
+    BadToken,
+    /// `/api/auth/me` named another provider than `TOKEN_PROVIDER` for the token.
+    #[error("The dashboard took the token as a {0} sign-in, not as its session token, so Hermes Chat didn't sign in with it.")]
+    NotSessionToken(String),
+    #[error("Token sign-in sends the token in the Authorization header, and this connection's extra request headers already set Authorization. Remove that header to sign in with a token.")]
+    AuthorizationHeaderSet,
+    /// The server's `/api/status` doesn't list `TOKEN_PROVIDER`, so the token isn't sent to it.
+    #[error("This Hermes server doesn't take a token: its sign-in doesn't list the session-token provider. Hermes Chat didn't send it the token. Sign in with a password, or update Hermes on the server.")]
+    TokenNotOffered,
     #[error("Too many sign-in attempts. Wait a minute and try again.")]
     RateLimited,
     #[error("The dashboard answered {status}: {body}")]
@@ -484,6 +515,124 @@ pub async fn read_server(base: &Url, headers: &HeaderMap, expect: Option<&str>, 
     Ok(ServerSeen { status, server })
 }
 
+/// A way to sign in that a dashboard offers and Hermes Chat supports (ADR 0058). `Password`: a provider's username
+/// and password form, `label` its display name. `Token`: the provisioned session token.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "method", rename_all = "camelCase")]
+pub enum SignInMethod {
+    Password { provider: String, label: String },
+    Token,
+}
+
+/// Why a dashboard's methods are a guess (Password with `basic`, as before discovery). `Unread`: its status or list of
+/// providers couldn't be read. `GateOff`: its sign-in is off, as on a loopback bind, so there is no session to sign in
+/// to. `NoneSupported`: it lists only providers Hermes Chat doesn't sign in with.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MethodsNote {
+    Unread,
+    GateOff,
+    NoneSupported,
+}
+
+/// The sign-in methods a dashboard offers, never empty, for the method picker. Parsed here so the webview gets this
+/// list, not the server's answers.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Methods {
+    pub methods: Vec<SignInMethod>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<MethodsNote>,
+}
+
+const LABEL_MAX: usize = 60;
+
+/// The methods `status` (`GET /api/status`) and `providers` (`GET /api/auth/providers`, read only when the status lists
+/// the native flow) offer: Password for each provider listed with `supports_password` (or `basic` when the status
+/// names it and no list was read), and Token when the status names `session-token`. Anything else, such as a browser
+/// sign-in or a service credential, isn't offered here. When nothing can be read or nothing is supported, Password
+/// with `basic`, as before, with a note saying why.
+pub fn sign_in_methods(status: Option<&str>, providers: Option<&str>) -> Methods {
+    let basic = || SignInMethod::Password { provider: PASSWORD_PROVIDER.into(), label: "Password".into() };
+    let guess = |note| Methods { methods: vec![basic()], note: Some(note) };
+    let Some(status) = status.and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()).filter(serde_json::Value::is_object) else {
+        return guess(MethodsNote::Unread);
+    };
+    if status["auth_required"] == json!(false) {
+        return guess(MethodsNote::GateOff);
+    }
+    let Some(names) = status["auth_providers"].as_array() else { return guess(MethodsNote::Unread) };
+    let names: Vec<&str> = names.iter().filter_map(serde_json::Value::as_str).collect();
+    let listed = providers
+        .and_then(|p| serde_json::from_str::<serde_json::Value>(p).ok())
+        .and_then(|v| v["providers"].as_array().cloned());
+    let mut methods = Vec::new();
+    match listed {
+        Some(list) => {
+            for p in &list {
+                let Some(name) = p["name"].as_str().filter(|n| provider_name(n)) else { continue };
+                if p["supports_password"] != json!(true) || methods.iter().any(|m| matches!(m, SignInMethod::Password { provider, .. } if provider == name)) {
+                    continue;
+                }
+                let label = p["display_name"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty() && l.chars().count() <= LABEL_MAX && !l.chars().any(char::is_control))
+                    .unwrap_or(name);
+                methods.push(SignInMethod::Password { provider: name.to_owned(), label: label.to_owned() });
+            }
+        }
+        None if names.contains(&PASSWORD_PROVIDER) => methods.push(basic()),
+        None => {}
+    }
+    if names.contains(&TOKEN_PROVIDER) {
+        methods.push(SignInMethod::Token);
+    }
+    if methods.is_empty() {
+        return guess(MethodsNote::NoneSupported);
+    }
+    Methods { methods, note: None }
+}
+
+/// Whether `status` says the dashboard takes a token. Unknown (no status, or no list of providers) counts as yes, so
+/// a status that can't be read doesn't stop a token sign-in; `/api/auth/me` still checks it.
+pub fn takes_token(status: Option<&str>) -> bool {
+    let Some(v) = status.and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()) else { return true };
+    match v["auth_providers"].as_array() {
+        Some(names) => names.iter().any(|n| n.as_str() == Some(TOKEN_PROVIDER)),
+        None => true,
+    }
+}
+
+/// Refuses a token sign-in before the token goes out when `status` says the dashboard doesn't take one.
+pub fn offered(sign_in: &SignIn, status: Option<&str>) -> Result<(), TransportError> {
+    match sign_in.credential {
+        Credential::Token(_) if !takes_token(status) => Err(TransportError::TokenNotOffered),
+        _ => Ok(()),
+    }
+}
+
+/// The sign-in methods the dashboard at `base` offers, given its `status` (`read_server`): reads `/api/auth/providers`
+/// within `wait` when the status lists the native flow, which is when Hermes has an interactive provider to list.
+pub async fn read_methods(base: &Url, headers: &HeaderMap, status: Option<&str>, wait: Duration) -> Methods {
+    let native = status
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .and_then(|v| v["auth_flows"].as_array().map(|f| f.iter().any(|f| f.as_str() == Some("native_pkce"))))
+        .unwrap_or(false);
+    let providers = if native {
+        let read = async {
+            let resp = client(headers).ok()?.get(endpoint(base, "api/auth/providers")).send().await.ok()?;
+            if !resp.status().is_success() {
+                return None;
+            }
+            resp.text().await.ok()
+        };
+        tokio::time::timeout(wait, read).await.ok().flatten()
+    } else {
+        None
+    };
+    sign_in_methods(status, providers.as_deref())
+}
+
 /// A local file the owner wants to attach: its size, or why it can't be attached.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct LocalFile {
@@ -814,39 +963,79 @@ impl Drop for Pipe {
 }
 
 /// A signed-in dashboard session. It keeps the session cookies up to date: the dashboard rotates an
-/// expired access token through the refresh cookie on any request and sends the new ones back.
+/// expired access token through the refresh cookie on any request and sends the new ones back. A token sign-in has
+/// no cookies: its `Authorization` header goes with every request instead (ADR 0058).
 pub struct Dashboard {
     http: reqwest::Client,
     base: Url,
     cookies: Mutex<Vec<(String, String)>>,
-    /// The owner's extra request headers; `http` sends them itself, the WebSocket handshake adds them.
+    /// The owner's extra request headers, and a token sign-in's `Authorization`; `http` sends them all itself, the
+    /// WebSocket handshake adds the extra headers. An error that repeats any of them isn't shown.
     headers: HeaderMap,
+    /// Signed in with a token: `headers` holds its `Authorization`, which the WebSocket handshake leaves out, as the
+    /// socket is let in by its ticket.
+    token: bool,
 }
 
 impl Dashboard {
-    /// Sign in at `base`, the dashboard root (e.g. the local end of the SSH tunnel).
+    /// Sign in at `base`, the dashboard root (e.g. the local end of the SSH tunnel). A password goes to the provider's
+    /// login form. A token is checked with `GET /api/auth/me`, which must name the session-token provider.
     pub async fn sign_in(base: &Url, sign_in: &SignIn) -> Result<Dashboard, TransportError> {
-        let http = client(&sign_in.headers)?;
-        let dashboard = Dashboard { http, base: base.clone(), cookies: Mutex::default(), headers: sign_in.headers.clone() };
-        let login = dashboard
-            .http
-            .post(endpoint(base, "auth/password-login"))
-            .json(&json!({
-                "provider": PASSWORD_PROVIDER,
-                "username": sign_in.username,
-                "password": sign_in.password,
-            }))
-            .send()
-            .await
-            .map_err(unreachable)?;
-        match login.status() {
-            s if s.is_success() => {}
-            StatusCode::UNAUTHORIZED => return Err(TransportError::BadCredentials),
-            StatusCode::TOO_MANY_REQUESTS => return Err(TransportError::RateLimited),
-            _ => return Err(unexpected(login, &sign_in.headers).await),
+        match &sign_in.credential {
+            Credential::Password { provider, username, password } => {
+                let http = client(&sign_in.headers)?;
+                let dashboard = Dashboard { http, base: base.clone(), cookies: Mutex::default(), headers: sign_in.headers.clone(), token: false };
+                let provider = if provider_name(provider) { provider.as_str() } else { PASSWORD_PROVIDER };
+                let login = dashboard
+                    .http
+                    .post(endpoint(base, "auth/password-login"))
+                    .json(&json!({
+                        "provider": provider,
+                        "username": username,
+                        "password": password,
+                    }))
+                    .send()
+                    .await
+                    .map_err(unreachable)?;
+                match login.status() {
+                    s if s.is_success() => {}
+                    StatusCode::UNAUTHORIZED => return Err(TransportError::BadCredentials),
+                    StatusCode::TOO_MANY_REQUESTS => return Err(TransportError::RateLimited),
+                    _ => return Err(unexpected(login, &sign_in.headers).await),
+                }
+                dashboard.keep_cookies(&login);
+                Ok(dashboard)
+            }
+            Credential::Token(token) => {
+                if sign_in.headers.contains_key(header::AUTHORIZATION) {
+                    return Err(TransportError::AuthorizationHeaderSet);
+                }
+                let token = token.trim();
+                // A token is one word of visible ASCII; anything else can't go in a header, and isn't one Hermes made.
+                if token.is_empty() || !token.bytes().all(|b| (b'!'..=b'~').contains(&b)) {
+                    return Err(TransportError::BadToken);
+                }
+                let mut bearer = HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| TransportError::BadToken)?;
+                bearer.set_sensitive(true);
+                let mut headers = sign_in.headers.clone();
+                headers.insert(header::AUTHORIZATION, bearer);
+                let http = client(&headers)?;
+                let dashboard = Dashboard { http, base: base.clone(), cookies: Mutex::default(), headers, token: true };
+                let me = dashboard.http.get(endpoint(base, "api/auth/me")).send().await.map_err(unreachable)?;
+                match me.status() {
+                    s if s.is_success() => {}
+                    StatusCode::UNAUTHORIZED => return Err(TransportError::BadToken),
+                    StatusCode::TOO_MANY_REQUESTS => return Err(TransportError::RateLimited),
+                    _ => return Err(unexpected(me, &dashboard.headers).await),
+                }
+                let me: serde_json::Value = me.json().await.map_err(unreachable)?;
+                match me["provider"].as_str() {
+                    Some(TOKEN_PROVIDER) => Ok(dashboard),
+                    Some(other) if provider_name(other) => Err(TransportError::NotSessionToken(other.to_owned())),
+                    _ => Err(TransportError::NotSessionToken("different".into())),
+                }
+            }
         }
-        dashboard.keep_cookies(&login);
-        Ok(dashboard)
     }
 
     /// Mint a WS ticket and open `/api/ws` for `profile`. Every frame the server sends, starting with
@@ -930,6 +1119,9 @@ impl Dashboard {
         ws_url.query_pairs_mut().extend_pairs(query);
         let mut handshake = ws_url.as_str().into_client_request().map_err(|e| TransportError::WebSocket(e.to_string()))?;
         for (name, value) in &self.headers {
+            if self.token && name == header::AUTHORIZATION {
+                continue;
+            }
             handshake.headers_mut().insert(name, value.clone());
         }
         Ok(handshake)
@@ -2000,6 +2192,7 @@ pub async fn probe_expecting(base: &Url, sign_in: &SignIn, profile: &str, step: 
     };
     let server = identify(status.as_deref(), expect).map_err(|e| ProbeFailure { stage: Stage::Reach, message: e.to_string(), status: status.clone() })?;
     let fail = |stage, message: String| ProbeFailure { stage, message, status: status.clone() };
+    offered(sign_in, status.as_deref()).map_err(|e| fail(Stage::SignIn, e.to_string()))?;
     let dashboard = match tokio::time::timeout(step, Dashboard::sign_in(base, sign_in)).await {
         Err(_) => return Err(fail(Stage::SignIn, timed_out("The dashboard's sign-in"))),
         Ok(Err(e)) => return Err(fail(Stage::SignIn, e.to_string())),
