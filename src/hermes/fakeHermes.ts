@@ -3,6 +3,7 @@
 import type { LocalFile, OpenPipe, PipeEvent, RestMethod, Route, Speech, ToolsetGuards, VoiceSetup } from "./pipe";
 import type { SavedKey } from "./setup";
 import { FakeMemoryProviders } from "./fakeMemoryProviders";
+import { FakeMcp } from "./fakeMcp";
 import { FakeVoiceProviders } from "./fakeVoiceProviders";
 import { FakeSkills } from "./fakeSkills";
 import { FakeServerFiles } from "./fakeServerFiles";
@@ -422,6 +423,8 @@ export class FakeHermes {
   /** The profiles' skills, as Settings → Skills reads and writes them (fakeSkills.ts). */
   readonly skills = new FakeSkills(this.managedFiles);
   /** The profiles' external memory providers, as Settings → Memory → External memory reads and writes them. */
+  /** The profile's MCP servers (fakeMcp.ts, ADR 0068). */
+  readonly mcp = new FakeMcp((p) => p === "default" || p in this.otherProfiles);
   readonly memoryProviders = new FakeMemoryProviders((p) => p === "default" || p in this.otherProfiles || p in this.memory);
   /** The profiles' speech providers, for Settings → Voice (fakeVoiceProviders.ts). */
   readonly voiceProviders = new FakeVoiceProviders(
@@ -1472,6 +1475,8 @@ export class FakeHermes {
         };
       },
       request: (method, pathAndQuery, body) => restCall(method, pathAndQuery, body),
+      // Mirrors `Dashboard::mcp_edit`: the raw map read, one server changed, the map written.
+      mcpEdit: (profile, edit) => this.mcp.edit(profile, edit),
       // Mirrors the Rust side's `Dashboard::save_provider_key`: only a listed provider secret, checked, then saved.
       saveProviderKey: async (profile, envVar, key) => this.saveProviderKey(profile, envVar, key),
       // Mirrors `Dashboard::get_limited`: any GET the relay takes, refused once the answer passes the limit.
@@ -1510,6 +1515,7 @@ export class FakeHermes {
       this.skills.route(req) ??
       this.learningRoute(req) ??
       this.memoryProviders.route(req) ??
+      this.mcp.route(req) ??
       this.voiceProviders.route(req);
     const toolset = /^\/api\/tools\/toolsets(?:\/([^/]+)(\/config)?)?$/.exec(req.path);
     if (!handler && toolset) return JSON.stringify(await this.toolsetRoute(req, toolset[1], !!toolset[2]));
