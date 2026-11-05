@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Found, Updater, UpdateState } from "../hermes/updates";
 import { getUIPrefs } from "../hermes/uiPrefs";
+import { stagedFiles } from "../hermes/unsaved";
 import { UpdateSettings } from "./UpdateSettings";
 
 afterEach(cleanup);
@@ -58,10 +59,28 @@ describe("UpdateSettings", () => {
   it("restarts only when the owner asks, saying drafts and unsent messages are kept", async () => {
     const u = fake({ state: "restart", from: "r312.ef433a2-1", to: "r314.2222222-1" });
     render(<UpdateSettings updates={u} />);
-    expect(screen.getByText(/drafts and unsent messages are kept/)).toBeTruthy();
+    expect(screen.getByText(/drafts, unsent messages and queued messages are kept, in every pane and tab\. The app opens again with one pane/)).toBeTruthy();
+    expect(screen.queryByRole("note")).toBeNull();
     expect(u.restart).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole("button", { name: /restart now/i }));
     expect(u.restart).toHaveBeenCalled();
+  });
+
+  it("names the attached files a restart would drop, as composers attach and send them", async () => {
+    const left = {};
+    const right = {};
+    stagedFiles.set(left, [{ name: "shot-1.png" }]);
+    render(<UpdateSettings updates={fake({ state: "restart", from: "r1.ef433a2-1", to: "r2.2222222-1" })} />);
+    expect(screen.getByRole("note").textContent).toBe(
+      "Not kept: a file attached in a composer, shot-1.png. Send or remove it first, or attach it again after the restart. A screenshot taken in Hermes Chat can't be attached again.",
+    );
+    act(() => stagedFiles.set(right, [{ name: "notes.txt" }, { name: "log.txt" }]));
+    expect(screen.getByRole("note").textContent).toContain("3 files attached in a composer, shot-1.png, notes.txt, log.txt. Send or remove them first");
+    act(() => {
+      stagedFiles.set(left, []);
+      stagedFiles.set(right, []);
+    });
+    expect(screen.queryByRole("note")).toBeNull();
   });
 
   it("shows a failure and tries the failed step again", async () => {

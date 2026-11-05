@@ -160,21 +160,38 @@ fn drafts_file(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("restart-drafts.json"))
 }
 
+/// Writes `text` to `path` (mode 0600) whole or not at all: into a file beside it first, flushed to disk, then renamed
+/// over it, and the folder flushed so the rename lasts. A failed write (a full disk, say) leaves no `path` behind for
+/// the next launch to mistake for a restart's drafts.
+fn write_whole(path: &std::path::Path, text: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let dir = path.parent().expect("a file in a directory");
+    std::fs::create_dir_all(dir)?;
+    let part = path.with_extension("json.part");
+    let written = (|| {
+        let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&part)?;
+        file.write_all(text)?;
+        file.sync_all()?;
+        std::fs::rename(&part, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&part);
+    }
+    written?;
+    // Best effort: the copy is in place now, and reporting a failure here would leave it behind a restart that didn't
+    // happen, for an ordinary launch later to put back over newer drafts.
+    let _ = std::fs::File::open(dir).and_then(|d| d.sync_all());
+    Ok(())
+}
+
 /// Restarts the app. `drafts` (every draft, outbox and queue, from localStorage; updates.ts `DRAFT_PREFIXES`) is written to disk first, and nothing
 /// restarts if that fails; the next launch puts them back (`restart_drafts_read`), in case the webview hadn't saved
 /// the last keystrokes when the process ended.
 #[tauri::command]
 pub async fn app_restart(app: AppHandle, state: State<'_, Updates>, drafts: String) -> Result<(), String> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
     let path = drafts_file(&app)?;
-    let save = || -> std::io::Result<()> {
-        std::fs::create_dir_all(path.parent().expect("a file in a directory"))?;
-        let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&path)?;
-        file.write_all(drafts.as_bytes())?;
-        file.sync_all()
-    };
-    save().map_err(|e| format!("Couldn't save your drafts before restarting, so the app didn't restart: {e}"))?;
+    write_whole(&path, drafts.as_bytes()).map_err(|e| format!("Couldn't save your drafts before restarting, so the app didn't restart: {e}"))?;
     // Not `app.restart()`: that starts the app with the same arguments, and a copy started by the desktop shortcut
     // (`--screenshot`) would hand the screenshot to this one as it exits, and quit (main.rs).
     state.restart.store(true, Ordering::Relaxed);
@@ -182,9 +199,14 @@ pub async fn app_restart(app: AppHandle, state: State<'_, Updates>, drafts: Stri
     Ok(())
 }
 
-/// The arguments to start the app again with: the same, less `--screenshot`.
+/// The arguments to start the app again with: the same, less anything that asks a running Hermes Chat for something
+/// (`--screenshot`, `--show`, `--toggle`, a chat link). Started with one, the new app would hand it to this one, which
+/// still owns the bus name as it exits, and quit (main.rs), leaving no app at all. The link was opened already.
 fn relaunch_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Vec<std::ffi::OsString> {
-    args.into_iter().skip(1).filter(|a| a != "--screenshot" && a != "--show" && a != "--toggle").collect()
+    args.into_iter()
+        .skip(1)
+        .filter(|a| a != "--screenshot" && a != "--show" && a != "--toggle" && !a.to_str().is_some_and(crate::links::candidate))
+        .collect()
 }
 
 /// Starts the app again, if the owner asked to restart, from the binary it started from (or the AppImage, which the
@@ -204,17 +226,34 @@ pub fn relaunch(app: &AppHandle) {
     }
 }
 
-/// The drafts saved by the last restart, if any. The file stays until the webview has put them all back
-/// (`restart_drafts_clear`), so a crash or a full store at launch doesn't lose them. An error if it is there but can't
-/// be read: the app doesn't open over it.
-#[tauri::command]
-pub async fn restart_drafts_read(app: AppHandle) -> Result<Option<String>, String> {
-    let path = drafts_file(&app)?;
-    match std::fs::read_to_string(&path) {
-        Ok(text) => Ok(Some(text)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+/// What the last restart left to put back.
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum Saved {
+    /// No restart, or its drafts are all back.
+    None,
+    Text { text: String },
+    /// There, but not text: no draft can be read out of it. The webview sets it aside (`restart_drafts_set_aside`).
+    Unreadable { reason: String },
+}
+
+fn read_saved(path: &std::path::Path) -> Result<Saved, String> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(match String::from_utf8(bytes) {
+            Ok(text) => Saved::Text { text },
+            Err(e) => Saved::Unreadable { reason: format!("it isn't text ({e})") },
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Saved::None),
         Err(e) => Err(format!("{}: {e}", path.display())),
     }
+}
+
+/// The drafts saved by the last restart, if any. The file stays until the webview has put them all back
+/// (`restart_drafts_clear`), so a crash or a full store at launch doesn't lose them. An error if it is there but can't
+/// be opened (its permissions, say): the app doesn't open over it, and trying again may work once that's fixed.
+#[tauri::command]
+pub async fn restart_drafts_read(app: AppHandle) -> Result<Saved, String> {
+    read_saved(&drafts_file(&app)?)
 }
 
 #[tauri::command]
@@ -227,14 +266,24 @@ pub async fn restart_drafts_clear(app: AppHandle) -> Result<(), String> {
 }
 
 /// Moves the drafts saved by the last restart to a file of their own, never put back, when the webview couldn't put
-/// them all back (its storage is full), so they can't later overwrite what the owner types. Returns its path.
+/// them all back (its storage is full) or couldn't read them, so they can't later overwrite what the owner types.
+/// Returns its path.
 #[tauri::command]
 pub async fn restart_drafts_set_aside(app: AppHandle) -> Result<String, String> {
     let from = drafts_file(&app)?;
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    let to = from.with_file_name(format!("restart-drafts-{secs}.json"));
-    std::fs::rename(&from, &to).map_err(|e| format!("{}: {e}", from.display()))?;
-    Ok(to.display().to_string())
+    set_aside(&from, secs).map(|to| to.display().to_string())
+}
+
+/// `restart-drafts-<secs>.json` beside `from`, or `-<secs>-2` and on if that is taken: rename replaces silently, and an
+/// earlier copy set aside must never be lost.
+fn set_aside(from: &std::path::Path, secs: u64) -> Result<PathBuf, String> {
+    let to = (1..)
+        .map(|n| from.with_file_name(if n == 1 { format!("restart-drafts-{secs}.json") } else { format!("restart-drafts-{secs}-{n}.json") }))
+        .find(|p| !p.exists())
+        .expect("a free name");
+    std::fs::rename(from, &to).map_err(|e| format!("{}: {e}", from.display()))?;
+    Ok(to)
 }
 
 /// The screenshots that drafts saved for a restart and not put back yet (`restart-drafts*.json`) attach, for screenshot
@@ -299,6 +348,80 @@ mod tests {
     fn restarts_without_asking_for_a_screenshot_or_to_show_a_window() {
         let args = ["/usr/bin/hermes-chat", "--screenshot", "--toggle", "--show", "--other"].map(std::ffi::OsString::from);
         assert_eq!(relaunch_args(args), ["--other"]);
+    }
+
+    #[test]
+    fn restarts_without_the_chat_link_it_was_started_for() {
+        // Passed again, the new app would hand the link to the exiting one over D-Bus and quit (main.rs).
+        let args = ["/usr/bin/hermes-chat", "hermes-chat://chat?id=x", "HERMES-CHAT://chat?id=y", "--other"].map(std::ffi::OsString::from);
+        assert_eq!(relaunch_args(args), ["--other"]);
+        let link = ["/usr/bin/hermes-chat", "hermes-chat://chat?id=x"].map(String::from);
+        assert!(matches!(crate::remote::request_of(link, None, true), Some(crate::remote::Request::OpenLink { .. })));
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("hermes-chat-update-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn saves_the_drafts_private_and_whole() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("save");
+        let path = dir.join("restart-drafts.json");
+        std::fs::write(&path, "an older, longer copy that must not show through").unwrap();
+        write_whole(&path, br#"{"a":"b"}"#).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), r#"{"a":"b"}"#);
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert!(!dir.join("restart-drafts.json.part").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_failed_save_leaves_nothing_to_put_back() {
+        let dir = scratch("fail");
+        let path = dir.join("restart-drafts.json");
+        // The rename can't replace a folder: the write fails after the part file was written.
+        std::fs::create_dir(&path).unwrap();
+        assert!(write_whole(&path, b"{}").is_err());
+        assert!(!dir.join("restart-drafts.json.part").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn tells_an_unreadable_copy_from_a_missing_or_blocked_one() {
+        let dir = scratch("read");
+        let path = dir.join("restart-drafts.json");
+        assert_eq!(read_saved(&path), Ok(Saved::None));
+        std::fs::write(&path, "{}").unwrap();
+        assert_eq!(read_saved(&path), Ok(Saved::Text { text: "{}".into() }));
+        std::fs::write(&path, [b'{', 0xff, 0xfe]).unwrap();
+        assert!(matches!(read_saved(&path), Ok(Saved::Unreadable { .. })));
+        // A folder where the file should be can't be opened: an error, which keeps the app from opening over it.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(read_saved(&path).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            serde_json::to_string(&Saved::Unreadable { reason: "x".into() }).unwrap(),
+            r#"{"kind":"unreadable","reason":"x"}"#
+        );
+        assert_eq!(serde_json::to_string(&Saved::None).unwrap(), r#"{"kind":"none"}"#);
+    }
+
+    #[test]
+    fn setting_aside_never_replaces_an_earlier_copy() {
+        let dir = scratch("aside");
+        let from = dir.join("restart-drafts.json");
+        std::fs::write(&from, "first").unwrap();
+        assert_eq!(set_aside(&from, 7).unwrap(), dir.join("restart-drafts-7.json"));
+        std::fs::write(&from, "second").unwrap();
+        assert_eq!(set_aside(&from, 7).unwrap(), dir.join("restart-drafts-7-2.json"));
+        assert_eq!(std::fs::read_to_string(dir.join("restart-drafts-7.json")).unwrap(), "first");
+        assert!(!from.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

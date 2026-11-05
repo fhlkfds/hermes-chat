@@ -388,11 +388,17 @@ A development build (`npm run app`) or an AppImage registers nothing. To try a l
 
 ## Updates
 
-Settings → General → **Updates** shows the installed version, what's newer, and what changed. It checks once at launch unless you turn that off. Nothing installs or restarts without you. A restart keeps your drafts and unsent messages: they're written to disk first, and the app doesn't restart if that fails. If the app's storage is too full to put them all back, it clears its cached chat lists and Saved copies to make room; failing that, it keeps them in a file and Settings says where. How an update installs depends on how the app was installed:
+Settings → General → **Updates** shows the installed version, what's newer, and what changed. It checks once at launch unless you turn that off. Nothing installs or restarts without you. Updating the app doesn't involve your Hermes server: any server version the app works with stays supported, and after a restart the app signs in to the same connection again.
+
+A restart keeps your drafts, unsent and uncertain messages, and queued messages, for every connection, profile and chat, in every pane and tab. They're written whole to `~/.local/share/net.l0cky12.hermes-chat/restart-drafts.json` (readable only by you) first, and the app doesn't restart if that fails. The next launch puts them back and deletes the file. A queue comes back paused, and an uncertain message is checked against the chat's history as usual, so nothing goes twice. The app opens again with one pane. Files attached in a composer aren't kept, and the restart section names them so you can send them first. If the app's storage is too full to put the drafts back, it clears its cached chat lists and Saved copies to make room. If that isn't enough, or the file can't be read (cut short, say), the app renames it to `restart-drafts-<time>.json`, never puts it back, and Settings says where it is. The screenshots it refers to are kept until you move or delete it (ADR 0060).
+
+How an update installs depends on how the app was installed:
 
 - **The `hermes-chat-git` package** (pacman owns `/usr/bin/hermes-chat`): the app compares the package's commit with `main` on GitHub and lists the pull requests merged since. It never replaces the package's files. You run the update yourself, from your checkout: `git pull && packaging/aur/build.sh -si`. Back in the app, it sees the new version and offers **Restart now**.
 - **A standalone AppImage built with an update key**: Tauri's updater downloads the new AppImage, checks its signature against the public key built into the app, and replaces the AppImage. Then you restart.
-- **Anything else** (for example `npm run app`, or a binary you copied): the app says it isn't updated from here.
+- **Anything else** (for example `npm run app`, or a binary you copied): the app says it isn't updated from here. It decides by asking pacman which package owns the binary it started from, so a copy of the packaged binary somewhere else counts as unmanaged too.
+
+What has been tested for real: on Arch Linux, the documented `git pull && packaging/aur/build.sh -si` upgraded `hermes-chat-git` under a running app. The real pacman worked on a copy of the real package database, inside an unprivileged namespace made by `tools/arch-update/sandbox.sh`, which runs it without root and without touching the system. Refocusing the app found the new version, and Restart now brought up the new binary with the drafts back. A `pacman -U` on the system itself, as root, hasn't been tested by the app's developers. Standalone AppImage updates have only been tested against a local update server.
 
 The repo ships no AppImage, update server or signing key yet, so standalone updates are off. To turn them on for your own builds, generate a key once. Keep the private key and its password out of the repo:
 

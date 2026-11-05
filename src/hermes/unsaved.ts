@@ -29,3 +29,32 @@ export function persist(storage: () => Pick<Storage, "setItem" | "removeItem">, 
     return false;
   }
 }
+
+/**
+ * Files attached in each composer and not sent yet, by composer. An update's restart doesn't keep them (a draft is
+ * text only, and a screenshot staged there is deleted at the next launch), so Settings names them before the owner
+ * restarts (UpdateSettings).
+ */
+export const stagedFiles = (() => {
+  const by = new Map<object, readonly { name: string }[]>();
+  const listeners = new Set<() => void>();
+  let names: readonly string[] = [];
+  const changed = () => {
+    names = [...by.values()].flatMap((files) => files.map((f) => f.name));
+    listeners.forEach((fn) => fn());
+  };
+  return {
+    /** `files` is what `composer` has attached now; none forgets it. */
+    set(composer: object, files: readonly { name: string }[]) {
+      if (!files.length && !by.has(composer)) return;
+      if (files.length) by.set(composer, files);
+      else by.delete(composer);
+      changed();
+    },
+    getSnapshot: () => names,
+    subscribe(fn: () => void) {
+      listeners.add(fn);
+      return () => void listeners.delete(fn);
+    },
+  };
+})();

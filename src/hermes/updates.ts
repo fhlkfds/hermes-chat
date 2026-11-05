@@ -49,10 +49,18 @@ export type UpdateDeps = {
   /** Deletes the chat lists and Saved copies kept on this computer, to make room for drafts (chatCache.ts). */
   clearCache?: () => void;
   now?: () => number;
+  /** How long GitHub gets (`CHECK_TIMEOUT_MS`). */
+  checkTimeoutMs?: number;
 };
 
 /** Release notes listed before "and N more". */
 export const NOTES_SHOWN = 20;
+
+/**
+ * How long GitHub gets to answer an update check. Without a limit a check that never answers stays "Checking…", and
+ * no check runs after it, not even the quiet one that notices pacman's install when the window is focused.
+ */
+export const CHECK_TIMEOUT_MS = 20_000;
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -107,6 +115,7 @@ export async function checkPackage(
   install: Extract<Install, { kind: "pacman" }>,
   get: typeof fetch,
   now: number,
+  timeoutMs = CHECK_TIMEOUT_MS,
 ): Promise<UpdateState> {
   const { package: pkg, running } = install;
   const v = parseGitPkgver(running);
@@ -116,19 +125,22 @@ export async function checkPackage(
       version: `${pkg} ${running}`,
       reason: `pacman installed this copy as ${pkg} ${running}, which isn't a build from main that this app can compare. Update it with your package manager.`,
     };
+  // The answer's body too: a connection that stalls halfway mustn't hold the check either.
+  const signal = AbortSignal.timeout(timeoutMs);
+  const late = () => signal.aborted && { state: "error" as const, message: "GitHub didn't answer the update check in time. Try again." };
   let res: Response;
   try {
-    res = await get(`https://api.github.com/repos/${REPO}/compare/${v.commit}...main`, { headers: { Accept: "application/vnd.github+json" } });
+    res = await get(`https://api.github.com/repos/${REPO}/compare/${v.commit}...main`, { headers: { Accept: "application/vnd.github+json" }, signal });
   } catch (e) {
-    return { state: "error", message: `Couldn't reach GitHub to check for updates: ${messageOf(e)}` };
+    return late() || { state: "error", message: `Couldn't reach GitHub to check for updates: ${messageOf(e)}` };
   }
-  if (!res.ok) return { state: "error", message: await refusal(res, v.commit, now) };
+  if (!res.ok) return late() || { state: "error", message: await refusal(res, v.commit, now) };
   let c: Compare;
   try {
     c = await res.json();
     if (typeof c.status !== "string" || typeof c.ahead_by !== "number" || !Array.isArray(c.commits)) throw new Error("not a comparison");
   } catch (e) {
-    return { state: "error", message: `GitHub's answer to the update check didn't make sense: ${messageOf(e)}` };
+    return late() || { state: "error", message: `GitHub's answer to the update check didn't make sense: ${messageOf(e)}` };
   }
   if (c.ahead_by === 0)
     return {
@@ -212,6 +224,21 @@ export function snapshotDrafts(storage: UpdateDeps["storage"], pending: Readonly
   return JSON.stringify(out);
 }
 
+/** What the last restart left to put back (update.rs `Saved`). */
+export type Saved = { kind: "none" } | { kind: "text"; text: string } | { kind: "unreadable"; reason: string };
+
+/** The drafts by key in a snapshot `snapshotDrafts` wrote, or why the text isn't one. */
+export function readSnapshot(text: string): { drafts: Record<string, string> } | { why: string } {
+  let saved: unknown;
+  try {
+    saved = JSON.parse(text);
+  } catch (e) {
+    return { why: `it isn't complete JSON (${messageOf(e)})` };
+  }
+  if (typeof saved !== "object" || saved === null || Array.isArray(saved)) return { why: "it isn't a list of drafts" };
+  return { drafts: Object.fromEntries(Object.entries(saved).filter((e): e is [string, string] => isDraftKey(e[0]) && typeof e[1] === "string")) };
+}
+
 /**
  * Puts back the drafts saved as the app restarted, replacing whatever the webview kept, so the last keystrokes before
  * the restart aren't lost. Run before anything reads a draft. Anything wrong with the snapshot leaves drafts as they are.
@@ -278,7 +305,7 @@ export function updater(deps: UpdateDeps): Updater {
       if (install.kind === "pacman") {
         if (install.installed === null)
           return settle({ state: "unsupported", version: install.running, reason: `pacman no longer lists ${install.package}, so there's nothing to compare.` });
-        return settle(await checkPackage(install, deps.fetch, now()));
+        return settle(await checkPackage(install, deps.fetch, now(), deps.checkTimeoutMs));
       }
       if (!install.updater)
         return settle({
@@ -327,10 +354,22 @@ export function updater(deps: UpdateDeps): Updater {
   };
 
   const restoreAfterRestart = async () => {
-    const saved = await deps.invoke<string | null>("restart_drafts_read");
-    if (saved === null) return;
+    const saved = await deps.invoke<Saved>("restart_drafts_read");
+    if (saved.kind === "none") return;
+    const read = saved.kind === "text" ? readSnapshot(saved.text) : { why: saved.reason };
+    // Not something this app wrote whole (a crash mid-write, a disk error): kept for the owner, never deleted, and
+    // nothing in it is put back, since a part of it could be older than what storage has.
+    if ("why" in read) {
+      const path = await deps.invoke<string>("restart_drafts_set_aside");
+      return set({
+        state: "error",
+        setAside: path,
+        message: `The drafts and unsent messages saved for the restart couldn't be read, because ${read.why}, so none were put back. The file is kept at ${path}.`,
+      });
+    }
+    const text = JSON.stringify(read.drafts);
     // A full store: the chat lists and Saved copies are only a copy of what Hermes has, so they go to make room.
-    const restored = restoreDrafts(deps.storage, saved) || (deps.clearCache?.(), restoreDrafts(deps.storage, saved));
+    const restored = restoreDrafts(deps.storage, text) || (deps.clearCache?.(), restoreDrafts(deps.storage, text));
     // Never put back again later, over what the owner types from now on.
     if (restored) return void (await deps.invoke("restart_drafts_clear"));
     const path = await deps.invoke<string>("restart_drafts_set_aside");

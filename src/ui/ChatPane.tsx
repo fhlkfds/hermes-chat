@@ -16,6 +16,7 @@ import { QueuePanel, type QueueApi } from "./Queue";
 import { Markdown } from "./Markdown";
 import { SourceIcon, Spinner, StoredTime, composing, highlight } from "./bits";
 import { wakeFull } from "../hermes/snooze";
+import { stagedFiles } from "../hermes/unsaved";
 import { AttachmentChip, Previews, readPreview } from "./previews";
 import { Speaker } from "./speaker";
 import { DictationNoteView, DictationStrip, ListenButton, MicButton, type VoiceApi, listenBlocked, micBlocked, useDictation, useVoiceSetup } from "./Voice";
@@ -1136,6 +1137,10 @@ function Composer({
   followUp?: FollowUpHost;
 }) {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  // What an update's restart would drop, for Settings to name (unsaved.ts).
+  const me = useRef({}).current;
+  useEffect(() => stagedFiles.set(me, attachments), [attachments]);
+  useEffect(() => () => stagedFiles.set(me, []), []);
   const focused = useRef(autoFocus);
   focused.current = autoFocus;
   // The transcript joins the text as it is when it arrives, typed meanwhile included.
