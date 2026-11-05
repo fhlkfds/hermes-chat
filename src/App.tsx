@@ -1149,8 +1149,10 @@ export function Main({
   const shownProject = listable.find((p) => p.id === proj.selectedId);
   const projectScreenOpen = projectOpen && !!shownProject;
   const inShown = shownProject && new Set(proj.chats[shownProject.id] ?? []);
-  const listed = inShown ? chats.filter((c) => inShown.has(c.id)) : chats;
-  const unreadChats = chats.filter((c) => c.unread && !c.archived);
+  // A Bot Chat opened from the Bots view is in `chats`, for its pane, but never in the list (ADR 0062).
+  const inList = chats.filter((c) => !c.bot);
+  const listed = inShown ? inList.filter((c) => inShown.has(c.id)) : inList;
+  const unreadChats = inList.filter((c) => c.unread && !c.archived);
   const projectUnread: ProjectUnread = {
     all: unreadChats.length,
     hidden: inShown ? unreadChats.filter((c) => !inShown.has(c.id)).length : 0,

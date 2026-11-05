@@ -35,7 +35,8 @@ export type CapabilityId =
   | "serverFiles"
   | "scheduledJobs"
   | "automations"
-  | "outputs";
+  | "outputs"
+  | "botMode";
 
 export type CapabilityState = "supported" | "unsupported" | "unknown" | "unreachable";
 
@@ -85,6 +86,8 @@ export type CapabilitySpec = {
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const isList = (v: unknown) => Array.isArray(v);
+/** A `profiles.list` answer whose rows report their Bot Chat (`canonical_session`, null for none yet). */
+const botRoster = (r: unknown) => isObj(r) && isList(r.profiles) && (r.profiles as unknown[]).every((p) => isObj(p) && "canonical_session" in p);
 
 /** The name a check gives where it must name something, so nothing real is read. */
 export const PROBE_NAME = "__hermes_chat_probe__";
@@ -247,6 +250,17 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
     anchor: "outputs",
     probe: { kind: "rest", path: (profile) => `api/fs/list?${new URLSearchParams({ path: "/", profile })}`, maxBytes: 512 * 1024, shape: isObj },
     routes: [/^api\/fs\/list$/],
+  },
+  {
+    id: "botMode",
+    label: "Bot Mode",
+    usedBy: "The Bots view",
+    needs: "profiles.list on /api/ws, reporting each profile's Bot Chat (canonical_session), and session.list by title.",
+    without: "The Bots button doesn't show. Every profile's chats still open from the profile switcher.",
+    anchor: "bot-mode",
+    // Only a roster whose rows report their Bot Chat counts: an older profiles.list has no Bot Mode.
+    probe: { kind: "rpc", method: "profiles.list", params: () => ({}), shape: botRoster },
+    methods: ["profiles.list"],
   },
 ];
 

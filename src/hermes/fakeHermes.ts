@@ -68,6 +68,8 @@ export type SessionRow = {
   _lineage_ids?: string[];
   /** Not this fake's to send: a stored session no chat list shows (a later compression segment, a subagent run). */
   unlisted?: boolean;
+  /** Hermes's generic `hidden` flag: out of every default list, still resumable and found by search. Bot Chats have it. */
+  hidden?: boolean;
   /** Not this fake's to send: what the list shows instead for a compression root (its last segment's id, model, ...). */
   listedAs?: Partial<SessionRow>;
   /** A webhook session's platform identity (`webhook:v2:…`, `webhook:<route>`) and end. */
@@ -281,6 +283,19 @@ export class FakeHermes {
   /** Every other profile's stored sessions, by profile name. Each profile has its own store (research doc §5). */
   otherProfiles: Record<string, SessionRow[]> = {};
   /**
+   * Bot Mode (research doc "Bot Mode"): `full` as at the deployed `f0d94882`; `no-canonical`, a Hermes whose
+   * `profiles.list` rows don't report a Bot Chat; `none`, one without `profiles.list`.
+   */
+  botMode: "full" | "no-canonical" | "none" = "full";
+  /** What each profile's `profile.yaml` says about it, for `profiles.list`. */
+  profileMeta: Record<string, { description?: string; display_name?: string; ui_meta?: Record<string, unknown> }> = {};
+  /** Each profile's avatar, as a data URL (`profiles.get_asset`). */
+  botAvatars: Record<string, string> = {};
+  /** Runs as each `session.list` arrives, with its profile, e.g. to make a Bot Chat as another client would meanwhile. */
+  beforeTitleLookup?: (profile: string) => void;
+  /** Answers each `session.list` by title with this JSON-RPC error. */
+  titleLookupError?: { code: number; message: string };
+  /**
    * Each profile's SOUL.md as the file holds it, by profile name; a profile left out has none. Read and written as
    * `GET`/`PUT /api/profiles/{name}/soul` do at the deployed `bf0203a` (persona.ts).
    */
@@ -428,7 +443,7 @@ export class FakeHermes {
   readonly sessionModel = new Map<string, ModelInfo>();
   /** runtime session id -> stored session id, for every session.create / session.resume. */
   readonly runtime = new Map<string, string>();
-  private created = new Map<string, { source: string; profile?: string }>(); // runtime id, until the first prompt stores it
+  private created = new Map<string, { source: string; profile?: string; hidden?: boolean; title?: string }>(); // runtime id, until the first prompt stores it
 
   /**
    * The profile's `.env` rows as `GET /api/env` lists them (`hermes_cli/web_routers/config_env.py` at the deployed
@@ -540,7 +555,7 @@ export class FakeHermes {
 
   /**
    * Makes this server answer as Hermes 0.16.0 (`3705625`, 2026-06-08) does, as read from its source: no `/api/health`,
-   * no `client.capabilities` or `gateway.capabilities`, no `projects.*` or `learning.*`, and no managed-files or agent
+   * no `client.capabilities` or `gateway.capabilities`, no `projects.*`, `learning.*` or `profiles.list` (Bot Mode), and no managed-files or agent
    * fs routes. Its `/api/status` has the version and the sign-in gate.
    */
   asOlderHermes() {
@@ -548,6 +563,7 @@ export class FakeHermes {
     for (const m of ["client.capabilities", "gateway.capabilities", "projects.list", "projects.create", "learning.frames", "learning.detail", "learning.edit", "learning.delete"]) noMethod(m);
     for (const r of ["GET /api/health", "GET /api/files", "GET /api/files/read", "GET /api/fs/list"]) delete this.rest[r];
     this.status = { version: "0.16.0", release_date: "2026.6.8", auth_required: true, auth_providers: ["basic"] };
+    this.botMode = "none";
   }
 
   /** Per-method behaviour; tests override entries. Unhandled methods get no answer. */
@@ -555,13 +571,63 @@ export class FakeHermes {
     // `tui_gateway/contracts/liveness.py` at upstream `74b2ed6`: what this build enforces, as flags.
     "gateway.capabilities": (r) => this.respond(r.id, { per_session_exclusive_submit: true }),
     "session.active_list": (r) => this.respond(r.id, { sessions: this.liveSessions.map((l) => ({ current: false, message_count: 0, model: "", preview: "", title: "", started_at: l.last_active, ...l })) }),
+    // Bot Mode at the deployed `f0d94882` (research doc "Bot Mode", probed live on 2026-11-04).
+    "profiles.list": (r) => {
+      if (this.botMode === "none") return this.fail(r.id, -32601, "unknown method: profiles.list");
+      this.respond(r.id, { profiles: this.profileNames().map((name) => this.profileRow(name)), bot_mode_protocol: true, install_id: "install-1f2e3d4c5b6a" });
+    },
+    // `session.list {profile, title?, include_hidden?, limit?}`: with `title`, the exact-title lookup (`resolved_id` the
+    // lineage tip); without, the newest visible rows. Never archived ones.
+    "session.list": (r) => {
+      const store = this.store(r.params.profile as string | undefined);
+      if (!store) return this.fail(r.id, 4064, `profile '${String(r.params.profile)}' not found`);
+      this.beforeTitleLookup?.(String(r.params.profile ?? "default"));
+      const title = typeof r.params.title === "string" ? r.params.title : undefined;
+      if (title && this.titleLookupError) return this.fail(r.id, this.titleLookupError.code, this.titleLookupError.message);
+      const rows = store
+        .filter((s) => !s.archived && !s.unlisted && (r.params.include_hidden === true || !s.hidden) && (title === undefined || s.title === title))
+        .sort((a, b) => b.started_at - a.started_at)
+        .slice(0, typeof r.params.limit === "number" ? r.params.limit : 20);
+      this.respond(r.id, {
+        sessions: rows.map((s) => ({ id: s.id, ...(title !== undefined && { resolved_id: s.listedAs?.id ?? s.id }), title: s.title ?? "", preview: s.preview, started_at: s.started_at, message_count: s.message_count, source: s.source })),
+      });
+    },
+    // `session.title {session_id, title}` on a live session: a title another row of the profile holds is refused with
+    // 4022; on a session with no row yet, it stores the row now (`{pending: false}`).
+    "session.title": (r) => {
+      const runtimeId = String(r.params.session_id);
+      const stored = this.runtime.get(runtimeId);
+      if (!stored) return this.fail(r.id, 4001, "session not found");
+      const title = String(r.params.title ?? "");
+      const created = this.created.get(runtimeId);
+      const store = this.store(created ? created.profile : (this.runtimeProfile.get(runtimeId) ?? "default"))!;
+      const holder = store.find((s) => s.title === title && s.id !== stored);
+      if (holder) return this.fail(r.id, 4022, `Title '${title}' is already in use by session ${holder.id}`);
+      if (created) {
+        this.created.delete(runtimeId);
+        store.push(row(stored, 0, { source: created.source, title, preview: "", message_count: 0, ...(created.hidden && { hidden: true }) }));
+      } else {
+        const s = store.find((x) => x.id === stored);
+        if (s) s.title = title;
+      }
+      this.respond(r.id, { title, pending: false });
+    },
+    "profiles.get_asset": (r) => {
+      const data = this.botAvatars[String(r.params.name ?? "")];
+      this.respond(r.id, data ? { found: true, mime: data.slice(5, data.indexOf(";")), size: data.length, data } : { found: false });
+    },
     "session.create": (r) => {
       const n = this.requests.filter((q) => q.method === "session.create").length;
       const runtimeId = `rt-${n}`;
       const stored = `20261031_12000${n}_abc123`;
       this.runtime.set(runtimeId, stored);
       this.runtimeProfile.set(runtimeId, (r.params.profile as string | undefined) || "default");
-      this.created.set(runtimeId, { source: String(r.params.source ?? "tui"), profile: r.params.profile as string | undefined });
+      this.created.set(runtimeId, {
+        source: String(r.params.source ?? "tui"),
+        profile: r.params.profile as string | undefined,
+        ...(r.params.hidden === true && { hidden: true }),
+        ...(typeof r.params.title === "string" && { title: r.params.title }),
+      });
       this.agentTools.set(runtimeId, this.offeredTools((r.params.profile as string | undefined) ?? "default"));
       // `SessionCreateParams` `model` / `provider` / `reasoning_effort` / `fast`: the session's own overrides.
       const base = this.defaultModel(r.params.profile as string | undefined);
@@ -662,7 +728,7 @@ export class FakeHermes {
       const created = this.created.get(runtimeId);
       if (created) {
         this.created.delete(runtimeId);
-        const stored = row(this.runtime.get(runtimeId)!, 0, { source: created.source, title: null, preview: String(r.params.text), message_count: 1 });
+        const stored = row(this.runtime.get(runtimeId)!, 0, { source: created.source, title: null, preview: String(r.params.text), message_count: 1, ...(created.hidden && { hidden: true }) });
         this.store(created.profile)?.push(stored);
       }
       const stored = this.runtime.get(runtimeId);
@@ -991,11 +1057,14 @@ export class FakeHermes {
       const archived = query.get("archived") ?? "exclude";
       // order=created (the default): newest started first; order=recent: latest activity first.
       const at = (s: SessionRow) => (query.get("order") === "recent" ? (s.last_active ?? s.started_at) : s.started_at);
-      const recent = visible.filter((s) => archived === "include" || s.archived === (archived === "only")).sort((a, b) => at(b) - at(a));
+      // Hidden rows are out of every list but the archived-only one, the recovery view (`list_sessions_rich`).
+      const recent = visible
+        .filter((s) => (archived === "include" || s.archived === (archived === "only")) && (!s.hidden || archived === "only"))
+        .sort((a, b) => at(b) - at(a));
       const offset = Number(query.get("offset") ?? 0);
       const limit = Number(query.get("limit") ?? 20);
       const page = recent.slice(offset, offset + limit);
-      const pinned = visible.filter((s) => s.pinned && !page.includes(s));
+      const pinned = visible.filter((s) => s.pinned && !page.includes(s) && (!s.hidden || archived === "only"));
       // A compression root lists as its last segment, with its own counts and every segment's id.
       const listed = (s: SessionRow) => {
         const { listedAs, ...stored } = s;
@@ -1865,6 +1934,46 @@ export class FakeHermes {
     if (f === undefined) return { path, name, error: "No such file or directory (os error 2)" };
     if (typeof f === "object" && "dir" in f) return { path, name, error: "it's a folder" };
     return { path, name, size: typeof f === "string" ? f.length : f.size };
+  }
+
+  /** Every profile, default first. */
+  private profileNames(): string[] {
+    return ["default", ...Object.keys(this.otherProfiles)];
+  }
+
+  /**
+   * One `profiles.list` row (`tui_gateway/methods_profiles.py` at `f0d94882`): `canonical_session` is the profile's row
+   * titled "Bot Chat", found by title, null when none or when it is archived; `last_session` the newest visible one.
+   */
+  private profileRow(name: string): Record<string, unknown> {
+    const meta = this.profileMeta[name] ?? {};
+    const store = this.store(name) ?? [];
+    const recent = (s: SessionRow) => s.last_active ?? s.started_at;
+    const bot = store.find((s) => s.title === "Bot Chat" && !s.archived && !s.unlisted);
+    const last = store.filter((s) => !s.hidden && !s.archived && !s.unlisted).sort((a, b) => recent(b) - recent(a))[0];
+    const transcript = bot ? (this.transcripts[bot.id] ?? []).filter((m) => (m.role === "user" || m.role === "assistant") && (m.text ?? "").trim()) : [];
+    const newest = transcript[transcript.length - 1]?.text?.replace(/\s+/g, " ").trim() ?? bot?.preview ?? "";
+    const tip = bot?.listedAs?.id ?? bot?.id;
+    const canonical = bot
+      ? { id: bot.id, resolved_id: tip, root_title: "Bot Chat", title: bot.listedAs?.title ?? "Bot Chat", preview: newest.length > 80 ? `${newest.slice(0, 80)}...` : newest, started_at: bot.started_at, last_active: recent(bot), message_count: bot.message_count, live_message_count: transcript.length || bot.message_count }
+      : null;
+    return {
+      name,
+      path: name === "default" ? "/home/liam/.hermes" : `/home/liam/.hermes/profiles/${name}`,
+      is_default: name === "default",
+      model: null,
+      provider: null,
+      description: meta.description ?? "",
+      display_name: meta.display_name ?? "",
+      skill_count: 0,
+      previous_names: [],
+      last_session: last ? { id: last.id, title: last.title ?? "", preview: last.preview, started_at: last.started_at, last_active: recent(last), message_count: last.message_count } : null,
+      worker_session: null,
+      ...(this.botMode === "full" && { canonical_session: canonical }),
+      ui_meta_revisions: meta.ui_meta ? { "hermes-bots": 1 } : {},
+      ...(meta.ui_meta && { ui_meta: structuredClone(meta.ui_meta) }),
+      has_avatar: name in this.botAvatars,
+    };
   }
 
   /** A profile's stored sessions; no profile means the default one. Undefined for a profile the server doesn't have. */
