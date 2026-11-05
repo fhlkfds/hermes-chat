@@ -402,7 +402,7 @@ Two panes of one chat share its Draft, Queued messages and running reply; each h
 Attachments.
 
 **Update**:
-A newer version of Hermes Chat itself. For the packaged app, the owner installs it with pacman, and the app never replaces pacman's files. For a standalone build made with an update key, the app installs it, after checking its signature. Either way the new version runs only after the owner restarts the app, and drafts and unsent messages are kept across the restart.
+A newer version of Hermes Chat itself. For the packaged app, the owner installs it with pacman, and the app never replaces pacman's files. For a standalone build made with an update key, the app installs it, after checking its signature. Either way the new version runs only after the owner restarts the app. Drafts, unsent and uncertain messages, and queues are kept across the restart, for every connection, profile and chat. Files attached in a composer and a second pane aren't. A saved copy that can't be put back is set aside in a file of its own and never put back automatically (ADR 0055).
 _Avoid_: upgrade (pacman's word, for the package step only)
 
 ## Relationships

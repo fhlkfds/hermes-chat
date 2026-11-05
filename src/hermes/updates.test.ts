@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
 import { persist, restartHold, unsaved } from "./unsaved";
-import { checkPackage, needsAttention, parseGitPkgver, releaseNotes, restoreDrafts, snapshotDrafts, updater, type Install, type Progress, type UpdateDeps } from "./updates";
+import { checkPackage, needsAttention, parseGitPkgver, readSnapshot, releaseNotes, restoreDrafts, snapshotDrafts, updater, type Install, type Progress, type Saved, type UpdateDeps } from "./updates";
 
 const NOW = Date.UTC(2026, 10, 2, 12);
 const pacman = (running: string, installed: string | null = running): Extract<Install, { kind: "pacman" }> => ({
@@ -42,6 +42,37 @@ describe("releaseNotes", () => {
 });
 
 describe("checkPackage", () => {
+  /** A GitHub that takes the request and never answers, until the check gives up on it. */
+  const silent = vi.fn<typeof fetch>((_, init) => new Promise((_, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal!.reason))));
+
+  it("gives up on a GitHub that doesn't answer, so later checks can run", async () => {
+    const s = await checkPackage(pacman("r312.ef433a2-1"), silent, NOW, 20);
+    expect(s).toEqual({ state: "error", message: "GitHub didn't answer the update check in time. Try again." });
+  });
+
+  it("gives up on an answer that stalls halfway", async () => {
+    const stalled = vi.fn<typeof fetch>(async (_, init) => {
+      const body = new ReadableStream({ start: (c) => void init?.signal?.addEventListener("abort", () => c.error(init.signal!.reason)) });
+      return new Response(body, { status: 200 });
+    });
+    expect(await checkPackage(pacman("r312.ef433a2-1"), stalled, NOW, 20)).toMatchObject({ state: "error", message: expect.stringContaining("didn't answer") });
+  });
+
+  it("frees the store for the focus re-check after a check that hung", async () => {
+    let installed = "r312.ef433a2-1";
+    const { u } = setup({ update_install_kind: () => pacman("r312.ef433a2-1", installed) }, { fetch: silent, checkTimeoutMs: 20 });
+    const hung = u.check();
+    expect(u.getSnapshot().state).toBe("checking");
+    // pacman installs meanwhile; while the check is under way the focus re-check waits.
+    installed = "r313.4444444-1";
+    await u.check({ installedOnly: true });
+    expect(u.getSnapshot().state).toBe("checking");
+    await hung;
+    expect(u.getSnapshot().state).toBe("error");
+    await u.check({ installedOnly: true });
+    expect(u.getSnapshot()).toEqual({ state: "restart", from: "r312.ef433a2-1", to: "r313.4444444-1" });
+  });
+
   it("is up to date when main is the installed commit", async () => {
     const get = fetchOnce(json({ status: "identical", ahead_by: 0, behind_by: 0, commits: [] }));
     expect(await checkPackage(pacman("r312.ef433a2-1"), get, NOW)).toEqual({ state: "upToDate", version: "r312.ef433a2-1", note: undefined, checkedAt: NOW });
@@ -124,7 +155,7 @@ describe("checkPackage", () => {
 });
 
 /** An updater on scripted commands. `answers` maps a command to its result, or a function of its args. */
-function setup(answers: Record<string, unknown>, opts: { fetch?: typeof fetch; storage?: Storage } = {}) {
+function setup(answers: Record<string, unknown>, opts: { fetch?: typeof fetch; storage?: Storage; checkTimeoutMs?: number } = {}) {
   const channels: ((p: Progress) => void)[] = [];
   const invoke = vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
     const a = answers[cmd];
@@ -137,6 +168,7 @@ function setup(answers: Record<string, unknown>, opts: { fetch?: typeof fetch; s
     fetch: opts.fetch ?? vi.fn<typeof fetch>(),
     storage: opts.storage ?? localStorage,
     now: () => NOW,
+    checkTimeoutMs: opts.checkTimeoutMs,
   };
   return { u: updater(deps), invoke, channels };
 }
@@ -340,7 +372,7 @@ describe("drafts storage refused", () => {
 });
 
 describe("restoreAfterRestart", () => {
-  const snapshot = JSON.stringify({ "hermes-chat.draft.a": "half a thought" });
+  const snapshot: Saved = { kind: "text", text: JSON.stringify({ "hermes-chat.draft.a": "half a thought" }) };
   /** localStorage that refuses every write until `room` is made. */
   const fullUntil = (room: { made: boolean }): UpdateDeps["storage"] => ({
     length: 0,
@@ -354,7 +386,7 @@ describe("restoreAfterRestart", () => {
   });
 
   it("does nothing after a launch that wasn't a restart", async () => {
-    const { u, invoke } = setup({ restart_drafts_read: null });
+    const { u, invoke } = setup({ restart_drafts_read: { kind: "none" } });
     await u.restoreAfterRestart();
     expect(invoke).toHaveBeenCalledTimes(1);
   });
@@ -399,6 +431,49 @@ describe("restoreAfterRestart", () => {
     expect(needsAttention(s)).toBe(true);
     await u.check({ installedOnly: true });
     expect(u.getSnapshot()).toBe(s);
+  });
+
+  // A copy cut short by a crash or a full disk, garbled, or not text: kept for the owner rather than deleted, and
+  // nothing in it put back over the drafts storage has.
+  it.each<[string, Saved]>([
+    ["cut short", { kind: "text", text: '{"hermes-chat.draft.a": "half a th' }],
+    ["not a list of drafts", { kind: "text", text: "[1, 2]" }],
+    ["not text", { kind: "unreadable", reason: "it isn't text (invalid utf-8 sequence of 1 bytes from index 1)" }],
+  ])("sets aside a saved copy that is %s, says why, and leaves drafts alone", async (_, saved) => {
+    localStorage.clear();
+    localStorage.setItem("hermes-chat.draft.a", "typed after");
+    const calls: string[] = [];
+    const invoke = (async (cmd: string) => {
+      calls.push(cmd);
+      return cmd === "restart_drafts_read" ? saved : cmd === "restart_drafts_set_aside" ? "/data/restart-drafts-9.json" : undefined;
+    }) as UpdateDeps["invoke"];
+    const u = updater({ invoke, channel: () => 0, fetch: vi.fn<typeof fetch>(), storage: localStorage });
+    await u.restoreAfterRestart();
+    expect(calls).toEqual(["restart_drafts_read", "restart_drafts_set_aside"]);
+    expect(localStorage.getItem("hermes-chat.draft.a")).toBe("typed after");
+    const s = u.getSnapshot();
+    expect(s).toMatchObject({ state: "error", setAside: "/data/restart-drafts-9.json" });
+    expect(s.state === "error" && s.message).toMatch(/couldn't be read, because .+, so none were put back\. The file is kept at \/data\/restart-drafts-9\.json\./);
+    expect(needsAttention(s)).toBe(true);
+  });
+
+  it("reports a copy it couldn't set aside, for the app not to open over it", async () => {
+    const invoke = (async (cmd: string) => {
+      if (cmd === "restart_drafts_set_aside") throw new Error("/data/restart-drafts.json: Read-only file system");
+      return { kind: "text", text: "{" };
+    }) as UpdateDeps["invoke"];
+    const u = updater({ invoke, channel: () => 0, fetch: vi.fn<typeof fetch>(), storage: localStorage });
+    await expect(u.restoreAfterRestart()).rejects.toThrow("Read-only file system");
+  });
+});
+
+describe("readSnapshot", () => {
+  it("keeps only drafts, outboxes and queues", () => {
+    expect(readSnapshot(JSON.stringify({ "hermes-chat.draft.a": "x", "hermes-chat.queue.b": "{}", "hermes-ui-prefs": "{}", "hermes-chat.draft.n": 1 }))).toEqual({
+      drafts: { "hermes-chat.draft.a": "x", "hermes-chat.queue.b": "{}" },
+    });
+    expect(readSnapshot("{}")).toEqual({ drafts: {} });
+    for (const bad of ["", "{", "null", "[]", '"x"']) expect(readSnapshot(bad)).toHaveProperty("why");
   });
 });
 

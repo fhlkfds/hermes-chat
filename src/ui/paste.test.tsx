@@ -9,6 +9,7 @@ import { FakeHermes } from "../hermes/fakeHermes";
 import type { Attachment } from "../hermes/model";
 import { connect } from "../hermes/transport";
 import { ChatPane, pastedName } from "./ChatPane";
+import { stagedFiles } from "../hermes/unsaved";
 
 type Invoke = (cmd: string, args?: unknown, opts?: { headers?: Record<string, string> }) => Promise<unknown>;
 const tauri = vi.hoisted(() => ({ invoke: (async () => undefined) as Invoke }));
@@ -97,6 +98,18 @@ describe("Pasting into the composer", () => {
       ),
     );
     expect(chips()).toHaveLength(0);
+  });
+
+  it("tells an update's restart which files are attached, until they're sent or the composer goes", async () => {
+    await setUp("Which cable is loose?");
+    paste([new File([PNG], "image.png", { type: "image/png" })]);
+    await waitFor(() => expect(stagedFiles.getSnapshot()).toEqual([expect.stringMatching(/^clipboard-.*\.png$/)]));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(stagedFiles.getSnapshot()).toEqual([]));
+    paste([new File([PNG], "image.png", { type: "image/png" })]);
+    await waitFor(() => expect(stagedFiles.getSnapshot()).toHaveLength(1));
+    cleanup();
+    expect(stagedFiles.getSnapshot()).toEqual([]);
   });
 
   it("holds a send until the pasted screenshot is attached, so it isn't left behind", async () => {

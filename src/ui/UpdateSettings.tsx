@@ -5,6 +5,7 @@ import { useState, useSyncExternalStore } from "react";
 import { Copy, Download, RefreshCw, RotateCw } from "lucide-react";
 import { getUIPrefs, setUIPrefs, subscribe } from "../hermes/uiPrefs";
 import { appUpdates } from "../hermes/tauriUpdates";
+import { stagedFiles } from "../hermes/unsaved";
 import type { Found, Updater, UpdateState } from "../hermes/updates";
 import { fmtSize } from "./bits";
 
@@ -53,7 +54,25 @@ function PackageStep({ command }: { command: string }) {
   );
 }
 
-const RESTART_NOTE = "Your drafts and unsent messages are kept. Files attached in the composer aren't, and replies keep running on Hermes.";
+/** What a restart keeps, and what it doesn't: the composers' attached files are named, since they're lost. */
+function RestartNote() {
+  const files = useSyncExternalStore(stagedFiles.subscribe, stagedFiles.getSnapshot);
+  return (
+    <>
+      <p className="muted small">
+        Your drafts, unsent messages and queued messages are kept, in every pane and tab. The app opens again with one pane,
+        and replies keep running on Hermes.
+      </p>
+      {files.length > 0 && (
+        <p className="update-warning small" role="note">
+          Not kept: {files.length === 1 ? "a file" : `${files.length} files`} attached in a composer,{" "}
+          <span className="selectable">{files.join(", ")}</span>. Send or remove {files.length === 1 ? "it" : "them"} first, or attach{" "}
+          {files.length === 1 ? "it" : "them"} again after the restart. A screenshot taken in Hermes Chat can't be attached again.
+        </p>
+      )}
+    </>
+  );
+}
 
 function Status({ s, updates }: { s: UpdateState; updates: Updater }) {
   switch (s.state) {
@@ -124,7 +143,7 @@ function Status({ s, updates }: { s: UpdateState; updates: Updater }) {
               Restart to use it; until then this window keeps running <span className="mono">{s.from}</span>.
             </span>
           </p>
-          <p className="muted small">{RESTART_NOTE}</p>
+          <RestartNote />
           <button className="btn primary" disabled={s.state === "restarting"} onClick={() => void updates.restart()}>
             <RotateCw size={14} /> {s.state === "restarting" ? "Restarting…" : "Restart now"}
           </button>
