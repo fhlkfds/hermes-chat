@@ -40,6 +40,10 @@ const REPLIES: Record<string, string> = {
   "only blanks": "\n\n\n",
   "numbered steps": "Steps:\n\n1) First\n\n   ```sh\n   make\n   ```\n\n2) Second\n\n10. Ten\n11. Eleven\n\n- x\n\n  continued\n\n -\n\n- y",
   "open fence": "Start:\n\n```diff\n- old\n+ new\n\n```not a close\n",
+  "unclosed fence ending blank": "Here:\n\n~~~text\nx\n\n",
+  "unclosed fence ending in spaces and tabs": "```\nx\n \t\n\t\n\n",
+  "crlf": "Para one\r\nline two\r\n\r\n```js\r\nlet a = 1\r\n\r\n```\r\n\r\n- a\r\n- b\r\n\r\n| x | y |\r\n| - | - |\r\n| 1 | 2 |\r\n",
+  tabs: "-\tone\n-\ttwo\n\n\tindented code\n\t\tmore\n\n\t\nafter",
   "starts indented": "   - indented list\n   - item\n\n  ```\n  fence indented two\n    four\n  ```",
 };
 
@@ -107,6 +111,25 @@ describe("Splitting a reply into blocks", () => {
       });
       expect(blocks[0]?.start ?? 0).toBe(0);
     }
+  });
+
+  it("knows code still coming in by the parser's own fences, not lines that look like one", () => {
+    const open = (text: string) => splitBlocks(text).blocks.at(-1)!.open;
+    // Still open: a fence-like line that is code content, a closer indented four, a shorter or different fence.
+    expect(open("~~~js\nconst x = 1;\n> ~~~")).toBe(true);
+    expect(open("~~~js\nx\n    ~~~")).toBe(true);
+    expect(open("````\n```\n")).toBe(true);
+    expect(open("~~~\nx\n```")).toBe(true);
+    expect(open("> ```js\n> x")).toBe(true);
+    expect(open("1. a\n\n   ```\n   x")).toBe(true);
+    expect(open("    indented code")).toBe(true);
+    // Finished: closed, closed inside a quote or a list, or followed by something else.
+    expect(open("~~~js\nx\n   ~~~")).toBe(false);
+    expect(open("```\nx\n```\n\n")).toBe(false);
+    expect(open("> ```js\n> x\n> ```")).toBe(false);
+    expect(open("1. a\n\n   ```\n   x\n   ```")).toBe(false);
+    expect(open("```\nx\n```\nAfter.")).toBe(false);
+    expect(open("    code\n\npara")).toBe(false);
   });
 
   it("renders a reply that defines link references or footnotes in one piece", () => {

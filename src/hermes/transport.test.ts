@@ -104,6 +104,50 @@ describe("Hermes transport", () => {
       expect(heard).toHaveLength(2);
     });
 
+    it("are heard of once per batch, never by an earlier batch's timeout, and not after Hermes closes", async () => {
+      const frames: FrameRequestCallback[] = [];
+      vi.stubGlobal("requestAnimationFrame", (f: FrameRequestCallback) => frames.push(f));
+      const { server, hermes, runtime } = await signedIn();
+      const id = await hermes.newChat();
+      await hermes.send(id, "hi");
+      server.event(runtime(id), "message.start");
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      let heard = 0;
+      hermes.subscribe(() => heard++);
+      const runFrames = () => frames.splice(0).forEach((f) => f(0));
+
+      server.event(runtime(id), "message.delta", { text: "a" });
+      vi.advanceTimersByTime(16);
+      runFrames();
+      expect(heard).toBe(1);
+      // A second batch starts just before the first one's timeout would have gone off: that timeout tells nobody.
+      vi.advanceTimersByTime(80);
+      server.event(runtime(id), "message.delta", { text: "b" });
+      vi.advanceTimersByTime(10);
+      expect(heard).toBe(1);
+      runFrames();
+      expect(heard).toBe(2);
+      vi.advanceTimersByTime(200);
+      expect(heard).toBe(2);
+
+      // Heard of at once with the next change: the batch's frame and timeout then tell nobody.
+      server.event(runtime(id), "message.delta", { text: "c" });
+      server.event(runtime(id), "tool.start", { tool_id: "t1", name: "terminal", args: {}, preview: "ls" });
+      expect(heard).toBe(3);
+      runFrames();
+      vi.advanceTimersByTime(200);
+      expect(heard).toBe(3);
+
+      server.event(runtime(id), "message.delta", { text: "d" });
+      const closing = hermes.close();
+      vi.advanceTimersByTime(200);
+      await closing;
+      const after = heard;
+      runFrames();
+      vi.advanceTimersByTime(200);
+      expect(heard).toBe(after);
+    });
+
     it("are heard of soon even in a window that draws no frames", async () => {
       vi.stubGlobal("requestAnimationFrame", () => 0);
       const { server, hermes, chat, runtime } = await signedIn();

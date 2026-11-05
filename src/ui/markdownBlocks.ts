@@ -7,9 +7,9 @@ import { gfmFromMarkdown } from "mdast-util-gfm";
 import type { Nodes } from "mdast";
 
 /**
- * One top-level block: its source, from the start of its first line to the end of its last, without the blank lines
- * after it, so a finished block's text stays the same as the next one begins. `refs`: it defines a link reference or
- * footnote. `open`: it ends in code that may still be coming in (`openCode`).
+ * One top-level block: its source, from the start of its first line to where the parser says it ends, so the blank
+ * lines after a finished block don't change its text as the next one begins. `refs`: it defines a link reference or
+ * footnote. `open`: it ends in code that may still be coming in.
  */
 export type Block = { start: number; text: string; refs: boolean; open: boolean };
 
@@ -19,28 +19,28 @@ export type Block = { start: number; text: string; refs: boolean; open: boolean 
  */
 export type Blocks = { text: string; blocks: Block[]; whole: boolean };
 
-const options = { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] };
+// How many fences (opening, then closing) the parser found for each fenced code node; indented code has none. Read
+// from micromark's own tokens, so a fence-like line that is really code content, or in another container, isn't one.
+const fences = new WeakMap<object, number>();
+const countFences = {
+  enter: {
+    codeFencedFence(this: { stack: { type: string }[] }) {
+      // The code node, under the fragment its content is gathered into by the time the closing fence comes.
+      const code = [...this.stack].reverse().find((n) => n.type === "code");
+      if (code) fences.set(code, (fences.get(code) ?? 0) + 1);
+    },
+  },
+};
 
-const fence = /^[ \t>]*(`{3,}|~{3,})/;
-const closingFence = /^[ \t>]*(`{3,}|~{3,})[ \t]*$/;
+const options = { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown(), countFences] };
 
 /**
- * Whether the code block from `start` to `end` in `source` may still be coming in, were `source` to grow: nothing but
- * blank space after it, and its fence not closed yet (or no fence: indented code goes on while indented lines come).
+ * Whether `node`, parsed from `source`, ends in code that may still be coming in: code with nothing but blank space
+ * after it, whose fence isn't closed yet, or that has no fence (indented code goes on while indented lines come).
  */
-export function openCode(source: string, start: number, end: number): boolean {
-  if (source.slice(end).trim()) return false;
-  const lines = source.slice(start, end).split("\n");
-  const open = lines[0].match(fence)?.[1];
-  if (!open) return true;
-  const close = lines.length > 1 ? lines[lines.length - 1].match(closingFence)?.[1] : undefined;
-  return !close || close[0] !== open[0] || close.length < open.length;
-}
-
-/** Whether `node`, parsed from `source`, ends in code that may still be coming in. */
 function endsInOpenCode(node: Nodes, source: string): boolean {
   for (;;) {
-    if (node.type === "code") return openCode(source, node.position?.start.offset ?? 0, node.position?.end.offset ?? source.length);
+    if (node.type === "code") return !source.slice(node.position?.end.offset ?? source.length).trim() && (fences.get(node) ?? 0) < 2;
     if (!("children" in node) || !node.children.length) return false;
     node = node.children[node.children.length - 1];
   }
@@ -51,27 +51,29 @@ const definesRefs = (node: Nodes): boolean =>
 
 /** The top-level blocks of `text`, each starting at `base` plus where its first line starts in `text`. */
 function lex(text: string, base: number): Block[] {
-  const starts: number[] = [];
-  const refs: boolean[] = [];
-  const open: boolean[] = [];
+  const blocks: Block[] = [];
+  const ends: number[] = [];
   for (const node of fromMarkdown(text, options).children) {
     const at = node.position?.start.offset ?? 0;
+    const end = node.position?.end.offset ?? text.length;
     // From the start of its line: a fence or list indented a little keeps its indentation, which shapes its content.
-    const start = starts.length ? text.lastIndexOf("\n", at - 1) + 1 : 0;
+    const start = blocks.length ? text.lastIndexOf("\n", at - 1) + 1 : 0;
+    const last = blocks[blocks.length - 1];
     // Two blocks starting on one line would render as one; they can't be told apart by line, so they stay together.
-    if (starts.length && start <= starts[starts.length - 1]) {
-      refs[refs.length - 1] ||= definesRefs(node);
-      open[open.length - 1] = endsInOpenCode(node, text);
+    if (last && start <= last.start) {
+      last.refs ||= definesRefs(node);
+      last.open = endsInOpenCode(node, text);
+      ends[ends.length - 1] = Math.max(ends[ends.length - 1], end);
       continue;
     }
-    starts.push(start);
-    refs.push(definesRefs(node));
-    open.push(endsInOpenCode(node, text));
+    blocks.push({ start, text: "", refs: definesRefs(node), open: endsInOpenCode(node, text) });
+    ends.push(end);
   }
-  return starts.map((start, i) => ({ start: base + start, text: text.slice(start, starts[i + 1]).replace(/(\n[ \t]*)+$/, ""),
-    refs: refs[i],
-    open: open[i],
-  }));
+  for (const [i, b] of blocks.entries()) {
+    b.text = text.slice(b.start, ends[i]);
+    b.start += base;
+  }
+  return blocks;
 }
 
 /**

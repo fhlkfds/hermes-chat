@@ -77,7 +77,7 @@ export const Markdown = memo(function Markdown({ text, query = "", streaming = f
   if (!streamed.current) return <Part text={text} query={query} growing={false} />;
   // A cache of the last split, so each delta parses only from the last blocks on; the same text gives the same blocks.
   const blocks = (split.current = splitBlocks(text, split.current));
-  if (blocks.whole) return <Part text={text} query={query} growing={streaming} />;
+  if (blocks.whole) return <Part text={text} query={query} growing={streaming && !!blocks.blocks[blocks.blocks.length - 1]?.open} />;
   const last = blocks.blocks.length - 1;
   // A "\n" between blocks, as between the top-level elements of the text rendered in one piece.
   return blocks.blocks.map((b, i) => (

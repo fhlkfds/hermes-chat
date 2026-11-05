@@ -623,8 +623,8 @@ export class Hermes {
   private queueHolds = new Map<string, number>();
   /** A look at the queues is due once the current change is done (`pumpSoon`). */
   private pumpDue = false;
-  /** Listeners are due a call for a streamed delta already in the snapshot (`notifySoon`). */
-  private notifyDue = false;
+  /** The frame and timeout that will tell listeners of streamed deltas already in the snapshot (`notifySoon`). */
+  private notifyDue?: { frame?: number; timer: ReturnType<typeof setTimeout> };
 
   /** Hermes's projects, each call naming its profile (projects.ts). Folders are read, never created. */
   readonly projects: ProjectsApi = projectsApi({
@@ -3022,6 +3022,7 @@ export class Hermes {
     this.capabilities.disconnected();
     clearTimeout(this.retryTimer);
     clearInterval(this.heartbeat);
+    this.cancelNotify();
     const pipe = this.takePipe();
     await this.redialing?.catch(() => {});
     await this.droppedClosing;
@@ -4178,19 +4179,28 @@ export class Hermes {
   }
 
   private tellListeners() {
-    this.notifyDue = false;
+    this.cancelNotify();
     for (const fn of this.listeners) fn();
   }
 
-  /** Calls the listeners at the next animation frame, or after `NOTIFY_LATEST_MS` in a window that draws no frames. */
+  /**
+   * Calls the listeners at the next animation frame, or after `NOTIFY_LATEST_MS` in a window that draws no frames,
+   * whichever comes first. Then both are cancelled, so neither tells of a later batch out of turn.
+   */
   private notifySoon() {
     if (this.notifyDue) return;
-    this.notifyDue = true;
-    const flush = () => {
-      if (this.notifyDue) this.tellListeners();
-    };
-    if (typeof requestAnimationFrame === "function") requestAnimationFrame(flush);
-    setTimeout(flush, NOTIFY_LATEST_MS);
+    // Each call checks it is still the batch due, in case its cancelling didn't take (no cancelAnimationFrame).
+    const batch: NonNullable<Hermes["notifyDue"]> = { timer: setTimeout(() => flush(), NOTIFY_LATEST_MS) };
+    const flush = () => this.notifyDue === batch && this.tellListeners();
+    if (typeof requestAnimationFrame === "function") batch.frame = requestAnimationFrame(flush);
+    this.notifyDue = batch;
+  }
+
+  private cancelNotify() {
+    if (!this.notifyDue) return;
+    if (this.notifyDue.frame !== undefined && typeof cancelAnimationFrame === "function") cancelAnimationFrame(this.notifyDue.frame);
+    clearTimeout(this.notifyDue.timer);
+    this.notifyDue = undefined;
   }
 }
 

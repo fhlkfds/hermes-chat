@@ -8,7 +8,6 @@ import { SKIP, visit } from "unist-util-visit";
 import type { Element, ElementContent, Root } from "hast";
 import type { VFile } from "vfile";
 import { escapeRe } from "./bits";
-import { openCode } from "./markdownBlocks";
 
 type HastNode = { type: string; value?: string; tagName?: string; properties?: Record<string, unknown>; children?: HastNode[] };
 
@@ -88,15 +87,15 @@ function plain(code: Element) {
 
 /**
  * Rehype plugin: highlights each code block, guessing the language of untagged ones. `source`: the Markdown being
- * rendered, while it may still grow; code at its end that may still be coming in stays plain until it is finished, so
- * a streaming reply isn't highlighted again, and its language guessed again, on every delta (#224).
+ * rendered, when it ends in code still coming in (markdownBlocks.ts says which); the code at its very end then stays
+ * plain until it is finished, so a streaming reply isn't highlighted again, and its language guessed again, on every
+ * delta (ADR 0068).
  */
 function rehypeCode(source?: string) {
   return () => (tree: Root, file: VFile) =>
     visit(tree, "element", (node, _, parent) => {
       if (node.tagName !== "code" || parent?.type !== "element" || parent.tagName !== "pre") return;
-      const at = node.position;
-      if (source === undefined || !openCode(source, at?.start.offset ?? 0, at?.end.offset ?? source.length)) highlight(node, parent, file);
+      if (source === undefined || source.slice(node.position?.end.offset ?? 0).trim()) highlight(node, parent, file);
       else plain(node);
       return SKIP;
     });
