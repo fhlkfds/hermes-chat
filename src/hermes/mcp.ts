@@ -419,11 +419,17 @@ export class McpApi {
   /** Installs a catalog entry for the profile. One that builds on the server does so in the background. */
   install(profile: string, entry: CatalogEntry, env: Record<string, string>): Promise<McpChange> {
     const filled = Object.fromEntries(Object.entries(env).filter(([, v]) => v.trim()));
+    // Set only by Hermes's answer that it started the install in the background; a failed request leaves it false.
+    let started = false;
     return this.change(
       profile,
-      () => this.rest("POST", `api/mcp/catalog/install?${q(profile)}`, { name: entry.name, env: filled, enable: true }),
-      // A background install shows up once it's done; the answer says it started.
-      (l) => entry.needsInstall || l.servers.some((s) => s.name === entry.name),
+      async () => {
+        const res = await this.rest("POST", `api/mcp/catalog/install?${q(profile)}`, { name: entry.name, env: filled, enable: true });
+        started = obj(res).background === true;
+        return res;
+      },
+      // A background install shows up once it's done: its started answer counts, and otherwise only the list.
+      (l) => started || l.servers.some((s) => s.name === entry.name),
       (res) =>
         obj(res).background === true
           ? "Hermes is installing it on the server in the background (it clones and builds it). It shows in the list once that's done: read the list again in a minute."

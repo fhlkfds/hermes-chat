@@ -56,6 +56,8 @@ export class FakeMcp {
   refuse?: { status: number; detail: string };
   /** The next write lands differently: `enabled` toggles the other way. */
   misapply?: boolean;
+  /** Reads of an OAuth flow fail with a 500, while the flow carries on. */
+  flowReadsFail?: boolean;
 
   constructor(private known: (profile: string) => boolean) {}
 
@@ -190,6 +192,7 @@ export class FakeMcp {
   private flowRoute(method: string, id: string) {
     const f = this.flows[id];
     if (method === "GET") {
+      if (this.flowReadsFail) throw answered(500, "Internal Server Error");
       if (!f) throw answered(404, "OAuth flow not found or expired");
       return { ...this.snapshot(f), tools: f.tools };
     }

@@ -224,6 +224,16 @@ describe("MCP servers: catalog", () => {
     const bg = await api.install("default", cat.entries[1], {});
     expect(bg).toMatchObject({ kind: "saved", note: expect.stringMatching(/in the background/) });
   });
+
+  it("never calls a background install saved when its request failed", async () => {
+    const { api, fake } = await setUp();
+    fake.catalogEntries = [{ name: "big", description: "Built", transport: "stdio", command: "big", install: { url: "https://git.example/big", bootstrap: ["make"] } }];
+    const [big] = (await api.catalog("default")).entries;
+    fake.drop = "lost";
+    const r = await api.install("default", big, {});
+    expect(r.kind).toBe("unconfirmed");
+    expect(fake.writes).toEqual([]);
+  });
 });
 
 describe("MCP servers: forms", () => {

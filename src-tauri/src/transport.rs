@@ -2177,7 +2177,9 @@ impl Dashboard {
             StatusCode::UNAUTHORIZED => Err(TransportError::SignedOut),
             s => {
                 let answer = resp.text().await.unwrap_or_default();
-                Err(TransportError::Unexpected { status: s.as_u16(), body: crate::mcp::scrubbed(&answer, &edited.secrets) })
+                // Neither a secret the map held nor a value of the owner's extra request headers is shown.
+                let body = shown_body(s, &crate::mcp::scrubbed(&answer, &edited.secrets), &self.headers);
+                Err(TransportError::Unexpected { status: s.as_u16(), body })
             }
         }
     }

@@ -7,7 +7,7 @@ use axum::response::{AppendHeaders, IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use hermes_chat::mcp::Edit;
-use hermes_chat::transport::{Dashboard, SignIn, TransportError};
+use hermes_chat::transport::{Dashboard, ExtraHeader, SignIn, TransportError};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -21,6 +21,8 @@ struct Server {
     puts: Vec<(String, Value)>,
     /// The next whole-map write is refused with a 400 repeating the body, as a careless server might.
     refuse_echoing: bool,
+    /// The next whole-map write is refused with a 400 whose detail repeats the gateway's credential header.
+    refuse_echoing_header: bool,
     /// The next whole-map write drops `env` from every entry as it saves, so the read back differs.
     drop_env_on_write: bool,
     /// A raw read that wasn't asked for (`include_defaults` missing).
@@ -64,10 +66,14 @@ async fn save_env(State(s): State<Shared>, Query(q): Query<HashMap<String, Strin
     Json(json!({"ok": true})).into_response()
 }
 
-async fn replace(State(s): State<Shared>, Query(q): Query<HashMap<String, String>>, Json(body): Json<Value>) -> Response {
+async fn replace(State(s): State<Shared>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>, Json(body): Json<Value>) -> Response {
     let mut s = s.lock().unwrap();
     let profile = q.get("profile").cloned().unwrap_or_default();
     s.puts.push((profile.clone(), body.clone()));
+    if std::mem::take(&mut s.refuse_echoing_header) {
+        let secret = headers.get("cf-access-client-secret").and_then(|v| v.to_str().ok()).unwrap_or_default().to_owned();
+        return (StatusCode::BAD_REQUEST, Json(json!({"detail": format!("gateway refused service token {secret}")}))).into_response();
+    }
     if std::mem::take(&mut s.refuse_echoing) {
         return (StatusCode::BAD_REQUEST, Json(json!({"detail": format!("rejected: {body}")}))).into_response();
     }
@@ -86,6 +92,10 @@ async fn echo(body: String) -> Response {
 }
 
 async fn stub() -> (Dashboard, Shared) {
+    stub_with(Default::default()).await
+}
+
+async fn stub_with(extra: Vec<ExtraHeader>) -> (Dashboard, Shared) {
     let shared: Shared = Default::default();
     shared.lock().unwrap().servers.insert(
         "work".into(),
@@ -106,7 +116,7 @@ async fn stub() -> (Dashboard, Shared) {
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let base = Url::parse(&format!("http://{addr}/")).unwrap();
-    let dashboard = Dashboard::sign_in(&base, &SignIn { username: "liam".into(), password: "hunter2".into(), headers: Default::default() }).await.unwrap();
+    let dashboard = Dashboard::sign_in(&base, &SignIn { username: "liam".into(), password: "hunter2".into(), headers: hermes_chat::transport::extra_headers(&extra).unwrap() }).await.unwrap();
     (dashboard, shared)
 }
 
@@ -230,4 +240,16 @@ async fn the_relay_passes_only_the_mcp_writes_the_screen_makes() {
         assert!(matches!(err, TransportError::NotRelayed(_)), "{method} {path}: {err:?}");
     }
     assert!(shared.lock().unwrap().puts.is_empty(), "the whole-map replace went out from the webview");
+}
+
+#[tokio::test]
+async fn a_refusal_that_repeats_an_extra_request_header_never_shows_it() {
+    let (dashboard, shared) = stub_with(vec![ExtraHeader { name: "CF-Access-Client-Secret".into(), value: "gateway-s3cret-value".into() }]).await;
+    shared.lock().unwrap().refuse_echoing_header = true;
+    let err = dashboard
+        .mcp_edit("work", &edit(json!({"name": "fs", "server": {"transport": "stdio", "command": "npx", "args": [], "env": [{"key": "API_KEY"}]}})))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("400") && !err.contains("gateway-s3cret"), "{err}");
 }

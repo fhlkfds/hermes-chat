@@ -99,6 +99,17 @@ describe("Settings → MCP servers: the list", () => {
     expect(screen.getByText(/turns them off for discord chats/)).toBeTruthy();
   });
 
+  it("lists and switches servers whose names are also object property names", async () => {
+    const s = server();
+    s.mcp.servers.default = { constructor: { command: "a" }, toString: { url: "https://t.example/mcp", auth: "oauth" }, hasOwnProperty: { command: "c" } };
+    const { user } = await shown({ s });
+    expect(within(rowOf("toString")).getByRole("button", { name: "Sign in to toString" })).toBeTruthy();
+    await user.click(within(rowOf("constructor")).getByRole("switch", { name: "constructor" }));
+    await within(rowOf("constructor")).findByText("Turned off: Hermes reads it back that way.");
+    const name: string = "constructor";
+    expect(s.mcp.servers.default[name].enabled).toBe(false);
+  });
+
   it("drops an answer for a profile no longer shown", async () => {
     const s = server();
     const hermes = await connect(s.openPipe, "default");
@@ -270,6 +281,18 @@ describe("Settings → MCP servers: remove, test and sign in", () => {
     await waitFor(() => expect(Object.keys(s.mcp.flows)).toHaveLength(2));
     s.mcp.fail(Object.keys(s.mcp.flows)[1], "access_denied");
     await within(rowOf("notes")).findByText("Sign-in didn't finish: access_denied");
+  });
+
+  it("stops a sign-in on Hermes when it can no longer be followed, so the next one can start", async () => {
+    const { s, user } = await shown();
+    s.mcp.flowReadsFail = true;
+    await user.click(screen.getByRole("button", { name: "Sign in to notes" }));
+    await within(rowOf("notes")).findByText(/Lost track of the sign-in, so it was stopped/);
+    await waitFor(() => expect(Object.values(s.mcp.flows)[0].error).toBe("Cancelled by user"));
+    s.mcp.flowReadsFail = false;
+    await user.click(screen.getByRole("button", { name: "Sign in to notes" }));
+    await within(rowOf("notes")).findByText(/Finish signing in/);
+    expect(Object.keys(s.mcp.flows)).toHaveLength(2);
   });
 
   it("cancels a sign-in left waiting when the screen closes", async () => {

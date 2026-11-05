@@ -77,10 +77,11 @@ export function McpSettings({
   const [problem, setProblem] = useState<{ unsupported: boolean; text: string }>();
   const [loading, setLoading] = useState(false);
   const [noMcp, setNoMcp] = useState<string[]>();
-  const [busy, setBusy] = useState<Record<string, Busy>>({});
-  const [notes, setNotes] = useState<Record<string, Note>>({});
-  const [tests, setTests] = useState<Record<string, McpTest>>({});
-  const [signIns, setSignIns] = useState<Record<string, SignIn>>({});
+  // Maps keyed by server name: Hermes takes any name, `constructor` and `__proto__` included.
+  const [busy, setBusy] = useState<Map<string, Busy>>(new Map());
+  const [notes, setNotes] = useState<Map<string, Note>>(new Map());
+  const [tests, setTests] = useState<Map<string, McpTest>>(new Map());
+  const [signIns, setSignIns] = useState<Map<string, SignIn>>(new Map());
   const [confirmRemove, setConfirmRemove] = useState<string>();
   const [dialog, setDialog] = useState<Dialog>();
   const [listNote, setListNote] = useState<Note>();
@@ -89,7 +90,7 @@ export function McpSettings({
   const shown = useRef(profile);
   shown.current = profile;
   const mine = (p: string) => live.current && shown.current === p;
-  const flowsRef = useRef<Record<string, SignIn>>({});
+  const flowsRef = useRef<Map<string, SignIn>>(new Map());
   flowsRef.current = signIns;
 
   const load = useCallback(async () => {
@@ -116,18 +117,18 @@ export function McpSettings({
     return () => {
       live.current = false;
       // A sign-in left waiting would hold Hermes's slot for the server until it times out.
-      for (const s of Object.values(flowsRef.current)) if (s.flow.status === "starting" || s.flow.status === "authorization_required") void api.cancelSignIn(s.flow.flowId);
+      for (const s of flowsRef.current.values()) if (s.flow.status === "starting" || s.flow.status === "authorization_required") void api.cancelSignIn(s.flow.flowId);
     };
   }, [api]);
   useEffect(() => {
     if (connected) void load();
   }, [connected, load]);
 
-  const setOne = <T,>(set: (f: (m: Record<string, T>) => Record<string, T>) => void, name: string, v: T | undefined) =>
+  const setOne = <T,>(set: (f: (m: Map<string, T>) => Map<string, T>) => void, name: string, v: T | undefined) =>
     set((m) => {
-      const next = { ...m };
-      if (v === undefined) delete next[name];
-      else next[name] = v;
+      const next = new Map(m);
+      if (v === undefined) next.delete(name);
+      else next.set(name, v);
       return next;
     });
 
@@ -172,7 +173,7 @@ export function McpSettings({
 
   // Each sign-in under way is asked about every SIGN_IN_POLL_MS until Hermes says it's approved or failed.
   useEffect(() => {
-    const waiting = Object.entries(signIns).filter(([, s]) => s.flow.status === "starting" || s.flow.status === "authorization_required");
+    const waiting = [...signIns].filter(([, s]) => s.flow.status === "starting" || s.flow.status === "authorization_required");
     if (!waiting.length) return;
     const p = profile;
     const timer = setTimeout(() => {
@@ -185,7 +186,7 @@ export function McpSettings({
         }
         api.signInStatus(s.flow.flowId).then(
           (flow) => {
-            if (!mine(p) || flowsRef.current[name]?.flow.flowId !== flow.flowId) return;
+            if (!mine(p) || flowsRef.current.get(name)?.flow.flowId !== flow.flowId) return;
             // An answer about another server's flow isn't this one's.
             if (flow.server && flow.server !== name) return;
             if (flow.status === "approved") {
@@ -203,9 +204,11 @@ export function McpSettings({
             }
           },
           (e) => {
-            if (!mine(p)) return;
+            if (!mine(p) || flowsRef.current.get(name)?.flow.flowId !== s.flow.flowId) return;
+            // Dropped here, so stopped on Hermes too: a flow left waiting there refuses the next sign-in until it times out.
+            void api.cancelSignIn(s.flow.flowId);
             setOne(setSignIns, name, undefined);
-            setOne(setNotes, name, { tone: "bad", text: `Lost track of the sign-in: ${messageOf(e)}` });
+            setOne(setNotes, name, { tone: "bad", text: `Lost track of the sign-in, so it was stopped: ${messageOf(e)}. Sign in again to try once more.` });
           },
         );
       }
@@ -237,7 +240,7 @@ export function McpSettings({
   };
 
   const cancelSignIn = (name: string) => {
-    const s = signIns[name];
+    const s = signIns.get(name);
     if (!s) return;
     void api.cancelSignIn(s.flow.flowId);
     setOne(setSignIns, name, undefined);
@@ -250,11 +253,11 @@ export function McpSettings({
 
   const row = (s: McpServer) => {
     const id = `mcp-${s.name.replace(/[^A-Za-z0-9_-]/g, "_")}`;
-    const b = busy[s.name];
-    const t = tests[s.name];
-    const flow = signIns[s.name];
+    const b = busy.get(s.name);
+    const t = tests.get(s.name);
+    const flow = signIns.get(s.name);
     const locked = !connected || !!b || !s.changeable;
-    const note = notes[s.name];
+    const note = notes.get(s.name);
     return (
       <SettingRow
         key={s.name}
@@ -801,7 +804,7 @@ function CatalogDialog({
   const [catalog, setCatalog] = useState<Catalog>();
   const [error, setError] = useState<string>();
   const [picked, setPicked] = useState<CatalogEntry>();
-  const [env, setEnv] = useState<Record<string, string>>({});
+  const [env, setEnv] = useState<Map<string, string>>(new Map());
   const [sending, setSending] = useState(false);
   const [outcome, setOutcome] = useState<McpChange>();
   const open = useRef(true);
@@ -815,15 +818,15 @@ function CatalogDialog({
     return () => void (open.current = false);
   }, []);
 
-  const missing = picked?.requiredEnv.filter((v) => v.required && !env[v.name]?.trim()) ?? [];
+  const missing = picked?.requiredEnv.filter((v) => v.required && !env.get(v.name)?.trim()) ?? [];
   const install = async () => {
     if (!picked || missing.length || sending) return;
     setSending(true);
     setOutcome(undefined);
-    const r = await api.install(profile, picked, env);
+    const r = await api.install(profile, picked, Object.fromEntries(env));
     if (!open.current) return;
     setSending(false);
-    setEnv({});
+    setEnv(new Map());
     if (r.kind === "saved") return onDone(picked, r);
     setOutcome(r);
   };
@@ -871,7 +874,7 @@ function CatalogDialog({
                       disabled={e.installed || installed.includes(e.name)}
                       onClick={() => {
                         setPicked(e);
-                        setEnv({});
+                        setEnv(new Map());
                       }}
                     >
                       <span className="mono">{e.name}</span>
@@ -920,7 +923,7 @@ function CatalogDialog({
                   {v.prompt || v.name} <span className="mono muted">{v.name}</span>
                   {!v.required && <span className="muted">(optional)</span>}
                 </span>
-                <input type="password" value={env[v.name] ?? ""} onChange={(e) => setEnv((m) => ({ ...m, [v.name]: e.target.value }))} autoComplete="new-password" />
+                <input type="password" value={env.get(v.name) ?? ""} onChange={(e) => setEnv((m) => new Map(m).set(v.name, e.target.value))} autoComplete="new-password" />
               </label>
             ))}
             {outcome && outcome.kind !== "saved" && (
