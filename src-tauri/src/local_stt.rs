@@ -1,30 +1,649 @@
-//! Speech-to-text on this computer (ADR 0065): whisper.cpp's `whisper-cli` and a Whisper model in ggml format.
+//! Speech to text on this computer, and where each recording goes (#220 and #192; ADR 0067 and ADR 0065).
 //!
-//! The recording never leaves the computer. It is written to a private temp file, `whisper-cli` reads it, and the file
-//! is deleted when the run ends. Only the text goes back to the webview, which sends it to Hermes as typed text.
+//! Finds the engines already installed here, keeps which one the owner picked, downloads Whisper models for whisper.cpp
+//! into the app's data folder, and decides, inside `hermes_transcribe`, where a Dictation or Voice conversation
+//! recording is transcribed: on Hermes, on this computer, or one with the other as its backup. With "This computer" and
+//! no backup, a recording never goes to Hermes, whatever the webview asks.
 //!
-//! What runs is never named by the webview. The engine is the one the owner picked in the native Open dialog, or else
-//! the first `whisper-cli` (or `whisper-cpp`) found on `PATH`. The model is one of the five Whisper sizes, downloaded
-//! from whisper.cpp's own Hugging Face repository into the app's data folder and checked against its pinned size and
-//! SHA-256, or a model file the owner picked in the Open dialog. The engine runs as a fixed argument list with no shell
-//! and a timeout.
-//!
-//! The settings (model size, language, picked engine and picked model file) are kept in `local-stt.json` in the app's
-//! data folder, written whole and read back after every change.
+//! Only programs found on `PATH` under a known engine's name, or one the owner picked in the native Open dialog, are
+//! ever run, and only with an argument list built here: no shell. The webview names an engine and model only by
+//! choosing among what Rust found or was given through a dialog. The recording goes to a private folder (0700) that is
+//! deleted once the text is read, and the engine is killed after a timeout. The choice lives in `local-stt.json` in the
+//! app's config folder, for this computer, not per connection or profile.
+use std::ffi::{OsStr, OsString};
+use std::future::Future;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::ffi::OsString;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use tauri::ipc::{Channel, InvokeBody};
-use tauri::{Manager, State};
+use tauri::ipc::Channel;
+use tauri::{AppHandle, Manager, State as Managed};
 use tauri_plugin_dialog::DialogExt;
+use tokio::sync::watch;
 
-/// A Whisper model this app can download: its size name, file, exact byte count and SHA-256, as whisper.cpp's Hugging
-/// Face repository (`ggerganov/whisper.cpp`, branch `main`) lists them (its LFS object ids, read 2026-11-04).
+use crate::transport::Transcript;
+
+const SETTINGS_FILE: &str = "local-stt.json";
+/// Serializes the settings file's read-modify-write between this app's commands.
+static SETTINGS_LOCK: Mutex<()> = Mutex::new(());
+/// The largest recording taken: Hermes's own limit on one to transcribe, so both sides take the same recordings.
+/// Dictation's five minutes of 16 kHz 16-bit mono WAV is 9.6 MB.
+const MAX_WAV_BYTES: usize = 25 * 1024 * 1024;
+
+/// How long the primary gets before the backup runs instead, unless the owner sets another time.
+pub const DEFAULT_TIMEOUT_SECONDS: u64 = 30;
+pub const MIN_TIMEOUT_SECONDS: u64 = 5;
+pub const MAX_TIMEOUT_SECONDS: u64 = 600;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Kind {
+    WhisperCpp,
+    /// faster-whisper's command line, `whisper-ctranslate2`.
+    FasterWhisper,
+    OpenaiWhisper,
+    Vosk,
+}
+
+impl Kind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Kind::WhisperCpp => "whisper.cpp",
+            Kind::FasterWhisper => "faster-whisper",
+            Kind::OpenaiWhisper => "OpenAI Whisper",
+            Kind::Vosk => "Vosk",
+        }
+    }
+    /// Its model is a folder rather than one file.
+    fn model_is_folder(self) -> bool {
+        matches!(self, Kind::FasterWhisper | Kind::Vosk)
+    }
+}
+
+/// The program names looked for on `PATH`.
+const NAMES: [&str; 5] = ["whisper-cli", "whisper-cpp", "whisper", "whisper-ctranslate2", "vosk-transcriber"];
+
+/// Which engine a program is, by its file name. `whisper` is both whisper.cpp's old name and OpenAI Whisper's Python
+/// script, so a script (`#!`) is OpenAI's.
+pub fn kind_of(binary: &Path) -> Option<Kind> {
+    match binary.file_name()?.to_str()? {
+        "whisper-cli" | "whisper-cpp" => Some(Kind::WhisperCpp),
+        "whisper-ctranslate2" => Some(Kind::FasterWhisper),
+        "vosk-transcriber" => Some(Kind::Vosk),
+        "whisper" => {
+            let mut head = [0u8; 2];
+            let script = std::fs::File::open(binary).and_then(|mut f| std::io::Read::read_exact(&mut f, &mut head)).is_ok() && &head == b"#!";
+            Some(if script { Kind::OpenaiWhisper } else { Kind::WhisperCpp })
+        }
+        _ => None,
+    }
+}
+
+fn is_executable(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+/// The engines on `path` (a `PATH` value): for each known name, the first executable with it, as the shell would run.
+pub fn on_path(path: &OsStr) -> Vec<(Kind, PathBuf)> {
+    NAMES
+        .iter()
+        .filter_map(|name| std::env::split_paths(path).map(|dir| dir.join(name)).find(|p| p.is_absolute() && is_executable(p)))
+        .filter_map(|p| Some((kind_of(&p)?, p)))
+        .collect()
+}
+
+/// The folders models usually sit in: the XDG data and cache folders, Hugging Face's cache, the home folder, and the
+/// folder this app downloads whisper.cpp models into.
+pub struct Places {
+    pub home: PathBuf,
+    pub data: PathBuf,
+    pub cache: PathBuf,
+    pub hf: PathBuf,
+    pub app_models: Option<PathBuf>,
+}
+
+impl Places {
+    fn from_env(app_models: Option<PathBuf>) -> Self {
+        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+        let var = |name: &str, or: PathBuf| std::env::var_os(name).filter(|v| !v.is_empty()).map_or(or, PathBuf::from);
+        let data = var("XDG_DATA_HOME", home.join(".local/share"));
+        let cache = var("XDG_CACHE_HOME", home.join(".cache"));
+        let hf = var("HF_HOME", cache.join("huggingface"));
+        Places { home, data, cache, hf, app_models }
+    }
+}
+
+fn children(dir: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).collect();
+    out.sort();
+    out
+}
+
+fn name_of(p: &Path) -> &str {
+    p.file_name().and_then(|n| n.to_str()).unwrap_or("")
+}
+
+/// The models of `kind` in their usual folders under `places` (and the system's `/usr/share`, `/usr/local/share`).
+pub fn models(kind: Kind, places: &Places) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = match kind {
+        Kind::WhisperCpp => {
+            // This app's downloads first, then `whisper.cpp`, `whisper.cpp-model-base.en` and the like under each share
+            // folder, and their `models`. A download in progress is a hidden `.part` file, so it isn't listed.
+            let mut dirs: Vec<PathBuf> = places.app_models.iter().cloned().collect();
+            dirs.extend([places.cache.join("whisper.cpp"), places.home.join("whisper.cpp/models")]);
+            for share in [places.data.clone(), "/usr/share".into(), "/usr/local/share".into()] {
+                for d in children(&share).into_iter().filter(|d| name_of(d).starts_with("whisper")) {
+                    dirs.push(d.join("models"));
+                    dirs.push(d);
+                }
+            }
+            let ggml = |p: &PathBuf| name_of(p).starts_with("ggml-") && name_of(p).ends_with(".bin") && p.is_file();
+            dirs.iter().flat_map(|d| children(d)).filter(ggml).collect()
+        }
+        Kind::OpenaiWhisper => children(&places.cache.join("whisper")).into_iter().filter(|p| name_of(p).ends_with(".pt") && p.is_file()).collect(),
+        Kind::FasterWhisper => children(&places.hf.join("hub"))
+            .into_iter()
+            .filter(|d| name_of(d).starts_with("models--") && name_of(d).contains("whisper"))
+            .flat_map(|d| children(&d.join("snapshots")))
+            .filter(|s| s.join("model.bin").exists())
+            .collect(),
+        Kind::Vosk => [places.cache.join("vosk"), places.data.join("vosk"), "/usr/share/vosk".into()]
+            .iter()
+            .flat_map(|d| children(d))
+            .filter(|d| d.join("am").is_dir())
+            .collect(),
+    };
+    found.dedup();
+    found
+}
+
+/// An engine to run: its program and model, which the owner picked from what was found or through a dialog.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Engine {
+    pub kind: Kind,
+    pub binary: PathBuf,
+    pub model: Option<PathBuf>,
+}
+
+/// The owner's choice. `on_this_computer`: this computer is the primary, else Hermes is (as before this setting).
+/// `backup`: the other one transcribes the same recording when the primary fails or takes over `timeout_seconds`.
+/// `language`: `auto` or a Whisper language code, for the Whisper engines here.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Settings {
+    #[serde(default)]
+    pub on_this_computer: bool,
+    #[serde(default)]
+    pub engine: Option<Engine>,
+    #[serde(default)]
+    pub backup: bool,
+    #[serde(default = "default_timeout")]
+    pub timeout_seconds: u64,
+    #[serde(default = "default_language")]
+    pub language: String,
+}
+
+fn default_timeout() -> u64 {
+    DEFAULT_TIMEOUT_SECONDS
+}
+
+fn default_language() -> String {
+    "auto".into()
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings { on_this_computer: false, engine: None, backup: false, timeout_seconds: DEFAULT_TIMEOUT_SECONDS, language: default_language() }
+    }
+}
+
+impl Settings {
+    /// A timeout out of range is brought into it, and a language that isn't one is `auto`. Where a recording goes is
+    /// never guessed: a file that doesn't parse is an error (`read_settings`).
+    fn sanitized(mut self) -> Self {
+        self.timeout_seconds = self.timeout_seconds.clamp(MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS);
+        if !valid_language(&self.language) {
+            self.language = default_language();
+        }
+        self
+    }
+}
+
+/// `auto`, or a Whisper language code: two or three lowercase letters (`en`, `haw`, `yue`).
+pub fn valid_language(language: &str) -> bool {
+    language == "auto" || ((2..=3).contains(&language.len()) && language.bytes().all(|b| b.is_ascii_lowercase()))
+}
+
+/// The settings, or the default when there is no file yet. A file that can't be read is an error, not the default:
+/// the default sends recordings to Hermes, which the owner may have turned off.
+fn read_settings(path: &Path) -> Result<Settings, String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => serde_json::from_str::<Settings>(&text).map(Settings::sanitized).map_err(|e| format!("The speech-to-text setting in {} can't be read: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Settings::default()),
+        Err(e) => Err(format!("The speech-to-text setting in {} can't be read: {e}", path.display())),
+    }
+}
+
+/// Writes the file whole (a temp file renamed over it), then reads it back: what is returned is what was stored.
+fn write_settings(path: &Path, settings: &Settings) -> Result<Settings, String> {
+    let dir = path.parent().ok_or("No folder for the speech-to-text setting.")?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    let text = serde_json::to_string(settings).map_err(|e| e.to_string())?;
+    std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("{}: {e}", path.display())
+    })?;
+    let back = read_settings(path)?;
+    if &back != settings {
+        return Err("The speech-to-text setting didn't read back as it was saved.".into());
+    }
+    Ok(back)
+}
+
+fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app.path().app_config_dir().map_err(|e| e.to_string())?.join(SETTINGS_FILE))
+}
+
+/// Where this app downloads whisper.cpp models.
+fn models_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("whisper-models"))
+}
+
+/// Why `engine` can't run now, or `None`.
+pub fn problem(engine: Option<&Engine>) -> Option<String> {
+    let Some(e) = engine else { return Some("No speech-to-text engine is chosen on this computer.".into()) };
+    if !is_executable(&e.binary) {
+        return Some(format!("{} isn't at {} any more, or can't be run.", e.kind.label(), e.binary.display()));
+    }
+    let Some(model) = &e.model else { return Some(format!("No model is chosen for {}.", e.kind.label())) };
+    let there = if e.kind.model_is_folder() { model.is_dir() } else { model.is_file() };
+    if !there {
+        return Some(format!("The model {} isn't there any more.", model.display()));
+    }
+    None
+}
+
+/// The arguments that have `engine` transcribe `wav` into `<out>/audio.txt`, in `language` (`auto`: the engine
+/// detects it). Each is one argument: nothing is parsed by a shell. The input file is named `audio.wav`, so the
+/// Whisper command lines name their output `audio.txt`. Vosk's language is its model's.
+pub fn args(engine: &Engine, model: &Path, wav: &Path, out: &Path, language: &str) -> Vec<OsString> {
+    let s = |v: &str| OsString::from(v);
+    let p = |v: &Path| v.as_os_str().to_owned();
+    let lang = |mut v: Vec<OsString>| {
+        if language != "auto" {
+            v.extend([s("--language"), s(language)]);
+        }
+        v
+    };
+    match engine.kind {
+        // `-l auto`: a multilingual model detects the language; an English-only one ignores it. `-np`: results only.
+        Kind::WhisperCpp => vec![s("-m"), p(model), s("-f"), p(wav), s("-l"), s(language), s("-nt"), s("-np"), s("-otxt"), s("-of"), p(&out.join("audio"))],
+        Kind::FasterWhisper => lang(vec![
+            p(wav),
+            s("--model_directory"),
+            p(model),
+            s("--output_dir"),
+            p(out),
+            s("--output_format"),
+            s("txt"),
+            s("--verbose"),
+            s("False"),
+        ]),
+        Kind::OpenaiWhisper => lang(vec![
+            p(wav),
+            s("--model"),
+            p(model),
+            s("--output_dir"),
+            p(out),
+            s("--output_format"),
+            s("txt"),
+            s("--verbose"),
+            s("False"),
+            s("--fp16"),
+            s("False"),
+        ]),
+        Kind::Vosk => vec![s("-m"), p(model), s("-i"), p(wav), s("-o"), p(&out.join("audio.txt"))],
+    }
+}
+
+/// An engine's output as one line of text, without the lines that are only a note in brackets: whisper.cpp's
+/// `[BLANK_AUDIO]`, `(silence)`, `*music*`. So silence is empty.
+pub fn clean(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .filter(|l| {
+            let bracketed = |open: char, close: char| l.len() > 1 && l.starts_with(open) && l.ends_with(close);
+            !(bracketed('[', ']') || bracketed('(', ')') || bracketed('*', '*'))
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A private folder for one recording, deleted with everything in it when dropped.
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new() -> std::io::Result<Self> {
+        use std::sync::atomic::AtomicU64;
+        static N: AtomicU64 = AtomicU64::new(0);
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+        let dir = std::env::temp_dir().join(format!("hermes-chat-stt-{}-{nanos}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        // `create`, not `create_all`: it fails if anything, a link included, is already there.
+        std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
+        Ok(Scratch(dir))
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// How long an engine may take: a minute to load, plus three times the recording's length.
+fn time_limit(wav_bytes: usize) -> Duration {
+    Duration::from_secs(60 + 3 * (wav_bytes.saturating_sub(44) / 32_000) as u64)
+}
+
+/// Has `engine` transcribe a WAV recording in `language`, within `limit`. The recording is written to a private folder
+/// that is deleted afterwards, whatever happens. Errors say why, for the owner.
+pub async fn transcribe(engine: &Engine, wav: &[u8], limit: Duration, language: &str) -> Result<Transcript, String> {
+    if let Some(why) = problem(Some(engine)) {
+        return Err(why);
+    }
+    if wav.len() > MAX_WAV_BYTES {
+        return Err(format!("The recording is over {} MB.", MAX_WAV_BYTES / 1024 / 1024));
+    }
+    let model = engine.model.as_deref().expect("checked by problem");
+    let scratch = Scratch::new().map_err(|e| format!("Couldn't make a private folder for the recording: {e}"))?;
+    let wav_path = scratch.0.join("audio.wav");
+    {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&wav_path).map_err(|e| format!("Couldn't save the recording to transcribe: {e}"))?;
+        f.write_all(wav).map_err(|e| format!("Couldn't save the recording to transcribe: {e}"))?;
+    }
+    let label = engine.kind.label();
+    let child = tokio::process::Command::new(&engine.binary)
+        .args(args(engine, model, &wav_path, &scratch.0, language))
+        .current_dir(&scratch.0)
+        // faster-whisper's model is already here; it must never fetch one.
+        .env("HF_HUB_OFFLINE", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("{label} couldn't be started: {e}"))?;
+    let out = match tokio::time::timeout(limit, child.wait_with_output()).await {
+        Err(_) => return Err(format!("{label} took longer than {} s, so it was stopped.", limit.as_secs())),
+        Ok(r) => r.map_err(|e| format!("{label} failed: {e}"))?,
+    };
+    if !out.status.success() {
+        // whisper-ctranslate2 prints some of its errors on stdout, so that is the fallback.
+        let last_line = |b: &[u8]| String::from_utf8_lossy(b).lines().rev().map(str::trim).find(|l| !l.is_empty()).map(str::to_owned);
+        let last = last_line(&out.stderr).or_else(|| last_line(&out.stdout)).unwrap_or_else(|| "no message".into());
+        let how = out.status.code().map_or_else(|| "was killed".to_string(), |c| format!("exited with {c}"));
+        return Err(format!("{label} {how}: {}", last.chars().filter(|c| !c.is_control()).take(300).collect::<String>()));
+    }
+    let text = std::fs::read_to_string(scratch.0.join("audio.txt")).map_err(|e| format!("{label} finished but wrote no transcript: {e}"))?;
+    Ok(Transcript { text: clean(&text), provider: Some(label.into()) })
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Where a recording goes: the primary, then, if it fails, the backup (ADR 0065).
+
+/// One of the two places a recording can be transcribed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Side {
+    Server,
+    Local,
+}
+
+impl Side {
+    pub fn other(self) -> Side {
+        match self {
+            Side::Server => Side::Local,
+            Side::Local => Side::Server,
+        }
+    }
+    fn who(self) -> &'static str {
+        match self {
+            Side::Server => "Hermes",
+            Side::Local => "This computer",
+        }
+    }
+    pub fn parse(v: &str) -> Option<Side> {
+        match v {
+            "server" => Some(Side::Server),
+            "local" => Some(Side::Local),
+            _ => None,
+        }
+    }
+}
+
+/// The primary didn't give the text, and why: the backup did.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FellBack {
+    pub from: Side,
+    pub why: String,
+}
+
+/// A transcript, where it ran, and whether the backup gave it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Routed {
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    pub ran: Side,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fell_back: Option<FellBack>,
+}
+
+pub const CANCELLED: &str = "Cancelled.";
+
+/// "Hermes couldn't transcribe it: …", "This computer couldn't transcribe it either: …", without saying it twice.
+pub fn couldnt(side: Side, why: &str, either: bool) -> String {
+    let mut reason = why.trim();
+    for who in ["Hermes", "This computer"] {
+        if let Some(rest) = reason.strip_prefix(who).and_then(|r| r.strip_prefix(" couldn't transcribe")) {
+            if let Some((_, after)) = rest.split_once(':') {
+                reason = after.trim_start();
+            }
+        }
+    }
+    let end = if reason.ends_with(['.', '!', '?']) { "" } else { "." };
+    format!("{} couldn't transcribe it{}: {reason}{end}", side.who(), if either { " either" } else { "" })
+}
+
+/// The sides a recording is tried on, in order. `only`: one side alone, as Settings → Voice's Test asks; Hermes only
+/// when it is in the route, so a recording the owner keeps on this computer can't be sent to Hermes that way either.
+pub fn order(settings: &Settings, only: Option<Side>) -> Result<Vec<Side>, String> {
+    let primary = if settings.on_this_computer { Side::Local } else { Side::Server };
+    match only {
+        Some(Side::Server) if primary == Side::Local && !settings.backup => {
+            Err("Speech to text runs only on this computer, so the recording isn't sent to Hermes.".into())
+        }
+        Some(side) => Ok(vec![side]),
+        None if settings.backup => Ok(vec![primary, primary.other()]),
+        None => Ok(vec![primary]),
+    }
+}
+
+type Run<'a> = Pin<Box<dyn Future<Output = Result<Transcript, String>> + Send + 'a>>;
+
+/// Resolves once `cancel` is set; never, if its sender is gone without setting it.
+async fn cancelled(mut cancel: watch::Receiver<bool>) {
+    if cancel.wait_for(|c| *c).await.is_err() {
+        std::future::pending::<()>().await;
+    }
+}
+
+/// Tries `sides` in order, each at most once, on the one recording `server` and `local` would transcribe; neither
+/// future is started unless its side is tried. The first side gets `timeout` when one is given (a backup is waiting),
+/// and an answer after that is dropped. An empty transcript is an answer: the owner said nothing. Once `cancel` is set,
+/// the side running is dropped (a local engine is killed) and nothing more is tried.
+///
+/// Errors: one side alone says its own error (Hermes's unchanged; this computer's as "This computer couldn't
+/// transcribe it: …", unless `plain`); both say what each said.
+pub async fn route<'a>(
+    sides: &[Side],
+    timeout: Option<Duration>,
+    plain: bool,
+    server: impl Future<Output = Result<Transcript, String>> + Send + 'a,
+    local: impl Future<Output = Result<Transcript, String>> + Send + 'a,
+    cancel: watch::Receiver<bool>,
+) -> Result<Routed, String> {
+    let mut server: Option<Run<'a>> = Some(Box::pin(server));
+    let mut local: Option<Run<'a>> = Some(Box::pin(local));
+    let mut tried: Vec<(Side, String)> = Vec::new();
+    for (i, &side) in sides.iter().enumerate() {
+        if *cancel.borrow() {
+            return Err(CANCELLED.into());
+        }
+        let Some(run) = (match side {
+            Side::Server => server.take(),
+            Side::Local => local.take(),
+        }) else {
+            continue;
+        };
+        let timed = timeout.filter(|_| i == 0);
+        let run = async move {
+            match timed {
+                Some(t) => tokio::time::timeout(t, run).await.unwrap_or_else(|_| Err(format!("It took longer than {} s.", t.as_secs()))),
+                None => run.await,
+            }
+        };
+        let got = tokio::select! {
+            biased;
+            () = cancelled(cancel.clone()) => return Err(CANCELLED.into()),
+            got = run => got,
+        };
+        match got {
+            Ok(t) => {
+                let fell_back = tried.into_iter().next().map(|(from, why)| FellBack { from, why });
+                return Ok(Routed { text: t.text, provider: t.provider, ran: side, fell_back });
+            }
+            Err(why) => tried.push((side, why)),
+        }
+    }
+    Err(match tried.as_slice() {
+        [(Side::Server, why)] => why.clone(),
+        [(Side::Local, why)] if plain => why.clone(),
+        [(side, why)] => couldnt(*side, why, false),
+        [(first, a), (second, b)] => format!("{} {}", couldnt(*first, a, false), couldnt(*second, b, true)),
+        _ => "Nothing could transcribe the recording.".into(),
+    })
+}
+
+/// Transcribes a recording where the settings at `path` say: `server` is Hermes's transcribing, started only if Hermes
+/// is tried. `only`: one side alone (Test). A settings file that can't be read is an error, never "Hermes".
+pub async fn transcribe_routed_at<'a>(
+    path: &Path,
+    mime: &str,
+    wav: &'a [u8],
+    only: Option<Side>,
+    cancel: watch::Receiver<bool>,
+    server: impl Future<Output = Result<Transcript, String>> + Send + 'a,
+) -> Result<Routed, String> {
+    let settings = read_settings(path)?;
+    let sides = order(&settings, only)?;
+    let timeout = (only.is_none() && settings.backup).then(|| Duration::from_secs(settings.timeout_seconds));
+    let engine = settings.engine.clone();
+    let language = settings.language.clone();
+    let mime = mime.to_owned();
+    let local = async move {
+        if mime != "audio/wav" {
+            return Err(format!("This computer's engine takes WAV recordings, not {mime}."));
+        }
+        let Some(engine) = engine else { return Err(problem(None).unwrap_or_default()) };
+        transcribe(&engine, wav, time_limit(wav.len()), &language).await
+    };
+    route(&sides, timeout, only.is_some(), server, local, cancel).await
+}
+
+/// `transcribe_routed_at` with this app's settings, cancelled by `local_stt_cancel` with the same `run` id.
+pub async fn transcribe_routed<'a>(
+    app: &AppHandle,
+    mime: &str,
+    wav: &'a [u8],
+    only: Option<Side>,
+    run: Option<String>,
+    server: impl Future<Output = Result<Transcript, String>> + Send + 'a,
+) -> Result<Routed, String> {
+    let path = settings_path(app)?;
+    let ticket = run.map(Ticket::new);
+    let cancel = ticket.as_ref().map_or_else(|| watch::channel(false).1, |t| t.cancel.clone());
+    transcribe_routed_at(&path, mime, wav, only, cancel, server).await
+}
+
+/// The transcriptions running, by the webview's id, and cancels that came before their transcription did (kept a
+/// minute, so a cancel sent just after the recording isn't lost to the order the two commands arrive in).
+static RUNS: Mutex<Vec<(String, watch::Sender<bool>, Instant, bool)>> = Mutex::new(Vec::new());
+const EARLY_CANCEL_KEPT: Duration = Duration::from_secs(60);
+
+/// A transcription's place in `RUNS`, taken out when it ends.
+struct Ticket {
+    id: String,
+    cancel: watch::Receiver<bool>,
+}
+
+impl Ticket {
+    fn new(id: String) -> Ticket {
+        let mut runs = RUNS.lock().unwrap_or_else(|e| e.into_inner());
+        runs.retain(|(_, _, at, running)| *running || at.elapsed() < EARLY_CANCEL_KEPT);
+        let cancel = match runs.iter_mut().find(|(i, ..)| *i == id) {
+            Some((_, tx, _, running)) => {
+                *running = true;
+                tx.subscribe()
+            }
+            None => {
+                let (tx, rx) = watch::channel(false);
+                runs.push((id.clone(), tx, Instant::now(), true));
+                rx
+            }
+        };
+        Ticket { id, cancel }
+    }
+}
+
+impl Drop for Ticket {
+    fn drop(&mut self) {
+        RUNS.lock().unwrap_or_else(|e| e.into_inner()).retain(|(i, ..)| *i != self.id);
+    }
+}
+
+/// Stops the transcription the webview started with this `run` id: what runs is dropped, and the backup isn't tried.
+#[tauri::command]
+pub fn local_stt_cancel(run: String) {
+    let mut runs = RUNS.lock().unwrap_or_else(|e| e.into_inner());
+    match runs.iter().find(|(i, ..)| *i == run) {
+        Some((_, tx, ..)) => {
+            tx.send_replace(true);
+        }
+        None => {
+            let (tx, _) = watch::channel(true);
+            runs.push((run, tx, Instant::now(), false));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Whisper models for whisper.cpp, downloaded into this app's data folder (ADR 0065).
+
+/// A Whisper model this app can download: its size name, exact byte count and SHA-256, as whisper.cpp's Hugging Face
+/// repository (`ggerganov/whisper.cpp`, branch `main`) lists them (its LFS object ids, read 2026-11-04).
 #[derive(Debug, Clone, Copy)]
 pub struct ModelInfo {
     pub name: &'static str,
@@ -49,212 +668,12 @@ pub const MODELS: &[ModelInfo] = &[
 /// Where the models are downloaded from: whisper.cpp's own repository, at a file name from `MODELS` only.
 pub const MODEL_BASE_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/";
 
-/// The program names looked for on `PATH`, in order: whisper.cpp's CLI as it is built (`whisper-cli`) and as some
-/// distributions package it.
-pub const ENGINE_NAMES: &[&str] = &["whisper-cli", "whisper-cpp", "whisper.cpp"];
-
-/// The most a recording can be: Hermes's own limit on one to transcribe, so both sides take the same recordings.
-pub const MAX_AUDIO_BYTES: usize = 25 * 1024 * 1024;
-
-/// The longest and shortest a run may take before it is stopped, in seconds.
-pub const MAX_TIMEOUT_SECONDS: u64 = 600;
-pub const MIN_TIMEOUT_SECONDS: u64 = 5;
-
 pub fn model_info(name: &str) -> Option<&'static ModelInfo> {
     MODELS.iter().find(|m| m.name == name)
 }
 
-/// The owner's settings, as kept in `local-stt.json`. `engine` and `model_file` are set only from the Open dialog.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Config {
-    pub model: String,
-    pub language: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub engine: Option<PathBuf>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model_file: Option<PathBuf>,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Config { model: "base".into(), language: "auto".into(), engine: None, model_file: None }
-    }
-}
-
-/// `auto`, or a Whisper language code: two or three lowercase letters (`en`, `haw`, `yue`).
-pub fn valid_language(language: &str) -> bool {
-    language == "auto" || ((2..=3).contains(&language.len()) && language.bytes().all(|b| b.is_ascii_lowercase()))
-}
-
-impl Config {
-    /// A stored file as it can be used: anything unknown or malformed falls back to the default, field by field.
-    pub fn sanitized(mut self) -> Config {
-        if model_info(&self.model).is_none() {
-            self.model = Config::default().model;
-        }
-        if !valid_language(&self.language) {
-            self.language = Config::default().language;
-        }
-        self.engine = self.engine.filter(|p| p.is_absolute());
-        self.model_file = self.model_file.filter(|p| p.is_absolute());
-        self
-    }
-
-    pub fn load(path: &Path) -> Config {
-        std::fs::read(path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<Config>(&bytes).ok())
-            .map(Config::sanitized)
-            .unwrap_or_default()
-    }
-
-    /// Writes the file whole (a temp file renamed over it), then reads it back: what is returned is what was stored.
-    pub fn save(&self, path: &Path) -> Result<Config, String> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| format!("Couldn't make the settings folder: {e}"))?;
-        }
-        let tmp = path.with_extension("json.tmp");
-        let json = serde_json::to_vec_pretty(self).map_err(|e| e.to_string())?;
-        std::fs::write(&tmp, json).map_err(|e| format!("Couldn't save the settings: {e}"))?;
-        std::fs::rename(&tmp, path).map_err(|e| format!("Couldn't save the settings: {e}"))?;
-        let back = Config::load(path);
-        if &back != self {
-            return Err("The settings didn't read back as they were saved.".into());
-        }
-        Ok(back)
-    }
-}
-
-/// Whether `path` is a regular file someone may run.
-fn is_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path).map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false)
-}
-
-/// The first of `names` found as a runnable file in a directory of `path_var` (a `PATH` value). Relative entries are
-/// skipped, so a program in whatever folder the app was started from never runs.
-pub fn find_on_path(names: &[&str], path_var: Option<OsString>) -> Option<PathBuf> {
-    let path_var = path_var?;
-    let dirs: Vec<PathBuf> = std::env::split_paths(&path_var).filter(|d| d.is_absolute()).collect();
-    names.iter().find_map(|name| dirs.iter().map(|d| d.join(name)).find(|p| is_executable(p)))
-}
-
-/// The arguments `whisper-cli` runs with: the model, the recording, the language, plain text only (no timestamps, no
-/// progress), and up to eight threads.
-pub fn engine_args(model: &Path, audio: &Path, language: &str, threads: usize) -> Vec<OsString> {
-    let mut args: Vec<OsString> = Vec::new();
-    for (flag, value) in [("-m", model.as_os_str()), ("-f", audio.as_os_str())] {
-        args.push(flag.into());
-        args.push(value.to_owned());
-    }
-    args.extend(["-l".into(), language.into(), "-nt".into(), "-np".into(), "-t".into(), threads.clamp(1, 8).to_string().into()]);
-    args
-}
-
-/// The text of `whisper-cli -nt -np`'s output: one segment per line, joined with single spaces. Whisper's markers for
-/// no speech (`[BLANK_AUDIO]`, `(silence)` and the like, a whole segment in brackets) are dropped, so silence is empty.
-pub fn transcript_text(stdout: &str) -> String {
-    stdout
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .filter(|line| {
-            let bracketed = |open: char, close: char| line.starts_with(open) && line.ends_with(close);
-            !(bracketed('[', ']') || bracketed('(', ')') || bracketed('*', '*'))
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// Whether `audio` is a WAV file (RIFF … WAVE), the only kind the webview records.
-pub fn is_wav(audio: &[u8]) -> bool {
-    audio.len() > 44 && &audio[0..4] == b"RIFF" && &audio[8..12] == b"WAVE"
-}
-
-/// A folder only this user can read, deleted with everything in it when dropped.
-pub struct PrivateDir(PathBuf);
-
-impl PrivateDir {
-    pub fn new(parent: &Path) -> std::io::Result<PrivateDir> {
-        use std::os::unix::fs::DirBuilderExt;
-        static COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        for _ in 0..16 {
-            let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-            let seed = format!("{}-{}-{}", std::process::id(), nanos, COUNT.fetch_add(1, Ordering::Relaxed));
-            let name = format!("hermes-chat-stt-{}", &hex(&Sha256::digest(seed.as_bytes()))[..16]);
-            let dir = parent.join(name);
-            // `create` (not `create_dir_all`) fails if the name exists, so a folder someone else made is never used.
-            match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
-                Ok(()) => return Ok(PrivateDir(dir)),
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(e) => return Err(e),
-            }
-        }
-        Err(std::io::Error::other("couldn't make a private temp folder"))
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for PrivateDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// Writes `audio` to a private temp file, runs `engine` on it with `model`, and returns the text. The file and its
-/// folder are deleted when this returns, whatever happened; a run past `timeout` is killed.
-pub async fn transcribe_with(engine: &Path, model: &Path, language: &str, audio: &[u8], timeout: Duration, tmp_parent: &Path) -> Result<String, String> {
-    if !is_wav(audio) {
-        return Err("The recording isn't a WAV file.".into());
-    }
-    if audio.len() > MAX_AUDIO_BYTES {
-        return Err(format!("The recording is over {} MB.", MAX_AUDIO_BYTES / 1024 / 1024));
-    }
-    let dir = PrivateDir::new(tmp_parent).map_err(|e| format!("Couldn't make a private temp folder: {e}"))?;
-    let file = dir.path().join("recording.wav");
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&file)
-            .map_err(|e| format!("Couldn't write the recording to a temp file: {e}"))?;
-        f.write_all(audio).map_err(|e| format!("Couldn't write the recording to a temp file: {e}"))?;
-    }
-    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-    let mut command = tokio::process::Command::new(engine);
-    command
-        .args(engine_args(model, &file, language, threads))
-        .current_dir(dir.path())
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true);
-    let child = command.spawn().map_err(|e| format!("Couldn't start {}: {e}", engine.display()))?;
-    let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
-        Ok(output) => output.map_err(|e| format!("{} failed: {e}", engine.display()))?,
-        // Dropping the future drops the child, which kills it (`kill_on_drop`).
-        Err(_) => return Err(format!("It took longer than {} s, so it was stopped.", timeout.as_secs())),
-    };
-    drop(dir);
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let last = stderr.lines().map(str::trim).filter(|l| !l.is_empty()).last().unwrap_or("");
-        let last: String = last.chars().filter(|c| !c.is_control()).take(300).collect();
-        let how = output.status.code().map_or_else(|| "was stopped".to_string(), |c| format!("exited with code {c}"));
-        return Err(if last.is_empty() { format!("whisper.cpp {how}.") } else { format!("whisper.cpp {how}: {last}") });
-    }
-    Ok(transcript_text(&String::from_utf8_lossy(&output.stdout)))
 }
 
 /// A download's progress, as the webview's Channel gets it.
@@ -323,7 +742,7 @@ pub const DOWNLOAD_STALL: Duration = Duration::from_secs(60);
 
 /// Waits for `step`, but gives up as soon as `cancel` is set (checked every 100 ms) or after `DOWNLOAD_STALL` with
 /// nothing: a server that stops sending can't hold the download, and its slot, for ever.
-async fn interruptible<T>(cancel: &AtomicBool, step: impl std::future::Future<Output = T>) -> Result<T, String> {
+async fn interruptible<T>(cancel: &AtomicBool, step: impl Future<Output = T>) -> Result<T, String> {
     let cancelled = async {
         while !cancel.load(Ordering::Relaxed) {
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -331,281 +750,65 @@ async fn interruptible<T>(cancel: &AtomicBool, step: impl std::future::Future<Ou
     };
     tokio::select! {
         out = step => Ok(out),
-        () = cancelled => Err("Cancelled.".into()),
+        () = cancelled => Err(CANCELLED.into()),
         () = tokio::time::sleep(DOWNLOAD_STALL) => Err(format!("The download stalled: nothing came for {} s.", DOWNLOAD_STALL.as_secs())),
     }
 }
 
-/// A model size as the screen lists it: its size, and whether it is downloaded (the file is there at its exact size).
+/// A model size as Settings lists it: its size, whether it is downloaded (the file is there at its exact size), and
+/// its path, to choose it as whisper.cpp's model.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelState {
     pub name: String,
     pub bytes: u64,
     pub downloaded: bool,
+    pub path: PathBuf,
 }
 
-/// A file the owner picked: its path, and its size, or none when it is no longer there.
+/// The downloadable sizes, the folder they go in, and the download running, if any.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PickedFile {
-    pub path: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bytes: Option<u64>,
-}
-
-/// The engine that will run: its path, whether the owner picked it (else it was found on `PATH`), and its version.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EngineState {
-    pub path: String,
-    pub picked: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub version: Option<String>,
-}
-
-/// Everything Settings → Voice shows about speech-to-text on this computer. `ready`: an engine and a model are there,
-/// so "This computer" can be used; `why`: what is missing when it isn't.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Status {
-    pub model: String,
-    pub language: String,
+pub struct Models {
+    pub dir: PathBuf,
     pub models: Vec<ModelState>,
-    pub models_dir: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model_file: Option<PickedFile>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub engine: Option<EngineState>,
-    /// The engine the owner picked, when it can no longer be run.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub picked_engine_missing: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub downloading: Option<DownloadProgress>,
-    pub ready: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub why: Option<String>,
 }
 
-/// The model file that will be used: the picked one, else the downloaded size, if it is there.
-pub fn model_path(config: &Config, models_dir: &Path) -> Option<PathBuf> {
-    if let Some(file) = &config.model_file {
-        return file.is_file().then(|| file.clone());
-    }
-    let info = model_info(&config.model)?;
-    let path = models_dir.join(info.file_name());
-    std::fs::metadata(&path).ok().filter(|m| m.is_file() && m.len() == info.bytes).map(|_| path)
-}
+/// The download running (one at a time) and its cancel flag.
+#[derive(Default)]
+pub struct Downloads(Mutex<Option<(DownloadProgress, Arc<AtomicBool>)>>);
 
-/// The engine that will run: the picked one if it can still be run, else the first found on `PATH`. A picked engine
-/// that is gone is not replaced by one on `PATH`: the owner chose it, so they are told instead.
-pub fn engine_path(config: &Config, path_var: Option<OsString>) -> Option<(PathBuf, bool)> {
-    match &config.engine {
-        Some(picked) => is_executable(picked).then(|| (picked.clone(), true)),
-        None => find_on_path(ENGINE_NAMES, path_var).map(|p| (p, false)),
+impl Downloads {
+    fn now(&self) -> Option<DownloadProgress> {
+        self.0.lock().ok()?.as_ref().map(|(p, _)| p.clone())
     }
 }
 
-/// The status for `config`, without the engine's version (that needs a run; see `engine_version`).
-pub fn status_of(config: &Config, models_dir: &Path, path_var: Option<OsString>, downloading: Option<DownloadProgress>) -> Status {
+pub fn models_in(dir: &Path, downloading: Option<DownloadProgress>) -> Models {
     let models = MODELS
         .iter()
-        .map(|m| ModelState {
-            name: m.name.into(),
-            bytes: m.bytes,
-            downloaded: std::fs::metadata(models_dir.join(m.file_name())).map(|md| md.is_file() && md.len() == m.bytes).unwrap_or(false),
+        .map(|m| {
+            let path = dir.join(m.file_name());
+            let downloaded = std::fs::metadata(&path).is_ok_and(|md| md.is_file() && md.len() == m.bytes);
+            ModelState { name: m.name.into(), bytes: m.bytes, downloaded, path }
         })
         .collect();
-    let model_file = config.model_file.as_ref().map(|p| PickedFile {
-        path: p.display().to_string(),
-        bytes: std::fs::metadata(p).ok().filter(|m| m.is_file()).map(|m| m.len()),
-    });
-    let engine = engine_path(config, path_var).map(|(p, picked)| EngineState { path: p.display().to_string(), picked, version: None });
-    let picked_engine_missing = match (&config.engine, &engine) {
-        (Some(p), None) => Some(p.display().to_string()),
-        _ => None,
-    };
-    let model = model_path(config, models_dir);
-    let why = if engine.is_none() {
-        Some(match &picked_engine_missing {
-            Some(p) => format!("The whisper.cpp program you picked ({p}) can't be run any more."),
-            None => "whisper.cpp isn't installed on this computer (no whisper-cli on PATH).".into(),
-        })
-    } else if model.is_none() {
-        Some(match &config.model_file {
-            Some(p) => format!("The model file you picked ({}) isn't there any more.", p.display()),
-            None => format!("The {} model isn't downloaded yet.", config.model),
-        })
-    } else {
-        None
-    };
-    Status {
-        model: config.model.clone(),
-        language: config.language.clone(),
-        models,
-        models_dir: models_dir.display().to_string(),
-        model_file,
-        engine,
-        picked_engine_missing,
-        downloading,
-        ready: why.is_none(),
-        why,
-    }
-}
-
-/// The engine's version line (`whisper.cpp version: 1.9.5`), if `--version` gives one within two seconds.
-pub async fn engine_version(engine: &Path) -> Option<String> {
-    let mut command = tokio::process::Command::new(engine);
-    command.arg("--version").stdin(std::process::Stdio::null()).kill_on_drop(true);
-    let out = tokio::time::timeout(Duration::from_secs(2), command.output()).await.ok()?.ok()?;
-    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-    let line = text.lines().find(|l| l.to_lowercase().contains("version"))?;
-    let version = line.rsplit(':').next()?.trim();
-    (!version.is_empty() && version.len() <= 40 && !version.chars().any(char::is_control)).then(|| version.to_string())
-}
-
-/// The app's state for speech-to-text here: the settings (loaded once, then kept in step with the file), the download
-/// running (one at a time) and its cancel flag.
-#[derive(Default)]
-pub struct LocalStt {
-    config: Mutex<Option<Config>>,
-    download: Mutex<Option<(DownloadProgress, Arc<AtomicBool>)>>,
-}
-
-fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    app.path().app_data_dir().map_err(|e| e.to_string())
-}
-
-fn config_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    Ok(data_dir(app)?.join("local-stt.json"))
-}
-
-fn models_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    Ok(data_dir(app)?.join("whisper-models"))
-}
-
-impl LocalStt {
-    fn config(&self, app: &tauri::AppHandle) -> Result<Config, String> {
-        let mut held = self.config.lock().map_err(|e| e.to_string())?;
-        if held.is_none() {
-            *held = Some(Config::load(&config_path(app)?));
-        }
-        Ok(held.clone().unwrap_or_default())
-    }
-
-    fn change(&self, app: &tauri::AppHandle, f: impl FnOnce(&mut Config)) -> Result<(), String> {
-        let mut held = self.config.lock().map_err(|e| e.to_string())?;
-        let mut next = held.clone().unwrap_or_else(|| config_path(app).map(|p| Config::load(&p)).unwrap_or_default());
-        f(&mut next);
-        let saved = next.sanitized().save(&config_path(app)?)?;
-        *held = Some(saved);
-        Ok(())
-    }
-
-    fn downloading(&self) -> Option<DownloadProgress> {
-        self.download.lock().ok()?.as_ref().map(|(p, _)| p.clone())
-    }
-
-    async fn status(&self, app: &tauri::AppHandle) -> Result<Status, String> {
-        let config = self.config(app)?;
-        let mut status = status_of(&config, &models_dir(app)?, std::env::var_os("PATH"), self.downloading());
-        if let Some(engine) = &mut status.engine {
-            engine.version = engine_version(Path::new(&engine.path)).await;
-        }
-        Ok(status)
-    }
+    Models { dir: dir.to_owned(), models, downloading }
 }
 
 #[tauri::command]
-pub async fn local_stt_status(app: tauri::AppHandle, state: State<'_, LocalStt>) -> Result<Status, String> {
-    state.status(&app).await
-}
-
-/// Sets the model size and the language. Either may be left out. An unknown size or a malformed language is refused.
-/// Setting a size also stops using a picked model file, so the size picked is the one that runs.
-#[tauri::command]
-pub async fn local_stt_set(app: tauri::AppHandle, state: State<'_, LocalStt>, model: Option<String>, language: Option<String>) -> Result<Status, String> {
-    if let Some(m) = &model {
-        if model_info(m).is_none() {
-            return Err(format!("There's no Whisper model called {m}."));
-        }
-    }
-    if let Some(l) = &language {
-        if !valid_language(l) {
-            return Err("The language must be auto or a code such as en or es.".into());
-        }
-    }
-    state.change(&app, |c| {
-        // Picking a size uses it: a picked model file stops being used (the file itself stays).
-        if let Some(m) = model {
-            c.model = m;
-            c.model_file = None;
-        }
-        if let Some(l) = language {
-            c.language = l;
-        }
-    })?;
-    state.status(&app).await
-}
-
-/// Opens the native Open dialog to pick the whisper.cpp program (`what: "engine"`) or a ggml model file (`"model"`).
-/// Cancelling changes nothing. The webview never names the path, so it can't make anything else run.
-#[tauri::command]
-pub async fn local_stt_pick(app: tauri::AppHandle, state: State<'_, LocalStt>, what: String) -> Result<Status, String> {
-    let engine = match what.as_str() {
-        "engine" => true,
-        "model" => false,
-        _ => return Err("Pick the engine or a model.".into()),
-    };
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    let mut dialog = app.dialog().file().set_title(if engine { "Pick whisper.cpp's whisper-cli" } else { "Pick a Whisper model (ggml .bin)" });
-    if !engine {
-        dialog = dialog.add_filter("Whisper model", &["bin"]);
-    }
-    if let Some(window) = app.get_webview_window("main") {
-        dialog = dialog.set_parent(&window);
-    }
-    dialog.pick_file(move |path| {
-        let _ = tx.send(path);
-    });
-    if let Some(path) = rx.await.map_err(|e| e.to_string())? {
-        let path = path.into_path().map_err(|e| e.to_string())?;
-        if engine && !is_executable(&path) {
-            return Err(format!("{} isn't a program that can be run.", path.display()));
-        }
-        if !engine && !path.is_file() {
-            return Err(format!("{} isn't a file.", path.display()));
-        }
-        state.change(&app, |c| {
-            if engine {
-                c.engine = Some(path);
-            } else {
-                c.model_file = Some(path);
-            }
-        })?;
-    }
-    state.status(&app).await
-}
-
-/// Forgets the picked engine (back to the one on `PATH`) or the picked model file (back to the downloaded size). The
-/// file itself is left alone: this app never deletes a file the owner picked.
-#[tauri::command]
-pub async fn local_stt_forget(app: tauri::AppHandle, state: State<'_, LocalStt>, what: String) -> Result<Status, String> {
-    match what.as_str() {
-        "engine" => state.change(&app, |c| c.engine = None)?,
-        "model" => state.change(&app, |c| c.model_file = None)?,
-        _ => return Err("Forget the engine or the model.".into()),
-    }
-    state.status(&app).await
+pub fn local_stt_models(app: AppHandle, downloads: Managed<'_, Downloads>) -> Result<Models, String> {
+    Ok(models_in(&models_dir(&app)?, downloads.now()))
 }
 
 /// Downloads a model size into the models folder, reporting progress on `on_progress`. One download runs at a time.
 #[tauri::command]
-pub async fn local_stt_download(app: tauri::AppHandle, state: State<'_, LocalStt>, name: String, on_progress: Channel<DownloadProgress>) -> Result<Status, String> {
+pub async fn local_stt_download(app: AppHandle, downloads: Managed<'_, Downloads>, name: String, on_progress: Channel<DownloadProgress>) -> Result<Models, String> {
     let info = model_info(&name).ok_or_else(|| format!("There's no Whisper model called {name}."))?;
     let cancel = Arc::new(AtomicBool::new(false));
     {
-        let mut held = state.download.lock().map_err(|e| e.to_string())?;
+        let mut held = downloads.0.lock().map_err(|e| e.to_string())?;
         if let Some((running, _)) = held.as_ref() {
             return Err(format!("The {} model is downloading already.", running.name));
         }
@@ -613,246 +816,612 @@ pub async fn local_stt_download(app: tauri::AppHandle, state: State<'_, LocalStt
     }
     let client = reqwest::Client::builder().connect_timeout(Duration::from_secs(20)).build().map_err(|e| e.to_string());
     let dir = models_dir(&app);
-    let result = match (client, dir) {
+    let result = match (client, &dir) {
         (Ok(client), Ok(dir)) => {
-            let mut last = std::time::Instant::now();
-            download_model(&client, MODEL_BASE_URL, &dir, info, &cancel, |done| {
-                if let Ok(mut held) = state.download.lock() {
+            let mut last = Instant::now();
+            download_model(&client, MODEL_BASE_URL, dir, info, &cancel, |done| {
+                if let Ok(mut held) = downloads.0.lock() {
                     if let Some((p, _)) = held.as_mut() {
                         p.done = done;
                     }
                 }
                 if last.elapsed() >= Duration::from_millis(200) || done == info.bytes {
-                    last = std::time::Instant::now();
+                    last = Instant::now();
                     let _ = on_progress.send(DownloadProgress { name: name.clone(), done, total: info.bytes });
                 }
             })
             .await
         }
-        (Err(e), _) | (_, Err(e)) => Err(e),
+        (Err(e), _) => Err(e),
+        (_, Err(e)) => Err(e.clone()),
     };
-    if let Ok(mut held) = state.download.lock() {
+    if let Ok(mut held) = downloads.0.lock() {
         *held = None;
     }
     result?;
-    state.status(&app).await
+    Ok(models_in(&dir?, None))
 }
 
 #[tauri::command]
-pub fn local_stt_cancel_download(state: State<'_, LocalStt>) {
-    if let Ok(held) = state.download.lock() {
+pub fn local_stt_cancel_download(downloads: Managed<'_, Downloads>) {
+    if let Ok(held) = downloads.0.lock() {
         if let Some((_, cancel)) = held.as_ref() {
             cancel.store(true, Ordering::Relaxed);
         }
     }
 }
 
-/// Deletes a downloaded model size from the models folder. Only those five files can be deleted this way.
+/// Deletes a downloaded model size from the models folder. Only those five files can be deleted this way; a model
+/// found elsewhere or picked in a dialog is never deleted.
 #[tauri::command]
-pub async fn local_stt_delete(app: tauri::AppHandle, state: State<'_, LocalStt>, name: String) -> Result<Status, String> {
+pub fn local_stt_delete(app: AppHandle, downloads: Managed<'_, Downloads>, name: String) -> Result<Models, String> {
     let info = model_info(&name).ok_or_else(|| format!("There's no Whisper model called {name}."))?;
-    if state.downloading().is_some_and(|d| d.name == name) {
+    if downloads.now().is_some_and(|d| d.name == name) {
         return Err(format!("The {name} model is still downloading. Cancel it first."));
     }
-    let path = models_dir(&app)?.join(info.file_name());
+    let dir = models_dir(&app)?;
+    let path = dir.join(info.file_name());
     match std::fs::remove_file(&path) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(format!("Couldn't delete {}: {e}", path.display())),
     }
-    state.status(&app).await
+    Ok(models_in(&dir, downloads.now()))
 }
 
-/// What this computer heard. `provider` names the engine and model, as Hermes's answer names its provider.
+// ---------------------------------------------------------------------------------------------------------------------
+// The commands Settings → Voice → Speech to text uses.
+
+/// What Settings → Voice shows of the choice.
 #[derive(Debug, Serialize)]
-pub struct LocalTranscript {
-    pub text: String,
-    pub provider: String,
+#[serde(rename_all = "camelCase")]
+pub struct State {
+    pub on_this_computer: bool,
+    pub engine: Option<Engine>,
+    pub label: Option<&'static str>,
+    /// Why the engine can't run now.
+    pub problem: Option<String>,
+    pub backup: bool,
+    pub timeout_seconds: u64,
+    pub language: String,
 }
 
-/// Transcribes a recording on this computer. The audio comes as the raw request body (a WAV file), the timeout in
-/// seconds as the `x-timeout` header. Nothing here keeps or logs the audio or the text, and nothing goes to the network.
+fn state_of(s: Settings) -> State {
+    State {
+        on_this_computer: s.on_this_computer,
+        label: s.engine.as_ref().map(|e| e.kind.label()),
+        problem: problem(s.engine.as_ref()),
+        engine: s.engine,
+        backup: s.backup,
+        timeout_seconds: s.timeout_seconds,
+        language: s.language,
+    }
+}
+
+/// An engine found on `PATH`, its version if it says, and the models found for it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Found {
+    pub kind: Kind,
+    pub label: &'static str,
+    pub binary: PathBuf,
+    pub version: Option<String>,
+    pub models: Vec<PathBuf>,
+}
+
+/// The engines found on `PATH`, with each one's models (whisper.cpp's include this app's downloads).
+fn found_now(app_models: Option<PathBuf>) -> Vec<(Kind, PathBuf, Vec<PathBuf>)> {
+    let places = Places::from_env(app_models);
+    on_path(&std::env::var_os("PATH").unwrap_or_default()).into_iter().map(|(k, b)| (k, b, models(k, &places))).collect()
+}
+
+/// The first line a program prints for `--version`, if it answers in 5 s.
+async fn version(binary: &Path) -> Option<String> {
+    let run = tokio::process::Command::new(binary).arg("--version").stdin(Stdio::null()).kill_on_drop(true).output();
+    let out = tokio::time::timeout(Duration::from_secs(5), run).await.ok()?.ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = [out.stdout, out.stderr].concat();
+    String::from_utf8_lossy(&text).lines().map(str::trim).find(|l| !l.is_empty()).map(|l| l.chars().take(80).collect())
+}
+
+fn update(app: &AppHandle, change: impl FnOnce(&mut Settings) -> Result<(), String>) -> Result<State, String> {
+    let path = settings_path(app)?;
+    let _held = SETTINGS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut settings = read_settings(&path)?;
+    change(&mut settings)?;
+    Ok(state_of(write_settings(&path, &settings)?))
+}
+
 #[tauri::command]
-pub async fn local_stt_transcribe(app: tauri::AppHandle, state: State<'_, LocalStt>, request: tauri::ipc::Request<'_>) -> Result<LocalTranscript, String> {
-    let InvokeBody::Raw(audio) = request.body() else {
-        return Err("The recording didn't arrive as audio bytes.".into());
+pub fn local_stt_state(app: AppHandle) -> Result<State, String> {
+    Ok(state_of(read_settings(&settings_path(&app)?)?))
+}
+
+#[tauri::command]
+pub async fn local_stt_detect(app: AppHandle) -> Result<Vec<Found>, String> {
+    let app_models = models_dir(&app).ok();
+    let found = tokio::task::spawn_blocking(move || found_now(app_models)).await.map_err(|e| e.to_string())?;
+    let versions = futures_util::future::join_all(found.iter().map(|(_, b, _)| version(b))).await;
+    Ok(found.into_iter().zip(versions).map(|((kind, binary, models), version)| Found { kind, label: kind.label(), binary, version, models }).collect())
+}
+
+/// Checks a choice the webview sends against what is allowed to run: a program found on `PATH` now or the one already
+/// chosen (picked in a dialog earlier), and a model found for it now or the one already chosen for that program.
+pub fn allowed(choice: &Engine, current: Option<&Engine>, found: &[(Kind, PathBuf, Vec<PathBuf>)]) -> Result<Engine, String> {
+    let same_program = current.filter(|c| c.binary == choice.binary);
+    let kind = match found.iter().find(|(_, b, _)| *b == choice.binary) {
+        Some((k, _, _)) => *k,
+        None => same_program.ok_or("That program wasn't found on PATH. Pick it with Choose a program instead.")?.kind,
     };
-    let timeout = request
-        .headers()
-        .get("x-timeout")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(MAX_TIMEOUT_SECONDS)
-        .clamp(MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS);
-    let config = state.config(&app)?;
-    let dir = models_dir(&app)?;
-    let status = status_of(&config, &dir, std::env::var_os("PATH"), None);
-    let (Some((engine, _)), Some(model)) = (engine_path(&config, std::env::var_os("PATH")), model_path(&config, &dir)) else {
-        return Err(status.why.unwrap_or_else(|| "Speech-to-text isn't set up on this computer.".into()));
+    if let Some(model) = &choice.model {
+        let detected = found.iter().any(|(k, _, ms)| *k == kind && ms.contains(model));
+        let kept = same_program.is_some_and(|c| c.model.as_ref() == Some(model));
+        if !detected && !kept {
+            return Err("That model wasn't found for this engine. Pick it with Choose a model instead.".into());
+        }
+    }
+    Ok(Engine { kind, binary: choice.binary.clone(), model: choice.model.clone() })
+}
+
+/// A change to the choice; what is left out stays as it is.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Change {
+    pub on_this_computer: Option<bool>,
+    pub engine: Option<Engine>,
+    pub backup: Option<bool>,
+    pub timeout_seconds: Option<u64>,
+    pub language: Option<String>,
+}
+
+/// Applies `change` to `s` whole or not at all: a timeout or language out of range, or an engine that wasn't found,
+/// is refused, and nothing else in that change is made.
+pub fn apply(s: &mut Settings, change: Change, found: &[(Kind, PathBuf, Vec<PathBuf>)]) -> Result<(), String> {
+    if change.timeout_seconds.is_some_and(|t| !(MIN_TIMEOUT_SECONDS..=MAX_TIMEOUT_SECONDS).contains(&t)) {
+        return Err(format!("The time before the backup must be {MIN_TIMEOUT_SECONDS} to {MAX_TIMEOUT_SECONDS} seconds."));
+    }
+    if change.language.as_deref().is_some_and(|l| !valid_language(l)) {
+        return Err("The language must be auto or a code such as en or es.".into());
+    }
+    let engine = change.engine.as_ref().map(|choice| allowed(choice, s.engine.as_ref(), found)).transpose()?;
+    if let Some(e) = engine {
+        s.engine = Some(e);
+    }
+    if let Some(t) = change.timeout_seconds {
+        s.timeout_seconds = t;
+    }
+    if let Some(l) = change.language {
+        s.language = l;
+    }
+    if let Some(on) = change.on_this_computer {
+        s.on_this_computer = on;
+    }
+    if let Some(b) = change.backup {
+        s.backup = b;
+    }
+    Ok(())
+}
+
+/// Saves where speech becomes text, the backup and its time, the language, and which found engine and model run here.
+#[tauri::command]
+pub async fn local_stt_set(app: AppHandle, change: Change) -> Result<State, String> {
+    let found = match change.engine {
+        Some(_) => {
+            let app_models = models_dir(&app).ok();
+            tokio::task::spawn_blocking(move || found_now(app_models)).await.map_err(|e| e.to_string())?
+        }
+        None => vec![],
     };
-    let label = match &config.model_file {
-        Some(p) => p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned()),
-        None => config.model.clone(),
+    update(&app, |s| apply(s, change, &found))
+}
+
+async fn pick(app: &AppHandle, title: &str, folder: bool) -> Result<Option<PathBuf>, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut dialog = app.dialog().file().set_title(title);
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.set_parent(&window);
+    }
+    let send = move |p: Option<tauri_plugin_dialog::FilePath>| {
+        let _ = tx.send(p);
     };
-    let text = transcribe_with(&engine, &model, &config.language, audio, Duration::from_secs(timeout), &std::env::temp_dir()).await?;
-    Ok(LocalTranscript { text, provider: format!("whisper.cpp ({label})") })
+    if folder {
+        dialog.pick_folder(send)
+    } else {
+        dialog.pick_file(send)
+    }
+    let Some(path) = rx.await.map_err(|e| e.to_string())? else { return Ok(None) };
+    path.into_path().map(Some).map_err(|e| e.to_string())
+}
+
+/// The owner points at an engine's program in the native Open dialog. `None`: cancelled.
+#[tauri::command]
+pub async fn local_stt_pick_program(app: AppHandle) -> Result<Option<State>, String> {
+    let Some(binary) = pick(&app, "Choose a speech-to-text program", false).await? else { return Ok(None) };
+    let kind = kind_of(&binary).ok_or("Hermes Chat can run whisper-cli, whisper-cpp, whisper, whisper-ctranslate2 or vosk-transcriber.")?;
+    if !is_executable(&binary) {
+        return Err(format!("{} can't be run: it isn't an executable file.", binary.display()));
+    }
+    update(&app, |s| {
+        let model = s.engine.take().filter(|e| e.kind == kind).and_then(|e| e.model);
+        s.engine = Some(Engine { kind, binary, model });
+        Ok(())
+    })
+    .map(Some)
+}
+
+/// The owner points at a model file (or folder, for faster-whisper and Vosk) for the chosen engine. `None`: cancelled.
+#[tauri::command]
+pub async fn local_stt_pick_model(app: AppHandle) -> Result<Option<State>, String> {
+    let path = settings_path(&app)?;
+    let kind = read_settings(&path)?.engine.ok_or("Choose an engine first.")?.kind;
+    let title = if kind.model_is_folder() { "Choose the model's folder" } else { "Choose a model file" };
+    let Some(model) = pick(&app, title, kind.model_is_folder()).await? else { return Ok(None) };
+    update(&app, |s| {
+        let engine = s.engine.as_mut().filter(|e| e.kind == kind).ok_or("The engine changed meanwhile. Choose the model again.")?;
+        engine.model = Some(model);
+        Ok(())
+    })
+    .map(Some)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
+    use std::sync::atomic::AtomicUsize;
 
-    fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("hermes-local-stt-test-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("hc-stt-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
     }
 
-    fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
-        let path = dir.join(name);
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        path
+    fn file(path: &Path, text: &str, mode: u32) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
     }
 
-    fn wav() -> Vec<u8> {
-        let mut w = b"RIFF\0\0\0\0WAVEfmt ".to_vec();
-        w.resize(64, 0);
-        w
+    fn settings(on_this_computer: bool, engine: Option<Engine>) -> Settings {
+        Settings { on_this_computer, engine, ..Settings::default() }
     }
 
     #[test]
-    fn the_engine_is_found_on_path_in_order_and_never_in_a_relative_folder() {
-        let a = scratch("path-a");
-        let b = scratch("path-b");
-        script(&b, "whisper-cpp", "true");
-        let first = script(&a, "whisper-cli", "true");
-        std::fs::write(a.join("whisper-cpp"), "not executable").unwrap();
-        let path = std::env::join_paths([a.clone(), b.clone()]).unwrap();
-        assert_eq!(find_on_path(ENGINE_NAMES, Some(path.clone())), Some(first));
-        // whisper-cpp in `a` isn't executable, so `b`'s is found.
-        assert_eq!(find_on_path(&["whisper-cpp"], Some(path)), Some(b.join("whisper-cpp")));
-        assert_eq!(find_on_path(ENGINE_NAMES, Some("relative/bin".into())), None);
-        assert_eq!(find_on_path(ENGINE_NAMES, None), None);
-    }
-
-    #[test]
-    fn the_engine_runs_as_a_fixed_argument_list() {
-        let args = engine_args(Path::new("/m/ggml-base.bin"), Path::new("/t/rec wav; rm -rf ~"), "auto", 32);
-        let args: Vec<String> = args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
-        assert_eq!(args, ["-m", "/m/ggml-base.bin", "-f", "/t/rec wav; rm -rf ~", "-l", "auto", "-nt", "-np", "-t", "8"]);
-        let one = engine_args(Path::new("m"), Path::new("f"), "en", 0);
-        assert_eq!(one.last().unwrap(), "1");
-    }
-
-    #[test]
-    fn the_output_is_joined_and_no_speech_markers_are_dropped() {
-        assert_eq!(transcript_text("\n And so my fellow Americans,\n ask not.\n"), "And so my fellow Americans, ask not.");
-        assert_eq!(transcript_text(" [BLANK_AUDIO]\n"), "");
-        assert_eq!(transcript_text("(silence)\n *music*\n"), "");
-        assert_eq!(transcript_text("[Music] then words\n"), "[Music] then words");
-    }
-
-    #[test]
-    fn settings_read_back_and_bad_values_fall_back() {
-        let dir = scratch("config");
-        let path = dir.join("local-stt.json");
-        assert_eq!(Config::load(&path), Config::default());
-        let c = Config { model: "small".into(), language: "es".into(), engine: Some("/usr/bin/whisper-cli".into()), model_file: None };
-        assert_eq!(c.save(&path).unwrap(), c);
-        assert_eq!(Config::load(&path), c);
-        std::fs::write(&path, r#"{"model":"huge","language":"English!","engine":"bin/whisper","modelFile":"/m.bin"}"#).unwrap();
-        let back = Config::load(&path);
-        assert_eq!(back, Config { model: "base".into(), language: "auto".into(), engine: None, model_file: Some("/m.bin".into()) });
-        std::fs::write(&path, "not json").unwrap();
-        assert_eq!(Config::load(&path), Config::default());
-        assert!(valid_language("haw") && valid_language("auto") && !valid_language("EN") && !valid_language("e") && !valid_language("en-US"));
-    }
-
-    #[test]
-    fn status_says_what_is_missing() {
-        let dir = scratch("status");
-        let models = dir.join("models");
-        std::fs::create_dir_all(&models).unwrap();
-        let bin = scratch("status-bin");
-        let none = status_of(&Config::default(), &models, Some(bin.clone().into_os_string()), None);
-        assert!(!none.ready);
-        assert!(none.why.unwrap().contains("isn't installed"));
-        assert_eq!(none.models.len(), 5);
-        assert!(none.models.iter().all(|m| !m.downloaded));
-
-        script(&bin, "whisper-cli", "true");
-        let no_model = status_of(&Config::default(), &models, Some(bin.clone().into_os_string()), None);
-        assert!(!no_model.ready);
-        assert_eq!(no_model.why.as_deref(), Some("The base model isn't downloaded yet."));
-
-        // A file of the wrong size isn't taken as downloaded.
-        std::fs::write(models.join("ggml-base.bin"), b"short").unwrap();
-        assert!(!status_of(&Config::default(), &models, Some(bin.clone().into_os_string()), None).ready);
-
-        // A picked model file is used whatever its size; one that's gone is said.
-        let file = dir.join("mine.bin");
-        std::fs::write(&file, b"ggml").unwrap();
-        let picked = Config { model_file: Some(file.clone()), ..Config::default() };
-        let s = status_of(&picked, &models, Some(bin.clone().into_os_string()), None);
-        assert!(s.ready, "{:?}", s.why);
-        assert_eq!(s.model_file.unwrap().bytes, Some(4));
-        std::fs::remove_file(&file).unwrap();
-        let gone = status_of(&picked, &models, Some(bin.clone().into_os_string()), None);
-        assert!(gone.why.unwrap().contains("isn't there any more"));
-
-        // A picked engine that's gone isn't swapped for the one on PATH.
-        let lost = Config { engine: Some(dir.join("gone/whisper-cli")), ..Config::default() };
-        let s = status_of(&lost, &models, Some(bin.into_os_string()), None);
-        assert!(s.engine.is_none());
-        assert!(s.picked_engine_missing.is_some());
-        assert!(s.why.unwrap().contains("can't be run any more"));
-    }
-
-    #[tokio::test]
-    async fn a_run_gets_the_text_and_leaves_no_recording_behind() {
-        let dir = scratch("run");
-        let tmp = scratch("run-tmp");
-        // The stand-in checks its arguments, that the recording is private, and prints what whisper-cli would.
-        let engine = script(
-            &dir,
-            "whisper-cli",
-            r#"[ "$1" = -m ] && [ "$2" = /models/ggml-base.bin ] && [ "$3" = -f ] && [ "$5" = -l ] && [ "$6" = es ] || exit 3
-[ "$(stat -c %a "$4")" = 600 ] || exit 4
-[ "$(stat -c %a "$(dirname "$4")")" = 700 ] || exit 5
-echo "$4" > "$0.seen"
-printf '\n Hola,\n mundo.\n'"#,
+    fn engines_are_found_on_path_by_name_first_match_wins_and_only_if_executable() {
+        let d = temp("path");
+        let (a, b) = (d.join("a"), d.join("b"));
+        file(&a.join("whisper-cli"), "\x7fELF", 0o755);
+        file(&b.join("whisper-cli"), "\x7fELF", 0o755);
+        file(&a.join("whisper"), "#!/usr/bin/python3\n", 0o755);
+        file(&b.join("vosk-transcriber"), "#!/bin/sh\n", 0o644); // not executable
+        file(&b.join("whisper-ctranslate2"), "#!/usr/bin/python3\n", 0o755);
+        file(&b.join("ls"), "", 0o755);
+        let path = std::env::join_paths([&a, &b, &PathBuf::from("relative")]).unwrap();
+        let got = on_path(&path);
+        assert_eq!(
+            got,
+            vec![
+                (Kind::WhisperCpp, a.join("whisper-cli")),
+                (Kind::OpenaiWhisper, a.join("whisper")),
+                (Kind::FasterWhisper, b.join("whisper-ctranslate2")),
+            ]
         );
-        let text = transcribe_with(&engine, Path::new("/models/ggml-base.bin"), "es", &wav(), Duration::from_secs(10), &tmp).await.unwrap();
-        assert_eq!(text, "Hola, mundo.");
-        let seen = std::fs::read_to_string(dir.join("whisper-cli.seen")).unwrap();
-        assert!(!Path::new(seen.trim()).exists(), "the recording was left behind");
-        assert_eq!(std::fs::read_dir(&tmp).unwrap().count(), 0, "the temp folder was left behind");
+        // whisper.cpp's old `whisper` is a binary, not a script.
+        file(&a.join("whisper"), "\x7fELF", 0o755);
+        assert_eq!(kind_of(&a.join("whisper")), Some(Kind::WhisperCpp));
+        assert_eq!(kind_of(Path::new("/usr/bin/sh")), None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn models_are_found_in_each_engines_usual_folders_and_this_apps_downloads() {
+        let d = temp("models");
+        let places = Places { home: d.join("home"), data: d.join("data"), cache: d.join("cache"), hf: d.join("hf"), app_models: Some(d.join("app/whisper-models")) };
+        file(&d.join("data/whisper.cpp/ggml-base.en.bin"), "", 0o644);
+        file(&d.join("data/whisper.cpp/models/ggml-tiny.bin"), "", 0o644);
+        file(&d.join("data/whisper.cpp/models/notes.txt"), "", 0o644);
+        file(&d.join("home/whisper.cpp/models/ggml-small.bin"), "", 0o644);
+        file(&d.join("app/whisper-models/ggml-base.bin"), "", 0o644);
+        file(&d.join("app/whisper-models/.ggml-small.bin.part"), "", 0o644);
+        file(&d.join("cache/whisper/small.en.pt"), "", 0o644);
+        file(&d.join("hf/hub/models--Systran--faster-whisper-small/snapshots/abc/model.bin"), "", 0o644);
+        file(&d.join("hf/hub/models--Systran--faster-whisper-tiny/snapshots/def/config.json"), "", 0o644); // incomplete
+        file(&d.join("hf/hub/models--bert/snapshots/x/model.bin"), "", 0o644);
+        std::fs::create_dir_all(d.join("cache/vosk/vosk-model-small-en-us-0.15/am")).unwrap();
+        std::fs::create_dir_all(d.join("cache/vosk/not-a-model")).unwrap();
+
+        let cpp = models(Kind::WhisperCpp, &places);
+        assert_eq!(cpp[0], d.join("app/whisper-models/ggml-base.bin"), "this app's downloads come first");
+        for m in [d.join("data/whisper.cpp/ggml-base.en.bin"), d.join("data/whisper.cpp/models/ggml-tiny.bin"), d.join("home/whisper.cpp/models/ggml-small.bin")] {
+            assert!(cpp.contains(&m), "{m:?} in {cpp:?}");
+        }
+        assert!(!cpp.iter().any(|m| m.ends_with("notes.txt") || name_of(m).ends_with(".part")));
+        assert_eq!(models(Kind::OpenaiWhisper, &places), vec![d.join("cache/whisper/small.en.pt")]);
+        assert_eq!(models(Kind::FasterWhisper, &places), vec![d.join("hf/hub/models--Systran--faster-whisper-small/snapshots/abc")]);
+        assert_eq!(models(Kind::Vosk, &places), vec![d.join("cache/vosk/vosk-model-small-en-us-0.15")]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn each_engine_gets_a_fixed_argument_list_writing_audio_txt() {
+        let (m, w, o) = (Path::new("/m/model"), Path::new("/t/audio.wav"), Path::new("/t"));
+        let e = |kind| Engine { kind, binary: "/bin/x".into(), model: Some(m.into()) };
+        let strs = |k, l| args(&e(k), m, w, o, l).into_iter().map(|a| a.into_string().unwrap()).collect::<Vec<_>>().join(" ");
+        assert_eq!(strs(Kind::WhisperCpp, "auto"), "-m /m/model -f /t/audio.wav -l auto -nt -np -otxt -of /t/audio");
+        assert_eq!(strs(Kind::FasterWhisper, "auto"), "/t/audio.wav --model_directory /m/model --output_dir /t --output_format txt --verbose False");
+        assert_eq!(strs(Kind::OpenaiWhisper, "auto"), "/t/audio.wav --model /m/model --output_dir /t --output_format txt --verbose False --fp16 False");
+        assert_eq!(strs(Kind::Vosk, "auto"), "-m /m/model -i /t/audio.wav -o /t/audio.txt");
+        // A language other than auto goes to each Whisper engine; Vosk's is its model's.
+        assert_eq!(strs(Kind::WhisperCpp, "es"), "-m /m/model -f /t/audio.wav -l es -nt -np -otxt -of /t/audio");
+        assert!(strs(Kind::FasterWhisper, "es").ends_with("--verbose False --language es"));
+        assert!(strs(Kind::OpenaiWhisper, "es").ends_with("--fp16 False --language es"));
+        assert_eq!(strs(Kind::Vosk, "es"), "-m /m/model -i /t/audio.wav -o /t/audio.txt");
+        // A path with spaces and a leading dash stays one argument.
+        let odd = Path::new("/m/-x y.bin");
+        assert_eq!(args(&e(Kind::WhisperCpp), odd, w, o, "auto")[1], OsString::from("/m/-x y.bin"));
+    }
+
+    #[test]
+    fn transcripts_lose_bracketed_notes_and_line_breaks() {
+        assert_eq!(clean(" Hello there.\n\n[BLANK_AUDIO]\n How are you? \n"), "Hello there. How are you?");
+        assert_eq!(clean("[BLANK_AUDIO]\n"), "");
+        assert_eq!(clean("(silence)\n *music*\n"), "");
+        assert_eq!(clean("[Music] then words\n"), "[Music] then words");
+    }
+
+    #[test]
+    fn the_choice_survives_a_restart_and_a_broken_file_is_an_error_not_the_server() {
+        let d = temp("settings");
+        let path = d.join(SETTINGS_FILE);
+        assert_eq!(read_settings(&path).unwrap(), Settings::default(), "no file: Hermes transcribes");
+        let s = Settings {
+            on_this_computer: true,
+            engine: Some(Engine { kind: Kind::Vosk, binary: "/usr/bin/vosk-transcriber".into(), model: Some("/m".into()) }),
+            backup: true,
+            timeout_seconds: 20,
+            language: "es".into(),
+        };
+        assert_eq!(write_settings(&path, &s).unwrap(), s);
+        assert_eq!(read_settings(&path).unwrap(), s);
+        // A file from before the backup existed reads as no backup, 30 s, any language.
+        std::fs::write(&path, r#"{"onThisComputer":true,"engine":null}"#).unwrap();
+        assert_eq!(read_settings(&path).unwrap(), settings(true, None));
+        // A value out of range is brought into it; where the recording goes is kept.
+        std::fs::write(&path, r#"{"onThisComputer":true,"timeoutSeconds":1,"language":"English!"}"#).unwrap();
+        let back = read_settings(&path).unwrap();
+        assert!(back.on_this_computer);
+        assert_eq!((back.timeout_seconds, back.language.as_str()), (MIN_TIMEOUT_SECONDS, "auto"));
+        std::fs::write(&path, "{").unwrap();
+        assert!(read_settings(&path).is_err());
+        assert!(valid_language("haw") && valid_language("auto") && !valid_language("EN") && !valid_language("e") && !valid_language("en-US"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_webview_can_choose_only_found_programs_and_models() {
+        let found = vec![(Kind::WhisperCpp, PathBuf::from("/usr/bin/whisper-cli"), vec![PathBuf::from("/m/ggml-base.bin")])];
+        let choice = |b: &str, m: Option<&str>| Engine { kind: Kind::Vosk, binary: b.into(), model: m.map(PathBuf::from) };
+        // The kind comes from what was found, not from the webview.
+        assert_eq!(allowed(&choice("/usr/bin/whisper-cli", Some("/m/ggml-base.bin")), None, &found).unwrap().kind, Kind::WhisperCpp);
+        assert!(allowed(&choice("/bin/rm", None), None, &found).is_err());
+        assert!(allowed(&choice("/usr/bin/whisper-cli", Some("/etc/passwd")), None, &found).is_err());
+        // A program and model picked in a dialog earlier stay allowed.
+        let picked = Engine { kind: Kind::WhisperCpp, binary: "/opt/w/whisper-cli".into(), model: Some("/opt/m.bin".into()) };
+        assert_eq!(allowed(&choice("/opt/w/whisper-cli", Some("/opt/m.bin")), Some(&picked), &found).unwrap(), picked);
+        assert!(allowed(&choice("/opt/w/whisper-cli", Some("/etc/passwd")), Some(&picked), &found).is_err());
+    }
+
+    #[test]
+    fn a_change_keeps_what_it_leaves_out_and_is_refused_whole_when_out_of_range() {
+        let mut s = settings(true, None);
+        apply(&mut s, Change { backup: Some(true), timeout_seconds: Some(60), language: Some("de".into()), ..Change::default() }, &[]).unwrap();
+        assert_eq!((s.on_this_computer, s.backup, s.timeout_seconds, s.language.as_str()), (true, true, 60, "de"));
+        assert!(apply(&mut s, Change { timeout_seconds: Some(4), backup: Some(false), ..Change::default() }, &[]).is_err());
+        assert!(apply(&mut s, Change { language: Some("en-US".into()), ..Change::default() }, &[]).is_err());
+        // An engine that wasn't found is refused, and nothing else in that change is made.
+        let bad = Change { engine: Some(Engine { kind: Kind::WhisperCpp, binary: "/bin/rm".into(), model: None }), on_this_computer: Some(false), ..Change::default() };
+        assert!(apply(&mut s, bad, &[]).is_err());
+        assert_eq!((s.on_this_computer, s.backup, s.timeout_seconds, s.language.as_str()), (true, true, 60, "de"));
+    }
+
+    /// Each in its own folder: rewriting a program just run can fail with "text file busy".
+    fn fake_engine(dir: &Path, name: &str, script: &str) -> Engine {
+        let binary = dir.join(name).join("whisper-cli");
+        file(&binary, &format!("#!/bin/sh\n{script}\n"), 0o755);
+        file(&dir.join("ggml-tiny.bin"), "", 0o644);
+        Engine { kind: Kind::WhisperCpp, binary, model: Some(dir.join("ggml-tiny.bin")) }
+    }
+
+    /// The private folders left behind in the temp dir by this process.
+    fn leftovers() -> usize {
+        let prefix = format!("hermes-chat-stt-{}-", std::process::id());
+        children(&std::env::temp_dir()).iter().filter(|p| name_of(p).starts_with(&prefix)).count()
     }
 
     #[tokio::test]
-    async fn a_failed_slow_or_wrong_run_says_why() {
-        let dir = scratch("fail");
-        let tmp = scratch("fail-tmp");
-        let failing = script(&dir, "fails", "echo 'loading' >&2; echo 'error: failed to open model' >&2; exit 2");
-        let err = transcribe_with(&failing, Path::new("/m"), "auto", &wav(), Duration::from_secs(10), &tmp).await.unwrap_err();
-        assert_eq!(err, "whisper.cpp exited with code 2: error: failed to open model");
+    async fn a_run_reads_the_transcript_and_deletes_the_recording_whatever_happens() {
+        let d = temp("run");
+        // Writes what it was given, as whisper-cli does with `-of <out>`; records the folder's mode and the language.
+        let ok = fake_engine(&d, "ok", r#"l="$6"; while [ "$1" != "-of" ]; do shift; done; echo "$(stat -c %a "$(dirname "$2")") $l" > "$2.txt"; echo "[BLANK_AUDIO]" >> "$2.txt""#);
+        let got = transcribe(&ok, b"RIFF....", Duration::from_secs(10), "es").await.unwrap();
+        assert_eq!(got.text, "700 es", "the recording's folder is private, and the language is passed on");
+        assert_eq!(got.provider.as_deref(), Some("whisper.cpp"));
 
-        let slow = script(&dir, "slow", "exec sleep 30");
-        let started = std::time::Instant::now();
-        let err = transcribe_with(&slow, Path::new("/m"), "auto", &wav(), Duration::from_secs(1), &tmp).await.unwrap_err();
-        assert!(err.contains("longer than 1 s"), "{err}");
+        let fails = fake_engine(&d, "fails", "echo 'error: failed to load model' >&2; exit 3");
+        assert_eq!(transcribe(&fails, b"RIFF", Duration::from_secs(10), "auto").await.unwrap_err(), "whisper.cpp exited with 3: error: failed to load model");
+
+        let hangs = fake_engine(&d, "hangs", "exec sleep 30");
+        let err = transcribe(&hangs, b"RIFF", Duration::from_millis(300), "auto").await.unwrap_err();
+        assert!(err.contains("took longer than"), "{err}");
+
+        let mut gone = ok.clone();
+        gone.model = Some(d.join("missing.bin"));
+        assert!(transcribe(&gone, b"RIFF", Duration::from_secs(10), "auto").await.unwrap_err().contains("isn't there any more"));
+        assert!(transcribe(&ok, &vec![0; MAX_WAV_BYTES + 1], Duration::from_secs(10), "auto").await.unwrap_err().contains("over 25 MB"));
+        assert_eq!(leftovers(), 0);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[tokio::test]
+    async fn a_failure_printed_only_on_stdout_is_still_said() {
+        let d = temp("stdout");
+        let e = fake_engine(&d, "stdout", "echo 'RuntimeError: Unable to open file model.bin'; exit 1");
+        assert_eq!(transcribe(&e, b"RIFF", Duration::from_secs(10), "auto").await.unwrap_err(), "whisper.cpp exited with 1: RuntimeError: Unable to open file model.bin");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A Hermes that answers `text`, or fails with it, and counts the recordings it got.
+    fn hermes(got: &Arc<AtomicUsize>, answer: Result<&'static str, &'static str>) -> impl Future<Output = Result<Transcript, String>> + Send + 'static {
+        let got = got.clone();
+        async move {
+            got.fetch_add(1, Ordering::SeqCst);
+            answer.map(|t| Transcript { text: t.into(), provider: Some("openai".into()) }).map_err(str::to_owned)
+        }
+    }
+
+    fn not_cancelled() -> watch::Receiver<bool> {
+        watch::channel(false).1
+    }
+
+    /// The routing `hermes_transcribe` follows, with the settings file it reads.
+    #[tokio::test]
+    async fn with_this_computer_chosen_and_no_backup_a_recording_never_goes_to_hermes() {
+        let d = temp("route");
+        let path = d.join(SETTINGS_FILE);
+        let sent = Arc::new(AtomicUsize::new(0));
+        let go = |only: Option<Side>| {
+            let (path, sent) = (path.clone(), sent.clone());
+            async move { transcribe_routed_at(&path, "audio/wav", b"RIFF", only, not_cancelled(), hermes(&sent, Ok("from Hermes"))).await }
+        };
+        assert_eq!(go(None).await.unwrap().ran, Side::Server, "no file: Hermes, as before");
+        write_settings(&path, &settings(false, Some(fake_engine(&d, "unused", "exit 0")))).unwrap();
+        assert_eq!(go(None).await.unwrap().text, "from Hermes", "Hermes server chosen");
+        assert_eq!(sent.swap(0, Ordering::SeqCst), 2);
+
+        write_settings(&path, &settings(true, None)).unwrap();
+        assert_eq!(go(None).await.unwrap_err(), "This computer couldn't transcribe it: No speech-to-text engine is chosen on this computer.");
+        let failing = fake_engine(&d, "failing", "echo boom >&2; exit 2");
+        write_settings(&path, &settings(true, Some(failing))).unwrap();
+        assert_eq!(go(None).await.unwrap_err(), "This computer couldn't transcribe it: whisper.cpp exited with 2: boom.");
+        // Test can't send it to Hermes either, and gets this computer's own words.
+        assert!(go(Some(Side::Server)).await.unwrap_err().contains("isn't sent to Hermes"));
+        assert_eq!(go(Some(Side::Local)).await.unwrap_err(), "whisper.cpp exited with 2: boom");
+        let mut missing = fake_engine(&d, "missing", "exit 0");
+        missing.binary = d.join("nowhere/whisper-cli");
+        write_settings(&path, &settings(true, Some(missing))).unwrap();
+        assert!(go(None).await.is_err());
+        let ok = fake_engine(&d, "fine", r#"while [ "$1" != "-of" ]; do shift; done; echo "hello" > "$2.txt""#);
+        write_settings(&path, &settings(true, Some(ok))).unwrap();
+        let got = go(None).await.unwrap();
+        assert_eq!((got.text.as_str(), got.ran, got.fell_back), ("hello", Side::Local, None));
+        let webm = transcribe_routed_at(&path, "audio/webm", b"x", None, not_cancelled(), hermes(&sent, Ok("no"))).await;
+        assert!(webm.unwrap_err().contains("takes WAV"), "only WAV, and still not to Hermes");
+
+        std::fs::write(&path, "not json").unwrap();
+        assert!(go(None).await.unwrap_err().contains("can't be read"), "an unreadable choice isn't taken as Hermes server");
+        assert_eq!(sent.load(Ordering::SeqCst), 0, "nothing reached Hermes");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[tokio::test]
+    async fn the_backup_transcribes_when_the_primary_fails_and_the_text_says_so() {
+        let d = temp("backup");
+        let path = d.join(SETTINGS_FILE);
+        let sent = Arc::new(AtomicUsize::new(0));
+        let ok = fake_engine(&d, "ok", r#"while [ "$1" != "-of" ]; do shift; done; echo "Check the NAS" > "$2.txt""#);
+        let fails = fake_engine(&d, "fails", "echo 'error: failed to load model' >&2; exit 1");
+        let backed = |on: bool, engine: Engine| Settings { backup: true, ..settings(on, Some(engine)) };
+
+        // Hermes first, failing: this computer gives the text, and says why Hermes didn't.
+        write_settings(&path, &backed(false, ok.clone())).unwrap();
+        let got = transcribe_routed_at(&path, "audio/wav", b"RIFF", None, not_cancelled(), hermes(&sent, Err("The speech-to-text provider failed"))).await.unwrap();
+        assert_eq!((got.text.as_str(), got.ran), ("Check the NAS", Side::Local));
+        assert_eq!(got.fell_back, Some(FellBack { from: Side::Server, why: "The speech-to-text provider failed".into() }));
+
+        // This computer first, failing: Hermes gets the recording, as the owner allowed.
+        write_settings(&path, &backed(true, fails.clone())).unwrap();
+        let got = transcribe_routed_at(&path, "audio/wav", b"RIFF", None, not_cancelled(), hermes(&sent, Ok("from Hermes"))).await.unwrap();
+        assert_eq!((got.text.as_str(), got.ran), ("from Hermes", Side::Server));
+        assert_eq!(got.fell_back.unwrap().why, "whisper.cpp exited with 1: error: failed to load model");
+
+        // Both failing: each says why.
+        let err = transcribe_routed_at(&path, "audio/wav", b"RIFF", None, not_cancelled(), hermes(&sent, Err("Not connected to Hermes."))).await.unwrap_err();
+        assert_eq!(err, "This computer couldn't transcribe it: whisper.cpp exited with 1: error: failed to load model. Hermes couldn't transcribe it either: Not connected to Hermes.");
+
+        // An empty transcript is an answer: the backup isn't tried.
+        write_settings(&path, &backed(false, ok)).unwrap();
+        let before = sent.load(Ordering::SeqCst);
+        let got = transcribe_routed_at(&path, "audio/wav", b"RIFF", None, not_cancelled(), hermes(&sent, Ok(""))).await.unwrap();
+        assert_eq!((got.text.as_str(), got.ran), ("", Side::Server));
+        assert_eq!(sent.load(Ordering::SeqCst), before + 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[tokio::test]
+    async fn a_slow_primary_is_dropped_for_the_backup_after_the_time_set() {
+        let quick = async { Ok(Transcript { text: "quick".into(), provider: None }) };
+        let slow = async {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            Ok(Transcript { text: "late".into(), provider: None })
+        };
+        let started = Instant::now();
+        let got = route(&[Side::Server, Side::Local], Some(Duration::from_millis(1200)), false, slow, quick, not_cancelled()).await.unwrap();
+        assert_eq!((got.text.as_str(), got.ran), ("quick", Side::Local));
+        assert_eq!(got.fell_back.unwrap().why, "It took longer than 1 s.");
         assert!(started.elapsed() < Duration::from_secs(10));
-        assert_eq!(std::fs::read_dir(&tmp).unwrap().count(), 0);
+        // With no backup waiting, the primary isn't timed.
+        let slowish = async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            Ok(Transcript { text: "slow but good".into(), provider: None })
+        };
+        let never = async { Err::<Transcript, String>("not tried".into()) };
+        assert_eq!(route(&[Side::Server], None, false, slowish, never, not_cancelled()).await.unwrap().text, "slow but good");
+    }
 
-        let err = transcribe_with(&failing, Path::new("/m"), "auto", b"OggS not a wav file at all, longer than forty-four bytes", Duration::from_secs(1), &tmp)
-            .await
-            .unwrap_err();
-        assert!(err.contains("isn't a WAV"));
-        let err = transcribe_with(&dir.join("missing"), Path::new("/m"), "auto", &wav(), Duration::from_secs(1), &tmp).await.unwrap_err();
-        assert!(err.starts_with("Couldn't start"), "{err}");
+    #[tokio::test]
+    async fn a_cancel_stops_the_run_and_the_backup_is_never_tried() {
+        let tried = Arc::new(AtomicUsize::new(0));
+        let (tx, rx) = watch::channel(false);
+        let primary = async {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            Err::<Transcript, String>("too late".into())
+        };
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            tx.send_replace(true);
+        });
+        let started = Instant::now();
+        let err = route(&[Side::Local, Side::Server], None, false, hermes(&tried, Ok("no")), primary, rx).await.unwrap_err();
+        assert_eq!(err, CANCELLED);
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert_eq!(tried.load(Ordering::SeqCst), 0, "Hermes never got the recording");
+        // A cancel that arrives before its transcription does still stops it, and nothing is left behind after.
+        local_stt_cancel("early".into());
+        let ticket = Ticket::new("early".into());
+        assert!(*ticket.cancel.borrow());
+        drop(ticket);
+        assert!(RUNS.lock().unwrap().iter().all(|(i, ..)| i != "early"));
+        // One cancelled while it runs.
+        let ticket = Ticket::new("running".into());
+        assert!(!*ticket.cancel.borrow());
+        local_stt_cancel("running".into());
+        assert!(*ticket.cancel.borrow());
+    }
+
+    #[test]
+    fn the_errors_name_each_side_once_and_the_order_follows_the_choice() {
+        assert_eq!(couldnt(Side::Server, "Hermes couldn't transcribe the recording: no key", false), "Hermes couldn't transcribe it: no key.");
+        assert_eq!(couldnt(Side::Local, "boom!", true), "This computer couldn't transcribe it either: boom!");
+        let s = |on, backup| Settings { backup, ..settings(on, None) };
+        assert_eq!(order(&s(false, false), None).unwrap(), [Side::Server]);
+        assert_eq!(order(&s(true, false), None).unwrap(), [Side::Local]);
+        assert_eq!(order(&s(false, true), None).unwrap(), [Side::Server, Side::Local]);
+        assert_eq!(order(&s(true, true), None).unwrap(), [Side::Local, Side::Server]);
+        assert_eq!(order(&s(false, false), Some(Side::Local)).unwrap(), [Side::Local]);
+        assert_eq!(order(&s(true, true), Some(Side::Server)).unwrap(), [Side::Server]);
+        assert!(order(&s(true, false), Some(Side::Server)).is_err());
     }
 
     /// Serves `body` at every path, over loopback.
@@ -875,7 +1444,7 @@ printf '\n Hola,\n mundo.\n'"#,
         let good = ModelInfo { name: "tiny", bytes: body.len() as u64, sha256: digest };
         let url = serve(body.clone()).await;
         let client = reqwest::Client::new();
-        let dir = scratch("download");
+        let dir = temp("download");
         let mut seen = 0;
         let path = download_model(&client, &url, &dir, &good, &AtomicBool::new(false), |d| seen = d).await.unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), body);
@@ -887,10 +1456,15 @@ printf '\n Hola,\n mundo.\n'"#,
         let wrong_size = ModelInfo { name: "small", bytes: 5, ..good };
         assert!(download_model(&client, &url, &dir, &wrong_size, &AtomicBool::new(false), |_| {}).await.unwrap_err().contains("bigger"));
         let cancelled = ModelInfo { name: "medium", ..good };
-        assert_eq!(download_model(&client, &url, &dir, &cancelled, &AtomicBool::new(true), |_| {}).await.unwrap_err(), "Cancelled.");
+        assert_eq!(download_model(&client, &url, &dir, &cancelled, &AtomicBool::new(true), |_| {}).await.unwrap_err(), CANCELLED);
         // Only the good one is there, and no part file is left.
         let names: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
         assert_eq!(names, ["ggml-tiny.bin"]);
+        // A size counts as downloaded only at its exact size: the pinned tiny is bigger than this stand-in.
+        let listed = models_in(&dir, None);
+        assert!(listed.models.iter().all(|m| !m.downloaded));
+        assert_eq!(listed.models[0].path, dir.join("ggml-tiny.bin"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -898,11 +1472,9 @@ printf '\n Hola,\n mundo.\n'"#,
         // Headers, then a body that never comes.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let app = axum::Router::new().fallback(|| async {
-            axum::body::Body::from_stream(futures_util::stream::pending::<Result<Vec<u8>, std::io::Error>>())
-        });
+        let app = axum::Router::new().fallback(|| async { axum::body::Body::from_stream(futures_util::stream::pending::<Result<Vec<u8>, std::io::Error>>()) });
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let dir = scratch("stalled");
+        let dir = temp("stalled");
         let info = ModelInfo { name: "tiny", bytes: 10, sha256: "00" };
         let cancel = Arc::new(AtomicBool::new(false));
         let flag = cancel.clone();
@@ -910,11 +1482,12 @@ printf '\n Hola,\n mundo.\n'"#,
             tokio::time::sleep(Duration::from_millis(300)).await;
             flag.store(true, Ordering::Relaxed);
         });
-        let started = std::time::Instant::now();
+        let started = Instant::now();
         let err = download_model(&reqwest::Client::new(), &format!("http://{addr}/"), &dir, &info, &cancel, |_| {}).await.unwrap_err();
-        assert_eq!(err, "Cancelled.");
+        assert_eq!(err, CANCELLED);
         assert!(started.elapsed() < Duration::from_secs(5));
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "the part file was left behind");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -924,19 +1497,23 @@ printf '\n Hola,\n mundo.\n'"#,
         assert!(MODELS.iter().all(|m| m.sha256.len() == 64 && m.sha256.bytes().all(|b| b.is_ascii_hexdigit())));
     }
 
-    /// Runs the real whisper.cpp when `HERMES_TEST_WHISPER_CLI` and `HERMES_TEST_WHISPER_MODEL` name it and a model, on
-    /// whisper.cpp's own JFK sample (`HERMES_TEST_WHISPER_WAV`). Skipped otherwise.
+    /// Against a real whisper.cpp, on its own JFK sample: `HERMES_TEST_WHISPER_CLI=…/whisper-cli
+    /// HERMES_TEST_WHISPER_MODEL=…/ggml-tiny.bin HERMES_TEST_WHISPER_WAV=…/samples/jfk.wav cargo test real_whisper_cpp`.
+    /// Skipped when they aren't set.
     #[tokio::test]
-    async fn a_real_whisper_cpp_transcribes_when_one_is_given() {
+    async fn real_whisper_cpp() {
         let (Some(cli), Some(model), Some(wav)) =
             (std::env::var_os("HERMES_TEST_WHISPER_CLI"), std::env::var_os("HERMES_TEST_WHISPER_MODEL"), std::env::var_os("HERMES_TEST_WHISPER_WAV"))
         else {
             eprintln!("skipped: no HERMES_TEST_WHISPER_CLI/MODEL/WAV");
             return;
         };
-        let audio = std::fs::read(wav).unwrap();
-        let text = transcribe_with(Path::new(&cli), Path::new(&model), "auto", &audio, Duration::from_secs(120), &std::env::temp_dir()).await.unwrap();
-        assert!(text.to_lowercase().contains("ask not what your country can do for you"), "{text}");
-        assert!(engine_version(Path::new(&cli)).await.is_some());
+        let engine = Engine { kind: Kind::WhisperCpp, binary: cli.into(), model: Some(model.into()) };
+        let wav = std::fs::read(wav).unwrap();
+        let started = Instant::now();
+        let got = transcribe(&engine, &wav, time_limit(wav.len()), "auto").await.unwrap();
+        println!("{:?} in {:?}: {}", version(&engine.binary).await, started.elapsed(), got.text);
+        assert!(got.text.to_lowercase().contains("ask not what your country can do for you"), "{}", got.text);
+        assert_eq!(leftovers(), 0);
     }
 }

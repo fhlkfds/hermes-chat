@@ -6,8 +6,7 @@ import type { Speech, VoiceSetup } from "../hermes/pipe";
 import type { ConnectionStatus } from "../hermes/model";
 import { MAX_RECORDING_SECONDS, clock, dictationBlocked, messageOf, readAloudBlocked, sttProvider, ttsProvider } from "../hermes/voice";
 import { conversationBlocked, turnSettings } from "../hermes/voiceTurns";
-import { getUIPrefs, subscribe as subscribeUIPrefs } from "../hermes/uiPrefs";
-import { DEFAULT_STT_PREFS, fellBackOf, type HeardTranscript, type SttPrefs } from "../hermes/sttRoute";
+import { DEFAULT_STT_PREFS, fellBackOf, inRoute, sttRoute, type HeardTranscript, type SttPrefs } from "../hermes/sttRoute";
 import { type AudioEnv, type Capture, CaptureAborted, type Recording, startCapture } from "./recorder";
 import type { Speaker } from "./speaker";
 import { Spinner } from "./bits";
@@ -17,7 +16,7 @@ import { SettingNote, SettingRow, SettingsSection } from "./SettingRows";
 export type VoiceApi = {
   setup: () => Promise<VoiceSetup>;
   /**
-   * Transcribes where the owner chose (sttRoute.ts); `ran` and `fellBack` say where it did. Aborting `signal` drops the
+   * Transcribes where the owner chose (Rust decides; sttRoute.ts); `ran` and `fellBack` say where it did. Aborting `signal` drops the
    * recording: nothing more is tried with it.
    */
   transcribe: (audio: Uint8Array, mime: string, signal?: AbortSignal) => Promise<HeardTranscript>;
@@ -312,7 +311,7 @@ export function listenBlocked(status: ConnectionStatus, setup: VoiceSetup | unde
  * tried without Hermes: if it isn't set up, the recording's note says why.
  */
 export function micBlocked(status: ConnectionStatus, setup: VoiceSetup | undefined, stt: Readonly<SttPrefs> = DEFAULT_STT_PREFS): string | undefined {
-  if (stt.primary === "local" || stt.backup) return undefined;
+  if (inRoute(stt, "local")) return undefined;
   if (status !== "connected") return "Connect to Hermes to dictate: it does the transcribing.";
   return dictationBlocked(setup);
 }
@@ -359,7 +358,7 @@ export function VoiceSettings({
   }, [setup, connected, profile, changes]);
 
   const s = got?.setup;
-  const stt = useSyncExternalStore(subscribeUIPrefs, getUIPrefs).speechToText;
+  const stt = useSyncExternalStore(sttRoute.subscribe, sttRoute.get);
   const row = (name: string, blocked: string | undefined, provider: { label: string; needs: string; more?: string }) => (
     <SettingRow
       name={name}
@@ -389,7 +388,8 @@ export function VoiceSettings({
             Change the providers under Speech providers, below. The microphone is
             open only while you record, or while a voice conversation is on; a conversation pauses when you leave its chat pane or hide the window,
             and only you can resume it. Recordings stay in memory here and go to Hermes, and on to the provider if it's a cloud one; Hermes deletes
-            its copy once it has the text. Transcribed on this computer, they never leave it. Recordings stop by themselves after {MAX_RECORDING_SECONDS / 60} minutes.
+            its copy once it has the text. Transcribed on this computer, they never leave it; with This computer and no backup, they never go to
+            Hermes. Recordings stop by themselves after {MAX_RECORDING_SECONDS / 60} minutes.
           </p>
         </>
       }
@@ -406,7 +406,7 @@ export function VoiceSettings({
         </SettingNote>
       ) : (
         <>
-          {row("Dictation", stt.primary === "local" || stt.backup ? undefined : dictationBlocked(s), sttProvider(s))}
+          {row("Dictation", inRoute(stt, "local") ? undefined : dictationBlocked(s), sttProvider(s))}
           {row("Read aloud", readAloudBlocked(s), ttsProvider(s))}
           {row("Voice conversation", conversationBlocked(status, s, true, stt), conversationTurns(s))}
         </>

@@ -11,7 +11,6 @@ import { connect, type Hermes } from "../hermes/transport";
 import { Main } from "../App";
 import { setWindowHidden } from "./windowState";
 import { FakeLocalStt } from "../hermes/fakeLocalStt";
-import { setUIPrefs } from "../hermes/uiPrefs";
 
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: async () => null }));
@@ -175,6 +174,8 @@ async function opened(server = new FakeHermes(), localStt = new FakeLocalStt()) 
   server.voice = { silenceDuration: 1, ...server.voice };
   const hermes = await connect(server.openPipe);
   running.push(hermes);
+  // Rust reaches the connected Hermes for the server side, as `hermes_transcribe` does.
+  localStt.server = (audio, mime) => hermes.transcribe(audio, mime);
   const user = userEvent.setup();
   render(
     <Main hermes={hermes} connection={{ mode: "ssh", sshTarget: "liam@hermes", url: "", username: `talker${++signIns}` }} onSignOut={async () => {}} localStt={localStt} />,
@@ -547,11 +548,11 @@ describe("Where speech to text runs (ADR 0065)", () => {
   /** This computer first, Hermes as backup, with this computer's run held until `release`. */
   async function localFirst() {
     const localStt = new FakeLocalStt();
-    localStt.downloaded.add("base");
+    localStt.useModel("base");
     let release!: () => void;
     localStt.gate = new Promise((r) => (release = r));
     localStt.heard = new Error("whisper.cpp exited with code 1");
-    setUIPrefs({ speechToText: { primary: "local", backup: true, timeoutSeconds: 30 } });
+    localStt.route({ primary: "local", backup: true });
     const s = await opened(undefined, localStt);
     await start(s);
     mic.loud(1);

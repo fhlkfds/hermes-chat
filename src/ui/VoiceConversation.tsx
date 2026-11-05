@@ -309,8 +309,11 @@ export function ConversationPanel({
         <summary>What is recorded, and where it goes</summary>
         <p>
           While the conversation is on, the microphone on this computer is open. Only what you say while it's listening is kept, in memory, one turn
-          at a time; it's thrown away while Hermes speaks, while muted, and once sent. Each turn goes to Hermes, which transcribes it with{" "}
-          {stt?.label ?? "the profile's speech-to-text provider"} and puts the text in this chat as your message. Replies are spoken with{" "}
+          at a time; it's thrown away while Hermes speaks, while muted, and once sent.{" "}
+          {setup?.sttLocal
+            ? `Each turn is transcribed by ${stt?.label}: the audio never leaves this computer, and only the text goes to this chat as your message.`
+            : `Each turn goes to Hermes, which transcribes it with ${stt?.label ?? "the profile's speech-to-text provider"} and puts the text in this chat as your message.`}{" "}
+          Replies are spoken with{" "}
           {tts?.label ?? "the profile's text-to-speech provider"}. A cloud provider gets the audio or text from the Hermes server. The audio is never
           saved on this computer. The text sent is a chat message like any other, kept on this computer as typed messages are: in the chat's Saved
           copy, and as a Failed message if Hermes didn't take it.

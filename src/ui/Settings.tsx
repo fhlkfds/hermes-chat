@@ -36,14 +36,15 @@ import { PersonaPage, type PersonaDirty, type PersonaWhere } from "./PersonaSett
 import type { PersonaApi } from "../hermes/persona";
 import type { PersonaStore } from "../hermes/personaStore";
 import { StartupSettings } from "./StartupSettings";
+import { ChatSectionSettings } from "./ChatSectionSettings";
 import { FollowUpSettings } from "./FollowUpSettings";
 import { VoiceSettings, useVoiceChanges } from "./Voice";
 import type { VoiceSetup } from "../hermes/pipe";
 import type { VoiceSettingsApi } from "../hermes/voiceSettings";
 import { VoiceProviderSettings } from "./VoiceProviderSettings";
-import { SpeechToTextSettings } from "./SpeechToTextSettings";
+import { LocalSttSettings } from "./LocalSttSettings";
 import type { LocalSttApi } from "../hermes/localStt";
-import type { Transcript } from "../hermes/pipe";
+import type { SttSide, HeardTranscript } from "../hermes/sttRoute";
 import { ScreenshotSettings } from "./ScreenshotSettings";
 import { TraySettings } from "./TraySettings";
 import type { TrayWiring } from "../hermes/tauriTray";
@@ -160,9 +161,9 @@ export function SettingsScreen({
   voiceSetup,
   voiceSettings,
   onVoiceChange,
-  showVoice,
   localStt,
-  transcribeOnHermes,
+  transcribe,
+  showVoice,
   persona,
   onPersonaDirty = () => {},
   guard = allow,
@@ -236,12 +237,12 @@ export function SettingsScreen({
   voiceSettings?: VoiceSettingsApi;
   /** Calls `fn` whenever the voice set-up may have changed on Hermes; returns its unsubscribe. */
   onVoiceChange?: (fn: () => void) => () => void;
+  /** Where speech to text runs, and this computer's engine and models (ADR 0065, 0067), in the Voice tab. */
+  localStt?: LocalSttApi;
+  /** Transcribes a recording the way Dictation does, or on one side alone, for the Voice tab's Test. */
+  transcribe?: (audio: Uint8Array, mime: string, side?: SttSide) => Promise<HeardTranscript>;
   /** Set, each time anew, to show the Voice tab: from a voice conversation's "Change voice settings". */
   showVoice?: object;
-  /** Speech-to-text on this computer, for the Voice tab's Speech to text sections (ADR 0065). */
-  localStt?: LocalSttApi;
-  /** Hermes's transcribing on its own, without a backup, for the Voice tab's Test. */
-  transcribeOnHermes?: (audio: Uint8Array, mime: string) => Promise<Transcript>;
   /** Settings → Persona; the tab is left out without it. */
   persona?: PersonaWiring;
   /** Says whether the Persona tab holds an edit Hermes doesn't have yet. */
@@ -541,7 +542,12 @@ export function SettingsScreen({
         </SettingsSection>
       </>
     ),
-    chats: <FollowUpSettings />,
+    chats: (
+      <>
+        <ChatSectionSettings />
+        <FollowUpSettings />
+      </>
+    ),
     launch: (
       <>
         <StartupSettings />
@@ -750,7 +756,7 @@ export function SettingsScreen({
         return (
           <>
             <VoiceSettings status={status} profile={profile} setup={voiceSetup} changes={voiceChanges} />
-            {localStt && <SpeechToTextSettings local={localStt} server={transcribeOnHermes} status={status} setup={voiceSetup} changes={voiceChanges} />}
+            {localStt && <LocalSttSettings api={localStt} transcribe={transcribe} status={status} setup={voiceSetup} changes={voiceChanges} />}
             {voiceSettings && (
               // Read for one profile and connection; another starts afresh, with nothing typed kept.
               <VoiceProviderSettings key={profile} api={voiceSettings} profile={profile} connected={status === "connected"} />

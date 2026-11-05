@@ -9,7 +9,7 @@
 import type { VoiceSetup } from "./pipe";
 import type { ConnectionStatus } from "./model";
 import { MAX_RECORDING_SECONDS, dictationBlocked } from "./voice";
-import { DEFAULT_STT_PREFS, type SttPrefs } from "./sttRoute";
+import { DEFAULT_STT_PREFS, inRoute, type SttPrefs } from "./sttRoute";
 
 /** Hermes's defaults for the three settings (`hermes_cli/config_defaults.py`, `tools/voice_mode.py`). */
 export const HERMES_SILENCE_THRESHOLD = 200;
@@ -189,7 +189,7 @@ export function conversationBlocked(
   if (status !== "connected") return "Connect to Hermes to talk with it: it transcribes what you say and speaks its replies.";
   if (!setup) return "Checking this Hermes's voice set-up…";
   // With this computer in the route, Hermes's own speech-to-text isn't needed to start (ADR 0065).
-  const sttBlocked = stt.primary === "local" || stt.backup ? undefined : dictationBlocked(setup);
+  const sttBlocked = inRoute(stt, "local") ? undefined : dictationBlocked(setup);
   if (sttBlocked) return sttBlocked;
   if (!setup.speak) return "This Hermes server can't speak its replies. Updating Hermes adds it.";
   if (!started) return "Send this chat's first message, then talk: a voice conversation needs a chat that has started.";
