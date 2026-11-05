@@ -8,7 +8,7 @@ Nothing here publishes a release. The repo has no release, signing key, update e
 
 The app decides at runtime, in `src-tauri/src/update.rs`, in this order:
 
-1. **A file pacman owns.** The app asks `pacman -Qqo` about the file it was installed as. Running from an AppImage, that is the AppImage itself (`$APPIMAGE`), because the binary runs from a temporary mount of it. Otherwise it's the binary. If a package owns that file, only the package manager replaces it. The updater never runs, even in an AppImage that carries an update key, so a package that ships the release AppImage is safe. Settings shows the package and its version, and for `hermes-chat-git` compares its commit with `main` (README, "Updates").
+1. **A file pacman owns.** The app asks `pacman -Qqo` about the file it was installed as. Running from an AppImage, that is the AppImage itself (`$APPIMAGE`), because the binary runs from a temporary mount of it. Otherwise it's the binary. If a package owns that file, only the package manager replaces it. The updater never runs, even in an AppImage that carries an update key, so a package that ships the release AppImage is safe. The app asks pacman again right before a check and right before an install, in case a package took the file over while the app ran. Settings shows the package and its version, and for `hermes-chat-git` compares its commit with `main` (README, "Updates").
 2. **A standalone AppImage built with an update key.** `$APPIMAGE` is set, the binary's bundle type is AppImage, and the build carries `plugins.updater`. Tauri's updater checks the endpoint, downloads the new AppImage, verifies its signature against the public key built into the app, and replaces the AppImage. The new version runs after the owner restarts.
 3. **Anything else.** A source build (`npm run app`), a binary pulled out of an AppImage, an AppImage built without an update key, or a copy of the packaged binary somewhere pacman doesn't own. Settings says the copy isn't updated from here.
 
@@ -31,7 +31,7 @@ The `release-dry-run` workflow (`.github/workflows/release-dry-run.yml`) runs on
 1. checks that `verify.sh` passes a good release and refuses broken ones (`scripts/release/verify.test.sh`);
 2. builds the AppImage with the updater turned on and signs it (`scripts/release/dry-run.sh`);
 3. stages the AppImage, its `.sig`, `latest.json` and the public key under `release/`;
-4. verifies the staged folder with minisign, the way the app will;
+4. verifies the staged folder with minisign, the way the app will, and checks that the AppImage is built for the target `latest.json` lists it under;
 5. uploads `release/` as the workflow artifact `appimage-<signing>-<commit>`, kept for 14 days.
 
 It never creates a tag, a GitHub release or any hosted file. The manual run's `signing` input picks `throwaway` (the default) or `secret`, which signs with the production key. `secret` fails until the owner has created the secret and put the public key in `tauri.release.conf.json`.
@@ -113,13 +113,13 @@ The app trusts exactly one public key, the one it was built with. A release sign
 - an older and the same version, not offered;
 - a failed download, a download given up on, and an endpoint that doesn't answer, each leaving the AppImage alone.
 
-The `rust` CI job runs it. `scripts/release/verify.test.sh` covers the release scripts' own check, in the dry-run workflow.
+The `rust` CI job runs it. `scripts/release/verify.test.sh` covers the release scripts' own check, in the dry-run workflow: a genuine folder passes, and another key, an AppImage for another architecture, a tampered or truncated AppImage, a manifest announcing a version other than the signed one, a staged private key and a missing AppImage are each refused.
 
 ## Storage, servers and limits
 
 - **Storage.** The updater holds the download in memory, verifies it, moves the running AppImage into a private temporary folder on the same file system as a backup, writes the new one in its place with the old mode, and deletes the backup. It needs free space for one more AppImage beside the old one, and write access to the AppImage's folder. Nothing else on disk changes. Drafts kept across the restart are ADR 0060's.
 - **Hermes servers.** An update doesn't touch the Hermes server. Every server version the new app supports stays supported (`docs/compatibility.md`), and the updater has no notion of a server version.
-- **Limits.** The tests use the real verifier with a local server, not a real host or a real AppImage swap under a running app. The dry run signs and verifies a real AppImage, but no copy has installed it through the updater. The manifest is unsigned, so a host can still offer an older signed release as long as it's newer than the running copy, or offer nothing. The updater has no cancel. Quitting the app drops a download, and the AppImage is replaced only after the whole download has verified. Gzipped AppImages aren't supported.
+- **Limits.** The tests use the real verifier with a local server, not a real host or a real AppImage swap under a running app. The dry run signs and verifies a real AppImage, but no copy has installed it through the updater. The manifest is unsigned, so a host can still offer an older signed release as long as it's newer than the running copy, or offer nothing. The updater has no cancel. Quitting the app drops a download, and the AppImage is replaced only after the whole download has verified. The updater checks only the signature, the signed version and that the file is an ELF. It doesn't check the architecture, so an AppImage for another architecture listed under this one would install and then fail to start. `verify.sh` refuses such a release before upload, and that check is the only one. A gzipped AppImage is accepted too (the updater's default `zip` feature), with the signature over the compressed file. The release scripts stage only plain AppImages.
 
 ## Left for the owner
 

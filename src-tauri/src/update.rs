@@ -121,6 +121,15 @@ impl Updates {
     }
 }
 
+/// Whether a package owns the AppImage now, asked afresh before the updater may touch it: a package can take the file
+/// over while the app runs.
+async fn appimage_owned() -> bool {
+    match std::env::var_os("APPIMAGE") {
+        Some(appimage) => owner(PathBuf::from(appimage)).await.is_some(),
+        None => false,
+    }
+}
+
 #[tauri::command]
 pub async fn update_install_kind(app: AppHandle, state: State<'_, Updates>) -> Result<Install, String> {
     let version = app.package_info().version.to_string();
@@ -133,7 +142,7 @@ pub async fn update_install_kind(app: AppHandle, state: State<'_, Updates>) -> R
 
 #[tauri::command]
 pub async fn update_check(app: AppHandle, state: State<'_, Updates>) -> Result<Option<Available>, String> {
-    if !is_appimage() || !configured(app.config()) || state.package().await.is_some() {
+    if !is_appimage() || !configured(app.config()) || appimage_owned().await {
         return Err("This copy of Hermes Chat can't update itself.".into());
     }
     let update = app.updater().map_err(|e| e.to_string())?.check().await.map_err(|e| e.to_string())?;
@@ -155,6 +164,9 @@ pub async fn update_download_and_install(state: State<'_, Updates>, on_progress:
     let Some(update) = state.found.lock().await.take() else {
         return Err("Check for updates again first.".into());
     };
+    if appimage_owned().await {
+        return Err("A package owns this AppImage now, so only the package manager may replace it.".into());
+    }
     let (mut downloaded, mut sent) = (0u64, 0u64);
     let result = update
         .download_and_install(

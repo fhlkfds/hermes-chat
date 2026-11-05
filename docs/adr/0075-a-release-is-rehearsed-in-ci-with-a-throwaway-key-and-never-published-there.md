@@ -14,13 +14,13 @@ The default is a throwaway key made inside the job. It never leaves the runner's
 
 ## The app's own verifier is what the tests run
 
-The verification tests drive `tauri-plugin-updater` with a manifest and AppImage served from `127.0.0.1`, through the same `check` and `download_and_install` the app's Install button calls. No checksum or minisign call of our own stands in for it. The signatures are fixed in the test file, made with throwaway keys that were deleted, so the tests need no key at run time. `scripts/release/verify.sh` uses minisign only to check a staged folder before upload, and is tested against broken folders in the same workflow.
+The verification tests drive `tauri-plugin-updater` with a manifest and AppImage served from `127.0.0.1`, through the same `check` and `download_and_install` the app's Install button calls. No checksum or minisign call of our own stands in for it. The signatures are fixed in the test file, made with throwaway keys that were deleted, so the tests need no key at run time. `scripts/release/verify.sh` uses minisign only to check a staged folder before upload, and is tested against broken folders in the same workflow. It also checks the AppImage's ELF architecture against the target `latest.json` lists it under, because the updater doesn't: a signed AppImage for another architecture would install and then not start.
 
 `requireSignedVersion` is on, because the manifest isn't signed. Without it a manifest could pair a new version number with an older genuine AppImage.
 
 ## A package owns the AppImage, not the binary inside it
 
-The app asks pacman about `$APPIMAGE` when it runs from one, and about the binary otherwise. Before, an AppImage was taken as standalone without asking, so a package that shipped the release AppImage would have had its file replaced by the updater. Now any copy whose file a package owns is reported as the package's, and `update_check` refuses to run for it. Settings then shows the existing message for a package other than `hermes-chat-git`: update it with the package manager.
+The app asks pacman about `$APPIMAGE` when it runs from one, and about the binary otherwise. Before, an AppImage was taken as standalone without asking, so a package that shipped the release AppImage would have had its file replaced by the updater. Now any copy whose file a package owns is reported as the package's. `update_check` and the install ask pacman again, not the answer from launch, and refuse if a package owns the AppImage by then. Settings then shows the existing message for a package other than `hermes-chat-git`: update it with the package manager.
 
 ## One key, rotated by a bridge release
 

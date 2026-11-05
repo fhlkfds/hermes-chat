@@ -21,7 +21,7 @@ if [ -n "${HERMES_CHAT_UPDATER_KEY:-}" ]; then
     echo "src-tauri/tauri.release.conf.json holds no public key, so the app couldn't verify what $key signs" >&2
     exit 1
   fi
-  : "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD?the key's password}"
+  : "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD?set TAURI_SIGNING_PRIVATE_KEY_PASSWORD, empty for a key without one}"
 else
   key=$work/throwaway.key
   # Prints the paths it wrote and advice, never the key; stdout is dropped all the same.

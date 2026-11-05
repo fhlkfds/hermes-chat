@@ -13,14 +13,27 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 printf '%s' "$pubkey" | base64 -d > "$work/key.pub"
-{ read -r version; read -r url; read -r signature; } < <(node -e '
+{ read -r version; read -r target; read -r url; read -r signature; } < <(node -e '
   const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
-  const [platform] = Object.values(m.platforms);
-  console.log(m.version, platform.url, platform.signature);
+  const [[target, platform]] = Object.entries(m.platforms);
+  console.log(m.version, target, platform.url, platform.signature);
 ' "$dir/latest.json" | tr " " "\n")
 file=$dir/${url##*/}
 if [ ! -f "$file" ]; then
   echo "latest.json names $url, but ${url##*/} isn't in $dir" >&2
+  exit 1
+fi
+# The updater checks only the signature and that the file is an ELF, so an AppImage for another architecture, signed
+# and listed under this target, would install and then fail to start.
+case "$(od -An -tx1 -N4 "$file" | tr -d ' \n'):$(od -An -tu1 -j18 -N2 "$file" | tr -s ' ' ':')" in
+  7f454c46::62:0) machine=linux-x86_64 ;;
+  7f454c46::183:0) machine=linux-aarch64 ;;
+  7f454c46::3:0) machine=linux-i686 ;;
+  7f454c46::40:0) machine=linux-armv7 ;;
+  *) machine="not a known ELF" ;;
+esac
+if [ "$machine" != "$target" ]; then
+  echo "latest.json lists ${file##*/} for $target, but it is built for $machine" >&2
   exit 1
 fi
 printf '%s' "$signature" | base64 -d > "$work/file.minisig"
@@ -40,4 +53,4 @@ if grep -rqF -e "rsign encrypted secret key" -e "dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWd
   echo "a private key is in $dir" >&2
   exit 1
 fi
-echo "${file##*/} verifies against the public key for version $version, and no private key is staged"
+echo "${file##*/} verifies against the public key for version $version on $target, and no private key is staged"
