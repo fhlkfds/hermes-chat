@@ -2752,6 +2752,7 @@ export function Main({
             capabilities={hermes.capabilities}
             openGuide={openGuide}
             showDiagnostics={showDiagnostics}
+            screen={hermes.screen}
             onClearCache={() => hermes.clearCache()}
             importer={{
               imports: hermes.imports,

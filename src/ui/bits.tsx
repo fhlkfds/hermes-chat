@@ -1,6 +1,6 @@
 // Small shared UI bits, ported from the prototype.
 import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
-import { Archive, ArchiveRestore, EyeOff, FileInput, Globe, Monitor, RotateCcw, Send, Terminal } from "lucide-react";
+import { Archive, ArchiveRestore, Check, Copy, EyeOff, FileInput, Globe, Monitor, RotateCcw, Send, Terminal } from "lucide-react";
 import type { ConnectionStatus, Source } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
 import { SOURCE_LABEL } from "../hermes/model";
@@ -119,6 +119,27 @@ export function useReturnFocus() {
 
 export function Spinner() {
   return <span className="spinner" aria-label="working" />;
+}
+
+/** A command to run on the server, with a button that copies it. */
+export function CopyCommand({ command }: { command: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <span className="screen-command">
+      <code>{command}</code>
+      <button
+        className="icon-btn"
+        title="Copy the command"
+        onClick={() => {
+          void navigator.clipboard?.writeText(command);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1200);
+        }}
+      >
+        {copied ? <Check size={14} /> : <Copy size={14} />}
+      </button>
+    </span>
+  );
 }
 
 export function relTime(ts: number) {

@@ -342,9 +342,15 @@ export class FakeHermes {
   oneshotAnswer = "A new title";
   /**
    * The profile's Bot Desktop (`display.*`, tui_gateway/methods_display.py at v2026.9.24; ADR 0039): its status and who
-   * holds it. Undefined: a Hermes without it, which answers "method not found".
+   * holds it. Undefined: a Hermes without it, which answers "method not found". `profiles`: fields that differ for the
+   * profile named, such as its `browser` (each profile has its own `browser.executable_path`).
    */
-  display?: { status: Record<string, unknown>; lease: { holder: "agent" | "human"; viewer_hash: string | null; since: number; epoch: number }; minted: Set<string> };
+  display?: {
+    status: Record<string, unknown>;
+    lease: { holder: "agent" | "human"; viewer_hash: string | null; since: number; epoch: number };
+    minted: Set<string>;
+    profiles?: Record<string, Record<string, unknown>>;
+  };
   /** The server commands `commands.catalog` lists; undefined for a Hermes without the method. */
   commandCatalog: string[] | undefined = ["steer", "context", "compress", "help"];
   /** The profile's quick commands (`quick_commands` in config.yaml), by name, with their description. */
@@ -763,10 +769,10 @@ export class FakeHermes {
       const refPath = `attachments/${name}`;
       this.respond(r.id, { attached: true, name, path: `/hermes/workspace/${refPath}`, ref_path: refPath, ref_text: `@file:${formatRefValue(refPath)}`, uploaded: true });
     },
-    "display.status": (r) => this.displayAnswer(r.id),
+    "display.status": (r) => this.displayAnswer(r.id, r.params.profile),
     "display.start": (r) => {
       if (this.display) this.display.status.running = true;
-      this.displayAnswer(r.id);
+      this.displayAnswer(r.id, r.params.profile);
     },
     "display.observe": (r) => {
       const d = this.display;
@@ -1864,9 +1870,10 @@ export class FakeHermes {
     this.frame({ jsonrpc: "2.0", method: "event", params: { type, session_id: sessionId, payload } });
   }
 
-  private displayAnswer(id: number) {
+  private displayAnswer(id: number, profile: unknown) {
     if (!this.display) return this.fail(id, -32601, "unknown method: display.status");
-    this.respond(id, { ...this.display.status, lease: this.display.lease, profile_key: "/home/liam/.hermes" });
+    const own = typeof profile === "string" ? this.display.profiles?.[profile] : undefined;
+    this.respond(id, { ...this.display.status, ...own, lease: this.display.lease, profile_key: "/home/liam/.hermes" });
   }
 
   /** A session-less broadcast such as `sessions.changed` (tui_gateway `_broadcast_global_event`). */

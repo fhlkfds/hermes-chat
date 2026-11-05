@@ -54,6 +54,7 @@ import { ImportSection, type ImportWiring } from "./ImportTranscripts";
 import { BackupSection, type BackupWiring } from "./Backup";
 import { guideUrl, type CapabilityId, type CapabilityStore } from "../hermes/capabilities";
 import { CapabilityGate, DiagnosticsSettings, type OpenGuide } from "./Diagnostics";
+import type { ScreenApi } from "../hermes/screen";
 import { NAMED, applySearch, clearMarks, queryWords, textMatches } from "./settingsSearch";
 import { ProfilePicker } from "./ProfilePicker";
 import type { McpApi } from "../hermes/mcp";
@@ -100,7 +101,7 @@ const ABOUT: Partial<Record<Tab, string>> = {
   persona: "Who Hermes is and how it speaks in this profile's chats: the profile's SOUL.md, edited on the server.",
   memory: "What Hermes remembers about you and your work between chats, changed or removed entry by entry.",
   skills: "Instructions Hermes can load for a kind of task: turn each skill on or off for the profile, and edit its SKILL.md.",
-  diagnostics: "The connected Hermes's version, protocol and sign-in, and which features this server supports.",
+  diagnostics: "The connected Hermes's version, protocol and sign-in, which features this server supports, and whether its Bot Desktop has a browser.",
 };
 
 /** How the connection signs in, in words, for diagnostics: this app signs in only with the dashboard's username and password. */
@@ -180,6 +181,7 @@ export function SettingsScreen({
   capabilities,
   openGuide = () => {},
   showDiagnostics,
+  screen,
   connectionManager,
   listProfiles,
 }: {
@@ -276,6 +278,8 @@ export function SettingsScreen({
   openGuide?: OpenGuide;
   /** Set, each time anew, to show the Diagnostics tab, at a capability if it names one: from a screen's note. */
   showDiagnostics?: { id?: CapabilityId };
+  /** The profile's Bot Desktop, for Diagnostics' browser check. */
+  screen?: Pick<ScreenApi, "status">;
 }) {
   const [bytes, setBytes] = useState(cacheBytes);
   const [confirmClear, setConfirmClear] = useState(false);
@@ -807,6 +811,7 @@ export function SettingsScreen({
               profile={profile}
               openGuide={openGuide}
               focus={diagFocus}
+              screen={screen}
             />
           )
         );

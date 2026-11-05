@@ -1,7 +1,7 @@
 // Connection diagnostics (Settings → Diagnostics), and the note a screen shows in place of itself when the connected
 // Hermes lacks what it needs (`CapabilityGate`). Both read the one capability store the transport keeps
 // (src/hermes/capabilities.ts, ADR 0044).
-import { type ReactNode, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { AlertTriangle, ArrowLeft, BookOpen, Check, ClipboardCopy, RefreshCw, Stethoscope } from "lucide-react";
 import {
   CAPABILITIES,
@@ -18,7 +18,8 @@ import {
   stateText,
   versionLine,
 } from "../hermes/capabilities";
-import { Spinner, relTime, storedTime } from "./bits";
+import { BROWSER_FIX, browserOf, isUnavailable, type ScreenApi, type ServerBrowser } from "../hermes/screen";
+import { CopyCommand, Spinner, relTime, storedTime } from "./bits";
 import { SettingNote, SettingRow, SettingsSection } from "./SettingRows";
 
 /** Opens a compatibility guide page in the owner's browser. */
@@ -86,6 +87,7 @@ export function DiagnosticsSettings({
   profile,
   openGuide,
   focus,
+  screen,
   copyText = (text) => (navigator.clipboard?.writeText ? navigator.clipboard.writeText(text) : Promise.reject(new Error("no clipboard"))),
 }: {
   store: CapabilityStore;
@@ -103,6 +105,8 @@ export function DiagnosticsSettings({
   focus?: { id: CapabilityId };
   /** Puts text on the clipboard. */
   copyText?: (text: string) => Promise<void>;
+  /** `display.status` for the profile in use, which says whether its Bot Desktop has a browser. */
+  screen?: Pick<ScreenApi, "status">;
 }) {
   const snap = useCapabilities(store);
   const [copied, setCopied] = useState<"done" | "failed">();
@@ -166,6 +170,8 @@ export function DiagnosticsSettings({
         </Fact>
         <Fact name="Extra request headers">{headers ? `${headers}, whose values are never shown` : "None"}</Fact>
       </SettingsSection>
+
+      {screen && <BotDesktopSection screen={screen} connected={connected} profile={profile} />}
 
       <SettingsSection
         title="Features"
@@ -267,6 +273,82 @@ export function DiagnosticsSettings({
         />
       </SettingsSection>
     </div>
+  );
+}
+
+type BrowserCheck = { kind: "checking" } | { kind: "read"; browser: ServerBrowser } | { kind: "failed"; why: string };
+
+const UNKNOWN_WHY: Record<Extract<ServerBrowser, { kind: "unknown" }>["why"], string> = {
+  "older-hermes": "This Hermes doesn't report it. Updating Hermes on the server adds it.",
+  "not-linux": "Hermes checks it only on a Linux server, where its Bot Desktop runs.",
+  "in-sandbox": "This profile's Bot Desktop runs in the terminal's sandbox, which brings its own browser.",
+};
+
+/**
+ * Whether the profile's Bot Desktop has Chrome or Chromium, read from `display.status` for the profile in use: asked
+ * when the connection opens or the profile changes, and on Check again. An answer for an earlier profile is dropped.
+ */
+function BotDesktopSection({ screen, connected, profile }: { screen: Pick<ScreenApi, "status">; connected: boolean; profile: string }) {
+  const [check, setCheck] = useState<BrowserCheck>();
+  const asked = useRef(0);
+  const read = useCallback(async () => {
+    const ask = ++asked.current;
+    setCheck({ kind: "checking" });
+    let next: BrowserCheck;
+    try {
+      next = { kind: "read", browser: browserOf(await screen.status()) };
+    } catch (e) {
+      next = isUnavailable(e) ? { kind: "read", browser: { kind: "unknown", why: "older-hermes" } } : { kind: "failed", why: e instanceof Error ? e.message : String(e) };
+    }
+    if (ask === asked.current) setCheck(next);
+  }, [screen]);
+  useEffect(() => {
+    if (connected) void read();
+    else {
+      asked.current++;
+      setCheck((c) => (c?.kind === "checking" ? undefined : c));
+    }
+  }, [connected, profile, read]);
+
+  const b = check?.kind === "read" ? check.browser : undefined;
+  let value: ReactNode;
+  if (!check) value = <span className="muted">{connected ? "Not checked yet" : "Connect to Hermes to check."}</span>;
+  else if (check.kind === "checking")
+    value = (
+      <>
+        <Spinner /> Checking…
+      </>
+    );
+  else if (check.kind === "failed") value = <span className="muted">Couldn't check: {check.why}</span>;
+  else if (b?.kind === "found") value = <span className="mono">{b.path}</span>;
+  else if (b?.kind === "missing") value = <span className="badge cap-badge cap-no">Not installed</span>;
+  else value = <span className="badge cap-badge cap-unknown">Unknown</span>;
+  const note =
+    b?.kind === "missing" ? (
+      <SettingNote tone="warn">
+        No Chrome or Chromium on the Hermes server, so the agent can't open a browser on its screen. Run this on the server, then check again:
+        <CopyCommand command={BROWSER_FIX} />
+        <div className="muted small">Or set browser.executable_path in this profile's config to a Chrome or Chromium on the server.</div>
+      </SettingNote>
+    ) : b?.kind === "unknown" ? (
+      <SettingNote>{UNKNOWN_WHY[b.why]}</SettingNote>
+    ) : undefined;
+
+  return (
+    <SettingsSection
+      title="Bot Desktop"
+      titleId="diag-bot-desktop"
+      intro={`What profile ${profile}'s screen on the server has, where the agent's computer use and its browser run.`}
+      action={
+        <button className="btn" aria-label="Check the server's browser again" disabled={!connected || check?.kind === "checking"} onClick={() => void read()}>
+          <RefreshCw size={14} aria-hidden /> Check again
+        </button>
+      }
+    >
+      <SettingRow className="diag-fact" name="Browser on the Hermes server" control={<span className="set-value" role="status">{value}</span>}>
+        {note}
+      </SettingRow>
+    </SettingsSection>
   );
 }
 

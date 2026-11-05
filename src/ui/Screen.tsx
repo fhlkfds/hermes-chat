@@ -3,11 +3,13 @@
 // (a sign-in, a 2FA code, a CAPTCHA) and hands back. Hermes keeps who may drive it (the lease): while the owner holds
 // it, Hermes's computer use waits, and only the holder's keys and pointer reach the screen. noVNC draws the stream.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, Check, Copy, Hand, MonitorPlay, MousePointer2, Play, RefreshCw } from "lucide-react";
+import { AlertTriangle, Hand, MonitorPlay, MousePointer2, Play, RefreshCw } from "lucide-react";
 import {
+  BROWSER_FIX,
   CLOSE_CONTROL_TAKEN,
   CLOSE_SCREEN_GONE,
   RelayedSocket,
+  browserOf,
   heldBy,
   isOlder,
   isUnavailable,
@@ -17,7 +19,7 @@ import {
   type DisplayStatus,
   type ScreenApi,
 } from "../hermes/screen";
-import { Spinner } from "./bits";
+import { CopyCommand, Spinner } from "./bits";
 
 /** What the Screen needs of noVNC's RFB client. */
 export type RfbClient = {
@@ -80,7 +82,8 @@ export function ScreenTab({
   const [conn, setConn] = useState<Conn>({ kind: "idle" });
   const [viewer, setViewer] = useState<{ id: string; hash: string }>();
   const [evicted, setEvicted] = useState(false);
-  const [copied, setCopied] = useState(false);
+  /** The browser a Check again found where there was none, said once until the next read. */
+  const [found, setFound] = useState<string>();
   const host = useRef<HTMLDivElement>(null);
   const rfb = useRef<RfbClient | null>(null);
   // Bumped by every attach and detach, so a late answer from an earlier one does nothing.
@@ -111,9 +114,12 @@ export function ScreenTab({
   );
 
   const refresh = useCallback(async () => {
+    setFound(undefined);
     try {
-      noteStatus(await api.status());
+      const s = await api.status();
+      noteStatus(s);
       setError(undefined);
+      return s;
     } catch (e) {
       if (isUnavailable(e)) setUnavailable(true);
       else setError(messageOf(e));
@@ -228,6 +234,12 @@ export function ScreenTab({
       noteStatus(await api.start());
       setConn({ kind: "idle" });
     });
+  const checkAgain = () =>
+    act(async () => {
+      const s = await refresh();
+      const b = s && browserOf(s);
+      setFound(b?.kind === "found" ? b.path : undefined);
+    });
   const takeOver = () => act(async () => viewer && noteLease(await api.takeOver(viewer.id)));
   const handBack = () => act(async () => viewer && noteLease(await api.handBack(viewer.id)));
 
@@ -257,20 +269,7 @@ export function ScreenTab({
           <>
             {" "}
             Run this on the server, in the Terminal tab for one, then refresh:
-            <span className="screen-command">
-              <code>{phase.command}</code>
-              <button
-                className="icon-btn"
-                title="Copy the command"
-                onClick={() => {
-                  void navigator.clipboard?.writeText(phase.command!);
-                  setCopied(true);
-                  setTimeout(() => setCopied(false), 1200);
-                }}
-              >
-                {copied ? <Check size={14} /> : <Copy size={14} />}
-              </button>
-            </span>
+            <CopyCommand command={phase.command} />
           </>
         )}
       </Note>
@@ -292,6 +291,7 @@ export function ScreenTab({
     );
 
   const live = phase?.kind === "live";
+  const noBrowser = !unavailable && status && browserOf(status).kind === "missing";
   return (
     <div className="screen-tab" hidden={!shown}>
       <div className="screen-bar">
@@ -325,6 +325,23 @@ export function ScreenTab({
         <div className="attach-note" role="alert">
           {error}
         </div>
+      )}
+      {found && (
+        <div className="attach-note screen-found" role="status">
+          Hermes found a browser on the server: <span className="mono">{found}</span>
+        </div>
+      )}
+      {noBrowser && (
+        <Note title="No Chrome or Chromium on the Hermes server" className="screen-browser">
+          So the agent can't open a browser on its screen. Run this on the server, in the Terminal tab for one, then check again:
+          <CopyCommand command={BROWSER_FIX} />
+          <div className="small">Or set browser.executable_path in this profile's config to a Chrome or Chromium on the server.</div>
+          <div className="preview-state-actions">
+            <button className="btn" disabled={busy || !connected} onClick={() => void checkAgain()}>
+              {busy ? <Spinner /> : <RefreshCw size={14} />} Check again
+            </button>
+          </div>
+        </Note>
       )}
       {evicted && conn.kind !== "live" && (
         <div className="attach-note" role="status">
@@ -361,9 +378,9 @@ export function ScreenTab({
   );
 }
 
-function Note({ title, bad, children }: { title: string; bad?: boolean; children: React.ReactNode }) {
+function Note({ title, bad, className = "", children }: { title: string; bad?: boolean; className?: string; children: React.ReactNode }) {
   return (
-    <div className={`preview-state ${bad ? "preview-error" : ""}`} role={bad ? "alert" : "note"}>
+    <div className={`preview-state ${bad ? "preview-error" : ""} ${className}`} role={bad ? "alert" : "note"}>
       <AlertTriangle size={18} />
       <div>
         <div className="preview-state-title">{title}</div>

@@ -2663,6 +2663,9 @@ label.memory-pick { cursor: pointer; }
 .screen-who.you { color: var(--accent); }
 .screen-who.other { color: var(--warn); }
 .screen-tab > .attach-note { flex: none; padding: 6px 14px; color: var(--warn); border-bottom: 1px solid var(--line); }
+.screen-tab > .attach-note.screen-found { color: var(--ok); overflow-wrap: anywhere; }
+.screen-browser { flex: none; margin: 14px 22px 0; }
+.screen-browser > svg { color: var(--warn); }
 .screen-view { flex: 1; min-height: 0; position: relative; display: flex; background: var(--code-bg); border: 2px solid transparent; }
 .screen-view[hidden] { display: none; }
 .screen-view.held { border-color: var(--accent); }
