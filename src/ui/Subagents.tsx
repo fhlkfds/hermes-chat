@@ -16,8 +16,12 @@ import {
 } from "../hermes/subagents";
 import { composing } from "./bits";
 
-/** What the panel can ask Hermes for one subagent of its chat. `blocked`: why Steer and Stop can't be used now. */
+/**
+ * What the panel can ask Hermes about its chat's subagents. `refresh` reads the roster again. `blocked`: why Steer and
+ * Stop can't be used now.
+ */
 export type SubagentsApi = {
+  refresh: () => Promise<void>;
   output: (id: SubagentId) => Promise<SubagentOutput>;
   steer: (id: SubagentId, text: string) => Promise<"queued" | "rejected">;
   stop: (id: SubagentId) => Promise<boolean>;
@@ -55,7 +59,7 @@ function SyncNote({ tree }: { tree: SubagentTree }) {
     <div className="subagents-note" role="status">
       {s.kind === "lost"
         ? `Disconnected since ${clock(s.since)}: these are the states last heard. Hermes is asked again once the chat is open on Hermes.`
-        : `States are as last heard before the reconnect. ${s.why}`}
+        : `These are the states last heard. ${s.why}`}
     </div>
   );
 }
@@ -277,9 +281,11 @@ type Read = { state: "loading" } | { state: "done"; output: SubagentOutput; at: 
 function Output({ id, api }: { id: SubagentId; api: SubagentsApi }) {
   const [read, setRead] = useState<Read>({ state: "loading" });
   const asked = useRef(0);
+  // The roster too: it is how Hermes tells of a nested subagent's tools, which its events leave out.
   const load = () => {
     const n = ++asked.current;
     setRead({ state: "loading" });
+    void api.refresh();
     api.output(id).then(
       (output) => n === asked.current && setRead({ state: "done", output, at: Date.now() }),
       (e) => n === asked.current && setRead({ state: "failed", why: (e as Error).message }),

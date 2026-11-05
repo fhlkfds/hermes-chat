@@ -2954,6 +2954,13 @@ export class Hermes {
     }
   }
 
+  /** Reads the chat's subagent roster again, while it's open on Hermes; nothing otherwise. */
+  refreshSubagents(chatId: string): Promise<void> {
+    const runtimeId = this.snapshot.chats.find((c) => c.id === chatId)?.runtimeId;
+    if (!runtimeId || this.snapshot.status !== "connected") return Promise.resolve();
+    return this.listSubagents(chatId, runtimeId);
+  }
+
   /**
    * The end of a subagent's live transcript (`subagent.tail`, the last 16 KB). Hermes shares it only for a subagent
    * running for this chat on this connection; otherwise it isn't available.

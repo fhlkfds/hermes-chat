@@ -248,8 +248,10 @@ export function onSubagentEvent(tree: SubagentTree | undefined, type: string, pa
 
 /**
  * The tree with Hermes's roster (`subagent.list`) applied, now `live`. Hermes lists the subagents still running, and
- * background delegations that failed lately. A subagent the app was following that the roster leaves out has ended
- * without the app hearing how, so it's `unknown`. Undefined when there's no tree and nothing listed.
+ * background delegations that failed lately. A running subagent the roster leaves out has ended without the app
+ * hearing how, so it's `unknown`. The roster is also how the app hears of a nested subagent's tools: Hermes relays only
+ * its start and end (`delegate_tool_progress._normalize_event` drops the rest). Undefined when there's no tree and
+ * nothing listed.
  */
 export function onRoster(tree: SubagentTree | undefined, result: unknown, at: number): SubagentTree | undefined {
   const res = obj(result);
@@ -260,12 +262,15 @@ export function onRoster(tree: SubagentTree | undefined, result: unknown, at: nu
     const id = str(row.subagent_id);
     if (!id) continue;
     const last = str(row.last_tool);
+    const was = tree?.subagents.find((s) => s.id === id);
+    // Only the tool's name: it replaces what the events said only when it is news, by Hermes's count of its tools.
+    const newer = !was?.lastActivity || (int(row.tool_count) ?? 0) > (was.toolCount ?? 0);
     listed.push({
       ...identity(row, id as SubagentId),
       state: stateOf(row.status, "running"),
       ...(secondsAt(row.started_at) !== undefined && { startedAt: secondsAt(row.started_at) }),
       ...(typeof row.accepting_steer === "boolean" && { acceptingSteer: row.accepting_steer }),
-      ...(last && { lastActivity: { at: tree?.subagents.find((s) => s.id === id)?.lastActivity?.at ?? at, text: last } }),
+      ...(last && newer && { lastActivity: { at, text: last } }),
     });
   }
   const known = tree?.subagents ?? [];
@@ -288,7 +293,12 @@ export function onRoster(tree: SubagentTree | undefined, result: unknown, at: nu
   }
   if (!tree && !listed.length && !failures.length) return undefined;
   const ids = new Set([...listed, ...failures].map((r) => r.id));
-  const gone: Report[] = known.filter((s) => !hasEnded(s.state) && !ids.has(s.id)).map((s) => ({ id: s.id, state: "unknown" }));
+  // Hermes lists a subagent once it runs. A queued one missing from a roster read while connected throughout just hasn't
+  // started; after a drop, it may have come and gone unheard.
+  const recovering = tree?.sync.kind !== "live";
+  const gone: Report[] = known
+    .filter((s) => (s.state === "running" || (s.state === "queued" && recovering)) && !ids.has(s.id))
+    .map((s) => ({ id: s.id, state: "unknown" }));
   // One the roster brings that the app hadn't heard of was running before the app could hear it.
   const next = applied(tree, [...listed, ...failures, ...gone], (r) => (r.stored ? {} : { partial: true }));
   return { ...next, sync: { kind: "live" } };

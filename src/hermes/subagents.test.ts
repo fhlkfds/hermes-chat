@@ -203,6 +203,25 @@ describe("Recovering the tree after a reconnect", () => {
     expect(server.requests.filter((r) => r.method === "subagent.interrupt")).toEqual([]);
   });
 
+  it("while connected, a roster read keeps a queued subagent that hasn't started, and gives a nested one its tools", async () => {
+    const { server, hermes, id, runtime, tree, agent } = await replying();
+    server.event(runtime, "subagent.spawn_requested", who("q", "Waits its turn"));
+    server.event(runtime, "subagent.start", who("p", "Parent"));
+    server.event(runtime, "subagent.tool", who("p", "Parent", { tool_name: "read_file", tool_preview: "src/auth.ts", tool_count: 1 }));
+    // Hermes relays a nested subagent's start, not its tool calls.
+    server.event(runtime, "subagent.start", who("g", "Nested", { parent_id: "p", depth: 1 }));
+    server.subagents[id] = [
+      { subagent_id: "p", owner: runtime, goal: "Parent", status: "running", tool_count: 1, last_tool: "read_file", accepting_steer: true },
+      { subagent_id: "g", owner: runtime, goal: "Nested", parent_id: "p", depth: 1, status: "running", tool_count: 4, last_tool: "grep", accepting_steer: true },
+    ];
+    await hermes.refreshSubagents(id);
+    expect(tree().sync).toEqual({ kind: "live" });
+    expect(agent("q")!.state).toBe("queued");
+    expect(agent("g")).toMatchObject({ state: "running", toolCount: 4, lastActivity: { text: "grep" } });
+    // What the events said about the parent stays: the roster's bare tool name is no news.
+    expect(agent("p")!.lastActivity!.text).toBe("read_file: src/auth.ts");
+  });
+
   it("drops a roster that arrives after the chat's session changed", () => {
     // The tree is the roster's only input; the transport checks the session before applying it. A roster with nothing
     // in it and no tree makes no tree.

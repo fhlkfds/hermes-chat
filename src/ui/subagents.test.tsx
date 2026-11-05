@@ -55,7 +55,7 @@ async function auditing() {
 
 describe("The Subagents panel", () => {
   it("shows a tree of who started whom, and opens one to its own activity and output, apart from the chat", async () => {
-    const { user } = await auditing();
+    const { server, user } = await auditing();
     expect(within(panel()).getByText("3 running · 3 in all")).toBeTruthy();
     await user.click(within(panel()).getByRole("button", { name: /Subagents/ }));
 
@@ -63,8 +63,11 @@ describe("The Subagents panel", () => {
     expect(within(top).getAllByRole("button").map((b) => b.querySelector(".subagent-goal")!.textContent)).toEqual(["Read the auth code", "Check token expiry", "Read the tests"]);
     expect(within(panel()).getByRole("list", { name: "Started by Read the auth code" })).toBeTruthy();
 
+    const lists = server.requests.filter((r) => r.method === "subagent.list").length;
     await user.click(within(panel()).getByRole("button", { name: /Read the auth code/ }));
     expect(within(panel()).getByRole("heading", { name: "Read the auth code" })).toBe(document.activeElement);
+    // Opening one reads Hermes's roster again, which is how it tells of nested subagents' tools.
+    await waitFor(() => expect(server.requests.filter((r) => r.method === "subagent.list").length).toBe(lists + 1));
     expect(within(panel()).getByText("src/auth.ts")).toBeTruthy();
     await waitFor(() => expect(within(panel()).getByText(/Found 2 token checks/)).toBeTruthy());
     // The transcript holds only the chat's own messages.

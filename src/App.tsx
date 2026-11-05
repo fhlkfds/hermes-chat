@@ -3622,6 +3622,7 @@ function ChatView({
       subagents={
         started
           ? {
+              refresh: () => hermes.refreshSubagents(chat.id),
               output: (id) => hermes.subagentOutput(chat.id, id),
               steer: (id, text) => hermes.steerSubagent(chat.id, id, text),
               stop: (id) => hermes.stopSubagent(chat.id, id),
