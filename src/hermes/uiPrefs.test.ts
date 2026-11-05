@@ -42,7 +42,7 @@ afterEach(() => {
 
 describe("reading", () => {
   it("is the defaults when nothing is stored", () => {
-    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, checkUpdatesOnLaunch: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, modelPicks: {}, modelFavorites: [], statusBar: ["context", "yolo", "model", "status"], previewWidth: null, screenshotShortcut: "Ctrl+Shift+S", templates: [], terminalKind: "server", followUp: "queue", idleCompact: { enabled: false, percent: 70, idleMinutes: 15 } });
+    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, checkUpdatesOnLaunch: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, modelPicks: {}, modelFavorites: [], statusBar: ["context", "yolo", "model", "status"], previewWidth: null, screenshotShortcut: "Ctrl+Shift+S", templates: [], terminalKind: "server", followUp: "queue", idleCompact: { enabled: false, percent: 70, idleMinutes: 15 }, speechToText: { primary: "server", backup: false, timeoutSeconds: 30 } });
     expect(getUIPrefs()).toEqual(DEFAULT_UI_PREFS);
   });
 
@@ -70,6 +70,7 @@ describe("reading", () => {
         terminalKind: "laptop",
         followUp: "interrupt",
         idleCompact: { enabled: "yes", percent: 100, idleMinutes: 30 },
+        speechToText: { primary: "cloud", backup: true, timeoutSeconds: 3 },
       }),
     );
     expect(getUIPrefs()).toEqual({
@@ -84,6 +85,7 @@ describe("reading", () => {
       statusBar: ["model", "tokens"],
       previewWidth: null, screenshotShortcut: "Ctrl+Shift+S", templates: [], terminalKind: "server", followUp: "queue",
       idleCompact: { enabled: false, percent: 70, idleMinutes: 30 },
+      speechToText: { primary: "server", backup: true, timeoutSeconds: 30 },
     });
   });
 
