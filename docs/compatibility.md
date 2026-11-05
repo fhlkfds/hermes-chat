@@ -57,6 +57,8 @@ Needs the `projects.*` methods on `/api/ws`. Checked with `projects.list`. Witho
 
 Needs `commands.catalog`, `command.dispatch`, and `slash.exec` on `/api/ws`. Checked with `commands.catalog`. Without them, `/steer` and `/context` say that Hermes needs an update. The app's own commands still work.
 
+Running skills from the composer also needs `commands.catalog` to list skills (its `skills` field), and Settings → Skills' `GET /api/skills` and `GET /api/config`. Without any of them, the menus show no skills, "$" opens nothing, and text naming a skill is sent as an ordinary message.
+
 ## The inbox
 
 Needs `session.active_list` on `/api/ws` to show work running in other profiles. Without it, the inbox still lists Unread chats and Failed messages in every profile, and says that it can't see running work elsewhere.

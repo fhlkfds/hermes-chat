@@ -1,0 +1,30 @@
+[
+ {
+  "content": "[IMPORTANT: The user has invoked the \"debugging\" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]\n\n# Debugging\nReproduce first.\n\n[Skill directory: /srv/skills/debugging]\nResolve any relative paths in this skill (e.g. `scripts/foo.js`, `templates/config.yaml`) against that directory, then run them with the terminal tool using the absolute path.\nThe user has provided the following instruction alongside the skill invocation: fix the build  using\n$debugging",
+  "shown": "/debugging fix the build using $debugging"
+ },
+ {
+  "content": "[IMPORTANT: The user has invoked the \"debugging\" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]\n\n# Debugging\nQuote: The user has provided the following instruction alongside the skill invocation: not this\n\n[Skill directory: /srv/skills/debugging]\nResolve any relative paths in this skill (e.g. `scripts/foo.js`, `templates/config.yaml`) against that directory, then run them with the terminal tool using the absolute path.\nThe user has provided the following instruction alongside the skill invocation: the real one",
+  "shown": "/debugging the real one"
+ },
+ {
+  "content": "[IMPORTANT: The user has invoked the \"writing\" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]\n\nWrite plainly.\n\n[Skill directory: /srv/skills/writing]\nResolve any relative paths in this skill (e.g. `scripts/foo.js`, `templates/config.yaml`) against that directory, then run them with the terminal tool using the absolute path.",
+  "shown": "/writing"
+ },
+ {
+  "content": "[IMPORTANT: The user has invoked the \"/debugging /writing\" stacked skill bundle, loading 2 skills together. Treat every skill below as active guidance for this turn.]\n\nSkills loaded: debugging, writing\n\nUser instruction: fix it\n and say so\n\n[Loaded as part of the stacked skill invocation \"debugging\".]\n\nReproduce first.\n\n[Loaded as part of the stacked skill invocation \"writing\".]\n\nWrite plainly.",
+  "shown": "/debugging /writing fix it and say so"
+ },
+ {
+  "content": "[IMPORTANT: The user has invoked the \"/debugging /writing\" stacked skill bundle, loading 2 skills together. Treat every skill below as active guidance for this turn.]\n\nSkills loaded: debugging, writing\n\n[Loaded as part of the stacked skill invocation \"debugging\".]\n\na\n\n[Loaded as part of the stacked skill invocation \"writing\".]\n\nb",
+  "shown": "/debugging /writing"
+ },
+ {
+  "content": "[IMPORTANT: The config file is broken]",
+  "shown": null
+ },
+ {
+  "content": "just a message",
+  "shown": null
+ }
+]

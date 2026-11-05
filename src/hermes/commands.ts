@@ -2,6 +2,7 @@
 // app already has, and Hermes commands whose behaviour was read in Hermes's source at the deployed `bf0203a`. Nothing
 // typed is forwarded to Hermes as a command unless it is in this list; any other text starting with "/" is sent as an
 // ordinary message.
+import { catalogSkills } from "./skillCommands";
 
 /**
  * `local`: an action of this app, which may write to Hermes through the same calls its buttons use. `server`: a command
@@ -81,9 +82,10 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object
 
 /**
  * The registry's server commands Hermes lists (`listed`); those a quick or plugin command of the same name replaces
- * (`replaced`); and those that might be replaced by one Hermes couldn't list (`unsure`).
+ * (`replaced`); and those that might be replaced by one Hermes couldn't list (`unsure`). `skills`: the skills Hermes
+ * would run as commands, key to description (`skillCommands.catalogSkills`), undefined when it can't say.
  */
-export type ServerCommandList = { listed: Set<string>; replaced: Set<string>; unsure: Set<string> };
+export type ServerCommandList = { listed: Set<string>; replaced: Set<string>; unsure: Set<string>; skills?: Map<string, string> };
 
 /**
  * Commands that go through `command.dispatch`, which runs a quick command (any shell command) or a plugin command before
@@ -111,13 +113,20 @@ export async function listServerCommands(rpc: Rpc, profile: string): Promise<Ser
   // "User commands" and plugin commands in `plugin_commands`, by name without the slash.
   const canon = isObj(res.canon) ? res.canon : {};
   const taken = new Set<string>(Object.keys(isObj(res.plugin_commands) ? res.plugin_commands : {}).map((k) => `/${k.toLowerCase()}`));
+  // Quick commands are listed under "User commands" and plugin commands under "Plugin commands".
   for (const c of Array.isArray(res.categories) ? res.categories : [])
     if (isObj(c) && (c.name === "User commands" || c.name === "Plugin commands") && Array.isArray(c.pairs))
       for (const p of c.pairs) if (Array.isArray(p) && typeof p[0] === "string") taken.add(p[0].toLowerCase());
   const server = COMMANDS.filter((c) => c.scope === "server").map((c) => c.name);
   const replaced = new Set(server.filter((n) => REPLACEABLE.has(n) && taken.has(`/${n}`)));
   const unsure = new Set(server.filter((n) => REPLACEABLE.has(n) && failed && !replaced.has(n)));
-  return { listed: new Set(server.filter((n) => canon[`/${n}`] === `/${n}` && !replaced.has(n) && !unsure.has(n))), replaced, unsure };
+  const skills = catalogSkills(res, taken, failed);
+  return {
+    listed: new Set(server.filter((n) => canon[`/${n}`] === `/${n}` && !replaced.has(n) && !unsure.has(n))),
+    replaced,
+    unsure,
+    ...(skills && { skills }),
+  };
 }
 
 /**
