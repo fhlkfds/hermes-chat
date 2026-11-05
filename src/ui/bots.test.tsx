@@ -7,7 +7,9 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row } from "../hermes/fakeHermes";
 import { memoryCache } from "../hermes/memoryCache";
-import { BOT_CHAT_TITLE } from "../hermes/bots";
+import { BOT_CHAT_TITLE, BotModeUnsupportedError } from "../hermes/bots";
+import { getUIPrefs } from "../hermes/uiPrefs";
+import { Bots } from "./Bots";
 import { connect, type Hermes } from "../hermes/transport";
 import { Main } from "../App";
 
@@ -63,6 +65,11 @@ const botsButton = () => document.querySelector<HTMLButtonElement>(".bots-btn");
 const bots = () => screen.getByRole("dialog", { name: /Bots/ });
 const botRows = () => Array.from(bots().querySelectorAll<HTMLButtonElement>(".bots-open"));
 const listTitles = () => [...document.querySelectorAll(".sidebar .row-title")].map((e) => e.textContent);
+
+async function pickProfile(user: ReturnType<typeof userEvent.setup>, profile: string) {
+  await user.click(document.querySelector<HTMLElement>(".profile-btn")!);
+  await user.click(await screen.findByRole("option", { name: new RegExp(`^${profile}`) }));
+}
 
 async function openBots(user: ReturnType<typeof userEvent.setup>) {
   await user.click(botsButton()!);
@@ -154,14 +161,104 @@ describe("A Hermes without Bot Mode", () => {
     await waitFor(() => expect(botsButton()).toBeNull());
   });
 
-  it("says why in the view when its rows don't report Bot Chats, and the button goes once it closes", async () => {
-    const { user } = await launch((s) => (s.botMode = "no-canonical"));
-    await user.click(botsButton()!);
-    await waitFor(() => expect(within(bots()).getByRole("alert").textContent).toMatch(/doesn't report their Bot Chats, so it has no Bot Mode\. Hermes Chat shows no Bots button for it\.$/));
-    // The button stays while the view that found out is open, and Escape closes it from Close, which has focus.
-    expect(botsButton()).not.toBeNull();
+  it("shows no Bots button once the check finds a profiles.list that doesn't report Bot Chats, without opening the view", async () => {
+    const { hermes } = await launch((s) => (s.botMode = "no-canonical"));
+    await act(async () => void (await hermes.capabilities.refresh()));
+    await waitFor(() => expect(botsButton()).toBeNull());
+    expect(hermes.capabilities.get("botMode").why).toMatch(/doesn't report their Bot Chats/);
+  });
+
+  it("says why in the view when it finds out there, with focus on Close so Escape closes it", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    const onUnsupported = vi.fn();
+    render(
+      <Bots
+        server="hermes"
+        profile="default"
+        connected
+        load={async () => {
+          throw new BotModeUnsupportedError("This Hermes lists its profiles but doesn't report their Bot Chats, so it has no Bot Mode.");
+        }}
+        avatar={async () => undefined}
+        activity={() => undefined}
+        onOpen={() => {}}
+        onNewChat={() => {}}
+        onRefresh={() => {}}
+        onClose={onClose}
+        onUnsupported={onUnsupported}
+      />,
+    );
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toMatch(/so it has no Bot Mode\. Hermes Chat shows no Bots button for it\.$/));
+    expect(onUnsupported).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(document.activeElement?.classList.contains("bots-close")).toBe(true));
     await user.keyboard("{Escape}");
-    await waitFor(() => expect(botsButton()).toBeNull());
+    expect(onClose).toHaveBeenCalled();
+  });
+});
+
+describe("What the owner does while a Bot Chat opens", () => {
+  /** Holds every `session.list` until `release`. */
+  function holdLookups(server: FakeHermes) {
+    const lookup = server.handlers["session.list"];
+    const held: (() => void)[] = [];
+    server.handlers["session.list"] = (r) => void held.push(() => lookup(r));
+    return () => held.splice(0).forEach((f) => f());
+  }
+
+  it("keeps the chat the owner opened meanwhile, in the same profile", async () => {
+    const { server, hermes, user } = await launch();
+    const release = holdLookups(server);
+    await openBots(user);
+    await user.click(botRows()[0]);
+    await waitFor(() => expect(server.requests.some((r) => r.method === "session.list")).toBe(true));
+    await user.click(screen.getByText("Disk usage"));
+    await waitFor(() => expect(screen.getByText("How full is the disk?")).toBeTruthy());
+    await act(async () => release());
+    await waitFor(() => expect(server.sessions.some((s) => s.title === BOT_CHAT_TITLE)).toBe(true));
+    // The Bot Chat was made, but the pane stays on the chat the owner picked.
+    await act(async () => void (await hermes.idle()));
+    expect(screen.getByText("How full is the disk?")).toBeTruthy();
+    expect(document.querySelector(".chat-head")?.textContent).toMatch(/Disk usage/);
+  });
+
+  it("drops the open once the owner picks another profile before the bot's list loads, even after coming back", async () => {
+    const { server, hermes, user } = await launch();
+    // The scribe profile's list is held, so the open waits for it.
+    const list = server.rest["GET /api/sessions"];
+    const held: (() => void)[] = [];
+    let holding = true;
+    server.rest["GET /api/sessions"] = (req) =>
+      holding && req.query.get("profile") === "scribe" ? new Promise((resolve) => held.push(() => resolve(list(req)))) : list(req);
+    await openBots(user);
+    await user.click(botRows()[1]);
+    await waitFor(() => expect(hermes.profile).toBe("scribe"));
+    await pickProfile(user, "default");
+    await waitFor(() => expect(listTitles()).toEqual(["Disk usage"]));
+    holding = false;
+    held.splice(0).forEach((f) => f());
+    await pickProfile(user, "scribe");
+    await waitFor(() => expect(listTitles()).toEqual(["Changelog wording"]));
+    await act(async () => void (await hermes.idle()));
+    // Coming back is an ordinary switch: no Bot Chat lookup, and the Bot Chat doesn't open.
+    expect(server.requests.filter((r) => r.method === "session.list")).toEqual([]);
+    expect(screen.queryByText("Draft the release notes for 0.9")).toBeNull();
+  });
+});
+
+describe("A Bot Chat outside the list", () => {
+  it("stays out of the list after switching away and back, and isn't the chat reopened at launch", async () => {
+    const { hermes, user } = await launch();
+    await openBots(user);
+    await user.click(botRows()[1]);
+    await waitFor(() => expect(screen.getByText("Draft the release notes for 0.9")).toBeTruthy());
+    expect(getUIPrefs().lastOpenChat.scribe).toBeUndefined();
+    await act(async () => void (await hermes.switchProfile("default")));
+    await act(async () => void (await hermes.sync()));
+    await act(async () => void (await hermes.switchProfile("scribe")));
+    // The saved list shows at once, before Hermes answers: it never held the Bot Chat.
+    expect(listTitles()).not.toContain(BOT_CHAT_TITLE);
+    await act(async () => void (await hermes.sync()));
+    expect(listTitles()).toEqual(["Changelog wording"]);
   });
 });

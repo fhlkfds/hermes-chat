@@ -42,7 +42,7 @@ import { desktopLinks, type LinkInbox } from "./hermes/tauriLinks";
 import { ChatLinkNotice, type LinkNoticeView } from "./ui/ChatLinkNotice";
 import { Inbox } from "./ui/Inbox";
 import { Bots } from "./ui/Bots";
-import { botActivity, isBotChatTitle, newInBotChatNote, type Bot } from "./hermes/bots";
+import { botActivity, isBotChat, isBotChatTitle, newInBotChatNote, type Bot } from "./hermes/bots";
 import { inboxAcks, inboxEntries, inboxScope, needsOwner, type InboxEntry } from "./hermes/inbox";
 import { ChatPane, type FollowUpHost, type JumpTarget } from "./ui/ChatPane";
 import { BranchDialog, BranchedFrom } from "./ui/Branch";
@@ -991,7 +991,7 @@ export function Main({
   const [inboxOpen, setInboxOpen] = useState(false);
   /** The Bots view (Bots.tsx, ADR 0066), and a bot's chat to open once its profile is shown. */
   const [botsOpen, setBotsOpen] = useState(false);
-  const [botGo, setBotGo] = useState<{ bot: Bot; then: "open" | "new" }>();
+  const [botGo, setBotGo] = useState<{ bot: Bot; then: "open" | "new"; nav: number }>();
   const ackScope = inboxScope(connection);
   const acks = useMemo(() => inboxAcks(localStorage, ackScope), [ackScope]);
   const dismissed = useSyncExternalStore(acks.subscribe, acks.getSnapshot);
@@ -1155,7 +1155,7 @@ export function Main({
   const projectScreenOpen = projectOpen && !!shownProject;
   const inShown = shownProject && new Set(proj.chats[shownProject.id] ?? []);
   // A Bot Chat opened from the Bots view is in `chats`, for its pane, but never in the list (ADR 0066).
-  const inList = chats.filter((c) => !c.bot);
+  const inList = chats.filter((c) => !isBotChat(c));
   const listed = inShown ? inList.filter((c) => inShown.has(c.id)) : inList;
   const unreadChats = inList.filter((c) => c.unread && !c.archived);
   const projectUnread: ProjectUnread = {
@@ -1242,7 +1242,7 @@ export function Main({
     navGen.current++;
     activeKeyRef.current = key;
     setActiveKey(key);
-    rememberOpenChat(pref, pane.chatId);
+    rememberChat(pane.chatId);
   };
 
   // Every move between chats is kept as the profile's last open chat, so it reopens at the next launch whether or not
@@ -1250,6 +1250,12 @@ export function Main({
   // unless another is named, and the pane it opens in becomes the active one.
   // `keepSettings`: the move isn't the owner's, so Settings stays on screen. `newTab`: the chat opens in a tab of its
   // own, rather than in place of the one showing.
+  // A Bot Chat is reopened from its bot's row, found by its title, never by a stored id (ADR 0066): opening one leaves
+  // the chat to reopen at the next launch as it was.
+  const rememberChat = (id: string | null) => {
+    const chat = id === null ? undefined : hermes.getSnapshot().chats.find((c) => c.id === id);
+    if (!chat || !isBotChat(chat)) rememberOpenChat(pref, id);
+  };
   const openChat = (
     id: string | null,
     {
@@ -1276,7 +1282,7 @@ export function Main({
       setOutputsOpen(false);
       setUsageOpen(false);
       setLogsOpen(false);
-      if (remember) rememberOpenChat(pref, id);
+      if (remember) rememberChat(id);
     };
     if (keepSettings) go();
     else guard(go);
@@ -1341,7 +1347,7 @@ export function Main({
     hermes.reveal(found);
     patchPane(active.key, { chatId: found.chatId, picked: { found, at: Date.now() }, jump: undefined });
     setReopening(undefined);
-    rememberOpenChat(pref, found.chatId);
+    rememberChat(found.chatId);
     setSearchOpen(false);
     setSettingsOpen(false);
     setProjectOpen(false);
@@ -1372,7 +1378,7 @@ export function Main({
     setOutputsOpen(false);
     setUsageOpen(false);
     setLogsOpen(false);
-    rememberOpenChat(pref, chatId);
+    rememberChat(chatId);
   });
 
   /** Opens a chat in the left (0) or right (1) pane, opening the right one if there's one pane. */
@@ -1421,7 +1427,7 @@ export function Main({
     setPanes(rest);
     activeKeyRef.current = rest[0].key;
     setActiveKey(rest[0].key);
-    rememberOpenChat(pref, rest[0].chatId);
+    rememberChat(rest[0].chatId);
     requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(`[data-pane="${CSS.escape(rest[0].key)}"] .composer textarea`)?.focus());
   };
 
@@ -1467,7 +1473,7 @@ export function Main({
     activeKeyRef.current = out.active;
     setActiveKey(out.active);
     setReopening(undefined);
-    rememberOpenChat(pref, panesNow.find((p) => p.key === out.active)!.chatId);
+    rememberChat(panesNow.find((p) => p.key === out.active)!.chatId);
   });
   const dropChat = (key: string, moved: MovedChat, zone: DropZone, index?: number) => moveChat(moved, { pane: key, zone, index });
 
@@ -1548,6 +1554,7 @@ export function Main({
     navGen.current++;
     const keep = activeKeyRef.current;
     setGoTo(undefined);
+    setBotGo(undefined);
     setFocusItem(undefined);
     setPanes([{ key: keep, view: newView(), chatId: null, tabs: [null] }]);
     activeKeyRef.current = keep;
@@ -1639,26 +1646,30 @@ export function Main({
     return botActivity(b, live?.sessions ?? [], open && { running: open.running, waiting: open.items.some(isWaiting) });
   };
   const botsNeedYou =
-    chats.some((c) => c.bot && c.items.some(isWaiting)) || (live?.sessions ?? []).some((s) => s.status === "waiting" && isBotChatTitle(s.title));
+    chats.some((c) => isBotChat(c) && c.items.some(isWaiting)) || (live?.sessions ?? []).some((s) => s.status === "waiting" && isBotChatTitle(s.title));
   const openBot = (b: Bot, then: "open" | "new") => {
     setBotsOpen(false);
     guard(() => {
-      if (b.profile !== profile) switchProfile(b.profile);
-      setBotGo({ bot: b, then });
+      if (b.profile !== profile) switchProfileNow(b.profile);
+      // Anything the owner opens or switches to after this, before the Bot Chat opens, wins over it (`navGen`).
+      setBotGo({ bot: b, then, nav: navGen.current });
     }, b.profile !== profile ? "profile" : "leave");
   };
   useEffect(() => {
     const go = botGo;
-    if (!go || go.bot.profile !== profile || switching || !hermes.hasListed()) return;
+    if (!go) return;
+    if (navGen.current !== go.nav) return setBotGo(undefined);
+    if (go.bot.profile !== profile || switching || !hermes.hasListed()) return;
     setBotGo(undefined);
     if (go.then === "new") {
       newChat();
       return;
     }
+    const still = () => navGen.current === go.nav && hermes.profile === go.bot.profile;
     hermes
       .openBotChat(go.bot)
-      .then((id) => hermes.profile === go.bot.profile && openChat(id, { remember: false }))
-      .catch((e: unknown) => setToast({ text: (e as Error).message, at: Date.now() }));
+      .then((id) => still() && openChat(id, { remember: false }))
+      .catch((e: unknown) => still() && setToast({ text: (e as Error).message, at: Date.now() }));
   }, [botGo, profile, switching, chats]);
 
   // The Approval card or message an entry is about is scrolled to and focused once its chat shows it. Focus goes to
@@ -2214,7 +2225,7 @@ export function Main({
             const stillActive = activeKeyRef.current === p.key;
             patchPane(p.key, { chatId: id, picked: undefined, worktree: undefined });
             setReopening(undefined);
-            if (stillActive) rememberOpenChat(pref, id);
+            if (stillActive) rememberChat(id);
           }}
           onDraftError={(reason) => {
             if (panesRef.current.find((now) => now.key === p.key)?.view === p.view) patchPane(p.key, { draftError: reason });
@@ -3340,7 +3351,7 @@ function ChatView({
     refreshSkills: skillCommands.refresh,
     guide: caps.caps.commands.state === "unsupported" ? () => openGuide(guideUrl("commands")) : undefined,
     why: (def) => {
-      if (def.name === "help" || (def.name === "new" && !chat.bot)) return undefined;
+      if (def.name === "help" || (def.name === "new" && !isBotChat(chat))) return undefined;
       // In a Bot Chat, /new compacts it, which needs the chat open on Hermes and no reply running.
       if (def.name === "new") {
         if (status !== "connected") return "Not connected to Hermes.";
@@ -3352,8 +3363,8 @@ function ChatView({
       if (status !== "connected") return "Not connected to Hermes.";
       if (def.name === "delete" && chat.running) return "A chat with a reply running can't be deleted.";
       // A Bot Chat's title is its identity, and it is its bot's one chat (ADR 0066).
-      if (def.name === "rename" && chat.bot) return "A Bot Chat's name is how Hermes finds it, so it can't be renamed.";
-      if (def.name === "delete" && chat.bot) return "A Bot Chat is its bot's one continuous chat, so Hermes Chat doesn't delete it.";
+      if (def.name === "rename" && isBotChat(chat)) return "A Bot Chat's name is how Hermes finds it, so it can't be renamed.";
+      if (def.name === "delete" && isBotChat(chat)) return "A Bot Chat is its bot's one continuous chat, so Hermes Chat doesn't delete it.";
       if (def.scope === "local") return undefined;
       if (serverCommands.state === "loading") return "Checking whether this Hermes has it…";
       if (serverCommands.state === "failed") return `Couldn't check whether this Hermes has it: ${serverCommands.reason}`;
@@ -3376,7 +3387,7 @@ function ChatView({
       try {
         if (def.name === "new") {
           // A Bot Chat is one continuous conversation: /new compacts it instead, as in Hermes's desktop (ADR 0066).
-          if (chat.bot) {
+          if (isBotChat(chat)) {
             const res = await hermes.compact(chat.id);
             if (here()) done();
             return newInBotChatNote(res);

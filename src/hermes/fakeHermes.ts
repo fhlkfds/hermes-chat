@@ -1104,10 +1104,11 @@ export class FakeHermes {
       const store = this.storeOrFail(query.get("profile")).filter((s) => !excluded.includes(s.source) && (!only.length || only.includes(s.source)));
       const hits = (token: string) => words.some((w) => token.toLowerCase().startsWith(w));
       const results = new Map<string, Record<string, unknown>>();
+      // A hit in a compressed chat is reported at its lineage's tip, with the tip's title (`add_lineage_result`).
       const add = (s: SessionRow, snippet: string, role: string | null) =>
         results.size < limit && !results.has(s.id) && results.set(s.id, {
-          snippet, role, source: s.source, model: s.model ?? null, session_started: s.started_at, session_id: s.id, lineage_root: s.id,
-          profile: query.get("profile") ?? "default", id: s.id, title: s.title, started_at: s.started_at,
+          snippet, role, source: s.source, model: s.model ?? null, session_started: s.started_at, session_id: s.listedAs?.id ?? s.id, lineage_root: s.id,
+          profile: query.get("profile") ?? "default", id: s.listedAs?.id ?? s.id, title: s.listedAs?.title ?? s.title, started_at: s.started_at,
           last_active: s.last_active ?? s.started_at, message_count: s.message_count, preview: s.preview, archived: s.archived,
         });
       for (const s of store)
@@ -1951,9 +1952,10 @@ export class FakeHermes {
     const recent = (s: SessionRow) => s.last_active ?? s.started_at;
     const bot = store.find((s) => s.title === "Bot Chat" && !s.archived && !s.unlisted);
     const last = store.filter((s) => !s.hidden && !s.archived && !s.unlisted).sort((a, b) => recent(b) - recent(a))[0];
-    const transcript = bot ? (this.transcripts[bot.id] ?? []).filter((m) => (m.role === "user" || m.role === "assistant") && (m.text ?? "").trim()) : [];
-    const newest = transcript[transcript.length - 1]?.text?.replace(/\s+/g, " ").trim() ?? bot?.preview ?? "";
     const tip = bot?.listedAs?.id ?? bot?.id;
+    // The preview is the tip's newest user or assistant message (`_latest_message_preview` on the tip).
+    const transcript = bot ? (this.transcripts[tip!] ?? this.transcripts[bot.id] ?? []).filter((m) => (m.role === "user" || m.role === "assistant") && (m.text ?? "").trim()) : [];
+    const newest = transcript[transcript.length - 1]?.text?.replace(/\s+/g, " ").trim() ?? bot?.preview ?? "";
     const canonical = bot
       ? { id: bot.id, resolved_id: tip, root_title: "Bot Chat", title: bot.listedAs?.title ?? "Bot Chat", preview: newest.length > 80 ? `${newest.slice(0, 80)}...` : newest, started_at: bot.started_at, last_active: recent(bot), message_count: bot.message_count, live_message_count: transcript.length || bot.message_count }
       : null;

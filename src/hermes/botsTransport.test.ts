@@ -146,6 +146,38 @@ describe("keeping Bot Chats out of the list and search", () => {
     expect(found.map((f) => f.chatId)).toEqual(["scribe-side"]);
   });
 
+  it("leaves out a compressed Bot Chat, by its lineage, before the Bots view has ever opened", async () => {
+    const server = new FakeHermes();
+    const { hermes } = await signedIn(server);
+    // A compressed Bot Chat whose newest segment is titled otherwise (Hermes carries the title over; this one didn't).
+    server.sessions.push(
+      row("bot-root", 2, { title: BOT_CHAT_TITLE, hidden: true, archived: true, listedAs: { id: "bot-tip", title: "Draft notes" } }),
+      row("bot-tip", 1, { unlisted: true, hidden: true }),
+    );
+    server.transcripts["bot-root"] = [{ role: "user", text: "release checklist for the bot" }];
+    server.transcripts["bot-tip"] = [{ role: "assistant", text: "Tip: the release is ready." }];
+    server.sessions.find((s) => s.id === "bot-root")!.archived = false;
+    // Search reports the hit at the tip, under the tip's title; only the roster's ids say it's the Bot Chat.
+    const found = await hermes.search("release");
+    expect(found.map((f) => f.chatId)).toEqual(["side"]);
+    // The roster reports the tip, and previews its newest message.
+    const me = (await hermes.bots()).find((b) => b.profile === "default")!;
+    expect(me.botChat).toMatchObject({ id: "bot-root", resolvedId: "bot-tip", preview: "Tip: the release is ready." });
+    expect(await hermes.openBotChat(me)).toBe("bot-tip");
+  });
+
+  it("refuses to rename a chat to the Bot Chat's title, which would make it a bot's one chat", async () => {
+    const { server, hermes } = await signedIn();
+    await expect(hermes.rename("side", " Bot Chat ", "Disk usage")).rejects.toThrow("“Bot Chat” is the name Hermes gives each bot's one chat. Pick another name.");
+    expect(server.restRequests.filter((r) => r.method === "PATCH")).toEqual([]);
+    // Nor is a Bot Chat renamed, or its title made again.
+    const me = (await hermes.bots()).find((b) => b.profile === "default")!;
+    const id = await hermes.openBotChat(me);
+    await expect(hermes.rename(id, "Ops notes", BOT_CHAT_TITLE)).rejects.toThrow("A Bot Chat's name is how Hermes finds it, so it can't be renamed.");
+    await expect(hermes.regenerateTitle(id)).rejects.toThrow("can't be renamed");
+    expect(server.restRequests.filter((r) => r.method === "PATCH")).toEqual([]);
+  });
+
   it("leaves out one born visible elsewhere, by its title", async () => {
     const server = new FakeHermes();
     const { hermes } = await signedIn(server);

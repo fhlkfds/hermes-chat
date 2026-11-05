@@ -44,7 +44,7 @@ import { memoryApi, type MemoryApi } from "./memory";
 import { MemoryProvidersApi } from "./memoryProviders";
 import { SkillsApi } from "./skills";
 import { CapabilityStore, CapabilityUnsupportedError } from "./capabilities";
-import { BOT_CHAT_TITLE, BotChats, BotModeUnsupportedError, isBotChatTitle, rosterOf, type Bot } from "./bots";
+import { BOT_CHAT_TITLE, BotChats, BotModeUnsupportedError, isBotChat, isBotChatTitle, rosterOf, type Bot } from "./bots";
 import type { OpenPipe, Pipe, PipeEvent, RestMethod, Route, Speech, Transcript, VoiceSetup } from "./pipe";
 import { RemoteFilesError, previewSupport, remoteFiles, type EditIo, type RemoteFiles } from "./remoteFiles";
 import { isUnsecure } from "./unsecure";
@@ -83,6 +83,9 @@ import { cannotResend, laterOf, replayBlocked, resendText, replayTarget, splitRe
  * `authorize_history` at the deployed `bf0203a`): every edit of a `hermes-chat` row was answered 404 `not_found`.
  */
 export const APP_SOURCE = "gui";
+
+/** Why a Bot Chat can't be renamed here (ADR 0066). */
+const BOT_CHAT_RENAME = "A Bot Chat's name is how Hermes finds it, so it can't be renamed.";
 /** What this app stamped before, still shown as this app's. Hermes won't edit these chats. */
 const OLD_APP_SOURCE = "hermes-chat";
 const READY_TIMEOUT_MS = 15_000;
@@ -560,6 +563,8 @@ export class Hermes {
   private botChats = new BotChats((method, params) => this.request(method, params), APP_SOURCE);
   /** The Bot Chats the latest roster named, by profile: registry rows and lineage tips, which search leaves out. */
   private botChatIds = new Map<string, Set<string>>();
+  /** The roster read for the Bot Chats' ids on a connection (`knownBotChats`). */
+  private botChatsRead?: { gen: number; done: Promise<void> };
   /** Chats archived or restored here whose flag Hermes hasn't confirmed yet: the `archived` flag each should have.
    * While a chat is here, this flag beats the one the server lists. */
   private archiveWanted = new Map<string, boolean>();
@@ -1322,13 +1327,13 @@ export class Hermes {
     const profile = this.profile;
     const raw = rawSources(sources);
     const query = new URLSearchParams({ q, profile, limit: String(limit), exclude_sources: "cron", ...(raw && { sources: raw }) });
-    const res = (await this.rest("GET", `api/sessions/search?${query}`)) as { results: SearchRow[] };
+    const [res] = (await Promise.all([this.rest("GET", `api/sessions/search?${query}`), this.knownBotChats()])) as [{ results: SearchRow[] }, void];
     if (this.profile !== profile) throw new Error(`Switched to the ${this.profile} profile before the results came.`);
     const listed = new Map(this.snapshot.chats.map((c) => [c.id, c]));
     // Search rows don't say whether a chat is pinned, and the list leaves out pinned chats older than its month.
     const pinned = res.results.some((r) => !listed.has(r.id)) ? await this.pinnedIds(profile) : new Set<string>();
     const found = res.results
-      .filter((r) => (archived || !this.isArchived(r)) && !this.deleted.has(r.id) && !this.isBotChatHit(profile, r))
+      .filter((r) => (archived || !this.isArchived(r)) && !this.deleted.has(r.id) && !this.isBotChatRow(profile, r))
       .map((r): Found => {
         const snippet = snippetParts(r.snippet ?? "");
         const role = r.role === "user" || r.role === "assistant" ? r.role : undefined;
@@ -1354,6 +1359,7 @@ export class Hermes {
    */
   async browse({ archived, sources }: { archived: "exclude" | "only" | "include"; sources?: Source[] }): Promise<{ found: Found[]; capped: boolean }> {
     const profile = this.profile;
+    await this.knownBotChats();
     const { rows, more } = await this.readList(profile, archived, -Infinity, rawSources(sources));
     if (this.profile !== profile) throw new Error(`Switched to the ${this.profile} profile before the chats came.`);
     const listed = new Map(this.snapshot.chats.map((c) => [c.id, c]));
@@ -1484,11 +1490,27 @@ export class Hermes {
     return openId;
   }
 
-  /** A search hit in one of the profile's Bot Chats: by its title, or by the ids the latest roster named. */
-  private isBotChatHit(profile: string, r: SearchRow): boolean {
+  /**
+   * A listed row or search hit in one of the profile's Bot Chats. By its title: Hermes carries the title to a compressed
+   * chat's newest segment, which is the row it lists and the hit it reports (research doc "Bot Mode"). And by the ids
+   * the latest roster named, the registry row and its tip, for the lineage's other segments.
+   */
+  private isBotChatRow(profile: string, r: { id: string; title?: string | null; lineage_root?: string; _lineage_root_id?: string | null }): boolean {
     if (isBotChatTitle(r.title)) return true;
     const ids = this.botChatIds.get(profile);
-    return !!ids && (ids.has(r.id) || (!!r.lineage_root && ids.has(r.lineage_root)));
+    const root = r.lineage_root ?? r._lineage_root_id ?? undefined;
+    return !!ids && (ids.has(r.id) || (!!root && ids.has(root)));
+  }
+
+  /**
+   * Reads the roster once per connection, for the Bot Chats' ids, so search can leave them out before the Bots view
+   * has ever opened. A Hermes without Bot Mode, or a read that fails, leaves only the title to go by.
+   */
+  private knownBotChats(): Promise<void> {
+    const gen = this.generation;
+    if (this.capabilities.get("botMode").state === "unsupported") return Promise.resolve();
+    if (this.botChatsRead?.gen !== gen) this.botChatsRead = { gen, done: this.bots().then(() => {}, () => {}) };
+    return this.botChatsRead.done;
   }
 
   reveal(found: Found) {
@@ -2475,7 +2497,7 @@ export class Hermes {
       running: true,
       updatedAt: Date.now(),
       // A new chat is named by its first message until Hermes titles it; a Bot Chat keeps its title, its identity.
-      title: c.items.length === 0 && c.runtimeId && !c.bot ? (text || attachments[0]?.name || c.title).slice(0, 48) : c.title,
+      title: c.items.length === 0 && c.runtimeId && !isBotChat(c) ? (text || attachments[0]?.name || c.title).slice(0, 48) : c.title,
       items: [...c.items, user],
     }));
     for (const fn of this.sendListeners) fn(profile, chatId);
@@ -2637,6 +2659,10 @@ export class Hermes {
     const title = proposed.trim();
     if (!title) throw new Error("A chat needs a title.");
     if (title === from) return from;
+    // A Bot Chat's title is how Hermes finds it, and a chat renamed to the title would become a bot's one chat (ADR 0066).
+    const chat = this.snapshot.chats.find((c) => c.id === chatId);
+    if (chat && isBotChat(chat)) throw new Error(BOT_CHAT_RENAME);
+    if (isBotChatTitle(title)) throw new Error(`“${BOT_CHAT_TITLE}” is the name Hermes gives each bot's one chat. Pick another name.`);
     const profile = this.profile;
     // Read in this order, a rename elsewhere either shows in the title or makes the revision stale.
     const revision = await this.revision(chatId, profile);
@@ -2674,6 +2700,7 @@ export class Hermes {
   async regenerateTitle(chatId: string): Promise<string> {
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
     if (!chat) throw new Error("This chat isn't in the list.");
+    if (isBotChat(chat)) throw new Error(BOT_CHAT_RENAME);
     const from = chat.title;
     const profile = this.profile;
     // Tool rows count toward each page, so older pages are read until the last messages are all in.
@@ -3707,7 +3734,7 @@ export class Hermes {
       const res = (await this.rest("GET", `api/sessions?${query}`)) as SessionPage;
       // A Bot Chat is opened from its bot's row only, never from the list (ADR 0066). Hermes lists them hidden, except
       // in the archived view, and one born visible elsewhere is still named "Bot Chat".
-      rows.push(...res.sessions.filter((r) => !isBotChatTitle(r.title)));
+      rows.push(...res.sessions.filter((r) => !this.isBotChatRow(profile, r)));
       const passedCutoff = res.sessions.some((r) => !r.pinned && lastActive(r) < cutoff);
       if (passedCutoff || res.sessions.length === 0 || offset + PAGE_SIZE >= res.total) return { rows, more: false };
     }
@@ -3723,7 +3750,7 @@ export class Hermes {
     const query = new URLSearchParams({ profile, order: "recent", limit: String(OTHER_PAGE_SIZE), offset: "0", exclude_sources: "cron" });
     const res = (await this.rest("GET", `api/sessions?${query}`)) as SessionPage;
     const chats = res.sessions
-      .filter((r) => !r.archived && !this.deleted.has(r.id) && !isBotChatTitle(r.title))
+      .filter((r) => !r.archived && !this.deleted.has(r.id) && !this.isBotChatRow(profile, r))
       .map((r): ListedChat => ({ id: r.id, title: listTitle(r), at: lastActive(r), unread: !!r.unread && lastActive(r) >= cutoff, source: toSource(r.source) }));
     // As in syncOnce: the page also carries every pinned row, and the unpinned ones follow recency.
     const passedCutoff = res.sessions.some((r) => !r.pinned && lastActive(r) < cutoff);
@@ -3744,7 +3771,8 @@ export class Hermes {
   private saveList(profile: string, chats: Chat[]) {
     this.cache.save(
       profile,
-      chats.map(({ id, title, source, settled, settledHere, archived, updatedAt, unread }) => ({
+      // A Bot Chat isn't part of the list, so it isn't kept as part of it (ADR 0066).
+      chats.filter((c) => !isBotChat(c)).map(({ id, title, source, settled, settledHere, archived, updatedAt, unread }) => ({
         id,
         title,
         source,

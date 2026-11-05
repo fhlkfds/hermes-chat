@@ -11,6 +11,7 @@ import type { SkillCall } from "../hermes/skillCommands";
 import type { DeskState, ScreenshotDesk } from "../hermes/screenshots";
 import { ApprovalCard } from "./ApprovalCard";
 import { Menu } from "./ChatMenu";
+import { isBotChat } from "../hermes/bots";
 import { DeleteChatDialog } from "./DeleteChat";
 import { QueuePanel, type QueueApi } from "./Queue";
 import { Markdown } from "./Markdown";
@@ -178,7 +179,7 @@ function MoreMenu({
       <button
         ref={button}
         className={`icon-btn ${at ? "on" : ""}`}
-        title={chat.bot ? "More actions: export" : `More actions: export, copy link, settle, archive${onDelete ? ", delete" : ""}`}
+        title={isBotChat(chat) ? "More actions: export" : `More actions: export, copy link, settle, archive${onDelete ? ", delete" : ""}`}
         aria-label="More"
         aria-haspopup="menu"
         aria-expanded={!!at}
@@ -199,15 +200,15 @@ function MoreMenu({
           {onExport && item("Export as Markdown", <FileDown size={15} />, onExport)}
           {/* A Bot Chat is opened from its bot's row, found by its title (ADR 0066): no link to it by id, and nothing
               that would retire it, which would leave its bot to start another. */}
-          {onCopyLink && !chat.bot && item("Copy chat link", <Link2 size={15} />, onCopyLink, "Copy a link that opens this chat in Hermes Chat on this computer")}
-          {onSettle && !chat.bot && !chat.archived && item(chat.settled ? "Unsettle" : "Settle", chat.settled ? <ArchiveRestore size={15} /> : <Archive size={15} />, () => onSettle(!chat.settled))}
+          {onCopyLink && !isBotChat(chat) && item("Copy chat link", <Link2 size={15} />, onCopyLink, "Copy a link that opens this chat in Hermes Chat on this computer")}
+          {onSettle && !isBotChat(chat) && !chat.archived && item(chat.settled ? "Unsettle" : "Settle", chat.settled ? <ArchiveRestore size={15} /> : <Archive size={15} />, () => onSettle(!chat.settled))}
           {onArchive &&
-            !chat.bot &&
+            !isBotChat(chat) &&
             !chat.running &&
             (chat.archived
               ? item("Restore", <RotateCcw size={15} />, () => onArchive(false))
               : item("Archive", <EyeOff size={15} />, () => onArchive(true), "Hide in every Hermes client, keeping its history"))}
-          {onDelete && !chat.bot && (
+          {onDelete && !isBotChat(chat) && (
             <>
               <div className="menu-sep" role="separator" />
               {item("Delete chat…", <Trash2 size={15} />, () => setAskDelete(true), "Delete this chat in every Hermes client. This can't be undone.", true)}
@@ -575,14 +576,14 @@ export function ChatPane({
         <div className="chat-title">
           {chat.source !== "app" && <SourceIcon source={chat.source} size={13} />}
           <span>{chat.title}</span>
-          {chat.bot ? (
+          {isBotChat(chat) ? (
             <span className="badge" title="Its bot's one continuous chat, opened from the Bots view">
               Bot
             </span>
           ) : (
             chat.settled && <span className="badge">Settled</span>
           )}
-          {!chat.bot && !chat.settled && !chat.archived && snoozedUntil !== undefined && (
+          {!isBotChat(chat) && !chat.settled && !chat.archived && snoozedUntil !== undefined && (
             <span className="badge" title={`Snoozed until ${wakeFull(snoozedUntil)}`}>
               Snoozed
             </span>

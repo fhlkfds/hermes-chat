@@ -132,6 +132,13 @@ export function rosterOf(result: unknown): Bot[] {
 export const isBotChatTitle = (title: unknown) => typeof title === "string" && title.trim() === BOT_CHAT_TITLE;
 
 /**
+ * Whether a chat this app holds is a Bot Chat: one opened from its bot's row, or any chat with the title, which in
+ * Hermes is the profile's Bot Chat whoever named it. Every Bot Chat rule reads this, so a chat renamed to the title
+ * elsewhere is treated as one too.
+ */
+export const isBotChat = (c: { bot?: boolean; title: string }) => !!c.bot || isBotChatTitle(c.title);
+
+/**
  * Whether the chat on screen, by its stored id, is this bot's Bot Chat: its registry row or the lineage's tip, which
  * is what opens once Hermes has compressed it. The `/new` guard reads this (Hermes's `isCanonicalChatOnScreen`).
  */
@@ -172,9 +179,13 @@ export class BotChats {
       if (codeOf(e) === NO_SUCH_METHOD) throw new BotModeUnsupportedError("This Hermes can't look a chat up by its title, so it has no Bot Mode.");
       throw new Error(`Couldn't look up ${name}'s Bot Chat, so no new one was started: ${messageOf(e)}`);
     }
-    const rows = isObj(res) && Array.isArray(res.sessions) ? res.sessions : [];
-    // A title lookup answers only exact matches; a row of another title would be a Hermes that ignored `title`.
-    const row = rows.find((r) => isObj(r) && isBotChatTitle(r.title) && str(r.id));
+    // Only an answer that is plainly a title lookup can say there is no Bot Chat: a list of rows, every one of them
+    // titled "Bot Chat" with an id. Anything else, such as a Hermes that ignored `title` and listed its newest chats,
+    // proves nothing, so nothing is created.
+    const rows = isObj(res) && Array.isArray(res.sessions) ? (res.sessions as unknown[]) : undefined;
+    if (!rows || rows.some((r) => !isObj(r) || !str(r.id) || !isBotChatTitle(r.title)))
+      throw new Error(`Hermes answered the lookup of ${name}'s Bot Chat in a way this app doesn't read, so no new one was started.`);
+    const row = rows[0];
     if (isObj(row)) return { id: str(row.id), resolvedId: str(row.resolved_id) || str(row.id) };
     if (expected) throw new Error(`Hermes didn't confirm ${name}'s Bot Chat this time, so no new one was started. Try again.`);
     return null;

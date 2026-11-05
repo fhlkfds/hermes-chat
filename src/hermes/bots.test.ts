@@ -3,7 +3,7 @@
 // (no stored pointer) and new-compact-guard. The transport's side (hidden from the list and search, the open) is in
 // botsTransport.test.ts.
 import { describe, expect, it } from "vitest";
-import { BOT_CHAT_TITLE, BotChats, BotModeUnsupportedError, botActivity, botName, isBotChatOnScreen, isBotChatTitle, newInBotChatNote, rosterOf, type BotRpc } from "./bots";
+import { BOT_CHAT_TITLE, BotChats, BotModeUnsupportedError, botActivity, botName, isBotChat, isBotChatOnScreen, isBotChatTitle, newInBotChatNote, rosterOf, type BotRpc } from "./bots";
 
 type Call = { method: string; params: Record<string, unknown> };
 
@@ -44,15 +44,19 @@ describe("the bot row opens its Bot Chat", () => {
     expect(methods()).toEqual(["session.list", "session.list"]);
   });
 
-  it("never picks a row of another title, such as the newest chat", async () => {
-    const { rpc, methods } = rpcOf({
-      "session.list": listed({ id: "newest", title: "Release notes" }),
-      "session.create": { session_id: "rt-1", stored_session_id: "s-1" },
-      "session.title": { title: BOT_CHAT_TITLE, pending: false },
-    });
-    const opened = await new BotChats(rpc, "gui").open("ops", "Ops", false);
-    expect(opened).toEqual({ registryId: "s-1", openId: "s-1", created: true });
-    expect(methods()).toEqual(["session.list", "session.create", "session.title"]);
+  it("never picks a row of another title, such as the newest chat, and creates nothing on such an answer", async () => {
+    // A Hermes that ignored `title` lists its newest chats: that says nothing about whether a Bot Chat exists.
+    const { rpc, methods } = rpcOf({ "session.list": listed({ id: "newest", title: "Release notes" }), "session.create": { session_id: "rt-1", stored_session_id: "s-1" } });
+    await expect(new BotChats(rpc, "gui").open("ops", "Ops", false)).rejects.toThrow("Hermes answered the lookup of Ops's Bot Chat in a way this app doesn't read");
+    expect(methods()).toEqual(["session.list"]);
+  });
+
+  it("creates nothing on a lookup answer it can't read", async () => {
+    for (const answer of [{}, { sessions: "none" }, { sessions: [{ title: BOT_CHAT_TITLE }] }, { sessions: [null] }, null]) {
+      const { rpc, methods } = rpcOf({ "session.list": () => answer, "session.create": { session_id: "rt-1", stored_session_id: "s-1" } });
+      await expect(new BotChats(rpc, "gui").open("ops", "Ops", false), JSON.stringify(answer)).rejects.toThrow(/in a way this app doesn't read/);
+      expect(methods()).toEqual(["session.list"]);
+    }
   });
 });
 
@@ -189,6 +193,13 @@ describe("telling a Bot Chat apart", () => {
     expect(isBotChatTitle(" Bot Chat ")).toBe(true);
     expect(isBotChatTitle("Bot Chat #2")).toBe(false);
     expect(isBotChatTitle(undefined)).toBe(false);
+  });
+
+  it("counts a chat as a Bot Chat when it was opened as one, or has the title, however it got it", () => {
+    expect(isBotChat({ bot: true, title: "anything" })).toBe(true);
+    // Renamed to the title in another client: in Hermes it is now the profile's Bot Chat.
+    expect(isBotChat({ title: "Bot Chat" })).toBe(true);
+    expect(isBotChat({ title: "Disk usage" })).toBe(false);
   });
 
   it("knows the Bot Chat on screen by its registry row or its lineage tip, for the /new guard", () => {

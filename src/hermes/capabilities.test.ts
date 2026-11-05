@@ -241,11 +241,13 @@ describe("partial and malformed answers", () => {
     expect(t.caps.get("liveSessions").state).toBe("unknown");
   });
 
-  it("doesn't count a profiles.list whose rows don't report a Bot Chat as Bot Mode", async () => {
-    const t = store({ ...NEW, "RPC profiles.list": { profiles: [{ name: "default", is_default: true }] } });
+  it("finds Bot Mode unsupported on a profiles.list whose rows don't report a Bot Chat, and unknown on another shape", async () => {
+    const t = store({ ...NEW, "RPC profiles.list": { profiles: [{ name: "default", is_default: true }, { name: "ops" }] } });
     await connectAndCheck(t);
-    // The Bots view's own read then reports it unsupported (botsTransport.test.ts).
-    expect(t.caps.get("botMode").state).toBe("unknown");
+    expect(t.caps.get("botMode")).toMatchObject({ state: "unsupported", source: "probed", why: expect.stringMatching(/doesn't report their Bot Chats/) });
+    const odd = store({ ...NEW, "RPC profiles.list": { roster: [] } });
+    await connectAndCheck(odd);
+    expect(odd.caps.get("botMode").state).toBe("unknown");
   });
 
   it("reads Approvals from the client.capabilities answer, whatever its shape", () => {
