@@ -10,27 +10,33 @@ export type Secret = { kind: string; text: string; start: number };
 const PLACEHOLDER =
   /^(?:[*x•.#-]+|<[^>]*>|\[[^\]]*\]|\{\{?[^}]*\}\}?|\$\{?\w+\}?|%\w+%|(?:your|my|the|example|sample|some|insert|enter|replace|change|dummy|fake|test)\b[\w-]*|(?:your|example|sample|dummy|fake)_[\w-]*|password|passwd|secret|token|api[_-]?key|changeme|redacted|string|null|none|undefined|true|false|\.\.\.)$/i;
 
-/** A value given a password-like name that also looks like a password: a letter, and a digit or symbol; or a long run. */
-function looksSecret(value: string): boolean {
-  if (PLACEHOLDER.test(value) || /^[A-Za-z_]\w*(?:\.\w+)+$/.test(value)) return false;
+/**
+ * A value given a password-like name that also looks like a password: a letter, and a digit or symbol; or a long run.
+ * A `bare` (unquoted) one that reads as a member of an object (`os.environ`) is code.
+ */
+function looksSecret(value: string, bare: boolean): boolean {
+  if (PLACEHOLDER.test(value) || (bare && /^[A-Za-z_]\w*(?:\.\w+)+$/.test(value))) return false;
   const mixed = /[A-Za-z]/.test(value) && /[^A-Za-z_-]/.test(value);
   return value.length >= 6 && (mixed || value.length >= 16);
 }
 
 const hasDigit = (value: string) => /\d/.test(value);
 
-// The secret is a rule's first group that matched, or the whole match. `ok` turns a match down.
-const RULES: { kind: string; re: RegExp; ok?: (value: string) => boolean }[] = [
-  { kind: "Private key", re: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g },
-  { kind: "Password in a link", re: /\b[a-z][a-z0-9+.-]*:\/\/[^\s/?#@:]+:([^\s/?#@]+)@/gi, ok: (v) => !PLACEHOLDER.test(v) },
+// The secret is a rule's first group that matched, or the whole match. `ok` turns a match down. `\\?["']` is a quote
+// as written, or escaped in JSON, as a tool call's arguments are.
+const RULES: { kind: string; re: RegExp; ok?: (value: string, m: RegExpMatchArray) => boolean }[] = [
+  { kind: "private key", re: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g },
+  { kind: "password in a link", re: /\b[a-z][a-z0-9+.-]*:\/\/[^\s/?#@:]+:([^\s/?#@]+)@/gi, ok: (v) => !PLACEHOLDER.test(v) },
   { kind: "API key", re: new RegExp(`\\b${PROVIDER_KEY}`, "g") },
-  { kind: "Sign-in token (JWT)", re: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g },
-  { kind: "Bearer token", re: /\bBearer\s+([A-Za-z0-9._~+/-]{16,}=*)/gi, ok: hasDigit },
-  { kind: "Bot token", re: /\b\d{8,10}:[A-Za-z0-9_-]{35}\b/g },
+  { kind: "sign-in token (JWT)", re: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g },
+  // In a header any token counts; in prose, "Bearer" and a long word must have a digit too.
+  { kind: "bearer token", re: /\bauthorization(?:\\?["'])?\s*[:=]\s*(?:\\?["'])?Bearer\s+([A-Za-z0-9._~+/-]{16,}=*)/gi },
+  { kind: "bearer token", re: /\bBearer\s+([A-Za-z0-9._~+/-]{16,}=*)/gi, ok: hasDigit },
+  { kind: "bot token", re: /\b\d{8,10}:[A-Za-z0-9_-]{35}\b/g },
   {
-    kind: "Password or key",
-    re: /\b(?:[A-Za-z0-9]+[_-])*(?:password|passwd|pwd|passphrase|secret(?:[_-]?key)?|api[_-]?key|apikey|access[_-]?key|private[_-]?key|token)["']?\s*[:=]\s*(?:"([^"\n]+)"|'([^'\n]+)'|([^\s,;&"'`()[\]{}<>]+))/gi,
-    ok: looksSecret,
+    kind: "password or key",
+    re: /\b(?:[A-Za-z0-9]+[_-])*(?:password|passwd|pwd|passphrase|secret(?:[_-]?key)?|api[_-]?key|apikey|access[_-]?key|private[_-]?key|token)(?:\\?["'])?\s*[:=]\s*(?:\\"([^"\\\n]+)\\"|"([^"\n]+)"|'([^'\n]+)'|(?<bare>[^\s,;&"'`()[\]{}<>\\]+))/gi,
+    ok: (value, m) => looksSecret(value, m.groups?.bare !== undefined),
   },
 ];
 
@@ -41,7 +47,7 @@ export function findSecrets(text: string): Secret[] {
     for (const m of text.matchAll(rule.re)) {
       const group = m.slice(1).findIndex((g) => g !== undefined);
       const value = group < 0 ? m[0] : m[group + 1];
-      if (rule.ok && !rule.ok(value)) continue;
+      if (rule.ok && !rule.ok(value, m)) continue;
       // A rule's secret group is the last thing it matches but a closing quote or `@`.
       const start = m.index + (group < 0 ? 0 : m[0].lastIndexOf(value));
       found.push({ kind: rule.kind, text: value, start, end: start + value.length });

@@ -42,11 +42,12 @@ export function ExportChatDialog({
   const keys = useModal(box, returnTo);
   const titleId = useId();
   const secretsId = useId();
+  const pickId = useId();
   const pickHelpId = useId();
   const [shot] = useState(() => chat);
   const [at] = useState(() => new Date());
   const [draft, setDraft] = useState<ExportDraft>(FIRST_DRAFT);
-  const [selected, setSelected] = useState("");
+  const [toRedact, setToRedact] = useState("");
   const [note, setNote] = useState<string>();
   const [saving, setSaving] = useState(false);
   const pre = useRef<HTMLPreElement>(null);
@@ -57,12 +58,11 @@ export function ExportChatDialog({
   const chosen = messages.length - messages.filter((m) => draft.leftOut.has(m.id)).length;
   const empty = !chosen && !(draft.toolCalls && tools);
 
-  // Text selected in the preview, for Redact selected text. Read on every change, so a keyboard selection counts too.
+  // Text selected in the preview goes in Text to redact, which can also be typed or pasted into from the keyboard.
   useEffect(() => {
     const read = () => {
       const sel = document.getSelection();
-      const inside = !!sel && !sel.isCollapsed && !!pre.current?.contains(sel.anchorNode) && pre.current.contains(sel.focusNode);
-      setSelected(inside ? sel.toString().trim() : "");
+      if (sel && !sel.isCollapsed && pre.current?.contains(sel.anchorNode) && pre.current.contains(sel.focusNode)) setToRedact(sel.toString());
     };
     document.addEventListener("selectionchange", read);
     return () => document.removeEventListener("selectionchange", read);
@@ -75,11 +75,14 @@ export function ExportChatDialog({
     else next.delete(value);
     return next;
   };
+  const picking = toRedact.trim();
+  // A redaction is the text as the chat has it, so one can't depend on another being kept.
+  const overlaps = picking.includes(REDACTED);
   const pick = () => {
-    if (!selected || draft.picked.includes(selected)) return;
-    change({ picked: [...draft.picked, selected] });
+    if (!picking || overlaps) return;
+    if (!draft.picked.includes(picking)) change({ picked: [...draft.picked, picking] });
     document.getSelection()?.removeAllRanges();
-    setSelected("");
+    setToRedact("");
   };
 
   const doSave = async () => {
@@ -179,7 +182,7 @@ export function ExportChatDialog({
                   <label>
                     <input type="checkbox" checked={s.redacted} onChange={(e) => change({ kept: toggle(draft.kept, s.text, !e.target.checked) })} />
                     <span>
-                      Redact {s.kind.toLowerCase()} <code>{short(s.text)}</code>
+                      Redact {s.kind} <code>{short(s.text)}</code>
                       {s.times > 1 && <span className="muted"> ({places(s.times)})</span>}
                     </span>
                   </label>
@@ -190,14 +193,24 @@ export function ExportChatDialog({
             <p className="small">None found in what you've chosen.</p>
           )}
         </section>
-        <div className="export-pick">
-          <button className="btn" onClick={pick} disabled={!selected} aria-describedby={pickHelpId}>
-            Redact selected text
+        <form
+          className="export-pick"
+          onSubmit={(e) => {
+            e.preventDefault();
+            pick();
+          }}
+        >
+          <label htmlFor={pickId}>Text to redact</label>
+          <input id={pickId} value={toRedact} onChange={(e) => setToRedact(e.target.value)} aria-describedby={pickHelpId} spellCheck={false} />
+          <button className="btn" type="submit" disabled={!picking || overlaps}>
+            Redact
           </button>
-          <span id={pickHelpId} className="muted small">
-            Select text in the file below to replace it everywhere it appears.
+          <span id={pickHelpId} className={overlaps ? "small export-pick-problem" : "muted small"}>
+            {overlaps
+              ? `Leave ${REDACTED} out: pick text the chat has, on one side of it or the other.`
+              : "Select text in the file below, or type it, to replace it everywhere it appears."}
           </span>
-        </div>
+        </form>
         {preview.picked.length > 0 && (
           <ul className="export-picked" aria-label="Text you redacted">
             {preview.picked.map((p) => (

@@ -264,8 +264,8 @@ describe("Flagging likely secrets in an export", () => {
     const p = preview();
     expect(p.secrets).toEqual([
       { text: key, kind: "API key", times: 2, redacted: true },
-      { text: "Pa55w0rd!", kind: "Password in a link", times: 1, redacted: true },
-      { text: pem, kind: "Private key", times: 1, redacted: true },
+      { text: "Pa55w0rd!", kind: "password in a link", times: 1, redacted: true },
+      { text: pem, kind: "private key", times: 1, redacted: true },
     ]);
     for (const s of [key, "Pa55w0rd!", "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ", "BEGIN OPENSSH"]) expect(p.markdown).not.toContain(s);
     expect(p.markdown).toContain("My key is [redacted], and the db is postgres://app:[redacted]@db.internal:5432/app");
@@ -280,15 +280,25 @@ describe("Flagging likely secrets in an export", () => {
   });
 
   it("only flags what the file would hold", () => {
-    expect(preview({ leftOut: new Set(["u2"]) }).secrets.map((s) => s.kind)).toEqual(["API key", "Password in a link"]);
+    expect(preview({ leftOut: new Set(["u2"]) }).secrets.map((s) => s.kind)).toEqual(["API key", "password in a link"]);
   });
 
   it("finds a secret in a tool call's arguments once tool calls go in", () => {
     const withTool = [...items, { kind: "tool", id: "t", name: "terminal", args: { command: "curl -H 'Authorization: Bearer 7f3a9c2e8b1d4f6a0e5c'" }, status: "done", result: "ok" } as Item];
-    expect(exportPreview(chat(withTool), FIRST_DRAFT, AT).secrets.some((s) => s.kind === "Bearer token")).toBe(false);
+    expect(exportPreview(chat(withTool), FIRST_DRAFT, AT).secrets.some((s) => s.kind === "bearer token")).toBe(false);
     const p = exportPreview(chat(withTool), { ...FIRST_DRAFT, toolCalls: true }, AT);
-    expect(p.secrets.find((s) => s.kind === "Bearer token")!.text).toBe("7f3a9c2e8b1d4f6a0e5c");
+    expect(p.secrets.find((s) => s.kind === "bearer token")!.text).toBe("7f3a9c2e8b1d4f6a0e5c");
     expect(p.markdown).not.toContain("7f3a9c2e8b1d4f6a0e5c");
+  });
+
+  it("finds a quoted password in a tool call's command, where JSON escapes the quotes", async () => {
+    const withTool: Item[] = [{ kind: "tool", id: "t", name: "terminal", args: { command: 'PASSWORD="Mov3rs!2026" ./deploy.sh' }, status: "done", result: "ok" }];
+    const p = exportPreview(chat(withTool), { ...FIRST_DRAFT, toolCalls: true }, AT);
+    expect(p.secrets.map((s) => [s.kind, s.text])).toEqual([["password or key", "Mov3rs!2026"]]);
+    let bytes = "";
+    await saveExport(p.markdown, p.fileName, async (md) => ((bytes = md), "/tmp/x.md"));
+    expect(bytes).toContain("./deploy.sh");
+    expect(bytes).not.toContain("Mov3rs");
   });
 });
 
@@ -309,6 +319,33 @@ describe("Redacting by hand", () => {
     expect(bytes).toContain("# Shipping to [redacted]");
     expect(bytes).toContain("Noted: [redacted], Duluth.");
     expect(p.fileName).toBe("Shipping to [redacted].md");
+  });
+
+  it("redacts the whole title line, in the file and its name, however the title was spaced", () => {
+    const p = exportPreview(chat(items, { title: "  Client\n Alpha  " }), { ...FIRST_DRAFT, picked: ["# Client Alpha"] }, AT);
+    expect(p.markdown.split("\n")[0]).toBe("[redacted]");
+    expect(p.fileName).toBe("[redacted].md");
+    expect(exportPreview(chat(items, { title: "Client  Alpha" }), { ...FIRST_DRAFT, picked: ["Client Alpha"] }, AT).fileName).toBe("[redacted].md");
+  });
+
+  it("keeps overlapping redactions whole in any order, and after one of them is taken back", () => {
+    const both = ["14 Larch Lane", "address is 14 Larch"];
+    const first = exportPreview(chat(items), { ...FIRST_DRAFT, picked: both }, AT).markdown;
+    expect(first).toContain("My home [redacted], Duluth.");
+    expect(exportPreview(chat(items), { ...FIRST_DRAFT, picked: [...both].reverse() }, AT).markdown).toBe(first);
+    const second = exportPreview(chat(items), { ...FIRST_DRAFT, picked: [both[1]] }, AT).markdown;
+    expect(second).toContain("My home [redacted] Lane, Duluth.");
+    expect(second).not.toContain("address is");
+  });
+
+  it("leaves nothing of a flagged secret when part of it was picked too", () => {
+    const key = "sk-ant-api03-Zx8Kq2LmN4pR7tVw9yBc";
+    const keyed: Item[] = [{ kind: "user", id: "u", text: `key ${key} here` }];
+    for (const kept of [new Set<string>(), new Set([key])]) {
+      const md = exportPreview(chat(keyed), { ...FIRST_DRAFT, kept, picked: ["Zx8Kq2"] }, AT).markdown;
+      expect(md).not.toContain("Zx8Kq2");
+      if (!kept.size) expect(md).toContain("key [redacted] here");
+    }
   });
 
   it("says when a picked text isn't in what's chosen any more", () => {

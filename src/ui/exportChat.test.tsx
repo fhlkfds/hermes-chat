@@ -58,7 +58,7 @@ describe("Exporting from the chat's More menu", () => {
     await user.click(screen.getByRole("menuitem", { name: "Export as Markdown…" }));
     const dialog = screen.getByRole("dialog", { name: "Export “Deploy keys”" });
     expect((within(dialog).getByRole("checkbox", { name: /Tool calls and Approvals/ }) as HTMLInputElement).checked).toBe(false);
-    expect((within(dialog).getByRole("checkbox", { name: /Redact api key/ }) as HTMLInputElement).checked).toBe(true);
+    expect((within(dialog).getByRole("checkbox", { name: /Redact API key/ }) as HTMLInputElement).checked).toBe(true);
     expect(preview().textContent).not.toContain(KEY);
     expect(preview().textContent).not.toContain("DB_HOST");
     expect(preview().textContent).toContain("The deploy fails with [redacted]");
@@ -99,29 +99,31 @@ function open(c = chat()) {
   return { saves, onSaved, onClose, rerender: (next: Chat) => view.rerender(<ExportChatDialog chat={next} {...props} />), user: userEvent.setup() };
 }
 
-/** Selects `text` in the preview, as a drag or Shift+arrows would. */
+/** Selects the first `text` in the preview, across its marked parts, as a drag would. */
 function select(text: string) {
+  const at = preview().textContent!.indexOf(text);
+  if (at < 0) throw new Error(`"${text}" isn't in the preview`);
+  const range = document.createRange();
   const walker = document.createTreeWalker(preview(), NodeFilter.SHOW_TEXT);
+  let seen = 0;
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-    const at = node.textContent!.indexOf(text);
-    if (at < 0) continue;
-    const range = document.createRange();
-    range.setStart(node, at);
-    range.setEnd(node, at + text.length);
-    document.getSelection()!.removeAllRanges();
-    document.getSelection()!.addRange(range);
-    fireEvent(document, new Event("selectionchange"));
-    return;
+    const len = node.textContent!.length;
+    if (seen <= at && at < seen + len) range.setStart(node, at - seen);
+    if (seen < at + text.length && at + text.length <= seen + len) range.setEnd(node, at + text.length - seen);
+    seen += len;
   }
-  throw new Error(`"${text}" isn't in the preview`);
+  document.getSelection()!.removeAllRanges();
+  document.getSelection()!.addRange(range);
+  fireEvent(document, new Event("selectionchange"));
 }
 
 describe("The Export dialog", () => {
   it("redacts selected text everywhere, and the saved bytes don't hold it", async () => {
     const { saves, user } = open();
-    const redact = screen.getByRole("button", { name: "Redact selected text" });
+    const redact = screen.getByRole("button", { name: "Redact" });
     expect((redact as HTMLButtonElement).disabled).toBe(true);
     select("14 Larch Lane");
+    expect((screen.getByRole("textbox", { name: "Text to redact" }) as HTMLInputElement).value).toBe("14 Larch Lane");
     await user.click(redact);
     expect(within(screen.getByRole("list", { name: "Text you redacted" })).getByText("2 places")).toBeTruthy();
     expect(preview().textContent).not.toContain("Larch");
@@ -137,13 +139,31 @@ describe("The Export dialog", () => {
   it("puts back a redaction the owner takes back, and a flagged secret the owner keeps", async () => {
     const { user } = open();
     select("Duluth");
-    await user.click(screen.getByRole("button", { name: "Redact selected text" }));
+    await user.click(screen.getByRole("button", { name: "Redact" }));
     expect(preview().textContent).not.toContain("Duluth");
     await user.click(screen.getByRole("button", { name: "Keep Duluth in the file" }));
     expect(preview().textContent).toContain("Duluth");
 
     await user.click(screen.getByRole("checkbox", { name: /Redact password or key/ }));
     expect(preview().textContent).toContain("password: Mov3rs!2026");
+  });
+
+  it("redacts text typed from the keyboard, with Enter", async () => {
+    const { user } = open();
+    await user.click(screen.getByRole("textbox", { name: "Text to redact" }));
+    await user.paste("pizza place");
+    await user.keyboard("{Enter}");
+    expect(preview().textContent).toContain("what's a good [redacted] there?");
+    expect((screen.getByRole("textbox", { name: "Text to redact" }) as HTMLInputElement).value).toBe("");
+  });
+
+  it("won't redact a selection with [redacted] in it, and says why", async () => {
+    const { user } = open();
+    select("password: [redacted]");
+    expect((screen.getByRole("button", { name: "Redact" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/Leave \[redacted\] out/)).toBeTruthy();
+    await user.keyboard("{Enter}");
+    expect(screen.queryByRole("list", { name: "Text you redacted" })).toBeNull();
   });
 
   it("leaves out an unticked message, and adds tool calls and attachment names only when ticked", async () => {

@@ -10,34 +10,39 @@ describe("Flagging likely secrets", () => {
     ["API key", "git clone https://github.com/x/y with ghp_0123456789abcdefghijABCDEFGHIJ", "ghp_0123456789abcdefghijABCDEFGHIJ"],
     ["API key", "aws_access_key_id = AKIAIOSFODNN7EXAMPLE", "AKIAIOSFODNN7EXAMPLE"],
     ["API key", "HF_TOKEN=hf_aBcDeFgHiJkLmNoPqRsTuVwXyZ012345", "hf_aBcDeFgHiJkLmNoPqRsTuVwXyZ012345"],
-    ["Bearer token", "curl -H 'Authorization: Bearer 7f3a9c2e8b1d4f6a0e5c' https://api.example.com", "7f3a9c2e8b1d4f6a0e5c"],
+    ["bearer token", "curl -H 'Authorization: Bearer 7f3a9c2e8b1d4f6a0e5c' https://api.example.com", "7f3a9c2e8b1d4f6a0e5c"],
     [
-      "Sign-in token (JWT)",
+      "sign-in token (JWT)",
       "the cookie was eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U ok",
       "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
     ],
-    ["Password in a link", "DATABASE_URL=postgres://app:Pa55w0rd!@db.internal:5432/app", "Pa55w0rd!"],
-    ["Password in a link", "pip install --index-url https://deploy:s3cr3t-T0ken@pypi.corp.lan/simple pkg", "s3cr3t-T0ken"],
-    ["Bot token", "TELEGRAM_BOT_TOKEN: 123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsawQ", "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsawQ"],
-    ["Password or key", "ssh in with password: hunter2!", "hunter2!"],
-    ["Password or key", 'config = {"db_password": "Tr0ub4dor&3"}', "Tr0ub4dor&3"],
-    ["Password or key", "SECRET_KEY='django-insecure-k9#x2!m'", "django-insecure-k9#x2!m"],
-    ["Password or key", "admin_passphrase=correcthorsebatterystaple", "correcthorsebatterystaple"],
+    ["password in a link", "DATABASE_URL=postgres://app:Pa55w0rd!@db.internal:5432/app", "Pa55w0rd!"],
+    ["password in a link", "pip install --index-url https://deploy:s3cr3t-T0ken@pypi.corp.lan/simple pkg", "s3cr3t-T0ken"],
+    ["bot token", "TELEGRAM_BOT_TOKEN: 123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsawQ", "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsawQ"],
+    ["password or key", "ssh in with password: hunter2!", "hunter2!"],
+    ["password or key", 'config = {"db_password": "Tr0ub4dor&3"}', "Tr0ub4dor&3"],
+    ["password or key", "SECRET_KEY='django-insecure-k9#x2!m'", "django-insecure-k9#x2!m"],
+    ["password or key", "admin_passphrase=correcthorsebatterystaple", "correcthorsebatterystaple"],
+    ["password or key", 'password: "Tr0ub4dor.3"', "Tr0ub4dor.3"],
+    ["password or key", '{"command": "PASSWORD=\\"Mov3rs!2026\\" ./deploy.sh"}', "Mov3rs!2026"],
+    ["password or key", '{"env": "{\\"db_password\\": \\"Tr0ub4dor&3\\"}"}', "Tr0ub4dor&3"],
+    ["bearer token", "Authorization: Bearer AbCdEfGhIjKlMnOpQrStUvWxYz", "AbCdEfGhIjKlMnOpQrStUvWxYz"],
+    ["bearer token", '{"headers": {"Authorization": "Bearer AbCdEfGhIjKlMnOpQrStUvWxYz"}}', "AbCdEfGhIjKlMnOpQrStUvWxYz"],
   ])("flags a %s: %s", (kind, text, secret) => {
     expect(found(text)).toEqual([[kind, secret]]);
   });
 
   it("flags a private key whole, BEGIN to END, and a key cut off before its END", () => {
     const pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn\n/ygWyF8PbnGy0AHB7MhgHcTz6sE2I2yP\n-----END RSA PRIVATE KEY-----";
-    expect(found(`Here it is:\n\n${pem}\n\nThanks`)).toEqual([["Private key", pem]]);
+    expect(found(`Here it is:\n\n${pem}\n\nThanks`)).toEqual([["private key", pem]]);
     expect(found("-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC")).toEqual([
-      ["Private key", "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC"],
+      ["private key", "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC"],
     ]);
   });
 
   it("flags a private key written inside JSON, as a tool call's arguments are", () => {
     const args = JSON.stringify({ content: "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----\n" });
-    expect(found(args)).toEqual([["Private key", "-----BEGIN OPENSSH PRIVATE KEY-----\\nb3BlbnNzaC1rZXk\\n-----END OPENSSH PRIVATE KEY-----"]]);
+    expect(found(args)).toEqual([["private key", "-----BEGIN OPENSSH PRIVATE KEY-----\\nb3BlbnNzaC1rZXk\\n-----END OPENSSH PRIVATE KEY-----"]]);
   });
 
   it("gives where each secret starts, in order, and flags a key inside a header once", () => {
@@ -51,6 +56,7 @@ describe("Flagging likely secrets", () => {
   it.each([
     "Use a bearer token in the Authorization header.",
     "Bearer tokens expire after an hour.",
+    "Bearer AuthenticationIsTheTopicHere is how the docs put it.",
     "Authorization: Bearer $GITHUB_TOKEN",
     "The password field is required.",
     "password: required",

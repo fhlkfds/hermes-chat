@@ -42,7 +42,10 @@ export type ExportChoice = {
   toolCalls: boolean;
   /** The names of files attached to the owner's messages. Their contents are never in an export. */
   attachments: boolean;
-  /** Text replaced with `[redacted]` everywhere in the title and the items, one after another in this order. */
+  /**
+   * Text replaced with `[redacted]` wherever it is in the title or the items, as written there. Overlapping and touching
+   * places become one `[redacted]`, so no order of redactions leaves part of one behind.
+   */
   redact: readonly string[];
 };
 
@@ -51,7 +54,7 @@ export const WHOLE: ExportChoice = { leftOut: new Set(), toolCalls: true, attach
 
 /** `chat` as Markdown: the title, notes on what is and isn't in it, then the chosen items, with `choice.redact` replaced. */
 export function chatMarkdown(chat: Chat, exportedAt: Date, choice: ExportChoice = WHOLE): string {
-  return render(chat, exportedAt, choice).markdown;
+  return render(chat, exportedAt, choice);
 }
 
 /** The title line and the chosen items, before any redaction. */
@@ -61,17 +64,29 @@ function content(chat: Chat, choice: Omit<ExportChoice, "redact">) {
   return { items, title, body: items.flatMap((i) => block(i, choice.attachments)).join("\n\n") };
 }
 
-/** `chatMarkdown`, and how many places each of `choice.redact` replaced. */
-function render(chat: Chat, exportedAt: Date, choice: ExportChoice): { markdown: string; counts: number[] } {
-  const { items, ...text } = content(chat, choice);
-  const counts = choice.redact.map((r) => {
-    if (!r) return 0;
-    const n = text.title.split(r).length + text.body.split(r).length - 2;
-    text.title = text.title.split(r).join(REDACTED);
-    text.body = text.body.split(r).join(REDACTED);
-    return n;
-  });
-  const redacted = counts.reduce((a, b) => a + b, 0);
+/** `text` with every place each of `redact` is replaced, and how many `[redacted]` it has for them. */
+function redactText(text: string, redact: readonly string[]): { text: string; places: number } {
+  const spans: [number, number][] = [];
+  for (const r of redact) if (r) for (let i = text.indexOf(r); i >= 0; i = text.indexOf(r, i + 1)) spans.push([i, i + r.length]);
+  spans.sort((a, b) => a[0] - b[0]);
+  let out = "";
+  let at = 0;
+  let places = 0;
+  for (let k = 0; k < spans.length; places++) {
+    const start = spans[k][0];
+    let end = spans[k++][1];
+    while (k < spans.length && spans[k][0] <= end) end = Math.max(end, spans[k++][1]);
+    out += text.slice(at, start) + REDACTED;
+    at = end;
+  }
+  return { text: out + text.slice(at), places };
+}
+
+function render(chat: Chat, exportedAt: Date, choice: ExportChoice): string {
+  const { items, ...raw } = content(chat, choice);
+  const title = redactText(raw.title, choice.redact);
+  const body = redactText(raw.body, choice.redact);
+  const redacted = title.places + body.places;
   const messages = chat.items.filter(isMessage).length;
   const left = chat.items.filter((i) => isMessage(i) && choice.leftOut.has(i.id)).length;
   const iso = exportedAt.toISOString();
@@ -94,15 +109,14 @@ function render(chat: Chat, exportedAt: Date, choice: ExportChoice): { markdown:
       `secret, and text chosen for redaction is replaced with \`${REDACTED}\` (${redacted === 1 ? "1 place" : `${redacted} places`} in this file). ` +
       "It can miss a secret written another way.",
   ].filter((n) => n !== false && n !== undefined);
-  const markdown = [text.title, notes.map((n) => (n ? `> ${n}` : ">")).join("\n"), ...(text.body ? [text.body] : [])].join("\n\n") + "\n";
-  return { markdown, counts };
+  return [title.text, notes.map((n) => (n ? `> ${n}` : ">")).join("\n"), ...(body.text ? [body.text] : [])].join("\n\n") + "\n";
 }
 
 /** What the owner is choosing in the Export dialog. Every likely secret found is redacted unless the owner keeps it. */
 export type ExportDraft = Omit<ExportChoice, "redact"> & {
   /** Likely secrets (`findSecrets`) the owner chose to keep in the file. */
   kept: ReadonlySet<string>;
-  /** Text the owner picked in the preview to redact, in the order picked. */
+  /** Text the owner picked to redact, in the order picked, as the title and the items have it (never with `[redacted]` in it). */
   picked: readonly string[];
 };
 
@@ -121,20 +135,18 @@ export type ExportPreview = {
 
 export function exportPreview(chat: Chat, draft: ExportDraft, exportedAt: Date): ExportPreview {
   const { title, body } = content(chat, draft);
-  // The title and the items only: the notes are the app's own words.
-  const plain = `${title}\n\n${body}`;
+  const times = (text: string) => title.split(text).length + body.split(text).length - 2;
   const secrets = new Map<string, ExportPreview["secrets"][number]>();
-  for (const s of findSecrets(plain))
-    if (!secrets.has(s.text)) secrets.set(s.text, { text: s.text, kind: s.kind, times: plain.split(s.text).length - 1, redacted: !draft.kept.has(s.text) });
-  // Longest first, so a secret inside a longer one doesn't leave the rest of the longer one behind.
-  const flagged = [...secrets.values()].filter((s) => s.redacted).map((s) => s.text).sort((a, b) => b.length - a.length);
-  const redact = [...flagged, ...draft.picked];
-  const { markdown, counts } = render(chat, exportedAt, { leftOut: draft.leftOut, toolCalls: draft.toolCalls, attachments: draft.attachments, redact });
+  for (const s of [...findSecrets(title), ...findSecrets(body)])
+    if (!secrets.has(s.text)) secrets.set(s.text, { text: s.text, kind: s.kind, times: times(s.text), redacted: !draft.kept.has(s.text) });
+  const redact = [...[...secrets.values()].filter((s) => s.redacted).map((s) => s.text), ...draft.picked];
+  const markdown = render(chat, exportedAt, { leftOut: draft.leftOut, toolCalls: draft.toolCalls, attachments: draft.attachments, redact });
   return {
     markdown,
-    fileName: exportFileName(redact.reduce((t, r) => (r ? t.split(r).join(REDACTED) : t), chat.title)),
+    // The title as the file has it, so a redaction there is one in the name too.
+    fileName: exportFileName(markdown.slice(0, markdown.indexOf("\n")).replace(/^# /, "")),
     secrets: [...secrets.values()],
-    picked: draft.picked.map((text, i) => ({ text, times: counts[flagged.length + i] })),
+    picked: draft.picked.map((text) => ({ text, times: text ? times(text) : 0 })),
   };
 }
 
