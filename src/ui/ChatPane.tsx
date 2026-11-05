@@ -1342,7 +1342,8 @@ function Composer({
   };
   // What Enter, and the button beside the text, do now; Ctrl+Enter does the other while a reply runs.
   const enterDoes = enterSteers ? "steer" : queueing ? "queue" : "send";
-  const ctrlDoes = enterSteers ? "Ctrl+Enter to queue · " : ctrlSteers ? "Ctrl+Enter to steer · " : "";
+  // With the Ctrl+Enter hint there is no room for Shift+Enter's, which never changes.
+  const keysHint = `Enter to ${enterDoes} · ${enterSteers ? "Ctrl+Enter to queue" : ctrlSteers ? "Ctrl+Enter to steer" : "Shift+Enter for a new line"}`;
 
   return (
     <div
@@ -1469,7 +1470,7 @@ function Composer({
           {modelControls}
           {!dictation.active && (
             <span className="composer-keys" title={steerWhy && `Can't steer now: ${steerWhy}`}>
-              Enter to {enterDoes} · {ctrlDoes}Shift+Enter for a new line
+              {keysHint}
             </span>
           )}
           {enterSteers ? (

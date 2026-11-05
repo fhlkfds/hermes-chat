@@ -25,9 +25,9 @@ export function FollowUpSettings() {
             <span className="mono">/steer</span>, is queued. With no reply running, Enter sends as usual.
           </div>
         </div>
-        <div className="seg" role="group" aria-labelledby="follow-up-label">
+        <div className="segmented" role="group" aria-labelledby="follow-up-label">
           {CHOICES.map((c) => (
-            <button key={c.value} type="button" className={followUp === c.value ? "on" : ""} aria-pressed={followUp === c.value} onClick={() => setUIPrefs({ followUp: c.value })}>
+            <button key={c.value} type="button" aria-pressed={followUp === c.value} onClick={() => setUIPrefs({ followUp: c.value })}>
               {c.label}
             </button>
           ))}

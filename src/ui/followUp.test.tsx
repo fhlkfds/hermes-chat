@@ -67,7 +67,7 @@ async function replying(setup: (s: FakeHermes) => void = () => {}) {
 describe("Follow-up behavior: Queue (the default)", () => {
   it("Enter queues as before, and Ctrl+Enter steers that one message into the running reply", async () => {
     const s = await replying();
-    expect(keys()).toBe("Enter to queue · Ctrl+Enter to steer · Shift+Enter for a new line");
+    expect(keys()).toBe("Enter to queue · Ctrl+Enter to steer");
     expect(screen.getByRole("button", { name: "Queue" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Steer" })).toBeNull();
 
@@ -106,7 +106,7 @@ describe("Follow-up behavior: Steer", () => {
   it("Enter steers, the button says so, and Ctrl+Enter queues", async () => {
     setUIPrefs({ followUp: "steer" });
     const s = await replying();
-    expect(keys()).toBe("Enter to steer · Ctrl+Enter to queue · Shift+Enter for a new line");
+    expect(keys()).toBe("Enter to steer · Ctrl+Enter to queue");
     expect(screen.queryByRole("button", { name: "Queue" })).toBeNull();
 
     await s.user.type(composer(), "Use the second disk");
