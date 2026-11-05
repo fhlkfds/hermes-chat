@@ -3,6 +3,7 @@ pub mod defaults_file;
 pub mod display;
 pub mod fonts;
 pub mod links;
+pub mod local_stt;
 pub mod media;
 pub mod notify;
 pub mod remote;
@@ -1191,6 +1192,7 @@ pub fn run(screenshot: bool, link: Option<String>) {
             Ok(())
         })
         .manage(PickedFiles::default())
+        .manage(local_stt::LocalStt::default())
         .manage(Transfers::default())
         .manage(UploadPicks::default())
         .manage(terminal::Terminals::default())
@@ -1266,6 +1268,14 @@ pub fn run(screenshot: bool, link: Option<String>) {
             update::app_restart,
             update::restart_drafts_read,
             update::restart_drafts_clear,
+            local_stt::local_stt_status,
+            local_stt::local_stt_set,
+            local_stt::local_stt_pick,
+            local_stt::local_stt_forget,
+            local_stt::local_stt_download,
+            local_stt::local_stt_cancel_download,
+            local_stt::local_stt_delete,
+            local_stt::local_stt_transcribe,
             backup::backup_export,
             backup::backup_pick,
             backup::backup_save_recovery,

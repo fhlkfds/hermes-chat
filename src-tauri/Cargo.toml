@@ -16,7 +16,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "net", "time", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "net", "time", "sync", "fs", "io-util"] }
 # TLS through the system's OpenSSL and trust store, so https:// and wss:// dashboards (such as one behind
 # Cloudflare Access) work.
 # `multipart` and `stream`: Server files uploads stream a local file into `POST /api/files/upload-stream` (ADR 0023).
