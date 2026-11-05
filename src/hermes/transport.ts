@@ -963,7 +963,7 @@ export class Hermes {
     if (method !== "GET") this.skillsRead = undefined;
     return this.rest(method, pathAndQuery, body);
   });
-  /** The Clone profile dialog's profile list, create and delete (profileClone.ts, ADR 0071). Each call names its profiles. */
+  /** The Clone profile dialog's profile list, create and delete (profileClone.ts, ADR 0074). Each call names its profiles. */
   readonly profileClone = new ProfileCloneApi((method, pathAndQuery, body) => this.rest(method, pathAndQuery, body), this.persona, this.skills);
 
   /**

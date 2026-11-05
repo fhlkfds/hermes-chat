@@ -1,4 +1,4 @@
-// Clone profile (ADR 0071), opened from the profile switcher: a new Hermes profile made from another one. It shows what
+// Clone profile (ADR 0074), opened from the profile switcher: a new Hermes profile made from another one. It shows what
 // each category would do before anything is written, makes the profile through Hermes, reads it back, and only then
 // offers to open it. API keys go only when the owner turns on the full copy, which says so first.
 import { useEffect, useId, useRef, useState, type ReactElement, type RefObject } from "react";
