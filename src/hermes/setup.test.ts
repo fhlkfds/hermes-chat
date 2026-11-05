@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { FakeHermes, fakeEnv } from "./fakeHermes";
 import { connect } from "./transport";
-import { explain, isSetUp, missing, providerKeys, readStatus, readyProviders, testConnection, type Probe, type ProbeFailure, type Probed } from "./setup";
+import { explain, explainSignIn, isSetUp, missing, providerKeys, readStatus, readyProviders, testConnection, type Probe, type ProbeFailure, type Probed } from "./setup";
 import type { SignInDetails } from "./tauriPipe";
 
 const READY = JSON.stringify({ jsonrpc: "2.0", method: "event", params: { type: "gateway.ready", payload: { skin: {} } } });
@@ -153,6 +153,14 @@ describe("Explaining a failed test", () => {
 
   it("explains a chat connection that a proxy blocks", () => {
     expect(why({ stage: "chat", message: "The chat connection failed: HTTP error: 400 Bad Request" }).fixes[0]).toContain("WebSocket");
+  });
+});
+
+describe("Explaining what the sign-in screen shows", () => {
+  it("shows Sign out's keyring note as it is, not as an unreachable server", () => {
+    const note = "Signed out, but couldn't delete the saved password from the system keyring: no Secret Service on the bus";
+    const why = explainSignIn(note, { mode: "url", sshTarget: "", url: "http://hermes:9119", username: "liam", password: "", headers: [] });
+    expect([why.problem, why.fixes]).toEqual([note, []]);
   });
 });
 

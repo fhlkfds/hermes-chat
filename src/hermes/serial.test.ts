@@ -68,3 +68,110 @@ describe("Switching connections quickly", () => {
     expect(await run(async (stale) => (stale() ? "stale" : "ran"))).toBe("ran");
   });
 });
+
+describe("A change that can be stopped while it waits its turn", () => {
+  const stopped = () => new Error("stopped");
+
+  it("rejects at once when stopped while queued, and never starts", async () => {
+    const run = serial();
+    let letGo!: () => void;
+    const busy = run(() => new Promise<void>((r) => (letGo = r)));
+    const stop = new AbortController();
+    let started = false;
+    const queued = run.stoppable(stop.signal, stopped, async () => {
+      started = true;
+      return "connected";
+    });
+    await tick();
+    stop.abort();
+    await expect(queued).rejects.toThrow("stopped");
+    letGo();
+    await busy;
+    await tick();
+    expect(started).toBe(false);
+  });
+
+  it("leaves a started change to stop itself, and resolves with what it gave", async () => {
+    const run = serial();
+    const stop = new AbortController();
+    let finish!: () => void;
+    const going = run.stoppable(stop.signal, stopped, async () => {
+      await new Promise<void>((r) => (finish = r));
+      return "connected";
+    });
+    await tick();
+    stop.abort();
+    finish();
+    await expect(going).resolves.toBe("connected");
+  });
+
+  it("never starts when stopped before it is asked for, and runs as before without a signal", async () => {
+    const run = serial();
+    const stop = new AbortController();
+    stop.abort();
+    let started = false;
+    await expect(run.stoppable(stop.signal, stopped, async () => void (started = true))).rejects.toThrow("stopped");
+    expect(started).toBe(false);
+    await expect(run.stoppable(undefined, stopped, async () => 7)).resolves.toBe(7);
+  });
+});
+
+describe("A stoppable change and the change before it", () => {
+  const stopped = () => new Error("stopped");
+
+  it("doesn't overtake the change before it while it waits, so stopping it leaves that change connected", async () => {
+    const rust = fakeRust();
+    const run = serial();
+    let inUse: string | undefined;
+    // A switch to bravo is signing in when Setup's Save and connect queues behind it, and is then stopped.
+    const toBravo = run(async (stale) => {
+      const h = await rust.connect("bravo");
+      if (stale()) return h.close();
+      inUse = h.to;
+    });
+    await tick();
+    const stop = new AbortController();
+    let started = false;
+    const save = run.stoppable(stop.signal, stopped, async () => void (started = true));
+    await tick();
+    stop.abort();
+    await expect(save).rejects.toThrow("stopped");
+    rust.answer("bravo");
+    await toBravo;
+    expect([inUse, started, rust.log]).toEqual(["bravo", false, ["connect bravo", "connected bravo"]]);
+  });
+
+  it("starts overtaken when a newer change was asked for after it, and doesn't overtake that one", async () => {
+    const run = serial();
+    let letGo!: () => void;
+    const busy = run(() => new Promise<void>((r) => (letGo = r)));
+    const seen: string[] = [];
+    const save = run.stoppable(undefined, stopped, async (stale) => void seen.push(`save stale=${stale()}`));
+    const later = run(async (stale) => void seen.push(`later stale=${stale()}`));
+    await tick();
+    letGo();
+    await Promise.all([busy, save, later]);
+    expect(seen).toEqual(["save stale=true", "later stale=false"]);
+  });
+
+  it("overtakes the change before it once it starts", async () => {
+    const run = serial();
+    const seen: boolean[] = [];
+    let letGo!: () => void;
+    let checkLater!: () => void;
+    const before = run(async (stale) => {
+      await new Promise<void>((r) => (letGo = r));
+      await new Promise<void>((r) => (checkLater = r));
+      seen.push(stale());
+    });
+    await tick();
+    const save = run.stoppable(new AbortController().signal, stopped, async (stale) => stale());
+    letGo();
+    await tick();
+    // Still waiting its turn: the change before it isn't overtaken.
+    checkLater();
+    await before;
+    expect(await save).toBe(false);
+    expect(seen).toEqual([false]);
+  });
+});

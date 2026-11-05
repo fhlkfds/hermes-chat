@@ -107,7 +107,7 @@ describe("Saved connections", () => {
     await userEvent.type(screen.getByLabelText(/^Dashboard password/), "bravo-pass");
     await userEvent.click(screen.getByRole("button", { name: "Test connection" }));
     await userEvent.click(await screen.findByRole("button", { name: "Save and connect" }));
-    await userEvent.click(await screen.findByRole("button", { name: "Finish" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Skip" }));
 
     expect(await screen.findByText("Bravo notes")).toBeTruthy();
     expect(screen.queryByText("Alpha backups")).toBeNull();
@@ -185,7 +185,7 @@ describe("Saved connections", () => {
     await userEvent.type(await screen.findByLabelText(/^Dashboard password/), "bravo-pass");
     await userEvent.click(await screen.findByRole("button", { name: "Test connection" }));
     await userEvent.click(await screen.findByRole("button", { name: "Save and connect" }));
-    await userEvent.click(await screen.findByRole("button", { name: "Finish" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Skip" }));
     await waitFor(() => expect(screen.getAllByText("Bravo notes").some(el => el.closest(".row")?.classList.contains("sel"))).toBe(true));
 
     // Remove alpha from Settings: it says what goes, and the server's chats stay.

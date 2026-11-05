@@ -1,7 +1,7 @@
 import { type ReactNode, type RefObject, Suspense, lazy, useCallback, useLayoutEffect, useMemo, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { ArrowLeft, ArrowRight, Columns2, FolderCog, GitBranch, PanelBottom, PanelLeft, PanelRight, PanelTop, Rows2, X } from "lucide-react";
-import { RenameConflict, connect, readSaved, toSource, type Delivery, type Hermes } from "./hermes/transport";
+import { CONNECT_STOPPED, RenameConflict, connect, readSaved, toSource, type Delivery, type Hermes } from "./hermes/transport";
 import { invoke } from "@tauri-apps/api/core";
 import type { CommandHost } from "./ui/SlashCommands";
 import type { ServerCommandList } from "./hermes/commands";
@@ -168,7 +168,7 @@ const account: Account = {
     return savedConnections();
   },
   secrets: systemSecrets,
-  connect: (c, d) => connect(tauriPipe(d), undefined, localChatCache(c), desktopNotify),
+  connect: (c, d, signal) => connect(tauriPipe(d), undefined, localChatCache(c), desktopNotify, signal),
   readSaved: (c, d, reason) => readSaved(tauriPipe(d), reason, localChatCache(c), desktopNotify),
 };
 
@@ -269,6 +269,11 @@ export default function App({ links = desktopLinks }: { links?: LinkInbox } = {}
   // Whether the main screen reopens the profile's last open chat: at launch, and on switching to a connection.
   const [coldStart, setColdStart] = useState(true);
   const [setup, setSetup] = useState<Setup>();
+  const setupRef = useRef(setup);
+  setupRef.current = setup;
+  // Moves on with everything the owner does on the sign-in screen, so a Run setup again still reading the keyring
+  // gives way to whatever was asked for after it.
+  const signInAsks = useRef(0);
   const [confirmingSetup, setConfirmingSetup] = useState(false);
   const connectionGuard = useRef<((to: SavedConnection) => Promise<boolean>) | undefined>(undefined);
   // A connection being switched to, for the screen shown meanwhile.
@@ -374,9 +379,10 @@ export default function App({ links = desktopLinks }: { links?: LinkInbox } = {}
    * Setup's Save and connect, and the sign-in screen's Connect: signs in to `target` with `d`, and keeps it. The
    * connection in use closes first, or its reconnects would take Rust's one connection back. If the new one fails
    * after all, the one in use before is put back, as at launch: Offline with what this computer saved if it can't
-   * connect either.
+   * connect either. `signal` is Setup's Stop: while Hermes hasn't answered, it stops the sign-in, which then fails
+   * with nothing saved, and the one in use before is put back the same way.
    */
-  const connectWith = async (target: SavedConnection, d: SignInDetails, name?: string) => {
+  const connectWith = async (target: SavedConnection, d: SignInDetails, name?: string, signal?: AbortSignal) => {
     // Setup can spend minutes testing while more work or approvals arrive. Ask at the actual switch, using Main's
     // latest state, and keep Setup mounted but hidden so cancelling the question keeps its tested details.
     if (setup && current.current && connectionGuard.current) {
@@ -388,14 +394,15 @@ export default function App({ links = desktopLinks }: { links?: LinkInbox } = {}
         setConfirmingSetup(false);
       }
     }
-    return serial(async (stale) => {
+    // Stopped while it waits its turn: it never starts, and the connection in use isn't touched.
+    return serial.stoppable(signal, () => new Error(CONNECT_STOPPED), async (stale) => {
       if (stale()) throw new Error("A newer connection was selected.");
       const before = current.current;
       const beforeConnection = connectionRef.current;
       const beforeDetails = signedInWith.current;
       if (before) await before.close().catch(() => {});
       try {
-        const { hermes: h, connection: c, notSaved, kept } = await signIn(target, d, account, name);
+        const { hermes: h, connection: c, notSaved, kept } = await signIn(target, d, account, name, signal);
         if (stale()) {
           await h.close().catch(() => {});
           use(null);
@@ -464,7 +471,7 @@ export default function App({ links = desktopLinks }: { links?: LinkInbox } = {}
         initialName={setup.name}
         probe={tauriProbe}
         hermes={hermes ?? undefined}
-        onConnect={(d, name) => connectWith(setup.target, d, name)}
+        onConnect={(d, name, signal) => connectWith(setup.target, d, name, signal)}
         onCancel={setup.mode === "first-run" ? undefined : () => setSetup(undefined)}
         onDone={() => setSetup(undefined)}
       />
@@ -562,16 +569,34 @@ export default function App({ links = desktopLinks }: { links?: LinkInbox } = {}
         error={error}
         connection={connection}
         connections={recent}
-        onSetUp={() => setSetup({ mode: "sign-in", initial: BLANK, target: store.draft(BLANK) })}
-        onPick={(c) =>
+        onSetUp={() => {
+          signInAsks.current++;
+          setSetup({ mode: "sign-in", initial: BLANK, target: store.draft(BLANK) });
+        }}
+        onRerunSetup={(c) => {
+          const mine = ++signInAsks.current;
+          void serial(async (stale) => {
+            // From what is saved for it, as Edit does. Setup opens only if nothing else was asked for meanwhile: the
+            // screen is still for `c`, nothing signed in, and no other setup opened.
+            const d = await signInForm(c, account);
+            if (stale() || mine !== signInAsks.current || setupRef.current || current.current || connectionRef.current?.id !== c.id) return;
+            setSetup({ mode: "edit", initial: d, target: c, name: c.name });
+          });
+        }}
+        onPick={(c) => {
+          signInAsks.current++;
           void serial(async (stale) => {
             const d = (await savedSignIn(c, account)) ?? (await signInForm(c, account));
             if (!stale()) showSignIn(c, d);
-          })
-        }
-        onRemove={setRemoving}
+          });
+        }}
+        onRemove={(c) => {
+          signInAsks.current++;
+          setRemoving(c);
+        }}
         onSignIn={async (d) => {
           if (!connection) return;
+          signInAsks.current++;
           setError(undefined);
           try {
             await connectWith(connection, d);

@@ -236,7 +236,7 @@ A model the owner starred in the model picker. Favorites are listed first, and a
 _Avoid_: pinned model (pinning is how Hermes stores Active, ADR 0002)
 
 **Setup**:
-The steps that connect Hermes Chat to a Hermes server: the server, the dashboard sign-in, then optionally a Provider key. Setup tests the connection before it keeps anything, and says what to fix when the test fails. It opens by itself only on a computer with nothing set up, and again to add a Connection or change a saved one, from Settings, the rail or the sign-in screen. Cancelling it leaves every Connection as it was.
+The steps that connect Hermes Chat to a Hermes server: the server, the dashboard sign-in, then optionally a Provider key, which can be skipped. Setup tests the connection before it keeps anything, and says what to fix when the test fails. It opens by itself only on a computer with nothing set up, and again to add a Connection or change a saved one, from Settings, the rail or the sign-in screen (**Run setup again**). Cancelling it, or stopping Save and connect, leaves every Connection as it was.
 _Avoid_: onboarding (fine in conversation, not in the app), wizard, first-run (that's only when setup opens by itself)
 
 **Provider key**:

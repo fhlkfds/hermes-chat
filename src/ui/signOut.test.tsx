@@ -89,7 +89,7 @@ describe("Signing out with extra request headers", () => {
     await userEvent.type(screen.getByLabelText(/^Dashboard password/), "hunter2");
     await userEvent.click(screen.getByRole("button", { name: "Test connection" }));
     await userEvent.click(await screen.findByRole("button", { name: "Save and connect" }));
-    await userEvent.click(await screen.findByRole("button", { name: "Finish" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Skip" }));
 
     await userEvent.click(await screen.findByRole("button", { name: "Settings" }));
     expect(screen.getByText("CF-Access-Client-Secret")).toBeTruthy();

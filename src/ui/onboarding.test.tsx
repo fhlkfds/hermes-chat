@@ -22,6 +22,20 @@ const backend = vi.hoisted(() => ({
   release: undefined as (() => void) | undefined,
   /** While set, a stopped test answers only when the test releases it, as when Rust's abort lands late. */
   lateCancel: false,
+  /** While set, Save and connect's sign-in waits until it is stopped or let through, like a slow server. */
+  holdConnect: false,
+  letConnect: undefined as (() => void) | undefined,
+  /** Sign-ins stopped while they were opening (src-tauri `hermes_connect_cancel`). */
+  connectsStopped: 0,
+  /** While set, the next connection test fails with this, or answers with this first chat frame. */
+  probeFailure: undefined as ProbeFailure | undefined,
+  probeReady: undefined as string | undefined,
+  /** While set, saving a provider key fails with a message that quotes the key, as a provider's own text can. */
+  echoKey: false,
+  /** While set, the keyring's password save, or its extra-header read, waits until let through. */
+  holdKeyringSave: false,
+  holdHeadersLoad: false,
+  letKeyring: undefined as (() => void) | undefined,
 }));
 
 const where = (d: SignInDetails) => (d.mode === "ssh" ? `ssh:${d.sshTarget.trim()}` : `url:${d.url.trim()}`);
@@ -39,10 +53,25 @@ vi.mock("../hermes/tauriPipe", () => ({
   asError: (e: unknown) => Promise.reject(new Error(String(e))),
   tauriPipe:
     (d: SignInDetails): OpenPipe =>
-    async (onEvent, profile) => {
+    async (onEvent, profile, signal) => {
+      if (backend.holdConnect)
+        await new Promise<void>((resolve, reject) => {
+          backend.letConnect = resolve;
+          signal?.addEventListener("abort", () => {
+            backend.connectsStopped++;
+            reject(new Error("The connection was stopped."));
+          });
+        });
       const r = reach(d);
       if ("stage" in r) throw new Error(r.message);
-      return r.server.openPipe(onEvent, profile);
+      const pipe = await r.server.openPipe(onEvent, profile);
+      if (!backend.echoKey) return pipe;
+      return {
+        ...pipe,
+        saveProviderKey: async (_profile: string, _envVar: string, key: string) => {
+          throw new Error(`The provider said: invalid key ${key.slice(2, 14)}…`);
+        },
+      };
     },
   tauriProbe: {
     run: async (d: SignInDetails): Promise<Probed> => {
@@ -51,12 +80,13 @@ vi.mock("../hermes/tauriPipe", () => ({
         await new Promise<void>((resolve) => (backend.release = resolve));
         throw { stage: "cancelled", message: "The test was stopped." } satisfies ProbeFailure;
       }
+      if (backend.probeFailure) throw backend.probeFailure;
       const r = reach(d);
       if ("stage" in r) throw r;
       return {
         route: r.server.route,
         status: '{"version":"0.22.5","auth_required":true,"auth_providers":["basic"]}',
-        ready: JSON.stringify({ jsonrpc: "2.0", method: "event", params: { type: "gateway.ready", payload: r.server.readyPayload } }),
+        ready: backend.probeReady ?? JSON.stringify({ jsonrpc: "2.0", method: "event", params: { type: "gateway.ready", payload: r.server.readyPayload } }),
       };
     },
     cancel: () => {
@@ -68,6 +98,8 @@ vi.mock("../hermes/tauriPipe", () => ({
 vi.mock("@tauri-apps/api/core", () => ({
   Channel: class {},
   invoke: async (cmd: string, args?: { password?: string }) => {
+    if ((cmd === "password_save" && backend.holdKeyringSave) || (cmd === "headers_load" && backend.holdHeadersLoad))
+      await new Promise<void>((go) => (backend.letKeyring = go));
     if (cmd === "password_load") return backend.keyring ?? null;
     if (cmd === "password_save") {
       if (backend.keyringBroken) throw "The system keyring failed: no Secret Service on the bus";
@@ -97,7 +129,24 @@ beforeEach(() => {
   home = new FakeHermes();
   backend.servers.clear();
   backend.servers.set("ssh:liam@hermes", { server: home, password: "hunter2" });
-  Object.assign(backend, { keyring: undefined, holdProbe: false, keyringBroken: false, probes: 0, cancelled: 0, release: undefined, lateCancel: false });
+  Object.assign(backend, {
+    keyring: undefined,
+    holdProbe: false,
+    keyringBroken: false,
+    probes: 0,
+    cancelled: 0,
+    release: undefined,
+    lateCancel: false,
+    holdConnect: false,
+    letConnect: undefined,
+    connectsStopped: 0,
+    probeFailure: undefined,
+    probeReady: undefined,
+    echoKey: false,
+    holdKeyringSave: false,
+    holdHeadersLoad: false,
+    letKeyring: undefined,
+  });
 });
 
 afterEach(() => {
@@ -357,7 +406,8 @@ describe("Setup from Settings", () => {
     expect([home.closed, studio.opened, savedPassword()]).toEqual([true, 1, "pa55"]);
     expect(savedSignIn()).toEqual({ mode: "url", sshTarget: "liam@hermes", url: "http://studio.example.com:9119", username: "liam" });
 
-    await user.click(screen.getByRole("button", { name: "Finish" }));
+    await screen.findByText(/Hermes can already use/);
+    await user.click(screen.getByRole("button", { name: "Skip" }));
     expect(dialog()).toBeNull();
     expect(await screen.findByText("New chat", { selector: ".chat-title span" })).toBeTruthy();
   });
@@ -406,7 +456,7 @@ describe("Setup from Settings", () => {
     await user.click(screen.getByRole("button", { name: "Test connection" }));
     await screen.findByText(/Connected to Hermes/);
     await user.click(screen.getByRole("button", { name: "Save and connect" }));
-    await user.click(await screen.findByRole("button", { name: "Finish" }));
+    await user.click(await screen.findByRole("button", { name: "Skip" }));
     expect(backend.keyring).toBeUndefined();
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
@@ -448,5 +498,412 @@ describe("Setup from Settings", () => {
     await user.click(screen.getByRole("button", { name: "Done" }));
     expect(dialog()).toBeNull();
     expect([home.opened, home.closed]).toEqual([1, false]);
+  });
+});
+
+/** First run up to a passed test of liam@hermes. */
+async function testedFirstRun(user: ReturnType<typeof userEvent.setup>) {
+  await screen.findByRole("heading", { name: "Welcome to Hermes Chat" });
+  await toSignInStep(user);
+  await user.type(screen.getByLabelText("Dashboard username"), "liam");
+  await user.type(screen.getByLabelText("Dashboard password"), "hunter2");
+  await user.click(screen.getByRole("button", { name: "Test connection" }));
+  await screen.findByText(/Connected to Hermes/);
+}
+
+/** Each stage's mark in a test result: ok, bad or skip. */
+const marks = (result: HTMLElement) => [...result.querySelectorAll(".setup-checks li")].map((li) => `${li.textContent}: ${li.className}`);
+
+describe("A connection test explains each stage on its own", () => {
+  it("tells an unreachable dashboard, a refused sign-in, a gateway, a protocol mismatch and a pass apart, keeping nothing", async () => {
+    const user = await start();
+    await screen.findByRole("heading", { name: "Welcome to Hermes Chat" });
+    await toSignInStep(user);
+    await user.type(screen.getByLabelText("Dashboard username"), "liam");
+    await user.type(screen.getByLabelText("Dashboard password"), "hunter2");
+    const retest = async () => {
+      await user.click(screen.getByRole("button", { name: /^(Test connection|Try again|Test again)$/ }));
+      return screen.findByRole(backend.probeFailure || backend.probeReady ? "alert" : "status");
+    };
+
+    // Reachability: the tunnel opened, but nothing answers on the dashboard's port.
+    backend.probeFailure = { stage: "reach", message: "Can't reach the Hermes dashboard: connection refused" };
+    let result = await retest();
+    expect(result.textContent).toContain("The tunnel opened, but nothing answered on the server's port 9119.");
+    expect(result.textContent).toContain("hermes dashboard");
+    expect(marks(result)).toEqual([
+      "Open an SSH tunnel to the server: ok",
+      "Reach the Hermes dashboard: bad",
+      "Sign in to the dashboard: skip",
+      "Open the chat connection: skip",
+    ]);
+
+    // Authentication: the dashboard answered, and turned the password down.
+    backend.probeFailure = { stage: "sign-in", message: "Wrong username or password.", status: '{"version":"0.22.5","auth_required":true,"auth_providers":["basic"]}' };
+    result = await retest();
+    expect(result.textContent).toContain("The dashboard turned down the username or password.");
+    expect(marks(result).map((m) => m.split(": ")[1])).toEqual(["ok", "ok", "bad", "skip"]);
+
+    // A dashboard that offers no password sign-in is an authentication problem too, with its own fix.
+    backend.probeFailure = { stage: "sign-in", message: "The dashboard answered 404", status: '{"version":"0.22.5","auth_required":true,"auth_providers":["oidc"]}' };
+    result = await retest();
+    expect(result.textContent).toContain("This dashboard doesn't offer username and password sign-in");
+    expect(result.textContent).toContain("It offers: oidc.");
+
+    // Protocol: signed in, but the server speaks the canonical session protocol.
+    backend.probeFailure = undefined;
+    backend.probeReady = JSON.stringify({ jsonrpc: "2.0", method: "event", params: { type: "gateway.ready", payload: { session_authority: "server" } } });
+    result = await retest();
+    expect(result.textContent).toContain("Hermes Chat can't talk to this server yet.");
+    expect(result.textContent).toContain("newer session protocol");
+    expect(marks(result).map((m) => m.split(": ")[1])).toEqual(["ok", "ok", "ok", "bad"]);
+    // A protocol mismatch can't be saved.
+    expect(screen.queryByRole("button", { name: "Save and connect" })).toBeNull();
+
+    // A pass marks every stage.
+    backend.probeReady = undefined;
+    result = await retest();
+    expect(result.textContent).toContain("Connected to Hermes 0.22.5 at ssh://liam@hermes.");
+    expect(marks(result).map((m) => m.split(": ")[1])).toEqual(["ok", "ok", "ok", "ok"]);
+
+    // None of the tests kept anything.
+    expect([backend.keyring, savedSignIn(), backend.probes]).toEqual([undefined, null, 5]);
+  });
+
+  it("says a gateway turned Hermes Chat away before the password is sent", async () => {
+    const user = await start();
+    await screen.findByRole("heading", { name: "Welcome to Hermes Chat" });
+    await user.click(screen.getByRole("button", { name: "Get started" }));
+    await user.click(screen.getByRole("button", { name: "URL" }));
+    await user.type(screen.getByLabelText("Dashboard URL"), "https://hermes.example.com");
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.type(screen.getByLabelText("Dashboard username"), "liam");
+    await user.type(screen.getByLabelText("Dashboard password"), "hunter2");
+    backend.probeFailure = { stage: "reach", message: "The dashboard answered 403: Forbidden by Access" };
+    await user.click(screen.getByRole("button", { name: "Test connection" }));
+    const result = await screen.findByRole("alert");
+    expect(result.textContent).toContain("Something in front of the dashboard at hermes.example.com turned Hermes Chat away.");
+    expect(result.textContent).toContain("CF-Access-Client-Id");
+    expect(marks(result)).toEqual(["Find the server: ok", "Reach the Hermes dashboard: bad", "Sign in to the dashboard: skip", "Open the chat connection: skip"]);
+  });
+});
+
+describe("Stopping Save and connect", () => {
+  it("on first run, stops the sign-in and keeps nothing, and can connect afterwards", async () => {
+    backend.holdConnect = true;
+    const user = await start();
+    await testedFirstRun(user);
+    await user.click(screen.getByRole("button", { name: "Save and connect" }));
+    expect((screen.getByRole("button", { name: "Connecting…" }) as HTMLButtonElement).disabled).toBe(true);
+    // Setup can't be left with a sign-in under way, only stopped.
+    expect(screen.queryByRole("button", { name: /cancel/i })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+    expect((await screen.findByText(/Connecting was stopped/)).textContent?.trim()).toBe("Connecting was stopped. Nothing was saved.");
+    expect([backend.connectsStopped, backend.keyring, savedSignIn(), home.opened]).toEqual([1, undefined, null, 0]);
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    backend.holdConnect = false;
+    await user.click(screen.getByRole("button", { name: "Save and connect" }));
+    await screen.findByRole("heading", { name: "Model providers" });
+    expect([savedPassword(), home.opened]).toEqual(["hunter2", 1]);
+  });
+
+  it("stops on Escape too, and stays in setup", async () => {
+    backend.holdConnect = true;
+    const user = await start();
+    await testedFirstRun(user);
+    await user.click(screen.getByRole("button", { name: "Save and connect" }));
+    await waitFor(() => expect(backend.letConnect).toBeTruthy());
+    await user.keyboard("{Escape}");
+    await screen.findByText(/Connecting was stopped/);
+    expect(dialog()).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Sign in to the dashboard" })).toBeTruthy();
+    expect([backend.connectsStopped, backend.keyring]).toEqual([1, undefined]);
+  });
+
+  it("from Settings, puts the connection in use back, with its draft", async () => {
+    const studio = new FakeHermes();
+    backend.servers.set("url:http://studio.example.com:9119", { server: studio, password: "pa55" });
+    alreadySetUp();
+    const user = await start();
+    const composer = await screen.findByPlaceholderText("Message Hermes");
+    await user.click(composer);
+    await user.paste("Half-written plan");
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: "Run setup again" }));
+    await user.click(await screen.findByRole("button", { name: "Change connection" }));
+    await user.click(screen.getByRole("button", { name: "URL" }));
+    await user.type(screen.getByLabelText("Dashboard URL"), "http://studio.example.com:9119");
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.type(screen.getByLabelText("Dashboard password"), "pa55");
+    await user.click(screen.getByRole("button", { name: "Test connection" }));
+    await screen.findByText(/Connected to Hermes/);
+
+    backend.holdConnect = true;
+    await user.click(screen.getByRole("button", { name: "Save and connect" }));
+    await waitFor(() => expect(backend.letConnect).toBeTruthy());
+    // Only the new sign-in is held: putting the old one back goes straight through.
+    backend.holdConnect = false;
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+    expect((await screen.findByText(/Connecting was stopped/)).textContent?.trim()).toBe(
+      "Connecting was stopped. Nothing was saved, and the connection you were using was put back.",
+    );
+    expect([studio.opened, home.opened, backend.keyring, savedSignIn()!.mode]).toEqual([0, 2, "hunter2", "ssh"]);
+
+    await user.click(screen.getByRole("button", { name: "Cancel setup" }));
+    expect(dialog()).toBeNull();
+    expect(home.closed).toBe(false);
+    expect(((await screen.findByPlaceholderText("Message Hermes")) as HTMLTextAreaElement).value).toBe("Half-written plan");
+  });
+});
+
+describe("Composer drafts across a reconfiguration", () => {
+  async function typedDraftThenSetup() {
+    const studio = new FakeHermes();
+    backend.servers.set("url:http://studio.example.com:9119", { server: studio, password: "pa55" });
+    alreadySetUp();
+    const user = await start();
+    const composer = await screen.findByPlaceholderText("Message Hermes");
+    await user.click(composer);
+    await user.paste("Half-written plan");
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: "Run setup again" }));
+    await user.click(await screen.findByRole("button", { name: "Change connection" }));
+    await user.click(screen.getByRole("button", { name: "URL" }));
+    await user.type(screen.getByLabelText("Dashboard URL"), "http://studio.example.com:9119");
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.type(screen.getByLabelText("Dashboard password"), "pa55");
+    await user.click(screen.getByRole("button", { name: "Test connection" }));
+    await screen.findByText(/Connected to Hermes/);
+    return { user, studio };
+  }
+
+  it("keeps the draft when the connection in use moves to another address", async () => {
+    const { user, studio } = await typedDraftThenSetup();
+    await user.click(screen.getByRole("button", { name: "Save and connect" }));
+    await user.click(await screen.findByRole("button", { name: "Skip" }));
+    expect(dialog()).toBeNull();
+    expect([studio.opened, home.closed]).toEqual([1, true]);
+    expect(((await screen.findByPlaceholderText("Message Hermes")) as HTMLTextAreaElement).value).toBe("Half-written plan");
+  });
+
+  it("keeps the draft when a failed reconfiguration puts the old connection back", async () => {
+    const { user, studio } = await typedDraftThenSetup();
+    studio.refuse = "Can't reach the Hermes dashboard: connection reset";
+    await user.click(screen.getByRole("button", { name: "Save and connect" }));
+    await screen.findByText(/The test passed, but connecting failed/);
+    await waitFor(() => expect(home.opened).toBe(2));
+    await user.click(screen.getByRole("button", { name: "Cancel setup" }));
+    expect(((await screen.findByPlaceholderText("Message Hermes")) as HTMLTextAreaElement).value).toBe("Half-written plan");
+  });
+});
+
+describe("Leaving the providers step", () => {
+  it("is Skip on a server whose Hermes can already use a provider, and Skip for now on one that can't", async () => {
+    const user = await start();
+    await testedFirstRun(user);
+    await user.click(screen.getByRole("button", { name: "Save and connect" }));
+    await screen.findByText(/Hermes can already use/);
+    expect(screen.getByText(/This step is optional/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Finish" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Skip" }));
+    expect(dialog()).toBeNull();
+    expect(home.savedKeys).toEqual([]);
+    // Skipping keeps the connection.
+    expect(savedPassword()).toBe("hunter2");
+  });
+
+  it("offers Skip for now when Hermes lists no provider it can use", async () => {
+    home.modelOptionsResult = { providers: [] };
+    home.restModelOptions = { providers: [] };
+    const user = await start();
+    await testedFirstRun(user);
+    await user.click(screen.getByRole("button", { name: "Save and connect" }));
+    expect(await screen.findByText(/Hermes doesn't list a model provider it can use yet/)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Skip for now" }));
+    expect(dialog()).toBeNull();
+  });
+});
+
+describe("Provider keys are masked and write-only", () => {
+  it("masks the key, and never shows an answer that repeats it, nor keeps it on this computer", async () => {
+    backend.echoKey = true;
+    const key = "sk-ant-api03-SYNTHETIC0123456789";
+    alreadySetUp();
+    const user = await start();
+    await screen.findByText("New chat", { selector: ".chat-title span" });
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: "Run setup again" }));
+    await user.click(await screen.findByRole("button", { name: "Add a provider key" }));
+    await user.selectOptions(await screen.findByLabelText("Provider"), "anthropic");
+    const input = screen.getByLabelText("API key") as HTMLInputElement;
+    expect([input.type, input.getAttribute("autocomplete"), input.getAttribute("spellcheck")]).toEqual(["password", "off", "false"]);
+    await user.click(input);
+    await user.paste(key);
+    await user.click(screen.getByRole("button", { name: "Check and save key" }));
+    expect((await within(dialog()!).findByRole("alert")).textContent).toBe("Not saved: Hermes's answer isn't shown, as it may repeat the key.");
+    for (const part of [key, key.slice(2, 14), "SYNTHETIC"]) {
+      expect(document.body.textContent).not.toContain(part);
+      expect(JSON.stringify(localStorage)).not.toContain(part);
+      expect(backend.keyring ?? "").not.toContain(part);
+    }
+    expect(home.savedKeys).toEqual([]);
+  });
+});
+
+describe("Run setup again from the sign-in screen", () => {
+  it("opens setup for the connection the screen is for, cancels back, and saves only once tested", async () => {
+    alreadySetUp({ signedOut: true });
+    const user = await start();
+    await screen.findByRole("heading", { name: "Connect to hermes" });
+    await user.click(screen.getByRole("button", { name: "Run setup again…" }));
+    expect(await screen.findByRole("heading", { name: "Edit hermes" })).toBeTruthy();
+    expect(screen.getByText(/Nothing changes until the connection is tested and saved/)).toBeTruthy();
+    expect((screen.getByLabelText("SSH target") as HTMLInputElement).value).toBe("liam@hermes");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(await screen.findByRole("heading", { name: "Connect to hermes" })).toBeTruthy();
+    expect(dialog()).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Run setup again…" }));
+    await user.click(await screen.findByRole("button", { name: "Next" }));
+    expect((screen.getByLabelText("Dashboard username") as HTMLInputElement).value).toBe("liam");
+    await user.type(screen.getByLabelText("Dashboard password"), "hunter2");
+    await user.click(screen.getByRole("button", { name: "Test connection" }));
+    await screen.findByText(/Connected to Hermes/);
+    expect(backend.keyring).toBeUndefined();
+    await user.click(screen.getByRole("button", { name: "Save and connect" }));
+    await user.click(await screen.findByRole("button", { name: "Skip" }));
+    expect(dialog()).toBeNull();
+    expect(await screen.findByText("New chat", { selector: ".chat-title span" })).toBeTruthy();
+    expect(savedPassword()).toBe("hunter2");
+    // Still the one connection, edited in place.
+    expect(JSON.parse(localStorage.getItem("hermes-chat.connections")!).connections).toHaveLength(1);
+  });
+});
+
+describe("Stopping at the edges", () => {
+  it("keeps a sign-in that Hermes already answered, even if Stop comes while the keyring saves it", async () => {
+    backend.holdKeyringSave = true;
+    const user = await start();
+    await testedFirstRun(user);
+    await user.click(screen.getByRole("button", { name: "Save and connect" }));
+    await waitFor(() => expect(backend.letKeyring).toBeTruthy());
+    expect(home.opened).toBe(1);
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+    backend.holdKeyringSave = false;
+    await act(async () => backend.letKeyring!());
+    await screen.findByRole("heading", { name: "Model providers" });
+    expect(screen.queryByText(/Connecting was stopped/)).toBeNull();
+    expect([savedPassword(), savedSignIn()?.sshTarget, home.opened, home.closed, backend.connectsStopped]).toEqual(["hunter2", "liam@hermes", 1, false, 0]);
+  });
+
+  it("from Settings, when the old server can't be reached either, goes back to it signed out, with its draft and secrets", async () => {
+    const studio = new FakeHermes();
+    backend.servers.set("url:http://studio.example.com:9119", { server: studio, password: "pa55" });
+    alreadySetUp();
+    const user = await start();
+    const composer = await screen.findByPlaceholderText("Message Hermes");
+    await screen.findByText("New chat", { selector: ".chat-title span" });
+    await user.click(composer);
+    await user.paste("Half-written plan");
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: "Run setup again" }));
+    await user.click(await screen.findByRole("button", { name: "Change connection" }));
+    await user.click(screen.getByRole("button", { name: "URL" }));
+    await user.type(screen.getByLabelText("Dashboard URL"), "http://studio.example.com:9119");
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.type(screen.getByLabelText("Dashboard password"), "pa55");
+    await user.click(screen.getByRole("button", { name: "Test connection" }));
+    await screen.findByText(/Connected to Hermes/);
+
+    backend.holdConnect = true;
+    await user.click(screen.getByRole("button", { name: "Save and connect" }));
+    await waitFor(() => expect(backend.letConnect).toBeTruthy());
+    backend.holdConnect = false;
+    home.refuse = "Can't reach the Hermes dashboard: connection reset";
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+    // Nothing could be put back, so setup doesn't claim it was.
+    expect((await screen.findByText(/Connecting was stopped/)).textContent?.trim()).toBe("Connecting was stopped. Nothing was saved.");
+    // Nothing of the new server was kept; the old connection's secrets and address are as they were.
+    expect([studio.opened, backend.keyring, savedSignIn()]).toEqual([0, "hunter2", { mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" }]);
+
+    // With no chat list saved to read Offline, the old connection's sign-in screen is under setup.
+    await user.click(screen.getByRole("button", { name: "Cancel setup" }));
+    expect(dialog()).toBeNull();
+    expect(await screen.findByRole("heading", { name: "Connect to hermes" })).toBeTruthy();
+    expect((screen.getByLabelText("SSH target") as HTMLInputElement).value).toBe("liam@hermes");
+    // Once it answers again, signing in finds the draft.
+    home.refuse = undefined;
+    await user.type(screen.getByLabelText(/^Dashboard password/), "hunter2");
+    await user.click(screen.getByRole("button", { name: "Connect" }));
+    expect(((await screen.findByPlaceholderText("Message Hermes")) as HTMLTextAreaElement).value).toBe("Half-written plan");
+    expect(studio.opened).toBe(0);
+  });
+});
+
+describe("Run setup again while the keyring is slow", () => {
+  it("gives way to Set up a new connection asked for meanwhile", async () => {
+    alreadySetUp({ signedOut: true });
+    const user = await start();
+    await screen.findByRole("heading", { name: "Connect to hermes" });
+    backend.holdHeadersLoad = true;
+    await user.click(screen.getByRole("button", { name: "Run setup again…" }));
+    await waitFor(() => expect(backend.letKeyring).toBeTruthy());
+    await user.click(screen.getByRole("button", { name: "Set up a new connection…" }));
+    expect(await screen.findByRole("heading", { name: "Set up Hermes Chat" })).toBeTruthy();
+    backend.holdHeadersLoad = false;
+    await act(async () => backend.letKeyring!());
+    await act(async () => {});
+    expect(screen.getByRole("heading", { name: "Set up Hermes Chat" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Edit hermes" })).toBeNull();
+  });
+});
+
+describe("Stopping a Save and connect that waits its turn", () => {
+  it("stops at once, never dials, and leaves the change before it to finish", async () => {
+    alreadySetUp({ signedOut: true });
+    const user = await start();
+    await screen.findByRole("heading", { name: "Connect to hermes" });
+    // Run setup again reads the keyring, and that change holds the queue.
+    backend.holdHeadersLoad = true;
+    await user.click(screen.getByRole("button", { name: "Run setup again…" }));
+    await waitFor(() => expect(backend.letKeyring).toBeTruthy());
+    await user.click(screen.getByRole("button", { name: "Set up a new connection…" }));
+    await toSignInStep(user);
+    await user.type(screen.getByLabelText("Dashboard username"), "liam");
+    await user.type(screen.getByLabelText("Dashboard password"), "hunter2");
+    await user.click(screen.getByRole("button", { name: "Test connection" }));
+    await screen.findByText(/Connected to Hermes/);
+
+    await user.click(screen.getByRole("button", { name: "Save and connect" }));
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+    // Stopped while still queued: no wait for the change ahead of it.
+    expect((await screen.findByText(/Connecting was stopped/)).textContent?.trim()).toBe("Connecting was stopped. Nothing was saved.");
+    backend.holdHeadersLoad = false;
+    await act(async () => backend.letKeyring!());
+    await act(async () => {});
+    expect([home.opened, backend.connectsStopped, backend.keyring]).toEqual([0, 0, undefined]);
+    // The change ahead of it gave way to the setup opened meanwhile; setup is still there, and can connect.
+    expect(screen.getByRole("heading", { name: "Sign in to the dashboard" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Save and connect" }));
+    await screen.findByRole("heading", { name: "Model providers" });
+    expect([home.opened, savedPassword()]).toEqual([1, "hunter2"]);
+  });
+});
+
+describe("The app closing while Save and connect dials", () => {
+  it("stops the dial through the real sign-in chain, and saves nothing even when the server answers later", async () => {
+    backend.holdConnect = true;
+    const user = await start();
+    await testedFirstRun(user);
+    await user.click(screen.getByRole("button", { name: "Save and connect" }));
+    await waitFor(() => expect(backend.letConnect).toBeTruthy());
+    const late = backend.letConnect!;
+    cleanup();
+    expect(backend.connectsStopped).toBe(1);
+    // The server answering after all changes nothing: the dial was already stopped.
+    await act(async () => late());
+    await act(async () => {});
+    expect([home.opened, backend.keyring, savedSignIn()]).toEqual([0, undefined, null]);
   });
 });
