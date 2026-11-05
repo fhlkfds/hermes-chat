@@ -193,7 +193,7 @@ export function Onboarding({
     setStopped(false);
     try {
       const { notSaved, kept } = await onConnect(withHeaders(d), name, stop.signal);
-      setNotSaved(notSaved && `${notSaved.replace(/\.?$/, ".")} ${retypeLater(kept)}`);
+      setNotSaved(notSaved && `${notSaved.replace(/\.?$/, ".")} ${retypeLater(kept, d.method === "token" ? "token" : "password")}`);
       setSaved(true);
       setD((was) => ({ ...was, password: "", token: undefined }));
       setStep("providers");
@@ -533,10 +533,10 @@ function Welcome({
 
 /** The SSH or URL choice and its field, shared with the sign-in screen. */
 /** What the owner types again because the keyring couldn't keep it. */
-function retypeLater(kept: Kept = { password: false, headers: true }): string {
-  if (!kept.password && !kept.headers) return "You'll type the password and the extra request headers again at the next launch.";
+function retypeLater(kept: Kept = { password: false, headers: true }, what: "password" | "token" = "password"): string {
+  if (!kept.password && !kept.headers) return `You'll type the ${what} and the extra request headers again at the next launch.`;
   if (!kept.headers) return "You'll type the extra request headers again at the next sign-in.";
-  return "You'll type the password again at the next launch.";
+  return `You'll type the ${what} again at the next launch.`;
 }
 
 /**

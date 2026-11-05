@@ -63,6 +63,27 @@ describe("The sign-in screen", () => {
     expect(screen.getByLabelText(/^Dashboard password/)).toBeTruthy();
   });
 
+  it("reads the methods again for an address typed in, and drops an answer for an address it moved on from", async () => {
+    const asked: string[] = [];
+    let slow!: (m: Methods) => void;
+    const readMethods = vi.fn((d: SignInDetails) => {
+      asked.push(d.url);
+      if (d.url === "http://hermes:9119") return new Promise<Methods>((resolve) => (slow = resolve));
+      return Promise.resolve(d.url === "http://tokens:9119" ? { methods: [{ method: "token" as const }] } : passwordOnly);
+    });
+    render(<SignIn connection={connection} initial={blank} onSignIn={async () => {}} readMethods={readMethods} />);
+    await waitFor(() => expect(asked).toEqual(["http://hermes:9119"]));
+    const url = screen.getByLabelText(/^Dashboard URL/);
+    await userEvent.clear(url);
+    await userEvent.click(url);
+    await userEvent.paste("http://tokens:9119");
+    expect(await screen.findByLabelText("Dashboard session token", {}, { timeout: 3000 })).toBeTruthy();
+    slow(passwordOnly);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.getByLabelText("Dashboard session token")).toBeTruthy();
+    expect(asked.at(-1)).toBe("http://tokens:9119");
+  });
+
   it("explains a token the dashboard turned down", () => {
     render(
       <SignIn

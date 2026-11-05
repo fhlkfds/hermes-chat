@@ -2,7 +2,7 @@
 // connection form. With more than one saved connection (ADR 0049) the recent-connection picker beside the form picks
 // which one the form is for; nothing is picked on its own, so with none picked the form waits for the owner. The
 // form offers the sign-in methods the server advertises (ADR 0058); with one, it looks as it always did.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CircleAlert, KeyRound, PlugZap, Trash2 } from "lucide-react";
 import type { Methods, SignInDetails } from "../hermes/tauriPipe";
 import { type SavedConnection, addressLabel } from "../hermes/connections";
@@ -48,24 +48,35 @@ export function SignIn({
   const [d, setD] = useState<SignInDetails>(initial);
   const [busy, setBusy] = useState(false);
   const [methods, setMethods] = useState<Methods>();
-  // Read once for the connection the form opened with; the form is remounted for another.
+  // Read for the address the form holds: at once when it opens, and again a moment after the address is edited. An
+  // answer for an address the form has moved on from is dropped.
+  const address = JSON.stringify([d.mode, d.sshTarget.trim(), d.url.trim(), d.mode === "url" ? (d.headers ?? []) : []]);
+  const firstRead = useRef(true);
   useEffect(() => {
     if (!connection || !readMethods) return;
     let live = true;
-    void readMethods(initial).then((got) => {
-      if (!live) return;
-      setMethods(got);
-      // The method this connection used, if the server still offers it; otherwise the first it does.
-      setD((was) => {
-        const list = offered(got, was);
-        return list.some((m) => isPicked(m, was)) ? was : withMethod(was, list[0]);
-      });
-    });
+    const first = firstRead.current;
+    firstRead.current = false;
+    if (!first) setMethods(undefined);
+    const timer = setTimeout(
+      () =>
+        void readMethods(d).then((got) => {
+          if (!live) return;
+          setMethods(got);
+          // The method this connection used, if the server still offers it; otherwise the first it does.
+          setD((was) => {
+            const list = offered(got, was);
+            return list.some((m) => isPicked(m, was)) ? was : withMethod(was, list[0]);
+          });
+        }),
+      first ? 0 : 700,
+    );
     return () => {
       live = false;
+      clearTimeout(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [address]);
   // A password filled in from the keyring is for the address it was saved with. Once the address changes it is
   // cleared, as the header values are (ServerFields), so it never goes to another server. A saved token is Rust's,
   // which refuses it for another address anyway; the form stops counting on it.

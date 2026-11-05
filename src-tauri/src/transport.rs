@@ -970,8 +970,11 @@ pub struct Dashboard {
     base: Url,
     cookies: Mutex<Vec<(String, String)>>,
     /// The owner's extra request headers, and a token sign-in's `Authorization`; `http` sends them all itself, the
-    /// WebSocket handshake adds the extra headers. An error that repeats any of them isn't shown.
+    /// WebSocket handshake adds the extra headers.
     headers: HeaderMap,
+    /// What an error or close reason mustn't repeat to be shown: `headers`, and a token on its own, however short.
+    /// Never sent.
+    hide: HeaderMap,
     /// Signed in with a token: `headers` holds its `Authorization`, which the WebSocket handshake leaves out, as the
     /// socket is let in by its ticket.
     token: bool,
@@ -984,7 +987,8 @@ impl Dashboard {
         match &sign_in.credential {
             Credential::Password { provider, username, password } => {
                 let http = client(&sign_in.headers)?;
-                let dashboard = Dashboard { http, base: base.clone(), cookies: Mutex::default(), headers: sign_in.headers.clone(), token: false };
+                let dashboard =
+                    Dashboard { http, base: base.clone(), cookies: Mutex::default(), headers: sign_in.headers.clone(), hide: sign_in.headers.clone(), token: false };
                 let provider = if provider_name(provider) { provider.as_str() } else { PASSWORD_PROVIDER };
                 let login = dashboard
                     .http
@@ -1020,18 +1024,23 @@ impl Dashboard {
                 let mut headers = sign_in.headers.clone();
                 headers.insert(header::AUTHORIZATION, bearer);
                 let http = client(&headers)?;
-                let dashboard = Dashboard { http, base: base.clone(), cookies: Mutex::default(), headers, token: true };
+                let mut hide = headers.clone();
+                let mut bare = HeaderValue::from_str(token).map_err(|_| TransportError::BadToken)?;
+                bare.set_sensitive(true);
+                hide.insert(HeaderName::from_static("x-hermes-chat-token"), bare);
+                let dashboard = Dashboard { http, base: base.clone(), cookies: Mutex::default(), headers, hide, token: true };
                 let me = dashboard.http.get(endpoint(base, "api/auth/me")).send().await.map_err(unreachable)?;
                 match me.status() {
                     s if s.is_success() => {}
                     StatusCode::UNAUTHORIZED => return Err(TransportError::BadToken),
                     StatusCode::TOO_MANY_REQUESTS => return Err(TransportError::RateLimited),
-                    _ => return Err(unexpected(me, &dashboard.headers).await),
+                    _ => return Err(unexpected(me, &dashboard.hide).await),
                 }
                 let me: serde_json::Value = me.json().await.map_err(unreachable)?;
+                // Only a provider Hermes ships is named: anything else the server put there could be the token itself.
                 match me["provider"].as_str() {
                     Some(TOKEN_PROVIDER) => Ok(dashboard),
-                    Some(other) if provider_name(other) => Err(TransportError::NotSessionToken(other.to_owned())),
+                    Some(other @ ("basic" | "self-hosted" | "nous" | "drain-secret" | "loopback")) => Err(TransportError::NotSessionToken(other.to_owned())),
                     _ => Err(TransportError::NotSessionToken("different".into())),
                 }
             }
@@ -1050,7 +1059,7 @@ impl Dashboard {
             .map_err(unreachable)?;
         self.keep_cookies(&ticket);
         if !ticket.status().is_success() {
-            return Err(unexpected(ticket, &self.headers).await);
+            return Err(unexpected(ticket, &self.hide).await);
         }
         let ticket: serde_json::Value = ticket
             .json()
@@ -1067,7 +1076,7 @@ impl Dashboard {
             .map_err(|e| TransportError::WebSocket(e.to_string()))?;
 
         let (outgoing, mut to_server) = mpsc::unbounded_channel::<String>();
-        let headers = self.headers.clone();
+        let headers = self.hide.clone();
         let task = tokio::spawn(async move {
             let (mut sink, mut stream) = ws.split();
             let reason = loop {
@@ -1129,7 +1138,7 @@ impl Dashboard {
 
     /// Whether a server's close reason may repeat the owner's extra request headers, so it mustn't be shown.
     pub fn hides_reason(&self, reason: &str) -> bool {
-        repeats_header(reason, &self.headers)
+        repeats_header(reason, &self.hide)
     }
 
     /// One dashboard REST call for the webview: `GET`, `PATCH` or `DELETE` on a path under `api/`, with a
@@ -1186,7 +1195,7 @@ impl Dashboard {
         match resp.status() {
             s if s.is_success() => resp.text().await.map_err(unreachable),
             StatusCode::UNAUTHORIZED => Err(TransportError::SignedOut),
-            _ => Err(unexpected(resp, &self.headers).await),
+            _ => Err(unexpected(resp, &self.hide).await),
         }
     }
 
@@ -1302,15 +1311,15 @@ impl Dashboard {
             return Err(TransportError::SignedOut);
         }
         if status.is_redirection() {
-            return Err(unexpected(resp, &self.headers).await);
+            return Err(unexpected(resp, &self.hide).await);
         }
         let text = resp.text().await.map_err(unreachable)?;
         if status.is_success() {
             return serde_json::from_str(&text)
                 .map(AudioAnswer::Done)
-                .map_err(|_| TransportError::Unexpected { status: status.as_u16(), body: shown_body(status, &text, &self.headers) });
+                .map_err(|_| TransportError::Unexpected { status: status.as_u16(), body: shown_body(status, &text, &self.hide) });
         }
-        let reason = refusal_reason(status, &text, &self.headers);
+        let reason = refusal_reason(status, &text, &self.hide);
         // FastAPI's own "no such route" (and the headless backend's catch-all) differ from a refusal by the route
         // itself, such as an unknown profile, which also answers 404 but with its own reason.
         let no_route = match status {
@@ -1338,7 +1347,7 @@ impl Dashboard {
         match resp.status() {
             s if s.is_success() => {}
             StatusCode::UNAUTHORIZED => return Err(TransportError::SignedOut),
-            _ => return Err(unexpected(resp, &self.headers).await),
+            _ => return Err(unexpected(resp, &self.hide).await),
         }
         let too_large = |size| TransportError::FileTooLarge { size, max: max_bytes };
         if let Some(size) = resp.content_length().filter(|&n| n > max_bytes) {
@@ -1373,7 +1382,7 @@ impl Dashboard {
         match resp.status() {
             s if s.is_success() => {}
             StatusCode::UNAUTHORIZED => return Err(TransportError::SignedOut),
-            _ => return Err(unexpected(resp, &self.headers).await),
+            _ => return Err(unexpected(resp, &self.hide).await),
         }
         let total = resp.content_length();
         let io = |e: std::io::Error| TransportError::File(format!("couldn't write it on this computer: {e}"));
@@ -1476,7 +1485,7 @@ impl Dashboard {
         match resp.status() {
             s if s.is_success() => resp.text().await.map_err(unreachable),
             StatusCode::UNAUTHORIZED => Err(TransportError::SignedOut),
-            _ => Err(unexpected(resp, &self.headers).await),
+            _ => Err(unexpected(resp, &self.hide).await),
         }
     }
 
@@ -1510,7 +1519,7 @@ impl Dashboard {
         match resp.status() {
             s if s.is_success() => resp.text().await.map_err(unreachable),
             StatusCode::UNAUTHORIZED => Err(TransportError::SignedOut),
-            _ => Err(unexpected(resp, &self.headers).await),
+            _ => Err(unexpected(resp, &self.hide).await),
         }
     }
 
@@ -2352,7 +2361,7 @@ impl Dashboard {
         match resp.status() {
             s if s.is_success() => resp.text().await.map_err(unreachable),
             StatusCode::UNAUTHORIZED => Err(TransportError::SignedOut),
-            _ if show_failure => Err(unexpected(resp, &self.headers).await),
+            _ if show_failure => Err(unexpected(resp, &self.hide).await),
             s => Err(TransportError::Unexpected { status: s.as_u16(), body: "(not shown, as it may hold the key)".into() }),
         }
     }
@@ -2437,7 +2446,7 @@ impl Dashboard {
             s => {
                 let answer = resp.text().await.unwrap_or_default();
                 // Neither a secret the map held nor a value of the owner's extra request headers is shown.
-                let body = shown_body(s, &crate::mcp::scrubbed(&answer, &edited.secrets), &self.headers);
+                let body = shown_body(s, &crate::mcp::scrubbed(&answer, &edited.secrets), &self.hide);
                 Err(TransportError::Unexpected { status: s.as_u16(), body })
             }
         }

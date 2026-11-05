@@ -35,6 +35,9 @@ describe("Sign-in methods", () => {
     expect(firstPick(offered({ methods: [token] }, d), d)).toEqual(token);
     expect(offered({ methods: [basic], note: "unread" }, tok)).toEqual([basic, token]);
     expect(offered({ methods: [basic] }, tok)).toEqual([basic]);
+    // A status that was read and says no token isn't overruled by the connection's habit.
+    expect(offered({ methods: [basic], note: "none-supported" }, tok)).toEqual([basic]);
+    expect(offered({ methods: [basic], note: "gate-off" }, tok)).toEqual([basic]);
   });
 
   it("switching method drops what belonged to the other: a typed token, the password, the provider", () => {

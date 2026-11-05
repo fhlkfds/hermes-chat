@@ -46,11 +46,15 @@ export type Account = {
 
 /** What the Rust side says when the dashboard turns the password down (`TransportError::BadCredentials`). */
 export const WRONG_PASSWORD = "Wrong username or password.";
-/** How the Rust side's message starts when the dashboard turns the token down (`TransportError::BadToken`). */
-export const WRONG_TOKEN = "Wrong token:";
+/**
+ * How the Rust side's messages start when a token sign-in can't go through as it is: the dashboard turned the token
+ * down (`TransportError::BadToken`), the server doesn't take one (`TokenNotOffered`), the route's extra headers set
+ * Authorization (`AuthorizationHeaderSet`), or no token is saved for the address. Trying again won't change them.
+ */
+export const TOKEN_REFUSED = /^(Wrong token:|This Hermes server doesn't take a token|Token sign-in sends the token|No token is saved)/;
 
-/** Whether `reason` is Hermes turning down the sign-in itself, so asking again is the only fix. */
-export const turnedDown = (reason: string) => reason === WRONG_PASSWORD || reason.startsWith(WRONG_TOKEN);
+/** Whether `reason` is a sign-in that only asking again can fix, so launch shows the sign-in screen, not Offline. */
+export const turnedDown = (reason: string) => reason === WRONG_PASSWORD || TOKEN_REFUSED.test(reason);
 
 /** What the keyring kept at sign-in. */
 export type Kept = { password: boolean; headers: boolean };

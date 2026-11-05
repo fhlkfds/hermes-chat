@@ -36,7 +36,7 @@ export const isPicked = (m: SignInMethod, d: SignInDetails) =>
 export function offered(methods: Methods | undefined, d: SignInDetails): SignInMethod[] {
   const own: SignInMethod = d.method === "token" ? { method: "token" } : { ...PASSWORD, provider: d.provider ?? "basic" };
   if (!methods) return [own];
-  if (methods.note && d.method === "token" && !methods.methods.some((m) => m.method === "token")) return [...methods.methods, own];
+  if (methods.note === "unread" && d.method === "token" && !methods.methods.some((m) => m.method === "token")) return [...methods.methods, own];
   return methods.methods;
 }
 

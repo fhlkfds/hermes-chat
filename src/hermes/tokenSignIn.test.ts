@@ -106,6 +106,14 @@ describe("Token sign-in", () => {
     token.routes = [routeKey({ id: "main", kind: "lan", target: "http://other:9119" })];
     expect(await savedSignIn(a.connections.get(c.id)!, a)).toBeUndefined();
     await expect(launchSignIn(c, { ...lan, token: "STALE" }, a)).rejects.toThrow(/^Wrong token:/);
+    for (const why of [
+      "This Hermes server doesn't take a token: its sign-in doesn't list the session-token provider.",
+      "Token sign-in sends the token in the Authorization header, and this connection's extra request headers already set Authorization.",
+      "No token is saved for this address. Enter the token to sign in.",
+    ]) {
+      const refusing: Account = { ...a, connect: () => Promise.reject(new Error(why)) };
+      await expect(launchSignIn(c, lan, refusing)).rejects.toThrow(why);
+    }
   });
 
   it("deletes the token on Sign out and on Remove", async () => {
