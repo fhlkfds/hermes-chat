@@ -70,18 +70,28 @@ export function SubagentsPanel({
   api,
   approvalWaiting,
   onGoToApproval,
+  show,
 }: {
   tree?: SubagentTree;
   api?: SubagentsApi;
   /** The chat's reply waits for the owner's answer to an Approval. */
   approvalWaiting: boolean;
   onGoToApproval: () => void;
+  /** A subagent to open, from the agent office; `at` tells one request from the next. */
+  show?: { id: SubagentId; at: number };
 }) {
   const [open, setOpen] = useState(false);
   const [picked, setPicked] = useState<SubagentId>();
   const rootRef = useRef<HTMLElement>(null);
   const backTo = useRef<SubagentId | undefined>(undefined);
   const shown = picked && tree?.subagents.find((s) => s.id === picked);
+
+  useEffect(() => {
+    if (!show) return;
+    setOpen(true);
+    setPicked(show.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [show?.at]);
 
   // Back from a subagent, focus goes to its row.
   useEffect(() => {
