@@ -58,7 +58,7 @@ describe("Settings → Model", () => {
   it("shows the main model, subagents, auxiliary models and guardrails as Hermes has them", async () => {
     await shown();
     expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual(
-      expect.arrayContaining(["Main model", "Subagents", "Auxiliary models", "Guardrails"]),
+      expect.arrayContaining(["Main model", "Subagents", "Auxiliary models", "Guardrails", "Idle compaction"]),
     );
     expect(select("Main provider").value).toBe("openrouter");
     expect(select("Main model").value).toBe("z-ai/glm-5.3-flash");

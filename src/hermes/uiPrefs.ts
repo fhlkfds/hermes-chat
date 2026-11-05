@@ -1,6 +1,6 @@
 // Display preferences for this computer: the theme, whether the last chat reopens at launch and which chat each profile
 // had open, whether reasoning shows, the model last picked and the starred models, which items the status bar shows,
-// the screenshot shortcut and preview pane width, and which computer the Terminal opens on. All preferences live in one versioned localStorage document.
+// the screenshot shortcut and preview pane width, which computer the Terminal opens on, and Idle compaction. All preferences live in one versioned localStorage document.
 // it (chatCache.ts) and later settings add fields here rather than new keys. Nothing here goes to Hermes. Every
 // settings feature reads and writes through this module.
 
@@ -47,7 +47,20 @@ export type UIPrefs = {
   templates: Template[];
   /** The Terminal's shell picked last: the Hermes server's, through ssh, or this computer's (ADR 0051). */
   terminalKind: TerminalKind;
+  /** Idle compaction: compact a chat open on Hermes here once it has sat idle with its context window this full (ADR 0056). */
+  idleCompact: IdleCompactPrefs;
 };
+
+/**
+ * Idle compaction (idleCompact.ts, ADR 0056). `enabled`: off until the owner turns it on, since a compaction is a model
+ * call. `percent`: how full the context window must be, as Hermes measured it. `idleMinutes`: how long the chat must
+ * have had nothing happen in it.
+ */
+export type IdleCompactPrefs = { enabled: boolean; percent: number; idleMinutes: number };
+/** The fullness choices Settings → Model offers, in percent. */
+export const IDLE_COMPACT_PERCENTS = [50, 60, 70, 75, 80, 85, 90] as const;
+/** The idle-time choices Settings → Model offers, in minutes. */
+export const IDLE_COMPACT_MINUTES = [5, 10, 15, 30, 60, 120] as const;
 
 /** The shape of a stored shortcut: modifiers in order, then one key (ui/shortcut.ts writes them). */
 const SHORTCUT = /^(?:Ctrl\+)?(?:Alt\+)?(?:Shift\+)?(?:Super\+)?(?:[A-Z0-9]|F(?:[1-9]|1\d|2[0-4])|PrintScreen|Pause|ScrollLock|Insert)$/;
@@ -69,6 +82,7 @@ export const DEFAULT_UI_PREFS: Readonly<UIPrefs> = Object.freeze({
   previewWidth: null,
   templates: [],
   terminalKind: "server",
+  idleCompact: Object.freeze({ enabled: false, percent: 70, idleMinutes: 15 }),
 });
 
 /** A stored document as read, before its fields are checked. */
@@ -147,6 +161,20 @@ function toStatusBar(v: unknown): string[] | undefined {
 const toPreviewWidth = (v: unknown): number | null | undefined =>
   v === null ? null : typeof v === "number" && Number.isInteger(v) && v >= 200 && v <= 8000 ? v : undefined;
 
+/**
+ * Idle compaction's prefs as stored, each field checked on its own; undefined when it isn't a document. A percent or
+ * time that a newer app or a hand edit put outside the choices offered is kept if it is still sane.
+ */
+function toIdleCompact(v: unknown, d: IdleCompactPrefs): IdleCompactPrefs | undefined {
+  if (!isDoc(v)) return undefined;
+  const whole = (n: unknown, min: number, max: number) => typeof n === "number" && Number.isInteger(n) && n >= min && n <= max;
+  return {
+    enabled: typeof v.enabled === "boolean" ? v.enabled : d.enabled,
+    percent: whole(v.percent, 10, 99) ? (v.percent as number) : d.percent,
+    idleMinutes: whole(v.idleMinutes, 1, 24 * 60) ? (v.idleMinutes as number) : d.idleMinutes,
+  };
+}
+
 /** The most profiles `lastOpenChat` keeps; a document edited by hand can't grow the prefs without end. */
 const LAST_OPEN_LIMIT = 100;
 
@@ -174,6 +202,7 @@ export function readUIPrefs(doc: UIPrefsDoc, d: Readonly<UIPrefs> = DEFAULT_UI_P
     previewWidth: previewWidth === undefined ? d.previewWidth : previewWidth,
     templates: toTemplates(doc.templates) ?? [...d.templates],
     terminalKind: doc.terminalKind === "server" || doc.terminalKind === "local" ? doc.terminalKind : d.terminalKind,
+    idleCompact: toIdleCompact(doc.idleCompact, d.idleCompact) ?? { ...d.idleCompact },
   };
 }
 
