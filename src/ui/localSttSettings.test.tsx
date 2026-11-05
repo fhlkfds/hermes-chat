@@ -183,6 +183,28 @@ describe("Speech to text: Whisper models for whisper.cpp", () => {
     expect(screen.getByText(api.dir)).toBeTruthy();
   });
 
+  it("keeps a newer Backup choice when the re-read after a delete answers late", async () => {
+    const api = fake();
+    api.route({ primary: "local" });
+    api.useModel("base");
+    render(<LocalSttSettings api={api} status="connected" />);
+    await screen.findByRole("button", { name: "Delete the base model" });
+    // The re-read after the delete is slow, and answers what it read: no backup.
+    let release: (() => void) | undefined;
+    api.state = () => {
+      const then = api.snapshot();
+      return new Promise((r) => (release = () => r(then)));
+    };
+    await userEvent.click(screen.getByRole("button", { name: "Delete the base model" }));
+    await waitFor(() => expect(release).toBeDefined());
+    await userEvent.click(radio("Backup speech to text", "Hermes server"));
+    await screen.findByText(/unless this computer can't: then the recording does/);
+    await act(async () => release!());
+    expect(screen.getByText(/unless this computer can't: then the recording does/)).toBeTruthy();
+    expect(screen.queryByText(/The recording never leaves this computer/)).toBeNull();
+    expect(sttRoute.get()).toEqual({ primary: "local", backup: true, timeoutSeconds: 30 });
+  });
+
   it("can't use a downloaded size until there's a whisper.cpp program", async () => {
     const api = fake([]);
     api.route({ primary: "local" });

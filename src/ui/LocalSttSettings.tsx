@@ -65,16 +65,26 @@ export function LocalSttSettings({
     starting: undefined as AbortController | undefined,
     sending: undefined as AbortController | undefined,
     mounted: true,
+    reads: 0,
   });
 
-  const show = (s: LocalSttState) => {
-    setState(s);
-    sttRoute.set(prefsOf(s));
+  /**
+   * Shows what a read or change of the choice answers, numbered when it was asked: an answer to an older one that
+   * comes late (a re-read after a download, say, overtaken by a Backup change) is dropped, here and in the route store.
+   */
+  const track = (p: Promise<LocalSttState | undefined>) => {
+    const mine = ++live.current.reads;
+    void sttRoute
+      .refresh(() => p.then((s) => (s ? prefsOf(s) : sttRoute.get())))
+      .catch(() => {});
+    return p.then((s) => {
+      if (s && live.current.mounted && mine === live.current.reads) setState(s);
+    });
   };
   useEffect(() => {
     const now = live.current;
     now.mounted = true;
-    api.state().then(show, (e) => setError(messageOf(e)));
+    track(api.state()).catch((e) => setError(messageOf(e)));
     return () => {
       now.mounted = false;
       now.run++;
@@ -135,7 +145,7 @@ export function LocalSttSettings({
   const act = (p: Promise<LocalSttState | undefined>) => {
     setError(undefined);
     stopTest();
-    p.then((s) => s && live.current.mounted && show(s), (e) => live.current.mounted && setError(messageOf(e)));
+    track(p).catch((e) => live.current.mounted && setError(messageOf(e)));
   };
   const change = (c: LocalSttChange) => act(api.set(c));
   const actModels = (p: Promise<LocalModels>) => {
@@ -146,7 +156,7 @@ export function LocalSttSettings({
         setDownloads(m);
         // The engine's model list and the chosen model's problem follow the files.
         setFound(undefined);
-        api.state().then(show, () => {});
+        track(api.state()).catch(() => {});
       },
       (e) => live.current.mounted && setError(messageOf(e)),
     );
