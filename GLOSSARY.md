@@ -160,7 +160,7 @@ A message the owner reuses, kept in a library on this computer: a name, an optio
 _Avoid_: snippet, macro, prompt (for the template itself), quick command (Hermes's own)
 
 **Dictation**:
-Speaking a message instead of typing it. The microphone is open only between the owner starting a recording and pressing Done or cancelling. Hermes turns the recording into text with the profile's speech-to-text provider, and the text goes into the composer after anything already typed, for the owner to edit and send. Nothing reaches the chat until the owner sends it. Cancelling, or opening another chat, drops the recording. A recording Hermes couldn't transcribe is held in memory until the owner tries again or discards it. Recordings are never saved on this computer.
+Speaking a message instead of typing it. The microphone is open only between the owner starting a recording and pressing Done or cancelling. The recording is turned into text where Speech to text runs, and the text goes into the composer after anything already typed, for the owner to edit and send. Nothing reaches the chat until the owner sends it. Cancelling, or opening another chat, drops the recording. A recording Hermes couldn't transcribe is held in memory until the owner tries again or discards it. Recordings are never saved on this computer.
 _Avoid_: voice message, voice mode (Hermes's own hands-free voice chat), speech input
 
 **Read aloud**:
@@ -172,8 +172,12 @@ Talking with Hermes hands-free in a started chat, from Start voice conversation 
 _Avoid_: voice mode (Hermes's own), voice chat, live mode, hands-free mode
 
 **Speech provider**:
-The service Hermes turns speech into text with (speech-to-text), or text into speech with (text-to-speech), for one profile, such as Local Whisper or ElevenLabs. Dictation, Read aloud and Voice conversations all use the profile's two, on the server. Settings → Voice lists the ones Hermes offers, says which are set up (installed, signed in, or with a key), and picks one for each side, with its model, voice and language and its API key. A key is write-only: Hermes says only whether one is set. Each save is checked against Hermes first and confirmed by reading back (ADR 0055).
+The service Hermes turns speech into text with (speech-to-text), or text into speech with (text-to-speech), for one profile, such as Local Whisper or ElevenLabs. Read aloud and Voice conversations speak with the profile's text-to-speech one, on the server. Dictation and Voice conversations transcribe with its speech-to-text one, unless Speech to text runs on this computer. Settings → Voice lists the ones Hermes offers, says which are set up (installed, signed in, or with a key), and picks one for each side, with its model, voice and language and its API key. A key is write-only: Hermes says only whether one is set. Each save is checked against Hermes first and confirmed by reading back (ADR 0055).
 _Avoid_: STT/TTS engine, voice backend, voice model
+
+**Speech to text** (where it runs):
+Where Dictation and Voice conversations turn a recording into text: on **Hermes**, with the profile's speech-to-text Speech provider, or on **this computer**, with whisper.cpp and a Whisper model here. The owner picks a Primary and may make the other one the Backup, which transcribes the same recording when the primary fails or is slower than a set time; the chat then says which one did it. On this computer the recording never leaves the computer, only the text goes to Hermes; it is written to a private temp file for whisper.cpp to read, and deleted when the run ends. This computer can be the primary only once a model is downloaded or picked. The choice is kept on this computer (ADR 0062).
+_Avoid_: local mode, offline mode, STT engine
 
 **Close to tray**:
 The owner's setting that has closing the window hide it in the tray instead of quitting. It is off unless the owner turns it on, and works only while the desktop shows the tray icon; otherwise closing quits. A hidden window keeps its chats, drafts and replies coming in, but drops a Dictation recording, stops Read aloud, pauses a Voice conversation, and the chat it shows doesn't count as on screen, so new replies leave it Unread. The tray menu, `hermes-chat --show` or `--toggle`, or launching Hermes Chat again brings back the same window. Quit in the tray menu always exits. The setting is kept on this computer (ADR 0034).
