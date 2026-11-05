@@ -32,7 +32,8 @@ The `release-dry-run` workflow (`.github/workflows/release-dry-run.yml`) runs on
 2. builds the AppImage with the updater turned on and signs it (`scripts/release/dry-run.sh`);
 3. stages the AppImage, its `.sig`, `latest.json` and the public key under `release/`;
 4. verifies the staged folder with minisign, the way the app will, and checks that the AppImage is built for the target `latest.json` lists it under;
-5. uploads `release/` as the workflow artifact `appimage-<signing>-<commit>`, kept for 14 days.
+5. uploads `release/` as the workflow artifact `appimage-<signing>-<commit>`, kept for 14 days;
+6. installs the staged AppImage with the app's updater, from a local server, into a copy that trusts the staged public key (`a_staged_release_installs` in `src-tauri/tests/update.rs`).
 
 It never creates a tag, a GitHub release or any hosted file. The manual run's `signing` input picks `throwaway` (the default) or `secret`, which signs with the production key. `secret` fails until the owner has created the secret and put the public key in `tauri.release.conf.json`.
 
@@ -111,7 +112,8 @@ The app trusts exactly one public key, the one it was built with. A release sign
 - a manifest without this computer's target;
 - a manifest announcing a version the AppImage wasn't signed for, and a signature with no version;
 - an older and the same version, not offered;
-- a failed download, a download given up on, and an endpoint that doesn't answer, each leaving the AppImage alone.
+- a failed download, a download given up on, and an endpoint that doesn't answer, each leaving the AppImage alone;
+- the folder a dry run staged, with `HERMES_TEST_RELEASE=<folder>`, installed into a copy at version 0.0.0. Without the variable it does nothing.
 
 The `rust` CI job runs it. `scripts/release/verify.test.sh` covers the release scripts' own check, in the dry-run workflow: a genuine folder passes, and another key, an AppImage for another architecture, a tampered or truncated AppImage, a manifest announcing a version other than the signed one, a staged private key and a missing AppImage are each refused.
 
@@ -119,7 +121,7 @@ The `rust` CI job runs it. `scripts/release/verify.test.sh` covers the release s
 
 - **Storage.** The updater holds the download in memory, verifies it, moves the running AppImage into a private temporary folder on the same file system as a backup, writes the new one in its place with the old mode, and deletes the backup. It needs free space for one more AppImage beside the old one, and write access to the AppImage's folder. Nothing else on disk changes. Drafts kept across the restart are ADR 0060's.
 - **Hermes servers.** An update doesn't touch the Hermes server. Every server version the new app supports stays supported (`docs/compatibility.md`), and the updater has no notion of a server version.
-- **Limits.** The tests use the real verifier with a local server, not a real host or a real AppImage swap under a running app. The dry run signs and verifies a real AppImage, but no copy has installed it through the updater. The manifest is unsigned, so a host can still offer an older signed release as long as it's newer than the running copy, or offer nothing. The updater has no cancel. Quitting the app drops a download, and the AppImage is replaced only after the whole download has verified. The updater checks only the signature, the signed version and that the file is an ELF. It doesn't check the architecture, so an AppImage for another architecture listed under this one would install and then fail to start. `verify.sh` refuses such a release before upload, and that check is the only one. A gzipped AppImage is accepted too (the updater's default `zip` feature), with the signature over the compressed file. The release scripts stage only plain AppImages.
+- **Limits.** The tests use the real verifier with a local server, not a real host or a real AppImage swap under a running app. The dry run's real AppImage is installed through the updater's code, into a mock app, not by a running AppImage replacing itself. The manifest is unsigned, so a host can still offer an older signed release as long as it's newer than the running copy, or offer nothing. The updater has no cancel. Quitting the app drops a download, and the AppImage is replaced only after the whole download has verified. The updater checks only the signature, the signed version and that the file is an ELF. It doesn't check the architecture, so an AppImage for another architecture listed under this one would install and then fail to start. `verify.sh` refuses such a release before upload, and that check is the only one. A gzipped AppImage is accepted too (the updater's default `zip` feature), with the signature over the compressed file. The release scripts stage only plain AppImages.
 
 ## Left for the owner
 

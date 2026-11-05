@@ -90,7 +90,12 @@ fn manifest(version: &str, target: &str, base: &str, signature: &str) -> Value {
 
 /// An app that trusts `pubkey` and checks `endpoint`, as a release build reads them from its config.
 fn app(pubkey: &str, endpoint: &str) -> tauri::App<MockRuntime> {
+    app_at(CURRENT, pubkey, endpoint)
+}
+
+fn app_at(version: &str, pubkey: &str, endpoint: &str) -> tauri::App<MockRuntime> {
     let mut context = mock_context(noop_assets());
+    context.package_info_mut().version = version.parse().unwrap();
     context.config_mut().plugins.0.insert(
         "updater".into(),
         json!({
@@ -253,5 +258,31 @@ async fn an_endpoint_that_does_not_answer_is_an_error_not_an_update() {
     let updater = app.updater_builder().executable_path(&appimage).build().unwrap();
     assert!(matches!(updater.check().await, Err(Error::Reqwest(_))));
     assert_eq!(std::fs::read(&appimage).unwrap(), INSTALLED);
+    std::fs::remove_dir_all(appimage.parent().unwrap()).unwrap();
+}
+
+/// The folder `scripts/release/dry-run.sh` staged, installed by an app at 0.0.0 that trusts its public key:
+/// what the pipeline produces is what the app's verifier takes. Runs only with `HERMES_TEST_RELEASE=<folder>`, which
+/// the dry-run workflow sets after staging.
+#[tokio::test]
+async fn a_staged_release_installs() {
+    let Some(dir) = std::env::var_os("HERMES_TEST_RELEASE").map(PathBuf::from) else {
+        eprintln!("HERMES_TEST_RELEASE isn't set, so there is no staged release to install");
+        return;
+    };
+    let staged: Value = serde_json::from_slice(&std::fs::read(dir.join("latest.json")).unwrap()).unwrap();
+    let pubkey = std::fs::read_to_string(dir.join("updater.key.pub")).unwrap();
+    let version = staged["version"].as_str().unwrap().to_owned();
+    let platform = &staged["platforms"][target()];
+    let signature = platform["signature"].as_str().unwrap().to_owned();
+    let bytes = std::fs::read(dir.join(platform["url"].as_str().unwrap().rsplit('/').next().unwrap())).unwrap();
+    let served = version.clone();
+    let base = serve(Box::new(move |base| manifest(&served, &target(), base, &signature)), Artifact::Bytes(bytes.clone())).await;
+    let appimage = installed("staged");
+    let app = app_at("0.0.0", &pubkey, &format!("{base}/latest.json"));
+    let update = app.updater_builder().executable_path(&appimage).build().unwrap().check().await.unwrap().expect("the staged version is newer");
+    assert_eq!(update.version, version);
+    update.download_and_install(|_, _| {}, || {}).await.unwrap();
+    assert!(std::fs::read(&appimage).unwrap() == bytes, "the AppImage is the staged one");
     std::fs::remove_dir_all(appimage.parent().unwrap()).unwrap();
 }

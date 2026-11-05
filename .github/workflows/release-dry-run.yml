@@ -9,6 +9,7 @@ on:
       - .github/workflows/release-dry-run.yml
       - scripts/release/**
       - src-tauri/tauri.release.conf.json
+      - src-tauri/tests/update.rs
   workflow_dispatch:
     inputs:
       signing:
@@ -70,3 +71,6 @@ jobs:
           path: release/
           if-no-files-found: error
           retention-days: 14
+      - name: Install the staged release with the app's updater
+        working-directory: src-tauri
+        run: HERMES_TEST_RELEASE="$GITHUB_WORKSPACE/release" cargo test --test update a_staged_release_installs -- --exact
