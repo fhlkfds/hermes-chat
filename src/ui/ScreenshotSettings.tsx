@@ -3,6 +3,7 @@
 import { type KeyboardEvent, useEffect, useState, useSyncExternalStore } from "react";
 import { getUIPrefs, setUIPrefs, subscribe } from "../hermes/uiPrefs";
 import type { ScreenshotSupport } from "../hermes/tauriScreenshot";
+import { SettingRow, SettingsSection } from "./SettingRows";
 import { DEFAULT_SCREENSHOT_SHORTCUT, checkShortcut, onlyModifiers, shortcutLabel, shortcutOf } from "./shortcut";
 
 const COMMAND = "hermes-chat --screenshot";
@@ -46,90 +47,104 @@ export function ScreenshotSettings({ checkSupport }: { checkSupport?: () => Prom
   };
 
   return (
-    <section className="screenshot-settings">
-      <h2>Screenshots</h2>
-      <p className="muted">
-        Take a screenshot of a region or a window and attach it to the message you're writing. You see it in the composer before you send it, and
-        can remove it. It stays on this computer until you send the message, and is deleted from this computer once Hermes has the message or you
-        remove it.
-      </p>
-      <div className="appearance-row">
-        <div className="appearance-label">
-          <div className="appearance-title" id="screenshot-shortcut-label">
-            Screenshot shortcut
-          </div>
-          <div className="muted small">Works while Hermes Chat is the window you're using.</div>
-        </div>
-        <div className="shortcut-controls">
-          <button
-            className={`btn shortcut-key ${recording ? "recording" : ""}`}
-            aria-labelledby="screenshot-shortcut-label"
-            aria-describedby="screenshot-shortcut-help"
-            onClick={() => {
-              setRecording(true);
-              setProblem(undefined);
-            }}
-            onKeyDown={record}
-            onBlur={() => setRecording(false)}
-          >
-            {recording ? "Press the shortcut…" : screenshotShortcut ? shortcutLabel(screenshotShortcut) : "Off"}
-          </button>
-          {screenshotShortcut ? (
-            <button className="btn" onClick={() => setUIPrefs({ screenshotShortcut: null })}>
-              Turn off
-            </button>
-          ) : (
+    <SettingsSection
+      title="Screenshots"
+      className="screenshot-settings"
+      intro="Take a screenshot of a region or a window and attach it to the message you're writing."
+      more={
+        <p>
+          You see it in the composer before you send it, and can remove it. It stays on this computer until you send the message, and is deleted from
+          this computer once Hermes has the message or you remove it.
+        </p>
+      }
+    >
+      <SettingRow
+        name="Screenshot shortcut"
+        nameId="screenshot-shortcut-label"
+        hint={recording ? "Press the keys together, or Esc to keep the current shortcut." : "Works while Hermes Chat is the window you're using. Click the shortcut to change it."}
+        hintId="screenshot-shortcut-help"
+        control={
+          <div className="shortcut-controls">
             <button
-              className="btn"
-              onClick={() => setUIPrefs({ screenshotShortcut: DEFAULT_SCREENSHOT_SHORTCUT })}
+              className={`btn shortcut-key ${recording ? "recording" : ""}`}
+              aria-labelledby="screenshot-shortcut-label"
+              aria-describedby="screenshot-shortcut-help"
+              onClick={() => {
+                setRecording(true);
+                setProblem(undefined);
+              }}
+              onKeyDown={record}
+              onBlur={() => setRecording(false)}
             >
-              Use {DEFAULT_SCREENSHOT_SHORTCUT}
+              {recording ? "Press the shortcut…" : screenshotShortcut ? shortcutLabel(screenshotShortcut) : "Off"}
             </button>
-          )}
-        </div>
-      </div>
-      <p id="screenshot-shortcut-help" className="muted settings-note">
-        {recording ? "Press the keys together, or Esc to keep the current shortcut." : "Click the shortcut to change it."}
-      </p>
-      {problem && (
-        <p className="sign-in-error settings-note" role="alert">
-          {problem}
-        </p>
-      )}
-      {!problem && warning && (
-        <p className="warn-note settings-note" role="status">
-          {warning}
-        </p>
-      )}
+            {screenshotShortcut ? (
+              <button className="btn" onClick={() => setUIPrefs({ screenshotShortcut: null })}>
+                Turn off
+              </button>
+            ) : (
+              <button className="btn" onClick={() => setUIPrefs({ screenshotShortcut: DEFAULT_SCREENSHOT_SHORTCUT })}>
+                Use {DEFAULT_SCREENSHOT_SHORTCUT}
+              </button>
+            )}
+          </div>
+        }
+      >
+        {problem && (
+          <div className="sign-in-error" role="alert">
+            {problem}
+          </div>
+        )}
+        {!problem && warning && (
+          <div className="warn-note small" role="status">
+            {warning}
+          </div>
+        )}
+      </SettingRow>
 
-      <h3>From anywhere on your desktop</h3>
-      <p className="muted small">
-        On Wayland, apps can't see key presses meant for other windows, so a shortcut that works while you're in another app has to be set up in
-        your desktop's own keyboard settings. Make it run <code>{COMMAND}</code>. If Hermes Chat is open, the screenshot goes to the chat on screen;
-        if not, Hermes Chat opens and takes it once you're signed in.
-      </p>
-      <ul className="muted small shortcut-examples">
-        <li>
-          Hyprland, in <code>hyprland.conf</code>: <code>bind = SUPER SHIFT, S, exec, {COMMAND}</code>
-        </li>
-        <li>
-          Sway, in its config: <code>bindsym $mod+Shift+s exec {COMMAND}</code>
-        </li>
-        <li>GNOME or KDE Plasma: add a custom shortcut in the Keyboard settings with that command.</li>
-      </ul>
-      <p className="muted small">
-        Pick keys your desktop doesn't already use. If Hermes Chat might not be open yet, run{" "}
-        <code>env WEBKIT_DISABLE_DMABUF_RENDERER=1 {COMMAND}</code> instead, as the app's launcher does.
-      </p>
-      <p className="muted small">
-        To bring Hermes Chat forward from any app, bind a key the same way to <code>hermes-chat --toggle</code> (or <code>--show</code>, which
-        never hides it), for example <code>bind = SUPER, H, exec, hermes-chat --toggle</code> in <code>hyprland.conf</code>.
-      </p>
+      <SettingRow
+        name="From anywhere on your desktop"
+        hint={
+          <>
+            Bind a key in your desktop's own keyboard settings to run <code>{COMMAND}</code>.
+          </>
+        }
+        more={
+          <>
+            <p>
+              On Wayland, apps can't see key presses meant for other windows, so a shortcut that works while you're in another app has to be set up in
+              your desktop's own keyboard settings. If Hermes Chat is open, the screenshot goes to the chat on screen; if not, Hermes Chat opens and
+              takes it once you're signed in.
+            </p>
+            <ul>
+              <li>
+                Hyprland, in <code>hyprland.conf</code>: <code>bind = SUPER SHIFT, S, exec, {COMMAND}</code>
+              </li>
+              <li>
+                Sway, in its config: <code>bindsym $mod+Shift+s exec {COMMAND}</code>
+              </li>
+              <li>GNOME or KDE Plasma: add a custom shortcut in the Keyboard settings with that command.</li>
+            </ul>
+            <p>
+              Pick keys your desktop doesn't already use. If Hermes Chat might not be open yet, run{" "}
+              <code>env WEBKIT_DISABLE_DMABUF_RENDERER=1 {COMMAND}</code> instead, as the app's launcher does.
+            </p>
+            <p>
+              To bring Hermes Chat forward from any app, bind a key the same way to <code>hermes-chat --toggle</code> (or <code>--show</code>, which
+              never hides it), for example <code>bind = SUPER, H, exec, hermes-chat --toggle</code> in <code>hyprland.conf</code>.
+            </p>
+          </>
+        }
+      />
 
-      <h3>On this desktop</h3>
-      <p className={`small ${support && !support.ok ? "sign-in-error" : "muted"}`} role={support && !support.ok ? "alert" : undefined}>
-        {support ? support.summary : checkSupport ? "Checking…" : "Screenshots work only in the desktop app."}
-      </p>
-    </section>
+      <SettingRow
+        name="On this desktop"
+        hint={
+          <span className={support && !support.ok ? "sign-in-error" : undefined} role={support && !support.ok ? "alert" : undefined}>
+            {support ? support.summary : checkSupport ? "Checking…" : "Screenshots work only in the desktop app."}
+          </span>
+        }
+      />
+    </SettingsSection>
   );
 }

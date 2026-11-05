@@ -7,6 +7,7 @@ import { type SavedConnection, NAME_MAX, addressLabel } from "../hermes/connecti
 import { KEPT_ON_SERVER, REMOVED_LOCALLY } from "../hermes/forgetConnection";
 import { stageLabel, type TestOutcome } from "../hermes/setup";
 import { composing, relTime, routeLabel, useReturnFocus } from "./bits";
+import { SettingNote, SettingsSection } from "./SettingRows";
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -222,28 +223,29 @@ export function ConnectionManager({
     if (runs.current.get(c.id) === n) setTests((t) => ({ ...t, [c.id]: next }));
   };
   return (
-    <section className="conn-manager" aria-labelledby="conn-manager-title">
-      <div className="conn-manager-head">
-        <h2 id="conn-manager-title">Connections</h2>
+    <SettingsSection
+      title="Connections"
+      titleId="conn-manager-title"
+      className="conn-manager"
+      intro="The Hermes servers this app can sign in to. One is in use at a time."
+      more="Each connection keeps its own password and extra request headers in the system keyring, and its own drafts, queued messages, profile and Saved copies on this computer."
+      action={
         <button className="btn" onClick={onAdd}>
           <Plus size={14} /> Add connection
         </button>
-      </div>
-      <p className="muted small settings-note">
-        Each connection keeps its own password and extra request headers in the system keyring, and its own drafts, queued messages, profile
-        and Saved copies on this computer. One is in use at a time.
-      </p>
+      }
+    >
       {unsaved && (
-        <p className="sign-in-error small" role="alert">
+        <SettingNote tone="bad" role="alert">
           This computer's storage is full, so the latest change to this list lasts only until Hermes Chat closes.
-        </p>
+        </SettingNote>
       )}
       <ul className="conn-rows">
         {connections.map((c) => {
           const t = tests[c.id];
           const inUse = c.id === currentId;
           return (
-            <li key={c.id} className={`conn-row ${inUse ? "in-use" : ""}`}>
+            <li key={c.id} className={`set-row conn-row ${inUse ? "in-use" : ""}`}>
               <div className="conn-row-main">
                 <span className="conn-option-icon">
                   <ModeIcon c={c} size={14} />
@@ -292,7 +294,7 @@ export function ConnectionManager({
           );
         })}
       </ul>
-    </section>
+    </SettingsSection>
   );
 }
 

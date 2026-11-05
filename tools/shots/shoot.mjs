@@ -29,6 +29,13 @@ const sections = `(async () => {
 const menuOn = (chat) =>
   `(() => { const el = document.querySelector('.row-open[data-chat="${chat}"]'); const r = el.getBoundingClientRect();
      el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: r.left + 80, clientY: r.top + 20 })); })()`;
+const hd = { width: 1920, height: 1080 };
+const openSettings = key(",", { ctrlKey: true });
+// Types into Settings' search box the way a person does, so React sees the change.
+const typeSearch = (text) =>
+  `(() => { const box = document.querySelector("input[aria-label='Search settings']");
+     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(box, ${JSON.stringify(text)});
+     box.dispatchEvent(new Event("input", { bubbles: true })); })()`;
 const scenes = {
   "sidebar-sections": { query: "", steps: [sections, click(".section-toggle", "Snoozed"), click(".section-toggle", "Settled")] },
   "sidebar-sections-light": { query: "?mode=light", steps: [sections, click(".section-toggle", "Snoozed"), click(".section-toggle", "Settled")] },
@@ -51,6 +58,16 @@ const scenes = {
   "new-chat-light": { query: "?mode=light", steps: [] },
   search: { query: "", steps: [click("button", "Nightly backup"), key("k", { ctrlKey: true })] },
   settings: { query: "", steps: [key(",", { ctrlKey: true })] },
+  // Settings → General (#174), at 1920 × 1080 and at the window's 760 × 500 minimum.
+  "general-connection": { query: "", ...hd, steps: [openSettings] },
+  "general-launch": { query: "", ...hd, steps: [openSettings, click(".subnav-item", "Launch")] },
+  "general-voice": { query: "", ...hd, steps: [openSettings, click(".subnav-item", "Voice")] },
+  "general-storage": { query: "", ...hd, steps: [openSettings, click(".subnav-item", "Storage")] },
+  "general-search": { query: "", ...hd, steps: [openSettings, typeSearch("cache")] },
+  "general-more": { query: "", ...hd, steps: [openSettings, click(".subnav-item", "Launch"), click(".set-more-btn[aria-label='About Close to tray']")] },
+  "general-light": { query: "?mode=light", ...hd, steps: [openSettings, click(".subnav-item", "Storage")] },
+  "general-min": { query: "", width: 760, height: 500, steps: [openSettings] },
+  "general-min-launch": { query: "", width: 760, height: 500, steps: [openSettings, click(".subnav-item", "Launch")] },
   // Automations (ADR 0036). Tall pages: the screenshot covers the whole screen, scrolled to the part named.
   automations: { query: "", steps: [click("button[aria-label='Automations']")] },
   "automation-editor": { query: "", height: 1700, steps: [click("button[aria-label='Automations']"), click("button", "New automation")] },
@@ -106,7 +123,7 @@ try {
       return result.result.value;
     };
     await send("Runtime.enable");
-    await send("Emulation.setDeviceMetricsOverride", { width: 1440, height: scene.height ?? 900, deviceScaleFactor: 1, mobile: false });
+    await send("Emulation.setDeviceMetricsOverride", { width: scene.width ?? 1440, height: scene.height ?? 900, deviceScaleFactor: 1, mobile: false });
     await send("Page.navigate", { url: url + scene.query });
     for (let i = 0; !(await evaluate("!!document.querySelector('.sidebar, nav, aside') && document.body.innerText.includes('Nightly backup')")); i++) {
       if (i > 100) throw new Error(`${name}: app never showed. ${logs.join("\n")}`);

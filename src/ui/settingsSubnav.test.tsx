@@ -112,6 +112,24 @@ describe("Settings → General groups", () => {
     expect(heading("Connection in use")).toBeTruthy();
   });
 
+  it("keeps every tab's and group's name for a narrow window, where only the shown one's label is drawn (#154)", async () => {
+    await shown();
+    // A narrow window hides the other labels with CSS; the name and the tip stay on the button.
+    for (const tab of screen.getAllByRole("tab")) {
+      const label = tab.querySelector(".settings-tab-label")!.textContent;
+      expect(tab.getAttribute("aria-label")).toBe(label);
+      expect(tab.getAttribute("title")).toBe(label);
+    }
+    expect(screen.getByRole("tab", { name: "Memory" })).toBeTruthy();
+    expect(nav("General").classList.contains("compact")).toBe(true);
+    const storage = within(nav("General")).getByRole("button", { name: "Storage & data" });
+    expect(storage.getAttribute("title")).toBe("Storage & data");
+    // Memory's profiles share one icon, so its list keeps every label.
+    await userEvent.click(screen.getByRole("tab", { name: "Memory" }));
+    expect(nav("Memory").classList.contains("compact")).toBe(false);
+    expect(within(nav("Memory")).getByRole("button", { name: "Agent notes" }).hasAttribute("title")).toBe(false);
+  });
+
   it("shows every group's sections while searching, and the chosen group again after", async () => {
     const { user } = await shown();
     await user.type(screen.getByRole("searchbox", { name: "Search settings" }), "cache");
