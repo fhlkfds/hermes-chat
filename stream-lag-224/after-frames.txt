@@ -1,0 +1,30 @@
+{
+  "p95": 33,
+  "longestGapsMs": [
+    141,
+    66,
+    57,
+    55,
+    52
+  ],
+  "p50": 17,
+  "p99": 49,
+  "over50": 5,
+  "over100": 1,
+  "spanS": 15,
+  "frames": 732,
+  "max": 141
+}
+stream wall time: 14.3 s
+{
+  "highlighted": true,
+  "langs": [
+    "typescript",
+    "typescript",
+    "typescript",
+    "typescript",
+    "typescript",
+    "typescript"
+  ],
+  "codes": 6
+}
