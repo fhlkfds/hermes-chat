@@ -1,4 +1,4 @@
-// The Subagents a chat's reply started (Hermes's `delegate_task`), as one tree per chat on this connection (ADR 0070).
+// The Subagents a chat's reply started (Hermes's `delegate_task`), as one tree per chat on this connection (ADR 0072).
 // Hermes reports them two ways: `subagent.*` events on the chat's session while they run
 // (`tui_gateway/contracts/events.py` SubagentEventPayload), and `subagent.list`, its live roster plus recently failed
 // background delegations (`tui_gateway/methods_subagents.py`). Both go through the pure functions here, so events in any

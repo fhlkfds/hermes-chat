@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// The Subagents panel (ADR 0070), driven the way the owner would, against a fake Hermes: what shows, and what reaches
+// The Subagents panel (ADR 0072), driven the way the owner would, against a fake Hermes: what shows, and what reaches
 // Hermes when they steer or stop one.
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
