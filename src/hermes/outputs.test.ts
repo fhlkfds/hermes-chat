@@ -1,6 +1,6 @@
 // Outputs (outputs.ts): which stored tool results count as files Hermes made, how they are kept, and how the index
 // reads Hermes, against a fake Hermes whose stored rows and `/api/fs/list` answer as the deployed `bf0203a` does.
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row, type TranscriptMessage } from "./fakeHermes";
 import { connect, type Hermes } from "./transport";
 import {
@@ -23,6 +23,7 @@ import {
   typeOf,
   versions,
   type OutputsIo,
+  type OutputsSnapshot,
   type StoredRow,
 } from "./outputs";
 
@@ -298,6 +299,40 @@ describe("checking where files are", () => {
       "tools:/locked/x.txt": "forbidden",
     });
     expect(server.restRequests.filter((r) => r.path === "/api/fs/list").map((r) => r.query.get("path"))).toEqual(["/srv/out", "/srv/gone", "/locked"]);
+  });
+
+  it("checks after reading, and a refresh replaced meanwhile doesn't check or cancel the newer one's check (#223)", async () => {
+    const gates = new Map<string, () => void>();
+    const listed: string[] = [];
+    const io: OutputsIo = {
+      rows: (chatId) =>
+        new Promise((resolve) =>
+          gates.set(chatId, () => resolve(page([{ id: 1, role: "tool", tool_name: "write_file", tool_call_id: chatId, content: JSON.stringify(written(`/srv/${chatId}/gone.sh`)) }]))),
+        ),
+      listDir: (path) => (listed.push(path), new Promise((resolve) => gates.set(path, () => resolve({ entries: [] })))),
+    };
+    const index = new OutputsIndex(io, memory(), "s");
+    const shown = (chat: string) => (s: OutputsSnapshot) => outputsIn(s, new Set([chat]));
+    const old = index.refresh([{ id: "a", updatedAt: 1 }], false, shown("a"));
+    const now = index.refresh([{ id: "b", updatedAt: 1 }], false, shown("b"));
+    // The newer refresh is checking its folder when the one it replaced finishes reading.
+    gates.get("b")!();
+    await vi.waitFor(() => expect(gates.has("/srv/b")).toBe(true));
+    gates.get("a")!();
+    await old;
+    gates.get("/srv/b")!();
+    await now;
+    expect(listed).toEqual(["/srv/b"]);
+    expect(outputsIn(index.getSnapshot(), new Set(["b"]))[0].availability?.state).toBe("missing");
+  });
+
+  it("keeps a failed read's error on screen and doesn't check after it (#223)", async () => {
+    const listed: string[] = [];
+    const io: OutputsIo = { rows: () => Promise.reject(new Error('The dashboard answered 500: {"detail":"boom"}')), listDir: async (p) => (listed.push(p), { entries: [] }) };
+    const index = new OutputsIndex(io, memory(), "s");
+    await index.refresh([{ id: "c", updatedAt: 1 }], false, (s) => outputsIn(s));
+    expect(index.getSnapshot().error).toMatch(/Couldn't read a chat's messages.*500/);
+    expect(listed).toEqual([]);
   });
 
   it("reports a refused listing as forbidden and another failure as unknown", async () => {

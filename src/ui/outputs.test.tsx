@@ -95,8 +95,7 @@ describe("Outputs", () => {
     expect(rows[2].textContent).toContain("Version 1 of 2");
     expect(rows[1].textContent).toContain("Quarterly report");
     expect(rows[1].textContent).toContain("Written by write_file");
-    // Opening Outputs checks the files never checked, so a missing one says so before it is opened (ADR 0062).
-    await waitFor(() => expect(document.querySelectorAll(".out-table tbody tr")[1].textContent).toContain("Available"));
+    expect(rows[1].textContent).toContain("Available");
   });
 
   it("widens to every chat in the profile, searches and filters by type, and says when nothing matches", async () => {
@@ -116,7 +115,7 @@ describe("Outputs", () => {
     expect(screen.getByText("No outputs match.")).toBeTruthy();
   });
 
-  it("checks on Refresh which files are still there, and marks a deleted one missing with why", async () => {
+  it("checks again on Refresh which files are still there, and marks a deleted one missing with why", async () => {
     const { user } = await launch();
     await openChat(user, "Quarterly report");
     await openOutputs(user);
@@ -130,6 +129,49 @@ describe("Outputs", () => {
     expect(preview.disabled).toBe(true);
     // Read again naming its chat, as Preview and Edit read it, before it is called missing (ADR 0062).
     expect(preview.title).toBe("It isn't at this path where its chat's tools ran: it was deleted, moved or renamed. Check again, or look in its folder.");
+  });
+
+  it("marks a file the chat deleted itself Missing on opening, before Edit or Preview is clicked (#223)", async () => {
+    // As on the real Hermes: write_file made the script, then the agent's own terminal call ran and deleted it.
+    const s = server();
+    const gone = "/srv/out/hermes-verify-install.sh";
+    s.transcripts.report.push(
+      ...call("w9", "write_file", { path: gone }, written(gone, 2109), 20),
+      ...call("t9", "terminal", { command: `bash ${gone}; rm -f ${gone}` }, JSON.stringify({ output: "PASS", exit_code: 0 }), 22),
+    );
+    const { user } = await launch(s);
+    await openChat(user, "Quarterly report");
+    await openOutputs(user);
+    const row = [...document.querySelectorAll(".out-table tbody tr")].find((tr) => tr.querySelector(".files-label")!.textContent === "hermes-verify-install.sh") as HTMLElement;
+    await waitFor(() => expect(row.querySelector(".out-avail")?.textContent).toMatch(/^Missing/));
+    for (const name of [/^Edit hermes-verify-install/, /^Preview hermes-verify-install/]) {
+      const button = within(row).getByRole("button", { name }) as HTMLButtonElement;
+      expect(button.disabled).toBe(true);
+      expect(button.title).toMatch(/Check again, or look in its folder\.$/);
+    }
+    // Its folder can still be opened to look for it.
+    expect(within(row).getByRole("button", { name: /^Show hermes-verify-install\.sh's folder/ })).toBeTruthy();
+  });
+
+  it("keeps Edit and Preview off while opening still checks a file, on a slow connection (#223)", async () => {
+    const s = server();
+    let release!: () => void;
+    const listed = new Promise<void>((r) => (release = r));
+    const list = s.rest["GET /api/fs/list"];
+    const { user } = await launch(s);
+    s.rest["GET /api/fs/list"] = async (req) => (await listed, list(req));
+    await openChat(user, "Quarterly report");
+    await user.click(screen.getByRole("button", { name: "Outputs" }));
+    const row = () => [...document.querySelectorAll(".out-table tbody tr")].find((tr) => tr.querySelector(".out-path")!.textContent === "/srv/out/report.md") as HTMLElement;
+    await waitFor(() => expect(row()?.querySelectorAll("td")[3].textContent).toBe("Checking…"));
+    for (const name of [/^Edit report\.md/, /^Preview report\.md/]) {
+      const button = within(row()).getByRole("button", { name }) as HTMLButtonElement;
+      expect(button.disabled).toBe(true);
+      expect(button.title).toBe("Checking whether it's still there…");
+    }
+    release();
+    await waitFor(() => expect(row().querySelector(".out-avail")?.textContent).toBe("Available"));
+    expect((within(row()).getByRole("button", { name: /^Edit report\.md/ }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("opens a file in the preview pane beside Outputs", async () => {
@@ -215,6 +257,7 @@ describe("Outputs", () => {
     expect(shown()).toHaveLength(250);
     await user.type(screen.getByRole("textbox", { name: /Search outputs/ }), "f249.");
     expect(shown()).toEqual(["f249.txt"]);
+    // 250 rows render twice: once listed, again once opening has checked where they are (ADR 0064).
   }, 20_000);
 
   it("says discovery is partial in a chat whose file tools didn't say what they wrote, though none was found", async () => {
