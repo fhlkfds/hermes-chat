@@ -8,7 +8,7 @@ Issue #223: on the Outputs page, Edit on `hermes-verify-install.sh` failed with 
 
 The bug was the app's. ADR 0016 checked where files are only when the owner pressed Refresh or added a file. Until then a row said "Not checked", and Edit and Preview stayed on for a file that was gone.
 
-**Decision:** opening Outputs, or changing its scope, now runs what Refresh runs: it reads the chats that changed, then checks every file shown, within ADR 0016's limit of 40 folders. A file that is gone shows Missing before anything is clicked. Its Edit and Preview are off, and say why: "Refresh checks again, or show its folder in Server files to look for it". The row's folder button opens that folder in Server files.
+**Decision:** opening Outputs, or changing its scope, now runs what Refresh runs: it reads the chats that changed, then checks every file shown, within ADR 0016's limit of 40 folders. A file that is gone shows Missing before anything is clicked. Its Edit and Preview are off, and say why: "Refresh checks again, or show its folder in Server files to look for it". The row's folder button opens that folder in Server files. Two rules make it safe to run without asking (`OutputsIndex.refresh`). A refresh that a newer one, or a profile switch, replaced while it read doesn't check, so it can't cancel the newer one's check. And a read that failed isn't followed by a check, so its error stays on screen.
 
 **Considered:** checking only when Edit or Preview is clicked. Rejected: the row would still claim nothing until the click, and the issue asks for Missing before it.
 

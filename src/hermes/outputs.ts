@@ -669,6 +669,20 @@ export class OutputsIndex {
     if (live()) this.set({ indexing: undefined, unsupported: undefined });
   }
 
+  /**
+   * What opening Outputs and Refresh do (ADR 0064): `index`, then `check` the Outputs `shown` picks from what it read.
+   * The check is skipped when a newer run, or `cancel`, replaced this one meanwhile, so it can't cancel that run's own
+   * check, and when the read failed, so its error stays on screen.
+   */
+  async refresh(chats: ChatRef[], rebuildEvicted: boolean, shown: (s: OutputsSnapshot) => Output[]): Promise<void> {
+    if (!this.live) return;
+    const seq = this.runSeq + 1;
+    await this.index(chats, false, rebuildEvicted);
+    const s = this.snap;
+    if (seq !== this.runSeq || !this.live || s.error !== undefined || s.unsupported !== undefined) return;
+    await this.check(shown(s));
+  }
+
   /** Reads where each of `outputs` is now (`checkPaths`) and keeps the answers. */
   async check(outputs: Output[]): Promise<void> {
     if (!this.live) return;

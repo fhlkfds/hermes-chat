@@ -1180,12 +1180,9 @@ export function Main({
   const shownOutputs = useMemo(() => scopedOutputs(outSnap), [outSnap, outputsChatKey, shownOutputsScope]);
   const outputsRefs = () => outputsChats.map((c) => ({ id: c.id, updatedAt: c.updatedAt }));
   // Reads the chats that changed, then checks where every file shown is now, so a file deleted since (a chat's own
-  // `rm`, a scratch folder pruned) shows Missing before Edit or Preview is tried (#223). A chat opened on its own reads
-  // again the Outputs dropped to stay within the limit.
-  const refreshOutputs = async () => {
-    await outputsIndex.index(outputsRefs(), false, shownOutputsScope === "chat");
-    if (outputsIndex.getSnapshot().unsupported === undefined) await outputsIndex.check(scopedOutputs(outputsIndex.getSnapshot()));
-  };
+  // `rm`, a scratch folder pruned) shows Missing before Edit or Preview is tried (#223, ADR 0064). A chat opened on its
+  // own reads again the Outputs dropped to stay within the limit.
+  const refreshOutputs = () => outputsIndex.refresh(outputsRefs(), shownOutputsScope === "chat", scopedOutputs);
   // The profile's list, once read from Hermes, is every chat it has: the records of the others go, whether or not
   // Outputs is open. A chat deleted, or no longer listed, keeps no record (outputs.ts `keepOnly`).
   const listedFromHermes = hermes.hasListed();
