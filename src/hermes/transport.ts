@@ -793,7 +793,7 @@ export class Hermes {
     },
   );
   /**
-   * Settings → Voice's reads and writes (voiceSettings.ts, ADR 0051). Each call names its profile, and goes only over a
+   * Settings → Voice's reads and writes (voiceSettings.ts, ADR 0053). Each call names its profile, and goes only over a
    * connection that is up. Its read of the voice set-up is always fresh; a save drops the chat panes' cached one.
    */
   readonly voiceSettings = new VoiceSettingsApi(

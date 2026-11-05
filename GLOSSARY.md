@@ -164,7 +164,7 @@ Talking with Hermes hands-free in a started chat, from Start voice conversation 
 _Avoid_: voice mode (Hermes's own), voice chat, live mode, hands-free mode
 
 **Speech provider**:
-The service Hermes turns speech into text with (speech-to-text), or text into speech with (text-to-speech), for one profile, such as Local Whisper or ElevenLabs. Dictation, Read aloud and Voice conversations all use the profile's two, on the server. Settings → Voice lists the ones Hermes offers, says which are set up (installed, signed in, or with a key), and picks one for each side, with its model, voice and language and its API key. A key is write-only: Hermes says only whether one is set. Each save is checked against Hermes first and confirmed by reading back (ADR 0051).
+The service Hermes turns speech into text with (speech-to-text), or text into speech with (text-to-speech), for one profile, such as Local Whisper or ElevenLabs. Dictation, Read aloud and Voice conversations all use the profile's two, on the server. Settings → Voice lists the ones Hermes offers, says which are set up (installed, signed in, or with a key), and picks one for each side, with its model, voice and language and its API key. A key is write-only: Hermes says only whether one is set. Each save is checked against Hermes first and confirmed by reading back (ADR 0053).
 _Avoid_: STT/TTS engine, voice backend, voice model
 
 **Close to tray**:
