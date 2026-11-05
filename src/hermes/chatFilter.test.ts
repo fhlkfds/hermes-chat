@@ -150,7 +150,8 @@ describe("Running a chat filter", () => {
     await runFilter({ tags: ["infra"], state: "all" }, hermes, tags);
     await runFilter({ text: "backup", state: "all", model: "opus" }, hermes, tags);
     expect(server.restRequests.filter((r) => r.method !== "GET")).toEqual([]);
-    expect(server.requests.length).toBe(ws);
+    // Only the roster is read over /api/ws, once, for the Bot Chats a filter leaves out (ADR 0066).
+    expect(server.requests.slice(ws).map((r) => r.method)).toEqual(["profiles.list"]);
     expect(hermes.getSnapshot().chats).toBe(chats);
   });
 

@@ -155,6 +155,8 @@ export type Chat = {
   settledHere?: boolean;
   /** Archived in Hermes: hidden in every Hermes client, its history kept. Active or Settled stays as it was. */
   archived?: boolean;
+  /** A bot's Bot Chat, opened from the Bots view: it stays out of the chat list and search (bots.ts, ADR 0066). */
+  bot?: boolean;
   updatedAt: number;
   /** Something happened in it since the owner last opened it here or in another Hermes client (ADR 0002). */
   unread?: boolean;

@@ -35,7 +35,8 @@ export type CapabilityId =
   | "serverFiles"
   | "scheduledJobs"
   | "automations"
-  | "outputs";
+  | "outputs"
+  | "botMode";
 
 export type CapabilityState = "supported" | "unsupported" | "unknown" | "unreachable";
 
@@ -53,9 +54,13 @@ export type Capability = {
 };
 
 /** A check that only reads: a dashboard GET, or a JSON-RPC request whose method only reads. */
+/**
+ * `lacks`: for an answer not of `shape`, why it shows Hermes doesn't have the feature, such as an older answer that
+ * leaves the feature's field out; none when it shows nothing. Such an answer makes the capability unsupported.
+ */
 type Probe =
-  | { kind: "rest"; path: (profile: string) => string; maxBytes?: number; shape: (body: unknown) => boolean }
-  | { kind: "rpc"; method: string; params: (profile: string) => Record<string, unknown>; shape: (result: unknown) => boolean };
+  | { kind: "rest"; path: (profile: string) => string; maxBytes?: number; shape: (body: unknown) => boolean; lacks?: (body: unknown) => string | undefined }
+  | { kind: "rpc"; method: string; params: (profile: string) => Record<string, unknown>; shape: (result: unknown) => boolean; lacks?: (result: unknown) => string | undefined };
 
 export type CapabilitySpec = {
   id: CapabilityId;
@@ -85,6 +90,13 @@ export type CapabilitySpec = {
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const isList = (v: unknown) => Array.isArray(v);
+/** A `profiles.list` answer whose rows report their Bot Chat (`canonical_session`, null for none yet). */
+const botRoster = (r: unknown) => isObj(r) && isList(r.profiles) && (r.profiles as unknown[]).every((p) => isObj(p) && "canonical_session" in p);
+/** A `profiles.list` from a Hermes older than Bot Mode: its rows are profiles, but none reports a Bot Chat. */
+const rosterWithoutBotChats = (r: unknown) =>
+  isObj(r) && isList(r.profiles) && (r.profiles as unknown[]).length > 0 && (r.profiles as unknown[]).every((p) => isObj(p) && typeof p.name === "string" && !("canonical_session" in p))
+    ? "This Hermes lists its profiles but doesn't report their Bot Chats, so it has no Bot Mode."
+    : undefined;
 
 /** The name a check gives where it must name something, so nothing real is read. */
 export const PROBE_NAME = "__hermes_chat_probe__";
@@ -247,6 +259,17 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
     anchor: "outputs",
     probe: { kind: "rest", path: (profile) => `api/fs/list?${new URLSearchParams({ path: "/", profile })}`, maxBytes: 512 * 1024, shape: isObj },
     routes: [/^api\/fs\/list$/],
+  },
+  {
+    id: "botMode",
+    label: "Bot Mode",
+    usedBy: "The Bots view",
+    needs: "profiles.list on /api/ws, reporting each profile's Bot Chat (canonical_session), and session.list by title.",
+    without: "The Bots button doesn't show. Every profile's chats still open from the profile switcher.",
+    anchor: "bot-mode",
+    // Only a roster whose rows report their Bot Chat counts: an older profiles.list has no Bot Mode.
+    probe: { kind: "rpc", method: "profiles.list", params: () => ({}), shape: botRoster, lacks: rosterWithoutBotChats },
+    methods: ["profiles.list"],
   },
 ];
 
@@ -602,7 +625,11 @@ export class CapabilityStore {
         // Only an answer of the shape the app reads counts, so a 200 that is an HTML page or a changed shape settles
         // nothing (`valid`).
         if (this.snap.caps[spec.id].state === "supported" && !this.missing.get(spec.id)?.size) continue;
-        if (!valid(spec, key, answer)) continue;
+        if (!valid(spec, key, answer)) {
+          const lacking = spec.probe && probeKey(spec) === key ? spec.probe.lacks?.(answer) : undefined;
+          if (lacking) this.found(spec.id, key, { state: "unsupported", source: "observed", why: lacking });
+          continue;
+        }
         this.found(spec.id, key, { state: "supported", source: "observed", why: "Hermes answered this app's own request." });
         continue;
       }
@@ -750,9 +777,12 @@ export class CapabilityStore {
         probe.kind === "rest"
           ? JSON.parse(await within(this.io.get(probe.path(scope.profile), probe.maxBytes), this.timeoutMs))
           : await within(this.io.rpc(probe.method, probe.params(scope.profile)), this.timeoutMs);
+      const lacking = probe.shape(answer) ? undefined : probe.lacks?.(answer);
       result = probe.shape(answer)
         ? { state: "supported", source: "probed", why: "Hermes answered the check." }
-        : { state: "unknown", source: "probed", why: "Hermes answered with something other than what this app reads, so it may have changed." };
+        : lacking
+          ? { state: "unsupported", source: "probed", why: lacking }
+          : { state: "unknown", source: "probed", why: "Hermes answered with something other than what this app reads, so it may have changed." };
     } catch (e) {
       result = { source: "probed", ...(e instanceof SyntaxError ? { state: "unknown", why: "Hermes answered with something that isn't JSON." } : stateOfFailure(failureOf(e))) };
     }
