@@ -1,0 +1,146 @@
+// The agent office (ADR 0077): the agents at work on this connection as desks, one room per chat. Worked out from what
+// the app already has, and nothing else: a chat's own reply from the inbox's entries for it (inbox.ts), and its
+// subagents from its subagent tree (subagents.ts). The office reads nothing of its own, keeps nothing, and never answers,
+// approves, retries or starts anything.
+import type { InboxEntry, InboxKind } from "./inbox";
+import type { Chat } from "./model";
+import { childrenOf, type Subagent, type SubagentId, type SubagentState, type SubagentTree } from "./subagents";
+
+/**
+ * What a desk's agent is doing. `approval`: the chat's reply waits for the owner's answer. `uncertain`: a message the
+ * owner sent may not have reached Hermes. `completed`: Hermes said it finished, never guessed. `idle`: the chat's reply
+ * isn't running, and nothing about it needs the owner, but its subagents are known. `unknown`: a subagent known only as
+ * the parent of another, or a reply while the app isn't connected and nothing else says how it is.
+ */
+export type DeskState = "queued" | "running" | "approval" | "failed" | "uncertain" | "completed" | "stopped" | "ended" | "unknown" | "idle";
+
+export type Desk = {
+  key: string;
+  /** The chat's own reply, with the inbox entry its state comes from, or one of the chat's subagents. */
+  agent: { kind: "reply"; entry?: InboxEntry } | { kind: "subagent"; id: SubagentId; depth: number; parent?: SubagentId };
+  name: string;
+  state: DeskState;
+  /** What it last did, if known, and when; `at` 0 when that isn't known. */
+  doing?: { text: string; at: number };
+  /** Why its state may not be current: shown as last heard. None when it is current. */
+  stale?: string;
+};
+
+export type Room = { key: string; profile: string; chatId: string; title: string; desks: Desk[] };
+
+const SUBAGENT_STATE: Record<SubagentState, DeskState> = {
+  queued: "queued",
+  running: "running",
+  completed: "completed",
+  failed: "failed",
+  error: "failed",
+  timeout: "failed",
+  interrupted: "stopped",
+  ended: "ended",
+  unknown: "unknown",
+};
+
+/** Which inbox entry a chat's reply desk shows when there are several: what needs the owner first. */
+const REPLY_ORDER: readonly InboxKind[] = ["approval", "running", "failed", "uncertain", "completed"];
+const REPLY_STATE: Record<InboxKind, DeskState> = { approval: "approval", running: "running", failed: "failed", uncertain: "uncertain", completed: "completed" };
+
+/** Live work is shown whatever the owner dismissed; what already happened goes once they dismiss it in the inbox. */
+const isLive = (e: InboxEntry) => e.kind === "running" || (e.kind === "approval" && !e.ended);
+
+const NOT_CONNECTED = "Not connected to Hermes: as last seen.";
+
+function treeStale(tree: SubagentTree, connected: boolean): string | undefined {
+  if (tree.sync.kind === "lost") return `Disconnected since ${new Date(tree.sync.since).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}: as last heard.`;
+  if (tree.sync.kind === "unchecked") return `As last heard. ${tree.sync.why}`;
+  return connected ? undefined : NOT_CONNECTED;
+}
+
+function subagentDesks(tree: SubagentTree, chatKey: string, stale: string | undefined): Desk[] {
+  const out: Desk[] = [];
+  const walk = (parent?: SubagentId) => {
+    for (const s of childrenOf(tree, parent)) {
+      out.push(subagentDesk(s, chatKey, stale));
+      walk(s.id);
+    }
+  };
+  walk();
+  return out;
+}
+
+function subagentDesk(s: Subagent, chatKey: string, stale: string | undefined): Desk {
+  return {
+    key: `${chatKey} ${s.id}`,
+    agent: { kind: "subagent", id: s.id, depth: s.depth, ...(s.parent && { parent: s.parent }) },
+    name: s.goal || "A subagent Hermes hasn't described yet",
+    state: SUBAGENT_STATE[s.state],
+    ...(s.lastActivity && { doing: { text: s.lastActivity.text, at: s.lastActivity.at } }),
+    ...(stale && { stale }),
+  };
+}
+
+/**
+ * The office's rooms: one for each chat the inbox lists, in the inbox's order, then each chat of the shown profile
+ * whose subagents this connection has heard of. `entries`: all the inbox's entries; `shown`: whether the owner left an
+ * entry in the inbox (not dismissed). A room's first desk is the chat's own reply; its subagents follow, each after
+ * the one that started it.
+ */
+export function officeRooms({
+  entries,
+  shown,
+  chats,
+  profile,
+  connected,
+}: {
+  entries: readonly InboxEntry[];
+  shown: (e: InboxEntry) => boolean;
+  chats: readonly Chat[];
+  profile: string;
+  connected: boolean;
+}): Room[] {
+  const rooms = new Map<string, { profile: string; chatId: string; title: string; entries: InboxEntry[] }>();
+  const room = (p: string, chatId: string, title: string) => {
+    const key = `${p} ${chatId}`;
+    if (!rooms.has(key)) rooms.set(key, { profile: p, chatId, title, entries: [] });
+    return rooms.get(key)!;
+  };
+  for (const e of entries) if (isLive(e) || (!e.ended && shown(e))) room(e.profile, e.chatId, e.title).entries.push(e);
+  for (const c of chats) if (c.subagents?.subagents.length) room(profile, c.id, c.title);
+
+  return [...rooms.entries()].map(([key, r]) => {
+    const entry = REPLY_ORDER.map((k) => r.entries.find((e) => e.kind === k)).find((e) => !!e);
+    const stale = !connected ? NOT_CONNECTED : entry?.stale ? "As last seen: Hermes couldn't be checked." : undefined;
+    const reply: Desk = {
+      key: `${key} reply`,
+      agent: { kind: "reply", ...(entry && { entry }) },
+      name: "The chat's reply",
+      // A drop ends the app's word on whether the reply runs; it's resumed and known again once connected.
+      state: entry ? REPLY_STATE[entry.kind] : connected ? "idle" : "unknown",
+      ...(entry && { doing: { text: entry.summary, at: entry.at || entry.noticedAt || 0 } }),
+      ...(stale && { stale }),
+    };
+    const tree = r.profile === profile ? chats.find((c) => c.id === r.chatId)?.subagents : undefined;
+    return {
+      key,
+      profile: r.profile,
+      chatId: r.chatId,
+      title: r.title,
+      desks: [reply, ...(tree ? subagentDesks(tree, key, treeStale(tree, connected)) : [])],
+    };
+  });
+}
+
+/** How many desks are at work, wait for the owner, or failed, for the office's heading. */
+export function officeTally(rooms: readonly Room[]): { working: number; waiting: number; failed: number; desks: number } {
+  let working = 0;
+  let waiting = 0;
+  let failed = 0;
+  let desks = 0;
+  for (const r of rooms)
+    for (const d of r.desks) {
+      desks++;
+      if (d.state === "running" || d.state === "queued") working++;
+      else if (d.state === "approval") waiting++;
+      else if (d.state === "failed") failed++;
+    }
+  return { working, waiting, failed, desks };
+}
