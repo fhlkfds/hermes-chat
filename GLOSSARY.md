@@ -223,6 +223,10 @@ _Avoid_: undelivered, pending, unsent message
 A reply the owner, or another Hermes client, interrupted before it finished. The reply keeps what it had said and is labelled Stopped. The message it answered was sent, so it isn't a Failed message.
 _Avoid_: cancelled, failed
 
+**Subagent**:
+An agent Hermes started from a chat's reply to do part of its work (Hermes's `delegate_task`). A subagent can start subagents of its own. The chat's Subagents panel, above the composer, shows them as a tree with each one's goal, model, state and last activity. Opening one shows what it did and its latest output, apart from the chat. **Steer** sends one subagent words to read after its current tool call. **Stop** ends one subagent and the running subagents it started. Each names its target first, and neither reaches the chat's reply or other subagents. A subagent never asks for an Approval. The tree is kept only while the app runs. After a reconnect the app reads it again from Hermes. A subagent that ended unheard while the app was disconnected shows as Unknown (ADR 0069).
+_Avoid_: child agent, worker, delegate (in the UI). Subagent model settings in Settings → Model pick models, not running work
+
 **Approval**:
 Hermes asking the owner before it runs a command it counts as dangerous. It shows as a card in the chat, and the reply waits until the owner approves or denies it, Hermes stops waiting, or the reply is stopped. The card offers only the answers Hermes offers: once, for the rest of the chat, always, or deny. The two broader grants ask the owner to confirm first.
 _Avoid_: permission, confirmation, prompt

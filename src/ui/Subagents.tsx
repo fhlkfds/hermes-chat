@@ -1,4 +1,4 @@
-// The Subagents a chat's reply started (ADR 0068), above the composer: a tree of who started whom, and one subagent's
+// The Subagents a chat's reply started (ADR 0069), above the composer: a tree of who started whom, and one subagent's
 // own activity and output apart from the chat. Steer and Stop act on one subagent, named in full before they go.
 import { useEffect, useId, useRef, useState } from "react";
 import { ArrowLeft, ChevronDown, ChevronRight, RefreshCw, Workflow } from "lucide-react";
@@ -311,7 +311,7 @@ function Output({ id, api }: { id: SubagentId; api: SubagentsApi }) {
           <pre className="subagent-tail">{read.output.text || "(nothing yet)"}</pre>
         </>
       ) : (
-        <p className="subagent-why">Hermes shares a subagent's output only while it runs for this chat on this connection.</p>
+        <p className="subagent-why">Hermes shares a subagent's output only while it runs, and only with the chat session that started it.</p>
       )}
     </div>
   );
@@ -338,7 +338,7 @@ function Controls({ s, under, api }: { s: Subagent; under: number; api: Subagent
     run(async () => {
       const words = text.trim();
       if ((await api.steer(s.id, words)) !== "queued")
-        return { ok: false, text: "Hermes didn't take it: this subagent isn't taking steers now, or this connection didn't start it." };
+        return { ok: false, text: "Hermes didn't take it: this subagent isn't taking steers now, or an earlier session of this chat started it." };
       setText("");
       return { ok: true, text: `Steered ${target}. It reads your words after its current tool call.` };
     });
@@ -347,7 +347,7 @@ function Controls({ s, under, api }: { s: Subagent; under: number; api: Subagent
       setConfirming(false);
       return (await api.stop(s.id))
         ? { ok: true, text: `Asked Hermes to stop ${target}. It shows as Stopped once Hermes ends it.` }
-        : { ok: false, text: "Hermes didn't find it to stop: it may have ended, or this connection didn't start it." };
+        : { ok: false, text: "Hermes didn't find it to stop: it may have ended, or an earlier session of this chat started it." };
     });
 
   if (api.blocked)

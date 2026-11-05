@@ -23,7 +23,7 @@ const who = (subagent_id: string, goal: string, more: Record<string, unknown> = 
   task_count: 1,
   task_index: 0,
   subagent_id,
-  depth: 1,
+  depth: 0,
   model: "claude-sonnet-4-5",
   ...more,
 });
@@ -38,13 +38,13 @@ describe("The subagent tree from Hermes's events", () => {
     server.event(runtime, "subagent.spawn_requested", who("b", "Read the tests", { task_count: 2, task_index: 1, delegation_id: "d1" }));
     server.event(runtime, "subagent.start", who("a", "Read the auth code", { task_count: 2, delegation_id: "d1" }));
     server.event(runtime, "subagent.start", who("b", "Read the tests", { task_count: 2, task_index: 1, delegation_id: "d1" }));
-    server.event(runtime, "subagent.start", who("a1", "Check token expiry", { parent_id: "a", depth: 2, model: "gpt-5-mini" }));
-    server.event(runtime, "subagent.tool", who("a1", "Check token expiry", { parent_id: "a", depth: 2, model: "gpt-5-mini", tool_name: "read_file", tool_preview: "src/auth.ts", tool_count: 1 }));
+    server.event(runtime, "subagent.start", who("a1", "Check token expiry", { parent_id: "a", depth: 1, model: "gpt-5-mini" }));
+    server.event(runtime, "subagent.tool", who("a1", "Check token expiry", { parent_id: "a", depth: 1, model: "gpt-5-mini", tool_name: "read_file", tool_preview: "src/auth.ts", tool_count: 1 }));
 
     expect(ids(tree())).toEqual(["a", "b"]);
     expect(ids(tree(), "a")).toEqual(["a1"]);
-    expect(agent("b")).toMatchObject({ goal: "Read the tests", model: "claude-sonnet-4-5", state: "running", depth: 1, taskIndex: 1, taskCount: 2 });
-    expect(agent("a1")).toMatchObject({ parent: "a", depth: 2, model: "gpt-5-mini", state: "running", lastActivity: { text: "read_file: src/auth.ts" } });
+    expect(agent("b")).toMatchObject({ goal: "Read the tests", model: "claude-sonnet-4-5", state: "running", depth: 0, taskIndex: 1, taskCount: 2 });
+    expect(agent("a1")).toMatchObject({ parent: "a", depth: 1, model: "gpt-5-mini", state: "running", lastActivity: { text: "read_file: src/auth.ts" } });
     expect(tally(tree())).toEqual({ running: 3, failed: 0, total: 3 });
   });
 
@@ -73,16 +73,16 @@ describe("The subagent tree from Hermes's events", () => {
   it("takes events in any order: a late start, an event after the end, a child before its parent, a repeat", () => {
     let t: SubagentTree | undefined;
     const ev = (type: string, p: Record<string, unknown>, at: number) => (t = onSubagentEvent(t, type, p, at));
-    ev("subagent.tool", who("c", "Grandchild", { parent_id: "p", depth: 2, tool_name: "grep", tool_count: 2 }), 1);
+    ev("subagent.tool", who("c", "Grandchild", { parent_id: "p", depth: 1, tool_name: "grep", tool_count: 2 }), 1);
     // Its parent is in the tree, undescribed, before anything about it arrives.
     expect(t!.subagents.find((s) => s.id === "p")).toMatchObject({ goal: "", state: "unknown", partial: true });
-    ev("subagent.tool", who("c", "Grandchild", { parent_id: "p", depth: 2, tool_name: "read_file", tool_count: 1 }), 2);
-    ev("subagent.tool", who("c", "Grandchild", { parent_id: "p", depth: 2, tool_name: "grep", tool_count: 2 }), 3);
+    ev("subagent.tool", who("c", "Grandchild", { parent_id: "p", depth: 1, tool_name: "read_file", tool_count: 1 }), 2);
+    ev("subagent.tool", who("c", "Grandchild", { parent_id: "p", depth: 1, tool_name: "grep", tool_count: 2 }), 3);
     ev("subagent.start", who("p", "Parent"), 4);
-    ev("subagent.complete", who("c", "Grandchild", { parent_id: "p", depth: 2, status: "completed", summary: "Found it." }), 5);
-    ev("subagent.tool", who("c", "Grandchild", { parent_id: "p", depth: 2, tool_name: "terminal", tool_count: 3 }), 6);
+    ev("subagent.complete", who("c", "Grandchild", { parent_id: "p", depth: 1, status: "completed", summary: "Found it." }), 5);
+    ev("subagent.tool", who("c", "Grandchild", { parent_id: "p", depth: 1, tool_name: "terminal", tool_count: 3 }), 6);
     ev("subagent.spawn_requested", who("p", "Parent"), 7);
-    ev("subagent.complete", who("c", "Grandchild", { parent_id: "p", depth: 2, status: "failed" }), 8);
+    ev("subagent.complete", who("c", "Grandchild", { parent_id: "p", depth: 1, status: "failed" }), 8);
 
     const [p, c] = ["p", "c"].map((id) => t!.subagents.find((s) => s.id === id)!);
     expect(p).toMatchObject({ goal: "Parent", state: "running", partial: false });
@@ -113,8 +113,8 @@ describe("The subagent tree from Hermes's events", () => {
     let t: SubagentTree | undefined;
     t = onSubagentEvent(t, "subagent.start", who("a", "A"), 1);
     t = onSubagentEvent(t, "subagent.start", who("b", "B"), 1);
-    t = onSubagentEvent(t, "subagent.start", who("a1", "A1", { parent_id: "a", depth: 2 }), 1);
-    t = onSubagentEvent(t, "subagent.start", who("a1x", "A1x", { parent_id: "a1", depth: 3 }), 1);
+    t = onSubagentEvent(t, "subagent.start", who("a1", "A1", { parent_id: "a", depth: 1 }), 1);
+    t = onSubagentEvent(t, "subagent.start", who("a1x", "A1x", { parent_id: "a1", depth: 2 }), 1);
     expect(descendantsOf(t!, sid("a")).map((s) => s.id)).toEqual(["a1", "a1x"]);
     expect(descendantsOf(t!, sid("b"))).toEqual([]);
   });
@@ -222,7 +222,7 @@ describe("Steering and stopping one subagent", () => {
     server.subagents[id] = ["a", "b", "a1"].map((s) => ({ subagent_id: s, owner: runtime, accepting_steer: true, status: "running", tail: `${s} says hi` }));
     server.subagents[other] = [{ subagent_id: "x", owner: otherRuntime, accepting_steer: true, status: "running" }];
     for (const s of ["a", "b"]) server.event(runtime, "subagent.start", who(s, s.toUpperCase()));
-    server.event(runtime, "subagent.start", who("a1", "A1", { parent_id: "a", depth: 2 }));
+    server.event(runtime, "subagent.start", who("a1", "A1", { parent_id: "a", depth: 1 }));
     server.event(otherRuntime, "subagent.start", who("x", "X"));
     return { ...r, other, otherRuntime };
   }

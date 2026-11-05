@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// The Subagents panel (ADR 0068), driven the way the owner would, against a fake Hermes: what shows, and what reaches
+// The Subagents panel (ADR 0069), driven the way the owner would, against a fake Hermes: what shows, and what reaches
 // Hermes when they steer or stop one.
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -24,7 +24,7 @@ afterEach(async () => {
 
 const settle = (hermes: Hermes) => act(async () => void (await hermes.idle()));
 const panel = () => screen.getByRole("region", { name: "Subagents" });
-const who = (subagent_id: string, goal: string, more: Record<string, unknown> = {}) => ({ goal, task_count: 1, task_index: 0, subagent_id, depth: 1, model: "claude-sonnet-4-5", ...more });
+const who = (subagent_id: string, goal: string, more: Record<string, unknown> = {}) => ({ goal, task_count: 1, task_index: 0, subagent_id, depth: 0, model: "claude-sonnet-4-5", ...more });
 
 /** Signed in, with "Audit" open, its reply running with two subagents and one under the first. */
 async function auditing() {
@@ -47,7 +47,7 @@ async function auditing() {
     server.event(runtime, "message.start");
     server.event(runtime, "subagent.start", who("sa-auth", "Read the auth code"));
     server.event(runtime, "subagent.start", who("sa-tests", "Read the tests"));
-    server.event(runtime, "subagent.start", who("sa-expiry", "Check token expiry", { parent_id: "sa-auth", depth: 2 }));
+    server.event(runtime, "subagent.start", who("sa-expiry", "Check token expiry", { parent_id: "sa-auth", depth: 1 }));
     server.event(runtime, "subagent.tool", who("sa-auth", "Read the auth code", { tool_name: "read_file", tool_preview: "src/auth.ts", tool_count: 1 }));
   });
   return { server, hermes, user, runtime };
