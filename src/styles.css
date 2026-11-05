@@ -403,6 +403,9 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .msg.user.sending .bubble-text { opacity: 0.6; }
 .msg.user.failed .bubble-text { box-shadow: inset 0 0 0 1px rgba(248, 113, 113, 0.6); }
 .msg.user.unknown .bubble-text { box-shadow: inset 0 0 0 1px rgba(245, 184, 74, 0.6); }
+/* A message that went into the running reply rather than as a turn of its own (ADR 0055). */
+.steer-tag { display: inline-flex; align-items: center; gap: 4px; font-size: calc(11.5rem / 14); line-height: 1.3; color: var(--muted); }
+.msg.user.steer .bubble-text { background: transparent; outline: 1px dashed var(--line-3); outline-offset: -1px; }
 .send-failed { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; font-size: calc(12.5rem / 14); line-height: 1.45; }
 .send-failed-why { display: flex; gap: 6px; align-items: flex-start; color: var(--bad); text-align: right; }
 .send-failed.unknown .send-failed-why { color: var(--warn); }

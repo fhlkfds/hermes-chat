@@ -143,7 +143,15 @@ function toItem(v: unknown): Item | undefined {
       const rowId = Number.isSafeInteger(i.rowId) ? (i.rowId as number) : undefined;
       return text === undefined
         ? undefined
-        : { kind: "user", id, text, ...(attachments?.length && { attachments }), ...(at !== undefined && { at }), ...(rowId !== undefined && { rowId }) };
+        : {
+            kind: "user",
+            id,
+            text,
+            ...(attachments?.length && { attachments }),
+            ...(at !== undefined && { at }),
+            ...(rowId !== undefined && { rowId }),
+            ...(i.steer === true && { steer: true }),
+          };
     }
     case "assistant": {
       const rowId = Number.isSafeInteger(i.rowId) ? (i.rowId as number) : undefined;

@@ -4,7 +4,7 @@ import { ArrowLeft, ArrowRight, Columns2, FolderCog, GitBranch, PanelBottom, Pan
 import { CONNECT_STOPPED, RenameConflict, connect, readSaved, toSource, type Delivery, type Hermes } from "./hermes/transport";
 import { invoke } from "@tauri-apps/api/core";
 import type { CommandHost } from "./ui/SlashCommands";
-import type { ServerCommandList } from "./hermes/commands";
+import { STEER, type ServerCommandList } from "./hermes/commands";
 import { CHECK_EVERY_MS } from "./hermes/otherProfiles";
 import { type Account, type Kept, type SavedSignIn, launchSignIn, removeConnection, savedSignIn, signIn, signInForm, signOutToSignIn } from "./hermes/account";
 import { CONNECTIONS_KEY, Connections, type SavedConnection, addressLabel, defaultName, prefScope } from "./hermes/connections";
@@ -41,7 +41,7 @@ import { desktopLinks, type LinkInbox } from "./hermes/tauriLinks";
 import { ChatLinkNotice, type LinkNoticeView } from "./ui/ChatLinkNotice";
 import { Inbox } from "./ui/Inbox";
 import { inboxAcks, inboxEntries, inboxScope, needsOwner, type InboxEntry } from "./hermes/inbox";
-import { ChatPane, type JumpTarget } from "./ui/ChatPane";
+import { ChatPane, type FollowUpHost, type JumpTarget } from "./ui/ChatPane";
 import { BranchDialog, BranchedFrom } from "./ui/Branch";
 import { MembershipDialog, MembershipStatus, needsOwner as membershipNeedsOwner } from "./ui/MembershipSync";
 import { ReplayDialog } from "./ui/Replay";
@@ -3277,6 +3277,30 @@ function ChatView({
     },
   };
 
+  // A message sent while the reply runs, by the Follow-up behavior setting (ADR 0055): queued (queueApi), or steered
+  // into the reply through the same route as a typed /steer, and only when /steer could run now. The Draft empties only
+  // once Hermes has taken the words, and only if the owner hasn't changed it meanwhile. If the reply ended, or Hermes
+  // couldn't steer it yet, the words go to the end of the queue instead, so they never jump a message queued earlier.
+  const followUpMode = useSyncExternalStore(subscribeUIPrefs, getUIPrefs).followUp;
+  const followUp: FollowUpHost | undefined = queueApi && {
+    mode: followUpMode,
+    why: () => commands.why(STEER),
+    steer: async (text) => {
+      const key = shownDraft;
+      const typed = savedDrafts.get(key);
+      const done = () => savedDrafts.get(key) === typed && savedDrafts.set(key, "");
+      if (await hermes.steer(chat.id, text) === "steered") {
+        done();
+        return undefined;
+      }
+      if (!stillIn()) throw new Error(`The profile changed to ${hermes.profile} meanwhile.`);
+      const why = hermes.enqueue(chat.id, text);
+      if (why) throw new Error(`Hermes couldn't steer the reply just then, and it couldn't be queued: ${why}`);
+      done();
+      return "Hermes couldn't steer the reply just then, so your message is queued instead.";
+    },
+  };
+
   // An opened chat shows its stored history and is marked read; a chat already open on this connection is left as it
   // is. Until connected it shows its Saved copy, and after a reconnect it loads again. Settings covers the panes, so
   // the chats aren't on screen meanwhile.
@@ -3357,6 +3381,7 @@ function ChatView({
       // typed stays in the composer, and a failure is a Failed message (ADR 0041).
       voiceSend={started ? (text) => hermes.sendTracked(chat.id, text) : undefined}
       commands={commands}
+      followUp={followUp}
       headActions={
         <>
           {started && inWorktree && (

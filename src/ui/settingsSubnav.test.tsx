@@ -92,7 +92,7 @@ const heading = (name: string | RegExp) => screen.queryByRole("heading", { name 
 describe("Settings → General groups", () => {
   it("shows one group beside the sub-nav, Connection first", async () => {
     await shown();
-    expect(within(nav("General")).getAllByRole("button").map((b) => b.textContent)).toEqual(["Connection", "Launch, tray & updates", "Voice & screenshots", "Storage & data"]);
+    expect(within(nav("General")).getAllByRole("button").map((b) => b.textContent)).toEqual(["Connection", "Chats", "Launch, tray & updates", "Voice & screenshots", "Storage & data"]);
     expect(within(nav("General")).getByRole("button", { name: "Connection" }).getAttribute("aria-current")).toBe("true");
     expect(heading("Connection in use")).toBeTruthy();
     expect(heading("Local cache")).toBeNull();
