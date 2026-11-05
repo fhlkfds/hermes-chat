@@ -8,7 +8,8 @@ long queue to the front took a click per place (#217).
 - **Drag a row to a place.** Each queued message's row can be dragged within the queue. A grip at its left shows it.
   While dragging, a bar marks where it will land: on the border of the row it goes in front of, or under the last row.
   It lands in front of the first row whose middle is below the pointer, the same rule a tab strip uses (`slotAt` in
-  `bits.tsx`). Over the queue's head it goes first, and over its foot last.
+  `bits.tsx`). Over the queue's head it goes first, and over its foot last. This holds when the queue is too long to
+  show whole and its list is scrolled: there, the list scrolls to that end so the mark is in sight.
 - **The ↑ and ↓ buttons are gone.** Dragging replaces them. Alt+↑ and Alt+↓ on a focused message still move it one
   place, and focus stays on it. After a drop, focus goes to the moved message too. Tab now goes from a message to its
   Edit and Remove buttons, then to the next message.

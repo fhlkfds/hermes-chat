@@ -46,14 +46,15 @@ function transfer() {
 }
 type Transfer = ReturnType<typeof transfer>;
 
-/** Lays the queue rows out 40 pixels tall from the top, in their order at the time each is measured. */
-function layOut() {
+const box = (top: number, height: number) => ({ left: 0, top, width: 600, height, right: 600, bottom: top + height, x: 0, y: top, toJSON: () => {} });
+
+/** Lays the queue rows out 40 pixels tall from the top, in their order at the time each is measured, `scrolled` pixels
+ * up. The list itself stays unmeasured unless `shown` gives how much of it is in sight from the top. */
+function layOut({ scrolled = 0, shown }: { scrolled?: number; shown?: number } = {}) {
   for (const row of document.querySelectorAll<HTMLElement>(".queue-item")) {
-    vi.spyOn(row, "getBoundingClientRect").mockImplementation(() => {
-      const top = Array.from(row.parentElement!.children).indexOf(row) * 40;
-      return { left: 0, top, width: 600, height: 40, right: 600, bottom: top + 40, x: 0, y: top, toJSON: () => {} };
-    });
+    vi.spyOn(row, "getBoundingClientRect").mockImplementation(() => box(Array.from(row.parentElement!.children).indexOf(row) * 40 - scrolled, 40));
   }
+  if (shown !== undefined) for (const list of document.querySelectorAll(".queue-list")) vi.spyOn(list, "getBoundingClientRect").mockReturnValue(box(0, shown));
 }
 
 // jsdom has no DragEvent, so the pointer's place is put on the event by hand.
@@ -201,6 +202,33 @@ describe("While Hermes replies", () => {
 
     await s.finish();
     expect(prompts(s.server)).toEqual(["Unlock it", "d"]);
+  });
+
+  it("puts a message dropped over the queue's foot last and over its head first, when the list scrolls", async () => {
+    const s = await replying();
+    for (const t of ["a", "b", "c", "d"]) await s.user.type(composerIn(document.body), `${t}{Enter}`);
+    const queue = () => queueIn(document.body)!;
+    const list = queue().querySelector<HTMLElement>(".queue-list")!;
+    Object.defineProperty(list, "scrollHeight", { configurable: true, value: 160 });
+    const lifted = (source: Element, clientY: number, layout: Parameters<typeof layOut>[0]) => {
+      const dataTransfer = transfer();
+      layOut(layout);
+      fireEvent.dragStart(source, { dataTransfer });
+      const allowed = dragOver(queue(), clientY, dataTransfer);
+      if (allowed) dropOn(queue(), clientY, dataTransfer);
+      fireEvent.dragEnd(source, { dataTransfer });
+      return allowed;
+    };
+
+    // Two rows in sight; "c" and "d" are below the foot, out of sight.
+    expect(lifted(rowOf(queue(), "a"), 100, { shown: 80 })).toBe(true);
+    expect(queuedTexts(queue())).toEqual(["b", "c", "d", "a"]);
+    expect(list.scrollTop).toBe(160);
+
+    // Scrolled to the end: "b" and "c" are above the head, out of sight.
+    expect(lifted(rowOf(queue(), "a"), -10, { scrolled: 80, shown: 80 })).toBe(true);
+    expect(queuedTexts(queue())).toEqual(["a", "b", "c", "d"]);
+    expect(list.scrollTop).toBe(0);
   });
 
   it("refuses a queued message dropped outside the queue, and the composer takes nothing from it", async () => {

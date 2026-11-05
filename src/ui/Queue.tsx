@@ -59,15 +59,19 @@ export function QueuePanel({ chat, queue, status, api }: { chat: Chat; queue?: C
     setFocus({ id, index: 0 });
   };
   // Where a drop here would put the dragged message, or nothing for a drag that isn't one of this chat's queued
-  // messages, or a drop that would leave it where it is.
+  // messages, or a drop that would leave it where it is. `edge`: over the queue's head or foot, which mean first and
+  // last even when the list is scrolled and its rows out of sight would count otherwise.
   const dropAt = (e: DragEvent) => {
     if (!e.dataTransfer.types.includes(QUEUED_DRAG) || queueDrag?.chat !== chat.id) return undefined;
     const { id } = queueDrag;
     const from = items.findIndex((i) => i.id === id);
-    const slot = slotAt(Array.from(rootRef.current?.querySelectorAll(".queue-item") ?? []), e.clientY, "y");
+    const list = rootRef.current?.querySelector(".queue-list");
+    const box = list?.getBoundingClientRect();
+    const edge = !box?.height ? undefined : e.clientY < box.top ? "head" : e.clientY >= box.bottom ? "foot" : undefined;
+    const slot = edge === "head" ? 0 : edge === "foot" ? items.length : slotAt(Array.from(list?.querySelectorAll(".queue-item") ?? []), e.clientY, "y");
     if (from < 0 || slot === undefined) return undefined;
     const to = slot > from ? slot - 1 : slot;
-    return to === from ? undefined : { id, to, slot };
+    return to === from ? undefined : { id, to, slot, edge, list };
   };
   const remove = (item: Queued, index: number) => {
     api.remove(item.id);
@@ -85,6 +89,8 @@ export function QueuePanel({ chat, queue, status, api }: { chat: Chat; queue?: C
           e.preventDefault();
           e.dataTransfer.dropEffect = "move";
           if (over !== drop.slot) setOver(drop.slot);
+          // So the mark is in sight.
+          if (drop.edge && drop.list) drop.list.scrollTop = drop.edge === "head" ? 0 : drop.list.scrollHeight;
         }}
         onDragLeave={(e) => e.currentTarget.contains(e.relatedTarget as Node) || setOver(null)}
         onDrop={(e) => {
