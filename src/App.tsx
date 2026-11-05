@@ -71,7 +71,7 @@ import { OutputsScreen, type OutputsScope } from "./ui/Outputs";
 import { UsageAnalytics } from "./ui/UsageAnalytics";
 import { LogsScreen } from "./ui/Logs";
 import { note } from "./hermes/logs";
-import { OutputsIndex, outputsIn, splitPath, type Output } from "./hermes/outputs";
+import { OutputsIndex, outputsIn, sessionOf, splitPath, type Output } from "./hermes/outputs";
 import { STATUS_LABEL, composing, routeLabel } from "./ui/bits";
 import { ProjectScreen, ProjectSwitcher, type ProjectUnread } from "./ui/Projects";
 import { ScheduledJobs } from "./ui/ScheduledJobs";
@@ -843,7 +843,7 @@ export function Main({
   // Artifacts open to edit beside the chat (artifacts.ts, ADR 0029): their drafts live in memory for this sign-in, so
   // moving around the app keeps them, and only signing out or closing the window would drop one.
   const artifacts = useMemo(
-    () => new ArtifactStore((ref) => artifactIo({ host: ref.host, files: hermes.files, fs: hermes.artifactFs(ref.profile) }), (o) => hermes.askForEdit(o)),
+    () => new ArtifactStore((ref) => artifactIo({ host: ref.host, files: hermes.files, fs: hermes.artifactFs(ref.profile, ref.session) }), (o) => hermes.askForEdit(o)),
     [hermes],
   );
   const artSnap = useSyncExternalStore(artifacts.subscribe, artifacts.getSnapshot);
@@ -1188,10 +1188,14 @@ export function Main({
   }, [outputsIndex, listedFromHermes, allChatsKey]);
   // Opening Outputs, or picking another scope, reads the chats in it that changed since they were last read. A chat
   // changing while it is open (a reply streaming) waits for Refresh, so a reply doesn't set off a read per word.
+  // Then the files never checked are, so one that is gone says Missing before it is opened (ADR 0062).
   useEffect(() => {
     if (!outputsOpen || status !== "connected") return;
     // A chat opened on its own reads again the Outputs dropped to stay within the limit.
-    void outputsIndex.index(outputsRefs(), false, shownOutputsScope === "chat");
+    void outputsIndex.index(outputsRefs(), false, shownOutputsScope === "chat").then(() => {
+      const unchecked = scopedOutputs(outputsIndex.getSnapshot()).filter((o) => !o.availability);
+      if (unchecked.length && outputsIndex.getSnapshot().unsupported === undefined) return outputsIndex.check(unchecked);
+    });
   }, [outputsOpen, status, outputsIndex, shownOutputsScope, outputsChatKey]);
   const where = routeLabel(route) ?? addressLabel(connection);
   const inbox = inboxEntries({ profile, chats, connected: status === "connected", others, live, seen });
@@ -2712,9 +2716,13 @@ export function Main({
             onIndexMore={() => void outputsIndex.index(outputsRefs())}
             onAdd={(path) => outputsIndex.add(path, shownOutputsScope === "chat" ? (outputsChatId ?? undefined) : undefined)}
             onRemove={(key) => outputsIndex.remove(key)}
-            onPreview={(o) => openPreview({ kind: "server", path: o.path, ...(o.host && { host: true }) })}
-            onEdit={(o) => openPreview({ kind: "artifact", ref: { scope, profile, path: o.path, host: !!o.host, ...(o.chatId && { chatId: o.chatId }) } })}
-            unsavedEdit={(o) => isDirty(artSnap.get(artifactKey({ scope, host: !!o.host, path: o.path })))}
+            onRecheck={(o) => void outputsIndex.check([o])}
+            // Preview, Edit and the check all read the file the same way: where the tools run (or `host`), naming its chat.
+            onPreview={(o) => openPreview({ kind: "server", path: o.path, ...(o.host && { host: true }), ...(sessionOf(o) && { session: sessionOf(o) }) })}
+            onEdit={(o) =>
+              openPreview({ kind: "artifact", ref: { scope, profile, path: o.path, host: !!o.host, ...(o.chatId && { chatId: o.chatId }), ...(sessionOf(o) && { session: sessionOf(o) }) } })
+            }
+            unsavedEdit={(o) => isDirty(artSnap.get(artifactKey({ scope, host: !!o.host, path: o.path, session: sessionOf(o) })))}
             onJump={(o) => {
               if (!o.chatId || !o.callId) return;
               if (!chats.some((c) => c.id === o.chatId)) {
@@ -2798,7 +2806,7 @@ export function Main({
                     key={previewSeq}
                     target={preview ?? { kind: "start" }}
                     serverLabel={serverLabel(route)}
-                    readServer={(path, host) => (host ? hermes.readHostFile(path) : hermes.readServerFile(path))}
+                    readServer={(path, host, session) => (host ? hermes.readHostFile(path) : hermes.readServerFile(path, session))}
                     local={localFiles}
                     web={webPages}
                     serverPages={serverPages}

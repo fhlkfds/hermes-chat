@@ -640,6 +640,18 @@ export function protectedPath(path: string): boolean {
   return name === ".env" || name.startsWith(".env.") || name === ".envrc" || names.includes(name) || path.split("/").some((p) => ["mcp-tokens", "pairing"].includes(p.toLowerCase()));
 }
 
+/**
+ * Hermes's 404 for a container path (`/workspace/…`, `/root/…`) it couldn't map to a file on its machine
+ * (`SANDBOX_NOT_FOUND` at `f0d94882`): the file may be in the agent's sandbox, out of the dashboard's reach.
+ */
+export const SANDBOX_NOT_FOUND_PREFIX = "File not found on the gateway host";
+/** Hermes's 409 when a save names a chat whose own copy of the file is gone (`SANDBOX_COPY_MISSING`). */
+export const SANDBOX_COPY_MISSING = "File is no longer in this session's workspace";
+/** A `session_id` Hermes doesn't have in the profile (`_fs_owned_session`): the chat was deleted. */
+export const SESSION_GONE = /^The dashboard answered 404: \{"detail":"Session not found"\}/;
+/** What the owner reads for `SANDBOX_NOT_FOUND`. */
+export const SANDBOX_MISSING = "Hermes can't find it in its chat's sandbox. It may have been removed, or be in a sandbox the dashboard can't read.";
+
 const OFFLINE = [/^Not connected to Hermes/, /^The chat connection is closed/, /^Can't reach the Hermes dashboard/];
 
 /**
@@ -680,6 +692,7 @@ export function explain(message: string, what: "list" | "read" | "write", previe
     "Invalid path": "That isn't a path the server can open.",
   };
   if (detail in known) return new RemoteFilesError(known[detail], status);
+  if (status === 404 && detail.startsWith(SANDBOX_NOT_FOUND_PREFIX)) return new RemoteFilesError(SANDBOX_MISSING, status);
   if (status === 403) return new RemoteFilesError(`The server refused: ${detail}`, status);
   const doing = what === "list" ? "list this folder" : what === "read" ? "read this file" : "write this file";
   return new RemoteFilesError(`The server couldn't ${doing} (${status}): ${detail || "no reason given"}`, status);

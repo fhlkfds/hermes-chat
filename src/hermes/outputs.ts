@@ -82,6 +82,8 @@ export const OUTPUTS_PER_CHAT = 1000;
 export const ADDED_MAX = 200;
 /** Most folders listed in one availability check. */
 export const MAX_FOLDERS_PER_CHECK = 40;
+/** The most files one check reads again, naming their chat, after their folder's listing didn't find them. */
+export const MAX_CONFIRMS_PER_CHECK = 40;
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
@@ -247,9 +249,12 @@ export const typeOf = (path: string): OutputType => BY_EXTENSION.get(extensionOf
 /** The most an image preview reads: Hermes's `read-data-url` limit. Text previews show the first 512 KB of any size. */
 export const IMAGE_PREVIEW_MAX = 16 * 1024 * 1024;
 
+/** Why a file found missing can't be opened: what the check found, and how to look for it. */
+const missingWhy = (a: Availability) => `${a.why ?? "The file isn't at this path any more."} Check again, or look in its folder.`;
+
 /** Whether the preview pane can show the file, and why not. */
 export function previewable(o: Output): { ok: true } | { ok: false; why: string } {
-  if (o.availability?.state === "missing") return { ok: false, why: "The file isn't at this path any more." };
+  if (o.availability?.state === "missing") return { ok: false, why: missingWhy(o.availability) };
   if (o.availability?.state === "folder") return { ok: false, why: "This path is a folder now." };
   const type = typeOf(o.path);
   if (type === "image" && o.size !== undefined && o.size > IMAGE_PREVIEW_MAX) return { ok: false, why: "It's too large to preview (over 16 MB)." };
@@ -268,7 +273,7 @@ const EDIT_MAX = 1024 * 1024;
  */
 export function editable(o: Output): { ok: true } | { ok: false; why: string } {
   if (o.how === "speech" || o.how === "image") return { ok: false, why: "Only text files can be edited." };
-  if (o.availability?.state === "missing") return { ok: false, why: "The file isn't at this path any more." };
+  if (o.availability?.state === "missing") return { ok: false, why: missingWhy(o.availability) };
   if (o.availability?.state === "folder") return { ok: false, why: "This path is a folder now." };
   if (o.size !== undefined && o.size > EDIT_MAX) return { ok: false, why: "It's over 1 MB, the most the editor opens." };
   const type = typeOf(o.path);
@@ -315,6 +320,13 @@ export type OutputsIo = {
    * run (`GET /api/fs/list`), or with `host` on the dashboard's own machine (`GET /api/files`).
    */
   listDir(path: string, host?: boolean): Promise<{ entries: { name: string; isDirectory: boolean }[]; error?: string }>;
+  /**
+   * Whether the file is there, read as Preview reads it (`GET /api/fs/read-text`) naming `session`, the chat whose
+   * sandbox it is in (ADR 0062). For an Output its folder's listing didn't find: `fs/list` takes no chat, so for a
+   * container path it lists the profile's own `/workspace`, not the chat's. Undefined when Hermes no longer has the
+   * chat, so the listing's answer stands.
+   */
+  confirm?(path: string, session: string): Promise<Omit<Availability, "checkedAt"> | undefined>;
 };
 
 const TOO_BIG = /over the .* MB limit/;
@@ -381,6 +393,14 @@ export function splitPath(path: string): { dir: string; name: string } {
   if (at < 0) return { dir: "~", name: clean.slice(2) };
   return { dir: at === 0 ? "/" : clean.slice(0, at), name: clean.slice(at + 1) };
 }
+
+/**
+ * The chat whose sandbox an Output's path is in, which every read and save of it names as `session_id` (ADR 0062):
+ * for a file a tool wrote where the profile's tools run, its chat. With a Docker terminal backend that mounts each
+ * chat's folder at `/workspace`, `/workspace/x` is a different file in each chat, and Hermes finds the right one only
+ * when told the chat. Files on the dashboard's machine (`host`) and files the owner added by path name none.
+ */
+export const sessionOf = (o: Pick<Output, "how" | "host" | "chatId">): string | undefined => (!o.host && o.how !== "added" ? o.chatId : undefined);
 
 /** Where a file is: its path, on the tools' machine or (`host`) the dashboard's. Availability is kept by this. */
 export const placeOf = (o: { path: string; host?: boolean }) => `${o.host ? "host" : "tools"}:${o.path}`;
@@ -681,8 +701,27 @@ export class OutputsIndex {
       return this.set(e instanceof OutputsUnsupported ? { checking: false, unsupported: message } : { checking: false, error: `Couldn't check the files: ${message}` });
     }
     if (seq !== this.checkSeq) return;
+    // A file a chat's tools wrote that the listing didn't find is read again naming the chat, as Preview and Edit read
+    // it (ADR 0062): with a sandbox per chat, the listing showed another folder.
+    const confirmed = new Map<string, Availability>();
+    const doubtful = outputs.filter((o) => sessionOf(o) && found.get(placeOf(o))?.state === "missing").slice(0, MAX_CONFIRMS_PER_CHECK);
+    for (const o of doubtful) {
+      if (!this.io.confirm) break;
+      let answer: Omit<Availability, "checkedAt"> | undefined;
+      try {
+        answer = await this.io.confirm(o.path, sessionOf(o) as string);
+      } catch (e) {
+        answer = { state: "unknown", why: e instanceof Error ? e.message : String(e) };
+      }
+      if (seq !== this.checkSeq) return;
+      if (answer) confirmed.set(o.key, { ...answer, checkedAt: this.now() });
+    }
     const keys = new Set(outputs.map((o) => o.key));
-    const update = (o: Output) => (keys.has(o.key) && found.has(placeOf(o)) ? { ...o, availability: found.get(placeOf(o)) } : o);
+    const update = (o: Output) => {
+      if (!keys.has(o.key)) return o;
+      const a = confirmed.get(o.key) ?? found.get(placeOf(o));
+      return a ? { ...o, availability: a } : o;
+    };
     this.set(
       (s) => ({
         checking: false,
