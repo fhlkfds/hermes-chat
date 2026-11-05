@@ -1001,7 +1001,7 @@ export function ChatList({
   onCheckOthers: () => void;
   onSwitchProfile: (name: string) => void;
   onRetrySwitch: () => void;
-  /** Clone profile's calls (ADR 0069); without it the switcher offers no clone. */
+  /** Clone profile's calls (ADR 0071); without it the switcher offers no clone. */
   profileClone?: ProfileCloneApi;
   /** The list's own New chat and Search buttons, labeled with their keys; the rail keeps icons for both. */
   onNew?: () => void;

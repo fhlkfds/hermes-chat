@@ -1,4 +1,4 @@
-// Clone profile (ADR 0069): a new Hermes profile made from another one, through Hermes's own profile route. Nothing on
+// Clone profile (ADR 0071): a new Hermes profile made from another one, through Hermes's own profile route. Nothing on
 // the server is copied or written by this app directly.
 //
 // At the deployed `f0d94882` (`hermes_cli/web_routers/profiles.py`, `hermes_cli/profiles.py`):

@@ -100,7 +100,7 @@ Switching profile happens in place, with the same sign-in: the list shows what t
 _Avoid_: account, workspace, agent (as a name for a profile), connection (the server signed in to, which covers every profile)
 
 **Clone profile**:
-Making a new profile on the server from another one, from the profile switcher's menu. By default the clone is fresh, with only the parts the owner picks: the source's persona, model, description and own skills. It has no API keys. The full copy, which the owner turns on after a warning, also copies the source's API keys, memory and every setting. Chats, scheduled jobs and messaging channels are never copied. The new profile is read back before it can be opened, and the dialog says which parts didn't copy (ADR 0069).
+Making a new profile on the server from another one, from the profile switcher's menu. By default the clone is fresh, with only the parts the owner picks: the source's persona, model, description and own skills. It has no API keys. The full copy, which the owner turns on after a warning, also copies the source's API keys, memory and every setting. Chats, scheduled jobs and messaging channels are never copied. The new profile is read back before it can be opened, and the dialog says which parts didn't copy (ADR 0071).
 _Avoid_: duplicate, fork, copy (as a name for the feature; a copy is what Hermes's full copy does)
 
 **Bot Mode**:

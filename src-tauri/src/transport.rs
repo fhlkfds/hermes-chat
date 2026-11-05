@@ -1145,7 +1145,7 @@ impl Dashboard {
     /// One dashboard REST call for the webview: `GET`, `PATCH` or `DELETE` on a path under `api/`, with a
     /// JSON body. `POST` and `PUT` reach only Settings → Model's two writes (`POST api/model/set`,
     /// `PUT api/config`), the scheduled-job writes (`cron_write`), Settings → Persona's
-    /// `PUT api/profiles/{name}/soul`, the Clone profile dialog's `POST api/profiles` (`profile_create_allowed`, ADR 0069),
+    /// `PUT api/profiles/{name}/soul`, the Clone profile dialog's `POST api/profiles` (`profile_create_allowed`, ADR 0071),
     /// and Settings → Toolsets' switch, `PUT api/tools/toolsets/<name>` with exactly
     /// `{"enabled": true|false}` (`toolset_toggle_allowed`), Settings → Skills' two writes, `PUT api/skills/toggle` and
     /// `PUT api/skills/content` with exactly their fields (`skill_write_allowed`), Settings → Skills' copy to another
@@ -2090,7 +2090,7 @@ fn profile_id(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
 }
 
-/// Whether a `POST api/profiles` body is the Clone profile dialog's (ADR 0069): `{"name"}` with only `"soul"`,
+/// Whether a `POST api/profiles` body is the Clone profile dialog's (ADR 0071): `{"name"}` with only `"soul"`,
 /// `"description"`, `"provider"` and `"model"` beside it, or `{"name", "clone_from"}` with only `"description"` beside
 /// them, the full copy the owner opted in to; each a string. The name is a profile id other than `default`, and the
 /// source a profile id or `default`. Every other field Hermes takes is refused: `clone_all` copies the source's whole
