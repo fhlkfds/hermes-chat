@@ -246,6 +246,36 @@ describe("Settings → Voice → Speech providers", () => {
     expect(picker("Speech-to-text").value).toBe("Local Whisper");
   });
 
+  it("after a conflict over the provider, sends nothing typed for the pick that was dropped", async () => {
+    const { user, fake } = await shown();
+    await screen.findByRole("group", { name: "Text-to-speech" });
+    await user.selectOptions(picker("Text-to-speech"), "OpenAI TTS");
+    await user.clear(within(side("Text-to-speech")).getByLabelText(/^Voice/));
+    await user.type(within(side("Text-to-speech")).getByLabelText(/^Voice/), "nova");
+    fake.set("default", "tts.provider", "elevenlabs");
+    await user.click(saveButton());
+    expect((await screen.findByRole("alert")).textContent).toMatch(/the text-to-speech provider \(now ElevenLabs\) changed on Hermes/);
+    expect(picker("Text-to-speech").value).toBe("ElevenLabs");
+    expect((saveButton() as HTMLButtonElement).disabled).toBe(true);
+    expect(fake.writes).toEqual([]);
+  });
+
+  it("drops what was typed where Read again finds Hermes changed it, and says so, instead of saving over it", async () => {
+    const { user, fake } = await shown();
+    await screen.findByRole("group", { name: "Text-to-speech" });
+    await user.clear(within(side("Text-to-speech")).getByLabelText(/^Voice/));
+    await user.type(within(side("Text-to-speech")).getByLabelText(/^Voice/), "en-US-JennyNeural");
+    await user.selectOptions(within(side("Speech-to-text")).getByLabelText(/Model size/), "small");
+    fake.set("default", "tts.edge.voice", "en-GB-SoniaNeural");
+    await user.click(screen.getByRole("button", { name: /Read again/ }));
+    await waitFor(() => expect(within(side("Text-to-speech")).getByLabelText<HTMLInputElement>(/^Voice/).value).toBe("en-GB-SoniaNeural"));
+    expect(screen.getByRole("alert").textContent).toMatch(/Changed on Hermes since you opened this: Microsoft Edge TTS's voice/);
+    expect(within(side("Speech-to-text")).getByLabelText<HTMLSelectElement>(/Model size/).value).toBe("small");
+    await user.click(saveButton());
+    await screen.findByText(/Saved on Hermes, and read back/);
+    expect(fake.writes.map((w) => w.body)).toEqual([{ stt: { local: { model: "small" } } }]);
+  });
+
   it("says when the server can't list its speech providers, and what to do instead", async () => {
     await shown({ setUp: (s) => (s.voiceProviders.routes = "none") });
     const note = await screen.findByRole("note");

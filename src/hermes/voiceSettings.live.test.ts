@@ -31,6 +31,7 @@ function setupFrom(config: Json): VoiceSetup {
   return {
     transcribe: true,
     speak: true,
+    sttEnabled: section("stt").enabled !== false,
     sttProvider: typeof section("stt").provider === "string" ? (section("stt").provider as string) : undefined,
     ttsProvider: typeof section("tts").provider === "string" ? (section("tts").provider as string) : undefined,
     sttLanguage: typeof section("stt").language === "string" ? (section("stt").language as string) : undefined,

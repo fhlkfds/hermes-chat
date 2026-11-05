@@ -15,6 +15,8 @@ import {
   type VoiceSettingsApi,
   VoiceUnsupportedError,
   activeOf,
+  changedUnder,
+  withoutChanged,
   namedOf,
   pickedOf,
   draftChanges,
@@ -80,6 +82,10 @@ export function VoiceProviderSettings({
   const [outcome, setOutcome] = useState<{ ok: boolean; text: string }>();
   // Bumped by every new profile, connection and reload: an answer from before is dropped.
   const epoch = useRef(0);
+  const readRef = useRef(read);
+  readRef.current = read;
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
   const shown = useRef({ api, profile });
   shown.current = { api, profile };
   const current = (mine: number, forApi: VoiceSettingsApi, forProfile: string) =>
@@ -94,6 +100,16 @@ export function VoiceProviderSettings({
       (r) => {
         if (!current(mine, forApi, forProfile)) return;
         setUnsupported(undefined);
+        // What the owner has typed stays, except where Hermes's value changed since the read it was made from: a later
+        // save is checked against this read, so a change under the draft would otherwise be overwritten unseen.
+        const before = readRef.current;
+        if (before) {
+          const { what, kinds, paths } = changedUnder(before, r, draftRef.current);
+          if (what.length) {
+            setDraft((d) => withoutChanged(d, kinds, paths));
+            setOutcome({ ok: false, text: `Changed on Hermes since you opened this: ${what.join(", ")}. Hermes's values are shown there now.` });
+          }
+        }
         setRead(r);
       },
       (e) => {
@@ -158,11 +174,7 @@ export function VoiceProviderSettings({
     setDraft((d) => {
       if (r.kind === "saved") return emptyDraft();
       const next: VoiceDraft = { provider: { ...d.provider }, settings: { ...d.settings }, keys: {} };
-      if (r.kind === "conflict") {
-        for (const kind of r.kinds) delete next.provider[kind];
-        for (const path of r.paths) delete next.settings[path];
-      }
-      return next;
+      return r.kind === "conflict" ? withoutChanged(next, r.kinds, r.paths) : next;
     });
   };
 

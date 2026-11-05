@@ -285,6 +285,41 @@ export const namedOf = (read: VoiceRead, kind: VoiceKind) => (kind === "stt" ? r
  */
 export const pickedOf = (read: VoiceRead, kind: VoiceKind) => (namedOf(read, kind) ? activeOf(read, kind) : undefined);
 
+/**
+ * What Hermes changed between `base` (the read a draft was made from) and `now`, of what the draft changes: a provider
+ * side, compared both as the row Hermes marks in use and as the name the config writes (a switch between two providers
+ * Hermes doesn't list changes only the name), and each setting.
+ */
+export function changedUnder(base: VoiceRead, now: VoiceRead, draft: VoiceDraft): { what: string[]; kinds: VoiceKind[]; paths: string[] } {
+  const kinds = KINDS.filter(
+    (kind) => draft.provider[kind] !== undefined && (activeOf(now, kind)?.name !== activeOf(base, kind)?.name || namedOf(now, kind) !== namedOf(base, kind)),
+  );
+  const paths = Object.keys(draft.settings).filter((path) => now.values[path] !== base.values[path]);
+  const what = [
+    ...kinds.map((kind) => `the ${KIND_LABEL[kind].toLowerCase()} provider (now ${activeOf(now, kind)?.name ?? namedOf(now, kind) ?? "none"})`),
+    ...paths.map((path) => settingLabel(now, path)),
+  ];
+  return { what, kinds, paths };
+}
+
+/**
+ * The draft with what Hermes changed under it dropped, so the screen shows Hermes's values there. A provider side that
+ * changed loses its pick and everything typed for it: settings and keys typed for a pick the owner no longer sees are
+ * never sent.
+ */
+export function withoutChanged(draft: VoiceDraft, kinds: VoiceKind[], paths: string[]): VoiceDraft {
+  const provider = { ...draft.provider };
+  const keys = { ...draft.keys };
+  for (const kind of kinds) {
+    delete provider[kind];
+    delete keys[kind];
+  }
+  const settings = Object.fromEntries(
+    Object.entries(draft.settings).filter(([path]) => !paths.includes(path) && !kinds.some((kind) => path.startsWith(`${kind}.`) && path !== STT_LANGUAGE)),
+  );
+  return { provider, settings, keys };
+}
+
 /** `{tts: {openai: {voice: "nova"}}}` from `{"tts.openai.voice": "nova"}`. */
 function nested(settings: Record<string, string>): Json {
   const out: Json = {};
@@ -361,6 +396,10 @@ export class VoiceSettingsApi {
       this.side(profile, "tts"),
       this.rest("GET", `api/config/schema?${this.q(profile)}`).catch(() => undefined),
     ]);
+    // Without the config, nothing could be checked before a write or confirmed after it (Rust says so by leaving
+    // `sttEnabled` out).
+    if (setup.sttEnabled === undefined)
+      throw new Error("Hermes Chat couldn't read the profile's config on Hermes, so it can't check or confirm a change to the speech providers.");
     return { profile, setup, sides: { stt, tts }, values: valuesFrom(setup), options: optionsFrom(schema), readAt: Date.now() };
   }
 
@@ -384,16 +423,7 @@ export class VoiceSettingsApi {
     const before = await this.read(profile);
     // The provider is compared both as Hermes lists it and as the config names it: a switch between two providers Hermes
     // doesn't list (command or plugin ones) changes only the name.
-    const kinds = KINDS.filter(
-      (kind) =>
-        draft.provider[kind] !== undefined &&
-        (activeOf(before, kind)?.name !== activeOf(base, kind)?.name || namedOf(before, kind) !== namedOf(base, kind)),
-    );
-    const paths = Object.keys(draft.settings).filter((path) => before.values[path] !== base.values[path]);
-    const what = [
-      ...kinds.map((kind) => `the ${KIND_LABEL[kind].toLowerCase()} provider (now ${activeOf(before, kind)?.name ?? namedOf(before, kind) ?? "none"})`),
-      ...paths.map((path) => settingLabel(before, path)),
-    ];
+    const { what, kinds, paths } = changedUnder(base, before, draft);
     if (what.length) return { kind: "conflict", read: before, what, kinds, paths };
 
     const problems = draftProblems(before, draft);
@@ -446,7 +476,8 @@ export class VoiceSettingsApi {
     const missing: string[] = [];
     for (const kind of KINDS) {
       const want = draft.provider[kind];
-      if (want !== undefined && activeOf(after, kind)?.name !== want) missing.push(`the ${KIND_LABEL[kind].toLowerCase()} provider`);
+      // Named in the config too: Hermes marks Local Whisper in use while `stt.provider` is unset.
+      if (want !== undefined && pickedOf(after, kind)?.name !== want) missing.push(`the ${KIND_LABEL[kind].toLowerCase()} provider`);
     }
     for (const [path, value] of Object.entries(draft.settings)) if (after.values[path] !== value) missing.push(settingLabel(after, path));
     for (const [kind, env] of keys)

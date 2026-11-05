@@ -182,6 +182,21 @@ describe("Settings → Voice: saving", () => {
     if (r.kind === "saved") expect(namedOf(r.read, "stt")).toBe("local");
   });
 
+  it("doesn't call Local Whisper picked when the write naming it was lost, though Hermes marks it in use either way", async () => {
+    const { server, fake, api } = await setUp();
+    server.voice = { ...server.voice, sttProvider: undefined };
+    const base = await api.read("default");
+    fake.failNext = { route: "provider", detail: "Can't reach the Hermes dashboard: connection reset" };
+    const r = await api.save("default", base, draft({ provider: { stt: "Local Whisper" } }));
+    expect(r).toMatchObject({ kind: "failed", refused: false, done: [] });
+  });
+
+  it("won't read, and so won't save, when Rust couldn't read the profile's config", async () => {
+    const { server, api } = await setUp();
+    server.voice = { transcribe: true, speak: true };
+    await expect(api.read("default")).rejects.toThrow(/couldn't read the profile's config on Hermes/);
+  });
+
   it("sees another client switch between two providers Hermes doesn't list", async () => {
     const { fake, api } = await setUp();
     fake.set("default", "stt.provider", "my-command-a");
