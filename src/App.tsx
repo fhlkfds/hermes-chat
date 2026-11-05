@@ -790,7 +790,7 @@ export function Main({
   screenshots?: Screenshots;
   /** The Repository screen's helper over ssh, and worktrees' (ADR 0034, 0043). */
   repoApi?: RepoApi;
-  /** Speech-to-text on this computer: whisper.cpp, run by Rust (ADR 0062). */
+  /** Speech-to-text on this computer: whisper.cpp, run by Rust (ADR 0065). */
   localStt?: LocalSttApi;
   /** Tells the window `hermes-chat --show` or `--toggle` brought it forward; none outside the desktop app. */
   summon?: SummonApi;
@@ -896,7 +896,7 @@ export function Main({
   const voice = useMemo<VoiceApi>(
     () => ({
       setup: () => hermes.voiceSetup(),
-      // Where the owner chose: Hermes, this computer, or one with the other as backup (ADR 0062).
+      // Where the owner chose: Hermes, this computer, or one with the other as backup (ADR 0065).
       transcribe: (audio, mime) =>
         transcribeRouted(
           getUIPrefs().speechToText,

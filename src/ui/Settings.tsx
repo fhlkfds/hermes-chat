@@ -238,7 +238,7 @@ export function SettingsScreen({
   onVoiceChange?: (fn: () => void) => () => void;
   /** Set, each time anew, to show the Voice tab: from a voice conversation's "Change voice settings". */
   showVoice?: object;
-  /** Speech-to-text on this computer, for the Voice tab's Speech to text sections (ADR 0062). */
+  /** Speech-to-text on this computer, for the Voice tab's Speech to text sections (ADR 0065). */
   localStt?: LocalSttApi;
   /** Hermes's transcribing on its own, without a backup, for the Voice tab's Test. */
   transcribeOnHermes?: (audio: Uint8Array, mime: string) => Promise<Transcript>;

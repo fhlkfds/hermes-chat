@@ -1,4 +1,4 @@
-// Speech-to-text on this computer, as the webview sees it (src-tauri/src/local_stt.rs, ADR 0062): whisper.cpp found on
+// Speech-to-text on this computer, as the webview sees it (src-tauri/src/local_stt.rs, ADR 0065): whisper.cpp found on
 // PATH or picked by the owner, and a Whisper model downloaded into the app's data folder or picked as a file. Rust runs
 // it, so the recording never leaves the computer; only the text comes back.
 

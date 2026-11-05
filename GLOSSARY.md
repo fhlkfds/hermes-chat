@@ -176,7 +176,7 @@ The service Hermes turns speech into text with (speech-to-text), or text into sp
 _Avoid_: STT/TTS engine, voice backend, voice model
 
 **Speech to text** (where it runs):
-Where Dictation and Voice conversations turn a recording into text: on **Hermes**, with the profile's speech-to-text Speech provider, or on **this computer**, with whisper.cpp and a Whisper model here. The owner picks a Primary and may make the other one the Backup, which transcribes the same recording when the primary fails or is slower than a set time; the chat then says which one did it. On this computer the recording never leaves the computer, only the text goes to Hermes; it is written to a private temp file for whisper.cpp to read, and deleted when the run ends. This computer can be the primary only once a model is downloaded or picked. The choice is kept on this computer (ADR 0062).
+Where Dictation and Voice conversations turn a recording into text: on **Hermes**, with the profile's speech-to-text Speech provider, or on **this computer**, with whisper.cpp and a Whisper model here. The owner picks a Primary and may make the other one the Backup, which transcribes the same recording when the primary fails or is slower than a set time; the chat then says which one did it. On this computer the recording never leaves the computer, only the text goes to Hermes; it is written to a private temp file for whisper.cpp to read, and deleted when the run ends. This computer can be the primary only once a model is downloaded or picked. The choice is kept on this computer (ADR 0065).
 _Avoid_: local mode, offline mode, STT engine
 
 **Close to tray**:

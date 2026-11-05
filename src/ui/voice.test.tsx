@@ -450,7 +450,7 @@ describe("Dictation", () => {
   });
 });
 
-describe("Dictation, where speech-to-text runs (ADR 0062)", () => {
+describe("Dictation, where speech-to-text runs (ADR 0065)", () => {
   it("transcribes on this computer when it is the primary: nothing goes to Hermes", async () => {
     const localStt = new FakeLocalStt();
     localStt.downloaded.add("base");
@@ -674,7 +674,7 @@ describe("Settings, Voice", () => {
   });
 });
 
-describe("Settings, Voice, Speech to text (ADR 0062)", () => {
+describe("Settings, Voice, Speech to text (ADR 0065)", () => {
   async function openVoice(localStt = new FakeLocalStt(), server?: FakeHermes) {
     const got = await signedIn(server, localStt);
     await got.user.click(screen.getByRole("button", { name: "Settings" }));

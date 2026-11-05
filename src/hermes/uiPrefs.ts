@@ -56,7 +56,7 @@ export type UIPrefs = {
   followUp: FollowUp;
   /** Idle compaction: compact a chat open on Hermes here once it has sat idle with its context window this full (ADR 0059). */
   idleCompact: IdleCompactPrefs;
-  /** Where Dictation and voice conversations transcribe: Hermes or this computer, and the other as backup (ADR 0062). */
+  /** Where Dictation and voice conversations transcribe: Hermes or this computer, and the other as backup (ADR 0065). */
   speechToText: SttPrefs;
 };
 

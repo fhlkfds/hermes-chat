@@ -1,4 +1,4 @@
-// Where speech-to-text runs (ADR 0062): on the Hermes server, with the profile's speech provider, or on this computer,
+// Where speech-to-text runs (ADR 0065): on the Hermes server, with the profile's speech provider, or on this computer,
 // with whisper.cpp (src-tauri/src/local_stt.rs). The owner picks a Primary, and may make the other one its Backup. If
 // the primary fails (Hermes unreachable, a provider error, no model here, or too slow past the
 // timeout), the backup runs on the same recording, and the transcript says which one it came from.

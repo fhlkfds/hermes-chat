@@ -419,7 +419,7 @@ export class VoiceConversation {
     if (session !== this.session || this.transcribing !== turn) return;
     this.transcribing = undefined;
     const text = got.text.trim();
-    // Said under the turn when the backup did the transcribing (ADR 0062).
+    // Said under the turn when the backup did the transcribing (ADR 0065).
     const via = fellBackOf(got);
     if (!text) {
       const who = got.ran === "local" ? "This computer" : "Hermes";

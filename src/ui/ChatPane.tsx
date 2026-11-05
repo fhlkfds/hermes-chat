@@ -1148,7 +1148,7 @@ function Composer({
   textRef.current = text;
   // Focus goes back to the text once a recording is done with, whichever way, since the controls it was on are gone.
   const wasDictating = useRef(false);
-  // Where speech-to-text runs: with this computer in the route, Dictation works without Hermes (ADR 0062).
+  // Where speech-to-text runs: with this computer in the route, Dictation works without Hermes (ADR 0065).
   const sttPrefs = useSyncExternalStore(subscribeUIPrefs, getUIPrefs).speechToText;
   const dictation = useDictation(voice?.transcribe, (heard) => {
     if (!focused.current) return;

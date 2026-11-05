@@ -1,4 +1,4 @@
-//! Speech-to-text on this computer (ADR 0062): whisper.cpp's `whisper-cli` and a Whisper model in ggml format.
+//! Speech-to-text on this computer (ADR 0065): whisper.cpp's `whisper-cli` and a Whisper model in ggml format.
 //!
 //! The recording never leaves the computer. It is written to a private temp file, `whisper-cli` reads it, and the file
 //! is deleted when the run ends. Only the text goes back to the webview, which sends it to Hermes as typed text.

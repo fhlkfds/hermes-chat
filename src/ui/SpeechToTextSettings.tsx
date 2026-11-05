@@ -1,4 +1,4 @@
-// Settings → Voice → Speech to text (ADR 0062): where Dictation and voice conversations transcribe, Hermes or this
+// Settings → Voice → Speech to text (ADR 0065): where Dictation and voice conversations transcribe, Hermes or this
 // computer, and whether the other is the backup; the model on each side; and a Test that records a few seconds and
 // runs it through each. Where it runs is kept in the display preferences (uiPrefs.ts); this computer's engine, model
 // and language are kept by Rust (src-tauri/src/local_stt.rs) and shown as it reads them back.
