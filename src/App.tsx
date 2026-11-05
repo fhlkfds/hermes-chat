@@ -53,6 +53,9 @@ import { paneNames, Split, usePaneVisible, type PaneSlot, type SplitDir } from "
 import { closeTabIn, navigateTabs, PaneDrop, TabStrip, type TabAction } from "./ui/Tabs";
 import { dropLabel, EDGE_SIDE, EDGES, moveTab, sameMove, type DropZone, type MovedChat, type TabDrop } from "./ui/tabMoves";
 import type { VoiceApi } from "./ui/Voice";
+import { transcribeRouted } from "./hermes/sttRoute";
+import type { LocalSttApi } from "./hermes/localStt";
+import { tauriLocalStt } from "./hermes/tauriLocalStt";
 import { SearchPalette } from "./ui/Search";
 import { SavedFilters, TagManager } from "./ui/Tags";
 import { useSnoozeClock } from "./ui/Snooze";
@@ -748,6 +751,7 @@ export function Main({
   refs = savedConnectionRefs,
   tray = tauriTray,
   repoApi = tauriRepo,
+  localStt = tauriLocalStt,
 }: {
   hermes: Hermes;
   /** The saved connection in use (connections.ts); a bare sign-in (in tests) is keyed by its address, as before. */
@@ -786,6 +790,8 @@ export function Main({
   screenshots?: Screenshots;
   /** The Repository screen's helper over ssh, and worktrees' (ADR 0034, 0043). */
   repoApi?: RepoApi;
+  /** Speech-to-text on this computer: whisper.cpp, run by Rust (ADR 0062). */
+  localStt?: LocalSttApi;
   /** Tells the window `hermes-chat --show` or `--toggle` brought it forward; none outside the desktop app. */
   summon?: SummonApi;
   /** Where Settings → Persona keeps unsaved edits and replaced versions on this computer. */
@@ -890,12 +896,19 @@ export function Main({
   const voice = useMemo<VoiceApi>(
     () => ({
       setup: () => hermes.voiceSetup(),
-      transcribe: (audio, mime) => hermes.transcribe(audio, mime),
+      // Where the owner chose: Hermes, this computer, or one with the other as backup (ADR 0062).
+      transcribe: (audio, mime) =>
+        transcribeRouted(
+          getUIPrefs().speechToText,
+          { server: (a, m) => hermes.transcribe(a, m), local: (a, _m, timeout) => localStt.transcribe(a, timeout) },
+          audio,
+          mime,
+        ),
       speak: (text) => hermes.speak(text),
       onChange: hermes.onVoiceChange,
       openSettings: () => openVoiceSettings.current(),
     }),
-    [hermes],
+    [hermes, localStt],
   );
   // The project screen covers the chat pane, as Settings does.
   const [projectOpen, setProjectOpen] = useState(false);
@@ -2598,6 +2611,8 @@ export function Main({
             voiceSettings={hermes.voiceSettings}
             onVoiceChange={hermes.onVoiceChange}
             showVoice={showVoice}
+            localStt={localStt}
+            transcribeOnHermes={(audio, mime) => hermes.transcribe(audio, mime)}
             showTextGeneration={showTextGeneration}
             showMemory={showMemory}
             capabilities={hermes.capabilities}

@@ -1,13 +1,14 @@
 // Display preferences for this computer: the theme, whether the last chat reopens at launch and which chat each profile
 // had open, whether reasoning shows, the model last picked and the starred models, which items the status bar shows,
 // the screenshot shortcut and preview pane width, which computer the Terminal opens on, what sending does while a
-// reply runs, and Idle compaction. All preferences live in one versioned localStorage document.
+// reply runs, Idle compaction, and where speech-to-text runs. All preferences live in one versioned localStorage document.
 // it (chatCache.ts) and later settings add fields here rather than new keys. Nothing here goes to Hermes. Every
 // settings feature reads and writes through this module.
 
 import { fromKey, isEffort, type ModelPick } from "./models";
 import { toTemplates, type Template } from "./templates";
 import type { TerminalKind } from "./terminal";
+import { DEFAULT_STT_PREFS, toSttPrefs, type SttPrefs } from "./sttRoute";
 
 export const UI_PREFS_KEY = "hermes-ui-prefs";
 /** The shape the document has now. Bump it, and add a step to UI_PREFS_MIGRATIONS, when a field changes meaning. */
@@ -55,6 +56,8 @@ export type UIPrefs = {
   followUp: FollowUp;
   /** Idle compaction: compact a chat open on Hermes here once it has sat idle with its context window this full (ADR 0059). */
   idleCompact: IdleCompactPrefs;
+  /** Where Dictation and voice conversations transcribe: Hermes or this computer, and the other as backup (ADR 0062). */
+  speechToText: SttPrefs;
 };
 
 export type FollowUp = "queue" | "steer";
@@ -92,6 +95,7 @@ export const DEFAULT_UI_PREFS: Readonly<UIPrefs> = Object.freeze({
   terminalKind: "server",
   followUp: "queue",
   idleCompact: Object.freeze({ enabled: false, percent: 70, idleMinutes: 15 }),
+  speechToText: DEFAULT_STT_PREFS,
 });
 
 /** A stored document as read, before its fields are checked. */
@@ -213,6 +217,7 @@ export function readUIPrefs(doc: UIPrefsDoc, d: Readonly<UIPrefs> = DEFAULT_UI_P
     terminalKind: doc.terminalKind === "server" || doc.terminalKind === "local" ? doc.terminalKind : d.terminalKind,
     followUp: doc.followUp === "queue" || doc.followUp === "steer" ? doc.followUp : d.followUp,
     idleCompact: toIdleCompact(doc.idleCompact, d.idleCompact) ?? { ...d.idleCompact },
+    speechToText: toSttPrefs(doc.speechToText, d.speechToText) ?? { ...d.speechToText },
   };
 }
 

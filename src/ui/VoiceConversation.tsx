@@ -287,6 +287,7 @@ export function ConversationPanel({
                   {HEARD_STATE[h.state]}
                   {h.why ? `: ${h.why}` : ""}
                 </span>
+                {h.via && <span className="conv-heard-via">{h.via}</span>}
               </li>
             ))}
           </ol>

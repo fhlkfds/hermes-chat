@@ -6,6 +6,8 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row } from "../hermes/fakeHermes";
+import { FakeLocalStt } from "../hermes/fakeLocalStt";
+import { getUIPrefs, setUIPrefs } from "../hermes/uiPrefs";
 import { connect, type Hermes } from "../hermes/transport";
 import { Main } from "../App";
 import { Speaker } from "./speaker";
@@ -111,7 +113,7 @@ const settle = (hermes: Hermes) => act(async () => void (await hermes.idle()));
 let signIns = 0;
 
 /** Signed in with one Active chat that has a reply, the New chat pane on screen. Each sign-in has its own drafts. */
-async function signedIn(server = new FakeHermes()) {
+async function signedIn(server = new FakeHermes(), localStt = new FakeLocalStt()) {
   server.sessions = [row("backup", 1, { pinned: true, title: "Nightly backup" }), row("nas", 2, { pinned: true, title: "NAS disks" })];
   server.transcripts = {
     backup: [
@@ -122,10 +124,12 @@ async function signedIn(server = new FakeHermes()) {
   };
   const hermes = await connect(server.openPipe);
   const user = userEvent.setup();
-  render(<Main hermes={hermes} connection={{ mode: "ssh", sshTarget: "liam@hermes", url: "", username: `liam${++signIns}` }} onSignOut={async () => {}} />);
+  render(
+    <Main hermes={hermes} connection={{ mode: "ssh", sshTarget: "liam@hermes", url: "", username: `liam${++signIns}` }} onSignOut={async () => {}} localStt={localStt} />,
+  );
   await screen.findByRole("button", { name: /Nightly backup/ });
   await settle(hermes);
-  return { server, hermes, user };
+  return { server, hermes, user, localStt };
 }
 
 const dictate = () => screen.getByRole("button", { name: "Dictate" });
@@ -446,6 +450,80 @@ describe("Dictation", () => {
   });
 });
 
+describe("Dictation, where speech-to-text runs (ADR 0062)", () => {
+  it("transcribes on this computer when it is the primary: nothing goes to Hermes", async () => {
+    const localStt = new FakeLocalStt();
+    localStt.downloaded.add("base");
+    localStt.heard = "Restart the NAS";
+    setUIPrefs({ speechToText: { primary: "local", backup: false, timeoutSeconds: 30 } });
+    const { server, user } = await signedIn(undefined, localStt);
+    await record(user);
+    mic.say(1);
+    await user.click(screen.getByRole("button", { name: /Done/ }));
+    await waitFor(() => expect(composer().value).toBe("Restart the NAS"));
+    expect(server.recordings).toHaveLength(0);
+    expect(localStt.recordings).toHaveLength(1);
+    expect(String.fromCharCode(...localStt.recordings[0].audio.slice(0, 4))).toBe("RIFF");
+    // No backup waits, so this computer gets its own longest run.
+    expect(localStt.recordings[0].timeoutSeconds).toBe(600);
+    // It came from the primary, so there's nothing to say.
+    expect(screen.queryByRole("status", { name: "" })).toBeNull();
+    expect(document.querySelector(".voice-note")).toBeNull();
+  });
+
+  it("falls back to this computer when Hermes's provider fails, and says which one transcribed it", async () => {
+    const localStt = new FakeLocalStt();
+    localStt.downloaded.add("base");
+    localStt.heard = "Check the NAS";
+    setUIPrefs({ speechToText: { primary: "server", backup: true, timeoutSeconds: 30 } });
+    const server = new FakeHermes();
+    server.heard = new Error("Hermes couldn't transcribe the recording: GROQ_API_KEY is not set");
+    const { user } = await signedIn(server, localStt);
+    await record(user);
+    mic.say(1);
+    await user.click(screen.getByRole("button", { name: /Done/ }));
+    await waitFor(() => expect(composer().value).toBe("Check the NAS"));
+    expect(server.recordings).toHaveLength(1);
+    expect(localStt.recordings).toHaveLength(1);
+    expect(localStt.recordings[0].audio).toEqual(server.recordings[0].audio);
+    const note = document.querySelector(".voice-note.info")!;
+    expect(note.getAttribute("role")).toBe("status");
+    expect(note.textContent).toMatch(/^Transcribed on this computer\. Hermes couldn't transcribe it: GROQ_API_KEY is not set\./);
+  });
+
+  it("falls back to Hermes when this computer has no model, and keeps the recording when both fail", async () => {
+    const localStt = new FakeLocalStt();
+    setUIPrefs({ speechToText: { primary: "local", backup: true, timeoutSeconds: 30 } });
+    const { server, user } = await signedIn(undefined, localStt);
+    await record(user);
+    mic.say(1);
+    await user.click(screen.getByRole("button", { name: /Done/ }));
+    await waitFor(() => expect(composer().value).toBe("Check the backup logs"));
+    expect(document.querySelector(".voice-note.info")!.textContent).toMatch(/^Transcribed on Hermes\. This computer couldn't transcribe it: The base model isn't downloaded yet\./);
+
+    server.heard = new Error("Can't reach the Hermes dashboard: connection reset");
+    await user.click(screen.getByRole("button", { name: "Dismiss" }));
+    await record(user);
+    mic.say(1);
+    await user.click(screen.getByRole("button", { name: /Done/ }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toMatch(/This computer couldn't transcribe it: The base model isn't downloaded yet\. Hermes couldn't transcribe it either: Can't reach/);
+    expect(screen.getByRole("button", { name: /Try again/ })).toBeTruthy();
+  });
+
+  it("can be started while Hermes is offline when this computer transcribes", async () => {
+    const localStt = new FakeLocalStt();
+    localStt.downloaded.add("base");
+    setUIPrefs({ speechToText: { primary: "local", backup: false, timeoutSeconds: 30 } });
+    const { server, hermes } = await signedIn(undefined, localStt);
+    server.refuse = "Can't reach the Hermes dashboard: connection refused";
+    act(() => server.drop());
+    await settle(hermes);
+    await waitFor(() => expect(screen.getAllByText(/Reconnecting|Disconnected|Offline|Can't reach/i).length).toBeGreaterThan(0));
+    expect(dictate().getAttribute("aria-disabled")).toBe("false");
+  });
+});
+
 describe("Read aloud", () => {
   async function inBackup(server?: FakeHermes) {
     const s = await signedIn(server);
@@ -595,3 +673,118 @@ describe("Settings, Voice", () => {
     expect(section.textContent).toMatch(/can't read replies aloud/);
   });
 });
+
+describe("Settings, Voice, Speech to text (ADR 0062)", () => {
+  async function openVoice(localStt = new FakeLocalStt(), server?: FakeHermes) {
+    const got = await signedIn(server, localStt);
+    await got.user.click(screen.getByRole("button", { name: "Settings" }));
+    await got.user.click(await screen.findByRole("tab", { name: /Voice/ }));
+    const section = (await screen.findByRole("heading", { name: "Speech to text" })).closest("section")!;
+    const here = (await screen.findByRole("heading", { name: "Speech to text on this computer" })).closest("section")!;
+    await within(here).findByText(/Ready|Not ready/);
+    return { ...got, section, here };
+  }
+  const choice = (section: HTMLElement, group: string, name: string) => within(within(section).getByRole("group", { name: group })).getByRole("button", { name });
+
+  it("won't make this computer the primary until a model is downloaded, then saves the choice", async () => {
+    const localStt = new FakeLocalStt();
+    let finish!: () => void;
+    localStt.downloadGate = new Promise((r) => (finish = r));
+    const { user, section, here } = await openVoice(localStt);
+    const local = choice(section, "Primary speech-to-text", "This computer");
+    expect(local.getAttribute("aria-disabled")).toBe("true");
+    expect(local.title).toMatch(/The base model isn't downloaded yet/);
+    await user.click(local);
+    expect(getUIPrefs().speechToText.primary).toBe("server");
+    expect(within(here).getByText(/Not ready: The base model isn't downloaded yet/)).toBeTruthy();
+
+    await user.click(within(here).getByRole("button", { name: "Download the base model" }));
+    const bar = await within(here).findByRole("progressbar", { name: "Downloading the base model" });
+    expect(bar.textContent).toMatch(/74 MB of 148 MB/);
+    finish();
+    await within(here).findByText("Ready: this computer can transcribe.");
+    expect(within(here).queryByRole("progressbar")).toBeNull();
+    expect(within(here).getByRole("button", { name: "Delete the base model" })).toBeTruthy();
+
+    await user.click(choice(section, "Primary speech-to-text", "This computer"));
+    expect(getUIPrefs().speechToText).toEqual({ primary: "local", backup: false, timeoutSeconds: 30 });
+    // Read back from storage, as the next launch would.
+    expect(JSON.parse(localStorage.getItem("hermes-ui-prefs")!).speechToText).toEqual({ primary: "local", backup: false, timeoutSeconds: 30 });
+    expect(section.textContent).toMatch(/The recording never leaves this computer/);
+  });
+
+  it("sets the backup and its timeout, and says where the recording goes", async () => {
+    const { user, section } = await openVoice();
+    expect(within(section).queryByLabelText("Switch to the backup after")).toBeNull();
+    await user.click(choice(section, "Backup speech-to-text", "This computer"));
+    expect(getUIPrefs().speechToText.backup).toBe(true);
+    expect(section.textContent).toMatch(/If Hermes can't, this computer transcribes it instead/);
+    await user.selectOptions(within(section).getByLabelText("Switch to the backup after"), "60");
+    expect(getUIPrefs().speechToText.timeoutSeconds).toBe(60);
+    // The profile's provider on Hermes is named, with where to change it.
+    await within(section).findByText("Local Whisper");
+    expect(section.textContent).toMatch(/under Speech providers, below/);
+  });
+
+  it("warns when this computer, the primary, can no longer transcribe", async () => {
+    setUIPrefs({ speechToText: { primary: "local", backup: false, timeoutSeconds: 30 } });
+    const { section } = await openVoice();
+    expect(within(section).getByRole("status").textContent).toMatch(/This computer can't transcribe now: The base model isn't downloaded yet\. Dictation will fail/);
+  });
+
+  it("picks the model size and language, showing what Rust read back, and deletes a download", async () => {
+    const localStt = new FakeLocalStt();
+    localStt.downloaded.add("small");
+    const { user, here } = await openVoice(localStt);
+    await user.click(within(here).getByRole("button", { name: "Use the small model" }));
+    await within(here).findByText("Ready: this computer can transcribe.");
+    expect(localStt.sets).toEqual([{ model: "small" }]);
+    expect(within(here).getByText("In use").closest(".set-row")!.textContent).toMatch(/small/);
+
+    await user.selectOptions(within(here).getByLabelText("Language"), "es");
+    await waitFor(() => expect(localStt.language).toBe("es"));
+    expect(within<HTMLElement>(here).getByLabelText<HTMLSelectElement>("Language").value).toBe("es");
+
+    await user.click(within(here).getByRole("button", { name: "Delete the small model" }));
+    await within(here).findByText(/Not ready: The small model isn't downloaded yet/);
+    expect(within(here).getByText(localStt.modelsDir)).toBeTruthy();
+  });
+
+  it("uses a model file the owner picked, and says when whisper.cpp isn't installed", async () => {
+    const localStt = new FakeLocalStt();
+    localStt.engine = undefined;
+    localStt.picks = { model: "/home/liam/models/ggml-large-v3-turbo.bin", engine: "/opt/whisper/bin/whisper-cli" };
+    const got = await signedIn(undefined, localStt);
+    await got.user.click(screen.getByRole("button", { name: "Settings" }));
+    await got.user.click(await screen.findByRole("tab", { name: /Voice/ }));
+    const here = (await screen.findByRole("heading", { name: "Speech to text on this computer" })).closest("section")!;
+    await within(here).findByText(/Not installed: no whisper-cli on PATH/);
+    await got.user.click(within(here).getByRole("button", { name: /Pick program/ }));
+    await within(here).findByText("/opt/whisper/bin/whisper-cli");
+    expect(here.textContent).toMatch(/picked by you/);
+    await got.user.click(within(here).getByRole("button", { name: /Pick file/ }));
+    await within(here).findByText("/home/liam/models/ggml-large-v3-turbo.bin");
+    await within(here).findByText("Ready: this computer can transcribe.");
+    // The picked file is used instead of a size, so no size is in use.
+    expect(within(here).queryByText("In use")).toBeNull();
+  });
+
+  it("tests both sides on one recording and shows what each heard and how long it took", async () => {
+    const localStt = new FakeLocalStt();
+    localStt.downloaded.add("base");
+    localStt.heard = "Testing one two";
+    const { server, user, section } = await openVoice(localStt);
+    server.heard = "Testing one too";
+    await user.click(within(section).getByRole("button", { name: /^Test$/ }));
+    await within(section).findByText(/Recording: say something/);
+    mic.say(4.2);
+    await within(section).findByText("“Testing one two”", undefined, { timeout: 3000 });
+    await within(section).findByText("“Testing one too”");
+    expect(server.recordings).toHaveLength(1);
+    expect(localStt.recordings).toHaveLength(1);
+    expect(localStt.recordings[0].audio).toEqual(server.recordings[0].audio);
+    expect(section.querySelector(".stt-test")!.textContent).toMatch(/whisper\.cpp \(base\)/);
+    expect(mic.closed).toBe(true);
+  });
+});
+

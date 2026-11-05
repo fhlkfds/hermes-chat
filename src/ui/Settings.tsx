@@ -41,6 +41,9 @@ import { VoiceSettings, useVoiceChanges } from "./Voice";
 import type { VoiceSetup } from "../hermes/pipe";
 import type { VoiceSettingsApi } from "../hermes/voiceSettings";
 import { VoiceProviderSettings } from "./VoiceProviderSettings";
+import { SpeechToTextSettings } from "./SpeechToTextSettings";
+import type { LocalSttApi } from "../hermes/localStt";
+import type { Transcript } from "../hermes/pipe";
 import { ScreenshotSettings } from "./ScreenshotSettings";
 import { TraySettings } from "./TraySettings";
 import type { TrayWiring } from "../hermes/tauriTray";
@@ -158,6 +161,8 @@ export function SettingsScreen({
   voiceSettings,
   onVoiceChange,
   showVoice,
+  localStt,
+  transcribeOnHermes,
   persona,
   onPersonaDirty = () => {},
   guard = allow,
@@ -233,6 +238,10 @@ export function SettingsScreen({
   onVoiceChange?: (fn: () => void) => () => void;
   /** Set, each time anew, to show the Voice tab: from a voice conversation's "Change voice settings". */
   showVoice?: object;
+  /** Speech-to-text on this computer, for the Voice tab's Speech to text sections (ADR 0062). */
+  localStt?: LocalSttApi;
+  /** Hermes's transcribing on its own, without a backup, for the Voice tab's Test. */
+  transcribeOnHermes?: (audio: Uint8Array, mime: string) => Promise<Transcript>;
   /** Settings → Persona; the tab is left out without it. */
   persona?: PersonaWiring;
   /** Says whether the Persona tab holds an edit Hermes doesn't have yet. */
@@ -312,7 +321,7 @@ export function SettingsScreen({
   const tabs = TABS.filter(
     (t) =>
       (t.id !== "toolsets" || toolsets) &&
-      (t.id !== "voice" || voiceSetup || voiceSettings) &&
+      (t.id !== "voice" || voiceSetup || voiceSettings || localStt) &&
       (t.id !== "persona" || persona) &&
       (t.id !== "memory" || memory) &&
       (t.id !== "skills" || skills) &&
@@ -741,6 +750,7 @@ export function SettingsScreen({
         return (
           <>
             <VoiceSettings status={status} profile={profile} setup={voiceSetup} changes={voiceChanges} />
+            {localStt && <SpeechToTextSettings local={localStt} server={transcribeOnHermes} status={status} setup={voiceSetup} changes={voiceChanges} />}
             {voiceSettings && (
               // Read for one profile and connection; another starts afresh, with nothing typed kept.
               <VoiceProviderSettings key={profile} api={voiceSettings} profile={profile} connected={status === "connected"} />

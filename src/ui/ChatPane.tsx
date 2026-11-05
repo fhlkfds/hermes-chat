@@ -36,7 +36,7 @@ import { useWindowHidden } from "./windowState";
 import { EditButton, RegenerateButton, VariantNav } from "./Replay";
 import { CopyButton, replyMarkdown } from "./CopyMessage";
 import { turnsOf, type ReplayKind, type Variant } from "../hermes/replay";
-import type { FollowUp } from "../hermes/uiPrefs";
+import { type FollowUp, getUIPrefs, subscribe as subscribeUIPrefs } from "../hermes/uiPrefs";
 
 /**
  * What a message sent while the chat's reply runs does (ADR 0057). `mode`: what Enter does, the Follow-up behavior
@@ -1148,6 +1148,8 @@ function Composer({
   textRef.current = text;
   // Focus goes back to the text once a recording is done with, whichever way, since the controls it was on are gone.
   const wasDictating = useRef(false);
+  // Where speech-to-text runs: with this computer in the route, Dictation works without Hermes (ADR 0062).
+  const sttPrefs = useSyncExternalStore(subscribeUIPrefs, getUIPrefs).speechToText;
   const dictation = useDictation(voice?.transcribe, (heard) => {
     if (!focused.current) return;
     const next = withTranscript(textRef.current, heard);
@@ -1451,7 +1453,7 @@ function Composer({
           <button className="icon-btn" title="Attach files" onClick={() => void pick()}>
             <Paperclip size={16} />
           </button>
-          {voice && !dictation.active && !talking && <MicButton dictation={dictation} blocked={micBlocked(status, voiceSetup)} />}
+          {voice && !dictation.active && !talking && <MicButton dictation={dictation} blocked={micBlocked(status, voiceSetup, sttPrefs)} />}
           {conversation && !dictation.active && !talking && (
             <StartConversationButton
               ref={startTalkRef}
