@@ -9,9 +9,10 @@
 // The shown profile's saved SOUL.md can be copied over another profile's, through the same check-first, read-back save
 // (ADR 0057).
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Copy, FileText, History, RotateCcw, Save, TriangleAlert, Undo2, X, ChevronRight } from "lucide-react";
+import { Copy, FileText, RotateCcw, Save, TriangleAlert, Undo2, X } from "lucide-react";
 import { asReadBack, certainlyUnwritten, PersonaError, sameSoul, soulNotes, type PersonaApi, type ProfileHome, type Soul } from "../hermes/persona";
 import { LeavePersona } from "./LeavePersona";
+import { SettingNote, SettingRow, SettingsSection } from "./SettingRows";
 import { EARLIER_KEPT, type EarlierSoul, type PersonaDraft, type PersonaStore } from "../hermes/personaStore";
 
 /** Where SOUL.md is, as the screen names it. */
@@ -101,23 +102,21 @@ export function PersonaPage({
   const names = [...new Set([inUse, ...(listed ?? []), picked])];
   if (listed) names.sort((a, b) => (a === inUse ? -1 : b === inUse ? 1 : listed.indexOf(a) - listed.indexOf(b)));
   const picker = (
-    <span className="persona-picker">
-      <select className="select persona-profile" aria-label="Profile" value={picked} onChange={(e) => pick(e.target.value)}>
-        {names.map((p) => (
-          <option key={p} value={p}>
-            {p === inUse ? `${p} (in use)` : p}
-          </option>
-        ))}
-      </select>
-      {listProblem && (
-        <span className="muted small" role="status">
-          Couldn't list the server's profiles: {listProblem}{" "}
-          <button className="link-btn" disabled={!connected} onClick={() => void list()}>
-            Try again
-          </button>
-        </span>
-      )}
-    </span>
+    <select className="select persona-profile" aria-label="Profile" value={picked} onChange={(e) => pick(e.target.value)}>
+      {names.map((p) => (
+        <option key={p} value={p}>
+          {p === inUse ? `${p} (in use)` : p}
+        </option>
+      ))}
+    </select>
+  );
+  const pickerProblem = listProblem && (
+    <div className="muted" role="status">
+      Couldn't list the server's profiles: {listProblem}{" "}
+      <button className="link-btn" disabled={!connected} onClick={() => void list()}>
+        Try again
+      </button>
+    </div>
   );
 
   return (
@@ -128,6 +127,7 @@ export function PersonaPage({
         where={{ ...where, profile: picked }}
         inUse={inUse}
         picker={picker}
+        pickerProblem={pickerProblem}
         connected={connected}
         store={store}
         storeKey={keyOf(picked)}
@@ -185,6 +185,7 @@ export function PersonaSettings({
   where,
   inUse = where.profile,
   picker,
+  pickerProblem,
   connected,
   store,
   storeKey,
@@ -199,6 +200,8 @@ export function PersonaSettings({
   inUse?: string;
   /** Shown in place of the profile's name, to pick another (PersonaPage). */
   picker?: ReactNode;
+  /** Why the picker couldn't list the server's profiles, shown under it. */
+  pickerProblem?: ReactNode;
   /** Every profile Hermes lists, once read: where this SOUL.md can be copied. */
   profiles?: readonly string[];
   /** Where another profile's edits and earlier versions are kept, for a copy over its SOUL.md. Without it, no copying. */
@@ -546,349 +549,369 @@ export function PersonaSettings({
 
   return (
     <div className="persona">
-      <section>
-        <h2>Persona</h2>
-        <p className="muted">
-          The persona is the <span className="mono">SOUL.md</span> file in a profile's folder on the Hermes server: who Hermes is and how it speaks,
-          for every chat in the profile. Hermes Chat edits it as plain text and keeps its Markdown as you write it.
-          {picker && " Pick any profile on this server to edit its persona; that doesn't change the profile Hermes Chat is using."}
-        </p>
-        <dl className="persona-where" aria-label="Persona file">
-          <dt>Server</dt>
-          <dd className="mono">{where.route ?? where.server}</dd>
-          <dt>Profile</dt>
-          <dd className="mono">{picker ?? profile}</dd>
-          <dt>File</dt>
-          <dd>
-            {file ? <span className="mono">{file}</span> : <span className="muted">SOUL.md in the {profile} profile's folder on the server</span>}
-          </dd>
-        </dl>
-        {profile !== inUse && (
-          <p className="muted small persona-effect">
-            Hermes Chat is using the <span className="mono">{inUse}</span> profile, so chats started here keep its persona. This one is for chats on
-            the <span className="mono">{profile}</span> profile, in any Hermes client.
-          </p>
-        )}
-        <details className="disc persona-how">
-          <summary>
-            <ChevronRight size={13} className="disc-chev" aria-hidden /> When a saved persona takes effect
-          </summary>
-        <p className="muted small persona-effect">
-          Hermes reads SOUL.md when a chat starts. Chats started after you save use the new persona, in Hermes Chat, in other Hermes clients and on
-          messaging platforms that use the {profile} profile. A chat already under way keeps the persona it started with, unless Hermes rebuilds its
-          instructions, as it does when the chat's model changes. Hermes doesn't need to restart, and Hermes Chat never restarts it.
-        </p>
-        </details>
-        {home?.distribution && (
-          <p className="muted small persona-effect">
-            <TriangleAlert size={12} /> This profile was installed from the <span className="mono">{home.distribution}</span> profile distribution.
-            Updating it from there (<span className="mono">hermes profile update</span>) can replace SOUL.md.
-          </p>
-        )}
-      </section>
-
-      <section>
-        {recover && (
-          <div className="persona-banner" role="status">
-            <FileText size={14} />
-            <div>
-              <div>
-                Changes you didn't save, from {when(recover.at)}, are kept {kept ? "on this computer" : "in this app until it closes"} ({chars(recover.text.length)}).
-                {loaded && !sameSoul(recover.base, loaded.server) && " SOUL.md has changed on the server since you made them."}
-                {!loaded && " They come back once SOUL.md loads."}
-              </div>
-              {!kept && (
-                <div className="sign-in-error" role="alert">
-                  This computer's storage couldn't take them, so they last only until the app closes.{" "}
-                  <button className="link-btn" onClick={() => void navigator.clipboard?.writeText(recover.text)}>
-                    Copy them
-                  </button>
-                </div>
-              )}
-              {loaded && (
-                <div className="confirm-actions persona-actions-left">
-                  <button className="btn primary" disabled={busy} onClick={restoreKept}>
-                    Restore them
-                  </button>
-                  <button className="btn" disabled={busy} onClick={discardKept}>
-                    Discard them
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {earlierSave && (
-          <p className="muted small persona-note" role="status">
-            A save you started before leaving Persona is still under way. Editing waits until Hermes answers it.
-          </p>
-        )}
-        {load.state === "loading" && <p className="muted">Reading SOUL.md from Hermes…</p>}
-
-        {load.state === "problem" && (
-          <Problem problem={load.problem} connected={connected} profile={profile} onRetry={() => void read()} />
-        )}
-
-        {loaded && !editing && (
-          <div className="persona-missing">
-            <p>
-              The {profile} profile has no SOUL.md, so Hermes uses its built-in identity. Hermes writes its default SOUL.md here itself the next time
-              it sets up this profile's folder. Creating one now gives this profile a persona of your own; no other profile changes.
-            </p>
-            <div className="persona-actions">
-              <button className="btn primary" disabled={!connected || !!recover || busy} onClick={() => setCreating(true)}>
-                <FileText size={14} /> Create SOUL.md
-              </button>
-              <button className="btn" disabled={!connected} onClick={reload}>
-                <RotateCcw size={14} /> Reload
-              </button>
-            </div>
-          </div>
-        )}
-
-        {loaded && editing && (
+      <SettingsSection
+        title="Persona"
+        intro={
           <>
-            {conflict && (
-              <div className="persona-conflict">
-                <div className="confirm-msg" role="alert">
-                  <TriangleAlert size={13} />{" "}
-                  {conflict.written
-                    ? "Hermes saved your version, but reading it back found different text: something else changed SOUL.md at the same time."
-                    : "SOUL.md changed on the server since you started editing, so nothing was saved."}{" "}
-                  Your text is still in the editor. This is what Hermes has now:
+            The <span className="mono">SOUL.md</span> file in a profile's folder on the Hermes server: who Hermes is and how it speaks in the profile's
+            chats.
+          </>
+        }
+        more={
+          <>
+            <p>Hermes Chat edits it as plain text and keeps its Markdown as you write it.</p>
+            <p>
+              When a saved persona takes effect: Hermes reads SOUL.md when a chat starts. Chats started after you save use the new persona, in Hermes
+              Chat, in other Hermes clients and on messaging platforms that use the {profile} profile. A chat already under way keeps the persona it
+              started with, unless Hermes rebuilds its instructions, as it does when the chat's model changes. Hermes doesn't need to restart, and
+              Hermes Chat never restarts it.
+            </p>
+          </>
+        }
+      >
+        <SettingRow name="Server" control={<span className="set-value mono persona-fact">{where.route ?? where.server}</span>} />
+        <SettingRow
+          name="Profile"
+          hint={picker ? "Pick any profile on this server to edit its persona; that doesn't change the profile Hermes Chat is using." : undefined}
+          control={picker ?? <span className="set-value mono persona-fact">{profile}</span>}
+        >
+          {pickerProblem}
+          {profile !== inUse && (
+            <div className="muted">
+              Hermes Chat is using the <span className="mono">{inUse}</span> profile, so chats started here keep its persona. This one is for chats on
+              the <span className="mono">{profile}</span> profile, in any Hermes client.
+            </div>
+          )}
+        </SettingRow>
+        <SettingRow
+          name="File"
+          control={
+            file ? (
+              <span className="set-value mono persona-fact">{file}</span>
+            ) : (
+              <span className="muted">SOUL.md in the {profile} profile's folder on the server</span>
+            )
+          }
+        />
+        {home?.distribution && (
+          <SettingNote tone="warn">
+            <TriangleAlert size={13} aria-hidden />
+            <span>
+              This profile was installed from the <span className="mono">{home.distribution}</span> profile distribution. Updating it from there (
+              <span className="mono">hermes profile update</span>) can replace SOUL.md.
+            </span>
+          </SettingNote>
+        )}
+        {earlierSave && (
+          <SettingNote role="status">A save you started before leaving Persona is still under way. Editing waits until Hermes answers it.</SettingNote>
+        )}
+        {load.state === "loading" && <SettingNote>Reading SOUL.md from Hermes…</SettingNote>}
+        {(recover || load.state !== "loading") && (
+          <div className="set-block persona-editor">
+            {recover && (
+              <div className="persona-banner" role="status">
+                <FileText size={14} />
+                <div>
+                  <div>
+                    Changes you didn't save, from {when(recover.at)}, are kept {kept ? "on this computer" : "in this app until it closes"} ({chars(recover.text.length)}).
+                    {loaded && !sameSoul(recover.base, loaded.server) && " SOUL.md has changed on the server since you made them."}
+                    {!loaded && " They come back once SOUL.md loads."}
+                  </div>
+                  {!kept && (
+                    <div className="sign-in-error" role="alert">
+                      This computer's storage couldn't take them, so they last only until the app closes.{" "}
+                      <button className="link-btn" onClick={() => void navigator.clipboard?.writeText(recover.text)}>
+                        Copy them
+                      </button>
+                    </div>
+                  )}
+                  {loaded && (
+                    <div className="confirm-actions persona-actions-left">
+                      <button className="btn primary" disabled={busy} onClick={restoreKept}>
+                        Restore them
+                      </button>
+                      <button className="btn" disabled={busy} onClick={discardKept}>
+                        Discard them
+                      </button>
+                    </div>
+                  )}
                 </div>
-                <textarea
-                  className="persona-text persona-readonly"
-                  readOnly
-                  aria-label="SOUL.md on the server now"
-                  value={conflict.server.exists ? conflict.server.content : ""}
-                  placeholder={conflict.server.exists ? undefined : "There is no SOUL.md on the server now."}
-                  rows={8}
-                  spellCheck={false}
-                />
-                {ask === "overwrite" ? (
-                  <div className="confirm">
-                    <span>Replace what Hermes has now with your text? What it has now is kept under Earlier versions.</span>
+              </div>
+            )}
+
+            {load.state === "problem" && (
+              <Problem problem={load.problem} connected={connected} profile={profile} onRetry={() => void read()} />
+            )}
+
+            {loaded && !editing && (
+              <div className="persona-missing">
+                <p>
+                  The {profile} profile has no SOUL.md, so Hermes uses its built-in identity. Hermes writes its default SOUL.md here itself the next time
+                  it sets up this profile's folder. Creating one now gives this profile a persona of your own; no other profile changes.
+                </p>
+                <div className="persona-actions">
+                  <button className="btn primary" disabled={!connected || !!recover || busy} onClick={() => setCreating(true)}>
+                    <FileText size={14} /> Create SOUL.md
+                  </button>
+                  <button className="btn" disabled={!connected} onClick={reload}>
+                    <RotateCcw size={14} /> Reload
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {loaded && editing && (
+              <>
+                {conflict && (
+                  <div className="persona-conflict">
+                    <div className="confirm-msg" role="alert">
+                      <TriangleAlert size={13} />{" "}
+                      {conflict.written
+                        ? "Hermes saved your version, but reading it back found different text: something else changed SOUL.md at the same time."
+                        : "SOUL.md changed on the server since you started editing, so nothing was saved."}{" "}
+                      Your text is still in the editor. This is what Hermes has now:
+                    </div>
+                    <textarea
+                      className="persona-text persona-readonly"
+                      readOnly
+                      aria-label="SOUL.md on the server now"
+                      value={conflict.server.exists ? conflict.server.content : ""}
+                      placeholder={conflict.server.exists ? undefined : "There is no SOUL.md on the server now."}
+                      rows={8}
+                      spellCheck={false}
+                    />
+                    {ask === "overwrite" ? (
+                      <div className="confirm">
+                        <span>Replace what Hermes has now with your text? What it has now is kept under Earlier versions.</span>
+                        <div className="confirm-actions">
+                          <button className="btn" autoFocus onClick={() => setAsk(undefined)}>
+                            Keep editing
+                          </button>
+                          <button className="btn danger" disabled={!canWrite} onClick={() => void save(conflict.server)}>
+                            Save mine over it
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="persona-actions">
+                        <button className="btn" disabled={!canWrite} onClick={() => setAsk("overwrite")}>
+                          Save mine over it…
+                        </button>
+                        <button className="btn" disabled={busy} onClick={takeServer}>
+                          Use the server's version
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <label className="field">
+                  <span className="field-label">
+                    SOUL.md · {profile}
+                    {dirty && <span className="badge warn">Unsaved</span>}
+                    {!loaded.base.exists && <span className="badge">New file</span>}
+                  </span>
+                  <textarea
+                    className="persona-text"
+                    aria-label={`SOUL.md for the ${profile} profile`}
+                    value={text}
+                    readOnly={saving || reloading || !!recover}
+                    onChange={(e) => {
+                      setText(e.target.value);
+                      if (notice?.kind !== "discarded") setNotice(undefined);
+                    }}
+                    spellCheck={false}
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    wrap="soft"
+                    rows={13}
+                    placeholder={loaded.base.exists ? "SOUL.md is empty." : "# Persona\n\nWho Hermes is, and how it speaks…"}
+                  />
+                  <span className="field-hint">
+                    {chars(text.length)} · Read from Hermes {when(loaded.readAt)}
+                  </span>
+                </label>
+
+                {notes.map((n) => (
+                  <p key={n} className="muted small persona-note">
+                    <TriangleAlert size={12} /> {n}
+                  </p>
+                ))}
+
+                {ask === "empty" && (
+                  <div className="confirm persona-confirm" role="alertdialog" aria-label="Save an empty SOUL.md?">
+                    <span>Save an empty SOUL.md? Hermes then uses its built-in identity for new chats on the {profile} profile.</span>
                     <div className="confirm-actions">
                       <button className="btn" autoFocus onClick={() => setAsk(undefined)}>
                         Keep editing
                       </button>
-                      <button className="btn danger" disabled={!canWrite} onClick={() => void save(conflict.server)}>
-                        Save mine over it
+                      <button className="btn danger" disabled={!canWrite} onClick={() => void save(loaded.base)}>
+                        Save empty
                       </button>
                     </div>
                   </div>
-                ) : (
-                  <div className="persona-actions">
-                    <button className="btn" disabled={!canWrite} onClick={() => setAsk("overwrite")}>
-                      Save mine over it…
-                    </button>
-                    <button className="btn" disabled={busy} onClick={takeServer}>
-                      Use the server's version
-                    </button>
+                )}
+                {ask === "reload" && (
+                  <div className="confirm persona-confirm" role="alertdialog" aria-label="Reload SOUL.md?">
+                    <span>Reload replaces your unsaved changes with what Hermes has now. You can undo that afterwards.</span>
+                    <div className="confirm-actions">
+                      <button className="btn" autoFocus onClick={() => setAsk(undefined)}>
+                        Keep editing
+                      </button>
+                      <button className="btn danger" disabled={!connected} onClick={reload}>
+                        Reload anyway
+                      </button>
+                    </div>
                   </div>
                 )}
-              </div>
-            )}
 
-            <label className="field">
-              <span className="field-label">
-                SOUL.md · {profile}
-                {dirty && <span className="badge warn">Unsaved</span>}
-                {!loaded.base.exists && <span className="badge">New file</span>}
-              </span>
-              <textarea
-                className="persona-text"
-                aria-label={`SOUL.md for the ${profile} profile`}
-                value={text}
-                readOnly={saving || reloading || !!recover}
-                onChange={(e) => {
-                  setText(e.target.value);
-                  if (notice?.kind !== "discarded") setNotice(undefined);
-                }}
-                spellCheck={false}
-                autoCapitalize="off"
-                autoCorrect="off"
-                wrap="soft"
-                rows={13}
-                placeholder={loaded.base.exists ? "SOUL.md is empty." : "# Persona\n\nWho Hermes is, and how it speaks…"}
-              />
-              <span className="field-hint">
-                {chars(text.length)} · Read from Hermes {when(loaded.readAt)}
-              </span>
-            </label>
-
-            {notes.map((n) => (
-              <p key={n} className="muted small persona-note">
-                <TriangleAlert size={12} /> {n}
-              </p>
-            ))}
-
-            {ask === "empty" && (
-              <div className="confirm persona-confirm" role="alertdialog" aria-label="Save an empty SOUL.md?">
-                <span>Save an empty SOUL.md? Hermes then uses its built-in identity for new chats on the {profile} profile.</span>
-                <div className="confirm-actions">
-                  <button className="btn" autoFocus onClick={() => setAsk(undefined)}>
-                    Keep editing
+                <div className="persona-actions">
+                  <button className="btn primary" disabled={!canWrite || !dirty || !!conflict || !!recover} onClick={trySave}>
+                    <Save size={14} /> {saving ? "Saving…" : loaded.base.exists ? "Save" : "Create SOUL.md"}
                   </button>
-                  <button className="btn danger" disabled={!canWrite} onClick={() => void save(loaded.base)}>
-                    Save empty
+                  <button className="btn" disabled={saving || reloading || (!dirty && !creating)} onClick={cancel}>
+                    <X size={14} /> Cancel
+                  </button>
+                  <button className="btn" disabled={!connected || saving || reloading} onClick={() => (dirty ? setAsk("reload") : reload())}>
+                    <RotateCcw size={14} /> Reload
                   </button>
                 </div>
-              </div>
-            )}
-            {ask === "reload" && (
-              <div className="confirm persona-confirm" role="alertdialog" aria-label="Reload SOUL.md?">
-                <span>Reload replaces your unsaved changes with what Hermes has now. You can undo that afterwards.</span>
-                <div className="confirm-actions">
-                  <button className="btn" autoFocus onClick={() => setAsk(undefined)}>
-                    Keep editing
-                  </button>
-                  <button className="btn danger" disabled={!connected} onClick={reload}>
-                    Reload anyway
-                  </button>
-                </div>
-              </div>
-            )}
 
-            <div className="persona-actions">
-              <button className="btn primary" disabled={!canWrite || !dirty || !!conflict || !!recover} onClick={trySave}>
-                <Save size={14} /> {saving ? "Saving…" : loaded.base.exists ? "Save" : "Create SOUL.md"}
-              </button>
-              <button className="btn" disabled={saving || reloading || (!dirty && !creating)} onClick={cancel}>
-                <X size={14} /> Cancel
-              </button>
-              <button className="btn" disabled={!connected || saving || reloading} onClick={() => (dirty ? setAsk("reload") : reload())}>
-                <RotateCcw size={14} /> Reload
-              </button>
-            </div>
-
-            {!connected && (
-              <p className="muted small persona-note" role="status">
-                Not connected to Hermes, so nothing can be saved or reloaded now.{dirty && kept && " Your changes are kept on this computer."}
-              </p>
+                {!connected && (
+                  <p className="muted small persona-note" role="status">
+                    Not connected to Hermes, so nothing can be saved or reloaded now.{dirty && kept && " Your changes are kept on this computer."}
+                  </p>
+                )}
+                {dirty && !kept && (
+                  <p className="sign-in-error persona-note" role="alert">
+                    Hermes Chat couldn't write your changes to this computer's storage: it is full or can't be written. They last only until the app
+                    closes, unless you save them.{" "}
+                    <button className="link-btn" onClick={() => void navigator.clipboard?.writeText(text)}>
+                      Copy them
+                    </button>
+                  </p>
+                )}
+                <NoticeLine notice={notice} undoDisabled={busy} onUndo={undoDiscard} />
+              </>
             )}
-            {dirty && !kept && (
-              <p className="sign-in-error persona-note" role="alert">
-                Hermes Chat couldn't write your changes to this computer's storage: it is full or can't be written. They last only until the app
-                closes, unless you save them.{" "}
-                <button className="link-btn" onClick={() => void navigator.clipboard?.writeText(text)}>
-                  Copy them
-                </button>
-              </p>
-            )}
-            <NoticeLine notice={notice} undoDisabled={busy} onUndo={undoDiscard} />
-          </>
+          </div>
         )}
-      </section>
+      </SettingsSection>
 
       {loaded && loaded.server.exists && storeKeyFor && targets.length > 0 && (
-        <section aria-labelledby="persona-copy-heading">
-          <h2 id="persona-copy-heading">
-            <Copy size={14} /> Copy to another profile
-          </h2>
-          <p className="muted small">
-            Replaces another profile's SOUL.md with the {profile} profile's, as Hermes has it saved. Chats started on that profile afterwards use it;
-            the {profile} profile doesn't change.
-          </p>
-          <div className="persona-copy">
-            <label className="field">
-              <span className="field-label">To profile</span>
-              <select className="mono" value={target} disabled={copying} onChange={(e) => (setCopyTo(e.target.value), setCopyAsk(undefined), setCopyNotice(undefined))}>
-                {targets.map((t) => (
-                  <option key={t} value={t}>
-                    {t}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button
-              className="btn"
-              disabled={!connected || copying || dirty || !!recover || !target}
-              title={dirty || recover ? "Save or discard your changes first: the copy is SOUL.md as Hermes has it saved." : undefined}
-              onClick={() => target && void askCopy(target)}
-            >
-              <Copy size={14} /> Copy…
-            </button>
-          </div>
-          {copyAsk && (
-            <div className="confirm persona-confirm" role="alertdialog" aria-label={`Replace ${copyAsk.to}'s SOUL.md?`}>
-              <span className="confirm-msg">
-                {copyAsk.problem
-                  ? `Couldn't read ${copyAsk.to}'s SOUL.md to check it first, so nothing can be copied: ${copyAsk.problem}`
-                  : !copyAsk.target
-                    ? `Reading ${copyAsk.to}'s SOUL.md…`
-                    : copyAsk.target.exists
-                      ? `Replace ${copyAsk.to}'s SOUL.md (${chars(copyAsk.target.content.length)}) with ${profile}'s (${chars(loaded.server.content.length)})? What ${copyAsk.to} has now is kept under Earlier versions in its Persona, on this computer.`
-                      : `${copyAsk.to} has no SOUL.md. Create one there with ${profile}'s (${chars(loaded.server.content.length)})?`}
-                {storeKeyFor && store.draft(storeKeyFor(copyAsk.to)) && ` Changes to ${copyAsk.to}'s persona you didn't save are kept on this computer; they stay, and show as made to an older SOUL.md.`}
-              </span>
-              <div className="confirm-actions">
-                <button className="btn" autoFocus onClick={() => setCopyAsk(undefined)}>
-                  Cancel
+        <SettingsSection
+          title="Copy to another profile"
+          titleId="persona-copy-heading"
+          intro={<>Replaces another profile's SOUL.md with the {profile} profile's, as Hermes has it saved.</>}
+        >
+          <SettingRow
+            name="To profile"
+            nameId="persona-copy-to"
+            hint={<>Chats started on that profile afterwards use it; the {profile} profile doesn't change.</>}
+            control={
+              <>
+                <select
+                  className="select mono"
+                  aria-labelledby="persona-copy-to"
+                  value={target}
+                  disabled={copying}
+                  onChange={(e) => (setCopyTo(e.target.value), setCopyAsk(undefined), setCopyNotice(undefined))}
+                >
+                  {targets.map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  className="btn"
+                  disabled={!connected || copying || dirty || !!recover || !target}
+                  title={dirty || recover ? "Save or discard your changes first: the copy is SOUL.md as Hermes has it saved." : undefined}
+                  onClick={() => target && void askCopy(target)}
+                >
+                  <Copy size={14} /> Copy…
                 </button>
-                <button className="btn danger" disabled={!connected || copying || !copyAsk.target || dirty || !!recover} onClick={() => void copy()}>
-                  {copying ? "Copying…" : copyAsk.target?.exists === false ? `Create in ${copyAsk.to}` : `Replace ${copyAsk.to}'s`}
-                </button>
+              </>
+            }
+          >
+            {copyAsk && (
+              <div className="confirm persona-confirm" role="alertdialog" aria-label={`Replace ${copyAsk.to}'s SOUL.md?`}>
+                <span className="confirm-msg">
+                  {copyAsk.problem
+                    ? `Couldn't read ${copyAsk.to}'s SOUL.md to check it first, so nothing can be copied: ${copyAsk.problem}`
+                    : !copyAsk.target
+                      ? `Reading ${copyAsk.to}'s SOUL.md…`
+                      : copyAsk.target.exists
+                        ? `Replace ${copyAsk.to}'s SOUL.md (${chars(copyAsk.target.content.length)}) with ${profile}'s (${chars(loaded.server.content.length)})? What ${copyAsk.to} has now is kept under Earlier versions in its Persona, on this computer.`
+                        : `${copyAsk.to} has no SOUL.md. Create one there with ${profile}'s (${chars(loaded.server.content.length)})?`}
+                  {storeKeyFor && store.draft(storeKeyFor(copyAsk.to)) && ` Changes to ${copyAsk.to}'s persona you didn't save are kept on this computer; they stay, and show as made to an older SOUL.md.`}
+                </span>
+                <div className="confirm-actions">
+                  <button className="btn" autoFocus onClick={() => setCopyAsk(undefined)}>
+                    Cancel
+                  </button>
+                  <button className="btn danger" disabled={!connected || copying || !copyAsk.target || dirty || !!recover} onClick={() => void copy()}>
+                    {copying ? "Copying…" : copyAsk.target?.exists === false ? `Create in ${copyAsk.to}` : `Replace ${copyAsk.to}'s`}
+                  </button>
+                </div>
               </div>
-            </div>
-          )}
-          {copyNotice && (
-            <p className={`small persona-note ${copyNotice.ok ? "muted" : "sign-in-error"}`} role={copyNotice.ok ? "status" : "alert"}>
-              {copyNotice.text}
-            </p>
-          )}
-        </section>
+            )}
+            {copyNotice && (
+              <div className={copyNotice.ok ? "muted" : "sign-in-error"} role={copyNotice.ok ? "status" : "alert"}>
+                {copyNotice.text}
+              </div>
+            )}
+          </SettingRow>
+        </SettingsSection>
       )}
 
       {earlier.length > 0 && (
-        <section>
-          <h2>
-            <History size={14} /> Earlier versions
-          </h2>
-          <p className="muted small">
-            The SOUL.md each save from this computer replaced, for the {profile} profile on {where.server}. The last {EARLIER_KEPT} are kept on this
-            computer, newest first.
-          </p>
-          <ul className="persona-earlier">
-            {earlier.map((v, i) => (
-              <li key={`${v.replacedAt}-${i}`}>
-                <div className="persona-earlier-row">
-                  <span>
-                    Replaced {when(v.replacedAt)} · {v.exists ? chars(v.content.length) : "there was no SOUL.md"}
-                  </span>
-                  {v.exists && (
-                    <button className="btn" aria-expanded={viewing === i} onClick={() => setViewing(viewing === i ? undefined : i)}>
-                      {viewing === i ? "Hide" : "View"}
+        <SettingsSection
+          title="Earlier versions"
+          intro={
+            <>
+              The SOUL.md each save from this computer replaced, for the {profile} profile on {where.server}. The last {EARLIER_KEPT} are kept on
+              this computer, newest first.
+            </>
+          }
+        >
+          {earlier.map((v, i) => (
+            <SettingRow
+              key={`${v.replacedAt}-${i}`}
+              name={`Replaced ${when(v.replacedAt)}`}
+              hint={v.exists ? chars(v.content.length) : "There was no SOUL.md."}
+              control={
+                v.exists && (
+                  <button className="btn" aria-expanded={viewing === i} onClick={() => setViewing(viewing === i ? undefined : i)}>
+                    {viewing === i ? "Hide" : "View"}
+                  </button>
+                )
+              }
+            >
+              {viewing === i && (
+                <>
+                  <textarea
+                    className="persona-text persona-readonly"
+                    readOnly
+                    aria-label={`SOUL.md replaced ${when(v.replacedAt)}`}
+                    value={v.content}
+                    rows={10}
+                    spellCheck={false}
+                  />
+                  <div className="persona-actions">
+                    <button className="btn" disabled={!loaded || busy || !!recover} onClick={() => putInEditor(v)}>
+                      Put in the editor
                     </button>
-                  )}
-                </div>
-                {viewing === i && (
-                  <div className="persona-earlier-view">
-                    <textarea
-                      className="persona-text persona-readonly"
-                      readOnly
-                      aria-label={`SOUL.md replaced ${when(v.replacedAt)}`}
-                      value={v.content}
-                      rows={10}
-                      spellCheck={false}
-                    />
-                    <div className="persona-actions">
-                      <button className="btn" disabled={!loaded || busy || !!recover} onClick={() => putInEditor(v)}>
-                        Put in the editor
-                      </button>
-                      <button className="btn" onClick={() => void navigator.clipboard?.writeText(v.content)}>
-                        Copy
-                      </button>
-                    </div>
-                    <p className="muted small">Putting it in the editor doesn't save it: Save does, after checking what Hermes has.</p>
+                    <button className="btn" onClick={() => void navigator.clipboard?.writeText(v.content)}>
+                      Copy
+                    </button>
                   </div>
-                )}
-              </li>
-            ))}
-          </ul>
-        </section>
+                  <div className="muted">Putting it in the editor doesn't save it: Save does, after checking what Hermes has.</div>
+                </>
+              )}
+            </SettingRow>
+          ))}
+        </SettingsSection>
       )}
     </div>
   );
