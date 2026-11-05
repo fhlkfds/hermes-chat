@@ -3,6 +3,7 @@ pub mod defaults_file;
 pub mod display;
 pub mod fonts;
 pub mod links;
+pub mod local_stt;
 pub mod media;
 pub mod notify;
 pub mod remote;
@@ -456,11 +457,15 @@ fn header_value(request: &tauri::ipc::Request<'_>, name: &str) -> Option<String>
 /// Transcribes a dictated recording. Its bytes come as the raw request body, not as JSON, and its MIME type and the
 /// profile as the URI-encoded `x-mime` and `x-profile` headers. Nothing here keeps or logs the audio or the text.
 #[tauri::command]
-async fn hermes_transcribe(state: State<'_, AppState>, request: tauri::ipc::Request<'_>) -> Result<transport::Transcript, String> {
+async fn hermes_transcribe(app: tauri::AppHandle, state: State<'_, AppState>, request: tauri::ipc::Request<'_>) -> Result<transport::Transcript, String> {
     let InvokeBody::Raw(audio) = request.body() else {
         return Err("The recording didn't arrive as audio bytes.".into());
     };
     let mime = header_value(&request, "x-mime").unwrap_or_default();
+    // With "This computer" chosen the recording never goes to Hermes, even when the engine can't run (#220).
+    if let Some(local) = local_stt::transcribe_if_local(&app, &mime, audio).await {
+        return local;
+    }
     let profile = header_value(&request, "x-profile").ok_or("The recording didn't name a profile.")?;
     let dashboard = dashboard(&state).await?;
     dashboard.transcribe(&profile, &mime, audio).await.map_err(|e| e.to_string())
@@ -1207,6 +1212,11 @@ pub fn run(screenshot: bool, link: Option<String>) {
             stage_clipboard_file,
             hermes_request,
             hermes_transcribe,
+            local_stt::local_stt_state,
+            local_stt::local_stt_detect,
+            local_stt::local_stt_set,
+            local_stt::local_stt_pick_program,
+            local_stt::local_stt_pick_model,
             hermes_speak,
             hermes_voice_setup,
             hermes_toolset_guards,

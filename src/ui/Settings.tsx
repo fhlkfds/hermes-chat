@@ -39,9 +39,11 @@ import { StartupSettings } from "./StartupSettings";
 import { ChatSectionSettings } from "./ChatSectionSettings";
 import { FollowUpSettings } from "./FollowUpSettings";
 import { VoiceSettings, useVoiceChanges } from "./Voice";
-import type { VoiceSetup } from "../hermes/pipe";
+import type { Transcript, VoiceSetup } from "../hermes/pipe";
 import type { VoiceSettingsApi } from "../hermes/voiceSettings";
 import { VoiceProviderSettings } from "./VoiceProviderSettings";
+import { LocalSttSettings } from "./LocalSttSettings";
+import type { LocalSttApi } from "../hermes/localStt";
 import { ScreenshotSettings } from "./ScreenshotSettings";
 import { TraySettings } from "./TraySettings";
 import type { TrayWiring } from "../hermes/tauriTray";
@@ -158,6 +160,8 @@ export function SettingsScreen({
   voiceSetup,
   voiceSettings,
   onVoiceChange,
+  localStt,
+  transcribe,
   showVoice,
   persona,
   onPersonaDirty = () => {},
@@ -232,6 +236,10 @@ export function SettingsScreen({
   voiceSettings?: VoiceSettingsApi;
   /** Calls `fn` whenever the voice set-up may have changed on Hermes; returns its unsubscribe. */
   onVoiceChange?: (fn: () => void) => () => void;
+  /** Speech to text on this computer instead of on Hermes (ADR 0067), in the Voice tab. */
+  localStt?: LocalSttApi;
+  /** Transcribes a recording the way Dictation does, for the Voice tab's Test. */
+  transcribe?: (audio: Uint8Array, mime: string) => Promise<Transcript>;
   /** Set, each time anew, to show the Voice tab: from a voice conversation's "Change voice settings". */
   showVoice?: object;
   /** Settings → Persona; the tab is left out without it. */
@@ -747,6 +755,7 @@ export function SettingsScreen({
         return (
           <>
             <VoiceSettings status={status} profile={profile} setup={voiceSetup} changes={voiceChanges} />
+            {localStt && <LocalSttSettings api={localStt} transcribe={transcribe} connected={status === "connected"} />}
             {voiceSettings && (
               // Read for one profile and connection; another starts afresh, with nothing typed kept.
               <VoiceProviderSettings key={profile} api={voiceSettings} profile={profile} connected={status === "connected"} />

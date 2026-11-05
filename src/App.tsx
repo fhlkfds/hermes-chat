@@ -55,6 +55,7 @@ import { paneNames, Split, usePaneVisible, type PaneSlot, type SplitDir } from "
 import { closeTabIn, navigateTabs, PaneDrop, TabStrip, type TabAction } from "./ui/Tabs";
 import { dropLabel, EDGE_SIDE, EDGES, moveTab, sameMove, type DropZone, type MovedChat, type TabDrop } from "./ui/tabMoves";
 import type { VoiceApi } from "./ui/Voice";
+import { tauriLocalStt } from "./hermes/localStt";
 import { SearchPalette } from "./ui/Search";
 import { SavedFilters, TagManager } from "./ui/Tags";
 import { useSnoozeClock } from "./ui/Snooze";
@@ -891,10 +892,18 @@ export function Main({
   const openVoiceSettings = useRef(() => {});
   const voice = useMemo<VoiceApi>(
     () => ({
-      setup: () => hermes.voiceSetup(),
+      // Speech to text may run on this computer instead (ADR 0067); Rust decides where a recording goes either way.
+      setup: () =>
+        Promise.all([hermes.voiceSetup(), tauriLocalStt.state().catch(() => undefined)]).then(([setup, local]) =>
+          local?.onThisComputer ? { ...setup, sttLocal: { label: local.label ?? undefined, problem: local.problem ?? undefined } } : setup,
+        ),
       transcribe: (audio, mime) => hermes.transcribe(audio, mime),
       speak: (text) => hermes.speak(text),
-      onChange: hermes.onVoiceChange,
+      onChange: (fn) => {
+        const offHermes = hermes.onVoiceChange(fn);
+        const offLocal = tauriLocalStt.onChange(fn);
+        return () => (offHermes(), offLocal());
+      },
       openSettings: () => openVoiceSettings.current(),
     }),
     [hermes],
@@ -2719,7 +2728,9 @@ export function Main({
             tray={tray}
             voiceSetup={voice.setup}
             voiceSettings={hermes.voiceSettings}
-            onVoiceChange={hermes.onVoiceChange}
+            onVoiceChange={voice.onChange}
+            localStt={tauriLocalStt}
+            transcribe={voice.transcribe}
             showVoice={showVoice}
             showTextGeneration={showTextGeneration}
             showMemory={showMemory}
