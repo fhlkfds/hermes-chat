@@ -1341,13 +1341,14 @@ function PrCard({
   const draft = useMemo(() => prDraft(p), [p]);
   const [title, setTitle] = useState(draft.title);
   const [body, setBody] = useState(draft.body);
-  // The suggested title and body follow new commits until the owner writes their own.
-  const [edited, setEdited] = useState(false);
+  // The suggested title and body follow new commits until the owner writes their own. A ref, set as they type: an
+  // effect from a re-read rendered just before a keystroke runs after it, and must not put the suggestion back.
+  const edited = useRef(false);
   useEffect(() => {
-    if (edited) return;
+    if (edited.current) return;
     setTitle(draft.title);
     setBody(draft.body);
-  }, [draft, edited]);
+  }, [draft]);
   const [base, setBase] = useState(p.github?.defaultBranch ?? p.bases[0] ?? "");
   const [isDraft, setIsDraft] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -1457,7 +1458,7 @@ function PrCard({
               className="repo-pr-title"
               value={title}
               onChange={(e) => {
-                setEdited(true);
+                edited.current = true;
                 setTitle(e.target.value);
               }}
             />
@@ -1470,7 +1471,7 @@ function PrCard({
               rows={5}
               value={body}
               onChange={(e) => {
-                setEdited(true);
+                edited.current = true;
                 setBody(e.target.value);
               }}
             />
