@@ -320,6 +320,17 @@ export class FakeHermes {
   /** Profile distributions, by profile name, as `GET /api/profiles` lists them (`distribution_name`). */
   distributions: Record<string, string> = {};
   /**
+   * Each profile's `.env`, by profile name: the API keys a full copy (`clone_from`) carries and a fresh profile lacks.
+   * Messaging bot tokens (`*_BOT_TOKEN`) are left out of a copy, as `strip_channel_settings` does.
+   */
+  profileEnv: Record<string, Record<string, string>> = {};
+  /** While set, `POST /api/profiles` fails with this message and makes nothing (a refusal, or a 500 before the rename). */
+  profileCreateError?: string;
+  /** While set, `POST /api/profiles` makes the profile, then fails with this message, as a connection lost before the answer. */
+  profileCreateLost?: string;
+  /** While set, `POST /api/profiles` makes the profile but not its model, and answers `model_error` with this. */
+  profileModelError?: string;
+  /**
    * Scheduled jobs by profile, as `cron/jobs.json` holds them, and how the cron routes behave
    * (`hermes_cli/web_routers/cron.py` at the deployed `bf0203a`, as probed with a throwaway HERMES_HOME).
    */
@@ -1270,7 +1281,7 @@ export class FakeHermes {
         is_default: name === "default",
         model: this.profileModel[name]?.model ?? null,
         provider: this.profileModel[name]?.provider ?? null,
-        description: "",
+        description: this.profileMeta[name]?.description ?? "",
         display_name: "",
         distribution_name: this.distributions[name] ?? null,
       })),
@@ -1318,6 +1329,7 @@ export class FakeHermes {
       profiles: ["default"],
     }),
     "POST /api/model/set": ({ body }) => this.setModel(body ?? {}),
+    "POST /api/profiles": ({ body }) => this.createProfile(body ?? {}),
     "PUT /api/config": async ({ body, query }) => {
       // `ConfigUpdate` needs `config`; the rest deep-merges over the stored file (`update_config`).
       const config = body?.config;
@@ -1582,6 +1594,7 @@ export class FakeHermes {
     const snapshot = /^\/api\/sessions\/([^/]+)\/mutation-snapshot$/.exec(req.path);
     const messages = /^\/api\/sessions\/([^/]+)\/messages$/.exec(req.path);
     const soul = /^\/api\/profiles\/([^/]+)\/soul$/.exec(req.path);
+    const profilePath = /^\/api\/profiles\/([^/]+)$/.exec(req.path);
     const handler =
       this.rest[`${method} ${req.path}`] ??
       (method === "POST" && req.path === "/api/sessions/import" ? () => this.importSessions(req.body!) : undefined) ??
@@ -1591,6 +1604,7 @@ export class FakeHermes {
       (method === "GET" && snapshot ? () => this.mutationSnapshot(snapshot[1], req.query.get("profile")) : undefined) ??
       (method === "GET" && messages ? () => this.storedMessages(decodeURIComponent(messages[1]), req.query) : undefined) ??
       (soul && this.soulRoutes && (method === "GET" || method === "PUT") ? () => this.soul(method, decodeURIComponent(soul[1]), req.body) : undefined) ??
+      (method === "DELETE" && profilePath ? () => this.deleteProfile(decodeURIComponent(profilePath[1])) : undefined) ??
       this.webhooks.route(req) ??
       this.cron.route(req) ??
       this.skills.route(req) ??
@@ -1842,6 +1856,80 @@ export class FakeHermes {
         return res;
       };
     return () => Promise.reject(refuse(405, "Method Not Allowed"));
+  }
+
+  /**
+   * `POST /api/profiles` at `f0d94882` (`create_profile_endpoint`, `profiles.create_profile`): refuses an invalid, reserved
+   * or taken name and an unknown source (400), then makes the whole profile at once. Fresh, it has an empty `.env`, the
+   * body's SOUL.md (else Hermes's default) and its model if Hermes's check takes it. `clone_from` copies the source's
+   * `.env` without bot tokens, SOUL.md, model, skill folders and memory. Chats and scheduled jobs are never copied.
+   */
+  private createProfile(body: Record<string, unknown>): unknown {
+    const refuse = (detail: string) => new Error(`The dashboard answered 400: ${JSON.stringify({ detail })}`);
+    if (this.profileCreateError) throw new Error(this.profileCreateError);
+    const name = typeof body.name === "string" ? body.name.trim().toLowerCase() : "";
+    const known = (p: string) => p === "default" || p in this.otherProfiles;
+    if (name === "default") throw refuse("Cannot create a profile named 'default' — it is the built-in profile (~/.hermes).");
+    if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(name)) throw refuse(`'${name}' is not a valid profile name.`);
+    if (["hermes", "test", "tmp", "root", "sudo"].includes(name))
+      throw refuse(`Profile name '${name}' is reserved — it collides with either the Hermes installation itself or a common system binary.  Pick a different name.`);
+    if (known(name)) throw refuse(`A profile named '${name}' already exists. Switch to it with \`hermes profile use ${name}\`, or choose a different name.`);
+    const source = typeof body.clone_from === "string" ? body.clone_from : undefined;
+    if (source !== undefined && !known(source)) throw refuse(`Source profile '${source}' does not exist at /home/liam/.hermes/profiles/${source}`);
+    this.otherProfiles[name] = [];
+    this.skills.profiles.add(name);
+    let modelSet = false;
+    let modelError = "";
+    if (source !== undefined) {
+      this.profileEnv[name] = Object.fromEntries(Object.entries(this.profileEnv[source] ?? {}).filter(([k]) => !/_BOT_TOKEN$/.test(k)));
+      if (source in this.souls) this.souls[name] = this.souls[source];
+      if (this.profileModel[source]) this.profileModel[name] = { ...this.profileModel[source] };
+      for (const skill of this.skills.folders[source] ?? []) {
+        const dir = `${FakeSkills.home(name)}${skill.dir.slice(FakeSkills.home(source).length)}`;
+        this.skills.add(name, { ...skill, dir }, this.skills.file(skill.dir));
+      }
+      if (this.memory[source]) this.memory[name] = { memory: [...this.memory[source].memory], profile: [...this.memory[source].profile] };
+    } else {
+      this.profileEnv[name] = {};
+      this.souls[name] = typeof body.soul === "string" ? body.soul : "You are Hermes, a helpful assistant.\n";
+      const provider = typeof body.provider === "string" ? body.provider.trim() : "";
+      const model = typeof body.model === "string" ? body.model.trim() : "";
+      if (provider && model) {
+        if (this.profileModelError) modelError = this.profileModelError;
+        else {
+          this.profileModel[name] = { model, provider, reasoning_effort: "medium", fast: false };
+          modelSet = true;
+        }
+      }
+    }
+    if (typeof body.description === "string" && body.description.trim()) this.profileMeta[name] = { ...this.profileMeta[name], description: body.description.trim() };
+    if (this.profileCreateLost) throw new Error(this.profileCreateLost);
+    return {
+      ok: true,
+      name,
+      path: `/home/liam/.hermes/profiles/${name}`,
+      model_set: modelSet,
+      model_error: modelError,
+      mcp_written: 0,
+      skills_disabled: 0,
+      hub_installs: [],
+      soul_set: typeof body.soul === "string",
+    };
+  }
+
+  /** `DELETE /api/profiles/{name}` at `f0d94882`: removes the profile's folder; the default profile can't be deleted. */
+  private deleteProfile(name: string): unknown {
+    if (name === "default") throw new Error(`The dashboard answered 400: ${JSON.stringify({ detail: "Cannot delete the default profile." })}`);
+    if (!(name in this.otherProfiles)) throw new Error(`The dashboard answered 404: ${JSON.stringify({ detail: `Profile '${name}' does not exist.` })}`);
+    delete this.otherProfiles[name];
+    delete this.souls[name];
+    delete this.profileEnv[name];
+    delete this.profileModel[name];
+    delete this.profileMeta[name];
+    delete this.memory[name];
+    delete this.skills.folders[name];
+    this.skills.profiles.delete(name);
+    return { ok: true, path: `/home/liam/.hermes/profiles/${name}` };
   }
 
   /**

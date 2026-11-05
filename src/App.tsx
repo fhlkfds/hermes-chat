@@ -2610,6 +2610,7 @@ export function Main({
           onCheckOthers={() => void hermes.checkOtherProfiles()}
           onSwitchProfile={switchProfile}
           onRetrySwitch={() => void (status === "connected" ? hermes.sync() : hermes.reconnect())}
+          profileClone={hermes.profileClone}
           onNew={() => newChat()}
           onSearch={() => openSearch()}
         />
