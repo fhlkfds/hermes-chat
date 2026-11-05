@@ -1339,15 +1339,11 @@ function PrCard({
   onChanged: () => void;
 }) {
   const draft = useMemo(() => prDraft(p), [p]);
-  const [title, setTitle] = useState(draft.title);
-  const [body, setBody] = useState(draft.body);
-  // The suggested title and body follow new commits until the owner writes their own.
-  const [edited, setEdited] = useState(false);
-  useEffect(() => {
-    if (edited) return;
-    setTitle(draft.title);
-    setBody(draft.body);
-  }, [draft, edited]);
+  // The suggested title and body follow new commits until the owner writes their own; then both keep what was shown.
+  // Derived, not copied in by an effect: an effect from a re-read landing mid-keystroke would put the suggestion back.
+  const [own, setOwn] = useState<{ title: string; body: string }>();
+  const title = own?.title ?? draft.title;
+  const body = own?.body ?? draft.body;
   const [base, setBase] = useState(p.github?.defaultBranch ?? p.bases[0] ?? "");
   const [isDraft, setIsDraft] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -1457,8 +1453,8 @@ function PrCard({
               className="repo-pr-title"
               value={title}
               onChange={(e) => {
-                setEdited(true);
-                setTitle(e.target.value);
+                const v = e.target.value;
+                setOwn((o) => ({ ...(o ?? { title, body }), title: v }));
               }}
             />
             <label htmlFor={ids.body} className="small muted">
@@ -1470,8 +1466,8 @@ function PrCard({
               rows={5}
               value={body}
               onChange={(e) => {
-                setEdited(true);
-                setBody(e.target.value);
+                const v = e.target.value;
+                setOwn((o) => ({ ...(o ?? { title, body }), body: v }));
               }}
             />
             <label className="repo-pr-draft small">

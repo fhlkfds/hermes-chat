@@ -703,6 +703,25 @@ describe("Repository screen, publishing", () => {
     expect(screen.getByText(/Push this branch first/)).toBeTruthy();
   });
 
+  it("follows new commits with the suggested title and body until the owner writes, then keeps what they wrote", async () => {
+    const user = userEvent.setup();
+    let commits: { sha: string; subject: string }[] = [];
+    const { api } = publishing(() => STATUS_PR, () => ({ ...INFO, remoteHead: HEAD, ahead: 0, commits }));
+    show(api);
+    const title = (await screen.findByLabelText("Title")) as HTMLInputElement;
+    const body = screen.getByLabelText("Description") as HTMLTextAreaElement;
+    expect(title.value).toBe("Login");
+    commits = [{ sha: "b".repeat(40), subject: "Require a user name" }];
+    await user.click(screen.getByRole("button", { name: "Refresh push and pull request" }));
+    await waitFor(() => expect(title.value).toBe("Require a user name"));
+    await user.type(body, "Fixes the empty-user bug.");
+    commits = [...commits, { sha: "a".repeat(40), subject: "Lengthen sessions" }];
+    await user.click(screen.getByRole("button", { name: "Refresh push and pull request" }));
+    await waitFor(() => expect((screen.getByRole("button", { name: "Refresh push and pull request" }) as HTMLButtonElement).disabled).toBe(false));
+    expect(title.value).toBe("Require a user name");
+    expect(body.value).toBe("Fixes the empty-user bug.");
+  });
+
   it("creates a pull request with the title, body, base and draft written, then shows its status", async () => {
     const user = userEvent.setup();
     const { api, calls } = publishing(
