@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import ReactMarkdown from "react-markdown";
-import { chatMarkdown, exportChat, exportFileName } from "./exportChat";
+import { FIRST_DRAFT, chatMarkdown, exportFileName, exportPreview, saveExport, type ExportDraft } from "./exportChat";
+import { planImport } from "./importTranscripts";
 import type { ApprovalChoice, Chat, Item } from "./model";
 
 const AT = new Date("2026-11-02T14:05:00Z");
@@ -155,11 +156,10 @@ describe("A chat as Markdown", () => {
     });
   });
 
-  it("warns that the content may be sensitive, without claiming to have checked it", () => {
+  it("warns that the content may be sensitive and that redaction can miss a secret", () => {
     const md = chatMarkdown(chat([{ kind: "user", id: "u", text: "the password is hunter2" }]), AT);
     expect(md).toMatch(/may contain sensitive information/);
-    expect(md).toMatch(/doesn't look for or remove/);
-    // Ordinary chat content stays as it was.
+    expect(md).toMatch(/\(0 places in this file\)\. It can miss a secret written another way\./);
     expect(md).toContain("the password is hunter2");
   });
 
@@ -188,24 +188,131 @@ describe("The suggested file name", () => {
   });
 });
 
-describe("Exporting a chat", () => {
-  const one = chat([{ kind: "user", id: "u", text: "hi" }]);
-
-  it("hands the Markdown and a file name to the Save dialog, and says where it went", async () => {
+describe("Saving an export", () => {
+  it("hands the Markdown and file name to the Save dialog, and says where it went", async () => {
     const saved: string[][] = [];
-    const toast = await exportChat(one, async (md, name) => (saved.push([md, name]), "/home/liam/notes/Fix.md"), AT);
-    expect(saved).toEqual([[chatMarkdown(one, AT), "Fix nightly backup cron.md"]]);
-    expect(toast).toMatch(/^Exported to \/home\/liam\/notes\/Fix\.md\./);
-    expect(toast).toMatch(/sensitive/);
+    const notice = await saveExport("# Fix\n", "Fix.md", async (md, name) => (saved.push([md, name]), "/home/liam/notes/Fix.md"));
+    expect(saved).toEqual([["# Fix\n", "Fix.md"]]);
+    expect(notice).toMatch(/^Exported to \/home\/liam\/notes\/Fix\.md\. Read it before you share it/);
   });
 
   it("does nothing when the owner cancels", async () => {
-    expect(await exportChat(one, async () => null, AT)).toBeUndefined();
+    expect(await saveExport("# Fix\n", "Fix.md", async () => null)).toBeUndefined();
   });
 
-  it("says why when saving fails", async () => {
-    expect(await exportChat(one, async () => Promise.reject(new Error("Permission denied (os error 13)")), AT)).toBe(
-      "Couldn't export: Permission denied (os error 13)",
-    );
+  it("passes a failure on to show", async () => {
+    await expect(saveExport("# Fix\n", "Fix.md", async () => Promise.reject(new Error("Permission denied (os error 13)")))).rejects.toThrow("Permission denied");
+  });
+});
+
+describe("Choosing what goes in an export", () => {
+  const files = { kind: "user", id: "u1", text: "Why won't these load?", attachments: ["prod.env", "dump.sql"] } as Item;
+  const items: Item[] = [
+    files,
+    { kind: "thinking", id: "r1", text: "The env file probably has the wrong host." },
+    { kind: "tool", id: "t1", name: "terminal", args: { command: "cat /srv/app/.env" }, status: "done", result: "DB_HOST=10.0.0.12" },
+    { kind: "approval", ...offered, id: "ap1", requestId: "req-1", command: "systemctl restart app", description: "Restart the app", answer: "once" },
+    { kind: "assistant", id: "a1", text: "The host was wrong. Fixed and restarted." },
+    { kind: "user", id: "u2", text: "Thanks, unrelated: what's for lunch?" },
+  ];
+  const md = (draft: Partial<ExportDraft>) => exportPreview(chat(items), { ...FIRST_DRAFT, ...draft }, AT).markdown;
+
+  it("leaves out tool calls, Approvals and attachment names at first, and says so", () => {
+    const first = md({});
+    for (const gone of ["cat /srv/app/.env", "DB_HOST=10.0.0.12", "**Tool:**", "systemctl restart app", "**Approval asked:**", "prod.env", "dump.sql", "_Attached"])
+      expect(first).not.toContain(gone);
+    expect(first).toContain("> Tool calls and Approvals were left out.");
+    expect(first).toContain("> The names of attached files were left out.");
+    expect(first).toContain("**You:**\n\nWhy won't these load?");
+    expect(first).toContain("**Hermes:**\n\nThe host was wrong.");
+  });
+
+  it("puts tool calls and attachment names in when asked", () => {
+    const all = md({ toolCalls: true, attachments: true });
+    expect(all).toContain("DB_HOST=10.0.0.12");
+    expect(all).toContain("_Approved once_");
+    expect(all).toContain("_Attached, not included in this file:_ `prod.env`, `dump.sql`");
+    expect(all).not.toMatch(/were left out/);
+  });
+
+  it("leaves out the messages not chosen, keeps the rest in order, and counts what was left out", () => {
+    const some = md({ leftOut: new Set(["u2", "r1"]) });
+    expect(some).not.toContain("lunch");
+    expect(some).not.toContain("wrong host");
+    expect(some.indexOf("Why won't these load?")).toBeLessThan(some.indexOf("The host was wrong."));
+    expect(some).toContain("> 2 of the chat's 4 messages were left out.");
+  });
+
+  it("is still a file Import reads", async () => {
+    const some = md({ leftOut: new Set(["u2"]), picked: ["10.0.0.12"], toolCalls: true });
+    const p = await planImport("markdown", "Fix.md", some);
+    expect(p.chats[0]).toMatchObject({ messages: 2, toolCalls: 1 });
+  });
+});
+
+describe("Flagging likely secrets in an export", () => {
+  const key = "sk-ant-api03-Zx8Kq2LmN4pR7tVw9yBc";
+  const pem = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ\n-----END OPENSSH PRIVATE KEY-----";
+  const items: Item[] = [
+    { kind: "user", id: "u", text: `My key is ${key}, and the db is postgres://app:Pa55w0rd!@db.internal:5432/app` },
+    { kind: "assistant", id: "a", text: `Don't paste ${key} in chats. Set it as ANTHROPIC_API_KEY instead.` },
+    { kind: "user", id: "u2", text: `Here's the deploy key:\n\n${pem}` },
+  ];
+  const preview = (draft: Partial<ExportDraft> = {}) => exportPreview(chat(items), { ...FIRST_DRAFT, ...draft }, AT);
+
+  it("flags each different secret once, with its kind and how often it's there, and redacts all of them at first", () => {
+    const p = preview();
+    expect(p.secrets).toEqual([
+      { text: key, kind: "API key", times: 2, redacted: true },
+      { text: "Pa55w0rd!", kind: "Password in a link", times: 1, redacted: true },
+      { text: pem, kind: "Private key", times: 1, redacted: true },
+    ]);
+    for (const s of [key, "Pa55w0rd!", "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ", "BEGIN OPENSSH"]) expect(p.markdown).not.toContain(s);
+    expect(p.markdown).toContain("My key is [redacted], and the db is postgres://app:[redacted]@db.internal:5432/app");
+    expect(p.markdown).toContain("(4 places in this file)");
+  });
+
+  it("keeps a flagged text the owner says isn't secret", () => {
+    const p = preview({ kept: new Set(["Pa55w0rd!"]) });
+    expect(p.markdown).toContain("postgres://app:Pa55w0rd!@db.internal");
+    expect(p.secrets.find((s) => s.text === "Pa55w0rd!")!.redacted).toBe(false);
+    expect(p.markdown).not.toContain(key);
+  });
+
+  it("only flags what the file would hold", () => {
+    expect(preview({ leftOut: new Set(["u2"]) }).secrets.map((s) => s.kind)).toEqual(["API key", "Password in a link"]);
+  });
+
+  it("finds a secret in a tool call's arguments once tool calls go in", () => {
+    const withTool = [...items, { kind: "tool", id: "t", name: "terminal", args: { command: "curl -H 'Authorization: Bearer 7f3a9c2e8b1d4f6a0e5c'" }, status: "done", result: "ok" } as Item];
+    expect(exportPreview(chat(withTool), FIRST_DRAFT, AT).secrets.some((s) => s.kind === "Bearer token")).toBe(false);
+    const p = exportPreview(chat(withTool), { ...FIRST_DRAFT, toolCalls: true }, AT);
+    expect(p.secrets.find((s) => s.kind === "Bearer token")!.text).toBe("7f3a9c2e8b1d4f6a0e5c");
+    expect(p.markdown).not.toContain("7f3a9c2e8b1d4f6a0e5c");
+  });
+});
+
+describe("Redacting by hand", () => {
+  const items: Item[] = [
+    { kind: "user", id: "u", text: "My home address is 14 Larch Lane, Duluth. Ship it to 14 Larch Lane." },
+    { kind: "assistant", id: "a", text: "Noted: 14 Larch Lane, Duluth." },
+  ];
+
+  it("replaces picked text everywhere it appears, so the saved bytes don't hold it", async () => {
+    const p = exportPreview(chat(items, { title: "Shipping to 14 Larch Lane" }), { ...FIRST_DRAFT, picked: ["14 Larch Lane"] }, AT);
+    expect(p.picked).toEqual([{ text: "14 Larch Lane", times: 4 }]);
+    let written = new Uint8Array();
+    await saveExport(p.markdown, p.fileName, async (markdown, name) => ((written = new TextEncoder().encode(markdown)), `/tmp/${name}`));
+    const bytes = new TextDecoder().decode(written);
+    expect(bytes).toBe(p.markdown);
+    expect(bytes).not.toContain("Larch");
+    expect(bytes).toContain("# Shipping to [redacted]");
+    expect(bytes).toContain("Noted: [redacted], Duluth.");
+    expect(p.fileName).toBe("Shipping to [redacted].md");
+  });
+
+  it("says when a picked text isn't in what's chosen any more", () => {
+    const p = exportPreview(chat(items), { ...FIRST_DRAFT, leftOut: new Set(["u", "a"]), picked: ["14 Larch Lane"] }, AT);
+    expect(p.picked).toEqual([{ text: "14 Larch Lane", times: 0 }]);
   });
 });

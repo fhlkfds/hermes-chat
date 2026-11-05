@@ -17,7 +17,6 @@ import { PersonaStore, personaKey } from "./hermes/personaStore";
 import { sending, unsaved, type Sending } from "./hermes/unsaved";
 import { connOf, restoreBlocked, savedBackupEnv } from "./hermes/backup";
 import { chatToReopen, forgetOpenChat, rememberOpenChat } from "./hermes/uiPrefs";
-import { exportChat } from "./hermes/exportChat";
 import { PROJECTS_KEY, projectLinks, projectScope } from "./hermes/projectLinks";
 import { ProjectsStore, type Project } from "./hermes/projects";
 import { instructionsMessage, modelProblem, resolveNewChat, savedDefaults, type ProjectDefaults } from "./hermes/projectDefaults";
@@ -1814,16 +1813,6 @@ export function Main({
     });
   };
 
-  // One Save dialog at a time: a second click while it is open does nothing.
-  const exporting = useRef(false);
-  const exportChatOnScreen = (chat: Chat) => {
-    if (exporting.current) return;
-    exporting.current = true;
-    void exportChat(chat)
-      .then((text) => text && setToast({ text, at: Date.now() }))
-      .finally(() => (exporting.current = false));
-  };
-
   // Archiving hides the chat in every Hermes client and keeps its history; the toast shows once Hermes confirms it. A
   // pane showing the chat gives way to a fresh draft, as it leaves the list. A write that didn't go in says why in the
   // list.
@@ -2313,7 +2302,7 @@ export function Main({
               : undefined
           }
           onSettle={(s) => setSettled(chat.id, s)}
-          onExport={() => exportChatOnScreen(chat)}
+          onExport={(text) => setToast({ text, at: Date.now() })}
           onCopyLink={() => copyChatLink(chat)}
           onArchive={(a) => setArchived(chat.id, a)}
           onNew={() => newChat()}
@@ -3231,7 +3220,7 @@ function ChatView({
   /** Opens Settings → Memory, when this Hermes can edit memory from here. */
   onMemorySettings?: () => void;
   onSettle: (settled: boolean) => void;
-  onExport: () => void;
+  onExport: (notice: string) => void;
   onCopyLink: () => void;
   onArchive: (archived: boolean) => void;
   onNew: () => void;
